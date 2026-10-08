@@ -48,8 +48,9 @@ Agent rules to include (plus `.claude/orchestration.md`):
 
 - Read CLAUDE.md and follow it. One PR per node, each from a fresh worktree off
   origin/main. Spec in docs as the first commit when there's a real design
-  choice. TDD. Full test suite before every push. `gh pr create`, watch checks,
-  batch fixes. **Do not merge** — the orchestrator merges.
+  choice. TDD. Full test suite (`just test`) before every push; CLAUDE.md's
+  docs-only exception applies. `gh pr create`, watch checks, batch fixes.
+  **Do not merge** — the orchestrator merges.
 - Fail fast: act on the first failed check while the others still run
   (`gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<job>/logs`;
   `gh run view --log-failed` refuses until the whole run ends).
@@ -70,8 +71,11 @@ Agent rules to include (plus `.claude/orchestration.md`):
   sudo) — ask the orchestrator. GitHub errors may be an outage: retry, don't
   change code to work around them.
 - When your nodes are merged, remove your worktrees (`git worktree remove
-  --force` if there are submodules) and local branches.
-- `pkill -f <pattern>` matches your own shell when the pattern is in the command.
+  --force` if there are submodules) and your local branches **by explicit
+  name**. Never `git branch | xargs git branch -D`: all worktrees share one
+  repo, so that deletes other agents' (and the user's) branches.
+- Stop processes with the repo's `just stop <pattern>` when it has one; a bare
+  `pkill -f`/`pgrep -f` matches your own shell and every other agent's processes.
 
 ## 3. Watch
 
@@ -83,7 +87,10 @@ WATCH_PREFIX=<prefix>- ~/.claude/skills/orchestrate/watch.sh
 ```
 
 It is level-triggered: it exits while any non-draft PR has finished CI, or has
-a failed check while others still run (`FAILING:<checks>+pending`), in a state
+a failed check while others still run (`FAILING:<checks>+pending`), or gets
+no CI (`DIRTY`: conflicts, so the owner rebases; `NOCHECKS`: targets main with
+no checks 5 min after its last update, usually pushed before a retarget, so
+close and reopen it and tell the owner to retarget before pushing), in a state
 you haven't marked handled; when the newest main run completes or has a failed
 job; when an agent is idle 15 polls; or on a 30-min heartbeat. After acting on
 a PR (merged, sent back, deferred), mark it:

@@ -9,8 +9,9 @@
 # a $WATCH_PREFIX agent idle >= 15 polls, or a 30-minute heartbeat.
 D=.claude/orchestrator; mkdir -p "$D"; H=$D/handled; ST=$D/idle.state; touch "$H"
 P=${WATCH_PREFIX:-w}
-# State: pending | FAILING:<failed checks>+pending | <unique conclusions>.
-prs() { gh pr list --json number,headRefOid,isDraft,statusCheckRollup --jq '.[]|select(.isDraft|not)|(.statusCheckRollup // []) as $c|([$c[]|select(.status=="COMPLETED" and (.conclusion|IN("FAILURE","CANCELLED","TIMED_OUT","STARTUP_FAILURE","ACTION_REQUIRED")))|.name|gsub(" ";"_")]) as $f|([$c[]|select(.status!="COMPLETED")]|length) as $p|"\(.number) \(.headRefOid[:7]) \(if ($c|length)==0 then "pending" elif $p>0 and ($f|length)>0 then "FAILING:\($f|join(","))+pending" elif $p>0 then "pending" else ([$c[]|.conclusion]|unique|join(",")) end)"' 2>/dev/null; }
+# State: pending | DIRTY (conflicts; gets no CI) | NOCHECKS (to main, no checks 5+ min after
+# its last update: pushed before a retarget) | FAILING:<failed checks>+pending | <unique conclusions>.
+prs() { gh pr list --json number,headRefOid,isDraft,statusCheckRollup,mergeStateStatus,baseRefName,updatedAt --jq '.[]|select(.isDraft|not)|(.statusCheckRollup // []) as $c|([$c[]|select(.status=="COMPLETED" and (.conclusion|IN("FAILURE","CANCELLED","TIMED_OUT","STARTUP_FAILURE","ACTION_REQUIRED")))|.name|gsub(" ";"_")]) as $f|([$c[]|select(.status!="COMPLETED")]|length) as $p|"\(.number) \(.headRefOid[:7]) \(if .mergeStateStatus=="DIRTY" then "DIRTY" elif ($c|length)==0 then (if .baseRefName=="main" and (now-(.updatedAt|fromdate))>300 then "NOCHECKS" else "pending" end) elif $p>0 and ($f|length)>0 then "FAILING:\($f|join(","))+pending" elif $p>0 then "pending" else ([$c[]|.conclusion]|unique|join(",")) end)"' 2>/dev/null; }
 actionable() { prs | while read -r n sha st; do [ "$st" = pending ] || grep -qxF -e "$n $sha" -e "$n $sha $st" "$H" || echo "ACTION PR #$n @$sha: $st  (mark: echo \"$n $sha\" or \"$n $sha $st\")"; done; }
 # --status completed --limit 1 sometimes returns a stale run; sort instead.
 # Newest run only: a rerun requeues an old run, which must not look like a change.
