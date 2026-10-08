@@ -27,7 +27,10 @@ From this session only, list what actually happened, with quotes:
 - Where the time went: from the repo root, run
   `~/.claude/skills/harness-retro/time-report.py --since <session start>`.
   It reports work time (tests, builds), waiting time (CI, agents, the user),
-  and CI time per job and step, across every session in the project. The
+  and CI time per job and step, across every session in the project. Agents
+  that worked in another repo (e.g. a game repo) keep their transcripts in that
+  repo's project dir: add `--project-dir ~/.claude/projects/<its dir>` for each,
+  plus the default one. The
   biggest work rows are optimization candidates, and they're usually tests.
   A speedup is a repo change: propose it as a task, not as harness text.
 - If this session orchestrated agents, their wrong turns are in their own

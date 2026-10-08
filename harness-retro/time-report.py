@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Where the time went: tool wall time from Claude Code transcripts, plus CI job time.
 
-  time-report.py [--since 2026-10-07T08:00] [--project-dir DIR] [--top 15] [--no-ci]
+  time-report.py [--since 2026-10-07T08:00] [--project-dir DIR]... [--top 15] [--no-ci]
 
 Transcripts: every session in the project dir (the orchestrator and its herdr
-agents share one) whose records fall after --since (default: 24 h ago). A
+agents share one; repeat --project-dir for agents that worked in another repo) whose records fall after --since (default: 24 h ago). A
 foreground tool call runs from tool_use to tool_result; a background Bash call
 runs to its task-notification. Commands are grouped by what they ran (`just
 test`, `gh pr checks`, ...), so the top rows are the optimization targets.
@@ -54,9 +54,9 @@ def add(row, dur):
 # Waiting on CI, agents or the user, not doing work.
 WAITING = re.compile(r"watch\.sh|wait loop|AskUserQuestion|wait for CI|gh pr checks|herdr agent wait")
 
-def sessions(pdir, since):
+def sessions(pdirs, since):
     tools, model, per = defaultdict(lambda: [0.0, 0, 0.0]), defaultdict(float), defaultdict(float)
-    for f in glob.glob(os.path.join(pdir, "*.jsonl")):
+    for f in [f for d in pdirs for f in glob.glob(os.path.join(d, "*.jsonl"))]:
         if datetime.fromtimestamp(os.path.getmtime(f), timezone.utc) < since:
             continue
         recs = []
@@ -129,7 +129,7 @@ def fmt(s):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", help="ISO time (local if no zone); default 24 h ago")
-    ap.add_argument("--project-dir", default=os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())))
+    ap.add_argument("--project-dir", action="append", help="repeatable; default: the cwd's project dir")
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--no-ci", action="store_true")
     a = ap.parse_args()
@@ -137,7 +137,8 @@ def main():
     if a.since:
         since = datetime.fromisoformat(a.since)
         since = since.astimezone(timezone.utc) if since.tzinfo else since.astimezone().astimezone(timezone.utc)
-    tools, model, per = sessions(a.project_dir, since)
+    pdirs = a.project_dir or [os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))]
+    tools, model, per = sessions(pdirs, since)
     print(f"# Time report since {since.astimezone():%Y-%m-%d %H:%M}\n\n## Sessions (foreground tool time · model time)")
     for who in sorted(set(per) | set(model), key=lambda w: -(per[w] + model[w])):
         print(f"{fmt(per[who])} tools · {fmt(model[who])} model   {who}")
