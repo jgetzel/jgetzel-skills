@@ -25,7 +25,9 @@ subagents are fine for quick read-only lookups (docs questions, searches).
    lessons from earlier waves.
 5. Load `ListAgents` and `SendMessage` (ToolSearch) and call `ListAgents`: its
    first line names this session (e.g. `haskell-demo-e7`). Put that name in
-   every brief as the address agents report to.
+   every brief as the address agents report to. After the first launch, check that
+   `ListAgents` shows the agent under its `-n` lane name (§2). If not, send every
+   agent a lane → session-name roster at launch and handoff.
 
 ## 1. Plan
 
@@ -37,7 +39,7 @@ subagents are fine for quick read-only lookups (docs questions, searches).
 
 ```bash
 p=$(herdr tab create --label <prefix>-<lane> --no-focus --cwd "$PWD" | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
-herdr agent start <prefix>-<lane> --kind claude --pane "$p" -- --permission-mode auto   # away mode: add --disallowedTools AskUserQuestion
+herdr agent start <prefix>-<lane> --kind claude --pane "$p" -- --permission-mode auto -n <prefix>-<lane>   # away mode: add --disallowedTools AskUserQuestion
 herdr agent prompt <prefix>-<lane> "$(cat brief.md rules.md)"
 ```
 
@@ -74,8 +76,21 @@ Agent rules to include (plus `.claude/orchestration.md`):
   --force` if there are submodules) and your local branches **by explicit
   name**. Never `git branch | xargs git branch -D`: all worktrees share one
   repo, so that deletes other agents' (and the user's) branches.
-- Stop processes with the repo's `just stop <pattern>` when it has one; a bare
-  `pkill -f`/`pgrep -f` matches your own shell and every other agent's processes.
+- Long jobs: start them with run_in_background, then do other work or end your
+  turn; the completion notification wakes you (or Monitor with `tail -n 0 -F`).
+  A bare `&` or `nohup` sends no notification: you sit idle until someone
+  reads your pane. Never wait in the foreground (`until …; do sleep …; done`, `wait`, a polling
+  loop): it is capped at 10 min and you can't read peer messages while it
+  blocks. Only a plain `sleep N` is blocked; loops are not. Wait on and kill
+  processes by PID (`$!`, `ps -p PID`, `kill PID`), or with the repo's
+  `just stop <pattern>`. `pkill -f`, `pgrep -f` and `ps | grep <pattern>` match
+  your own shell and other agents' processes. This applies to you too.
+- The shell is zsh: an unquoted `$var` is not word-split (`for x in $list`,
+  `cmd $args` pass one word), and a pipeline's status is its last command's
+  (`… | tail -1 && git commit` hides a failure). Use arrays or `${=var}`, check
+  `$pipestatus`, or put multi-step loops in a `bash` script.
+- Message other lanes by their lane name (each agent is started with
+  `-n <prefix>-<lane>`, so it's both its herdr name and its SendMessage address).
 
 ## 3. Watch
 
