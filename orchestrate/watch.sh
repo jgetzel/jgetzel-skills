@@ -22,7 +22,7 @@ main() {
   local f; f=$(gh run view "$1" --json jobs --jq '[.jobs[]|select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out")|.name|gsub(" ";"_")]|join(",")' 2>/dev/null)
   [ -n "$f" ] && echo "main $2 FAILING:$f"
 }
-idle() { herdr agent list 2>/dev/null | P="$P" python3 -c 'import os,sys,json;[print(a["name"]) for a in json.load(sys.stdin)["result"]["agents"] if a.get("name","").startswith(os.environ["P"]) and a["agent_status"]!="working"]'; }
+idle() { herdr agent list 2>/dev/null | P="$P" python3 -c 'import os,sys,json;[print(a["name"]) for a in json.load(sys.stdin)["result"]["agents"] if a.get("name","").startswith(os.environ["P"]) and a["agent_status"]!="working" and a.get("pane_id")!=os.environ.get("HERDR_PANE_ID") and a.get("name") not in os.environ.get("WATCH_IGNORE","").split()]'; }
 declare -A n; [ -f "$ST" ] && source "$ST"
 m0=$(main)
 for i in $(seq 30); do

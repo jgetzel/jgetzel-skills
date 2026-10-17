@@ -31,6 +31,9 @@ subagents are fine for quick read-only lookups (docs questions, searches).
 
 ## 1. Plan
 
+- Plan the wave as a DAG: node ids, "needs" edges, lanes as chains of nodes.
+  Launch only unblocked nodes; start or split a lane when its prerequisite
+  merges (user guidance; it worked in Wave E of the music repo).
 - Split the nodes into lanes (one agent each). Before assigning a node, check
   for existing work: `git branch -r | grep -i <node>`, `gh pr list`.
 - Confirm the plan and any open decisions with the user, unless in away mode (§5).
@@ -69,6 +72,9 @@ Agent rules to include (plus `.claude/orchestration.md`):
 - Stop only for a real design decision (options + recommendation) or when all
   nodes are merged ("ALL NODES DONE"). In away mode, don't stop for decisions:
   take your recommendation and record it in the PR body.
+- A file you will rewrite (your handoff, a doc): open it with the Read tool
+  first (Edit/Write refuse files you only `cat`'ed), and check the edit
+  succeeded before `git commit`.
 - Never push to main; nothing account-level (repo creation, tokens, secrets,
   sudo) — ask the orchestrator. GitHub errors may be an outage: retry, don't
   change code to work around them.
@@ -82,24 +88,29 @@ Agent rules to include (plus `.claude/orchestration.md`):
   reads your pane. Never wait in the foreground (`until …; do sleep …; done`, `wait`, a polling
   loop): it is capped at 10 min and you can't read peer messages while it
   blocks. Only a plain `sleep N` is blocked; loops are not. Wait on and kill
-  processes by PID (`$!`, `ps -p PID`, `kill PID`), or with the repo's
-  `just stop <pattern>`. `pkill -f`, `pgrep -f` and `ps | grep <pattern>` match
+  processes by PID (`$!`, `ps -p PID`, `kill PID`; a stopped job's child
+  processes need killing too). `pkill -f`, `pgrep -f` and `ps | grep <pattern>` match
   your own shell and other agents' processes. This applies to you too.
 - The shell is zsh: an unquoted `$var` is not word-split (`for x in $list`,
-  `cmd $args` pass one word), and a pipeline's status is its last command's
-  (`… | tail -1 && git commit` hides a failure). Use arrays or `${=var}`, check
-  `$pipestatus`, or put multi-step loops in a `bash` script.
+  `cmd $args` pass one word). Use arrays or `${=var}`, or put multi-step loops
+  in a `bash` script.
+- Never let a pipe decide a check: `build | tail`, `job | grep | head` and
+  `job; ssh … tail` report exit 0 when the job failed. Append
+  `; echo exit=${pipestatus[1]}`, or log to a file and tail that afterwards.
 - Message other lanes by their lane name (each agent is started with
   `-n <prefix>-<lane>`, so it's both its herdr name and its SendMessage address).
 
 ## 3. Watch
 
-**Never end a turn without the watcher running in the background** — including
-while waiting on the user. Start it with run_in_background from the repo root:
+**While any lane is expected to make progress, never end a turn without the
+watcher running in the background.** Start it with run_in_background from the
+repo root:
 
 ```bash
 WATCH_PREFIX=<prefix>- ~/.claude/skills/orchestrate/watch.sh
 ```
+
+`WATCH_IGNORE="<name> <name>"` skips idle auditors in the idle-15 check.
 
 It is level-triggered: it exits while any non-draft PR has finished CI, or has
 a failed check while others still run (`FAILING:<checks>+pending`), or gets
@@ -125,14 +136,31 @@ input box and fail with `agent_blocked` while a question dialog is open, so
 once agents have the herdr fallback, ask the user in plain text, not with
 AskUserQuestion.
 
+If a wake-up (heartbeat or idle) shows that nothing moved, do one of these:
+- **A) Push the lanes to keep going:** send each idle lane its next step.
+- **B) Stop watching:** do this if you won't push them and don't expect any lane
+  to keep working, for example when every lane is waiting on the user or is
+  finished. Kill the watcher by PID, then `rm .claude/orchestrator/pane` so the
+  Stop hook lets you end the turn.
+  When new work comes in, re-register (§0.3) and restart the watcher.
+
+Never re-arm the watcher just to wait. A 30-minute heartbeat with nothing to do
+only wakes you up for nothing.
+
 ## 4. Review and merge
 
 - Read the PR body and diff. For >100 files `gh pr view --json files`
   truncates — use `git diff --stat origin/main...origin/<branch>`.
 - Visual work: look at the screenshots/goldens yourself (Read the PNG; LFS
-  files: `git show <ref>:<path> | git lfs smudge > x.png`).
-- Check overlap before merging: `git merge-tree --write-tree --name-only origin/main origin/<branch>`.
+  files: `git show "${ref}:path" | git lfs smudge > x.png`; zsh turns an
+  unquoted `$ref:engine/…` into `ngine/…`).
+- Check overlap before merging: `~/.claude/skills/orchestrate/overlap.sh <pr>`
+  (textual conflicts, merges since the PR's base, files both sides changed);
+  read the shared files' hunks for changed signatures and new strict fields.
 - Squash-merge green, reviewed PRs. Tell owners of stacked branches to rebase.
+  Never pass `--delete-branch`: gh ≥ 2.10x also `git worktree remove`s the
+  branch's linked worktree (a lane's warm worktree, possibly mid-command).
+  Delete the remote branch with `git push origin --delete <branch>`.
   PR CI tests the merge ref at trigger time, so post-merge main CI is the
   safety net — revert if it goes red. A cancelled main run superseded by a
   newer push is normal.
@@ -174,5 +202,14 @@ Short updates when something merges or needs the user; lead with decisions.
 2. Ask the user to run `/harness-retro` (user-invoked only). Log harness
    lessons in `.claude/harness-ledger.md` as they happen during the wave.
 3. Next wave, or hand off: launch a fresh orchestrator agent with this skill
-   plus a state summary (what merged, open PRs, decisions, open questions),
-   then `rm .claude/orchestrator/pane`.
+   plus a state summary (what merged, open PRs, decisions, open questions).
+   Start it in a new pane **in your own tab**, not a new tab, so herdr's tab
+   layout doesn't rearrange (user request):
+   `p=$(herdr pane split "$HERDR_PANE_ID" --direction right | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')`
+   (check the JSON shape once), then `herdr agent rename <your name> <name>-old`
+   and `herdr agent start <name> --pane "$p" …` as in §2.
+   Its brief tells it to close your pane (`herdr pane close <your pane id>`)
+   once it has registered its pane and started its watcher, and to pass both
+   rules on to its own successor (user request). After a handoff the successor has
+   overwritten `.claude/orchestrator/pane`; `rm` it only when the wave ends
+   with no successor.

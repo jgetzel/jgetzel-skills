@@ -134,6 +134,14 @@ Use the kind requested by the user. Run `herdr agent` to inspect the installed k
 herdr agent start reviewer --kind codex --pane <returned-pane-id> -- <agent-args...>
 ```
 
+For Claude, give the session the same name with `-n` too. Herdr's agent name doesn't reach Claude Code, which otherwise derives a session name from the cwd (e.g. `music-ce`). Peers then can't find the agent under the herdr name in `ListAgents` / `SendMessage`:
+
+```bash
+herdr agent start reviewer --kind claude --pane <returned-pane-id> -- -n reviewer
+```
+
+To message a Claude peer, prefer `SendMessage` over `herdr agent prompt`, which types into the pane's input box and can clobber what the user is typing. If a peer isn't listed under its herdr name, match `agent_session.value` from `herdr agent list` to `sessionId` in `~/.claude/sessions/*.json`; that file's `name` is the one to use. A running session can be renamed with `/rename <name>`.
+
 A successful `agent start` returns only after Herdr detects the expected agent in the same pane and considers it ready for interactive input. If the agent is blocked during startup, the command returns `agent_not_ready` immediately but keeps the name available for `agent read` and `agent send-keys`. Wait until the agent becomes idle before prompting it. Startup defaults to a 30-second timeout.
 
 Submit work through the agent surface:
