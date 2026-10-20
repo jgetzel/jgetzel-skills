@@ -21,9 +21,7 @@ subagents are fine for quick read-only lookups (docs questions, searches).
    `mkdir -p .claude/orchestrator && echo "$HERDR_PANE_ID" > .claude/orchestrator/pane`.
    The hook then blocks ending a turn while no watcher runs. `rm` the file when
    the wave is finished or handed off.
-4. If `.claude/harness-ledger.md` exists, skim its recent entries — they are
-   lessons from earlier waves.
-5. Load `ListAgents` and `SendMessage` (ToolSearch) and call `ListAgents`: its
+4. Load `ListAgents` and `SendMessage` (ToolSearch) and call `ListAgents`: its
    first line names this session (e.g. `haskell-demo-e7`). Put that name in
    every brief as the address agents report to. After the first launch, check that
    `ListAgents` shows the agent under its `-n` lane name (§2). If not, send every
@@ -99,6 +97,7 @@ Agent rules to include (plus `.claude/orchestration.md`):
   `; echo exit=${pipestatus[1]}`, or log to a file and tail that afterwards.
 - Message other lanes by their lane name (each agent is started with
   `-n <prefix>-<lane>`, so it's both its herdr name and its SendMessage address).
+- At high context (a context-size warning), hand off with the `relaunch` skill.
 
 ## 3. Watch
 
@@ -199,10 +198,10 @@ Short updates when something merges or needs the user; lead with decisions.
 
 1. `~/.claude/skills/orchestrate/prune-worktrees.sh` — removes clean worktrees
    whose PR is merged (dry run by default; `--apply` to act).
-2. Ask the user to run `/harness-retro` (user-invoked only). Log harness
-   lessons in `.claude/harness-ledger.md` as they happen during the wave.
+2. Suggest the user run `/harness-retro` (user-invoked only).
 3. Next wave, or hand off: launch a fresh orchestrator agent with this skill
    plus a state summary (what merged, open PRs, decisions, open questions).
+   Write and gate its brief as in the `relaunch` skill (steps 1–2).
    Start it in a new pane **in your own tab**, not a new tab, so herdr's tab
    layout doesn't rearrange (user request):
    `p=$(herdr pane split "$HERDR_PANE_ID" --direction right | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')`
