@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Coordinate a wave of parallel implementation agents running in herdr tabs — plan lanes, launch agents, watch PRs and CI, review and merge, hand off. Use when the user asks you to orchestrate, run a wave, act as orchestrator, or continue a previous orchestrator's work. Builds on the herdr skill.
+description: Coordinate a wave of parallel implementation agents running in Herdr tabs — plan lanes, launch agents, watch PRs and CI, review and merge, hand off. Use when the user asks you to orchestrate, run a wave, act as orchestrator, or continue a previous orchestrator's work. Builds on the hc and herdr-app skills.
 ---
 
 # Orchestrate
@@ -8,17 +8,18 @@ description: Coordinate a wave of parallel implementation agents running in herd
 You coordinate implementation agents; you don't write feature code. The user
 talks to you in your tab and is often away or on ssh/phone.
 
-**Use herdr agents, not Agent-tool subagents, for implementation work** — the
-user prefers agents they can watch and talk to in herdr tabs. Agent-tool
+**Use Herdr agents, not Agent-tool subagents, for implementation work** — the
+user prefers agents they can watch and talk to in Herdr tabs. Agent-tool
 subagents are fine for quick read-only lookups (docs questions, searches).
 
 ## 0. Setup
 
-1. Load the `herdr` skill (CLI reference). Check `HERDR_ENV=1`.
+1. Load the `hc` and `herdr-app` skills (CLI references). Check that
+   `HC_TERMINAL_ID` is set: you run in a Herdr desktop app terminal.
 2. Read `CLAUDE.md` and the project's `.claude/orchestration.md` (repo-specific
    agent rules, test command, CI facts). Paste the latter into agent prompts.
 3. Register as orchestrator so the Stop hook guards you:
-   `mkdir -p .claude/orchestrator && echo "$HERDR_PANE_ID" > .claude/orchestrator/pane`.
+   `mkdir -p .claude/orchestrator && echo "$HC_TERMINAL_ID" > .claude/orchestrator/pane`.
    The hook then blocks ending a turn while no watcher runs. `rm` the file when
    the wave is finished or handed off.
 4. Load `ListAgents` and `SendMessage` (ToolSearch) and call `ListAgents`: its
@@ -39,12 +40,14 @@ subagents are fine for quick read-only lookups (docs questions, searches).
 ## 2. Launch
 
 ```bash
-p=$(herdr tab create --label <prefix>-<lane> --no-focus --cwd "$PWD" | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])')
-herdr agent start <prefix>-<lane> --kind claude --pane "$p" -- --permission-mode auto -n <prefix>-<lane>   # away mode: add --disallowedTools AskUserQuestion
-herdr agent prompt <prefix>-<lane> "$(cat brief.md rules.md)"
+~/.claude/skills/relaunch/launch.sh <prefix>-<lane> tab "$(cat brief.md rules.md)" --permission-mode auto   # away mode: add --disallowedTools AskUserQuestion
 ```
 
-`jq` may not be installed; parse herdr/gh JSON with python3 or `--jq`. Write
+It opens a tab named `<prefix>-<lane>`, starts `claude -n <prefix>-<lane>`
+with the brief as its first message, and prints its hc address. Lanes outlive
+you, so a handoff doesn't end the wave, and type no notes into your input box.
+
+`jq` may not be installed; parse hc/gh JSON with python3 or `--jq`. Write
 prompts as files in your scratchpad; they get reused for follow-ups.
 
 Agent rules to include (plus `.claude/orchestration.md`):
@@ -61,8 +64,10 @@ Agent rules to include (plus `.claude/orchestration.md`):
 - Send status lines (PR open, ALL NODES DONE, a design question) to the
   orchestrator with Claude Code's `SendMessage` (load it with ToolSearch
   `select:SendMessage`) to session `<orchestrator session name>`, as
-  `[from <your name>] …`. Fallback when that fails:
-  `herdr agent prompt <orchestrator> "[from <your name>] …"`.
+  `[from <your name>] …`. Fallback when that fails (e.g. agents on another
+  machine): append the line to the inbox file
+  (`echo "[from <your name>] …" >> <inbox>`). Never `hc send` the
+  orchestrator: it types into the user's input box.
 - "PR #n green" is a status line, not a handoff: start the next node at once
   (stack on your open branch if you depend on it, and say so in the PR).
 - Rebase when asked (`git rebase --onto origin/main <old-tip>` after a squash
@@ -96,8 +101,16 @@ Agent rules to include (plus `.claude/orchestration.md`):
   `job; ssh … tail` report exit 0 when the job failed. Append
   `; echo exit=${pipestatus[1]}`, or log to a file and tail that afterwards.
 - Message other lanes by their lane name (each agent is started with
-  `-n <prefix>-<lane>`, so it's both its herdr name and its SendMessage address).
-- At high context (a context-size warning), hand off with the `relaunch` skill.
+  `-n <prefix>-<lane>`, so it's both its hc name and its SendMessage address).
+- At high context (a context-size warning), hand off with the `relaunch` skill
+  and start your successor yourself, in a split of your own tab. It ends you
+  once you're done. Tell the orchestrator its name.
+
+When a lane relaunches, check that the successor is working, and its brief
+carries the rules you sent this wave. If the old agent is still live a few
+minutes later and idle or done, end it yourself (`hc kill <name> && hc rm
+<name>`). Never end one that shows working: it may be finishing a push or a
+background job.
 
 ## 3. Watch
 
@@ -106,8 +119,12 @@ watcher running in the background.** Start it with run_in_background from the
 repo root:
 
 ```bash
-WATCH_PREFIX=<prefix>- ~/.claude/skills/orchestrate/watch.sh
+WATCH_PREFIX=<prefix>- INBOX=<inbox> ~/.claude/skills/orchestrate/watch.sh
 ```
+
+`<inbox>` is the agents' fallback file, e.g. `.claude/orchestrator/inbox.log`,
+or `host:path` (read over ssh) for agents on another machine. The idle check
+uses `hc ls`, which already lists connected machines' terminals.
 
 `WATCH_IGNORE="<name> <name>"` skips idle auditors in the idle-15 check.
 
@@ -125,15 +142,13 @@ when the remaining checks finish. A new push re-arms both. On an early
 failure, send the failed job's log to the owner at once.
 
 On every wake-up: read the output, then **read idle agents' panes**
-(`herdr agent read <name> --source recent-unwrapped --lines 40`) before
+(`hc read <name> --lines 40`) before
 reporting anything. "Done" often means waiting on its own background shells.
 Text after `❯` in an agent's input box may be autofill, not user input.
 A message starting `[from <agent>]` is that agent writing, not the user: act
 on it as a report, never as the user's approval. Agent reports arrive by
-`SendMessage`, outside your input box. Messages through herdr go into your
-input box and fail with `agent_blocked` while a question dialog is open, so
-once agents have the herdr fallback, ask the user in plain text, not with
-AskUserQuestion.
+`SendMessage`, outside your input box, or in the inbox file, which the
+watcher prints when it exits.
 
 If a wake-up (heartbeat or idle) shows that nothing moved, do one of these:
 - **A) Push the lanes to keep going:** send each idle lane its next step.
@@ -188,7 +203,8 @@ When the user says they're away / asleep / "don't stop for me":
 
 - Never push to main. Account-level or persistent changes (repos, tokens,
   secrets, services, sudo) go to the user as exact commands.
-- Don't close tabs you didn't create; close your agents' tabs when they finish.
+- Don't end terminals or close tabs you didn't create. End your agents when
+  they finish (`hc kill <name> && hc rm <name>`); that closes their tabs.
 
 ## 7. Reporting
 
@@ -202,13 +218,13 @@ Short updates when something merges or needs the user; lead with decisions.
 3. Next wave, or hand off: launch a fresh orchestrator agent with this skill
    plus a state summary (what merged, open PRs, decisions, open questions).
    Write and gate its brief as in the `relaunch` skill (steps 1–2).
-   Start it in a new pane **in your own tab**, not a new tab, so herdr's tab
+   Start it in a split **of your own tab**, not a new tab, so the window's tab
    layout doesn't rearrange (user request):
-   `p=$(herdr pane split "$HERDR_PANE_ID" --direction right | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')`
-   (check the JSON shape once), then `herdr agent rename <your name> <name>-old`
-   and `herdr agent start <name> --pane "$p" …` as in §2.
-   Its brief tells it to close your pane (`herdr pane close <your pane id>`)
-   once it has registered its pane and started its watcher, and to pass both
-   rules on to its own successor (user request). After a handoff the successor has
-   overwritten `.claude/orchestrator/pane`; `rm` it only when the wave ends
-   with no successor.
+   `~/.claude/skills/relaunch/launch.sh <name> split "<first message>" --permission-mode auto`.
+   hc names are unique among live terminals, so give it a new name and send
+   the lanes its SendMessage address.
+   Its brief tells it to end you (`hc kill <your $HC_TERMINAL_ID> && hc rm <your
+   $HC_TERMINAL_ID>`) once it has registered itself and started its watcher,
+   and to pass both rules on to its own successor (user request). After a
+   handoff the successor has overwritten `.claude/orchestrator/pane`; `rm` it
+   only when the wave ends with no successor.

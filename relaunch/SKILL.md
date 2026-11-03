@@ -1,6 +1,6 @@
 ---
 name: relaunch
-description: Hand off to a fresh session of yourself when your context runs high — write the handoff and your successor's brief, start the successor in a herdr pane, close your own. Use when a context-size warning tells you to hand off, when your brief says to relaunch, or when the user asks you to restart yourself.
+description: Hand off to a fresh session of yourself when your context runs high — write the handoff and your successor's brief, start the successor in a split of your Herdr tab, and it ends you. Use when a context-size warning tells you to hand off, when your brief says to relaunch, or when the user asks you to restart yourself.
 ---
 
 # Relaunch
@@ -16,15 +16,20 @@ Append to your handoff file (in an orchestrated wave,
 `### <you> -> <successor> state (<time>)`:
 
 - **PENDING FIRST:** what the successor does before anything else, with exact
-  commands, branches and shas.
+  commands, branches and shas. Its first item is always: "end `<your name>`
+  (`hc kill <your $HC_TERMINAL_ID> && hc rm <your $HC_TERMINAL_ID>`) once
+  `hc get <your $HC_TERMINAL_ID>` shows idle or done". The address is how it
+  finds you (a session the user opened has no hc name); without it nobody
+  closes your pane.
 - In-flight work: running jobs (where, PID or queue entry, log path, how to tell
   it finished), open PRs, unrated pages, uncommitted work.
 - Decisions made this generation and why, open questions, who decides them.
 - Peers and their current names.
 
-State is facts that change. It goes here, never in the brief. Then commit only
-that file (`git commit -m "<lane>: handoff" -- <file>`), so you don't sweep up
-other lanes' staged work. Commit your own finished work first.
+State is facts that change. It goes here, never in the brief. Don't commit
+the handoff or the brief: they are local state for the next session on this
+machine, not the repo's history (`.claude/orchestrator/` is gitignored).
+Commit your own finished work first.
 
 ## 2. Brief: the standing harness
 
@@ -49,22 +54,23 @@ jobs; standing rules; peers; the relaunch line.
 
 ## 3. Start the successor
 
-If your brief or memory says you may relaunch yourself:
+Start it yourself, unless your brief says the orchestrator starts successors.
+First finish or kill your background jobs (by PID), so your pane is safe to
+close once you stop. Run from your working folder:
 
 ```bash
-p=$(herdr pane split --current --direction down --cwd "$PWD" --no-focus | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
-herdr agent start <successor> --kind claude --pane "$p" -- -n <successor> <the flags you were started with>
-herdr agent prompt <successor> "Read and follow <brief path> (you are <successor>). <PENDING FIRST in one line>. Close <your name>'s pane once you are running."
+~/.claude/skills/relaunch/launch.sh <successor> split "Read and follow <brief path> (you are <successor>). First: end <your name> (hc kill $HC_TERMINAL_ID && hc rm $HC_TERMINAL_ID) once \`hc get $HC_TERMINAL_ID\` shows idle or done. Then: <PENDING FIRST in one line>." <the flags you were started with>
 ```
 
-Check that it is working (`herdr agent get <successor>`), tell peers and the
-user its name in one line (brief bytes old → new), and stop. The successor
-closes your pane once it is running. If it hasn't after a few minutes and
-it's busy, close your own (`herdr pane close "$HERDR_PANE_ID"`) as your last
-action.
+It splits your tab, starts `claude -n <successor>` with the prompt as its first
+message, and prints its address. The successor outlives you: a plain `hc run`
+child would die when the successor ends you. Check it is working with
+`hc get <successor>` (right after launch it can still show idle; `hc read
+<successor>` if unsure), send the orchestrator, if any, `[from <you>]
+relaunched as <successor>: <brief path> (brief bytes old → new)`, tell peers
+its name, and end your turn. You then show as done, and the successor ends
+you, which closes your pane.
 
-Otherwise send the orchestrator `[from <you>] handoff committed: <brief path>`
-and stop. It starts the successor.
-
-A successor that finds its predecessor's pane still open, idle and with no
-running jobs closes it.
+If your brief says the orchestrator starts successors, send it `[from <you>]
+handoff written: <brief path>, my address <$HC_TERMINAL_ID>` and end your turn.
+It starts the successor, which ends you per the handoff's first item.
