@@ -40,12 +40,33 @@ subagents are fine for quick read-only lookups (docs questions, searches).
 ## 2. Launch
 
 ```bash
-~/.claude/skills/relaunch/launch.sh <prefix>-<lane> tab "$(cat brief.md rules.md)" --permission-mode auto   # away mode: add --disallowedTools AskUserQuestion
+~/.claude/skills/relaunch/launch.sh <prefix>-<lane> tab "$(cat brief.md rules.md)" --permission-mode auto --model <opus|sonnet>   # away mode: add --disallowedTools=AskUserQuestion
 ```
 
 It opens a tab named `<prefix>-<lane>`, starts `claude -n <prefix>-<lane>`
 with the brief as its first message, and prints its hc address. Lanes outlive
 you, so a handoff doesn't end the wave, and type no notes into your input box.
+Write `--disallowedTools=X` with the `=`: the space form takes the task as a
+tool name and the lane starts with no task.
+
+### Models
+
+Pick each agent's model by the kind of work, and pass it explicitly on every
+launch and relaunch (`--model` for lanes, `model` on the Agent tool, `model:`
+in `.claude/agents/*.md`). Without it an agent inherits whatever is running.
+
+| Work | Model |
+|---|---|
+| Planning: design options, specs, build DAGs, spikes, hard diagnosis | Opus |
+| Implementation: building to a picked spec, routine fixes, tests, shots | Sonnet |
+| Mechanical: read-only lookups, searches, log scraping (Agent-tool subagents) | Haiku |
+
+A lane keeps its kind across relaunches: a build lane's successor is Sonnet
+even if its predecessor ran on Opus. Put the rule in the wave's rules file so
+lanes relaunching themselves pass it on, and check each successor's `--model`.
+Split work that is both: an Opus lane writes the spec and options, a Sonnet
+lane builds the picked one. Ask the user before switching an orchestrator's
+model.
 
 `jq` may not be installed; parse hc/gh JSON with python3 or `--jq`. Write
 prompts as files in your scratchpad; they get reused for follow-ups.
