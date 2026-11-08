@@ -787,6 +787,47 @@ class T(unittest.TestCase):
         self.assertEqual((pushes[0]["branch"], pushes[0]["subject"]), (None, None))  # older event
         self.assertEqual((pushes[1]["branch"], pushes[1]["subject"]), ("main", "init"))
 
+    def test_state_json_view(self):
+        self.agent("a", wt=self.wt)
+        self.agent("b")
+        self.sw("a", "task", "add", "t")
+        self.sw("b", "lock", "b.txt")
+        self.sw("a", "post", "b", "hi")
+        self.sw("b", "leave")
+        st = lambda *v: json.loads(self.sw("a", "state", "--json", *v).stdout)
+        head = {"active", "db", "now", "view", "comms", "tasks", "agents", "conflicts", "pressure", "machine"}
+        for view, extra in {"board": set(), "activity": {"messages", "events"}, "system": {"events", "locks"},
+                            "overview": {"messages", "events"}, "agents": set()}.items():
+            s = st("--view", view)
+            self.assertEqual(set(s), head | extra, view)
+            a, b = s["agents"]
+            self.assertNotIn("messages", a)  # per-agent messages only for --agent
+            self.assertEqual("events" in a, view in ("overview", "agents", "system"), view)  # live lanes
+            self.assertNotIn("events", b)  # ended and not asked for
+        self.assertEqual(st("--view", "board")["tasks"][0]["title"], "t")
+        a, b = st("--view", "agents", "--agent", "b")["agents"]
+        self.assertEqual((b["messages"][0]["body"], a["branch"]), ("hi", "w2"))  # w2: read from the worktree's HEAD
+        self.assertIn("leave", [e["kind"] for e in b["events"]])
+        full = st()
+        self.assertEqual(full["view"], None)
+        self.assertIn("locks", full["agents"][1])  # no --view: everything, as before
+
+    def test_state_json_hc_only_where_shown(self):
+        t = int(time.time())
+        self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin)
+        log = os.path.join(self.d, "hc.log")
+        open(os.path.join(self.fakebin, "hc"), "w").write(f"#!/bin/sh\necho \"$2\" >> {log}\necho '{{}}'\n")
+        os.chmod(os.path.join(self.fakebin, "hc"), 0o755)
+        kw = dict(status="idle", last_active=t - 4 * 3600)
+        self.agent("live", hc="t-live", **kw)
+        self.agent("gone", hc="t-gone", **kw)
+        self.q("update agent set ended=? where name='gone'", t)
+        calls = lambda: open(log).read().split() if os.path.exists(log) else []
+        self.sw("a", "state", "--json", "--view", "board")
+        self.assertEqual(calls(), [])  # board shows no idle timers
+        self.sw("a", "state", "--json")
+        self.assertEqual(calls(), ["t-live"])  # never an ended agent's terminal
+
     def test_state_json_old_db(self):
         c = sqlite3.connect(self.db)  # schema from before agent.wt / task.after,model,question
         c.executescript("create table agent(name text primary key, hc text, model text, cwd text, status text, last_active int,"

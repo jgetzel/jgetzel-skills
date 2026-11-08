@@ -1,13 +1,15 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings } from "herdr";
+import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder } from "herdr";
 
 // Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
-// machine it is that machine's installed skill. `state --json` is read-only.
-const swarmState = (cwd, on) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB python3 "$HOME/.claude/skills/swarm/swarm" state --json'], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json"], { cwd });
-const POLL = 3000, PR_POLL = 60000;
+// machine it is that machine's installed skill. `state --json` is read-only; `args` pick the view.
+const swarmState = (cwd, on, args) => on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB python3 "$HOME/.claude/skills/swarm/swarm" state --json "$@"', "sh", ...args], { cwd, on })
+  : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", ...args], { cwd });
+// POLL: the fastest rate, while the db changes. QUIET_POLL: a watched local db that hasn't changed (idle
+// timers, cache countdowns and the machine reading still move). REMOTE_POLL: other machines, unwatched.
+const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;
 const CTX_MAX = 600000, FINISH = 350000, HANDOFF = 550000; // the context bar's scale and its two ticks
 // [id, label, label width in px at 11.5]: the segment highlight slides between computed lefts
 const TABS = [["overview", "Overview", 52], ["agents", "Agents", 40], ["board", "Board", 32], ["activity", "Activity", 46], ["system", "System", 42]];
@@ -81,9 +83,10 @@ export default class Swarm extends View {
     this.s = null; this.prs = null; this.runs = null; this.error = null;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 860;
     this.tab = "overview"; this.sel = null; this.push = null; this.boardFilter = "all"; this.actFilter = "all";
+    this.old = new Set(); // machines whose swarm CLI predates --view
     this.refresh(cx);
-    // Data timers only; each tick returns at once while the panel isn't shown.
-    cx.timer.every(POLL, cx => { if (this.visible()) this.refresh(cx); });
+    // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
+    cx.timer.every(POLL, cx => { if (this.visible() && this.due()) this.refresh(cx); });
     cx.timer.every(PR_POLL, cx => { if (this.visible()) this.refreshPrs(cx); });
   }
 
@@ -93,41 +96,69 @@ export default class Swarm extends View {
     return panel && !panel.hidden && body.active === "swarm";
   }
 
+  // What the open view asks state --json for: the tab, and on Agents the agent in the detail pane.
+  view() { return `${this.tab}:${this.tab === "agents" ? this.detailName ?? "" : ""}`; }
+  due() {
+    const age = Date.now() - (this.at ?? 0);
+    return locKey() !== this.loc || this.view() !== this.polled || this.dirty
+      || age > (this.on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL);
+  }
+
   refresh(cx) {
     if (this.loading) return;
     const { cwd, on } = location();
     this.loc = locKey();
     if (!cwd) { this.s = null; this.error = "No folder"; return; }
-    this.loading = true; this.at = Date.now();
+    const view = this.view(), args = this.old.has(on) ? [] : ["--view", this.tab, ...(this.tab === "agents" && this.detailName ? ["--agent", this.detailName] : [])];
+    this.loading = true; this.at = Date.now(); this.dirty = false; this.polled = view;
     cx.spawn(async cx => {
       try {
-        const r = await swarmState(cwd, on);
+        const r = await swarmState(cwd, on, args);
+        if (r.code !== 0 && args.length && /unrecognized arguments/.test(r.stderr)) { this.old.add(on); this.at = 0; return; } // asks again in full
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = JSON.parse(r.stdout);
         const now = location();
         if (now.cwd !== cwd || now.on !== on) return; // moved to another folder meanwhile; the next render asks again
-        if (s.db !== this.s?.db || on !== this.on) {
+        const same = s.db === this.s?.db && on === this.on;
+        if (!same) {
           if (this.s) { this.seen.clear(); this.sel = null; this.push = null; } // another repo: its agents, not the last one's
-          this.prs = null; this.runs = null; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
+          this.prs = null; this.runs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
         }
-        this.s = s; this.error = null;
+        // A view sends only its sections; the others keep their last values (empty at first) until their tab asks.
+        this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
+        if (on) this.watching = null; else if (s.agents) this.watch(s.db.replace(/\/[^/]*$/, ""), cx);
       } catch (e) { this.error = String(e.message ?? e); }
       finally { this.loading = false; cx.notify(); }
     });
   }
 
+  // Marks the data stale when the db folder changes; the POLL tick does the asking. Our own reads touch
+  // only the -shm index, so those don't count.
+  watch(dir, cx) {
+    if (this.watching === dir) return;
+    this.watching = dir;
+    cx.spawn(async () => {
+      try {
+        while (this.watching === dir) if ((await watchFolder(dir)).some(p => !p.endsWith("-shm"))) this.dirty = true;
+      } catch { if (this.watching === dir) this.watching = null; } // unwatchable: back to polling every POLL
+    });
+  }
+
+  // CI runs feed the needs-you strip on every tab; PRs only show on Agents and System.
   refreshPrs(cx) {
-    const cwd = this.cwd, on = this.on;
+    const cwd = this.cwd, on = this.on, prs = this.tab === "agents" || this.tab === "system";
     if (!cwd || this.prLoading) return;
     this.prLoading = true;
     cx.spawn(async cx => {
       try {
-        const pr = await exec("gh", ["pr", "list", "--limit", "30", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd, on });
-        this.prs = pr.code === 0 ? JSON.parse(pr.stdout) : null;
+        if (prs) {
+          const pr = await exec("gh", ["pr", "list", "--limit", "30", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd, on });
+          this.prs = pr.code === 0 ? JSON.parse(pr.stdout) : null;
+        }
         const ci = await exec("gh", ["run", "list", "--branch", "main", "--limit", "6", "--json", "databaseId,status,conclusion,displayTitle,createdAt,url"], { cwd, on });
         this.runs = ci.code === 0 ? JSON.parse(ci.stdout) : null;
       } catch { this.prs = null; this.runs = null; } // no gh: those parts just say so
-      finally { this.prLoading = false; this.prAt = Date.now(); cx.notify(); }
+      finally { this.prLoading = false; this.prAt = Date.now(); if (prs) this.prsAt = this.prAt; cx.notify(); }
     });
   }
 
@@ -405,6 +436,7 @@ export default class Swarm extends View {
   // Wide: lanes | selected agent (master-detail). Narrow: lanes open inline; Open agent pushes the detail.
   agents(t, d) {
     const narrow = this.width < 520;
+    if (narrow) this.detailName = this.push;
     if (narrow && this.push) {
       const a = this.s.agents.find(x => x.name === this.push);
       if (a) {
@@ -431,6 +463,7 @@ export default class Swarm extends View {
         .child(this.list("ended", showEnded.map(a => this.endRow(t, a))))
         .when(d.ended.length > 10, el => el.child(this.link(t, "ended-more", this.open.ended ? "Show fewer" : `Show all ${d.ended.length}`, cx => { this.open.ended = !this.open.ended; cx.notify(); }).px(4).py(6))));
     if (narrow) return div().p(10).child(master);
+    this.detailName = sel; // the next poll brings its messages
     const a = this.s.agents.find(x => x.name === sel);
     return h_flex().id("agents-md").size_full().min_h(0).p(12).gap(14).items_start()
       .child(v_flex().id("agents-list").w(this.width >= 760 ? 316 : 260).flex_none().h_full().min_h(0).overflow_y_scrollbar().child(master))
@@ -444,7 +477,7 @@ export default class Swarm extends View {
     const pr = branch && this.prs?.find(p => p.headRefName === branch);
     const push = a.events?.find(e => e.kind === "push");
     const n = a.ctx_tokens;
-    const msgs = a.messages.slice(0, 6), tl = (a.events ?? []).slice(0, 10);
+    const msgs = (a.messages ?? []).slice(0, 6), tl = (a.events ?? []).slice(0, 10);
     const lastDone = s.tasks.filter(k => k.state === "done" && k.owner === a.name).pop();
     const section = (label, note) => h_flex().gap(8).items_center().child(this.k(t, label)).when(Boolean(note), el => el.child(div().text_size(10.5).text_color(t.dim).child(note)));
     return v_flex().id(`det-${a.name}`).relative().w_full().min_w(0).px(16).py(14).gap(14).rounded(10).bg(t.surface).border_1().border_color(t.border)
@@ -481,7 +514,7 @@ export default class Swarm extends View {
           .child(div().truncate().min_w(0).text_color(t.dim).child(a.worktree ? "worktree" : "checkout")).child(div().flex_1())
           .child(div().flex_none().text_color(t.dim).child(push ? `pushed ${hhmm(push.ts)}${push.subject ? ` · ${one(push.subject)}` : ""}` : "")))
         .child(pr ? this.prRow(t, pr, false)
-          : div().h(22).text_size(11.5).text_color(t.dim).child(this.prs == null ? "PRs unknown (gh not available)" : "No open PR from this branch")))
+          : div().h(22).text_size(11.5).text_color(t.dim).child(this.prs == null ? (this.prLoading ? "…" : "PRs unknown (gh not available)") : "No open PR from this branch")))
       .when(a.files.length > 0, el => el.child(v_flex().gap(0).child(h_flex().pb(4).child(section("Files", String(a.files.length)))).children(a.files.slice(0, 12).map(f => this.fileRow(t, f)))))
       .when(msgs.length > 0, el => el.child(v_flex().gap(3).child(section("Messages", "first line only"))
         .children(msgs.map(m => v_flex().gap(3).px(8).py(6).rounded(6).when(Boolean(m.urgent), el => el.bg(t.blocked + "14"))
@@ -802,8 +835,11 @@ export default class Swarm extends View {
 
   // ---- frame ---------------------------------------------------------------------------------
   render(cx) {
-    if (this.visible() && !this.loading && (locKey() !== this.loc || Date.now() - (this.at ?? 0) > POLL)) this.refresh(cx);
-    const t = theme(), el = this.draw(t);
+    const t = theme(), el = this.draw(t); // draws first: it settles which agent the detail pane shows
+    if (this.visible()) {
+      if (!this.loading && this.due()) this.refresh(cx);
+      if ((this.tab === "agents" || this.tab === "system") && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx);
+    }
     // Keys first drawn in this frame sit at their start values; a frame later they move, staggered.
     if (this.fresh.size && !this.entering) {
       this.entering = true;

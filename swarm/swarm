@@ -1321,6 +1321,24 @@ def cmd_machine(c, a):
     print(machine_note(c, None))
 
 
+def head_branch(wt):
+    """`git rev-parse --abbrev-ref HEAD` in worktree `wt` without a subprocess: read its HEAD file."""
+    g = os.path.join(wt, ".git")
+    try:
+        if os.path.isfile(g):  # a linked worktree: .git names its gitdir
+            g = os.path.join(wt, open(g).read().split("gitdir:", 1)[1].strip())
+        h = open(os.path.join(g, "HEAD")).read().strip()
+    except (OSError, IndexError):
+        return None
+    return h[16:] if h.startswith("ref: refs/heads/") else "HEAD"
+
+
+# Sections each panel view needs beyond the header (tasks, agents, conflicts, pressure, machine).
+# "lanes": hc idle lookups, worktrees and each live agent's last events. No --view is everything.
+VIEWS = {"overview": {"lanes", "messages", "events"}, "agents": {"lanes"}, "board": set(),
+         "activity": {"messages", "events"}, "system": {"lanes", "events", "locks"}}
+
+
 class Rec(dict):
     def __missing__(self, k):
         return None
@@ -1350,27 +1368,33 @@ def cmd_state(a):
         r.update(task_timing(r, [e for e in tev if event_task(e) == r["id"]]))
         r["lease_left"] = r["lease_until"] - t if r["state"] in ("claimed", "blocked") and r["lease_until"] else None
         r["waiting"] = bool(r.get("after") and state.get(r["after"]) != "done")
-    wts, agents = wt_map(c), []
+    full = a.view is None
+    want = VIEWS[a.view] if a.view else {"lanes", "messages", "events", "locks"}
+    lanes = "lanes" in want
+    wts, agents = wt_map(c) if lanes else {}, []
     for x in rows("select * from agent order by ended is not null, name"):
         own = [r for r in tasks if r["owner"] == x["name"] and r["state"] in ("claimed", "blocked")]
         sn = json.loads(x["snap"]) if x["snap"] and x["snap"].startswith("{") else {}
-        live = x["ended"] is None
-        agents.append({
+        live, wt = x["ended"] is None, wts.get(x["name"]) or x["wt"]
+        act = session_active(x, t) if live and lanes else (x["last_active"] or 0)  # hc lookups only where idle shows
+        ag = {
             "name": x["name"], "hc": x["hc"], "model": x["model"], "ctx_tokens": x["ctx_tokens"] or 0,
             "status": "ended" if not live else "blocked" if any(r["state"] == "blocked" for r in own) else x["status"],
-            "idle_s": t - (session_active(x, t) or t), "started": x["started"], "ended": x["ended"],
-            "cache": "warm" if t - session_active(x, t) < COLD_IDLE else "cold",
-            "cold_guarded": bool(live and cold_reason(x, t)),
-            "worktree": wts.get(x["name"]) or x["wt"],
-            "branch": (git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=wts.get(x["name"]) or x["wt"])
-                       if live and (wts.get(x["name"]) or x["wt"]) and os.path.isdir(wts.get(x["name"]) or x["wt"]) else None),
-            "cold_at": session_active(x, t) + COLD_IDLE if live and x["status"] != "working" else None,
+            "idle_s": t - (act or t), "started": x["started"], "ended": x["ended"],
+            "cache": "warm" if t - act < COLD_IDLE else "cold",
+            "cold_guarded": bool(live and lanes and cold_reason(x, t)),
+            "worktree": wt, "branch": head_branch(wt) if live and wt else None,
+            "cold_at": act + COLD_IDLE if live and x["status"] != "working" else None,
             "task": {"id": own[0]["id"], "title": own[0]["title"], "state": own[0]["state"]} if own else None,
-            "files": sn.get("files", []),
-            "locks": [r["path"] for r in rows("select path from lock where agent=?", x["name"])],
-            "events": rows("select ts,kind,path,data from event where agent=? and kind not in ('touch','status') order by id desc limit 5", x["name"]),
-            "messages": rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg where frm=? or dest=? order by id desc limit 5", x["name"], x["name"]),
-        })
+            "files": sn.get("files", []) if full or live or x["name"] == a.agent else [],
+        }
+        if full:
+            ag["locks"] = [r["path"] for r in rows("select path from lock where agent=?", x["name"])]
+        if full or (lanes and live) or x["name"] == a.agent:
+            ag["events"] = rows("select ts,kind,path,data from event where agent=? and kind not in ('touch','status') order by id desc limit 5", x["name"])
+        if full or x["name"] == a.agent:  # the detail pane's messages
+            ag["messages"] = rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg where frm=? or dest=? order by id desc limit 5", x["name"], x["name"])
+        agents.append(ag)
     episodes = []
     for e in rows("select ts,kind,data from event where kind in ('pressure','pressure-end') order by id"):
         if e["kind"] == "pressure":
@@ -1394,18 +1418,22 @@ def cmd_state(a):
                 e["path"] = None
         return evs
     for x in agents:
-        pushinfo(x["events"])
+        pushinfo(x.get("events", []))
     cm = rows("select v from meta where k='comms'")
-    print(json.dumps({
-        "active": any(x["ended"] is None for x in agents), "db": p, "now": t,
+    out = {
+        "active": any(x["ended"] is None for x in agents), "db": p, "now": t, "view": a.view,
         "comms": (cm[0]["v"] if cm else None) or os.environ.get("SWARM_COMMS"),
         "tasks": tasks, "agents": agents,
-        "messages": rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit 40"),
-        "events": pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60")),
         "conflicts": rows("select * from conflict order by since desc"),
-        "locks": rows("select * from lock order by since desc"),
         "pressure": episodes[-5:][::-1], "machine": machine,
-    }))
+    }
+    if "messages" in want:
+        out["messages"] = rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit 40")
+    if "events" in want:
+        out["events"] = pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60"))
+    if "locks" in want:
+        out["locks"] = rows("select * from lock order by since desc")
+    print(json.dumps(out))
 
 
 COL = ["31", "32", "33", "34", "35", "36"]
@@ -1555,7 +1583,10 @@ def main(argv=None):
     p = add("unlock", cmd_unlock)
     p.add_argument("path")
     add("machine", cmd_machine)
-    add("state", None).add_argument("--json", action="store_true", required=True)
+    p = add("state", None)
+    p.add_argument("--json", action="store_true", required=True)
+    p.add_argument("--view", choices=sorted(VIEWS), help="only what that panel view shows (default: everything)")
+    p.add_argument("--agent", help="also the detail pane's messages and events for this agent")
     p = add("watch", cmd_watch)
     p.add_argument("--tail", type=int, default=20)
     p.add_argument("--once", action="store_true")
