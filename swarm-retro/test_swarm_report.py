@@ -34,11 +34,24 @@ insert into event(ts,agent,kind,path,data) values(1,'a','conflict','L.hs','b'),(
     got = [os.path.basename(x) for x in sr.transcripts("jl-1", "/w")]
     self.assertEqual(sorted(got), ["a.jsonl", "c.jsonl"])
 
-  def test_hook_bytes(self):
+  def test_hook_bytes_by_source(self):
     import tempfile, json
     f = tempfile.mktemp(suffix=".jsonl")
-    open(f, "w").write(json.dumps({"attachment": {"type": "hook_additional_context", "content": "abcd"}}) + "\n" + json.dumps({"attachment": {"type": "date"}}) + "\n")
-    self.assertEqual(sr.hook_bytes([f]), 4)
+    h = lambda c: json.dumps({"attachment": {"type": "hook_additional_context", "content": c}}) + "\n"
+    open(f, "w").write(h(["swarm messages (x"]) + h(["machine: 1G"]) + h(["zzz"]) + json.dumps({"attachment": {"type": "date"}}) + "\n")
+    self.assertEqual(sr.hook_bytes([f]), {"inbox": 17, "machine": 11, "other": 3})
+
+  def test_brief_size(self):
+    import tempfile, json
+    f = tempfile.mktemp(suffix=".jsonl")
+    open(f, "w").write(json.dumps({"type": "user", "message": {"content": "abcde"}}, separators=(",", ":")) + "\n")
+    self.assertEqual((sr.brief_size([f], 9), sr.brief_size([], 9)), (5, 9))
+
+  def test_cold_wakes(self):
+    ev = lambda *r: [dict(ts=t, agent="a", kind=k) for t, k in r]
+    self.assertEqual(sr.cold_wakes(ev((0, "push"), (4000, "wake"), (4100, "wake"))), 1)  # second wake is warm
+    self.assertEqual(sr.cold_wakes(ev((0, "push"), (1000, "compact"), (1100, "push"), (5000, "wake"))), 1)
+    self.assertEqual(sr.cold_wakes(ev((0, "push"), (3000, "compact"), (3100, "wake"))), 0)
 
   def test_resources(self):
     c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
