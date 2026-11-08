@@ -1137,6 +1137,74 @@ def cmd_machine(c, a):
     print(machine_note(c, None))
 
 
+class Rec(dict):
+    def __missing__(self, k):
+        return None
+
+
+def cmd_state(a):
+    """One read-only JSON snapshot of the swarm for UIs (the Herdr panel). Never creates or writes the db."""
+    p, t = dbpath(), now()
+    if not os.path.exists(p):
+        return print(json.dumps({"active": False, "db": p, "now": t}))
+    c = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=10)
+    # read-only can't run connect()'s column migrations, so a column an older db lacks reads as None
+    c.row_factory = lambda cur, row: Rec(zip([d[0] for d in cur.description], row))
+
+    def rows(q, *x):
+        try:
+            return list(c.execute(q, x))
+        except sqlite3.OperationalError as e:  # a table an older db never had
+            if "no such table" not in str(e):
+                raise
+            return []
+    tasks = rows("select * from task order by id")
+    state = {r["id"]: r["state"] for r in tasks}
+    for r in tasks:
+        r.pop("body", None)
+        r["lease_left"] = r["lease_until"] - t if r["state"] in ("claimed", "blocked") and r["lease_until"] else None
+        r["waiting"] = bool(r.get("after") and state.get(r["after"]) != "done")
+    wts, agents = wt_map(c), []
+    for x in rows("select * from agent order by ended is not null, name"):
+        own = [r for r in tasks if r["owner"] == x["name"] and r["state"] in ("claimed", "blocked")]
+        sn = json.loads(x["snap"]) if x["snap"] and x["snap"].startswith("{") else {}
+        live = x["ended"] is None
+        agents.append({
+            "name": x["name"], "hc": x["hc"], "model": x["model"], "ctx_tokens": x["ctx_tokens"] or 0,
+            "status": "ended" if not live else "blocked" if any(r["state"] == "blocked" for r in own) else x["status"],
+            "idle_s": t - (x["last_active"] or t), "started": x["started"], "ended": x["ended"],
+            "cache": "warm" if t - (x["last_active"] or 0) < COLD_IDLE else "cold",
+            "cold_guarded": bool(live and cold_reason(x, t)),
+            "worktree": wts.get(x["name"]) or x["wt"],
+            "task": {"id": own[0]["id"], "title": own[0]["title"], "state": own[0]["state"]} if own else None,
+            "files": sn.get("files", []),
+            "locks": [r["path"] for r in rows("select path from lock where agent=?", x["name"])],
+            "events": rows("select ts,kind,path,data from event where agent=? and kind not in ('touch','status') order by id desc limit 5", x["name"]),
+            "messages": rows("select id,ts,frm,dest,body,urgent,kind from msg where frm=? or dest=? order by id desc limit 5", x["name"], x["name"]),
+        })
+    episodes = []
+    for e in rows("select ts,kind,data from event where kind in ('pressure','pressure-end') order by id"):
+        if e["kind"] == "pressure":
+            episodes.append({"start": e["ts"], "end": None, "line": e["data"]})
+        elif episodes and episodes[-1]["end"] is None:
+            episodes[-1]["end"] = e["ts"]
+    try:
+        avail, total, psi = mem_psi()
+        machine = {"line": machine_line(avail, total, psi), "avail_kb": avail, "total_kb": total, "psi": psi,
+                   "high": pressure_high(avail, total, psi)}
+    except OSError:
+        machine = None
+    print(json.dumps({
+        "active": any(x["ended"] is None for x in agents), "db": p, "now": t,
+        "tasks": tasks, "agents": agents,
+        "messages": rows("select id,ts,frm,dest,body,urgent,kind from msg order by id desc limit 40"),
+        "events": rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60"),
+        "conflicts": rows("select * from conflict order by since desc"),
+        "locks": rows("select * from lock order by since desc"),
+        "pressure": episodes[-5:][::-1], "machine": machine,
+    }))
+
+
 COL = ["31", "32", "33", "34", "35", "36"]
 
 
@@ -1280,6 +1348,7 @@ def main(argv=None):
     p = add("unlock", cmd_unlock)
     p.add_argument("path")
     add("machine", cmd_machine)
+    add("state", None).add_argument("--json", action="store_true", required=True)
     p = add("watch", cmd_watch)
     p.add_argument("--tail", type=int, default=20)
     p.add_argument("--once", action="store_true")
@@ -1297,6 +1366,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "hook":
         return hook(a.event)
+    if a.cmd == "state":
+        return cmd_state(a)
     if a.cmd == "wait" and a.me:
         os.environ["SWARM_NAME"] = a.me
     if a.cmd == "spawn" and a.task[:1] == ["--"]:
