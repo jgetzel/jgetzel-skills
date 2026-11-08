@@ -731,6 +731,30 @@ class T(unittest.TestCase):
         self.swp("a", pr, "watchd", "--once")
         self.assertEqual(self.q("select count(*) from event where kind='pressure-end'")[0][0], 1)
 
+    def test_ci_red_goes_to_live_suspects_else_comms(self):
+        def commit(who):
+            subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", f"x\n\nSwarm-Agent: {who}"], cwd=self.repo, check=True)
+        green = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
+        commit("a"); commit("gone")
+        red = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
+        bindir = os.path.join(self.d, "bin"); os.makedirs(bindir)
+        runs = [{"databaseId": 9, "headSha": red, "conclusion": "failure", "status": "completed", "url": "http://ci/9"},
+                {"databaseId": 8, "headSha": green, "conclusion": "success", "status": "completed", "url": "http://ci/8"}]
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$2\" = list ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
+        os.chmod(os.path.join(bindir, "gh"), 0o755)
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "a", "PATH": bindir + os.pathsep + os.environ["PATH"]}
+        self.agent("a"); self.agent("gone", ended=1); self.agent("comms")
+        go = lambda: subprocess.run([sys.executable, SWARM, "watchd", "--once", "--ci", "--comms", "comms"],
+                                    env=env, capture_output=True, text=True, cwd=self.repo, check=True)
+        go(); go()  # second tick: edge-triggered
+        m = self.q("select dest,body from msg where kind='system' order by id")
+        self.assertEqual([x[0] for x in m], ["a"])
+        self.assertIn("http://ci/9", m[0][1]); self.assertIn("Build failed", m[0][1])
+        # no live suspect: falls back to comms
+        self.q("update agent set ended=1 where name='a'"); self.q("delete from event where kind='ci-red'")
+        go()
+        self.assertEqual([x[0] for x in self.q("select dest from msg where kind='system' order by id")], ["a", "comms"])
+
 
 if __name__ == "__main__":
     unittest.main()
