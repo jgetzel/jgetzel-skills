@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
+from datetime import datetime
 import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
@@ -69,6 +70,7 @@ def connect():
     c.executescript(SCHEMA)
     for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("task", "question text"), ("agent", "claude_pid int"),
                      ("task", "created_at int"), ("task", "first_claimed_at int"), ("task", "done_at int"), ("task", "dropped_at int"),
+                     ("task", "pr int"), ("task", "merged_at int"), ("task", "ci_conclusion text"), ("task", "ci_green_at int"),
                      ("task", "claim_ctx int"), ("task", "done_ctx int")):  # dbs made before sw-locks
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
@@ -110,7 +112,9 @@ def task_timing(r, evs):
             "queue_wait_s": d(created, first), "work_s": d(first, done), "total_s": d(created, done), "blocked_s": blocked,
             "claims": len(claims), "releases": len(ts("release")),
             "holders": list(dict.fromkeys(e["agent"] for e in claims)),
-            "claim_ctx": r.get("claim_ctx"), "done_ctx": r.get("done_ctx")}
+            "claim_ctx": r.get("claim_ctx"), "done_ctx": r.get("done_ctx"),
+            "pr": r.get("pr"), "merged_at": r.get("merged_at"), "ci_conclusion": r.get("ci_conclusion"),
+            "merge_to_green_s": d(r.get("merged_at"), r.get("ci_green_at"))}
 
 
 def task_events(c, tid):
@@ -861,6 +865,7 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
     machine_tick(c)
     if repo:
         ci_check(c, repo, comms)
+        pr_ci(c, repo)
 
 
 def last_event(c, *kinds):
@@ -919,6 +924,35 @@ def machine_tick(c):
                         pass
                 log(c, v[0]["name"], "orphan-kill", None, f"{h['pid']} {h['cmd'][:60]} {h['rss_kb'] // 1024}M")
                 break
+
+
+def pr_ci(c, repo):
+    """For done tasks without merge data: find the PR (evidence 'PR #N' / 'pull/N', else the merged PR from the owner's branch),
+    its merged_at, and the first completed main CI run on the merge commit; if red, the next green run. Stored on the task."""
+    todo = c.execute("select * from task where state='done' and merged_at is null and done_at>?", (now() - 86400,)).fetchall()
+    if not todo:
+        return
+    ts = lambda x: int(datetime.fromisoformat(x.replace("Z", "+00:00")).timestamp())
+    try:
+        prs = json.loads(run(["gh", "pr", "list", "--state", "merged", "--limit", "100", "--json", "number,mergedAt,mergeCommit,headRefName"], cwd=repo) or "[]")
+        runs = sorted(json.loads(run(["gh", "run", "list", "--branch", "main", "--limit", "100", "--json", "headSha,conclusion,status,createdAt,updatedAt"], cwd=repo) or "[]"), key=lambda r: r["createdAt"])
+    except ValueError:
+        return
+    for r in todo:
+        m = re.search(r"(?:PR #|pull/)(\d+)", r["evidence"] or "")
+        pr = next((x for x in prs if m and x["number"] == int(m[1])), None) or max(
+            (x for x in prs if x["headRefName"].startswith(f"{r['owner']}/") and ts(x["mergedAt"]) >= (r["first_claimed_at"] or 0)),
+            key=lambda x: x["mergedAt"], default=None)
+        if not pr:
+            continue
+        merged = ts(pr["mergedAt"])
+        mine = next((x for x in runs if x["status"] == "completed" and x["headSha"] == (pr.get("mergeCommit") or {}).get("oid")), None)
+        if not mine:
+            c.execute("update task set pr=?, merged_at=? where id=?", (pr["number"], merged, r["id"]))  # CI not finished; ci_conclusion stays null
+            continue
+        green = mine if mine["conclusion"] == "success" else next((x for x in runs if x["status"] == "completed" and x["createdAt"] > mine["createdAt"] and x["conclusion"] == "success"), None)
+        c.execute("update task set pr=?, merged_at=?, ci_conclusion=?, ci_green_at=? where id=?",
+                  (pr["number"], merged, mine["conclusion"], ts(green["updatedAt"]) if green else None, r["id"]))
 
 
 def ci_check(c, repo, comms=None):
@@ -1049,7 +1083,9 @@ def cmd_task(c, a):
               f"timing: queue {f('queue_wait_s')}, work {f('work_s')}, total {f('total_s')}, blocked {f('blocked_s')}, "
               f"claims {tm['claims']}, releases {tm['releases']}, held by {', '.join(tm['holders']) or '-'}"
               + (f", ctx {tm['claim_ctx'] // 1000}k at claim" if tm["claim_ctx"] else "")
-              + (f" -> {tm['done_ctx'] // 1000}k at done" if tm["done_ctx"] else "") + f"\n{r['body'] or '(no body)'}")
+              + (f" -> {tm['done_ctx'] // 1000}k at done" if tm["done_ctx"] else "")
+              + (f"\nPR #{tm['pr']} merged {hhmm(tm['merged_at'])}, main CI {tm['ci_conclusion'] or 'pending'}"
+                 + (f", green {tm['merge_to_green_s'] // 60}m after merge" if tm["merge_to_green_s"] is not None else "") if tm["merged_at"] else "") + f"\n{r['body'] or '(no body)'}")
     elif a.act in ("renew", "done"):
         if r["owner"] != n or r["state"] != "claimed":
             die(f"task #{a.id} is not claimed by you")

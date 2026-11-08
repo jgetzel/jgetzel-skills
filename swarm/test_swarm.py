@@ -467,6 +467,24 @@ class T(unittest.TestCase):
         self.sw("a", "task", "claim", "2")
         self.assertIn("go idle", self.sw("a", "task", "done", "2", "--evidence", "e").stdout)
 
+    def test_pr_ci_merge_to_green(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod5", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod5", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        c = m.connect()
+        self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "done", "1", "--evidence", "PR #7 merged")
+        out = {"pr": [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}],
+               "run": [{"headSha": "red", "conclusion": "failure", "status": "completed", "createdAt": "2026-11-08T10:00:05Z", "updatedAt": "2026-11-08T10:02:00Z"},
+                       {"headSha": "fix", "conclusion": "success", "status": "completed", "createdAt": "2026-11-08T10:05:00Z", "updatedAt": "2026-11-08T10:08:00Z"}]}
+        m.run = lambda cmd, cwd=None, **k: json.dumps(out[cmd[1]])
+        m.pr_ci(c, self.repo)
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertEqual((t["pr"], t["ci_conclusion"], t["merge_to_green_s"]), (7, "failure", 480))
+        self.assertIn("PR #7 merged", self.sw("a", "task", "show", "1").stdout)
+
     def test_block_unblock(self):
         import importlib.machinery, importlib.util
         ld = importlib.machinery.SourceFileLoader("swarm_mod4", SWARM)

@@ -145,7 +145,7 @@ def report(c, since=None, git=True):
     ev = q("select * from event where ts>=? order by ts", since)
     out = {"since": since, "agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
     timing, tasks = task_timing(), []
-    for t in q("select * from task"):
+    for t in q("select * from task"):  # a column an older db lacks reads as absent
         mine = [e for e in ev if (e["data"] or "").split(" ", 1)[0] == f"#{t['id']}" and e["kind"] in ("task-add", "claim", "done", "block", "unblock", "release", "drop")]
         tm = timing(t, mine)
         tasks.append({k: t.get(k) for k in ("id", "title", "state", "owner", "evidence")} | tm | {"took": span(tm["work_s"]) if tm["work_s"] is not None else None})
@@ -154,6 +154,8 @@ def report(c, since=None, git=True):
                              "longest": [{"id": t["id"], "title": t["title"], "work_s": t["work_s"]} for t in sorted((t for t in tasks if t["work_s"] is not None), key=lambda t: -t["work_s"])[:5]],
                              "queue_wait_median_s": pct([t["queue_wait_s"] for t in tasks if t["queue_wait_s"] is not None], .5),
                              "queue_wait_max_s": max([t["queue_wait_s"] for t in tasks if t["queue_wait_s"] is not None] or [None], key=lambda x: x or 0),
+                             "merge_to_green_median_s": pct([t["merge_to_green_s"] for t in tasks if t["merge_to_green_s"] is not None], .5),
+                             "red_after_merge": [t["id"] for t in tasks if t["ci_conclusion"] == "failure"],
                              "blocked_total_s": sum(t["blocked_s"] for t in tasks),
                              "reclaimed": [{"id": t["id"], "claims": t["claims"], "holders": t["holders"]} for t in tasks if t["claims"] > 1]}
     out["tasks"] = tasks
@@ -212,7 +214,7 @@ def show(r):
         print(f"- #{k['id']} {k['state']} {k['owner'] or '-'} {k['took'] or '-'}: {k['title']}" + (f"\n    evidence: {k['evidence']}" if k["evidence"] else ""))
     d = r["task_durations"]
     f = lambda x: span(x) if x is not None else "-"
-    print(f"\n## task durations\n- {d['n_done']} done: work median {f(d['work_median_s'])}, p90 {f(d['work_p90_s'])}; queue wait median {f(d['queue_wait_median_s'])}, max {f(d['queue_wait_max_s'])}; blocked total {f(d['blocked_total_s'])}")
+    print(f"\n## task durations\n- {d['n_done']} done: work median {f(d['work_median_s'])}, p90 {f(d['work_p90_s'])}; queue wait median {f(d['queue_wait_median_s'])}, max {f(d['queue_wait_max_s'])}; blocked total {f(d['blocked_total_s'])}; merge to green CI median {f(d['merge_to_green_median_s'])}, red after merge: {', '.join('#%d' % i for i in d['red_after_merge']) or 'none'}")
     for k in d["longest"]:
         print(f"- longest: #{k['id']} {f(k['work_s'])} {k['title']}")
     for k in d["reclaimed"]:
