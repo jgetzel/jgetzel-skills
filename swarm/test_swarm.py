@@ -1,3 +1,4 @@
+import sys; sys.dont_write_bytecode = True
 import json, os, sqlite3, subprocess, sys, tempfile, time, unittest
 
 SWARM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
