@@ -39,6 +39,9 @@ with subagents.
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
+   One watchd per repo: a second is refused while the first lives, naming it;
+   `--takeover` replaces it (the old one exits on its next tick). A relaunched
+   communicator starts its watchd with `--takeover`.
    Auto-spawn goes through `swarm spawn --task N`, which claims the task for
    the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
