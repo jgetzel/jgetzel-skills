@@ -105,6 +105,26 @@ class T(unittest.TestCase):
         self.assertIn("look at X", out["additionalContext"])
         self.assertEqual(self.hook("b", "post-tool", tool_name="Read", tool_input={}), {})
 
+    def test_burst_capped_rest_stays_unread(self):
+        self.agent("a"); self.agent("b")
+        for i in range(40):
+            self.sw("a", "post", "b", f"m{i} " + "y" * 400)
+        ctx = self.hook("b", "post-tool", tool_name="Read", tool_input={})["additionalContext"]
+        self.assertLess(len(ctx), 10_000)
+        self.assertIn("more unread", ctx)
+        shown = ctx.count(" yyyy")
+        left = self.sw("b", "read").stdout
+        self.assertEqual(shown + left.count(" yyyy"), 40)
+
+    def test_post_compact_ctx(self):
+        tr = os.path.join(self.d, "t.jsonl")
+        with open(tr, "w") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 1, "cache_read_input_tokens": 200_000}}}) + "\n")
+            f.write(json.dumps({"type": "system", "compactMetadata": {"postTokens": 9_000}}) + "\n")
+        self.agent("a")
+        self.hook("a", "session", source="compact", transcript_path=tr)
+        self.assertEqual(self.q("select ctx_tokens from agent where name='a'")[0][0], 40_000)
+
     # ---- touches ----
     def test_touch_overlap_both_ways(self):
         self.agent("a"); self.agent("b")
