@@ -389,6 +389,43 @@ class T(unittest.TestCase):
     def ended(self, name):
         return self.q("select ended from agent where name=?", name)[0][0] is not None
 
+    # ---- sweep ----
+    def old_wt(self, path):
+        gd = subprocess.run([*G, "rev-parse", "--absolute-git-dir"], cwd=path, capture_output=True, text=True).stdout.strip()
+        for p in (path, os.path.join(gd, "logs", "HEAD")):
+            os.utime(p, (self.OLD, self.OLD))
+
+    def test_sweep(self):
+        self.old_wt(self.wt)
+        pr = self.fake_proc()
+        swp = lambda: self.swp("a", pr, "watchd", "--once", "--comms", "comms", "--max-agents", "0")
+        branches = lambda: subprocess.run(["git", "branch", "--list", "w2"], cwd=self.repo, capture_output=True, text=True).stdout
+        dry = self.swp("a", pr, "watchd", "--dry-run").stdout
+        self.assertIn(self.wt, dry); self.assertTrue(os.path.exists(self.wt))
+        self.add_proc(pr, 500, 1, "bash", ["bash"], cwd=self.wt)
+        swp(); self.assertTrue(os.path.exists(self.wt))  # a process is in it
+        shutil.rmtree(os.path.join(pr, "500"))
+        self.agent("x", cwd=os.path.join(self.wt, "sub"))
+        swp(); self.assertTrue(os.path.exists(self.wt))  # a live agent's cwd is in it
+        self.q("update agent set ended=1 where name='x'")
+        self.write("b", "new.txt", "wip")
+        self.old_wt(self.wt)
+        swp(); self.assertTrue(os.path.exists(self.wt))  # dirty
+        os.remove(os.path.join(self.wt, "new.txt"))
+        self.write("b", "u.txt", "wip")
+        subprocess.run([*G, "add", "."], cwd=self.wt, check=True)
+        subprocess.run([*G, "commit", "-qm", "wip"], cwd=self.wt, check=True)
+        self.old_wt(self.wt)
+        swp(); self.assertTrue(os.path.exists(self.wt))  # unlanded
+        subprocess.run([*G, "merge", "-q", "w2"], cwd=self.repo, check=True)
+        os.utime(self.wt)
+        swp(); self.assertTrue(os.path.exists(self.wt))  # touched just now
+        self.old_wt(self.wt)
+        swp()
+        self.assertFalse(os.path.exists(self.wt)); self.assertEqual(branches(), "")
+        self.assertEqual(self.q("select count(*) from event where kind='sweep'")[0][0], 1)
+        self.assertIn("swept 1", self.q("select body from msg where kind='notice'")[0][0])
+
     def test_landed_agent_ended_and_cleaned(self):
         self.idle("e", wt=self.wt)
         self.comms_tick()
