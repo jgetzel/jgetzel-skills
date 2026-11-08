@@ -101,7 +101,7 @@ def report(c, since=None, git=True):
         n = a["name"]
         a["msgs_sent"] = c.execute("select count(*) from msg where frm=? and ts>=?", (n, since)).fetchone()[0]
         a["msgs_to_all"] = c.execute("select count(*) from msg where frm=? and dest='@all' and ts>=?", (n, since)).fetchone()[0]
-        a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'')!='system' and ts>=?", (n, n, since)).fetchone()[0]
+        a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'') not in ('system','notice') and ts>=?", (n, n, since)).fetchone()[0]
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["overlaps"] = [{k: e[k] for k in ("ts", "agent", "path", "data")} for e in ev if e["kind"] == "overlap"]
