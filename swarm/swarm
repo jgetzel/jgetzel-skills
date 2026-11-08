@@ -448,7 +448,7 @@ def snapshot(wt, base):
     with tempfile.TemporaryDirectory() as d:
         tmp = os.path.join(d, "index")
         try:
-            shutil.copy(idx, tmp)  # seeds the stat cache; git replaces the index by rename, so the copy is whole
+            shutil.copy2(idx, tmp)  # keeps the index mtime, or git trusts stale stat data (racy git); rename-replaced, so the copy is whole
         except OSError:
             pass
         env = dict(os.environ, GIT_INDEX_FILE=tmp, GIT_OPTIONAL_LOCKS="0", **ident)
