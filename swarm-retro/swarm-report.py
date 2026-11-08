@@ -96,12 +96,14 @@ def sh(*cmd):
     return r.stdout if r.returncode == 0 else ""
 
 def git_evidence(since=0, ref="origin/main"):
-    """Landed commits per agent-hour and files two or more agents changed, from Swarm-Agent trailers."""
+    """Landed commits per agent-hour and files two or more agents changed, from Swarm-Agent: lines anywhere in the message."""
     hours, files, commits = {}, {}, []
-    for blk in sh("git", "log", ref, *([f"--since={since}"] if since else []), "--name-only", "--format=@@%H\t%ct\t%(trailers:key=Swarm-Agent,valueonly,separator=)").split("@@")[1:]:
-        head, *fs = blk.strip().split("\n")
-        sha, ct, agent = (head.split("\t") + ["", ""])[:3]
-        agent = agent.strip() or "(none)"
+    for blk in sh("git", "log", ref, *([f"--since={since}"] if since else []), "--name-only", "--format=@@%H%x00%ct%x00%B%x00").split("@@")[1:]:
+        sha, ct, body, rest = blk.split("\x00")
+        fs = rest.strip().split("\n")
+        # squash merges put the line in its own paragraph, so a trailer parse misses it
+        m = re.search(r"^Swarm-Agent:\s*(\S+)", body, re.M)
+        agent = m.group(1) if m else "(none)"
         commits.append((int(ct), sha, agent))
         k = (datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d %H:00"), agent)
         hours[k] = hours.get(k, 0) + 1
