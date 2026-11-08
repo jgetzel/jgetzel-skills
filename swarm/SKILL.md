@@ -41,9 +41,7 @@ with subagents.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (and removes their worktree and branch), spawns fresh agents for startable
    tasks when none is free (at most `--max-agents`, default the live count now;
-   raise it only with the user; `--min-free-mem` GiB, default 4; and it holds new spawns while the repo's
-   `.claude/swarm.json` `heavy_queue` command (prints `waiting slots`) shows more than
-   `heavy_queue_per_slot` (default 2) waiting per slot, logging `hold`/`hold-end` events), reports live
+   raise it only with the user; `--min-free-mem` GiB, default 4), reports live
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only

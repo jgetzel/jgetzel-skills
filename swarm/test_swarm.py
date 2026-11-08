@@ -539,36 +539,6 @@ class T(unittest.TestCase):
         finally:
             os.chdir(cwd)
 
-    def test_auto_spawn_holds_on_deep_heavy_queue(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod8", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod8", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        spawned = []
-        m.cmd_spawn = lambda c, a: spawned.append(a.name)
-        m.hc_terminals = lambda: None
-        c = m.connect()
-        self.agent("t-comms", status="working")
-        self.sw("a", "task", "add", "do it")
-        os.makedirs(os.path.join(self.repo, ".claude"), exist_ok=True)
-        cfg = os.path.join(self.repo, ".claude", "swarm.json")
-        json.dump({"heavy_queue": "echo 9 3"}, open(cfg, "w"))  # 9 waiting > 2 per slot * 3
-        cwd = os.getcwd(); os.chdir(self.repo)
-        try:
-            opts = {"max_agents": 2, "min_free_gib": 0}
-            m.watchd_tick(c, "t-comms", None, opts)  # first sight
-            m.watchd_tick(c, "t-comms", None, opts)
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, [])
-            self.assertEqual([r["kind"] for r in self.q("select kind from event where kind like 'hold%'")], ["hold"])
-            json.dump({"heavy_queue": "echo 6 3"}, open(cfg, "w"))  # at the limit: not deeper
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, ["t-1"])
-            self.assertEqual([r["kind"] for r in self.q("select kind from event where kind like 'hold%'")], ["hold", "hold-end"])
-        finally:
-            os.chdir(cwd)
-
     def test_auto_spawn_waits_one_interval(self):
         import importlib.machinery, importlib.util
         ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
