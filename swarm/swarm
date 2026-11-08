@@ -680,6 +680,18 @@ def mem_available_gib():
         return float("inf")
 
 
+def heavy_queue_deep():
+    """'waiting N, M slots' when the repo's .claude/swarm.json {"heavy_queue": "<cmd printing 'waiting slots'>",
+    "heavy_queue_per_slot": N (default 2)} says the heavy-job queue is deeper than N per slot; else None."""
+    top = git(["rev-parse", "--show-toplevel"])
+    try:
+        cfg = json.load(open(os.path.join(top, ".claude", "swarm.json")))
+        w, s = map(int, subprocess.run(["sh", "-c", cfg["heavy_queue"]], cwd=top, capture_output=True, text=True, timeout=10, check=True).stdout.split()[:2])
+        return f"{w} waiting for {s} slots" if w > cfg.get("heavy_queue_per_slot", 2) * max(s, 1) else None
+    except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
+        return None  # a hung (10s timeout) or failing command, no config or an unreadable queue: never hold
+
+
 def lifecycle(c, t, comms, terms, opts):
     """End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4)."""
     wts = wt_map(c)
@@ -725,6 +737,14 @@ def lifecycle(c, t, comms, terms, opts):
         if not seen or t - seen[0] < opts.get("interval", 0):
             continue
         if len(members) >= opts["max_agents"] or mem_available_gib() < opts.get("min_free_gib", 4):
+            break
+        deep = heavy_queue_deep()
+        last = c.execute("select kind from event where kind in ('hold','hold-end') order by id desc limit 1").fetchone()
+        if deep and not (last and last[0] == "hold"):  # edge-triggered so the retro counts holds, not ticks
+            log(c, None, "hold", str(task["id"]), f"heavy queue: {deep}")
+        elif not deep and last and last[0] == "hold":
+            log(c, None, "hold-end")
+        if deep:
             break
         name = f"{prefix}{max(nums, default=0) + 1}"
         nums.append(int(name[len(prefix):]))

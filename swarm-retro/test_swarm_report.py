@@ -60,10 +60,11 @@ create table task(id,title,state,owner,evidence);
 create table event(id integer primary key,ts,agent,kind,path,data);
 create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
 insert into event(ts,agent,kind,data) values(10,null,'heavy-count','2'),(20,null,'pressure',null),(80,null,'pressure-end',null),
- (90,null,'pressure',null),(95,null,'heavy-count','1'),(30,'a','heavy-start','cabal build'),(40,'a','heavy-start','x'),(50,'b','orphan-kill','1 ghc');""")
+ (90,null,'pressure',null),(95,null,'heavy-count','1'),(100,null,'hold','3'),(130,null,'hold-end',null),(140,null,'hold','3'),(30,'a','heavy-start','cabal build'),(40,'a','heavy-start','x'),(50,'b','orphan-kill','1 ghc');""")
     p = sr.report(c, git=False)["pressure"]
     self.assertEqual((p["episodes"], p["total_s"], p["ongoing"], p["max_concurrent_heavy"], p["orphan_kills"]), (2, 60, True, 2, 1))
     self.assertEqual(p["heavy_starts"], {"a": 2})
+    self.assertEqual(sr.report(c, git=False)["spawn_holds"], {"episodes": 2, "total_s": 30, "ongoing": True})
 
   def test_agent_line_anywhere_in_body(self):
     import subprocess, tempfile
