@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
-import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, time
+import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
@@ -65,7 +65,7 @@ def connect():
     c.execute("pragma busy_timeout=10000")
     c.execute("pragma journal_mode=wal")
     c.executescript(SCHEMA)
-    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text")):  # dbs made before sw-locks
+    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("agent", "claude_pid int")):  # dbs made before sw-locks
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
     return c
@@ -304,6 +304,11 @@ def hook(ev):
                     log(c, name, "deny-cold", tgt["name"], why[:120])
                     return emit("PreToolUse", deny=f"{why} Use `swarm post {tgt['name']} …`: it reads the message "
                                 f"when it next wakes. If it truly can't wait, resend starting with `[urgent]`.")
+        elif tool == "Bash":
+            cmd = ti.get("command", "")
+            if is_heavy(cmd, cwd):  # information at decision time: context only, never a deny or a rewrite
+                emit("PreToolUse", ctx=machine_note(c, name))
+                log(c, name, "heavy-start", None, cmd[:80])
         elif tool in EDIT_TOOLS:
             r = repo_rel(ti.get("file_path") or ti.get("notebook_path") or "", cwd)
             if not r:
@@ -344,6 +349,7 @@ def hook(ev):
         set_status(c, name, "idle", ctx_tokens=k)
 
     elif ev == "session":
+        ensure_agent(c, name, claude_pid=claude_pid())
         if p.get("source") == "compact":
             ensure_agent(c, name, compacted_at=now(), ctx_tokens=post_compact(p.get("transcript_path")))
             log(c, name, "compact")
@@ -713,8 +719,67 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
     conflict_tick(c, t)
     if comms:  # without a communicator there is nobody to exempt from ending
         lifecycle(c, t, comms, terms, opts or {})
+    machine_tick(c)
     if repo:
         ci_check(c, repo)
+
+
+def last_event(c, *kinds):
+    r = c.execute(f"select kind from event where kind in ({','.join('?' * len(kinds))}) order by id desc limit 1", kinds).fetchone()
+    return r[0] if r else None
+
+
+def machine_tick(c):
+    """Edge-triggered pressure notice, heavy-count log, oom bias for agents' builds, orphan kills."""
+    try:
+        avail, total, psi = mem_psi()
+    except OSError:
+        return
+    procs = read_procs()
+    hv = heavy_procs(c, procs)
+    prev = c.execute("select data from event where kind='heavy-count' order by id desc limit 1").fetchone()
+    if str(len(hv)) != (prev[0] if prev else "0"):
+        log(c, None, "heavy-count", None, str(len(hv)))
+    for h in hv:  # hygiene that rations nothing: the OOM killer picks agents' builds before the dev db and Claude
+        if h["agent"] != "other session":
+            try:
+                f = f"{PROC}/{h['pid']}/oom_score_adj"
+                if int(open(f).read() or 0) < 500:
+                    open(f, "w").write("500")
+            except (OSError, ValueError):
+                pass
+    high, was = pressure_high(avail, total, psi), last_event(c, "pressure", "pressure-end") == "pressure"
+    if high and not was:
+        top = ", ".join(f"{p['comm']}({p['pid']}) {p['rss_kb'] / 1048576:.1f}G" for p in
+                        sorted(procs.values(), key=lambda p: -p["rss_kb"])[:3])
+        log(c, None, "pressure", None, machine_line(avail, total, psi))
+        for who in sorted({h["agent"] for h in hv} - {"other session"}):
+            post(c, "swarm", who, f"memory pressure: {machine_line(avail, total, psi)}. Top holders: {top}. "
+                 f"Prefer other work or ask the agent holding the most.", kind="notice")
+    elif was and not high:
+        log(c, None, "pressure-end")
+    # orphans: heavy processes reparented to init whose cwd is in an ended agent's worktree and no live agent's
+    tops = {}
+    for r in c.execute("select name,cwd,ended from agent where cwd is not null"):
+        tops.setdefault(git(["rev-parse", "--show-toplevel"], cwd=r["cwd"]) if os.path.isdir(r["cwd"]) else None, []).append(r)
+    live_tops = {k for k, v in tops.items() if any(x["ended"] is None for x in v)}
+    for h in hv:
+        if h["ppid"] != 1:
+            continue
+        try:
+            cwd = os.path.realpath(os.readlink(f"{PROC}/{h['pid']}/cwd"))
+        except OSError:
+            continue
+        for k, v in tops.items():
+            if k and k not in live_tops and (cwd == k or cwd.startswith(k + os.sep)):
+                kids = [q["pid"] for q in procs.values() if q["ppid"] == h["pid"]]
+                for pid in [h["pid"], *kids]:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                log(c, v[0]["name"], "orphan-kill", None, f"{h['pid']} {h['cmd'][:60]} {h['rss_kb'] // 1024}M")
+                break
 
 
 def ci_check(c, repo):
@@ -872,6 +937,10 @@ def cmd_board(c, a):
 def cmd_who(c, a):
     t = now()
     wts = wt_map(c)
+    try:
+        print(machine_line(*mem_psi()))
+    except OSError:
+        pass
     for x in live_agents(c):
         k = (x["ctx_tokens"] or 0) // 1000
         cache = "warm" if t - (x["last_active"] or 0) < COLD_IDLE else "cold"
@@ -903,23 +972,127 @@ def cmd_unlock(c, a):
     print(f"unlocked {a.path}")
 
 
-def cmd_heavy(c, a):
-    n = int(os.environ.get("SWARM_SLOTS") or max(1, (os.cpu_count() or 4) // 4))
-    d = os.path.join(os.path.dirname(dbpath()), "slots")
-    os.makedirs(d, exist_ok=True)
-    cmd = [x for x in a.cmd if x != "--"] if a.cmd[:1] == ["--"] else a.cmd
-    if not cmd:
-        die("usage: swarm heavy -- <cmd>")
-    fds = [open(os.path.join(d, f"slot{i}"), "w") for i in range(n)]
-    while True:
-        for f in fds:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                continue
-            return_code = subprocess.run(cmd).returncode  # the slot is held until this process exits
-            sys.exit(return_code)
-        time.sleep(1)
+HEAVY_RE = re.compile(r"\b(cabal|stack|ghc|make|cmake|ninja|gradle|mvn|pytest|tox|tsc|spago|purs|playwright"
+                      r"|nix\s+(build|flake\s+check)|docker\s+build"
+                      r"|(cargo|go|npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|check|clippy|bench|install))\b")
+NOT_HEAVY = re.compile(r"\s*(git|gh|swarm|echo|grep|rg|cat|ls|sed|head|tail)\b")  # shortcut: first-word skip so `git commit -m make` isn't flagged
+PROC = os.environ.get("SWARM_PROC", "/proc")  # tests point this at a fake tree
+INTERP = re.compile(r"(python[\d.]*|node|bash|sh)$")
+
+
+def is_heavy(cmd, cwd):
+    """Does a Bash command look like a build/test (built-in words plus the repo's .claude/swarm.json {"heavy": [regex]})?"""
+    if NOT_HEAVY.match(cmd):
+        return False
+    pats = [HEAVY_RE]
+    top = git(["rev-parse", "--show-toplevel"], cwd=cwd)
+    try:
+        pats += [re.compile(x) for x in json.load(open(os.path.join(top, ".claude", "swarm.json"))).get("heavy", [])]
+    except (OSError, TypeError, ValueError, re.error):
+        pass
+    return any(r.search(cmd) for r in pats)
+
+
+def claude_pid():
+    """Nearest ancestor that is the claude process (its comm contains 'claude')."""
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            if "claude" in open(f"/proc/{pid}/comm").read():
+                return pid
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+
+
+def read_procs():
+    """One /proc scan: {pid: dict(ppid, comm, rss_kb, age, argv, cwd)}."""
+    try:
+        up = float(open(f"{PROC}/uptime").read().split()[0])
+    except (OSError, ValueError):
+        up = 0
+    tck, pg = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE") // 1024
+    out = {}
+    for d in os.listdir(PROC):
+        if not d.isdigit():
+            continue
+        try:
+            st = open(f"{PROC}/{d}/stat").read()
+            comm, rest = st[st.index("(") + 1:st.rindex(")")], st[st.rindex(")") + 2:].split()
+            argv = open(f"{PROC}/{d}/cmdline").read().split("\0")
+            out[int(d)] = dict(pid=int(d), ppid=int(rest[1]), comm=comm, rss_kb=int(rest[21]) * pg,
+                               age=max(0, up - int(rest[19]) / tck), argv=[x for x in argv if x])
+        except (OSError, ValueError, IndexError):
+            continue  # exited mid-scan
+    return out
+
+
+def proc_cmd(p):
+    """argv as 'tool arg ...' with path and interpreter stripped, so `node /x/tsc` reads as `tsc`."""
+    w = [os.path.basename(x) if i < 2 else x for i, x in enumerate(p["argv"])]
+    if len(w) > 1 and INTERP.match(w[0]):
+        w = w[1:]
+    return " ".join(w)
+
+
+def heavy_procs(c, procs):
+    """Heavy processes with the swarm agent each belongs to (walk ppid up to an agent's claude pid), else 'other session'."""
+    owner = {r["claude_pid"]: r["name"] for r in c.execute("select name,claude_pid from agent where ended is null and claude_pid is not null")}
+    out = []
+    for p in procs.values():
+        cmd = proc_cmd(p)
+        if not (HEAVY_RE.match(cmd) or re.match(r"ghc(-[\d.]+)?\b", cmd)):
+            continue
+        q, who, hop = p, "other session", 0
+        while q and hop < 64:
+            if q["pid"] in owner:
+                who = owner[q["pid"]]
+                break
+            q, hop = procs.get(q["ppid"]), hop + 1
+        out.append({**p, "cmd": cmd, "agent": who})
+    return out
+
+
+def mem_psi():
+    mi = {}
+    for l in open(f"{PROC}/meminfo"):
+        k, v = l.split(":")
+        mi[k] = int(v.split()[0])
+    psi = {}
+    for r in ("memory", "cpu"):
+        try:
+            psi[r] = float(re.search(r"some avg10=([\d.]+)", open(f"{PROC}/pressure/{r}").read()).group(1))
+        except (OSError, AttributeError):
+            psi[r] = 0.0
+    return mi["MemAvailable"], mi["MemTotal"], psi
+
+
+def pressure_high(avail, total, psi):
+    return psi["memory"] > 10 or avail < 0.15 * total
+
+
+def machine_line(avail, total, psi):
+    return f"machine: {avail / 1048576:.1f}/{total / 1048576:.1f}G mem available, pressure10 mem {psi['memory']:g}% cpu {psi['cpu']:g}%"
+
+
+def machine_note(c, me_, procs=None):
+    """<= 6 lines: machine state, running heavy processes (attributed), builds other agents started in the last minute."""
+    avail, total, psi = mem_psi()
+    hv = sorted(heavy_procs(c, procs or read_procs()), key=lambda h: -h["rss_kb"])
+    lines = [machine_line(avail, total, psi)]
+    for h in hv[:3]:
+        lines.append(f"  running: {h['cmd'][:40]} {h['rss_kb'] / 1048576:.1f}G {int(h['age'] // 60)}m ({h['agent']})")
+    if len(hv) > 3:
+        lines.append(f"  +{len(hv) - 3} more heavy processes")
+    st = [f"{e['agent']}: {(e['data'] or '')[:30]} ({now() - e['ts']}s ago)" for e in
+          c.execute("select * from event where kind='heavy-start' and ts>? and agent!=? order by ts", (now() - 60, me_))]
+    if st:
+        lines.append("  started in the last 60s: " + "; ".join(st[:3]))
+    return "\n".join(lines)
+
+
+def cmd_machine(c, a):
+    print(machine_note(c, None))
 
 
 COL = ["31", "32", "33", "34", "35", "36"]
@@ -1043,8 +1216,7 @@ def main(argv=None):
     p.add_argument("--lease", default="2h")
     p = add("unlock", cmd_unlock)
     p.add_argument("path")
-    p = add("heavy", cmd_heavy)
-    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    add("machine", cmd_machine)
     p = add("watch", cmd_watch)
     p.add_argument("--tail", type=int, default=20)
     p.add_argument("--once", action="store_true")
