@@ -672,10 +672,11 @@ def lifecycle(c, t, comms, terms, opts):
             reusable.append(a)
         else:
             end_agent(c, a, wts.get(n), main, comms)
-    for a in reusable:
-        if t - (a["last_active"] or 0) > 900 and not c.execute(
-                "select 1 from event where kind='digest' and agent=? and ts>?", (a["name"], t - 900)).fetchone():
-            log(c, a["name"], "digest")
+    ids = {r["id"] for r in tasks}
+    for a in reusable:  # edge-triggered: only when the pool holds an id this agent was never told about
+        told = {int(i) for (d,) in c.execute("select data from event where kind='digest' and agent=?", (a["name"],)) for i in (d or "").split(",") if i}
+        if ids - told:
+            log(c, a["name"], "digest", None, ",".join(map(str, sorted(ids))))
             post(c, "swarm", a["name"], f"{len(tasks)} open task(s) and you are idle: `swarm board`.", kind="system")
     if reusable or not tasks or opts.get("max_agents") is None:
         return
