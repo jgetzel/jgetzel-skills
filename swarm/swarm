@@ -258,6 +258,22 @@ def ctx_from(path):
     return None
 
 
+HANDOFF_CTX = 150_000  # tokens; past this, one nudge to hand off
+
+
+def handoff_nudge(c, name, transcript):
+    """One nudge per context: when it passes HANDOFF_CTX, tell the agent to hand off. Compaction re-arms it."""
+    last = c.execute("select max(ts) from event where agent=? and kind='handoff-nudge'", (name,)).fetchone()[0] or 0
+    if last and last >= (c.execute("select compacted_at from agent where name=?", (name,)).fetchone()[0] or 0):
+        return None
+    k = ctx_from(transcript)
+    if not k or k < HANDOFF_CTX:
+        return None
+    log(c, name, "handoff-nudge", None, str(k))
+    return (f"Your context is ~{k // 1000}k tokens. Finish or release your task, then hand off with the "
+            f"`relaunch` skill (same model) and post the successor's name.")
+
+
 def post_compact(path):
     """Context after the latest compaction: the boundary's postTokens plus ~31k of system prompt and tools."""
     try:
@@ -336,9 +352,10 @@ def hook(ev):
         set_status(c, name, "working")
         if tool == "Bash" and re.search(r"\bgit\s+push\b", ti.get("command", "")):
             log(c, name, "push", None, ti["command"][:120])
-        ctx = deliver(c, name)
-        if ctx:
-            emit("PostToolUse", ctx=ctx)
+        ctx = deliver(c, name) or ""
+        n = handoff_nudge(c, name, p.get("transcript_path"))
+        if ctx or n:
+            emit("PostToolUse", ctx="\n".join(x for x in (ctx, n) if x))
 
     elif ev == "prompt":  # a turn started without a tool call (human prompt or peer message)
         set_status(c, name, "working")

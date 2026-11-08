@@ -125,6 +125,20 @@ class T(unittest.TestCase):
         self.assertIn("look at X", out["additionalContext"])
         self.assertEqual(self.hook("b", "post-tool", tool_name="Read", tool_input={}), {})
 
+    def test_handoff_nudge_once_until_compaction(self):
+        self.agent("b")
+        tr = os.path.join(self.cwd["b"], "t.jsonl")
+        def usage(n):
+            open(tr, "w").write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": n}}}) + "\n")
+        post = lambda: self.hook("b", "post-tool", tool_name="Read", tool_input={}, transcript_path=tr)
+        usage(100_000)
+        self.assertEqual(post(), {})
+        usage(160_000)
+        self.assertIn("relaunch", post()["additionalContext"])
+        self.assertEqual(post(), {})
+        self.q("update agent set compacted_at=? where name='b'", int(time.time()) + 5)
+        self.assertIn("relaunch", post()["additionalContext"])
+
     def test_burst_capped_rest_stays_unread(self):
         self.agent("a"); self.agent("b")
         for i in range(40):
