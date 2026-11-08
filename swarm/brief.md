@@ -28,10 +28,11 @@ your name is in `$SWARM_NAME`.
   see (a migration number: `migrations/0070*`, not `migrations/0070`);
   it frees itself when your work on it lands, or `swarm unlock`.
 - **Commits.** Every commit carries a `Swarm-Agent: <your name>` trailer.
-- **CI.** After a push, `swarm ci <sha> --wait` (in the background) says whether main's CI passed on the
-  first run that includes your commit: exit 0 green, 1 red (failed jobs named). It reads what watchd
-  polled, so it costs no GitHub API calls. Never `gh run watch` or poll `gh` in a loop: every agent
-  shares one API limit, and a few watchers at gh's 3 s default exhaust it.
+- **CI.** Work on main is done: once your commit (or its PR's merge) is on `origin/main`, `swarm task
+  done <id> --evidence <sha>`; don't wait for CI, even where the repo says to watch it. watchd watches
+  main's CI and makes a red run one `main red: …` task, done by watchd on the next green run.
+  `swarm ci <sha> [--wait]` reads what watchd polled (exit 0 green, 1 red, 2 pending). Never `gh run
+  watch` or a `gh` loop: every agent shares one API limit.
 - **Heavy work.** Before a build or test, read the machine note the hook shows. Under pressure prefer other work, or message the agent holding the most memory. Don't poll.
 - **Other machines.** `swarm run --on <machine> -- <cmd>` runs a build or test on another
   machine (`hc machine ls`) against a copy of your worktree and brings back what it wrote. The

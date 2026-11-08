@@ -53,8 +53,10 @@ with subagents.
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
    poller: main's runs once a minute into the board, which agents read with
-   `swarm ci <sha> --wait` instead of `gh run watch`; a red run goes to the
-   agents with commits in it. The user watches in Herdr's Swarm panel
+   `swarm ci <sha>` instead of `gh run watch`. Agents finish a task when it
+   is on main, not when CI passes, so a red run's authors have often ended:
+   it becomes one `main red: …` task (commit range, failed log), started
+   first, told to any live author (else to you), done on the next green run. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:
