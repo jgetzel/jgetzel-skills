@@ -234,7 +234,7 @@ Agents call it through Bash, one call per action.
 | `swarm post <agent\|@all> [--urgent] <text>` | Stores a message. Delivery is described below. `@all` is allowed but noted in the event log. |
 | `swarm read` | Unread messages, which advances the cursor. |
 | `swarm lock <path\|glob> [--reason]` / `swarm unlock` | Hard locks, leased (default 2 h). |
-| `swarm heavy -- <cmd>` | Runs a heavy build or test under N shared slots (flock, default `nproc/4`), so 12 agents don't run 12 cabal builds at once. |
+| `swarm heavy -- <cmd>` | Runs a heavy command under N machine-wide slots (flock in `/tmp/swarm-heavy-$UID`, default `nproc/4`, `SWARM_SLOTS`), then waits while PSI cpu/memory avg10 is over `SWARM_PSI_CPU`/`SWARM_PSI_MEM` (40/10) or MemAvailable < 10%, up to `SWARM_HEAVY_MAXWAIT` (900s). The pre-tool Bash hook rewrites build/test commands (cabal, cargo build/test, make, pytest, npm test, ...) to run through it automatically. |
 | `swarm watch` | A plain program for the human, in a Herdr split. It tails `event` with colors per agent: messages, claims, touches, overlaps, locks, status changes, pushes and CI. No model in the loop. |
 | `swarm watchd` | The deterministic watcher daemon, described below. |
 

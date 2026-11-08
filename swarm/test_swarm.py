@@ -302,5 +302,20 @@ class T(unittest.TestCase):
         self.assertIn("a idle", self.sw("a", "who").stdout)
 
 
+    def test_heavy_rewrite_and_gate(self):
+        o = self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": "cd x && cargo test"})
+        self.assertEqual(o["permissionDecision"], "allow")
+        self.assertTrue(o["updatedInput"]["command"].startswith("swarm heavy -- bash -c "))
+        for c in ("ls", "swarm heavy -- cabal build", "git commit -m 'make it'"):
+            self.assertEqual(self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": c}), {})
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_HEAVY_DIR": os.path.join(self.d, "slots"), "SWARM_SLOTS": "1"}
+        r = subprocess.run([sys.executable, SWARM, "heavy", "--", "echo", "ok"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "ok")
+        # high pressure + zero wait cap: still runs (the cap stops starvation)
+        env.update(SWARM_PSI_CPU="-1", SWARM_HEAVY_MAXWAIT="0")
+        r = subprocess.run([sys.executable, SWARM, "heavy", "--", "echo", "ok2"], env=env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(r.stdout.strip(), "ok2")
+
+
 if __name__ == "__main__":
     unittest.main()

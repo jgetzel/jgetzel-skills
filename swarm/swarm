@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """swarm: shared board, messages, file touches and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
-import argparse, fcntl, fnmatch, json, os, re, sqlite3, subprocess, sys, time
+import argparse, fcntl, fnmatch, json, os, re, shlex, sqlite3, subprocess, sys, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
@@ -276,8 +276,10 @@ def porcelain(top):
 
 # ---------- hooks ----------
 
-def emit(event, ctx=None, deny=None):
+def emit(event, ctx=None, deny=None, update=None):
     o = {"hookEventName": event}
+    if update:
+        o.update(permissionDecision="allow", updatedInput=update)
     if deny:
         o.update(permissionDecision="deny", permissionDecisionReason=deny)
     if ctx:
@@ -352,6 +354,10 @@ def hook(ev):
                     log(c, name, "deny-cold", tgt["name"], why[:120])
                     return emit("PreToolUse", deny=f"{why} Use `swarm post {tgt['name']} …`: it reads the message "
                                 f"when it next wakes. If it truly can't wait, resend starting with `[urgent]`.")
+        elif tool == "Bash":
+            cmd = ti.get("command", "")
+            if HEAVY_RE.search(cmd) and not os.environ.get("SWARM_IN_HEAVY") and not re.match(r"\s*swarm\s+heavy\b", cmd):
+                emit("PreToolUse", update={**ti, "command": f"swarm heavy -- bash -c {shlex.quote(cmd)}"})
         elif tool in EDIT_TOOLS:
             r = repo_rel(ti.get("file_path") or ti.get("notebook_path") or "", cwd)
             if not r:
@@ -665,22 +671,54 @@ def cmd_unlock(c, a):
     print(f"unlocked {a.path}")
 
 
+# Build/test commands the pre-tool hook routes through `swarm heavy`.
+HEAVY_RE = re.compile(r"(^|[;&|(]\s*)(cabal|stack|ghc|make|cmake|ninja|gradle|mvn|pytest|tox|tsc|docker\s+build"
+                      r"|(cargo|go|npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|check|clippy|bench|install))\b")
+
+
+def pressure_high():
+    """Machine-wide stall: PSI avg10 (cpu some / memory some) over a limit, or MemAvailable < 10%. Missing files = fine."""
+    lim = {"cpu": float(os.environ.get("SWARM_PSI_CPU", 40)), "memory": float(os.environ.get("SWARM_PSI_MEM", 10))}
+    for r, mx in lim.items():
+        try:
+            m = re.search(r"some avg10=([\d.]+)", open(f"/proc/pressure/{r}").read())
+        except OSError:
+            continue
+        if m and float(m.group(1)) > mx:
+            return f"{r} pressure {m.group(1)}% > {mx:g}%"
+    try:
+        mi = dict(l.split(":", 1) for l in open("/proc/meminfo"))
+        if int(mi["MemAvailable"].split()[0]) < 0.1 * int(mi["MemTotal"].split()[0]):
+            return "MemAvailable < 10%"
+    except (OSError, KeyError, ValueError):
+        pass
+
+
 def cmd_heavy(c, a):
-    n = int(os.environ.get("SWARM_SLOTS") or max(1, (os.cpu_count() or 4) // 4))
-    d = os.path.join(os.path.dirname(dbpath()), "slots")
-    os.makedirs(d, exist_ok=True)
     cmd = [x for x in a.cmd if x != "--"] if a.cmd[:1] == ["--"] else a.cmd
     if not cmd:
         die("usage: swarm heavy -- <cmd>")
+    n = int(os.environ.get("SWARM_SLOTS") or max(1, (os.cpu_count() or 4) // 4))
+    d = os.environ.get("SWARM_HEAVY_DIR") or f"/tmp/swarm-heavy-{os.getuid()}"  # machine-wide: every repo's swarm shares it
+    os.makedirs(d, exist_ok=True)
     fds = [open(os.path.join(d, f"slot{i}"), "w") for i in range(n)]
+    env = {**os.environ, "SWARM_IN_HEAVY": "1"}
+    give_up = time.time() + float(os.environ.get("SWARM_HEAVY_MAXWAIT", 900))
+    held = False
     while True:
-        for f in fds:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                continue
-            return_code = subprocess.run(cmd).returncode  # the slot is held until this process exits
-            sys.exit(return_code)
+        if not held:
+            for f in fds:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held = True
+                    break
+                except OSError:
+                    pass
+        why = pressure_high() if held else "waiting for a slot"
+        if held and (not why or time.time() > give_up):  # the cap stops a busy machine from starving us forever
+            sys.exit(subprocess.run(cmd, env=env).returncode)  # slot held until this process exits
+        if time.time() > give_up and not held:
+            give_up = time.time() + 1e9
         time.sleep(1)
 
 
