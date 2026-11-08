@@ -50,6 +50,21 @@ class T(unittest.TestCase):
             self.q(f"update agent set {k}=? where name=?", v, name)
 
     # ---- tasks ----
+    def test_release_reopens(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.assertNotEqual(self.sw("b", "task", "release", "1", ok=False).returncode, 0)
+        self.sw("a", "task", "release", "1")
+        self.assertEqual(self.q("select state,owner from task")[0]["state"], "open")
+        self.sw("b", "task", "claim", "1")
+        self.assertEqual(self.q("select count(*) n from event where kind='release'")[0]["n"], 1)
+
+    def test_lock_denial_logged(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "lock", "a.txt")
+        self.assertIn("locked", self.edit("b", "a.txt").get("permissionDecisionReason", ""))
+        self.assertEqual(self.q("select path,data from event where kind='deny-lock'")[0]["data"], "a")
+
     def test_claim_lease_done(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
@@ -203,6 +218,7 @@ class T(unittest.TestCase):
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertIn("idle 72 min", out["permissionDecisionReason"])
         self.assertIn("140k", out["permissionDecisionReason"])
+        self.assertEqual(self.q("select path from event where kind='deny-cold'")[0]["path"], "cold")
         self.assertEqual(self.sendmsg("nobody-we-know"), {})  # not a member
         # post to a cold agent is stored without a wake
         r = self.sw("a", "post", "cold", "later")
@@ -220,6 +236,7 @@ class T(unittest.TestCase):
         w = self.sw("cold", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
         self.assertEqual(w.returncode, 2)
         self.assertIn("stop pushing", w.stderr)
+        self.assertEqual(self.q("select data from event where kind='wake'")[0]["data"], "1 msg urgent")
 
     def test_wait_wakes_warm_idle(self):
         self.agent("a"); self.agent("b")
