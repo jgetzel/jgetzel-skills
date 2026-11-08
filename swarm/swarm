@@ -384,7 +384,9 @@ def hook(ev):
     elif ev == "post-tool":
         set_status(c, name, "working")
         if tool == "Bash" and re.search(r"\bgit\s+push\b", ti.get("command", "")):
-            log(c, name, "push", None, ti["command"][:120])
+            # path carries {branch, subject} as JSON for the panel; state --json unpacks it
+            log(c, name, "push", json.dumps({"branch": git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd),
+                                             "subject": git(["log", "-1", "--format=%s"], cwd=cwd)}), ti["command"][:120])
         ctx = deliver(c, name) or ""
         n = handoff_nudge(c, name, p)
         if ctx or n:
@@ -1270,6 +1272,9 @@ def cmd_state(a):
             "cache": "warm" if t - session_active(x, t) < COLD_IDLE else "cold",
             "cold_guarded": bool(live and cold_reason(x, t)),
             "worktree": wts.get(x["name"]) or x["wt"],
+            "branch": (git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=wts.get(x["name"]) or x["wt"])
+                       if live and (wts.get(x["name"]) or x["wt"]) and os.path.isdir(wts.get(x["name"]) or x["wt"]) else None),
+            "cold_at": session_active(x, t) + COLD_IDLE if live and x["status"] != "working" else None,
             "task": {"id": own[0]["id"], "title": own[0]["title"], "state": own[0]["state"]} if own else None,
             "files": sn.get("files", []),
             "locks": [r["path"] for r in rows("select path from lock where agent=?", x["name"])],
@@ -1288,11 +1293,25 @@ def cmd_state(a):
                    "high": pressure_high(avail, total, psi)}
     except OSError:
         machine = None
+    def pushinfo(evs):  # push events keep {branch, subject} JSON in path; older ones have none
+        for e in evs:
+            if e["kind"] == "push":
+                try:
+                    d = json.loads(e["path"] or "")
+                except ValueError:
+                    d = {}
+                e["branch"], e["subject"] = d.get("branch"), d.get("subject")
+                e["path"] = None
+        return evs
+    for x in agents:
+        pushinfo(x["events"])
+    cm = rows("select v from meta where k='comms'")
     print(json.dumps({
         "active": any(x["ended"] is None for x in agents), "db": p, "now": t,
+        "comms": (cm[0]["v"] if cm else None) or os.environ.get("SWARM_COMMS"),
         "tasks": tasks, "agents": agents,
         "messages": rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit 40"),
-        "events": rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60"),
+        "events": pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60")),
         "conflicts": rows("select * from conflict order by since desc"),
         "locks": rows("select * from lock order by since desc"),
         "pressure": episodes[-5:][::-1], "machine": machine,
@@ -1325,6 +1344,8 @@ def cmd_watch(c, a):
 def cmd_watchd(c, a):
     repo = git(["rev-parse", "--show-toplevel"]) if a.ci else None
     comms = a.comms or os.environ.get("SWARM_COMMS")
+    if comms:
+        c.execute("insert or replace into meta(k,v) values('comms',?)", (comms,))
     # default cap: the roster the human launched, so watchd refills it but doesn't grow it
     cap = a.max_agents if a.max_agents is not None else sum(1 for x in live_agents(c) if x["name"] != comms)
     opts = {"max_agents": cap, "min_free_gib": a.min_free_mem, "model": a.model, "interval": a.interval}

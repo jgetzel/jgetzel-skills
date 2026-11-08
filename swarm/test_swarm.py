@@ -728,6 +728,21 @@ class T(unittest.TestCase):
         s = json.loads(self.sw("a", "state", "--json").stdout)
         self.assertEqual(len(s["messages"][0]["body"]), 500)  # long bodies (briefs) are cut
 
+    def test_state_json_round2(self):
+        self.agent("a")
+        self.q("update agent set status='idle', last_active=1000 where name='a'")
+        self.q("update agent set wt=? where name='a'", self.repo)
+        self.hook("a", "post-tool", tool_name="Bash", tool_input={"command": "git push"}, cwd=self.repo)
+        self.q("update agent set status='idle', last_active=1000 where name='a'")
+        self.q("insert or replace into event(ts,agent,kind,data) values(1,'a','push','git push old')")
+        self.q("insert or replace into meta(k,v) values('comms','sr-comms')")
+        s = json.loads(self.sw("a", "state", "--json").stdout)
+        a = s["agents"][0]
+        self.assertEqual((s["comms"], a["branch"], a["cold_at"]), ("sr-comms", "main", 1000 + 55 * 60))
+        pushes = [e for e in s["events"] if e["kind"] == "push"]
+        self.assertEqual((pushes[0]["branch"], pushes[0]["subject"]), (None, None))  # older event
+        self.assertEqual((pushes[1]["branch"], pushes[1]["subject"]), ("main", "init"))
+
     def test_state_json_old_db(self):
         c = sqlite3.connect(self.db)  # schema from before agent.wt / task.after,model,question
         c.executescript("create table agent(name text primary key, hc text, model text, cwd text, status text, last_active int,"
