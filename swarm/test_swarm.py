@@ -23,6 +23,7 @@ class T(unittest.TestCase):
 
     def sw(self, who, *args, stdin=None, ok=True):
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who}
+        env.pop("HC_TERMINAL_ID", None)  # an agent's own terminal would make `hc ls` part of the test
         r = subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True,
                            text=True, cwd=self.cwd.get(who, self.repo))
         if ok:
