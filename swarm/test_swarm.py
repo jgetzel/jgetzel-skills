@@ -1207,6 +1207,14 @@ class T(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else {}
 
+    def test_one_watchd(self):
+        self.sw("a", "join")
+        self.q("insert or replace into meta(k,v) values('watchd',?)", f"{os.getppid()} T1")  # a live pid
+        r = self.sw("a", "watchd", "--once", ok=False)
+        self.assertIn("already runs", r.stderr); self.assertIn("T1", r.stderr)
+        self.sw("a", "watchd", "--once", "--takeover")
+        self.assertNotIn("T1", self.q("select v from meta where k='watchd'")[0]["v"])
+
     def test_machine_note_and_patterns(self):
         pr = self.fake_proc()
         self.hook("a", "session"); self.hook("b", "session")

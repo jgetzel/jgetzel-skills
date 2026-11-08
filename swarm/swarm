@@ -1915,12 +1915,21 @@ def cmd_watchd(c, a):
         return
     repo = git(["rev-parse", "--show-toplevel"]) if a.ci else None
     comms = a.comms or os.environ.get("SWARM_COMMS")
-    if comms:
-        c.execute("insert or replace into meta(k,v) values('comms',?)", (comms,))
+    mine = f"{os.getpid()} {os.environ.get('HC_TERMINAL_ID') or '-'}"  # sw-ownership §4.6: the watchd record
+    with tx(c):
+        old = c.execute("select v from meta where k='watchd'").fetchone()
+        if old and old[0] != mine and pid_alive(old[0].split()[0]) and not a.takeover:
+            die(f"watchd already runs (pid {old[0].split()[0]}, terminal {old[0].split()[1]}); `swarm watchd --takeover` replaces it.")
+        c.execute("insert or replace into meta(k,v) values('watchd',?)", (mine,))
+        if comms:
+            c.execute("insert or replace into meta(k,v) values('comms',?)", (comms,))
     # default cap: the roster the human launched, so watchd refills it but doesn't grow it
     cap = a.max_agents if a.max_agents is not None else sum(1 for x in live_agents(c) if x["name"] != comms)
     opts = {"max_agents": cap, "min_free_gib": a.min_free_mem, "model": a.model, "interval": a.interval}
     while True:
+        cur = c.execute("select v from meta where k='watchd'").fetchone()
+        if not cur or cur[0] != mine:
+            die(f"watchd (pid {os.getpid()}) was replaced by {cur[0] if cur else 'none'}; exiting")
         watchd_tick(c, comms, repo, opts)
         if a.once:
             return
@@ -2096,6 +2105,7 @@ def main(argv=None):
     p.add_argument("--interval", type=int, default=30)
     p.add_argument("--once", action="store_true")
     p.add_argument("--ci", action="store_true", help="also watch main CI with gh")
+    p.add_argument("--takeover", action="store_true", help="replace a live watchd; it exits on its next tick")
     p.add_argument("--dry-run", action="store_true", help="only list the worktrees the sweep would remove, then exit")
     p.add_argument("--max-agents", type=int, help="cap for auto-spawn (default: live agents now)")
     p.add_argument("--min-free-mem", type=float, default=4, help="GiB of MemAvailable needed to auto-spawn")
