@@ -5,7 +5,7 @@ sys.path.insert(0, "../swarm")
 
 def test_claim_to_done():
     c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
-    c.executescript("""create table agent(name,model,started,ended,ctx_tokens,status);
+    c.executescript("""create table agent(name,model,cwd,started,ended,ctx_tokens,status);
 create table task(id,title,state,owner,evidence);
 create table event(id integer primary key,ts,agent,kind,path,data);
 create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
