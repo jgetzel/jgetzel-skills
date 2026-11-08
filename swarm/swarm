@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
+from contextlib import contextmanager
 from datetime import datetime
 import argparse, difflib, fcntl, fnmatch, glob, json, os, re, shlex, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 
@@ -75,6 +76,21 @@ def connect():
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
     return c
+
+
+@contextmanager
+def tx(c):
+    """One `begin immediate` transaction (sw-ownership §4.1); nested calls join the outer one. Never run a subprocess inside."""
+    if c.in_transaction:
+        yield c
+        return
+    c.execute("begin immediate")
+    try:
+        yield c
+    except BaseException:  # die() is SystemExit
+        c.execute("rollback")
+        raise
+    c.execute("commit")
 
 
 def me():
@@ -487,6 +503,11 @@ def hook(ev):
 # ---------- reaping and watchd ----------
 
 def release(c, name):
+    with tx(c):
+        _release(c, name)
+
+
+def _release(c, name):
     c.execute("update task set state='open', owner=null, lease_until=null, question=null where owner=? and state in ('claimed','blocked')", (name,))
     c.execute("delete from lock where agent=?", (name,))
     c.execute("delete from conflict where a=? or b=?", (name, name))
@@ -508,22 +529,30 @@ def reap(c, live_addrs=None, t=None, comms=None):
                 post(c, "swarm", comms, f"{r['owner']} has held #{r['id']} past its lease (idle {ago(o['last_active'])}).",
                      kind="notice")
             continue
-        c.execute("update task set state='open', owner=null, lease_until=null where id=?", (r["id"],))
-        post(c, "swarm", r["owner"], f"your lease on task #{r['id']} ({r['title']}) expired; it is open again. "
-             f"`swarm task claim {r['id']}` to take it back.", kind="system")
-        log(c, r["owner"], "reap", None, f"task #{r['id']} lease expired")
+        with tx(c):  # re-check: a renew or re-claim since the select keeps the task
+            if not c.execute("update task set state='open', owner=null, lease_until=null "
+                             "where id=? and owner=? and state='claimed' and lease_until<?", (r["id"], r["owner"], t)).rowcount:
+                continue
+            post(c, "swarm", r["owner"], f"your lease on task #{r['id']} ({r['title']}) expired; it is open again. "
+                 f"`swarm task claim {r['id']}` to take it back.", kind="system")
+            log(c, r["owner"], "reap", None, f"task #{r['id']} lease expired")
         out.append(f"task #{r['id']}")
     for r in c.execute("select * from lock where lease_until<?", (t,)).fetchall():
-        c.execute("delete from lock where path=?", (r["path"],))
-        log(c, r["agent"], "reap", r["path"], "lock expired")
+        with tx(c):  # re-check: a fresh lock on the path since the select stays
+            if not c.execute("delete from lock where path=? and agent=? and lease_until<?", (r["path"], r["agent"], t)).rowcount:
+                continue
+            log(c, r["agent"], "reap", r["path"], "lock expired")
         out.append(f"lock {r['path']}")
     if live_addrs is not None:
         for a in live_agents(c):
             if a["hc"] and a["hc"] not in live_addrs:
-                c.execute("update agent set ended=?, status='ended' where name=?", (t, a["name"]))
-                release(c, a["name"])
-                post(c, "swarm", "@all", f"{a['name']} is gone; its tasks and locks are released.", kind="system")
-                log(c, a["name"], "reap", None, "agent gone")
+                with tx(c):  # re-check: still bound to the address judged dead, still live
+                    if not c.execute("update agent set ended=?, status='ended' where name=? and hc=? and ended is null",
+                                     (t, a["name"], a["hc"])).rowcount:
+                        continue
+                    _release(c, a["name"])
+                    post(c, "swarm", "@all", f"{a['name']} is gone; its tasks and locks are released.", kind="system")
+                    log(c, a["name"], "reap", None, "agent gone")
                 out.append(f"agent {a['name']}")
     return out
 
@@ -770,9 +799,10 @@ def end_agent(c, a, wt, main, comms):
     """Release a finished agent, kill its terminal, and remove its worktree and branch without losing work."""
     n = a["name"]
     br = git(["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"]) if wt else None
-    release(c, n)
-    c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
-    log(c, n, "end", None, "landed")
+    with tx(c):
+        _release(c, n)
+        c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
+        log(c, n, "end", None, "landed")
     if a["hc"]:
         run(["hc", "kill", a["hc"]])
         run(["hc", "rm", a["hc"]])
@@ -1089,9 +1119,10 @@ def cmd_join(c, a):
 
 def cmd_leave(c, a):
     n = a.name or me()
-    c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
-    release(c, n)
-    log(c, n, "leave")
+    with tx(c):
+        c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
+        _release(c, n)
+        log(c, n, "leave")
 
 
 def cmd_post(c, a):
@@ -1188,24 +1219,27 @@ def cmd_task(c, a):
               + (f"\nPR #{tm['pr']} merged {hhmm(tm['merged_at'])}, main CI {tm['ci_conclusion'] or 'pending'}"
                  + (f", green {tm['merge_to_green_s'] // 60}m after merge" if tm["merge_to_green_s"] is not None else "") if tm["merged_at"] else "") + f"\n{r['body'] or '(no body)'}")
     elif a.act in ("renew", "done"):
-        if r["owner"] != n or r["state"] != "claimed":
-            die(f"task #{a.id} is not claimed by you")
+        mine = " where id=? and owner=? and state='claimed'"  # owner and state checked in the write (sw-ownership §3.2)
         if a.act == "renew":
-            c.execute("update task set lease_until=? where id=?", (t + dur(a.lease), a.id))
+            if not c.execute("update task set lease_until=?" + mine, (t + dur(a.lease), a.id, n)).rowcount:
+                die(f"task #{a.id} is not claimed by you")
             print(f"renewed #{a.id} until {hhmm(t + dur(a.lease))}")
         else:
-            c.execute("update task set state='done', evidence=?, lease_until=null, done_at=?, "
-                      "done_ctx=(select ctx_tokens from agent where name=?) where id=?", (a.evidence, t, n, a.id))
-            log(c, n, "done", None, f"#{a.id} {a.evidence}")
+            with tx(c):
+                if not c.execute("update task set state='done', evidence=?, lease_until=null, done_at=?, "
+                                 "done_ctx=(select ctx_tokens from agent where name=?)" + mine, (a.evidence, t, n, a.id, n)).rowcount:
+                    die(f"task #{a.id} is not claimed by you")
+                log(c, n, "done", None, f"#{a.id} {a.evidence}")
             print(f"done #{a.id}")
             k = (c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0) // 1000
             print(f"context ~{k}k: take the next task (swarm board)." if k * 1000 < SMALL_CTX and pool(c) else
                   f"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work.")
     elif a.act == "block":
-        if r["owner"] != n or r["state"] != "claimed":
-            die(f"task #{a.id} is not claimed by you")
-        c.execute("update task set state='blocked', question=? where id=?", (a.question, a.id))
-        log(c, n, "block", None, f"#{a.id} {a.question}")
+        with tx(c):
+            if not c.execute("update task set state='blocked', question=? where id=? and owner=? and state='claimed'",
+                             (a.question, a.id, n)).rowcount:
+                die(f"task #{a.id} is not claimed by you")
+            log(c, n, "block", None, f"#{a.id} {a.question}")
         print(f"blocked #{a.id}; watchd tells the communicator. It stays yours until `swarm task unblock`.")
     elif a.act == "unblock":
         comms = os.environ.get("SWARM_COMMS")
@@ -1213,20 +1247,28 @@ def cmd_task(c, a):
             die(f"task #{a.id} is not blocked")
         if n not in (r["owner"], comms) and not n.endswith("comms"):
             die(f"only {r['owner']} or the communicator can unblock #{a.id}")
-        c.execute("update task set state='claimed', question=null, lease_until=? where id=?", (t + LEASE, a.id))
-        log(c, n, "unblock", None, f"#{a.id}")
-        if a.answer and n != r["owner"]:
-            post(c, n, r["owner"], f"#{a.id} is unblocked. Answer: {a.answer}")
+        with tx(c):
+            if not c.execute("update task set state='claimed', question=null, lease_until=? where id=? and owner=? and state='blocked'",
+                             (t + LEASE, a.id, r["owner"])).rowcount:
+                die(f"task #{a.id} changed under you; `swarm task show {a.id}`")
+            log(c, n, "unblock", None, f"#{a.id}")
+            if a.answer and n != r["owner"]:
+                post(c, n, r["owner"], f"#{a.id} is unblocked. Answer: {a.answer}")
         print(f"unblocked #{a.id}; claimed by {r['owner']} again")
     elif a.act == "release":
-        if r["owner"] != n or r["state"] != "claimed":
-            die(f"task #{a.id} is not claimed by you")
-        c.execute("update task set state='open', owner=null, lease_until=null where id=?", (a.id,))
-        log(c, n, "release", None, f"#{a.id}")
+        with tx(c):
+            if not c.execute("update task set state='open', owner=null, lease_until=null where id=? and owner=? and state='claimed'",
+                             (a.id, n)).rowcount:
+                die(f"task #{a.id} is not claimed by you")
+            log(c, n, "release", None, f"#{a.id}")
         print(f"released #{a.id}; it is open again")
     elif a.act == "drop":
-        c.execute("update task set state='dropped', owner=null, lease_until=null, dropped_at=? where id=?", (t, a.id))
-        log(c, n, "drop", None, f"#{a.id}")
+        with tx(c):
+            r = c.execute("select * from task where id=?", (a.id,)).fetchone()
+            if r["state"] in ("claimed", "blocked") and r["owner"] != n and not is_comms(c, n):
+                die(f"#{a.id} is {r['state']} by {r['owner']}; only it or the communicator can drop it")
+            c.execute("update task set state='dropped', owner=null, lease_until=null, dropped_at=? where id=?", (t, a.id))
+            log(c, n, "drop", None, f"#{a.id}")
         print(f"dropped #{a.id}")
 
 
@@ -1272,14 +1314,16 @@ def cmd_who(c, a):
 
 def cmd_lock(c, a):
     n = me()
-    ensure_agent(c, n)
-    for o in c.execute("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
-                       "and g.ended is null", (n, now())):
-        if covers(a.path, o["path"]) or covers(o["path"], a.path):  # approximate for two globs; errs toward allowing
-            die(f"{a.path} overlaps {o['path']}, locked by {o['agent']}; message it")
-    c.execute("insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)",
-              (a.path, n, a.reason, now(), now() + dur(a.lease)))
-    log(c, n, "lock", a.path, a.reason)
+    with tx(c):  # scan and write in one transaction: a concurrent lock waits, then sees this one
+        ensure_agent(c, n)
+        for o in c.execute("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
+                           "and g.ended is null", (n, now())):
+            if covers(a.path, o["path"]) or covers(o["path"], a.path):  # approximate for two globs; errs toward allowing
+                die(f"{a.path} overlaps {o['path']}, locked by {o['agent']}; message it")
+        # replaces only this agent's own lock (a renew) or a dead or expired one: a live peer's was refused above
+        c.execute("insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)",
+                  (a.path, n, a.reason, now(), now() + dur(a.lease)))
+        log(c, n, "lock", a.path, a.reason)
     print(f"locked {a.path}")
 
 

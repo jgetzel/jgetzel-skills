@@ -1,6 +1,6 @@
 import argparse
 import sys; sys.dont_write_bytecode = True
-import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest
+import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest, unittest.mock
 
 SWARM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
 G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -144,6 +144,91 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select state from task")[0]["state"], "open")
         self.assertEqual(self.q("select * from lock"), [])
         self.assertIsNotNone(self.q("select ended from agent where name='a'")[0]["ended"])
+
+    # ---- ownership transactions (sw-ownership §7.1) ----
+    def mod(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_tx", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_tx", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        return m
+
+    def racing(self, c, sql, fn):
+        """c, but fn runs once right after the first statement containing sql has been read: a peer acting in between."""
+        class Rows(list):
+            fetchall = lambda s: s
+            fetchone = lambda s: s[0] if s else None
+        class P:
+            def __getattr__(s, k): return getattr(c, k)
+            def execute(s, q, *a):
+                cur = c.execute(q, *a)
+                if sql not in q or not hasattr(s, "fn"):
+                    return cur
+                rows = Rows(cur.fetchall())
+                f = s.fn; del s.fn; f()
+                return rows
+        p = P(); p.fn = fn
+        return p
+
+    def test_second_lock_on_held_path_refused(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "lock", "a.txt")
+        self.assertIn("locked by a", self.sw("b", "lock", "a.txt", ok=False).stderr)
+        self.assertEqual([tuple(r) for r in self.q("select path,agent from lock")], [("a.txt", "a")])
+
+    def test_concurrent_lock_waits_not_double_writes(self):
+        self.agent("a"); self.agent("b")
+        peer = sqlite3.connect(self.db, isolation_level=None)
+        peer.execute("begin immediate")
+        peer.execute("insert into lock(path,agent,since,lease_until) values('a.txt','a',?,?)", (int(time.time()), int(time.time()) + 3600))
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"}
+        env.pop("HC_TERMINAL_ID", None)
+        pr = subprocess.Popen([sys.executable, SWARM, "lock", "a.txt"], env=env, cwd=self.repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1)
+        self.assertIsNone(pr.poll())  # waiting on the peer's transaction
+        peer.execute("commit")
+        _, err = pr.communicate(timeout=15)
+        self.assertNotEqual(pr.returncode, 0, err)
+        self.assertEqual([tuple(r) for r in self.q("select path,agent from lock")], [("a.txt", "a")])
+
+    def test_done_after_reap_and_reclaim_fails(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        m = self.mod()
+        reclaim = lambda: self.q("update task set owner='b' where id=1")  # reaped, then claimed by b
+        for act in ("done", "renew", "block", "release"):
+            c = self.racing(m.connect(), "select * from task where id=?", reclaim)
+            with unittest.mock.patch.dict(os.environ, {"SWARM_NAME": "a"}), self.assertRaises(SystemExit):
+                m.cmd_task(c, argparse.Namespace(act=act, id=1, evidence="e", lease="1h", question="q"))
+            self.assertEqual(tuple(self.q("select state,owner from task")[0]), ("claimed", "b"), act)
+            self.q("update task set owner='a'")
+
+    def test_reap_keeps_renew_after_its_select(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "lock", "a.txt")
+        self.q("update task set lease_until=1")
+        self.q("update agent set ended=1 where name='a'")
+        m = self.mod()
+        renew = lambda: self.q("update task set lease_until=? where id=1", int(time.time()) + 3600)
+        self.assertEqual(m.reap(self.racing(m.connect(), "from task where state='claimed'", renew)), [])
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
+        self.q("update lock set lease_until=1")
+        relock = lambda: self.q("update lock set lease_until=?", int(time.time()) + 3600)
+        self.assertEqual(m.reap(self.racing(m.connect(), "select * from lock", relock)), [])
+        self.assertEqual(len(self.q("select * from lock")), 1)
+
+    def test_drop_claimed_only_by_owner_or_comms(self):
+        for i in range(3):
+            self.sw("a", "task", "add", f"t{i}")
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "claim", "2")
+        self.assertIn("only it or the communicator", self.sw("b", "task", "drop", "1", ok=False).stderr)
+        self.sw("b", "task", "drop", "3")  # open: anyone
+        self.sw("a", "task", "drop", "1")
+        self.sw("x-comms", "task", "drop", "2")
+        self.assertEqual([r["state"] for r in self.q("select state from task order by id")], ["dropped"] * 3)
 
     # ---- messages ----
     def test_cursor(self):
