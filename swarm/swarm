@@ -258,6 +258,37 @@ def ctx_from(path):
     return None
 
 
+CTX_WARN = 350_000  # tokens; warn here, then every +100k; at CTX_NOW say hand off
+
+
+def ctx_advice(k):
+    if k >= 550_000:
+        return ("hand off now with the relaunch skill, same model, and post the successor's name, "
+                "or `swarm task release` if the task is barely started.")
+    return "finish this task, then go idle (watchd ends you and a fresh agent takes the next task); don't claim another."
+
+
+def handoff_nudge(c, name, p):
+    """Context-size note. Shares the repo hook's step marker (claude-ctx-<session_id>) so only one of the two fires per step."""
+    k = ctx_from(p.get("transcript_path"))
+    if not k:
+        return None
+    c.execute("update agent set ctx_tokens=? where name=?", (k, name))
+    step = (k - (CTX_WARN - 100_000)) // 100_000  # 1 at 350k, 2 at 450k, ...
+    if step < 1:
+        return None
+    mark = os.path.join(tempfile.gettempdir(), f"claude-ctx-{p.get('session_id') or 'x'}")
+    try:
+        last = int(open(mark).read())
+    except (OSError, ValueError):
+        last = 0
+    if step <= last:
+        return None
+    open(mark, "w").write(str(step))
+    log(c, name, "ctx-note", None, str(k))
+    return f"Context is ~{k // 1000}k tokens: {ctx_advice(k)}"
+
+
 def post_compact(path):
     """Context after the latest compaction: the boundary's postTokens plus ~31k of system prompt and tools."""
     try:
@@ -336,9 +367,10 @@ def hook(ev):
         set_status(c, name, "working")
         if tool == "Bash" and re.search(r"\bgit\s+push\b", ti.get("command", "")):
             log(c, name, "push", None, ti["command"][:120])
-        ctx = deliver(c, name)
-        if ctx:
-            emit("PostToolUse", ctx=ctx)
+        ctx = deliver(c, name) or ""
+        n = handoff_nudge(c, name, p)
+        if ctx or n:
+            emit("PostToolUse", ctx="\n".join(x for x in (ctx, n) if x))
 
     elif ev == "prompt":  # a turn started without a tool call (human prompt or peer message)
         set_status(c, name, "working")
@@ -909,6 +941,9 @@ def cmd_task(c, a):
         if dep:
             die(f"#{a.id} waits on #{dep['id']} ({dep['state']}" + (f", claimed by {dep['owner']}" if dep["owner"] else "") + ")")
         ensure_agent(c, n)
+        k = c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0
+        if k >= CTX_WARN:
+            die(f"context ~{k // 1000}k, too high to take new work: {ctx_advice(k)}")
         cur = c.execute("update task set state='claimed', owner=?, lease_until=? where id=? and state='open'",
                         (n, t + dur(a.lease), a.id))
         if not cur.rowcount:
