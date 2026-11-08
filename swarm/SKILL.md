@@ -39,8 +39,8 @@ with subagents.
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
-   It never auto-spawns for a task on first sight: a task must stay startable
-   a full `--interval` so an explicit spawn that claims it first wins.
+   Auto-spawn goes through `swarm spawn --task N`, which claims the task for
+   the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (and removes their worktree and branch), spawns fresh agents for startable
    tasks when none is free (at most `--max-agents`, default the live count now;
@@ -50,7 +50,9 @@ with subagents.
    (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:
-   `swarm spawn <prefix>-<n> --model <m> -- "<area and first tasks>"`.
+   `swarm spawn <prefix>-<n> --model <m> [--task N] -- "<area and first tasks>"`.
+   With `--task N` the new agent's name and task #N are reserved in one step
+   before launch (rolled back if the launch fails); the text may be omitted.
    Pick the model by kind of work: Opus for planning and hard diagnosis,
    Sonnet for building to a spec, Haiku for mechanical work. Mix models where
    a decision matters. Start with the agents the work can use; the user

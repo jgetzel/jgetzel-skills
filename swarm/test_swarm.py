@@ -763,7 +763,7 @@ class T(unittest.TestCase):
         ld.exec_module(m)
         os.environ["SWARM_DB"] = self.db
         spawned = []
-        m.cmd_spawn = lambda c, a: spawned.append((a.name, a.model))
+        m.run = self.fake_launch(spawned, lambda cmd: (cmd[1], cmd[cmd.index("--model") + 1]))
         m.hc_terminals = lambda: None
         c = m.connect()
         for n in ("t-comms", "t-1"):
@@ -784,28 +784,56 @@ class T(unittest.TestCase):
         finally:
             os.chdir(cwd)
 
-    def test_auto_spawn_waits_one_interval(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        spawned = []
-        m.cmd_spawn = lambda c, a: spawned.append(a.name)
+    def fake_launch(self, log, rec, fail=False):
+        real = self.mod().run  # only launch.sh is faked; git etc. run for real
+
+        def run(cmd, **kw):
+            if "launch.sh" not in cmd[0]:
+                return real(cmd, **kw)
+            if rec:
+                log.append(rec(cmd))
+            return None if fail else "hc1"
+        return run
+
+    def test_spawn_task_claims_before_launch(self):
+        m = self.mod()
+        c = m.connect()
+        self.sw("a", "task", "add", "do it")
+        seen = []
+        m.run = self.fake_launch(seen, lambda cmd: tuple(self.q("select owner,state from task")[0]))
+        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.assertEqual(seen, [("t-9", "claimed")])  # claimed by the new name before launch ran
+        self.assertEqual(self.q("select hc from agent where name='t-9'")[0][0], "hc1")
+        with self.assertRaises(SystemExit):  # a live name is refused
+            m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+
+    def test_spawn_task_launch_failure_rolls_back(self):
+        m = self.mod()
+        c = m.connect()
+        self.sw("a", "task", "add", "do it")
+        m.run = self.fake_launch([], None, fail=True)
+        with self.assertRaises(SystemExit):
+            m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.assertEqual(tuple(self.q("select owner,state from task")[0]), (None, "open"))
+        self.assertTrue(self.q("select ended from agent where name='t-9'")[0][0])
+
+    def test_auto_spawn_skips_lost_race(self):
+        m = self.mod()
+        launched = []
+        m.run = self.fake_launch(launched, lambda cmd: cmd)
         m.hc_terminals = lambda: None
         c = m.connect()
         self.agent("t-comms", status="working")
         self.sw("a", "task", "add", "do it")
+        real = m.pool
+        m.pool = lambda c: (lambda r: (self.sw("t-1", "join"), self.sw("t-1", "task", "claim", "1"), r)[2])(real(c))  # a peer claims after pool()
         cwd = os.getcwd(); os.chdir(self.repo)
         try:
-            opts = {"max_agents": 1, "min_free_gib": 0}
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, [])  # first sight of the task: no spawn
-            self.sw("t-1", "join"); self.sw("t-1", "task", "claim", "1")  # an explicit spawn takes it
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, [])
+            m.watchd_tick(c, "t-comms", None, {"max_agents": 1, "min_free_gib": 0})
         finally:
             os.chdir(cwd)
+        self.assertEqual(launched, [])
+        self.assertEqual(self.q("select owner from task")[0][0], "t-1")
 
     def test_rules_appended_to_spawn(self):
         import importlib.machinery, importlib.util
