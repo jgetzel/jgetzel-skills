@@ -3,7 +3,8 @@
 
 - mods/swarm        -> symlink to this repo's panel (edits here are live)
 - mods/swarm-tabs   <- Herdr's shipped tabs mod plus a Swarm button (generated: tabs has no extension point)
-- layouts/swarm.json <- Herdr's shipped main layout with swarm-tabs and a "swarm" child in the side panel
+- layouts/swarm.json <- Herdr's shipped main layout with swarm-tabs, a "swarm" child in the side panel,
+                       and that panel at half the work area
 Switch to it once with: herdr-app do layout.switch --name swarm"""
 import json, os, shutil, sys
 
@@ -99,6 +100,13 @@ def main():
     if not bar or bar.get("content", {}).get("mod") != "tabs" or not body:
         sys.exit("install: Herdr's main layout changed (no tabs block or panel-body stack); update install.py")
     bar["content"]["mod"] = "swarm-tabs"
+    # The side panel opens at half the work area (weight 1 beside the tab's weight 1); the window's
+    # left sidebar is a fixed px column, so an exact half of the window isn't expressible.
+    panel = find(lay, "panel")
+    if not panel:
+        sys.exit("install: Herdr's main layout changed (no panel column); update install.py")
+    panel["size"] = {"weight": 1}
+    panel.pop("max", None)
     body["children"] = [c for c in body["children"] if c.get("id") != "swarm"] + [
         {"id": "swarm", "type": "block", "content": {"mod": "swarm"}}]
     out = os.path.join(HOME, "layouts", "swarm.json")
