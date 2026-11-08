@@ -67,7 +67,9 @@ def connect():
     c.execute("pragma busy_timeout=10000")
     c.execute("pragma journal_mode=wal")
     c.executescript(SCHEMA)
-    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("task", "question text"), ("agent", "claude_pid int")):  # dbs made before sw-locks
+    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("task", "question text"), ("agent", "claude_pid int"),
+                     ("task", "created_at int"), ("task", "first_claimed_at int"), ("task", "done_at int"), ("task", "dropped_at int"),
+                     ("task", "claim_ctx int"), ("task", "done_ctx int")):  # dbs made before sw-locks
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
     return c
@@ -82,6 +84,38 @@ def me():
 
 def log(c, agent, kind, path=None, data=None):
     c.execute("insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)", (now(), agent, kind, path, data))
+
+
+def task_timing(r, evs):
+    """Task durations (seconds) from the CLI-written columns, else from the task's claim/done/block/unblock/release/drop events
+    (evs: that task's events in order; data starts '#<id>'). Shared with swarm-retro/swarm-report.py."""
+    r = dict(r)
+    ts = lambda k: [e["ts"] for e in evs if e["kind"] == k]
+    claims = [e for e in evs if e["kind"] == "claim"]
+    created = r.get("created_at") or min(ts("task-add"), default=None)
+    first = r.get("first_claimed_at") or min(ts("claim"), default=None)
+    done = r.get("done_at") or (max(ts("done"), default=None) if r.get("state") == "done" else None)
+    dropped = r.get("dropped_at") or (max(ts("drop"), default=None) if r.get("state") == "dropped" else None)
+    end = done or dropped or now()
+    blocked, start = 0, None
+    for e in evs:
+        if e["kind"] == "block" and start is None:
+            start = e["ts"]
+        elif e["kind"] == "unblock" and start is not None:
+            blocked, start = blocked + e["ts"] - start, None
+    if start is not None and r.get("state") == "blocked":
+        blocked += end - start
+    d = lambda a, b: b - a if a is not None and b is not None else None
+    return {"created_at": created, "first_claimed_at": first, "done_at": done, "dropped_at": dropped,
+            "queue_wait_s": d(created, first), "work_s": d(first, done), "total_s": d(created, done), "blocked_s": blocked,
+            "claims": len(claims), "releases": len(ts("release")),
+            "holders": list(dict.fromkeys(e["agent"] for e in claims)),
+            "claim_ctx": r.get("claim_ctx"), "done_ctx": r.get("done_ctx")}
+
+
+def task_events(c, tid):
+    return [dict(e) for e in c.execute("select ts,agent,kind,data from event where kind in "
+            "('task-add','claim','done','block','unblock','release','drop') and (data=? or data like ?) order by id", (f"#{tid}", f"#{tid} %"))]
 
 
 def ago(t):
@@ -984,8 +1018,8 @@ def cmd_task(c, a):
     if a.act == "add":
         if a.after and not c.execute("select 1 from task where id=?", (a.after,)).fetchone():
             die(f"no task #{a.after} to wait on")
-        cur = c.execute("insert into task(title,body,created_by,after,model) values(?,?,?,?,?)",
-                        (a.title, a.body, n, a.after, a.model))
+        cur = c.execute("insert into task(title,body,created_by,after,model,created_at) values(?,?,?,?,?,?)",
+                        (a.title, a.body, n, a.after, a.model, t))
         log(c, n, "task-add", None, f"#{cur.lastrowid} {a.title}")
         print(f"task #{cur.lastrowid}")
         return
@@ -1000,15 +1034,22 @@ def cmd_task(c, a):
         k = c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0
         if k >= CTX_WARN:
             die(f"context ~{k // 1000}k, too high to take new work: {ctx_advice(k)}")
-        cur = c.execute("update task set state='claimed', owner=?, lease_until=? where id=? and state='open'",
-                        (n, t + dur(a.lease), a.id))
+        cur = c.execute("update task set state='claimed', owner=?, lease_until=?, claim_ctx=?, "
+                        "first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open'",
+                        (n, t + dur(a.lease), k, t, a.id))
         if not cur.rowcount:
             die(f"task #{a.id} is {r['state']}" + (f", owned by {r['owner']}" if r["owner"] else ""))
         log(c, n, "claim", None, f"#{a.id} {r['title']}")
         print(f"claimed #{a.id} until {hhmm(t + dur(a.lease))}")
         print(r["body"] or "(no body)")
     elif a.act == "show":
-        print(f"#{r['id']} {r['state']} {r['owner'] or '-'}  {r['title']}\n{r['body'] or '(no body)'}")
+        tm = task_timing(r, task_events(c, r["id"]))
+        f = lambda k: f"{tm[k] // 60}m" if tm[k] is not None else "-"
+        print(f"#{r['id']} {r['state']} {r['owner'] or '-'}  {r['title']}\n"
+              f"timing: queue {f('queue_wait_s')}, work {f('work_s')}, total {f('total_s')}, blocked {f('blocked_s')}, "
+              f"claims {tm['claims']}, releases {tm['releases']}, held by {', '.join(tm['holders']) or '-'}"
+              + (f", ctx {tm['claim_ctx'] // 1000}k at claim" if tm["claim_ctx"] else "")
+              + (f" -> {tm['done_ctx'] // 1000}k at done" if tm["done_ctx"] else "") + f"\n{r['body'] or '(no body)'}")
     elif a.act in ("renew", "done"):
         if r["owner"] != n or r["state"] != "claimed":
             die(f"task #{a.id} is not claimed by you")
@@ -1016,7 +1057,8 @@ def cmd_task(c, a):
             c.execute("update task set lease_until=? where id=?", (t + dur(a.lease), a.id))
             print(f"renewed #{a.id} until {hhmm(t + dur(a.lease))}")
         else:
-            c.execute("update task set state='done', evidence=?, lease_until=null where id=?", (a.evidence, a.id))
+            c.execute("update task set state='done', evidence=?, lease_until=null, done_at=?, "
+                      "done_ctx=(select ctx_tokens from agent where name=?) where id=?", (a.evidence, t, n, a.id))
             log(c, n, "done", None, f"#{a.id} {a.evidence}")
             print(f"done #{a.id}")
             k = (c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0) // 1000
@@ -1046,7 +1088,7 @@ def cmd_task(c, a):
         log(c, n, "release", None, f"#{a.id}")
         print(f"released #{a.id}; it is open again")
     elif a.act == "drop":
-        c.execute("update task set state='dropped', owner=null, lease_until=null where id=?", (a.id,))
+        c.execute("update task set state='dropped', owner=null, lease_until=null, dropped_at=? where id=?", (t, a.id))
         log(c, n, "drop", None, f"#{a.id}")
         print(f"dropped #{a.id}")
 
@@ -1255,9 +1297,11 @@ def cmd_state(a):
                 raise
             return []
     tasks = rows("select * from task order by id")
+    tev = rows("select ts,agent,kind,data from event where kind in ('task-add','claim','done','block','unblock','release','drop') order by id")
     state = {r["id"]: r["state"] for r in tasks}
     for r in tasks:
         r.pop("body", None)
+        r.update(task_timing(r, [e for e in tev if e["data"] == f"#{r['id']}" or (e["data"] or "").startswith(f"#{r['id']} ")]))
         r["lease_left"] = r["lease_until"] - t if r["state"] in ("claimed", "blocked") and r["lease_until"] else None
         r["waiting"] = bool(r.get("after") and state.get(r["after"]) != "done")
     wts, agents = wt_map(c), []

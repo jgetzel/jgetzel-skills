@@ -54,6 +54,23 @@ class T(unittest.TestCase):
             self.q(f"update agent set {k}=? where name=?", v, name)
 
     # ---- tasks ----
+    def test_task_timing_columns(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "block", "1", "why")
+        self.sw("a", "task", "unblock", "1")
+        self.assertIn("claims 1, releases 0, held by a", self.sw("a", "task", "show", "1").stdout)
+        self.sw("a", "task", "done", "1", "--evidence", "e")
+        r = self.q("select created_at, first_claimed_at, done_at from task")[0]
+        self.assertTrue(r["created_at"] <= r["first_claimed_at"] <= r["done_at"])
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertEqual((t["claims"], t["holders"], t["blocked_s"] >= 0), (1, ["a"], True))
+        # an older db: columns null, numbers come from the events
+        self.q("update task set created_at=null, first_claimed_at=null, done_at=null")
+        self.q("update event set ts=ts-100 where kind='task-add'")
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertGreaterEqual(t["queue_wait_s"], 100)
+
     def test_task_show_and_claim_print_body(self):
         self.sw("a", "task", "add", "t1", "--body", "build X and Y")
         self.sw("a", "task", "add", "t2")
