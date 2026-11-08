@@ -538,6 +538,50 @@ class T(unittest.TestCase):
         self.assertIn("do it", self.sw("a", "board").stdout)
         self.assertIn("a idle", self.sw("a", "who").stdout)
 
+    def test_state_json(self):
+        self.assertEqual(json.loads(self.sw("a", "state", "--json").stdout)["active"], False)
+        self.assertFalse(os.path.exists(self.db))  # read-only: no db is created
+        self.agent("a", model="opus", ctx_tokens=90_000)
+        self.agent("b")
+        self.sw("a", "task", "add", "first")
+        self.sw("a", "task", "add", "second", "--after", "1")
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "block", "1", "which db?")
+        self.sw("b", "lock", "b.txt")
+        self.sw("a", "post", "b", "hello")
+        self.sw("b", "leave")
+        before = self.q("select count(*) n from event")[0]["n"]
+        s = json.loads(self.sw("a", "state", "--json").stdout)
+        self.assertEqual(self.q("select count(*) n from event")[0]["n"], before)
+        self.assertTrue(s["active"])
+        t1, t2 = s["tasks"]
+        self.assertEqual((t1["state"], t1["owner"], t1["question"]), ("blocked", "a", "which db?"))
+        self.assertGreater(t1["lease_left"], 0)
+        self.assertTrue(t2["waiting"])
+        a, b = s["agents"]
+        self.assertEqual((a["name"], a["status"], a["model"], a["ctx_tokens"], a["cache"]), ("a", "blocked", "opus", 90_000, "warm"))
+        self.assertEqual(a["task"]["id"], 1)
+        self.assertEqual(a["messages"][0]["body"], "hello")
+        self.assertEqual((b["name"], b["status"]), ("b", "ended"))
+        self.assertEqual(s["messages"][0]["dest"], "b")
+        self.assertIn("block", [e["kind"] for e in s["events"]])
+        self.assertIn("machine", s)
+
+    def test_state_json_old_db(self):
+        c = sqlite3.connect(self.db)  # schema from before agent.wt / task.after,model,question
+        c.executescript("create table agent(name text primary key, hc text, model text, cwd text, status text, last_active int,"
+                        " ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text, waiter int);"
+                        "create table task(id integer primary key, title text, body text, state text, owner text, lease_until int,"
+                        " created_by text, evidence text);"
+                        "create table msg(id integer primary key, ts int, frm text, dest text, body text, urgent int, kind text);"
+                        "create table event(id integer primary key, ts int, agent text, kind text, path text, data text);"
+                        "insert into agent(name,status,last_active) values('a','idle',1);"
+                        "insert into task(title,state) values('t','open');")
+        c.close()
+        s = json.loads(self.sw("a", "state", "--json").stdout)
+        self.assertTrue(s["active"])
+        self.assertEqual((s["agents"][0]["worktree"], s["tasks"][0]["waiting"]), (None, False))
+
 
     def fake_proc(self, avail_kb=20_000_000, psi=1.0):
         r = os.path.join(self.d, "proc")

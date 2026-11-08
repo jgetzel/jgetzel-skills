@@ -13,3 +13,7 @@ for skill in */SKILL.md; do
   ln -sfn "$PWD/$name" "$dest/$name"
   echo "linked $name"
 done
+# The swarm skill's Herdr panel, when the Herdr desktop app is installed.
+if [ -d "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/tabs" ]; then
+  python3 swarm/herdr/install.py || echo "skipped the Herdr Swarm panel (see above)" >&2
+fi
