@@ -806,6 +806,9 @@ def inside(p, wt):
     return p == wt or p.startswith(wt + os.sep)
 
 
+NOT_LANDED = set()  # (worktree, HEAD sha, B sha) verdicts "not landed", so unchanged worktrees don't hit gh every tick
+
+
 def sweep_worktrees(c, comms=None, dry=False):
     """Remove clean, landed worktrees (and their local branch) that no live agent or process uses. Returns [(path, branch, MB)]."""
     lines = (run(["git", "worktree", "list", "--porcelain"]) or "").splitlines()
@@ -835,8 +838,15 @@ def sweep_worktrees(c, comms=None, dry=False):
             continue
         gd = git(["-C", wt, "rev-parse", "--absolute-git-dir"])
         last = max(os.path.getmtime(p) for p in (wt, os.path.join(gd or wt, "logs", "HEAD")) if os.path.exists(p))
-        if t - last < SWEEP_IDLE or not landed(wt, B, main):
-            continue  # landed() also requires a clean status
+        st = run(["git", "-C", wt, "status", "--porcelain"])
+        if t - last < SWEEP_IDLE or st is None or st.strip():
+            continue  # dirty or unreadable: never landed
+        key = (wt, git(["-C", wt, "rev-parse", "HEAD"]), git(["-C", main, "rev-parse", B]))
+        if key in NOT_LANDED:
+            continue
+        if not landed(wt, B, main):
+            NOT_LANDED.add(key)
+            continue
         mb = int((run(["du", "-sk", wt]) or "0").split()[0]) // 1024
         if not dry:
             if gx(["-C", main, "worktree", "remove", wt], None)[0]:
