@@ -36,9 +36,9 @@ class T(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
         return r
 
-    def hook(self, who, ev, **payload):
-        payload.setdefault("cwd", self.cwd[who])
-        r = self.sw(who, "hook", ev, stdin=json.dumps(payload))
+    def hook(self, who, ev, hc=None, **payload):
+        payload.setdefault("cwd", self.cwd.get(who, self.repo))
+        r = self.sw(who, "hook", ev, stdin=json.dumps(payload), hc=hc)
         return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else {}
 
     def edit(self, who, path):
@@ -127,6 +127,8 @@ class T(unittest.TestCase):
         self.sw("a", "watchd", "--once")
         self.assertEqual(self.q("select state from task")[0]["state"], "open")
         self.assertEqual(self.q("select * from lock"), [])
+        self.assertIn("was ended", self.sw("a", "read", ok=False).stderr)  # ended: only join returns it
+        self.sw("a", "join")
         self.assertIn("lease", self.sw("a", "read").stdout)
         # dead agent: hc terminal gone releases everything
         self.sw("a", "task", "claim", "1")
@@ -170,6 +172,69 @@ class T(unittest.TestCase):
                 return rows
         p = P(); p.fn = fn
         return p
+
+    # ---- fencing on the bound terminal (sw-ownership §7.2) ----
+    def live_hc(self, *addrs):
+        self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin, exist_ok=True)
+        hc = os.path.join(self.fakebin, "hc")
+        ts = json.dumps({"terminals": [{"address": x, "state": "live"} for x in addrs]})
+        open(hc, "w").write(f"#!/bin/sh\n[ \"$1\" = ls ] && echo '{ts}' || echo '{{}}'\n")
+        os.chmod(hc, 0o755)
+
+    def test_other_terminal_hook_and_wait_dont_rebind(self):
+        self.sw("a", "join", hc="t1")
+        self.q("update agent set status='idle'")
+        out = self.hook("a", "post-tool", hc="t2", tool_name="Bash", tool_input={"command": "ls"})
+        self.assertIn("a is bound to t1; this terminal is t2. `swarm join --takeover`", out["additionalContext"])
+        self.assertEqual(self.hook("a", "prompt", hc="t2"), {})  # said once per terminal
+        self.assertEqual(tuple(self.q("select hc,status from agent")[0]), ("t1", "idle"))  # wrote nothing
+        self.assertEqual(self.sw("a", "wait", "--timeout", "1", hc="t2").returncode, 0)
+        self.assertEqual(self.q("select hc from agent")[0]["hc"], "t1")
+        self.assertIn("bound to t1", self.sw("a", "task", "add", "x", hc="t2", ok=False).stderr)
+        self.sw("a", "task", "add", "x", hc="t1")
+        self.sw("u", "join")  # unbound row (outside Herdr): wait binds it
+        self.sw("u", "wait", "--timeout", "1", hc="t3")
+        self.assertEqual(self.q("select hc from agent where name='u'")[0]["hc"], "t3")
+
+    def test_ended_agent_not_revived(self):
+        self.sw("a", "join", hc="t1")
+        self.sw("a", "leave", hc="t1")
+        self.assertIn("a was ended at", self.hook("a", "prompt", hc="t1")["additionalContext"])
+        self.hook("a", "stop", hc="t1"); self.sw("a", "wait", "--timeout", "1", hc="t1")
+        self.assertEqual(tuple(self.q("select status,ended is not null from agent")[0]), ("ended", 1))
+        self.assertIn("swarm join` to return", self.sw("a", "lock", "a.txt", hc="t1", ok=False).stderr)
+        self.sw("a", "join", hc="t1")
+        self.assertEqual(tuple(self.q("select status,ended from agent")[0]), ("idle", None))
+
+    def test_join_refused_on_live_binding_takeover_moves_and_logs(self):
+        self.live_hc("t1", "t2")
+        self.sw("a", "join", hc="t1")
+        self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
+        err = self.sw("a", "join", hc="t2", ok=False).stderr
+        self.assertIn("a is bound to t1; this terminal is t2. `swarm join --takeover`", err)
+        self.assertEqual(self.q("select hc from agent")[0]["hc"], "t1")
+        # relaunch: the predecessor t1 is still live, the successor takes over from t2
+        self.sw("a", "join", "--takeover", hc="t2")
+        self.assertEqual(self.q("select hc from agent")[0]["hc"], "t2")
+        self.assertEqual(self.q("select data from event where kind='takeover'")[0]["data"], "t1 -> t2")
+        for cmd in (("task", "done", "1", "--evidence", "x"), ("read",), ("lock", "b.txt"), ("post", "@all", "hi")):
+            self.assertIn("a is bound to t2; this terminal is t1", self.sw("a", *cmd, hc="t1", ok=False).stderr, cmd)
+        self.assertIn("bound to t2", self.hook("a", "pre-tool", hc="t1", tool_name="Bash", tool_input={"command": "ls"})["additionalContext"])
+        self.assertEqual(tuple(self.q("select state,owner from task")[0]), ("claimed", "a"))  # the claim moved with the name
+        self.sw("a", "task", "done", "1", "--evidence", "x", hc="t2")
+        # a binding whose terminal hc ls doesn't show live moves without --takeover
+        self.sw("b", "join", hc="t9")
+        self.sw("b", "join", hc="t2")
+        self.assertEqual(self.q("select hc from agent where name='b'")[0]["hc"], "t2")
+
+    def test_reap_spares_row_rebound_after_hc_ls(self):
+        self.sw("a", "join", hc="t1")
+        self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
+        m = self.mod()
+        rebind = lambda: self.q("update agent set hc='t2' where name='a'")  # a takeover after reap's hc ls
+        self.assertEqual(m.reap(self.racing(m.connect(), "from agent where ended is null", rebind), live_addrs={"t2"}), [])
+        self.assertEqual(tuple(self.q("select hc,ended from agent")[0]), ("t2", None))
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
 
     def test_second_lock_on_held_path_refused(self):
         self.agent("a"); self.agent("b")
@@ -734,7 +799,7 @@ class T(unittest.TestCase):
         m.hc_terminals = lambda: [{"address": "h1", "state": "live", **st}]
         c = m.connect()
         self.agent("a", hc="h1", status="working"); self.agent("t-comms")
-        self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "add", "t1", hc="h1"); self.sw("a", "task", "claim", "1", hc="h1")
         cwd = os.getcwd(); os.chdir(self.repo)
         try:
             m.watchd_tick(c, "t-comms", None, {})
@@ -895,17 +960,20 @@ class T(unittest.TestCase):
         self.assertRegex(who, r"comms idle .*idle=1m cache=warm(?! COLD)")
         self.assertRegex(who, r"nohc idle .*cache=cold COLD-GUARDED")
 
-    def test_wait_rebinds_dead_hc(self):
+    def test_wait_fenced_join_rebinds_dead_hc(self):
         self.agent("a")
         t = int(time.time())
         self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin)
         hc = os.path.join(self.fakebin, "hc")
-        open(hc, "w").write(f"#!/bin/sh\n[ \"$2\" = new ] && echo '{{\"status_ms\": {(t - 60) * 1000}}}' || echo '{{}}'\n")
+        open(hc, "w").write(f"#!/bin/sh\n[ \"$1\" = ls ] && echo '{{\"terminals\": []}}' && exit; [ \"$2\" = new ] && echo '{{\"status_ms\": {(t - 60) * 1000}}}' || echo '{{}}'\n")
         os.chmod(hc, 0o755)
         self.agent("comms", hc="dead", status="idle", ctx_tokens=140_000, last_active=t - 4 * 3600, compacted_at=0)
         self.sw("a", "post", "comms", "later")
         w = self.sw("comms", "wait", "--timeout", "2", "--poll", "0.2", ok=False)
         self.assertEqual(w.returncode, 0)  # dead address: cold, held
+        self.assertEqual(self.sw("comms", "wait", "--timeout", "1", hc="new").returncode, 0)  # fenced: no rebind
+        self.assertEqual(self.q("select hc from agent where name='comms'")[0]["hc"], "dead")
+        self.sw("comms", "join", hc="new")  # hc ls doesn't show dead live: join moves it without --takeover
         w = self.sw("comms", "wait", "--timeout", "3", "--poll", "0.2", ok=False, hc="new")
         self.assertEqual(w.returncode, 2)
         self.assertIn("later", w.stderr)
@@ -932,7 +1000,7 @@ class T(unittest.TestCase):
     def test_prompt_hook_delivers_and_stops_waiter(self):
         self.agent("a"); self.agent("b")
         w = subprocess.Popen([sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"],
-                             env={**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"},
+                             env={**{k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}, "SWARM_DB": self.db, "SWARM_NAME": "b"},
                              stderr=subprocess.PIPE, text=True)
         time.sleep(1)
         out = self.hook("b", "prompt", prompt="hi")  # turn without a tool call: status -> working

@@ -164,13 +164,59 @@ def dur(s):
     return int(m[1]) * {"s": 1, "m": 60, "h": 3600, "": 1}[m[2]]
 
 
-def ensure_agent(c, name, cwd=None, **kw):
-    c.execute("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
-              (name, cwd, "idle", now(), now()))
-    c.execute("update agent set ended=null where name=?", (name,))
+def fence(c, name):
+    """Why this terminal may not write as name (sw-ownership §4.2, §4.4), or None: the bound terminal is the token."""
+    r = c.execute("select hc, ended from agent where name=?", (name,)).fetchone()
+    if not r:
+        return None
+    if r["ended"] is not None:
+        why = c.execute("select data from event where agent=? and kind in ('reap','leave','end') order by id desc limit 1", (name,)).fetchone()
+        return f"{name} was ended at {hhmm(r['ended'])}{f' ({why[0]})' if why and why[0] else ''}; `swarm join` to return."
+    here = os.environ.get("HC_TERMINAL_ID")
+    if r["hc"] and r["hc"] != here:
+        return (f"{name} is bound to {r['hc']}; this terminal is {here or 'outside Herdr'}. "
+                f"`swarm join --takeover` moves it here.")
+    return None
+
+
+def touch(c, name, cwd=None, bind=False, **kw):
+    """Write name's own fields, fenced: nothing for an ended row or another terminal's (returns why).
+    A new row is bound here; bind=True (wait) also binds an unbound one. Only join moves a binding."""
+    why = fence(c, name)
+    if why:
+        return why
+    here = os.environ.get("HC_TERMINAL_ID")
+    c.execute("insert or ignore into agent(name,cwd,status,last_active,started,hc) values(?,?,?,?,?,?)",
+              (name, cwd, "idle", now(), now(), here))
+    if bind and here:
+        c.execute("update agent set hc=? where name=? and hc is null", (here, name))
+    mine = " where name=? and ended is null and (hc is null or hc is ?)"  # the fence re-checked in the write
     for k, v in kw.items():
         if v is not None:
-            c.execute(f"update agent set {k}=? where name=?", (v, name))
+            c.execute(f"update agent set {k}=?" + mine, (v, name, here))
+    return None
+
+
+def bind(c, name, cwd, hc, model=None, takeover=False):
+    """Bind name to terminal hc (join, spawn): a new, ended or unbound row, or one whose terminal isn't live.
+    A live binding elsewhere moves only with takeover, logged old -> new."""
+    r = c.execute("select hc, ended from agent where name=?", (name,)).fetchone()
+    old = r["hc"] if r and r["ended"] is None else None
+    if old and old != hc and not takeover:
+        terms = hc_terminals()  # outside any transaction; None (no hc) can't show it dead, so it counts as live
+        if terms is None or old in {x["address"] for x in terms if x.get("state") == "live"}:
+            die(f"{name} is bound to {old}; this terminal is {hc or 'outside Herdr'}. "
+                f"`swarm join --takeover` moves it here.")
+    with tx(c):
+        r2 = c.execute("select hc, ended from agent where name=?", (name,)).fetchone()
+        if (r and tuple(r)) != (r2 and tuple(r2)):
+            die(f"{name}'s binding changed under you; run it again")
+        c.execute("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
+                  (name, cwd, "idle", now(), now()))
+        c.execute("update agent set hc=?, ended=null, model=coalesce(?,model), "
+                  "status=case when ended is null then status else 'idle' end where name=?", (hc, model, name))
+        if old and old != hc:
+            log(c, name, "takeover", None, f"{old} -> {hc or 'outside Herdr'}")
 
 
 def live_agents(c):
@@ -414,7 +460,8 @@ def post_compact(path):
 
 def set_status(c, name, status, **kw):
     old = c.execute("select status from agent where name=?", (name,)).fetchone()
-    ensure_agent(c, name, last_active=now(), status=status, **kw)
+    if touch(c, name, last_active=now(), status=status, **kw):
+        return
     if not old or old[0] != status:
         log(c, name, "status", None, status)
 
@@ -430,7 +477,15 @@ def hook(ev):
     c = connect()
     cwd = p.get("cwd") or os.getcwd()
     tool, ti = p.get("tool_name"), p.get("tool_input") or {}
-    ensure_agent(c, name, cwd, hc=os.environ.get("HC_TERMINAL_ID"))
+    why = fence(c, name)
+    if why:  # a predecessor's last turn or an ended agent: write nothing, say so once per terminal, never deny
+        here = os.environ.get("HC_TERMINAL_ID") or "-"
+        out = {"pre-tool": "PreToolUse", "post-tool": "PostToolUse", "prompt": "UserPromptSubmit", "session": "SessionStart"}.get(ev)
+        if out and not c.execute("select 1 from event where kind='fenced' and agent=? and path=? and data=?", (name, here, why)).fetchone():
+            log(c, name, "fenced", here, why)
+            emit(out, ctx=why)
+        return
+    touch(c, name, cwd)
 
     if ev == "pre-tool":
         t = now()
@@ -490,9 +545,9 @@ def hook(ev):
         set_status(c, name, "idle", ctx_tokens=k)
 
     elif ev == "session":
-        ensure_agent(c, name, claude_pid=claude_pid())
+        touch(c, name, claude_pid=claude_pid())
         if p.get("source") == "compact":
-            ensure_agent(c, name, compacted_at=now(), ctx_tokens=post_compact(p.get("transcript_path")))
+            touch(c, name, compacted_at=now(), ctx_tokens=post_compact(p.get("transcript_path")))
             log(c, name, "compact")
         else:
             set_status(c, name, "idle")
@@ -1112,7 +1167,7 @@ def ci_check(c, repo, comms=None):
 # ---------- commands ----------
 
 def cmd_join(c, a):
-    ensure_agent(c, a.name or me(), os.getcwd(), hc=os.environ.get("HC_TERMINAL_ID"), model=a.model)
+    bind(c, a.name or me(), os.getcwd(), os.environ.get("HC_TERMINAL_ID"), a.model, a.takeover)
     log(c, a.name or me(), "join")
 
 
@@ -1160,7 +1215,8 @@ def cmd_read(c, a):
 
 def cmd_wait(c, a):
     n = me()
-    ensure_agent(c, n, status="idle", hc=os.environ.get("HC_TERMINAL_ID"))  # the Stop hook set last_active; the cold rule needs it untouched
+    if touch(c, n, bind=True, status="idle"):  # the Stop hook set last_active; the cold rule needs it untouched
+        return  # fenced: another terminal holds the name, or it ended; nothing to wake
     pid = os.getpid()  # every Stop starts a waiter and none is killed: the newest owns the inbox
     c.execute("update agent set waiter=? where name=?", (pid, n))
     deadline = now() + a.timeout
@@ -1195,7 +1251,7 @@ def cmd_task(c, a):
         dep = c.execute("select * from task where id=? and state!='done'", (r["after"],)).fetchone() if r["after"] else None
         if dep:
             die(f"#{a.id} waits on #{dep['id']} ({dep['state']}" + (f", claimed by {dep['owner']}" if dep["owner"] else "") + ")")
-        ensure_agent(c, n)
+        touch(c, n)
         k = c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0
         if k >= CTX_WARN:
             die(f"context ~{k // 1000}k, too high to take new work: {ctx_advice(k)}")
@@ -1314,7 +1370,7 @@ def cmd_who(c, a):
 def cmd_lock(c, a):
     n = me()
     with tx(c):  # scan and write in one transaction: a concurrent lock waits, then sees this one
-        ensure_agent(c, n)
+        touch(c, n)
         for o in c.execute("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
                            "and g.ended is null", (n, now())):
             if covers(a.path, o["path"]) or covers(o["path"], a.path):  # approximate for two globs; errs toward allowing
@@ -1888,8 +1944,8 @@ def reserve(c, name, tid, model):
             die(f"#{tid} waits on #{r['after']}")
         if r["state"] != "open":
             raise LostRace(f"task #{tid} is {r['state']}" + (f", owned by {r['owner']}" if r["owner"] else ""))
-        ensure_agent(c, name, os.getcwd(), model=model)
-        c.execute("update agent set hc=null, ended=null where name=?", (name,))
+        c.execute("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)", (name, os.getcwd(), "idle", t, t))
+        c.execute("update agent set hc=null, ended=null, status='idle', model=coalesce(?,model) where name=?", (model, name))
         c.execute("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=?",
                   (name, t + LEASE, t, tid))
         log(c, name, "claim", None, f"#{tid} {r['title']}")
@@ -1941,8 +1997,8 @@ def cmd_spawn(c, a):
         die("launch.sh failed")
     if tid:
         c.execute("update agent set hc=? where name=? and hc is null", (out.strip().splitlines()[-1], name))
-    else:
-        ensure_agent(c, name, os.getcwd(), hc=out.strip().splitlines()[-1], model=a.model)
+    else:  # shortcut: without --task nothing reserved the name, so a live one is overwritten; reserve here too if it bites
+        bind(c, name, os.getcwd(), out.strip().splitlines()[-1], a.model, takeover=True)
     log(c, me() if os.environ.get("SWARM_NAME") else "human", "spawn", None, name)
     print(f"spawned {name} at {out.strip()}")
 
@@ -1972,6 +2028,7 @@ def main(argv=None):
     p = add("join", cmd_join)
     p.add_argument("name", nargs="?")
     p.add_argument("--model")
+    p.add_argument("--takeover", action="store_true", help="move a live binding of this name to this terminal")
     p = add("leave", cmd_leave)
     p.add_argument("name", nargs="?")
     p = add("post", cmd_post)
@@ -2056,6 +2113,10 @@ def main(argv=None):
     if a.cmd == "spawn" and a.task[:1] == ["--"]:
         a.task = a.task[1:]
     c = connect()
+    if os.environ.get("SWARM_NAME") and a.cmd in ("post", "read", "task", "lock", "unlock", "leave") and getattr(a, "act", None) != "show":
+        why = fence(c, os.environ["SWARM_NAME"])
+        if why:
+            die(why)
     if a.cmd in ("read", "wait", "board", "who"):
         comms_nudge(c)
     return a.f(c, a)
