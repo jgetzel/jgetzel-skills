@@ -54,6 +54,23 @@ class T(unittest.TestCase):
             self.q(f"update agent set {k}=? where name=?", v, name)
 
     # ---- tasks ----
+    def test_task_timing_columns(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "block", "1", "why")
+        self.sw("a", "task", "unblock", "1")
+        self.assertIn("claims 1, releases 0, held by a", self.sw("a", "task", "show", "1").stdout)
+        self.sw("a", "task", "done", "1", "--evidence", "e")
+        r = self.q("select created_at, first_claimed_at, done_at from task")[0]
+        self.assertTrue(r["created_at"] <= r["first_claimed_at"] <= r["done_at"])
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertEqual((t["claims"], t["holders"], t["blocked_s"] >= 0), (1, ["a"], True))
+        # an older db: columns null, numbers come from the events
+        self.q("update task set created_at=null, first_claimed_at=null, done_at=null")
+        self.q("update event set ts=ts-100 where kind='task-add'")
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertGreaterEqual(t["queue_wait_s"], 100)
+
     def test_task_show_and_claim_print_body(self):
         self.sw("a", "task", "add", "t1", "--body", "build X and Y")
         self.sw("a", "task", "add", "t2")
@@ -449,6 +466,24 @@ class T(unittest.TestCase):
         self.q("update agent set ctx_tokens=120000")
         self.sw("a", "task", "claim", "2")
         self.assertIn("go idle", self.sw("a", "task", "done", "2", "--evidence", "e").stdout)
+
+    def test_pr_ci_merge_to_green(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod5", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod5", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        c = m.connect()
+        self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
+        self.sw("a", "task", "done", "1", "--evidence", "PR #7 merged")
+        out = {"pr": [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}],
+               "run": [{"headSha": "red", "conclusion": "failure", "status": "completed", "createdAt": "2026-11-08T10:00:05Z", "updatedAt": "2026-11-08T10:02:00Z"},
+                       {"headSha": "fix", "conclusion": "success", "status": "completed", "createdAt": "2026-11-08T10:05:00Z", "updatedAt": "2026-11-08T10:08:00Z"}]}
+        m.run = lambda cmd, cwd=None, **k: json.dumps(out[cmd[1]])
+        m.pr_ci(c, self.repo)
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertEqual((t["pr"], t["ci_conclusion"], t["merge_to_green_s"]), (7, "failure", 480))
+        self.assertIn("PR #7 merged", self.sw("a", "task", "show", "1").stdout)
 
     def test_block_unblock(self):
         import importlib.machinery, importlib.util
