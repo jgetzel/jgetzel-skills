@@ -25,6 +25,8 @@ with subagents.
 
 ## 1. Start
 
+0. Set the rules every spawn's first message carries, auto-spawns included:
+   `swarm rules set "<what CLAUDE.md and orchestration.md ask of agents, e.g. never edit the main checkout>"`.
 1. Write the goal as tasks, each independently doable with a definition of
    done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
@@ -34,6 +36,8 @@ with subagents.
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
+   It never auto-spawns for a task on first sight: a task must stay startable
+   a full `--interval` so an explicit spawn that claims it first wins.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (and removes their worktree and branch), spawns fresh agents for startable
    tasks when none is free (at most `--max-agents`, default the live count now;

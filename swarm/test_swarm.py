@@ -1,3 +1,4 @@
+import argparse
 import sys; sys.dont_write_bytecode = True
 import json, os, sqlite3, subprocess, sys, tempfile, time, unittest
 
@@ -432,6 +433,42 @@ class T(unittest.TestCase):
             self.assertEqual(len(spawned), 1)  # the task is claimed: no second spawn
         finally:
             os.chdir(cwd)
+
+    def test_auto_spawn_waits_one_interval(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        spawned = []
+        m.cmd_spawn = lambda c, a: spawned.append(a.name)
+        m.hc_terminals = lambda: None
+        c = m.connect()
+        self.agent("t-comms", status="working")
+        self.sw("a", "task", "add", "do it")
+        cwd = os.getcwd(); os.chdir(self.repo)
+        try:
+            opts = {"max_agents": 1, "min_free_gib": 0}
+            m.watchd_tick(c, "t-comms", None, opts)
+            self.assertEqual(spawned, [])  # first sight of the task: no spawn
+            self.sw("t-1", "join"); self.sw("t-1", "task", "claim", "1")  # an explicit spawn takes it
+            m.watchd_tick(c, "t-comms", None, opts)
+            self.assertEqual(spawned, [])
+        finally:
+            os.chdir(cwd)
+
+    def test_rules_appended_to_spawn(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod7", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod7", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        seen = []
+        m.run = lambda cmd, **kw: seen.append(cmd[3]) or "hc1"
+        c = m.connect()
+        self.assertEqual(self.sw("a", "rules", "set", "never", "edit", "main").stdout.strip(), "never edit main")
+        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task=["go"]))
+        self.assertIn("never edit main", seen[0])
 
     # ---- cold-cache rule ----
     def sendmsg(self, to, text="hi"):

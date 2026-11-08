@@ -22,6 +22,7 @@ create table if not exists task(id integer primary key autoincrement, title text
 create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
 create table if not exists pairkey(a text, b text, key text, primary key(a,b));
+create table if not exists meta(k text primary key, v text);
 create table if not exists event(id integer primary key autoincrement, ts int, agent text, kind text,
   path text, data text);
 """
@@ -685,6 +686,12 @@ def lifecycle(c, t, comms, terms, opts):
     nums = [int(m[1]) for (nm,) in c.execute("select name from agent") if (m := re.fullmatch(re.escape(prefix) + r"(\d+)", nm))]
     models = [a["model"] for a in members if a["model"]]
     for task in tasks:
+        # startable for a full interval first, so an explicit spawn that claims it wins
+        seen = c.execute("select ts from event where kind='startable' and path=?", (str(task["id"]),)).fetchone()
+        if not seen:
+            log(c, None, "startable", str(task["id"]))
+        if not seen or t - seen[0] < opts.get("interval", 0):
+            continue
         if len(members) >= opts["max_agents"] or mem_available_gib() < opts.get("min_free_gib", 4):
             break
         name = f"{prefix}{max(nums, default=0) + 1}"
@@ -1158,7 +1165,7 @@ def cmd_watchd(c, a):
     comms = a.comms or os.environ.get("SWARM_COMMS")
     # default cap: the roster the human launched, so watchd refills it but doesn't grow it
     cap = a.max_agents if a.max_agents is not None else sum(1 for x in live_agents(c) if x["name"] != comms)
-    opts = {"max_agents": cap, "min_free_gib": a.min_free_mem, "model": a.model}
+    opts = {"max_agents": cap, "min_free_gib": a.min_free_mem, "model": a.model, "interval": a.interval}
     while True:
         watchd_tick(c, comms, repo, opts)
         if a.once:
@@ -1188,6 +1195,9 @@ def cmd_spawn(c, a):
     brief = (open(os.path.join(HERE, "brief.md")).read()
              + f"\n\n---\nYour name: {name}. Roster: {', '.join(roster) or 'nobody yet'}.\n"
              f"Your area and first task:\n{task}\n")
+    rules = c.execute("select v from meta where k='rules'").fetchone()
+    if rules:
+        brief += f"\nRules for this repo, from the communicator:\n{rules[0]}\n"
     launch = os.path.join(HERE, "..", "relaunch", "launch.sh")
     out = run([launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf])
     if out is None:
@@ -1195,6 +1205,14 @@ def cmd_spawn(c, a):
     ensure_agent(c, name, os.getcwd(), hc=out.strip().splitlines()[-1], model=a.model)
     log(c, me() if os.environ.get("SWARM_NAME") else "human", "spawn", None, name)
     print(f"spawned {name} at {out.strip()}")
+
+
+def cmd_rules(c, a):
+    """Repo rules every spawn's first message carries (set by the communicator)."""
+    if a.act == "set":
+        c.execute("insert or replace into meta(k,v) values('rules',?)", (" ".join(a.text),))
+    r = c.execute("select v from meta where k='rules'").fetchone()
+    print(r[0] if r else "(none)")
 
 
 def main(argv=None):
@@ -1248,6 +1266,10 @@ def main(argv=None):
     q.add_argument("id", type=int)
     q = ts.add_parser("drop")
     q.add_argument("id", type=int)
+    p = add("rules", cmd_rules)
+    q = p.add_subparsers(dest="act", required=True)
+    q.add_parser("show")
+    q.add_parser("set").add_argument("text", nargs="+")
     p = add("board", cmd_board)
     p.add_argument("--all", action="store_true")
     add("who", cmd_who)
