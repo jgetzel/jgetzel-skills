@@ -304,6 +304,10 @@ def hook(ev):
                     log(c, name, "deny-cold", tgt["name"], why[:120])
                     return emit("PreToolUse", deny=f"{why} Use `swarm post {tgt['name']} …`: it reads the message "
                                 f"when it next wakes. If it truly can't wait, resend starting with `[urgent]`.")
+        elif tool == "Bash":
+            cmd = ti.get("command", "")
+            if HEAVY_RE.search(cmd) and not NOT_HEAVY.match(cmd):  # information at decision time, no gate
+                emit("PreToolUse", ctx=machine_state() + ". Other builds running above? Weigh before you start.")
         elif tool in EDIT_TOOLS:
             r = repo_rel(ti.get("file_path") or ti.get("notebook_path") or "", cwd)
             if not r:
@@ -903,23 +907,34 @@ def cmd_unlock(c, a):
     print(f"unlocked {a.path}")
 
 
-def cmd_heavy(c, a):
-    n = int(os.environ.get("SWARM_SLOTS") or max(1, (os.cpu_count() or 4) // 4))
-    d = os.path.join(os.path.dirname(dbpath()), "slots")
-    os.makedirs(d, exist_ok=True)
-    cmd = [x for x in a.cmd if x != "--"] if a.cmd[:1] == ["--"] else a.cmd
-    if not cmd:
-        die("usage: swarm heavy -- <cmd>")
-    fds = [open(os.path.join(d, f"slot{i}"), "w") for i in range(n)]
-    while True:
-        for f in fds:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                continue
-            return_code = subprocess.run(cmd).returncode  # the slot is held until this process exits
-            sys.exit(return_code)
-        time.sleep(1)
+HEAVY_RE = re.compile(r"\b(cabal|stack|ghc|make|cmake|ninja|gradle|mvn|pytest|tox|tsc|spago|purs|playwright"
+                      r"|nix\s+(build|flake\s+check)|docker\s+build"
+                      r"|(cargo|go|npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|check|clippy|bench|install))\b")
+NOT_HEAVY = re.compile(r"\s*(git|gh|swarm|echo|grep|rg|cat|ls|sed|head|tail)\b")  # shortcut: first-word skip so `git commit -m make` isn't flagged
+
+
+def machine_state():
+    """One line of machine state for an agent deciding whether to start a build now."""
+    mi = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
+    psi = []
+    for r in ("cpu", "memory"):
+        try:
+            psi.append(f"{r[:3]} psi10={re.search(r'some avg10=([\d.]+)', open(f'/proc/pressure/{r}').read()).group(1)}%")
+        except (OSError, AttributeError):
+            pass
+    ps = subprocess.run(["ps", "-eo", "rss=,comm="], capture_output=True, text=True).stdout.split("\n")
+    rss = {}
+    for l in ps:
+        k = l.split(None, 1)
+        if len(k) == 2:
+            rss[k[1].strip()] = rss.get(k[1].strip(), 0) + int(k[0])
+    top = ", ".join(f"{n} {v / 1048576:.1f}G" for n, v in sorted(rss.items(), key=lambda x: -x[1])[:4])
+    return (f"machine: {mi['MemAvailable'] / 1048576:.1f}/{mi['MemTotal'] / 1048576:.1f}G mem available, "
+            f"load {os.getloadavg()[0]:.1f}/{os.cpu_count()} cpus, {', '.join(psi)}; biggest by RSS: {top}")
+
+
+def cmd_machine(c, a):
+    print(machine_state())
 
 
 COL = ["31", "32", "33", "34", "35", "36"]
@@ -1043,8 +1058,7 @@ def main(argv=None):
     p.add_argument("--lease", default="2h")
     p = add("unlock", cmd_unlock)
     p.add_argument("path")
-    p = add("heavy", cmd_heavy)
-    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    add("machine", cmd_machine)
     p = add("watch", cmd_watch)
     p.add_argument("--tail", type=int, default=20)
     p.add_argument("--once", action="store_true")

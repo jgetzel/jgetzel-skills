@@ -474,5 +474,14 @@ class T(unittest.TestCase):
         self.assertIn("a idle", self.sw("a", "who").stdout)
 
 
+    def test_machine_info(self):
+        self.assertIn("mem available", self.sw("a", "machine").stdout)
+        o = self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": "nix develop -c env X=1 cabal build"})
+        self.assertIn("machine:", o["additionalContext"])
+        self.assertNotIn("permissionDecision", o)
+        for c in ("ls", "git commit -m 'make it'", "nix run .#dev"):
+            self.assertEqual(self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": c}), {}, c)
+
+
 if __name__ == "__main__":
     unittest.main()
