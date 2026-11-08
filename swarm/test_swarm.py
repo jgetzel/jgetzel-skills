@@ -190,6 +190,18 @@ class T(unittest.TestCase):
         self.edit("a", "b.txt")
         self.assertEqual(len(self.notices("a")), 1)
 
+    def test_real_hunk_probe_asserts(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod2", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod2", ld))
+        ld.exec_module(m)
+        rh = m.real_hunk
+        self.assertFalse(rh("module L (a, b) where\n", "module L (a, b, c) where\n", "module L (a, b, d) where\n"))
+        self.assertFalse(rh("f a b\n", "f a x b\n", "g a b\n"))
+        self.assertTrue(rh("x = f a\n", "x = g a\n", "x = h a\n"))
+        self.assertFalse(rh("f a b c\n", "f a b c d\n", "f z\n"))  # insertion at the edge of a replaced span merges
+        self.assertTrue(rh("f a b c\n", "f a x b c\n", "f z\n"))  # insertion inside a replaced span does not
+
     def test_branch_fallback_for_wt(self):
         self.agent("w2"); self.q("update agent set wt=null")
         subprocess.run([*G, "branch", "-m", "w2", "w2/x"], cwd=self.wt, check=True)

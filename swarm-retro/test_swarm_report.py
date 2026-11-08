@@ -14,6 +14,17 @@ insert into event(ts,agent,kind,data) values(100,'a','claim','#1 t'),(190,'a','d
     r = sr.report(c, git=False)
     self.assertEqual(r["tasks"][0]["took"], "1m30s"); self.assertEqual(r["friction"][0]["kind"], "reap"); self.assertEqual(len(r["idle_with_open_tasks"]), 1)
 
+  def test_conflict_events(self):
+    c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
+    c.executescript("""create table agent(name,model,cwd,started,ended,ctx_tokens,status);
+create table task(id,title,state,owner,evidence);
+create table event(id integer primary key,ts,agent,kind,path,data);
+create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
+insert into event(ts,agent,kind,path,data) values(1,'a','conflict','L.hs','b'),(2,'a','conflict-compat',null,'b'),(3,'b','shared-tree','/r','a');""")
+    r = sr.report(c, git=False)
+    self.assertEqual([e["kind"] for e in r["conflicts"]], ["conflict", "conflict-compat", "shared-tree"])
+    self.assertEqual([e["kind"] for e in r["friction"]], ["conflict", "shared-tree"])  # compat is not friction
+
   def test_transcript_name_is_exact(self):
     import tempfile
     h = tempfile.mkdtemp(); os.environ["HOME"] = h
