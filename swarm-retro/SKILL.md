@@ -21,7 +21,7 @@ session n = 1 and every finding is one trial.
 ## Scope
 
 - **User-level**: `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, skills in
-  `~/.claude/skills` (including the swarm tooling). Reaches every repo.
+  `~/.claude/skills` (incl. swarm tooling). Reaches every repo.
 - **Project-level**: the repo's CLAUDE.md / AGENTS.md, `.claude/` (rules,
   skills, hooks, `orchestration.md`), auto-memory, swarm and lane briefs.
   Reaches that repo only.
@@ -49,8 +49,7 @@ root:
   waiting time, CI per job. Add `--project-dir` for agents that worked in
   another repo's project dir.
 - `~/.claude/skills/harness-retro/harness-lint.py`: always-on bytes, and
-  broken skills, hooks and settings. Lint errors are stale facts; fix them
-  free.
+  broken skills, hooks and settings. Lint errors are stale facts: fix them free.
 
 From the report, list the **coordination signals**, each with the event it
 rests on:
@@ -60,7 +59,9 @@ rests on:
   real token-level clash between two agents' uncommitted work, notified),
   `shared-tree` (two agents in one worktree), and `conflict-compat` (a line
   conflict that merges at token level: no notice was sent, so not friction;
-  many of them means a registry file wants one entry per line);
+  many of them means a registry file wants one entry per line). Old dbs have
+  `overlap` events, which were notice noise unless the file was really
+  changed by 2+ agents;
 - stale claims: `reap` events, and long-held claims with no commit from the owner;
 - tasks done without evidence, `deny-lock` and `deny-cold` events, `digest`
   events (agents idle while tasks were open), directed messages that got no
@@ -98,13 +99,12 @@ dir) only if it was compacted.
 ## 3. Cluster and count
 
 1. **Cluster** digests that describe one mechanism; split a label that covers
-   two. Reuse a ledger entry's name when the mechanism matches it.
+   two. Reuse a ledger entry's name on a match.
 2. **Count k/n**: of the n agents that reached this kind of step, k hit the
    failure. n comes from the digests, not the report. Count only agents that
    met it independently. An agent that copied
    a peer's approach from a message is not a new trial; check message times.
-   1 of n is noise unless the failure was costly (data loss, a destructive
-   action, hours lost).
+   1 of n is noise unless costly (data loss, a destructive action, hours lost).
 3. **Rule out variance.** If a retry, a successor or a peer did the same step
    right under the unchanged harness, the harness may be fine: log it and
    don't edit, unless k/n says otherwise.
@@ -121,16 +121,15 @@ No cluster survives → step 7, then stop.
 ## 4. Read the harness and the ledgers
 
 Read what the clusters touch: always-loaded context (every CLAUDE.md and
-AGENTS.md in scope, `.claude/rules/`, `MEMORY.md`), the swarm brief and lane
-briefs (their standing rules are always-on for those agents), the text swarm's
+AGENTS.md in scope, `.claude/rules/`, `MEMORY.md`), the swarm and lane briefs
+(their standing rules are always-on for those agents), the text swarm's
 hooks inject (report: by source), and the skills, hooks, scripts and settings
 involved. Count a brief line at its bytes × agents, plus its re-send on every
 cold-cache wake.
 
-The ledgers are shared with `harness-retro`: project changes in
+The ledgers (shared with `harness-retro`): project changes in
 `<repo root>/.claude/harness-ledger.md`, user-level ones in
-`~/.claude/harness-ledger.md`. Neither is auto-loaded. Score every open entry
-against this run: did its `cue` arise? If so, was the failure prevented (`hit`)
+`~/.claude/harness-ledger.md`. Score every open entry against this run: did its `cue` arise? If so, was the failure prevented (`hit`)
 or did it recur (`miss`)? If not, `not-arisen`. Append `<date> <result>` to the
 entry. Where an entry has `predicts:`, check the prediction against this run's
 report.
@@ -190,7 +189,7 @@ Reject a candidate if any hold:
 4. **Will rot** — counts, line numbers, inventories. Rewrite as a statement or
    a command that computes it.
 5. **Noise** — new always-loaded text backed by 1 of n agents and no ledger
-   recurrence: log it `seen 1×`. Same exception as step 3 for costly failures.
+   recurrence: log it `seen 1×`. Same exception for costly failures.
 6. **Unbounded** — more checking, retrying or confirming with no exit.
 7. **Already covered** — existing text says it: fix its wording or placement
    instead of adding.
@@ -217,8 +216,8 @@ user first.
 
 ## 7. Prune one piece
 
-Pick the always-loaded section, memory file, or brief's standing rules that the
-ledgers show was least recently pruned. Verify each claim against the repo (run
+Pick the always-loaded section, memory file or brief's standing rules least
+recently pruned per the ledgers. Verify each claim against the repo (run
 the commands). Delete what is stale, wrong or derivable, and what was
 **exercised** (its cue arose) in five or more retros without a `hit`. A piece
 whose cue never arose stays; note it. Move a mechanical rule into a hook, and a
@@ -228,12 +227,12 @@ only when it changes.
 
 ## 8. Present, then apply
 
-Show the user: the coordination signals, each cluster (k/n, fault side), each
+Show the coordination signals, each cluster (k/n, fault side), each
 candidate with its declarations, gate and test verdict, the diffs, and
 always-loaded bytes (files, brief × agents, hook-injected) before → after. Apply only what they approve. Approval of
 a change in a repo that lands by PR (Scope) covers its branch and PR; anywhere
 else, commit or push only when asked.
-Re-run `harness-lint.py`.
+Re-run `harness-lint.py`: it must pass.
 
 Then append to the ledger of the change's scope, one line per candidate,
 approved or not:
