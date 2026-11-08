@@ -16,12 +16,12 @@ Several agents doing the same kind of step under the same harness are
 **repeated trials** at no extra cost; their spread is the run's noise. With one
 session n = 1 and every finding is one trial.
 
-"No change" is a normal, good outcome. Don't manufacture a lesson.
+"No change" is a normal, good outcome. No lesson to manufacture.
 
 ## Scope
 
 - **User-level**: `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, skills in
-  `~/.claude/skills` (incl. swarm tooling). Reaches every repo.
+  `~/.claude/skills` (incl. swarm tooling). Reaches all repos.
 - **Project-level**: the repo's CLAUDE.md / AGENTS.md, `.claude/` (rules,
   skills, hooks, `orchestration.md`), auto-memory, swarm and lane briefs.
   Reaches that repo only.
