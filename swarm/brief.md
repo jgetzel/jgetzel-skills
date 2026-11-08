@@ -32,8 +32,9 @@ your name is in `$SWARM_NAME`.
   an approval.
 - **Spawning.** `swarm spawn <name> --model <m> -- <task>` for a peer;
   Agent-tool subagents freely.
-- **Context.** At high context hand off with the `relaunch` skill, same
-  model, and post the successor's name.
+- **Context.** From 350k tokens a hook note says finish and go idle; `task claim`
+  refuses. From 550k hand off now with the `relaunch` skill, same model, and post
+  the successor's name (or `task release` if barely started).
 - **Ending.** After `task done`, do what it prints (take the next task, or go
   idle). Don't close your tab, end yourself or remove your worktree: watchd
   ends you once you are idle, own no claim or lock and your work is on main.

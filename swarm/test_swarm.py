@@ -125,19 +125,27 @@ class T(unittest.TestCase):
         self.assertIn("look at X", out["additionalContext"])
         self.assertEqual(self.hook("b", "post-tool", tool_name="Read", tool_input={}), {})
 
-    def test_handoff_nudge_once_until_compaction(self):
+    def test_ctx_note_steps_marker_and_claim_refusal(self):
         self.agent("b")
         tr = os.path.join(self.cwd["b"], "t.jsonl")
         def usage(n):
             open(tr, "w").write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": n}}}) + "\n")
-        post = lambda: self.hook("b", "post-tool", tool_name="Read", tool_input={}, transcript_path=tr)
-        usage(100_000)
+        sid = f"t{os.getpid()}{time.time()}"
+        mark = os.path.join(tempfile.gettempdir(), f"claude-ctx-{sid}")
+        post = lambda: self.hook("b", "post-tool", tool_name="Read", tool_input={}, transcript_path=tr, session_id=sid)
+        self.addCleanup(lambda: os.path.exists(mark) and os.remove(mark))
+        usage(300_000)
         self.assertEqual(post(), {})
-        usage(160_000)
-        self.assertIn("relaunch", post()["additionalContext"])
+        usage(360_000)
+        self.assertIn("go idle", post()["additionalContext"])
+        self.assertEqual(post(), {})  # same step
+        self.sw("b", "task", "add", "t1")
+        self.assertNotEqual(self.sw("b", "task", "claim", "1", ok=False).returncode, 0)
+        usage(560_000)
+        self.assertIn("hand off now", post()["additionalContext"])
+        open(mark, "w").write("9")  # the repo hook already fired for this step
+        usage(1_000_000 - 1)
         self.assertEqual(post(), {})
-        self.q("update agent set compacted_at=? where name='b'", int(time.time()) + 5)
-        self.assertIn("relaunch", post()["additionalContext"])
 
     def test_burst_capped_rest_stays_unread(self):
         self.agent("a"); self.agent("b")
