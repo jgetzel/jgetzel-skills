@@ -2127,6 +2127,9 @@ def cmd_spawn(c, a):
         brief += f"\nRules for this repo, from the communicator:\n{rules[0]}\n"
     launch = os.path.join(HERE, "..", "relaunch", "launch.sh")
     out = run([launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf])
+    if out is None:  # launch.sh can fail after hc started the agent: keep a live terminal by that name
+        live = [x["address"] for x in hc_terminals() or [] if x.get("name") == name and x.get("state") == "live"]
+        out = live[0] if live else None
     if out is None:
         if tid:
             unreserve(c, name, r)
