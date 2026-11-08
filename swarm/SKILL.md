@@ -43,8 +43,9 @@ with subagents.
    tasks when none is free (at most `--max-agents`, default the live count now;
    raise it only with the user; `--min-free-mem` GiB, default 4), reports live
    agents past their task lease without taking the claim, and tells you when an
-   agent is blocked on a prompt. Run `swarm watch` in a Herdr split for the
-   user (`herdr-app`); it costs no model tokens.
+   agent is blocked on a prompt. The user watches in Herdr's Swarm panel
+   (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only
+   if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:
    `swarm spawn <prefix>-<n> --model <m> -- "<area and first tasks>"`.
    Pick the model by kind of work: Opus for planning and hard diagnosis,
@@ -67,7 +68,7 @@ with subagents.
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
 - **Ending.** `watchd` ends agents; you don't. When all tasks are done, tell
-  the user. `watchd` and the watch split are yours to kill, by PID.
+  the user. `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
 - **Dependencies.** `swarm task add "<title>" --after N [--model M]` keeps a
   task out of the pool (and out of auto-spawn) until #N is done.
 
