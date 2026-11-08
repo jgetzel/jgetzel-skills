@@ -9,8 +9,8 @@ snapshot (§4.1, §4.3) is also the "can this agent end?" signal.
 
 **sr-* (PR repo, the communicator merges):**
 
-- sr-a and sr-b finished at +14 and +16 min and went idle. Their PRs merged at
-  about +17 min. Nothing told them. Their tabs, worktrees and local branches
+- sr-a and sr-b finished at +14 and +16 min and went idle. Their last PRs (#7–#9) merged at
+  +18 to +19 min. Nothing told them. Their tabs, worktrees and local branches
   stayed until sr-comms ran `swarm leave` for both at +23 min and removed the
   rest by hand. `origin/sr-c/locks` is still on the remote after PR #10 merged.
 - sr-b dropped #4 meaning "release", which deleted it. `task release` fixed
