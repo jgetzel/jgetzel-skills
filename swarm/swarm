@@ -6,6 +6,7 @@ import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, signal, sqlite3,
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
 LEASE = 7200
+HC_Q = "a prompt needs the human"
 HERE = os.path.dirname(os.path.realpath(__file__))
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
@@ -17,7 +18,7 @@ create table if not exists msg(id integer primary key autoincrement, ts int, frm
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
 create table if not exists task(id integer primary key autoincrement, title text, body text,
-  state text default 'open', owner text, lease_until int, created_by text, evidence text, after int, model text);
+  state text default 'open', owner text, lease_until int, created_by text, evidence text, after int, model text, question text);
 create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
 create table if not exists pairkey(a text, b text, key text, primary key(a,b));
@@ -65,7 +66,7 @@ def connect():
     c.execute("pragma busy_timeout=10000")
     c.execute("pragma journal_mode=wal")
     c.executescript(SCHEMA)
-    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("agent", "claude_pid int")):  # dbs made before sw-locks
+    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text"), ("task", "question text"), ("agent", "claude_pid int")):  # dbs made before sw-locks
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
     return c
@@ -222,7 +223,7 @@ def lock_holder(c, me_, path, t):
 
 
 def task_of(c, name):
-    r = c.execute("select id,title from task where owner=? and state='claimed' order by id limit 1", (name,)).fetchone()
+    r = c.execute("select id,title from task where owner=? and state in ('claimed','blocked') order by id limit 1", (name,)).fetchone()
     return f"task #{r['id']}: {r['title']}" if r else "no claimed task"
 
 
@@ -362,7 +363,7 @@ def hook(ev):
 # ---------- reaping and watchd ----------
 
 def release(c, name):
-    c.execute("update task set state='open', owner=null, lease_until=null where owner=? and state='claimed'", (name,))
+    c.execute("update task set state='open', owner=null, lease_until=null, question=null where owner=? and state in ('claimed','blocked')", (name,))
     c.execute("delete from lock where agent=?", (name,))
     c.execute("delete from conflict where a=? or b=?", (name, name))
     c.execute("delete from pairkey where a=? or b=?", (name, name))
@@ -663,7 +664,7 @@ def lifecycle(c, t, comms, terms, opts):
         x = by.get(a["hc"]) if a["hc"] and terms is not None else None
         if (n == comms or a["status"] != "idle" or t - (a["last_active"] or 0) < 120
                 or (a["hc"] and terms is not None and (not x or x.get("status") not in ("idle", "done")))
-                or c.execute("select 1 from task where owner=? and state='claimed'", (n,)).fetchone()
+                or c.execute("select 1 from task where owner=? and state in ('claimed','blocked')", (n,)).fetchone()
                 or c.execute("select 1 from lock where agent=?", (n,)).fetchone()
                 or (n in wts and not landed(wts[n], B, main))):
             continue
@@ -710,12 +711,25 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
         by = {x["address"]: x for x in terms}
         for a in live_agents(c):
             x = by.get(a["hc"])
+            if x and x.get("status") != "blocked":  # the prompt is gone: give back the claim hc blocked
+                c.execute("update task set state='claimed', question=null, lease_until=? where owner=? and state='blocked' and question=?",
+                          (t + LEASE, a["name"], HC_Q))
             if x and x.get("status") == "blocked" and a["status"] != "blocked":
                 c.execute("update agent set status='blocked' where name=?", (a["name"],))
                 log(c, a["name"], "blocked")
+                t_ = c.execute("select id from task where owner=? and state='claimed' order by id limit 1", (a["name"],)).fetchone()
+                if t_:  # the agent notice below is the single notice; the task notice is marked sent
+                    c.execute("update task set state='blocked', question=? where id=?", (HC_Q, t_[0]))
+                    log(c, a["name"], "task-blocked", str(t_[0]), HC_Q)
                 if comms:
                     post(c, "swarm", comms, f"{a['name']} is blocked (a prompt or question needs the human).",
                          urgent=True, kind="system")
+    if comms:  # once per block: the event records that the question went out
+        for r in c.execute("select * from task where state='blocked'").fetchall():
+            if not c.execute("select 1 from event where kind='task-blocked' and path=? and data=?", (str(r["id"]), r["question"])).fetchone():
+                log(c, r["owner"], "task-blocked", str(r["id"]), r["question"])
+                post(c, "swarm", comms, f"{r['owner']} is blocked on #{r['id']} ({r['title']}): {r['question']} "
+                     f"Answer with `swarm task unblock {r['id']} --answer \"...\"`.", urgent=True, kind="system")
     conflict_tick(c, t)
     if comms:  # without a communicator there is nobody to exempt from ending
         lifecycle(c, t, comms, terms, opts or {})
@@ -906,6 +920,23 @@ def cmd_task(c, a):
             k = (c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0) // 1000
             print(f"context ~{k}k: take the next task (swarm board)." if k * 1000 < SMALL_CTX and pool(c) else
                   f"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work.")
+    elif a.act == "block":
+        if r["owner"] != n or r["state"] != "claimed":
+            die(f"task #{a.id} is not claimed by you")
+        c.execute("update task set state='blocked', question=? where id=?", (a.question, a.id))
+        log(c, n, "block", None, f"#{a.id} {a.question}")
+        print(f"blocked #{a.id}; watchd tells the communicator. It stays yours until `swarm task unblock`.")
+    elif a.act == "unblock":
+        comms = os.environ.get("SWARM_COMMS")
+        if r["state"] != "blocked":
+            die(f"task #{a.id} is not blocked")
+        if n not in (r["owner"], comms) and not n.endswith("comms"):
+            die(f"only {r['owner']} or the communicator can unblock #{a.id}")
+        c.execute("update task set state='claimed', question=null, lease_until=? where id=?", (t + LEASE, a.id))
+        log(c, n, "unblock", None, f"#{a.id}")
+        if a.answer and n != r["owner"]:
+            post(c, n, r["owner"], f"#{a.id} is unblocked. Answer: {a.answer}")
+        print(f"unblocked #{a.id}; claimed by {r['owner']} again")
     elif a.act == "release":
         if r["owner"] != n or r["state"] != "claimed":
             die(f"task #{a.id} is not claimed by you")
@@ -919,10 +950,13 @@ def cmd_task(c, a):
 
 
 def cmd_board(c, a):
-    q = "select * from task " + ("" if a.all else "where state in ('open','claimed') ") + "order by id"
+    q = "select * from task " + ("" if a.all else "where state in ('open','claimed','blocked') ") + "order by id"
     rows = c.execute(q).fetchall()
     for r in rows:
         who = r["owner"] or "-"
+        if r["state"] == "blocked":
+            print(f"#{r['id']} blocked by {who}: {r['question']}  {r['title']}")
+            continue
         lease = ""
         if r["state"] == "claimed":
             left = r["lease_until"] - now()
@@ -1203,6 +1237,12 @@ def main(argv=None):
     q = ts.add_parser("done")
     q.add_argument("id", type=int)
     q.add_argument("--evidence", required=True)
+    q = ts.add_parser("block")
+    q.add_argument("id", type=int)
+    q.add_argument("question")
+    q = ts.add_parser("unblock")
+    q.add_argument("id", type=int)
+    q.add_argument("--answer", default="")
     q = ts.add_parser("release")  # give a claimed task back, still open; drop kills it
     q.add_argument("id", type=int)
     q = ts.add_parser("drop")

@@ -58,6 +58,7 @@ with subagents.
 - **You hear two things:** messages addressed to you (questions for the human)
   and `watchd`'s blocked notices. Relay them to the user and answer agents on
   the user's word.
+- **Answer a blocked task** with `swarm task unblock <id> --answer "<text>"`; it DMs the owner.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
