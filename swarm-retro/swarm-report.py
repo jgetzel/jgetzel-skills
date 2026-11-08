@@ -31,7 +31,7 @@ def transcripts(name, cwd):
     if not cwd:
         return []
     d = os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", cwd))
-    rx = re.compile(r"^" + re.escape(name) + r"(-?\d+)?$")
+    rx = re.compile(r"^" + re.escape(name) + r"(-\d+)?$")
     hit = []
     for f in glob.glob(d + "/*.jsonl"):
         with open(f) as fh:
@@ -95,13 +95,13 @@ def report(c, since=None, git=True):
         tasks.append(t)
     out["tasks"] = tasks
     out["events"] = {a: dict(Counter(e["kind"] for e in ev if e["agent"] == a)) for a in sorted({e["agent"] for e in ev})}
-    # transcripts: files whose agent-name record is this agent or a relaunched successor (name-2, name2)
+    # transcripts: files whose agent-name record is this agent or a relaunched successor (name-2)
     for a in out["agents"]:
         a["transcripts"] = transcripts(a["name"], a.get("cwd"))
         n = a["name"]
         a["msgs_sent"] = c.execute("select count(*) from msg where frm=? and ts>=?", (n, since)).fetchone()[0]
         a["msgs_to_all"] = c.execute("select count(*) from msg where frm=? and dest='@all' and ts>=?", (n, since)).fetchone()[0]
-        a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and ts>=?", (n, n, since)).fetchone()[0]
+        a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'')!='system' and ts>=?", (n, n, since)).fetchone()[0]
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["overlaps"] = [{k: e[k] for k in ("ts", "agent", "path", "data")} for e in ev if e["kind"] == "overlap"]

@@ -14,5 +14,14 @@ insert into event(ts,agent,kind,data) values(100,'a','claim','#1 t'),(190,'a','d
     r = sr.report(c, git=False)
     self.assertEqual(r["tasks"][0]["took"], "1m30s"); self.assertEqual(r["friction"][0]["kind"], "reap"); self.assertEqual(len(r["idle_with_open_tasks"]), 1)
 
+  def test_transcript_name_is_exact(self):
+    import tempfile
+    h = tempfile.mkdtemp(); os.environ["HOME"] = h
+    d = os.path.join(h, ".claude/projects/-w"); os.makedirs(d)
+    for f, n in (("a", "jl-1"), ("b", "jl-11"), ("c", "jl-1-2"), ("d", "jl-10")):
+        open(os.path.join(d, f + ".jsonl"), "w").write('{"type":"agent-name","agentName":"%s"}\n' % n)
+    got = [os.path.basename(x) for x in sr.transcripts("jl-1", "/w")]
+    self.assertEqual(sorted(got), ["a.jsonl", "c.jsonl"])
+
 if __name__ == '__main__':
     unittest.main()
