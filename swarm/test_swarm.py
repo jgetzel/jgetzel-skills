@@ -22,11 +22,14 @@ class T(unittest.TestCase):
         self.db = os.path.join(self.d, "swarm.db")
         self.cwd = {"a": self.repo, "b": self.wt}
 
-    def sw(self, who, *args, stdin=None, ok=True):
+    def sw(self, who, *args, stdin=None, ok=True, hc=None):
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who}
         if getattr(self, "fakebin", None):
             env["PATH"] = self.fakebin + os.pathsep + env["PATH"]
-        env.pop("HC_TERMINAL_ID", None)  # an agent's own terminal would make `hc ls` part of the test
+        env.pop("HC_TERMINAL_ID", None)
+        if hc:
+            env["HC_TERMINAL_ID"] = hc
+        # an agent's own terminal would make `hc ls` part of the test
         r = subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True,
                            text=True, cwd=self.cwd.get(who, self.repo))
         if ok:
@@ -747,6 +750,22 @@ class T(unittest.TestCase):
         who = self.sw("a", "who").stdout
         self.assertRegex(who, r"comms idle .*idle=1m cache=warm(?! COLD)")
         self.assertRegex(who, r"nohc idle .*cache=cold COLD-GUARDED")
+
+    def test_wait_rebinds_dead_hc(self):
+        self.agent("a")
+        t = int(time.time())
+        self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin)
+        hc = os.path.join(self.fakebin, "hc")
+        open(hc, "w").write(f"#!/bin/sh\n[ \"$2\" = new ] && echo '{{\"status_ms\": {(t - 60) * 1000}}}' || echo '{{}}'\n")
+        os.chmod(hc, 0o755)
+        self.agent("comms", hc="dead", status="idle", ctx_tokens=140_000, last_active=t - 4 * 3600, compacted_at=0)
+        self.sw("a", "post", "comms", "later")
+        w = self.sw("comms", "wait", "--timeout", "2", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 0)  # dead address: cold, held
+        w = self.sw("comms", "wait", "--timeout", "3", "--poll", "0.2", ok=False, hc="new")
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("later", w.stderr)
+        self.assertEqual(self.q("select hc from agent where name='comms'")[0]["hc"], "new")
 
     def test_urgent_override(self):
         self.agent("a")
