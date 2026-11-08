@@ -27,7 +27,39 @@ def span(s):
     s = int(s or 0)
     return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
 
-def report(c, since=0):
+def sh(*cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+def git_evidence(since=0, ref="origin/main"):
+    """Landed commits per agent-hour and files two or more agents changed, from Swarm-Agent trailers."""
+    hours, files, commits = {}, {}, []
+    for blk in sh("git", "log", ref, *([f"--since={since}"] if since else []), "--name-only", "--format=@@%H\t%ct\t%(trailers:key=Swarm-Agent,valueonly,separator=)").split("@@")[1:]:
+        head, *fs = blk.strip().split("\n")
+        sha, ct, agent = (head.split("\t") + ["", ""])[:3]
+        agent = agent.strip() or "(none)"
+        commits.append((int(ct), sha, agent))
+        k = (datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d %H:00"), agent)
+        hours[k] = hours.get(k, 0) + 1
+        for f in filter(None, fs):
+            files.setdefault(f, set()).add(agent)
+    return {"commits_per_hour": [{"hour": h, "agent": a, "n": n} for (h, a), n in sorted(hours.items())],
+            "multi_agent_files": {f: sorted(a) for f, a in files.items() if len(a - {"(none)"}) > 1}, "_commits": commits}
+
+def red_runs(commits, since=0):
+    """Failed main runs and the agent whose later green run's commit fixed it (needs gh)."""
+    runs = json.loads(sh("gh", "run", "list", "--branch", "main", "--limit", "100", "--json", "conclusion,headSha,createdAt,databaseId") or "[]")
+    by = {sha: a for _, sha, a in commits}
+    runs = [r for r in runs if r["createdAt"] >= datetime.fromtimestamp(since).strftime("%Y-%m-%dT%H:%M:%S")]
+    runs.sort(key=lambda r: r["createdAt"])
+    out = []
+    for i, r in enumerate(runs):
+        if r["conclusion"] == "failure":
+            fix = next((x for x in runs[i + 1:] if x["conclusion"] == "success"), None)
+            out.append({"run": r["databaseId"], "broke": by.get(r["headSha"], "?"), "fixed_by": by.get(fix["headSha"], "?") if fix else None})
+    return out
+
+def report(c, since=0, git=True):
     q = lambda sql, *p: [dict(r) for r in c.execute(sql, p)]
     ev = q("select * from event where ts>=? order by ts", since)
     out = {"agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
@@ -54,6 +86,12 @@ def report(c, since=0):
         a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and ts>=?", (n, n, since)).fetchone()[0]
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
+    out["overlaps"] = [{k: e[k] for k in ("ts", "agent", "path", "data")} for e in ev if e["kind"] == "overlap"]
+    out["idle_with_open_tasks"] = [{"ts": e["ts"], "agent": e["agent"]} for e in ev if e["kind"] == "digest"]
+    if git:
+        g = git_evidence(since)
+        out["red_main_runs"] = red_runs(g.pop("_commits"), since)
+        out.update(g)
     out["messages"] = q("select frm, count(*) n, sum(urgent) urgent from msg where ts>=? group by frm", since)
     out["locks"] = q("select path,agent,reason from lock")
     return out
@@ -74,6 +112,14 @@ def show(r):
     print("\n## friction")
     for e in r["friction"]:
         print(f"- {t(e['ts'])} {e['agent']} {e['kind']} {e['path'] or ''} {e['data'] or ''}".rstrip())
+    for key, title in (("commits_per_hour", "landed commits per hour"), ("red_main_runs", "red main runs"),
+                       ("overlaps", "overlap events"), ("idle_with_open_tasks", "watchd digests (idle with open tasks)")):
+        print(f"\n## {title}")
+        for x in r.get(key, []):
+            print("- " + " ".join(f"{k}={v}" for k, v in x.items()))
+    print("\n## files changed by 2+ agents")
+    for f, a in r.get("multi_agent_files", {}).items():
+        print(f"- {f}: {', '.join(a)}")
     print("\n## messages sent")
     for m in r["messages"]:
         print(f"- {m['frm']}: {m['n']} ({m['urgent'] or 0} urgent)")
