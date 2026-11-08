@@ -315,6 +315,19 @@ class T(unittest.TestCase):
         self.assertIn("1 open task", self.sw("r", "read").stdout)
         self.assertNotIn("open task", self.sw("comms", "read").stdout)
 
+    def test_digest_edge_triggered(self):
+        self.idle("comms"); self.idle("r")
+        digests = lambda: len(self.q("select 1 from msg where dest='r' and body like '%open task%'"))
+        self.sw("comms", "task", "add", "t1")
+        self.comms_tick(); self.assertEqual(digests(), 1)
+        self.q("update event set ts=ts-5000"); self.q("update agent set last_active=last_active-5000")
+        self.comms_tick(); self.assertEqual(digests(), 1)  # unchanged pool, 900 s later: silent
+        self.sw("comms", "task", "add", "t2")
+        self.comms_tick(); self.assertEqual(digests(), 2)  # a new id
+        self.sw("comms", "task", "claim", "2"); self.sw("comms", "task", "block", "2", "q")
+        self.sw("comms", "task", "add", "t3", "--after", "2")  # waits on a blocked task: not startable
+        self.comms_tick(); self.assertEqual(digests(), 2)
+
     def test_big_context_finished_even_with_open_tasks(self):
         self.idle("big", ctx_tokens=120_000)
         self.sw("big", "task", "add", "t")
