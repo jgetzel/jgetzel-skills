@@ -630,24 +630,29 @@ def gx(args, cwd):
     return r.returncode, r.stderr.strip()
 
 
+def landed_ref(cwd, ref, B):
+    """Commits of ref (checked from cwd) are in B: ancestor, same content under other commits, or a merged PR."""
+    if gx(["-C", cwd, "merge-base", "--is-ancestor", ref, B], None)[0] == 0:
+        return True
+    mb = git(["-C", cwd, "merge-base", B, ref])
+    files = (run(["git", "-C", cwd, "diff", "--name-only", "-z", mb, ref]) or "").split("\0") if mb else []
+    files = [f for f in files if f]
+    if files and gx(["-C", cwd, "diff", "--quiet", ref, B, "--", *files], None)[0] == 0:
+        return True  # squash or rebase merge: same content under other commits
+    br = git(["-C", cwd, "rev-parse", "--abbrev-ref", ref])
+    prs = run(["gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number"], cwd=cwd) if br else None
+    return bool(prs and json.loads(prs))
+
+
 def landed(wt, B, main):
     """Nothing in worktree wt is unlanded relative to ref B (sw-lifecycle §4.2)."""
     if not os.path.exists(wt):  # nothing uncommitted can be lost; judge by its branch if git still knows it
         m = re.search(r"^worktree %s\n(?:.*\n)*?branch refs/heads/(.*)$" % re.escape(wt), run(["git", "-C", main, "worktree", "list", "--porcelain"]) or "", re.M)
-        return not m or gx(["-C", main, "merge-base", "--is-ancestor", m[1], B], None)[0] == 0
+        return not m or landed_ref(main, m[1], B)
     st = run(["git", "-C", wt, "status", "--porcelain"])
     if st is None or st.strip():
         return False
-    if wt == main or gx(["-C", wt, "merge-base", "--is-ancestor", "HEAD", B], None)[0] == 0:
-        return True
-    mb = git(["-C", wt, "merge-base", B, "HEAD"])
-    files = (run(["git", "-C", wt, "diff", "--name-only", "-z", mb, "HEAD"]) or "").split("\0") if mb else []
-    files = [f for f in files if f]
-    if files and gx(["-C", wt, "diff", "--quiet", "HEAD", B, "--", *files], None)[0] == 0:
-        return True  # squash or rebase merge: same content under other commits
-    br = git(["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
-    prs = run(["gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number"], cwd=wt) if br else None
-    return bool(prs and json.loads(prs))
+    return wt == main or landed_ref(wt, "HEAD", B)
 
 
 def end_agent(c, a, wt, main, comms):

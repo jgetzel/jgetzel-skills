@@ -344,6 +344,15 @@ class T(unittest.TestCase):
         self.comms_tick()
         self.assertFalse(self.ended("e"))
 
+    def test_missing_worktree_squash_merged_branch_ended(self):
+        self.idle("e", wt=self.wt)
+        for d in (self.wt, self.repo):  # same content, different commits
+            self.write("b" if d == self.wt else "a", "a.txt", "squashed")
+            subprocess.run([*G, "commit", "-qam", "change"], cwd=d, check=True)
+        shutil.rmtree(self.wt)
+        self.comms_tick()
+        self.assertTrue(self.ended("e"))
+
     def test_claim_keeps_agent_and_lease(self):
         self.idle("e", wt=self.wt)
         self.sw("e", "task", "add", "t"); self.sw("e", "task", "claim", "1")
