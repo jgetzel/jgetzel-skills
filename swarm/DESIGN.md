@@ -274,6 +274,25 @@ No roles in the skill. The communicator is an ordinary session that writes
 tasks, runs `watchd` and relays questions for the human; it steers through
 the board and never reassigns claimed work by message.
 
+### Ownership: [research/sw-ownership.md](research/sw-ownership.md) (proposed, 2026-11-08)
+
+Every fact with one holder (a task's owner and lease, a lock, an agent's
+terminal, the communicator, watchd) changes under one rule set:
+
+- **One change, one `begin immediate` transaction**, or one conditional
+  update whose `rowcount` decides. No subprocess runs inside one.
+- **The bound terminal is the fencing token.** Only `swarm join` moves
+  `agent.hc`, and a live binding moves only with `--takeover` (logged).
+  A command from another terminal is refused with the holder's name; a hook
+  there writes nothing. A relaunched successor's one step is `swarm join --takeover`.
+- **Intent before effect.** `swarm spawn <name> --task N` claims before it
+  launches and rolls back if the launch fails.
+- **Ended agents return only through `join`.**
+
+This is ownership correctness, not rationing (decision 6). A second holder
+makes the board wrong. The refusals name who holds what, and the rule
+removes a timer (auto-spawn's one-interval wait).
+
 ### Hooks, delivery and the cold-cache rule
 
 Unchanged from the design: `PostToolUse` delivers unread messages beside the
