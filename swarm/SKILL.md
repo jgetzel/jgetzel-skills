@@ -28,7 +28,7 @@ with subagents.
 1. Write the goal as tasks, each independently doable with a definition of
    done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
-2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21600`
+2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
    running as a background Bash (`run_in_background`): it is your inbox. When
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:

@@ -24,7 +24,7 @@
     "Stop": [
       {"hooks": [
         {"type": "command", "command": "{{SWARM}} hook stop"},
-        {"type": "command", "command": "{{SWARM}} wait", "asyncRewake": true, "timeout": 21600}
+        {"type": "command", "command": "{{SWARM}} wait", "async": true, "asyncRewake": true, "timeout": 21600}
       ]}
     ]
   }

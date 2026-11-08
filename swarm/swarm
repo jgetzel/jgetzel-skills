@@ -12,7 +12,8 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 SCHEMA = """
 create table if not exists agent(name text primary key, hc text, model text, cwd text, status text,
-  last_active int, ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text);
+  last_active int, ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text,
+  waiter int);
 create table if not exists msg(id integer primary key autoincrement, ts int, frm text, dest text,
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
@@ -478,17 +479,20 @@ def cmd_post(c, a):
         die(f"unknown agent {a.to!r}; `swarm who` lists them")
     post(c, frm, a.to, body, a.urgent)
     targets = [x for x in live_agents(c) if x["name"] != frm and (a.to == "@all" or x["name"] == a.to)]
-    g = {"drains at its next tool round": [], "wakes": [], "held, cold (reads it when it next wakes)": []}
+    g = {"drains at its next tool round": [], "wakes": [], "held, cold (reads it when it next wakes)": [],
+         "no live waiter": []}
     for x in targets:
         if x["status"] == "working":
             g["drains at its next tool round"].append(x["name"])
         elif cold_reason(x) and not a.urgent:
             g["held, cold (reads it when it next wakes)"].append(x["name"])
-        else:
+        elif x["waiter"] and os.path.exists(f"/proc/{x['waiter']}"):
             g["wakes"].append(x["name"])
+        else:
+            g["no live waiter"].append(x["name"])
     print("posted. " + "; ".join(f"{', '.join(v)}: {k}" for k, v in g.items() if v))
-    if g["wakes"]:
-        print(f"if no wake arrives, nudge by SendMessage: {', '.join(g['wakes'])}")
+    if g["no live waiter"]:
+        print(f"nudge by SendMessage (one line, `swarm read`): {', '.join(g['no live waiter'])}")
 
 
 def cmd_read(c, a):
@@ -501,11 +505,13 @@ def cmd_read(c, a):
 def cmd_wait(c, a):
     n = me()
     ensure_agent(c, n, status="idle")  # the Stop hook set last_active; the cold rule needs it untouched
+    pid = os.getpid()  # every Stop starts a waiter and none is killed: the newest owns the inbox
+    c.execute("update agent set waiter=? where name=?", (pid, n))
     deadline = now() + a.timeout
     while now() < deadline:
         ag = c.execute("select * from agent where name=?", (n,)).fetchone()
-        if ag["status"] == "working":
-            return  # the agent runs again; its hooks deliver
+        if ag["waiter"] != pid or ag["status"] == "working":
+            return  # superseded, or the agent runs again and its hooks deliver
         rows = unread(c, n)
         if rows and (any(r["urgent"] for r in rows) or not cold_reason(ag)):
             advance(c, n, rows)
@@ -702,7 +708,7 @@ def main(argv=None):
     add("read", cmd_read)
     p = add("wait", cmd_wait)
     p.add_argument("--me")
-    p.add_argument("--timeout", type=int, default=6 * 3600)
+    p.add_argument("--timeout", type=int, default=21000)  # under the hook timeout of 21600
     p.add_argument("--poll", type=float, default=1)
     p = add("task", cmd_task)
     ts = p.add_subparsers(dest="act", required=True)

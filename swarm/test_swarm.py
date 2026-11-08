@@ -205,6 +205,20 @@ class T(unittest.TestCase):
         self.assertIn("while idle", self.hook("b", "prompt", prompt="x")["additionalContext"])
         self.assertIn("no unread", self.sw("b", "read").stdout)
 
+    def test_newest_waiter_owns_inbox(self):
+        self.agent("a"); self.agent("b")
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"}
+        cmd = [sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"]
+        w1 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.8)
+        w2 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.8)
+        self.assertEqual(w1.wait(timeout=5), 0)  # superseded without ever seeing 'working'
+        self.assertIn("wakes", self.sw("a", "post", "b", "ping").stdout)
+        self.assertEqual(w2.wait(timeout=5), 2)
+        self.assertIn("ping", w2.stderr.read())
+        self.assertIn("no live waiter", self.sw("a", "post", "b", "again").stdout)
+
     def test_sendmessage_ref_and_hookless_waiter(self):
         self.agent("a")
         t = int(time.time())
