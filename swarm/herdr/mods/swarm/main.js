@@ -83,7 +83,6 @@ export default class Swarm extends View {
     this.s = null; this.prs = null; this.runs = null; this.error = null;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 860;
     this.tab = "overview"; this.sel = null; this.push = null; this.boardFilter = "all"; this.actFilter = "all";
-    this.old = new Set(); // machines whose swarm CLI predates --view
     this.refresh(cx);
     // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
     cx.timer.every(POLL, cx => { if (this.visible() && this.due()) this.refresh(cx); });
@@ -109,12 +108,11 @@ export default class Swarm extends View {
     const { cwd, on } = location();
     this.loc = locKey();
     if (!cwd) { this.s = null; this.error = "No folder"; return; }
-    const view = this.view(), args = this.old.has(on) ? [] : ["--view", this.tab, ...(this.tab === "agents" && this.detailName ? ["--agent", this.detailName] : [])];
+    const view = this.view(), args = ["--view", this.tab, ...(this.tab === "agents" && this.detailName ? ["--agent", this.detailName] : [])];
     this.loading = true; this.at = Date.now(); this.dirty = false; this.polled = view;
     cx.spawn(async cx => {
       try {
         const r = await swarmState(cwd, on, args);
-        if (r.code !== 0 && args.length && /unrecognized arguments/.test(r.stderr)) { this.old.add(on); this.at = 0; return; } // asks again in full
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = JSON.parse(r.stdout);
         const now = location();
@@ -261,8 +259,7 @@ export default class Swarm extends View {
   // ---- derived data -------------------------------------------------------------------------
   derive() {
     const s = this.s;
-    // Older CLIs have no `comms`: fall back to a live agent named *comms.
-    const comms = s.comms ?? s.agents.find(a => a.status !== "ended" && /comms$/.test(a.name))?.name ?? null;
+    const comms = s.comms ?? null;
     const order = { blocked: 0, working: 1, idle: 2 };
     const live = s.agents.filter(a => a.status !== "ended" && a.name !== comms)
       .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.name.localeCompare(b.name));
@@ -538,14 +535,23 @@ export default class Swarm extends View {
     const head = (key, label, color, n, note) => ({ key, h: 30, el: h_flex().h(30).pt(4).gap(6).items_center().child(this.dot(color, 6)).child(this.sec(t, label, note ? `${n} · ${note}` : String(n)).px(0).pt(0).flex_1()) });
     const big = k => {
       const blocked = k.state === "blocked", c = blocked ? t.blocked : k.state === "claimed" ? t.ansi3 : t.muted;
-      const sub = blocked ? `? ${one(k.question)}` : [k.waiting ? `after ${k.deps.filter(i => s.tasks.find(x => x.id === i)?.state !== "done").map(i => `#${i}`).join(", ")}` : null, `added by ${k.created_by ?? "?"}`, k.model].filter(Boolean).join(" · ");
-      const el = h_flex().id(`task-${k.id}`).h(52).px(12).gap(12).items_center().min_w(0).rounded(7).bg(blocked ? t.blocked + "14" : t.surface)
-        .border_1().border_color(blocked ? t.blocked + "66" : t.border).opacity(k.waiting ? 0.6 : 1)
+      const after = k.waiting ? k.deps.filter(i => s.tasks.find(x => x.id === i)?.state !== "done") : [];
+      const dim = blocked ? t.blocked : t.dim;
+      // #N in a subline is a link: it highlights that task's row (shortcut: a plain scroll div has no scroll-to, so a row off screen isn't scrolled into view).
+      const refs = (label, ids) => h_flex().flex_none().gap(4).child(label).children(ids.map(i => div().id(`ref-${k.id}-${label}-${i}`).cursor_pointer().hover(st => st.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.hl = i; if (!s.tasks.some(x => x.id === i && ["open", "claimed", "blocked"].includes(x.state))) this.boardFilter = "all"; cx.notify(); }).child(`#${i}`)));
+      const sub = h_flex().gap(6).min_w(0).overflow_hidden().text_size(10.5).text_color(dim)
+        .when(blocked, el => el.child(div().truncate().min_w(0).child(`? ${one(k.question)}`)))
+        .when(after.length > 0, el => el.child(refs("after", after)))
+        .when(k.blocks?.length > 0, el => el.child(refs("blocks", k.blocks)))
+        .child(div().truncate().min_w(0).child([blocked ? null : `added by ${k.created_by ?? "?"}`, blocked ? null : k.model].filter(Boolean).join(" · ")));
+      const el = h_flex().id(`task-${k.id}`).h(52).px(12).gap(12).items_center().min_w(0).rounded(7).bg(blocked ? t.blocked + "14" : this.hl === k.id ? t.selected : t.surface)
+        .border_1().border_color(blocked ? t.blocked + "66" : this.hl === k.id ? t.input : t.border).opacity(k.waiting ? 0.6 : 1)
         .when(Boolean(k.owner), el => el.cursor_pointer().hover(st => st.bg(t.hover)).on_click((_e, cx) => this.go("agents", cx, k.owner)))
         .child(div().w(2).h(30).rounded(1).flex_none().bg(c))
         .child(v_flex().flex_1().min_w(0).gap(3)
           .child(h_flex().gap(6).min_w(0).child(div().flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`)).child(div().flex_1().min_w(0).truncate().text_size(12.5).child(k.title)))
-          .child(div().truncate().text_size(10.5).text_color(blocked ? t.blocked : t.dim).child(sub)))
+          .child(sub))
         .when(Boolean(k.owner), el => el.child(v_flex().flex_none().items_end().gap(3)
           .child(div().font_semibold().text_size(12).child(k.owner))
           .child(div().text_size(10.5).text_color(t.dim).child(k.lease_left != null ? (k.lease_left > 0 ? `lease ${ago(k.lease_left)} left` : "lease expired") : ""))))
@@ -554,7 +560,8 @@ export default class Swarm extends View {
     };
     if (f === "all" || f === "active") {
       const blocked = by("blocked"), claimed = by("claimed"), open = by("open");
-      for (const [st, ks, c] of [["blocked", blocked, t.blocked], ["claimed", claimed, t.ansi3], ["open", open, t.muted]]) {
+      const ready = open.filter(k => !k.waiting), waiting = open.filter(k => k.waiting);
+      for (const [st, ks, c] of [["blocked", blocked, t.blocked], ["claimed", claimed, t.ansi3], ["ready", ready, t.muted], ["waiting", waiting, t.dim]]) {
         if (!ks.length) continue;
         rows.push(head(`h-${st}`, st, c, ks.length));
         for (const k of ks) rows.push(big(k));
