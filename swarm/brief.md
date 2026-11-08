@@ -31,5 +31,8 @@ your name is in `$SWARM_NAME`.
   Agent-tool subagents freely.
 - **Context.** At high context hand off with the `relaunch` skill, same
   model, and post the successor's name.
-- **Ending.** When the board has nothing for you, go idle; don't poll. Your
-  waiting hook wakes you.
+- **Ending.** After `task done`, do what it prints (take the next task, or go
+  idle). Don't close your tab, end yourself or remove your worktree: watchd
+  ends you once you are idle, own no claim or lock and your work is on main.
+  If review asks for changes you are still here to make them. Don't poll; your
+  waiting hook wakes you. A task with `after #N` can't be claimed until #N is done.

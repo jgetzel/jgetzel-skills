@@ -83,6 +83,9 @@ class T(unittest.TestCase):
         self.q("update task set lease_until=1")
         self.q("update lock set lease_until=1")
         self.sw("a", "watchd", "--once")
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")  # live owner: claim stays
+        self.q("update agent set ended=1 where name='a'")
+        self.sw("a", "watchd", "--once")
         self.assertEqual(self.q("select state from task")[0]["state"], "open")
         self.assertEqual(self.q("select * from lock"), [])
         self.assertIn("lease", self.sw("a", "read").stdout)
@@ -252,6 +255,118 @@ class T(unittest.TestCase):
         self.assertEqual(self.edit("a", "a.txt"), {})
         self.sw("a", "unlock", "*.txt")
         self.assertEqual(self.edit("b", "a.txt").get("permissionDecision"), None)
+
+    # ---- lifecycle ----
+    OLD = int(time.time()) - 3600
+
+    def comms_tick(self):
+        self.sw("a", "watchd", "--once", "--comms", "comms", "--max-agents", "0")
+
+    def idle(self, name, **kw):
+        self.agent(name, status="idle", last_active=self.OLD, **kw)
+
+    def ended(self, name):
+        return self.q("select ended from agent where name=?", name)[0][0] is not None
+
+    def test_landed_agent_ended_and_cleaned(self):
+        self.idle("e", wt=self.wt)
+        self.comms_tick()
+        self.assertTrue(self.ended("e"))
+        self.assertFalse(os.path.exists(self.wt))
+        self.assertEqual(subprocess.run(["git", "branch", "--list", "w2"], cwd=self.repo, capture_output=True, text=True).stdout, "")
+        self.assertEqual(self.q("select data from event where kind='end'")[0][0], "landed")
+
+    def test_squash_merged_agent_ended(self):
+        self.idle("e", wt=self.wt)
+        for d in (self.wt, self.repo):  # same content, different commits
+            self.write("b" if d == self.wt else "a", "a.txt", "squashed")
+            subprocess.run([*G, "commit", "-qam", "change"], cwd=d, check=True)
+        self.comms_tick()
+        self.assertTrue(self.ended("e"))
+
+    def test_dirty_or_unlanded_not_ended(self):
+        self.idle("e", wt=self.wt)
+        self.write("b", "new.txt", "wip")
+        self.comms_tick()
+        self.assertFalse(self.ended("e"))  # dirty
+        subprocess.run([*G, "add", "."], cwd=self.wt, check=True)
+        subprocess.run([*G, "commit", "-qm", "wip"], cwd=self.wt, check=True)
+        self.comms_tick()
+        self.assertFalse(self.ended("e"))  # clean but not on main
+        self.assertTrue(os.path.exists(self.wt))
+
+    def test_claim_keeps_agent_and_lease(self):
+        self.idle("e", wt=self.wt)
+        self.sw("e", "task", "add", "t"); self.sw("e", "task", "claim", "1")
+        self.q("update task set lease_until=1")
+        self.comms_tick()
+        self.assertFalse(self.ended("e"))
+        self.assertEqual(self.q("select state from task")[0][0], "claimed")
+        self.assertIn("past its lease", self.sw("comms", "read").stdout)
+        self.comms_tick()
+        self.assertEqual(self.q("select count(*) from msg where dest='comms'")[0][0], 1)  # once per lease period
+        self.assertNotIn("open task", self.sw("e", "read").stdout)  # not digested
+
+    def test_comms_never_digested_or_ended_reusable_digested(self):
+        self.idle("comms"); self.idle("r")
+        self.sw("comms", "task", "add", "t")
+        self.comms_tick()
+        self.assertFalse(self.ended("comms")); self.assertFalse(self.ended("r"))
+        self.assertIn("1 open task", self.sw("r", "read").stdout)
+        self.assertNotIn("open task", self.sw("comms", "read").stdout)
+
+    def test_big_context_finished_even_with_open_tasks(self):
+        self.idle("big", ctx_tokens=120_000)
+        self.sw("big", "task", "add", "t")
+        self.comms_tick()
+        self.assertTrue(self.ended("big"))
+
+    def test_task_done_says_what_next(self):
+        self.agent("a", ctx_tokens=20_000)
+        for t in "xyz":
+            self.sw("a", "task", "add", t)
+        self.sw("a", "task", "claim", "1")
+        self.assertIn("take the next task", self.sw("a", "task", "done", "1", "--evidence", "e").stdout)
+        self.q("update agent set ctx_tokens=120000")
+        self.sw("a", "task", "claim", "2")
+        self.assertIn("go idle", self.sw("a", "task", "done", "2", "--evidence", "e").stdout)
+
+    def test_after_dependency(self):
+        self.agent("a")
+        self.sw("a", "task", "add", "first"); self.sw("a", "task", "add", "second", "--after", "1")
+        self.assertIn("after #1", self.sw("a", "board").stdout)
+        r = self.sw("a", "task", "claim", "2", ok=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("waits on #1", r.stderr)
+        self.sw("a", "task", "claim", "1"); self.sw("a", "task", "done", "1", "--evidence", "e")
+        self.sw("a", "task", "claim", "2")
+
+    def test_auto_spawn_once_within_cap(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod3", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod3", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        spawned = []
+        m.cmd_spawn = lambda c, a: spawned.append((a.name, a.model))
+        m.hc_terminals = lambda: None
+        c = m.connect()
+        for n in ("t-comms", "t-1"):
+            self.agent(n, status="working", model="haiku")
+        self.sw("a", "task", "add", "do it")
+        cwd = os.getcwd(); os.chdir(self.repo)
+        try:
+            opts = {"max_agents": 1, "min_free_gib": 0}
+            m.watchd_tick(c, "t-comms", None, opts)
+            self.assertEqual(spawned, [])  # at the cap
+            opts["max_agents"] = 2
+            m.watchd_tick(c, "t-comms", None, opts)
+            self.assertEqual(spawned, [("t-2", "haiku")])
+            self.assertEqual(self.q("select owner,state from task")[0]["owner"], "t-2")
+            m.watchd_tick(c, "t-comms", None, opts)
+            self.assertEqual(len(spawned), 1)  # the task is claimed: no second spawn
+        finally:
+            os.chdir(cwd)
 
     # ---- cold-cache rule ----
     def sendmsg(self, to, text="hi"):
