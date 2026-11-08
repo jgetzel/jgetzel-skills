@@ -793,6 +793,14 @@ class T(unittest.TestCase):
         self.assertIn("ping", w2.stderr.read())
         self.assertIn("no live waiter", self.sw("a", "post", "b", "again").stdout)
 
+    def test_post_to_comms_has_no_sendmessage_nudge(self):
+        self.agent("a"); self.agent("x-comms", status="idle", last_active=int(time.time()))
+        out = self.sw("a", "post", "x-comms", "hi").stdout
+        self.assertNotIn("nudge by SendMessage", out)
+        self.assertIn("held", out)
+        self.agent("b", status="idle", last_active=int(time.time()))
+        self.assertIn("nudge by SendMessage", self.sw("a", "post", "b", "hi").stdout)
+
     def test_sendmessage_ref_and_hookless_waiter(self):
         self.agent("a")
         t = int(time.time())
