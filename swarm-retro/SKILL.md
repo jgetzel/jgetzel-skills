@@ -53,12 +53,16 @@ root:
   free of budget.
 
 From the report, list the **coordination signals**, each with the event it
-rests on: duplicate work (two agents on one file or one goal), conflicts
-(overlap events, failed rebases, CI red caused by a peer), stale claims
-(reaped leases, a claim with no touches), tasks done without evidence,
-directed messages that got no reply or action, and blocked agents. The db does
-not record lock denials, idle-with-open-tasks time or urgent counts per
-recipient; take those from transcripts when they matter, and say so.
+rests on:
+
+- duplicate work: two agents on one goal, or files changed by 2+ agents;
+- conflicts: failed rebases, CI red caused by a peer, and overlap events
+  *only* on files 2+ agents actually changed (the rest are notice noise);
+- stale claims: `reap` events, and tasks still claimed long after their claim
+  event with no commit from the owner;
+- tasks done without evidence, `deny-lock` and `deny-cold` events, `digest`
+  events (agents idle while tasks were open), directed messages that got no
+  reply or action, and blocked agents.
 
 The event log is the ground truth for *who did what when*. LLM blame across
 agents is weak (the best method finds the decisive step about one time in
@@ -66,10 +70,11 @@ seven), so every cross-agent finding cites an event or a quoted step.
 
 ## 2. Digest each transcript
 
-For every agent in the report, plus the communicator, find its transcripts
-(the report lists them by cwd; agents sharing a cwd share a list, so map each
-file by its first user message, `Your name: <n>`). Relaunch successors are
-generations of one lane: digest them together. Render each with
+For every agent in the report, take the transcripts it lists. Relaunch
+successors are generations of one lane: digest them together. The
+communicator usually has none listed: it is the user's session, or the one
+running this retro; find it in the project dir as a `.jsonl` that ran
+`swarm join`, or note that it is missing. Render each with
 `~/.claude/skills/harness-retro/transcript.py FILE.jsonl > OUT.md`.
 
 Give each rendered file to a read-only subagent, all in parallel. Brief:
@@ -94,7 +99,8 @@ newest `.jsonl` in the project dir); otherwise use your context.
 1. **Cluster** digests that describe one mechanism; split a label that covers
    two. Reuse a ledger entry's name when the mechanism matches it.
 2. **Count k/n**: of the n agents that reached this kind of step, k hit the
-   failure. Count only agents that met it independently. An agent that copied
+   failure. n comes from the digests, not the report. Count only agents that
+   met it independently. An agent that copied
    a peer's approach from a message is not a new trial; check message times.
    1 of n is noise unless the failure was costly (data loss, a destructive
    action, hours lost).
@@ -219,8 +225,9 @@ rule repeated across briefs into a skill. Correct what is still useful.
 
 Show the user: the coordination signals, each cluster with k/n and fault side,
 each candidate with its declarations, gate and test verdict, the diffs, and
-always-loaded bytes before → after. Apply only what they approve. Land each
-change by its owning repo's rules (Scope); never commit or push unless asked.
+always-loaded bytes before → after. Apply only what they approve. Approval of
+a change in a repo that lands by PR (Scope) covers its branch and PR; anywhere
+else, commit or push only when asked.
 Re-run `harness-lint.py`: it must pass.
 
 Then append to the ledger of the change's scope, one line per candidate,
