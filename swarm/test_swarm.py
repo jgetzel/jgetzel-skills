@@ -377,6 +377,19 @@ class T(unittest.TestCase):
         left = self.sw("b", "read").stdout
         self.assertEqual(shown + left.count(" yyyy"), 40)
 
+    def test_new_agent_skips_older_broadcasts(self):
+        self.agent("a")
+        self.sw("a", "post", "@all", "old rule from another run")
+        self.agent("b")  # joins after it
+        self.sw("a", "post", "@all", "new rule")
+        self.sw("a", "post", "b", "for you")
+        out = self.sw("b", "read").stdout
+        self.assertNotIn("old rule", out)
+        self.assertIn("new rule", out); self.assertIn("for you", out)
+        self.sw("b", "leave"); self.sw("a", "post", "@all", "while b was away")
+        self.agent("b")  # a rejoin keeps its cursor
+        self.assertIn("while b was away", self.sw("b", "read").stdout)
+
     def test_post_compact_ctx(self):
         tr = os.path.join(self.d, "t.jsonl")
         with open(tr, "w") as f:
@@ -809,6 +822,7 @@ class T(unittest.TestCase):
         commit = lambda: subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "c"], cwd=self.repo, check=True)
         c1 = sha(); commit(); c2 = sha(); commit(); c3 = sha()
         self.sw("a", "join")
+        self.assertEqual(self.sw("a", "ci", c1, "--wait", "--timeout", "2", "--poll", "1", ok=False).stderr.count("nobody is polling"), 1)
         self.q("insert into meta(k,v) values('ci_polled',?)", str(int(time.time())))
         self.assertEqual(self.sw("a", "ci", c1, ok=False).returncode, 2)  # no run yet
         ins = lambda i, s, st, cc, t: self.q("insert into ci(id,sha,status,conclusion,url,created) values(?,?,?,?,'u',?)", i, s, st, cc, t)

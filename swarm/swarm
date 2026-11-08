@@ -215,6 +215,8 @@ def bind(c, name, cwd, hc, model=None, takeover=False):
             die(f"{name}'s binding changed under you; run it again")
         c.execute("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
                   (name, cwd, "idle", now(), now()))
+        if r is None:  # a new agent's inbox starts now: earlier broadcasts (often an older run's) aren't for it
+            c.execute("insert or ignore into cursor(agent,last_msg_id) select ?, coalesce(max(id),0) from msg", (name,))
         c.execute("update agent set hc=?, ended=null, model=coalesce(?,model), "
                   "status=case when ended is null then status else 'idle' end where name=?", (hc, model, name))
         if old and old != hc:
@@ -1228,10 +1230,11 @@ def cmd_ci(c, a):
     124 timed out waiting."""
     cwd = os.getcwd()
     sha = git(["rev-parse", a.sha], cwd=cwd) or a.sha
-    deadline, fetched = now() + a.timeout, 0
+    deadline, fetched, warned = now() + a.timeout, 0, False
     while True:
         polled = c.execute("select v from meta where k='ci_polled'").fetchone()
-        if not polled or now() - int(polled[0]) > 300:
+        if (not polled or now() - int(polled[0]) > 300) and not warned:
+            warned = True
             print("swarm ci: nobody is polling CI (the communicator runs `swarm watchd --ci`); tell it.", file=sys.stderr)
         state, r = ci_for(c, sha, cwd)
         if state != "pending" or not a.wait:
