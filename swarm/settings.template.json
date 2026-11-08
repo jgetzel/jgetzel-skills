@@ -15,7 +15,7 @@
       {"hooks": [{"type": "command", "command": "{{SWARM}} hook prompt"}]}
     ],
     "PreToolUse": [
-      {"matcher": "Edit|Write|MultiEdit|NotebookEdit|SendMessage",
+      {"matcher": "Edit|Write|MultiEdit|NotebookEdit|SendMessage|Bash",
        "hooks": [{"type": "command", "command": "{{SWARM}} hook pre-tool"}]}
     ],
     "PostToolUse": [
