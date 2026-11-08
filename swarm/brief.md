@@ -8,7 +8,8 @@ your name is in `$SWARM_NAME`.
   say why in the PR instead of dropping it silently.
 - **Land work by the repo's rules.** Read CLAUDE.md and
   `.claude/orchestration.md`; skip anything about an orchestrator.
-- **The board.** Run `swarm board` first. `swarm task claim <id>` before you
+- **The board.** Run `swarm board` first. `swarm task show <id>` prints a task's body (the board marks tasks that have
+  one); `swarm task claim <id>` before you
   work (it fails if someone holds it), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A
   claim without evidence is a rumor to the others. Add tasks for what you
