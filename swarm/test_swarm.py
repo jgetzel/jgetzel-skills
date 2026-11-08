@@ -596,6 +596,37 @@ class T(unittest.TestCase):
         self.comms_tick()
         self.assertTrue(self.ended("e"))
 
+    def end_mod(self):
+        sys.path.insert(0, os.path.dirname(SWARM))
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod_end", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod_end", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        return m, m.connect()
+
+    def test_end_agent_skips_agent_that_claimed_since_decision(self):
+        self.idle("e", wt=self.wt)
+        self.sw("e", "task", "add", "t")
+        m, c = self.end_mod()
+        a = dict(c.execute("select * from agent where name='e'").fetchone())
+        self.sw("e", "task", "claim", "1")  # after lifecycle judged it idle
+        m.run = lambda *x, **k: None
+        m.end_agent(c, a, self.wt, self.repo, None)
+        self.assertFalse(self.ended("e"))
+        self.assertEqual(self.q("select owner from task where id=1")[0][0], "e")
+        self.assertTrue(os.path.isdir(self.wt))
+
+    def test_end_agent_keeps_worktree_a_live_peer_uses(self):
+        self.idle("e", wt=self.wt)
+        self.agent("p", wt=self.wt)
+        m, c = self.end_mod()
+        a = dict(c.execute("select * from agent where name='e'").fetchone())
+        m.run = lambda *x, **k: None
+        m.end_agent(c, a, self.wt, self.repo, None)
+        self.assertTrue(self.ended("e"))
+        self.assertTrue(os.path.isdir(self.wt))
+
     def test_claim_keeps_agent_and_lease(self):
         self.idle("e", wt=self.wt)
         self.sw("e", "task", "add", "t"); self.sw("e", "task", "claim", "1")

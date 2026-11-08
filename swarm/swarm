@@ -799,7 +799,11 @@ def end_agent(c, a, wt, main, comms):
     """Release a finished agent, kill its terminal, and remove its worktree and branch without losing work."""
     n = a["name"]
     br = git(["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"]) if wt else None
-    with tx(c):
+    with tx(c):  # re-check what lifecycle judged: still idle, same terminal, no claim, no lock
+        if not c.execute("""select 1 from agent where name=? and ended is null and status='idle' and hc is ?
+                            and not exists (select 1 from task where owner=? and state in ('claimed','blocked'))
+                            and not exists (select 1 from lock where agent=?)""", (n, a["hc"], n, n)).fetchone():
+            return
         _release(c, n)
         c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
         log(c, n, "end", None, "landed")
@@ -808,7 +812,10 @@ def end_agent(c, a, wt, main, comms):
         run(["hc", "rm", a["hc"]])
     if not wt or wt == main:
         return
-    clean_remote(c, os.path.realpath(wt))
+    real = os.path.realpath(wt)
+    if any(inside(os.path.realpath(p), real) for x in live_agents(c) for p in (x["wt"], x["cwd"]) if p):
+        return  # a live peer uses this worktree
+    clean_remote(c, real)
     if not os.path.exists(wt):
         run(["git", "-C", main, "worktree", "prune"])
         return
