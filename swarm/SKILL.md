@@ -35,8 +35,10 @@ with subagents.
    an agent finishes in an hour. Strike what doesn't split.
 2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
    running as a background Bash (`run_in_background`, never `&` or `disown`: a
-   detached waiter sends no notification and lingers): it is your inbox. When
-   it exits, run `swarm read`, act, and start it again.
+   detached waiter sends no notification and lingers): it is your inbox. Exit
+   2 means messages (on stderr), 0 a timeout: run `swarm read`, act, and start
+   it again. Exit 3 means this terminal doesn't hold your name (stderr says who
+   does): run `swarm join` (`--takeover` after a relaunch) before restarting it.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
    One watchd per repo: a second is refused while the first lives, naming it;

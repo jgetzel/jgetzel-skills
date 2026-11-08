@@ -1215,8 +1215,10 @@ def cmd_read(c, a):
 
 def cmd_wait(c, a):
     n = me()
-    if touch(c, n, bind=True, status="idle"):  # the Stop hook set last_active; the cold rule needs it untouched
-        return  # fenced: another terminal holds the name, or it ended; nothing to wake
+    why = touch(c, n, bind=True, status="idle")  # the Stop hook set last_active; the cold rule needs it untouched
+    if why:  # fenced: this waiter can never wake; 3 so it isn't read as a timeout (0) or messages (2)
+        print(why, file=sys.stderr)
+        sys.exit(3)
     pid = os.getpid()  # every Stop starts a waiter and none is killed: the newest owns the inbox
     c.execute("update agent set waiter=? where name=?", (pid, n))
     deadline = now() + a.timeout

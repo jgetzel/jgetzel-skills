@@ -188,7 +188,8 @@ class T(unittest.TestCase):
         self.assertIn("a is bound to t1; this terminal is t2. `swarm join --takeover`", out["additionalContext"])
         self.assertEqual(self.hook("a", "prompt", hc="t2"), {})  # said once per terminal
         self.assertEqual(tuple(self.q("select hc,status from agent")[0]), ("t1", "idle"))  # wrote nothing
-        self.assertEqual(self.sw("a", "wait", "--timeout", "1", hc="t2").returncode, 0)
+        w = self.sw("a", "wait", "--timeout", "1", hc="t2", ok=False)
+        self.assertEqual((w.returncode, w.stderr.strip()), (3, "a is bound to t1; this terminal is t2. `swarm join --takeover` moves it here."))
         self.assertEqual(self.q("select hc from agent")[0]["hc"], "t1")
         self.assertIn("bound to t1", self.sw("a", "task", "add", "x", hc="t2", ok=False).stderr)
         self.sw("a", "task", "add", "x", hc="t1")
@@ -200,7 +201,9 @@ class T(unittest.TestCase):
         self.sw("a", "join", hc="t1")
         self.sw("a", "leave", hc="t1")
         self.assertIn("a was ended at", self.hook("a", "prompt", hc="t1")["additionalContext"])
-        self.hook("a", "stop", hc="t1"); self.sw("a", "wait", "--timeout", "1", hc="t1")
+        self.hook("a", "stop", hc="t1")
+        w = self.sw("a", "wait", "--timeout", "1", hc="t1", ok=False)
+        self.assertEqual(w.returncode, 3); self.assertIn("swarm join` to return", w.stderr)
         self.assertEqual(tuple(self.q("select status,ended is not null from agent")[0]), ("ended", 1))
         self.assertIn("swarm join` to return", self.sw("a", "lock", "a.txt", hc="t1", ok=False).stderr)
         self.sw("a", "join", hc="t1")
@@ -981,8 +984,8 @@ class T(unittest.TestCase):
         self.agent("comms", hc="dead", status="idle", ctx_tokens=140_000, last_active=t - 4 * 3600, compacted_at=0)
         self.sw("a", "post", "comms", "later")
         w = self.sw("comms", "wait", "--timeout", "2", "--poll", "0.2", ok=False)
-        self.assertEqual(w.returncode, 0)  # dead address: cold, held
-        self.assertEqual(self.sw("comms", "wait", "--timeout", "1", hc="new").returncode, 0)  # fenced: no rebind
+        self.assertEqual(w.returncode, 3)  # outside Herdr while bound to "dead": fenced
+        self.assertEqual(self.sw("comms", "wait", "--timeout", "1", hc="new", ok=False).returncode, 3)  # fenced: no rebind
         self.assertEqual(self.q("select hc from agent where name='comms'")[0]["hc"], "dead")
         self.sw("comms", "join", hc="new")  # hc ls doesn't show dead live: join moves it without --takeover
         w = self.sw("comms", "wait", "--timeout", "3", "--poll", "0.2", ok=False, hc="new")
