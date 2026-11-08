@@ -24,6 +24,8 @@ class T(unittest.TestCase):
 
     def sw(self, who, *args, stdin=None, ok=True):
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who}
+        if getattr(self, "fakebin", None):
+            env["PATH"] = self.fakebin + os.pathsep + env["PATH"]
         env.pop("HC_TERMINAL_ID", None)  # an agent's own terminal would make `hc ls` part of the test
         r = subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True,
                            text=True, cwd=self.cwd.get(who, self.repo))
@@ -633,6 +635,22 @@ class T(unittest.TestCase):
         # wait: non-urgent stays held, [urgent] wakes (exit 2)
         w = self.sw("cold", "wait", "--timeout", "2", "--poll", "0.2", ok=False)
         self.assertEqual(w.returncode, 0)
+
+    def test_session_turns_keep_cache_warm(self):
+        self.agent("a")
+        t = int(time.time())
+        self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin)
+        hc = os.path.join(self.fakebin, "hc")
+        open(hc, "w").write(f"#!/bin/sh\necho '{{\"status_ms\": {(t - 60) * 1000}}}'\n")
+        os.chmod(hc, 0o755)
+        kw = dict(status="idle", ctx_tokens=140_000, last_active=t - 4 * 3600, compacted_at=0)
+        self.agent("comms", hc="t1", **kw)
+        self.agent("nohc", **kw)
+        self.assertEqual(self.sendmsg("comms"), {})
+        self.assertEqual(self.sendmsg("nohc")["permissionDecision"], "deny")
+        who = self.sw("a", "who").stdout
+        self.assertRegex(who, r"comms idle .*idle=1m cache=warm(?! COLD)")
+        self.assertRegex(who, r"nohc idle .*cache=cold COLD-GUARDED")
 
     def test_urgent_override(self):
         self.agent("a")

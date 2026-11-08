@@ -115,12 +115,30 @@ def live_agents(c):
 
 # ---------- cold-cache rule ----------
 
+_term_seen = {}  # hc address -> (fetched_at, session's last status change, epoch s)
+
+
+def session_active(a, t):
+    """Later of last_active and the hc session's last status change: an agent that doesn't run
+    the swarm hooks (the comms) still has a warm cache while its session is taking turns."""
+    last = a["last_active"] or 0
+    if not a["hc"] or t - last < COLD_IDLE:
+        return last
+    if a["hc"] not in _term_seen or t - _term_seen[a["hc"]][0] > 30:
+        try:
+            ms = json.loads(run(["hc", "get", a["hc"], "--json"]) or "{}").get("status_ms") or 0
+        except ValueError:
+            ms = 0
+        _term_seen[a["hc"]] = (t, ms // 1000)
+    return max(last, _term_seen[a["hc"]][1])
+
+
 def cold_reason(a, t=None):
     """None if waking agent row `a` is cheap, else why it is a cold wake."""
     t = t or now()
-    last = a["last_active"] or 0
     if a["status"] == "working" or (a["ctx_tokens"] or 0) < SMALL_CTX:
         return None
+    last = session_active(a, t)
     if (a["compacted_at"] or 0) >= last or t - last < COLD_IDLE:
         return None
     k = a["ctx_tokens"] // 1000
@@ -1080,11 +1098,12 @@ def cmd_who(c, a):
         pass
     for x in live_agents(c):
         k = (x["ctx_tokens"] or 0) // 1000
-        cache = "warm" if t - (x["last_active"] or 0) < COLD_IDLE else "cold"
+        last = session_active(x, t)
+        cache = "warm" if t - last < COLD_IDLE else "cold"
         sn = json.loads(x["snap"]) if x["snap"] and x["snap"].startswith("{") else {}
         fs = sn.get("files", [])
         lk = [r[0] for r in c.execute("select path from lock where agent=?", (x["name"],))]
-        print(f"{x['name']} {x['status']} ctx={k}k idle={ago(x['last_active'])} cache={cache}"
+        print(f"{x['name']} {x['status']} ctx={k}k idle={ago(last)} cache={cache}"
               + (" COLD-GUARDED" if cold_reason(x, t) else "")
               + f" wt: {os.path.basename(wts[x['name']]) if x['name'] in wts else '?'}"
               + (f" files: {', '.join(fs[:5])}{' +%d more' % (len(fs) - 5) if len(fs) > 5 else ''}" if fs else "") + (f" locks: {', '.join(lk)}" if lk else ""))
@@ -1267,8 +1286,8 @@ def cmd_state(a):
         agents.append({
             "name": x["name"], "hc": x["hc"], "model": x["model"], "ctx_tokens": x["ctx_tokens"] or 0,
             "status": "ended" if not live else "blocked" if any(r["state"] == "blocked" for r in own) else x["status"],
-            "idle_s": t - (x["last_active"] or t), "started": x["started"], "ended": x["ended"],
-            "cache": "warm" if t - (x["last_active"] or 0) < COLD_IDLE else "cold",
+            "idle_s": t - (session_active(x, t) or t), "started": x["started"], "ended": x["ended"],
+            "cache": "warm" if t - session_active(x, t) < COLD_IDLE else "cold",
             "cold_guarded": bool(live and cold_reason(x, t)),
             "worktree": wts.get(x["name"]) or x["wt"],
             "task": {"id": own[0]["id"], "title": own[0]["title"], "state": own[0]["state"]} if own else None,
