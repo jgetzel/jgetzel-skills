@@ -28,12 +28,15 @@ with subagents.
 1. Write the goal as tasks, each independently doable with a definition of
    done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
-2. Start the watcher, in the background:
+2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21600`
+   running as a background Bash (`run_in_background`): it is your inbox. When
+   it exits, run `swarm read`, act, and start it again.
+3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
    It reaps stale leases, dead agents and expired locks, and tells you when an
    agent is blocked on a prompt. Run `swarm watch` in a Herdr split for the
    user (`herdr-app`); it costs no model tokens.
-3. Spawn agents, each with its own area so no two get identical prompts:
+4. Spawn agents, each with its own area so no two get identical prompts:
    `swarm spawn <prefix>-<n> --model <m> -- "<area and first tasks>"`.
    Pick the model by kind of work: Opus for planning and hard diagnosis,
    Sonnet for building to a spec, Haiku for mechanical work. Mix models where

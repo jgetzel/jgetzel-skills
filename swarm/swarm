@@ -287,7 +287,7 @@ def hook(ev):
     if ev == "pre-tool":
         t = now()
         if tool == "SendMessage":
-            tgt = c.execute("select * from agent where name=? and ended is null", (ti.get("to"),)).fetchone()
+            tgt = c.execute("select * from agent where name=? and ended is null", (str(ti.get("to", "")).split(" [")[0],)).fetchone()
             if tgt and not str(ti.get("message", "")).lstrip().startswith("[urgent]"):
                 why = cold_reason(tgt, t)
                 if why:
@@ -317,6 +317,13 @@ def hook(ev):
             notes.append(peer_note(rows))
         if notes:
             emit("PostToolUse", ctx="\n\n".join(notes))
+
+    elif ev == "prompt":  # a turn started without a tool call (human prompt or peer message)
+        set_status(c, name, "working")
+        rows = unread(c, name)
+        if rows:
+            advance(c, name, rows)
+            emit("UserPromptSubmit", ctx=peer_note(rows))
 
     elif ev == "stop":
         k = ctx_from(p.get("transcript_path"))
@@ -731,7 +738,7 @@ def main(argv=None):
     p.add_argument("--once", action="store_true")
     p.add_argument("--ci", action="store_true", help="also watch main CI with gh")
     p = add("hook", None)
-    p.add_argument("event", choices=["pre-tool", "post-tool", "stop", "session"])
+    p.add_argument("event", choices=["pre-tool", "post-tool", "prompt", "stop", "session"])
 
     a = ap.parse_args(argv)
     if a.cmd == "hook":

@@ -192,6 +192,31 @@ class T(unittest.TestCase):
         self.assertEqual(w.returncode, 2)
         self.assertIn("ping", w.stderr)
 
+    def test_prompt_hook_delivers_and_stops_waiter(self):
+        self.agent("a"); self.agent("b")
+        w = subprocess.Popen([sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"],
+                             env={**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"},
+                             stderr=subprocess.PIPE, text=True)
+        time.sleep(1)
+        out = self.hook("b", "prompt", prompt="hi")  # turn without a tool call: status -> working
+        self.assertEqual(out, {})
+        self.assertEqual(w.wait(timeout=5), 0)  # old waiter exits; no double delivery
+        self.sw("a", "post", "b", "while idle")
+        self.assertIn("while idle", self.hook("b", "prompt", prompt="x")["additionalContext"])
+        self.assertIn("no unread", self.sw("b", "read").stdout)
+
+    def test_sendmessage_ref_and_hookless_waiter(self):
+        self.agent("a")
+        t = int(time.time())
+        self.agent("cold", status="idle", ctx_tokens=140_000, last_active=t - 4000, compacted_at=0)
+        out = self.sendmsg("cold [ab12]")
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.sw("c", "join")  # no hooks: idle, ctx 0 counts as cheap
+        self.sw("a", "post", "c", "inbox")
+        w = self.sw("c", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("inbox", w.stderr)
+
     def test_stop_hook_records_ctx(self):
         self.agent("a")
         tr = os.path.join(self.d, "t.jsonl")

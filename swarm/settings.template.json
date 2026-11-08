@@ -11,6 +11,9 @@
     "SessionStart": [
       {"hooks": [{"type": "command", "command": "{{SWARM}} hook session"}]}
     ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "{{SWARM}} hook prompt"}]}
+    ],
     "PreToolUse": [
       {"matcher": "Edit|Write|MultiEdit|NotebookEdit|SendMessage",
        "hooks": [{"type": "command", "command": "{{SWARM}} hook pre-tool"}]}

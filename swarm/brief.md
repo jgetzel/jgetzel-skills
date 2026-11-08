@@ -27,5 +27,5 @@ your name is in `$SWARM_NAME`.
   Agent-tool subagents freely.
 - **Context.** At high context hand off with the `relaunch` skill, same
   model, and post the successor's name.
-- **Ending.** When the board has nothing for you, say so on the board and go
-  idle. Polling costs the swarm; your waiting hook wakes you.
+- **Ending.** When the board has nothing for you, go idle; don't poll. Your
+  waiting hook wakes you.
