@@ -27,6 +27,22 @@ def span(s):
     s = int(s or 0)
     return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
 
+def transcripts(name, cwd):
+    if not cwd:
+        return []
+    d = os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", cwd))
+    rx = re.compile(r"^" + re.escape(name) + r"(-?\d+)?$")
+    hit = []
+    for f in glob.glob(d + "/*.jsonl"):
+        with open(f) as fh:
+            for _, line in zip(range(40), fh):  # the record sits near the top
+                m = re.search(r'"type":"agent-name","agentName":"([^"]+)"', line)
+                if m:
+                    if rx.match(m[1]):
+                        hit.append(f)
+                    break
+    return sorted(hit, key=os.path.getmtime)
+
 def sh(*cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else ""
@@ -76,10 +92,9 @@ def report(c, since=0, git=True):
         tasks.append(t)
     out["tasks"] = tasks
     out["events"] = {a: dict(Counter(e["kind"] for e in ev if e["agent"] == a)) for a in sorted({e["agent"] for e in ev})}
-    # transcripts: Claude Code keeps one dir per cwd; match sessions by mtime inside the run window
+    # transcripts: files whose agent-name record is this agent or a relaunched successor (name-2, name2)
     for a in out["agents"]:
-        d = os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", a.get("cwd") or ""))
-        a["transcripts"] = sorted(glob.glob(d + "/*.jsonl"), key=os.path.getmtime)[-3:] if a.get("cwd") else []
+        a["transcripts"] = transcripts(a["name"], a.get("cwd"))
         n = a["name"]
         a["msgs_sent"] = c.execute("select count(*) from msg where frm=? and ts>=?", (n, since)).fetchone()[0]
         a["msgs_to_all"] = c.execute("select count(*) from msg where frm=? and dest='@all' and ts>=?", (n, since)).fetchone()[0]
