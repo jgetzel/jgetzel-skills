@@ -360,13 +360,17 @@ def handoff_nudge(c, name, p, comms=False):
     return f"Context is ~{k // 1000}k tokens: {ctx_advice(k, comms)}"
 
 
+def is_comms(c, name):
+    cm = c.execute("select v from meta where k='comms'").fetchone()
+    return bool(name) and (name.endswith("comms") or name == (cm[0] if cm else os.environ.get("SWARM_COMMS")))
+
+
 def comms_nudge(c):
     """The communicator is a normal session with no swarm hooks: read/wait/board/who stand in for post-tool."""
     name, sid = os.environ.get("SWARM_NAME"), os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not (name and sid):
         return
-    cm = c.execute("select v from meta where k='comms'").fetchone()
-    if not (name.endswith("comms") or name == (cm[0] if cm else os.environ.get("SWARM_COMMS"))):
+    if not is_comms(c, name):
         return
     tr = next(iter(glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))), None)
     n = handoff_nudge(c, name, {"transcript_path": tr, "session_id": sid}, comms=True)
@@ -1109,8 +1113,12 @@ def cmd_post(c, a):
         else:
             g["no live waiter"].append(x["name"])
     print("posted. " + "; ".join(f"{', '.join(v)}: {k}" for k, v in g.items() if v))
-    if g["no live waiter"]:
-        print(f"nudge by SendMessage (one line, `swarm read`): {', '.join(g['no live waiter'])}")
+    idle = [n for n in g["no live waiter"] if not is_comms(c, n)]
+    held = [n for n in g["no live waiter"] if is_comms(c, n)]
+    if held:  # the communicator isn't a SendMessage address; its next `swarm wait` delivers it
+        print(f"{', '.join(held)}: held; the communicator reads it when its inbox is next armed (no SendMessage nudge)")
+    if idle:
+        print(f"nudge by SendMessage (one line, `swarm read`): {', '.join(idle)}")
 
 
 def cmd_read(c, a):
