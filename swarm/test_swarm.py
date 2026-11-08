@@ -131,11 +131,27 @@ class T(unittest.TestCase):
         self.sw("a", "task", "add", "fix a"); self.sw("a", "task", "claim", "1")
         self.assertEqual(self.edit("a", "a.txt"), {})
         out = self.edit("b", "a.txt")  # other worktree, same repo-relative path
-        self.assertIn("a also touched a.txt", out["additionalContext"])
+        self.assertIn("a.txt is also being touched by a", out["additionalContext"])
         self.assertIn("task #1", out["additionalContext"])
         self.assertIn("b also touched a.txt", self.sw("a", "read").stdout)
-        self.assertEqual(self.edit("b", "a.txt"), {})  # once per pair and path
+        self.assertEqual(self.edit("b", "a.txt"), {})  # once per agent and path
         self.assertNotIn("also touched", self.sw("a", "read").stdout)
+
+    def test_hotspot_is_linear_and_notices_dont_wake(self):
+        for n in "abcdef":
+            self.cwd.setdefault(n, self.repo)
+            self.agent(n)
+        for n in "abcdef":
+            self.edit(n, "a.txt")
+        self.assertEqual(self.q("select count(*) from msg")[0][0], 1)  # a heard once; later touchers get hook notes
+        per = self.q("select agent,count(*) n from event where kind='overlap' group by agent")
+        self.assertTrue(all(r["n"] == 1 for r in per) and len(per) == 6)  # each agent told once per path
+        w = self.sw("a", "wait", "--timeout", "1", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 0)  # a has an unread notice, but notices don't wake
+        self.sw("b", "post", "a", "real question")
+        w = self.sw("a", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("also touched a.txt", w.stderr)  # the notice rides along with the wake
 
     def test_bash_git_status_touch(self):
         self.agent("a"); self.agent("b")
@@ -144,7 +160,7 @@ class T(unittest.TestCase):
         with open(os.path.join(self.wt, "b.txt"), "w") as h:
             h.write("changed")
         out = self.hook("b", "post-tool", tool_name="Bash", tool_input={"command": "sed -i s/x/y/ b.txt"})
-        self.assertIn("a also touched b.txt", out["additionalContext"])
+        self.assertIn("b.txt is also being touched by a", out["additionalContext"])
         self.assertIn("b also touched b.txt", self.sw("a", "read").stdout)
 
     def test_touches_clear_on_done(self):

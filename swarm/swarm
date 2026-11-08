@@ -150,7 +150,7 @@ def advance(c, name, rows):
 def fmt_msgs(rows):
     out = []
     for m in rows:
-        tag = ("swarm" if m["kind"] == "system" else m["frm"]) + (" (to all)" if m["dest"] == "@all" else "")
+        tag = ("swarm" if m["kind"] in ("system", "notice") else m["frm"]) + (" (to all)" if m["dest"] == "@all" else "")
         out.append(f"#{m['id']} {hhmm(m['ts'])} {tag}{' [urgent]' if m['urgent'] else ''}: {m['body']}")
     return "\n".join(out)
 
@@ -219,24 +219,33 @@ def task_of(c, name):
     return f"task #{r['id']}: {r['title']}" if r else "no claimed task"
 
 
+def told(c, who, path, t):
+    """Whether `who` already got an overlap notice for path this window; mark it if not."""
+    if c.execute("select 1 from event where kind='overlap' and agent=? and path=? and ts>?",
+                 (who, path, t - TOUCH_WIN)).fetchone():
+        return True
+    log(c, who, "overlap", path)
+    return False
+
+
 def touched(c, me_, paths, via, t=None):
-    """Record touches by me_; return notice lines for me_ (other agents get a system message)."""
+    """Record touches by me_; return notice lines for me_. Each agent hears about a path at most once
+    per window, so a hotspot touched by N agents costs N notices, not N^2. Notices don't wake anyone."""
     t = t or now()
     notes = []
     for path in paths:
-        for o in c.execute("select t.agent,t.last_ts from touch t join agent a on a.name=t.agent "
-                           "where t.path=? and t.agent!=? and t.last_ts>? and a.ended is null",
-                           (path, me_, t - TOUCH_WIN)).fetchall():
-            seen = c.execute("select 1 from event where kind='overlap' and path=? and ts>? and "
-                             "((agent=? and data=?) or (agent=? and data=?))",
-                             (path, t - TOUCH_WIN, me_, o[0], o[0], me_)).fetchone()
-            if seen:
-                continue
-            log(c, me_, "overlap", path, o[0])
-            notes.append(f"{o[0]} also touched {path} {ago(o[1])} ago ({task_of(c, o[0])}). "
-                         f"If your changes may conflict, message it.")
-            post(c, "swarm", o[0], f"{me_} also touched {path} just now ({task_of(c, me_)}). "
-                 f"If your changes may conflict, message it.", kind="system")
+        others = c.execute("select t.agent,t.last_ts from touch t join agent a on a.name=t.agent "
+                           "where t.path=? and t.agent!=? and t.last_ts>? and a.ended is null "
+                           "order by t.last_ts desc", (path, me_, t - TOUCH_WIN)).fetchall()
+        if others and not told(c, me_, path, t):
+            who = ", ".join(f"{o[0]} ({ago(o[1])} ago, {task_of(c, o[0])})" for o in others[:5])
+            more = f" and {len(others) - 5} more" if len(others) > 5 else ""
+            notes.append(f"{path} is also being touched by {who}{more}. If your changes may conflict, "
+                         f"message the owner.")
+        for o in others:
+            if not told(c, o[0], path, t):
+                post(c, "swarm", o[0], f"{me_} also touched {path} just now ({task_of(c, me_)}). "
+                     f"If your changes may conflict, message it.", kind="notice")
         c.execute("insert into touch(agent,path,first_ts,last_ts,via) values(?,?,?,?,?) "
                   "on conflict(agent,path) do update set last_ts=excluded.last_ts",
                   (me_, path, t, t, via))
@@ -559,7 +568,8 @@ def cmd_wait(c, a):
         if ag["waiter"] != pid or ag["status"] == "working":
             return  # superseded, or the agent runs again and its hooks deliver
         rows = unread(c, n)
-        if rows and (any(r["urgent"] for r in rows) or not cold_reason(ag)):
+        wake = [r for r in rows if r["kind"] != "notice" or r["urgent"]]  # notices ride along, never wake
+        if wake and (any(r["urgent"] for r in wake) or not cold_reason(ag)):
             print(deliver(c, n), file=sys.stderr)
             sys.exit(2)
         time.sleep(a.poll)
