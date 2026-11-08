@@ -798,6 +798,57 @@ def mem_available_gib():
         return float("inf")
 
 
+SWEEP_IDLE = 1800  # a worktree untouched this long (s) may be swept
+
+
+def inside(p, wt):
+    return p == wt or p.startswith(wt + os.sep)
+
+
+def sweep_worktrees(c, comms=None, dry=False):
+    """Remove clean, landed worktrees (and their local branch) that no live agent or process uses. Returns [(path, branch, MB)]."""
+    lines = (run(["git", "worktree", "list", "--porcelain"]) or "").splitlines()
+    if not lines:
+        return []
+    main = os.path.realpath(lines[0][9:])
+    B = "origin/main" if git(["-C", main, "remote", "get-url", "origin"]) else "main"
+    wts, cur = [], None
+    for l in lines[1:]:
+        if l.startswith("worktree "):
+            cur = [os.path.realpath(l[9:]), None]
+            wts.append(cur)
+        elif l.startswith("branch refs/heads/") and cur:
+            cur[1] = l[18:]
+    used = [os.path.realpath(p) for a in live_agents(c) for p in (a["wt"], a["cwd"]) if p]
+    used += list(wt_map(c).values())
+    pcwd = []
+    for d in os.listdir(PROC):
+        try:
+            pcwd.append(os.path.realpath(os.readlink(f"{PROC}/{d}/cwd")))
+        except OSError:
+            pass
+    t = time.time()
+    out = []
+    for wt, br in wts:
+        if (wt == main or not os.path.isdir(wt) or any(inside(u, wt) for u in used) or any(inside(p, wt) for p in pcwd)):
+            continue
+        gd = git(["-C", wt, "rev-parse", "--absolute-git-dir"])
+        last = max(os.path.getmtime(p) for p in (wt, os.path.join(gd or wt, "logs", "HEAD")) if os.path.exists(p))
+        if t - last < SWEEP_IDLE or not landed(wt, B, main):
+            continue  # landed() also requires a clean status
+        mb = int((run(["du", "-sk", wt]) or "0").split()[0]) // 1024
+        if not dry:
+            if gx(["-C", main, "worktree", "remove", wt], None)[0]:
+                continue
+            if br and br not in ("main", "master"):
+                gx(["-C", main, "branch", "-D", br], None)
+            log(c, None, "sweep", wt, f"{br} {mb}MB")
+        out.append((wt, br, mb))
+    if out and comms and not dry:
+        post(c, "swarm", comms, f"swept {len(out)} landed worktree(s), {sum(m for _, _, m in out)} MB freed.", kind="notice")
+    return out
+
+
 def lifecycle(c, t, comms, terms, opts):
     """End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4)."""
     wts = wt_map(c)
@@ -807,6 +858,7 @@ def lifecycle(c, t, comms, terms, opts):
     if git(["remote", "get-url", "origin"]):
         run(["git", "fetch", "-q", "origin", "main"])
         B = "origin/main"
+    sweep_worktrees(c, comms)
     by = {x["address"]: x for x in terms or []}
     tasks = pool(c)
     reusable = []
@@ -1486,6 +1538,10 @@ def cmd_watch(c, a):
 
 
 def cmd_watchd(c, a):
+    if a.dry_run:
+        for wt, br, mb in sweep_worktrees(c, dry=True):
+            print(f"{wt}\t{br}\t{mb} MB")
+        return
     repo = git(["rev-parse", "--show-toplevel"]) if a.ci else None
     comms = a.comms or os.environ.get("SWARM_COMMS")
     if comms:
@@ -1621,6 +1677,7 @@ def main(argv=None):
     p.add_argument("--interval", type=int, default=30)
     p.add_argument("--once", action="store_true")
     p.add_argument("--ci", action="store_true", help="also watch main CI with gh")
+    p.add_argument("--dry-run", action="store_true", help="only list the worktrees the sweep would remove, then exit")
     p.add_argument("--max-agents", type=int, help="cap for auto-spawn (default: live agents now)")
     p.add_argument("--min-free-mem", type=float, default=4, help="GiB of MemAvailable needed to auto-spawn")
     p.add_argument("--model", help="model for auto-spawned agents (default: the most common)")
