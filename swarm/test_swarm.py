@@ -331,6 +331,58 @@ class T(unittest.TestCase):
         self.sw("a", "task", "claim", "2")
         self.assertIn("go idle", self.sw("a", "task", "done", "2", "--evidence", "e").stdout)
 
+    def test_block_unblock(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod4", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod4", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        m.hc_terminals = lambda: None
+        c = m.connect()
+        self.agent("a"); self.agent("t-comms")
+        self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
+        self.sw("b", "task", "block", "1", "q?", ok=False)
+        self.sw("a", "task", "block", "1", "which db?")
+        self.assertIn("#1 blocked by a: which db?", self.sw("a", "board").stdout)
+        self.q("update task set lease_until=1")
+        self.assertEqual(m.pool(c), [])
+        m.reap(c, set(), comms="t-comms")
+        self.assertEqual(self.q("select state,owner from task")[0]["state"], "blocked")
+        cwd = os.getcwd(); os.chdir(self.repo)
+        try:
+            for _ in range(2):
+                m.watchd_tick(c, "t-comms", None, {})
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(len(self.q("select 1 from msg where dest='t-comms' and body like '%which db?%'")), 1)
+        self.sw("b", "task", "unblock", "1", ok=False)
+        self.sw("t-comms", "task", "unblock", "1", "--answer", "sqlite")
+        self.assertEqual(self.q("select state,owner from task")[0]["owner"], "a")
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
+        self.assertEqual(len(self.q("select 1 from msg where dest='a' and body like '%sqlite%'")), 1)
+
+    def test_hc_blocked_marks_task(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod5", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod5", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        st = {"status": "blocked"}
+        m.hc_terminals = lambda: [{"address": "h1", "state": "live", **st}]
+        c = m.connect()
+        self.agent("a", hc="h1", status="working"); self.agent("t-comms")
+        self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
+        cwd = os.getcwd(); os.chdir(self.repo)
+        try:
+            m.watchd_tick(c, "t-comms", None, {})
+            self.assertEqual(self.q("select state from task")[0]["state"], "blocked")
+            self.assertEqual(len(self.q("select 1 from msg where dest='t-comms'")), 1)  # one notice, not two
+            st["status"] = "working"
+            m.watchd_tick(c, "t-comms", None, {})
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
+
     def test_after_dependency(self):
         self.agent("a")
         self.sw("a", "task", "add", "first"); self.sw("a", "task", "add", "second", "--after", "1")

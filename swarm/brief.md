@@ -14,6 +14,7 @@ your name is in `$SWARM_NAME`.
   claim without evidence is a rumor to the others. Add tasks for what you
   find (`swarm task add "<title>"`); split a task that is too big. Can't
   finish it? `swarm task release <id>` (not `drop`, which kills the task).
+  Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours.
 - **Talk at breakpoints.** `swarm read` after a task, before a push, when
   blocked. `swarm post <agent|@all> "<text>"` only for a blocker, a conflict,
   or a discovery that changes someone's work. Status belongs on the board.
