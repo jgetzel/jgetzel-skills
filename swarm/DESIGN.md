@@ -237,6 +237,9 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
   trial-merges pairs with overlapping files (`git merge-tree`). Only a real
   token-level conflict becomes an episode and one `notice` per agent; a
   line-only conflict that merges compatibly is logged as `conflict-compat`.
+  Each side is the agent's own changes replayed onto `origin/main` (local
+  `main` only if ahead), so commits merged in from main belong to no one; an
+  agent whose own changes conflict with main is skipped (`conflict-stale`).
 - **Reservation locks.** `swarm lock '<glob>'` or `dir/` reserves what git
   can't see, such as a migration number. Overlapping locks are refused; a
   lock frees itself when the holder's work lands.
