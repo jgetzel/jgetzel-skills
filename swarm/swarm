@@ -795,7 +795,7 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
         lifecycle(c, t, comms, terms, opts or {})
     machine_tick(c)
     if repo:
-        ci_check(c, repo)
+        ci_check(c, repo, comms)
 
 
 def last_event(c, *kinds):
@@ -856,9 +856,9 @@ def machine_tick(c):
                 break
 
 
-def ci_check(c, repo):
+def ci_check(c, repo, comms=None):
     out = run(["gh", "run", "list", "--branch", "main", "--limit", "10", "--json",
-               "databaseId,headSha,conclusion,status"], cwd=repo)
+               "databaseId,headSha,conclusion,status,url"], cwd=repo)
     try:
         runs = [r for r in json.loads(out or "[]") if r["status"] == "completed"]
     except ValueError:
@@ -874,9 +874,14 @@ def ci_check(c, repo):
     body = run(["git", "log", "--format=%B%x1e", *rng.split()], cwd=repo) or ""
     names = sorted(set(re.findall(r"^Swarm-Agent:\s*(\S+)", body, re.M)))
     tail = "\n".join((run(["gh", "run", "view", str(red["databaseId"]), "--log-failed"], cwd=repo) or "").splitlines()[-30:])
-    for n in names:
-        post(c, "swarm", n, f"main CI is red (run {red['databaseId']}); you have commits since the last green. "
-             f"Fix forward.\n{tail}", urgent=True, kind="system")
+    live = {x["name"] for x in live_agents(c)}
+    msg = f"main CI is red (run {red['databaseId']} {red.get('url', '')}); you have commits since the last green. Fix forward.\n{tail}"
+    suspects = [n for n in names if n in live]
+    for n in suspects:
+        post(c, "swarm", n, msg, urgent=True, kind="system")
+    if not suspects and comms:  # nobody who committed is live
+        post(c, "swarm", comms, msg + f"\nNo live agent has commits in it (authors: {', '.join(names) or 'none'}).",
+             urgent=True, kind="system")
 
 
 # ---------- commands ----------
