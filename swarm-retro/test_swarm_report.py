@@ -8,7 +8,7 @@ def test_claim_to_done():
     c.executescript("""create table agent(name,model,started,ended,ctx_tokens,status);
 create table task(id,title,state,owner,evidence);
 create table event(id integer primary key,ts,agent,kind,path,data);
-create table msg(ts,frm,urgent);create table lock(path,agent,reason);
+create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
 insert into task values(1,'t','done','a','sha');
 insert into event(ts,agent,kind,data) values(100,'a','claim','#1 t'),(190,'a','done','#1 sha'),(150,'a','reap','x');""")
     r = sr.report(c)

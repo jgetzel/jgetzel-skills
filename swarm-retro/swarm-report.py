@@ -7,7 +7,7 @@ Default db: <git-common-dir>/swarm/swarm.db (or $SWARM_DB). Sections: agents, ta
 (claim -> done time, evidence), event counts per agent (overlaps, reaps, compactions, pushes,
 ci-red are the friction signals), messages, locks. Read-only.
 """
-import argparse, json, os, sqlite3, subprocess, sys
+import argparse, glob, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
 from datetime import datetime
 
@@ -30,7 +30,7 @@ def span(s):
 def report(c, since=0):
     q = lambda sql, *p: [dict(r) for r in c.execute(sql, p)]
     ev = q("select * from event where ts>=? order by ts", since)
-    out = {"agents": q("select name,model,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
+    out = {"agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
     claims = {}
     for e in ev:
         n = (e["data"] or "").split(" ", 1)[0]
@@ -44,6 +44,15 @@ def report(c, since=0):
         tasks.append(t)
     out["tasks"] = tasks
     out["events"] = {a: dict(Counter(e["kind"] for e in ev if e["agent"] == a)) for a in sorted({e["agent"] for e in ev})}
+    # transcripts: Claude Code keeps one dir per cwd; match sessions by mtime inside the run window
+    for a in out["agents"]:
+        d = os.path.expanduser("~/.claude/projects/" + re.sub(r"[^A-Za-z0-9]", "-", a.get("cwd") or ""))
+        a["transcripts"] = sorted(glob.glob(d + "/*.jsonl"), key=os.path.getmtime)[-3:] if a.get("cwd") else []
+        n = a["name"]
+        a["msgs_sent"] = c.execute("select count(*) from msg where frm=? and ts>=?", (n, since)).fetchone()[0]
+        a["msgs_to_all"] = c.execute("select count(*) from msg where frm=? and dest='@all' and ts>=?", (n, since)).fetchone()[0]
+        a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and ts>=?", (n, n, since)).fetchone()[0]
+        a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["messages"] = q("select frm, count(*) n, sum(urgent) urgent from msg where ts>=? group by frm", since)
     out["locks"] = q("select path,agent,reason from lock")
@@ -53,7 +62,9 @@ def show(r):
     t = lambda s: datetime.fromtimestamp(s).strftime("%H:%M") if s else "-"
     print("## agents")
     for a in r["agents"]:
-        print(f"- {a['name']} {a['model'] or '?'} {t(a['started'])}-{t(a['ended'])} {a['status']} ctx={(a['ctx_tokens'] or 0) // 1000}k")
+        print(f"- {a['name']} {a['model'] or '?'} {t(a['started'])}-{t(a['ended'])} {a['status']} ctx={(a['ctx_tokens'] or 0) // 1000}k msgs sent/recv={a['msgs_sent']}/{a['msgs_recv']} (@all {a['msgs_to_all']}) done-without-evidence={a['tasks_done_no_evidence']}")
+        for f in a["transcripts"]:
+            print(f"    transcript: {f}")
     print("\n## tasks")
     for k in r["tasks"]:
         print(f"- #{k['id']} {k['state']} {k['owner'] or '-'} {k['took'] or '-'}: {k['title']}" + (f"\n    evidence: {k['evidence']}" if k["evidence"] else ""))
