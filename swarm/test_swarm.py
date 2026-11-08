@@ -1010,6 +1010,26 @@ class T(unittest.TestCase):
         with self.assertRaises(SystemExit):  # a live name is refused
             m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
 
+    def test_spawn_launch_failure_keeps_live_agent(self):
+        m = self.mod()
+        c = m.connect()
+        self.sw("a", "task", "add", "do it")
+        m.run = self.fake_launch([], None, fail=True)
+        m.hc_terminals = lambda: [{"address": "t7", "name": "t-9", "state": "live"}]
+        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.assertEqual(tuple(self.q("select owner,state from task")[0]), ("t-9", "claimed"))
+        self.assertEqual(self.q("select hc from agent where name='t-9'")[0][0], "t7")
+
+    def test_launch_sh_survives_failure_after_hc_run(self):
+        fb = os.path.join(self.d, "lfb"); os.makedirs(fb)
+        j = json.dumps({"spaces": [{"id": "s", "tabs": [{"id": "b", "terminals": [{"terminal": "t1"}]}]}]})
+        for n, body in (("hc", "echo '{\"address\": \"t5\"}'"), ("herdr-app", f"[ \"$1\" = ls ] && echo '{j}' || exit 1")):
+            open(os.path.join(fb, n), "w").write("#!/bin/sh\n" + body + "\n"); os.chmod(os.path.join(fb, n), 0o755)
+        sh = os.path.join(os.path.dirname(__file__), "..", "relaunch", "launch.sh")
+        r = subprocess.run([sh, "x", "tab", "task"], capture_output=True, text=True,
+                           env={**os.environ, "PATH": fb + ":" + os.environ["PATH"], "HC_TERMINAL_ID": "t1"})
+        self.assertEqual((r.returncode, r.stdout.strip().splitlines()[-1:]), (0, ["t5"]), r.stderr)
+
     def test_spawn_task_launch_failure_rolls_back(self):
         m = self.mod()
         c = m.connect()

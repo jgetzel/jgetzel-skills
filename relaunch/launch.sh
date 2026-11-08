@@ -28,6 +28,9 @@ out=$(hc run --json --bg --outlive-parent --no-notify --name "$name" --cwd "$PWD
   -- env "${unset_vars[@]}" claude -n "$name" "$@" "$task")
 addr=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["address"])' "$out")
 
+# The agent runs now: report it, and treat naming the tab as best effort.
+echo "$addr"
+set +e
 # The window numbers a new tab; name it once the window has placed the terminal.
 if [ "$place" = tab ]; then
   for _ in $(seq 20); do
@@ -35,6 +38,6 @@ if [ "$place" = tab ]; then
     [ -n "$id" ] && { herdr-app do tab.rename --id "$id" --name "$name" >/dev/null; break; }
     sleep 0.5
   done
-  [ -n "$id" ] || echo "launch.sh: $addr has no tab yet; left unnamed" >&2
+  [ -n "${id:-}" ] || echo "launch.sh: $addr has no tab yet; left unnamed" >&2
 fi
-echo "$addr"
+exit 0
