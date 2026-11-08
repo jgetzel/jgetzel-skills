@@ -512,10 +512,19 @@ def snapshot(wt, base):
     return {"head": head, "tree": tree, "commit": commit, "files": [f for f in files if f]}
 
 
+def onto(wt, base, commit):
+    """Tree of commit's own changes (since its merge-base with base) replayed onto base; None if they conflict with base."""
+    mb = git(["-C", wt, "merge-base", base, commit])
+    r = subprocess.run(["git", "-C", wt, "merge-tree", "--write-tree", "--no-messages", f"--merge-base={mb}", base, commit],
+                       capture_output=True, text=True) if mb else None
+    return r.stdout.split()[0] if r and r.returncode == 0 else None
+
+
 def trial_merge(cwd, base, ca, cb):
-    """None if clean or git failed; else {path: [(ours, theirs) real hunk texts]} and a flag for line-only conflicts."""
+    """Merge two trees that are each one agent's own changes on base, so commits merged in from base are no one's.
+    None if git failed; else {path: [(ours, theirs) real hunk texts]} and a flag for line-only conflicts."""
     r = subprocess.run(["git", "-c", "merge.conflictStyle=diff3", f"--attr-source={base}", "merge-tree", "--write-tree",
-                        "--name-only", "--no-messages", ca, cb], cwd=cwd, capture_output=True, text=True)
+                        "--name-only", "--no-messages", f"--merge-base={base}", ca, cb], cwd=cwd, capture_output=True, text=True)
     if r.returncode != 1:
         if r.returncode:
             return None, False
@@ -542,8 +551,12 @@ def line_range(cwd, commit, path, text):
 
 def conflict_tick(c, t):
     wts = wt_map(c)
-    base = next((b for b in ("main", "origin/main", "master") if git(["rev-parse", "--verify", "-q", b])), None)
-    snaps, bywt = {}, {}
+    # origin/main, unless local main is ahead: a stale local main counts merged-in PRs as the agent's own edits
+    have = [b for b in ("origin/main", "main", "master") if git(["rev-parse", "--verify", "-q", b])]
+    if have[:2] == ["origin/main", "main"] and gx(["merge-base", "--is-ancestor", "origin/main", "main"], None)[0] == 0:
+        have.pop(0)
+    base = git(["rev-parse", have[0]]) if have else None
+    snaps, bywt, ontos = {}, {}, {}
     for n, w in wts.items():
         if w not in bywt:
             bywt[w] = snapshot(w, base)
@@ -560,11 +573,18 @@ def conflict_tick(c, t):
     for a, b in {(r[0], r[1]) for r in c.execute("select a,b from conflict")} - cand:
         c.execute("delete from conflict where a=? and b=?", (a, b))  # no longer overlapping, or an agent is gone
     for a, b in sorted(cand):
-        key = snaps[a]["tree"] + snaps[b]["tree"]
+        key = snaps[a]["tree"] + snaps[b]["tree"] + base
         old = c.execute("select key from pairkey where a=? and b=?", (a, b)).fetchone()
         if old and old[0] == key:
             continue
-        real, compat = trial_merge(wts[a], base, snaps[a]["commit"], snaps[b]["commit"])
+        for n in (a, b):
+            if n not in ontos:
+                ontos[n] = onto(wts[n], base, snaps[n]["commit"])
+        if not (ontos[a] and ontos[b]):  # an agent's work conflicts with base itself; it must merge base first
+            c.execute("insert or replace into pairkey values(?,?,?)", (a, b, key))
+            log(c, a, "conflict-stale", b)
+            continue
+        real, compat = trial_merge(wts[a], base, ontos[a], ontos[b])
         if real is None:
             log(c, a, "conflict-error", b)
             continue

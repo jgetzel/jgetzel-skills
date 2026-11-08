@@ -12,8 +12,9 @@ from collections import Counter
 from datetime import datetime, timezone
 
 # conflict/shared-tree come from watchd's trial merges; conflict-compat is a line conflict whose tokens merge (no notice sent);
+# conflict-stale is a pair skipped because one agent's own changes conflict with main;
 # overlap is the pre-sw-locks touch notice, kept so old dbs still report
-CONFLICTS = ("conflict", "conflict-compat", "shared-tree", "conflict-error", "overlap")
+CONFLICTS = ("conflict", "conflict-compat", "shared-tree", "conflict-error", "conflict-stale", "overlap")
 COLD_IDLE = 55 * 60  # as swarm/swarm: the prompt cache is warm this long
 FRICTION = ("conflict", "shared-tree", "overlap", "reap", "compact", "ci-red", "blocked", "push")
 
