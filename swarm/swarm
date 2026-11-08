@@ -701,7 +701,7 @@ def lifecycle(c, t, comms, terms, opts):
         model = task["model"] or opts.get("model") or max(set(models), key=models.count, default="sonnet")
         try:
             cmd_spawn(c, argparse.Namespace(name=name, model=model, task=[
-                f"Board task #{task['id']}: {task['title']}. It is claimed for you; read its body with swarm board."]))
+                f"Board task #{task['id']}: {task['title']}. It is claimed for you; read its body with `swarm task show {task['id']}`."]))
             log(c, name, "spawn", None, f"auto #{task['id']}")
             members.append({"name": name})
         except SystemExit:
@@ -915,6 +915,9 @@ def cmd_task(c, a):
             die(f"task #{a.id} is {r['state']}" + (f", owned by {r['owner']}" if r["owner"] else ""))
         log(c, n, "claim", None, f"#{a.id} {r['title']}")
         print(f"claimed #{a.id} until {hhmm(t + dur(a.lease))}")
+        print(r["body"] or "(no body)")
+    elif a.act == "show":
+        print(f"#{r['id']} {r['state']} {r['owner'] or '-'}  {r['title']}\n{r['body'] or '(no body)'}")
     elif a.act in ("renew", "done"):
         if r["owner"] != n or r["state"] != "claimed":
             die(f"task #{a.id} is not claimed by you")
@@ -971,6 +974,7 @@ def cmd_board(c, a):
             lease = f" lease {left // 60}m left" if left > 0 else " lease EXPIRED"
         wait = c.execute("select 1 from task where id=? and state!='done'", (r["after"],)).fetchone() if r["after"] else None
         print(f"#{r['id']} {r['state']:<7} {who}{lease}{' after #%d' % r['after'] if wait else ''}  {r['title']}"
+              + ("  [body: task show]" if r["body"] else "")
               + (f"  [evidence: {r['evidence']}]" if r["evidence"] else ""))
     done = c.execute("select count(*) from task where state='done'").fetchone()[0]
     print(f"({len(rows)} shown, {done} done)" if not a.all else f"({len(rows)} tasks)")
@@ -1321,6 +1325,8 @@ def main(argv=None):
         q = ts.add_parser(act)
         q.add_argument("id", type=int)
         q.add_argument("--lease", default="2h")
+    q = ts.add_parser("show")
+    q.add_argument("id", type=int)
     q = ts.add_parser("done")
     q.add_argument("id", type=int)
     q.add_argument("--evidence", required=True)

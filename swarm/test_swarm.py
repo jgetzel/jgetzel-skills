@@ -52,6 +52,14 @@ class T(unittest.TestCase):
             self.q(f"update agent set {k}=? where name=?", v, name)
 
     # ---- tasks ----
+    def test_task_show_and_claim_print_body(self):
+        self.sw("a", "task", "add", "t1", "--body", "build X and Y")
+        self.sw("a", "task", "add", "t2")
+        self.assertIn("[body: task show]", self.sw("a", "board").stdout)
+        self.assertIn("build X and Y", self.sw("b", "task", "show", "1").stdout)
+        self.assertIn("build X and Y", self.sw("a", "task", "claim", "1").stdout)
+        self.assertIn("(no body)", self.sw("a", "task", "show", "2").stdout)
+
     def test_release_reopens(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
