@@ -43,7 +43,7 @@ root:
 
 - `~/.claude/skills/swarm-retro/swarm-report.py --since <ISO start>`: agents,
   tasks (claim → done time, evidence), per-agent events and the friction list
-  (overlaps, reaps, compactions, CI reds, blocked prompts), messages, locks.
+  (conflicts, shared trees, reaps, compactions, CI reds, blocked prompts), messages, locks.
   Skip it with no `swarm.db`.
 - `~/.claude/skills/harness-retro/time-report.py --since <start>`: work and
   waiting time, CI per job. Add `--project-dir` for agents that worked in
@@ -56,8 +56,13 @@ From the report, list the **coordination signals**, each with the event it
 rests on:
 
 - duplicate work: two agents on one goal, or files changed by 2+ agents;
-- conflicts: failed rebases, CI red caused by a peer, and overlap events
-  *only* on files 2+ agents actually changed (the rest are notice noise);
+- conflicts: failed rebases, CI red caused by a peer, `conflict` events (a
+  real token-level clash between two agents' uncommitted work, notified),
+  `shared-tree` (two agents in one worktree), and `conflict-compat` (a line
+  conflict that merges at token level: no notice was sent, so not friction;
+  many of them means a registry file wants one entry per line). Old dbs have
+  `overlap` events, which were notice noise unless the file was really
+  changed by 2+ agents;
 - stale claims: `reap` events, and tasks still claimed long after their claim
   event with no commit from the owner;
 - tasks done without evidence, `deny-lock` and `deny-cold` events, `digest`

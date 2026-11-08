@@ -4,14 +4,17 @@
   swarm-report.py [--db PATH] [--since 2026-11-07T08:00] [--json]
 
 Default db: <git-common-dir>/swarm/swarm.db (or $SWARM_DB). Sections: agents, tasks
-(claim -> done time, evidence), event counts per agent (overlaps, reaps, compactions, pushes,
+(claim -> done time, evidence), event counts per agent (conflicts, shared trees, reaps, compactions, pushes,
 ci-red are the friction signals), messages, locks. Read-only.
 """
 import argparse, glob, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
 from datetime import datetime, timezone
 
-FRICTION = ("overlap", "reap", "compact", "ci-red", "blocked", "push")
+# conflict/shared-tree come from watchd's trial merges; conflict-compat is a line conflict whose tokens merge (no notice sent);
+# overlap is the pre-sw-locks touch notice, kept so old dbs still report
+CONFLICTS = ("conflict", "conflict-compat", "shared-tree", "conflict-error", "overlap")
+FRICTION = ("conflict", "shared-tree", "overlap", "reap", "compact", "ci-red", "blocked", "push")
 
 def dbpath(a):
     if a:
@@ -104,7 +107,7 @@ def report(c, since=None, git=True):
         a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'') not in ('system','notice') and ts>=?", (n, n, since)).fetchone()[0]
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
-    out["overlaps"] = [{k: e[k] for k in ("ts", "agent", "path", "data")} for e in ev if e["kind"] == "overlap"]
+    out["conflicts"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in CONFLICTS]
     out["idle_with_open_tasks"] = [{"ts": e["ts"], "agent": e["agent"]} for e in ev if e["kind"] == "digest"]
     if git:
         g = git_evidence(since)
@@ -131,7 +134,7 @@ def show(r):
     for e in r["friction"]:
         print(f"- {t(e['ts'])} {e['agent']} {e['kind']} {e['path'] or ''} {e['data'] or ''}".rstrip())
     for key, title in (("commits_per_hour", "landed commits per hour"), ("red_main_runs", "red main runs"),
-                       ("overlaps", "overlap events"), ("idle_with_open_tasks", "watchd digests (idle with open tasks)")):
+                       ("conflicts", "conflict, conflict-compat and shared-tree events"), ("idle_with_open_tasks", "watchd digests (idle with open tasks)")):
         print(f"\n## {title}")
         for x in r.get(key, []):
             print("- " + " ".join(f"{k}={v}" for k, v in x.items()))
