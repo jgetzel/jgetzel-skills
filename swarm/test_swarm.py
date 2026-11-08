@@ -1,0 +1,253 @@
+import sys; sys.dont_write_bytecode = True
+import json, os, sqlite3, subprocess, sys, tempfile, time, unittest
+
+SWARM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
+G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+class T(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.repo = os.path.join(self.d, "repo")
+        self.wt = os.path.join(self.d, "wt")
+        os.makedirs(self.repo)
+        subprocess.run([*G, "init", "-q", "-b", "main"], cwd=self.repo, check=True)
+        for f in ("a.txt", "b.txt"):
+            with open(os.path.join(self.repo, f), "w") as h:
+                h.write("x")
+        subprocess.run([*G, "add", "."], cwd=self.repo, check=True)
+        subprocess.run([*G, "commit", "-qm", "init"], cwd=self.repo, check=True)
+        subprocess.run([*G, "worktree", "add", "-q", "-b", "w2", self.wt], cwd=self.repo, check=True)
+        self.db = os.path.join(self.d, "swarm.db")
+        self.cwd = {"a": self.repo, "b": self.wt}
+
+    def sw(self, who, *args, stdin=None, ok=True):
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who}
+        r = subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True,
+                           text=True, cwd=self.cwd.get(who, self.repo))
+        if ok:
+            self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def hook(self, who, ev, **payload):
+        payload.setdefault("cwd", self.cwd[who])
+        r = self.sw(who, "hook", ev, stdin=json.dumps(payload))
+        return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else {}
+
+    def edit(self, who, path):
+        return self.hook(who, "pre-tool", tool_name="Edit", tool_input={"file_path": os.path.join(self.cwd[who], path)})
+
+    def q(self, sql, *a):
+        c = sqlite3.connect(self.db)
+        c.row_factory = sqlite3.Row
+        r = c.execute(sql, a).fetchall()
+        c.commit()
+        return r
+
+    def agent(self, name, **kw):
+        self.sw(name, "join")
+        for k, v in kw.items():
+            self.q(f"update agent set {k}=? where name=?", v, name)
+
+    # ---- tasks ----
+    def test_claim_lease_done(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.assertNotEqual(self.sw("b", "task", "claim", "1", ok=False).returncode, 0)
+        self.assertEqual(self.sw("a", "task", "done", "1", ok=False).returncode, 2)
+        self.sw("a", "task", "renew", "1", "--lease", "3h")
+        self.sw("a", "task", "done", "1", "--evidence", "sha abc")
+        self.assertEqual(self.q("select state,evidence from task")[0]["state"], "done")
+
+    def test_reaping(self):
+        self.sw("a", "task", "add", "t1")
+        self.sw("a", "task", "claim", "1")
+        self.sw("b", "join")
+        self.sw("a", "lock", "a.txt")
+        self.q("update task set lease_until=1")
+        self.q("update lock set lease_until=1")
+        self.sw("a", "watchd", "--once")
+        self.assertEqual(self.q("select state from task")[0]["state"], "open")
+        self.assertEqual(self.q("select * from lock"), [])
+        self.assertIn("lease", self.sw("a", "read").stdout)
+        # dead agent: hc terminal gone releases everything
+        self.sw("a", "task", "claim", "1")
+        self.sw("a", "lock", "b.txt")
+        self.q("update agent set hc='t99' where name='a'")
+        sys.path.insert(0, os.path.dirname(SWARM))
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        c = m.connect()
+        out = m.reap(c, live_addrs={"t1"})
+        self.assertIn("agent a", out)
+        self.assertEqual(self.q("select state from task")[0]["state"], "open")
+        self.assertEqual(self.q("select * from lock"), [])
+        self.assertIsNotNone(self.q("select ended from agent where name='a'")[0]["ended"])
+
+    # ---- messages ----
+    def test_cursor(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "post", "b", "hello")
+        self.sw("a", "post", "@all", "all")
+        self.assertIn("hello", self.sw("b", "read").stdout)
+        self.assertIn("no unread", self.sw("b", "read").stdout)
+        self.assertIn("no unread", self.sw("a", "read").stdout)  # own @all not echoed
+        self.sw("a", "post", "b", "again")
+        self.assertIn("again", self.sw("b", "read").stdout)
+
+    def test_post_delivery_in_post_tool(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "post", "b", "look at X")
+        out = self.hook("b", "post-tool", tool_name="Read", tool_input={})
+        self.assertIn("look at X", out["additionalContext"])
+        self.assertEqual(self.hook("b", "post-tool", tool_name="Read", tool_input={}), {})
+
+    # ---- touches ----
+    def test_touch_overlap_both_ways(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "task", "add", "fix a"); self.sw("a", "task", "claim", "1")
+        self.assertEqual(self.edit("a", "a.txt"), {})
+        out = self.edit("b", "a.txt")  # other worktree, same repo-relative path
+        self.assertIn("a also touched a.txt", out["additionalContext"])
+        self.assertIn("task #1", out["additionalContext"])
+        self.assertIn("b also touched a.txt", self.sw("a", "read").stdout)
+        self.assertEqual(self.edit("b", "a.txt"), {})  # once per pair and path
+        self.assertNotIn("also touched", self.sw("a", "read").stdout)
+
+    def test_bash_git_status_touch(self):
+        self.agent("a"); self.agent("b")
+        self.hook("b", "post-tool", tool_name="Bash", tool_input={"command": "true"})  # baseline
+        self.assertEqual(self.edit("a", "b.txt"), {})
+        with open(os.path.join(self.wt, "b.txt"), "w") as h:
+            h.write("changed")
+        out = self.hook("b", "post-tool", tool_name="Bash", tool_input={"command": "sed -i s/x/y/ b.txt"})
+        self.assertIn("a also touched b.txt", out["additionalContext"])
+        self.assertIn("b also touched b.txt", self.sw("a", "read").stdout)
+
+    def test_touches_clear_on_done(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "task", "add", "t"); self.sw("a", "task", "claim", "1")
+        self.edit("a", "a.txt")
+        self.sw("a", "task", "done", "1", "--evidence", "x")
+        self.assertEqual(self.edit("b", "a.txt"), {})
+
+    # ---- locks ----
+    def test_hard_lock_deny(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "lock", "*.txt", "--reason", "refactor")
+        out = self.edit("b", "a.txt")
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("locked by a", out["permissionDecisionReason"])
+        self.assertEqual(self.edit("a", "a.txt"), {})
+        self.sw("a", "unlock", "*.txt")
+        self.assertEqual(self.edit("b", "a.txt").get("permissionDecision"), None)
+
+    # ---- cold-cache rule ----
+    def sendmsg(self, to, text="hi"):
+        return self.hook("a", "pre-tool", tool_name="SendMessage", tool_input={"to": to, "message": text})
+
+    def test_cold_cache_cheap_cases_and_cold(self):
+        self.agent("a")
+        t = int(time.time())
+        cold = dict(status="idle", ctx_tokens=140_000, last_active=t - 72 * 60, compacted_at=0)
+        cheap = {
+            "working": dict(cold, status="working"),
+            "warm": dict(cold, last_active=t - 10 * 60),
+            "compacted": dict(cold, compacted_at=t - 60),
+            "small": dict(cold, ctx_tokens=30_000),
+        }
+        for n, kw in cheap.items():
+            self.agent(n, **kw)
+            self.assertEqual(self.sendmsg(n), {}, n)
+        self.agent("cold", **cold)
+        out = self.sendmsg("cold")
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("idle 72 min", out["permissionDecisionReason"])
+        self.assertIn("140k", out["permissionDecisionReason"])
+        self.assertEqual(self.sendmsg("nobody-we-know"), {})  # not a member
+        # post to a cold agent is stored without a wake
+        r = self.sw("a", "post", "cold", "later")
+        self.assertIn("held, cold", r.stdout)
+        # wait: non-urgent stays held, [urgent] wakes (exit 2)
+        w = self.sw("cold", "wait", "--timeout", "2", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 0)
+
+    def test_urgent_override(self):
+        self.agent("a")
+        t = int(time.time())
+        self.agent("cold", status="idle", ctx_tokens=140_000, last_active=t - 4000, compacted_at=0)
+        self.assertEqual(self.sendmsg("cold", "[urgent] main is red"), {})
+        self.sw("a", "post", "cold", "--urgent", "stop pushing")
+        w = self.sw("cold", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("stop pushing", w.stderr)
+
+    def test_wait_wakes_warm_idle(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "post", "b", "ping")
+        w = self.sw("b", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("ping", w.stderr)
+
+    def test_prompt_hook_delivers_and_stops_waiter(self):
+        self.agent("a"); self.agent("b")
+        w = subprocess.Popen([sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"],
+                             env={**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"},
+                             stderr=subprocess.PIPE, text=True)
+        time.sleep(1)
+        out = self.hook("b", "prompt", prompt="hi")  # turn without a tool call: status -> working
+        self.assertEqual(out, {})
+        self.assertEqual(w.wait(timeout=5), 0)  # old waiter exits; no double delivery
+        self.sw("a", "post", "b", "while idle")
+        self.assertIn("while idle", self.hook("b", "prompt", prompt="x")["additionalContext"])
+        self.assertIn("no unread", self.sw("b", "read").stdout)
+
+    def test_newest_waiter_owns_inbox(self):
+        self.agent("a"); self.agent("b")
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"}
+        cmd = [sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"]
+        w1 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.8)
+        w2 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.8)
+        self.assertEqual(w1.wait(timeout=5), 0)  # superseded without ever seeing 'working'
+        self.assertIn("wakes", self.sw("a", "post", "b", "ping").stdout)
+        self.assertEqual(w2.wait(timeout=5), 2)
+        self.assertIn("ping", w2.stderr.read())
+        self.assertIn("no live waiter", self.sw("a", "post", "b", "again").stdout)
+
+    def test_sendmessage_ref_and_hookless_waiter(self):
+        self.agent("a")
+        t = int(time.time())
+        self.agent("cold", status="idle", ctx_tokens=140_000, last_active=t - 4000, compacted_at=0)
+        out = self.sendmsg("cold [ab12]")
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.sw("c", "join")  # no hooks: idle, ctx 0 counts as cheap
+        self.sw("a", "post", "c", "inbox")
+        w = self.sw("c", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
+        self.assertEqual(w.returncode, 2)
+        self.assertIn("inbox", w.stderr)
+
+    def test_stop_hook_records_ctx(self):
+        self.agent("a")
+        tr = os.path.join(self.d, "t.jsonl")
+        open(tr, "w").write(json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": 10, "cache_read_input_tokens": 90000, "cache_creation_input_tokens": 500}}}) + "\n")
+        self.hook("a", "stop", transcript_path=tr)
+        r = self.q("select status,ctx_tokens from agent where name='a'")[0]
+        self.assertEqual((r["status"], r["ctx_tokens"]), ("idle", 90510))
+        self.hook("a", "session", source="compact", transcript_path=tr)
+        self.assertGreater(self.q("select compacted_at from agent where name='a'")[0][0], 0)
+
+    def test_board_who(self):
+        self.agent("a")
+        self.sw("a", "task", "add", "do it")
+        self.assertIn("do it", self.sw("a", "board").stdout)
+        self.assertIn("a idle", self.sw("a", "who").stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

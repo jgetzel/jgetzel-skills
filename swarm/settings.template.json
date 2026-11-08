@@ -1,0 +1,31 @@
+{
+  "crossSessionInbound": "accept",
+  "promptCacheTtl": "1h",
+  "env": {
+    "SWARM_NAME": "{{NAME}}",
+    "SWARM_DB": "{{DB}}",
+    "PATH": "{{PATH}}",
+    "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "100000"
+  },
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "{{SWARM}} hook session"}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "{{SWARM}} hook prompt"}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Edit|Write|MultiEdit|NotebookEdit|SendMessage",
+       "hooks": [{"type": "command", "command": "{{SWARM}} hook pre-tool"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "{{SWARM}} hook post-tool"}]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "{{SWARM}} hook stop"},
+        {"type": "command", "command": "{{SWARM}} wait", "async": true, "asyncRewake": true, "timeout": 21600}
+      ]}
+    ]
+  }
+}
