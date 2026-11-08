@@ -933,26 +933,18 @@ def lifecycle(c, t, comms, terms, opts):
     nums = [int(m[1]) for (nm,) in c.execute("select name from agent") if (m := re.fullmatch(re.escape(prefix) + r"(\d+)", nm))]
     models = [a["model"] for a in members if a["model"]]
     for task in tasks:
-        # startable for a full interval first, so an explicit spawn that claims it wins
-        seen = c.execute("select ts from event where kind='startable' and path=?", (str(task["id"]),)).fetchone()
-        if not seen:
-            log(c, None, "startable", str(task["id"]))
-        if not seen or t - seen[0] < opts.get("interval", 0):
-            continue
         if len(members) >= opts["max_agents"] or mem_available_gib() < opts.get("min_free_gib", 4):
             break
         name = f"{prefix}{max(nums, default=0) + 1}"
         nums.append(int(name[len(prefix):]))
-        c.execute("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open'",
-                  (name, t + LEASE, t, task["id"]))
         model = task["model"] or opts.get("model") or max(set(models), key=models.count, default="sonnet")
         try:
-            cmd_spawn(c, argparse.Namespace(name=name, model=model, task=[
-                f"Board task #{task['id']}: {task['title']}. It is claimed for you; read its body with `swarm task show {task['id']}`."]))
+            cmd_spawn(c, argparse.Namespace(name=name, model=model, task_id=task["id"], task=[]))
             log(c, name, "spawn", None, f"auto #{task['id']}")
             members.append({"name": name})
-        except SystemExit:
-            c.execute("update task set state='open', owner=null, lease_until=null, first_claimed_at=? where id=?", (task["first_claimed_at"], task["id"]))
+        except LostRace:  # a peer claimed it between pool() and now
+            continue
+        except SystemExit:  # launch failed; cmd_spawn already reopened the task
             post(c, "swarm", comms, f"auto-spawn of {name} for #{task['id']} failed (launch error).", kind="notice")
             break
 
@@ -1872,11 +1864,48 @@ def cmd_watchd(c, a):
         time.sleep(a.interval)
 
 
+class LostRace(SystemExit):
+    """spawn --task: the task was no longer open when the claim ran."""
+
+
+def reserve(c, name, tid, model):
+    """Intent before effect (sw-ownership §4.3): the name and task #tid become the new agent's in one transaction."""
+    t = now()
+    with tx(c):
+        if c.execute("select 1 from agent where name=? and ended is null", (name,)).fetchone():
+            die(f"{name} is a live agent")
+        r = c.execute("select * from task where id=?", (tid,)).fetchone()
+        if not r:
+            die(f"no task #{tid}")
+        if r["after"] and c.execute("select 1 from task where id=? and state!='done'", (r["after"],)).fetchone():
+            die(f"#{tid} waits on #{r['after']}")
+        if r["state"] != "open":
+            raise LostRace(f"task #{tid} is {r['state']}" + (f", owned by {r['owner']}" if r["owner"] else ""))
+        ensure_agent(c, name, os.getcwd(), model=model)
+        c.execute("update agent set hc=null, ended=null where name=?", (name,))
+        c.execute("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=?",
+                  (name, t + LEASE, t, tid))
+        log(c, name, "claim", None, f"#{tid} {r['title']}")
+    return r
+
+
+def unreserve(c, name, r):
+    """Launch failed: end the row and reopen the task, if the new agent still holds it."""
+    with tx(c):
+        c.execute("update agent set ended=? where name=? and hc is null", (now(), name))
+        c.execute("update task set state='open', owner=null, lease_until=null, first_claimed_at=? where id=? and owner=? and state='claimed'",
+                  (r["first_claimed_at"], r["id"], name))
+
+
 def cmd_spawn(c, a):
     name = a.name
     task = " ".join(a.task)
+    tid = getattr(a, "task_id", None)
+    if tid:
+        r = reserve(c, name, tid, a.model)
+        task = task or f"Board task #{tid}: {r['title']}. It is claimed for you; read its body with `swarm task show {tid}`."
     if not task:
-        die("usage: swarm spawn <name> [--model M] -- <task>")
+        die("usage: swarm spawn <name> [--model M] [--task N] -- <task>")
     self_ = os.path.join(HERE, "swarm")
     db = dbpath()
     tpl = open(os.path.join(HERE, "settings.template.json")).read()
@@ -1900,8 +1929,13 @@ def cmd_spawn(c, a):
     launch = os.path.join(HERE, "..", "relaunch", "launch.sh")
     out = run([launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf])
     if out is None:
+        if tid:
+            unreserve(c, name, r)
         die("launch.sh failed")
-    ensure_agent(c, name, os.getcwd(), hc=out.strip().splitlines()[-1], model=a.model)
+    if tid:
+        c.execute("update agent set hc=? where name=? and hc is null", (out.strip().splitlines()[-1], name))
+    else:
+        ensure_agent(c, name, os.getcwd(), hc=out.strip().splitlines()[-1], model=a.model)
     log(c, me() if os.environ.get("SWARM_NAME") else "human", "spawn", None, name)
     print(f"spawned {name} at {out.strip()}")
 
@@ -1926,6 +1960,7 @@ def main(argv=None):
     p = add("spawn", cmd_spawn)
     p.add_argument("name")
     p.add_argument("--model", default="sonnet")
+    p.add_argument("--task", type=int, dest="task_id", help="claim this board task for the new agent before launching")
     p.add_argument("task", nargs="*")
     p = add("join", cmd_join)
     p.add_argument("name", nargs="?")
