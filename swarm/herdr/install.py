@@ -16,29 +16,33 @@ TABS_PATCH = [
      'import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec, appHome, focused } from "herdr";'),
     ("  init() {\n",
      "  init(_props, cx) {\n"
-     "    this.swarm = {}; // folder -> has a live swarm (undefined: not checked yet)\n"
+     "    this.swarm = {}; // machine:folder -> has a live swarm (undefined: not checked yet)\n"
      "    cx.timer.every(15000, cx => this.swarmCheck(cx));\n"),
     ("  render() {\n",
      "  swarmFolder() {\n"
      "    const space = spaces().find(s => s.active), f = focused();\n"
-     "    if (!space || space.machine) return null; // the swarm CLI runs here only\n"
-     "    return (f?.pane ? panes().find(p => p.pane === f.pane)?.cwd : null) || f?.cwd || space.folder || null;\n"
+     "    if (!space) return null;\n"
+     "    const cwd = (f?.pane ? panes().find(p => p.pane === f.pane)?.cwd : null) || f?.cwd || space.folder;\n"
+     "    return cwd ? { cwd, on: space.machine ?? null, key: `${space.machine}:${cwd}` } : null;\n"
      "  }\n\n"
      "  swarmCheck(cx) {\n"
-     "    const folder = this.swarmFolder();\n"
-     "    if (!folder || this.swarmBusy) return;\n"
+     "    const loc = this.swarmFolder();\n"
+     "    if (!loc || this.swarmBusy) return;\n"
      "    this.swarmBusy = true;\n"
      "    cx.spawn(async cx => {\n"
      "      let on = false;\n"
-     '      try { const r = await exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json"], { cwd: folder }); on = r.code === 0 && JSON.parse(r.stdout).active === true; } catch {}\n'
+     '      // Another machine: its installed swarm skill; here: the CLI beside mods/swarm.\n'
+     '      const r = loc.on ? exec("sh", ["-c", \'exec env -u SWARM_DB python3 "$HOME/.claude/skills/swarm/swarm" state --json\'], { cwd: loc.cwd, on: loc.on })\n'
+     '        : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json"], { cwd: loc.cwd });\n'
+     '      try { const out = await r; on = out.code === 0 && JSON.parse(out.stdout).active === true; } catch {}\n'
      "      this.swarmBusy = false;\n"
-     "      if (this.swarm[folder] !== on) { this.swarm[folder] = on; cx.notify(); }\n"
+     "      if (this.swarm[loc.key] !== on) { this.swarm[loc.key] = on; cx.notify(); }\n"
      "    });\n"
      "  }\n\n"
      "  render(cx) {\n"),
     ('    const enabled = shared("workspace.panels") ?? ["files", "changes"];\n',
-     '    const folder = this.swarmFolder(), swarmOn = folder ? this.swarm[folder] : false;\n'
-     '    if (folder && swarmOn === undefined) this.swarmCheck(cx);\n'
+     '    const loc = this.swarmFolder(), swarmOn = loc ? this.swarm[loc.key] : false;\n'
+     '    if (loc && swarmOn === undefined) this.swarmCheck(cx);\n'
      '    // Unchecked counts as on, so restoring a space\'s Swarm panel survives the first check.\n'
      '    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...(swarmOn !== false ? ["swarm"] : [])];\n'
      '    if (swarmOn === false && panel && !panel.hidden && body?.active === "swarm") run("layout.hide", { id: "panel" });\n'),

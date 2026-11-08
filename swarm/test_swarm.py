@@ -633,6 +633,9 @@ class T(unittest.TestCase):
         self.assertEqual(s["messages"][0]["dest"], "b")
         self.assertIn("block", [e["kind"] for e in s["events"]])
         self.assertIn("machine", s)
+        self.sw("a", "post", "b", "x" * 5000)
+        s = json.loads(self.sw("a", "state", "--json").stdout)
+        self.assertEqual(len(s["messages"][0]["body"]), 500)  # long bodies (briefs) are cut
 
     def test_state_json_old_db(self):
         c = sqlite3.connect(self.db)  # schema from before agent.wt / task.after,model,question

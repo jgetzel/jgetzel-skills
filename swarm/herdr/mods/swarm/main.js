@@ -2,8 +2,11 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, run, appHome, window } from "herdr";
 
-// mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; `state --json` is read-only.
-const SWARM = () => `${appHome()}/mods/swarm/../../../swarm`;
+// Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
+// machine it is that machine's installed skill. `state --json` is read-only.
+const swarmState = (cwd, on) => on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB python3 "$HOME/.claude/skills/swarm/swarm" state --json'], { cwd, on })
+  : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json"], { cwd });
 const POLL = 3000, PR_POLL = 60000, TASK_H = 46, HEAD_H = 26, ACT_H = 20;
 
 function find(node, id) {
@@ -16,6 +19,7 @@ function location() {
   const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on: space?.machine ?? null };
 }
+const locKey = () => { const l = location(); return `${l.on}:${l.cwd}`; };
 const ago = s => s == null ? "" : s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m` : s >= 60 ? `${Math.floor(s / 60)}m` : `${Math.max(0, s)}s`;
 const hhmm = ts => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const base = p => p ? p.split("/").filter(Boolean).pop() : "";
@@ -40,16 +44,17 @@ export default class Swarm extends View {
   refresh(cx) {
     if (this.loading) return;
     const { cwd, on } = location();
-    this.loc = cwd;
-    if (!cwd || on) { this.s = null; this.error = on ? "Swarm panel reads local spaces only" : "No folder"; return; }
+    this.loc = locKey();
+    if (!cwd) { this.s = null; this.error = "No folder"; return; }
     this.loading = true; this.at = Date.now();
     cx.spawn(async cx => {
       try {
-        const r = await exec("env", ["-u", "SWARM_DB", "python3", SWARM(), "state", "--json"], { cwd });
+        const r = await swarmState(cwd, on);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = JSON.parse(r.stdout);
-        if (location().cwd !== cwd) return; // moved to another folder meanwhile; the next render asks again
-        if (s.db !== this.s?.db) { this.prs = null; this.ci = null; this.seen.clear(); this.cwd = cwd; this.refreshPrs(cx); }
+        const now = location();
+        if (now.cwd !== cwd || now.on !== on) return; // moved to another folder meanwhile; the next render asks again
+        if (s.db !== this.s?.db || on !== this.on) { this.prs = null; this.ci = null; this.seen.clear(); this.cwd = cwd; this.on = on; this.refreshPrs(cx); }
         this.s = s; this.error = null;
       } catch (e) { this.error = String(e.message ?? e); }
       finally { this.loading = false; cx.notify(); }
@@ -57,14 +62,14 @@ export default class Swarm extends View {
   }
 
   refreshPrs(cx) {
-    const cwd = this.cwd;
+    const cwd = this.cwd, on = this.on;
     if (!cwd || this.prLoading) return;
     this.prLoading = true;
     cx.spawn(async cx => {
       try {
-        const pr = await exec("gh", ["pr", "list", "--limit", "15", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd });
+        const pr = await exec("gh", ["pr", "list", "--limit", "15", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd, on });
         this.prs = pr.code === 0 ? JSON.parse(pr.stdout) : null;
-        const ci = await exec("gh", ["run", "list", "--branch", "main", "--limit", "1", "--json", "status,conclusion,displayTitle,createdAt"], { cwd });
+        const ci = await exec("gh", ["run", "list", "--branch", "main", "--limit", "1", "--json", "status,conclusion,displayTitle,createdAt"], { cwd, on });
         this.ci = ci.code === 0 ? JSON.parse(ci.stdout)[0] ?? null : null;
       } catch { this.prs = null; this.ci = null; } // no gh: the section just stays out
       finally { this.prLoading = false; cx.notify(); }
@@ -225,7 +230,7 @@ export default class Swarm extends View {
   }
 
   render(cx) {
-    if (this.visible() && !this.loading && (location().cwd !== this.loc || Date.now() - (this.at ?? 0) > POLL)) this.refresh(cx);
+    if (this.visible() && !this.loading && (locKey() !== this.loc || Date.now() - (this.at ?? 0) > POLL)) this.refresh(cx);
     const t = theme(), el = this.draw(t);
     // Rows first drawn in this frame are transparent; a frame later they fade in, staggered.
     if (this.fresh.size && !this.entering) {
