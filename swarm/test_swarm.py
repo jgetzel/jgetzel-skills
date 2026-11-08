@@ -426,6 +426,34 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select count(*) from event where kind='sweep'")[0][0], 1)
         self.assertIn("swept 1", self.q("select body from msg where kind='notice'")[0][0])
 
+    def test_sweep_caches_not_landed(self):
+        self.write("b", "u.txt", "wip")
+        subprocess.run([*G, "add", "."], cwd=self.wt, check=True)
+        subprocess.run([*G, "commit", "-qm", "wip"], cwd=self.wt, check=True)
+        self.old_wt(self.wt)
+        sys.path.insert(0, os.path.dirname(SWARM))
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        m.PROC = self.fake_proc()
+        c = m.connect()
+        calls = []
+        real = m.landed
+        m.landed = lambda *a: calls.append(a) or real(*a)
+        cwd = os.getcwd(); os.chdir(self.repo)
+        try:
+            m.sweep_worktrees(c); self.assertEqual(len(calls), 1)
+            m.sweep_worktrees(c); self.assertEqual(len(calls), 1)  # HEAD and B unchanged
+            subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "x"], cwd=self.repo, check=True)
+            m.sweep_worktrees(c); self.assertEqual(len(calls), 1 + (m.git(["-C", self.repo, "remote", "get-url", "origin"]) is None))  # B moved only when it is local main
+            subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "y"], cwd=self.wt, check=True)
+            self.old_wt(self.wt)
+            n = len(calls); m.sweep_worktrees(c); self.assertEqual(len(calls), n + 1)  # HEAD moved
+        finally:
+            os.chdir(cwd)
+
     def test_landed_agent_ended_and_cleaned(self):
         self.idle("e", wt=self.wt)
         self.comms_tick()
