@@ -23,6 +23,14 @@ const locKey = () => { const l = location(); return `${l.on}:${l.cwd}`; };
 const ago = s => s == null ? "" : s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m` : s >= 60 ? `${Math.floor(s / 60)}m` : `${Math.max(0, s)}s`;
 const hhmm = ts => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const base = p => p ? p.split("/").filter(Boolean).pop() : "";
+// One display line: first non-empty line (rows are fixed-height; a newline would overlap neighbours).
+const one = x => String(x ?? "").split("\n").map(l => l.trim()).find(Boolean) ?? "";
+// Push events carry the shell command; show "push <branch>" (last plain arg of the git push segment).
+const evText = e => {
+  const m = e.kind === "push" && /git push([^\n;&|]*)/.exec(e.data ?? "");
+  if (m) return `push ${m[1].trim().split(/\s+/).filter(w => w && !w.startsWith("-")).pop() ?? ""}`.trim();
+  return one(`${e.kind}${e.data ? " " + one(e.data) : e.path ? " " + e.path : ""}`);
+};
 const kilo = n => n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 
 export default class Swarm extends View {
@@ -117,8 +125,8 @@ export default class Swarm extends View {
 
   agentRow(t, a) {
     const open = this.open[`a:${a.name}`], wide = this.width >= 340, c = this.statusColor(t, a.status);
-    const detail = [...a.events.map(e => ({ ts: e.ts, text: `${e.kind}${e.data ? " " + e.data : e.path ? " " + e.path : ""}`, ev: true })),
-      ...a.messages.map(m => ({ ts: m.ts, text: `${m.frm === a.name ? "→ " + m.dest : "← " + m.frm}: ${m.body}`, urgent: m.urgent }))]
+    const detail = [...a.events.map(e => ({ ts: e.ts, text: evText(e), ev: true })),
+      ...a.messages.map(m => ({ ts: m.ts, text: `${m.frm === a.name ? "→ " + m.dest : "← " + m.frm}: ${one(m.body)}`, urgent: m.urgent }))]
       .sort((x, y) => y.ts - x.ts).slice(0, 8);
     const meta = [a.model, a.ctx_tokens ? `${kilo(a.ctx_tokens)} ctx` : null].filter(Boolean).join(" · ");
     const h = 84 + (open ? 10 + detail.length * 18 + (a.files.length || a.locks.length ? 18 : 0) : 0);
@@ -179,9 +187,9 @@ export default class Swarm extends View {
 
   activity(t) {
     const s = this.s, items = [
-      ...s.messages.map(m => ({ key: `m${m.id}`, ts: m.ts, who: m.frm, text: `→ ${m.dest === "all" ? "@all" : m.dest}: ${m.body}`, color: m.urgent ? t.blocked : m.kind === "system" ? t.ansi4 : t.foreground })),
+      ...s.messages.map(m => ({ key: `m${m.id}`, ts: m.ts, who: m.frm, text: `→ ${m.dest === "all" ? "@all" : m.dest}: ${one(m.body)}`, color: m.urgent ? t.blocked : m.kind === "system" ? t.ansi4 : t.foreground })),
       ...s.events.filter(e => !["post", "wake", "heavy-start"].includes(e.kind)).map(e => ({ key: `e${e.id}`, ts: e.ts, who: e.agent ?? "swarm",
-        text: `${e.kind}${e.data ? " " + e.data : ""}${e.path ? " " + e.path : ""}`, color: ["overlap", "conflict", "pressure", "ci-red", "orphan-kill"].includes(e.kind) ? t.blocked : t.muted })),
+        text: e.kind === "push" ? evText(e) : one(`${e.kind}${e.data ? " " + one(e.data) : ""}${e.path ? " " + e.path : ""}`), color: ["overlap", "conflict", "pressure", "ci-red", "orphan-kill"].includes(e.kind) ? t.blocked : t.muted })),
     ].sort((a, b) => b.ts - a.ts).slice(0, this.open.act ? 60 : 18);
     return this.list("act", items.map(i => ({ key: i.key, h: ACT_H, el: h_flex().h(ACT_H).px(4).gap(6).text_size(10.5).min_w(0)
       .child(div().w(32).flex_none().text_color(t.dim).child(hhmm(i.ts)))
