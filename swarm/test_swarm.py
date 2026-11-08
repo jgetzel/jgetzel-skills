@@ -214,6 +214,52 @@ class T(unittest.TestCase):
         self.tick()
         self.assertEqual(len(self.notices("a")), 2)  # a new episode
 
+    def land(self, path, text):
+        """A peer's PR lands on origin/main; the repo fetches it, and its local main stays behind."""
+        o = os.path.join(self.d, "origin.git")
+        if not os.path.exists(o):
+            subprocess.run([*G, "clone", "-q", "--bare", self.repo, o], check=True)
+            subprocess.run([*G, "remote", "add", "origin", o], cwd=self.repo, check=True)
+        pr = os.path.join(self.d, "pr")
+        subprocess.run([*G, "clone", "-q", o, pr], check=True)
+        with open(os.path.join(pr, path), "w") as h:
+            h.write(text)
+        subprocess.run([*G, "commit", "-qam", "pr"], cwd=pr, check=True)
+        subprocess.run([*G, "push", "-q", "origin", "main"], cwd=pr, check=True)
+        subprocess.run(["rm", "-rf", pr], check=True)
+        subprocess.run([*G, "fetch", "-q", "origin"], cwd=self.repo, check=True)
+
+    def test_fresh_worktree_off_origin_main_is_silent(self):
+        self.agent("a"); self.agent("b")
+        self.edit("b", "a.txt")
+        self.write("b", "a.txt", "z")  # b's own uncommitted edit, off the old main
+        self.land("a.txt", "y")
+        self.cwd["c"] = os.path.join(self.d, "wt3")
+        subprocess.run([*G, "worktree", "add", "-q", "-b", "c/x", self.cwd["c"], "origin/main"], cwd=self.repo, check=True)
+        self.agent("c")
+        self.tick()
+        self.assertEqual(self.q("select count(*) n from msg where kind='notice'")[0]["n"], 0)
+
+    def test_merge_origin_main_is_silent(self):
+        self.agent("a"); self.agent("b")
+        L = "".join(f"l{i}\n" for i in range(9))
+        self.write("a", "e.txt", L)
+        subprocess.run([*G, "commit", "-qam", "lines"], cwd=self.repo, check=True)
+        subprocess.run([*G, "merge", "-q", "main"], cwd=self.wt, check=True)
+        self.land("e.txt", L.replace("l0", "main0"))
+        self.cwd["c"] = os.path.join(self.d, "wt3")
+        subprocess.run([*G, "worktree", "add", "-q", "-b", "c/x", self.cwd["c"], "main"], cwd=self.repo, check=True)
+        self.agent("c")
+        self.edit("b", "e.txt"); self.edit("c", "e.txt")
+        subprocess.run([*G, "merge", "-q", "origin/main"], cwd=self.cwd["c"], check=True)
+        self.write("c", "e.txt", L.replace("l0", "main0").replace("l8", "c8"))  # c's own edit: line 8
+        self.write("b", "e.txt", L.replace("l0", "b0"))  # b edits line 0, which main changed: b vs main, not vs c
+        self.tick()
+        self.assertEqual(self.q("select count(*) n from msg where kind='notice'")[0]["n"], 0)
+        self.write("b", "e.txt", L.replace("l8", "b8"))  # now b's own change overlaps c's
+        self.tick()
+        self.assertIn("conflicts with b's", self.notices("c")[0]["body"])
+
     def test_shared_tree_notice_once(self):
         self.cwd["c"] = self.repo
         self.agent("a"); self.agent("c")
