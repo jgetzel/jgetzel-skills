@@ -51,7 +51,10 @@ with subagents.
    tasks when none is free (at most `--max-agents`, default the live count now;
    raise it only with the user; `--min-free-mem` GiB, default 4), reports live
    agents past their task lease without taking the claim, and tells you when an
-   agent is blocked on a prompt. The user watches in Herdr's Swarm panel
+   agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
+   poller: main's runs once a minute into the board, which agents read with
+   `swarm ci <sha> --wait` instead of `gh run watch`; a red run goes to the
+   agents with commits in it. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:

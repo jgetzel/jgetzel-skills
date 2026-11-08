@@ -27,6 +27,8 @@ create table if not exists pairkey(a text, b text, key text, primary key(a,b));
 create table if not exists meta(k text primary key, v text);
 create table if not exists event(id integer primary key autoincrement, ts int, agent text, kind text,
   path text, data text);
+create table if not exists ci(id integer primary key, sha text, status text, conclusion text, url text,
+  created text, updated text, failed text);
 """
 
 
@@ -1045,6 +1047,7 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
     machine_tick(c)
     remote_tick(c, t)
     if repo:
+        ci_poll(c, repo)
         ci_check(c, repo, comms)
         pr_ci(c, repo)
 
@@ -1114,11 +1117,14 @@ def pr_ci(c, repo):
     if not todo:
         return
     ts = lambda x: int(datetime.fromisoformat(x.replace("Z", "+00:00")).timestamp())
+    if not due(c, "pr_polled", 600):  # a repo that lands on main has no PRs, and every gh call counts against the API limit
+        return
     try:
         prs = json.loads(run(["gh", "pr", "list", "--state", "merged", "--limit", "100", "--json", "number,mergedAt,mergeCommit,headRefName"], cwd=repo) or "[]")
-        runs = sorted(json.loads(run(["gh", "run", "list", "--branch", "main", "--limit", "100", "--json", "headSha,conclusion,status,createdAt,updatedAt"], cwd=repo) or "[]"), key=lambda r: r["createdAt"])
     except ValueError:
         return
+    runs = [{"headSha": x["sha"], "conclusion": x["conclusion"], "status": x["status"], "createdAt": x["created"], "updatedAt": x["updated"]}
+            for x in c.execute("select * from ci order by created")]
     for r in todo:
         m = re.search(r"(?:PR #|pull/)(\d+)", r["evidence"] or "")
         pr = next((x for x in prs if m and x["number"] == int(m[1])), None) or max(
@@ -1136,13 +1142,46 @@ def pr_ci(c, repo):
                   (pr["number"], merged, mine["conclusion"], ts(green["updatedAt"]) if green else None, r["id"]))
 
 
-def ci_check(c, repo, comms=None):
-    out = run(["gh", "run", "list", "--branch", "main", "--limit", "10", "--json",
-               "databaseId,headSha,conclusion,status,url"], cwd=repo)
-    try:
-        runs = [r for r in json.loads(out or "[]") if r["status"] == "completed"]
-    except ValueError:
+def due(c, key, every):
+    """True, and stamps the time, if `key` was last stamped `every` seconds ago or never."""
+    r = c.execute("select v from meta where k=?", (key,)).fetchone()
+    if r and now() - int(r[0]) < every:
+        return False
+    c.execute("insert or replace into meta(k,v) values(?,?)", (key, str(now())))
+    return True
+
+
+def ci_poll(c, repo, every=60):
+    """The one place the swarm asks GitHub about main's CI: a run list a minute into the ci table, and each red
+    run's failed jobs once. Agents read the table (`swarm ci`), so N agents cost one poll, not N."""
+    err = c.execute("select v from meta where k='ci_error'").fetchone()
+    if err and now() - int(err[0]) < 300:  # refused: GitHub's secondary limit grows with retries, so back off
         return
+    if not due(c, "ci_polled", every):
+        return
+    out = run(["gh", "run", "list", "--branch", "main", "--limit", "20", "--json",
+               "databaseId,headSha,status,conclusion,url,createdAt,updatedAt"], cwd=repo)
+    try:
+        runs = json.loads(out) if out else None
+    except ValueError:
+        runs = None
+    if runs is None:  # rate limited or offline: keep what's stored, try again next minute
+        c.execute("insert or replace into meta(k,v) values('ci_error',?)", (str(now()),))
+        return
+    c.execute("delete from meta where k='ci_error'")
+    for r in runs:
+        c.execute("insert into ci(id,sha,status,conclusion,url,created,updated) values(?,?,?,?,?,?,?) on conflict(id) do update set "
+                  "status=excluded.status, conclusion=excluded.conclusion, updated=excluded.updated",
+                  (r["databaseId"], r["headSha"], r["status"], r["conclusion"] or None, r.get("url"), r["createdAt"], r["updatedAt"]))
+    for r in c.execute("select id from ci where conclusion='failure' and failed is null").fetchall():
+        jobs = run(["gh", "run", "view", str(r["id"]), "--json", "jobs", "--jq", '[.jobs[] | select(.conclusion=="failure") | .name] | join(", ")'], cwd=repo)
+        if jobs is not None:
+            c.execute("update ci set failed=? where id=?", (jobs.strip(), r["id"]))
+
+
+def ci_check(c, repo, comms=None):
+    runs = [{"databaseId": r["id"], "headSha": r["sha"], "conclusion": r["conclusion"], "url": r["url"]}
+            for r in c.execute("select * from ci where status='completed' order by created desc limit 10")]
     if not runs or runs[0]["conclusion"] != "failure":
         return
     red = runs[0]
@@ -1165,6 +1204,49 @@ def ci_check(c, repo, comms=None):
 
 
 # ---------- commands ----------
+
+def ci_for(c, sha, cwd):
+    """The newest main CI run that includes `sha` (its head is sha or a descendant), skipping cancelled ones, which a
+    newer push replaced: (state, row), state one of success/failure/pending; pending with no row if none is known yet."""
+    for r in c.execute("select * from ci order by created desc").fetchall():
+        if r["sha"] != sha and subprocess.run(["git", "merge-base", "--is-ancestor", sha, r["sha"]], cwd=cwd,
+                                              capture_output=True).returncode != 0:
+            continue
+        if r["status"] != "completed":
+            return "pending", r
+        if r["conclusion"] == "cancelled":
+            continue
+        return ("success" if r["conclusion"] == "success" else "failure"), r
+    return "pending", None
+
+
+def cmd_ci(c, a):
+    """main's CI for a commit, from what watchd polled: never asks GitHub itself. Exit 0 green, 1 red, 2 pending,
+    124 timed out waiting."""
+    cwd = os.getcwd()
+    sha = git(["rev-parse", a.sha], cwd=cwd) or a.sha
+    deadline, fetched = now() + a.timeout, 0
+    while True:
+        polled = c.execute("select v from meta where k='ci_polled'").fetchone()
+        if not polled or now() - int(polled[0]) > 300:
+            print("swarm ci: nobody is polling CI (the communicator runs `swarm watchd --ci`); tell it.", file=sys.stderr)
+        state, r = ci_for(c, sha, cwd)
+        if state != "pending" or not a.wait:
+            break
+        if now() >= deadline:
+            print(f"{sha[:7]}: still pending after {a.timeout}s", file=sys.stderr)
+            sys.exit(124)
+        if now() - fetched >= 60:  # a newer run's head must be local for the ancestry check; git, not the API
+            run(["git", "fetch", "-q", "origin"], cwd=cwd)
+            fetched = now()
+        time.sleep(a.poll)
+    if r is None:
+        print(f"{sha[:7]}: no main CI run includes it yet")
+    else:
+        failed = f"; failed: {r['failed']}" if r["failed"] else ""
+        print(f"{sha[:7]}: {state} (run {r['id']} at {r['sha'][:7]} {r['url'] or ''}{failed})")
+    sys.exit({"success": 0, "failure": 1}.get(state, 2))
+
 
 def cmd_join(c, a):
     bind(c, a.name or me(), os.getcwd(), os.environ.get("HC_TERMINAL_ID"), a.model, a.takeover)
@@ -2051,6 +2133,11 @@ def main(argv=None):
     p.add_argument("--me")
     p.add_argument("--timeout", type=int, default=21000)  # under the hook timeout of 21600
     p.add_argument("--poll", type=float, default=1)
+    p = add("ci", cmd_ci)
+    p.add_argument("sha", nargs="?", default="HEAD")
+    p.add_argument("--wait", action="store_true", help="block until a finished run includes it")
+    p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--poll", type=float, default=10)
     p = add("task", cmd_task)
     ts = p.add_subparsers(dest="act", required=True)
     q = ts.add_parser("add")

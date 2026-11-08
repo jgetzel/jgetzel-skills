@@ -764,14 +764,64 @@ class T(unittest.TestCase):
         c = m.connect()
         self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
         self.sw("a", "task", "done", "1", "--evidence", "PR #7 merged")
-        out = {"pr": [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}],
-               "run": [{"headSha": "red", "conclusion": "failure", "status": "completed", "createdAt": "2026-11-08T10:00:05Z", "updatedAt": "2026-11-08T10:02:00Z"},
-                       {"headSha": "fix", "conclusion": "success", "status": "completed", "createdAt": "2026-11-08T10:05:00Z", "updatedAt": "2026-11-08T10:08:00Z"}]}
-        m.run = lambda cmd, cwd=None, **k: json.dumps(out[cmd[1]])
+        out = {"pr": [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}]}
+        for i, (sha, concl, cr, up) in enumerate([("red", "failure", "2026-11-08T10:00:05Z", "2026-11-08T10:02:00Z"),
+                                                  ("fix", "success", "2026-11-08T10:05:00Z", "2026-11-08T10:08:00Z")]):
+            c.execute("insert into ci(id,sha,status,conclusion,created,updated) values(?,?,'completed',?,?,?)", (i + 1, sha, concl, cr, up))
+        calls = []
+        m.run = lambda cmd, cwd=None, **k: calls.append(cmd) or json.dumps(out[cmd[1]])
         m.pr_ci(c, self.repo)
         t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
         self.assertEqual((t["pr"], t["ci_conclusion"], t["merge_to_green_s"]), (7, "failure", 480))
         self.assertIn("PR #7 merged", self.sw("a", "task", "show", "1").stdout)
+        self.assertEqual([x[1] for x in calls], ["pr"])  # runs come from the ci table, not GitHub
+        m.pr_ci(c, self.repo)
+        self.assertEqual(len(calls), 1)  # the PR list is asked for at most every 10 minutes
+
+    def test_ci_poll_once_for_all(self):
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
+        ld.exec_module(m)
+        os.environ["SWARM_DB"] = self.db
+        c = m.connect()
+        calls = []
+        runs = [{"databaseId": 1, "headSha": "a1", "status": "completed", "conclusion": "failure", "url": "u1",
+                 "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}]
+
+        def fake(cmd, cwd=None, **k):
+            calls.append(cmd[:3])
+            return json.dumps(runs) if cmd[2] == "list" else "server, e2e\n"
+        m.run = fake
+        m.ci_poll(c, self.repo)
+        self.assertEqual(calls, [["gh", "run", "list"], ["gh", "run", "view"]])
+        self.assertEqual(tuple(self.q("select conclusion, failed from ci where id=1")[0]), ("failure", "server, e2e"))
+        m.ci_poll(c, self.repo)
+        self.assertEqual(len(calls), 2)  # within the minute: no call
+        self.q("update meta set v='0' where k='ci_polled'")
+        m.run = lambda cmd, cwd=None, **k: None  # rate limited
+        m.ci_poll(c, self.repo)
+        self.assertEqual(len(self.q("select 1 from ci")), 1)  # kept
+        self.assertTrue(self.q("select 1 from meta where k='ci_error'"))
+
+    def test_ci_reads_the_table(self):
+        sha = lambda: subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
+        commit = lambda: subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "c"], cwd=self.repo, check=True)
+        c1 = sha(); commit(); c2 = sha(); commit(); c3 = sha()
+        self.sw("a", "join")
+        self.q("insert into meta(k,v) values('ci_polled',?)", str(int(time.time())))
+        self.assertEqual(self.sw("a", "ci", c1, ok=False).returncode, 2)  # no run yet
+        ins = lambda i, s, st, cc, t: self.q("insert into ci(id,sha,status,conclusion,url,created) values(?,?,?,?,'u',?)", i, s, st, cc, t)
+        ins(1, c2, "completed", "cancelled", "2026-11-08T10:00:00Z")  # replaced by the next push
+        ins(2, c3, "in_progress", None, "2026-11-08T10:01:00Z")
+        self.assertEqual(self.sw("a", "ci", c1, ok=False).returncode, 2)  # c3's run includes c1, still running
+        self.q("update ci set status='completed', conclusion='failure', failed='e2e' where id=2")
+        r = self.sw("a", "ci", c1, ok=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed: e2e", r.stdout)
+        ins(3, c3, "completed", "success", "2026-11-08T10:05:00Z")  # a re-run, green
+        self.assertEqual(self.sw("a", "ci", c2).returncode, 0)
+        self.assertEqual(self.sw("a", "ci", c3, "--wait", "--timeout", "5").returncode, 0)
 
     def test_block_unblock(self):
         import importlib.machinery, importlib.util
@@ -1285,8 +1335,10 @@ class T(unittest.TestCase):
         commit("a"); commit("gone")
         red = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
         bindir = os.path.join(self.d, "bin"); os.makedirs(bindir)
-        runs = [{"databaseId": 9, "headSha": red, "conclusion": "failure", "status": "completed", "url": "http://ci/9"},
-                {"databaseId": 8, "headSha": green, "conclusion": "success", "status": "completed", "url": "http://ci/8"}]
+        runs = [{"databaseId": 9, "headSha": red, "conclusion": "failure", "status": "completed", "url": "http://ci/9",
+                 "createdAt": "2026-11-08T10:05:00Z", "updatedAt": "2026-11-08T10:08:00Z"},
+                {"databaseId": 8, "headSha": green, "conclusion": "success", "status": "completed", "url": "http://ci/8",
+                 "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}]
         open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$2\" = list ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
         os.chmod(os.path.join(bindir, "gh"), 0o755)
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "a", "PATH": bindir + os.pathsep + os.environ["PATH"]}
