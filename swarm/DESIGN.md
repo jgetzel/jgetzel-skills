@@ -269,7 +269,7 @@ mechanisms, the second used if the probe rules out the first:
 
 Either way, the wake is subject to the cold-cache rule below.
 
-**File touches (soft locks):**
+**File touches (soft locks) — superseded by `research/sw-locks.md` §4 (worktree attribution, trial-merge conflicts in `watchd`, reservation locks); the text below is the original design:**
 
 - `PreToolUse` on `Edit|Write|MultiEdit|NotebookEdit` resolves the path
   relative to the repo root (worktree-independent). If another live agent

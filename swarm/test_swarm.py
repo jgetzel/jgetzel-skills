@@ -12,9 +12,9 @@ class T(unittest.TestCase):
         self.wt = os.path.join(self.d, "wt")
         os.makedirs(self.repo)
         subprocess.run([*G, "init", "-q", "-b", "main"], cwd=self.repo, check=True)
-        for f in ("a.txt", "b.txt"):
+        for f in ("a.txt", "b.txt", "e.txt"):
             with open(os.path.join(self.repo, f), "w") as h:
-                h.write("x")
+                h.write("mod (p, q)\n" if f == "e.txt" else "x")
         subprocess.run([*G, "add", "."], cwd=self.repo, check=True)
         subprocess.run([*G, "commit", "-qm", "init"], cwd=self.repo, check=True)
         subprocess.run([*G, "worktree", "add", "-q", "-b", "w2", self.wt], cwd=self.repo, check=True)
@@ -140,52 +140,96 @@ class T(unittest.TestCase):
         self.hook("a", "session", source="compact", transcript_path=tr)
         self.assertEqual(self.q("select ctx_tokens from agent where name='a'")[0][0], 40_000)
 
-    # ---- touches ----
-    def test_touch_overlap_both_ways(self):
+    # ---- conflicts ----
+    def write(self, who, path, text):
+        with open(os.path.join(self.cwd[who], path), "w") as h:
+            h.write(text)
+
+    def tick(self):
+        self.sw("a", "watchd", "--once")
+
+    def notices(self, who):
+        return self.q("select body from msg where dest=? and kind='notice'", who)
+
+    def test_compatible_appends_are_silent(self):
         self.agent("a"); self.agent("b")
-        self.sw("a", "task", "add", "fix a"); self.sw("a", "task", "claim", "1")
+        self.edit("a", "e.txt"); self.edit("b", "e.txt")
+        self.write("a", "e.txt", "mod (p, q, c)\n")
+        self.write("b", "e.txt", "mod (p, q, d)\n")
+        self.tick()
+        self.assertEqual(self.q("select count(*) n from msg where kind='notice'")[0]["n"], 0)
+        self.assertEqual(self.q("select count(*) n from event where kind='conflict-compat'")[0]["n"], 1)
+
+    def test_same_token_episode(self):
+        self.agent("a"); self.agent("b")
+        self.edit("a", "a.txt"); self.edit("b", "a.txt")
+        self.write("a", "a.txt", "y"); self.write("b", "a.txt", "z")
+        self.tick()
+        for w, o in (("a", "b"), ("b", "a")):
+            n = self.notices(w)
+            self.assertEqual(len(n), 1)
+            self.assertIn(f"conflicts with {o}'s", n[0]["body"])
+            self.assertIn("a.txt (your lines 1–1", n[0]["body"])
+        self.tick()
+        self.assertEqual(len(self.notices("a")), 1)  # same episode: silent
+        self.write("b", "a.txt", "x")  # revert one side
+        self.tick()
+        self.assertEqual(self.q("select * from conflict"), [])
+        self.write("b", "a.txt", "w")
+        self.tick()
+        self.assertEqual(len(self.notices("a")), 2)  # a new episode
+
+    def test_shared_tree_notice_once(self):
+        self.cwd["c"] = self.repo
+        self.agent("a"); self.agent("c")
         self.assertEqual(self.edit("a", "a.txt"), {})
-        out = self.edit("b", "a.txt")  # other worktree, same repo-relative path
-        self.assertIn("a.txt is also being touched by a", out["additionalContext"])
-        self.assertIn("task #1", out["additionalContext"])
-        self.assertIn("b also touched a.txt", self.sw("a", "read").stdout)
-        self.assertEqual(self.edit("b", "a.txt"), {})  # once per agent and path
-        self.assertNotIn("also touched", self.sw("a", "read").stdout)
+        out = self.edit("c", "a.txt")
+        self.assertIn("also a's worktree", out["additionalContext"])
+        self.assertIn("also edits in", self.notices("a")[0]["body"])
+        self.assertEqual(self.edit("c", "a.txt"), {})
+        self.edit("a", "b.txt")
+        self.assertEqual(len(self.notices("a")), 1)
 
-    def test_hotspot_is_linear_and_notices_dont_wake(self):
-        for n in "abcdef":
-            self.cwd.setdefault(n, self.repo)
-            self.agent(n)
-        for n in "abcdef":
-            self.edit(n, "a.txt")
-        self.assertEqual(self.q("select count(*) from msg")[0][0], 1)  # a heard once; later touchers get hook notes
-        per = self.q("select agent,count(*) n from event where kind='overlap' group by agent")
-        self.assertTrue(all(r["n"] == 1 for r in per) and len(per) == 6)  # each agent told once per path
-        w = self.sw("a", "wait", "--timeout", "1", "--poll", "0.2", ok=False)
-        self.assertEqual(w.returncode, 0)  # a has an unread notice, but notices don't wake
-        self.sw("b", "post", "a", "real question")
-        w = self.sw("a", "wait", "--timeout", "3", "--poll", "0.2", ok=False)
-        self.assertEqual(w.returncode, 2)
-        self.assertIn("also touched a.txt", w.stderr)  # the notice rides along with the wake
-
-    def test_bash_git_status_touch(self):
-        self.agent("a"); self.agent("b")
-        self.hook("b", "post-tool", tool_name="Bash", tool_input={"command": "true"})  # baseline
-        self.assertEqual(self.edit("a", "b.txt"), {})
-        with open(os.path.join(self.wt, "b.txt"), "w") as h:
-            h.write("changed")
-        out = self.hook("b", "post-tool", tool_name="Bash", tool_input={"command": "sed -i s/x/y/ b.txt"})
-        self.assertIn("b.txt is also being touched by a", out["additionalContext"])
-        self.assertIn("b also touched b.txt", self.sw("a", "read").stdout)
-
-    def test_touches_clear_on_done(self):
-        self.agent("a"); self.agent("b")
-        self.sw("a", "task", "add", "t"); self.sw("a", "task", "claim", "1")
-        self.edit("a", "a.txt")
-        self.sw("a", "task", "done", "1", "--evidence", "x")
-        self.assertEqual(self.edit("b", "a.txt"), {})
+    def test_branch_fallback_for_wt(self):
+        self.agent("w2"); self.q("update agent set wt=null")
+        subprocess.run([*G, "branch", "-m", "w2", "w2/x"], cwd=self.wt, check=True)
+        self.assertIn("wt: wt", self.sw("w2", "who").stdout)
 
     # ---- locks ----
+    def test_lock_prefix_and_overlap(self):
+        self.agent("a"); self.agent("b")
+        self.sw("a", "lock", "migrations/0070*")
+        out = self.edit("b", "migrations/0070_x.sql")
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.sw("a", "lock", "docs/")
+        self.assertEqual(self.edit("b", "docs/x/y.md")["permissionDecision"], "deny")
+        self.assertNotEqual(self.sw("b", "lock", "docs/x.md", ok=False).returncode, 0)
+        self.assertNotEqual(self.sw("b", "lock", "migrations/0070_a.sql", ok=False).returncode, 0)
+        self.sw("b", "lock", "other/")
+
+    def test_lock_released_when_work_lands(self):
+        self.agent("a")
+        self.edit("a", "a.txt")
+        self.sw("a", "lock", "a.txt")
+        self.tick()
+        self.assertEqual(len(self.q("select * from lock")), 1)  # no change yet: not seen
+        self.write("a", "a.txt", "changed")
+        self.tick()
+        self.assertEqual(self.q("select seen from lock")[0][0], 1)
+        subprocess.run([*G, "commit", "-qam", "land"], cwd=self.repo, check=True)
+        subprocess.run([*G, "worktree", "prune"], cwd=self.repo)
+        self.tick()  # main moved to include the change: the file left a's working set
+        self.assertEqual(self.q("select * from lock"), [])
+
+    def test_bash_lock_violation(self):
+        self.agent("a"); self.agent("b")
+        self.edit("b", "b.txt")
+        self.sw("a", "lock", "a.txt")
+        self.write("b", "a.txt", "sneaky")
+        self.tick()
+        self.assertIn("violation", self.sw("b", "read").stdout)
+        self.assertIn("locked path", self.sw("a", "read").stdout)
+
     def test_hard_lock_deny(self):
         self.agent("a"); self.agent("b")
         self.sw("a", "lock", "*.txt", "--reason", "refactor")

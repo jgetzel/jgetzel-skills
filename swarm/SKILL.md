@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: Run a swarm of peer Claude Code agents in Herdr tabs that share a task board, messages, file-touch notices and locks. Use when the user asks for /swarm, a swarm, or many agents on work that splits (many files, an oracle, a test corpus). You are the communicator. Builds on the hc and herdr-app skills.
+description: Run a swarm of peer Claude Code agents in Herdr tabs that share a task board, messages, conflict notices and locks. Use when the user asks for /swarm, a swarm, or many agents on work that splits (many files, an oracle, a test corpus). You are the communicator. Builds on the hc and herdr-app skills.
 ---
 
 # Swarm

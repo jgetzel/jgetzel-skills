@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""swarm: shared board, messages, file touches and locks for a swarm of Claude Code agents.
+"""swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
-import argparse, fcntl, fnmatch, json, os, re, sqlite3, subprocess, sys, time
+import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
-TOUCH_WIN = 3600
 LEASE = 7200
 HERE = os.path.dirname(os.path.realpath(__file__))
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -13,15 +12,15 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SCHEMA = """
 create table if not exists agent(name text primary key, hc text, model text, cwd text, status text,
   last_active int, ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text,
-  waiter int);
+  waiter int, wt text);
 create table if not exists msg(id integer primary key autoincrement, ts int, frm text, dest text,
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
 create table if not exists task(id integer primary key autoincrement, title text, body text,
   state text default 'open', owner text, lease_until int, created_by text, evidence text);
-create table if not exists touch(agent text, path text, first_ts int, last_ts int, via text,
-  primary key(agent, path));
-create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int);
+create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
+create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
+create table if not exists pairkey(a text, b text, key text, primary key(a,b));
 create table if not exists event(id integer primary key autoincrement, ts int, agent text, kind text,
   path text, data text);
 """
@@ -31,9 +30,9 @@ def now():
     return int(time.time())
 
 
-def run(cmd, cwd=None, inp=None):
+def run(cmd, cwd=None, inp=None, env=None):
     try:
-        r = subprocess.run(cmd, cwd=cwd, input=inp, capture_output=True, text=True)
+        r = subprocess.run(cmd, cwd=cwd, input=inp, capture_output=True, text=True, env=env)
         return r.stdout if r.returncode == 0 else None
     except OSError:
         return None
@@ -66,6 +65,9 @@ def connect():
     c.execute("pragma busy_timeout=10000")
     c.execute("pragma journal_mode=wal")
     c.executescript(SCHEMA)
+    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0")):  # dbs made before sw-locks
+        if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
+            c.execute(f"alter table {tbl} add column {col}")
     return c
 
 
@@ -190,7 +192,7 @@ def peer_note(rows):
             + fmt_msgs(rows))
 
 
-# ---------- paths, touches, locks ----------
+# ---------- paths, locks ----------
 
 def repo_rel(path, cwd):
     """(toplevel, repo-relative path) for an absolute or cwd-relative path, or None outside a repo."""
@@ -206,10 +208,15 @@ def repo_rel(path, cwd):
     return None if r.startswith("..") else (top, r)
 
 
+def covers(path, pat):
+    """Whether lock pattern pat covers path: a glob, or a directory prefix (`migrations/`)."""
+    return fnmatch.fnmatch(path, pat) or path.startswith(pat.rstrip("/") + "/")
+
+
 def lock_holder(c, me_, path, t):
     for r in c.execute("select l.* from lock l join agent a on a.name=l.agent "
                        "where l.agent!=? and l.lease_until>? and a.ended is null", (me_, t)):
-        if r["path"] == path or fnmatch.fnmatch(path, r["path"]):
+        if covers(path, r["path"]):
             return r
     return None
 
@@ -217,61 +224,6 @@ def lock_holder(c, me_, path, t):
 def task_of(c, name):
     r = c.execute("select id,title from task where owner=? and state='claimed' order by id limit 1", (name,)).fetchone()
     return f"task #{r['id']}: {r['title']}" if r else "no claimed task"
-
-
-def told(c, who, path, t):
-    """Whether `who` already got an overlap notice for path this window; mark it if not."""
-    if c.execute("select 1 from event where kind='overlap' and agent=? and path=? and ts>?",
-                 (who, path, t - TOUCH_WIN)).fetchone():
-        return True
-    log(c, who, "overlap", path)
-    return False
-
-
-def touched(c, me_, paths, via, t=None):
-    """Record touches by me_; return notice lines for me_. Each agent hears about a path at most once
-    per window, so a hotspot touched by N agents costs N notices, not N^2. Notices don't wake anyone."""
-    t = t or now()
-    notes = []
-    for path in paths:
-        others = c.execute("select t.agent,t.last_ts from touch t join agent a on a.name=t.agent "
-                           "where t.path=? and t.agent!=? and t.last_ts>? and a.ended is null "
-                           "order by t.last_ts desc", (path, me_, t - TOUCH_WIN)).fetchall()
-        if others and not told(c, me_, path, t):
-            who = ", ".join(f"{o[0]} ({ago(o[1])} ago, {task_of(c, o[0])})" for o in others[:5])
-            more = f" and {len(others) - 5} more" if len(others) > 5 else ""
-            notes.append(f"{path} is also being touched by {who}{more}. If your changes may conflict, "
-                         f"message the owner.")
-        for o in others:
-            if not told(c, o[0], path, t):
-                post(c, "swarm", o[0], f"{me_} also touched {path} just now ({task_of(c, me_)}). "
-                     f"If your changes may conflict, message it.", kind="notice")
-        c.execute("insert into touch(agent,path,first_ts,last_ts,via) values(?,?,?,?,?) "
-                  "on conflict(agent,path) do update set last_ts=excluded.last_ts",
-                  (me_, path, t, t, via))
-        log(c, me_, "touch", path, via)
-    return notes
-
-
-def porcelain(top):
-    """{path: [code, mtime_ns, size]} of `git status`, paths relative to the toplevel."""
-    out = run(["git", "status", "--porcelain", "-z", "-uall"], cwd=top)
-    res, items = {}, (out or "").split("\0")
-    i = 0
-    while i < len(items):
-        e = items[i]
-        i += 1
-        if len(e) < 4:
-            continue
-        code, path = e[:2], e[3:]
-        if code[0] in "RC":
-            i += 1  # the original name follows
-        try:
-            st = os.stat(os.path.join(top, path))
-            res[path] = [code, st.st_mtime_ns, st.st_size]
-        except OSError:
-            res[path] = [code, 0, 0]
-    return res
 
 
 # ---------- hooks ----------
@@ -362,18 +314,22 @@ def hook(ev):
                 log(c, name, "deny-lock", path, lk["agent"])
                 return emit("PreToolUse", deny=f"{path} is locked by {lk['agent']} since {hhmm(lk['since'])}"
                             f"{' (' + lk['reason'] + ')' if lk['reason'] else ''}. Ask it with SendMessage.")
-            notes = touched(c, name, [path], "edit", t)
-            if notes:
-                emit("PreToolUse", ctx=capped(notes))
+            c.execute("update agent set wt=? where name=?", (r[0], name))
+            for o in c.execute("select name from agent where wt=? and name!=? and ended is null", (r[0], name)).fetchall():
+                if c.execute("select 1 from event where kind='shared-tree' and agent=? and path=?", (name, r[0])).fetchone():
+                    continue
+                log(c, name, "shared-tree", r[0], o[0])
+                post(c, "swarm", o[0], f"{name} also edits in {r[0]} ({task_of(c, name)}). Two agents' uncommitted "
+                     f"edits in one tree mix and can't be told apart; make your own worktree.", kind="notice")
+                return emit("PreToolUse", ctx=f"{r[0]} is also {o[0]}'s worktree ({task_of(c, o[0])}). Two agents' "
+                            f"uncommitted edits in one tree mix and can't be told apart. Make your own: "
+                            f"`git worktree add …`.")
 
     elif ev == "post-tool":
         set_status(c, name, "working")
-        notes = []
-        if tool == "Bash":
-            notes += bash_diff(c, name, cwd, ti.get("command", ""))
-        ctx = capped(notes, CTX_CAP // 3) if notes else ""
-        msgs = deliver(c, name, CTX_CAP - len(ctx))
-        ctx = "\n\n".join(x for x in (ctx, msgs) if x)
+        if tool == "Bash" and re.search(r"\bgit\s+push\b", ti.get("command", "")):
+            log(c, name, "push", None, ti["command"][:120])
+        ctx = deliver(c, name)
         if ctx:
             emit("PostToolUse", ctx=ctx)
 
@@ -397,42 +353,17 @@ def hook(ev):
         die(f"unknown hook event {ev}")
 
 
-def bash_diff(c, name, cwd, command):
-    notes = []
-    if re.search(r"\bgit\s+push\b", command):
-        log(c, name, "push", None, command[:120])
-    top = git(["rev-parse", "--show-toplevel"], cwd=cwd)
-    if not top:
-        return notes
-    cur = porcelain(top)
-    row = c.execute("select snap from agent where name=?", (name,)).fetchone()
-    c.execute("update agent set snap=? where name=?", (json.dumps(cur), name))
-    if row[0] is None:
-        return notes  # first look is the baseline: what was already dirty is not this agent's edit
-    old = json.loads(row[0])
-    new = [p for p, v in cur.items() if old.get(p) != v]
-    t = now()
-    for p in new:
-        lk = lock_holder(c, name, p, t)
-        if lk:
-            msg = f"{name} edited {p} by Bash, locked by {lk['agent']}: violation. Revert it or ask {lk['agent']}."
-            notes.append(msg)
-            post(c, "swarm", name, msg, kind="system")
-            post(c, "swarm", lk["agent"], f"{name} edited your locked path {p} by Bash.", kind="system")
-    notes += touched(c, name, new, "git-status", t)
-    return notes
-
-
 # ---------- reaping and watchd ----------
 
 def release(c, name):
     c.execute("update task set state='open', owner=null, lease_until=null where owner=? and state='claimed'", (name,))
     c.execute("delete from lock where agent=?", (name,))
-    c.execute("delete from touch where agent=?", (name,))
+    c.execute("delete from conflict where a=? or b=?", (name, name))
+    c.execute("delete from pairkey where a=? or b=?", (name, name))
 
 
 def reap(c, live_addrs=None, t=None):
-    """Reopen expired task leases, drop expired locks and old touches, end dead agents.
+    """Reopen expired task leases, drop expired locks, end dead agents.
     live_addrs: set of live hc terminal addresses, or None to skip the dead-agent check."""
     t = t or now()
     out = []
@@ -446,16 +377,188 @@ def reap(c, live_addrs=None, t=None):
         c.execute("delete from lock where path=?", (r["path"],))
         log(c, r["agent"], "reap", r["path"], "lock expired")
         out.append(f"lock {r['path']}")
-    c.execute("delete from touch where last_ts<?", (t - TOUCH_WIN,))
     if live_addrs is not None:
         for a in live_agents(c):
             if a["hc"] and a["hc"] not in live_addrs:
                 c.execute("update agent set ended=?, status='ended' where name=?", (t, a["name"]))
                 release(c, a["name"])
-                post(c, "swarm", "@all", f"{a['name']} is gone; its tasks, locks and touches are released.", kind="system")
+                post(c, "swarm", "@all", f"{a['name']} is gone; its tasks and locks are released.", kind="system")
                 log(c, a["name"], "reap", None, "agent gone")
                 out.append(f"agent {a['name']}")
     return out
+
+
+# ---------- conflict tick ----------
+
+TOK = re.compile(r"\w+|[^\w\s]|\n")
+HUNK = re.compile(r"^<<<<<<< .*?\n(.*?)^\|\|\|\|\|\|\| .*?\n(.*?)^=======\n(.*?)^>>>>>>> ", re.S | re.M)
+
+
+def edits(base, side):
+    """Base-token spans one side changed, half-open; i1 == i2 is an insertion at i1."""
+    return [(i1, i2) for op, i1, i2, _, _ in difflib.SequenceMatcher(None, base, side, autojunk=False).get_opcodes()
+            if op != "equal"]
+
+
+def clash(a, b):
+    """Two spans clash if both change a common base token, or one inserts strictly inside the other's change."""
+    (a1, a2), (b1, b2) = a, b
+    if a1 == a2 and b1 == b2:
+        return False
+    if a1 == a2:
+        return b1 < a1 < b2
+    if b1 == b2:
+        return a1 < b1 < a2
+    return a1 < b2 and b1 < a2
+
+
+def real_hunk(base, ours, theirs):
+    b = TOK.findall(base)
+    return any(clash(x, y) for x in edits(b, TOK.findall(ours)) for y in edits(b, TOK.findall(theirs)))
+
+
+assert not real_hunk("module L (a, b) where\n", "module L (a, b, c) where\n", "module L (a, b, d) where\n")
+assert real_hunk("x = f a\n", "x = g a\n", "x = h a\n")
+
+
+def wt_map(c):
+    """{agent: worktree} for live agents: agent.wt, else the worktree whose branch is <name>/…"""
+    br, cur = {}, None
+    for l in (run(["git", "worktree", "list", "--porcelain"]) or "").splitlines():
+        if l.startswith("worktree "):
+            cur = os.path.realpath(l[9:])
+        elif l.startswith("branch refs/heads/") and cur:
+            br[cur] = l[18:]
+    res = {}
+    for a in live_agents(c):
+        w = a["wt"] or next((p for p, b in br.items() if b.startswith(a["name"] + "/")), None)
+        if w:
+            res[a["name"]] = w
+    return res
+
+
+def snapshot(wt, base):
+    """Commit wt's working state (tracked + untracked, not ignored) as an unreferenced commit; reads wt only.
+    Returns {head, tree, commit, files} or None."""
+    head = git(["-C", wt, "rev-parse", "HEAD"])
+    idx = git(["-C", wt, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    if not head or not idx:
+        return None
+    ident = {f"GIT_{r}_{k}": v for r in ("AUTHOR", "COMMITTER") for k, v in (("NAME", "swarm"), ("EMAIL", "swarm@swarm"))}
+    with tempfile.TemporaryDirectory() as d:
+        tmp = os.path.join(d, "index")
+        try:
+            shutil.copy(idx, tmp)  # seeds the stat cache; git replaces the index by rename, so the copy is whole
+        except OSError:
+            pass
+        env = dict(os.environ, GIT_INDEX_FILE=tmp, GIT_OPTIONAL_LOCKS="0", **ident)
+        g = lambda *a: (run(["git", "-C", wt, *a], env=env) or "").strip()
+        g("add", "-A")
+        tree = g("write-tree")
+        commit = g("commit-tree", tree, "-p", head, "-m", "swarm snapshot") if tree else ""
+    if not commit:
+        return None
+    mb = git(["-C", wt, "merge-base", base, commit]) if base else None
+    files = (run(["git", "-C", wt, "diff", "--name-only", "-z", mb, commit]) or "").split("\0") if mb else []
+    return {"head": head, "tree": tree, "commit": commit, "files": [f for f in files if f]}
+
+
+def trial_merge(cwd, base, ca, cb):
+    """None if clean or git failed; else {path: [(ours, theirs) real hunk texts]} and a flag for line-only conflicts."""
+    r = subprocess.run(["git", "-c", "merge.conflictStyle=diff3", f"--attr-source={base}", "merge-tree", "--write-tree",
+                        "--name-only", "--no-messages", ca, cb], cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 1:
+        if r.returncode:
+            return None, False
+        return {}, False
+    tree, *files = r.stdout.splitlines()
+    real, compat = {}, False
+    for f in sorted(set(files) - {""}):
+        text = git(["show", f"{tree}:{f}"], cwd=cwd) or ""
+        hunks = [m.groups() for m in HUNK.finditer(text)]
+        bad = [(o, t) for o, b, t in hunks if real_hunk(b, o, t)]
+        if bad or not hunks:  # no diff3 hunks: a rename or file/directory conflict, which counts as real
+            real[f] = bad or [("", "")]
+        else:
+            compat = True
+    return real, compat
+
+
+def line_range(cwd, commit, path, text):
+    text = text.strip("\n")
+    f = git(["show", f"{commit}:{path}"], cwd=cwd) or ""
+    i = f.find(text) if text else -1
+    return f"{f.count(chr(10), 0, i) + 1}–{f.count(chr(10), 0, i) + 1 + text.count(chr(10))}" if i >= 0 else "?"
+
+
+def conflict_tick(c, t):
+    wts = wt_map(c)
+    base = next((b for b in ("main", "origin/main", "master") if git(["rev-parse", "--verify", "-q", b])), None)
+    snaps, bywt = {}, {}
+    for n, w in wts.items():
+        if w not in bywt:
+            bywt[w] = snapshot(w, base)
+        if bywt[w]:
+            snaps[n] = bywt[w]
+            c.execute("update agent set snap=? where name=?", (json.dumps(bywt[w]), n))
+    notes = {}
+    names = sorted(snaps)
+    cand = set()
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if wts[a] != wts[b] and set(snaps[a]["files"]) & set(snaps[b]["files"]):
+                cand.add((a, b))
+    for a, b in {(r[0], r[1]) for r in c.execute("select a,b from conflict")} - cand:
+        c.execute("delete from conflict where a=? and b=?", (a, b))  # no longer overlapping, or an agent is gone
+    for a, b in sorted(cand):
+        key = snaps[a]["tree"] + snaps[b]["tree"]
+        old = c.execute("select key from pairkey where a=? and b=?", (a, b)).fetchone()
+        if old and old[0] == key:
+            continue
+        real, compat = trial_merge(wts[a], base, snaps[a]["commit"], snaps[b]["commit"])
+        if real is None:
+            log(c, a, "conflict-error", b)
+            continue
+        c.execute("insert or replace into pairkey values(?,?,?)", (a, b, key))
+        have = {r[0] for r in c.execute("select path from conflict where a=? and b=?", (a, b))}
+        for p in have - set(real):
+            c.execute("delete from conflict where a=? and b=? and path=?", (a, b, p))
+        if compat:
+            log(c, a, "conflict-compat", b)
+        for p, hunks in real.items():
+            if p in have:
+                continue
+            c.execute("insert into conflict values(?,?,?,?)", (a, b, p, t))
+            log(c, a, "conflict", p, b)
+            ha = ", ".join(sorted({line_range(wts[a], snaps[a]["commit"], p, h[0]) for h in hunks}))
+            hb = ", ".join(sorted({line_range(wts[b], snaps[b]["commit"], p, h[1]) for h in hunks}))
+            for me_, o, mine, theirs in ((a, b, ha, hb), (b, a, hb, ha)):
+                notes.setdefault(me_, []).append(
+                    f"Your uncommitted work conflicts with {o}'s ({task_of(c, o)}) in {p} (your lines {mine}, "
+                    f"theirs {theirs}). Whoever lands first wins; the other rebases onto it. Message {o} only if "
+                    f"the two changes can't both stand.")
+    for n, lines in notes.items():
+        post(c, "swarm", n, "\n".join(lines), kind="notice")
+    # Bash edits to another agent's lock, from the snapshot; only in trees one agent owns
+    for n in names:
+        if sum(1 for w in wts.values() if w == wts[n]) > 1:
+            continue
+        for p in snaps[n]["files"]:
+            lk = lock_holder(c, n, p, t)
+            if lk and not c.execute("select 1 from event where kind='lock-violation' and agent=? and path=?", (n, p)).fetchone():
+                log(c, n, "lock-violation", p, lk["agent"])
+                post(c, "swarm", n, f"{n} edited {p}, locked by {lk['agent']}: violation. Revert it or ask {lk['agent']}.", kind="system")
+                post(c, "swarm", lk["agent"], f"{n} edited your locked path {p}.", kind="system")
+    # a lock is released once the holder's work on it lands (it matched, and no longer does)
+    for lk in c.execute("select * from lock").fetchall():
+        if lk["agent"] not in snaps:
+            continue
+        hit = any(covers(f, lk["path"]) for f in snaps[lk["agent"]]["files"])
+        if hit and not lk["seen"]:
+            c.execute("update lock set seen=1 where path=?", (lk["path"],))
+        elif not hit and lk["seen"]:
+            c.execute("delete from lock where path=?", (lk["path"],))
+            log(c, lk["agent"], "unlock", lk["path"], "landed")
 
 
 def hc_terminals():
@@ -488,6 +591,7 @@ def watchd_tick(c, comms=None, repo=None):
                     "select 1 from event where kind='digest' and agent=? and ts>?", (a["name"], t - 900)).fetchone():
                 log(c, a["name"], "digest")
                 post(c, "swarm", a["name"], f"{n_open} open task(s) and you are idle: `swarm board`.", kind="system")
+    conflict_tick(c, t)
     if repo:
         ci_check(c, repo)
 
@@ -605,7 +709,6 @@ def cmd_task(c, a):
             print(f"renewed #{a.id} until {hhmm(t + dur(a.lease))}")
         else:
             c.execute("update task set state='done', evidence=?, lease_until=null where id=?", (a.evidence, a.id))
-            c.execute("delete from touch where agent=?", (n,))
             log(c, n, "done", None, f"#{a.id} {a.evidence}")
             print(f"done #{a.id}")
     elif a.act == "release":
@@ -637,23 +740,27 @@ def cmd_board(c, a):
 
 def cmd_who(c, a):
     t = now()
+    wts = wt_map(c)
     for x in live_agents(c):
         k = (x["ctx_tokens"] or 0) // 1000
         cache = "warm" if t - (x["last_active"] or 0) < COLD_IDLE else "cold"
-        tc = [r[0] for r in c.execute("select path from touch where agent=? and last_ts>?", (x["name"], t - TOUCH_WIN))]
+        sn = json.loads(x["snap"]) if x["snap"] and x["snap"].startswith("{") else {}
+        fs = sn.get("files", [])
         lk = [r[0] for r in c.execute("select path from lock where agent=?", (x["name"],))]
         print(f"{x['name']} {x['status']} ctx={k}k idle={ago(x['last_active'])} cache={cache}"
               + (" COLD-GUARDED" if cold_reason(x, t) else "")
-              + (f" touching: {', '.join(tc)}" if tc else "") + (f" locks: {', '.join(lk)}" if lk else ""))
+              + f" wt: {os.path.basename(wts[x['name']]) if x['name'] in wts else '?'}"
+              + (f" files: {', '.join(fs[:5])}{' +%d more' % (len(fs) - 5) if len(fs) > 5 else ''}" if fs else "") + (f" locks: {', '.join(lk)}" if lk else ""))
 
 
 def cmd_lock(c, a):
     n = me()
     ensure_agent(c, n)
-    other = c.execute("select agent from lock where path=? and agent!=? and lease_until>?", (a.path, n, now())).fetchone()
-    if other:
-        die(f"{a.path} is already locked by {other[0]}")
-    c.execute("insert or replace into lock(path,agent,reason,since,lease_until) values(?,?,?,?,?)",
+    for o in c.execute("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
+                       "and g.ended is null", (n, now())):
+        if covers(a.path, o["path"]) or covers(o["path"], a.path):  # approximate for two globs; errs toward allowing
+            die(f"{a.path} overlaps {o['path']}, locked by {o['agent']}; message it")
+    c.execute("insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)",
               (a.path, n, a.reason, now(), now() + dur(a.lease)))
     log(c, n, "lock", a.path, a.reason)
     print(f"locked {a.path}")
