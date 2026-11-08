@@ -29,7 +29,8 @@ with subagents.
    done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
 2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
-   running as a background Bash (`run_in_background`): it is your inbox. When
+   running as a background Bash (`run_in_background`, never `&` or `disown`: a
+   detached waiter sends no notification and lingers): it is your inbox. When
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
@@ -48,6 +49,8 @@ with subagents.
 - **Read state, not streams.** `swarm board`, `swarm who`, `swarm read`.
 - **Steer where agents already pull from:** add or drop tasks, then
   `swarm post <agent> …`, then `swarm post @all …`. Prefer the board.
+- **Don't reassign claimed work by message.** Add, drop or split tasks and let
+  claims settle; one message per agent, not a sequence of corrections.
 - **You hear two things:** messages addressed to you (questions for the human)
   and `watchd`'s blocked notices. Relay them to the user and answer agents on
   the user's word.

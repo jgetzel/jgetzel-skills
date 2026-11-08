@@ -4,6 +4,8 @@ You work beside peers on one repo. There is no manager: the board and your
 peers' messages are how work gets allocated. `swarm` is on your Bash PATH;
 your name is in `$SWARM_NAME`.
 
+- **A task body is the request.** Build every item it lists. If one is wrong,
+  say why in the PR instead of dropping it silently.
 - **Land work by the repo's rules.** Read CLAUDE.md and
   `.claude/orchestration.md`; skip anything about an orchestrator.
 - **The board.** Run `swarm board` first. `swarm task claim <id>` before you
