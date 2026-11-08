@@ -820,7 +820,7 @@ def hc_terminals():
 def pool(c):
     """Open tasks whose --after dependency (if any) is done: work that can start."""
     return c.execute("select * from task where state='open' and (after is null or after in "
-                     "(select id from task where state='done')) order by id").fetchall()
+                     "(select id from task where state='done')) order by title like ? desc, id", (RED_TASK + "%",)).fetchall()
 
 
 def gx(args, cwd):
@@ -1184,28 +1184,58 @@ def ci_poll(c, repo, every=60):
             c.execute("update ci set failed=? where id=?", (jobs.strip(), r["id"]))
 
 
+RED_TASK = "main red: "  # a red main is one board task, so one agent fixes it; watchd closes it on the next green
+
+
 def ci_check(c, repo, comms=None):
-    runs = [{"databaseId": r["id"], "headSha": r["sha"], "conclusion": r["conclusion"], "url": r["url"]}
-            for r in c.execute("select * from ci where status='completed' order by created desc limit 10")]
-    if not runs or runs[0]["conclusion"] != "failure":
+    runs = [{"databaseId": r["id"], "headSha": r["sha"], "conclusion": r["conclusion"], "url": r["url"], "failed": r["failed"]}
+            for r in c.execute("select * from ci where status='completed' and conclusion!='cancelled' order by created desc limit 10")]
+    if not runs:
         return
     red = runs[0]
+    open_red = c.execute("select id,title,owner from task where title like ? and state in ('open','claimed','blocked')",
+                         (RED_TASK + "%",)).fetchall()
+    if red["conclusion"] == "success":
+        for t in open_red:  # only a run at least as new as the red one: a re-run in progress leaves an older green on top
+            m = re.match(re.escape(RED_TASK) + r"run (\d+)", t["title"])
+            if m and red["databaseId"] < int(m[1]):
+                continue
+            c.execute("update task set state='done', evidence=?, lease_until=null, done_at=? where id=?",
+                      (f"green run {red['databaseId']} at {red['headSha'][:7]}", now(), t["id"]))
+            log(c, "swarm", "done", None, f"#{t['id']} green run {red['databaseId']}")
+            if t["owner"]:
+                post(c, "swarm", t["owner"], f"main is green (run {red['databaseId']}): #{t['id']} is done; stop fixing it.",
+                     kind="system")
+        return
+    if red["conclusion"] not in ("failure", "timed_out", "startup_failure"):
+        return
     if c.execute("select 1 from event where kind='ci-red' and data=?", (str(red["databaseId"]),)).fetchone():
         return
     log(c, "swarm", "ci-red", None, str(red["databaseId"]))
+    if open_red:  # one fixer per red stretch: a later red goes into its body, and its fixer waits for a green run
+        c.execute("update task set body=body || ? where id=?",
+                  (f"\nLater red: run {red['databaseId']} at {red['headSha'][:7]}" + (f" ({red['failed']})" if red["failed"] else ""),
+                   open_red[0]["id"]))
+        return
     green = next((r for r in runs if r["conclusion"] == "success"), None)
     rng = f"{green['headSha']}..{red['headSha']}" if green else f"-20 {red['headSha']}"
     body = run(["git", "log", "--format=%B%x1e", *rng.split()], cwd=repo) or ""
     names = sorted(set(re.findall(r"^Swarm-Agent:\s*(\S+)", body, re.M)))
     tail = "\n".join((run(["gh", "run", "view", str(red["databaseId"]), "--log-failed"], cwd=repo) or "").splitlines()[-30:])
+    about = f"main CI is red (run {red['databaseId']} {red.get('url', '')}), commits {rng}, authors: {', '.join(names) or 'none'}."
+    title = f"{RED_TASK}run {red['databaseId']}" + (f" ({red['failed']})" if red["failed"] else "")
+    tid = c.execute("insert into task(title,body,created_by,created_at) values(?,?,?,?)",
+                    (title, f"{about} Fix forward on main; watchd marks this done on the next green run.\n{tail}",
+                     "swarm", now())).lastrowid
+    log(c, "swarm", "task-add", None, f"#{tid} {title}")
     live = {x["name"] for x in live_agents(c)}
-    msg = f"main CI is red (run {red['databaseId']} {red.get('url', '')}); you have commits since the last green. Fix forward.\n{tail}"
+    msg = (f"{about} Task #{tid} is its one fix: `swarm task claim {tid}` if your commit broke it, then fix forward; "
+           f"if someone holds it, leave it to them.")
     suspects = [n for n in names if n in live]
     for n in suspects:
         post(c, "swarm", n, msg, urgent=True, kind="system")
-    if not suspects and comms:  # nobody who committed is live
-        post(c, "swarm", comms, msg + f"\nNo live agent has commits in it (authors: {', '.join(names) or 'none'}).",
-             urgent=True, kind="system")
+    if not suspects and comms:  # nobody who committed is live: the board's task gets a fresh agent
+        post(c, "swarm", comms, msg + " No live agent has commits in it.", urgent=True, kind="system")
 
 
 # ---------- commands ----------
@@ -1370,6 +1400,12 @@ def cmd_task(c, a):
                 die(f"task #{a.id} is not claimed by you")
             print(f"renewed #{a.id} until {hhmm(t + dur(a.lease))}")
         else:
+            r = c.execute("select title from task where id=?", (a.id,)).fetchone()
+            if r and r["title"].startswith(RED_TASK):  # a run that predates the fix could still go red: green closes it
+                if not c.execute("update task set evidence=?" + mine, (a.evidence, a.id, n)).rowcount:
+                    die(f"task #{a.id} is not claimed by you")
+                print(f"#{a.id} stays yours until a green run: watchd marks it done then, and you can go idle now.")
+                return
             with tx(c):
                 if not c.execute("update task set state='done', evidence=?, lease_until=null, done_at=?, "
                                  "done_ctx=(select ctx_tokens from agent where name=?)" + mine, (a.evidence, t, n, a.id, n)).rowcount:
@@ -1418,7 +1454,8 @@ def cmd_task(c, a):
 
 
 def cmd_board(c, a):
-    q = "select * from task " + ("" if a.all else "where state in ('open','claimed','blocked') ") + "order by id"
+    q = "select * from task " + ("" if a.all else "where state in ('open','claimed','blocked') ") + \
+        f"order by title like '{RED_TASK}%' and state!='done' desc, id"
     rows = c.execute(q).fetchall()
     for r in rows:
         who = r["owner"] or "-"

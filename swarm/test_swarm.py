@@ -1342,7 +1342,7 @@ class T(unittest.TestCase):
         self.swp("a", pr, "watchd", "--once")
         self.assertEqual(self.q("select count(*) from event where kind='pressure-end'")[0][0], 1)
 
-    def test_ci_red_goes_to_live_suspects_else_comms(self):
+    def test_ci_red_is_one_task_closed_on_green(self):
         def commit(who):
             subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", f"x\n\nSwarm-Agent: {who}"], cwd=self.repo, check=True)
         green = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
@@ -1359,14 +1359,50 @@ class T(unittest.TestCase):
         self.agent("a"); self.agent("gone", ended=1); self.agent("comms")
         go = lambda: subprocess.run([sys.executable, SWARM, "watchd", "--once", "--ci", "--comms", "comms"],
                                     env=env, capture_output=True, text=True, cwd=self.repo, check=True)
+        self.sw("a", "task", "add", "earlier work")
         go(); go()  # second tick: edge-triggered
         m = self.q("select dest,body from msg where kind='system' order by id")
         self.assertEqual([x[0] for x in m], ["a"])
-        self.assertIn("http://ci/9", m[0][1]); self.assertIn("Build failed", m[0][1])
-        # no live suspect: falls back to comms
-        self.q("update agent set ended=1 where name='a'"); self.q("delete from event where kind='ci-red'")
+        self.assertIn("http://ci/9", m[0][1]); self.assertIn("swarm task claim 2", m[0][1])
+        red_tasks = self.q("select id,body,state from task where title like 'main red:%'")
+        self.assertEqual(len(red_tasks), 1); self.assertIn("Build failed", red_tasks[0][1])
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader("swarm_mod_red", SWARM)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod_red", ld)); ld.exec_module(mod)
+        c = sqlite3.connect(self.db); c.row_factory = sqlite3.Row
+        self.assertEqual([r["id"] for r in mod.pool(c)], [2, 1])  # the red task starts first
+        # a later red in the same stretch is the same task
+        runs.insert(0, {**runs[0], "databaseId": 10, "createdAt": "2026-11-08T10:10:00Z"})
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
+        self.q("delete from meta where k like 'ci%'")
         go()
-        self.assertEqual([x[0] for x in self.q("select dest from msg where kind='system' order by id")], ["a", "comms"])
+        self.assertEqual(len(self.q("select 1 from task where title like 'main red:%'")), 1)
+        self.assertEqual(len(self.q("select 1 from msg where kind='system'")), 1)
+        self.assertIn("Later red: run 10", self.q("select body from task where id=2")[0][0])
+        # the fixer's done keeps its claim; a re-run of the reds leaves an older green on top: still open
+        self.sw("a", "task", "claim", "2")
+        self.assertIn("stays yours", self.sw("a", "task", "done", "2", "--evidence", "abc").stdout)
+        self.assertEqual(self.q("select state from task where id=2")[0][0], "claimed")
+        rerun = [{**r, "status": "in_progress", "conclusion": None} if r["conclusion"] == "failure" else r for r in runs]
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(rerun)}' || echo 'step Build failed'\n")
+        self.q("delete from meta where k like 'ci%'")
+        go()
+        self.assertEqual(self.q("select state from task where id=2")[0][0], "claimed")
+        # green closes it, and tells its owner
+        runs.insert(0, {**runs[0], "databaseId": 11, "conclusion": "success", "createdAt": "2026-11-08T10:20:00Z"})
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
+        self.q("delete from meta where k like 'ci%'")
+        go()
+        self.assertEqual(self.q("select state,evidence from task where id=2")[0][:], ("done", f"green run 11 at {red[:7]}"))
+        self.assertIn("is done; stop fixing it", self.q("select body from msg where dest='a' order by id desc limit 1")[0][0])
+        # no live suspect: a new task, and comms hears of it
+        self.q("update agent set ended=1 where name='a'"); self.q("delete from event where kind='ci-red'")
+        runs.pop(0)
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
+        self.q("delete from meta where k like 'ci%'"); self.q("delete from ci")
+        go()
+        self.assertEqual([x[0] for x in self.q("select dest from msg where kind='system' order by id")], ["a", "a", "comms"])
+        self.assertEqual(len(self.q("select 1 from task where title like 'main red:%' and state='open'")), 1)
 
     # ---- swarm run ----
     def fake_remote(self, state="connected"):
