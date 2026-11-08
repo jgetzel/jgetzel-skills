@@ -227,6 +227,17 @@ class T(unittest.TestCase):
         self.sw("b", "join", hc="t2")
         self.assertEqual(self.q("select hc from agent where name='b'")[0]["hc"], "t2")
 
+    def test_takeover_then_predecessor_death_keeps_agent_claims_locks(self):
+        self.sw("a", "join", hc="t1")
+        self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
+        self.sw("a", "lock", "a.txt", hc="t1")
+        self.sw("a", "join", "--takeover", hc="t2")
+        # the predecessor's terminal t1 is gone; only t2 is live
+        self.assertEqual(self.mod().reap(self.mod().connect(), live_addrs={"t2"}), [])
+        self.assertEqual(tuple(self.q("select hc,ended from agent")[0]), ("t2", None))
+        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
+        self.assertEqual(self.q("select agent from lock")[0]["agent"], "a")
+
     def test_reap_spares_row_rebound_after_hc_ls(self):
         self.sw("a", "join", hc="t1")
         self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")

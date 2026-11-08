@@ -86,7 +86,7 @@ with subagents.
   check. Kill by PID, never `pkill -f`.
 - Clean up every terminal you start (`hc kill <t> && hc rm <t>`) when the
   swarm ends.
-- At high context hand off with the `relaunch` skill, same model. You have no hooks, so `swarm read/wait/board/who` print the context-size note for you.
+- At high context hand off with the `relaunch` skill, same model; your handoff tells the successor to run `swarm join --takeover` (same `SWARM_NAME`) before it ends you. You have no hooks, so `swarm read/wait/board/who` print the context-size note for you.
 
 ## Reference
 

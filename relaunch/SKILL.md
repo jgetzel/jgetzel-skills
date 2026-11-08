@@ -16,7 +16,10 @@ Append to your handoff file (in an orchestrated wave,
 `### <you> -> <successor> state (<time>)`:
 
 - **PENDING FIRST:** what the successor does before anything else, with exact
-  commands, branches and shas. Its first item is always: "end `<your name>`
+  commands, branches and shas. In a swarm its first item is `swarm join
+  --takeover` (with your `$SWARM_NAME`), so the swarm binds you to the
+  successor's terminal before your pane dies; without it your death reaps
+  your claims and locks. Then, always: "end `<your name>`
   (`hc kill <your $HC_TERMINAL_ID> && hc rm <your $HC_TERMINAL_ID>`) once
   `hc get <your $HC_TERMINAL_ID>` shows idle or done". The address is how it
   finds you (a session the user opened has no hc name); without it nobody
@@ -59,7 +62,7 @@ First finish or kill your background jobs (by PID), so your pane is safe to
 close once you stop. Run from your working folder:
 
 ```bash
-~/.claude/skills/relaunch/launch.sh <successor> split "Read and follow <brief path> (you are <successor>). First: end <your name> (hc kill $HC_TERMINAL_ID && hc rm $HC_TERMINAL_ID) once \`hc get $HC_TERMINAL_ID\` shows idle or done. Then: <PENDING FIRST in one line>." <the flags you were started with>
+~/.claude/skills/relaunch/launch.sh <successor> split "Read and follow <brief path> (you are <successor>). First: in a swarm, run \`swarm join --takeover\` with SWARM_NAME=$SWARM_NAME. Then end <your name> (hc kill $HC_TERMINAL_ID && hc rm $HC_TERMINAL_ID) once \`hc get $HC_TERMINAL_ID\` shows idle or done. Then: <PENDING FIRST in one line>." <the flags you were started with>
 ```
 
 It splits your tab, starts `claude -n <successor>` with the prompt as its first
