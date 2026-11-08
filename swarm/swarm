@@ -632,6 +632,9 @@ def gx(args, cwd):
 
 def landed(wt, B, main):
     """Nothing in worktree wt is unlanded relative to ref B (sw-lifecycle §4.2)."""
+    if not os.path.exists(wt):  # nothing uncommitted can be lost; judge by its branch if git still knows it
+        m = re.search(r"^worktree %s\n(?:.*\n)*?branch refs/heads/(.*)$" % re.escape(wt), run(["git", "-C", main, "worktree", "list", "--porcelain"]) or "", re.M)
+        return not m or gx(["-C", main, "merge-base", "--is-ancestor", m[1], B], None)[0] == 0
     st = run(["git", "-C", wt, "status", "--porcelain"])
     if st is None or st.strip():
         return False
@@ -658,6 +661,9 @@ def end_agent(c, a, wt, main, comms):
         run(["hc", "kill", a["hc"]])
         run(["hc", "rm", a["hc"]])
     if not wt or wt == main:
+        return
+    if not os.path.exists(wt):
+        run(["git", "-C", main, "worktree", "prune"])
         return
     steps = [["-C", main, "worktree", "remove", wt]]
     if br and br not in ("HEAD", "main", "master"):

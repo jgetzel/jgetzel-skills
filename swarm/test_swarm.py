@@ -1,6 +1,6 @@
 import argparse
 import sys; sys.dont_write_bytecode = True
-import json, os, sqlite3, subprocess, sys, tempfile, time, unittest
+import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest
 
 SWARM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
 G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -325,6 +325,24 @@ class T(unittest.TestCase):
         self.comms_tick()
         self.assertFalse(self.ended("e"))  # clean but not on main
         self.assertTrue(os.path.exists(self.wt))
+
+    def test_missing_worktree(self):
+        self.idle("e", wt=self.wt)
+        shutil.rmtree(self.wt)  # branch w2 still registered; its commits are on main
+        self.comms_tick()
+        self.assertTrue(self.ended("e"))
+        self.idle("f", wt=self.wt + "-gone")  # no worktree, no branch
+        self.comms_tick()
+        self.assertTrue(self.ended("f"))
+
+    def test_missing_worktree_unlanded_branch_not_ended(self):
+        self.idle("e", wt=self.wt)
+        self.write("b", "new.txt", "wip")
+        subprocess.run([*G, "add", "."], cwd=self.wt, check=True)
+        subprocess.run([*G, "commit", "-qm", "wip"], cwd=self.wt, check=True)
+        shutil.rmtree(self.wt)
+        self.comms_tick()
+        self.assertFalse(self.ended("e"))
 
     def test_claim_keeps_agent_and_lease(self):
         self.idle("e", wt=self.wt)
