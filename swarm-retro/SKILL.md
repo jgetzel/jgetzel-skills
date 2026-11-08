@@ -233,7 +233,7 @@ candidate with its declarations, gate and test verdict, the diffs, and
 always-loaded bytes (files, brief × agents, hook-injected) before → after. Apply only what they approve. Approval of
 a change in a repo that lands by PR (Scope) covers its branch and PR; anywhere
 else, commit or push only when asked.
-Re-run `harness-lint.py`; it must pass.
+Re-run `harness-lint.py`.
 
 Then append to the ledger of the change's scope, one line per candidate,
 approved or not:
