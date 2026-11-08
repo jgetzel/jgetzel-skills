@@ -251,7 +251,8 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
   and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
   within `--max-agents` and `--min-free-mem`.
-- **`task add --after N`** keeps a task unclaimable until #N is done; `task
+- **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are done (`task after`
+  edits the list; sw-deps.md); `task
   done` prints whether to take the next task or go idle.
 - **Leases** are live: an expired claim reopens only when its owner has
   ended; a live owner is reported to the communicator, not overridden.
