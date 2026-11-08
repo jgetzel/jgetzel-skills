@@ -1336,7 +1336,7 @@ def head_branch(wt):
 # Sections each panel view needs beyond the header (tasks, agents, conflicts, pressure, machine).
 # "lanes": hc idle lookups, worktrees and each live agent's last events. No --view is everything.
 VIEWS = {"overview": {"lanes", "messages", "events"}, "agents": {"lanes"}, "board": set(),
-         "activity": {"messages", "events"}, "system": {"lanes", "events", "locks"}}
+         "activity": {"messages", "events"}, "system": {"lanes", "events", "locks", "running"}}
 
 
 class Rec(dict):
@@ -1369,7 +1369,7 @@ def cmd_state(a):
         r["lease_left"] = r["lease_until"] - t if r["state"] in ("claimed", "blocked") and r["lease_until"] else None
         r["waiting"] = bool(r.get("after") and state.get(r["after"]) != "done")
     full = a.view is None
-    want = VIEWS[a.view] if a.view else {"lanes", "messages", "events", "locks"}
+    want = VIEWS[a.view] if a.view else {"lanes", "messages", "events", "locks", "running"}
     lanes = "lanes" in want
     wts, agents = wt_map(c) if lanes else {}, []
     for x in rows("select * from agent order by ended is not null, name"):
@@ -1433,6 +1433,13 @@ def cmd_state(a):
         out["events"] = pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60"))
     if "locks" in want:
         out["locks"] = rows("select * from lock order by since desc")
+    if "running" in want:  # one /proc scan, only where the System view shows it
+        try:
+            hv = heavy_procs(c, read_procs())
+        except sqlite3.OperationalError:  # an old db without claude_pid
+            hv = []
+        out["running"] = [{"agent": h["agent"], "command": h["cmd"][:120], "elapsed_s": int(h["age"]), "start": t - int(h["age"]), "rss_kb": h["rss_kb"]}
+                          for h in sorted(hv, key=lambda h: -h["rss_kb"])]
     print(json.dumps(out))
 
 

@@ -796,7 +796,7 @@ class T(unittest.TestCase):
         self.sw("b", "leave")
         st = lambda *v: json.loads(self.sw("a", "state", "--json", *v).stdout)
         head = {"active", "db", "now", "view", "comms", "tasks", "agents", "conflicts", "pressure", "machine"}
-        for view, extra in {"board": set(), "activity": {"messages", "events"}, "system": {"events", "locks"},
+        for view, extra in {"board": set(), "activity": {"messages", "events"}, "system": {"events", "locks", "running"},
                             "overview": {"messages", "events"}, "agents": set()}.items():
             s = st("--view", view)
             self.assertEqual(set(s), head | extra, view)
@@ -811,6 +811,19 @@ class T(unittest.TestCase):
         full = st()
         self.assertEqual(full["view"], None)
         self.assertIn("locks", full["agents"][1])  # no --view: everything, as before
+
+    def test_state_json_running(self):
+        pr = self.fake_proc()
+        self.hook("a", "session")
+        self.q("update agent set claude_pid=100 where name='a'")
+        self.add_proc(pr, 100, 1, "claude", ["claude"])
+        self.add_proc(pr, 102, 100, "cabal", ["/x/bin/cabal", "build"], rss_pages=1_000_000 // 4, age_s=125)
+        self.add_proc(pr, 200, 1, "node", ["node", "/x/bin/tsc", "-b"], rss_pages=500_000 // 4)
+        st = lambda *v: json.loads(self.swp("a", pr, "state", "--json", *v).stdout)
+        r = st("--view", "system")["running"]
+        self.assertEqual([(j["agent"], j["command"], j["elapsed_s"], j["rss_kb"]) for j in r],
+                         [("a", "cabal build", 125, 1_000_000), ("other session", "tsc -b", 240, 500_000)])
+        self.assertNotIn("running", st("--view", "board"))
 
     def test_state_json_hc_only_where_shown(self):
         t = int(time.time())
