@@ -26,6 +26,13 @@ function location() {
   const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on: space?.machine ?? null };
 }
+// Focus address of an agent's terminal: remote spaces name terminals "machine/tN". null when it is gone
+// (ended, hc rm'd, or relaunched into a new terminal). shortcut: if panes() carries no terminal ids, trust a.hc.
+function focusAddr(a) {
+  if (!a.hc || a.status === "ended") return null;
+  const addr = location().on ? `${location().on}/${a.hc}` : a.hc, ps = panes();
+  return !ps.some(p => p.terminal) || ps.some(p => p.terminal === addr) ? addr : null;
+}
 const locKey = () => { const l = location(); return `${l.on}:${l.cwd}`; };
 const ago = s => s == null ? "" : s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m` : s >= 60 ? `${Math.floor(s / 60)}m` : `${Math.max(0, s)}s`;
 const hhmm = ts => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
@@ -364,7 +371,7 @@ export default class Swarm extends View {
               .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(e.ts))).child(div().flex_1().min_w(0).truncate().text_color(l.red ? t.blocked : t.muted).child(l.text)); })))
           .child(h_flex().mt(8).h(24).gap(6)
             .child(this.btn(t, `push-${a.name}`, "Open agent", cx => { this.push = a.name; cx.notify(); }))
-            .when(Boolean(a.hc), el => el.child(this.btn(t, `focus2-${a.name}`, "Focus terminal ↗", () => run("agent.focus", { terminal: a.hc }))))));
+            .when(Boolean(focusAddr(a)), el => el.child(this.btn(t, `focus2-${a.name}`, "Focus terminal ↗", () => run("agent.focus", { terminal: focusAddr(a) }))))));
     }
     return { key: a.name, h, el };
   }
@@ -450,7 +457,7 @@ export default class Swarm extends View {
           .when(Boolean(a.model), el => el.child(this.chip(t, a.model)))
           .when(!isComms, el => el.child(this.cacheChip(t, a, true) ?? div()))
           .child(div().flex_1())
-          .when(Boolean(a.hc) && a.status !== "ended", el => el.child(this.btn(t, `focus-${a.name}`, this.width < 760 && this.width >= 520 ? "↗" : "Focus terminal ↗", () => run("agent.focus", { terminal: a.hc })))))
+          .when(Boolean(focusAddr(a)), el => el.child(this.btn(t, `focus-${a.name}`, this.width < 760 && this.width >= 520 ? "↗" : "Focus terminal ↗", () => run("agent.focus", { terminal: focusAddr(a) })))))
         .child(div().pl(18).text_size(10.5).text_color(t.dim).whitespace_normal()
           .child([isComms ? "the comms" : null, a.started ? `started ${hhmm(a.started)}` : null, a.ended ? `ended ${hhmm(a.ended)}` : null, a.hc ? `terminal ${a.hc}` : null,
             isComms ? "no idle or cache timer: it only sees swarm activity" : null].filter(Boolean).join(" · "))))
