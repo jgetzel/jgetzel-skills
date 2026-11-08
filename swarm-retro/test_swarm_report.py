@@ -34,5 +34,17 @@ insert into event(ts,agent,kind,path,data) values(1,'a','conflict','L.hs','b'),(
     got = [os.path.basename(x) for x in sr.transcripts("jl-1", "/w")]
     self.assertEqual(sorted(got), ["a.jsonl", "c.jsonl"])
 
+  def test_resources(self):
+    c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
+    c.executescript("""create table agent(name,model,cwd,started,ended,ctx_tokens,status);
+create table task(id,title,state,owner,evidence);
+create table event(id integer primary key,ts,agent,kind,path,data);
+create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
+insert into event(ts,agent,kind,data) values(10,null,'heavy-count','2'),(20,null,'pressure',null),(80,null,'pressure-end',null),
+ (90,null,'pressure',null),(95,null,'heavy-count','1'),(30,'a','heavy-start','cabal build'),(40,'a','heavy-start','x'),(50,'b','orphan-kill','1 ghc');""")
+    p = sr.report(c, git=False)["pressure"]
+    self.assertEqual((p["episodes"], p["total_s"], p["ongoing"], p["max_concurrent_heavy"], p["orphan_kills"]), (2, 60, True, 2, 1))
+    self.assertEqual(p["heavy_starts"], {"a": 2})
+
 if __name__ == '__main__':
     unittest.main()

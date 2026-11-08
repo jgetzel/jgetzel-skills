@@ -97,7 +97,7 @@ def report(c, since=None, git=True):
         t["took"] = span(done["ts"] - cl["ts"]) if cl and done else None
         tasks.append(t)
     out["tasks"] = tasks
-    out["events"] = {a: dict(Counter(e["kind"] for e in ev if e["agent"] == a)) for a in sorted({e["agent"] for e in ev})}
+    out["events"] = {a or "watchd": dict(Counter(e["kind"] for e in ev if e["agent"] == a)) for a in sorted({e["agent"] for e in ev}, key=lambda x: x or "")}
     # transcripts: files whose agent-name record is this agent or a relaunched successor (name-2)
     for a in out["agents"]:
         a["transcripts"] = transcripts(a["name"], a.get("cwd"))
@@ -108,6 +108,17 @@ def report(c, since=None, git=True):
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["conflicts"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in CONFLICTS]
+    ps, start = [], None
+    for e in ev:
+        if e["kind"] == "pressure":
+            start = e["ts"]
+        elif e["kind"] == "pressure-end" and start:
+            ps.append(e["ts"] - start)
+            start = None
+    out["pressure"] = {"episodes": len(ps) + (start is not None), "total_s": sum(ps), "ongoing": start is not None,
+                       "max_concurrent_heavy": max([int(e["data"]) for e in ev if e["kind"] == "heavy-count"] or [0]),
+                       "orphan_kills": sum(e["kind"] == "orphan-kill" for e in ev),
+                       "heavy_starts": dict(Counter(e["agent"] for e in ev if e["kind"] == "heavy-start"))}
     out["idle_with_open_tasks"] = [{"ts": e["ts"], "agent": e["agent"]} for e in ev if e["kind"] == "digest"]
     if git:
         g = git_evidence(since)
@@ -140,6 +151,10 @@ def show(r):
             print("- " + " ".join(f"{k}={v}" for k, v in x.items()))
         if key == "commits_per_hour":
             print(f"- not swarm: {r.get('not_swarm_commits', 0)}")
+    p = r["pressure"]
+    print(f"\n## resources\n- pressure episodes: {p['episodes']} ({span(p['total_s'])} total{', ongoing' if p['ongoing'] else ''})"
+          f"\n- max concurrent heavy: {p['max_concurrent_heavy']}\n- orphan kills: {p['orphan_kills']}"
+          f"\n- heavy starts per agent: {', '.join(f'{k}={v}' for k, v in sorted(p['heavy_starts'].items())) or '-'}")
     print("\n## files changed by 2+ agents")
     for f, a in r.get("multi_agent_files", {}).items():
         print(f"- {f}: {', '.join(a)}")

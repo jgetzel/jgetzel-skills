@@ -474,13 +474,83 @@ class T(unittest.TestCase):
         self.assertIn("a idle", self.sw("a", "who").stdout)
 
 
-    def test_machine_info(self):
-        self.assertIn("mem available", self.sw("a", "machine").stdout)
-        o = self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": "nix develop -c env X=1 cabal build"})
-        self.assertIn("machine:", o["additionalContext"])
+    def fake_proc(self, avail_kb=20_000_000, psi=1.0):
+        r = os.path.join(self.d, "proc")
+        os.makedirs(os.path.join(r, "pressure"), exist_ok=True)
+        open(os.path.join(r, "uptime"), "w").write("10000.0 0\n")
+        open(os.path.join(r, "meminfo"), "w").write(f"MemTotal: 32000000 kB\nMemAvailable: {avail_kb} kB\n")
+        for k in ("memory", "cpu"):
+            open(os.path.join(r, "pressure", k), "w").write(f"some avg10={psi} avg60=0 avg300=0 total=0\n")
+        return r
+
+    def add_proc(self, r, pid, ppid, comm, argv, rss_pages=0, age_s=240, cwd=None):
+        d = os.path.join(r, str(pid))
+        os.makedirs(d, exist_ok=True)
+        tck = os.sysconf("SC_CLK_TCK")
+        f = ["S", str(ppid)] + ["0"] * 17 + [str(int((10000 - age_s) * tck)), "0", str(rss_pages)]
+        open(os.path.join(d, "stat"), "w").write(f"{pid} ({comm}) " + " ".join(f))
+        open(os.path.join(d, "cmdline"), "w").write("\0".join(argv) + "\0")
+        open(os.path.join(d, "oom_score_adj"), "w").write("0")
+        if cwd:
+            os.symlink(cwd, os.path.join(d, "cwd"))
+
+    def swp(self, who, proc, *args, stdin=None):
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who, "SWARM_PROC": proc}
+        return subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True, text=True, cwd=self.cwd[who])
+
+    def hookp(self, who, proc, cmd):
+        r = self.swp(who, proc, "hook", "pre-tool", stdin=json.dumps({"cwd": self.cwd[who], "tool_name": "Bash", "tool_input": {"command": cmd}}))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else {}
+
+    def test_machine_note_and_patterns(self):
+        pr = self.fake_proc()
+        self.hook("a", "session"); self.hook("b", "session")
+        self.q("update agent set claude_pid=100 where name='a'")
+        self.add_proc(pr, 100, 1, "claude", ["claude"])
+        self.add_proc(pr, 101, 100, "bash", ["bash", "-c", "x"])
+        self.add_proc(pr, 102, 101, "cabal", ["/nix/store/x/bin/cabal", "build"], rss_pages=1_000_000 // 4)
+        self.add_proc(pr, 200, 1, "node", ["node", "/x/bin/tsc", "-b"], rss_pages=500_000 // 4)  # not a swarm agent's
+        self.add_proc(pr, 103, 101, "ghc-9.10.3", ["/s/ghc-9.10.3", "--make"], rss_pages=2_000_000 // 4)
+        self.hookp("b", pr, "nix develop -c env TPG_SOCK=/m/.dev/.s.PGSQL.5432 cabal build")  # b starts one: logged
+        o = self.hookp("a", pr, "nix develop -c env TPG_SOCK=/m/.dev/.s.PGSQL.5432 cabal build")
         self.assertNotIn("permissionDecision", o)
-        for c in ("ls", "git commit -m 'make it'", "nix run .#dev"):
-            self.assertEqual(self.hook("a", "pre-tool", tool_name="Bash", tool_input={"command": c}), {}, c)
+        n = o["additionalContext"]
+        self.assertLessEqual(len(n.splitlines()), 6)
+        self.assertIn("machine: 19.1/30.5G", n)
+        self.assertRegex(n, r"running: ghc-9.10.3 --make .*\(a\)")
+        self.assertIn("running: tsc -b", n); self.assertIn("(other session)", n)
+        self.assertIn("started in the last 60s: b:", n)
+        self.assertEqual(self.hookp("a", pr, "git commit -m 'make it'"), {})
+        self.assertEqual(self.hookp("a", pr, "nix run .#dev"), {})
+        for c in ("nix build .#server", "nix flake check", "spago build", "purs compile", "npx playwright test"):
+            self.assertIn("machine:", self.hookp("a", pr, c)["additionalContext"], c)
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        open(os.path.join(self.repo, ".claude", "swarm.json"), "w").write('{"heavy": ["\\\\bfoo-build\\\\b"]}')
+        self.assertIn("machine:", self.hookp("a", pr, "foo-build all")["additionalContext"])
+
+    def test_pressure_edge_oom_and_orphans(self):
+        pr = self.fake_proc(avail_kb=2_000_000)  # 6% available: high
+        self.hook("a", "session"); self.hook("b", "session")
+        self.q("update agent set claude_pid=100 where name='a'")
+        self.add_proc(pr, 100, 1, "claude", ["claude"])
+        self.add_proc(pr, 102, 100, "cabal", ["cabal", "build"], rss_pages=1_000_000 // 4)
+        # b is ended; its worktree holds a build reparented to init
+        self.q("update agent set ended=1 where name='b'")
+        self.add_proc(pr, 300, 1, "ghc-9.10.3", ["ghc-9.10.3", "--make"], rss_pages=3_000_000 // 4, cwd=self.wt)
+        self.swp("a", pr, "watchd", "--once")
+        ev = [r[0] for r in self.q("select kind from event where kind in ('pressure','pressure-end','orphan-kill') order by id")]
+        self.assertEqual(ev, ["pressure", "orphan-kill"])
+        notes = self.q("select dest,body from msg where kind='notice'")
+        self.assertEqual([n[0] for n in notes], ["a"]); self.assertIn("ghc-9.10.3", notes[0][1])
+        self.assertEqual(open(os.path.join(pr, "102", "oom_score_adj")).read(), "500")
+        self.assertEqual(open(os.path.join(pr, "300", "oom_score_adj")).read(), "0")  # not an agent's: left alone
+        # still high: no second notice (edge-triggered); leaves high: pressure-end
+        self.swp("a", pr, "watchd", "--once")
+        self.assertEqual(self.q("select count(*) from event where kind='pressure'")[0][0], 1)
+        self.fake_proc(avail_kb=20_000_000)
+        self.swp("a", pr, "watchd", "--once")
+        self.assertEqual(self.q("select count(*) from event where kind='pressure-end'")[0][0], 1)
 
 
 if __name__ == "__main__":
