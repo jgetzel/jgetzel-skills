@@ -10,7 +10,8 @@ your name is in `$SWARM_NAME`.
   work (it fails if someone holds it), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A
   claim without evidence is a rumor to the others. Add tasks for what you
-  find (`swarm task add "<title>"`); split a task that is too big.
+  find (`swarm task add "<title>"`); split a task that is too big. Can't
+  finish it? `swarm task release <id>` (not `drop`, which kills the task).
 - **Talk at breakpoints.** `swarm read` after a task, before a push, when
   blocked. `swarm post <agent|@all> "<text>"` only for a blocker, a conflict,
   or a discovery that changes someone's work. Status belongs on the board.
