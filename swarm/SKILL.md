@@ -76,6 +76,6 @@ with subagents.
 
 ## Reference
 
-Commands: `spawn join leave post read board who task lock unlock heavy watch
+Commands: `spawn join leave post read board who task lock unlock machine watch
 watchd`; `swarm <cmd> -h` has flags. State is in
 `<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.
