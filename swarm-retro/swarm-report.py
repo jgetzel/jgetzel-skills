@@ -138,6 +138,29 @@ def red_runs(commits, since=0):
             out.append({"run": r["databaseId"], "broke": by.get(r["headSha"], "?"), "fixed_by": by.get(fix["headSha"], "?") if fix else None})
     return out
 
+def jobs(ev):
+    """`swarm run` jobs per machine ('here' = local): count, minutes, exit codes, lost and unfinished, sync and bring-back seconds."""
+    data = lambda e: json.loads(e["data"] or "{}") if (e["data"] or "").startswith("{") else {}
+    ends = {e["path"]: data(e) for e in ev if e["kind"] == "job-end"}
+    out = {}
+    for e in ev:
+        if e["kind"] != "job-start":
+            continue
+        s, x = data(e), ends.get(e["path"])
+        m = out.setdefault(s.get("machine") or "here", {"jobs": 0, "minutes": 0, "exits": {}, "lost": 0, "unfinished": 0, "sync_s": 0, "back_s": 0})
+        m["jobs"] += 1
+        if x is None:
+            m["unfinished"] += 1
+            continue
+        m["minutes"] += round((x.get("s") or 0) / 60, 1)
+        if x.get("exit") == "lost":
+            m["lost"] += 1
+        else:
+            m["exits"][str(x.get("exit"))] = m["exits"].get(str(x.get("exit")), 0) + 1
+        m["sync_s"] += x.get("sync_s") or 0
+        m["back_s"] += x.get("back_s") or 0
+    return out
+
 def report(c, since=None, git=True):
     if since is None:  # default window: the swarm's start
         since = c.execute("select coalesce(min(started),0) from agent").fetchone()[0]
@@ -189,6 +212,7 @@ def report(c, since=None, git=True):
                        "max_concurrent_heavy": max([int(e["data"]) for e in ev if e["kind"] == "heavy-count"] or [0]),
                        "orphan_kills": sum(e["kind"] == "orphan-kill" for e in ev),
                        "heavy_starts": dict(Counter(e["agent"] for e in ev if e["kind"] == "heavy-start"))}
+    out["jobs"] = jobs(ev)
     out["idle_with_open_tasks"] = [{"ts": e["ts"], "agent": e["agent"]} for e in ev if e["kind"] == "digest"]
     if git:
         g = git_evidence(since)
@@ -236,6 +260,9 @@ def show(r):
     print(f"\n## resources\n- pressure episodes: {p['episodes']} ({span(p['total_s'])} total{', ongoing' if p['ongoing'] else ''})"
           f"\n- max concurrent heavy: {p['max_concurrent_heavy']}\n- orphan kills: {p['orphan_kills']}"
           f"\n- heavy starts per agent: {', '.join(f'{k}={v}' for k, v in sorted(p['heavy_starts'].items())) or '-'}")
+    print("\n## swarm run jobs")
+    for k, m in r["jobs"].items():
+        print(f"- {k}: {m['jobs']} jobs, {m['minutes']:.0f} min, exits {m['exits'] or '-'}, lost {m['lost']}, unfinished {m['unfinished']}, sync {m['sync_s']:.0f}s, back {m['back_s']:.0f}s")
     print("\n## files changed by 2+ agents")
     for f, a in r.get("multi_agent_files", {}).items():
         print(f"- {f}: {', '.join(a)}")

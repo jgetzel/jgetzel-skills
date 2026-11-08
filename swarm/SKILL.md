@@ -22,6 +22,9 @@ with subagents.
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
    Your `ListAgents` name is the address agents' blocked notices reach.
 4. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
+5. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
+   knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
+   `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys.
 
 ## 1. Start
 
@@ -85,6 +88,6 @@ with subagents.
 
 ## Reference
 
-Commands: `spawn join leave post read board who task lock unlock machine watch
-watchd`; `swarm <cmd> -h` has flags. State is in
+Commands: `spawn join leave post read board who task lock unlock machine run
+watch watchd`; `swarm <cmd> -h` has flags. State is in
 `<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.
