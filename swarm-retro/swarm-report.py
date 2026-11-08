@@ -161,14 +161,18 @@ def report(c, since=None, git=True):
                             "cold_wakes": cold_wakes(ev), "hook_total": sum(hs.values()), "hook_by_source": dict(hs)}
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["conflicts"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in CONFLICTS]
-    ps, start = [], None
-    for e in ev:
-        if e["kind"] == "pressure":
-            start = e["ts"]
-        elif e["kind"] == "pressure-end" and start:
-            ps.append(e["ts"] - start)
-            start = None
-    out["pressure"] = {"episodes": len(ps) + (start is not None), "total_s": sum(ps), "ongoing": start is not None,
+    def episodes(open_k, end_k):
+        ds, start = [], None
+        for e in ev:
+            if e["kind"] == open_k and start is None:
+                start = e["ts"]
+            elif e["kind"] == end_k and start is not None:
+                ds.append(e["ts"] - start)
+                start = None
+        return {"episodes": len(ds) + (start is not None), "total_s": sum(ds), "ongoing": start is not None}
+    ps = episodes("pressure", "pressure-end")
+    out["spawn_holds"] = episodes("hold", "hold-end")
+    out["pressure"] = {**ps,
                        "max_concurrent_heavy": max([int(e["data"]) for e in ev if e["kind"] == "heavy-count"] or [0]),
                        "orphan_kills": sum(e["kind"] == "orphan-kill" for e in ev),
                        "heavy_starts": dict(Counter(e["agent"] for e in ev if e["kind"] == "heavy-start"))}
@@ -212,6 +216,8 @@ def show(r):
     print(f"\n## resources\n- pressure episodes: {p['episodes']} ({span(p['total_s'])} total{', ongoing' if p['ongoing'] else ''})"
           f"\n- max concurrent heavy: {p['max_concurrent_heavy']}\n- orphan kills: {p['orphan_kills']}"
           f"\n- heavy starts per agent: {', '.join(f'{k}={v}' for k, v in sorted(p['heavy_starts'].items())) or '-'}")
+    h = r["spawn_holds"]
+    print(f"- auto-spawn holds (heavy queue deep): {h['episodes']} ({span(h['total_s'])} total{', ongoing' if h['ongoing'] else ''})")
     print("\n## files changed by 2+ agents")
     for f, a in r.get("multi_agent_files", {}).items():
         print(f"- {f}: {', '.join(a)}")
