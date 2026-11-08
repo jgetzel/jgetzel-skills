@@ -110,7 +110,7 @@ rules, not negotiation.
 | Waking idle agents | A `Stop` hook with `asyncRewake` runs `swarm wait --me X` and exits 2 when something arrives. **Unproven: probe first.** Fallback: whoever posts gets a list of idle recipients and sends each a one-line `SendMessage` nudge. | — |
 | DMs | `SendMessage`. A `PostToolUse` hook mirrors each one into `msg`, so the human sees it. | — |
 | Watcher | A daemon (not an LLM); what it does now is under "What's built". It writes each event to the owner's inbox in `swarm.db`, and the hooks deliver it. | watch.sh, merge-retry.sh, overlap.sh |
-| Human view | `swarm watch`: a colored log tail plus agent status in a Herdr split, at zero model cost. | herdr-app |
+| Human view | Herdr's Swarm panel (`swarm/herdr`, from `swarm state --json`); `swarm watch`, a colored log tail in a split, where the panel isn't installed. Zero model cost. | herdr-app |
 | Communicator | `<prefix>-comms`, an ordinary member in `#human` and `#announce`. It writes goals as tasks, reports `blocked`, and relays the judge's verdict. Agents never `hc send` it. | orchestrate's reporting norms |
 | Ending | The board decides. A fresh-context judge checks the written definition of done each cycle. The communicator asks the human before ending the swarm. | — |
 
