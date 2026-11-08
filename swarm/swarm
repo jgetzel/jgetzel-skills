@@ -686,10 +686,10 @@ def heavy_queue_deep():
     top = git(["rev-parse", "--show-toplevel"])
     try:
         cfg = json.load(open(os.path.join(top, ".claude", "swarm.json")))
-        w, s = map(int, (run(["sh", "-c", cfg["heavy_queue"]], cwd=top) or "").split()[:2])
+        w, s = map(int, subprocess.run(["sh", "-c", cfg["heavy_queue"]], cwd=top, capture_output=True, text=True, timeout=10, check=True).stdout.split()[:2])
         return f"{w} waiting for {s} slots" if w > cfg.get("heavy_queue_per_slot", 2) * max(s, 1) else None
-    except (OSError, TypeError, ValueError, KeyError):
-        return None  # no config or an unreadable queue: never hold
+    except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
+        return None  # a hung (10s timeout) or failing command, no config or an unreadable queue: never hold
 
 
 def lifecycle(c, t, comms, terms, opts):
