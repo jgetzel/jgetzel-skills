@@ -65,5 +65,16 @@ insert into event(ts,agent,kind,data) values(10,null,'heavy-count','2'),(20,null
     self.assertEqual((p["episodes"], p["total_s"], p["ongoing"], p["max_concurrent_heavy"], p["orphan_kills"]), (2, 60, True, 2, 1))
     self.assertEqual(p["heavy_starts"], {"a": 2})
 
+  def test_agent_line_anywhere_in_body(self):
+    import subprocess, tempfile
+    d = tempfile.mkdtemp(); g = lambda *a: subprocess.run(("git", "-C", d, "-c", "user.name=x", "-c", "user.email=x@x") + a, check=True, capture_output=True)
+    g("init", "-q"); open(d + "/f", "w").write("1")
+    g("add", "f"); g("commit", "-qm", "t\n\n@@ -1 +1 @@\n\nSwarm-Agent: sp-a\n\nCo-authored-by: y")
+    g("commit", "-q", "--allow-empty", "-m", "plain")
+    cwd = os.getcwd(); os.chdir(d)
+    try: ev = sr.git_evidence(ref="HEAD")
+    finally: os.chdir(cwd)
+    self.assertEqual([c[2] for c in ev["_commits"]], ["(none)", "sp-a"]); self.assertEqual(ev["not_swarm_commits"], 1)
+
 if __name__ == '__main__':
     unittest.main()
