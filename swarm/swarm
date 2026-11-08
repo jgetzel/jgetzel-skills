@@ -2,7 +2,7 @@
 """swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
 from datetime import datetime
-import argparse, difflib, fcntl, fnmatch, glob, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
+import argparse, difflib, fcntl, fnmatch, glob, json, os, re, shlex, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
@@ -774,6 +774,7 @@ def end_agent(c, a, wt, main, comms):
         run(["hc", "rm", a["hc"]])
     if not wt or wt == main:
         return
+    clean_remote(c, os.path.realpath(wt))
     if not os.path.exists(wt):
         run(["git", "-C", main, "worktree", "prune"])
         return
@@ -892,6 +893,7 @@ def watchd_tick(c, comms=None, repo=None, opts=None):
     if comms:  # without a communicator there is nobody to exempt from ending
         lifecycle(c, t, comms, terms, opts or {})
     machine_tick(c)
+    remote_tick(c, t)
     if repo:
         ci_check(c, repo, comms)
         pr_ci(c, repo)
@@ -1227,6 +1229,8 @@ INTERP = re.compile(r"(python[\d.]*|node|bash|sh)$")
 
 def is_heavy(cmd, cwd):
     """Does a Bash command look like a build/test (built-in words plus the repo's .claude/swarm.json {"heavy": [regex]})?"""
+    if re.match(r"\s*swarm\s+run\b", cmd):
+        return True
     if NOT_HEAVY.match(cmd):
         return False
     pats = [HEAVY_RE]
@@ -1321,7 +1325,8 @@ def machine_line(avail, total, psi):
 
 
 def machine_note(c, me_, procs=None):
-    """<= 6 lines: machine state, running heavy processes (attributed), builds other agents started in the last minute."""
+    """<= 6 lines: machine state, running heavy processes (attributed), builds other agents started in the last minute;
+    then one line per other hc machine from watchd's cache."""
     avail, total, psi = mem_psi()
     hv = sorted(heavy_procs(c, procs or read_procs()), key=lambda h: -h["rss_kb"])
     lines = [machine_line(avail, total, psi)]
@@ -1333,11 +1338,254 @@ def machine_note(c, me_, procs=None):
           c.execute("select * from event where kind='heavy-start' and ts>? and agent!=? order by ts", (now() - 60, me_))]
     if st:
         lines.append("  started in the last 60s: " + "; ".join(st[:3]))
-    return "\n".join(lines)
+    return "\n".join(lines + remote_lines(c))
 
 
 def cmd_machine(c, a):
     print(machine_note(c, None))
+
+
+# ---------- swarm run: a job here or on another hc machine ----------
+
+RUN_DIR = ".cache/swarm-run"  # under each machine's home: <repo>/<worktree>/{src,jobs/<id>}, plus whatever `set` puts in {dir}
+JOB_TAIL = 200
+
+
+def hc_machines():
+    """{name: {state, target, ...}} from `hc machine ls`, {} without hc."""
+    try:
+        return {m["name"]: m for m in json.loads(run(["hc", "machine", "ls", "--json"]) or "{}").get("machines", [])}
+    except (ValueError, KeyError, TypeError):
+        return {}
+
+
+def live_jobs(c, t=None):
+    """job-start events with no job-end yet, newest first, data unpacked."""
+    ended = {r["path"] for r in c.execute("select path from event where kind='job-end'")}
+    out = []
+    for r in c.execute("select ts,agent,path,data from event where kind='job-start' and ts>? order by id desc", ((t or now()) - 86400,)):
+        if r["path"] not in ended:
+            try:
+                out.append({"ts": r["ts"], "agent": r["agent"], "id": r["path"], **json.loads(r["data"] or "{}")})
+            except ValueError:
+                pass
+    return out
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def remote_lines(c, t=None):
+    """One line per other machine from watchd's cache (the hook never waits on the network), with this repo's live jobs on it."""
+    t = t or now()
+    r = c.execute("select v from meta where k='machines'").fetchone()
+    try:
+        ms = json.loads(r[0]) if r else {}
+    except ValueError:
+        return []
+    jobs = live_jobs(c, t)
+    out = []
+    for n, m in sorted(ms.items()):
+        js = ", ".join(f"{j['agent']} {j['cmd'][:24]} {ago(j['ts'])}" for j in jobs if j.get("machine") == n)
+        if m.get("state") != "connected":
+            out.append(f"{n}: {m.get('state')} since {hhmm(m.get('since') or m['ts'])}")
+            continue
+        old = f" (as of {ago(m['ts'])} ago)" if t - m["ts"] > 120 else ""
+        out.append(f"{n}: {m['avail_kb'] / 1048576:.0f}/{m['total_kb'] / 1048576:.0f}G available, load {m['load']:g} on {m['cores']} cores, "
+                   f"mem pressure {m['psi']:g}%{old}" + (f", jobs: {js}" if js else ""))
+    return out
+
+
+def remote_tick(c, t):
+    """Each hc machine's load and memory, one `hc exec` each, stored in meta 'machines' for the machine note."""
+    if not os.environ.get("HC_TERMINAL_ID"):  # only watchd started from a Herdr terminal probes; tests and plain shells skip it
+        return
+    ms = hc_machines()
+    r = c.execute("select v from meta where k='machines'").fetchone()
+    old = json.loads(r[0]) if r else {}
+    out = {}
+    for n, m in ms.items():
+        o = old.get(n, {})
+        txt = run(["hc", "exec", "--on", n, "--timeout", "10", "sh", "-c",
+                   "nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null"]) if m.get("state") == "connected" else None
+        try:
+            lines = txt.splitlines()
+            g = lambda k: int(re.search(k + r":\s+(\d+)", txt)[1])
+            psi = re.search(r"some avg10=([\d.]+)", txt)
+            out[n] = {"state": "connected", "ts": t, "cores": int(lines[0]), "load": float(lines[1].split()[0]),
+                      "avail_kb": g("MemAvailable"), "total_kb": g("MemTotal"), "psi": float(psi[1]) if psi else 0.0}
+        except (AttributeError, IndexError, TypeError, ValueError):
+            st = m.get("state") if m.get("state") != "connected" else "unreachable"
+            out[n] = {"state": st, "ts": t, "since": o.get("since") if o.get("state") == st else t}
+    c.execute("insert or replace into meta(k,v) values('machines',?)", (json.dumps(out),))
+
+
+def clean_remote(c, wt):
+    """Remove a landed worktree's dirs on every machine its jobs ran on."""
+    seen = set()
+    for (d,) in c.execute("select data from event where kind='job-start'"):
+        try:
+            j = json.loads(d or "{}")
+        except ValueError:
+            continue
+        if j.get("machine") and j.get("wt") == wt and re.fullmatch(re.escape(RUN_DIR) + r"/[\w.-]+/[\w.-]+", j.get("dir", "")) \
+                and (j["machine"], j["dir"]) not in seen:
+            seen.add((j["machine"], j["dir"]))
+            ok = run(["hc", "exec", "--on", j["machine"], "--timeout", "120", "rm", "-rf", j["dir"]]) is not None
+            log(c, None, "remote-clean", j["dir"], f"{j['machine']} {'ok' if ok else 'failed'}")
+
+
+def ssh_cmd():
+    """ssh with one shared connection per host (each call after the first costs ~0.05 s) that gives up fast on a sleeping host."""
+    cp = os.path.join(tempfile.gettempdir(), "swarm-ssh-%C")
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-o", "ControlMaster=auto", "-o", f"ControlPath={cp}", "-o", "ControlPersist=120"]
+
+
+def job_env(cfg, top, extra):
+    """Variables the job gets: names matching a `run.env` regex, names `run.env_scan` finds in files, and --env."""
+    rx = [re.compile(p) for p in cfg.get("env", [])]
+    names = set()
+    for pat, find in cfg.get("env_scan", []):
+        for f in glob.glob(os.path.join(top, pat)):
+            try:
+                names |= set(re.findall(find, open(f, errors="ignore").read()))
+            except OSError:
+                pass
+    env = {k: v for k, v in os.environ.items() if k in names or any(r.search(k) for r in rx)}
+    for e in extra:
+        k, eq, v = e.partition("=")
+        if eq:
+            env[k] = v
+        elif k in os.environ:
+            env[k] = os.environ[k]
+    return env
+
+
+def cmd_run(c, a):
+    """Run a build or test here, or on another hc machine against a copy of this worktree, and record it as a job."""
+    if a.cmd[:1] == ["--"]:
+        a.cmd = a.cmd[1:]
+    if not a.cmd:
+        die("usage: swarm run [--on <machine>] [--env NAME[=VAL]]... -- <cmd…>")
+    top = git(["rev-parse", "--show-toplevel"]) or die("not in a git repo")
+    top = os.path.realpath(top)
+    common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    repo = re.sub(r"[^\w.-]", "_", os.path.basename(os.path.dirname(common)) if common.endswith("/.git") else os.path.basename(top))
+    wtname = re.sub(r"[^\w.-]", "_", os.path.basename(top))
+    rel = os.path.relpath(os.path.realpath(os.getcwd()), top)
+    try:
+        cfg = json.load(open(os.path.join(top, ".claude", "swarm.json"))).get("run") or {}
+    except (OSError, ValueError):
+        cfg = {}
+    who = os.environ.get("SWARM_NAME") or "human"
+    line = a.cmd[0] if len(a.cmd) == 1 else shlex.join(a.cmd)  # one argument is shell text
+    if cfg.get("prefix"):  # the wrapper runs the whole command
+        full = f"{cfg['prefix']} " + (f"sh -c {shlex.quote(line)}" if len(a.cmd) == 1 else line)
+    else:
+        full = line
+    env = job_env(cfg, top, a.env)
+    jid = c.execute("insert into meta(k,v) values('jobs','1') on conflict(k) do update set v=cast(v as int)+1 returning v").fetchone()[0]
+    jobs = os.path.join(os.path.dirname(dbpath()), "jobs", str(jid))
+    os.makedirs(jobs, exist_ok=True)
+    logf = os.path.join(jobs, "log")
+    task = c.execute("select id from task where owner=? and state in ('claimed','blocked') order by id limit 1", (who,)).fetchone()
+    d = f"{RUN_DIR}/{repo}/{wtname}"
+    rec = {"machine": a.on, "wt": top, "dir": d, "task": task[0] if task else None, "cmd": full, "pid": os.getpid()}
+    t0 = time.time()
+
+    def finish(code, tree=None, sync=None, back=None, kept=()):
+        s = int(time.time() - t0)
+        log(c, who, "job-end", str(jid), json.dumps({"machine": a.on, "exit": code, "s": s, "sync_s": sync, "back_s": back, "tree": tree}))
+        try:
+            tail = open(logf, errors="replace").read().splitlines()[-JOB_TAIL:]
+        except OSError:
+            tail = []
+        if tail:
+            print("\n".join(tail))
+        lost = code == "lost"
+        print(f"job j{jid} {'lost' if lost else 'exit ' + str(code)} on {a.on or 'this machine'}, {s // 60}m{s % 60:02d}s"
+              + (f" (sync {sync:.1f}s, back {back:.1f}s)" if sync is not None and back is not None else "")
+              + (f", tree {tree[:7]}" if tree else "") + f"; log: {logf}"
+              + (f"\nkept your local edits; the job's versions of {', '.join(kept)} are in {jobs}/kept/" if kept else "")
+              + (f"\nthe terminal {rec['hc']} may still be running: `hc wait {rec['hc']}` later" if lost and rec.get("hc") else ""))
+        sys.exit(255 if lost else code)
+
+    if not a.on:
+        rec["dir"] = None
+        log(c, who, "job-start", str(jid), json.dumps(rec))
+        tree = (snapshot(top, None) or {}).get("tree")
+        with open(logf, "w") as f:
+            rc = subprocess.run(["sh", "-c", full], env={**os.environ, **env}, stdout=f, stderr=subprocess.STDOUT).returncode
+        finish(rc if rc >= 0 else 128 - rc, tree)
+
+    m = hc_machines().get(a.on)
+    if not m or m.get("state") != "connected":
+        die(f"machine {a.on} is {m.get('state') if m else 'not in `hc machine ls`'}; the job never ran. Pick another (see the machine note).", 255)
+    ssh = ssh_cmd()
+    tgt = m["target"]
+    busy = sum(1 for j in live_jobs(c) if j.get("machine") == a.on and j.get("wt") == top and pid_alive(j.get("pid")))
+    src = f"{d}/src" + (f".{busy + 1}" if busy else "")  # a second job from this worktree gets its own copy, sharing {dir}
+    # snapshot of local files, to keep edits made while the job ran
+    files = [f for f in (run(["git", "-C", top, "ls-files", "-z", "-c", "-o", "--exclude-standard"]) or "").split("\0") if f]
+    st = lambda f: (lambda s: (s.st_mtime_ns, s.st_size))(os.stat(os.path.join(top, f))) if os.path.lexists(os.path.join(top, f)) else None
+    before = {f: st(f) for f in files}
+    r = subprocess.run(["rsync", "-rlpD", "--checksum", "--delete", "--exclude=.git", "--filter=:- .gitignore", "--mkpath",
+                        "-e", shlex.join(ssh), f"{top}/", f"{tgt}:{src}/"], capture_output=True, text=True)
+    sync = time.time() - t0
+    if r.returncode:
+        die(f"sync to {a.on} failed (rsync exit {r.returncode}: {(r.stderr.strip().splitlines() or ['?'])[-1]}); the job never ran.", 255)
+    exports = [f"{k}={shlex.quote(v)}" for k, v in env.items()] + \
+              [f'{k}="{v}"'.replace("{dir}", f"$HOME/{d}") for k, v in (cfg.get("set") or {}).items()]
+    meta = f'"$HOME/{d}/jobs/{jid}"'
+    # the copy's own git index marks what the job wrote; nix flakes also see only tracked files
+    script = "; ".join([
+        f'mkdir -p {meta} && cd "$HOME/{src}" || exit 255', "[ -d .git ] || git init -q", f"git add -A && git write-tree > {meta}/tree",
+        f"{{ (cd {shlex.quote(rel)} && {'export ' + ' '.join(exports) + ' && ' if exports else ''}{full}); echo $? > {meta}/rc; }} 2>&1 | tee {meta}/log",
+        f"git ls-files -z -m -o --exclude-standard > {meta}/files", f'exit "$(cat {meta}/rc 2>/dev/null || echo 255)"'])
+    name = re.sub(r"[^a-z0-9_-]", "-", f"{who}-j{jid}".lower())[:32]
+    task_l = ["--label", f"swarm-task={rec['task']}"] if rec["task"] else []
+    out = run(["hc", "run", "--on", a.on, "--bg", "--json", "--no-notify", "--name", name, "--label", f"swarm-agent={who}",
+               "--label", f"swarm-job={jid}", "--label", f"swarm-wt={repo}/{wtname}", *task_l, "sh", "-c", script])
+    try:
+        rec["hc"] = json.loads(out)["address"]
+    except (TypeError, ValueError, KeyError):
+        die(f"`hc run --on {a.on}` failed; the job never ran.", 255)
+    log(c, who, "job-start", str(jid), json.dumps(rec))
+    while True:
+        try:
+            w = json.loads(run(["hc", "wait", rec["hc"], "--json", "--timeout", "600"]) or "")
+        except ValueError:
+            finish("lost", sync=sync)
+        if w.get("ended"):
+            break
+    code = w.get("exit_code")
+    if code is None:
+        code = 128 + w["signal"] if isinstance(w.get("signal"), int) else "lost"
+    tb = time.time()
+    rs = lambda *x: subprocess.run(["rsync", "-a", "-e", shlex.join(ssh), *x], capture_output=True, text=True)
+    rs(f"{tgt}:{d}/jobs/{jid}/", f"{jobs}/")
+    back = [f for f in open(os.path.join(jobs, "files")).read().split("\0") if f] if os.path.exists(os.path.join(jobs, "files")) else []
+    kept = []
+    if back:
+        stage = os.path.join(jobs, "kept")
+        rs("--from0", f"--files-from={os.path.join(jobs, 'files')}", f"{tgt}:{src}/", f"{stage}/")
+        for f in back:
+            if st(f) == before.get(f) and os.path.lexists(os.path.join(stage, f)):  # untouched here since the sync
+                os.makedirs(os.path.dirname(os.path.join(top, f)) or ".", exist_ok=True)
+                shutil.move(os.path.join(stage, f), os.path.join(top, f))
+            elif os.path.lexists(os.path.join(stage, f)):
+                kept.append(f)
+    for b in cfg.get("bring_back", []):  # ~/x: the same path on both machines; else relative to the tree
+        rs(f"{tgt}:{b[2:]}" if b.startswith("~/") else f"{tgt}:{src}/{b}", os.path.expanduser(b) if b.startswith("~/") else os.path.join(top, b))
+    tree = open(os.path.join(jobs, "tree")).read().strip() if os.path.exists(os.path.join(jobs, "tree")) else None
+    run(["hc", "rm", rec["hc"]])
+    finish(code, tree, sync, time.time() - tb, kept)
 
 
 def head_branch(wt):
@@ -1459,6 +1707,12 @@ def cmd_state(a):
             hv = []
         out["running"] = [{"agent": h["agent"], "command": h["cmd"][:120], "elapsed_s": int(h["age"]), "start": t - int(h["age"]), "rss_kb": h["rss_kb"]}
                           for h in sorted(hv, key=lambda h: -h["rss_kb"])]
+        # jobs on other machines (local ones are in the /proc scan); lost: its `swarm run` is gone and so is its terminal
+        js = [j for j in (live_jobs(c, t) if rows("select 1 from event where kind='job-start' limit 1") else []) if j.get("machine")]
+        gone = [j for j in js if not pid_alive(j.get("pid"))]
+        live = {x["address"] for x in hc_terminals() or []} if gone else set()
+        out["running"] += [{"agent": j["agent"], "command": j["cmd"][:120], "elapsed_s": t - j["ts"], "start": j["ts"], "rss_kb": None,
+                            "machine": j["machine"], "job": j["id"], "lost": j in gone and j.get("hc") not in live} for j in js]
     print(json.dumps(out))
 
 
@@ -1609,6 +1863,10 @@ def main(argv=None):
     p = add("unlock", cmd_unlock)
     p.add_argument("path")
     add("machine", cmd_machine)
+    p = add("run", cmd_run)
+    p.add_argument("--on", help="an hc machine (`hc machine ls`); default: here")
+    p.add_argument("--env", action="append", default=[], metavar="NAME[=VAL]", help="also pass this variable (repeatable)")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
     p = add("state", None)
     p.add_argument("--json", action="store_true", required=True)
     p.add_argument("--view", choices=sorted(VIEWS), help="only what that panel view shows (default: everything)")

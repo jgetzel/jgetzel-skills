@@ -39,6 +39,18 @@ insert into event(ts,agent,kind,path,data) values(1,'a','conflict','L.hs','b'),(
     self.assertEqual([e["kind"] for e in r["conflicts"]], ["conflict", "conflict-compat", "shared-tree"])
     self.assertEqual([e["kind"] for e in r["friction"]], ["conflict", "shared-tree"])  # compat is not friction
 
+  def test_jobs_per_machine(self):
+    c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
+    c.executescript("""create table agent(name,model,cwd,started,ended,ctx_tokens,status);
+create table task(id,title,state,owner,evidence);
+create table event(id integer primary key,ts,agent,kind,path,data);
+create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
+insert into event(ts,agent,kind,path,data) values(1,'a','job-start','1','{"machine":"laptop"}'),(2,'a','job-end','1','{"exit":1,"s":120,"sync_s":0.5,"back_s":0.25}'),
+ (3,'a','job-start','2','{"machine":"laptop"}'),(4,'a','job-end','2','{"exit":"lost","s":60}'),(5,'b','job-start','3','{"machine":null}');""")
+    j = sr.report(c, since=0, git=False)["jobs"]
+    self.assertEqual(j["laptop"], {"jobs": 2, "minutes": 3.0, "exits": {"1": 1}, "lost": 1, "unfinished": 0, "sync_s": 0.5, "back_s": 0.25})
+    self.assertEqual(j["here"]["unfinished"], 1)
+
   def test_transcript_name_is_exact(self):
     import tempfile
     h = tempfile.mkdtemp(); os.environ["HOME"] = h

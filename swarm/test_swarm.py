@@ -976,6 +976,119 @@ class T(unittest.TestCase):
         go()
         self.assertEqual([x[0] for x in self.q("select dest from msg where kind='system' order by id")], ["a", "comms"])
 
+    # ---- swarm run ----
+    def fake_remote(self, state="connected"):
+        """Fake hc and ssh: the 'laptop' is a home dir here; rsync is real."""
+        self.home = os.path.join(self.d, "laptop-home"); os.makedirs(self.home, exist_ok=True)
+        self.fakebin = os.path.join(self.d, "fb"); os.makedirs(self.fakebin, exist_ok=True)
+        self.hclog = os.path.join(self.d, "hc.log")
+        m = json.dumps({"machines": [{"name": "laptop", "state": state, "target": "u@laptop"}]})
+        open(os.path.join(self.fakebin, "hc"), "w").write(f"""#!{sys.executable}
+import json, os, subprocess, sys
+a, H, D = sys.argv[1:], {self.home!r}, {self.d!r}
+open({self.hclog!r}, "a").write(" ".join(a) + "\\n")
+env = {{**os.environ, "HOME": H}}
+if a[:2] == ["machine", "ls"]: print({m!r})
+elif a[0] == "ls": print('{{"terminals": []}}')
+elif a[0] == "run":
+    i = a.index("sh")
+    rc = subprocess.run(a[i:], cwd=H, env=env, stdout=subprocess.DEVNULL).returncode
+    open(D + "/rc", "w").write(str(rc)); print('{{"address": "laptop/t1"}}')
+elif a[0] == "wait":
+    if os.path.exists(D + "/lost"): sys.exit(3)
+    print(json.dumps({{"ended": True, "exit_code": int(open(D + "/rc").read())}}))
+elif a[0] == "exec":
+    sys.stdout.write(subprocess.run(a[a.index("--timeout") + 2:], cwd=H, env=env, capture_output=True, text=True).stdout)
+""")
+        open(os.path.join(self.fakebin, "ssh"), "w").write(f"""#!/bin/sh
+while [ "$1" = -o ] || [ "$1" = -l ]; do shift 2; done
+shift; cd {self.home} && HOME={self.home} exec sh -c "$*"
+""")
+        for f in ("hc", "ssh"):
+            os.chmod(os.path.join(self.fakebin, f), 0o755)
+
+    def read(self, *p):
+        return open(os.path.join(*p)).read()
+
+    def test_run_remote_syncs_runs_and_brings_back(self):
+        self.fake_remote()
+        os.makedirs(os.path.join(self.wt, ".claude"))
+        open(os.path.join(self.wt, ".claude", "swarm.json"), "w").write(json.dumps({"run": {
+            "prefix": "env", "env": ["^APP_"], "set": {"T": "{dir}/target"}, "bring_back": ["out/"]}}))
+        self.write("b", ".gitignore", "out/\nsecret.txt\n"); self.write("b", "secret.txt", "s")
+        self.sw("b", "task", "add", "t"); self.sw("b", "task", "claim", "1")
+        cmd = (f'echo "app=$APP_Y k=$K t=$T"; echo new > new.txt; echo job > a.txt; mkdir -p out; echo r > out/r.txt; '
+               f'echo mine > {self.wt}/b.txt; echo theirs > b.txt; exit 3')
+        os.environ["APP_Y"] = "2"
+        try:
+            r = self.sw("b", "run", "--on", "laptop", "--env", "K=1", "--", cmd, ok=False)
+        finally:
+            del os.environ["APP_Y"]
+        self.assertEqual(r.returncode, 3, r.stderr)
+        src = os.path.join(self.home, ".cache/swarm-run/repo/wt/src")
+        self.assertIn(f"app=2 k=1 t={self.home}/.cache/swarm-run/repo/wt/target", r.stdout)
+        self.assertRegex(r.stdout, r"job j1 exit 3 on laptop, 0m\d\ds \(sync [\d.]+s, back [\d.]+s\), tree [0-9a-f]{7}; log: ")
+        self.assertFalse(os.path.exists(os.path.join(src, "secret.txt")))  # ignored files stay here
+        self.assertEqual((self.read(self.wt, "new.txt"), self.read(self.wt, "a.txt"), self.read(self.wt, "out/r.txt")), ("new\n", "job\n", "r\n"))
+        self.assertEqual(self.read(self.wt, "b.txt"), "mine\n")  # edited here during the job: kept, theirs beside the log
+        self.assertEqual(self.read(self.d, "jobs", "1", "kept", "b.txt"), "theirs\n")
+        self.assertIn("b.txt are in", r.stdout)
+        ev = {k: json.loads(d) for k, d in self.q("select kind,data from event where kind like 'job-%'")}
+        self.assertEqual((ev["job-start"]["machine"], ev["job-start"]["task"], ev["job-start"]["hc"]), ("laptop", 1, "laptop/t1"))
+        self.assertEqual((ev["job-end"]["exit"], len(ev["job-end"]["tree"])), (3, 40))
+        hc = self.read(self.hclog)
+        self.assertIn("--label swarm-agent=b --label swarm-job=1 --label swarm-wt=repo/wt --label swarm-task=1", hc)
+        self.assertIn("rm laptop/t1", hc)
+        self.assertEqual([j for j in json.loads(self.sw("b", "state", "--json").stdout)["running"] if "machine" in j], [])
+
+    def test_run_never_ran_or_lost_is_255(self):
+        self.fake_remote(state="disconnected")
+        r = self.sw("b", "run", "--on", "laptop", "--", "true", ok=False)
+        self.assertEqual(r.returncode, 255)
+        self.assertIn("laptop is disconnected; the job never ran", r.stderr)
+        self.assertEqual(self.q("select count(*) from event where kind like 'job-%'")[0][0], 0)
+        self.fake_remote()
+        open(os.path.join(self.d, "lost"), "w").close()
+        r = self.sw("b", "run", "--on", "laptop", "--", "true", ok=False)
+        self.assertEqual(r.returncode, 255)
+        self.assertIn("lost on laptop", r.stdout); self.assertIn("hc wait laptop/t1", r.stdout)
+        self.assertEqual(json.loads(self.q("select data from event where kind='job-end'")[0][0])["exit"], "lost")
+
+    def test_run_local_records_job(self):
+        r = self.sw("b", "run", "--", "echo hi; exit 2", ok=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertRegex(r.stdout, r"^hi\njob j1 exit 2 on this machine, .*tree [0-9a-f]{7}")
+        self.assertEqual([k for (k,) in self.q("select kind from event where kind like 'job-%' order by id")], ["job-start", "job-end"])
+
+    def test_run_note_state_and_cleanup(self):
+        self.fake_remote()
+        pr = self.fake_proc()
+        self.agent("a")
+        t = int(time.time())
+        self.q("insert into meta values('machines',?)", json.dumps({
+            "laptop": {"state": "connected", "ts": t, "cores": 24, "load": 3.5, "avail_kb": 80 * 2**20, "total_kb": 93 * 2**20, "psi": 0.0},
+            "nas": {"state": "disconnected", "ts": t, "since": t - 600}}))
+        d = ".cache/swarm-run/repo/wt"
+        self.q("insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)", t - 120, "a", "job-start", "1",
+               json.dumps({"machine": "laptop", "hc": "laptop/t9", "wt": os.path.realpath(self.wt), "dir": d, "cmd": "cargo test -p x", "pid": 999999999}))
+        n = self.hookp("a", pr, "swarm run --on laptop -- cargo test")["additionalContext"]  # swarm run is heavy
+        self.assertIn("laptop: 80/93G available, load 3.5 on 24 cores, mem pressure 0%, jobs: a cargo test -p x 2m", n)
+        self.assertIn("nas: disconnected since", n)
+        run = json.loads(self.sw("a", "state", "--json").stdout)["running"]
+        self.assertEqual([(j["machine"], j["job"], j["lost"]) for j in run if "machine" in j], [("laptop", "1", True)])  # swarm run gone, terminal gone
+        # watchd's probe of each machine, only from a Herdr terminal
+        env = {**os.environ, "SWARM_DB": self.db, "HC_TERMINAL_ID": "t1", "PATH": self.fakebin + os.pathsep + os.environ["PATH"]}
+        subprocess.run([sys.executable, SWARM, "watchd", "--once"], env=env, cwd=self.repo, check=True, capture_output=True)
+        lap = json.loads(self.q("select v from meta where k='machines'")[0][0])["laptop"]
+        self.assertEqual(lap["state"], "connected"); self.assertGreater(lap["cores"], 0); self.assertGreater(lap["total_kb"], 0)
+        # a landed worktree's dirs go on every machine its jobs used
+        os.makedirs(os.path.join(self.home, d, "src"))
+        self.idle("e", wt=self.wt)
+        self.comms_tick()
+        self.assertTrue(self.ended("e"))
+        self.assertIn(f"exec --on laptop --timeout 120 rm -rf {d}", self.read(self.hclog))
+        self.assertFalse(os.path.exists(os.path.join(self.home, d)))
+
 
 if __name__ == "__main__":
     unittest.main()
