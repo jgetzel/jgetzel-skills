@@ -98,7 +98,7 @@ def sh(*cmd):
 def git_evidence(since=0, ref="origin/main"):
     """Landed commits per agent-hour and files two or more agents changed, from Swarm-Agent: lines anywhere in the message."""
     hours, files, commits = {}, {}, []
-    for blk in sh("git", "log", ref, *([f"--since={since}"] if since else []), "--name-only", "--format=@@%H%x00%ct%x00%B%x00").split("@@")[1:]:
+    for blk in sh("git", "log", ref, *([f"--since={since}"] if since else []), "--name-only", "--format=%x01%H%x00%ct%x00%B%x00").split("\x01")[1:]:
         sha, ct, body, rest = blk.split("\x00")
         fs = rest.strip().split("\n")
         # squash merges put the line in its own paragraph, so a trailer parse misses it
