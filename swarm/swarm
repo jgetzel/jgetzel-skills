@@ -1122,7 +1122,7 @@ def cmd_read(c, a):
 
 def cmd_wait(c, a):
     n = me()
-    ensure_agent(c, n, status="idle")  # the Stop hook set last_active; the cold rule needs it untouched
+    ensure_agent(c, n, status="idle", hc=os.environ.get("HC_TERMINAL_ID"))  # the Stop hook set last_active; the cold rule needs it untouched
     pid = os.getpid()  # every Stop starts a waiter and none is killed: the newest owns the inbox
     c.execute("update agent set waiter=? where name=?", (pid, n))
     deadline = now() + a.timeout
