@@ -33,7 +33,7 @@ def task_timing():
     p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "swarm")
     m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_cli", importlib.machinery.SourceFileLoader("swarm_cli", p)))
     m.__spec__.loader.exec_module(m)
-    return m.task_timing
+    return m.task_timing, m.event_task, m.TASK_KINDS
 
 def pct(xs, p):
     xs = sorted(xs)
@@ -144,9 +144,9 @@ def report(c, since=None, git=True):
     q = lambda sql, *p: [dict(r) for r in c.execute(sql, p)]
     ev = q("select * from event where ts>=? order by ts", since)
     out = {"since": since, "agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
-    timing, tasks = task_timing(), []
+    timing, event_task, kinds, tasks = *task_timing(), []
     for t in q("select * from task"):  # a column an older db lacks reads as absent
-        mine = [e for e in ev if (e["data"] or "").split(" ", 1)[0] == f"#{t['id']}" and e["kind"] in ("task-add", "claim", "done", "block", "unblock", "release", "drop")]
+        mine = [e for e in ev if e["kind"] in kinds and event_task(e) == t["id"]]
         tm = timing(t, mine)
         tasks.append({k: t.get(k) for k in ("id", "title", "state", "owner", "evidence")} | tm | {"took": span(tm["work_s"]) if tm["work_s"] is not None else None})
     works = [t["work_s"] for t in tasks if t["work_s"] is not None]

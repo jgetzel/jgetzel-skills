@@ -88,10 +88,20 @@ def log(c, agent, kind, path=None, data=None):
     c.execute("insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)", (now(), agent, kind, path, data))
 
 
+TASK_KINDS = ("task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop")
+
+
+def event_task(e):
+    """Task id an event is about: data starts '#<id>' (spawn: 'auto #<id>'), else None."""
+    m = re.match(r"(?:auto )?#(\d+)(?: |$)", e["data"] or "")
+    return int(m[1]) if m else None
+
+
 def task_timing(r, evs):
     """Task durations (seconds) from the CLI-written columns, else from the task's claim/done/block/unblock/release/drop events
     (evs: that task's events in order; data starts '#<id>'). Shared with swarm-retro/swarm-report.py."""
     r = dict(r)
+    evs = [{**e, "kind": "claim"} if e["kind"] == "spawn" else e for e in evs]  # watchd's auto-spawn claims with a 'spawn' event
     ts = lambda k: [e["ts"] for e in evs if e["kind"] == k]
     claims = [e for e in evs if e["kind"] == "claim"]
     created = r.get("created_at") or min(ts("task-add"), default=None)
@@ -118,8 +128,8 @@ def task_timing(r, evs):
 
 
 def task_events(c, tid):
-    return [dict(e) for e in c.execute("select ts,agent,kind,data from event where kind in "
-            "('task-add','claim','done','block','unblock','release','drop') and (data=? or data like ?) order by id", (f"#{tid}", f"#{tid} %"))]
+    return [dict(e) for e in c.execute("select ts,agent,kind,data from event where kind in (%s) order by id" % ",".join(f"'{k}'" for k in TASK_KINDS))
+            if event_task(e) == tid]
 
 
 def ago(t):
@@ -817,8 +827,8 @@ def lifecycle(c, t, comms, terms, opts):
             break
         name = f"{prefix}{max(nums, default=0) + 1}"
         nums.append(int(name[len(prefix):]))
-        c.execute("update task set state='claimed', owner=?, lease_until=? where id=? and state='open'",
-                  (name, t + LEASE, task["id"]))
+        c.execute("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open'",
+                  (name, t + LEASE, t, task["id"]))
         model = task["model"] or opts.get("model") or max(set(models), key=models.count, default="sonnet")
         try:
             cmd_spawn(c, argparse.Namespace(name=name, model=model, task=[
@@ -826,7 +836,7 @@ def lifecycle(c, t, comms, terms, opts):
             log(c, name, "spawn", None, f"auto #{task['id']}")
             members.append({"name": name})
         except SystemExit:
-            c.execute("update task set state='open', owner=null, lease_until=null where id=?", (task["id"],))
+            c.execute("update task set state='open', owner=null, lease_until=null, first_claimed_at=? where id=?", (task["first_claimed_at"], task["id"]))
             post(c, "swarm", comms, f"auto-spawn of {name} for #{task['id']} failed (launch error).", kind="notice")
             break
 
@@ -1333,11 +1343,11 @@ def cmd_state(a):
                 raise
             return []
     tasks = rows("select * from task order by id")
-    tev = rows("select ts,agent,kind,data from event where kind in ('task-add','claim','done','block','unblock','release','drop') order by id")
+    tev = rows("select ts,agent,kind,data from event where kind in (%s) order by id" % ",".join(f"'{k}'" for k in TASK_KINDS))
     state = {r["id"]: r["state"] for r in tasks}
     for r in tasks:
         r.pop("body", None)
-        r.update(task_timing(r, [e for e in tev if e["data"] == f"#{r['id']}" or (e["data"] or "").startswith(f"#{r['id']} ")]))
+        r.update(task_timing(r, [e for e in tev if event_task(e) == r["id"]]))
         r["lease_left"] = r["lease_until"] - t if r["state"] in ("claimed", "blocked") and r["lease_until"] else None
         r["waiting"] = bool(r.get("after") and state.get(r["after"]) != "done")
     wts, agents = wt_map(c), []

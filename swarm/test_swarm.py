@@ -71,6 +71,14 @@ class T(unittest.TestCase):
         t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
         self.assertGreaterEqual(t["queue_wait_s"], 100)
 
+    def test_timing_from_auto_spawn_event(self):
+        self.sw("a", "task", "add", "t1")
+        self.q("update task set state='done', owner='t-2', created_at=null")
+        self.q("update event set ts=100 where kind='task-add'")
+        self.q("insert into event(ts,agent,kind,data) values(160,'t-2','spawn','auto #1'),(400,'t-2','done','#1 e'),(5,'a','spawn','t-3')")
+        t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
+        self.assertEqual((t["queue_wait_s"], t["work_s"], t["holders"]), (60, 240, ["t-2"]))
+
     def test_task_show_and_claim_print_body(self):
         self.sw("a", "task", "add", "t1", "--body", "build X and Y")
         self.sw("a", "task", "add", "t2")
@@ -569,6 +577,7 @@ class T(unittest.TestCase):
             m.watchd_tick(c, "t-comms", None, opts)
             self.assertEqual(spawned, [("t-2", "haiku")])
             self.assertEqual(self.q("select owner,state from task")[0]["owner"], "t-2")
+            self.assertTrue(self.q("select first_claimed_at from task")[0][0])  # auto-spawn stamps the claim time
             m.watchd_tick(c, "t-comms", None, opts)
             self.assertEqual(len(spawned), 1)  # the task is claimed: no second spawn
         finally:
