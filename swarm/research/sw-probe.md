@@ -234,4 +234,56 @@ wraps the text in `<hc …>`, so a slash command sent that way runs as a prompt.
 
 ## Addendum (timeouts, idle compaction)
 
-Filled in below when the long-running checks finish.
+### Timeout ceiling
+
+**What was observed:**
+
+| `timeout` | Outcome |
+|---|---|
+| 120 | SIGTERM at 120.0 s |
+| 600 | SIGTERM at 600.0 s |
+| 3600 | SIGTERM at 3600.0 s |
+| 86400 | Still alive at 3628 s. Fired at 61 min, it woke the session normally. |
+
+No ceiling showed up at 3600 s or below, so the merged 21600 s is very likely
+honoured. Past one hour it is untested.
+
+**The late wake's cost:** `cache_read` was 31,104 and `cache_creation` was
+15,738.
+
+- The conversation part had passed its 1 h TTL, so it was written again.
+- The 31k system-and-tools prefix was still warm. Other haiku sessions on this
+  account were probably keeping it warm.
+
+So a cold wake costs about the conversation's size, not the whole context.
+The cold rule's estimate of "~ctx_tokens uncached" is high by roughly the
+shared prefix (about 31k here). That's fine as a conservative estimate.
+
+### Idle compaction: not seen
+
+**Config:** session swp-i ran haiku 5.5, interactive, under `--settings` with
+`promptCacheTtl: "1h"` and `env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS =
+"100000"`, auto-compaction on by default. It read docs until its context was
+241,646 tokens (1 h cache writes confirmed). Then it sat idle.
+
+**What was observed:** it did not compact within 76 minutes of its last
+request:
+
+- no `PreCompact`, `PostCompact` or `SessionStart(compact)`;
+- no `compact_boundary` in the transcript;
+- the only hook event while idle was `Notification(idle_prompt)` at 60 s.
+
+It never auto-compacted at 241k either, so haiku 5.5's window here is
+larger than 200k. The cause is unknown. Candidates are a server-side feature
+flag, a size condition relative to that larger window, or an "attended"
+condition. The probe can't tell these apart.
+
+**Consequence:** don't count on idle compaction to make idle agents cheap.
+
+- The cold-cache guard (PreToolUse on SendMessage, `swarm post`/`wait`) is
+  what actually prevents expensive wakes. Keep it as the primary mechanism.
+- If idle compaction does happen, the hooks will see `SessionStart(compact)`,
+  as for manual and auto compaction. That is unverified for the idle path,
+  whose `trigger` value is also unknown.
+- To make idle compaction testable, rerun with an opus/sonnet agent on a 200k
+  window, or ask whether the flag is on for this account.
