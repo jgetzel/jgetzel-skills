@@ -182,6 +182,23 @@ class T(unittest.TestCase):
         usage(1_000_000 - 1)
         self.assertEqual(post(), {})
 
+    def test_comms_ctx_note_from_commands(self):
+        self.agent("x-comms")
+        sid = f"c{os.getpid()}{time.time()}"
+        home = os.path.join(self.d, "home", ".claude", "projects", "p")
+        os.makedirs(home)
+        open(os.path.join(home, sid + ".jsonl"), "w").write(
+            json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 360_000}}}) + "\n")
+        mark = os.path.join(tempfile.gettempdir(), f"claude-ctx-{sid}")
+        self.addCleanup(lambda: os.path.exists(mark) and os.remove(mark))
+        env = {**os.environ, "HOME": os.path.join(self.d, "home"), "CLAUDE_CODE_SESSION_ID": sid}
+        r = subprocess.run([sys.executable, "-B", SWARM, "board"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
+                           capture_output=True, text=True)
+        self.assertIn("pass on the swarm", r.stdout)
+        r = subprocess.run([sys.executable, "-B", SWARM, "who"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
+                           capture_output=True, text=True)
+        self.assertNotIn("pass on the swarm", r.stdout)  # once per step
+
     def test_burst_capped_rest_stays_unread(self):
         self.agent("a"); self.agent("b")
         for i in range(40):

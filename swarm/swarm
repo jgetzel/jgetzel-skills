@@ -2,7 +2,7 @@
 """swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks."""
 from datetime import datetime
-import argparse, difflib, fcntl, fnmatch, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
+import argparse, difflib, fcntl, fnmatch, glob, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 
 COLD_IDLE = 55 * 60      # prompt cache (1 h TTL) counts as warm for this long
 SMALL_CTX = 40_000       # a wake of a context this small is cheap whatever the cache
@@ -327,14 +327,19 @@ def ctx_from(path):
 CTX_WARN = 350_000  # tokens; warn here, then every +100k; at CTX_NOW say hand off
 
 
-def ctx_advice(k):
+def ctx_advice(k, comms=False):
+    if comms:  # the communicator holds the swarm's state, so a handoff carries it over
+        return ("finish the current step, then hand off with the relaunch skill, same model, and pass on the swarm "
+                "(board, watchd PID, open threads)." if k >= 550_000 else
+                "wrap up this step; at ~550k hand off with the relaunch skill, same model, and pass on the swarm "
+                "(board, watchd PID, open threads).")
     if k >= 550_000:
         return ("hand off now with the relaunch skill, same model, and post the successor's name, "
                 "or `swarm task release` if the task is barely started.")
     return "finish this task, then go idle (watchd ends you and a fresh agent takes the next task); don't claim another."
 
 
-def handoff_nudge(c, name, p):
+def handoff_nudge(c, name, p, comms=False):
     """Context-size note. Shares the repo hook's step marker (claude-ctx-<session_id>) so only one of the two fires per step."""
     k = ctx_from(p.get("transcript_path"))
     if not k:
@@ -352,7 +357,21 @@ def handoff_nudge(c, name, p):
         return None
     open(mark, "w").write(str(step))
     log(c, name, "ctx-note", None, str(k))
-    return f"Context is ~{k // 1000}k tokens: {ctx_advice(k)}"
+    return f"Context is ~{k // 1000}k tokens: {ctx_advice(k, comms)}"
+
+
+def comms_nudge(c):
+    """The communicator is a normal session with no swarm hooks: read/wait/board/who stand in for post-tool."""
+    name, sid = os.environ.get("SWARM_NAME"), os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not (name and sid):
+        return
+    cm = c.execute("select v from meta where k='comms'").fetchone()
+    if not (name.endswith("comms") or name == (cm[0] if cm else os.environ.get("SWARM_COMMS"))):
+        return
+    tr = next(iter(glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))), None)
+    n = handoff_nudge(c, name, {"transcript_path": tr, "session_id": sid}, comms=True)
+    if n:
+        print(n, file=sys.stderr if sys.argv[1:2] == ["wait"] else sys.stdout)
 
 
 def post_compact(path):
@@ -1617,7 +1636,10 @@ def main(argv=None):
         os.environ["SWARM_NAME"] = a.me
     if a.cmd == "spawn" and a.task[:1] == ["--"]:
         a.task = a.task[1:]
-    return a.f(connect(), a)
+    c = connect()
+    if a.cmd in ("read", "wait", "board", "who"):
+        comms_nudge(c)
+    return a.f(c, a)
 
 
 if __name__ == "__main__":
