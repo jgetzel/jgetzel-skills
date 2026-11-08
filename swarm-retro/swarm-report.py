@@ -46,6 +46,25 @@ def transcripts(name, cwd):
                     break
     return sorted(hit, key=os.path.getmtime)
 
+def hook_bytes(files):
+    """Bytes of hook-injected context (the text agents get on every tool call or prompt) across transcript files."""
+    n = 0
+    for f in files:
+        with open(f) as fh:
+            for line in fh:
+                if '"hook_additional_context"' in line:
+                    try:
+                        a = json.loads(line).get("attachment") or {}
+                    except ValueError:
+                        continue
+                    c = a.get("content")
+                    n += len(c if isinstance(c, str) else json.dumps(c or ""))
+    return n
+
+def brief_bytes():
+    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "brief.md")
+    return os.path.getsize(p) if os.path.exists(p) else 0
+
 def sh(*cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else ""
@@ -102,10 +121,14 @@ def report(c, since=None, git=True):
     for a in out["agents"]:
         a["transcripts"] = transcripts(a["name"], a.get("cwd"))
         n = a["name"]
+        a["hook_bytes"] = hook_bytes(a["transcripts"])
         a["msgs_sent"] = c.execute("select count(*) from msg where frm=? and ts>=?", (n, since)).fetchone()[0]
         a["msgs_to_all"] = c.execute("select count(*) from msg where frm=? and dest='@all' and ts>=?", (n, since)).fetchone()[0]
         a["msgs_recv"] = c.execute("select count(*) from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'') not in ('system','notice') and ts>=?", (n, n, since)).fetchone()[0]
         a["tasks_done_no_evidence"] = c.execute("select count(*) from task where owner=? and state='done' and coalesce(evidence,'')=''", (n,)).fetchone()[0]
+    b = brief_bytes()
+    out["always_loaded"] = {"brief_bytes": b, "agents": len(out["agents"]), "brief_total": b * len(out["agents"]),
+                            "hook_total": sum(a["hook_bytes"] for a in out["agents"])}
     out["friction"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in FRICTION and e["kind"] != "push"]
     out["conflicts"] = [{k: e[k] for k in ("ts", "agent", "kind", "path", "data")} for e in ev if e["kind"] in CONFLICTS]
     ps, start = [], None
@@ -135,6 +158,9 @@ def show(r):
         print(f"- {a['name']} {a['model'] or '?'} {t(a['started'])}-{t(a['ended'])} {a['status']} ctx={(a['ctx_tokens'] or 0) // 1000}k msgs sent/recv={a['msgs_sent']}/{a['msgs_recv']} (@all {a['msgs_to_all']}) done-without-evidence={a['tasks_done_no_evidence']}")
         for f in a["transcripts"]:
             print(f"    transcript: {f}")
+    al = r["always_loaded"]
+    print(f"\n## always-loaded context\n- swarm brief: {al['brief_bytes']} B x {al['agents']} agents = {al['brief_total']} B (plus roster, task and repo rules per agent)"
+          f"\n- hook-injected text: {al['hook_total']} B total; per agent: " + (", ".join(f"{a['name']}={a['hook_bytes']}" for a in r["agents"]) or "-"))
     print("\n## tasks")
     for k in r["tasks"]:
         print(f"- #{k['id']} {k['state']} {k['owner'] or '-'} {k['took'] or '-'}: {k['title']}" + (f"\n    evidence: {k['evidence']}" if k["evidence"] else ""))

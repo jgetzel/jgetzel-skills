@@ -34,6 +34,12 @@ insert into event(ts,agent,kind,path,data) values(1,'a','conflict','L.hs','b'),(
     got = [os.path.basename(x) for x in sr.transcripts("jl-1", "/w")]
     self.assertEqual(sorted(got), ["a.jsonl", "c.jsonl"])
 
+  def test_hook_bytes(self):
+    import tempfile, json
+    f = tempfile.mktemp(suffix=".jsonl")
+    open(f, "w").write(json.dumps({"attachment": {"type": "hook_additional_context", "content": "abcd"}}) + "\n" + json.dumps({"attachment": {"type": "date"}}) + "\n")
+    self.assertEqual(sr.hook_bytes([f]), 4)
+
   def test_resources(self):
     c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
     c.executescript("""create table agent(name,model,cwd,started,ended,ctx_tokens,status);

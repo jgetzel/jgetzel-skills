@@ -43,7 +43,8 @@ root:
 
 - `~/.claude/skills/swarm-retro/swarm-report.py --since <ISO start>`: agents,
   tasks (claim → done time, evidence), per-agent events and the friction list
-  (conflicts, shared trees, reaps, compactions, CI reds, blocked prompts), messages, locks.
+  (conflicts, shared trees, reaps, compactions, CI reds, blocked prompts), messages, locks, and
+  always-loaded context (brief bytes × agents, hook-injected bytes per agent).
   Skip it with no `swarm.db`.
 - `~/.claude/skills/harness-retro/time-report.py --since <start>`: work and
   waiting time, CI per job. Add `--project-dir` for agents that worked in
