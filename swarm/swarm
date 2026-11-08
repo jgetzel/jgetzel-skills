@@ -1159,8 +1159,11 @@ def ci_poll(c, repo, every=60):
         return
     if not due(c, "ci_polled", every):
         return
-    out = run(["gh", "run", "list", "--branch", "main", "--limit", "20", "--json",
-               "databaseId,headSha,status,conclusion,url,createdAt,updatedAt"], cwd=repo)
+    # The runs endpoint itself: one request, where `gh run list` first lists every workflow (a second request,
+    # and the one GitHub's secondary limit kept refusing while this endpoint answered)
+    out = run(["gh", "api", "repos/{owner}/{repo}/actions/runs?branch=main&per_page=20", "--jq",
+               "[.workflow_runs[] | {databaseId: .id, headSha: .head_sha, status, conclusion, url: .html_url,"
+               " createdAt: .created_at, updatedAt: .updated_at}]"], cwd=repo)
     try:
         runs = json.loads(out) if out else None
     except ValueError:

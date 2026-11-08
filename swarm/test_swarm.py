@@ -790,11 +790,11 @@ class T(unittest.TestCase):
                  "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}]
 
         def fake(cmd, cwd=None, **k):
-            calls.append(cmd[:3])
-            return json.dumps(runs) if cmd[2] == "list" else "server, e2e\n"
+            calls.append(cmd[:2])
+            return json.dumps(runs) if cmd[1] == "api" else "server, e2e\n"
         m.run = fake
         m.ci_poll(c, self.repo)
-        self.assertEqual(calls, [["gh", "run", "list"], ["gh", "run", "view"]])
+        self.assertEqual(calls, [["gh", "api"], ["gh", "run"]])  # one request for the runs, one for the red run's jobs
         self.assertEqual(tuple(self.q("select conclusion, failed from ci where id=1")[0]), ("failure", "server, e2e"))
         m.ci_poll(c, self.repo)
         self.assertEqual(len(calls), 2)  # within the minute: no call
@@ -1339,7 +1339,7 @@ class T(unittest.TestCase):
                  "createdAt": "2026-11-08T10:05:00Z", "updatedAt": "2026-11-08T10:08:00Z"},
                 {"databaseId": 8, "headSha": green, "conclusion": "success", "status": "completed", "url": "http://ci/8",
                  "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}]
-        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$2\" = list ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
+        open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
         os.chmod(os.path.join(bindir, "gh"), 0o755)
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "a", "PATH": bindir + os.pathsep + os.environ["PATH"]}
         self.agent("a"); self.agent("gone", ended=1); self.agent("comms")
