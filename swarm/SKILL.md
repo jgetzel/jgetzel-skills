@@ -84,8 +84,9 @@ with subagents.
   `--urgent` only when the stop-work is real.
 - **Ending.** `watchd` ends agents; you don't. When all tasks are done, tell
   the user. `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
-- **Dependencies.** `swarm task add "<title>" --after N [--model M]` keeps a
-  task out of the pool (and out of auto-spawn) until #N is done.
+- **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M]` keeps a
+  task out of the pool (and out of auto-spawn) until #3 and #5 are done.
+  `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
 
 ## 3. Rules that carry over from /orchestrate
 

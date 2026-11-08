@@ -5,10 +5,9 @@ Herdr Swarm panel show the dependency graph?
 
 ## Verdict
 
-- **Several dependencies per task: build it, smaller than proposed.** Keep the `task.after`
-  column, but make it point at the dependency the task waits on now. Add a `deps` list column
-  beside it. No new table is needed. A watchd still running old code then keeps working
-  correctly without a restart.
+- **Several dependencies per task: build it, smaller than proposed.** A `deps` list column
+  replaces the `task.after` column. No new table is needed. (An earlier draft kept `after` as a
+  compat pointer for old watchds; the user chose to delete it.)
 - **A graph view in the panel: don't build it.** Show the DAG in the Board tab's rows instead:
   split open tasks into *ready* and *waiting*, and give each row its "after" and "blocks" lists.
   The graphs are too small and shallow for a node-link view to show anything a list doesn't.
@@ -52,24 +51,16 @@ ask of a board is "what can start now, and what is this waiting on?". Lists answ
 
 ## Design (#60): the CLI and store
 
-**Store.** Add `task.deps text`: the ids the task waits on, comma-separated, in the order given.
-Add it in the existing `ALTER` loop, and migrate with one statement:
-`update task set deps=after where deps is null and after is not null`.
+**Store.** `task.deps text` holds the ids the task waits on, comma-separated, in the order
+given. It is the only store: the old `task.after` column (one id) is gone. `connect()` migrates
+an old db once, in one transaction: `update task set deps=after where deps is null and after is
+not null`, then `alter table task drop column after` (sqlite 3.35+).
 
-**`after` becomes the dependency the task waits on now.** It holds the lowest dependency that
-isn't done. When every dependency is done, it holds the last one to finish. Because of this,
-`pool()`, `claim`, `reserve()`, `swarm board`'s waiting check and `state --json`'s `waiting`
-stay correct without reading `deps`. That includes a watchd running old code in another swarm:
-it reads `after` only, and `after` is undone exactly while some dependency is undone. Old code
-reading `after` alone was the risk that a separate table with `after` = the first dependency
-would have left.
-
-One helper, `rewait(c, ids)`, recomputes `after` from `deps` for the given tasks. It runs:
-
-- in `task add`;
-- in `task after`;
-- after each move to `done`, for the tasks whose `deps` contain that id. There are two such
-  moves: `task done`, and watchd closing a `main red` task on green.
+A task is startable when every dependency is done. `pool()`, `claim`, `reserve()`, `swarm
+board`, `task show` and `state --json` all read `deps`. An earlier draft kept `after` as a
+pointer to the dependency waited on now, so a watchd on old code stayed correct. The user chose
+to delete the old way instead: no other swarm needs it, and the one old watchd restarts when
+this lands.
 
 **CLI.**
 
@@ -90,10 +81,9 @@ One helper, `rewait(c, ids)`, recomputes `after` from `deps` for the given tasks
 
 Tests in `swarm/test_swarm.py`:
 
-- the migration;
+- the migration (`after` copied into `deps`, then the column dropped);
 - `--after` with a list;
 - `pool()`, `claim` and `reserve()` holding a task until its last dependency is done;
-- an old-style reader (`after` alone) agreeing with `pool()` at every step;
 - `task after` refusing a cycle and refusing a task that isn't open;
 - the board and show lines;
 - the warning on `drop`.
@@ -116,7 +106,7 @@ the PR.
 
 ## Not doing
 
-- **A dependency table.** A column plus the `after` pointer is enough at this size.
+- **A dependency table.** One `deps` column is enough at this size.
 - **Dependencies on PRs or outside events.** "After PR #12 merges" is a task's `done`, since a
   task is done when its work is on main.
 - **Treating a dropped dependency as met.** The board shows it, and the user decides.

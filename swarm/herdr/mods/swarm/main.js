@@ -538,7 +538,7 @@ export default class Swarm extends View {
     const head = (key, label, color, n, note) => ({ key, h: 30, el: h_flex().h(30).pt(4).gap(6).items_center().child(this.dot(color, 6)).child(this.sec(t, label, note ? `${n} · ${note}` : String(n)).px(0).pt(0).flex_1()) });
     const big = k => {
       const blocked = k.state === "blocked", c = blocked ? t.blocked : k.state === "claimed" ? t.ansi3 : t.muted;
-      const sub = blocked ? `? ${one(k.question)}` : [k.waiting ? `after #${k.after}` : null, `added by ${k.created_by ?? "?"}`, k.model].filter(Boolean).join(" · ");
+      const sub = blocked ? `? ${one(k.question)}` : [k.waiting ? `after ${k.deps.filter(i => s.tasks.find(x => x.id === i)?.state !== "done").map(i => `#${i}`).join(", ")}` : null, `added by ${k.created_by ?? "?"}`, k.model].filter(Boolean).join(" · ");
       const el = h_flex().id(`task-${k.id}`).h(52).px(12).gap(12).items_center().min_w(0).rounded(7).bg(blocked ? t.blocked + "14" : t.surface)
         .border_1().border_color(blocked ? t.blocked + "66" : t.border).opacity(k.waiting ? 0.6 : 1)
         .when(Boolean(k.owner), el => el.cursor_pointer().hover(st => st.bg(t.hover)).on_click((_e, cx) => this.go("agents", cx, k.owner)))

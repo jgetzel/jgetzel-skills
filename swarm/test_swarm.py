@@ -899,6 +899,66 @@ class T(unittest.TestCase):
         self.sw("a", "task", "claim", "1"); self.sw("a", "task", "done", "1", "--evidence", "e")
         self.sw("a", "task", "claim", "2")
 
+    def test_deps_migration(self):
+        c = sqlite3.connect(self.db)  # a task.after from before task.deps
+        c.executescript("create table task(id integer primary key, title text, body text, state text default 'open', owner text,"
+                        " lease_until int, created_by text, evidence text, after int);"
+                        "insert into task(title) values('one'); insert into task(title,after) values('two',1);")
+        c.close()
+        self.agent("a")
+        self.assertEqual([r[0] for r in self.q("select deps from task")], [None, "1"])
+        self.assertNotIn("after", [r[1] for r in self.q("pragma table_info(task)")])
+        self.assertIn("after #1  two", self.sw("a", "board").stdout)
+
+    def test_deps_list_holds_until_last_done(self):
+        m = self.mod()
+        c = m.connect()
+        self.agent("a")
+        for t in ("one", "two", "three"):
+            self.sw("a", "task", "add", t)
+        self.sw("a", "task", "add", "four", "--after", "3,1")
+        self.assertEqual(self.q("select deps from task where id=4")[0][0], "3,1")
+
+        def check(ready):
+            self.assertEqual(sorted(r["id"] for r in m.pool(c)), ready)
+            if 4 not in ready:
+                self.assertIn("waits on", self.sw("a", "task", "claim", "4", ok=False).stderr)
+                with self.assertRaises(SystemExit):
+                    m.reserve(c, "t-9", 4, None)
+        check([1, 2, 3])
+        for tid, ready in ((1, [2, 3]), (2, [3]), (3, [4])):
+            self.sw("a", "task", "claim", str(tid)); self.sw("a", "task", "done", str(tid), "--evidence", "e")
+            check(ready)
+        self.assertIn("after: #3 done, #1 done", self.sw("a", "task", "show", "4").stdout)
+        self.sw("a", "task", "claim", "4")
+        self.assertIn("no task #9", self.sw("a", "task", "add", "x", "--after", "1,9", ok=False).stderr)
+
+    def test_task_after_cycle_and_lines(self):
+        self.agent("a")
+        for t in ("one", "two", "three"):
+            self.sw("a", "task", "add", t)
+        self.sw("a", "task", "after", "2", "1")
+        self.sw("a", "task", "after", "3", "2,1")
+        r = self.sw("a", "task", "after", "1", "3", ok=False)
+        self.assertIn("#1 → #3 → #2 → #1", r.stderr)
+        self.assertIn("#1 → #1", self.sw("a", "task", "after", "1", "1", ok=False).stderr)
+        self.assertIn("after #1  two", self.sw("a", "board").stdout)
+        show = self.sw("a", "task", "show", "1").stdout
+        self.assertIn("blocks: #2, #3", show)
+        self.assertNotIn("after:", show)
+        self.assertIn("after: #2 open, #1 open", self.sw("a", "task", "show", "3").stdout)
+        s = {t["id"]: t for t in json.loads(self.sw("a", "state", "--json").stdout)["tasks"]}
+        self.assertEqual((s[3]["deps"], s[1]["blocks"], s[3]["blocks"]), ([2, 1], [2, 3], []))
+        out = self.sw("a", "task", "drop", "1").stdout
+        self.assertIn("#2 waits on #1: drop it too, or `swarm task after 2 …`", out)
+        self.assertIn("#3 waits on #1", out)
+        self.assertIn("after #2, #1 (dropped)  three", self.sw("a", "board").stdout)  # still held back
+        self.sw("a", "task", "after", "3", "")  # cleared
+        self.assertEqual(self.q("select deps from task where id=3")[0][0], "")
+        self.sw("a", "task", "claim", "2", ok=False)
+        self.sw("a", "task", "claim", "3")
+        self.assertIn("is claimed", self.sw("a", "task", "after", "3", "2", ok=False).stderr)
+
     def test_auto_spawn_once_within_cap(self):
         import importlib.machinery, importlib.util
         ld = importlib.machinery.SourceFileLoader("swarm_mod3", SWARM)
