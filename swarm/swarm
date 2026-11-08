@@ -17,7 +17,7 @@ create table if not exists msg(id integer primary key autoincrement, ts int, frm
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
 create table if not exists task(id integer primary key autoincrement, title text, body text,
-  state text default 'open', owner text, lease_until int, created_by text, evidence text);
+  state text default 'open', owner text, lease_until int, created_by text, evidence text, after int, model text);
 create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
 create table if not exists pairkey(a text, b text, key text, primary key(a,b));
@@ -65,7 +65,7 @@ def connect():
     c.execute("pragma busy_timeout=10000")
     c.execute("pragma journal_mode=wal")
     c.executescript(SCHEMA)
-    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0")):  # dbs made before sw-locks
+    for tbl, col in (("agent", "wt text"), ("lock", "seen int default 0"), ("task", "after int"), ("task", "model text")):  # dbs made before sw-locks
         if col.split()[0] not in [r[1] for r in c.execute(f"pragma table_info({tbl})")]:
             c.execute(f"alter table {tbl} add column {col}")
     return c
@@ -362,12 +362,21 @@ def release(c, name):
     c.execute("delete from pairkey where a=? or b=?", (name, name))
 
 
-def reap(c, live_addrs=None, t=None):
+def reap(c, live_addrs=None, t=None, comms=None):
     """Reopen expired task leases, drop expired locks, end dead agents.
     live_addrs: set of live hc terminal addresses, or None to skip the dead-agent check."""
     t = t or now()
     out = []
     for r in c.execute("select * from task where state='claimed' and lease_until<?", (t,)).fetchall():
+        o = c.execute("select * from agent where name=?", (r["owner"],)).fetchone()
+        if o and o["ended"] is None and not (live_addrs is not None and o["hc"] and o["hc"] not in live_addrs):
+            # a live owner idling on its claim is the common state, not abandonment: tell the communicator, keep it
+            if comms and not c.execute("select 1 from event where kind='lease-late' and path=? and ts>?",
+                                       (str(r["id"]), t - LEASE)).fetchone():
+                log(c, r["owner"], "lease-late", str(r["id"]))
+                post(c, "swarm", comms, f"{r['owner']} has held #{r['id']} past its lease (idle {ago(o['last_active'])}).",
+                     kind="notice")
+            continue
         c.execute("update task set state='open', owner=null, lease_until=null where id=?", (r["id"],))
         post(c, "swarm", r["owner"], f"your lease on task #{r['id']} ({r['title']}) expired; it is open again. "
              f"`swarm task claim {r['id']}` to take it back.", kind="system")
@@ -569,10 +578,127 @@ def hc_terminals():
         return None
 
 
-def watchd_tick(c, comms=None, repo=None):
+def pool(c):
+    """Open tasks whose --after dependency (if any) is done: work that can start."""
+    return c.execute("select * from task where state='open' and (after is null or after in "
+                     "(select id from task where state='done')) order by id").fetchall()
+
+
+def gx(args, cwd):
+    """(returncode, stderr) of a git command."""
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return r.returncode, r.stderr.strip()
+
+
+def landed(wt, B, main):
+    """Nothing in worktree wt is unlanded relative to ref B (sw-lifecycle §4.2)."""
+    st = run(["git", "-C", wt, "status", "--porcelain"])
+    if st is None or st.strip():
+        return False
+    if wt == main or gx(["-C", wt, "merge-base", "--is-ancestor", "HEAD", B], None)[0] == 0:
+        return True
+    mb = git(["-C", wt, "merge-base", B, "HEAD"])
+    files = (run(["git", "-C", wt, "diff", "--name-only", "-z", mb, "HEAD"]) or "").split("\0") if mb else []
+    files = [f for f in files if f]
+    if files and gx(["-C", wt, "diff", "--quiet", "HEAD", B, "--", *files], None)[0] == 0:
+        return True  # squash or rebase merge: same content under other commits
+    br = git(["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
+    prs = run(["gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number"], cwd=wt) if br else None
+    return bool(prs and json.loads(prs))
+
+
+def end_agent(c, a, wt, main, comms):
+    """Release a finished agent, kill its terminal, and remove its worktree and branch without losing work."""
+    n = a["name"]
+    br = git(["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"]) if wt else None
+    release(c, n)
+    c.execute("update agent set ended=?, status='ended' where name=?", (now(), n))
+    log(c, n, "end", None, "landed")
+    if a["hc"]:
+        run(["hc", "kill", a["hc"]])
+        run(["hc", "rm", a["hc"]])
+    if not wt or wt == main:
+        return
+    steps = [["-C", main, "worktree", "remove", wt]]
+    if br and br not in ("HEAD", "main", "master"):
+        steps.append(["-C", main, "branch", "-D", br])
+        if git(["-C", main, "remote", "get-url", "origin"]) and git(["-C", main, "ls-remote", "--heads", "origin", br]):
+            steps.append(["-C", main, "push", "-q", "origin", "--delete", br])
+    for st in steps:
+        rc, err = gx(st, None)
+        if rc:
+            if comms:
+                post(c, "swarm", comms, f"{n} ended; {wt} not removed: {err.splitlines()[0] if err else 'git failed'}.",
+                     kind="notice")
+            return
+
+
+def mem_available_gib():
+    try:
+        return int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read())[1]) / 2**20
+    except (OSError, TypeError):
+        return float("inf")
+
+
+def lifecycle(c, t, comms, terms, opts):
+    """End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4)."""
+    wts = wt_map(c)
+    main = next(iter(re.findall(r"^worktree (.*)$", run(["git", "worktree", "list", "--porcelain"]) or "", re.M)), None)
+    main = os.path.realpath(main) if main else None
+    B = "main"
+    if git(["remote", "get-url", "origin"]):
+        run(["git", "fetch", "-q", "origin", "main"])
+        B = "origin/main"
+    by = {x["address"]: x for x in terms or []}
+    tasks = pool(c)
+    reusable = []
+    for a in live_agents(c):
+        n = a["name"]
+        x = by.get(a["hc"]) if a["hc"] and terms is not None else None
+        if (n == comms or a["status"] != "idle" or t - (a["last_active"] or 0) < 120
+                or (a["hc"] and terms is not None and (not x or x.get("status") not in ("idle", "done")))
+                or c.execute("select 1 from task where owner=? and state='claimed'", (n,)).fetchone()
+                or c.execute("select 1 from lock where agent=?", (n,)).fetchone()
+                or (n in wts and not landed(wts[n], B, main))):
+            continue
+        if (a["ctx_tokens"] or 0) < SMALL_CTX and tasks:
+            reusable.append(a)
+        else:
+            end_agent(c, a, wts.get(n), main, comms)
+    for a in reusable:
+        if t - (a["last_active"] or 0) > 900 and not c.execute(
+                "select 1 from event where kind='digest' and agent=? and ts>?", (a["name"], t - 900)).fetchone():
+            log(c, a["name"], "digest")
+            post(c, "swarm", a["name"], f"{len(tasks)} open task(s) and you are idle: `swarm board`.", kind="system")
+    if reusable or not tasks or opts.get("max_agents") is None:
+        return
+    members = [a for a in live_agents(c) if a["name"] != comms]
+    prefix = comms[:-5] if comms.endswith("comms") else comms + "-"
+    nums = [int(m[1]) for (nm,) in c.execute("select name from agent") if (m := re.fullmatch(re.escape(prefix) + r"(\d+)", nm))]
+    models = [a["model"] for a in members if a["model"]]
+    for task in tasks:
+        if len(members) >= opts["max_agents"] or mem_available_gib() < opts.get("min_free_gib", 4):
+            break
+        name = f"{prefix}{max(nums, default=0) + 1}"
+        nums.append(int(name[len(prefix):]))
+        c.execute("update task set state='claimed', owner=?, lease_until=? where id=? and state='open'",
+                  (name, t + LEASE, task["id"]))
+        model = task["model"] or opts.get("model") or max(set(models), key=models.count, default="sonnet")
+        try:
+            cmd_spawn(c, argparse.Namespace(name=name, model=model, task=[
+                f"Board task #{task['id']}: {task['title']}. It is claimed for you; read its body with swarm board."]))
+            log(c, name, "spawn", None, f"auto #{task['id']}")
+            members.append({"name": name})
+        except SystemExit:
+            c.execute("update task set state='open', owner=null, lease_until=null where id=?", (task["id"],))
+            post(c, "swarm", comms, f"auto-spawn of {name} for #{task['id']} failed (launch error).", kind="notice")
+            break
+
+
+def watchd_tick(c, comms=None, repo=None, opts=None):
     terms = hc_terminals()
     live = {x["address"] for x in terms if x.get("state") == "live"} if terms is not None else None
-    reap(c, live)
+    reap(c, live, comms=comms)
     t = now()
     if terms:
         by = {x["address"]: x for x in terms}
@@ -584,14 +710,9 @@ def watchd_tick(c, comms=None, repo=None):
                 if comms:
                     post(c, "swarm", comms, f"{a['name']} is blocked (a prompt or question needs the human).",
                          urgent=True, kind="system")
-    n_open = c.execute("select count(*) from task where state='open'").fetchone()[0]
-    if n_open:
-        for a in live_agents(c):
-            if a["status"] == "idle" and t - (a["last_active"] or 0) > 900 and not c.execute(
-                    "select 1 from event where kind='digest' and agent=? and ts>?", (a["name"], t - 900)).fetchone():
-                log(c, a["name"], "digest")
-                post(c, "swarm", a["name"], f"{n_open} open task(s) and you are idle: `swarm board`.", kind="system")
     conflict_tick(c, t)
+    if comms:  # without a communicator there is nobody to exempt from ending
+        lifecycle(c, t, comms, terms, opts or {})
     if repo:
         ci_check(c, repo)
 
@@ -686,7 +807,10 @@ def cmd_task(c, a):
     n = me()
     t = now()
     if a.act == "add":
-        cur = c.execute("insert into task(title,body,created_by) values(?,?,?)", (a.title, a.body, n))
+        if a.after and not c.execute("select 1 from task where id=?", (a.after,)).fetchone():
+            die(f"no task #{a.after} to wait on")
+        cur = c.execute("insert into task(title,body,created_by,after,model) values(?,?,?,?,?)",
+                        (a.title, a.body, n, a.after, a.model))
         log(c, n, "task-add", None, f"#{cur.lastrowid} {a.title}")
         print(f"task #{cur.lastrowid}")
         return
@@ -694,6 +818,9 @@ def cmd_task(c, a):
     if not r:
         die(f"no task #{a.id}")
     if a.act == "claim":
+        dep = c.execute("select * from task where id=? and state!='done'", (r["after"],)).fetchone() if r["after"] else None
+        if dep:
+            die(f"#{a.id} waits on #{dep['id']} ({dep['state']}" + (f", claimed by {dep['owner']}" if dep["owner"] else "") + ")")
         ensure_agent(c, n)
         cur = c.execute("update task set state='claimed', owner=?, lease_until=? where id=? and state='open'",
                         (n, t + dur(a.lease), a.id))
@@ -711,6 +838,9 @@ def cmd_task(c, a):
             c.execute("update task set state='done', evidence=?, lease_until=null where id=?", (a.evidence, a.id))
             log(c, n, "done", None, f"#{a.id} {a.evidence}")
             print(f"done #{a.id}")
+            k = (c.execute("select ctx_tokens from agent where name=?", (n,)).fetchone()[0] or 0) // 1000
+            print(f"context ~{k}k: take the next task (swarm board)." if k * 1000 < SMALL_CTX and pool(c) else
+                  f"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work.")
     elif a.act == "release":
         if r["owner"] != n or r["state"] != "claimed":
             die(f"task #{a.id} is not claimed by you")
@@ -732,7 +862,8 @@ def cmd_board(c, a):
         if r["state"] == "claimed":
             left = r["lease_until"] - now()
             lease = f" lease {left // 60}m left" if left > 0 else " lease EXPIRED"
-        print(f"#{r['id']} {r['state']:<7} {who}{lease}  {r['title']}"
+        wait = c.execute("select 1 from task where id=? and state!='done'", (r["after"],)).fetchone() if r["after"] else None
+        print(f"#{r['id']} {r['state']:<7} {who}{lease}{' after #%d' % r['after'] if wait else ''}  {r['title']}"
               + (f"  [evidence: {r['evidence']}]" if r["evidence"] else ""))
     done = c.execute("select count(*) from task where state='done'").fetchone()[0]
     print(f"({len(rows)} shown, {done} done)" if not a.all else f"({len(rows)} tasks)")
@@ -816,8 +947,12 @@ def cmd_watch(c, a):
 
 def cmd_watchd(c, a):
     repo = git(["rev-parse", "--show-toplevel"]) if a.ci else None
+    comms = a.comms or os.environ.get("SWARM_COMMS")
+    # default cap: the roster the human launched, so watchd refills it but doesn't grow it
+    cap = a.max_agents if a.max_agents is not None else sum(1 for x in live_agents(c) if x["name"] != comms)
+    opts = {"max_agents": cap, "min_free_gib": a.min_free_mem, "model": a.model}
     while True:
-        watchd_tick(c, a.comms or os.environ.get("SWARM_COMMS"), repo)
+        watchd_tick(c, comms, repo, opts)
         if a.once:
             return
         time.sleep(a.interval)
@@ -886,6 +1021,8 @@ def main(argv=None):
     q = ts.add_parser("add")
     q.add_argument("title")
     q.add_argument("--body", default="")
+    q.add_argument("--after", type=int)
+    q.add_argument("--model")
     for act in ("claim", "renew"):
         q = ts.add_parser(act)
         q.add_argument("id", type=int)
@@ -916,6 +1053,9 @@ def main(argv=None):
     p.add_argument("--interval", type=int, default=30)
     p.add_argument("--once", action="store_true")
     p.add_argument("--ci", action="store_true", help="also watch main CI with gh")
+    p.add_argument("--max-agents", type=int, help="cap for auto-spawn (default: live agents now)")
+    p.add_argument("--min-free-mem", type=float, default=4, help="GiB of MemAvailable needed to auto-spawn")
+    p.add_argument("--model", help="model for auto-spawned agents (default: the most common)")
     p = add("hook", None)
     p.add_argument("event", choices=["pre-tool", "post-tool", "prompt", "stop", "session"])
 

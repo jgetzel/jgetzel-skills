@@ -33,7 +33,11 @@ with subagents.
    it exits, run `swarm read`, act, and start it again.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
-   It reaps stale leases, dead agents and expired locks, and tells you when an
+   It reaps dead agents and expired locks, ends agents whose work has landed
+   (and removes their worktree and branch), spawns fresh agents for startable
+   tasks when none is free (at most `--max-agents`, default the live count now;
+   raise it only with the user; `--min-free-mem` GiB, default 4), reports live
+   agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. Run `swarm watch` in a Herdr split for the
    user (`herdr-app`); it costs no model tokens.
 4. Spawn agents, each with its own area so no two get identical prompts:
@@ -54,9 +58,10 @@ with subagents.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
-- **Ending.** The board decides. When tasks are done, ask the user before
-  telling agents to stop. `watchd` and the watch split are yours to kill, by
-  PID.
+- **Ending.** `watchd` ends agents; you don't. When all tasks are done, tell
+  the user. `watchd` and the watch split are yours to kill, by PID.
+- **Dependencies.** `swarm task add "<title>" --after N [--model M]` keeps a
+  task out of the pool (and out of auto-spawn) until #N is done.
 
 ## 3. Rules that carry over from /orchestrate
 
