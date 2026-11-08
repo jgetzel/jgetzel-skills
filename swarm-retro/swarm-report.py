@@ -9,7 +9,7 @@ ci-red are the friction signals), messages, locks. Read-only.
 """
 import argparse, glob, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 
 FRICTION = ("overlap", "reap", "compact", "ci-red", "blocked", "push")
 
@@ -59,14 +59,15 @@ def git_evidence(since=0, ref="origin/main"):
         hours[k] = hours.get(k, 0) + 1
         for f in filter(None, fs):
             files.setdefault(f, set()).add(agent)
-    return {"commits_per_hour": [{"hour": h, "agent": a, "n": n} for (h, a), n in sorted(hours.items())],
+    return {"commits_per_hour": [{"hour": h, "agent": a, "n": n} for (h, a), n in sorted(hours.items()) if a != "(none)"],
+            "not_swarm_commits": sum(n for (h, a), n in hours.items() if a == "(none)"),
             "multi_agent_files": {f: sorted(a) for f, a in files.items() if len(a - {"(none)"}) > 1}, "_commits": commits}
 
 def red_runs(commits, since=0):
     """Failed main runs and the agent whose later green run's commit fixed it (needs gh)."""
     runs = json.loads(sh("gh", "run", "list", "--branch", "main", "--limit", "100", "--json", "conclusion,headSha,createdAt,databaseId") or "[]")
     by = {sha: a for _, sha, a in commits}
-    runs = [r for r in runs if r["createdAt"] >= datetime.fromtimestamp(since).strftime("%Y-%m-%dT%H:%M:%S")]
+    runs = [r for r in runs if r["createdAt"] >= datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")]
     runs.sort(key=lambda r: r["createdAt"])
     out = []
     for i, r in enumerate(runs):
@@ -75,10 +76,12 @@ def red_runs(commits, since=0):
             out.append({"run": r["databaseId"], "broke": by.get(r["headSha"], "?"), "fixed_by": by.get(fix["headSha"], "?") if fix else None})
     return out
 
-def report(c, since=0, git=True):
+def report(c, since=None, git=True):
+    if since is None:  # default window: the swarm's start
+        since = c.execute("select coalesce(min(started),0) from agent").fetchone()[0]
     q = lambda sql, *p: [dict(r) for r in c.execute(sql, p)]
     ev = q("select * from event where ts>=? order by ts", since)
-    out = {"agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
+    out = {"since": since, "agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
     claims = {}
     for e in ev:
         n = (e["data"] or "").split(" ", 1)[0]
@@ -132,6 +135,8 @@ def show(r):
         print(f"\n## {title}")
         for x in r.get(key, []):
             print("- " + " ".join(f"{k}={v}" for k, v in x.items()))
+        if key == "commits_per_hour":
+            print(f"- not swarm: {r.get('not_swarm_commits', 0)}")
     print("\n## files changed by 2+ agents")
     for f, a in r.get("multi_agent_files", {}).items():
         print(f"- {f}: {', '.join(a)}")
@@ -152,7 +157,7 @@ def main():
         sys.exit(f"swarm-report: no db at {path}")
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
-    r = report(c, int(datetime.fromisoformat(a.since).timestamp()) if a.since else 0)
+    r = report(c, int(datetime.fromisoformat(a.since).timestamp()) if a.since else None)
     print(json.dumps(r, indent=1)) if a.json else show(r)
 
 if __name__ == "__main__":
