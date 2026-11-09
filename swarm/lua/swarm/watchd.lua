@@ -349,18 +349,31 @@ function M.lifecycle(c, t, comms, terms, opts)
     local m = re.fullmatch(re.escape(prefix) .. "(\\d+)", r.name)
     if m then top = math.max(top, tonumber(m[1])) end
   end
+  local bo = c:one("select v from meta where k='spawn_backoff'")  -- "until,delay,name" after a failed launch
+  local bo_until, bo_delay, bo_name = 0, 0, nil
+  if bo then
+    local u, dl, nm = bo.v:match("^(%d+),(%d+),(.*)$")
+    bo_until, bo_delay, bo_name = tonumber(u), tonumber(dl), nm
+  end
+  if util.now() < bo_until then return end
   for _, task in ipairs(pool) do
     if #members >= opts.max_agents or M.mem_available_gib() < (opts.min_free_gib or 4) then break end
-    top = top + 1
-    local name = prefix .. d(top)
+    local name = nz(bo_name)
+    if not name then top = top + 1; name = prefix .. d(top) end
     local model = nz(task.model) or nz(opts.model) or common
     local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, task_id = task.id, task = {} })
     if ok then
+      c:exec("delete from meta where k='spawn_backoff'")
       db.log(c, name, "spawn", nil, "auto #" .. d(task.id))
       members[#members + 1] = { name = name }
     elseif type(e) == "table" and e.lost then  -- a peer claimed it between pool() and now
     elseif type(e) == "table" and e.exit then  -- launch failed; cmd_spawn already reopened the task
-      msgs.post(c, "swarm", comms, ("auto-spawn of %s for #%s failed (launch error)."):format(name, d(task.id)), false, "notice")
+      local delay = bo_delay == 0 and 300 or math.min(bo_delay * 2, 3600)  -- 5 min, doubling, capped at 1 h
+      c:exec("insert or replace into meta(k,v) values('spawn_backoff',?)", ("%d,%d,%s"):format(util.now() + delay, delay, name))
+      if bo_delay == 0 then  -- one notice per failure streak
+        msgs.post(c, "swarm", comms, ("auto-spawn of %s for #%s failed: %s. Auto-spawn pauses %d min and retries, doubling."):format(
+          name, d(task.id), M.launch_err or "launch error", math.floor(delay / 60)), false, "notice")
+      end
       break
     else
       error(e, 0)
@@ -588,7 +601,9 @@ function M.cmd_spawn(c, a)
   local rules = c:one("select v from meta where k='rules'")
   if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
   local launch = agents.env("SWARM_LAUNCH") or util.join(here, "..", "relaunch", "launch.sh")  -- tests point this at a fake
-  local out = proc.run({ launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf })
+  local out, err, code = proc.exec({ launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf })
+  if code ~= 0 then out = nil end
+  M.launch_err = (util.strip(err or ""):gsub("\n.*", ""))  -- launch.sh's reason, for the watchd notice
   if out == nil then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
     for _, x in ipairs(agents.hc_terminals() or {}) do
       if x.name == name and x.state == "live" and x.address then out = x.address; break end
