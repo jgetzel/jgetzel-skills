@@ -5,8 +5,8 @@ import { spaces, panes, focused, exec, theme, layout, run, appHome, window, sett
 // Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
 // machine it is that machine's installed skill. `state --json` is read-only; `args` pick the view.
 const swarmState = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB python3 "$HOME/.claude/skills/swarm/swarm" state --json "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", ...args], { cwd });
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB "$HOME/.claude/skills/swarm/swarm" state --json "$@"', "sh", ...args], { cwd, on })
+  : exec("env", ["-u", "SWARM_DB", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", ...args], { cwd });
 // POLL: the fastest rate, while the db changes. QUIET_POLL: a watched local db that hasn't changed (idle
 // timers, cache countdowns and the machine reading still move). REMOTE_POLL: other machines, unwatched.
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;

@@ -30,7 +30,7 @@ def dbpath(a):
 
 def task_timing():
     """The CLI's own task_timing, so the report and `swarm state` agree."""
-    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "swarm")
+    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "swarm.py")  # shortcut: the Python CLI; P11 deletes it, so read task_timing from `swarm state --json` then
     m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_cli", importlib.machinery.SourceFileLoader("swarm_cli", p)))
     m.__spec__.loader.exec_module(m)
     return m.task_timing, m.event_task, m.TASK_KINDS

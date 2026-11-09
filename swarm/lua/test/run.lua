@@ -2,7 +2,7 @@
 -- Each *_spec.lua is a plain script of asserts; it passes if it returns without an error.
 local dir = (arg[0]:match("^(.*)/[^/]*$") or ".")
 local tree = (os.getenv("XDG_DATA_HOME") or ((os.getenv("HOME") or "") .. "/.local/share")) .. "/swarm/lua"
-package.path = dir .. "/../?.lua;" .. tree .. "/share/lua/5.1/?.lua;" .. package.path  -- as the swarm-lua launcher does
+package.path = dir .. "/../?.lua;" .. tree .. "/share/lua/5.1/?.lua;" .. package.path  -- as the swarm launcher does
 package.cpath = tree .. "/lib/lua/5.1/?.so;" .. package.cpath
 local lfs = require "lfs"
 local specs = {}

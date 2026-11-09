@@ -1,12 +1,21 @@
 -- swarm: shared board, messages, conflict notices and locks for a swarm of Claude Code agents.
 -- One sqlite db per repo (shared by its worktrees). Agents use it through Bash and hooks.
--- Run through the swarm-lua launcher, which sets the module path.
+-- Run through the swarm/swarm launcher, which sets the module path.
 
 -- Every rock, before any work: a missing one is told here, never by a stack trace (sw-lua §4).
 local ROCKS = { "lsqlite3", "cjson", "posix.unistd", "rex_pcre2", "lfs", "argparse", "lua-utf8" }
 local missing = {}
 for _, m in ipairs(ROCKS) do
   if not pcall(require, m) then missing[#missing + 1] = m end
+end
+if #missing > 0 and os.getenv("SWARM_HERE") and io.open(os.getenv("SWARM_HERE") .. "/swarm.py") then
+  -- cutover window only (sw-lua §4), deleted in P11: run the Python CLI instead, same argv and stdin
+  local function q(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+  local cmd = { "exec python3", q(os.getenv("SWARM_HERE") .. "/swarm.py") }
+  for _, a in ipairs(arg) do cmd[#cmd + 1] = q(a) end
+  local r, _, code = os.execute(table.concat(cmd, " "))
+  if type(r) == "number" then code = r > 255 and math.floor(r / 256) or r end  -- Lua 5.1: the wait status
+  os.exit(code)
 end
 if #missing > 0 then
   local hint = os.getenv("SWARM_INSTALL_HINT") or "LuaJIT's rocks (swarm/research/sw-lua.md section 4)"
