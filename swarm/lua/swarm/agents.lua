@@ -73,6 +73,28 @@ function M.bind(c, name, cwd, hc, model, takeover)
   end)
 end
 
+-- Write name's own fields, fenced: nothing for an ended row or another terminal's (returns why).
+-- A new row is bound here; bind=true (wait) also binds an unbound one. Only join moves a binding.
+function M.touch(c, name, cwd, bind, kw)
+  local why = M.fence(c, name)
+  if why then return why end
+  local here, t = M.env("HC_TERMINAL_ID"), util.now()
+  c:exec("insert or ignore into agent(name,cwd,status,last_active,started,hc) values(?,?,?,?,?,?)", name, cwd, "idle", t, t, here)
+  if bind and here then c:exec("update agent set hc=? where name=? and hc is null", here, name) end
+  for k, v in pairs(kw or {}) do  -- keys come from code, never input
+    c:exec("update agent set " .. k .. "=? where name=? and ended is null and (hc is null or hc is ?)", v, name, here)
+  end
+  return nil
+end
+
+function M.set_status(c, name, status, kw)
+  local old = c:one("select status from agent where name=?", name)
+  kw = kw or {}
+  kw.last_active, kw.status = util.now(), status
+  if M.touch(c, name, nil, false, kw) then return end
+  if not old or old.status ~= status then db.log(c, name, "status", nil, status) end
+end
+
 function M.live_agents(c)
   return c:all("select * from agent where ended is null order by name")
 end
