@@ -2068,10 +2068,12 @@ def cmd_state(a):
         "conflicts": rows("select * from conflict order by since desc"),
         "pressure": episodes[-5:][::-1], "machine": machine,
     }
+    deep = a.view == "activity"  # the Activity tab folds and filters, so it reads further back
     if "messages" in want:
-        out["messages"] = rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit 40")
+        out["messages"] = rows(f"select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit {120 if deep else 40}")
     if "events" in want:
-        out["events"] = pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') order by id desc limit 60"))
+        out["events"] = pushinfo(rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') "
+                                      f"order by id desc limit {300 if deep else 60}"))
     if "locks" in want:
         out["locks"] = rows("select * from lock order by since desc")
     if "running" in want:  # one /proc scan, only where the System view shows it
