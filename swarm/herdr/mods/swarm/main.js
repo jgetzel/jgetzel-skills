@@ -1,5 +1,5 @@
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, HoverCard } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder } from "herdr";
 
 // Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
@@ -74,6 +74,27 @@ function evidence(s) {
 }
 // shortcut: wrapped-text height from an average glyph width; a real measure would need a layout pass.
 const lines = (text, px, charW) => Math.max(1, Math.ceil(String(text ?? "").length * charW / Math.max(60, px)));
+// Lines `text` takes when wrapped at spaces in `px`, a word longer than a line broken anywhere. Errs high:
+// the renderer also breaks after "/" and its glyphs average under `charW`.
+function wrapLines(text, px, charW) {
+  const per = Math.max(8, Math.floor(px / charW));
+  let n = 1, col = 0;
+  for (const w of String(text ?? "").split(/\s+/).filter(Boolean)) {
+    if (col && col + 1 + w.length > per) { n++; col = 0; }
+    if (col) col += 1 + w.length;
+    else { n += Math.ceil(w.length / per) - 1; col = w.length % per || per; }
+  }
+  return n;
+}
+// URLs, shorter: a GitHub PR or issue link becomes "PR #N" ("issue #N"), and the row's chip when the text
+// ends with it; any other link loses its scheme and host.
+function shortUrls(s) {
+  s = s.replace(/https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(pull|issues)\/(\d+)(?:[/#?][^\s)\]]*)?/g, (_, k, n) => `${k === "pull" ? "PR" : "issue"} #${n}`)
+    .replace(/\b(PR|issue) \1 #/g, "$1 #")
+    .replace(/https?:\/\/[^\s/)\]]+\/([^\s)\]]+)/g, "$1").replace(/https?:\/\//g, "");
+  const m = /^(.*?\S)[\s:;,.—-]*\b((?:PR|issue) #\d+)[\s.;:]*$/.exec(s);
+  return m ? { text: m[1], chip: m[2] } : { text: s, chip: null };
+}
 const openUrl = url => exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]);
 
 export default class Swarm extends View {
@@ -670,7 +691,7 @@ export default class Swarm extends View {
       if (!log && !KIND[kind].show) continue;
       const g = `${m.frm}|${m.ts}|${m.body}`;
       if (groups.has(g)) { groups.get(g).dests.push(m.dest); continue; }
-      const it = { key: `m${m.id}`, ts: m.ts, who: m.frm, kind, raw: m.kind, dests: [m.dest], text: one(m.body) };
+      const it = { key: `m${m.id}`, ts: m.ts, who: m.frm, kind, raw: m.kind, dests: [m.dest], ...(log ? { text: one(m.body) } : shortUrls(one(m.body))) };
       groups.set(g, it); items.push(it);
     }
     for (const m of items) { const n = m.dests.length; m.meta = `to ${n > 1 ? `${n} agents` : m.dests[0] === "all" ? "everyone" : m.dests[0]}`; }
@@ -712,8 +733,24 @@ export default class Swarm extends View {
       items.push(it); prev = it;
     }
     items.sort((a, b) => b.ts - a.ts);
+    if (!log) this.foldAsks(items);
     this.actCache = { s, log, items };
     return items;
+  }
+
+  // One block is up to four events within a minute: the agent's "asked you", the task's "waiting on you",
+  // the swarm's notice to the comms and the agent's own message about the task. The ask row keeps them in
+  // its tooltip; the full log keeps them as rows.
+  foldAsks(items) {
+    for (const b of items.filter(i => i.kind === "block" && i.task)) {
+      const near = i => i !== b && Math.abs(i.ts - b.ts) <= 60 && (i.kind === "task-blocked" && i.task === b.task
+        || i.who === "swarm" && i.text.includes(`${b.who} is blocked on #${b.task}`)
+        || i.who === b.who && KIND[i.kind].group === "messages" && i.text.includes(`#${b.task}`));
+      const folded = items.filter(near);
+      if (!folded.length) continue;
+      b.full = [b, ...folded].map(i => `${i.who} ${i.text}${i.meta ? ` (${i.meta})` : ""}`);
+      for (const i of folded) items.splice(items.indexOf(i), 1);
+    }
   }
 
   // What one event says in the summary: { text, sub, part (its piece of a folded row), open, chip, meta }.
@@ -727,8 +764,8 @@ export default class Swarm extends View {
       case "claim": return { text: `claimed ${ref}` };
       case "done": { const ev = evidence(m?.[2]); return { text: `finished ${ref}`, chip: ev.chip }; }
       case "ci-green": return { text: `main CI is green again (run ${/green run (\d+)/.exec(data)?.[1] ?? "?"})` };
-      case "block": return { text: `asked you about #${m?.[1]}: ${m?.[2] ?? ""}`, open: task(m?.[1])?.state === "blocked" };
-      case "task-blocked": return { text: `#${e.path} is waiting on you: ${data}`, open: task(e.path)?.state === "blocked" };
+      case "block": return { text: `asked you about #${m?.[1]}: ${shortUrls(m?.[2] ?? "").text}`, task: m?.[1], open: task(m?.[1])?.state === "blocked" };
+      case "task-blocked": return { text: `#${e.path} is waiting on you: ${shortUrls(data).text}`, task: e.path, open: task(e.path)?.state === "blocked" };
       case "blocked": return { text: "stopped at a prompt in its terminal", open: s.agents.find(a => a.name === e.agent)?.status === "blocked" };
       case "unblock": return { text: `unblocked ${ref}` };
       case "release": return { text: `gave back ${ref}` };
@@ -757,26 +794,40 @@ export default class Swarm extends View {
     return this.iconDir ? svg(`${this.iconDir}/${KIND[i.kind].icon}.svg`).size(n).flex_none().text_color(this.actColor(t, i)) : div().size(n).flex_none();
   }
 
-  // One row: time, icon, who, (log: raw kind), what, and one tail: needs you / answered / ongoing / PR / to whom.
-  // The tooltip says what the kind means and whether you act; a folded row adds each event it holds.
+  // One row: time, icon, who, (log: raw kind), what, then a tail (needs you / answered / ongoing / PR) and
+  // to whom. Summary rows wrap to their whole text, the log stays one line per event. Returns { h, el }.
+  // The tooltip says what the kind means and whether you act; a folded row adds each event it holds. It is a
+  // card pinned under the row's left edge and no wider than the row: the native tooltip follows the pointer
+  // and, near the window's right edge, flips left past the panel.
   actRow(t, d, i, log) {
     const W = this.width, narrow = W < 520, fold = W < 640, k = KIND[i.kind], hot = k.level === "you" && i.open;
-    const who = i.who === d.comms ? `${i.who} (comms)` : i.who;
+    const who = i.who === d.comms ? `${i.who} (comms)` : i.who, whoW = W < 760 ? 80 : 118;
     const text = `${fold ? i.who + " " : ""}${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
-    const tip = `${k.label}: ${k.what}${i.full?.length > 1 ? `\n\n${i.full.join("\n")}` : text.length > 70 ? `\n\n${text}` : ""}`;
-    const tail = log ? null : hot ? this.chip(t, "needs you", t.blocked, true)
-      : k.level === "you" ? div().flex_none().text_size(10.5).text_color(t.dim).child("answered")
-      : k.level === "warn" && i.open ? this.chip(t, i.kind === "pressure" ? "ongoing" : "unresolved", t.ansi3)
-      : i.chip ? this.chip(t, i.chip, i.chip.startsWith("PR") ? t.ansi2 : null) : null;
-    const meta = !tail && i.meta && !narrow ? div().flex_none().text_size(10.5).text_color(t.dim).child(i.meta) : null;
-    return h_flex().id(`act-${i.key}`).h(26).px(10).gap(10).items_center().min_w(0).rounded(5).tooltip(tip)
+    const tip = `${k.label}: ${k.what}${i.full?.length > 1 ? `\n\n${i.full.join("\n")}` : log && text.length > 70 ? `\n\n${text}` : ""}`;
+    const [tailText, tailEl] = log ? [] : hot ? ["needs you", this.chip(t, "needs you", t.blocked, true)]
+      : k.level === "you" ? ["answered", div().flex_none().text_size(10.5).text_color(t.dim).child("answered")]
+      : k.level === "warn" && i.open ? [i.kind === "pressure" ? "ongoing" : "unresolved", this.chip(t, i.kind === "pressure" ? "ongoing" : "unresolved", t.ansi3)]
+      : i.chip ? [i.chip, this.chip(t, i.chip, i.chip.startsWith("PR") ? t.ansi2 : null)] : [];
+    const meta = i.meta && !narrow && (!tailEl || k.group === "messages") ? i.meta : null;
+    // Text column: panel minus border, list and row padding, a scrollbar's room, time, icon, who and tails;
+    // glyphs at 11.5px measured 5.1-5.4 wide on average in 320-860 shots; 5.6 errs high, never low.
+    const textW = W - 2 - 24 - 20 - 8 - (34 + 10) - (14 + 10) - (fold ? 0 : whoW + 10) - (log && !narrow ? 106 : 0)
+      - (tailText ? tailText.length * 6 + 22 : 0) - (meta ? meta.length * 6 + 10 : 0);
+    const n = log ? 1 : wrapLines(text, textW, 5.6), h = n * 16 + 10;
+    const lead = el => el.h(16).flex().items_center();
+    const el = h_flex().id(`act-${i.key}`).h(h).px(10).py(5).gap(10).items_start().w_full().min_w(0).rounded(5)
       .when(hot, el => el.bg(t.blocked + "14")).hover(st => st.bg(hot ? t.blocked + "1f" : t.surface))
-      .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(i.ts)))
-      .child(this.icon(t, i))
-      .when(!fold, el => el.child(div().w(W < 760 ? 80 : 118).flex_none().truncate().text_size(11).text_color(t.muted).child(who)))
-      .when(log && !narrow, el => el.child(this.mono(div().w(96).flex_none().truncate().text_size(10.5).text_color(t.dim).child(i.raw))))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(hot || (k.level === "warn" && i.open !== false) || k.group === "messages" ? t.foreground : t.muted).child(text))
-      .when(Boolean(tail ?? meta), el => el.child(tail ?? meta));
+      .child(lead(div().w(34).flex_none().text_size(11).text_color(t.dim)).child(hhmm(i.ts)))
+      .child(lead(div().flex_none()).child(this.icon(t, i)))
+      .when(!fold, el => el.child(lead(div().w(whoW).flex_none().min_w(0)).child(div().truncate().text_size(11).text_color(t.muted).child(who))))
+      .when(log && !narrow, el => el.child(lead(div().w(96).flex_none().min_w(0)).child(this.mono(div().truncate().text_size(10.5).text_color(t.dim).child(i.raw)))))
+      .child(div().flex_1().min_w(0).line_height("16px").text_size(11.5).when(log, el => el.truncate()).when(!log, el => el.whitespace_normal())
+        .text_color(hot || (k.level === "warn" && i.open !== false) || k.group === "messages" ? t.foreground : t.muted).child(text))
+      .when(Boolean(tailEl), el => el.child(lead(div().flex_none()).child(tailEl)))
+      .when(Boolean(meta), el => el.child(lead(div().flex_none().text_size(10.5).text_color(t.dim)).child(meta)));
+    const card = v_flex().max_w(W - 48).px(8).py(6).gap(2).rounded(6).bg(t.surface).border_1().border_color(t.border)
+      .text_size(11).line_height("16px").children(tip.split("\n").map(l => l ? div().whitespace_normal().child(l) : div().h(4)));
+    return { h, el: HoverCard.new(`tip-${i.key}`).anchor("top_left").open_delay(500).trigger(el).content(card) };
   }
 
   // The key: each kind on screen with its icon, name and meaning (the row tooltips say the same).
@@ -803,7 +854,7 @@ export default class Swarm extends View {
         hour = h;
         rows.push({ key: `hr${i.ts}`, h: 28, el: h_flex().h(28).px(10).pt(8).gap(10).items_center().text_size(10.5).text_color(t.dim).child(`${h}:00`).child(div().flex_1().h(1).bg(t.border)) });
       }
-      rows.push({ key: i.key, h: 26, el: this.actRow(t, d, i, log) });
+      rows.push({ key: i.key, ...this.actRow(t, d, i, log) });
     }
     if (!rows.length) rows.push({ key: "none", h: 30, el: div().px(10).py(8).text_size(11).text_color(t.dim).child(this.actFilter === "you" ? "Nothing needs you right now." : "Nothing here yet") });
     return div().px(12).pt(4).pb(8).when(Boolean(this.open.key), el => el.child(this.actKey(t, all)))
