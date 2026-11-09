@@ -25,7 +25,7 @@ function M.exec(argv, o)
     end
     unistd.dup2(out, 1)
     unistd.dup2((o.merge or o.stdout_file) and out or ew, 2)
-    for _, f in ipairs({ ir, iw, or_, ow, er, ew }) do unistd.close(f) end
+    for _, f in pairs({ ir = ir, iw = iw, or_ = or_, ow = ow, er = er, ew = ew }) do unistd.close(f) end  -- pairs: ir/iw may be nil
     if o.cwd and not unistd.chdir(o.cwd) then unistd._exit(127) end
     for k, v in pairs(o.env or {}) do stdlib.setenv(k, v or nil) end
     unistd.execp(argv[1], { select(2, unpack(argv)) })
