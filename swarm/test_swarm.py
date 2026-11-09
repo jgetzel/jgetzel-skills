@@ -2,7 +2,7 @@ import argparse
 import sys; sys.dont_write_bytecode = True
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest, unittest.mock
 
-SWARM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
+SWARM = os.environ.get("SWARM_CLI") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
 G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
 
@@ -26,11 +26,13 @@ class T(unittest.TestCase):
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who}
         if getattr(self, "fakebin", None):
             env["PATH"] = self.fakebin + os.pathsep + env["PATH"]
+        if getattr(self, "launch", None):
+            env["SWARM_LAUNCH"] = self.launch
         env.pop("HC_TERMINAL_ID", None)
         if hc:
             env["HC_TERMINAL_ID"] = hc
         # an agent's own terminal would make `hc ls` part of the test
-        r = subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True,
+        r = subprocess.run([SWARM, *args], env=env, input=stdin, capture_output=True,
                            text=True, cwd=self.cwd.get(who, self.repo))
         if ok:
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -134,15 +136,9 @@ class T(unittest.TestCase):
         self.sw("a", "task", "claim", "1")
         self.sw("a", "lock", "b.txt")
         self.q("update agent set hc='t99' where name='a'")
-        sys.path.insert(0, os.path.dirname(SWARM))
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        c = m.connect()
-        out = m.reap(c, live_addrs={"t1"})
-        self.assertIn("agent a", out)
+        self.fakes(); self.set_hc({"address": "t1"})
+        self.sw("a", "watchd", "--once")
+        self.assertEqual(self.q("select count(*) from event where kind='reap' and data='agent gone'")[0][0], 1)
         self.assertEqual(self.q("select state from task")[0]["state"], "open")
         self.assertEqual(self.q("select * from lock"), [])
         self.assertIsNotNone(self.q("select ended from agent where name='a'")[0]["ended"])
@@ -172,6 +168,57 @@ class T(unittest.TestCase):
                 return rows
         p = P(); p.fn = fn
         return p
+
+    # ---- fakes for the external commands: hc, gh and the launch script (SWARM_LAUNCH) ----
+    def fakes(self):
+        """hc ls answers from set_hc (absent: hc fails); gh answers from set_gh by subcommand (absent: fails); the launch
+        script logs its argv and the task row it saw. Every call is logged to <name>.log in the test dir."""
+        D = self.d
+        self.fakebin = os.path.join(D, "fb"); os.makedirs(self.fakebin, exist_ok=True)
+        self.launch = os.path.join(D, "launch")
+        for path, body in ((os.path.join(self.fakebin, "hc"), """
+if a[0] == "ls":
+    if not os.path.exists(D + "/hc.json"): sys.exit(1)
+    print(open(D + "/hc.json").read())
+else: print("{}")
+"""), (os.path.join(self.fakebin, "gh"), """
+if not os.path.exists(D + "/gh." + a[0]): sys.exit(1)
+sys.stdout.write(open(D + "/gh." + a[0]).read())
+"""), (self.launch, """
+import sqlite3
+rows = sqlite3.connect(os.environ["SWARM_DB"]).execute("select owner,state from task").fetchall()
+open(D + "/launch.calls", "a").write(json.dumps({"argv": a, "task": rows}) + "\\n")
+if os.path.exists(D + "/launch.fail"): sys.exit(1)
+print("hc1")
+""")):
+            name = os.path.basename(path)
+            open(path, "w").write(f"#!{sys.executable}\nimport json, os, sys\na, D = sys.argv[1:], {D!r}\n"
+                                  f"open(D + '/{name}.log', 'a').write(' '.join(a) + '\\n')\n" + body)
+            os.chmod(path, 0o755)
+
+    def set_hc(self, *terminals):
+        """hc ls --json lists these terminals; none given: hc ls fails."""
+        f = os.path.join(self.d, "hc.json")
+        if terminals:
+            open(f, "w").write(json.dumps({"terminals": [{"state": "live", **t} for t in terminals]}))
+        elif os.path.exists(f):
+            os.remove(f)
+
+    def set_gh(self, sub, out=None):
+        """gh <sub> prints out; None: it fails (rate limited)."""
+        f = os.path.join(self.d, "gh." + sub)
+        if out is None:
+            os.path.exists(f) and os.remove(f)
+        else:
+            open(f, "w").write(out if isinstance(out, str) else json.dumps(out))
+
+    def calls(self, name):
+        f = os.path.join(self.d, name + ".log")
+        return open(f).read().splitlines() if os.path.exists(f) else []
+
+    def launched(self):
+        f = os.path.join(self.d, "launch.calls")
+        return [json.loads(x) for x in open(f)] if os.path.exists(f) else []
 
     # ---- fencing on the bound terminal (sw-ownership §7.2) ----
     def live_hc(self, *addrs):
@@ -231,16 +278,18 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select hc from agent where name='b'")[0]["hc"], "t2")
 
     def test_takeover_then_predecessor_death_keeps_agent_claims_locks(self):
+        self.fakes()
         self.sw("a", "join", hc="t1")
         self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
         self.sw("a", "lock", "a.txt", hc="t1")
         self.sw("a", "join", "--takeover", hc="t2")
-        # the predecessor's terminal t1 is gone; only t2 is live
-        self.assertEqual(self.mod().reap(self.mod().connect(), live_addrs={"t2"}), [])
+        self.set_hc({"address": "t2"})  # the predecessor's terminal t1 is gone; only t2 is live
+        self.sw("a", "watchd", "--once")
         self.assertEqual(tuple(self.q("select hc,ended from agent")[0]), ("t2", None))
         self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
         self.assertEqual(self.q("select agent from lock")[0]["agent"], "a")
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_reap_spares_row_rebound_after_hc_ls(self):
         self.sw("a", "join", hc="t1")
         self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
@@ -263,7 +312,7 @@ class T(unittest.TestCase):
         peer.execute("insert into lock(path,agent,since,lease_until) values('a.txt','a',?,?)", (int(time.time()), int(time.time()) + 3600))
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"}
         env.pop("HC_TERMINAL_ID", None)
-        pr = subprocess.Popen([sys.executable, SWARM, "lock", "a.txt"], env=env, cwd=self.repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        pr = subprocess.Popen([SWARM, "lock", "a.txt"], env=env, cwd=self.repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         time.sleep(1)
         self.assertIsNone(pr.poll())  # waiting on the peer's transaction
         peer.execute("commit")
@@ -271,6 +320,7 @@ class T(unittest.TestCase):
         self.assertNotEqual(pr.returncode, 0, err)
         self.assertEqual([tuple(r) for r in self.q("select path,agent from lock")], [("a.txt", "a")])
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_done_after_reap_and_reclaim_fails(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
@@ -283,6 +333,7 @@ class T(unittest.TestCase):
             self.assertEqual(tuple(self.q("select state,owner from task")[0]), ("claimed", "b"), act)
             self.q("update task set owner='a'")
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_reap_keeps_renew_after_its_select(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
@@ -359,10 +410,10 @@ class T(unittest.TestCase):
         mark = os.path.join(tempfile.gettempdir(), f"claude-ctx-{sid}")
         self.addCleanup(lambda: os.path.exists(mark) and os.remove(mark))
         env = {**os.environ, "HOME": os.path.join(self.d, "home"), "CLAUDE_CODE_SESSION_ID": sid}
-        r = subprocess.run([sys.executable, "-B", SWARM, "board"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
+        r = subprocess.run([SWARM, "board"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
                            capture_output=True, text=True)
         self.assertIn("pass on the swarm", r.stdout)
-        r = subprocess.run([sys.executable, "-B", SWARM, "who"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
+        r = subprocess.run([SWARM, "who"], env={**env, "SWARM_NAME": "x-comms", "SWARM_DB": self.db},
                            capture_output=True, text=True)
         self.assertNotIn("pass on the swarm", r.stdout)  # once per step
 
@@ -495,6 +546,7 @@ class T(unittest.TestCase):
         self.edit("a", "b.txt")
         self.assertEqual(len(self.notices("a")), 1)
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_real_hunk_probe_asserts(self):
         import importlib.machinery, importlib.util
         ld = importlib.machinery.SourceFileLoader("swarm_mod2", SWARM)
@@ -611,28 +663,31 @@ class T(unittest.TestCase):
         subprocess.run([*G, "add", "."], cwd=self.wt, check=True)
         subprocess.run([*G, "commit", "-qm", "wip"], cwd=self.wt, check=True)
         self.old_wt(self.wt)
-        sys.path.insert(0, os.path.dirname(SWARM))
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        m.PROC = self.fake_proc()
-        c = m.connect()
-        calls = []
-        real = m.landed
-        m.landed = lambda *a: calls.append(a) or real(*a)
-        cwd = os.getcwd(); os.chdir(self.repo)
+        self.fakes(); self.set_gh("pr", "[]")
+        env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "a", "SWARM_PROC": self.fake_proc(), "PATH": self.fakebin + os.pathsep + os.environ["PATH"]}
+        asked = lambda: sum(1 for x in self.calls("gh") if x.startswith("pr list"))  # the last resort of `landed`
+        ticks = lambda: sum(1 for x in self.calls("hc") if x.startswith("ls"))
+
+        def tick(n):  # n more ticks of the running watchd
+            goal = ticks() + n
+            for _ in range(200):
+                if ticks() >= goal:
+                    return
+                time.sleep(0.1)
+            self.fail("watchd did not tick")
+        # the verdict cache lives in the daemon: run it, not --once
+        w = subprocess.Popen([SWARM, "watchd", "--comms", "comms", "--max-agents", "0", "--interval", "1"], env=env, cwd=self.repo,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            m.sweep_worktrees(c); self.assertEqual(len(calls), 1)
-            m.sweep_worktrees(c); self.assertEqual(len(calls), 1)  # HEAD and B unchanged
+            tick(1); tick(1); self.assertEqual(asked(), 1)  # unchanged: asked once over two ticks
             subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "x"], cwd=self.repo, check=True)
-            m.sweep_worktrees(c); self.assertEqual(len(calls), 1 + (m.git(["-C", self.repo, "remote", "get-url", "origin"]) is None))  # B moved only when it is local main
+            no_origin = subprocess.run(["git", "-C", self.repo, "remote", "get-url", "origin"], capture_output=True).returncode != 0
+            tick(2); self.assertEqual(asked(), 1 + no_origin)  # B moved only when it is local main
             subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "y"], cwd=self.wt, check=True)
             self.old_wt(self.wt)
-            n = len(calls); m.sweep_worktrees(c); self.assertEqual(len(calls), n + 1)  # HEAD moved
+            n = asked(); tick(2); self.assertEqual(asked(), n + 1)  # HEAD moved
         finally:
-            os.chdir(cwd)
+            w.terminate(); w.wait()
 
     def test_landed_agent_ended_and_cleaned(self):
         self.idle("e", wt=self.wt)
@@ -680,6 +735,7 @@ class T(unittest.TestCase):
         self.assertFalse(self.ended("e"))
 
     def test_missing_worktree_squash_merged_branch_ended(self):
+        self.fakes()
         self.idle("e", wt=self.wt)
         for d in (self.wt, self.repo):  # same content, different commits
             self.write("b" if d == self.wt else "a", "a.txt", "squashed")
@@ -697,6 +753,7 @@ class T(unittest.TestCase):
         os.environ["SWARM_DB"] = self.db
         return m, m.connect()
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_end_agent_skips_agent_that_claimed_since_decision(self):
         self.idle("e", wt=self.wt)
         self.sw("e", "task", "add", "t")
@@ -710,12 +767,10 @@ class T(unittest.TestCase):
         self.assertTrue(os.path.isdir(self.wt))
 
     def test_end_agent_keeps_worktree_a_live_peer_uses(self):
+        self.fakes()
         self.idle("e", wt=self.wt)
         self.agent("p", wt=self.wt)
-        m, c = self.end_mod()
-        a = dict(c.execute("select * from agent where name='e'").fetchone())
-        m.run = lambda *x, **k: None
-        m.end_agent(c, a, self.wt, self.repo, None)
+        self.comms_tick()
         self.assertTrue(self.ended("e"))
         self.assertTrue(os.path.isdir(self.wt))
 
@@ -769,51 +824,38 @@ class T(unittest.TestCase):
         self.assertIn("go idle", self.sw("a", "task", "done", "2", "--evidence", "e").stdout)
 
     def test_pr_ci_merge_to_green(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod5", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod5", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        c = m.connect()
+        self.fakes()
+        self.agent("a")
         self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
         self.sw("a", "task", "done", "1", "--evidence", "PR #7 merged")
-        out = {"pr": [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}]}
+        self.set_gh("pr", [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}])
         for i, (sha, concl, cr, up) in enumerate([("red", "failure", "2026-11-08T10:00:05Z", "2026-11-08T10:02:00Z"),
                                                   ("fix", "success", "2026-11-08T10:05:00Z", "2026-11-08T10:08:00Z")]):
-            c.execute("insert into ci(id,sha,status,conclusion,created,updated) values(?,?,'completed',?,?,?)", (i + 1, sha, concl, cr, up))
-        calls = []
-        m.run = lambda cmd, cwd=None, **k: calls.append(cmd) or json.dumps(out[cmd[1]])
-        m.pr_ci(c, self.repo)
+            self.q("insert into ci(id,sha,status,conclusion,created,updated) values(?,?,'completed',?,?,?)", i + 1, sha, concl, cr, up)
+        prs = lambda: [x for x in self.calls("gh") if x.startswith("pr ")]
+        self.sw("a", "watchd", "--once", "--ci")
         t = json.loads(self.sw("a", "state", "--json").stdout)["tasks"][0]
         self.assertEqual((t["pr"], t["ci_conclusion"], t["merge_to_green_s"]), (7, "failure", 480))
         self.assertIn("PR #7 merged", self.sw("a", "task", "show", "1").stdout)
-        self.assertEqual([x[1] for x in calls], ["pr"])  # runs come from the ci table, not GitHub
-        m.pr_ci(c, self.repo)
-        self.assertEqual(len(calls), 1)  # the PR list is asked for at most every 10 minutes
+        self.assertEqual(len(prs()), 1)  # runs come from the ci table, not GitHub
+        self.sw("a", "watchd", "--once", "--ci")
+        self.assertEqual(len(prs()), 1)  # the PR list is asked for at most every 10 minutes
 
     def test_ci_poll_once_for_all(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod6", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod6", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        c = m.connect()
-        calls = []
-        runs = [{"databaseId": 1, "headSha": "a1", "status": "completed", "conclusion": "failure", "url": "u1",
-                 "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}]
-
-        def fake(cmd, cwd=None, **k):
-            calls.append(cmd[:2])
-            return json.dumps(runs) if cmd[1] == "api" else "server, e2e\n"
-        m.run = fake
-        m.ci_poll(c, self.repo)
-        self.assertEqual(calls, [["gh", "api"], ["gh", "run"]])  # one request for the runs, one for the red run's jobs
+        self.fakes()
+        self.agent("a")
+        self.set_gh("api", [{"databaseId": 1, "headSha": "a1", "status": "completed", "conclusion": "failure", "url": "u1",
+                             "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z"}])
+        self.set_gh("run", "server, e2e\n")
+        subs = lambda: [x.split()[0] for x in self.calls("gh") if x.startswith("api") or "--json jobs" in x]  # the poll's own calls
+        self.sw("a", "watchd", "--once", "--ci")
+        self.assertEqual(subs(), ["api", "run"])  # one request for the runs, one for the red run's jobs
         self.assertEqual(tuple(self.q("select conclusion, failed from ci where id=1")[0]), ("failure", "server, e2e"))
-        m.ci_poll(c, self.repo)
-        self.assertEqual(len(calls), 2)  # within the minute: no call
+        self.sw("a", "watchd", "--once", "--ci")
+        self.assertEqual(len(subs()), 2)  # within the minute: no call
         self.q("update meta set v='0' where k='ci_polled'")
-        m.run = lambda cmd, cwd=None, **k: None  # rate limited
-        m.ci_poll(c, self.repo)
+        self.set_gh("api", None)  # rate limited
+        self.sw("a", "watchd", "--once", "--ci")
         self.assertEqual(len(self.q("select 1 from ci")), 1)  # kept
         self.assertTrue(self.q("select 1 from meta where k='ci_error'"))
 
@@ -838,28 +880,16 @@ class T(unittest.TestCase):
         self.assertEqual(self.sw("a", "ci", c3, "--wait", "--timeout", "5").returncode, 0)
 
     def test_block_unblock(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod4", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod4", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        m.hc_terminals = lambda: None
-        c = m.connect()
+        self.fakes()
         self.agent("a"); self.agent("t-comms")
         self.sw("a", "task", "add", "t1"); self.sw("a", "task", "claim", "1")
         self.sw("b", "task", "block", "1", "q?", ok=False)
         self.sw("a", "task", "block", "1", "which db?")
         self.assertIn("#1 blocked by a: which db?", self.sw("a", "board").stdout)
         self.q("update task set lease_until=1")
-        self.assertEqual(m.pool(c), [])
-        m.reap(c, set(), comms="t-comms")
+        for _ in range(2):
+            self.sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "0")
         self.assertEqual(self.q("select state,owner from task")[0]["state"], "blocked")
-        cwd = os.getcwd(); os.chdir(self.repo)
-        try:
-            for _ in range(2):
-                m.watchd_tick(c, "t-comms", None, {})
-        finally:
-            os.chdir(cwd)
         self.assertEqual(len(self.q("select 1 from msg where dest='t-comms' and body like '%which db?%'")), 1)
         self.sw("b", "task", "unblock", "1", ok=False)
         self.sw("t-comms", "task", "unblock", "1", "--answer", "sqlite")
@@ -868,25 +898,16 @@ class T(unittest.TestCase):
         self.assertEqual(len(self.q("select 1 from msg where dest='a' and body like '%sqlite%'")), 1)
 
     def test_hc_blocked_marks_task(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod5", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod5", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        st = {"status": "blocked"}
-        m.hc_terminals = lambda: [{"address": "h1", "state": "live", **st}]
-        c = m.connect()
+        self.fakes()
+        self.set_hc({"address": "h1", "status": "blocked"})
         self.agent("a", hc="h1", status="working"); self.agent("t-comms")
         self.sw("a", "task", "add", "t1", hc="h1"); self.sw("a", "task", "claim", "1", hc="h1")
-        cwd = os.getcwd(); os.chdir(self.repo)
-        try:
-            m.watchd_tick(c, "t-comms", None, {})
-            self.assertEqual(self.q("select state from task")[0]["state"], "blocked")
-            self.assertEqual(len(self.q("select 1 from msg where dest='t-comms'")), 1)  # one notice, not two
-            st["status"] = "working"
-            m.watchd_tick(c, "t-comms", None, {})
-        finally:
-            os.chdir(cwd)
+        tick = lambda: self.sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "0")
+        tick()
+        self.assertEqual(self.q("select state from task")[0]["state"], "blocked")
+        self.assertEqual(len(self.q("select 1 from msg where dest='t-comms'")), 1)  # one notice, not two
+        self.set_hc({"address": "h1", "status": "working"})
+        tick()
         self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
 
     def test_after_dependency(self):
@@ -911,8 +932,7 @@ class T(unittest.TestCase):
         self.assertIn("after #1  two", self.sw("a", "board").stdout)
 
     def test_deps_list_holds_until_last_done(self):
-        m = self.mod()
-        c = m.connect()
+        self.fakes()
         self.agent("a")
         for t in ("one", "two", "three"):
             self.sw("a", "task", "add", t)
@@ -920,11 +940,11 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select deps from task where id=4")[0][0], "3,1")
 
         def check(ready):
-            self.assertEqual(sorted(r["id"] for r in m.pool(c)), ready)
+            ts = json.loads(self.sw("a", "state", "--json").stdout)["tasks"]
+            self.assertEqual(sorted(t["id"] for t in ts if t["state"] == "open" and not t["waiting"]), ready)
             if 4 not in ready:
                 self.assertIn("waits on", self.sw("a", "task", "claim", "4", ok=False).stderr)
-                with self.assertRaises(SystemExit):
-                    m.reserve(c, "t-9", 4, None)
+                self.assertIn("waits on", self.sw("a", "spawn", "t-9", "--task", "4", ok=False).stderr)
         check([1, 2, 3])
         for tid, ready in ((1, [2, 3]), (2, [3]), (3, [4])):
             self.sw("a", "task", "claim", str(tid)); self.sw("a", "task", "done", str(tid), "--evidence", "e")
@@ -960,32 +980,20 @@ class T(unittest.TestCase):
         self.assertIn("is claimed", self.sw("a", "task", "after", "3", "2", ok=False).stderr)
 
     def test_auto_spawn_once_within_cap(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod3", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod3", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        spawned = []
-        m.run = self.fake_launch(spawned, lambda cmd: (cmd[1], cmd[cmd.index("--model") + 1]))
-        m.hc_terminals = lambda: None
-        c = m.connect()
+        self.fakes()
         for n in ("t-comms", "t-1"):
             self.agent(n, status="working", model="haiku")
         self.sw("a", "task", "add", "do it")
-        cwd = os.getcwd(); os.chdir(self.repo)
-        try:
-            opts = {"max_agents": 1, "min_free_gib": 0}
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, [])  # at the cap
-            opts["max_agents"] = 2
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(spawned, [("t-2", "haiku")])
-            self.assertEqual(self.q("select owner,state from task")[0]["owner"], "t-2")
-            self.assertTrue(self.q("select first_claimed_at from task")[0][0])  # auto-spawn stamps the claim time
-            m.watchd_tick(c, "t-comms", None, opts)
-            self.assertEqual(len(spawned), 1)  # the task is claimed: no second spawn
-        finally:
-            os.chdir(cwd)
+        tick = lambda cap: self.sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", str(cap), "--min-free-mem", "0")
+        spawned = lambda: [(x["argv"][0], x["argv"][x["argv"].index("--model") + 1]) for x in self.launched()]
+        tick(1)
+        self.assertEqual(spawned(), [])  # at the cap
+        tick(2)
+        self.assertEqual(spawned(), [("t-2", "haiku")])
+        self.assertEqual(self.q("select owner,state from task")[0]["owner"], "t-2")
+        self.assertTrue(self.q("select first_claimed_at from task")[0][0])  # auto-spawn stamps the claim time
+        tick(2)
+        self.assertEqual(len(spawned()), 1)  # the task is claimed: no second spawn
 
     def fake_launch(self, log, rec, fail=False):
         real = self.mod().run  # only launch.sh is faked; git etc. run for real
@@ -999,24 +1007,18 @@ class T(unittest.TestCase):
         return run
 
     def test_spawn_task_claims_before_launch(self):
-        m = self.mod()
-        c = m.connect()
+        self.fakes()
         self.sw("a", "task", "add", "do it")
-        seen = []
-        m.run = self.fake_launch(seen, lambda cmd: tuple(self.q("select owner,state from task")[0]))
-        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
-        self.assertEqual(seen, [("t-9", "claimed")])  # claimed by the new name before launch ran
+        self.sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1")
+        self.assertEqual([x["task"] for x in self.launched()], [[["t-9", "claimed"]]])  # claimed by the new name before launch ran
         self.assertEqual(self.q("select hc from agent where name='t-9'")[0][0], "hc1")
-        with self.assertRaises(SystemExit):  # a live name is refused
-            m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.assertIn("live agent", self.sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", ok=False).stderr)  # a live name is refused
 
     def test_spawn_launch_failure_keeps_live_agent(self):
-        m = self.mod()
-        c = m.connect()
+        self.fakes(); self.set_hc({"name": "t-9", "address": "t7"})
+        open(os.path.join(self.d, "launch.fail"), "w").close()
         self.sw("a", "task", "add", "do it")
-        m.run = self.fake_launch([], None, fail=True)
-        m.hc_terminals = lambda: [{"address": "t7", "name": "t-9", "state": "live"}]
-        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1")
         self.assertEqual(tuple(self.q("select owner,state from task")[0]), ("t-9", "claimed"))
         self.assertEqual(self.q("select hc from agent where name='t-9'")[0][0], "t7")
 
@@ -1031,15 +1033,14 @@ class T(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout.strip().splitlines()[-1:]), (0, ["t5"]), r.stderr)
 
     def test_spawn_task_launch_failure_rolls_back(self):
-        m = self.mod()
-        c = m.connect()
+        self.fakes()
+        open(os.path.join(self.d, "launch.fail"), "w").close()
         self.sw("a", "task", "add", "do it")
-        m.run = self.fake_launch([], None, fail=True)
-        with self.assertRaises(SystemExit):
-            m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task_id=1, task=[]))
+        self.sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", ok=False)
         self.assertEqual(tuple(self.q("select owner,state from task")[0]), (None, "open"))
         self.assertTrue(self.q("select ended from agent where name='t-9'")[0][0])
 
+    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_auto_spawn_skips_lost_race(self):
         m = self.mod()
         launched = []
@@ -1059,17 +1060,10 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select owner from task")[0][0], "t-1")
 
     def test_rules_appended_to_spawn(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod7", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod7", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        seen = []
-        m.run = lambda cmd, **kw: seen.append(cmd[3]) or "hc1"
-        c = m.connect()
+        self.fakes()
         self.assertEqual(self.sw("a", "rules", "set", "never", "edit", "main").stdout.strip(), "never edit main")
-        m.cmd_spawn(c, argparse.Namespace(name="t-9", model="haiku", task=["go"]))
-        self.assertIn("never edit main", seen[0])
+        self.sw("a", "spawn", "t-9", "--model", "haiku", "--", "go")
+        self.assertIn("never edit main", self.launched()[0]["argv"][2])
 
     # ---- cold-cache rule ----
     def sendmsg(self, to, text="hi"):
@@ -1157,7 +1151,7 @@ class T(unittest.TestCase):
 
     def test_prompt_hook_delivers_and_stops_waiter(self):
         self.agent("a"); self.agent("b")
-        w = subprocess.Popen([sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"],
+        w = subprocess.Popen([SWARM, "wait", "--timeout", "10", "--poll", "0.2"],
                              env={**{k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}, "SWARM_DB": self.db, "SWARM_NAME": "b"},
                              stderr=subprocess.PIPE, text=True)
         time.sleep(1)
@@ -1171,7 +1165,7 @@ class T(unittest.TestCase):
     def test_newest_waiter_owns_inbox(self):
         self.agent("a"); self.agent("b")
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "b"}
-        cmd = [sys.executable, SWARM, "wait", "--timeout", "10", "--poll", "0.2"]
+        cmd = [SWARM, "wait", "--timeout", "10", "--poll", "0.2"]
         w1 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
         time.sleep(0.8)
         w2 = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
@@ -1368,7 +1362,11 @@ class T(unittest.TestCase):
 
     def swp(self, who, proc, *args, stdin=None):
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": who, "SWARM_PROC": proc}
-        return subprocess.run([sys.executable, SWARM, *args], env=env, input=stdin, capture_output=True, text=True, cwd=self.cwd[who])
+        if getattr(self, "fakebin", None):
+            env["PATH"] = self.fakebin + os.pathsep + env["PATH"]
+        if getattr(self, "launch", None):
+            env["SWARM_LAUNCH"] = self.launch
+        return subprocess.run([SWARM, *args], env=env, input=stdin, capture_output=True, text=True, cwd=self.cwd[who])
 
     def hookp(self, who, proc, cmd):
         r = self.swp(who, proc, "hook", "pre-tool", stdin=json.dumps({"cwd": self.cwd[who], "tool_name": "Bash", "tool_input": {"command": cmd}}))
@@ -1447,7 +1445,7 @@ class T(unittest.TestCase):
         os.chmod(os.path.join(bindir, "gh"), 0o755)
         env = {**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "a", "PATH": bindir + os.pathsep + os.environ["PATH"]}
         self.agent("a"); self.agent("gone", ended=1); self.agent("comms")
-        go = lambda: subprocess.run([sys.executable, SWARM, "watchd", "--once", "--ci", "--comms", "comms"],
+        go = lambda: subprocess.run([SWARM, "watchd", "--once", "--ci", "--comms", "comms"],
                                     env=env, capture_output=True, text=True, cwd=self.repo, check=True)
         self.sw("a", "task", "add", "earlier work")
         go(); go()  # second tick: edge-triggered
@@ -1456,11 +1454,8 @@ class T(unittest.TestCase):
         self.assertIn("http://ci/9", m[0][1]); self.assertIn("swarm task claim 2", m[0][1])
         red_tasks = self.q("select id,body,state from task where title like 'main red:%'")
         self.assertEqual(len(red_tasks), 1); self.assertIn("Build failed", red_tasks[0][1])
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod_red", SWARM)
-        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod_red", ld)); ld.exec_module(mod)
-        c = sqlite3.connect(self.db); c.row_factory = sqlite3.Row
-        self.assertEqual([r["id"] for r in mod.pool(c)], [2, 1])  # the red task starts first
+        board = self.sw("a", "board").stdout
+        self.assertLess(board.index("main red"), board.index("earlier work"))  # the red task starts first
         # a later red in the same stretch is the same task
         runs.insert(0, {**runs[0], "databaseId": 10, "createdAt": "2026-11-08T10:10:00Z"})
         open(os.path.join(bindir, "gh"), "w").write(f"#!/bin/sh\n[ \"$1\" = api ] && echo '{json.dumps(runs)}' || echo 'step Build failed'\n")
@@ -1596,7 +1591,7 @@ shift; cd {self.home} && HOME={self.home} exec sh -c "$*"
         self.assertEqual([(j["machine"], j["job"], j["lost"]) for j in run if "machine" in j], [("laptop", "1", True)])  # swarm run gone, terminal gone
         # watchd's probe of each machine, only from a Herdr terminal
         env = {**os.environ, "SWARM_DB": self.db, "HC_TERMINAL_ID": "t1", "PATH": self.fakebin + os.pathsep + os.environ["PATH"]}
-        subprocess.run([sys.executable, SWARM, "watchd", "--once"], env=env, cwd=self.repo, check=True, capture_output=True)
+        subprocess.run([SWARM, "watchd", "--once"], env=env, cwd=self.repo, check=True, capture_output=True)
         lap = json.loads(self.q("select v from meta where k='machines'")[0][0])["laptop"]
         self.assertEqual(lap["state"], "connected"); self.assertGreater(lap["cores"], 0); self.assertGreater(lap["total_kb"], 0)
         # a landed worktree's dirs go on every machine its jobs used
