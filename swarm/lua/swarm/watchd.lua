@@ -63,8 +63,8 @@ function M.reap(c, live_addrs, t, comms)
   local out = {}
   for _, r in ipairs(c:all("select * from task where state='claimed' and lease_until<?", t)) do
     local o = c:one("select * from agent where name=?", r.owner)
-    if o and o.ended == nil and o.status == "working" and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
-      -- a working owner past its lease forgot to renew: tell the communicator, keep it
+    if o and o.ended == nil and o.status ~= "idle" and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
+      -- a working or prompt-blocked owner past its lease: its work is live: tell the communicator, keep it
       if comms and not c:one("select 1 from event where kind='lease-late' and path=? and ts>?", d(r.id), t - M.LEASE) then
         db.log(c, r.owner, "lease-late", d(r.id))
         msgs.post(c, "swarm", comms, ("%s has held #%s past its lease (idle %s)."):format(r.owner, d(r.id), util.ago(o.last_active)),
