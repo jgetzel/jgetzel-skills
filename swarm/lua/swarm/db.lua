@@ -76,8 +76,10 @@ local function fail(c, st, sql)
 end
 
 -- Rows as tables keyed by column name; NULL is nil (so never read rows positionally).
-function DB:all(sql, ...)
+-- all, and the column names too (state --json prints a NULL column as null, so it needs to know the columns).
+function DB:all_cols(sql, ...)
   local st, rows = prepare(self, sql, ...), {}
+  local names = st:get_names()
   while true do
     local rc = st:step()
     if rc == sqlite3.ROW then rows[#rows + 1] = st:get_named_values()
@@ -85,7 +87,11 @@ function DB:all(sql, ...)
     else fail(self, st, sql) end
   end
   st:finalize()
-  return rows
+  return rows, names
+end
+
+function DB:all(sql, ...)
+  return (self:all_cols(sql, ...))
 end
 
 function DB:one(sql, ...)
@@ -173,6 +179,14 @@ function M.connect()
     end)
   end
   return c
+end
+
+-- A read-only connection: no schema, no migrations, never creates the file. Nil and the error if it can't open.
+function M.open_ro(p)
+  local h, _, err = sqlite3.open(p, sqlite3.OPEN_READONLY)
+  if not h then return nil, err end
+  h:busy_timeout(10000)
+  return setmetatable({ h = h, depth = 0, path = p }, DB)
 end
 
 function M.log(c, agent, kind, path, data)
