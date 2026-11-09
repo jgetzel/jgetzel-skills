@@ -338,6 +338,15 @@ function T.test_working_owner_past_lease_keeps_claim(t)
   t:eq(t:q1("select count(*) n from msg where dest='comms'").n, 1)  -- once per lease period
 end
 
+function T.test_prompt_blocked_owner_past_lease_keeps_claim(t)
+  t:fakes()
+  t:agent("e", { status = "blocked" }); t:agent("comms")
+  t:sw("e", "task", "add", "t"); t:sw("e", "task", "claim", "1")
+  t:q("update task set lease_until=1")
+  comms_tick(t)
+  t:eq(t:q1("select state from task").state, "claimed")
+end
+
 function T.test_comms_never_digested_or_ended_reusable_digested(t)
   idle(t, "comms"); idle(t, "r")
   t:sw("comms", "task", "add", "t")
