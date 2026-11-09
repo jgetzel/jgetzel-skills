@@ -11,7 +11,7 @@ create table event(id integer primary key,ts,agent,kind,path,data);
 create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
 insert into task values(1,'t','done','a','sha');
 insert into event(ts,agent,kind,data) values(100,'a','claim','#1 t'),(190,'a','done','#1 sha'),(150,'a','reap','x'),(160,'a','digest',null);""")
-    r = sr.report(c, git=False)
+    r = sr.report(c, git=False, state=[{"id": 1, "work_s": 90, "claims": 1, "blocked_s": 0}])
     self.assertEqual(r["tasks"][0]["took"], "1m30s"); self.assertEqual(r["friction"][0]["kind"], "reap"); self.assertEqual(len(r["idle_with_open_tasks"]), 1)
 
   def test_task_durations_from_events(self):
@@ -23,7 +23,7 @@ create table msg(ts,frm,dest,urgent);create table lock(path,agent,reason);
 insert into task values(1,'t','done','b','sha');
 insert into event(ts,agent,kind,data) values(10,'a','task-add','#1 t'),(100,'a','claim','#1 t'),(130,'a','block','#1 q'),(160,'a','unblock','#1'),
  (200,'a','release','#1'),(300,'b','claim','#1 t'),(400,'b','done','#1 sha');""")
-    r = sr.report(c, since=0, git=False)
+    r = sr.report(c, since=0, git=False, state=[{"id": 1, "queue_wait_s": 90, "work_s": 300, "total_s": 390, "blocked_s": 30, "claims": 2, "releases": 1, "holders": ["a", "b"]}])
     t = r["tasks"][0]
     self.assertEqual((t["queue_wait_s"], t["work_s"], t["total_s"], t["blocked_s"], t["claims"], t["releases"], t["holders"]), (90, 300, 390, 30, 2, 1, ["a", "b"]))
     self.assertEqual(r["task_durations"]["work_median_s"], 300); self.assertEqual(r["task_durations"]["reclaimed"][0]["id"], 1)
