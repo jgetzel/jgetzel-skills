@@ -40,7 +40,7 @@ session n = 1 and every finding is one trial.
 Find the run window (the first spawn or session start) and run, from the repo
 root:
 
-- `~/.claude/skills/swarm-retro/swarm-report.py --since <ISO start>`: agents,
+- `~/.claude/skills/swarm-retro/swarm-report --since <ISO start>`: agents,
   tasks (claim → done time, evidence), per-agent events and the friction list
   (conflicts, shared trees, reaps, compactions, CI reds, blocked prompts), messages, locks, and
   always-loaded context (spawn prompts × agents, cold-cache wakes, hook-injected bytes by source).
