@@ -71,7 +71,7 @@ function M.read_procs()
     local a, b = st and st:find("(", 1, true), st and st:match("^.*()%)")
     if a and b then
       local rest = util.split(st:sub(b + 2))
-      if tonumber(rest[22]) then
+      if cl and tonumber(rest[22]) then
         local argv = {}
         for x in cl:gmatch("[^%z]+") do argv[#argv + 1] = x end
         out[tonumber(d)] = { pid = tonumber(d), ppid = tonumber(rest[2]), comm = st:sub(a + 1, b - 1),
