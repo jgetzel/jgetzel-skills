@@ -42,7 +42,7 @@ assert(calls("^pr ") == 1)  -- the PR list is asked for at most every 10 minutes
 c:exec("delete from ci")
 gh('[{"databaseId":1,"headSha":"a1","status":"completed","conclusion":"failure","url":"u1","createdAt":"2026-11-08T10:00:00Z","updatedAt":"2026-11-08T10:03:00Z"}]')
 ci.ci_poll(c, dir)
-assert(calls("^api") == 1 and calls("%-%-json jobs") == 1)
+assert(calls("^api") == 1 and calls("%-%-json jobs") == 1 and calls("event=push") == 1)  -- a scheduled run isn't CI
 assert(c:one("select failed from ci where id=1").failed == "step Build failed")
 ci.ci_poll(c, dir)
 assert(calls("^api") == 1)
