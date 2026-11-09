@@ -3,8 +3,8 @@
 Measured 2026-11-07 against jk_ledger's live 12-agent swarm (read-only: its
 `swarm.db` opened `mode=ro`; its worktrees read through a `--shared` bare clone
 in a scratch dir). git 2.56, 12 cores. Prior-art notes came from a research
-subagent; sources are at the end. `sw-locks-probe.py` reproduces the numbers:
-`python3 -I swarm/research/sw-locks-probe.py ~/workspace/jk_ledger <scratch>`.
+subagent; sources are at the end. `sw-locks-probe.lua` reproduces the numbers:
+`luajit swarm/research/sw-locks-probe.lua ~/workspace/jk_ledger <scratch>`.
 
 ## 1. What went wrong in jk_ledger
 
@@ -131,7 +131,7 @@ For each live agent with a worktree, in a single process:
    `(i, i)`). The hunk is **real** if a span from ours and a span from theirs
    clash: both non-empty and overlapping, or one an insertion strictly inside
    the other's non-empty span. Two insertions at one point never clash. Code:
-   `real_hunk` in `sw-locks-probe.py`, with asserts.
+   `real_hunk` in `swarm/lua/swarm/conflict.lua`, with asserts (the probe calls it).
 5. **Episodes.** Table `conflict(a, b, path, since, primary key(a,b,path))`
    with `a < b`. A real (a, b, path) not in the table starts an episode:
    insert it and queue a notice for both agents. A row whose pair was
@@ -193,7 +193,7 @@ agent's `files` from `agent.snap` instead of touches. `porcelain()` goes. The
 
 ## 5. Prototype check
 
-`sw-locks-probe.py` runs §4.3 steps 1–4 over every jk_ledger worktree.
+`sw-locks-probe.lua` runs §4.3 steps 1–4 over every jk_ledger worktree.
 
 | | Run 1 (13 worktrees) | Probe run (16 worktrees) |
 |---|---|---|
