@@ -39,7 +39,15 @@ end
 
 -- Whether lock pattern pat covers path: a glob, or a directory prefix (`migrations/`).
 function M.covers(path, pat)
-  return fnmatch.fnmatch(pat, path, 0) == 0 or util.startswith(path, (pat:gsub("/+$", "")) .. "/")
+  return path == pat or fnmatch.fnmatch(pat, path, 0) == 0 or util.startswith(path, (pat:gsub("/+$", "")) .. "/")
+end
+
+-- A lock path as typed (absolute, ./x, or relative to a subdirectory) -> repo-relative, which is what the edit
+-- hook matches. A trailing slash (a directory lock) is kept; outside a repo it stays as typed.
+local function norm(path)
+  local _, rel = M.repo_rel(path)
+  if not rel then return path end
+  return rel .. ((path:sub(-1) == "/" and rel ~= ".") and "/" or "")
 end
 
 function M.lock_holder(c, me_, path, t)
@@ -57,6 +65,7 @@ end
 
 function M.cmd_lock(c, a)
   local n = agents.me()
+  a.path = norm(a.path)
   c:tx(function()  -- scan and write in one transaction: a concurrent lock waits, then sees this one
     agents.touch(c, n)
     for _, o in ipairs(c:all("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
@@ -75,6 +84,7 @@ end
 
 function M.cmd_unlock(c, a)
   local n = agents.me()
+  a.path = norm(a.path)
   c:exec("delete from lock where path=? and agent=?", a.path, n)
   db.log(c, n, "unlock", a.path)
   print("unlocked " .. a.path)

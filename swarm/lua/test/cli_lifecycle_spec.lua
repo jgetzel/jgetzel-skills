@@ -161,6 +161,18 @@ function T.test_hard_lock_deny(t)
   t:eq(t:edit("b", "a.txt").permissionDecision, nil)
 end
 
+-- A lock typed in a subdirectory, or with ./, is the repo-relative path the edit hook sees.
+function T.test_lock_path_is_repo_relative(t)
+  t:agent("a"); t:agent("b")
+  lfs.mkdir(t.cwd.a .. "/sub")
+  t:has(t:sw("a", "lock", "x.txt", { cwd = t.cwd.a .. "/sub" }).stdout, "locked sub/x.txt")
+  t:eq(t:edit("b", "sub/x.txt").permissionDecision, "deny")
+  t:sw("a", "unlock", "./x.txt", { cwd = t.cwd.a .. "/sub" })
+  t:eq(t:edit("b", "sub/x.txt").permissionDecision, nil)
+  t:sw("a", "lock", "app/[id]/page.tsx")  -- glob characters in a literal path still cover that path
+  t:eq(t:edit("b", "app/[id]/page.tsx").permissionDecision, "deny")
+end
+
 -- ---- sweep ----
 function T.test_sweep(t)
   old_wt(t, t.wt)
@@ -279,6 +291,20 @@ function T.test_missing_worktree_squash_merged_branch_ended(t)
   rmtree(t.wt)
   comms_tick(t)
   assert(ended(t, "e"))
+end
+
+-- A merged PR counts only when it merged this commit: a branch reused after its PR merged holds new work.
+function T.test_merged_pr_of_reused_branch_not_ended(t)
+  t:fakes()
+  idle(t, "e", { wt = t.wt })
+  commit_wip(t, "new.txt")
+  t:set_gh("pr", { { number = 1, headRefOid = "0000000000000000000000000000000000000000" } })
+  comms_tick(t)
+  assert(not ended(t, "e"), "the merged PR was an earlier commit")
+  assert(exists(t.wt))
+  t:set_gh("pr", { { number = 2, headRefOid = util.strip(t:git(t.wt, "rev-parse", "HEAD")) } })
+  comms_tick(t)
+  assert(ended(t, "e"), "the merged PR is this commit")
 end
 
 function T.test_end_agent_keeps_worktree_a_live_peer_uses(t)

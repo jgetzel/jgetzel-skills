@@ -25,10 +25,10 @@ function M.due(c, key, every)
   return true
 end
 
--- For done tasks without merge data: find the PR (evidence 'PR #N' / 'pull/N', else the merged PR from the owner's
+-- For done tasks without merge data or without a green main run yet: find the PR (evidence 'PR #N' / 'pull/N', else the merged PR from the owner's
 -- branch), its merged_at, and the first completed main CI run on the merge commit; if red, the next green run.
 function M.pr_ci(c, repo)
-  local todo = c:all("select * from task where state='done' and merged_at is null and done_at>?", now() - 86400)
+  local todo = c:all("select * from task where state='done' and (merged_at is null or ci_green_at is null) and done_at>?", now() - 86400)
   if #todo == 0 or not M.due(c, "pr_polled", 600) then return end  -- every gh call counts against the API limit
   local prs = json.decode(proc.run({ "gh", "pr", "list", "--state", "merged", "--limit", "100", "--json",
     "number,mergedAt,mergeCommit,headRefName" }, repo) or "[]")
@@ -46,7 +46,7 @@ function M.pr_ci(c, repo)
     local ev, num = r.evidence or "", nil
     local a, b = ev:match("PR #(%d+)"), ev:match("pull/(%d+)")
     local pa, pb = ev:find("PR #%d"), ev:find("pull/%d")
-    num = tonumber((pa and (not pb or pa < pb)) and a or b)
+    num = r.pr or tonumber((pa and (not pb or pa < pb)) and a or b)  -- re-polled until green: keep the PR already matched
     local pr
     for _, x in ipairs(prs) do
       if num and x.number == num then pr = x; break end

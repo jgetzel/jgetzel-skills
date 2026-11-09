@@ -90,7 +90,7 @@ function M.cmd_post(c, a)
       local k
       if x.status == "working" then k = keys[1]
       elseif agents.cold_reason(x) and not a.urgent then k = keys[3]
-      elseif x.waiter and lfs.attributes("/proc/" .. util.d(x.waiter)) then k = keys[2]
+      elseif x.waiter and require("posix.signal").kill(x.waiter, 0) == 0 then k = keys[2]
       else k = keys[4] end
       g[k][#g[k] + 1] = x.name
     end

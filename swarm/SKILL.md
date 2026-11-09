@@ -85,7 +85,10 @@ with subagents.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
-- **Ending.** `watchd` ends agents; you don't. When all tasks are done, tell
+- **Ending.** `watchd` ends agents; you don't. It also removes any worktree of
+  this repo (yours included) that is clean, on main, untouched for 30 minutes
+  and has no process in it, and deletes its branch: tell the user before the
+  first watchd if they park worktrees here. When all tasks are done, tell
   the user. `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.

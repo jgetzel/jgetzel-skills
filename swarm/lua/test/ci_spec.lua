@@ -37,6 +37,18 @@ local t = c:one("select pr, merged_at, ci_conclusion, ci_green_at from task wher
 assert(t.pr == 7 and t.ci_conclusion == "failure" and t.ci_green_at - t.merged_at == 480, json.encode(t))
 ci.pr_ci(c, dir)
 assert(calls("^pr ") == 1)  -- the PR list is asked for at most every 10 minutes
+-- merged while its main run is still going: polled again, and filled in once the run completes
+c:exec("insert into task(title,state,owner,evidence,done_at,first_claimed_at) values('t2','done','a','PR #8 merged',?,1)", os.time())
+c:exec("insert into ci(id,sha,status,created,updated) values(3,'m8','in_progress','2026-11-08T11:00:05Z','2026-11-08T11:00:05Z')")
+gh("", '[{"number":8,"mergedAt":"2026-11-08T11:00:00Z","mergeCommit":{"oid":"m8"},"headRefName":"a/y"}]')
+c:exec("delete from meta where k='pr_polled'"); ci.pr_ci(c, dir)
+t = c:one("select pr, merged_at, ci_conclusion from task where id=2")
+assert(t.pr == 8 and t.merged_at and t.ci_conclusion == nil, json.encode(t))
+c:exec("update ci set status='completed', conclusion='success', updated='2026-11-08T11:04:00Z' where id=3")
+c:exec("delete from meta where k='pr_polled'"); ci.pr_ci(c, dir)
+t = c:one("select ci_conclusion, ci_green_at, merged_at from task where id=2")
+assert(t.ci_conclusion == "success" and t.ci_green_at - t.merged_at == 240, json.encode(t))
+c:exec("delete from task where id=2")
 
 -- ci_poll: one request for the runs, one for the red run's jobs; within the minute no call; refused keeps the table
 c:exec("delete from ci")

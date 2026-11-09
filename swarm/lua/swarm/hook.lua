@@ -56,14 +56,17 @@ local function tmpdir()  -- tempfile.gettempdir()
 end
 
 -- Context-size note. Shares the repo hook's step marker (claude-ctx-<session_id>) so only one of the two fires per step.
+local function ctx_mark(sid)
+  return util.join(tmpdir(), "claude-ctx-" .. ((sid and sid ~= "") and sid or "x"))
+end
+
 function M.handoff_nudge(c, name, p, comms)
   local k = M.ctx_from(p.transcript_path)
   if not k or k == 0 then return nil end
   c:exec("update agent set ctx_tokens=? where name=?", k, name)
   local step = math.floor((k - (M.CTX_WARN - 100000)) / 100000)  -- 1 at 350k, 2 at 450k, ...
   if step < 1 then return nil end
-  local sid = p.session_id
-  local mark = util.join(tmpdir(), "claude-ctx-" .. ((sid and sid ~= "") and sid or "x"))
+  local mark = ctx_mark(p.session_id)
   local last = tonumber(util.slurp(mark) or "") or 0
   if step <= last then return nil end
   local f = io.open(mark, "w")
@@ -217,6 +220,7 @@ function M.hook(ev)
       local k = M.post_compact(p.transcript_path)
       agents.touch(c, name, nil, false, { compacted_at = util.now(), ctx_tokens = k })
       if not k then set_null(c, name, "ctx_tokens") end
+      os.remove(ctx_mark(p.session_id))  -- the notes fire again as the smaller context regrows
       db.log(c, name, "compact")
     else
       agents.set_status(c, name, "idle")

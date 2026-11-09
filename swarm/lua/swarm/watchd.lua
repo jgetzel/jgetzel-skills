@@ -110,7 +110,8 @@ end
 
 -- ---------- landed, end_agent ----------
 
--- Commits of ref (checked from cwd) are in B: ancestor, same content under other commits, or a merged PR.
+-- Commits of ref (checked from cwd) are in B: ancestor, same content under other commits, or a PR merged at this
+-- commit. The branch name alone proves nothing: a branch reused after its PR merged holds unmerged commits.
 function M.landed_ref(cwd, ref, B)
   if proc.gx({ "-C", cwd, "merge-base", "--is-ancestor", ref, B }) == 0 then return true end
   local mb = nz(proc.git({ "-C", cwd, "merge-base", B, ref }))
@@ -124,9 +125,13 @@ function M.landed_ref(cwd, ref, B)
     if proc.gx(args) == 0 then return true end  -- squash or rebase merge: same content under other commits
   end
   local br = nz(proc.git({ "-C", cwd, "rev-parse", "--abbrev-ref", ref }))
-  local prs = br and proc.run({ "gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number" }, cwd)
+  local head = nz(proc.git({ "-C", cwd, "rev-parse", ref }))
+  local prs = br and head and proc.run({ "gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number,headRefOid" }, cwd)
   local j = prs and json.decode(prs)
-  return type(j) == "table" and next(j) ~= nil
+  for _, pr in ipairs(type(j) == "table" and j or {}) do
+    if pr.headRefOid == head then return true end
+  end
+  return false
 end
 
 -- Nothing in worktree wt is unlanded relative to ref B (sw-lifecycle §4.2).
@@ -223,7 +228,9 @@ function M.sweep_worktrees(c, comms, dry)
   end
   for _, w in pairs(conflict.wt_map(c)) do used[#used + 1] = w end
   local pcwd = {}
-  for e in lfs.dir(machine.PROC) do
+  local ok, it, dir = pcall(lfs.dir, machine.PROC)
+  if not ok then return {} end  -- no /proc (macOS): which worktrees a process sits in is unknown, so sweep none
+  for e in it, dir do
     local l = unistd.readlink(machine.PROC .. "/" .. e .. "/cwd")
     if l then pcwd[#pcwd + 1] = realpath(l) end
   end
@@ -374,6 +381,7 @@ function M.lifecycle(c, t, comms, terms, opts)
       c:exec("delete from meta where k='spawn_fails'")
       db.log(c, name, "spawn", nil, "auto #" .. d(task.id))
       members[#members + 1] = { name = name }
+      bo_name, bo_delay = nil, 0  -- the retry took the name: later tasks this tick get fresh ones
     elseif type(e) == "table" and e.lost then  -- a peer claimed it between pool() and now
     elseif type(e) == "table" and e.exit then  -- launch failed; cmd_spawn already reopened the task
       local delay = bo_delay == 0 and 300 or math.min(bo_delay * 2, 3600)  -- 5 min, doubling, capped at 1 h

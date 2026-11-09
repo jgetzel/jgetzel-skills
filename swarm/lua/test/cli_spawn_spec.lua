@@ -87,6 +87,19 @@ function T.test_auto_spawn_failure_backs_off(t)
   t:eq(t:q1("select count(*) n from msg where body like '%auto-spawn%'").n, 1)  -- still one notice
 end
 
+-- The name kept for the retry goes to the first task only; the next one this tick gets a fresh name.
+function T.test_auto_spawn_backoff_name_used_once(t)
+  t:fakes(); two_haiku(t)
+  touch(t.d .. "/launch.fail")
+  t:sw("a", "task", "add", "one"); t:sw("a", "task", "add", "two")
+  tick(t, 4)
+  os.remove(t.d .. "/launch.fail")
+  t:q("update meta set v='0,300,t-2' where k='spawn_backoff'")  -- window over
+  tick(t, 4)
+  t:eq(names(t:launched()), { "t-2", "t-2", "t-3" })
+  t:eq(t:q1("select count(*) n from meta where k in ('spawn_backoff','spawn_fails')").n, 0)
+end
+
 function T.test_auto_spawn_gives_up_after_k_failures(t)
   t:fakes(); two_haiku(t)
   touch(t.d .. "/launch.fail")
