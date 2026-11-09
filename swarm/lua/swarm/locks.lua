@@ -1,42 +1,50 @@
--- Lock lookups for the hook: repo_rel, covers, lock_holder (sr-45's P5 adds cmd lock/unlock here).
-local util, proc = require "swarm.util", require "swarm.proc"
-local stdlib, fnmatch, lfs = require "posix.stdlib", require "posix.fnmatch", require "lfs"
+-- Paths and locks: repo_rel, covers, lock_holder, task_of; cmd lock/unlock.
+local util, proc, db = require "swarm.util", require "swarm.proc", require "swarm.db"
+local agents = require "swarm.agents"
+local stdlib, lfs = require "posix.stdlib", require "lfs"
+local fnmatch = require "posix.fnmatch"
 local M = {}
 
-local function isdir(p) return (lfs.attributes(p, "mode")) == "directory" end
-
--- (toplevel, repo-relative path) for an absolute or cwd-relative path, or nil outside a repo.
--- shortcut: ".." is folded lexically before symlinks resolve; upgrade if a symlinked dir/.. ever matters.
-function M.repo_rel(path, cwd)
+-- os.path.realpath, non-strict: the longest existing prefix resolved, the rest appended.
+-- shortcut: `..` is folded before symlinks are resolved (Python resolves first); fine for repo paths.
+local function realpath(p)
   local parts = {}
-  for seg in util.join(cwd or ".", path):gmatch("[^/]+") do
-    if seg == ".." then parts[#parts] = nil elseif seg ~= "." then parts[#parts + 1] = seg end
+  for x in p:gmatch("[^/]+") do
+    if x == ".." then parts[#parts] = nil elseif x ~= "." then parts[#parts + 1] = x end
   end
-  local p = "/" .. table.concat(parts, "/")
-  local d, tail = util.dirname(p), ""  -- the deepest existing directory holds the repo
-  while d ~= "/" and not isdir(d) do
-    tail = "/" .. util.basename(d) .. tail
-    d = util.dirname(d)
+  local tail = {}
+  while true do
+    local head = "/" .. table.concat(parts, "/")
+    local r = stdlib.realpath(head)
+    if r then
+      if #tail == 0 then return r end
+      return util.join(r, table.concat(tail, "/"))
+    end
+    table.insert(tail, 1, table.remove(parts))
   end
-  local real = stdlib.realpath(d)
-  if not real then return nil end
-  p = (real == "/" and "" or real) .. tail .. "/" .. util.basename(p)
-  local top = proc.git({ "rev-parse", "--show-toplevel" }, real)
-  if not top then return nil end
-  top = stdlib.realpath(top) or top
+end
+
+-- toplevel, repo-relative path for an absolute or cwd-relative path; nil outside a repo.
+function M.repo_rel(path, cwd)
+  local p = realpath(util.join(stdlib.realpath(".") or "/", cwd or ".", path))
+  local d = util.dirname(p)
+  while d ~= "/" and lfs.attributes(d, "mode") ~= "directory" do d = util.dirname(d) end
+  local top = proc.git({ "rev-parse", "--show-toplevel" }, d)
+  if not top or top == "" then return nil end
+  top = realpath(top)
   if p == top then return top, "." end
-  if util.startswith(p, top .. "/") then return top, p:sub(#top + 2) end
+  if util.startswith(p, top == "/" and "/" or top .. "/") then return top, p:sub(#top + (top == "/" and 1 or 2)) end
   return nil
 end
 
 -- Whether lock pattern pat covers path: a glob, or a directory prefix (`migrations/`).
 function M.covers(path, pat)
-  return fnmatch.fnmatch(pat, path, 0) == true or util.startswith(path, pat:gsub("/+$", "") .. "/")
+  return fnmatch.fnmatch(pat, path, 0) == 0 or util.startswith(path, (pat:gsub("/+$", "")) .. "/")
 end
 
-function M.lock_holder(c, me, path, t)
+function M.lock_holder(c, me_, path, t)
   for _, r in ipairs(c:all("select l.* from lock l join agent a on a.name=l.agent "
-      .. "where l.agent!=? and l.lease_until>? and a.ended is null", me, t)) do
+    .. "where l.agent!=? and l.lease_until>? and a.ended is null", me_, t)) do
     if M.covers(path, r.path) then return r end
   end
   return nil
@@ -45,6 +53,31 @@ end
 function M.task_of(c, name)
   local r = c:one("select id,title from task where owner=? and state in ('claimed','blocked') order by id limit 1", name)
   return r and ("task #%d: %s"):format(r.id, r.title) or "no claimed task"
+end
+
+function M.cmd_lock(c, a)
+  local n = agents.me()
+  c:tx(function()  -- scan and write in one transaction: a concurrent lock waits, then sees this one
+    agents.touch(c, n)
+    for _, o in ipairs(c:all("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
+      .. "and g.ended is null", n, util.now())) do
+      if M.covers(a.path, o.path) or M.covers(o.path, a.path) then  -- approximate for two globs; errs toward allowing
+        util.die(("%s overlaps %s, locked by %s; message it"):format(a.path, o.path, o.agent))
+      end
+    end
+    -- replaces only this agent's own lock (a renew) or a dead or expired one: a live peer's was refused above
+    c:exec("insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)",
+      a.path, n, a.reason, util.now(), util.now() + util.dur(a.lease))
+    db.log(c, n, "lock", a.path, a.reason)
+  end)
+  print("locked " .. a.path)
+end
+
+function M.cmd_unlock(c, a)
+  local n = agents.me()
+  c:exec("delete from lock where path=? and agent=?", a.path, n)
+  db.log(c, n, "unlock", a.path)
+  print("unlocked " .. a.path)
 end
 
 return M
