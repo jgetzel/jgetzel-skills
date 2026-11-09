@@ -3,7 +3,6 @@ import sys; sys.dont_write_bytecode = True
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest, unittest.mock
 
 SWARM = os.environ.get("SWARM_CLI") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
-PY = SWARM.endswith(".py")  # the Python CLI (SWARM_CLI=swarm/swarm.py) until P11 deletes it
 G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
 
@@ -144,32 +143,6 @@ class T(unittest.TestCase):
         self.assertEqual(self.q("select * from lock"), [])
         self.assertIsNotNone(self.q("select ended from agent where name='a'")[0]["ended"])
 
-    # ---- ownership transactions (sw-ownership §7.1) ----
-    def mod(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_tx", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_tx", ld))
-        ld.exec_module(m)
-        os.environ["SWARM_DB"] = self.db
-        return m
-
-    def racing(self, c, sql, fn):
-        """c, but fn runs once right after the first statement containing sql has been read: a peer acting in between."""
-        class Rows(list):
-            fetchall = lambda s: s
-            fetchone = lambda s: s[0] if s else None
-        class P:
-            def __getattr__(s, k): return getattr(c, k)
-            def execute(s, q, *a):
-                cur = c.execute(q, *a)
-                if sql not in q or not hasattr(s, "fn"):
-                    return cur
-                rows = Rows(cur.fetchall())
-                f = s.fn; del s.fn; f()
-                return rows
-        p = P(); p.fn = fn
-        return p
-
     # ---- fakes for the external commands: hc, gh and the launch script (SWARM_LAUNCH) ----
     def fakes(self):
         """hc ls answers from set_hc (absent: hc fails); gh answers from set_gh by subcommand (absent: fails); the launch
@@ -290,16 +263,6 @@ print("hc1")
         self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
         self.assertEqual(self.q("select agent from lock")[0]["agent"], "a")
 
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_reap_spares_row_rebound_after_hc_ls(self):
-        self.sw("a", "join", hc="t1")
-        self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
-        m = self.mod()
-        rebind = lambda: self.q("update agent set hc='t2' where name='a'")  # a takeover after reap's hc ls
-        self.assertEqual(m.reap(self.racing(m.connect(), "from agent where ended is null", rebind), live_addrs={"t2"}), [])
-        self.assertEqual(tuple(self.q("select hc,ended from agent")[0]), ("t2", None))
-        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
-
     def test_second_lock_on_held_path_refused(self):
         self.agent("a"); self.agent("b")
         self.sw("a", "lock", "a.txt")
@@ -320,35 +283,6 @@ print("hc1")
         _, err = pr.communicate(timeout=15)
         self.assertNotEqual(pr.returncode, 0, err)
         self.assertEqual([tuple(r) for r in self.q("select path,agent from lock")], [("a.txt", "a")])
-
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_done_after_reap_and_reclaim_fails(self):
-        self.sw("a", "task", "add", "t1")
-        self.sw("a", "task", "claim", "1")
-        m = self.mod()
-        reclaim = lambda: self.q("update task set owner='b' where id=1")  # reaped, then claimed by b
-        for act in ("done", "renew", "block", "release"):
-            c = self.racing(m.connect(), "select * from task where id=?", reclaim)
-            with unittest.mock.patch.dict(os.environ, {"SWARM_NAME": "a"}), self.assertRaises(SystemExit):
-                m.cmd_task(c, argparse.Namespace(act=act, id=1, evidence="e", lease="1h", question="q"))
-            self.assertEqual(tuple(self.q("select state,owner from task")[0]), ("claimed", "b"), act)
-            self.q("update task set owner='a'")
-
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_reap_keeps_renew_after_its_select(self):
-        self.sw("a", "task", "add", "t1")
-        self.sw("a", "task", "claim", "1")
-        self.sw("a", "lock", "a.txt")
-        self.q("update task set lease_until=1")
-        self.q("update agent set ended=1 where name='a'")
-        m = self.mod()
-        renew = lambda: self.q("update task set lease_until=? where id=1", int(time.time()) + 3600)
-        self.assertEqual(m.reap(self.racing(m.connect(), "from task where state='claimed'", renew)), [])
-        self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
-        self.q("update lock set lease_until=1")
-        relock = lambda: self.q("update lock set lease_until=?", int(time.time()) + 3600)
-        self.assertEqual(m.reap(self.racing(m.connect(), "select * from lock", relock)), [])
-        self.assertEqual(len(self.q("select * from lock")), 1)
 
     def test_drop_claimed_only_by_owner_or_comms(self):
         for i in range(3):
@@ -546,19 +480,6 @@ print("hc1")
         self.assertEqual(self.edit("c", "a.txt"), {})
         self.edit("a", "b.txt")
         self.assertEqual(len(self.notices("a")), 1)
-
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_real_hunk_probe_asserts(self):
-        import importlib.machinery, importlib.util
-        ld = importlib.machinery.SourceFileLoader("swarm_mod2", SWARM)
-        m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_mod2", ld))
-        ld.exec_module(m)
-        rh = m.real_hunk
-        self.assertFalse(rh("module L (a, b) where\n", "module L (a, b, c) where\n", "module L (a, b, d) where\n"))
-        self.assertFalse(rh("f a b\n", "f a x b\n", "g a b\n"))
-        self.assertTrue(rh("x = f a\n", "x = g a\n", "x = h a\n"))
-        self.assertFalse(rh("f a b c\n", "f a b c d\n", "f z\n"))  # insertion at the edge of a replaced span merges
-        self.assertTrue(rh("f a b c\n", "f a x b c\n", "f z\n"))  # insertion inside a replaced span does not
 
     @unittest.skipUnless(shutil.which("luajit"), "no luajit for the Lua specs")
     def test_lua_specs(self):
@@ -797,19 +718,6 @@ print("hc1")
         ld.exec_module(m)
         os.environ["SWARM_DB"] = self.db
         return m, m.connect()
-
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_end_agent_skips_agent_that_claimed_since_decision(self):
-        self.idle("e", wt=self.wt)
-        self.sw("e", "task", "add", "t")
-        m, c = self.end_mod()
-        a = dict(c.execute("select * from agent where name='e'").fetchone())
-        self.sw("e", "task", "claim", "1")  # after lifecycle judged it idle
-        m.run = lambda *x, **k: None
-        m.end_agent(c, a, self.wt, self.repo, None)
-        self.assertFalse(self.ended("e"))
-        self.assertEqual(self.q("select owner from task where id=1")[0][0], "e")
-        self.assertTrue(os.path.isdir(self.wt))
 
     def test_end_agent_keeps_worktree_a_live_peer_uses(self):
         self.fakes()
@@ -1058,17 +966,6 @@ print("hc1")
         self.assertEqual([x["argv"][0] for x in self.launched()], ["t-2", "t-2"])  # same name reused
         self.assertEqual(self.q("select count(*) from msg where body like '%auto-spawn%'")[0][0], 1)  # still one notice
 
-    def fake_launch(self, log, rec, fail=False):
-        real = self.mod().run  # only launch.sh is faked; git etc. run for real
-
-        def run(cmd, **kw):
-            if "launch.sh" not in cmd[0]:
-                return real(cmd, **kw)
-            if rec:
-                log.append(rec(cmd))
-            return None if fail else "hc1"
-        return run
-
     def test_spawn_task_claims_before_launch(self):
         self.fakes()
         self.sw("a", "task", "add", "do it")
@@ -1102,25 +999,6 @@ print("hc1")
         self.sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", ok=False)
         self.assertEqual(tuple(self.q("select owner,state from task")[0]), (None, "open"))
         self.assertTrue(self.q("select ended from agent where name='t-9'")[0][0])
-
-    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
-    def test_auto_spawn_skips_lost_race(self):
-        m = self.mod()
-        launched = []
-        m.run = self.fake_launch(launched, lambda cmd: cmd)
-        m.hc_terminals = lambda: None
-        c = m.connect()
-        self.agent("t-comms", status="working")
-        self.sw("a", "task", "add", "do it")
-        real = m.pool
-        m.pool = lambda c: (lambda r: (self.sw("t-1", "join"), self.sw("t-1", "task", "claim", "1"), r)[2])(real(c))  # a peer claims after pool()
-        cwd = os.getcwd(); os.chdir(self.repo)
-        try:
-            m.watchd_tick(c, "t-comms", None, {"max_agents": 1, "min_free_gib": 0})
-        finally:
-            os.chdir(cwd)
-        self.assertEqual(launched, [])
-        self.assertEqual(self.q("select owner from task")[0][0], "t-1")
 
     def test_rules_appended_to_spawn(self):
         self.fakes()
