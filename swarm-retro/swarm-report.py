@@ -7,7 +7,7 @@ Default db: <git-common-dir>/swarm/swarm.db (or $SWARM_DB). Sections: agents, ta
 (claim -> done time, evidence), event counts per agent (conflicts, shared trees, reaps, compactions, pushes,
 ci-red are the friction signals), messages, locks. Read-only.
 """
-import argparse, glob, importlib.machinery, importlib.util, json, os, re, sqlite3, subprocess, sys
+import argparse, glob, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -28,12 +28,13 @@ def dbpath(a):
         sys.exit("swarm-report: not in a git repo; pass --db")
     return os.path.join(r.stdout.strip(), "swarm", "swarm.db")
 
-def task_timing():
-    """The CLI's own task_timing, so the report and `swarm state` agree."""
-    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "swarm.py")  # shortcut: the Python CLI; P11 deletes it, so read task_timing from `swarm state --json` then
-    m = importlib.util.module_from_spec(importlib.util.spec_from_loader("swarm_cli", importlib.machinery.SourceFileLoader("swarm_cli", p)))
-    m.__spec__.loader.exec_module(m)
-    return m.task_timing, m.event_task, m.TASK_KINDS
+def state_tasks(path):
+    """Per-task timing from the CLI's own `swarm state --json`, so the report and `swarm state` agree."""
+    cli = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "swarm", "swarm")
+    r = subprocess.run([cli, "state", "--json"], capture_output=True, text=True, env={**os.environ, "SWARM_DB": path})
+    if r.returncode:
+        sys.exit(f"swarm-report: swarm state --json failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)["tasks"]
 
 def pct(xs, p):
     xs = sorted(xs)
@@ -161,17 +162,14 @@ def jobs(ev):
         m["back_s"] += x.get("back_s") or 0
     return out
 
-def report(c, since=None, git=True):
+def report(c, since=None, git=True, state=()):  # state: the tasks list of `swarm state --json`
     if since is None:  # default window: the swarm's start
         since = c.execute("select coalesce(min(started),0) from agent").fetchone()[0]
     q = lambda sql, *p: [dict(r) for r in c.execute(sql, p)]
     ev = q("select * from event where ts>=? order by ts", since)
     out = {"since": since, "agents": q("select name,model,cwd,started,ended,ctx_tokens,status from agent where coalesce(started,0)>=? or ended is null", since)}
-    timing, event_task, kinds, tasks = *task_timing(), []
-    for t in q("select * from task"):  # a column an older db lacks reads as absent
-        mine = [e for e in ev if e["kind"] in kinds and event_task(e) == t["id"]]
-        tm = timing(t, mine)
-        tasks.append({k: t.get(k) for k in ("id", "title", "state", "owner", "evidence")} | tm | {"took": span(tm["work_s"]) if tm["work_s"] is not None else None})
+    keys = ("id", "title", "state", "owner", "evidence", "queue_wait_s", "work_s", "total_s", "blocked_s", "claims", "releases", "holders", "merge_to_green_s", "ci_conclusion")
+    tasks = [{k: t.get(k) for k in keys} | {"took": span(t["work_s"]) if t.get("work_s") is not None else None} for t in state]
     works = [t["work_s"] for t in tasks if t["work_s"] is not None]
     out["task_durations"] = {"n_done": len(works), "work_median_s": pct(works, .5), "work_p90_s": pct(works, .9),
                              "longest": [{"id": t["id"], "title": t["title"], "work_s": t["work_s"]} for t in sorted((t for t in tasks if t["work_s"] is not None), key=lambda t: -t["work_s"])[:5]],
@@ -283,7 +281,7 @@ def main():
         sys.exit(f"swarm-report: no db at {path}")
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
-    r = report(c, int(datetime.fromisoformat(a.since).timestamp()) if a.since else None)
+    r = report(c, int(datetime.fromisoformat(a.since).timestamp()) if a.since else None, state=state_tasks(path))
     print(json.dumps(r, indent=1)) if a.json else show(r)
 
 if __name__ == "__main__":
