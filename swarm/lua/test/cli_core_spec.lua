@@ -83,8 +83,9 @@ function T.test_reaping(t)
   t:sw("a", "lock", "a.txt")
   t:q("update task set lease_until=1")
   t:q("update lock set lease_until=1")
+  t:q("update agent set status='working' where name='a'")
   t:sw("a", "watchd", "--once")
-  t:eq(t:q1("select state from task").state, "claimed")  -- live owner: claim stays
+  t:eq(t:q1("select state from task").state, "claimed")  -- live working owner: claim stays
   t:q("update agent set ended=1 where name='a'")
   t:sw("a", "watchd", "--once")
   t:eq(t:q1("select state from task").state, "open")
