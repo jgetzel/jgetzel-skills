@@ -13,10 +13,6 @@ for skill in */SKILL.md; do
   ln -sfn "$PWD/$name" "$dest/$name"
   echo "linked $name"
 done
-# The swarm skill's Herdr panel, when the Herdr desktop app is installed.
-if [ -d "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/tabs" ]; then
-  python3 swarm/herdr/install.py || echo "skipped the Herdr Swarm panel (see above)" >&2
-fi
 # The swarm CLI runs on LuaJIT plus 7 rocks (swarm/research/sw-lua.md section 4). Installs only into the
 # per-user rock tree the swarm/swarm launcher reads; never runs sudo.
 ROCKS="lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8"
@@ -49,4 +45,8 @@ if [ -n "$(lua_missing)" ]; then
   fi
   m=$(lua_missing)
   if [ -n "$m" ]; then echo "swarm: still missing: $m" >&2; exit 1; fi
+fi
+# The swarm skill's Herdr panel (runs on the LuaJIT checked above), when the Herdr desktop app is installed.
+if [ -d "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/tabs" ]; then
+  luajit swarm/herdr/install.lua || echo "skipped the Herdr Swarm panel (see above)" >&2
 fi

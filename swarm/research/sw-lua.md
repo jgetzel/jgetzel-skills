@@ -161,7 +161,7 @@ Checked on a copy of `/etc/nixos`:
 - `luajit` is not on PATH today.
 
 Apply it with `sudo nixos-rebuild switch --flake /etc/nixos` on each host. Keep `python3`: other skills
-and `install.py` still use it.
+still use it.
 
 **macOS with Nix** (nix-darwin or standalone home-manager). Add the same `luajit.withPackages …` to
 `home.packages`. nixpkgs marks every piece available on **aarch64-darwin**. On **x86_64-darwin** this
@@ -306,7 +306,7 @@ and `join`, so these two come first.
 **P10 (cutover, after all).** The full suite passes on Lua and the real-board diff is clean. Then one
 atomic PR:
 - `git mv swarm/swarm swarm/swarm.py` and `git mv swarm/swarm-lua swarm/swarm`.
-- `herdr/mods/swarm/main.js` (both `exec`s) and the string in `herdr/install.py` drop `python3`, so
+- `herdr/mods/swarm/main.js` (both `exec`s) and the string in `herdr/install.lua` drop `python3`, so
   the panel runs the script directly.
 - `install.sh` gets the dependency check.
 - Update the DESIGN.md lines that say "python3 stdlib".

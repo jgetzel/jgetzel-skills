@@ -173,7 +173,7 @@ function M.herdr_stale()
   local f = io.open(home .. "/swarm-install.stamp")
   local have = f and util.strip(f:read("*a")) or ""
   if f then f:close() end
-  local out = require("swarm.proc").run({ "sh", "-c", "cat herdr/install.py herdr/mods/swarm/swarm.svg | sha256sum" }, here)
+  local out = require("swarm.proc").run({ "sh", "-c", "cat herdr/install.lua herdr/mods/swarm/swarm.svg | sha256sum" }, here)
   if out and util.strip(out):sub(1, 64) ~= have then return "herdr panel: out of date: run install.sh" end
 end
 
