@@ -398,6 +398,9 @@ local function unwrap(url) -- Google's /url?q= redirect -> its target
   return url
 end
 
+-- Links and attachments come from the invite's author, and the panel opens them: web addresses only.
+local function web(url) return url:lower():find("^https?://") ~= nil end
+
 local SKIP = { "meet.google.com", "tel.meet", "zoom.us/j", "support.google.com" }
 local function links(raw)
   raw = drop_join(raw)
@@ -406,7 +409,8 @@ local function links(raw)
     if title[u] == nil then order[#order + 1] = u; title[u] = t end
   end
   for u, t in raw:gmatch('<[aA]%s[^>]-[hH][rR][eE][fF]="([^"]+)"[^>]*>(.-)</[aA]>') do
-    add(unwrap(unhtml(u)), strip(unhtml((t:gsub("<[^>]+>", "")))))
+    u = unwrap(unhtml(u))
+    if web(u) then add(u, strip(unhtml((t:gsub("<[^>]+>", ""))))) end
   end
   for u in unhtml((raw:gsub("<[^>]+>", " "))):gmatch('https?://[^%s<>"]+') do
     u = u:match("^(.-)" .. NBSP) or u
@@ -449,7 +453,7 @@ local function files(ev)
     local url, fmt = a.value, a.params.FMTTYPE or ""
     local kind = fmt:sub(1, 6) == "video/" and "recording"
       or (fmt:find("google-apps", 1, true) or url:find("docs.google.com", 1, true)) and "doc" or "file"
-    out[#out + 1] = { title = a.params.FILENAME or pretty(url), url = url, kind = kind }
+    if web(url) then out[#out + 1] = { title = a.params.FILENAME or pretty(url), url = url, kind = kind } end
   end
   return out
 end
@@ -522,12 +526,12 @@ local function record(ev, x, st, en, recurring, me, calendar_id, internal)
   }
 end
 
--- Events overlapping local days [today, today + 2), sorted by day, all-day first, then start.
+-- Events overlapping local days [today, today + 2), one record under each day it overlaps (`day`),
+-- sorted by day, all-day first, then start.
 local function events(cal, today, internal)
   local calendar_id = text(cal, "X-WR-CALNAME", "")
   local me = ("mailto:" .. calendar_id):lower()
   local local_midnight = { kind = "float", sec = 0 }
-  local ws, we = epoch(local_midnight, today), epoch(local_midnight, today + 2)
   local function key(x) return x.kind == "date" and "d" .. x.day or epoch(x) end
   local moved = {} -- uid -> instances an override replaces
   for _, ev in ipairs(cal.events) do
@@ -568,15 +572,22 @@ local function events(cal, today, internal)
         end
       end
       for _, x in ipairs(starts) do
-        local st, en, keep
-        if x.kind == "date" then
-          keep = x.day < today + 2 and x.day + len > today
-        else
-          st = epoch(x); en = st + len
-          keep = st < we and (en > ws or st >= ws)
+        local st = x.kind ~= "date" and epoch(x) or nil
+        local en = st and st + len
+        for d = today, today + 1 do
+          local keep
+          if st then
+            local ds, de = epoch(local_midnight, d), epoch(local_midnight, d + 1)
+            keep = st < de and (en > ds or st >= ds)
+          else
+            keep = x.day <= d and x.day + len > d
+          end
+          local rec = keep and record(ev, x, st, en, rr ~= nil or override, me, calendar_id, internal)
+          if rec then
+            rec.day = os.date("!%Y-%m-%d", d * 86400)
+            out[#out + 1] = rec
+          end
         end
-        local rec = keep and record(ev, x, st, en, rr ~= nil or override, me, calendar_id, internal)
-        if rec then out[#out + 1] = rec end
       end
     end
   end
@@ -610,9 +621,10 @@ UID:t
 SUMMARY:Maybe
 DTSTART:20261103T190000Z
 DTEND:20261103T193000Z
-DESCRIPTION:Agenda<br>item <a href="https://x.atlassian.net/wiki/pages/1/Retro+Notes">https://x.atlassian.net/wiki/pages/1/Retro+Notes</a> -::~:~::~join here::~:~::-\n\nJoin with Google Meet: https://meet.google.com/x\nOr dial: 1
+DESCRIPTION:Agenda<br>item <a href="file:///Applications/Calculator.app">agenda</a> <a href="https://x.atlassian.net/wiki/pages/1/Retro+Notes">https://x.atlassian.net/wiki/pages/1/Retro+Notes</a> -::~:~::~join here::~:~::-\n\nJoin with Google Meet: https://meet.google.com/x\nOr dial: 1
 ATTACH;FILENAME="Notes - 1:1";FMTTYPE=application/vnd.google-apps.document:https://docs.google.com/document/d/abc/edit
 ATTACH;FILENAME="Recording";FMTTYPE=video/mp4:https://drive.google.com/file/d/def/view
+ATTACH;FILENAME="Share":smb://host/share
 ATTENDEE;CN=Me;PARTSTAT=TENTATIVE:mailto:me@example.com
 ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@other.org
 END:VEVENT
@@ -638,7 +650,7 @@ END:VCALENDAR]]
   local titles = {}
   for i, e in ipairs(got) do titles[i] = e.title end
   eq(titles, { "Standup", "Maybe", "Offsite", "Standup" }, "titles")
-  eq({ got[2].rsvp, got[2].description }, { "TENTATIVE", "Agenda\nitem" }, "rsvp, description")
+  eq({ got[2].rsvp, got[2].description }, { "TENTATIVE", "Agenda\nitem agenda" }, "rsvp, description") -- the file:// link's text stays, its address goes
   eq(plain("a\226\128\168\nb\r\nc", {}), "a\n\nb\nc", "line separators")
   eq(got[2].attendees, { { name = "Me", email = "me@example.com", status = "TENTATIVE", external = false },
     { name = "guest@other.org", email = "guest@other.org", status = "ACCEPTED", external = true } }, "attendees")
@@ -665,12 +677,15 @@ END:VCALENDAR]]
     .. ev("sync", "Sync", "RECURRENCE-ID:20261104T200000Z\nDTSTART:20261104T200000Z\nDTEND:20261104T203000Z\nSTATUS:CANCELLED")
     .. ev("yearly", "Anniversary", "DTSTART;VALUE=DATE:20201104\nRRULE:FREQ=YEARLY")
     .. ev("bad", "Hourly", "DTSTART:20261101T150000Z\nRRULE:FREQ=HOURLY")
+    .. ev("span", "Conference", "DTSTART;VALUE=DATE:20261102\nDTEND;VALUE=DATE:20261105")
+    .. ev("late", "Overnight", "DTSTART:20261104T030000Z\nDTEND:20261104T070000Z")
     .. "END:VCALENDAR\n"), days(2026, 11, 3))
   local seen = {}
   for _, e in ipairs(got) do seen[#seen + 1] = e.day .. " " .. (e.all_day and "all-day" or os.date("!%H:%M", e.start / 1000)) .. " " .. e.title end
-  eq(seen, { "2026-11-03 13:00 Skips Wed", "2026-11-03 14:00 Tue Thu NY", "2026-11-03 15:00 Until Tue",
-    "2026-11-03 17:00 First Tuesday", "2026-11-03 22:00 Sync moved",
-    "2026-11-04 all-day Anniversary", "2026-11-04 16:00 Every other Wed" }, "rules")
+  -- Conference (all-day, Mon to Wed) and Overnight (Tue 22:00 to Wed 02:00 New York) list under both days.
+  eq(seen, { "2026-11-03 all-day Conference", "2026-11-03 13:00 Skips Wed", "2026-11-03 14:00 Tue Thu NY", "2026-11-03 15:00 Until Tue",
+    "2026-11-03 17:00 First Tuesday", "2026-11-03 22:00 Sync moved", "2026-11-03 03:00 Overnight",
+    "2026-11-04 all-day Anniversary", "2026-11-04 all-day Conference", "2026-11-04 03:00 Overnight", "2026-11-04 16:00 Every other Wed" }, "rules")
   eq(warned['skipped "Hourly": can\'t expand its RRULE FREQ=HOURLY'], true, "warning")
   print("ok")
 end

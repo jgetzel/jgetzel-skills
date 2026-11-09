@@ -43,11 +43,13 @@ async function reinstallIfUpdated() {
 }
 
 export function calendarFeed(cx) {
-  const feed = { asked: shared("calendar.refresh") ?? 0, fetching: false };
+  const feed = { asked: shared("calendar.refresh") ?? 0, fetching: false, tried: 0 };
 
+  // Render calls this, so it never calls cx.notify() itself (that throws there). A failed fetch waits out
+  // STALE like a good one: `tried` covers it, since `updated` only moves on success.
   feed.fetch = (cx, force) => {
-    if (feed.fetching || (!force && Date.now() - (shared("calendar")?.updated ?? 0) < STALE)) { cx.notify(); return; }
-    feed.asked = shared("calendar.refresh") ?? 0; feed.fetching = true; setShared("calendar.loading", true);
+    if (feed.fetching || (!force && Date.now() - Math.max(shared("calendar")?.updated ?? 0, feed.tried) < STALE)) return;
+    feed.asked = shared("calendar.refresh") ?? 0; feed.fetching = true; feed.tried = Date.now(); setShared("calendar.loading", true);
     cx.spawn(async (cx) => {
       try {
         const r = await exec("luajit", [`${appHome()}/mods/calendar/events.lua`]);
@@ -76,7 +78,8 @@ export function calendarFeed(cx) {
   if (reinstalled) { setShared("jgetzel.reinstalled", null); notify({ title: "Herdr mods updated", body: `Re-installed for Herdr ${reinstalled}`, level: "success", timeout: 5000 }); }
   cx.spawn(async () => { try { await reinstallIfUpdated(); } catch (e) { notify({ title: "Herdr mods re-install check failed", body: String(e), level: "error" }); } });
   feed.fetch(cx, false);
-  cx.timer.every(60000, (cx) => feed.fetch(cx, false));
+  // The notify redraws the badge's minute count.
+  cx.timer.every(60000, (cx) => { feed.fetch(cx, false); cx.notify(); });
   cx.spawn(async (cx) => {
     for (;;) {
       if (await nextCommand() === "calendar") toggle();

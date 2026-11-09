@@ -17,7 +17,8 @@ const stop = (_e, cx) => cx.stop_propagation();
 // The popup draws its own frame so the whole card can fade and rise in, not just its contents.
 const openDetails = (e) => openOverlay({ mod: "calendar", kind: "dialog", width: 460, height: 540, frame: "none", props: { event: e } });
 const mac = () => window().platform === "macos";
-const open = (url) => exec(mac() ? "open" : "xdg-open", [url]);
+// Web links only: these come from invites, and open/xdg-open would also launch a file, an app or a share.
+const open = (url) => /^https?:\/\//i.test(url) && exec(mac() ? "open" : "xdg-open", [url]);
 const COPY = { mac: 'printf %s "$1" | pbcopy', linux: 'printf %s "$1" | wl-copy 2>/dev/null || printf %s "$1" | xclip -selection clipboard' };
 const copy = (text) => exec("sh", ["-c", mac() ? COPY.mac : COPY.linux, "copy", text]).then(() => notify({ title: "Copied", body: text, timeout: 2000 }));
 // The meeting's working doc for the row's notes button: an attached Doc, else the first description link.
@@ -249,7 +250,7 @@ export default class Calendar extends View {
     if (opened !== this.opened) { this.opened = opened; this.reveal(cx, true); }
     this.rowN = 0;
     const cal = shared("calendar") ?? { events: [] }, loading = shared("calendar.loading");
-    const now = Date.now(), today = new Date(), tomorrow = new Date(now + 86400000);
+    const now = Date.now(), today = new Date(), tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
     const of = (d) => cal.events.filter((e) => e.day === dayKey(d));
     return v_flex().id("calendar").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)

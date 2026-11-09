@@ -143,34 +143,9 @@ end
 local mods, SWARM = HOME .. "/mods", HERE .. "/../swarm/herdr/mods/swarm"
 local version = (proc.run({ "herdr-app", "--version" }) or ""):match("(%S+)%s*$")
 
-local link = mods .. "/swarm"
-local st = lfs.symlinkattributes(link)
-if st and st.mode ~= "link" then die("install: " .. link .. " is a real directory; remove it and re-run") end
-if st then os.remove(link) end
-assert(unistd.link(assert(require("posix.stdlib").realpath(SWARM)), link, true))
-print("linked " .. link)
-
--- A copy, not a link: svg() refuses a path that resolves outside Herdr's home.
-local cal = mods .. "/calendar"
-if lfs.symlinkattributes(cal) then proc.run({ "rm", "-rf", cal }) end
-lfs.mkdir(cal)
-for f in lfs.dir(HERE .. "/calendar") do
-  if f:sub(1, 1) ~= "." then copy(HERE .. "/calendar/" .. f, cal) end
-end
-print("wrote " .. cal)
-
-local tabs = mods .. "/jgetzel-tabs"
-lfs.mkdir(tabs)
-write(tabs .. "/main.js", patch(assert(util.slurp(mods .. "/tabs/main.js")), TABS_PATCH))
-write(tabs .. "/mod.json", json.encode({ place = "none", title = "Tabs", installer = HERE .. "/install.lua",
-  cloned_from = { name = "tabs", version = version } }))
-copy(SWARM .. "/swarm.svg", tabs) -- assets don't load through a symlinked mod dir
-copy(HERE .. "/calendar/feed.js", tabs) -- mods can't import across mod folders
-for _, f in ipairs({ "gpui-kit.d.ts", "jsconfig.json" }) do
-  if lfs.attributes(mods .. "/tabs/" .. f) then copy(mods .. "/tabs/" .. f, tabs) end
-end
-print("wrote " .. tabs)
-
+-- Everything that can fail on a changed Herdr runs before the first write: rewriting the tab bar reloads it,
+-- which ends the task that reports a failed re-install (feed.js).
+local tabs_js = patch(assert(util.slurp(mods .. "/tabs/main.js")), TABS_PATCH)
 local lay = assert(json.decode(assert(util.slurp(HOME .. "/layouts/main.json"))))
 local bar, body = find(lay, "tabs"), find(lay, "panel-body")
 if not bar or (bar.content or {}).mod ~= "tabs" or not body then
@@ -190,6 +165,39 @@ end
 kids[#kids + 1] = { id = "swarm", type = "block", content = { mod = "swarm" } }
 kids[#kids + 1] = { id = "calendar", type = "block", content = { mod = "calendar" } }
 body.children = kids
+
+local link = mods .. "/swarm"
+local st = lfs.symlinkattributes(link)
+if st and st.mode ~= "link" then die("install: " .. link .. " is a real directory; remove it and re-run") end
+if st then os.remove(link) end
+assert(unistd.link(assert(require("posix.stdlib").realpath(SWARM)), link, true))
+print("linked " .. link)
+
+-- A copy, not a link: svg() refuses a path that resolves outside Herdr's home.
+local cal = mods .. "/calendar"
+if lfs.symlinkattributes(cal) then
+  -- Replaced only when it is a copy this installer made (those hold events.lua).
+  if not lfs.attributes(cal .. "/events.lua") then die("install: " .. cal .. " is not this installer's copy; remove it and re-run") end
+  proc.run({ "rm", "-rf", cal })
+end
+lfs.mkdir(cal)
+for f in lfs.dir(HERE .. "/calendar") do
+  if f:sub(1, 1) ~= "." then copy(HERE .. "/calendar/" .. f, cal) end
+end
+print("wrote " .. cal)
+
+local tabs = mods .. "/jgetzel-tabs"
+lfs.mkdir(tabs)
+write(tabs .. "/main.js", tabs_js)
+write(tabs .. "/mod.json", json.encode({ place = "none", title = "Tabs", installer = HERE .. "/install.lua",
+  cloned_from = { name = "tabs", version = version } }))
+copy(SWARM .. "/swarm.svg", tabs) -- assets don't load through a symlinked mod dir
+copy(HERE .. "/calendar/feed.js", tabs) -- mods can't import across mod folders
+for _, f in ipairs({ "gpui-kit.d.ts", "jsconfig.json" }) do
+  if lfs.attributes(mods .. "/tabs/" .. f) then copy(mods .. "/tabs/" .. f, tabs) end
+end
+print("wrote " .. tabs)
+
 local out = HOME .. "/layouts/jgetzel.json"
 write(out .. ".tmp", json.encode(lay))
 assert(os.rename(out .. ".tmp", out))
@@ -197,14 +205,17 @@ print("wrote " .. out)
 
 if version then
   for _, m in ipairs({ tabs, cal }) do
-    if not proc.run({ "herdr-app", "check", m }) then die("install: herdr-app check " .. m .. " failed") end
+    local stdout, stderr, code = proc.exec({ "herdr-app", "check", m })
+    if code ~= 0 then die("install: herdr-app check " .. m .. " failed: " .. util.strip(stderr ~= "" and stderr or stdout)) end
   end
 end
 
--- The swarm-only copies an earlier install.lua made: move a window off them, then remove them.
-local status = json.decode(proc.run({ "herdr-app", "status" }) or "") or {}
-if status.layout == "swarm" then proc.run({ "herdr-app", "do", "layout.switch", "--name", "jgetzel" }) end
-proc.run({ "rm", "-rf", mods .. "/swarm-tabs", HOME .. "/layouts/swarm.json", HOME .. "/swarm-install.stamp" })
+-- The swarm-only copies an earlier install.lua made: move a window off them, then remove them. With no
+-- window to ask, or a switch that failed, they stay for a later run: the saved layout may still be "swarm".
+local status = json.decode(proc.run({ "herdr-app", "status" }) or "")
+if status and (status.layout ~= "swarm" or proc.run({ "herdr-app", "do", "layout.switch", "--name", "jgetzel" })) then
+  proc.run({ "rm", "-rf", mods .. "/swarm-tabs", HOME .. "/layouts/swarm.json", HOME .. "/swarm-install.stamp" })
+end
 
 write(HOME .. "/jgetzel-install.stamp", stamp() .. "\n")
 if not (util.slurp(HOME .. "/keys.json") or ""):find('"jgetzel-tabs.calendar"', 1, true) then
