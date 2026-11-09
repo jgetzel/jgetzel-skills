@@ -10,7 +10,7 @@
 # OUT/state holds the sides; `cand=` names the candidate side. Never hand OUT/state to the judge.
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-json() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+json() { "$here/probe-json.lua" get "$1"; }
 
 case ${1:-} in
 setup)
@@ -28,11 +28,7 @@ setup)
     GIT_LFS_SKIP_SMUDGE=1 git -C "$repo" worktree add -q --detach "$wt" "$commit"
     [ -f "$repo/.claude/settings.local.json" ] && mkdir -p "$wt/.claude" && cp "$repo/.claude/settings.local.json" "$wt/.claude/"
     mkdir -p "$out/$s"; : > "$out/$s/append.md"
-    python3 - "$here/probe-guard.py" "$wt" "$repo" > "$out/$s/settings.json" <<'EOF'
-import json, shlex, sys
-cmd = "python3 " + " ".join(map(shlex.quote, sys.argv[1:]))
-print(json.dumps({"hooks": {"PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": cmd, "timeout": 10}]}]}}, indent=1))
-EOF
+    "$here/probe-json.lua" settings "$here/probe-guard.lua" "$wt" "$repo" > "$out/$s/settings.json"
     printf 'wt_%s=%q\n' "$s" "$wt" >> "$out/state"
   done
   . "$out/state"; w=wt_$cand
@@ -48,8 +44,8 @@ launch)
     git -C "$wt" -c user.name=probe -c user.email=probe@localhost commit -q --no-verify --allow-empty -m "probe start"
     printf 'start_%s=%s\n' "$s" "$(git -C "$wt" rev-parse HEAD)" >> "$out/state"
     tab=$(herdr tab create --label "$name" --no-focus --cwd "$wt")
-    pane=$(json 'd["result"]["root_pane"]["pane_id"]' <<<"$tab")
-    printf 'tab_%s=%s\n' "$s" "$(json 'd["result"]["tab"].get("tab_id") or d["result"]["tab"]["id"]' <<<"$tab")" >> "$out/state"
+    pane=$(json 'd.result.root_pane.pane_id' <<<"$tab")
+    printf 'tab_%s=%s\n' "$s" "$(json 'd.result.tab.tab_id or d.result.tab.id' <<<"$tab")" >> "$out/state"
     args=(--permission-mode auto -n "$name" --settings "$out/$s/settings.json" --disallowedTools AskUserQuestion)
     [ -s "$out/$s/append.md" ] && args+=(--append-system-prompt-file "$out/$s/append.md")
     if ! herdr agent start "$name" --kind claude --pane "$pane" -- "${args[@]}" >/dev/null; then
@@ -57,7 +53,7 @@ launch)
       echo "agent $name did not start (trust dialog?); show the user, then probe.sh clean $out" >&2; exit 1
     fi
     herdr agent prompt "$name" "$(cat "$here/probe-preamble.md" "$out/prompt.md")" >/dev/null
-    printf 'sid_%s=%s\n' "$s" "$(herdr agent get "$name" | json 'd["result"]["agent"].get("agent_session",{}).get("value","")')" >> "$out/state"
+    printf 'sid_%s=%s\n' "$s" "$(herdr agent get "$name" | json '(d.result.agent.agent_session or {}).value')" >> "$out/state"
   done
   echo "launched probe-$id-a and probe-$id-b; next: probe.sh wait $out (run_in_background)"
   ;;
@@ -68,13 +64,13 @@ wait)
     name=probe-$id-$s; st=timeout; v=sid_$s; sid=${!v:-}
     tx=$(ls ~/.claude/projects/*/"$sid.jsonl" 2>/dev/null | head -1)
     while :; do
-      [ -n "$tx" ] && "$here/transcript.py" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
+      [ -n "$tx" ] && "$here/transcript.lua" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
       [ "$(date +%s)" -lt "$deadline" ] || break
       herdr agent wait "$name" --timeout $(( (deadline - $(date +%s)) * 1000 )) >/dev/null 2>&1 || true
       info=$(herdr agent get "$name" 2>/dev/null) || { st=gone; break; }
       tx=$(ls ~/.claude/projects/*/"$sid.jsonl" 2>/dev/null | head -1)
-      [ -n "$tx" ] && "$here/transcript.py" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
-      [ "$(json 'd["result"]["agent"].get("agent_status","")' <<<"$info")" = blocked ] && { st=blocked; break; }
+      [ -n "$tx" ] && "$here/transcript.lua" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
+      [ "$(json 'd.result.agent.agent_status' <<<"$info")" = blocked ] && { st=blocked; break; }
       sleep 60
     done
     printf 'status_%s=%s\ntx_%s=%q\n' "$s" "$st" "$s" "$tx" >> "$out/state"
@@ -82,7 +78,7 @@ wait)
   . "$out/state"; mkdir -p "$out/judge"; cp "$out/prompt.md" "$out/judge/"
   for s in a b; do
     w=wt_$s; t=tx_$s; r=start_$s
-    [ -n "${!t}" ] && "$here/transcript.py" "${!t}" --redact "${!w}=<checkout>" --redact "probe-$id-$s=probe" > "$out/judge/$s.md"
+    [ -n "${!t}" ] && "$here/transcript.lua" "${!t}" --redact "${!w}=<checkout>" --redact "probe-$id-$s=probe" > "$out/judge/$s.md"
     git -C "${!w}" add -A -N && git -C "${!w}" diff "${!r}" > "$out/judge/$s.diff"
   done
   grep '^status_' "$out/state"; ls "$out/judge"
