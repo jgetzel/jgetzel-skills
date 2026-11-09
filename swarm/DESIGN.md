@@ -219,7 +219,7 @@ the mechanism; this section only says what each part is for.
 Everything lives in `swarm/`, symlinked to `~/.claude/skills/swarm`: one
 LuaJIT CLI (`swarm/swarm`, modules in `swarm/lua/`), `SKILL.md` for the communicator,
 `brief.md` for agents (prepended by `spawn`), `settings.template.json` for
-their hooks, and `test_swarm.py`. `swarm -h` lists commands.
+their hooks, and `swarm/lua/test/` (`luajit swarm/lua/test/run.lua`). `swarm -h` lists commands.
 
 ### Store
 

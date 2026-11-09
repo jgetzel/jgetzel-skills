@@ -175,7 +175,7 @@ keep their current meaning (decision 7 untouched).
 
 ## 7. Build tasks (proposed, not on the board)
 
-Each lands as its own PR with `python3 -B swarm/test_swarm.py` passing.
+Each lands as its own PR with `luajit swarm/lua/test/run.lua` passing.
 
 1. **Transactions for every ownership write.** A `tx(c)` context manager
    (`begin immediate` / commit / rollback). `cmd_lock` refuses an overlapping
