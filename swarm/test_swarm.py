@@ -189,7 +189,7 @@ sys.stdout.write(open(D + "/gh." + a[0]).read())
 import sqlite3
 rows = sqlite3.connect(os.environ["SWARM_DB"]).execute("select owner,state from task").fetchall()
 open(D + "/launch.calls", "a").write(json.dumps({"argv": a, "task": rows}) + "\\n")
-if os.path.exists(D + "/launch.fail"): sys.exit(1)
+if os.path.exists(D + "/launch.fail"): sys.stderr.write("no Herdr window\\nmore\\n"); sys.exit(1)
 print("hc1")
 """)):
             name = os.path.basename(path)
@@ -1028,6 +1028,24 @@ print("hc1")
         self.assertTrue(self.q("select first_claimed_at from task")[0][0])  # auto-spawn stamps the claim time
         tick(2)
         self.assertEqual(len(spawned()), 1)  # the task is claimed: no second spawn
+
+    def test_auto_spawn_failure_backs_off(self):
+        self.fakes()
+        for n in ("t-comms", "t-1"):
+            self.agent(n, status="working", model="haiku")
+        open(os.path.join(self.d, "launch.fail"), "w").close()
+        self.sw("a", "task", "add", "do it")
+        tick = lambda: self.sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "2", "--min-free-mem", "0")
+        tick()
+        tick()  # inside the backoff window: no second launch, no second notice
+        self.assertEqual([x["argv"][0] for x in self.launched()], ["t-2"])
+        notes = [r[0] for r in self.q("select body from msg where dest='t-comms'") if "auto-spawn" in r[0]]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("no Herdr window", notes[0])
+        self.q("update meta set v='0,300,t-2' where k='spawn_backoff'")  # window over
+        tick()
+        self.assertEqual([x["argv"][0] for x in self.launched()], ["t-2", "t-2"])  # same name reused
+        self.assertEqual(self.q("select count(*) from msg where body like '%auto-spawn%'")[0][0], 1)  # still one notice
 
     def fake_launch(self, log, rec, fail=False):
         real = self.mod().run  # only launch.sh is faked; git etc. run for real
