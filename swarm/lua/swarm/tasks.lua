@@ -386,6 +386,7 @@ function M.reserve(c, name, tid, model)
     end
     c:exec("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
       name, unistd.getcwd(), "idle", t, t)
+    agents.new_inbox(c, name)
     c:exec("update agent set hc=null, ended=null, status='idle', model=coalesce(?,model) where name=?", model, name)
     c:exec("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=?",
       name, t + M.LEASE, t, tid)
