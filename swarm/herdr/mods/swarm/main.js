@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder } from "herdr";
 
@@ -14,8 +14,6 @@ const CTX_MAX = 600000, FINISH = 350000, HANDOFF = 550000; // the context bar's 
 // [id, label, label width in px at 11.5]: the segment highlight slides between computed lefts
 const TABS = [["overview", "Overview", 52], ["agents", "Agents", 40], ["board", "Board", 32], ["activity", "Activity", 46], ["system", "System", 42]];
 const RED = new Set(["overlap", "conflict", "conflict-error", "pressure", "ci-red", "orphan-kill", "lock-violation", "blocked", "task-blocked"]);
-const GIT = new Set(["push", "lock", "unlock", "deny-lock", "lock-violation", "conflict", "conflict-stale", "conflict-error", "conflict-compat", "shared-tree"]);
-const BOARD = new Set(["claim", "done", "task-add", "drop", "release", "block", "unblock", "task-blocked", "spawn", "end", "join", "leave", "reap", "lease-late"]);
 const QUIET = new Set(["post", "wake", "heavy-start", "status", "digest", "startable", "deny-cold", "heavy-count"]);
 
 function find(node, id) {
@@ -83,10 +81,20 @@ export default class Swarm extends View {
     this.s = null; this.prs = null; this.runs = null; this.error = null;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 860;
     this.tab = "overview"; this.sel = null; this.push = null; this.boardFilter = "all"; this.actFilter = "all";
-    this.refresh(cx);
+    this.refresh(cx); this.copyIcons(cx);
     // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
     cx.timer.every(POLL, cx => { if (this.visible() && this.due()) this.refresh(cx); });
     cx.timer.every(PR_POLL, cx => { if (this.visible()) this.refreshPrs(cx); });
+  }
+
+  // svg() refuses a path that leaves Herdr's home, and mods/swarm is a symlink into the repo: copy the
+  // icons to a real folder there. Until it lands (or if it fails) an icon is an empty box of its size.
+  copyIcons(cx) {
+    const src = `${appHome()}/mods/swarm/icons`, dst = `${appHome()}/swarm-icons`;
+    cx.spawn(async cx => {
+      const r = await exec("sh", ["-c", 'mkdir -p "$2" && cp -f "$1"/*.svg "$2"/', "sh", src, dst]).catch(() => null);
+      if (r?.code === 0) { this.iconDir = "swarm-icons"; cx.notify(); }
+    });
   }
 
   visible() {
@@ -319,7 +327,7 @@ export default class Swarm extends View {
       return seg;
     });
     const on = segs.find(g => g.id === this.tab) ?? segs[0];
-    const below = (this.tab === "board" || this.tab === "activity") && this.width < 760; // filters get their own row
+    const below = this.tab === "activity" || (this.tab === "board" && this.width < 760); // filters get their own row
     const right = this.tab === "overview" ? div().text_size(10.5).text_color(t.dim).child(this.at ? `updated ${hhmm(this.at / 1000)}` : "")
       : this.tab === "agents" ? div().text_size(10.5).text_color(t.dim).child("blocked, working, then idle")
       : this.tab === "system" ? div().text_size(10.5).text_color(t.dim).child(this.prAt ? `polled ${hhmm(this.prAt / 1000)}` : "")
@@ -342,15 +350,21 @@ export default class Swarm extends View {
     const s = this.s, board = this.tab === "board";
     const opts = board
       ? [["all", "All", s.tasks.length], ["active", "Active", d.count("blocked") + d.count("claimed") + d.count("open")], ["done", "Done", d.count("done")], ["dropped", "Dropped", d.count("dropped")]]
-      : [["all", "All"], ["alerts", "Alerts", this.actRows(t, d, "alerts").length], ["messages", "Messages"], ["git", "Git"], ["board", "Board"]];
+      : [["all", "All"], ["you", "Needs you", this.actRows(t, d, "you").length], ["tasks", "Tasks"], ["code", "Code"], ["agents", "Agents"], ["messages", "Messages"], ["machine", "Machine"]];
     const cur = board ? this.boardFilter : this.actFilter;
-    const heavy = board ? 0 : s.events.filter(e => e.kind === "heavy-start").length;
+    // Activity: Summary | Full log first, the filters, then the key's toggle at the end.
+    const view = (id, label, log, tip) => div().id(id).h(20).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer().tooltip(tip)
+      .bg(Boolean(this.actLog) === log ? t.selected : t.background).text_color(Boolean(this.actLog) === log ? t.foreground : t.muted)
+      .hover(st => st.bg(t.hover)).on_click((_e, cx) => { this.actLog = log; cx.notify(); }).child(label);
     return h_flex().gap(4).items_center().flex_wrap()
+      .when(!board, el => el.child(h_flex().flex_none().mr(6).p(1).gap(1).rounded(5).border_1().border_color(t.border)
+        .child(view("v-sum", "Summary", false, "What happened, in plain words. Routine events are left to the full log."))
+        .child(view("v-log", "Full log", true, "Every event and message, with its raw kind. Nothing folded or hidden."))))
       .children(opts.map(([id, label, n]) => h_flex().id(`f-${id}`).h(22).px(9).gap(5).items_center().rounded(4).border_1().border_color(t.border)
         .bg(id === cur ? t.selected : t.background).text_size(11).text_color(id === cur ? t.foreground : t.muted).cursor_pointer().hover(st => st.bg(t.hover))
         .on_click((_e, cx) => { if (board) this.boardFilter = id; else this.actFilter = id; cx.notify(); })
-        .child(board ? `${label} ${n}` : label).when(!board && n != null && n > 0, el => el.child(div().text_size(10).text_color(t.dim).child(String(n))))))
-      .when(heavy > 0 && this.width >= 520, el => el.child(div().pl(8).text_size(10.5).text_color(t.dim).child(`${plural(heavy, "heavy run")} hidden`)));
+        .child(board ? `${label} ${n}` : label).when(!board && n != null && n > 0, el => el.child(div().text_size(10).text_color(id === "you" ? t.blocked : t.dim).child(String(n))))))
+      .when(!board, el => el.child(div().flex_1()).child(this.link(t, "key-toggle", this.open.key ? "Hide key" : "What these mean", cx => { this.open.key = !this.open.key; cx.notify(); }).pl(8)));
   }
 
   // ---- lanes (Overview, Agents) -------------------------------------------------------------
@@ -639,58 +653,161 @@ export default class Swarm extends View {
   }
 
   // ---- Activity tab -------------------------------------------------------------------------
-  // One row per event or message, one line each; a post fanned out to N agents is one row, and runs of
-  // agents ending (or compacting) within two minutes fold into one.
-  actRows(t, d, filter) {
-    const s = this.s, items = [], groups = new Map();
+  // Summary: one plain sentence per event, problems in color, routine noise left to the log. A post fanned
+  // out to N agents is one row, a memory-pressure episode is one row, and FOLD runs fold into one.
+  // Log: every event and message state --json sent, with its raw kind, nothing folded.
+  actRows(t, d, filter, log = false) {
+    const items = this.actItems(d, log);
+    return items.filter(i => filter === "all" || (filter === "you" ? KIND[i.kind].level === "you" && i.open : KIND[i.kind].group === filter));
+  }
+  // Built once per snapshot and view: Herdr's engine is slow enough that a frame can't afford it twice.
+  actItems(d, log) {
+    const s = this.s, c = this.actCache;
+    if (c?.s === s && c.log === log) return c.items;
+    const items = [], groups = new Map();
     for (const m of s.messages) {
+      const kind = m.urgent ? "urgent" : m.kind === "system" || m.kind === "notice" ? "notice" : m.kind === "all" ? "all" : "msg";
+      if (!log && !KIND[kind].show) continue;
       const g = `${m.frm}|${m.ts}|${m.body}`;
       if (groups.has(g)) { groups.get(g).dests.push(m.dest); continue; }
-      const it = { key: `m${m.id}`, ts: m.ts, who: m.frm, msg: m, dests: [m.dest], cat: "messages", red: Boolean(m.urgent) };
+      const it = { key: `m${m.id}`, ts: m.ts, who: m.frm, kind, raw: m.kind, dests: [m.dest], text: one(m.body) };
       groups.set(g, it); items.push(it);
     }
-    for (const m of items) {
-      const n = m.dests.length, to = n > 1 ? `${n} agents` : m.dests[0] === "all" ? "@all" : m.dests[0];
-      Object.assign(m, { k: m.msg.urgent ? "urgent" : m.msg.kind === "system" ? "notice" : "msg", text: one(m.msg.body), meta: `to ${to}` });
-    }
-    let prev = null;
-    for (const e of s.events) {
-      if (QUIET.has(e.kind)) continue;
-      const l = evLine(e), cat = RED.has(e.kind) ? "alerts" : GIT.has(e.kind) ? "git" : BOARD.has(e.kind) ? "board" : "other";
-      if (prev && prev.kind === e.kind && (e.kind === "end" || e.kind === "compact") && prev.ts - e.ts < 120) {
-        prev.agents.push(e.agent ?? "swarm"); prev.who = `${prev.agents.length} agents`;
-        const names = prev.agents.slice().reverse();
-        prev.text = `${names.slice(0, -1).join(", ")} and ${names.at(-1)} ${e.kind === "end" ? "ended" : "compacted their context"}`;
+    for (const m of items) { const n = m.dests.length; m.meta = `to ${n > 1 ? `${n} agents` : m.dests[0] === "all" ? "everyone" : m.dests[0]}`; }
+    let episode = null, prev = null;
+    for (const e of [...s.events].reverse()) { // oldest first: an episode opens before it closes, and runs fold forward
+      if (e.kind === "post") continue; // its message is the row
+      const kind = e.kind === "done" && e.agent === "swarm" && /green run/.test(e.data ?? "") ? "ci-green" : KIND[e.kind] ? e.kind : "other";
+      const who = e.agent ?? "swarm";
+      if (log) {
+        const l = evLine(e);
+        items.push({ key: `e${e.id}`, ts: e.ts, who, kind, raw: e.kind, text: `${l.text}${l.sub ? ` — ${l.sub}` : ""}` });
         continue;
       }
-      prev = { key: `e${e.id}`, ts: e.ts, kind: e.kind, agents: [e.agent ?? "swarm"], who: e.agent ?? "swarm", k: l.k, text: l.text, sub: l.sub, red: l.red, cat,
-        meta: e.kind === "ci-red" && d.told(e.data) ? `told ${d.told(e.data)}` : "" };
-      items.push(prev);
+      if (e.kind === "pressure-end") {
+        if (episode) {
+          const n = episode.durs.push(e.ts - episode.since), most = ago(Math.max(...episode.durs));
+          Object.assign(episode, { open: false, text: n > 1 ? `machine was short on memory ${n} times, up to ${most} each` : `machine was short on memory for ${most}` });
+        }
+        episode = null;
+        continue;
+      }
+      if (!KIND[kind].show || (e.kind === "pressure" && episode)) continue;
+      if (e.kind === "pressure" && prev?.kind === "pressure") { // back-to-back episodes, nothing between: one row
+        Object.assign(prev, { open: true, since: e.ts, ts: e.ts, text: `machine is short on memory again (${plural(prev.durs.length, "time")} before)` });
+        episode = prev;
+        continue;
+      }
+      const it = { key: `e${e.id}`, ts: e.ts, who, kind, ...this.say(e, kind, d) };
+      if (e.kind === "pressure") Object.assign(episode = it, { since: e.ts, durs: [] });
+      const f = FOLD[kind];
+      if (f && prev?.kind === kind && it.ts - prev.ts < 120 && (!f.same || prev.who === who)) {
+        prev.parts.push(it.part); prev.whos.push(who); prev.full.push(`${who} ${it.text}`); prev.ts = it.ts;
+        const n = prev.parts.length;
+        if (kind === "end") Object.assign(prev, { who: `${n} agents`, text: `${andList(prev.whos)} ended` });
+        else prev.text = `${{ spawn: "started", "task-add": "added", drop: "dropped" }[kind]} ${plural(n, kind === "spawn" ? "agent" : "task")}: ${andList(prev.parts)}`;
+        continue;
+      }
+      if (f) Object.assign(it, { parts: [it.part], whos: [who], full: [`${who} ${it.text}`] });
+      items.push(it); prev = it;
     }
     items.sort((a, b) => b.ts - a.ts);
-    return items.filter(i => filter === "all" || (filter === "alerts" ? i.red : i.cat === filter));
+    this.actCache = { s, log, items };
+    return items;
+  }
+
+  // What one event says in the summary: { text, sub, part (its piece of a folded row), open, chip, meta }.
+  // `open`: a "you" kind still waits on the user, or a problem is still on.
+  say(e, kind, d) {
+    const s = this.s, data = one(e.data), m = /^#(\d+)\s*(.*)$/.exec(data);
+    const task = id => s.tasks.find(k => k.id === Number(id));
+    const ref = m ? `#${m[1]} ${task(m[1])?.title ?? m[2]}`.trim() : data;
+    switch (kind) {
+      case "task-add": return { text: `added ${ref}`, part: m ? `#${m[1]}` : data };
+      case "claim": return { text: `claimed ${ref}` };
+      case "done": { const ev = evidence(m?.[2]); return { text: `finished ${ref}`, chip: ev.chip }; }
+      case "ci-green": return { text: `main CI is green again (run ${/green run (\d+)/.exec(data)?.[1] ?? "?"})` };
+      case "block": return { text: `asked you about #${m?.[1]}: ${m?.[2] ?? ""}`, open: task(m?.[1])?.state === "blocked" };
+      case "task-blocked": return { text: `#${e.path} is waiting on you: ${data}`, open: task(e.path)?.state === "blocked" };
+      case "blocked": return { text: "stopped at a prompt in its terminal", open: s.agents.find(a => a.name === e.agent)?.status === "blocked" };
+      case "unblock": return { text: `unblocked ${ref}` };
+      case "release": return { text: `gave back ${ref}` };
+      case "drop": return { text: `dropped ${ref}`, part: m ? `#${m[1]}` : data };
+      case "reap": return { text: /lease/.test(data) ? `lost ${data.replace(/^task /, "").replace(/ lease expired$/, "")}: its lease ran out` : e.path ? `lost its lock on ${e.path}: it expired` : "is gone: its terminal closed" };
+      case "push": return { text: `pushed ${pushBranch(e)}`.trim(), sub: one(e.subject) };
+      case "ci-red": return { text: `main CI failed (run ${data})`, meta: d.told(data) ? `told ${plural(d.told(data), "agent")}` : "" };
+      case "conflict": return { text: `edits collide with ${data}'s in ${e.path}`, open: s.conflicts.some(c => c.path === e.path && [c.a, c.b].includes(e.agent)) };
+      case "lock": return { text: `locked ${e.path}${data ? ` for ${data}` : ""}` };
+      case "lock-violation": return { text: `edited ${e.path}, which ${data} locked` };
+      case "shared-tree": return { text: `edits in ${data}'s worktree ${base(e.path)}` };
+      case "spawn": return { text: `started ${data.replace(/^auto #(\d+)$/, "an agent for #$1")}`, part: data };
+      case "takeover": return { text: "relaunched in a fresh session" };
+      case "end": return { text: "ended", part: e.agent ?? "?" };
+      case "pressure": return { text: "machine is short on memory", open: true };
+      case "orphan-kill": return { text: `left a heavy process running; the swarm stopped it: ${data.split(" ").slice(1, -1).join(" ")}` };
+      default: return { text: data };
+    }
+  }
+
+  actColor(t, i) {
+    const lv = KIND[i.kind].level;
+    return lv === "you" ? (i.open === false ? t.dim : t.blocked) : lv === "warn" ? (i.open === false ? t.muted : t.ansi3) : lv === "good" ? t.ansi2 : t.muted;
+  }
+  icon(t, i, n = 14) {
+    return this.iconDir ? svg(`${this.iconDir}/${KIND[i.kind].icon}.svg`).size(n).flex_none().text_color(this.actColor(t, i)) : div().size(n).flex_none();
+  }
+
+  // One row: time, icon, who, (log: raw kind), what, and one tail: needs you / answered / ongoing / PR / to whom.
+  // The tooltip says what the kind means and whether you act; a folded row adds each event it holds.
+  actRow(t, d, i, log) {
+    const W = this.width, narrow = W < 520, fold = W < 640, k = KIND[i.kind], hot = k.level === "you" && i.open;
+    const who = i.who === d.comms ? `${i.who} (comms)` : i.who;
+    const text = `${fold ? i.who + " " : ""}${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
+    const tip = `${k.label}: ${k.what}${i.full?.length > 1 ? `\n\n${i.full.join("\n")}` : text.length > 70 ? `\n\n${text}` : ""}`;
+    const tail = log ? null : hot ? this.chip(t, "needs you", t.blocked, true)
+      : k.level === "you" ? div().flex_none().text_size(10.5).text_color(t.dim).child("answered")
+      : k.level === "warn" && i.open ? this.chip(t, i.kind === "pressure" ? "ongoing" : "unresolved", t.ansi3)
+      : i.chip ? this.chip(t, i.chip, i.chip.startsWith("PR") ? t.ansi2 : null) : null;
+    const meta = !tail && i.meta && !narrow ? div().flex_none().text_size(10.5).text_color(t.dim).child(i.meta) : null;
+    return h_flex().id(`act-${i.key}`).h(26).px(10).gap(10).items_center().min_w(0).rounded(5).tooltip(tip)
+      .when(hot, el => el.bg(t.blocked + "14")).hover(st => st.bg(hot ? t.blocked + "1f" : t.surface))
+      .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(i.ts)))
+      .child(this.icon(t, i))
+      .when(!fold, el => el.child(div().w(W < 760 ? 80 : 118).flex_none().truncate().text_size(11).text_color(t.muted).child(who)))
+      .when(log && !narrow, el => el.child(this.mono(div().w(96).flex_none().truncate().text_size(10.5).text_color(t.dim).child(i.raw))))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(hot || (k.level === "warn" && i.open !== false) || k.group === "messages" ? t.foreground : t.muted).child(text))
+      .when(Boolean(tail ?? meta), el => el.child(tail ?? meta));
+  }
+
+  // The key: each kind on screen with its icon, name and meaning (the row tooltips say the same).
+  actKey(t, items) {
+    const kinds = Object.keys(KIND).filter(k => items.some(i => i.kind === k));
+    return v_flex().id("act-key").mb(8).px(12).py(10).gap(6).rounded(8).bg(t.surface).border_1().border_color(t.border)
+      .child(h_flex().gap(8).items_center().child(div().text_size(12).font_semibold().child("What these mean"))
+        .child(div().text_size(10.5).text_color(t.dim).child("kinds in this view")).child(div().flex_1())
+        .child(this.link(t, "key-hide", "Hide", cx => { this.open.key = false; cx.notify(); })))
+      .when(!kinds.length, el => el.child(div().text_size(11).text_color(t.dim).child("Nothing in this view")))
+      .children(kinds.map(k => h_flex().items_start().gap(10).min_w(0)
+        .child(div().pt(1).flex_none().child(this.icon(t, { kind: k, open: true })))
+        .child(div().w(this.width < 520 ? 92 : 124).flex_none().text_size(11.5).child(KIND[k].label))
+        .child(div().flex_1().min_w(0).whitespace_normal().line_height("16px").text_size(11).text_color(t.muted).child(KIND[k].what))));
   }
 
   activity(t, d) {
-    const W = this.width, narrow = W < 520, rows = [];
+    const log = Boolean(this.actLog), all = this.actRows(t, d, this.actFilter, log), rows = [];
     let hour = null;
-    for (const i of this.actRows(t, d, this.actFilter).slice(0, 80)) {
+    // shortcut: 120 rows; 200 overran Herdr's render deadline on a loaded machine. Upgrade: a virtual list.
+    for (const i of all.slice(0, 120)) {
       const h = hhmm(i.ts).slice(0, 2);
       if (h !== hour) {
         hour = h;
         rows.push({ key: `hr${i.ts}`, h: 28, el: h_flex().h(28).px(10).pt(8).gap(10).items_center().text_size(10.5).text_color(t.dim).child(`${h}:00`).child(div().flex_1().h(1).bg(t.border)) });
       }
-      const who = i.who === d.comms ? `${i.who} · comms` : i.who, fold = W < 640; // 640 and below: who goes into the line
-      rows.push({ key: i.key, h: 26, el: h_flex().h(26).px(10).gap(10).items_center().min_w(0).rounded(5).hover(s => s.bg(t.surface)).when(i.cat === "messages" && i.red, el => el.bg(t.blocked + "14"))
-        .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(i.ts)))
-        .when(!fold, el => el.child(div().w(W < 760 ? 80 : 118).flex_none().truncate().text_size(11).text_color(t.muted).child(who)))
-        .child(div().w(narrow ? 44 : 54).flex_none().truncate().text_size(10.5).text_color(i.red ? t.blocked : t.dim).child(i.k))
-        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(i.red ? t.blocked : i.cat === "messages" ? t.foreground : t.muted)
-          .child(`${fold ? i.who + " " : ""}${i.text}${i.sub ? ` · ${i.sub}` : ""}`))
-        .when(Boolean(i.meta) && !narrow, el => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(i.meta))) });
+      rows.push({ key: i.key, h: 26, el: this.actRow(t, d, i, log) });
     }
-    if (!rows.length) rows.push({ key: "none", h: 30, el: div().px(10).py(8).text_size(11).text_color(t.dim).child("Nothing here yet") });
-    return div().px(12).pt(4).pb(8).child(this.list(`act-${this.actFilter}`, rows));
+    if (!rows.length) rows.push({ key: "none", h: 30, el: div().px(10).py(8).text_size(11).text_color(t.dim).child(this.actFilter === "you" ? "Nothing needs you right now." : "Nothing here yet") });
+    return div().px(12).pt(4).pb(8).when(Boolean(this.open.key), el => el.child(this.actKey(t, all)))
+      .child(this.list(`act-${log ? "log" : "sum"}-${this.actFilter}`, rows));
   }
 
   // ---- System tab ---------------------------------------------------------------------------
@@ -832,10 +949,10 @@ export default class Swarm extends View {
     const activity = this.card(t, "ov-act").gap(2)
       .child(h_flex().pb(5).gap(6).items_center().child(div().text_size(12).font_semibold().child("Activity")).child(div().text_size(10.5).text_color(t.dim).child("digested"))
         .child(div().flex_1()).child(this.link(t, "all-act", "All activity ›", cx => this.go("activity", cx))))
-      .children(acts.map(i => h_flex().h(22).gap(8).items_center().text_size(11).min_w(0)
-        .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(i.ts)))
+      .children(acts.map(i => h_flex().h(22).gap(8).items_center().text_size(11).min_w(0).tooltip(`${KIND[i.kind].label}: ${KIND[i.kind].what}`)
+        .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(i.ts))).child(this.icon(t, i, 12))
         .when(W >= 640, el => el.child(div().w(66).flex_none().truncate().text_color(t.muted).child(i.who)))
-        .child(div().flex_1().min_w(0).truncate().text_color(i.red ? t.blocked : t.muted).child(`${W < 640 ? i.who + " " : ""}${i.text}${i.cat === "messages" ? ` · ${i.meta}` : ""}`))))
+        .child(div().flex_1().min_w(0).truncate().text_color(KIND[i.kind].level === "you" && i.open ? t.blocked : t.muted).child(`${W < 640 ? i.who + " " : ""}${i.text}${KIND[i.kind].group === "messages" ? ` · ${i.meta}` : ""}`))))
       .when(!acts.length, el => el.child(div().text_size(11).text_color(t.dim).child("Nothing yet")));
     const leftCol = v_flex().gap(8).min_w(0).when(Boolean(att), el => el.child(att)).child(agents);
     const rightCol = v_flex().gap(12).min_w(0).child(board).child(activity);
@@ -900,3 +1017,64 @@ export default class Swarm extends View {
         .when(Boolean(m) && !tiny, el => el.child(div().flex_none().child(`${(m.avail_kb / 1048576).toFixed(1)} of ${(m.total_kb / 1048576).toFixed(1)}G free`))));
   }
 }
+
+// ---- Activity kinds --------------------------------------------------------------------------
+// Every event kind swarm logs and every message kind, as the Activity tab names them:
+// [icon in icons/, filter group, label, what it means and whether you act, level, in the summary].
+// level: "you" red while it waits on the user (dim once answered), "warn" a problem the agents or swarm
+// handle, "good" something finished, "" plain. Kinds missing here (new or old ones) show only in the log.
+const KIND = Object.fromEntries(Object.entries({
+  "task-add": ["plus", "tasks", "Task added", "Someone put a new task on the board. Nothing for you to do.", "", 1],
+  claim: ["play", "tasks", "Claimed", "An agent took a task and is working on it. Nothing for you to do.", "", 1],
+  done: ["check", "tasks", "Done", "An agent finished a task and its work is on main. Nothing for you to do.", "good", 1],
+  block: ["circle-help", "tasks", "Asked you", "An agent is blocked on a question only you can answer. Answer it in the agent's terminal.", "you", 1],
+  "task-blocked": ["circle-help", "tasks", "Waiting on you", "A task is held up by a prompt or question for you. Answer it in the agent's terminal.", "you", 1],
+  unblock: ["play", "tasks", "Unblocked", "A blocked task is moving again. Nothing for you to do.", "", 1],
+  release: ["undo", "tasks", "Released", "An agent gave a task back to the board for another agent. Nothing for you to do.", "", 1],
+  drop: ["x", "tasks", "Dropped", "A task was taken off the board for good. Nothing for you to do.", "", 1],
+  reap: ["clock", "tasks", "Taken back", "The swarm took back a task or lock whose holder went quiet, so another agent can pick it up.", "warn", 1],
+  "lease-late": ["clock", "tasks", "Lease late", "An agent has held a task past its lease while idle. The comms was told.", "", 0],
+  "task-after": ["link", "tasks", "Order set", "A task was set to wait for other tasks to finish first.", "", 0],
+  startable: ["info", "tasks", "Startable", "A waiting task became free to claim (older swarms).", "", 0],
+  push: ["arrow-up", "code", "Pushed", "An agent pushed a branch to GitHub. Nothing for you to do.", "", 1],
+  "ci-red": ["circle-x", "code", "CI red", "main's CI failed. The swarm put a fix task on the board; act only if no agent takes it.", "warn", 1],
+  "ci-green": ["circle-check", "code", "CI green", "main's CI passed again and the fix task closed itself.", "good", 1],
+  conflict: ["git-merge", "code", "Conflict", "Two agents' uncommitted edits collide. Whoever lands first wins and the other rebases; act only if it lingers.", "warn", 1],
+  "conflict-compat": ["git-merge", "code", "Merges cleanly", "Two agents edit the same files, but their changes merge without a conflict.", "", 0],
+  "conflict-stale": ["git-merge", "code", "Behind main", "An agent's work conflicts with main itself; it has to merge main first.", "", 0],
+  "conflict-error": ["git-merge", "code", "Conflict check failed", "The swarm could not trial-merge two agents' work this time.", "", 0],
+  overlap: ["triangle-alert", "code", "Overlap", "Two agents edited the same files (older swarms).", "warn", 0],
+  lock: ["lock", "code", "Locked", "An agent reserved a path git can't see. It frees itself when the work lands.", "", 1],
+  unlock: ["lock-open", "code", "Unlocked", "A lock was freed, usually because its work landed.", "", 0],
+  "deny-lock": ["ban", "code", "Edit refused", "An agent tried to edit a path another agent locked, and was stopped.", "", 0],
+  "lock-violation": ["triangle-alert", "code", "Lock broken", "An agent edited a path another agent locked. Both were told and sort it out.", "warn", 1],
+  "shared-tree": ["users", "code", "Shared worktree", "Two agents edit in one worktree, so their changes mix. Both were told to split up.", "warn", 1],
+  sweep: ["trash", "code", "Worktree removed", "A finished agent's worktree was cleaned up.", "", 0],
+  spawn: ["user-plus", "agents", "Started", "A new agent joined the swarm. Nothing for you to do.", "", 1],
+  join: ["log-in", "agents", "Joined", "An agent registered with the swarm.", "", 0],
+  takeover: ["refresh", "agents", "Relaunched", "An agent handed off to a fresh session of itself. Nothing for you to do.", "", 1],
+  blocked: ["circle-help", "agents", "Waiting on you", "An agent is stopped at a prompt in its terminal. Open it and answer.", "you", 1],
+  end: ["user-minus", "agents", "Ended", "An agent's work is on main, so the swarm closed it. Nothing for you to do.", "", 1],
+  leave: ["log-out", "agents", "Left", "An agent left the swarm.", "", 0],
+  compact: ["shrink", "agents", "Compacted", "An agent's context was summarized to free room.", "", 0],
+  "ctx-note": ["gauge", "agents", "Context note", "An agent's context passed a size mark and it was told to wrap up or hand off.", "", 0],
+  fenced: ["ban", "agents", "Fenced", "An old session of an agent acted after its successor took over, and was ignored.", "", 0],
+  wake: ["bell", "messages", "Woke", "An idle agent woke up to read new messages.", "", 0],
+  digest: ["info", "messages", "Board nudge", "An idle agent was told there are open tasks.", "", 0],
+  "deny-cold": ["ban", "messages", "Message held", "A direct message to an agent with a cold cache went to its inbox instead.", "", 0],
+  msg: ["message", "messages", "Message", "One agent wrote to another. Nothing for you to do.", "", 1],
+  all: ["megaphone", "messages", "To everyone", "An agent wrote to the whole swarm. Nothing for you to do.", "", 1],
+  urgent: ["bell", "messages", "Urgent message", "An agent sent a message that wakes its reader at once.", "warn", 1],
+  notice: ["info", "messages", "Swarm notice", "The swarm told an agent something on its own, such as a conflict or an idle nudge.", "", 0],
+  pressure: ["gauge", "machine", "Memory pressure", "The machine ran short of memory. Agents were told to prefer light work; act if it lasts.", "warn", 1],
+  "pressure-end": ["gauge", "machine", "Pressure over", "The machine has enough memory again.", "", 0],
+  "heavy-start": ["cpu", "machine", "Heavy run", "An agent started a build or test.", "", 0],
+  "job-start": ["cpu", "machine", "Run started", "An agent started a build or test on another machine.", "", 0],
+  "job-end": ["cpu", "machine", "Run finished", "A build or test on another machine finished.", "", 0],
+  "remote-clean": ["trash", "machine", "Run cleaned up", "A finished run's copy on another machine was removed.", "", 0],
+  "orphan-kill": ["zap", "machine", "Process stopped", "The swarm stopped a heavy process an agent left running. Nothing for you to do.", "warn", 1],
+  other: ["dot", "other", "Other", "An event this panel has no description for.", "", 0],
+}).map(([k, [icon, group, label, what, level, show]]) => [k, { icon, group, label, what, level, show: Boolean(show) }]));
+// Runs of these, within two minutes, fold into one summary row; `same`: only by the same agent.
+const FOLD = { spawn: { same: true }, end: {}, "task-add": { same: true }, drop: { same: true } };
+const andList = xs => xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : xs[0] ?? "";

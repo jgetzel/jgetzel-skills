@@ -1290,6 +1290,10 @@ class T(unittest.TestCase):
         full = st()
         self.assertEqual(full["view"], None)
         self.assertIn("locks", full["agents"][1])  # no --view: everything, as before
+        for i in range(80):
+            self.q(f"insert into event(ts,agent,kind,data) values({i},'a','claim','#{i}')")
+        self.assertGreater(len(st("--view", "activity")["events"]), 80)  # Activity reads further back
+        self.assertEqual(len(st("--view", "overview")["events"]), 60)
 
     def test_state_json_running(self):
         pr = self.fake_proc()
