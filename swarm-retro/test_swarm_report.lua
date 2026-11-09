@@ -18,7 +18,7 @@ local function merge(a, b) local o = {}; for _, t in ipairs({ a, b or {} }) do f
 local function run(sql, o)
   o = o or {}
   local d = tmp()
-  local env = merge({ SWARM_DB = d .. "/swarm.db", HOME = o.home or d }, o.env)
+  local env = merge({ SWARM_DB = d .. "/swarm.db", SWARM_NAME = "t", HOME = o.home or d }, o.env)
   local _, err, code = proc.exec({ SWARM, "task", "add", "seed" }, { env = env })  -- makes the schema
   assert(code == 0, tostring(code) .. " " .. err)
   local c = assert(sqlite3.open(d .. "/swarm.db"))
@@ -120,7 +120,7 @@ end
 
 function T.text_report()
   local d = tmp()
-  local env = { SWARM_DB = d .. "/swarm.db", HOME = d, GIT_DIR = "/nonexistent" }
+  local env = { SWARM_DB = d .. "/swarm.db", SWARM_NAME = "t", HOME = d, GIT_DIR = "/nonexistent" }
   assert(select(3, proc.exec({ SWARM, "task", "add", "x" }, { env = env })) == 0)
   local out, err, code = proc.exec({ REPORT }, { env = env })
   assert(code == 0, err); assert(out:find("## tasks", 1, true))
