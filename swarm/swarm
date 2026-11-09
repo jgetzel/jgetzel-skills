@@ -534,10 +534,15 @@ def hook(ev):
 
     elif ev == "post-tool":
         set_status(c, name, "working")
-        if tool == "Bash" and re.search(r"\bgit\s+push\b", ti.get("command", "")):
+        m = tool == "Bash" and re.search(r"\bgit\s+(?:-C\s+(\S+)\s+)?push\b", ti.get("command", ""))
+        if m:
+            # agents push from their worktree (`cd <wt> && git push`), not the session cwd
+            cds = re.findall(r"(?:^|[;&|(]\s*)cd\s+([^\s;&|)]+)", ti["command"][:m.start()])
+            d = m[1] or (cds[-1] if cds else None)
+            d = os.path.join(cwd or "", os.path.expanduser(d.strip("'\""))) if d else cwd
             # path carries {branch, subject} as JSON for the panel; state --json unpacks it
-            log(c, name, "push", json.dumps({"branch": git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd),
-                                             "subject": git(["log", "-1", "--format=%s"], cwd=cwd)}), ti["command"][:120])
+            log(c, name, "push", json.dumps({"branch": git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=d),
+                                             "subject": git(["log", "-1", "--format=%s"], cwd=d)}), ti["command"][:120])
         ctx = deliver(c, name) or ""
         n = handoff_nudge(c, name, p)
         if ctx or n:

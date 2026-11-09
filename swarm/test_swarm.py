@@ -1265,6 +1265,12 @@ class T(unittest.TestCase):
         pushes = [e for e in s["events"] if e["kind"] == "push"]
         self.assertEqual((pushes[0]["branch"], pushes[0]["subject"]), (None, None))  # older event
         self.assertEqual((pushes[1]["branch"], pushes[1]["subject"]), ("main", "init"))
+        subprocess.run([*G, "commit", "-q", "--allow-empty", "-m", "wt work"], cwd=self.wt, check=True)
+        for cmd in (f"cd {self.wt} && git push", f"git -C '{self.wt}' push", "cd ../wt; git push -u origin w2"):
+            self.hook("a", "post-tool", tool_name="Bash", tool_input={"command": cmd}, cwd=self.repo)
+        s = json.loads(self.sw("a", "state", "--json").stdout)
+        pushes = [e for e in s["events"] if e["kind"] == "push"][:3]  # newest first
+        self.assertEqual([(e["branch"], e["subject"]) for e in pushes], [("w2", "wt work")] * 3)  # the worktree's
 
     def test_state_json_view(self):
         self.agent("a", wt=self.wt)
