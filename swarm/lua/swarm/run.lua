@@ -43,6 +43,51 @@ function M.pid_alive(pid)
   return pid ~= nil and require("posix.signal").kill(pid, 0) == 0
 end
 
+-- Each hc machine's load and memory, one `hc exec` each, stored in meta 'machines' for the machine note.
+function M.remote_tick(c, t)
+  local term = os.getenv("HC_TERMINAL_ID")
+  if not term or term == "" then return end  -- only watchd started from a Herdr terminal probes; tests and plain shells skip it
+  local ms = M.hc_machines()
+  local r = c:one("select v from meta where k='machines'")
+  local old = r and json.decode(r.v) or {}
+  local names = {}
+  for n in pairs(ms) do names[#names + 1] = n end
+  table.sort(names)
+  local out = {}
+  for _, n in ipairs(names) do
+    local m, o = ms[n], type(old[n]) == "table" and old[n] or {}
+    local txt = m.state == "connected" and proc.run({ "hc", "exec", "--on", n, "--timeout", "10", "sh", "-c",
+      "nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null" }) or nil
+    local lines = util.splitlines(txt or "")
+    local cores = tonumber(lines[1] or "")
+    local load = tonumber((lines[2] or ""):match("^%S+") or "")
+    local avail = tonumber(txt and txt:match("MemAvailable:%s+(%d+)") or "")
+    local total = tonumber(txt and txt:match("MemTotal:%s+(%d+)") or "")
+    if cores and load and avail and total then
+      out[n] = { state = "connected", ts = t, cores = cores, load = load, avail_kb = avail, total_kb = total,
+        psi = tonumber(txt:match("some avg10=([%d.]+)") or "") or 0 }
+    else
+      local st = m.state ~= "connected" and m.state or "unreachable"
+      out[n] = { state = st, ts = t, since = o.state == st and o.since or t }
+    end
+  end
+  c:exec("insert or replace into meta(k,v) values('machines',?)", json.encode(out))
+end
+
+-- Remove a landed worktree's dirs on every machine its jobs ran on.
+function M.clean_remote(c, wt)
+  local seen = {}
+  for _, e in ipairs(c:all("select data from event where kind='job-start'")) do
+    local j = json.decode(e.data or "{}")
+    if type(j) == "table" and type(j.machine) == "string" and j.machine ~= "" and j.wt == wt and type(j.dir) == "string"
+        and re.fullmatch(re.escape(M.RUN_DIR) .. [[/[\w.-]+/[\w.-]+]], j.dir) and not seen[j.machine .. "\0" .. j.dir] then
+      seen[j.machine .. "\0" .. j.dir] = true
+      local ok = proc.run({ "hc", "exec", "--on", j.machine, "--timeout", "120", "rm", "-rf", j.dir }) ~= nil
+      db.log(c, nil, "remote-clean", j.dir, j.machine .. " " .. (ok and "ok" or "failed"))
+    end
+  end
+end
+
 -- ssh with one shared connection per host (each call after the first costs ~0.05 s) that gives up fast on a sleeping host.
 function M.ssh_cmd()
   local cp = (os.getenv("TMPDIR") or "/tmp") .. "/swarm-ssh-%C"
