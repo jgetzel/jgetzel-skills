@@ -1,3 +1,4 @@
+// Screenshot it from a worktree: swarm/herdr/shot.sh --tab activity --width 520 out.png (a private Herdr, never yours).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder } from "herdr";
