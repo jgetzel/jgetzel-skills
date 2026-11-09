@@ -1452,6 +1452,10 @@ elif a[0] == "run":
 elif a[0] == "wait":
     if os.path.exists(D + "/lost"): sys.exit(3)
     print(json.dumps({{"ended": True, "exit_code": int(open(D + "/rc").read())}}))
+elif a[0] == "get":  # D/get.json maps a terminal to what `hc get` prints; else not found
+    g = json.load(open(D + "/get.json")) if os.path.exists(D + "/get.json") else {{}}
+    if a[1] in g: print(json.dumps(g[a[1]]))
+    else: print('{{"error": {{"kind": "not_found", "message": "no terminal"}}}}'); sys.exit(3)
 elif a[0] == "exec":
     sys.stdout.write(subprocess.run(a[a.index("--timeout") + 2:], cwd=H, env=env, capture_output=True, text=True).stdout)
 """)
@@ -1543,6 +1547,35 @@ shift; cd {self.home} && HOME={self.home} exec sh -c "$*"
         self.assertTrue(self.ended("e"))
         self.assertIn(f"exec --on laptop --timeout 120 rm -rf {d}", self.read(self.hclog))
         self.assertFalse(os.path.exists(os.path.join(self.home, d)))
+
+    def test_run_remote_job_telemetry(self):
+        self.fake_remote()
+        self.agent("a")
+        t = int(time.time())
+        tree = subprocess.Popen(["sh", "-c", "sleep 30 & sleep 30 & wait"])
+        self.addCleanup(tree.kill)
+        time.sleep(0.3)
+        json.dump({"t9": {"state": "live", "pid": tree.pid}, "t7": {"state": "exited", "pid": None}},
+                  open(os.path.join(self.d, "get.json"), "w"))
+        self.q("insert into meta values('machines',?)", json.dumps({"laptop": {"state": "connected", "ts": t, "jobs": {"2": {"gone": t - 3601}}}}))
+        for jid, term, age in (("1", "laptop/t9", 60), ("2", "laptop/t8", 9000), ("3", "laptop/t7", 30), ("4", "nas/t1", 30)):
+            self.q("insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)", t - age, "a", "job-start", jid,
+                   json.dumps({"machine": term.split("/")[0], "hc": term, "cmd": "cargo test", "pid": 999999999}))
+        env = {**os.environ, "SWARM_DB": self.db, "HC_TERMINAL_ID": "t1", "PATH": self.fakebin + os.pathsep + os.environ["PATH"]}
+        subprocess.run([SWARM, "watchd", "--once"], env=env, cwd=self.repo, check=True, capture_output=True)
+        self.assertIn("sh t7 t8 t9\n", self.read(self.hclog))  # one exec carries the job terminals, named as the machine names them
+        ms = json.loads(self.q("select v from meta where k='machines'")[0][0])
+        js = ms["laptop"]["jobs"]
+        self.assertGreater(js["1"]["rss_kb"], 0)  # sh and both sleeps
+        self.assertEqual((js["2"], js["3"]), ({"gone": t - 3601}, {"gone": js["3"]["gone"]}))
+        self.assertEqual([json.loads(d)["exit"] for (d,) in self.q("select data from event where kind='job-end'")], ["lost"])  # job 2: gone over an hour
+        ms["nas"] = {"state": "disconnected", "ts": t, "since": t}
+        self.q("update meta set v=? where k='machines'", json.dumps(ms))
+        run = {j["job"]: j for j in json.loads(self.sw("a", "state", "--json").stdout)["running"] if "machine" in j}
+        self.assertEqual(sorted(run), ["1", "3", "4"])
+        self.assertEqual((run["1"]["lost"], run["1"]["rss_kb"], run["3"]["lost"], run["3"]["rss_kb"]), (False, js["1"]["rss_kb"], True, None))
+        self.assertEqual((run["4"]["unreachable"], run["4"]["lost"]), (True, False))
+        self.assertIn(" cargo test 1m 0.0G", self.sw("a", "machine").stdout)
 
 
 if __name__ == "__main__":

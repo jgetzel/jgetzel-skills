@@ -43,7 +43,60 @@ function M.pid_alive(pid)
   return pid ~= nil and require("posix.signal").kill(pid, 0) == 0
 end
 
--- Each hc machine's load and memory, one `hc exec` each, stored in meta 'machines' for the machine note.
+M.LOST_FOR = 3600  -- a job whose terminal is gone this long gets a job-end 'lost', so Running now drops it
+
+-- Load and memory, then (with job terminals as args) every process and each terminal's `hc get`; ps flags work on Linux and macOS.
+local PROBE = "nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null; [ $# -gt 0 ] || exit 0; "
+  .. "echo @ps; LC_ALL=C ps -Ao pid=,ppid=,rss=,pcpu=; "
+  .. "for t; do echo \"@hc $t\"; hc get \"$t\" --json 2>&1 | tr -d '\\n'; echo; done"
+
+-- RSS (KiB) and %CPU summed over root and its descendants. shortcut: %CPU is ps's (lifetime average on Linux).
+local function tree_sum(ps, kids, root)
+  local rss, cpu, q, i = 0, 0, { root }, 1
+  while q[i] do
+    local p = ps[q[i]]
+    if p then rss, cpu = rss + p.rss, cpu + p.cpu end
+    for _, k in ipairs(kids[q[i]] or {}) do q[#q + 1] = k end
+    i = i + 1
+  end
+  return rss, cpu
+end
+
+-- {rss_kb, cpu} per live job, {gone = since} where the machine says its terminal is gone or ended.
+local function job_readings(c, t, txt, mine, old)
+  local ps, kids, got, cur = {}, {}, {}, nil
+  for _, l in ipairs(util.splitlines(txt:match("\n@ps\n(.*)$") or "")) do
+    local a = l:match("^@hc (%S+)$")
+    if a then cur = a; got[a] = ""
+    elseif cur then got[cur] = l
+    else
+      local pid, ppid, rss, cpu = l:match("^%s*(%d+)%s+(%d+)%s+(%d+)%s+([%d.]+)")
+      if pid then
+        pid, ppid = tonumber(pid), tonumber(ppid)
+        ps[pid] = { rss = tonumber(rss), cpu = tonumber(cpu) }
+        if pid ~= ppid then kids[ppid] = kids[ppid] or {}; table.insert(kids[ppid], pid) end
+      end
+    end
+  end
+  local out = {}
+  for _, j in ipairs(mine) do
+    local ok, g = pcall(json.decode, got[j.term] or "")
+    g = ok and type(g) == "table" and g or {}
+    if g.state == "live" and tonumber(g.pid) then
+      local rss, cpu = tree_sum(ps, kids, tonumber(g.pid))
+      out[j.id] = { rss_kb = rss, cpu = math.floor(cpu + 0.5) }
+    elseif g.state or (type(g.error) == "table" and g.error.kind == "not_found") then  -- the machine answered: no such live terminal
+      local since = type(old[j.id]) == "table" and old[j.id].gone or t
+      out[j.id] = { gone = since }
+      if t - since >= M.LOST_FOR and not M.pid_alive(j.pid) then
+        db.log(c, j.agent, "job-end", j.id, json.encode({ machine = j.machine, exit = "lost", s = t - j.ts }))
+      end
+    end
+  end
+  return out
+end
+
+-- Each hc machine's load and memory and its jobs' process trees, one `hc exec` each, stored in meta 'machines'.
 function M.remote_tick(c, t)
   local term = os.getenv("HC_TERMINAL_ID")
   if not term or term == "" then return end  -- only watchd started from a Herdr terminal probes; tests and plain shells skip it
@@ -53,19 +106,28 @@ function M.remote_tick(c, t)
   local names = {}
   for n in pairs(ms) do names[#names + 1] = n end
   table.sort(names)
-  local out = {}
+  local jobs, out = M.live_jobs(c, t), {}
   for _, n in ipairs(names) do
     local m, o = ms[n], type(old[n]) == "table" and old[n] or {}
-    local txt = m.state == "connected" and proc.run({ "hc", "exec", "--on", n, "--timeout", "10", "sh", "-c",
-      "nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null" }) or nil
+    local mine, cmd = {}, { "hc", "exec", "--on", n, "--timeout", "10", "sh", "-c", PROBE, "sh" }
+    for _, j in ipairs(jobs) do
+      if j.machine == n and type(j.hc) == "string" then
+        j.term = j.hc:match("^[^/]*/(.+)$") or j.hc  -- "laptop/t12" is t12 there
+        mine[#mine + 1] = j
+        cmd[#cmd + 1] = j.term
+      end
+    end
+    local txt = m.state == "connected" and proc.run(cmd) or nil
     local lines = util.splitlines(txt or "")
+    local head = txt and (txt:match("^(.-)\n@ps\n") or txt) or ""
     local cores = tonumber(lines[1] or "")
     local load = tonumber((lines[2] or ""):match("^%S+") or "")
-    local avail = tonumber(txt and txt:match("MemAvailable:%s+(%d+)") or "")
-    local total = tonumber(txt and txt:match("MemTotal:%s+(%d+)") or "")
+    local avail = tonumber(head:match("MemAvailable:%s+(%d+)") or "")
+    local total = tonumber(head:match("MemTotal:%s+(%d+)") or "")
     if cores and load and avail and total then
       out[n] = { state = "connected", ts = t, cores = cores, load = load, avail_kb = avail, total_kb = total,
-        psi = tonumber(txt:match("some avg10=([%d.]+)") or "") or 0 }
+        psi = tonumber(head:match("some avg10=([%d.]+)") or "") or 0,
+        jobs = job_readings(c, t, txt, mine, type(o.jobs) == "table" and o.jobs or {}) }
     else
       local st = m.state ~= "connected" and m.state or "unreachable"
       out[n] = { state = st, ts = t, since = o.state == st and o.since or t }

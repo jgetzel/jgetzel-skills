@@ -138,7 +138,11 @@ function M.remote_lines(c, t)
   for _, n in ipairs(names) do
     local m, js = ms[n], {}
     for _, j in ipairs(jobs) do
-      if j.machine == n then js[#js + 1] = ("%s %s %s"):format(j.agent, util.cut(j.cmd or "", 24), util.ago(j.ts)) end
+      local rd = j.machine == n and type(m.jobs) == "table" and m.jobs[j.id]
+      if j.machine == n then
+        js[#js + 1] = ("%s %s %s"):format(j.agent, util.cut(j.cmd or "", 24), util.ago(j.ts))
+          .. (type(rd) == "table" and rd.rss_kb and (" %.1fG"):format(rd.rss_kb / 1048576) or "")
+      end
     end
     if m.state ~= "connected" then
       out[#out + 1] = ("%s: %s since %s"):format(n, m.state, util.hhmm(m.since or m.ts))
