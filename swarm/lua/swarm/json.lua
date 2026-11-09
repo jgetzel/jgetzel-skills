@@ -21,6 +21,7 @@ function M.decode(s)
 end
 
 M.encode = cjson.encode
+M.null = cjson.null
 
 function M.array(t)  -- t (or a new table) encodes as a JSON array even when empty
   return setmetatable(t or {}, cjson.array_mt)
