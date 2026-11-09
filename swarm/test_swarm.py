@@ -967,6 +967,21 @@ print("hc1")
         self.assertEqual([x["argv"][0] for x in self.launched()], ["t-2", "t-2"])  # same name reused
         self.assertEqual(self.q("select count(*) from msg where body like '%auto-spawn%'")[0][0], 1)  # still one notice
 
+    def test_auto_spawn_gives_up_after_k_failures(self):
+        self.fakes()
+        for n in ("t-comms", "t-1"):
+            self.agent(n, status="working", model="haiku")
+        open(os.path.join(self.d, "launch.fail"), "w").close()
+        self.sw("a", "task", "add", "do it")
+        tick = lambda: self.sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "2", "--min-free-mem", "0")
+        for _ in range(7):
+            tick()
+            self.q("update meta set v='0,300,t-2' where k='spawn_backoff'")  # window over
+        self.assertEqual(len(self.launched()), 5)  # K=5, then no more launches
+        urgent = [r[0] for r in self.q("select body from msg where dest='t-comms' and urgent=1 and body like '%in a row%'")]
+        self.assertEqual(len(urgent), 1)
+        self.assertIn("no Herdr window", urgent[0])
+
     def test_spawn_task_claims_before_launch(self):
         self.fakes()
         self.sw("a", "task", "add", "do it")

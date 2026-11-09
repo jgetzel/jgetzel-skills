@@ -356,7 +356,14 @@ function M.lifecycle(c, t, comms, terms, opts)
     bo_until, bo_delay, bo_name = tonumber(u), tonumber(dl), nm
   end
   if util.now() < bo_until then return end
+  local halt = c:one("select v from meta where k='spawn_halt'")  -- a task auto-spawn gave up on
+  if halt then
+    local still = false
+    for _, t in ipairs(pool) do if tostring(t.id) == halt.v then still = true end end
+    if not still then c:exec("delete from meta where k='spawn_halt'"); halt = nil end  -- claimed, done or dropped: lifted
+  end
   for _, task in ipairs(pool) do
+    if halt and tostring(task.id) == halt.v then goto next_task end
     if #members >= opts.max_agents or M.mem_available_gib() < (opts.min_free_gib or 4) then break end
     local name = nz(bo_name)
     if not name then top = top + 1; name = prefix .. d(top) end
@@ -364,6 +371,7 @@ function M.lifecycle(c, t, comms, terms, opts)
     local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, task_id = task.id, task = {} })
     if ok then
       c:exec("delete from meta where k='spawn_backoff'")
+      c:exec("delete from meta where k='spawn_fails'")
       db.log(c, name, "spawn", nil, "auto #" .. d(task.id))
       members[#members + 1] = { name = name }
     elseif type(e) == "table" and e.lost then  -- a peer claimed it between pool() and now
@@ -374,12 +382,25 @@ function M.lifecycle(c, t, comms, terms, opts)
         msgs.post(c, "swarm", comms, ("auto-spawn of %s for #%s failed: %s. Auto-spawn pauses %d min and retries, doubling."):format(
           name, d(task.id), M.launch_err or "launch error", math.floor(delay / 60)), false, "notice")
       end
+      local f = c:one("select v from meta where k='spawn_fails'")
+      local ft, fn = (f and f.v or ""):match("^(%d+),(%d+)$")
+      fn = (ft == d(task.id) and tonumber(fn) or 0) + 1
+      c:exec("insert or replace into meta(k,v) values('spawn_fails',?)", ("%s,%d"):format(d(task.id), fn))
+      if fn >= M.SPAWN_FAILS then
+        c:exec("insert or replace into meta(k,v) values('spawn_halt',?)", d(task.id))
+        c:exec("delete from meta where k in ('spawn_backoff','spawn_fails')")
+        msgs.post(c, "swarm", comms, ("auto-spawn for #%s failed %d times in a row (last: %s). Auto-spawn stops for it until it is claimed or changes; spawn it by hand."):format(
+          d(task.id), fn, M.launch_err or "launch error"), true, "system")
+      end
       break
     else
       error(e, 0)
     end
+    ::next_task::
   end
 end
+
+M.SPAWN_FAILS = 5  -- failed launches in a row before auto-spawn gives up on a task
 
 -- ---------- the tick ----------
 
