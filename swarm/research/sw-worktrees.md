@@ -3,8 +3,8 @@
 Measured 2026-11-07 on this machine (12 cores, 31 GB RAM, ext4 on NVMe,
 git 2.56, jj 0.46, kernel 7.3) against scratch copies of jk_ledger. Its
 checkout was only read: a `--shared` bare clone in the scratchpad was the
-base for every tree. `sw-worktrees-probe.py` reproduces the checkout timings:
-`python3 -I swarm/research/sw-worktrees-probe.py ~/workspace/jk_ledger <scratch>`.
+base for every tree. `sw-worktrees-probe.lua` reproduces the checkout timings:
+`luajit swarm/research/sw-worktrees-probe.lua ~/workspace/jk_ledger <scratch>`.
 The build timings are commands in §3. Prior-art facts came from a research
 subagent reading primary docs and repos; the sources are at the end.
 
