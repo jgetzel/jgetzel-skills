@@ -25,7 +25,7 @@ function M.event_task(e)
 end
 
 -- Task durations (seconds) from the CLI-written columns, else from the task's claim/done/block/unblock/release/drop
--- events (evs: that task's events in order). Mirrors swarm-retro/swarm-report.py's task_timing.
+-- events (evs: that task's events in order). Mirrors swarm-retro/swarm-report's task timing.
 function M.task_timing(r, evs)
   local function ts(k, agg)
     local v

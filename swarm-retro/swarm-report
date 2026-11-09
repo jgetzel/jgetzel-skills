@@ -1,0 +1,13 @@
+#!/bin/sh
+# swarm-report on LuaJIT: find the real file through symlinks, put swarm's lua/ dir and rock tree on the module path.
+p=$0
+while [ -L "$p" ]; do
+  l=$(readlink "$p")
+  case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
+done
+here=$(cd -P "$(dirname "$p")" && pwd)
+tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
+export SWARM_RETRO_HERE="$here"
+export LUA_PATH="$here/../swarm/lua/?.lua;$tree/share/lua/5.1/?.lua;$tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}"
+export LUA_CPATH="$tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
+exec luajit "$here/swarm-report.lua" "$@"
