@@ -165,12 +165,26 @@ function M.cmd_leave(c, a)
   end)
 end
 
+-- Notice when install.sh's Herdr copies (swarm-tabs, layouts/swarm.json) predate this checkout's generator.
+function M.herdr_stale()
+  local home = os.getenv("HERDR_APP_HOME") or ((os.getenv("HOME") or "") .. "/.config/herdr-app")
+  local here = os.getenv("SWARM_HERE")
+  if not here or not require("lfs").attributes(home .. "/mods/swarm-tabs", "mode") then return nil end
+  local f = io.open(home .. "/swarm-install.stamp")
+  local have = f and util.strip(f:read("*a")) or ""
+  if f then f:close() end
+  local out = require("swarm.proc").run({ "sh", "-c", "cat herdr/install.py herdr/mods/swarm/swarm.svg | sha256sum" }, here)
+  if out and util.strip(out):sub(1, 64) ~= have then return "herdr panel: out of date: run install.sh" end
+end
+
 function M.cmd_who(c, a)
   local machine, conflict = require "swarm.machine", require "swarm.conflict"
   local t = util.now()
   local wts = conflict.wt_map(c)
   local avail, total, psi = machine.mem_psi()
   if avail then print(machine.machine_line(avail, total, psi)) end
+  local stale = M.herdr_stale()
+  if stale then print(stale) end
   for _, x in ipairs(M.live_agents(c)) do
     local k = math.floor((x.ctx_tokens or 0) / 1000)
     local last = M.session_active(x, t)

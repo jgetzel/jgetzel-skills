@@ -6,6 +6,7 @@
 - layouts/swarm.json <- Herdr's shipped main layout with swarm-tabs, a "swarm" child in the side panel,
                        and that panel at half the work area
 Switch to it once with: herdr-app do layout.switch --name swarm"""
+import hashlib
 import json, os, shutil, sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -72,6 +73,14 @@ def find(node, id_):
     return None
 
 
+def stamp():
+    """Hash of what generates the copies; `swarm who` recomputes it (sha256 of install.py then swarm.svg)."""
+    h = hashlib.sha256()
+    for f in (os.path.join(HERE, "install.py"), os.path.join(HERE, "mods", "swarm", "swarm.svg")):
+        h.update(open(f, "rb").read())
+    return h.hexdigest()
+
+
 def main():
     if not os.path.isdir(os.path.join(HOME, "mods", "tabs")):
         sys.exit(f"install: no Herdr app home with shipped mods at {HOME} (start Herdr once, or set HERDR_APP_HOME)")
@@ -114,6 +123,7 @@ def main():
     with open(out + ".tmp", "w") as f:
         json.dump(lay, f, indent=2)
     os.replace(out + ".tmp", out)
+    open(os.path.join(HOME, "swarm-install.stamp"), "w").write(stamp() + "\n")
     print(f"wrote {out}\nshow it with: herdr-app do layout.switch --name swarm")
 
 
