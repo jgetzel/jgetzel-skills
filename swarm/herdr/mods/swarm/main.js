@@ -796,7 +796,8 @@ export default class Swarm extends View {
   activity(t, d) {
     const log = Boolean(this.actLog), all = this.actRows(t, d, this.actFilter, log), rows = [];
     let hour = null;
-    for (const i of all.slice(0, 80)) {
+    // shortcut: 120 rows; 200 overran Herdr's render deadline on a loaded machine. Upgrade: a virtual list.
+    for (const i of all.slice(0, 120)) {
       const h = hhmm(i.ts).slice(0, 2);
       if (h !== hour) {
         hour = h;

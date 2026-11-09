@@ -54,7 +54,8 @@ at 320 the filters wrap to three rows. **Themes:** theme tokens only (`blocked`,
 `muted`, `dim`), checked in graphite (dark) and paper (light).
 
 **Data.** `state --json --view activity` reads the last 300 events and 120 messages (other views keep
-60 and 40), since the summary hides most of them.
+60 and 40), since the summary hides most of them. A view draws at most 120 rows: 200 overran
+Herdr's render deadline on a loaded machine (a virtual list would lift that).
 
 ## Every kind
 
@@ -124,9 +125,11 @@ run, a lock and a broadcast message.
 |---|---|---|
 | ![](../herdr/shots/activity-sum-420.png) | ![](../herdr/shots/activity-sum-320.png) | ![](../herdr/shots/activity-light-860.png) |
 
-## Open questions for the user
+## Decisions (approved by the user, 2026-11-08)
 
-1. Summary as the default view, Full log one click away: right?
-2. CI red and conflicts are yellow (agents handle them) rather than red; red is kept for "waiting on
-   you". The needs-you strip above the tabs still shows a red main CI in red. Right?
-3. The Overview's activity card now uses the same summary rows and icons. Keep?
+1. Summary is the default view; Full log is one click away.
+2. CI red and conflicts are yellow (agents handle them); red is kept for "waiting on you". The
+   needs-you strip above the tabs still shows a red main CI in red.
+3. The Overview's activity card uses the same summary rows and icons.
+
+![Overview card](../herdr/shots/activity-overview-860.png)
