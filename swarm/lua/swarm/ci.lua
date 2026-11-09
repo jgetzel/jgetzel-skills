@@ -85,20 +85,29 @@ function M.ci_poll(c, repo, every)
   if not M.due(c, "ci_polled", every or 60) then return end
   -- The runs endpoint itself: one request, where `gh run list` first lists every workflow (a second request).
   -- Push runs only: a scheduled workflow (an uptime check) on main's head isn't main's CI, and its green hid a red.
-  -- shortcut: a check run started by hand (workflow_dispatch) isn't counted; filter by workflow if one matters.
+  -- shortcut: a check run started by hand (workflow_dispatch) isn't counted. .claude/swarm.json {"ci": {"workflow":
+  -- "ci.yml"}} keeps only that workflow's runs (a substring of its path), when other push workflows run on main.
   local out = proc.run({ "gh", "api", "repos/{owner}/{repo}/actions/runs?branch=main&event=push&per_page=20", "--jq",
     "[.workflow_runs[] | {databaseId: .id, headSha: .head_sha, status, conclusion, url: .html_url,"
-    .. " createdAt: .created_at, updatedAt: .updated_at}]" }, repo)
+    .. " createdAt: .created_at, updatedAt: .updated_at, event, workflow: .name, path}]" }, repo)
   local runs = out and out ~= "" and json.decode(out) or nil
   if type(runs) ~= "table" then  -- rate limited or offline: keep what's stored, try again next minute
     c:exec("insert or replace into meta(k,v) values('ci_error',?)", d(now()))
     return
   end
   c:exec("delete from meta where k='ci_error'")
+  local top = proc.git({ "rev-parse", "--show-toplevel" }, repo)
+  local ok, cfg = pcall(json.decode, top and util.slurp(util.join(top, ".claude", "swarm.json")) or "")
+  cfg = ok and cfg
+  local wf = type(cfg) == "table" and type(cfg.ci) == "table" and type(cfg.ci.workflow) == "string" and cfg.ci.workflow
+  c:exec("delete from ci where workflow is null")  -- rows from before this filter: any event, any workflow
   for _, r in ipairs(runs) do
-    c:exec("insert into ci(id,sha,status,conclusion,url,created,updated) values(?,?,?,?,?,?,?) on conflict(id) do update set "
-      .. "status=excluded.status, conclusion=excluded.conclusion, updated=excluded.updated",
-      r.databaseId, r.headSha, r.status, (r.conclusion ~= "" and r.conclusion or nil), r.url, r.createdAt, r.updatedAt)
+    if r.event == "push" and (not wf or tostring(r.path):find(wf, 1, true)) then
+      c:exec("insert into ci(id,sha,status,conclusion,url,created,updated,workflow) values(?,?,?,?,?,?,?,?) on conflict(id) do update set "
+        .. "status=excluded.status, conclusion=excluded.conclusion, updated=excluded.updated",
+        r.databaseId, r.headSha, r.status, (r.conclusion ~= "" and r.conclusion or nil), r.url, r.createdAt, r.updatedAt,
+        r.workflow or "")
+    end
   end
   for _, r in ipairs(c:all("select id from ci where conclusion='failure' and failed is null")) do
     local jobs = proc.run({ "gh", "run", "view", d(r.id), "--json", "jobs", "--jq",
@@ -215,7 +224,8 @@ function M.cmd_ci(c, a)
     print(("%s: no main CI run includes it yet"):format(sha:sub(1, 7)))
   else
     local failed = r.failed and r.failed ~= "" and ("; failed: " .. r.failed) or ""
-    print(("%s: %s (run %s at %s %s%s)"):format(sha:sub(1, 7), state, d(r.id), r.sha:sub(1, 7), r.url or "", failed))
+    local wf = r.workflow and r.workflow ~= "" and (r.workflow .. " ") or ""
+    print(("%s: %s (%srun %s at %s %s%s)"):format(sha:sub(1, 7), state, wf, d(r.id), r.sha:sub(1, 7), r.url or "", failed))
   end
   util.exit(state == "success" and 0 or state == "failure" and 1 or 2)
 end

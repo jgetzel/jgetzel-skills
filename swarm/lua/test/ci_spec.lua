@@ -40,7 +40,7 @@ assert(calls("^pr ") == 1)  -- the PR list is asked for at most every 10 minutes
 
 -- ci_poll: one request for the runs, one for the red run's jobs; within the minute no call; refused keeps the table
 c:exec("delete from ci")
-gh('[{"databaseId":1,"headSha":"a1","status":"completed","conclusion":"failure","url":"u1","createdAt":"2026-11-08T10:00:00Z","updatedAt":"2026-11-08T10:03:00Z"}]')
+gh('[{"databaseId":1,"headSha":"a1","status":"completed","conclusion":"failure","url":"u1","createdAt":"2026-11-08T10:00:00Z","updatedAt":"2026-11-08T10:03:00Z","event":"push"}]')
 ci.ci_poll(c, dir)
 assert(calls("^api") == 1 and calls("%-%-json jobs") == 1 and calls("event=push") == 1)  -- a scheduled run isn't CI
 assert(c:one("select failed from ci where id=1").failed == "step Build failed")
@@ -79,3 +79,21 @@ c:exec("update agent set ended=1"); c:exec("delete from event where kind='ci-red
 c:exec("insert into ci(id,sha,status,conclusion,url,created) values(9,?, 'completed','failure','http://ci/9','2026-11-08T10:05:00Z')", red)
 ci.ci_check(c, dir, "comms")
 assert(c:one("select count(*) n from msg where dest='comms'").n == 1)
+
+-- a scheduled (or other) workflow's green run on the red sha: not main's CI, so the red task stays and ci reads red
+c:exec("delete from ci"); c:exec("delete from task"); c:exec("delete from event where kind='ci-red'")
+c:exec("delete from meta"); os.execute("mkdir -p " .. dir .. "/.claude")
+local f = io.open(dir .. "/.claude/swarm.json", "w"); f:write('{"ci": {"workflow": "ci.yml"}}'); f:close()
+local function run(id, concl, event, wf, at)
+  return { databaseId = id, headSha = red, status = "completed", conclusion = concl, url = "u", createdAt = at,
+    updatedAt = at, event = event, workflow = wf, path = ".github/workflows/" .. wf .. ".yml" }
+end
+c:exec("insert into ci(id,sha,status,conclusion,created) values(5,'old','completed','success','2026-11-08T09:00:00Z')")  -- pre-filter row
+gh(json.encode({ run(22, "success", "push", "deploy", "2026-11-08T11:02:00Z"),  -- push, but not ci.workflow
+  run(21, "success", "schedule", "ci", "2026-11-08T11:01:00Z"), run(20, "failure", "push", "ci", "2026-11-08T11:00:00Z") }))
+ci.ci_poll(c, dir)
+ci.ci_check(c, dir, "comms")
+local rows = c:all("select id, workflow from ci")
+assert(#rows == 1 and rows[1].id == 20 and rows[1].workflow == "ci", json.encode(rows))
+assert(c:one("select count(*) n from task where title like 'main red: run 20%' and state='open'").n == 1)
+assert(ci.ci_for(c, red, dir) == "failure")
