@@ -21,8 +21,6 @@ export SWARM_INSTALL_HINT
 if command -v luajit >/dev/null 2>&1; then
   exec luajit "$here/lua/swarm/main.lua" "$@"
 fi
-# cutover window only (sw-lua §4), deleted in P11: a host without luajit keeps running the Python CLI
-[ -f "$here/swarm.py" ] && exec python3 "$here/swarm.py" "$@"
 msg="swarm hooks are OFF: luajit is not on PATH; install with $SWARM_INSTALL_HINT"
 if [ "$1" = hook ]; then
   [ -n "$SWARM_NAME" ] || exit 0
