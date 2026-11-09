@@ -521,8 +521,9 @@ print("hc1")
         run = lambda: subprocess.run([SWARM, "who"], env={**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "x", **env},
                                      capture_output=True, text=True).stdout
         self.assertIn("out of date: run install.sh", run())
-        sys.path.insert(0, os.path.join(os.path.dirname(SWARM), "herdr")); import install
-        open(home + "/swarm-install.stamp", "w").write(install.stamp() + "\n")
+        stamp = subprocess.run("cat install.lua mods/swarm/swarm.svg | sha256sum", shell=True, cwd=os.path.join(os.path.dirname(SWARM), "herdr"),
+                               capture_output=True, text=True).stdout.split()[0]
+        open(home + "/swarm-install.stamp", "w").write(stamp + "\n")
         self.assertNotIn("out of date", run())
 
     def test_branch_fallback_for_wt(self):
