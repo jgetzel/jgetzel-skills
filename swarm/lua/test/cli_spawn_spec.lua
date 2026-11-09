@@ -111,6 +111,16 @@ function T.test_spawn_task_claims_before_launch(t)
   t:has(t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", { ok = false }).stderr, "live agent")  -- a live name is refused
 end
 
+function T.test_spawned_agent_skips_older_broadcasts(t)
+  t:fakes()
+  t:sw("a", "task", "add", "do it")
+  t:sw("a", "post", "@all", "old rule from another run")
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1")
+  t:sw("a", "post", "@all", "new rule")
+  local out = t:sw("t-9", "read", { hc = "hc1" }).stdout
+  t:hasnt(out, "old rule"); t:has(out, "new rule")
+end
+
 function T.test_spawn_launch_failure_keeps_live_agent(t)
   t:fakes(); t:set_hc({ name = "t-9", address = "t7" })
   touch(t.d .. "/launch.fail")

@@ -62,9 +62,7 @@ function M.bind(c, name, cwd, hc, model, takeover)
     end
     local t = util.now()
     c:exec("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)", name, cwd, "idle", t, t)
-    if r == nil then  -- a new agent's inbox starts now: earlier broadcasts (often an older run's) aren't for it
-      c:exec("insert or ignore into cursor(agent,last_msg_id) select ?, coalesce(max(id),0) from msg", name)
-    end
+    if r == nil then M.new_inbox(c, name) end
     c:exec("update agent set hc=?, ended=null, model=coalesce(?,model), "
       .. "status=case when ended is null then status else 'idle' end where name=?", hc, model, name)
     if old and old ~= hc then
@@ -73,13 +71,21 @@ function M.bind(c, name, cwd, hc, model, takeover)
   end)
 end
 
+-- A new agent's inbox starts now: earlier broadcasts (often an older run's) aren't for it. Call it wherever an
+-- agent row is created; a row that already has a cursor keeps it.
+function M.new_inbox(c, name)
+  c:exec("insert or ignore into cursor(agent,last_msg_id) select ?, coalesce(max(id),0) from msg", name)
+end
+
 -- Write name's own fields, fenced: nothing for an ended row or another terminal's (returns why).
 -- A new row is bound here; bind=true (wait) also binds an unbound one. Only join moves a binding.
 function M.touch(c, name, cwd, bind, kw)
   local why = M.fence(c, name)
   if why then return why end
   local here, t = M.env("HC_TERMINAL_ID"), util.now()
-  c:exec("insert or ignore into agent(name,cwd,status,last_active,started,hc) values(?,?,?,?,?,?)", name, cwd, "idle", t, t, here)
+  if c:exec("insert or ignore into agent(name,cwd,status,last_active,started,hc) values(?,?,?,?,?,?)", name, cwd, "idle", t, t, here) > 0 then
+    M.new_inbox(c, name)
+  end
   if bind and here then c:exec("update agent set hc=? where name=? and hc is null", here, name) end
   for k, v in pairs(kw or {}) do  -- keys come from code, never input
     c:exec("update agent set " .. k .. "=? where name=? and ended is null and (hc is null or hc is ?)", v, name, here)
