@@ -68,7 +68,7 @@ Split work that is both: an Opus lane writes the spec and options, a Sonnet
 lane builds the picked one. Ask the user before switching an orchestrator's
 model.
 
-`jq` may not be installed; parse hc/gh JSON with python3 or `--jq`. Write
+`jq` may not be installed; parse hc/gh JSON with `luajit -e` (cjson) or `--jq`. Write
 prompts as files in your scratchpad; they get reused for follow-ups.
 
 Agent rules to include (plus `.claude/orchestration.md`):
