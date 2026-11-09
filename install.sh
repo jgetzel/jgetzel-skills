@@ -46,7 +46,7 @@ if [ -n "$(lua_missing)" ]; then
   m=$(lua_missing)
   if [ -n "$m" ]; then echo "swarm: still missing: $m" >&2; exit 1; fi
 fi
-# The swarm skill's Herdr panel (runs on the LuaJIT checked above), when the Herdr desktop app is installed.
+# The Herdr Swarm and Calendar panels (run on the LuaJIT checked above), when the Herdr desktop app is installed.
 if [ -d "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/tabs" ]; then
-  luajit swarm/herdr/install.lua || echo "skipped the Herdr Swarm panel (see above)" >&2
+  luajit herdr-mods/install.lua || echo "skipped the Herdr panels (see above)" >&2
 fi

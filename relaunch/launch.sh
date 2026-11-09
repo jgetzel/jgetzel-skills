@@ -5,6 +5,9 @@
 # Prints its hc address. Run from the folder the agent should start in.
 #   launch.sh <name> tab|split <task> [claude args...]
 set -euo pipefail
+# The rocks install.sh puts in the per-user tree (Homebrew/apt; Nix's luajit has them built in).
+lua_tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
+export LUA_PATH="$lua_tree/share/lua/5.1/?.lua;$lua_tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}" LUA_CPATH="$lua_tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
 [ $# -ge 3 ] || { echo "usage: launch.sh <name> tab|split <task> [claude args...]" >&2; exit 2; }
 [ -n "${HC_TERMINAL_ID:-}" ] || { echo "launch.sh: not in a Herdr terminal (no HC_TERMINAL_ID)" >&2; exit 2; }
 name=$1 place=$2 task=$3; shift 3

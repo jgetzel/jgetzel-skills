@@ -98,12 +98,12 @@ end
 function T.test_who_flags_stale_herdr_copies(t)
   local home = stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-home-XXXXXX")
   t:defer(function() rmtree(home) end)
-  sh("mkdir -p %s/mods/swarm-tabs", util.shquote(home))
+  sh("mkdir -p %s/mods/jgetzel-tabs", util.shquote(home))
   local function run() return t:sw("x", "who", { env = { HERDR_APP_HOME = home } }).stdout end
   t:has(run(), "out of date: run install.sh")
-  local stamp = t:exec({ "sh", "-c", "cat install.lua mods/swarm/swarm.svg | sha256sum" },
-    { cwd = dirname(require("test.cli").SWARM) .. "/herdr" }).stdout:match("%S+")
-  put(home .. "/swarm-install.stamp", stamp .. "\n")
+  local stamp = t:exec({ "sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | sha256sum" },
+    { cwd = dirname(require("test.cli").SWARM) .. "/../herdr-mods" }).stdout:match("%S+")
+  put(home .. "/jgetzel-install.stamp", stamp .. "\n")
   t:hasnt(run(), "out of date")
 end
 

@@ -60,7 +60,7 @@ with subagents.
    is on main, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
    first, told to any live author (else to you), done on the next green run. The user watches in Herdr's Swarm panel
-   (`swarm/herdr`, installed by `install.sh`); open a `swarm watch` split only
+   (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:
    `swarm spawn <prefix>-<n> --model <m> [--task N] -- "<area and first tasks>"`.

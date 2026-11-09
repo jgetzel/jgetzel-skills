@@ -24,6 +24,9 @@ case $width in ''|*[!0-9]*) echo "shot.sh: --width takes px" >&2; exit 2 ;; esac
 case $out in /*) ;; *) out=$PWD/$out ;; esac
 
 here=$(cd -P "$(dirname "$0")" && pwd)
+# The rocks install.sh puts in the per-user tree (Homebrew/apt; Nix's luajit has them built in).
+lua_tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
+export LUA_PATH="$lua_tree/share/lua/5.1/?.lua;$lua_tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}" LUA_CPATH="$lua_tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
 repo=$(cd "$here/../.." && pwd)
 real=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/swarm/swarm.db
 [ -n "$db" ] || db=$real
@@ -90,7 +93,8 @@ wait_for 30 test -f "$H/layouts/main.json" -a -d "$H/mods/tabs"
 
 # Install like a person would, then swap the mods/swarm symlink for a real copy: hot reload and icon
 # loading don't follow a symlinked mod dir. The copy opens on --tab (the anchor is init()'s default).
-luajit "$here/install.lua" >/dev/null
+echo '{"url_command": "true"}' > "$H/calendar.json" # no calendar: never ask a keyring
+luajit "$here/../../herdr-mods/install.lua" >/dev/null
 rm "$H/mods/swarm"
 cp -r "$here/mods/swarm" "$H/mods/swarm"
 sed -i "s/this\.tab = \"overview\";/this.tab = \"$tab\";/" "$H/mods/swarm/main.js"
@@ -109,7 +113,7 @@ L
 fi
 
 hd() { herdr-app do "$@" >/dev/null; }
-hd layout.switch --name swarm
+hd layout.switch --name jgetzel
 hd space.new --name demo --folder "$D/demo"
 hd layout.show --id panel
 hd layout.select --stack panel-body --child swarm
