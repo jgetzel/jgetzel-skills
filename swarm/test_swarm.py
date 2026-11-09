@@ -559,6 +559,39 @@ print("hc1")
         self.assertFalse(rh("f a b c\n", "f a b c d\n", "f z\n"))  # insertion at the edge of a replaced span merges
         self.assertTrue(rh("f a b c\n", "f a x b c\n", "f z\n"))  # insertion inside a replaced span does not
 
+    @unittest.skipUnless(os.environ.get("SWARM_CLI") or shutil.which("luajit"), "no luajit for the Lua specs")
+    def test_lua_specs(self):
+        spec = os.path.join(os.path.dirname(os.path.realpath(SWARM)), "lua", "test", "run.lua")
+        r = subprocess.run(["luajit", spec], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_join_leave_who(self):
+        self.live_hc("t1", "t2")
+        self.sw("x", "join")
+        self.q("insert into msg(ts,frm,dest,body) values(0,'x','@all','older run')")
+        self.sw("a", "join", hc="t1")
+        self.assertEqual(self.q("select last_msg_id from cursor where agent='a'")[0][0], 1)  # skips older broadcasts
+        self.assertIn("a is bound to t1; this terminal is t2. `swarm join --takeover`", self.sw("a", "join", hc="t2", ok=False).stderr)
+        self.sw("a", "join", "--takeover", "--model", "opus", hc="t2")
+        self.assertEqual(tuple(self.q("select hc, model from agent where name='a'")[0]), ("t2", "opus"))
+        self.assertEqual(self.q("select data from event where kind='takeover'")[0][0], "t1 -> t2")
+        self.assertEqual(self.sw("a", "join", "p", "q", ok=False).returncode, 2)  # bad usage
+        self.sw("b", "join")
+        self.q("insert into lock(path,agent,since,lease_until) values('x.txt','b',0,9999999999)")
+        self.q("insert into task(title,state,owner,lease_until) values('t','claimed','b',9999999999)")
+        self.q("update agent set ctx_tokens=52000 where name='b'")
+        who = self.sw("x", "who").stdout
+        self.assertIn("machine: ", who)
+        self.assertRegex(who, r"(?m)^b idle ctx=52k idle=0m cache=warm wt: \? locks: x\.txt$")
+        self.sw("x", "leave", "b")
+        self.assertEqual(tuple(self.q("select status, ended is not null from agent where name='b'")[0]), ("ended", 1))
+        self.assertEqual((tuple(self.q("select state, owner from task")[0]), self.q("select * from lock")), (("open", None), []))
+        self.assertNotIn("\nb ", self.sw("x", "who").stdout)
+        self.assertIn("b was ended at", self.sw("b", "leave", ok=False).stderr)  # fenced
+        self.sw("b", "join")
+        self.assertEqual(tuple(self.q("select status, ended from agent where name='b'")[0]), ("idle", None))
+        self.assertEqual([r[0] for r in self.q("select kind from event where agent='b'")], ["join", "leave", "join"])
+
     def test_branch_fallback_for_wt(self):
         self.agent("w2"); self.q("update agent set wt=null")
         subprocess.run([*G, "branch", "-m", "w2", "w2/x"], cwd=self.wt, check=True)
