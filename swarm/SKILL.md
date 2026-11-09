@@ -54,8 +54,9 @@ with subagents.
    raise it only with the user; `--min-free-mem` GiB, default 4), reports live
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
-   poller: main's runs once a minute into the board, which agents read with
-   `swarm ci <sha>` instead of `gh run watch`. Agents finish a task when it
+   poller: main's push runs once a minute into the board, which agents read with
+   `swarm ci <sha>` instead of `gh run watch` (several push workflows on main?
+   `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it
    is on main, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
    first, told to any live author (else to you), done on the next green run. The user watches in Herdr's Swarm panel

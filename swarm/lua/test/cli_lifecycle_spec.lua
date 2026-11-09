@@ -368,7 +368,7 @@ function T.test_ci_poll_once_for_all(t)
   t:fakes()
   t:agent("a")
   t:set_gh("api", { { databaseId = 1, headSha = "a1", status = "completed", conclusion = "failure", url = "u1",
-                      createdAt = "2026-11-08T10:00:00Z", updatedAt = "2026-11-08T10:03:00Z" } })
+                      createdAt = "2026-11-08T10:00:00Z", updatedAt = "2026-11-08T10:03:00Z", event = "push" } })
   t:set_gh("run", "server, e2e\n")
   local function subs()  -- the poll's own calls
     local r = {}

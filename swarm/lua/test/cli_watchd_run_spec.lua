@@ -137,9 +137,9 @@ function T.test_ci_red_is_one_task_closed_on_green(t)
   local red = rev(t)
   local runs = {
     { databaseId = 9, headSha = red, conclusion = "failure", status = "completed", url = "http://ci/9",
-      createdAt = "2026-11-08T10:05:00Z", updatedAt = "2026-11-08T10:08:00Z" },
+      createdAt = "2026-11-08T10:05:00Z", updatedAt = "2026-11-08T10:08:00Z", event = "push" },
     { databaseId = 8, headSha = green, conclusion = "success", status = "completed", url = "http://ci/8",
-      createdAt = "2026-11-08T10:00:00Z", updatedAt = "2026-11-08T10:03:00Z" } }
+      createdAt = "2026-11-08T10:00:00Z", updatedAt = "2026-11-08T10:03:00Z", event = "push" } }
   local function gh(rs)
     t:fake("gh", ("#!/bin/sh\n[ \"$1\" = api ] && echo '%s' || echo 'step Build failed'\n"):format(cjson.encode(rs)))
   end
