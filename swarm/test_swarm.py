@@ -593,6 +593,17 @@ print("hc1")
         self.assertEqual(tuple(self.q("select status, ended from agent where name='b'")[0]), ("idle", None))
         self.assertEqual([r[0] for r in self.q("select kind from event where agent='b'")], ["join", "leave", "join"])
 
+    def test_who_flags_stale_herdr_copies(self):
+        home = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, home)
+        os.makedirs(home + "/mods/swarm-tabs")
+        env = {"HERDR_APP_HOME": home}
+        run = lambda: subprocess.run([SWARM, "who"], env={**os.environ, "SWARM_DB": self.db, "SWARM_NAME": "x", **env},
+                                     capture_output=True, text=True).stdout
+        self.assertIn("out of date: run install.sh", run())
+        sys.path.insert(0, os.path.join(os.path.dirname(SWARM), "herdr")); import install
+        open(home + "/swarm-install.stamp", "w").write(install.stamp() + "\n")
+        self.assertNotIn("out of date", run())
+
     def test_branch_fallback_for_wt(self):
         self.agent("w2"); self.q("update agent set wt=null")
         subprocess.run([*G, "branch", "-m", "w2", "w2/x"], cwd=self.wt, check=True)
