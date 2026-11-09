@@ -945,7 +945,7 @@ export default class Swarm extends View {
       .when(!run.length, el => el.child(div().text_size(11).text_color(t.dim).child("No heavy jobs running")))
       .children(run.slice(0, 8).map((j, i) => h_flex().id(`run-${i}`).h(22).gap(8).items_center().text_size(11.5).min_w(0)
         .child(div().w(40).flex_none().text_color(t.dim).child(ago(j.elapsed_s))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${j.agent} · ${j.command}`))
-        .child(div().flex_none().text_color(j.lost ? t.blocked : t.dim).child(j.machine ? `${j.machine}${j.lost ? " lost" : ""}` : `${gb(j.rss_kb)}G`))))
+        .child(div().flex_none().text_color(j.lost ? t.blocked : t.dim).child(j.machine ? `${j.machine}${j.unreachable ? " unreachable" : j.lost ? " lost" : j.rss_kb != null ? ` · ${gb(j.rss_kb)}G` : ""}` : `${gb(j.rss_kb)}G`))))
       .child(div().mt(4).text_size(12).font_semibold().child("Recent starts"))
       .when(!heavy.length, el => el.child(div().text_size(11).text_color(t.dim).child("None recently")))
       .children(heavy.map(e => h_flex().h(22).gap(8).items_center().text_size(11.5).min_w(0)

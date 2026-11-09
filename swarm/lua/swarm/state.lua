@@ -228,7 +228,8 @@ function M.cmd_state(a)
       run[#run + 1] = { agent = h.agent, command = util.cut(h.cmd, 120), elapsed_s = math.floor(h.age),
         start = t - math.floor(h.age), rss_kb = h.rss_kb }
     end
-    -- jobs on other machines (local ones are in the /proc scan); lost: its `swarm run` is gone and so is its terminal
+    -- jobs on other machines (local ones are in the /proc scan), with watchd's reading of each job's process tree;
+    -- lost: its `swarm run` is gone and so is its terminal; unreachable: watchd's probe of the machine failed
     local js, gone = {}, {}
     if #rows("select 1 from event where kind='job-start' limit 1") > 0 then
       for _, j in ipairs(machine.live_jobs(c, t)) do
@@ -244,9 +245,16 @@ function M.cmd_state(a)
     end
     local isgone = {}
     for _, j in ipairs(gone) do isgone[j] = true end
+    local mr = #js > 0 and c:one("select v from meta where k='machines'")
+    local ms = mr and json.decode(mr.v) or {}
     for _, j in ipairs(js) do
-      run[#run + 1] = { agent = j.agent, command = util.cut(j.cmd or "", 120), elapsed_s = t - j.ts, start = j.ts, rss_kb = null,
-        machine = j.machine, job = j.id, lost = (isgone[j] and not live[j.hc]) and true or false }
+      local m = type(ms[j.machine]) == "table" and ms[j.machine] or {}
+      local r = type(m.jobs) == "table" and type(m.jobs[j.id]) == "table" and m.jobs[j.id] or {}
+      local unreach = m.state ~= nil and m.state ~= "connected"
+      local gone = r.gone ~= nil or (r.rss_kb == nil and not live[j.hc])  -- the probe's word, else `hc ls` here
+      run[#run + 1] = { agent = j.agent, command = util.cut(j.cmd or "", 120), elapsed_s = t - j.ts, start = j.ts,
+        rss_kb = r.rss_kb or null, cpu = r.cpu or null, machine = j.machine, job = j.id, unreachable = unreach,
+        lost = (not unreach and isgone[j] and gone) and true or false }
     end
     out.running = array(run)
   end
