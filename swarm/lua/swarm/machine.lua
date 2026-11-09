@@ -161,7 +161,10 @@ end
 function M.machine_note(c, me, procs)
   local avail, total, psi = M.mem_psi()
   local hv = M.heavy_procs(c, procs or M.read_procs())
-  table.sort(hv, function(a, b) return a.rss_kb ~= b.rss_kb and a.rss_kb > b.rss_kb or a.pid < b.pid end)
+  table.sort(hv, function(a, b)  -- biggest first, then pid; not `x ~= y and x > y or ...`: that falls through when x < y
+    if a.rss_kb ~= b.rss_kb then return a.rss_kb > b.rss_kb end
+    return a.pid < b.pid
+  end)
   local lines = { M.machine_line(avail, total, psi) }
   for i = 1, math.min(3, #hv) do
     local h = hv[i]
