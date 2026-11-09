@@ -21,8 +21,10 @@ with subagents.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
    Your `ListAgents` name is the address agents' blocked notices reach.
-4. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
-5. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
+4. The CLI needs LuaJIT plus 7 rocks. `install.sh` checks and installs them by one of three routes: Nix
+   (`nix profile install github:jgetzel/jgetzel-skills`, the repo flake), Homebrew, or distro packages + luarocks.
+5. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
+6. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
    knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
    `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys.
 

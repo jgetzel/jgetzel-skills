@@ -30,8 +30,8 @@ rocks() {  # $1: luarocks --lua-dir, $2/$3: SQLITE_DIR/PCRE2_DIR args (empty on 
 }
 if [ -n "$(lua_missing)" ]; then
   if command -v nix >/dev/null 2>&1; then
-    echo "swarm needs LuaJIT: add to home.packages, or run nix profile install --impure --expr with the same:" >&2
-    echo "  (luajit.withPackages (p: with p; [ $ROCKS ]))" >&2
+    echo "swarm needs LuaJIT: nix profile install github:jgetzel/jgetzel-skills" >&2
+    echo "  (or add that flake's packages.\${system}.default to home.packages)" >&2
   elif command -v brew >/dev/null 2>&1; then
     brew install luajit luarocks sqlite pcre2 &&
       rocks "$(brew --prefix luajit)" "SQLITE_DIR=$(brew --prefix sqlite)" "PCRE2_DIR=$(brew --prefix pcre2)"
