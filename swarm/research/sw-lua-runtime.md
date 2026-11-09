@@ -1,5 +1,7 @@
 # sw-lua-runtime: ship swarm's Lua runtime as one prebuilt binary
 
+**Decision (2026-11-08, user): not built.** No prebuilt runtime ships. Users get LuaJIT plus the 7 rocks from their own package manager (like pip for Python skills): the root `flake.nix` for Nix users, Homebrew via `install.sh`, or distro packages + luarocks.
+
 Task #83, 2026-11-08, sr-65. The question: can swarm install with nothing to set up, the way Neovim embeds
 LuaJIT so lazy.nvim needs no system Lua? The idea is one small prebuilt binary per platform: LuaJIT plus
 the C libraries the CLI needs, linked in. It runs the `.lua` files from the checkout, so scripts stay
