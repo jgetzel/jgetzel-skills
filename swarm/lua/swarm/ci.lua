@@ -83,8 +83,10 @@ function M.ci_poll(c, repo, every)
   local err = c:one("select v from meta where k='ci_error'")
   if err and now() - tonumber(err.v) < 300 then return end  -- refused: GitHub's secondary limit grows with retries
   if not M.due(c, "ci_polled", every or 60) then return end
-  -- The runs endpoint itself: one request, where `gh run list` first lists every workflow (a second request)
-  local out = proc.run({ "gh", "api", "repos/{owner}/{repo}/actions/runs?branch=main&per_page=20", "--jq",
+  -- The runs endpoint itself: one request, where `gh run list` first lists every workflow (a second request).
+  -- Push runs only: a scheduled workflow (an uptime check) on main's head isn't main's CI, and its green hid a red.
+  -- shortcut: a check run started by hand (workflow_dispatch) isn't counted; filter by workflow if one matters.
+  local out = proc.run({ "gh", "api", "repos/{owner}/{repo}/actions/runs?branch=main&event=push&per_page=20", "--jq",
     "[.workflow_runs[] | {databaseId: .id, headSha: .head_sha, status, conclusion, url: .html_url,"
     .. " createdAt: .created_at, updatedAt: .updated_at}]" }, repo)
   local runs = out and out ~= "" and json.decode(out) or nil
