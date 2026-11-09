@@ -316,17 +316,26 @@ function T.test_end_agent_keeps_worktree_a_live_peer_uses(t)
   assert(exists(t.wt))
 end
 
-function T.test_claim_keeps_agent_and_lease(t)
+function T.test_idle_owner_past_lease_loses_claim(t)
   idle(t, "e", { wt = t.wt })
   t:sw("e", "task", "add", "t"); t:sw("e", "task", "claim", "1")
   t:q("update task set lease_until=1")
   comms_tick(t)
   assert(not ended(t, "e"))
+  t:eq(t:q1("select state from task").state, "open")
+  t:has(t:sw("e", "read").stdout, "lease expired while idle")
+end
+
+function T.test_working_owner_past_lease_keeps_claim(t)
+  t:fakes()
+  t:agent("e", { status = "working" }); t:agent("comms")
+  t:sw("e", "task", "add", "t"); t:sw("e", "task", "claim", "1")
+  t:q("update task set lease_until=1")
+  comms_tick(t)
   t:eq(t:q1("select state from task").state, "claimed")
   t:has(t:sw("comms", "read").stdout, "past its lease")
   comms_tick(t)
   t:eq(t:q1("select count(*) n from msg where dest='comms'").n, 1)  -- once per lease period
-  t:hasnt(t:sw("e", "read").stdout, "open task")  -- not digested
 end
 
 function T.test_comms_never_digested_or_ended_reusable_digested(t)
@@ -453,6 +462,10 @@ function T.test_block_unblock(t)
   t:eq(t:q1("select state,owner from task").owner, "a")
   t:eq(t:q1("select state from task").state, "claimed")
   t:eq(#t:q("select 1 x from msg where dest='a' and body like '%sqlite%'"), 1)
+  t:has(t:sw("a", "task", "show", "1").stdout, "sqlite")
+  -- the answer outlives the owner: a second agent claiming the released task sees it
+  t:sw("a", "task", "release", "1"); t:agent("c")
+  t:has(t:sw("c", "task", "claim", "1").stdout .. t:sw("c", "task", "show", "1").stdout, "sqlite")
 end
 
 function T.test_hc_blocked_marks_task(t)

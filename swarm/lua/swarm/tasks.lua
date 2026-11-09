@@ -224,7 +224,8 @@ function M.cmd_task(c, a)
         s = s .. (", green %dm after merge"):format(math.floor(tm.merge_to_green_s / 60))
       end
     end
-    print(s .. M.dep_lines(c, r) .. "\n" .. (py(r.body) or "(no body)"))
+    print(s .. M.dep_lines(c, r) .. "\n" .. (py(r.body) or "(no body)")
+      .. (py(r.answer) and "\nAnswer to the block: " .. r.answer or ""))
 
   elseif a.act == "after" then
     c:tx(function()
@@ -296,8 +297,8 @@ function M.cmd_task(c, a)
       util.die(("only %s or the communicator can unblock #%s"):format(tostring(r.owner), d(a.id)))
     end
     c:tx(function()
-      if c:exec("update task set state='claimed', question=null, lease_until=? where id=? and owner=? and state='blocked'",
-          t + M.LEASE, a.id, r.owner) == 0 then
+      if c:exec("update task set state='claimed', question=null, answer=coalesce(?, answer), lease_until=? where id=? and owner=? and state='blocked'",
+          py(a.answer), t + M.LEASE, a.id, r.owner) == 0 then
         util.die(("task #%s changed under you; `swarm task show %s`"):format(d(a.id), d(a.id)))
       end
       db.log(c, n, "unblock", nil, "#" .. d(a.id))

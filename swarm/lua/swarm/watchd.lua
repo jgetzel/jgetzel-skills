@@ -63,8 +63,8 @@ function M.reap(c, live_addrs, t, comms)
   local out = {}
   for _, r in ipairs(c:all("select * from task where state='claimed' and lease_until<?", t)) do
     local o = c:one("select * from agent where name=?", r.owner)
-    if o and o.ended == nil and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
-      -- a live owner idling on its claim is the common state, not abandonment: tell the communicator, keep it
+    if o and o.ended == nil and o.status == "working" and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
+      -- a working owner past its lease forgot to renew: tell the communicator, keep it
       if comms and not c:one("select 1 from event where kind='lease-late' and path=? and ts>?", d(r.id), t - M.LEASE) then
         db.log(c, r.owner, "lease-late", d(r.id))
         msgs.post(c, "swarm", comms, ("%s has held #%s past its lease (idle %s)."):format(r.owner, d(r.id), util.ago(o.last_active)),
@@ -76,7 +76,7 @@ function M.reap(c, live_addrs, t, comms)
             .. "where id=? and owner=? and state='claimed' and lease_until<?", r.id, r.owner, t) == 0 then
           return
         end
-        msgs.post(c, "swarm", r.owner, ("your lease on task #%s (%s) expired; it is open again. "
+        msgs.post(c, "swarm", r.owner, ("released #%s (%s): lease expired while idle; renew on long work. "
           .. "`swarm task claim %s` to take it back."):format(d(r.id), r.title, d(r.id)), false, "system")
         db.log(c, r.owner, "reap", nil, ("task #%s lease expired"):format(d(r.id)))
         out[#out + 1] = "task #" .. d(r.id)
