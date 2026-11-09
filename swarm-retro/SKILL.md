@@ -45,10 +45,10 @@ root:
   (conflicts, shared trees, reaps, compactions, CI reds, blocked prompts), messages, locks, and
   always-loaded context (spawn prompts × agents, cold-cache wakes, hook-injected bytes by source).
   Skip with no `swarm.db`.
-- `~/.claude/skills/harness-retro/time-report.py --since <start>`: work and
+- `~/.claude/skills/harness-retro/time-report.lua --since <start>`: work and
   waiting time, CI per job. Add `--project-dir` for agents that worked in
   another repo's project dir.
-- `~/.claude/skills/harness-retro/harness-lint.py`: always-on bytes, and
+- `~/.claude/skills/harness-retro/harness-lint.lua`: always-on bytes, and
   broken skills, hooks and settings. Lint errors are stale facts: fix them free.
 
 From the report, list the **coordination signals**, each with the event it
@@ -77,7 +77,7 @@ successors are generations of one lane: digest them together. The
 communicator usually has none listed: it is the user's session, or the one
 running this retro; find it in the project dir as a `.jsonl` that ran
 `swarm join`, or note that it is missing. Render each with
-`~/.claude/skills/harness-retro/transcript.py FILE.jsonl > OUT.md`.
+`~/.claude/skills/harness-retro/transcript.lua FILE.jsonl > OUT.md`.
 
 Give each rendered file to a read-only subagent, in parallel. Brief:
 
@@ -232,7 +232,7 @@ candidate with its declarations, gate and test verdict, the diffs, and
 always-loaded bytes (files, brief × agents, hook-injected) before → after. Apply only what they approve. Approval of
 a change in a repo that lands by PR (Scope) covers its branch and PR; anywhere
 else, commit or push only when asked.
-Re-run `harness-lint.py`: it must pass.
+Re-run `harness-lint.lua`: it must pass.
 
 Then append to the ledger of the change's scope, one line per candidate,
 approved or not:
