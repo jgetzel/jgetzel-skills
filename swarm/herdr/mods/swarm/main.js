@@ -41,7 +41,16 @@ const base = p => p ? p.split("/").filter(Boolean).pop() : "";
 const kilo = n => n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 // One display line: first non-empty line (rows are fixed-height; a newline would overlap neighbours).
-const one = x => String(x ?? "").split("\n").map(l => l.trim()).find(Boolean) ?? "";
+const one = x => {
+  const t = String(x ?? "");
+  for (let i = 0; i <= t.length;) {
+    let j = t.indexOf("\n", i); if (j < 0) j = t.length;
+    const l = t.slice(i, j).trim();
+    if (l) return l;
+    i = j + 1;
+  }
+  return "";
+};
 // Push events carry branch and subject (state --json since #39); older ones only the shell command.
 const pushBranch = e => {
   if (e.branch) return e.branch;
@@ -153,6 +162,7 @@ export default class Swarm extends View {
         }
         // A view sends only its sections; the others keep their last values (empty at first) until their tab asks.
         this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
+        if (this.s.agents) { const d = this.derive(); this.acts = [this.buildActs(d, false), this.buildActs(d, true)]; }
         if (on) this.watching = null; else if (s.agents) this.watch(s.db.replace(/\/[^/]*$/, ""), cx);
       } catch (e) { this.error = String(e.message ?? e); }
       finally { this.loading = false; cx.notify(); }
@@ -681,10 +691,11 @@ export default class Swarm extends View {
     const items = this.actItems(d, log);
     return items.filter(i => filter === "all" || (filter === "you" ? KIND[i.kind].level === "you" && i.open : KIND[i.kind].group === filter));
   }
-  // Built once per snapshot and view: Herdr's engine is slow enough that a frame can't afford it twice.
-  actItems(d, log) {
-    const s = this.s, c = this.actCache;
-    if (c?.s === s && c.log === log) return c.items;
+  // Render only reads these: refresh() builds both lists once per snapshot, because Herdr's engine
+  // interrupts a render that builds them in the frame.
+  actItems(d, log) { return this.acts?.[Number(log)] ?? []; }
+  buildActs(d, log) {
+    const s = this.s;
     const items = [], groups = new Map();
     for (const m of s.messages) {
       const kind = m.urgent ? "urgent" : m.kind === "system" || m.kind === "notice" ? "notice" : m.kind === "all" ? "all" : "msg";
@@ -734,7 +745,6 @@ export default class Swarm extends View {
     }
     items.sort((a, b) => b.ts - a.ts);
     if (!log) this.foldAsks(items);
-    this.actCache = { s, log, items };
     return items;
   }
 
