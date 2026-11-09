@@ -10,11 +10,19 @@ set -euo pipefail
 name=$1 place=$2 task=$3; shift 3
 case $place in tab | split) ;; *) echo "launch.sh: place is tab or split, not $place" >&2; exit 2 ;; esac
 
-# Prints "<space id> <tab id>" of the window tab showing terminal $1, or nothing.
-where() { herdr-app ls | ADDR="$1" python3 -c 'import json,os,sys
-print(next((s["id"]+" "+t["id"] for s in json.load(sys.stdin)["spaces"] for t in s["tabs"] if any(x["terminal"]==os.environ["ADDR"] for x in t["terminals"])),""))'; }
-read -r space tab <<<"$(where "$HC_TERMINAL_ID")"
-[ -n "$space" ] || { echo "launch.sh: $HC_TERMINAL_ID is not shown in the Herdr window" >&2; exit 1; }
+# Prints "<space id> <tab id>" of the window tab showing terminal $1, or nothing (also when no window runs here).
+where() { herdr-app ls 2>/dev/null | ADDR="$1" python3 -c 'import json,os,sys
+try: d = json.load(sys.stdin)
+except ValueError: d = {"spaces": []}
+print(next((s["id"]+" "+t["id"] for s in d["spaces"] for t in s["tabs"] if any(x["terminal"]==os.environ["ADDR"] for x in t["terminals"])),""))'; }
+# The window labels every terminal it shows with its space and tab, and hc keeps the labels, so this works
+# when the window runs on another machine; ask the local window only when the labels are missing.
+read -r space tab <<<"$(hc get "$HC_TERMINAL_ID" 2>/dev/null | python3 -c 'import json,sys
+try: l = json.load(sys.stdin).get("labels") or {}
+except ValueError: l = {}
+print(l.get("herdr.space", ""), l.get("herdr.tab", ""))')"
+[ -n "$space" ] || read -r space tab <<<"$(where "$HC_TERMINAL_ID")"
+[ -n "$space" ] || { echo "launch.sh: $HC_TERMINAL_ID has no herdr.space label and no Herdr window here shows it" >&2; exit 1; }
 labels=(--label "herdr.space=$space")
 [ "$place" = split ] && labels+=(--label "herdr.tab=$tab")
 
@@ -32,7 +40,7 @@ addr=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["address"])' "$
 echo "$addr"
 set +e
 # The window numbers a new tab; name it once the window has placed the terminal.
-if [ "$place" = tab ]; then
+if [ "$place" = tab ] && herdr-app status >/dev/null 2>&1; then # a window on another machine names its own tabs
   for _ in $(seq 20); do
     read -r _ id <<<"$(where "$addr")"
     [ -n "$id" ] && { herdr-app do tab.rename --id "$id" --name "$name" >/dev/null; break; }
