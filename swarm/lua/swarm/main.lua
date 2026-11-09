@@ -209,6 +209,9 @@ local ok, err = xpcall(main, function(e)
 end, arg)
 io.stdout:flush()
 if ok then os.exit(0) end
-if type(err) == "table" then os.exit(err.exit) end
+if type(err) == "table" then
+  if err.lost then io.stderr:write(err.lost .. "\n") end  -- tasks.reserve's lost race, uncaught: Python prints SystemExit's text
+  os.exit(err.exit)
+end
 io.stderr:write("swarm: " .. tostring(err) .. "\n")
 os.exit(1)
