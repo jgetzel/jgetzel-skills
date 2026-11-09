@@ -105,7 +105,7 @@ rules, not negotiation.
 |---|---|---|
 | Members | Herdr tabs via `relaunch/launch.sh`. Everyone runs `--permission-mode auto` with `crossSessionInbound: accept`; mixed mode classes hold messages, then drop them after 5 min. `--model` is set per agent. | launch.sh, orchestrate model table |
 | Store | `.swarm/swarm.db` (SQLite WAL, gitignored, absolute path shared by worktrees). Tables: see "What's built". | — |
-| CLI | `swarm` (python3 stdlib): see "What's built". One Bash call per post, whatever the fan-out. | — |
+| CLI | `swarm` (LuaJIT + 7 rocks, `research/sw-lua.md`): see "What's built". One Bash call per post, whatever the fan-out. | — |
 | Delivery to busy agents | A `PostToolUse` hook injects the agent's unread items as `additionalContext` at its next tool round. | hooks |
 | Waking idle agents | A `Stop` hook with `asyncRewake` runs `swarm wait --me X` and exits 2 when something arrives. **Unproven: probe first.** Fallback: whoever posts gets a list of idle recipients and sends each a one-line `SendMessage` nudge. | — |
 | DMs | `SendMessage`. A `PostToolUse` hook mirrors each one into `msg`, so the human sees it. | — |
@@ -217,7 +217,7 @@ the `role` table) is replaced by the code and by the specs below. Read those for
 the mechanism; this section only says what each part is for.
 
 Everything lives in `swarm/`, symlinked to `~/.claude/skills/swarm`: one
-python3-stdlib CLI (`swarm/swarm`), `SKILL.md` for the communicator,
+LuaJIT CLI (`swarm/swarm`, modules in `swarm/lua/`), `SKILL.md` for the communicator,
 `brief.md` for agents (prepended by `spawn`), `settings.template.json` for
 their hooks, and `test_swarm.py`. `swarm -h` lists commands.
 

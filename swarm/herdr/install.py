@@ -34,8 +34,8 @@ TABS_PATCH = [
      "      let on = false;\n"
      '      // Another machine: its installed swarm skill (full state if it predates --view); here: the CLI beside\n'
      '      // mods/swarm. Only `active` is read, so the cheapest view.\n'
-     '      const r = loc.on ? exec("sh", ["-c", \'S="$HOME/.claude/skills/swarm/swarm"; env -u SWARM_DB python3 "$S" state --json --view board 2>/dev/null || exec env -u SWARM_DB python3 "$S" state --json\'], { cwd: loc.cwd, on: loc.on })\n'
-     '        : exec("env", ["-u", "SWARM_DB", "python3", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", "--view", "board"], { cwd: loc.cwd });\n'
+     '      const r = loc.on ? exec("sh", ["-c", \'S="$HOME/.claude/skills/swarm/swarm"; env -u SWARM_DB "$S" state --json --view board 2>/dev/null || exec env -u SWARM_DB "$S" state --json\'], { cwd: loc.cwd, on: loc.on })\n'
+     '        : exec("env", ["-u", "SWARM_DB", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", "--view", "board"], { cwd: loc.cwd });\n'
      '      try { const out = await r; on = out.code === 0 && JSON.parse(out.stdout).active === true; } catch {}\n'
      "      this.swarmBusy = false;\n"
      "      if (this.swarm[loc.key] !== on) { this.swarm[loc.key] = on; cx.notify(); }\n"

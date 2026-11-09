@@ -3,6 +3,7 @@ import sys; sys.dont_write_bytecode = True
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, time, unittest, unittest.mock
 
 SWARM = os.environ.get("SWARM_CLI") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm")
+PY = SWARM.endswith(".py")  # the Python CLI (SWARM_CLI=swarm/swarm.py) until P11 deletes it
 G = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
 
@@ -289,7 +290,7 @@ print("hc1")
         self.assertEqual(self.q("select state from task")[0]["state"], "claimed")
         self.assertEqual(self.q("select agent from lock")[0]["agent"], "a")
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_reap_spares_row_rebound_after_hc_ls(self):
         self.sw("a", "join", hc="t1")
         self.sw("a", "task", "add", "t", hc="t1"); self.sw("a", "task", "claim", "1", hc="t1")
@@ -320,7 +321,7 @@ print("hc1")
         self.assertNotEqual(pr.returncode, 0, err)
         self.assertEqual([tuple(r) for r in self.q("select path,agent from lock")], [("a.txt", "a")])
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_done_after_reap_and_reclaim_fails(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
@@ -333,7 +334,7 @@ print("hc1")
             self.assertEqual(tuple(self.q("select state,owner from task")[0]), ("claimed", "b"), act)
             self.q("update task set owner='a'")
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_reap_keeps_renew_after_its_select(self):
         self.sw("a", "task", "add", "t1")
         self.sw("a", "task", "claim", "1")
@@ -546,7 +547,7 @@ print("hc1")
         self.edit("a", "b.txt")
         self.assertEqual(len(self.notices("a")), 1)
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_real_hunk_probe_asserts(self):
         import importlib.machinery, importlib.util
         ld = importlib.machinery.SourceFileLoader("swarm_mod2", SWARM)
@@ -559,7 +560,7 @@ print("hc1")
         self.assertFalse(rh("f a b c\n", "f a b c d\n", "f z\n"))  # insertion at the edge of a replaced span merges
         self.assertTrue(rh("f a b c\n", "f a x b c\n", "f z\n"))  # insertion inside a replaced span does not
 
-    @unittest.skipUnless(os.environ.get("SWARM_CLI") or shutil.which("luajit"), "no luajit for the Lua specs")
+    @unittest.skipUnless(shutil.which("luajit"), "no luajit for the Lua specs")
     def test_lua_specs(self):
         spec = os.path.join(os.path.dirname(os.path.realpath(SWARM)), "lua", "test", "run.lua")
         r = subprocess.run(["luajit", spec], capture_output=True, text=True)
@@ -786,7 +787,7 @@ print("hc1")
         os.environ["SWARM_DB"] = self.db
         return m, m.connect()
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_end_agent_skips_agent_that_claimed_since_decision(self):
         self.idle("e", wt=self.wt)
         self.sw("e", "task", "add", "t")
@@ -1073,7 +1074,7 @@ print("hc1")
         self.assertEqual(tuple(self.q("select owner,state from task")[0]), (None, "open"))
         self.assertTrue(self.q("select ended from agent where name='t-9'")[0][0])
 
-    @unittest.skipIf(os.environ.get("SWARM_CLI"), "needs the Python module: a race or a pure function, a Lua spec instead")
+    @unittest.skipUnless(PY, "needs the Python module: a race or a pure function, a Lua spec instead")
     def test_auto_spawn_skips_lost_race(self):
         m = self.mod()
         launched = []
