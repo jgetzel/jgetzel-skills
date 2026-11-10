@@ -276,7 +276,7 @@ local function nudges(t) return t:q("select body from msg where dest='e' and urg
 local function told(t) return t:q("select body from msg where dest='comms'") end
 
 function T.test_unclean_agent_nudged_once_then_ended_when_clean(t)
-  idle(t, "e", { wt = t.wt, waiter = unistd.getpid(), last_active = os.time() - 600 })
+  idle(t, "e", { wt = t.wt, last_active = os.time() - 600 })
   t:write("b", "scratch.txt", "x")
   comms_tick(t); t:eq(#nudges(t), 0)  -- idle under the threshold
   t:q("update agent set last_active=? where name='e'", OLD)
@@ -290,7 +290,7 @@ function T.test_unclean_agent_nudged_once_then_ended_when_clean(t)
 end
 
 function T.test_nudged_and_still_unclean_tells_comms_once(t)
-  idle(t, "e", { wt = t.wt, waiter = unistd.getpid() })
+  idle(t, "e", { wt = t.wt })
   commit_wip(t, "new.txt")
   comms_tick(t); t:eq(#nudges(t), 1)
   t:has(nudges(t)[1].body, "wip")
@@ -303,7 +303,8 @@ function T.test_nudged_and_still_unclean_tells_comms_once(t)
 end
 
 function T.test_unclean_agent_without_waiter_tells_comms(t)
-  idle(t, "e", { wt = t.wt })
+  local p = io.popen("sh -c 'echo $$'"); local dead = tonumber(p:read("*l")); p:close()
+  idle(t, "e", { wt = t.wt, waiter = dead })
   t:write("b", "scratch.txt", "x")
   comms_tick(t); comms_tick(t)
   t:eq(#nudges(t), 0)
