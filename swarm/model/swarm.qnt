@@ -15,6 +15,7 @@ module swarm {
   // (task done --evidence "" is accepted before #113: "emptyEvidence" in OFF is the code since)
   const LOCK_OVERLAP: bool // swarm lock refuses any common file (since #114); before, only one covering the other
   const DELIVER_CAS: bool  // a delivery moves the cursor only from where it read, else reads again (since #115)
+  const PASSED_OVER: bool  // lifecycle ends a reusable agent told of the whole pool, inbox read, idle again (since #116)
   // what the environment can't do in this instance, so the checker can exhaust it: "deps" (add --after, task after),
   // "block" (block, unblock), "big" (a context too big to reuse), "cold", "waiterGone" (the Stop hook's waiter
   // times out at 21000 s), "leave" (swarm leave, a dead terminal), "hc" (permission prompts), "prompt" (a turn the
@@ -159,7 +160,9 @@ module swarm {
   }
   pure def lifecycle(st: State): State = {
     val pl = pool(st)
-    val reusable = NAMES.filter(a => finished(st, a) and not(st.ag.get(a).big) and pl.size() > 0)
+    // since #116 one told of the whole pool, its inbox read, has passed it over: ended, not reusable
+    val reusable = NAMES.filter(a => finished(st, a) and not(st.ag.get(a).big) and pl.size() > 0
+      and not(PASSED_OVER and pl.subseteq(st.ag.get(a).told) and unread(st, a).length() == 0))
     val ended = AGENTS.foldl(st, (x, a) =>
       if (finished(st, a) and not(reusable.contains(a))) releaseAll(setAg(x, a, g => { ...g, st: "ended", boot: false, believes: Set() }), a)
       else x)
@@ -501,106 +504,116 @@ module swarm {
 // property doesn't need turned off, so TLC exhausts them (check.sh). S1 and liveness are per task: one task.
 module before {  // every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = false,
     OFF = Set(), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module first106 {  // every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = false,
     OFF = Set(), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module after {  // every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("emptyEvidence"), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module s1_before {  // oneWorker
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "big", "cold", "waiterGone", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s1_first106 {  // oneWorker
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "big", "cold", "waiterGone", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s1_after {  // oneWorker
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "big", "cold", "waiterGone", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s2_racy {  // noEarlyStart: claim before #112, a read, then a write that checks only state
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 3, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("block", "big", "cold", "waiterGone", "leave", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s2_fixed {  // noEarlyStart: claim since #112: the write rechecks the deps
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 2, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("block", "big", "cold", "waiterGone", "leave", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s2_atomic {  // noEarlyStart: claim as one transaction
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 3, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("block", "big", "cold", "waiterGone", "leave", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s3_globs {  // locksDisjoint: two globs neither of which covers the other
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s3_fixed {  // locksDisjoint since #114: lock refuses any common file
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = false, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s3_plain {  // locksDisjoint: a directory and files, no globs
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set("m/", "m/a.lua", "m/b.lua"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module s4_racy {  // inboxExact: the waiter delivers as a read then a write
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module s4_fixed {  // inboxExact since #115: the waiter reads, then writes only if the cursor hasn't moved
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module s4_atomic {  // inboxExact: every delivery one step; doneHasEvidence before #113
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module s5_fixed {  // doneHasEvidence since #113: done refuses empty evidence
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module l_before {  // liveness: waiters never time out
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module l_first106 {  // liveness: waiters never time out
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module l_after {  // liveness: waiters never time out
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
+    OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
+}
+module l_fixed {  // liveness since #116: a reusable agent that passed the pool over is ended
+  import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module l_after_waiter {  // liveness: a waiter may time out
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
+    OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
+}
+module l_fixed_waiter {  // liveness since #116, a waiter may time out
+  import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
 module replay {  // what cli_model_spec.lua drives the CLI with: atomic commands, no hc
   import swarm(AGENTS = ["m-1", "m-2", "m-3", "m-4"], ROSTER = 2, NTASKS = 4, PATTERNS = Set("m/*.lua", "m/a*", "m/", "m/a.lua"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("hc", "leave", "emptyEvidence"), COMPACT = false, MAX_LOG = 1000, MAX_POSTS = 6, COMMS = "m-comms") .*
 }

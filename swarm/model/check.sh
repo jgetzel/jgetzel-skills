@@ -26,8 +26,8 @@ s1_before        oneWorker        inv  holds
 s1_first106      oneWorker        inv  fails
 s1_after         oneWorker        inv  holds
 s2_racy          noEarlyStart     inv  fails
-s2_atomic        noEarlyStart     inv  holds
 s2_fixed         noEarlyStart     inv  holds
+s2_atomic        noEarlyStart     inv  holds
 s3_globs         locksDisjoint    inv  fails
 s3_fixed         locksDisjoint    inv  holds
 s3_plain         locksDisjoint    inv  holds
@@ -40,9 +40,14 @@ l_before         L2               temp fails
 l_first106       L2               temp holds
 l_after          L2               temp holds
 l_before         L3               temp fails
-l_after          L3               temp holds
-l_after          L1               temp holds
+l_after          L3               temp fails
+l_after          L1               temp fails
+l_fixed          L1               temp holds
+l_fixed          L2               temp holds
+l_fixed          L3               temp holds
 l_after_waiter   L1               temp fails
 l_after_waiter   L3               temp fails
+l_fixed_waiter   L1               temp fails
+l_fixed_waiter   L3               temp fails
 EOF
 exit $((fails > 0))
