@@ -18,7 +18,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3 |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the eleven counterexamples as runs, and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the thirteen counterexamples as runs, and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | the part of L2 that is proved |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
@@ -72,6 +72,8 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `waiterAlive` | an idle agent whose waiter exited is kept reusable, and never reads its digest | PR #119 ends it |
 | `bgKeeps` | reap reopens a lapsed claim of an idle owner even while its background job runs | PR #121 keeps it |
 | `retake` | the 350k fence on `task claim` refuses a task reap took from that very agent | PR #121 lets it retake (`reaped`, the Lua's `reaped_from`) |
+| `allWts` | lifecycle keeps an agent only for the one worktree `wt_map` picks | PR #123 keeps it while any worktree it owns is unlanded |
+| `uncleanNudge` | an idle agent kept only by an unclean worktree is kept silently, forever | PR #122 sends one urgent nudge per idle stretch |
 
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
 check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
@@ -161,13 +163,15 @@ Lua.
 | 9 | L1, L3 | `waiterAlive := false` / the run | The same with a waiter that exited: the agent never reads the digest, so it stays reusable and holds spawn back. | aeaf44f, PR #119 (board #113) |
 | 10 | work lost | `bgKeeps := false` / the run | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). | PR #121 (board #115) |
 | 11 | work lost | `retake := false` / the run | The task is reopened; its owner, whose context is past 350k, comes back and `task claim` refuses it, so only a fresh agent can take it. | PR #121 (board #115) |
+| 12 | work loss | `allWts := false` / the run | An agent owns two worktrees; `wt_map` picks the landed one, the other holds work not on main, and lifecycle ends the agent mid-task. | PR #123 (board #116) |
+| 13 | stuck, silent | `uncleanNudge := false` / the run | An agent idle 30 min with an unclean worktree and nothing else holding it: no action is enabled, forever, and nobody is told. With the fix `nudge` is enabled and its urgent message wakes the waiter; a second nudge is refused until the agent has woken and stopped again. | PR #122 (board #114) |
 
-Nothing is open: every counterexample above has a fix on main.
+Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent with unlanded work, or that the nudge makes the agent clean (it can ignore it). Nothing is open: every counterexample above has a fix on main.
 
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the eleven counterexamples and their fixed runs. **Not proved**: L1, L2
+is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L2
 and L3 as statements about fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
@@ -182,8 +186,10 @@ Replayed with `racy` off and no hc: a race can't be forced through the CLI, and 
 Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
 
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook; `swarm run` and machines;
-worktrees and `landed` (every agent's work counts as landed), so neither PR #122's nudge to an agent kept only
-by an unclean worktree nor PR #123's every-worktree rule (board #119); another swarm's communicator on the board (PR #124); roles and `swarm stay`
+git itself: an agent's worktrees are two flags (`wt1`, the one `wt_map` picks, and `wt2`) that `dirty` sets and clears
+at will, `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a live waiter (the no-waiter notice to
+the communicator is a notice), and none of this is replayed through the CLI (`Traces.lean` doesn't generate `dirty`,
+`stale` or `nudge`: PR #122's and #123's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
 launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`); `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); notices to the communicator; the 9000-character delivery budget

@@ -103,7 +103,7 @@ theorem tick_inv {c : Cfg} (P : State → Prop)
   have h1 : P (reapLocks (reapTasks c s)) := hlocks _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
   unfold tickOf lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
-  have h2 := foldl_inv (fun x a => if finished s1 a && !reusable c s1 a then endAgent x a else x)
+  have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
     (fun x : State => P x ∧ ∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) c.agents s1 ⟨h1, fun _ h => h⟩ (fun b a hb => by
       split
       · refine ⟨hend _ _ hb.1, fun t ht => ?_⟩
@@ -481,7 +481,7 @@ theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c
   case wakeRead a => obtain ⟨_, rfl⟩ := hstep; exact ii_wakeRead hs
   case wakeWrite a =>
     obtain ⟨hg, rfl⟩ := hstep
-    refine ii_setAg (fun _ => Or.inr rfl) (ii_setAg (f := fun g => { g with st := .working, waiter := false, aged := false, cold := false })
+    refine ii_setAg (fun _ => Or.inr rfl) (ii_setAg (f := fun g => { g with st := .working, waiter := false, aged := false, cold := false, stale := false, nudged := false })
       (fun _ => Or.inl rfl) (ii_deliver ?_))
     split
     · exact hs

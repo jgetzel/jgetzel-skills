@@ -522,6 +522,11 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
   case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case dirty a w v =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_setAg_same (fun _ => by split <;> rfl) (fun _ => by split <;> rfl) hs
+  case stale a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case nudge a => obtain ⟨_, rfl⟩ := hstep; exact J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
   case expire t =>
     obtain ⟨_, rfl⟩ := hstep
     exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e) hs
