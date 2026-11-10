@@ -133,7 +133,7 @@ function M.cmd_state(a)
       for _, r in ipairs(own) do if r.state == "blocked" then status = "blocked" end end
     end
     local ag = {
-      name = x.name, hc = N(x.hc), model = N(x.model), role = N(x.role), ctx_tokens = x.ctx_tokens or 0, status = N(status),
+      name = x.name, hc = N(x.hc), model = N(x.model), role = N(x.role), stay = N(x.stay), ctx_tokens = x.ctx_tokens or 0, status = N(status),
       idle_s = t - (act == 0 and t or act), started = N(x.started), ended = N(x.ended),
       cache = t - act < agents.COLD_IDLE and "warm" or "cold",
       cold_guarded = (live and lanes and agents.cold_reason(x, t)) and true or false,

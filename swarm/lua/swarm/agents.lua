@@ -158,6 +158,7 @@ end
 -- ---------- release ----------
 
 function M._release(c, name)
+  c:exec("update agent set stay=null where name=?", name)  -- a held thing, like a claim: an ended agent holds none
   c:exec("update task set state='open', owner=null, lease_until=null, question=null where owner=? and state in ('claimed','blocked')", name)
   c:exec("delete from lock where agent=?", name)
   c:exec("delete from conflict where a=? or b=?", name, name)
@@ -210,6 +211,30 @@ function M.cmd_join(c, a)
   db.log(c, n, "join")
 end
 
+function M.stay_of(c, name)
+  local r = name and c:one("select stay from agent where name=?", name)
+  return r and r.stay
+end
+
+function M.cmd_stay(c, a)
+  local n = M.me()
+  if #a.text == 0 and not a["end"] then
+    local s = M.stay_of(c, n)
+    print(s and ("you stay for '%s'"):format(s) or "you stay for nothing: watchd ends you once idle, holding nothing, work landed")
+    return
+  end
+  local v = not a["end"] and M.one_line(table.concat(a.text, " ")) or nil
+  if v == "" then util.die("say what you wait for: swarm stay \"<what>\"") end
+  c:tx(function()
+    local why = M.touch(c, n, nil, false)
+    if why then util.die(why) end
+    c:exec("update agent set stay=? where name=?", v, n)
+    db.log(c, n, v and "stay" or "stay-end", nil, v)
+  end)
+  print(v and ("you stay for '%s'; watchd won't end you. `swarm stay --end` when it is over."):format(v)
+    or "stay ended: watchd ends you once you are idle, hold nothing and your work is on main.")
+end
+
 function M.cmd_leave(c, a)
   local n = a.name or M.me()
   c:tx(function()
@@ -255,8 +280,8 @@ function M.cmd_who(c, a)
     local fs = type(sn) == "table" and type(sn.files) == "table" and sn.files or {}
     local lk = {}
     for _, r in ipairs(c:all("select path from lock where agent=?", x.name)) do lk[#lk + 1] = r.path end
-    local s = ("%s %s%s ctx=%dk idle=%s cache=%s"):format(x.name, x.status, x.role and (" role=" .. x.role) or "", k,
-      util.ago(last), cache)
+    local s = ("%s %s%s%s ctx=%dk idle=%s cache=%s"):format(x.name, x.status, x.role and (" role=" .. x.role) or "",
+      x.stay and (' stays: "%s"'):format(x.stay) or "", k, util.ago(last), cache)
       .. (M.cold_reason(x, t) and " COLD-GUARDED" or "")
       .. " wt: " .. (wts[x.name] and util.basename(wts[x.name]) or "?")
     if #fs > 0 then

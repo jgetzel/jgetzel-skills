@@ -277,8 +277,8 @@ function T.test_comms_ctx_note_from_commands(t)
   local mark = tmpdir() .. "/claude-ctx-" .. s
   t:defer(function() os.remove(mark) end)
   local env = { HOME = t.d .. "/home", CLAUDE_CODE_SESSION_ID = s }
-  t:has(t:sw("x-comms", "board", { env = env, ok = false }).stdout, "pass on the swarm")
-  t:hasnt(t:sw("x-comms", "who", { env = env, ok = false }).stdout, "pass on the swarm")  -- once per step
+  t:has(t:sw("x-comms", "board", { env = env, ok = false }).stdout, "pass on what you hold")
+  t:hasnt(t:sw("x-comms", "who", { env = env, ok = false }).stdout, "pass on what you hold")  -- once per step
 end
 
 function T.test_burst_capped_rest_stays_unread(t)

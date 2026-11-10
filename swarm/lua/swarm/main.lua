@@ -34,7 +34,7 @@ local stdlib = require "posix.stdlib"
 
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
-  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", lock = "locks", unlock = "locks",
+  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", stay = "agents", lock = "locks", unlock = "locks",
   machine = "machine", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
@@ -67,6 +67,7 @@ local function parser()
   p:argument("name")
   opt(p, "--model", "sonnet")
   opt(p, "--effort"):choices(EFFORTS):description("claude --effort for the new agent (default: its settings)")
+  opt(p, "--stay"):description("what the new agent waits for: watchd won't end it while it stays")
   opt(p, "--task", nil, int):target("task_id"):description("claim this board task for the new agent before launching")
   opt(p, "--role"):description("the new agent's role label (`swarm role`)")
   p:argument("task"):args("*")
@@ -126,6 +127,9 @@ local function parser()
   p:flag("--all")
   ap:command("who")
   ap:command("role"):argument("text"):args("*")
+  p = ap:command("stay")  -- what I wait for; watchd doesn't end an agent that stays
+  p:argument("text"):args("*")
+  p:flag("--end"):description("clear it: judged as any agent again")
   p = ap:command("lock")
   p:argument("path")
   opt(p, "--reason", "")
@@ -198,7 +202,7 @@ local function main(argv)
   local agents = require "swarm.agents"
   local c = require("swarm.db").connect()
   local name = agents.env("SWARM_NAME")
-  local fenced = { post = true, read = true, task = true, lock = true, unlock = true, leave = true }
+  local fenced = { post = true, read = true, task = true, lock = true, unlock = true, leave = true, stay = true }
   if name and fenced[a.cmd] and a.act ~= "show" then
     local why = agents.fence(c, name)
     if why then util.die(why) end

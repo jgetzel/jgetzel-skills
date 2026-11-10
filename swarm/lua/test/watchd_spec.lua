@@ -95,6 +95,16 @@ proc.run = run
 assert(peer:one("select ended from agent where name='e'").ended == nil)
 assert(task1().owner == "e")
 
+-- end_agent re-checks stay: e ran `swarm stay` between lifecycle's judgment and the end, so it is kept
+c = fresh()
+peer:exec("insert into agent(name,cwd,status,last_active,started) values('e',?,'idle',1,1)", repo)
+row = c:one("select * from agent where name='e'")
+peer:exec("update agent set stay='reviews' where name='e'")
+proc.run = function() return nil end
+watchd.end_agent(c, row, dir .. "/wt", repo, nil)
+proc.run = run
+assert(peer:one("select ended from agent where name='e'").ended == nil)
+
 -- auto-spawn: a peer claims the task between pool() and the reserve; nothing launches, the peer keeps it
 c = fresh()
 peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)", repo)

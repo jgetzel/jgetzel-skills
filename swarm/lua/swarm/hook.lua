@@ -35,14 +35,14 @@ function M.ctx_from(path)
   return nil
 end
 
-function M.ctx_advice(k, comms)
-  if comms then  -- the communicator holds the swarm's state, so a handoff carries it over
+function M.ctx_advice(k, stays)
+  if stays then  -- a stayer (the communicator too) holds what others rely on, so a handoff carries it over
     if k >= 550000 then
-      return "finish the current step, then hand off with the relaunch skill, same model, and pass on the swarm "
-        .. "(board, watchd PID, open threads)."
+      return "finish the current step, then hand off with the relaunch skill, same model, and pass on what you hold "
+        .. "(what you stay for, open threads; the communicator: board, watchd PID)."
     end
-    return "wrap up this step; at ~550k hand off with the relaunch skill, same model, and pass on the swarm "
-      .. "(board, watchd PID, open threads)."
+    return "wrap up this step; at ~550k hand off with the relaunch skill, same model, and pass on what you hold "
+      .. "(what you stay for, open threads; the communicator: board, watchd PID)."
   end
   if k >= 550000 then
     return "hand off now with the relaunch skill, same model, and post the successor's name, "
@@ -72,7 +72,7 @@ function M.handoff_nudge(c, name, p, comms)
   local f = io.open(mark, "w")
   if f then f:write(util.d(step)); f:close() end
   db.log(c, name, "ctx-note", nil, util.d(k))
-  return ("Context is ~%dk tokens: %s"):format(math.floor(k / 1000), M.ctx_advice(k, comms))
+  return ("Context is ~%dk tokens: %s"):format(math.floor(k / 1000), M.ctx_advice(k, comms or agents.stay_of(c, name)))
 end
 
 -- The communicator is a normal session with no swarm hooks: read/wait/board/who stand in for post-tool.
