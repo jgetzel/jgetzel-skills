@@ -41,13 +41,23 @@ example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"] }
 example : violates { racy := true }
     [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide
 
+-- #12, work loss. Agent 0 owns two worktrees; the one wt_map picks is landed, the other has work not on main. Before
+-- PR #123 lifecycle looks only at the first, so it ends the agent mid-task.
+def endedWithWork (s : State) : Bool := (List.range s.ag.length).any fun a =>
+  (s.agt a).st == .ended && ((s.agt a).wt1 || (s.agt a).wt2)
+example : violates { allWts := false } [.dirty 0 true true, .stop 0 false, .age 0, .tick] (!endedWithWork ·) = true := by decide
+example : violates {} [.dirty 0 true true, .stop 0 false, .age 0, .tick] (!endedWithWork ·) = false := by decide
+-- a landed worktree does not keep the agent
+example : (run {} [.dirty 0 true true, .dirty 0 true false, .stop 0 false, .age 0, .tick]).any
+    (fun s => (s.agt 0).st == .ended) = true := by decide
+
 -- ---------- liveness ----------
 /-- The actions fairness makes happen if they stay enabled: watchd ticks, leases lapse, idle agents age, a spawned
 agent boots, a waiter with a message it wakes on wakes, an hc prompt is answered, a working agent reads its
 messages and takes work, a background job ends, and the second half of a split command follows the first. -/
 def fair (c : Cfg) : List Action :=
   .tick :: c.tasks.map .expire ++ c.agents.flatMap fun a =>
-    [.age a, .bgEnd a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
+    [.age a, .bgEnd a, .nudge a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
       ++ c.tasks.map (.claim a) ++ c.tasks.map (.claimRead a)
 /-- no fair action is enabled: a fair run may stay in this state forever -/
 def stuck (c : Cfg) (s : State) : Bool := (fair c).all fun act => (step c s act).isNone
@@ -105,5 +115,14 @@ example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1
 -- The same runs with the fix on.
 example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide
 example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide
+-- #13, L5. Agent 0 is idle 30 min, kept only by an unclean worktree. Before PR #122 nothing is enabled, forever and
+-- silently; with it, `nudge` is (the urgent message wakes the waiter), once per idle stretch.
+def keptByWt (s : State) : Bool := (s.agt 0).st == .idle && ((s.agt 0).wt1 || (s.agt 0).wt2)
+example : stuckWith { uncleanNudge := false } [.dirty 0 false true, .stop 0 false, .age 0, .stale 0] keptByWt = true := by decide
+example : stuckWith {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0] keptByWt = false := by decide
+-- one nudge per idle stretch: a second is refused until the agent has woken and stopped again
+example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 0]).bind (step {} · (.nudge 0)) = none := by decide
+example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0,
+    .nudge 0]).isSome = true := by decide
 
 end Swarm

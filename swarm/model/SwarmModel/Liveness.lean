@@ -51,7 +51,7 @@ theorem reap_fold_lt {c : Cfg} {t a : Nat} : ∀ (l : List Nat) (x : State), t �
 
 theorem lifecycle_log_le (c : Cfg) (x : State) : x.log.length ≤ (lifecycle c x).log.length := by
   unfold lifecycle; simp only []
-  have h2 := foldl_inv (fun y a => if finished x a && !reusable c x a then endAgent y a else y)
+  have h2 := foldl_inv (fun y a => if finished c x a && !reusable c x a then endAgent y a else y)
     (fun y : State => x.log.length ≤ y.log.length) c.agents x (Nat.le_refl _) (fun b a hb => by
       split
       · simpa using hb

@@ -16,7 +16,7 @@ inductive TSt where | absent | opn | claimed | blocked | done | dropped
   deriving DecidableEq, Repr, Inhabited
 inductive ASt where | unborn | working | idle | blocked | ended
   deriving DecidableEq, Repr, Inhabited
-inductive Kind where | dm | answer | released | digest
+inductive Kind where | dm | answer | released | digest | nudge
   deriving DecidableEq, Repr, Inhabited
 
 /-- The instance: sizes, and one switch per fix, so the model is the code before and after it. The defaults
@@ -51,6 +51,10 @@ structure Cfg where
   /-- `task claim` refuses an agent with a big context (the 350k fence), unless reap took this very task from it
   (PR #121); with `retake` off the fence has no exception -/
   retake : Bool := true
+  /-- lifecycle keeps an agent while any worktree it owns is unlanded (PR #123); before, only the one wt_map picks -/
+  allWts : Bool := true
+  /-- watchd nudges an agent kept only by an unclean worktree, once per idle stretch (PR #122); before, silence -/
+  uncleanNudge : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -85,6 +89,13 @@ structure Agent where
   reading : Nat
   /-- a background job of its own is running (a build, a model check, a Monitor) -/
   bg : Bool := false
+  /-- the worktree wt_map picks holds work not on main, and another worktree it owns does -/
+  wt1 : Bool
+  wt2 : Bool
+  /-- idle 30+ min (UNCLEAN_IDLE) -/
+  stale : Bool
+  /-- already nudged in this idle stretch -/
+  nudged : Bool
   deriving DecidableEq, Repr, Inhabited
 
 structure Lock where
@@ -207,14 +218,18 @@ def reapTask (c : Cfg) (x : State) (t : Nat) : State :=
   | none => x
 def reapTasks (c : Cfg) (s : State) : State := c.tasks.foldl (reapTask c) s
 def reapLocks (s : State) : State := { s with lock := s.lock.map fun l => if l.exp then ⟨none, false⟩ else l }
-def finished (s : State) (a : Nat) : Bool :=
+/-- watchd.lifecycle's `unlanded`: work not on main in a worktree the agent owns (all of them since PR #123) -/
+def unlanded (c : Cfg) (g : Agent) : Bool := g.wt1 || (c.allWts && g.wt2)
+/-- idle and free of claims and locks: what lifecycle looks at before the worktrees -/
+def idleFree (s : State) (a : Nat) : Bool :=
   let g := s.agt a
   g.st == .idle && g.aged && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
+def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c (s.agt a)
 /-- lifecycle's reusable agents: since PR #116 one told of the whole pool, its inbox read, has passed it over:
 ended, not reusable; since PR #119 one with no live waiter (it would never read a digest) is ended too -/
 def reusable (c : Cfg) (s : State) (a : Nat) : Bool :=
   let pl := pool c s
-  finished s a && !(s.agt a).big && !pl.isEmpty
+  finished c s a && !(s.agt a).big && !pl.isEmpty
     && !(c.passedOver && pl.all (s.agt a).told.contains && (unread s a).isEmpty)
     && ((s.agt a).waiter || !c.waiterAlive)
 def endAgent (s : State) (a : Nat) : State :=
@@ -234,7 +249,7 @@ def spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : State :=
 /-- watchd.lifecycle: end finished agents, tell reusable ones about new work, else spawn into free slots -/
 def lifecycle (c : Cfg) (s : State) : State :=
   let pl := pool c s
-  let ended := c.agents.foldl (fun x a => if finished s a && !reusable c s a then endAgent x a else x) s
+  let ended := c.agents.foldl (fun x a => if finished c s a && !reusable c s a then endAgent x a else x) s
   let told := c.agents.foldl (fun x a =>
     if reusable c s a && !pl.all (x.agt a).told.contains then
       post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩
@@ -262,7 +277,7 @@ def firstClaimed (c : Cfg) (s : State) (a : Nat) : Nat := (c.tasks.find? (ownsCl
 def when (b : Bool) (s : State) : Option State := if b then some s else none
 def unbelieve (s : State) (a t : Nat) : State := setAg s a fun g => { g with believes := g.believes.filter (· != t) }
 def awake (s : State) (a : Nat) : State :=
-  setAg s a fun g => { g with st := .working, waiter := false, aged := false, cold := false }
+  setAg s a fun g => { g with st := .working, waiter := false, aged := false, cold := false, stale := false, nudged := false }
 
 /-- swarm task claim: refuses while a dependency isn't done, then writes `where state='open'` -/
 def claim (c : Cfg) (s : State) (a t : Nat) : Option State :=
@@ -311,7 +326,7 @@ def readAll (s : State) (a : Nat) : Option State :=
 and no claim takes it first (brief: take the next task), so only a big or busy one stops beside the pool. -/
 def stop (c : Cfg) (s : State) (a : Nat) (big : Bool) : Option State :=
   when (busy s a && (s.agt a).reading == 0 && (big || holds s a || (pool c s).isEmpty))
-    (setAg s a ({ · with st := .idle, waiter := true, big := big, aged := false, cold := false }))
+    (setAg s a ({ · with st := .idle, waiter := true, big := big, aged := false, cold := false, stale := false, nudged := false }))
 
 -- the environment: time, the waiter, the human, hc
 def wake (c : Cfg) (s : State) (a : Nat) : Option State :=
@@ -329,7 +344,7 @@ def wakeWrite (c : Cfg) (s : State) (a : Nat) : Option State :=
 /-- a turn the waiter didn't start (the human, a SendMessage nudge): the prompt hook delivers -/
 def prompt (s : State) (a : Nat) : Option State :=
   when ((s.agt a).st == .idle && !(s.agt a).boot)
-    (setAg (deliver s a) a ({ · with st := .working, aged := false, cold := false }))
+    (setAg (deliver s a) a ({ · with st := .working, aged := false, cold := false, stale := false, nudged := false }))
 /-- a spawned agent's first turn: its brief says task show -/
 def boot (c : Cfg) (s : State) (a : Nat) : Option State :=
   when ((s.agt a).boot && (s.agt a).st == .idle) <|
@@ -343,6 +358,16 @@ def age (s : State) (a : Nat) : Option State :=
 def cool (s : State) (a : Nat) : Option State :=
   let g := s.agt a
   when (g.st == .idle && g.aged && g.big && !g.cold) (setAg s a ({ · with cold := true }))
+/-- the agent's work leaves main behind in worktree 1 (the one wt_map picks) or 2, or lands -/
+def dirty (s : State) (a : Nat) (second : Bool) (v : Bool) : Option State :=
+  when (working s a) (setAg s a fun g => if second then { g with wt2 := v } else { g with wt1 := v })
+def stale (s : State) (a : Nat) : Option State :=
+  when ((s.agt a).st == .idle && (s.agt a).aged && !(s.agt a).stale) (setAg s a ({ · with stale := true }))
+/-- watchd.unclean: idle 30 min, kept only by an unclean worktree, with a live waiter: one urgent message per stretch -/
+def nudge (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (c.uncleanNudge && idleFree s a && unlanded c g && g.stale && g.waiter && !g.nudged)
+    (post (setAg s a ({ · with nudged := true })) ⟨none, a, true, .nudge, 0⟩)
 def expire (s : State) (t : Nat) : Option State :=
   when ((s.tk t).st == .claimed && (s.tk t).lease) (setTask s t ({ · with lease := false }))
 def expireLock (s : State) (p : Nat) : Option State :=
@@ -390,6 +415,7 @@ inductive Action where
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
+  | dirty (a : Nat) (second v : Bool) | stale (a : Nat) | nudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | tick
@@ -403,6 +429,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .unlock a p => unlock s a p | .postTo a b u => postTo s a b u | .readAll a => readAll s a
   | .stop a big => stop c s a big | .wake a => wake c s a | .wakeRead a => wakeRead c s a
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
+  | .dirty a w v => dirty s a w v | .stale a => stale s a | .nudge a => nudge c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .add deps => add s deps | .after t deps => after c s t deps

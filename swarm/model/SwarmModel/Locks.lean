@@ -124,7 +124,7 @@ theorem lk_tickOf {c : Cfg} {s : State} (h : LkInv c s.lock s.ag) : LkInv c (tic
     exact shrinks_map _ _ (by intro l; split <;> simp)
   unfold tickOf lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
-  have h2 := foldl_inv (fun x a => if finished s1 a && !reusable c s1 a then endAgent x a else x)
+  have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
     (fun x : State => LkInv c x.lock x.ag) c.agents s1 h1 (fun b a hb => by split; exact lk_endAgent _ hb; exact hb)
   have h3 := foldl_inv (fun x a =>
     if reusable c s1 a && !(pool c s1).all (x.agt a).told.contains then
