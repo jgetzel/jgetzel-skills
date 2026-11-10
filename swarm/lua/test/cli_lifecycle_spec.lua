@@ -251,6 +251,13 @@ function T.test_landed_agent_ended_and_cleaned(t)
   t:eq(t:q1("select data from event where kind='end'").data, "landed")
 end
 
+-- another swarm's communicator that joined this board (a waiter it once ran here) is not ended (#117)
+function T.test_foreign_comms_not_ended(t)
+  idle(t, "other-comms", { wt = t.wt .. "-gone" })
+  comms_tick(t)
+  assert(not ended(t, "other-comms"))
+end
+
 function T.test_squash_merged_agent_ended(t)
   idle(t, "e", { wt = t.wt })
   squash(t)

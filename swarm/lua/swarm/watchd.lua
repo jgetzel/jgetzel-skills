@@ -368,7 +368,7 @@ function M.lifecycle(c, t, comms, terms, opts)
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
     local x = nz(a.hc) and terms ~= nil and by[a.hc] or nil
-    if not (n == comms or a.status ~= "idle" or t - (a.last_active or 0) < 120
+    if not (agents.is_comms(c, n) or a.status ~= "idle" or t - (a.last_active or 0) < 120
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
