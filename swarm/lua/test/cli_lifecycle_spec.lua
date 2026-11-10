@@ -312,6 +312,27 @@ function T.test_unclean_agent_without_waiter_tells_comms(t)
   t:has(told(t)[1].body, "?? scratch.txt")
 end
 
+-- wt_map picks one worktree; e's landed t.wt must not hide unlanded work in another worktree e owns
+function T.test_agent_with_a_second_unlanded_worktree_not_ended(t)
+  idle(t, "e", { wt = t.wt })
+  local by_path = t.d .. "/repo-e-ev"  -- owned by its directory name
+  t:git(t.repo, "worktree", "add", "-q", "-b", "zz", by_path)
+  put(by_path .. "/new.txt", "wip")
+  comms_tick(t)
+  assert(not ended(t, "e"), "dirty worktree named -e-")
+  t:git(t.repo, "worktree", "remove", "--force", by_path)
+  local by_branch = t.d .. "/other"  -- owned by its branch e/…
+  t:git(t.repo, "worktree", "add", "-q", "-b", "e/topic", by_branch)
+  put(by_branch .. "/new.txt", "wip")
+  t:git(by_branch, "add", ".")
+  t:git(by_branch, "commit", "-qm", "wip")
+  comms_tick(t)
+  assert(not ended(t, "e"), "unpushed commit on e/topic")
+  t:git(by_branch, "reset", "-q", "--hard", "main")
+  comms_tick(t)
+  assert(ended(t, "e"), "every worktree landed")
+end
+
 function T.test_missing_worktree(t)
   idle(t, "e", { wt = t.wt })
   rmtree(t.wt)  -- branch w2 still registered; its commits are on main

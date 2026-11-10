@@ -327,7 +327,7 @@ end
 
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
-  local wts = conflict.wt_map(c)
+  local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
   local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
   main = main and realpath(main)
   local B = "main"
@@ -357,6 +357,13 @@ function M.lifecycle(c, t, comms, terms, opts)
     end
     return true
   end
+  local function unlanded(n)  -- a worktree n owns that holds work not on B, not just the one wt_map picked
+    local own = conflict.owned_wts(n, all_wts)
+    if wts[n] then table.insert(own, 1, wts[n]) end
+    for _, w in ipairs(own) do
+      if not M.landed(w, B, main) then return w end
+    end
+  end
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
@@ -365,8 +372,9 @@ function M.lifecycle(c, t, comms, terms, opts)
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
-      if wts[n] and not M.landed(wts[n], B, main) then
-        M.unclean(c, a, wts[n], B, t, comms)
+      local held = unlanded(n)
+      if held then
+        M.unclean(c, a, held, B, t, comms)
       -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
       -- not kept as a reason to spawn no one
       elseif (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n)
