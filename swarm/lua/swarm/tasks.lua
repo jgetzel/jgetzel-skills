@@ -223,6 +223,11 @@ function M.cmd_task(c, a)
     end
     db.log(c, n, "claim", nil, ("#%s %s"):format(d(a.id), r.title))
     print(("claimed #%s until %s"):format(d(a.id), util.hhmm(until_)))
+    local machine = require "swarm.machine"
+    local avail, total, psi = machine.mem()
+    if avail then  -- the line; the full note when pressure is high
+      print(machine.pressure_high(avail, total, psi) and machine.machine_note(c, n) or machine.machine_line(avail, total, psi))
+    end
     print(py(r.body) or "(no body)")
 
   elseif a.act == "show" then
@@ -356,6 +361,9 @@ function M.cmd_task(c, a)
 end
 
 function M.cmd_board(c, a)
+  local machine = require "swarm.machine"
+  local avail, total, psi = machine.mem()
+  if avail then print(machine.machine_line(avail, total, psi)) end
   local role = {}
   for _, x in ipairs(c:all("select name, role from agent where ended is null and role is not null")) do role[x.name] = x.role end
   local rows = c:all("select * from task " .. (a.all and "" or "where state in ('open','claimed','blocked') ")

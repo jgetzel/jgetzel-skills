@@ -195,6 +195,7 @@ function T.test_spawn_task_claims_before_launch(t)
   t:fakes()
   t:sw("a", "task", "add", "do it")
   t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1")
+  t:has(t:sw("a", "spawn", "t-8", "--model", "haiku", "--", "go").stdout, "machine:")  -- the note after the launch
   t:eq(t:launched()[1].task, { { "t-9", "claimed" } })  -- claimed by the new name before launch ran
   t:eq(t:q1("select hc from agent where name='t-9'").hc, "hc1")
   t:has(t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", { ok = false }).stderr, "live agent")  -- a live name is refused
