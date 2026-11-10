@@ -72,6 +72,12 @@ function T.test_claim_lease_done(t)
   assert(t:sw("b", "task", "claim", "1", { ok = false }).code ~= 0)
   t:eq(t:sw("a", "task", "done", "1", { ok = false }).code, 2)
   t:sw("a", "task", "renew", "1", "--lease", "3h")
+  for _, ev in ipairs({ "", "  " }) do  -- done needs evidence (swarm/model: doneHasEvidence)
+    local r = t:sw("a", "task", "done", "1", "--evidence", ev, { ok = false })
+    t:eq(r.code, 1)
+    t:has(r.stderr, "evidence")
+  end
+  t:eq(t:q1("select state from task").state, "claimed")
   t:sw("a", "task", "done", "1", "--evidence", "sha abc")
   t:eq(t:q1("select state,evidence from task").state, "done")
 end
