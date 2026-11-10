@@ -283,6 +283,46 @@ end
 
 -- ---------- lifecycle ----------
 
+M.UNCLEAN_IDLE = 1800  -- an idle agent kept only by its unclean worktree this long (s) is told what holds it
+
+-- What keeps worktree wt from landing: git status lines and commits not on B.
+function M.unclean_list(wt, B)
+  if not exists(wt) then return wt .. " is gone; its branch holds commits not on " .. B end
+  local l = {}
+  for _, s in ipairs(util.splitlines(proc.run({ "git", "-C", wt, "status", "--porcelain" }) or "")) do
+    if s ~= "" then l[#l + 1] = s end
+  end
+  for _, s in ipairs(util.splitlines(proc.run({ "git", "-C", wt, "log", "--oneline", B .. "..HEAD" }) or "")) do
+    if s ~= "" then l[#l + 1] = "commit " .. s end
+  end
+  return table.concat(l, "\n")
+end
+
+-- Agent a is idle and kept only by its unclean worktree wt. Once per idle stretch and per list (edge-triggered, as
+-- the digest is): wake it with the list; if it is idle again with the same list, or has no live waiter, tell comms.
+function M.unclean(c, a, wt, B, t, comms)
+  local n, since = a.name, a.last_active or 0
+  if t - since < M.UNCLEAN_IDLE then return end
+  local last = c:one("select ts, kind, data from event where agent=? and kind in ('unclean-nudge','unclean-notice') order by id desc limit 1", n)
+  if last and last.ts >= since then return end  -- already handled this idle stretch
+  local list = M.unclean_list(wt, B)
+  local same = last and last.data == list
+  if same and last.kind == "unclean-notice" then return end
+  local ls = util.splitlines(list)
+  local shown = table.concat(ls, "\n", 1, math.min(20, #ls)) .. (#ls > 20 and ("\n+%d more"):format(#ls - 20) or "")
+  local mins = math.floor((t - since) / 60)
+  if not same and a.waiter and signal.kill(a.waiter, 0) == 0 then
+    db.log(c, n, "unclean-nudge", wt, list)
+    msgs.post(c, "swarm", n, ("You are idle %d min with no claim or lock; watchd keeps you only because worktree %s holds:\n%s\n"
+      .. "If your work is done: land what is real, delete or ignore build outputs and scratch, then stop, and watchd ends you. "
+      .. "If not, tell the communicator (%s) what you are waiting on."):format(mins, wt, shown, comms), true, "system")
+  else
+    db.log(c, n, "unclean-notice", wt, list)
+    msgs.post(c, "swarm", comms, ("%s is idle %d min, kept only by its unclean worktree %s (%s):\n%s"):format(
+      n, mins, wt, same and "nudged once, idle again and still unclean" or "no live waiter, so not nudged", shown), false, "system")
+  end
+end
+
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
   local wts = conflict.wt_map(c)
@@ -322,10 +362,11 @@ function M.lifecycle(c, t, comms, terms, opts)
     if not (n == comms or a.status ~= "idle" or t - (a.last_active or 0) < 120
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
-        or c:one("select 1 from lock where agent=?", n)
-        or (wts[n] and not M.landed(wts[n], B, main))) then
+        or c:one("select 1 from lock where agent=?", n)) then
+      if wts[n] and not M.landed(wts[n], B, main) then
+        M.unclean(c, a, wts[n], B, t, comms)
       -- one that passed the work over is ended, not kept as a reason to spawn no one
-      if (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n) then
+      elseif (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n) then
         reusable[#reusable + 1] = a
       else
         M.end_agent(c, a, wts[n], main, comms)

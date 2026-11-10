@@ -247,7 +247,8 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 ### Lifecycle: [research/sw-lifecycle.md](research/sw-lifecycle.md)
 
 - **`watchd` ends landed agents**: idle, no claim, no lock, work on main.
-  It removes their terminal, worktree and branch. The communicator is exempt
+  It removes their terminal, worktree and branch. One kept only by an unclean
+  worktree is told what holds it after 30 min idle. The communicator is exempt
   and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
   within `--max-agents` and `--min-free-mem`.
