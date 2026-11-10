@@ -248,8 +248,8 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 
 - **`watchd` ends landed agents**: idle, no claim, no lock, work on main.
   It removes their terminal, worktree and branch. One kept only by an unclean
-  worktree is told what holds it after 30 min idle. The communicator is exempt
-  and does not end agents.
+  worktree is told what holds it after 30 min idle. The communicator is a
+  stayer (watchd's start gives it one) and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
   up to the auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
   and says on the board when either holds it (`spawn-held`). **`swarm spawn`

@@ -390,11 +390,18 @@ function M.lifecycle(c, t, comms, terms, opts)
       if not M.landed(w, B, main) then return w end
     end
   end
+  local function ours(cwd)  -- in this repo or one of its worktrees: else another swarm's terminal (#117)
+    cwd = realpath(cwd)
+    for _, w in ipairs(all_wts) do
+      if cwd == w[1] or util.startswith(cwd, w[1] .. "/") then return true end
+    end
+    return main ~= nil and (cwd == main or util.startswith(cwd, main .. "/"))
+  end
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
     local x = nz(a.hc) and terms ~= nil and by[a.hc] or nil
-    if not (agents.is_comms(c, n) or nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120
+    if not (nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120 or (x and nz(x.cwd) and not ours(x.cwd))
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
@@ -579,7 +586,7 @@ function M.watchd_tick(c, comms, repo, opts)
     end
   end
   conflict.conflict_tick(c, t)
-  if comms then  -- without a communicator there is nobody to exempt from ending
+  if comms then  -- ending reports to the communicator; without one, nobody hears what it did
     M.lifecycle(c, t, comms, terms, opts or {})
     M.quiet(c, t, comms)
   end
@@ -705,7 +712,12 @@ function M.cmd_watchd(c, a)
       util.die(("watchd already runs (pid %s, terminal %s); `swarm watchd --takeover` replaces it."):format(pid, term))
     end
     c:exec("insert or replace into meta(k,v) values('watchd',?)", mine)
-    if comms then c:exec("insert or replace into meta(k,v) values('comms',?)", comms) end
+    if comms then  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
+      c:exec("insert or replace into meta(k,v) values('comms',?)", comms)
+      if c:exec("update agent set stay=? where name=? and ended is null and stay is null", "the user's channel", comms) > 0 then
+        db.log(c, comms, "stay", nil, "the user's channel")
+      end
+    end
   end)
   -- the auto-spawn number (sw-roles §6): --max-agents writes it (deprecated: `swarm limits --min`); else the first
   -- watchd sets it to the roster the human launched, so watchd refills it but doesn't grow it

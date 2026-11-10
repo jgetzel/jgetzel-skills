@@ -253,11 +253,31 @@ function T.test_landed_agent_ended_and_cleaned(t)
   t:eq(t:q1("select data from event where kind='end'").data, "landed")
 end
 
--- another swarm's communicator that joined this board (a waiter it once ran here) is not ended (#117)
+-- another swarm's communicator that joined this board (a waiter it once ran here) is not ended (#117): its
+-- terminal's cwd is outside this repo and its worktrees. A name ending in comms is nothing special (sw-roles §5).
 function T.test_foreign_comms_not_ended(t)
-  idle(t, "other-comms", { wt = t.wt .. "-gone" })
+  t:fakes()
+  t:set_hc({ address = "t1", status = "idle", cwd = t.d }, { address = "t2", status = "idle", cwd = t.wt },
+    { address = "t3", status = "idle" })
+  idle(t, "other-comms", { wt = t.wt .. "-gone", hc = "t1" })
+  idle(t, "x-comms", { wt = t.wt .. "-gone", hc = "t2" })
+  idle(t, "e", { wt = t.wt .. "-gone", hc = "t3" })  -- hc reports no cwd: judged as before
   comms_tick(t)
   assert(not ended(t, "other-comms"))
+  assert(ended(t, "x-comms"), "a *comms name still spared")
+  assert(ended(t, "e"))
+end
+
+-- the communicator is a stayer: watchd's start gives it a stay, logged once, kept if it already has one
+function T.test_watchd_makes_comms_a_stayer(t)
+  idle(t, "comms")
+  comms_tick(t); comms_tick(t)
+  t:eq(t:q1("select stay from agent where name='comms'").stay, "the user's channel")
+  t:eq(#t:q("select 1 x from event where kind='stay' and agent='comms'"), 1)
+  assert(not ended(t, "comms"))
+  t:sw("comms", "stay", "the user and the PR queue")
+  comms_tick(t)
+  t:eq(t:q1("select stay from agent where name='comms'").stay, "the user and the PR queue")
 end
 
 function T.test_squash_merged_agent_ended(t)

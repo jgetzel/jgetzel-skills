@@ -387,6 +387,7 @@ end
 
 function T.test_post_to_comms_has_no_sendmessage_nudge(t)
   t:agent("a"); t:agent("x-comms", { status = "idle", last_active = os.time() })
+  t:q("insert or replace into meta(k,v) values('comms','x-comms')")
   local out = t:sw("a", "post", "x-comms", "hi").stdout
   t:hasnt(out, "nudge by SendMessage")
   t:has(out, "held")
