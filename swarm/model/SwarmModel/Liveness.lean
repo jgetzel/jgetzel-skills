@@ -102,7 +102,18 @@ theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release 
       · rfl
       · exfalso; simp [step, bgEnd, when, Agent.live, hb] at h3
         simp [idleClaim, ownsClaimed] at hic; simp [hic.2] at h3
-    exact tick_reopens hfix hw ht hic (by simpa [hic'.1.1] using h2) hbg h1
+    have h4 := hs (.boot a) (by simp [fair, ha, hnd])
+    by_cases hb : (s.agt a).boot = true
+    · simp [step, boot, when, hb, hic'.2] at h4
+    · have hl : (s.tk t).lease = false := by
+        cases hl : (s.tk t).lease
+        · rfl
+        · exfalso
+          have := h2 hic'.1.1 hl
+          have h5 := this.2
+          simp only [bootingOwner, hic'.1.2] at h5
+          exact hb h5
+      exact tick_reopens hfix hw ht hic hl hbg h1
 
 /-- L4, the part that is proved. If watchd runs, `hc ls` answers and the dead agent's row has an hc address, a row
 whose terminal is gone is never stuck: the reap of it is enabled. Every one of those three is needed (findings #14,

@@ -190,13 +190,15 @@ example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], 
 -- action that is enabled anywhere in the period is in the period (`boot` and `age` included), and #1 is never open at a
 -- state of the run, so no `claim` is ever enabled: a fair run in which the answer is never read.
 -- The model has no time between a lease and a boot; the Lua gives a spawned agent a fresh lease that is long next to a
--- boot, so this needs a hung launch each time. L3 holds only up to the first turn of a spawned agent (`answer_leads_to`).
-def cfg17 : Cfg := { nagents := 2, roster := 2, ntasks := 1 }
+-- boot, so this needs a hung launch each time. L3 holds only up to the first turn of a spawned agent; `bootFirst` (a boot beats a lease) is what closes it (`booting_reads`).
+def cfg17 : Cfg := { nagents := 2, roster := 2, ntasks := 1, bootFirst := false }
 def pre17 : List Action := [.add [], .claim 0 1, .block 0 1, .stop 0 true, .unblock 1, .age 0, .cool 0, .stop 1 true, .expire 1, .tick]
 def cyc17 : List Action := [.age 1, .expire 1, .tick, .boot 0, .stop 0 true, .age 0, .expire 1, .tick, .boot 1, .stop 1 true]
 example : lassoP cfg17 (!answered · 1) pre17 cyc17 4 = true := by decide +kernel
 example : periodicD cfg17 2 pre17 cyc17 2 = true := by decide +kernel
 -- the answer is read by the first turn: let the period's agent boot before its lease lapses
 example : lassoP cfg17 (!answered · 1) pre17 [.boot 0] 1 = false := by decide +kernel
+-- a boot beats a lease: with `bootFirst` the new agent's lease can't lapse, so the cycle's second `expire` is not enabled
+example : run { cfg17 with bootFirst := true } (pre17 ++ [.age 1, .expire 1, .tick, .boot 0, .stop 0 true, .age 0, .expire 1]) = none := by decide +kernel
 
 end Swarm

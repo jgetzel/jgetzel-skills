@@ -63,7 +63,7 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
         ("waiterGone", [a "a20" x], waiterGone s x),
         ("age", [a "a21" x], age s x),
         ("cool", [a "a22" x], cool s x)])
-      ++ (ts.map fun t => ("expire", [n "t23" t], expire s t))
+      ++ (ts.map fun t => ("expire", [n "t23" t], expire c s t))
       ++ ps.map fun q => ("expireLock", [p "p24" q], expireLock s q),
     (masks.map fun m => ("add", [d "d28" m], add s (depSet c m)))
       ++ (ts.flatMap fun t => masks.map fun m => ("after", [n "t29" t, d "d29" m], after c s t (depSet c m)))

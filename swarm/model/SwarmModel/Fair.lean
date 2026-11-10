@@ -421,8 +421,9 @@ theorem idleClaim_leads_to {c : Cfg} (hr : c.racy = false) (hfix : c.release ≠
     obtain ⟨k, hk, hact⟩ := Run.fair_ev hf (f := .expire t) (N0 := n) (fun k hk => by simp [fair, ht]) (fun k hk => by
       have h1 := hleased k hk
       have h2 := hH k hk
+      have h3 := hA k hk
       simp [step, expire, when, idleClaim, ownsClaimed] at h2 ⊢
-      simp [h1, h2.1.1])
+      simp [h1, h2.1.1, bootingOwner, h2.1.2, h3])
     have hok := r.ok k
     rw [hact] at hok
     have := expire_lapses hok
