@@ -41,8 +41,8 @@ end
 assert(not M.real_hunk("module L (a, b) where\n", "module L (a, b, c) where\n", "module L (a, b, d) where\n"))
 assert(M.real_hunk("x = f a\n", "x = g a\n", "x = h a\n"))
 
--- {agent: worktree} for live agents: agent.wt, else the worktree whose branch is <name>/…
-function M.wt_map(c)
+-- {{path, branch}} of the repo's worktrees that are on a branch
+function M.worktrees()
   local wts, cur = {}, nil
   for _, l in ipairs(util.splitlines(proc.run({ "git", "worktree", "list", "--porcelain" }))) do
     if util.startswith(l, "worktree ") then
@@ -51,6 +51,24 @@ function M.wt_map(c)
       wts[#wts + 1] = { cur, l:sub(19) }
     end
   end
+  return wts
+end
+
+-- Every worktree name owns: its branch is <name>/…, or its directory ends in -<name> or -<name>-…
+function M.owned_wts(name, wts)
+  local res = {}
+  for _, pb in ipairs(wts) do
+    local b = util.basename(pb[1])
+    if util.startswith(pb[2], name .. "/") or b:sub(-#name - 1) == "-" .. name or b:find("-" .. name .. "-", 1, true) then
+      res[#res + 1] = pb[1]
+    end
+  end
+  return res
+end
+
+-- {agent: worktree} for live agents: agent.wt, else the worktree whose branch is <name>/…
+function M.wt_map(c)
+  local wts = M.worktrees()
   local res = {}
   for _, a in ipairs(require("swarm.agents").live_agents(c)) do
     local w = a.wt
