@@ -695,6 +695,16 @@ function T.test_deps_list_holds_until_last_done(t)
   t:has(t:sw("a", "task", "add", "x", "--after", "1,9", { ok = false }).stderr, "no task #9")
 end
 
+function T.test_release_after_leaves_pool(t)
+  t:agent("a")
+  t:sw("a", "task", "add", "dep"); t:sw("a", "task", "add", "work")
+  t:sw("a", "task", "claim", "2")
+  t:has(t:sw("a", "task", "release", "2", "--after", "2", { ok = false }).stderr, "#2 → #2")
+  t:has(t:sw("a", "task", "release", "2", "--after", "1").stdout, "after #1")
+  t:has(t:sw("a", "board").stdout, "after #1  work")
+  t:has(t:sw("a", "task", "claim", "2", { ok = false }).stderr, "#1")
+end
+
 function T.test_task_after_cycle_and_lines(t)
   t:agent("a")
   for _, x in ipairs({ "one", "two", "three" }) do t:sw("a", "task", "add", x) end

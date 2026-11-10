@@ -158,6 +158,24 @@ local function no_task_to_wait_on(c, deps)
   end
 end
 
+-- Refuse a missing dep or a cycle, then store the list; returns it as strings.
+function M.set_deps(c, id, deps)
+  local ds = {}
+  for i, x in ipairs(deps) do
+    no_task_to_wait_on(c, { x })
+    local cyc = M.dep_path(c, x, id)
+    if cyc then
+      table.insert(cyc, 1, id)
+      local p = {}
+      for j, y in ipairs(cyc) do p[j] = "#" .. d(y) end
+      util.die("that would be a cycle: " .. table.concat(p, " → "))
+    end
+    ds[i] = d(x)
+  end
+  c:exec("update task set deps=? where id=?", table.concat(ds, ","), id)
+  return ds
+end
+
 local function ctx_of(c, n)
   local r = c:one("select ctx_tokens from agent where name=?", n)
   return r and r.ctx_tokens or 0
@@ -254,19 +272,7 @@ function M.cmd_task(c, a)
       if r2.state ~= "open" then
         util.die(("task #%s is %s; only an open task's dependencies can change"):format(d(a.id), r2.state))
       end
-      for _, x in ipairs(a.deps) do
-        no_task_to_wait_on(c, { x })
-        local cyc = M.dep_path(c, x, a.id)
-        if cyc then
-          table.insert(cyc, 1, a.id)
-          local p = {}
-          for i, y in ipairs(cyc) do p[i] = "#" .. d(y) end
-          util.die("that would be a cycle: " .. table.concat(p, " → "))
-        end
-      end
-      local ds = {}
-      for i, x in ipairs(a.deps) do ds[i] = d(x) end
-      c:exec("update task set deps=? where id=?", table.concat(ds, ","), a.id)
+      local ds = M.set_deps(c, a.id, a.deps)
       db.log(c, n, "task-after", nil, ("#%s after %s"):format(d(a.id), py(table.concat(ds, ",")) or "-"))
     end)
     print(("#%s after %s"):format(d(a.id), py(ids(a.deps)) or "nothing"))
@@ -339,9 +345,10 @@ function M.cmd_task(c, a)
           a.id, n) == 0 then
         util.die(("task #%s is not claimed by you"):format(d(a.id)))
       end
+      if a.after then M.set_deps(c, a.id, a.after) end
       db.log(c, n, "release", nil, "#" .. d(a.id))
     end)
-    print(("released #%s; it is open again"):format(d(a.id)))
+    print(("released #%s; it is open again%s"):format(d(a.id), a.after and #a.after > 0 and (" after " .. ids(a.after)) or ""))
 
   elseif a.act == "drop" then
     c:tx(function()
