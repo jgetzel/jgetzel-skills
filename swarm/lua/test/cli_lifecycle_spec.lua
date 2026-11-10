@@ -270,6 +270,47 @@ function T.test_dirty_or_unlanded_not_ended(t)
   assert(exists(t.wt))
 end
 
+-- An idle agent kept only by an unclean worktree is told what holds it, once; idle again and still unclean, or with
+-- no live waiter to wake, the communicator is told once instead.
+local function nudges(t) return t:q("select body from msg where dest='e' and urgent=1") end
+local function told(t) return t:q("select body from msg where dest='comms'") end
+
+function T.test_unclean_agent_nudged_once_then_ended_when_clean(t)
+  idle(t, "e", { wt = t.wt, waiter = unistd.getpid(), last_active = os.time() - 600 })
+  t:write("b", "scratch.txt", "x")
+  comms_tick(t); t:eq(#nudges(t), 0)  -- idle under the threshold
+  t:q("update agent set last_active=? where name='e'", OLD)
+  comms_tick(t); comms_tick(t)
+  t:eq(#nudges(t), 1)
+  t:has(nudges(t)[1].body, "?? scratch.txt")
+  t:eq(#told(t), 0)
+  os.remove(t.wt .. "/scratch.txt")
+  comms_tick(t)
+  assert(ended(t, "e"), "cleaned up and not ended")
+end
+
+function T.test_nudged_and_still_unclean_tells_comms_once(t)
+  idle(t, "e", { wt = t.wt, waiter = unistd.getpid() })
+  commit_wip(t, "new.txt")
+  comms_tick(t); t:eq(#nudges(t), 1)
+  t:has(nudges(t)[1].body, "wip")
+  t:q("update event set ts=ts-5000")  -- e woke after the nudge and is idle again, still holding the commit
+  comms_tick(t); comms_tick(t)
+  t:eq(#nudges(t), 1)
+  t:eq(#told(t), 1)
+  t:has(told(t)[1].body, "wip")
+  assert(not ended(t, "e"))
+end
+
+function T.test_unclean_agent_without_waiter_tells_comms(t)
+  idle(t, "e", { wt = t.wt })
+  t:write("b", "scratch.txt", "x")
+  comms_tick(t); comms_tick(t)
+  t:eq(#nudges(t), 0)
+  t:eq(#told(t), 1)
+  t:has(told(t)[1].body, "?? scratch.txt")
+end
+
 function T.test_missing_worktree(t)
   idle(t, "e", { wt = t.wt })
   rmtree(t.wt)  -- branch w2 still registered; its commits are on main
