@@ -1,4 +1,4 @@
--- Messages: post, unread, advance, deliver; cmd post/read/wait.
+-- Messages: post, unread, take, deliver; cmd post/read/wait.
 local util, db, lfs = require "swarm.util", require "swarm.db", require "lfs"
 local agents = require "swarm.agents"
 local utf8 = require "lua-utf8"
@@ -22,10 +22,19 @@ function M.unread(c, name)
     cur and cur.last_msg_id or 0, name, name)
 end
 
-function M.advance(c, name, rows)
-  if #rows > 0 then
-    c:exec("insert into cursor(agent,last_msg_id) values(?,?) on conflict(agent) do update "
-      .. "set last_msg_id=max(last_msg_id,excluded.last_msg_id)", name, rows[#rows].id)
+-- name's unread rows and the prefix pick chooses (all, without pick), that prefix marked read. The cursor moves only
+-- from where these rows were read; if another delivery (the waiter and a hook can run at once) moved it in between,
+-- read again, so each message is shown once.
+function M.take(c, name, pick)
+  while true do
+    local cur = c:one("select last_msg_id from cursor where agent=?", name)
+    local from = cur and cur.last_msg_id or 0
+    local rows = c:all("select * from msg where id>? and frm!=? and (dest=? or dest='@all') order by id", from, name, name)
+    local fit = pick and pick(rows) or rows
+    if #fit == 0 then return rows, fit end
+    local moved = cur and c:exec("update cursor set last_msg_id=? where agent=? and last_msg_id=?", fit[#fit].id, name, from)
+      or c:exec("insert or ignore into cursor(agent,last_msg_id) values(?,?)", name, fit[#fit].id)
+    if moved > 0 then return rows, fit end
   end
 end
 
@@ -45,14 +54,16 @@ end
 -- Unread messages that fit in budget chars, marked read; the rest stay unread with a pointer.
 function M.deliver(c, name, budget)
   budget = budget or M.CTX_CAP
-  local rows, fit, size = M.unread(c, name), {}, 120
-  for _, r in ipairs(rows) do
-    local n = utf8.len(M.fmt_msgs({ r })) + 1
-    if size + n > budget then break end
-    fit[#fit + 1] = r
-    size = size + n
-  end
-  M.advance(c, name, fit)
+  local rows, fit = M.take(c, name, function(rows)
+    local fit, size = {}, 120
+    for _, r in ipairs(rows) do
+      local n = utf8.len(M.fmt_msgs({ r })) + 1
+      if size + n > budget then break end
+      fit[#fit + 1] = r
+      size = size + n
+    end
+    return fit
+  end)
   local note = #fit > 0 and M.peer_note(fit) or ""
   if #fit < #rows then
     note = note .. ("\n%d more unread message(s), too long to show here: run `swarm read`."):format(#rows - #fit)
@@ -114,8 +125,7 @@ end
 
 function M.cmd_read(c)
   local n = agents.me()
-  local rows = M.unread(c, n)
-  M.advance(c, n, rows)
+  local _, rows = M.take(c, n)
   print(#rows > 0 and M.fmt_msgs(rows) or "no unread messages")
 end
 
