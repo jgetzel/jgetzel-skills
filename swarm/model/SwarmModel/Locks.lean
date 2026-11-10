@@ -214,7 +214,7 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (
   all_goals
     obtain ⟨hg, rfl⟩ := hstep
     (try split) <;> (try simp only [unbelieve, awake, claimed]) <;> simp <;>
-      ((with_reducible refine lk_live hs ?_); live_tac; (first | done | (trace_state; sorry)))
+      ((with_reducible refine lk_live hs ?_); live_tac)
 
 /-- S3. With PR #114 (swarm lock refuses any common file), no two live locks of different agents cover a common file. -/
 theorem locksDisjoint_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (h : Reachable c s) :
