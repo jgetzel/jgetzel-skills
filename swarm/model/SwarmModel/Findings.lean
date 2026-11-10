@@ -44,10 +44,10 @@ example : violates { racy := true }
 -- ---------- liveness ----------
 /-- The actions fairness makes happen if they stay enabled: watchd ticks, leases lapse, idle agents age, a spawned
 agent boots, a waiter with a message it wakes on wakes, an hc prompt is answered, a working agent reads its
-messages and takes work, and the second half of a split command follows the first. -/
+messages and takes work, a background job ends, and the second half of a split command follows the first. -/
 def fair (c : Cfg) : List Action :=
   .tick :: c.tasks.map .expire ++ c.agents.flatMap fun a =>
-    [.age a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
+    [.age a, .bgEnd a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
       ++ c.tasks.map (.claim a) ++ c.tasks.map (.claimRead a)
 /-- no fair action is enabled: a fair run may stay in this state forever -/
 def stuck (c : Cfg) (s : State) : Bool := (fair c).all fun act => (step c s act).isNone
@@ -88,5 +88,22 @@ example : stuckWith {} [.stop 0 false, .age 0, .add [], .tick, .wake 0, .claim 1
     .age 0, .leave 1] (fun s => idleSlot {} s && !answered s 1) = false := by decide
 example : stuckWith {} [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
     (fun s => idleSlot {} s && !answered s 1) = false := by decide
+
+-- ---------- the idle owner with a background job (board #115, found on #107) ----------
+/-- task 1 is held by agent 1 while agent 0, who had it, is live with its background job running -/
+def takenFromJob (s : State) : Bool := ((s.tk 1).owner == some 1 && (s.agt 0).bg && (s.agt 0).live)
+
+-- #10, S1-like (work lost). Agent 0 claims #1, starts a long job and stops; the lease lapses; with `bgKeeps` off
+-- reap reopens #1 (its owner is idle) and, agent 1 having left, watchd spawns agent 1 onto it while 0's job runs.
+example : violates { bgKeeps := false } [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick]
+    (!takenFromJob ·) = true := by decide
+
+-- #11. Reap took #1 from agent 0, whose context is big (the 350k fence): with `retake` off `task claim` refuses it
+-- the task it held, so the run cannot continue; with it on the claim goes through.
+example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isNone = true := by decide
+
+-- The same runs with the fix on.
+example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide
+example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide
 
 end Swarm

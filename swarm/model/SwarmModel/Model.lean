@@ -46,6 +46,11 @@ structure Cfg where
   passedOver : Bool := true
   /-- lifecycle keeps an agent reusable only while its waiter is alive (PR #119) -/
   waiterAlive : Bool := true
+  /-- reap keeps a lapsed claim whose idle owner has a live background job (PR #121) -/
+  bgKeeps : Bool := true
+  /-- `task claim` refuses an agent with a big context (the 350k fence), unless reap took this very task from it
+  (PR #121); with `retake` off the fence has no exception -/
+  retake : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -57,6 +62,8 @@ structure Task where
   answer : Bool
   /-- blocked by an hc prompt, not by `task block` -/
   hcq : Bool
+  /-- the agent reap took this task from, until another agent claims it (the Lua's `reaped_from`) -/
+  reaped : Option Nat := none
   deriving DecidableEq, Repr, Inhabited
 
 structure Agent where
@@ -76,6 +83,8 @@ structure Agent where
   snap : List Nat
   /-- the task whose deps `task claim` has read but not yet written (racy) -/
   reading : Nat
+  /-- a background job of its own is running (a build, a model check, a Monitor) -/
+  bg : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Lock where
@@ -171,7 +180,10 @@ def deliver (s : State) (a : Nat) : State := showAll s a (unread s a)
 def takes (c : Cfg) (s : State) (a t : Nat) : State :=
   let s1 := setAg s a fun g => { g with believes := t :: g.believes }
   if c.answerOnTask && (s1.tk t).answer then { s1 with pend := s1.pend.filter (· != t) } else s1
-def claimed (s : State) (a t : Nat) : State := setTask s t fun k => { k with st := .claimed, owner := some a, lease := true }
+def claimed (s : State) (a t : Nat) : State :=
+  setTask s t fun k => { k with st := .claimed, owner := some a, lease := true, reaped := if k.reaped == some a then k.reaped else none }
+/-- the 350k fence on `task claim`: a big agent may take only what reap took from it -/
+def fenced (c : Cfg) (s : State) (a t : Nat) : Bool := (s.agt a).big && !(c.retake && (s.tk t).reaped == some a)
 /-- agents._release: every claim and lock of a -/
 def releaseAll (s : State) (a : Nat) : State :=
   { s with
@@ -183,14 +195,14 @@ def keeps (c : Cfg) (g : Agent) : Bool :=
   match c.release with
   | .ended => g.live
   | .notWorking => g.st == .working
-  | .idle => g.live && g.st != .idle
+  | .idle => g.live && (g.st != .idle || (c.bgKeeps && g.bg))
 /-- reap of one task: reopened, and its owner told -/
 def reapTask (c : Cfg) (x : State) (t : Nat) : State :=
   let k := x.tk t
   match k.owner with
   | some o =>
     if k.st == .claimed && !k.lease && !keeps c (x.agt o) then
-      post (setTask x t fun r => { r with st := .opn, owner := none, lease := false }) ⟨none, o, false, .released, t⟩
+      post (setTask x t fun r => { r with st := .opn, owner := none, lease := false, reaped := some o }) ⟨none, o, false, .released, t⟩
     else x
   | none => x
 def reapTasks (c : Cfg) (s : State) : State := c.tasks.foldl (reapTask c) s
@@ -254,16 +266,19 @@ def awake (s : State) (a : Nat) : State :=
 
 /-- swarm task claim: refuses while a dependency isn't done, then writes `where state='open'` -/
 def claim (c : Cfg) (s : State) (a t : Nat) : Option State :=
-  when (!c.racy && working s a && startable s t) (takes c (claimed s a t) a t)
+  when (!c.racy && working s a && startable s t && !fenced c s a t) (takes c (claimed s a t) a t)
 /-- the same, as two steps: the dependency read, then the write -/
 def claimRead (c : Cfg) (s : State) (a t : Nat) : Option State :=
-  when (c.racy && working s a && (s.agt a).reading == 0 && startable s t) (setAg s a ({ · with reading := t }))
+  when (c.racy && working s a && (s.agt a).reading == 0 && startable s t && !fenced c s a t) (setAg s a ({ · with reading := t }))
 def claimWrite (c : Cfg) (s : State) (a : Nat) : Option State :=
   let t := (s.agt a).reading
   when (c.racy && t > 0) <|
     if (s.tk t).st == .opn && (depsDone s t || !c.claimChecksDeps) then
       setAg { takes c (claimed s a t) a t with early := s.early || !depsDone s t } a ({ · with reading := 0 })
     else setAg s a ({ · with reading := 0 })
+/-- the agent starts a background job, or it ends -/
+def bgStart (s : State) (a : Nat) : Option State := when (busy s a && !(s.agt a).bg) (setAg s a ({ · with bg := true }))
+def bgEnd (s : State) (a : Nat) : Option State := when ((s.agt a).live && (s.agt a).bg) (setAg s a ({ · with bg := false }))
 def renew (s : State) (a t : Nat) : Option State :=
   when (working s a && ownsClaimed s a t) (setTask s t ({ · with lease := true }))
 def release (s : State) (a t : Nat) : Option State :=
@@ -370,6 +385,7 @@ def tick (c : Cfg) (s : State) : Option State := when (tickOf c s != s) (tickOf 
 
 /-- Everything that can happen: the agents' commands, the environment, the communicator, watchd. -/
 inductive Action where
+  | bgStart (a : Nat) | bgEnd (a : Nat)
   | claim (a t : Nat) | claimRead (a t : Nat) | claimWrite (a : Nat) | renew (a t : Nat) | release (a t : Nat)
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
@@ -380,6 +396,7 @@ inductive Action where
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
+  | .bgStart a => bgStart s a | .bgEnd a => bgEnd s a
   | .claim a t => claim c s a t | .claimRead a t => claimRead c s a t | .claimWrite a => claimWrite c s a
   | .renew a t => renew s a t | .release a t => release s a t | .block a t => block s a t
   | .done a t ev => done c s a t ev | .dropOwn a t => dropOwn s a t | .lock a p => lock c s a p
