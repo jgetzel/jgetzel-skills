@@ -96,7 +96,8 @@ function M.cmd_post(c, a)
   local keys = { "drains at its next tool round", "wakes", "held, cold (reads it when it next wakes)", "no live waiter" }
   local g = {}
   for _, k in ipairs(keys) do g[k] = {} end
-  for _, x in ipairs(agents.live_agents(c)) do
+  local here, gone = agents.split_agents(c)
+  for _, x in ipairs(here) do
     if x.name ~= frm and (a.to == "@all" or x.name == a.to) then
       local k
       if x.status == "working" then k = keys[1]
@@ -109,6 +110,13 @@ function M.cmd_post(c, a)
   local parts = {}
   for _, k in ipairs(keys) do
     if #g[k] > 0 then parts[#parts + 1] = table.concat(g[k], ", ") .. ": " .. k end
+  end
+  local dead = {}
+  for _, x in ipairs(gone) do
+    if x.name ~= frm and (a.to == "@all" or x.name == a.to) then dead[#dead + 1] = x.name end
+  end
+  if #dead > 0 then
+    parts[#parts + 1] = table.concat(dead, ", ") .. ": no terminal; can't be delivered now (stored; read after `swarm join --takeover`)"
   end
   print("posted. " .. table.concat(parts, "; "))
   local idle, held = {}, {}

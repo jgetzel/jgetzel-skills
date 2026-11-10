@@ -105,6 +105,20 @@ function M.live_agents(c)
   return c:all("select * from agent where ended is null order by name")
 end
 
+-- Live rows split by the terminal at read time (hc ls), so it holds with no watchd to reap: present, gone.
+-- No hc, or an unbound row, can't show a terminal gone.
+function M.split_agents(c)
+  local terms, live = M.hc_terminals(), {}
+  for _, x in ipairs(terms or {}) do
+    if x.state == "live" and x.address then live[x.address] = true end
+  end
+  local here, gone = {}, {}
+  for _, x in ipairs(M.live_agents(c)) do
+    table.insert(terms ~= nil and x.hc and x.hc ~= "" and not live[x.hc] and gone or here, x)
+  end
+  return here, gone
+end
+
 function M.is_comms(c, name)
   if not name or name == "" then return false end
   local cm = c:one("select v from meta where k='comms'")
@@ -195,7 +209,11 @@ function M.cmd_who(c, a)
   if avail then print(machine.machine_line(avail, total, psi)) end
   local stale = M.herdr_stale()
   if stale then print(stale) end
-  for _, x in ipairs(M.live_agents(c)) do
+  local here, gone = M.split_agents(c)
+  for _, x in ipairs(gone) do
+    print(("%s gone: no terminal; swarm join --takeover %s"):format(x.name, x.name))
+  end
+  for _, x in ipairs(here) do
     local k = math.floor((x.ctx_tokens or 0) / 1000)
     local last = M.session_active(x, t)
     local cache = t - last < M.COLD_IDLE and "warm" or "cold"
