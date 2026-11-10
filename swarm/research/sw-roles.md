@@ -32,7 +32,7 @@ agent that holds it. An agent with no `stay` is judged exactly as today. So
 "finished" stays mechanical (idle, holds nothing, work landed), and the only
 new judgment, "am I still needed with no task?", is made by the one party
 that can know: the agent. watchd adds one edge-triggered notice for stayers
-when the swarm goes quiet. Nothing in the CLI or watchd ever reads the text of
+when the swarm goes quiet, and checks them for hangs. Nothing in the CLI or watchd ever reads the text of
 a role.
 
 Why a label plus a hold, and not role rules: DESIGN finding 3. Role prompts
@@ -104,6 +104,38 @@ A stayer that ignores the notice stays, visibly: `who`, the board footer and
 the panel show the sentence and the idle age. The communicator can message
 it. Nothing forces it out; see risks.
 
+**Hung stayers** (the user's concern, 2026-11-09: a stayer can hang for
+hours with nothing waking it). A sleeping stayer and a hung one look the
+same until something tries to reach it, so watchd looks for the signs it can
+see and, failing those, asks:
+
+| Sign | Kind | What watchd does |
+|---|---|---|
+| Terminal gone | edge | `reap` ends it (today) |
+| hc reports a prompt or any status but idle/working | edge | tells the communicator (today's blocked notice) |
+| Idle with no live waiter: no message can wake it | edge | tells the communicator once: "sr-7 stays for '<text>' but has no waiter and can't be woken." A poke would not arrive. |
+| A message to it is unread two ticks after it was posted, and it is still idle | edge | tells the communicator once: "sr-7 did not wake on a message." This fires exactly when someone needs the stayer. |
+| None of the above, idle 50 min | **periodic** | the liveness check below |
+
+The liveness check is a timer, against decision 7, because the user asked
+for it and because no edge exists for "hung while nobody needs it yet". It
+is the only one. After 50 minutes idle watchd posts to the stayer: "Liveness
+check: you have stayed 50 min for '<text>'. If that still holds, do nothing.
+If it is over, `swarm stay --end`." The answer is not a reply: the wake
+itself moves the agent's `last_active`. If that hasn't moved five minutes
+later, the stayer is hung: one urgent notice to the communicator with its
+terminal and hc status ("unstick it with `hc send`, or end it"), event
+`stay-hung`, and no more checks until it is active again. A stayer that
+answers is checked again after another 50 idle minutes.
+
+Why 50: the prompt cache lasts an hour (`COLD_IDLE` is 55 min). A check
+inside that window is a short cached turn and renews the cache, so a stayer
+is never a cold wake when it is finally needed. A check after it would
+resend the whole context uncached each time. The cost is about a tenth of
+the stayer's context per check, for as long as it stays; `who` shows how
+long that has been. Whether to repeat or check once is question 4. The
+communicator is not checked: it has no hooks, and the user is its liveness.
+
 **Context.** `hook.ctx_advice` tells an agent at 350k to "finish this task,
 then go idle; a fresh agent takes the next". For a stayer that is wrong: the
 advice becomes the one the communicator gets today (hand off with `relaunch`
@@ -119,7 +151,7 @@ stay". `task claim`'s refusal at 350k is unchanged.
 |---|---|---|
 | `lifecycle` end (`watchd.lua:371-385`) | idle + no claim + no lock + landed = finished | adds "+ no stay" (§4) |
 | `passed_over`, `reusable`, digest | an idle claimless agent exists to take tasks | unchanged; stayers never reach it |
-| Auto-spawn per task | watchd staffs every startable task | unchanged and optional: it is the scripted orchestrator. A swarm whose orchestrator staffs tasks itself runs `watchd --max-agents 0` (works today). Both can run: `spawn --task` reserves, so they can't double-staff. |
+| Auto-spawn per task | watchd staffs every startable task | unchanged and optional: it is the scripted orchestrator. A swarm whose orchestrator staffs tasks itself sets the auto-spawn number to 0 (§6). Both can run: `spawn --task` reserves, so they can't double-staff. |
 | Leases, `reap` | claims only | unchanged |
 | Communicator exemption (`is_comms` in `lifecycle`, the `*comms` name suffix) | a special case in code | the communicator is a stayer: `swarm watchd` sets its `stay` ("the user's channel") in the transaction that writes `meta.comms`. The lifecycle exemption and the suffix rule (`agents.lua:125`, `tasks.lua:315`) are deleted. `meta.comms` remains, as an address: where watchd sends what needs the human. That is the only role the CLI knows, and it knows it as an address. |
 | `brief.md` | "There is no manager", "`swarm board` first … claim before you work", "Ending: after `task done` …" | §6 |
@@ -136,10 +168,37 @@ the gap before it would have said so itself. The free text after `--` is
 already the role brief; no role templates.
 
 **Agents may spawn peers**, as the brief already says. That is what makes an
-orchestrator possible. What's missing is information at that decision:
-`swarm spawn` prints the live count, the count the user launched and free
-memory before it launches. Whether the user's count also *refuses* is
-question 1 in §10.
+orchestrator possible. No spawn is ever refused (the user, 2026-11-09).
+Two numbers, both the user's, tell everyone how many agents the swarm
+should hold:
+
+| | Auto-spawn number (the user's "agent min") | Agent max |
+|---|---|---|
+| Means | watchd staffs startable tasks until this many agents are live | the most agents the user wants live at once |
+| Binds | watchd, a script: it never spawns past it | nobody. Agents are told it and are expected to respect it |
+| Lives | `meta.agent_min` | `meta.agent_max` |
+| Default | the live count when the first watchd starts (today's rule) | the same number, until the user gives a higher one |
+
+Both count every live agent but the communicator, stayers included: each
+holds memory and quota whatever it calls itself.
+
+- **Who sets them:** the communicator, on the user's word, with
+  `swarm limits [--min N] [--max M]`. With no flag it prints both and the
+  live count. watchd reads `meta` each tick, so a change needs no restart.
+  `watchd --max-agents N` remains for one release as a way to write the
+  auto-spawn number at start, then goes.
+- **What agents see:** `swarm board` and `swarm who` open with "agents: 9
+  live, auto-spawn to 8, max 12". `swarm spawn` prints the same line as it
+  would be after the launch, with the machine note (§6a), and launches.
+- **Below the auto-spawn number:** watchd staffs tasks, as today.
+- **Between the two:** watchd spawns nothing. More agents come only from an
+  agent that judges one is needed: an orchestrator staffing a plan, an
+  implementer who wants a reviewer on another model.
+- **At or past the max:** the spawn still runs. It prints "this makes 13,
+  over the user's max of 12; the communicator can raise it", logs
+  `spawn-over`, and on the edge of crossing the communicator gets one
+  notice naming who spawned. The user sees it; nothing is undone.
+- **Auto-spawn number 0:** watchd staffs nothing; an orchestrator does.
 
 **brief.md** (kept short; each line lands with the PR that makes it true):
 
@@ -160,7 +219,7 @@ question 1 in §10.
 **SKILL.md**: "Agents choose their own roles; you assign none unless the user
 asks." §1.4 shows two starts: the flat board (today, the default), and
 seeding one strong-model agent with `--role orchestrator --stay "…"` and
-`watchd --max-agents 0`. The communicator stays out of the event path either
+an auto-spawn number of 0. The communicator stays out of the event path either
 way (principle 8): if the swarm wants an orchestrator, it is a separate agent.
 
 ## 6a. Telemetry: measured, not guessed from words
@@ -199,7 +258,7 @@ the per-agent totals exact and lets `end_agent` kill what an agent left
 behind with `cgroup.kill` in place of the orphan heuristic, and when an
 agent's `memory.peak` rises while exactly one of its commands is open, that
 command's row gets the exact figure. It is worth building only if the retro
-shows sampled peaks misleading agents (question 5).
+shows sampled peaks misleading agents (question 2).
 
 Mechanism for A, all in watchd's existing `machine_tick`: keep a table in
 memory of live command shells per agent (pid, start, command text, largest
@@ -277,21 +336,21 @@ behaviour there.
 
 ### Auto-spawn's limits
 
-They are two different things:
+Three numbers, and none of them refuses an agent anything:
 
-- `--min-free-mem` is not a gate on agents. watchd is a script, it can't
-  weigh a machine note, and a threshold is its stand-in for judgment about
-  its *own* spawns. It stays, for the scripted path only. Agents' spawns are
-  never refused for memory; they get the note. What changes: today watchd
-  skips the spawn silently (`watchd.lua:441`). It should log an edge-triggered
-  `spawn-held` event with the reason, and the board should carry one line
-  while it holds ("auto-spawn holding: 3.1G free, wants 4G; 2 tasks
-  startable"), so whoever reads the board can decide: spawn anyway, pick a
-  smaller task, use another machine. With an orchestrator and
-  `--max-agents 0`, watchd decides nothing and both numbers are only
-  information.
-- `--max-agents` is the user's budget, not machine contention. For watchd it
-  stays a limit. For agents it is information or a limit: question 1.
+- **`--min-free-mem`** stays (the user, 2026-11-09). watchd is a script, it
+  can't weigh a machine note, and a threshold is its stand-in for judgment
+  about its *own* spawns. Agents' spawns are never held for memory; they get
+  the note.
+- **The auto-spawn number** (§6) is the other bound on watchd's own spawns.
+- **The agent max** (§6) is information to agents.
+
+What changes for watchd: today it skips a spawn silently
+(`watchd.lua:441`). It logs an edge-triggered `spawn-held` event with the
+reason, and the board carries one line while it holds: "auto-spawn holding:
+3.1G free, wants 4G; 2 tasks startable", or "auto-spawn holding: 8 live, the
+auto-spawn number is 8; 2 tasks startable; max 12". Whoever reads the board
+can then decide: spawn anyway, pick a smaller task, use another machine.
 
 ## 7. Deleted or simplified
 
@@ -352,18 +411,29 @@ Each passes `luajit swarm/lua/test/run.lua` and carries its own brief lines.
    available; a process no word names is listed by size; the old heavy
    tests are deleted with the code.
 9. **Telemetry at decisions (independent; `pressure` to stayers after 2).**
-   The machine line on `board` and `task claim`, the note and counts on
-   `spawn`, `spawn-held` and its board line. The spawn refusal only if the
-   user says yes to question 1. *Tests:* each command prints the line from a
-   fake `/proc`; one `spawn-held` per edge; no agent spawn is refused for
-   memory.
-10. **A cgroup per agent (optional, after 7; question 5).** `spawn` launches
+   The machine line on `board` and `task claim`, the note on `spawn`.
+   *Tests:* each command prints the line from a fake `/proc`.
+10. **A cgroup per agent (optional, after 7; question 2).** `spawn` launches
     through `systemd-run --user --scope` where it exists; exact per-agent
     peak and CPU; `end_agent` uses `cgroup.kill`. Without systemd nothing
     changes.
 
-After 2 lands the roles request is met for agents; 3-6 are nudges, cleanup
-and views. 7-10 are the telemetry and stand apart from roles: they can go
+11. **The two numbers (independent).** `meta.agent_min` and `agent_max`,
+    `swarm limits`, watchd reading them each tick, the line on `board`,
+    `who` and `spawn`, `spawn-over` and its notice, `spawn-held` and its
+    board line. *Tests:* watchd spawns up to the auto-spawn number and not
+    past it; a change takes effect on the next tick; a spawn past the max
+    launches, logs `spawn-over` and tells the communicator once; no spawn
+    is refused; one `spawn-held` per edge.
+12. **Hung stayers (after 2).** The two edge notices and the liveness check.
+    *Tests:* a waiterless idle stayer is reported once; an unread message
+    two ticks old is reported once; a check goes out at 50 idle minutes and
+    not before; a moved `last_active` means no `stay-hung` and a new check
+    50 minutes later; an unmoved one means one `stay-hung` and no further
+    checks; the communicator is never checked.
+
+After 2 lands the roles request is met for agents; 3-6 and 12 are nudges,
+cleanup and views; 11 is the staffing numbers. 7-10 are the telemetry and stand apart from roles: they can go
 first.
 
 ## 9. Considered and not proposed
@@ -395,7 +465,8 @@ Risks:
   Mitigation is only the same-role line and the roster. Measure in the retro
   from `role` events.
 - **Stayers leak.** A forgotten stayer holds about 300 MB and is never ended.
-  The quiet notice and the visible sentence are the only pressure.
+  The quiet notice, the liveness check's question and the visible sentence
+  are the only pressure.
 - **A standing reviewer ages.** Principle 5 wants reviewers with a fresh
   context. A reviewer per PR as an ordinary task (auto-spawned, fresh, another
   model) is often better than a stayer, and already works. The brief should
@@ -404,6 +475,10 @@ Risks:
   messages are peer data, not orders. It has real power only through the
   board and `spawn`. Two orchestrators have no arbiter but claims.
 - **Spawn cost.** An orchestrator that spawns freely spends the user's quota.
+  The max is only told to it; the one check is the notice to the
+  communicator when it is passed.
+- **The liveness check costs tokens for as long as an agent stays**, about
+  a tenth of its context every 50 minutes, and it is a timer.
 - **The quiet notice wakes large contexts.** Bounded by the cold guard: cold
   stayers are reported, not woken.
 
@@ -415,24 +490,28 @@ Risks:
 - **Daemon-side work** (`nix build`, `docker build`) is in no agent's tree
   and is never attributed.
 
-Questions:
+Answered by the user, 2026-11-09 (relayed by the communicator):
 
-1. Should the user's agent count bind agents' own spawns? Recommended: yes,
-   one number in `meta` that `swarm spawn` refuses past, naming the
-   communicator as who can raise it. It is the user's budget, not contention
-   between agents, so decision 6 doesn't cover it. The alternative is the
-   information line alone.
-2. Is PR 4 wanted now? It deletes a special case but touches the one agent
-   whose wrongful end hurts most.
-3. `stay` as the word (`hold` and `wait` are taken or confusable)?
-4. Keep `--min-free-mem` as watchd's own threshold (recommended, made
-   visible by `spawn-held`), or drop it and let auto-spawn launch whatever
-   the cap allows, leaving memory to the agents' notes?
-5. Build the per-agent cgroup (PR 10)? Recommended: not until a retro shows
+- No spawn is refused. Two visible numbers: the auto-spawn number and the
+  agent max (§6).
+- `stay` is the word; stayers must be checked for hangs (§4).
+- `--min-free-mem` stays as watchd's own threshold, made visible (§6a).
+
+Open questions:
+
+1. Is PR 4 wanted now? It makes the communicator a stayer and deletes its
+   special case, but touches the one agent whose wrongful end hurts most.
+2. Build the per-agent cgroup (PR 10)? Recommended: not until a retro shows
    sampled peaks misleading agents. It is Linux-with-systemd only and
    changes how every agent is launched.
-6. Should the user's own Claude Code sessions outside a swarm be measured
+3. Should the user's own Claude Code sessions outside a swarm be measured
    too? Their builds are most of the load on a shared machine and today
    appear only as "other sessions". watchd could record any command shell
    under any claude process in the repo's worktrees; not planned unless
    wanted.
+4. The liveness check: every 50 idle minutes for as long as an agent stays
+   (recommended: the cache stays warm and a hang is found within an hour),
+   or once, with later hangs left to the two edge signs?
+5. Is the agent max's default right (the number launched, so the first
+   agent-made spawn is already "over" until the user raises it)? The
+   alternative is no max until the user sets one.
