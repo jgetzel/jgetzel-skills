@@ -14,6 +14,7 @@ create index cmd_key on cmd(machine, repo, key, id);
 - `key`: the command without a leading `cd … &&`, `swarm run … --`, `VAR=x`, or trailing pipes and redirections, cut to its first three words.
 - A row is written only when `wall_s >= 60` or `peak_kb >= 1 GiB`. Keep the newest 20 per `(machine, repo, key)`.
 - `exact=0`: peak is the largest RSS sum of the command's process tree over watchd's 30 s samples (it can run low).
+- `exact=1`: the peak is the agent's cgroup `memory.peak` (the agent runs in a `swarm-agent-*` scope where a systemd user session exists), taken when it rose while this was the agent's only open command. It includes the claude process itself.
 
 A repo script's row, from shell:
 

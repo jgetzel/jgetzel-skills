@@ -87,5 +87,36 @@ eq(cost.summary(h, "repo", "cargo test --release"),
   "`cargo test --release`, this repo, this machine: 3 runs, median 6 min, peak 4.0G (max 9.0G), 10 CPU-min.")
 eq(cost.summary(h, "repo", "nope"), nil)
 
+-- a cgroup per agent: a lone open command whose agent's memory.peak rose is exact; with two open it stays sampled
+local sh = require("swarm.util")
+local pr, cg0 = machine.PROC, machine.CGROUP
+machine.PROC, machine.CGROUP = dir .. "/proc", dir .. "/cg"
+local scope = "/user.slice/swarm-agent-sr-1-7.scope"
+os.execute(("mkdir -p %s/proc/100 %s/cg%s"):format(dir, dir, scope))
+local function cgset(kb)
+  local f = io.open(dir .. "/proc/100/cgroup", "w"); f:write("0::" .. scope .. "\n"); f:close()
+  f = io.open(dir .. "/cg" .. scope .. "/memory.peak", "w"); f:write(tostring(kb * 1024)); f:close()
+  f = io.open(dir .. "/cg" .. scope .. "/cpu.stat", "w"); f:write("usage_usec 5000000\n"); f:close()
+end
+eq(machine.cgroup(100), nil)
+cgset(1000)
+eq({ machine.cgroup(100).peak_kb, machine.cgroup(100).cpu_s }, { 1000, 5 })
+h:exec("delete from cmd")
+cost.cg_peak = {}
+cost.tick(c, h, ps("00:30", 100, "00:00:20"), 5000)  -- first sight of the cgroup: no rise yet
+cgset(9000000)
+cost.tick(c, h, ps("01:00", 100, "00:00:50"), 5030)
+cost.tick(c, h, machine.parse_ps(""), 5060)
+r = rows()
+eq({ #r, r[1].exact, r[1].peak_kb }, { 1, 1, 9000000 })
+h:exec("delete from cmd")
+cost.tick(c, h, ps("00:30", 100, "00:00:20"), 6000)
+cgset(9500000)
+cost.tick(c, h, two, 6030)
+cost.tick(c, h, machine.parse_ps(""), 6060)
+r = rows()
+eq({ #r, r[1].exact, r[2].exact }, { 2, 0, 0 })
+machine.PROC, machine.CGROUP = pr, cg0
+
 -- nothing here signals a process or writes oom_score_adj outside an agent's tree (the tick only reads)
 assert(not src:find("oom_score_adj") and not src:find("SIGTERM") and not src:find("signal"), "cost.lua only measures")
