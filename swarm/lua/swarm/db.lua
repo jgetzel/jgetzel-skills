@@ -184,6 +184,17 @@ function M.connect()
   return c
 end
 
+-- A connection to another sqlite file (the cmd-cost history), created with `schema` if absent.
+function M.open_at(p, schema)
+  makedirs(util.dirname(p))
+  local h, _, err = sqlite3.open(p)
+  if not h then util.die(("can't open %s: %s"):format(p, err)) end
+  local c = setmetatable({ h = h, depth = 0, path = p }, DB)
+  h:busy_timeout(10000)
+  c:script(schema)
+  return c
+end
+
 -- A read-only connection: no schema, no migrations, never creates the file. Nil and the error if it can't open.
 function M.open_ro(p)
   local h, _, err = sqlite3.open(p, sqlite3.OPEN_READONLY)

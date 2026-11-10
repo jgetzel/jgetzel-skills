@@ -28,6 +28,7 @@ local stdlib = require "posix.stdlib"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local M = {}
 M.SWARM = os.getenv("SWARM_CLI") or stdlib.realpath(here .. "/../../swarm")
+stdlib.setenv("XDG_STATE_HOME", stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-state-XXXXXX"))  -- the cmd-cost history is per user: never the real one
 M.PATH = os.getenv("PATH")  -- before any spec puts its own fakes on PATH
 local T = {}
 T.__index = T

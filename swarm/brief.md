@@ -42,7 +42,7 @@ your name is in `$SWARM_NAME`.
   main's CI and makes a red run one `main red: …` task, done by watchd on the next green run.
   `swarm ci <sha> [--wait]` reads what watchd polled (exit 0 green, 1 red, 2 pending). Never `gh run
   watch` or a `gh` loop: every agent shares one API limit.
-- **Heavy work.** Before a build or test, read the machine note the hook shows. Under pressure prefer other work, or message the agent holding the most memory. Don't poll.
+- **Heavy work.** Before a build or test, read the machine note the hook shows. Under pressure prefer other work, or message the agent holding the most memory. `swarm cost "<command>"` says what that command took here before (`--top`: the most intensive). Don't poll.
 - **Other machines.** `swarm run --on <machine> -- <cmd>` runs a build or test on another
   machine (`hc machine ls`) against a copy of your worktree and brings back what it wrote. The
   exit code is the command's; 255 means the machine never ran it. The machine note shows each
