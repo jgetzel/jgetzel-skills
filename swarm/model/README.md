@@ -148,7 +148,7 @@ What carries each proof:
 Liveness: `deadLive_not_stuck` is L4's part (with watchd running, `hc ls` answering and the row bound, a dead live row always has the reap enabled). L2 is proved over fair runs. A run is a sequence of steps (`Run` in `Fair.lean`); it is fair (`Run.Fair`) when
 every action of `fair` that is enabled at infinitely many steps happens at infinitely many steps (strong
 fairness; weak fairness is not enough for L1, see below). `idleClaim_leads_to`: in a fair run of an instance with
-`racy = false`, `release ≠ .ended` (PR #110 or #111) and the agent and the task in the instance, a state where an
+`racy = false`, `release ≠ .ended` (PR #110 or #111), `watchd`, the agent and the task in the instance, no `bgStart` or `die` in the run, and the agent with no job and a live terminal at the start, a state where an
 idle agent holds a claim is followed by one where it doesn't: the lease lapses (`expire`), the tick reopens the task
 (`tick_reopens`) or the owner gets back to work. A slot a spawn refills is a new agent: it boots at once (the proof
 shows `boot` happens), so it doesn't count. The proof is two persistence lemmas (`persist`, `tick_persist`: while an
