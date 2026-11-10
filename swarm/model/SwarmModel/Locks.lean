@@ -210,6 +210,7 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (
   case unlock a p =>
     obtain ⟨_, rfl⟩ := hstep
     exact lk_shrink hs (shrinks_set _ _ _ (fun l _ => Or.inl rfl))
+  case world w op => obtain ⟨_, rfl⟩ := hstep; exact hs
   case expireLock p =>
     obtain ⟨_, rfl⟩ := hstep
     refine lk_shrink hs (shrinks_set _ _ _ (fun l hl => Or.inr ⟨?_, by simp⟩))

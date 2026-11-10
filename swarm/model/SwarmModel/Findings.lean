@@ -41,15 +41,18 @@ example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"] }
 example : violates { racy := true }
     [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide
 
--- #12, work loss. Agent 0 owns two worktrees; the one wt_map picks is landed, the other has work not on main. Before
--- PR #123 lifecycle looks only at the first, so it ends the agent mid-task.
+-- #12, work loss. Agent 0 owns two worktrees; the one wt_map picks (agent.wt: it edited there last) is landed, the
+-- other has an uncommitted file. Before PR #123 lifecycle looks only at the first, so it ends the agent mid-task.
+/-- some ended agent owns a worktree with work not on main -/
 def endedWithWork (s : State) : Bool := (List.range s.ag.length).any fun a =>
-  (s.agt a).st == .ended && ((s.agt a).wt1 || (s.agt a).wt2)
-example : violates { allWts := false } [.dirty 0 true true, .stop 0 false, .age 0, .tick] (!endedWithWork ·) = true := by decide
-example : violates {} [.dirty 0 true true, .stop 0 false, .age 0, .tick] (!endedWithWork ·) = false := by decide
--- a landed worktree does not keep the agent
-example : (run {} [.dirty 0 true true, .dirty 0 true false, .stop 0 false, .age 0, .tick]).any
-    (fun s => (s.agt 0).st == .ended) = true := by decide
+  (s.agt a).st == .ended && (s.agt a).own.any fun (w, _) => owns s a w && !s.git.landed w
+def twoWts : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.add 1), .git 0 (.edit 1), .git 0 (.edit 0),
+  .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0, .tick]
+example : violates { nwts := 2, allWts := false } twoWts (!endedWithWork ·) = true := by decide
+example : violates { nwts := 2 } twoWts (!endedWithWork ·) = false := by decide
+-- a landed worktree does not keep the agent, and end_agent removes it and deletes its branch
+example : (run { nwts := 1 } [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0,
+    .tick]).any (fun s => (s.agt 0).st == .ended && !(s.git.wt 0).on && (s.git.tip 1).isNone) = true := by decide
 
 -- ---------- liveness ----------
 /-- The actions fairness makes happen if they stay enabled: watchd ticks (and so the reap of a row whose terminal `hc ls` no longer lists), leases lapse, idle agents age, a spawned
@@ -87,6 +90,7 @@ example : let c : Cfg := { passedOver := false }
       .age 0, .leave 1] (fun s => idleSlot c s && !answered s 1) = true := by decide
 
 -- #9, L1 and L3. The same with agent 0's waiter gone: it never reads the digest, so PR #116 doesn't end it.
+set_option maxHeartbeats 400000 in
 example : let c : Cfg := { waiterAlive := false }
     stuckWith c [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
       (fun s => idleSlot c s && !answered s 1) = true := by decide
@@ -135,13 +139,13 @@ example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1
 example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide
 -- #13, L5. Agent 0 is idle 30 min, kept only by an unclean worktree. Before PR #122 nothing is enabled, forever and
 -- silently; with it, `nudge` is (the urgent message wakes the waiter), once per idle stretch.
-def keptByWt (s : State) : Bool := (s.agt 0).st == .idle && ((s.agt 0).wt1 || (s.agt 0).wt2)
-example : stuckWith { uncleanNudge := false } [.dirty 0 false true, .stop 0 false, .age 0, .stale 0] keptByWt = true := by decide
-example : stuckWith {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0] keptByWt = false := by decide
+def keptByWt (s : State) : Bool := (s.agt 0).st == .idle && (s.agt 0).own.any fun (w, _) => owns s 0 w && !s.git.landed w
+def unclean : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .stop 0 false, .age 0, .stale 0]
+example : stuckWith { nwts := 1, uncleanNudge := false } unclean keptByWt = true := by decide
+example : stuckWith { nwts := 1 } unclean keptByWt = false := by decide
 -- one nudge per idle stretch: a second is refused until the agent has woken and stopped again
-example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 0]).bind (step {} · (.nudge 0)) = none := by decide
-example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0,
-    .nudge 0]).isSome = true := by decide
+example : (run { nwts := 1 } (unclean ++ [.nudge 0])).bind (step { nwts := 1 } · (.nudge 0)) = none := by decide
+example : (run { nwts := 1 } (unclean ++ [.nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0, .nudge 0])).isSome = true := by decide
 
 
 -- ---------- #16, L1 for the pool: a lasso (board #141) ----------

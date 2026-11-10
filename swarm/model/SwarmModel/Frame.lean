@@ -185,4 +185,13 @@ macro "frame" defs:Lean.Parser.Tactic.simpLemma,* : tactic =>
 @[simp] theorem awake_pend (s : State) (a : Nat) : (awake s a).pend = s.pend := by frame awake
 @[simp] theorem awake_early (s : State) (a : Nat) : (awake s a).early = s.early := by frame awake
 
+-- a change of git alone: the tick's git step, an agent's git command, the world in a worktree
+@[simp] theorem agt_withGit (s : State) (g : Git) (a : Nat) : ({ s with git := g } : State).agt a = s.agt a := rfl
+@[simp] theorem tk_withGit (s : State) (g : Git) (t : Nat) : ({ s with git := g } : State).tk t = s.tk t := rfl
+@[simp] theorem cur_withGit (s : State) (g : Git) (a : Nat) : ({ s with git := g } : State).cur a = s.cur a := rfl
+@[simp] theorem msg_withGit (s : State) (g : Git) (i : Nat) : ({ s with git := g } : State).msg i = s.msg i := rfl
+@[simp] theorem unread_withGit (s : State) (g : Git) (a : Nat) : unread ({ s with git := g } : State) a = unread s a := rfl
+theorem tickOf_git (c : Cfg) (s : State) :
+    tickOf c s = { lifecycle c (reapLocks (reapTasks c s)) with git := gitTick c (reapLocks (reapTasks c s)) } := rfl
+
 end Swarm

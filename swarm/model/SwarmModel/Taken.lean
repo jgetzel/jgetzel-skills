@@ -566,6 +566,11 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
       split
       · exact ready_takes (ready_setAg_ne hb (ready_deliver_ne hb hR'))
       · exact ready_setAg_ne hb (ready_deliver_ne hb hR')
+  case world w op => obtain ⟨hg, rfl⟩ := hs; exact Or.inl hR'
+  case git b op =>
+    obtain ⟨hg, rfl⟩ := hs
+    have hb : b ≠ a := by rintro rfl; simp_all [working, busy]
+    exact Or.inl (ready_setAg_ne hb hR')
   all_goals (obtain ⟨hg, rfl⟩ := hs)
   all_goals (left; refine ready_of_fields hR' ?_ ?_ ?_ ?_ ?_)
   all_goals first
@@ -588,7 +593,6 @@ def RInv (c : Cfg) (s : State) : Prop :=
   s.ag.length = c.nagents ∧ s.cursor.length = c.nagents ∧ (∀ b, s.cur b ≤ s.log.length) ∧
   (∀ b, (s.agt b).cold = true → (s.agt b).big = true) ∧ (∀ b, (s.agt b).dead = false)
 
-theorem tickOf_eq (c : Cfg) (s : State) : tickOf c s = lifecycle c (reapLocks (reapTasks c s)) := rfl
 
 theorem reusable_ready {c : Cfg} {s : State} {a : Nat} (hp : c.passedOver = true) (hwa : c.waiterAlive = true)
     (hI : RInv c s) (ha : a ∈ c.agents) (hr : reusable c (reapLocks (reapTasks c s)) a = true) : Ready (tickOf c s) a := by

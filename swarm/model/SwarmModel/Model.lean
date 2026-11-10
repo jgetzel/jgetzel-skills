@@ -64,6 +64,11 @@ structure Cfg where
   /-- a boot beats a lease: a spawned agent's lease does not lapse before its first turn. The Lua gives it a fresh 2 h
   lease and it boots in seconds; with this off the lease can lapse first, over and over (finding #17) -/
   bootFirst : Bool := true
+  /-- git worktree slots agents may add (the main checkout is outside the model) -/
+  nwts : Nat := 0
+  /-- base branches: 0 is `main`, the one the Lua's landed checks use; the rest exist from the start (a swarm's own
+  base, e.g. `formal`). Branch `nbases + w` is worktree w's own -/
+  nbases : Nat := 1
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -98,9 +103,10 @@ structure Agent where
   reading : Nat
   /-- a background job of its own is running (a build, a model check, a Monitor) -/
   bg : Bool := false
-  /-- the worktree wt_map picks holds work not on main, and another worktree it owns does -/
-  wt1 : Bool
-  wt2 : Bool
+  /-- agent.wt: the worktree it last edited in (the Edit hook sets it) -/
+  wt : Option Nat := none
+  /-- the worktrees it added, with their generation: their directory is named after it (`owned_wts`) -/
+  own : List (Nat × Nat) := []
   /-- idle 30+ min (UNCLEAN_IDLE) -/
   stale : Bool
   /-- already nudged in this idle stretch -/
@@ -123,6 +129,33 @@ structure Msg where
   task : Nat
   deriving DecidableEq, Repr, Inhabited
 
+/-- a linked worktree. Its process flag: some process's cwd is inside (machine.cwds) -/
+structure Wt where
+  on : Bool
+  br : Option Nat
+  head : Nat
+  dirty : Bool
+  proc : Bool
+  /-- touched within SWEEP_IDLE (its directory or its HEAD log) -/
+  recent : Bool
+  /-- how many times the slot was added: a new one has a new path -/
+  gen : Nat
+  deriving DecidableEq, Repr, Inhabited
+
+/-- a commit: its ancestors (itself included; history is a chain per commit) and its content, the patches it holds.
+Every ordinary commit adds one fresh patch (a new file); a squash merge holds the union. -/
+structure Commit where
+  anc : List Nat
+  cont : List Nat
+  deriving DecidableEq, Repr, Inhabited
+
+structure Git where
+  wts : List Wt
+  /-- branch tips; none: no such branch -/
+  brs : List (Option Nat)
+  cm : List Commit
+  deriving DecidableEq, Repr, Inhabited
+
 structure State where
   task : List Task
   ag : List Agent
@@ -137,6 +170,7 @@ structure State where
   pend : List Nat
   /-- ghost: some claim happened while a task it is after wasn't done -/
   early : Bool
+  git : Git := default
   deriving DecidableEq, Repr, Inhabited
 
 def Cfg.tasks (c : Cfg) : List Nat := List.range' 1 c.ntasks
@@ -182,6 +216,32 @@ def nextAgent (c : Cfg) (s : State) : Option Nat := c.agents.find? fun a => !(s.
 /-- the cycle `task after` refuses: does t reach target along deps? -/
 def reaches (c : Cfg) (s : State) (t target : Nat) : Bool :=
   ((List.range c.ntasks).foldl (fun r _ => r ++ r.flatMap fun x => (s.tk x).deps) [t]).contains target
+
+-- ---------- git ----------
+def Cfg.wtIds (c : Cfg) : List Nat := List.range c.nwts
+/-- worktree w's own branch -/
+def Cfg.wbr (c : Cfg) (w : Nat) : Nat := c.nbases + w
+def Git.wt (g : Git) (w : Nat) : Wt := g.wts.getD w default
+def Git.tip (g : Git) (b : Nat) : Option Nat := g.brs.getD b none
+def Git.cmt (g : Git) (k : Nat) : Commit := g.cm.getD k default
+def Git.tipOf (g : Git) (b : Nat) : Nat := (g.tip b).getD 0
+/-- watchd.landed_ref(k, main): an ancestor of main, or the same content under other commits. Every ordinary commit adds
+a fresh file and nothing is deleted, so both are "every patch of k is in main" -/
+def Git.onMain (g : Git) (k : Nat) : Bool := (g.cmt k).cont.all (g.cmt (g.tipOf 0)).cont.contains
+/-- watchd.landed(wt, main): clean and on main; a removed worktree has nothing to lose -/
+def Git.landed (g : Git) (w : Nat) : Bool := let x := g.wt w; !x.on || (!x.dirty && g.onMain x.head)
+/-- some worktree has branch b checked out: git refuses to move it from elsewhere, or check it out twice -/
+def Git.out (g : Git) (b : Nat) : Bool := g.wts.any fun x => x.on && x.br == some b
+/-- owned_wts: w is there and its directory is named after a -/
+def owns (s : State) (a w : Nat) : Bool := (s.git.wt w).on && (s.agt a).own.contains (w, (s.git.wt w).gen)
+/-- conflict.wt_map: agent.wt, else the worktree with a branch of a's checked out -/
+def wtmap (c : Cfg) (s : State) (a : Nat) : Option Nat :=
+  match (s.agt a).wt with
+  | some w => some w
+  | none => ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
+/-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns -/
+def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
+  (wtmap c s a).any (!s.git.landed ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !s.git.landed w)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
 def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
@@ -229,13 +289,11 @@ def reapTask (c : Cfg) (x : State) (t : Nat) : State :=
   | none => x
 def reapTasks (c : Cfg) (s : State) : State := c.tasks.foldl (reapTask c) s
 def reapLocks (s : State) : State := { s with lock := s.lock.map fun l => if l.exp then ⟨none, false⟩ else l }
-/-- watchd.lifecycle's `unlanded`: work not on main in a worktree the agent owns (all of them since PR #123) -/
-def unlanded (c : Cfg) (g : Agent) : Bool := g.wt1 || (c.allWts && g.wt2)
 /-- idle and free of claims and locks: what lifecycle looks at before the worktrees -/
 def idleFree (s : State) (a : Nat) : Bool :=
   let g := s.agt a
   g.st == .idle && g.aged && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
-def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c (s.agt a)
+def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c s a
 /-- lifecycle's reusable agents: since PR #116 one told of the whole pool, its inbox read, has passed it over:
 ended, not reusable; since PR #119 one with no live waiter (it would never read a digest) is ended too -/
 def reusable (c : Cfg) (s : State) (a : Nat) : Bool :=
@@ -266,7 +324,32 @@ def lifecycle (c : Cfg) (s : State) : State :=
       post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩
     else x) ended
   if c.agents.any (reusable c s) then told else c.tasks.foldl (spawnFor c pl) told
-def tickOf (c : Cfg) (s : State) : State := lifecycle c (reapLocks (reapTasks c s))
+/-- lifecycle ends a -/
+def ends (c : Cfg) (s : State) (a : Nat) : Bool := finished c s a && !reusable c s a
+/-- sweep's `used`: a live agent's agent.wt, or what wt_map picks for it -/
+def used (c : Cfg) (s : State) (w : Nat) : Bool :=
+  c.agents.any fun b => (s.agt b).live && ((s.agt b).wt == some w || wtmap c s b == some w)
+/-- watchd.sweep_worktrees: unused, no process inside, untouched 30 min, clean and on main -/
+def sweeps (c : Cfg) (s : State) (w : Nat) : Bool :=
+  let x := s.git.wt w
+  x.on && !used c s w && !x.proc && !x.recent && s.git.landed w
+/-- watchd.end_agent: the ended agent's wt_map worktree, unless a live peer's agent.wt is it; `git worktree remove`
+refuses a dirty one. It looks at no process. -/
+def endRemoves (c : Cfg) (s : State) (w : Nat) : Bool :=
+  let x := s.git.wt w
+  x.on && !x.dirty && c.agents.any (fun a => ends c s a && wtmap c s a == some w)
+    && c.agents.all fun b => !((s.agt b).live && (s.agt b).wt == some w) || ends c s b
+/-- `git worktree remove`, then `git branch -D` of the branch it had checked out unless that is main -/
+def Git.rm (g : Git) (w : Nat) : Git :=
+  let x := g.wt w
+  { g with wts := g.wts.set w { x with on := false },
+           brs := match x.br with | some b => if b == 0 then g.brs else g.brs.set b none | none => g.brs }
+/-- what the tick does to git: sweep (before lifecycle's decisions, which it doesn't change) and end_agent's removals -/
+def gitTick (c : Cfg) (s : State) : Git :=
+  c.wtIds.foldl (fun g w => if sweeps c s w || endRemoves c s w then g.rm w else g) s.git
+def tickOf (c : Cfg) (s : State) : State :=
+  let r := reapLocks (reapTasks c s)
+  { lifecycle c r with git := gitTick c r }
 
 -- ---------- actions: `none` is "not enabled" ----------
 def init (c : Cfg) : State where
@@ -279,6 +362,8 @@ def init (c : Cfg) : State where
   seen := c.agents.map fun _ => []
   pend := []
   early := false
+  git := { wts := List.replicate c.nwts default, brs := List.replicate c.nbases (some 0) ++ List.replicate c.nwts none,
+           cm := [⟨[0], []⟩] }
 
 def busy (s : State) (a : Nat) : Bool := (s.agt a).st == .working
 /-- an agent runs a command only with an empty inbox: the PreToolUse hook delivers before every one -/
@@ -369,15 +454,79 @@ def age (s : State) (a : Nat) : Option State :=
 def cool (s : State) (a : Nat) : Option State :=
   let g := s.agt a
   when (g.st == .idle && g.aged && g.big && !g.cold) (setAg s a ({ · with cold := true }))
-/-- the agent's work leaves main behind in worktree 1 (the one wt_map picks) or 2, or lands -/
-def dirty (s : State) (a : Nat) (second : Bool) (v : Bool) : Option State :=
-  when (working s a) (setAg s a fun g => if second then { g with wt2 := v } else { g with wt1 := v })
+/-- an agent's git commands, in a worktree it owns (`add`: one it makes) -/
+inductive GitOp where
+  /-- `git worktree add -b <name>/.. <dir named after it> main`. A second one only once it has edited (so wt_map's
+  fallback has one candidate) -/
+  | add (w : Nat)
+  /-- writes a new file; the Edit hook sets agent.wt -/
+  | edit (w : Nat)
+  | commit (w : Nat)
+  /-- `git push . HEAD:<b>`: fast-forward base b -/
+  | land (w b : Nat)
+  /-- a squash merge of HEAD into base b -/
+  | squash (w b : Nat)
+  /-- `git checkout <b>`: a base, or the worktree's own branch -/
+  | checkout (w b : Nat)
+  deriving DecidableEq, Repr
+
+def Git.setWt (g : Git) (w : Nat) (f : Wt → Wt) : Git := { g with wts := g.wts.modify w f }
+def Git.setBr (g : Git) (b k : Nat) : Git := { g with brs := g.brs.set b (some k) }
+def Git.next (g : Git) : Nat := g.cm.length
+/-- a new commit on top of k: a fresh patch -/
+def Git.mkCommit (g : Git) (k : Nat) : Git := { g with cm := g.cm ++ [⟨g.next :: (g.cmt k).anc, g.next :: (g.cmt k).cont⟩] }
+/-- a squash merge of h onto k -/
+def Git.mkSquash (g : Git) (k h : Nat) : Git :=
+  let ck := (g.cmt k).cont
+  { g with cm := g.cm ++ [⟨g.next :: (g.cmt k).anc, ck ++ (g.cmt h).cont.filter (!ck.contains ·)⟩] }
+
+/-- whether the command can run, the new git state, and the agent's agent.wt and worktrees after it -/
+def gitDo (c : Cfg) (s : State) (a : Nat) : GitOp → Bool × Git × Option Nat × List (Nat × Nat)
+  | .add w =>
+    let g := s.git
+    let x := g.wt w
+    let m := g.tipOf 0
+    (w < c.nwts && !x.on && ((s.agt a).wt.isSome || !(s.agt a).own.any fun (v, _) => owns s a v),
+      (g.setWt w fun _ => ⟨true, some (c.wbr w), m, false, false, true, x.gen + 1⟩).setBr (c.wbr w) m,
+      (s.agt a).wt, (w, x.gen + 1) :: (s.agt a).own)
+  | .edit w => (owns s a w, s.git.setWt w ({ · with dirty := true, recent := true }), some w, (s.agt a).own)
+  | .commit w =>
+    let g := s.git
+    let x := g.wt w
+    let g1 := (g.mkCommit x.head).setWt w ({ · with head := g.next, dirty := false, recent := true })
+    (owns s a w && x.dirty, match x.br with | some b => g1.setBr b g.next | none => g1, (s.agt a).wt, (s.agt a).own)
+  | .land w b =>
+    let g := s.git
+    let h := (g.wt w).head
+    (owns s a w && b < c.nbases && (g.tip b).isSome && (g.cmt h).anc.contains (g.tipOf b) && h != g.tipOf b && !g.out b,
+      g.setBr b h, (s.agt a).wt, (s.agt a).own)
+  | .squash w b =>
+    let g := s.git
+    let h := (g.wt w).head
+    let k := g.tipOf b
+    (owns s a w && b < c.nbases && (g.tip b).isSome && !(g.cmt h).cont.all (g.cmt k).cont.contains && !g.out b,
+      (g.mkSquash k h).setBr b g.next, (s.agt a).wt, (s.agt a).own)
+  | .checkout w b =>
+    let g := s.git
+    (owns s a w && (b < c.nbases || b == c.wbr w) && (g.tip b).isSome && !g.out b,
+      g.setWt w ({ · with br := some b, head := g.tipOf b, recent := true }), (s.agt a).wt, (s.agt a).own)
+def gitCmd (c : Cfg) (s : State) (a : Nat) (op : GitOp) : Option State :=
+  let r := gitDo c s a op
+  when (working s a && r.1) (setAg { s with git := r.2.1 } a fun g => { g with wt := r.2.2.1, own := r.2.2.2 })
+
+/-- the world in a worktree: 30 min pass untouched, or a process's cwd moves in or out -/
+inductive WOp where | age | proc (v : Bool)
+  deriving DecidableEq, Repr
+def WOp.ok (x : Wt) : WOp → Bool | .age => x.recent | .proc v => x.proc != v
+def WOp.f : WOp → Wt → Wt | .age, x => { x with recent := false } | .proc v, x => { x with proc := v }
+def world (s : State) (w : Nat) (op : WOp) : Option State :=
+  when ((s.git.wt w).on && op.ok (s.git.wt w)) { s with git := s.git.setWt w op.f }
 def stale (s : State) (a : Nat) : Option State :=
   when ((s.agt a).st == .idle && (s.agt a).aged && !(s.agt a).stale) (setAg s a ({ · with stale := true }))
 /-- watchd.unclean: idle 30 min, kept only by an unclean worktree, with a live waiter: one urgent message per stretch -/
 def nudge (c : Cfg) (s : State) (a : Nat) : Option State :=
   let g := s.agt a
-  when (c.uncleanNudge && idleFree s a && unlanded c g && g.stale && g.waiter && !g.nudged)
+  when (c.uncleanNudge && idleFree s a && unlanded c s a && g.stale && g.waiter && !g.nudged)
     (post (setAg s a ({ · with nudged := true })) ⟨none, a, true, .nudge, 0⟩)
 /-- the owner of `t` has not had its first turn -/
 def bootingOwner (s : State) (t : Nat) : Bool := match (s.tk t).owner with | some o => (s.agt o).boot | none => false
@@ -437,7 +586,7 @@ inductive Action where
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
-  | dirty (a : Nat) (second v : Bool) | stale (a : Nat) | nudge (a : Nat)
+  | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | tick
@@ -451,7 +600,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .unlock a p => unlock s a p | .postTo a b u => postTo s a b u | .readAll a => readAll s a
   | .stop a big => stop c s a big | .wake a => wake c s a | .wakeRead a => wakeRead c s a
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
-  | .dirty a w v => dirty s a w v | .stale a => stale s a | .nudge a => nudge c s a
+  | .git a op => gitCmd c s a op | .world w op => world s w op | .stale a => stale s a | .nudge a => nudge c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
@@ -509,6 +658,6 @@ def idleClaim (s : State) (a t : Nat) : Bool := ownsClaimed s a t && (s.agt a).s
 def answered (s : State) (t : Nat) : Bool := !s.pend.contains t || (s.tk t).st == .done || (s.tk t).st == .dropped
 
 /-- what cli_model_spec.lua drives the CLI with (atomic commands; Traces.lean leaves hc and leave out) -/
-def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"] }
+def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2 }
 
 end Swarm

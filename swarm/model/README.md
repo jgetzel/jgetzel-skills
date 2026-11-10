@@ -24,10 +24,10 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
-| `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
+| `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) the Lua suite replays |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 2 scripted runs the Lua suite replays |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
@@ -60,6 +60,24 @@ One value holds the whole state; every watchd tick is a pure function of it, com
 - **Messages** are one log with a cursor per agent. A hook, `swarm read`, a wake, a boot and the end of an hc
   prompt deliver every unread message. The waiter wakes the agent on an urgent message, or on any message if
   the agent isn't cold.
+- **Git** (`Git`, one field of the state): worktree slots (`Cfg.nwts`), branches and commits. The main checkout is
+  outside the model. A worktree is there or not, has a branch checked out, a HEAD, is dirty (an untracked file) or not,
+  has a process inside or not, and was touched in the last 30 min (`recent`) or not. Branches are `Cfg.nbases` bases
+  (0 is `main`; the rest, e.g. `formal`, exist from the start) and one per worktree slot (`<name>/w<w>-<k>` in the
+  replay). A commit holds its ancestors and its content, a set of patches: an ordinary commit adds one fresh patch (a
+  new file), a squash merge holds the union. So the Lua's `landed_ref(HEAD, main)` (an ancestor, or the same content
+  under other commits; `gh` isn't modelled) is "every patch of HEAD is in main" (`Git.onMain`), and `landed` adds
+  "clean". An agent's git commands (`GitOp`, one action `git a op`, only while working): add a worktree (its directory
+  is named after the agent: `own`, with the slot's generation, is `owned_wts`), edit in it (the Edit hook sets
+  agent.wt), commit, land (`git push . HEAD:<base>`, a fast-forward, refused while the base is checked out anywhere),
+  squash-merge into a base, check out a base or the worktree's own branch. A second worktree only after an edit, so
+  `wt_map`'s branch fallback has one candidate. The world (`world w op`): 30 min pass, a process moves in or out.
+- **watchd and git** (`gitTick`, in `tickOf`): `unlanded` (lifecycle keeps an idle agent) is work not on `main` in the
+  worktree `wt_map` picks (agent.wt, else the one with its branch), or since PR #123 in any it owns. `sweep_worktrees`
+  removes a worktree no live agent's agent.wt or `wt_map` names, with no process inside, untouched 30 min, clean and
+  landed; `end_agent` removes the ended agent's `wt_map` worktree unless a live peer's agent.wt is it, if it is clean
+  (git refuses a dirty one), whatever process is inside. Both then `branch -D` the branch it had checked out, unless it
+  is `main`: a base like `formal` goes too. The base is `main` everywhere: `nbases > 1` is the swarm that lands elsewhere.
 - `believes` (the tasks an agent thinks it holds), `seen` (what each agent was shown), `pend` (answers not yet
   read by the task's holder) and `early` are ghosts: they exist for the properties.
 
@@ -193,7 +211,7 @@ and kept by every action but `die` (`d_step`).
 - (`holder_leads_to`, `Holder.lean`) L3, the holder half. While an agent holds the claimed task with its answer unread in its
   inbox (`Pa`; `unblock_pa`: an `unblock` of a live, non-booting owner establishes it), then in a fair run the holder reads it, or
   stops holding the task (reaped, ended, hc-blocked, done, dropped), or a spawned agent has the slot (`boot`, whose half is
-  `booting_reads`). The step lemma `pa_step`: each of the 40 actions keeps `Pa` or ends it in one of those ways; `Pa` includes "the
+  `booting_reads`). The step lemma `pa_step`: each of the 41 actions keeps `Pa` or ends it in one of those ways; `Pa` includes "the
   holder is live", so no separate invariant "held => live" is needed. A working holder's `readAll` and an hc prompt's `hcClear` are
   fair and deliver; an idle one is L2's (`idleClaim_leads_to`). Needs no `bgStart` or `die` after the start, none live at the start.
 
@@ -252,17 +270,24 @@ for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, â
 writes the db (`lease_until` in the past, `last_active` back 200 s or 4000 s, `ctx_tokens`, the waiter's pid:
 the test's own while the model's waiter is alive, none once it is gone), and then the db must match the model:
 every task's state, owner, live lease, evidence and answer; every agent's status; every lock; every message to
-an agent, in order; and each agent's unread list. The 12 committed runs (seed 107, 50 steps) are in the Lua
-suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
+an agent, in order; and each agent's unread list. The git steps run git in the fixture's repo (its main checkout
+detached, a `formal` branch), and after them and every tick git must match too: every worktree there or not, its branch,
+HEAD, `git status` clean or not and its mtimes (what sweep reads); every branch's tip; each live agent's agent.wt. A
+process inside is a `sleep` started there; 30 min is an mtime set back. The 12 committed runs (seed 107, 50 steps) and
+two scripted ones (`script-end`: a squash-merged worktree is landed by content, its agent ended and the worktree and
+branch removed; `script-sweep`: a fast-forwarded one swept, and one with `formal` checked out swept with `formal`) are in
+the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
 
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.
 Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
 
-**Not modelled**: the red-main task and CI; conflict notices and the edit hook; `swarm run` and machines;
-git itself: an agent's worktrees are two flags (`wt1`, the one `wt_map` picks, and `wt2`) that `dirty` sets and clears
-at will, `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a live waiter (the no-waiter notice to
-the communicator is a notice), and none of this is replayed through the CLI (`Traces.lean` doesn't generate `dirty`,
-`stale` or `nudge`: PR #122's and #123's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
+**Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt); `swarm run` and machines;
+of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check, rebases, an agent removing its own
+worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
+`nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
+live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` doesn't
+generate `stale` or `nudge`, nor `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
+the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
 launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`); `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget

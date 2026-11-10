@@ -113,6 +113,8 @@ theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
   case lock a p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
   case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
   case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
+  case world w op => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
+  case git a op => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
   case wakeWrite a =>
     obtain ⟨_, rfl⟩ := hstep
     refine pfx_task (s := s) ?_ hs
@@ -523,9 +525,8 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case die a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
-  case dirty a w v =>
-    obtain ⟨_, rfl⟩ := hstep
-    exact J_setAg_same (fun _ => by split <;> rfl) (fun _ => by split <;> rfl) hs
+  case git a op => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case world w op => obtain ⟨_, rfl⟩ := hstep; exact hs
   case stale a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case nudge a => obtain ⟨_, rfl⟩ := hstep; exact J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
   case expire t =>

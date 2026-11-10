@@ -75,10 +75,10 @@ theorem takes_agt (c : Cfg) (s : State) (a t b : Nat) : ∃ bl, (takes c s a t).
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
 @[simp] theorem takes_dead (c : Cfg) (s : State) (a t b : Nat) : ((takes c s a t).agt b).dead = (s.agt b).dead := by
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
-@[simp] theorem agt_mk (task ag lock log cursor start seen pend early b) :
-    (State.mk task ag lock log cursor start seen pend early).agt b = ag.getD b default := rfl
-@[simp] theorem tk_mk (task ag lock log cursor start seen pend early t) :
-    (State.mk task ag lock log cursor start seen pend early).tk t = if t = 0 then default else task.getD (t - 1) default := rfl
+@[simp] theorem agt_mk (task ag lock log cursor start seen pend early git b) :
+    (State.mk task ag lock log cursor start seen pend early git).agt b = ag.getD b default := rfl
+@[simp] theorem tk_mk (task ag lock log cursor start seen pend early git t) :
+    (State.mk task ag lock log cursor start seen pend early git).tk t = if t = 0 then default else task.getD (t - 1) default := rfl
 @[simp] theorem agt_def (s : State) (b : Nat) : s.ag.getD b default = s.agt b := rfl
 @[simp] theorem tk_def (s : State) (t : Nat) : (if t = 0 then default else s.task.getD (t - 1) default) = s.tk t := rfl
 
@@ -152,7 +152,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     · simp at hs
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, add, after, drop, when, hr, bgEnd, dirty, stale, nudge] at hs hn)
+    hcPrompt, add, after, drop, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -201,7 +201,7 @@ theorem spawnFor_tk (c : Cfg) (pl : List Nat) (y : State) (t' u : Nat) :
   · rename_i a' hna
     split
     · simp only []
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _) a' t' u with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _) a' t' u with e | e
       · exact Or.inl (by rw [e]; simp only [tk_mk, setAg_task, tk_def])
       · exact Or.inr (by rw [e, hna])
     · exact Or.inl rfl
