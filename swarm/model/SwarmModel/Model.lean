@@ -61,6 +61,9 @@ structure Cfg where
   hcSees : Bool := true
   /-- slots whose row has no hc address (`agent.hc` null): `hc ls` can't show their terminal gone -/
   unbound : List Nat := []
+  /-- a boot beats a lease: a spawned agent's lease does not lapse before its first turn. The Lua gives it a fresh 2 h
+  lease and it boots in seconds; with this off the lease can lapse first, over and over (finding #17) -/
+  bootFirst : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -376,8 +379,10 @@ def nudge (c : Cfg) (s : State) (a : Nat) : Option State :=
   let g := s.agt a
   when (c.uncleanNudge && idleFree s a && unlanded c g && g.stale && g.waiter && !g.nudged)
     (post (setAg s a ({ · with nudged := true })) ⟨none, a, true, .nudge, 0⟩)
-def expire (s : State) (t : Nat) : Option State :=
-  when ((s.tk t).st == .claimed && (s.tk t).lease) (setTask s t ({ · with lease := false }))
+/-- the owner of `t` has not had its first turn -/
+def bootingOwner (s : State) (t : Nat) : Bool := match (s.tk t).owner with | some o => (s.agt o).boot | none => false
+def expire (c : Cfg) (s : State) (t : Nat) : Option State :=
+  when ((s.tk t).st == .claimed && (s.tk t).lease && !(c.bootFirst && bootingOwner s t)) (setTask s t ({ · with lease := false }))
 def expireLock (s : State) (p : Nat) : Option State :=
   let l := s.lock.getD p default
   when (l.holder != none && !l.exp) { s with lock := s.lock.set p { l with exp := true } }
@@ -447,7 +452,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .stop a big => stop c s a big | .wake a => wake c s a | .wakeRead a => wakeRead c s a
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
   | .dirty a w v => dirty s a w v | .stale a => stale s a | .nudge a => nudge c s a
-  | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire s t
+  | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
   | .unblock t => unblock c s t | .drop t => drop s t | .tick => tick c s

@@ -22,6 +22,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
+| `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -112,7 +113,8 @@ reads its messages and takes work):
 - **L2** A claimed task whose owner is idle is eventually done or open again, unless its owner gets back to
   work. `idleClaim`
 - **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `answered`. False in the
-  model as stated: a spawned agent is reaped before its first turn, over and over (finding #17)
+  model with `bootFirst := false`: a spawned agent is reaped before its first turn, over and over (finding #17).
+  `bootFirst` (a boot beats a lease, as in the Lua: a fresh 2 h lease, a boot in seconds) is on by default
 - **L4** A row whose terminal is gone is eventually ended (its claims and locks released). Its negation in one state:
   `deadLive`. Fairness: watchd ticks, and an `hc ls` that lists the terminal as gone. `watchd := false` (no watchd), a
   failing `hc ls`, and an unbound row each break it (findings #14, #15)
@@ -181,11 +183,17 @@ neither's `claim` is continuously enabled. `Run.Fair` already is strong fairness
 reachable state (`i1_of_reachable`: there are `nagents` slots and cursors, only a big agent is cold; `inbInv_of_reachable`)
 and kept by every action but `die` (`d_step`).
 
-Not proved: **L3**, which is false in the model as stated (finding #17), and L1 for the pool (false, #16). L3 has two halves. While
-the holder keeps the task, the answer is a message it reads or a lease that lapses (L2 covers the idle holder; a working holder's
-`readAll` and an hc prompt's `hcClear` are fair and deliver). Once the task is reopened and taken again, a claim reads the answer
-(`takes`), but a spawn does not: the spawned agent reads it at its first turn (`boot`), and the model lets its lease lapse and a tick
-reap it first, over and over (#17). Neither half is a theorem yet (board follow-ups). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
+- (`booting_reads`, `Boot.lean`) L3, the reopened half. With `bootFirst`, a spawned agent that holds a task with an
+  answer on it reads the answer at its first turn, unless it leaves, its terminal dies or the task is dropped: `keep`
+  (any action but the tick, its boot and those) and `tick_keep` (a tick leaves a booting holder its claim: the lease
+  is fresh, so reap passes it, and lifecycle neither ends nor replaces it) hold the claim, `boot` is fair, and
+  `boot_reads` (the first turn's `takes`) clears the answer. Taken as hypotheses: the run is reachable, and
+  `firstClaimed` is the task (a spawned agent holds one).
+
+Not proved: L1 for the pool (false, #16), and the held half of L3. While the holder keeps the task, the answer is a
+message it reads or a lease that lapses (L2 covers the idle holder; a working holder's `readAll` and an hc prompt's
+`hcClear` are fair and deliver); that half is not a theorem yet (board follow-up). With `bootFirst := false` L3 is
+false (#17). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
 theorems could in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
 
 ## Findings
@@ -217,9 +225,9 @@ Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent w
 | 15 | L4 | `hcSees := false`, or `unbound := [0]` / `deadLive_not_stuck` | watchd runs but can't tell. The dead agent was working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and #1 stays claimed forever. An unbound row is a communicator that joined from outside hc; `hc ls` failing makes `live_addrs` nil for every row. | open |
 | 16 | L1 (the pool) | `idleSlot` / `lassoOk`, `periodic` | Two tasks, a free slot, one agent. It takes #1, stops holding it, the lease lapses, the tick reaps it: the agent is idle with an unread `released`, so `reusable`, and lifecycle does not spawn into the free slot. It wakes, takes #2, and the same again. Every fair action enabled anywhere in the loop happens in it, and a startable task and a free slot are there at every state. L1 holds of each task (it is taken over and over), not of the pool. Evaluated for 4 periods; one more period changes only the log, the cursor and what was shown (`periodic`). **Not the real watchd**: the loop needs every tick to come after the lease lapsed (a tick while the agent holds a live lease would spawn onto the other task), and watchd ticks every 30 s against a 2 h lease; the model lets fairness delay a tick that long. | not a bug |
 
-| 17 | L3 | `!answered` / `lassoP`, `periodicD` | Two slots, one task. Agent 0 blocks #1, goes idle big and cold, and the answer to it is a DM it never reads. Reap reopens #1, the tick ends agent 0 and spawns a new agent into its slot for #1; the answer is stored on the task but only that agent's first turn (`boot`) reads it. Before it boots its lease lapses and the next tick reaps it and spawns into agent 1's slot; agent 0 now boots (it holds nothing), goes idle big, and the same happens the other way round. Every fair action enabled anywhere in the period happens in it (`boot` and `age` included), and #1 is never open at a state, so no `claim` is enabled: a fair run in which the answer is never read. Evaluated for 4 periods; one more changes only the log, the cursor, what was shown and where inboxes start (`periodicD`). With the period's agent booting before its lease lapses (`[.boot 0]`) the answer is read. **Not the real timing**: a spawned agent holds a fresh 2 h lease and boots in seconds, so the loop needs a launch that hangs for hours, every time; the model has no time between a lease and a boot. | not a bug; L3 holds only up to the first turn of a spawned agent |
+| 17 | L3 | `!answered` / `lassoP`, `periodicD` | Two slots, one task. Agent 0 blocks #1, goes idle big and cold, and the answer to it is a DM it never reads. Reap reopens #1, the tick ends agent 0 and spawns a new agent into its slot for #1; the answer is stored on the task but only that agent's first turn (`boot`) reads it. Before it boots its lease lapses and the next tick reaps it and spawns into agent 1's slot; agent 0 now boots (it holds nothing), goes idle big, and the same happens the other way round. Every fair action enabled anywhere in the period happens in it (`boot` and `age` included), and #1 is never open at a state, so no `claim` is enabled: a fair run in which the answer is never read. Evaluated for 4 periods; one more changes only the log, the cursor, what was shown and where inboxes start (`periodicD`). With the period's agent booting before its lease lapses (`[.boot 0]`) the answer is read. **Not the real timing**: a spawned agent holds a fresh 2 h lease and boots in seconds, so the loop needs a launch that hangs for hours, every time; the model has no time between a lease and a boot. | `bootFirst`: a boot beats a lease (`booting_reads`); not a bug |
 
-Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed. #16 is a statement that is too strong, not a bug; #17 is the same for L3, until the model says a boot beats a lease.
+Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed. #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
 its sender is told" is read from the code, not proved: watchd posts its notices (`lease-late`, `blocked on #N`, idle
@@ -231,7 +239,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3 (false as stated, #17) and L4 as statements about fair runs (L1, per task, and L2 are, for `racy = false`).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: the held half of L3 and L4 as statements about fair runs (L1, per task, and L2 are, for `racy = false`).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
