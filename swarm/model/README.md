@@ -18,7 +18,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3 |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the nine counterexamples as runs, and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the eleven counterexamples as runs, and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | the part of L2 that is proved |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
@@ -70,6 +70,8 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `deliverCas` | a delivery's cursor write ignores a delivery in between | PR #115 writes only from where it read |
 | `passedOver` | a reusable agent holds spawn back forever | PR #116 ends one that passed the work over |
 | `waiterAlive` | an idle agent whose waiter exited is kept reusable, and never reads its digest | PR #119 ends it |
+| `bgKeeps` | reap reopens a lapsed claim of an idle owner even while its background job runs | PR #121 keeps it |
+| `retake` | the 350k fence on `task claim` refuses a task reap took from that very agent | PR #121 lets it retake (`reaped`, the Lua's `reaped_from`) |
 
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
 check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
@@ -133,7 +135,7 @@ What carries each proof:
 - **S2**, **S5**: the ghost flag stays off; done implies evidence.
 
 Liveness is proved only this far: `idleClaim_not_stuck` says that with PR #110 or #111 a state where an idle
-agent holds a claim on a task of the instance always has a fair action enabled (the lease lapses, or the tick reopens the task and tells
+agent holds a claim on a task of the instance always has a fair action enabled (the lease lapses, the owner's background job ends, or the tick reopens the task and tells
 the owner: `tick_reopens`). That every fair run then reaches "done or open again" is not proved, and nothing
 general is proved for L1 or L3: with the fixes on, the runs of findings #1, #3, #8 and #9 no longer end stuck,
 which is a check of those runs only.
@@ -157,13 +159,15 @@ Lua.
 | 7 | S4 | `deliverCas := false`, `racy` / S4 | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
 | 8 | L1, L3 | `passedOver := false` / the run | A small-context idle agent was told of a task and went idle again without it; the task is open again with a free slot, and lifecycle keeps the agent reusable instead of spawning, so nobody takes the task or reads its answer. | 1ac83b1, PR #116 |
 | 9 | L1, L3 | `waiterAlive := false` / the run | The same with a waiter that exited: the agent never reads the digest, so it stays reusable and holds spawn back. | aeaf44f, PR #119 (board #113) |
+| 10 | work lost | `bgKeeps := false` / the run | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). | PR #121 (board #115) |
+| 11 | work lost | `retake := false` / the run | The task is reopened; its owner, whose context is past 350k, comes back and `task claim` refuses it, so only a fresh agent can take it. | PR #121 (board #115) |
 
 Nothing is open: every counterexample above has a fix on main.
 
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the nine counterexamples and their fixed runs. **Not proved**: L1, L2
+is what the replay tests. **Evaluated**: the eleven counterexamples and their fixed runs. **Not proved**: L1, L2
 and L3 as statements about fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
@@ -179,10 +183,9 @@ Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and no
 
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook; `swarm run` and machines;
 worktrees and `landed` (every agent's work counts as landed), so neither PR #122's nudge to an agent kept only
-by an unclean worktree nor PR #123's every-worktree rule (board #119); a background job keeping an idle owner's
-claim (PR #121, board #118); another swarm's communicator on the board (PR #124); roles and `swarm stay`
+by an unclean worktree nor PR #123's every-worktree rule (board #119); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
-launch failures, backoff and halt; the context fence on `task claim` (350k) and the handoff; compaction
+launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`); `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).

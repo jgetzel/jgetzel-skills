@@ -462,7 +462,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp [startable] at hg
-    exact J_claim hg.2.1 hs
+    exact J_claim (by simp_all) hs
   case claimRead a t => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case claimWrite a =>
     obtain ⟨_, rfl⟩ := hstep
@@ -519,6 +519,8 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
     · exact J_wake (fun _ => rfl) hs
   case waiterGone a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case age a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case expire t =>
     obtain ⟨_, rfl⟩ := hstep

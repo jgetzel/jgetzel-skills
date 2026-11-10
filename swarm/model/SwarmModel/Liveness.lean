@@ -70,7 +70,7 @@ theorem lifecycle_log_le (c : Cfg) (x : State) : x.log.length ≤ (lifecycle c x
 /-- With PR #110 or #111: once the lease of a claim whose owner is idle has lapsed, watchd's tick does something
 (reap reopens the task and posts `released` to the owner). -/
 theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (ht : t ∈ c.tasks)
-    (hic : idleClaim s a t = true) (hl : (s.tk t).lease = false) : tickOf c s ≠ s := by
+    (hic : idleClaim s a t = true) (hl : (s.tk t).lease = false) (hbg : (s.agt a).bg = false) : tickOf c s ≠ s := by
   simp [idleClaim, ownsClaimed] at hic
   have hk : keeps c (s.agt a) = false := by
     cases hr : c.release <;> simp_all [keeps, Agent.live]
@@ -84,7 +84,7 @@ theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .en
 /-- L2, the part that is proved. With PR #110 or #111, a state where an idle agent holds a claim is not stuck: the
 lease can lapse, or the tick is enabled. (That every fair run then reaches "done or open again" is not proved.) -/
 theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (ht : t ∈ c.tasks)
-    (hic : idleClaim s a t = true) : stuck c s = false := by
+    (ha : a ∈ c.agents) (hic : idleClaim s a t = true) : stuck c s = false := by
   cases hs : stuck c s
   · rfl
   · exfalso
@@ -95,6 +95,12 @@ theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release 
     simp [step, expire, when] at h2
     have hic' := hic
     simp [idleClaim, ownsClaimed] at hic'
-    exact tick_reopens hfix ht hic (by simpa [hic'.1.1] using h2) h1
+    have h3 := hs (.bgEnd a) (by simp [fair, ha])
+    have hbg : (s.agt a).bg = false := by
+      cases hb : (s.agt a).bg
+      · rfl
+      · exfalso; simp [step, bgEnd, when, Agent.live, hb] at h3
+        simp [idleClaim, ownsClaimed] at hic; simp [hic.2] at h3
+    exact tick_reopens hfix ht hic (by simpa [hic'.1.1] using h2) hbg h1
 
 end Swarm
