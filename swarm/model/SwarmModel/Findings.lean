@@ -152,15 +152,17 @@ def walk (c : Cfg) : State → List Action → Option (List State)
 /-- from the start `pre` leads to, `k` periods of `cyc` keep a startable task and a free slot (`idleSlot`) in every state,
 and every fair action enabled in any of those states is in `cyc`: repeated forever the run is fair (strong fairness of
 each action that is enabled infinitely often), and `idleSlot` holds forever -/
-def lassoOk (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool :=
+def lassoP (c : Cfg) (p : State → Bool) (pre cyc : List Action) (k : Nat) : Bool :=
   ((run c pre).bind fun s0 => walk c s0 (List.replicate k cyc).flatten).any fun ss =>
-    ss.all fun s => idleSlot c s && (fair c s).all fun f => (step c s f).isNone || cyc.contains f
-/-- one more period changes only the log, the cursor and what was shown: the state at the end of period `k + 1` is the
-state at the end of period `k` with those three replaced, and the log is longer by the two `released` messages -/
-def periodic (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool :=
+    ss.all fun s => p s && (fair c s).all fun f => (step c s f).isNone || cyc.contains f
+def lassoOk (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool := lassoP c (idleSlot c) pre cyc k
+/-- one more period changes only the log, the cursor, what was shown and where each inbox starts: the state at the end of
+period `k + 1` is the state at the end of period `k` with those four replaced, and the log is longer by `d` messages -/
+def periodicD (c : Cfg) (d : Nat) (pre cyc : List Action) (k : Nat) : Bool :=
   match run c (pre ++ (List.replicate k cyc).flatten), run c (pre ++ (List.replicate (k + 1) cyc).flatten) with
-  | some a, some b => decide ({ b with log := a.log, cursor := a.cursor, seen := a.seen } = a) && decide (b.log.length = a.log.length + 2)
+  | some a, some b => decide ({ b with log := a.log, cursor := a.cursor, seen := a.seen, start := a.start } = a) && decide (b.log.length = a.log.length + d)
   | _, _ => false
+def periodic (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool := periodicD c 2 pre cyc k
 
 -- Two tasks, two agent slots, agent 1 gone (so a slot is free). Agent 0 takes #1, stops holding it, its lease lapses, the
 -- tick reaps it: agent 0 is idle with an unread `released`, so it is `reusable` and lifecycle does not spawn into the free
@@ -178,5 +180,23 @@ example : periodic { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [],
 example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
     [.claim 0 1, .stop 0 false, .age 0, .expire 1, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .wake 0]
     4 = false := by decide +kernel
+
+-- ---------- #17, L3: a spawned agent reaped before its first turn (board #142) ----------
+-- Two slots, one task. Agent 0 takes #1, blocks it and goes idle with a big context, the answer is a DM it never reads
+-- (it is cold). Reap reopens #1 and the tick ends agent 0 and spawns a new agent into its slot for #1: that agent
+-- holds #1 with the answer still unread (the answer is stored on the task, but only `boot`, the spawned agent's first
+-- turn, reads it). Before it boots, its lease lapses and the next tick reaps it, and spawns agent 1's slot for #1. Agent
+-- 0 now boots (nothing to read: it holds nothing), goes idle big, and the same happens the other way round. Every fair
+-- action that is enabled anywhere in the period is in the period (`boot` and `age` included), and #1 is never open at a
+-- state of the run, so no `claim` is ever enabled: a fair run in which the answer is never read.
+-- The model has no time between a lease and a boot; the Lua gives a spawned agent a fresh lease that is long next to a
+-- boot, so this needs a hung launch each time. L3 holds only up to the first turn of a spawned agent (`answer_leads_to`).
+def cfg17 : Cfg := { nagents := 2, roster := 2, ntasks := 1 }
+def pre17 : List Action := [.add [], .claim 0 1, .block 0 1, .stop 0 true, .unblock 1, .age 0, .cool 0, .stop 1 true, .expire 1, .tick]
+def cyc17 : List Action := [.age 1, .expire 1, .tick, .boot 0, .stop 0 true, .age 0, .expire 1, .tick, .boot 1, .stop 1 true]
+example : lassoP cfg17 (!answered · 1) pre17 cyc17 4 = true := by decide +kernel
+example : periodicD cfg17 2 pre17 cyc17 2 = true := by decide +kernel
+-- the answer is read by the first turn: let the period's agent boot before its lease lapses
+example : lassoP cfg17 (!answered · 1) pre17 [.boot 0] 1 = false := by decide +kernel
 
 end Swarm
