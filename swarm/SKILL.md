@@ -90,7 +90,9 @@ with subagents.
   this repo (yours included) that is clean, on main, untouched for 30 minutes
   and has no process in it, and deletes its branch: tell the user before the
   first watchd if they park worktrees here. When all tasks are done, tell
-  the user. `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
+  the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
+  waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `hc send`, or end it.
+  `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.
   `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
