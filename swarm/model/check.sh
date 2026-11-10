@@ -49,5 +49,8 @@ l_after_waiter   L1               temp fails
 l_after_waiter   L3               temp fails
 l_fixed_waiter   L1               temp fails
 l_fixed_waiter   L3               temp fails
+l_waiter         L1               temp holds
+l_waiter         L2               temp holds
+l_waiter         L3               temp holds
 EOF
 exit $((fails > 0))

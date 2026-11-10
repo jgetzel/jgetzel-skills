@@ -5,6 +5,7 @@
 -- makes fresh ones).
 local json, util = require "swarm.json", require "swarm.util"
 local lfs = require "lfs"
+local unistd = require "posix.unistd"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local DIR = os.getenv("SWARM_MODEL_TRACES") or (here .. "/../../model/traces")
 local COMMS, ROSTER, CAP = "m-comms", 2, "2"
@@ -45,7 +46,9 @@ end
 
 -- The model's agents are slots: a spawn fills the first one not live, so an ended slot comes back as a new
 -- agent. N maps each slot to the real name of its current agent.
-local function check(t, st, where, N, seen)
+-- M maps slots for this step's new messages: N from before the step, since a tick posts before it spawns.
+local function check(t, st, where, N, seen, M)
+  M = M or N
   local function fail(what, got, want)
     error(("%s: %s: db has %s, model has %s"):format(where, what, t.repr and t.repr(got) or tostring(got), tostring(want)), 0)
   end
@@ -89,8 +92,8 @@ local function check(t, st, where, N, seen)
   if #rows ~= #st.log then fail("messages", #rows, #st.log) end
   for i, r in ipairs(rows) do
     local m = st.log[i]
-    if i > seen.n and (r.dest ~= N[m.to] or r.kind ~= SYS[m.kind] or (r.urgent ~= 0) ~= m.urgent) then
-      fail("message " .. i, r.dest .. " " .. r.kind, tostring(N[m.to]) .. " " .. m.kind)
+    if i > seen.n and (r.dest ~= M[m.to] or r.kind ~= SYS[m.kind] or (r.urgent ~= 0) ~= m.urgent) then
+      fail("message " .. i, r.dest .. " " .. r.kind, tostring(M[m.to]) .. " " .. m.kind)
     end
     idx[r.id] = i
   end
@@ -145,15 +148,15 @@ local function act(t, name, p, N)
     if p.u11 then sw(p.a11, "post", "--urgent", p.b11, "hi") else sw(p.a11, "post", p.b11, "hi") end
   elseif name == "readAll" then sw(p.a12, "read")
   elseif name == "stop" then
-    hook(p.a14, "stop")
-    setdb(t, "update agent set ctx_tokens=? where name=?", p.big14 and 100000 or 1000, p.a14)
+    hook(p.a14, "stop")  -- the Stop hook's waiter: this process stands in for it, alive until waiterGone or a wake
+    setdb(t, "update agent set ctx_tokens=?, waiter=? where name=?", p.big14 and 100000 or 1000, unistd.getpid(), p.a14)
   elseif name == "wake" then
     local r = sw(p.a15, "wait", "--timeout", "5", "--poll", "0.1", { ok = false })
     if r.code ~= 2 then error(("swarm wait exited %d, the model woke it: %s"):format(r.code, r.stderr), 0) end
     hook(p.a15, "prompt")
   elseif name == "prompt" then hook(p.a18, "prompt")
   elseif name == "boot" then hook(p.a19, "prompt")
-  elseif name == "waiterGone" then  -- the model's waiter only gates wake
+  elseif name == "waiterGone" then setdb(t, "update agent set waiter=null where name=?", p.a20)
   elseif name == "age" then setdb(t, "update agent set last_active=? where name=?", now - 200, p.a21)
   elseif name == "cool" then setdb(t, "update agent set last_active=? where name=?", now - 4000, p.a22)
   elseif name == "expire" then setdb(t, "update task set lease_until=? where id=?", now - 10, p.t23)
@@ -195,20 +198,30 @@ local function replay(t, file)
     local ok, err = pcall(act, t, name, picks, N)
     if not ok then error(where .. ": " .. tostring(err), 0) end
     local st = state(x)
-    for slot, g in pairs(st.ag) do  -- a spawn: the slot's agent is whoever the db gave its task to
-      if g.boot and not prev.ag[slot].boot then  -- the same tick may end a slot's agent and fill it again
+    local M = {}
+    for k, n in pairs(N) do M[k] = n end
+    -- a spawn: the slot's agent is whoever the db gave its task to. The same tick may end a booting slot's agent
+    -- and fill the slot again, so a booting slot is remapped whenever the db's owner differs, if the old one ended.
+    for slot, g in pairs(st.ag) do
+      if g.boot then
         for id, k in pairs(st.task) do
           if k.owner == slot and k.st == "claimed" then
             local r = t:q1("select owner, state from task where id=?", id)
             if not (r and r.owner) then
               error(("%s: the model spawned %s for task #%d; the db's is %s with no owner"):format(where, slot, id, r and r.state), 0)
             end
-            N[slot] = r.owner
+            if r.owner ~= N[slot] then
+              local old = N[slot] and prev.ag[slot].boot and t:q1("select status from agent where name=?", N[slot])
+              if old and old.status ~= "ended" then
+                error(("%s: task #%d went to %s while %s (slot %s) is %s"):format(where, id, r.owner, N[slot], slot, old.status), 0)
+              end
+              N[slot] = r.owner
+            end
           end
         end
       end
     end
-    check(t, st, where, N, seen)
+    check(t, st, where, N, seen, M)
     prev = st
   end
 end
