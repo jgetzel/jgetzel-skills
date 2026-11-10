@@ -117,7 +117,9 @@ local function parser()
   q = p:command("unblock")
   q:argument("id"):convert(int)
   opt(q, "--answer", "")
-  p:command("release"):argument("id"):convert(int)  -- give a claimed task back, still open; drop kills it
+  q = p:command("release")  -- give a claimed task back, still open; drop kills it
+  q:argument("id"):convert(int)
+  opt(q, "--after", nil, id_list):description("ids it now waits on: 3 or 3,5")
   p:command("drop"):argument("id"):convert(int)
 
   p = ap:command("rules"):command_target("act")

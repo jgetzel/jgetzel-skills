@@ -21,7 +21,8 @@ your name is in `$SWARM_NAME`.
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A
   claim without evidence is a rumor to the others. Add tasks for what you
   find (`swarm task add "<title>"`); split a task that is too big. Can't
-  finish it? `swarm task release <id>` (not `drop`, which kills the task).
+  finish it? `swarm task release <id>` (not `drop`, which kills the task);
+  can't start until another task lands? `release <id> --after N`.
   Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours.
   An answer to a block may be stored on the task: `swarm task show <id>`.
 - **Talk at breakpoints.** `swarm read` after a task, before a push, when
