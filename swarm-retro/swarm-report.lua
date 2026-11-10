@@ -326,16 +326,22 @@ function M.report(c, since, git, state)
     if CONFLICTS[e.kind] then table.insert(out.conflicts, pick(e, EVK)) end
     if e.kind == "digest" then table.insert(out.idle_with_open_tasks, { ts = e.ts, agent = e.agent or NULL }) end
   end
-  local ps, start, eps, tot, maxh, kills, heavy = 0, nil, 0, 0, 0, 0, {}
+  local start, eps, tot, kills = nil, 0, 0, 0
   for _, e in ipairs(ev) do
     if e.kind == "pressure" then start = e.ts
     elseif e.kind == "pressure-end" and start then eps = eps + 1; tot = tot + e.ts - start; start = nil
-    elseif e.kind == "heavy-count" then maxh = math.max(maxh, tonumber(e.data) or 0)
-    elseif e.kind == "orphan-kill" then kills = kills + 1
-    elseif e.kind == "heavy-start" and e.agent then heavy[e.agent] = (heavy[e.agent] or 0) + 1 end
+    elseif e.kind == "orphan-kill" then kills = kills + 1 end
   end
-  out.pressure = { episodes = eps + (start and 1 or 0), total_s = tot, ongoing = start ~= nil, max_concurrent_heavy = maxh,
-    orphan_kills = kills, heavy_starts = heavy }
+  -- finished commands that cost something, from the cmd-cost history (a measurement, not a word list)
+  local costly, peak = {}, 0
+  local cost = require "swarm.cost"
+  local h = require("swarm.db").open_ro(cost.path())
+  for _, r in ipairs(h and h:all("select agent,peak_kb from cmd where ts>=?", since) or {}) do
+    costly[r.agent or "?"] = (costly[r.agent or "?"] or 0) + 1
+    peak = math.max(peak, r.peak_kb)
+  end
+  out.pressure = { episodes = eps + (start and 1 or 0), total_s = tot, ongoing = start ~= nil, max_command_peak_kb = peak,
+    orphan_kills = kills, costly_commands = costly }
   out.jobs = M.jobs(ev)
   if git ~= false then
     local g = M.git_evidence(since)
@@ -403,9 +409,9 @@ local function show(r)
   section("conflict, conflict-compat and shared-tree events", "conflicts", EVK)
   section("watchd digests (idle with open tasks)", "idle_with_open_tasks", { "ts", "agent" })
   local p = r.pressure
-  print(("\n## resources\n- pressure episodes: %d (%s total%s)\n- max concurrent heavy: %d\n- orphan kills: %d\n- heavy starts per agent: %s")
-    :format(p.episodes, span(p.total_s), p.ongoing and ", ongoing" or "", p.max_concurrent_heavy, p.orphan_kills,
-      next(p.heavy_starts) and kv(p.heavy_starts) or "-"))
+  print(("\n## resources\n- pressure episodes: %d (%s total%s)\n- largest command peak: %.1fG\n- orphan kills: %d\n- costly commands per agent: %s")
+    :format(p.episodes, span(p.total_s), p.ongoing and ", ongoing" or "", p.max_command_peak_kb / 1048576, p.orphan_kills,
+      next(p.costly_commands) and kv(p.costly_commands) or "-"))
   print("\n## swarm run jobs")
   for _, k in ipairs(sorted_keys(r.jobs)) do
     local m = r.jobs[k]

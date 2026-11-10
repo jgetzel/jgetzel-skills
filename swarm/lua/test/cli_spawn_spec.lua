@@ -520,7 +520,7 @@ function T.test_state_json_view(t)
   end
   local head = { "active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine" }
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
-  local views = { board = {}, activity = { "messages", "events" }, system = { "events", "locks", "running" },
+  local views = { board = {}, activity = { "messages", "events" }, system = { "events", "locks", "running", "costly" },
                   overview = { "messages", "events" }, agents = {} }
   for view, extra in pairs(views) do
     local s = st("--view", view)
@@ -580,7 +580,8 @@ function T.test_state_json_running(t)
   t:q("update agent set claude_pid=100 where name='a'")
   add_proc(pr, 100, 1, "claude", { "claude" })
   add_proc(pr, 102, 100, "cabal", { "/x/bin/cabal", "build" }, 250000, 125)
-  add_proc(pr, 200, 1, "node", { "node", "/x/bin/tsc", "-b" }, 125000)
+  add_proc(pr, 150, 1, "claude", { "claude" })
+  add_proc(pr, 200, 150, "node", { "node", "/x/bin/tsc", "-b" }, 125000)
   local function st(...)
     local args = { "a", "state", "--json", ... }
     args[#args + 1] = { env = { SWARM_PROC = pr } }

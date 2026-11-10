@@ -84,25 +84,30 @@ function T.test_machine_note_and_patterns(t)
   add_proc(pr, 100, 1, "claude", { "claude" })
   add_proc(pr, 101, 100, "bash", { "bash", "-c", "x" })
   add_proc(pr, 102, 101, "cabal", { "/nix/store/x/bin/cabal", "build" }, { rss_pages = 1000000 / 4 })
-  add_proc(pr, 200, 1, "node", { "node", "/x/bin/tsc", "-b" }, { rss_pages = 500000 / 4 })  -- not a swarm agent's
-  add_proc(pr, 103, 101, "ghc-9.10.3", { "/s/ghc-9.10.3", "--make" }, { rss_pages = 2000000 / 4 })
-  hookp(t, "b", pr, "nix develop -c env TPG_SOCK=/m/.dev/.s.PGSQL.5432 cabal build")  -- b starts one: logged
-  local o = hookp(t, "a", pr, "nix develop -c env TPG_SOCK=/m/.dev/.s.PGSQL.5432 cabal build")
+  add_proc(pr, 103, 101, "my-build-script", { "./my-build-script", "all" }, { rss_pages = 2000000 / 4 })  -- no word names it
+  add_proc(pr, 150, 1, "claude", { "claude" })  -- someone's own session
+  add_proc(pr, 200, 150, "node", { "node", "/x/bin/tsc", "-b" }, { rss_pages = 500000 / 4 })
+  -- no history: nothing is printed, whatever the command
+  t:eq(hookp(t, "a", pr, "nix develop -c env X=1 cabal build"), {})
+  t:eq(hookp(t, "a", pr, "./my-build-script all"), {})
+  -- history here: a small command is silent, one predicted above half of the 19.1G available speaks
+  local cost = require "swarm.cost"
+  local h = cost.open()  -- the harness's XDG_STATE_HOME, shared with the CLI it runs
+  local repo = cost.repo_name(t.cwd.a)
+  for _, r in ipairs { { "cabal build", 1 }, { "./my-build-script all", 12 } } do
+    cost.record(h, { repo = repo, agent = "b", cmd = r[1], wall_s = 360, peak_kb = r[2] * 1048576 })
+  end
+  local hk = function(cmd) return hookp(t, "a", pr, cmd) end
+  t:eq(hk("cabal build"), {})
+  t:eq(hk("git commit -m 'make it'"), {})
+  local o = hk("cd /x && ./my-build-script all 2>&1 | tail")
   assert(o.permissionDecision == nil)
   local n = o.additionalContext
-  assert(lines(n) <= 6, n)
+  t:has(n, "`./my-build-script all` took ~12.0G and 6 min the last 1 time here; 19.1G is available now.")
   t:has(n, "machine: 19.1/30.5G")
-  assert(n:find("running: ghc%-9%.10%.3 %-%-make .*%(a%)"), n)
-  t:has(n, "running: tsc -b"); t:has(n, "(other session)")
-  t:has(n, "started in the last 60s: b:")
-  t:eq(hookp(t, "a", pr, "git commit -m 'make it'"), {})
-  t:eq(hookp(t, "a", pr, "nix run .#dev"), {})
-  for _, c in ipairs { "nix build .#server", "nix flake check", "spago build", "purs compile", "npx playwright test" } do
-    t:has(hookp(t, "a", pr, c).additionalContext, "machine:", c)
-  end
-  mkdir(t.repo .. "/.claude")
-  put(t.repo .. "/.claude/swarm.json", '{"heavy": ["\\\\bfoo-build\\\\b"]}')
-  t:has(hookp(t, "a", pr, "foo-build all").additionalContext, "machine:")
+  t:has(n, "a 2.9G (my-build-script all 1.9G)")  -- the claude process counts; the largest process is named by size
+  t:has(n, "other session 0.5G (tsc -b 0.5G)")
+  assert(lines(n) <= 7, n)
 end
 
 function T.test_pressure_edge_oom_and_orphans(t)
@@ -312,7 +317,7 @@ function T.test_run_note_state_and_cleanup(t)
   t:q("insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)", now - 120, "a", "job-start", "1",
     json.encode({ machine = "laptop", hc = "laptop/t9", wt = util.strip(sh("realpath " .. util.shquote(t.wt))), dir = d,
       cmd = "cargo test -p x", pid = 999999999 }))
-  local n = hookp(t, "a", pr, "swarm run --on laptop -- cargo test").additionalContext  -- swarm run is heavy
+  local n = swp(t, "a", pr, "machine").stdout
   t:has(n, "laptop: 80/93G available, load 3.5 on 24 cores, mem pressure 0%, jobs: a cargo test -p x 2m")
   t:has(n, "nas: disconnected since")
   local lost = {}

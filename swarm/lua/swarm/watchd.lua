@@ -651,23 +651,23 @@ function M.last_event(c, ...)
   return r and r.kind
 end
 
--- Edge-triggered pressure notice, heavy-count log, oom bias for agents' builds, orphan kills.
+-- Edge-triggered pressure notice, oom bias for the processes in agents' trees, orphan kills.
 function M.machine_tick(c)
   local avail, total, psi = machine.mem()
   if not avail then return end
   local procs = machine.procs()
   local ok, err = pcall(function() cost.tick(c, cost.handle(), procs, util.now()) end)  -- the history never stops the tick
   if not ok then io.stderr:write("cost: ", tostring(err), "\n") end
-  local hv = machine.heavy_procs(c, procs)
-  local prev = c:one("select data from event where kind='heavy-count' order by id desc limit 1")
-  if d(#hv) ~= (prev and prev.data or "0") then db.log(c, nil, "heavy-count", nil, d(#hv)) end
-  for _, h in ipairs(hv) do  -- hygiene that rations nothing: the OOM killer picks agents' builds before the dev db and Claude
+  local hs = machine.holders(c, procs)
+  for _, h in ipairs(hs) do  -- hygiene that rations nothing: the OOM killer picks agents' processes before the dev db and Claude
     if h.agent ~= "other session" and machine.OS == "Linux" then  -- macOS has no unprivileged per-process knob
-      local f = machine.PROC .. "/" .. d(h.pid) .. "/oom_score_adj"
-      local v = tonumber(util.strip(util.slurp(f) or "x"))
-      if v and v < 500 then
-        local w = io.open(f, "w")
-        if w then w:write("500"); w:close() end
+      for _, p in ipairs(h.procs) do
+        local f = machine.PROC .. "/" .. d(p.pid) .. "/oom_score_adj"
+        local v = tonumber(util.strip(util.slurp(f) or "x"))
+        if v and v < 500 then
+          local w = io.open(f, "w")
+          if w then w:write("500"); w:close() end
+        end
       end
     end
   end
@@ -686,11 +686,7 @@ function M.machine_tick(c)
     local line = machine.machine_line(avail, total, psi)
     db.log(c, nil, "pressure", nil, line)
     local who, seen = {}, {}
-    table.sort(hv, function(x, y)
-      if x.rss_kb ~= y.rss_kb then return x.rss_kb > y.rss_kb end
-      return x.pid < y.pid
-    end)
-    for _, h in ipairs(hv) do  -- the three agents holding the most memory, then every stayer
+    for _, h in ipairs(hs) do  -- the three agents holding the most memory, then every stayer
       if h.agent ~= "other session" and not seen[h.agent] and #who < 3 then seen[h.agent] = true; who[#who + 1] = h.agent end
     end
     for _, s in ipairs(c:all("select name from agent where ended is null and stay is not null")) do
@@ -704,7 +700,7 @@ function M.machine_tick(c)
   elseif was and not high then
     db.log(c, nil, "pressure-end")
   end
-  -- orphans: heavy processes reparented to init whose cwd is in an ended agent's worktree and no live agent's
+  -- orphans: processes reparented to init whose cwd is in an ended agent's worktree and no live agent's
   local tops, order = {}, {}
   for _, r in ipairs(c:all("select name,cwd,ended from agent where cwd is not null")) do
     local k = isdir(r.cwd) and proc.git({ "rev-parse", "--show-toplevel" }, r.cwd) or false
@@ -718,7 +714,7 @@ function M.machine_tick(c)
     end
   end
   local cw
-  for _, h in ipairs(hv) do
+  for _, h in pairs(procs) do
     if h.ppid == 1 then cw = cw or machine.cwds() or {} end
     local l = h.ppid == 1 and cw[h.pid]
     if l then
@@ -730,7 +726,7 @@ function M.machine_tick(c)
             if q.ppid == h.pid then kill[#kill + 1] = q.pid end
           end
           for _, pid in ipairs(kill) do signal.kill(pid, signal.SIGTERM) end
-          db.log(c, tops[k][1].name, "orphan-kill", nil, ("%s %s %dM"):format(d(h.pid), util.cut(h.cmd, 60), math.floor(h.rss_kb / 1024)))
+          db.log(c, tops[k][1].name, "orphan-kill", nil, ("%s %s %dM"):format(d(h.pid), util.cut(machine.proc_cmd(h), 60), math.floor(h.rss_kb / 1024)))
           break
         end
       end

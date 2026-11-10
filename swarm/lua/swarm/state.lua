@@ -1,7 +1,8 @@
 -- swarm state --json (one read-only snapshot for UIs) and swarm watch.
 local json, util, db = require "swarm.json", require "swarm.util", require "swarm.db"
 local agents, tasks, machine = require "swarm.agents", require "swarm.tasks", require "swarm.machine"
-local conflict, proc = require "swarm.conflict", require "swarm.proc"
+local conflict, proc, cost = require "swarm.conflict", require "swarm.proc", require "swarm.cost"
+local unistd = require "posix.unistd"
 local signal, lfs = require "posix.signal", require "lfs"
 local M = {}
 
@@ -209,25 +210,27 @@ function M.cmd_state(a)
     out.messages = fill_all(r, n)
   end
   if want.events then
-    local r, n = rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status','heavy-count') "
+    local r, n = rows("select id,ts,agent,kind,path,data from event where kind not in ('touch','status') "
       .. "order by id desc limit " .. (deep and 300 or 60))
     out.events = pushinfo(fill_all(r, n))
   end
   if want.locks then out.locks = fill_all(rows("select * from lock order by since desc")) end
   if want.running then  -- one ps, only where the System view shows it
     local hv = {}
-    local ok, r = pcall(machine.heavy_procs, c, machine.procs())
+    local ok, r = pcall(machine.holders, c, machine.procs())
     if ok then hv = r
     elseif not tostring(r):find("no such column", 1, true) then error(r, 0) end  -- an old db without claude_pid
-    table.sort(hv, function(x, y)
-      if x.rss_kb ~= y.rss_kb then return x.rss_kb > y.rss_kb end
-      return x.pid < y.pid
-    end)
     local run = {}
     for _, h in ipairs(hv) do
-      run[#run + 1] = { agent = h.agent, command = util.cut(h.cmd, 120), elapsed_s = math.floor(h.age),
-        start = t - math.floor(h.age), rss_kb = h.rss_kb }
+      run[#run + 1] = { agent = h.agent, command = util.cut(h.top or "", 120), elapsed_s = math.floor(h.age or 0),
+        start = t - math.floor(h.age or 0), rss_kb = h.kb }
     end
+    -- the last finished commands that cost something, from the history
+    local rc = {}
+    if unistd.access(cost.path(), "r") then
+      for _, r2 in ipairs(cost.open():all("select ts,agent,cmd,wall_s,peak_kb from cmd order by id desc limit 6")) do rc[#rc + 1] = r2 end
+    end
+    out.costly = array(rc)
     -- jobs on other machines (local ones are in the ps scan), with watchd's reading of each job's process tree;
     -- lost: its `swarm run` is gone and so is its terminal; unreachable: watchd's probe of the machine failed
     local js, gone = {}, {}

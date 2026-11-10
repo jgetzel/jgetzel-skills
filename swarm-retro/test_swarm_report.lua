@@ -101,11 +101,17 @@ function T.cold_wakes()
 end
 
 function T.resources()
-  local p = run([[insert into event(ts,agent,kind,data) values(10,null,'heavy-count','2'),(20,null,'pressure',null),(80,null,'pressure-end',null),
- (90,null,'pressure',null),(95,null,'heavy-count','1'),(30,'a','heavy-start','cabal build'),(40,'a','heavy-start','x'),(50,'b','orphan-kill','1 ghc');]],
-    { env = NOGIT }).pressure
-  eq({ p.episodes, p.total_s, p.ongoing, p.max_concurrent_heavy, p.orphan_kills }, { 2, 60, true, 2, 1 })
-  eq(p.heavy_starts, { a = 2 })
+  local d = tmp()
+  sh(("mkdir -p %s/.local/state/cmd-cost"):format(d))
+  local h = assert(sqlite3.open(d .. "/.local/state/cmd-cost/history.db"))
+  assert(h:exec([[create table cmd(id integer primary key, ts int, machine text, repo text, agent text, source text, cmd text,
+    key text, wall_s int, cpu_s int, peak_kb int, exact int);
+    insert into cmd(ts,agent,peak_kb) values(30,'a',2097152),(40,'a',1048576),(50,'b',3145728);]]) == sqlite3.OK)
+  h:close()
+  local p = run([[insert into event(ts,agent,kind,data) values(20,null,'pressure',null),(80,null,'pressure-end',null),
+ (90,null,'pressure',null),(50,'b','orphan-kill','1 ghc');]], { env = merge(NOGIT, { XDG_STATE_HOME = d .. "/.local/state" }) }).pressure
+  eq({ p.episodes, p.total_s, p.ongoing, p.max_command_peak_kb, p.orphan_kills }, { 2, 60, true, 3145728, 1 })
+  eq(p.costly_commands, { a = 2, b = 1 })
 end
 
 function T.agent_line_anywhere_in_body()

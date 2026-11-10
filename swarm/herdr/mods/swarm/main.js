@@ -15,7 +15,7 @@ const CTX_MAX = 600000, FINISH = 350000, HANDOFF = 550000; // the context bar's 
 // [id, label, label width in px at 11.5]: the segment highlight slides between computed lefts
 const TABS = [["overview", "Overview", 52], ["agents", "Agents", 40], ["board", "Board", 32], ["activity", "Activity", 46], ["system", "System", 42]];
 const RED = new Set(["overlap", "conflict", "conflict-error", "pressure", "ci-red", "orphan-kill", "lock-violation", "blocked", "task-blocked"]);
-const QUIET = new Set(["post", "wake", "heavy-start", "status", "digest", "startable", "deny-cold", "heavy-count"]);
+const QUIET = new Set(["post", "wake", "status", "digest", "startable", "deny-cold"]);
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -70,7 +70,6 @@ function evLine(e) {
     case "end": return { k: "ended", text: d ? `ended · ${d}` : "ended" };
     case "ci-red": return { k: "CI", text: `main CI red${d ? ` · run ${d}` : ""}`, red: true };
     case "compact": return { k: "context", text: "compacted context" };
-    case "heavy-start": return { k: "heavy", text: d };
     default: return { k: e.kind, text: [d, e.path].filter(Boolean).join(" "), red: RED.has(e.kind) };
   }
 }
@@ -318,10 +317,10 @@ export default class Swarm extends View {
   needs(t, d) {
     const s = this.s, out = [];
     if (d.reds) {
-      const r = d.redRuns[0], heavy = d.fix && s.agents.find(a => a.name === d.fix.owner)?.events?.find(e => e.kind === "heavy-start");
+      const r = d.redRuns[0];
       out.push({ key: "ci", title: "main CI red", go: "system",
         detail: `run ${r.databaseId} · ${hhmm(iso(r.createdAt))}${d.reds > 1 ? ` · ${d.reds} red runs since ${hhmm(iso(d.redRuns[d.reds - 1].createdAt))}` : ""}`,
-        short: hhmm(iso(r.createdAt)), owner: d.fix ? `${d.fix.owner} is on it (#${d.fix.id})` : "nobody on it", heavy: heavy ? `heavy run ${hhmm(heavy.ts)}` : null });
+        short: hhmm(iso(r.createdAt)), owner: d.fix ? `${d.fix.owner} is on it (#${d.fix.id})` : "nobody on it" });
     }
     for (const k of s.tasks.filter(k => k.state === "blocked"))
       out.push({ key: `t${k.id}`, title: `#${k.id} blocked`, detail: one(k.question) || k.title, short: "", owner: k.owner, go: "board" });
@@ -340,7 +339,6 @@ export default class Swarm extends View {
         .child(this.dot(t.blocked)).child(div().flex_none().text_size(12).font_semibold().text_color(t.blocked).child(x.title))
         .when(!narrow, el => el.child(div().min_w(0).flex_shrink(1).truncate().text_size(10.5).text_color(t.dim).child(x.detail)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.muted).child(x.owner ?? ""))
-        .when(!narrow && Boolean(x.heavy), el => el.child(this.chip(t, x.heavy, t.ansi3, true)))
         .when(narrow && Boolean(x.short), el => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(x.short)))
         .when(n.length > 1, el => el.child(this.chip(t, `+${n.length - 1}`, t.blocked)))
         .child(this.chev(t, "right"))));
@@ -794,7 +792,7 @@ export default class Swarm extends View {
       case "takeover": return { text: "relaunched in a fresh session" };
       case "end": return { text: "ended", part: e.agent ?? "?" };
       case "pressure": return { text: "machine is short on memory", open: true };
-      case "orphan-kill": return { text: `left a heavy process running; the swarm stopped it: ${data.split(" ").slice(1, -1).join(" ")}` };
+      case "orphan-kill": return { text: `left a process running; the swarm stopped it: ${data.split(" ").slice(1, -1).join(" ")}` };
       default: return { text: data };
     }
   }
@@ -942,17 +940,17 @@ export default class Swarm extends View {
         .child(h_flex().gap(6).text_size(11.5).child(div().text_color(t.muted).child("Memory")).child(div().flex_1()).child(`${gb(m.avail_kb)}G free`).child(div().text_color(t.dim).child(`of ${gb(m.total_kb)}G`)))
         .child(div().relative().h(6).rounded(3).bg(t.selected).child(div().absolute().left(0).top(0).h(6).rounded(3).bg(t.muted).w(`${Math.round((1 - m.avail_kb / m.total_kb) * 100)}%`)))
         .child(h_flex().gap(8).child(m.psi.level ? tile("mem pressure", m.psi.level) : tile("mem pressure", `${m.psi.memory}%`)).child(m.psi.level ? tile("load", `${m.psi.load} on ${m.psi.cores}`) : tile("cpu pressure", `${m.psi.cpu}%`)).child(tile("high", m.high ? "yes" : "no", m.high ? t.blocked : t.ansi2))));
-    const heavy = s.events.filter(e => e.kind === "heavy-start").slice(0, 6), run = s.running ?? [];
-    const jobs = this.card(t, "heavy").gap(6)
+    const costly = (s.costly ?? []).slice(0, 6), run = s.running ?? [];
+    const jobs = this.card(t, "jobs").gap(6)
       .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Running now")).child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child(run.some(j => j.machine) ? "all machines" : "this machine")))
-      .when(!run.length, el => el.child(div().text_size(11).text_color(t.dim).child("No heavy jobs running")))
+      .when(!run.length, el => el.child(div().text_size(11).text_color(t.dim).child("Nothing running")))
       .children(run.slice(0, 8).map((j, i) => h_flex().id(`run-${i}`).h(22).gap(8).items_center().text_size(11.5).min_w(0)
         .child(div().w(40).flex_none().text_color(t.dim).child(ago(j.elapsed_s))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${j.agent} · ${j.command}`))
         .child(div().flex_none().text_color(j.lost ? t.blocked : t.dim).child(j.machine ? `${j.machine}${j.unreachable ? " unreachable" : j.lost ? " lost" : j.rss_kb != null ? ` · ${gb(j.rss_kb)}G` : ""}` : `${gb(j.rss_kb)}G`))))
-      .child(div().mt(4).text_size(12).font_semibold().child("Recent starts"))
-      .when(!heavy.length, el => el.child(div().text_size(11).text_color(t.dim).child("None recently")))
-      .children(heavy.map(e => h_flex().h(22).gap(8).items_center().text_size(11.5).min_w(0)
-        .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(e.ts))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent ?? "?"} · ${one(e.data)}`))));
+      .child(div().mt(4).text_size(12).font_semibold().child("Recent costly commands"))
+      .when(!costly.length, el => el.child(div().text_size(11).text_color(t.dim).child("None recently")))
+      .children(costly.map(e => h_flex().h(22).gap(8).items_center().text_size(11.5).min_w(0)
+        .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(e.ts))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent ?? "?"} · ${one(e.cmd)} · ${gb(e.peak_kb)}G`))));
     const line = (key, text, color) => div().id(key).h(20).truncate().text_size(11).text_color(color ?? t.muted).child(text);
     const calm = !s.locks.length && !s.conflicts.length && !s.pressure.length;
     const locks = this.card(t, "locks").gap(8)
@@ -1132,11 +1130,10 @@ const KIND = Object.fromEntries(Object.entries({
   notice: ["info", "messages", "Swarm notice", "The swarm told an agent something on its own, such as a conflict or an idle nudge.", "", 0],
   pressure: ["gauge", "machine", "Memory pressure", "The machine ran short of memory. Agents were told to prefer light work; act if it lasts.", "warn", 1],
   "pressure-end": ["gauge", "machine", "Pressure over", "The machine has enough memory again.", "", 0],
-  "heavy-start": ["cpu", "machine", "Heavy run", "An agent started a build or test.", "", 0],
   "job-start": ["cpu", "machine", "Run started", "An agent started a build or test on another machine.", "", 0],
   "job-end": ["cpu", "machine", "Run finished", "A build or test on another machine finished.", "", 0],
   "remote-clean": ["trash", "machine", "Run cleaned up", "A finished run's copy on another machine was removed.", "", 0],
-  "orphan-kill": ["zap", "machine", "Process stopped", "The swarm stopped a heavy process an agent left running. Nothing for you to do.", "warn", 1],
+  "orphan-kill": ["zap", "machine", "Process stopped", "The swarm stopped a process an agent left running. Nothing for you to do.", "warn", 1],
   role: ["users", "agents", "Role", "An agent named what it is doing now. Nothing for you to do.", "", 0],
   stay: ["clock", "agents", "Staying", "An agent said what it is waiting for, so the swarm keeps it while idle. Nothing for you to do.", "", 0],
   "stay-end": ["log-out", "agents", "Stay over", "An agent stopped staying and is treated like any idle agent.", "", 0],
