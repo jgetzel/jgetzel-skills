@@ -8,12 +8,14 @@ split. Read with [DESIGN.md](../DESIGN.md) (decisions 1, 6, 7),
 
 An agent may be an implementer, an orchestrator, a reviewer, a designer, a
 planner or anything else, and may switch as the work changes. The CLI and
-watchd guarantee four things and impose no flow:
+watchd guarantee five things and impose no flow:
 
 1. agents are tracked, so the user sees each one's status and role;
 2. tasks are tracked when agents choose to take them;
 3. messages arrive, and spawned agents are hooked into the swarm;
-4. agents are nudged to keep working, or to clean up and end.
+4. agents are nudged to keep working, or to clean up and end;
+5. telemetry an agent can decide by: machine load here and on other
+   machines (added by the user, 2026-11-09; §6a).
 
 Today the only shapes are "hold a claim" and "be ended": watchd ends every
 idle agent that owns no claim or lock once its work is on main
@@ -161,6 +163,48 @@ seeding one strong-model agent with `--role orchestrator --stay "…"` and
 `watchd --max-agents 0`. The communicator stays out of the event path either
 way (principle 8): if the swarm wants an orchestrator, it is a separate agent.
 
+## 6a. Telemetry at decision time
+
+What exists: `machine.machine_line` (memory available, PSI; two file reads),
+`machine.machine_note` (the line, heavy processes by agent, jobs and load on
+other machines; a `/proc` scan), shown by the Bash hook before a heavy
+command, by `swarm machine` and `swarm who`; and watchd's edge-triggered
+`pressure` notice to agents that run heavy processes.
+
+All of it is aimed at an implementer about to build. A planner sizing tasks,
+an orchestrator about to spawn, or anyone choosing what to take never runs a
+heavy command and so never sees it. The fix is to show it where every role
+already decides, with no role in the rule:
+
+| Decision | Command | Shows |
+|---|---|---|
+| What do I do next? | `swarm board` | the one-line `machine_line` as its first line (as `who` has) |
+| Do I take this now? | `swarm task claim` | the line; the full note when pressure is high |
+| Do I add an agent? | `swarm spawn` | the full note, plus live count and the count the user launched (§6) |
+| Where do I run this? | heavy Bash, `swarm machine` | the full note, as today |
+
+The **`pressure` edge** goes, besides agents running heavy processes, to
+every stayer: they are the long-lived deciders, whatever they call
+themselves. It stays a non-urgent notice, so it never forces a cold wake.
+No polling, no repeats: one notice per edge, and the commands above for the
+state in between.
+
+**Auto-spawn's limits.** They are two different things:
+
+- `--min-free-mem` is not a gate on agents. watchd is a script, it can't
+  weigh a machine note, and a threshold is its stand-in for judgment about
+  its *own* spawns. It stays, for the scripted path only. Agents' spawns are
+  never refused for memory; they get the note. What changes: today watchd
+  skips the spawn silently (`watchd.lua:441`). It should log an edge-triggered
+  `spawn-held` event with the reason, and the board should carry one line
+  while it holds ("auto-spawn holding: 3.1G free, wants 4G; 2 tasks
+  startable"), so whoever reads the board can decide: spawn anyway, pick a
+  smaller task, use another machine. With an orchestrator and
+  `--max-agents 0`, watchd decides nothing and both numbers are only
+  information.
+- `--max-agents` is the user's budget, not machine contention. For watchd it
+  stays a limit. For agents it is information or a limit: question 1.
+
 ## 7. Deleted or simplified
 
 - `is_comms`' name-suffix rule and the lifecycle exemption for the
@@ -199,8 +243,12 @@ Each passes `luajit swarm/lua/test/run.lua` and carries its own brief lines.
    an agent merely named `x-comms` is no longer special.
 5. **Panel (after 1, 2).** Role chip, "staying", the four event kinds.
 6. **SKILL.md and DESIGN.md (after 1-4).** Decision 9, the two starts.
-7. **Spawn information (independent).** The live/launched/memory line on
-   `swarm spawn`; the refusal only if the user says yes to question 1.
+7. **Telemetry at decisions (independent).** The machine line on `board`
+   and `task claim`, the note and counts on `spawn`, `pressure` to stayers
+   (that part after 2), `spawn-held` and its board line. The spawn refusal
+   only if the user says yes to question 1. *Tests:* each command prints the
+   line from a fake `/proc`; one `spawn-held` per edge; no agent spawn is
+   refused for memory.
 
 After 2 lands the request is met for agents; 3-7 are nudges, cleanup and views.
 
@@ -252,3 +300,6 @@ Questions:
 2. Is PR 4 wanted now? It deletes a special case but touches the one agent
    whose wrongful end hurts most.
 3. `stay` as the word (`hold` and `wait` are taken or confusable)?
+4. Keep `--min-free-mem` as watchd's own threshold (recommended, made
+   visible by `spawn-held`), or drop it and let auto-spawn launch whatever
+   the cap allows, leaving memory to the agents' notes?
