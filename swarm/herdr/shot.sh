@@ -1,19 +1,21 @@
 #!/bin/sh
 # Screenshot this checkout's Swarm panel in a private, headless Herdr; never the person's window, mods or board.
-#   swarm/herdr/shot.sh [--tab overview|agents|board|activity|system] [--width PX] [--db FILE] [--theme light|dark|NAME] out.png
+#   swarm/herdr/shot.sh [--tab overview|agents|board|activity|system] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] out.png
 # --db (default $SWARM_DB): the board to show, copied in; with neither, a backup of this repo's real board.
 # --theme: light/dark set settings.json's appearance; anything else is a theme name (themes/ or Herdr's own).
+# --fixture: a made-up swarm from `luajit swarm/herdr/demo.lua DIR`: its board, machine reading, processes and cost history.
 # Everything lives under one /tmp/hs.* dir (socket paths must be shorter than SUN_LEN): its own Xvfb display,
 # HERDR_APP_HOME, hc session and a demo repo holding the board; on exit it stops only what it started.
 set -eu
-tab=overview width=860 db=${SWARM_DB:-} theme= out=
+tab=overview width=860 db=${SWARM_DB:-} theme= fx= out=
 while [ $# -gt 0 ]; do
   case $1 in
     --tab) tab=$2; shift 2 ;;
     --width) width=$2; shift 2 ;;
     --db) db=$2; shift 2 ;;
     --theme) theme=$2; shift 2 ;;
-    -h|--help) sed -n 2,6p "$0"; exit 0 ;;
+    --fixture) fx=$(cd "$2" && pwd); shift 2 ;;
+    -h|--help) sed -n 2,7p "$0"; exit 0 ;;
     -*) echo "shot.sh: unknown option $1" >&2; exit 2 ;;
     *) out=$1; shift ;;
   esac
@@ -30,6 +32,8 @@ export LUA_PATH="$lua_tree/share/lua/5.1/?.lua;$lua_tree/share/lua/5.1/?/init.lu
 repo=$(cd "$here/../.." && pwd)
 real=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/swarm/swarm.db
 [ -n "$db" ] || db=$real
+# the panel's `swarm state` inherits these: the fixture's /proc, `ps` and cmd-cost history instead of this machine's
+[ -z "$fx" ] || { db=$fx/swarm.db; export SWARM_PROC="$fx/proc" XDG_STATE_HOME="$fx/state" PATH="$fx/bin:$PATH"; }
 [ -f "$db" ] || { echo "shot.sh: no board at $db" >&2; exit 1; }
 
 # Tripwire: every Herdr window outside a shot.sh sandbox now must still be running after cleanup.

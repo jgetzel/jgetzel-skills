@@ -44,7 +44,10 @@ end
 
 -- ---- auto-spawn ----
 local function tick(t, cap) t:sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", tostring(cap), "--min-free-mem", "0") end
-local function two_haiku(t) for _, n in ipairs({ "t-comms", "t-1" }) do t:agent(n, { status = "working", model = "haiku" }) end end
+local function two_haiku(t)
+  for _, n in ipairs({ "t-comms", "t-1" }) do t:agent(n, { status = "working", model = "haiku" }) end
+  t:q("insert or replace into meta(k,v) values('comms','t-comms')")  -- the communicator is who meta says (#134 dropped the *comms suffix rule)
+end
 local function spawned(t)
   local r = {}
   for i, x in ipairs(t:launched()) do
@@ -518,9 +521,9 @@ function T.test_state_json_view(t)
     table.sort(r)
     return r
   end
-  local head = { "active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine" }
+  local head = { "active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits" }
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
-  local views = { board = {}, activity = { "messages", "events" }, system = { "events", "locks", "running", "costly" },
+  local views = { board = {}, activity = { "messages", "events" }, system = { "events", "locks", "running", "costly", "cost_top" },
                   overview = { "messages", "events" }, agents = {} }
   for view, extra in pairs(views) do
     local s = st("--view", view)
@@ -588,9 +591,41 @@ function T.test_state_json_running(t)
     return json.decode(t:sw(unpack(args)).stdout)
   end
   local got = {}
-  for i, j in ipairs(st("--view", "system").running) do got[i] = { j.agent, j.command, j.elapsed_s, j.rss_kb } end
-  t:eq(got, { { "a", "cabal build", 125, 1000000 }, { "other session", "tsc -b", 240, 500000 } })
+  for i, j in ipairs(st("--view", "system").running) do got[i] = { j.agent, j.command, j.elapsed_s, j.rss_kb, j.top_kb } end
+  t:eq(got, { { "a", "cabal build", 125, 1000000, 1000000 }, { "other session", "tsc -b", 240, 500000, 500000 } })
   t:eq(st("--view", "board").running, nil)
+end
+
+-- what the panel shows of sw-roles: the staffing numbers, the holding line, a stayer's hung sign, the cost history
+function T.test_state_json_staffing(t)
+  t:agent("a")
+  t:agent("b", { status = "idle", stay = "reviews", last_active = 1000 })
+  t:agent("cm")
+  t:q("insert or replace into meta(k,v) values('comms','cm')")
+  t:eq(stj(t, "--view", "board").limits, { live = 2 })  -- the communicator is not counted; unset numbers are null
+  t:sw("cm", "limits", "--min", "2", "--max", "3")
+  t:q("insert into meta(k,v) values('spawn_held','auto-spawn holding: 2 live, the auto-spawn number is 2; 1 task(s) startable; max 3')")
+  t:q("insert into event(ts,agent,kind) values(900,'b','stay-hung')")  -- before it was last active: over
+  t:q("insert into event(ts,agent,kind) values(1100,'b','stay-unwoken')")
+  local s = stj(t, "--view", "board")
+  t:eq({ s.limits.live, s.limits.min, s.limits.max }, { 2, 2, 3 })
+  t:has(s.limits.held, "auto-spawn holding")
+  local sign = {}
+  for _, x in ipairs(s.agents) do sign[x.name] = x.stay_sign end
+  t:eq(sign, { b = "unwoken" })
+  t:q("insert into event(ts,agent,kind) values(1200,'b','stay-hung')")
+  t:eq(stj(t, "--view", "board").agents[2].stay_sign, "hung")
+  local cost = require "swarm.cost"
+  local h = cost.open()
+  local repo = cost.repo_name(t.repo)
+  for _, r in ipairs({ { repo, "cargo test -p x", 9000000 }, { repo, "cargo test -p y", 5000000 }, { repo, "make", 7000000 }, { "elsewhere", "bazel build", 99000000 } }) do
+    cost.record(h, { repo = r[1], agent = "a", cmd = r[2], wall_s = 90, peak_kb = r[3] })
+  end
+  s = stj(t, "--view", "system")
+  local top = {}
+  for i, r in ipairs(s.cost_top) do top[i] = { r.key, r.n, r.peak_kb } end
+  t:eq(top, { { "cargo test -p", 2, 9000000 }, { "make", 1, 7000000 } })  -- this repo only, by peak
+  t:eq(#s.costly, 3)
 end
 
 function T.test_state_json_hc_only_where_shown(t)

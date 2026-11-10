@@ -133,8 +133,16 @@ function M.cmd_state(a)
     else
       for _, r in ipairs(own) do if r.state == "blocked" then status = "blocked" end end
     end
+    -- a stayer's hung sign (watchd.hung): its worst stay-* event since it was last active
+    local sign
+    if live and x.stay and x.stay ~= "" and x.status == "idle" then
+      local got = {}
+      for _, e in ipairs(rows("select distinct kind from event where agent=? and kind in ('stay-hung','stay-nowaiter','stay-unwoken') "
+        .. "and ts>=?", x.name, x.last_active or 0)) do got[e.kind] = true end
+      sign = got["stay-hung"] and "hung" or got["stay-nowaiter"] and "nowaiter" or got["stay-unwoken"] and "unwoken" or nil
+    end
     local ag = {
-      name = x.name, hc = N(x.hc), model = N(x.model), role = N(x.role), stay = N(x.stay), ctx_tokens = x.ctx_tokens or 0, status = N(status),
+      name = x.name, hc = N(x.hc), model = N(x.model), role = N(x.role), stay = N(x.stay), stay_sign = N(sign), ctx_tokens = x.ctx_tokens or 0, status = N(status),
       idle_s = t - (act == 0 and t or act), started = N(x.started), ended = N(x.ended),
       cache = t - act < agents.COLD_IDLE and "warm" or "cold",
       cold_guarded = (live and lanes and agents.cold_reason(x, t)) and true or false,
@@ -194,8 +202,15 @@ function M.cmd_state(a)
 
   local cm = rows("select v from meta where k='comms'")[1]
   local cv = cm and cm.v ~= "" and cm.v or agents.env("SWARM_COMMS")
+  local function meta(k) local r = rows("select v from meta where k=?", k)[1]; return r and r.v end
+  local nlive = 0
+  for _, x in ipairs(ags) do
+    if x.ended == null and x.name ~= cv then nlive = nlive + 1 end
+  end
   local out = {
     active = false, db = p, now = t, view = N(a.view), comms = N(cv),
+    -- the user's staffing numbers (agents.limits) and the board's "auto-spawn holding" line while it holds
+    limits = { live = nlive, min = N(tonumber(meta("agent_min"))), max = N(tonumber(meta("agent_max"))), held = N(meta("spawn_held")) },
     tasks = array(tk), agents = array(ags),
     conflicts = fill_all(rows("select * from conflict order by since desc")),
     pressure = array(press), machine = mach,
@@ -223,14 +238,18 @@ function M.cmd_state(a)
     local run = {}
     for _, h in ipairs(hv) do
       run[#run + 1] = { agent = h.agent, command = util.cut(h.top or "", 120), elapsed_s = math.floor(h.age or 0),
-        start = t - math.floor(h.age or 0), rss_kb = h.kb }
+        start = t - math.floor(h.age or 0), rss_kb = h.kb, top_kb = h.top and h.top_kb or null }
     end
-    -- the last finished commands that cost something, from the history
-    local rc = {}
+    -- from the cmd-cost history, this repo on this machine: the last finished commands that cost something, and
+    -- the most intensive by peak (`swarm cost --top`)
+    local rc, top = {}, {}
     if unistd.access(cost.path(), "r") then
-      for _, r2 in ipairs(cost.open():all("select ts,agent,cmd,wall_s,peak_kb from cmd order by id desc limit 6")) do rc[#rc + 1] = r2 end
+      local h, host, repo = cost.open(), cost.hostname(), cost.repo_name() or "?"
+      rc = h:all("select ts,agent,cmd,wall_s,peak_kb from cmd where machine=? and repo=? order by id desc limit 6", host, repo)
+      top = h:all("select key,count(*) n,max(peak_kb) peak_kb,max(wall_s) wall_s,max(cpu_s) cpu_s from cmd where machine=? and repo=? "
+        .. "group by key order by max(peak_kb) desc limit 5", host, repo)
     end
-    out.costly = array(rc)
+    out.costly, out.cost_top = array(rc), array(top)
     -- jobs on other machines (local ones are in the ps scan), with watchd's reading of each job's process tree;
     -- lost: its `swarm run` is gone and so is its terminal; unreachable: watchd's probe of the machine failed
     local js, gone = {}, {}
