@@ -360,6 +360,9 @@ function M.cmd_board(c, a)
   for _, x in ipairs(c:all("select name, role from agent where ended is null and role is not null")) do role[x.name] = x.role end
   local rows = c:all("select * from task " .. (a.all and "" or "where state in ('open','claimed','blocked') ")
     .. "order by title like '" .. M.RED_TASK .. "%' and state!='done' desc, id")
+  print(agents.limits_line(c))
+  local held = c:one("select v from meta where k='spawn_held'")
+  if held then print(held.v) end
   for _, r in ipairs(rows) do
     local who = (py(r.owner) or "-") .. (role[r.owner] and (" (" .. role[r.owner] .. ")") or "")
     if r.state == "blocked" then
@@ -403,7 +406,7 @@ end
 function M.reserve(c, name, tid, model)
   local t = util.now()
   return c:tx(function()
-    if c:one("select 1 from agent where name=? and ended is null", name) then util.die(name .. " is a live agent") end
+    agents.reserve(c, name, model)  -- a failed check below rolls it back
     local r = c:one("select * from task where id=?", tid)
     if not r then util.die("no task #" .. d(tid)) end
     local u = M.undone(c, r)
@@ -411,10 +414,6 @@ function M.reserve(c, name, tid, model)
     if r.state ~= "open" then
       error({ exit = 1, lost = ("task #%s is %s%s"):format(d(tid), r.state, owned(r)) }, 0)
     end
-    c:exec("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
-      name, unistd.getcwd(), "idle", t, t)
-    agents.new_inbox(c, name)
-    c:exec("update agent set hc=null, ended=null, status='idle', model=coalesce(?,model) where name=?", model, name)
     c:exec("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=?",
       name, t + M.LEASE, t, tid)
     db.log(c, name, "claim", nil, ("#%s %s"):format(d(tid), r.title))
@@ -422,10 +421,11 @@ function M.reserve(c, name, tid, model)
   end)
 end
 
--- Launch failed: end the row and reopen the task, if the new agent still holds it.
+-- Launch failed: end the row and reopen the task (r, when spawn reserved one), if the new agent still holds it.
 function M.unreserve(c, name, r)
   c:tx(function()
     c:exec("update agent set ended=? where name=? and hc is null", util.now(), name)
+    if not r then return end
     c:exec("update task set state='open', owner=null, lease_until=null, first_claimed_at=? where id=? and owner=? "
       .. "and state='claimed'", r.first_claimed_at, r.id, name)
   end)

@@ -251,7 +251,10 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
   worktree is told what holds it after 30 min idle. The communicator is exempt
   and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
-  within `--max-agents` and `--min-free-mem`.
+  up to the auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
+  and says on the board when either holds it (`spawn-held`). **`swarm spawn`
+  refuses** at the user's agent max (`meta.agent_max`, `swarm limits`),
+  checked with the new row in one transaction (sw-roles §6).
 - **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are done (`task after`
   edits the list; sw-deps.md); `task
   done` prints whether to take the next task or go idle.

@@ -119,6 +119,56 @@ function M.split_agents(c)
   return here, gone
 end
 
+-- The user's staffing numbers (sw-roles §6): live agents but the communicator, meta agent_min (watchd auto-spawns
+-- to it) and agent_max (every spawn refuses at it); nil when unset.
+function M.limits(c)
+  local function n(k) local r = c:one("select v from meta where k=?", k); return r and tonumber(r.v) end
+  local live = 0
+  for _, x in ipairs(M.live_agents(c)) do
+    if not M.is_comms(c, x.name) then live = live + 1 end
+  end
+  return live, n("agent_min"), n("agent_max")
+end
+
+function M.limits_line(c)
+  local live, mn, mx = M.limits(c)
+  return ("agents: %d live, %s, %s"):format(live, mn and "auto-spawn to " .. mn or "no auto-spawn number",
+    mx and "max " .. mx or "no max set")
+end
+
+-- Intent before effect (sw-ownership rule 3): the max check and the new agent's row in one transaction, before
+-- the launch, so two spawns can't both take the last place. At the max raises {exit = 1, refused = msg}.
+function M.reserve(c, name, model)
+  c:tx(function()
+    if c:one("select 1 from agent where name=? and ended is null", name) then util.die(name .. " is a live agent") end
+    local live, _, mx = M.limits(c)
+    if mx and live >= mx then
+      error({ exit = 1, refused = ("%d agents are live and the user's max is %d. The communicator can raise it "
+        .. "(`swarm limits --max N`)."):format(live, mx) }, 0)
+    end
+    local t = util.now()
+    c:exec("insert or ignore into agent(name,cwd,status,last_active,started) values(?,?,?,?,?)",
+      name, unistd.getcwd(), "idle", t, t)
+    M.new_inbox(c, name)
+    c:exec("update agent set hc=null, ended=null, status='idle', model=coalesce(?,model) where name=?", model, name)
+  end)
+end
+
+-- swarm limits [--min N] [--max M]: set the staffing numbers (the communicator, on the user's word); print them.
+function M.cmd_limits(c, a)
+  if a.min or a.max then
+    c:tx(function()
+      local _, mn, mx = M.limits(c)
+      mn, mx = a.min or mn, a.max or mx
+      if mn and mx and mn > mx then util.die(("the auto-spawn number %d is above the max %d"):format(mn, mx)) end
+      if a.min then c:exec("insert or replace into meta(k,v) values('agent_min',?)", tostring(a.min)) end
+      if a.max then c:exec("insert or replace into meta(k,v) values('agent_max',?)", tostring(a.max)) end
+      db.log(c, M.env("SWARM_NAME") or "human", "limits", nil, ("min %s max %s"):format(tostring(mn), tostring(mx)))
+    end)
+  end
+  print(M.limits_line(c))
+end
+
 function M.is_comms(c, name)
   if not name or name == "" then return false end
   local cm = c:one("select v from meta where k='comms'")
@@ -264,6 +314,7 @@ function M.cmd_who(c, a)
   local machine, conflict = require "swarm.machine", require "swarm.conflict"
   local t = util.now()
   local wts = conflict.wt_map(c)
+  print(M.limits_line(c))
   local avail, total, psi = machine.mem()
   if avail then print(machine.machine_line(avail, total, psi)) end
   local stale = M.herdr_stale()

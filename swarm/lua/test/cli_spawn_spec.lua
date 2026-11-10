@@ -114,6 +114,69 @@ function T.test_auto_spawn_gives_up_after_k_failures(t)
   t:has(urgent[1].body, "no Herdr window")
 end
 
+-- ---- the user's staffing numbers (sw-roles §6) ----
+local function tick0(t) t:sw("a", "watchd", "--once", "--comms", "t-comms", "--min-free-mem", "0") end
+
+function T.test_limits_auto_spawn_number_read_each_tick(t)
+  t:fakes(); two_haiku(t)
+  t:has(t:sw("a", "limits").stdout, "agents: 1 live, no auto-spawn number, no max set")
+  t:sw("a", "limits", "--min", "1")
+  t:sw("a", "task", "add", "one"); t:sw("a", "task", "add", "two")
+  tick0(t)
+  t:eq(spawned(t), {})  -- 1 live, the number is 1: not past it
+  t:has(t:sw("a", "board").stdout, "auto-spawn holding: 1 live, the auto-spawn number is 1; 2 task(s) startable")
+  tick0(t)
+  t:eq(t:q1("select count(*) n from event where kind='spawn-held'").n, 1)  -- one per edge
+  t:sw("a", "limits", "--min", "2")  -- takes effect on the next tick, no restart
+  tick0(t)
+  t:eq(names(t:launched()), { "t-2" })
+  t:has(t:sw("a", "board").stdout, "auto-spawn holding: 2 live, the auto-spawn number is 2; 1 task(s) startable")
+  t:eq(t:q1("select count(*) n from event where kind='spawn-held'").n, 1)  -- still holding: no new edge
+  t:sw("a", "limits", "--min", "3"); tick0(t)
+  t:eq(names(t:launched()), { "t-2", "t-3" })
+  t:hasnt(t:sw("a", "board").stdout, "auto-spawn holding")  -- nothing startable: the hold is over
+  t:eq(t:q1("select count(*) n from meta where k='spawn_held'").n, 0)
+end
+
+function T.test_first_watchd_sets_the_number_to_the_live_count(t)
+  t:fakes(); two_haiku(t)
+  tick0(t)
+  t:has(t:sw("a", "who").stdout, "agents: 1 live, auto-spawn to 1, no max set")
+  t:agent("t-5"); tick0(t)  -- a later start keeps it
+  t:has(t:sw("a", "board").stdout, "agents: 2 live, auto-spawn to 1, no max set")
+end
+
+function T.test_spawn_refused_at_the_max(t)
+  t:fakes(); two_haiku(t)
+  t:sw("a", "spawn", "t-8", "--", "go")  -- no max set: nothing refused
+  t:has(t:sw("a", "limits", "--max", "2").stdout, "agents: 2 live, no auto-spawn number, max 2")
+  local r = t:sw("a", "spawn", "t-9", "--", "go", { ok = false })
+  t:eq(r.code, 1)
+  t:has(r.stderr, "2 agents are live and the user's max is 2. The communicator can raise it")
+  t:sw("a", "task", "add", "do it")
+  t:has(t:sw("a", "spawn", "t-9", "--task", "1", { ok = false }).stderr, "the user's max is 2")
+  t:eq(#t:launched(), 1)  -- launched nothing
+  assert(not t:q1("select 1 x from agent where name='t-9'"), "a refused spawn leaves no row")
+  t:eq(t:q1("select state from task").state, "open")
+  t:eq(#t:q("select 1 from event where kind='spawn-refused' and data='t-9'"), 2)
+  t:has(t:sw("a", "limits", "--min", "3", { ok = false }).stderr, "the auto-spawn number 3 is above the max 2")
+  t:sw("a", "limits", "--max", "3")
+  t:sw("a", "spawn", "t-9", "--", "go")  -- raising the max lets the next through
+  t:eq(names(t:launched()), { "t-8", "t-9" })
+end
+
+function T.test_two_spawns_race_for_the_last_place(t)
+  t:fakes(); two_haiku(t)
+  t:sw("a", "limits", "--max", "2")
+  local r = t:exec({ "sh", "-c", '"$0" spawn r-1 -- go >/dev/null 2>&1 & p=$!; "$0" spawn r-2 -- go >/dev/null 2>&1; b=$?; wait $p; echo $? $b',
+    cli.SWARM }, { env = { SWARM_DB = t.db, SWARM_NAME = "a", HC_TERMINAL_ID = false,
+    PATH = t.fakebin .. ":" .. cli.PATH, SWARM_LAUNCH = t.launch }, cwd = t.repo })
+  local codes = util.strip(r.stdout)
+  assert(codes == "0 1" or codes == "1 0", "one wins: " .. codes)
+  t:eq(#t:launched(), 1)
+  t:eq(t:q1("select count(*) n from agent where name like 'r-%'").n, 1)
+end
+
 -- ---- spawn ----
 function T.test_spawn_effort(t)
   t:fakes(); two_haiku(t)

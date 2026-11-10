@@ -123,7 +123,8 @@ tasks.pool = function(cc)
   return r
 end
 -- cap 2: with t-1 live there is room for t-2, so the spawn is tried and its reserve loses (cap 1 would stop before it)
-watchd.watchd_tick(c, "t-comms", nil, { max_agents = 2, min_free_gib = 0 })
+peer:exec("insert or replace into meta(k,v) values('agent_min','2')")
+watchd.watchd_tick(c, "t-comms", nil, { min_free_gib = 0 })
 proc.run, tasks.pool, agents.hc_terminals = run, pool, hc
 assert(#launched == 0)
 assert(task1().owner == "t-1")
