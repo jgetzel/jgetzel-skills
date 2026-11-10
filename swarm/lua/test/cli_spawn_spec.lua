@@ -165,6 +165,24 @@ function T.test_spawn_task_launch_failure_rolls_back(t)
   assert(t:q1("select ended from agent where name='t-9'").ended)
 end
 
+function T.test_agent_without_terminal_reads_as_gone(t)
+  t:fakes(); t:set_hc({ address = "t1" })  -- only t1 is live
+  t:agent("a"); t:agent("alive"); t:agent("x-comms", { status = "idle" }); t:agent("w", { status = "idle" })
+  t:q("update agent set hc='t1' where name='alive'")
+  t:q("update agent set hc='dead' where name in ('x-comms','w')")
+  local who = t:sw("a", "who").stdout
+  t:has(who, "x-comms gone: no terminal; swarm join --takeover x-comms")
+  t:hasnt(who, "x-comms idle")
+  t:has(who, "alive idle")
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--", "go")
+  local brief = t:launched()[1].argv[3]
+  t:has(brief, "alive (idle)"); t:hasnt(brief, "x-comms"); t:hasnt(brief, "w (")
+  local out = t:sw("a", "post", "x-comms", "hi").stdout
+  t:has(out, "can't be delivered now"); t:has(out, "stored")
+  t:hasnt(out, "held;"); t:hasnt(out, "nudge by SendMessage")
+  t:has(t:sw("a", "post", "@all", "hi").stdout, "w, x-comms: no terminal")
+end
+
 function T.test_rules_appended_to_spawn(t)
   t:fakes()
   t:eq(util.strip(t:sw("a", "rules", "set", "never", "edit", "main").stdout), "never edit main")

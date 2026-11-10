@@ -637,7 +637,7 @@ function M.cmd_spawn(c, a)
     "{{PATH}}", bindir .. ":" .. (os.getenv("PATH") or "")))
   f:close()
   local roster = {}
-  for _, x in ipairs(agents.live_agents(c)) do roster[#roster + 1] = ("%s (%s)"):format(x.name, x.status or "None") end
+  for _, x in ipairs((agents.split_agents(c))) do roster[#roster + 1] = ("%s (%s)"):format(x.name, x.status or "None") end
   local brief = (util.slurp(util.join(here, "brief.md")) or "")
     .. ("\n\n---\nYour name: %s. Roster: %s.\nYour area and first task:\n%s\n"):format(
       name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
