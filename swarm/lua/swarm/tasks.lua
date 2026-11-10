@@ -163,6 +163,16 @@ local function ctx_of(c, n)
   return r and r.ctx_tokens or 0
 end
 
+-- reap took task id from n and nobody has claimed it since: retaking it is n's own work, not new work
+local function reaped_from(c, n, id)
+  local last
+  for _, e in ipairs(M.task_events(c, id)) do
+    if e.kind == "claim" or e.kind == "spawn" then last = e.agent end
+  end
+  return last == n
+    and c:one("select 1 from event where kind='reap' and agent=? and data=?", n, ("task #%s lease expired"):format(d(id))) ~= nil
+end
+
 local function owned(r)  -- `, owned by x` when the row has an owner
   return py(r.owner) and (", owned by " .. r.owner) or ""
 end
@@ -197,7 +207,7 @@ function M.cmd_task(c, a)
     end
     agents.touch(c, n)
     local k = ctx_of(c, n)
-    if k >= hook.CTX_WARN then
+    if k >= hook.CTX_WARN and not reaped_from(c, n, a.id) then
       util.die(("context ~%dk, too high to take new work: %s"):format(math.floor(k / 1000), hook.ctx_advice(k)))
     end
     local until_ = t + util.dur(a.lease)

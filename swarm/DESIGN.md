@@ -254,8 +254,10 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 - **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are done (`task after`
   edits the list; sw-deps.md); `task
   done` prints whether to take the next task or go idle.
-- **Leases** are live: an expired claim reopens only when its owner has
-  ended; a live owner is reported to the communicator, not overridden.
+- **Leases** are live: an expired claim reopens when its owner has ended
+  or sits idle with no background Bash job; a working, prompt-blocked or
+  background-waiting owner is reported to the communicator, not overridden.
+  An owner whose claim reap reopened may retake it past the context fence.
 
 ### Resources by information, not gates
 

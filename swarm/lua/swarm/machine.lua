@@ -111,6 +111,22 @@ function M.heavy_procs(c, procs)
   return out
 end
 
+-- Agents running a Bash-tool shell (it sources a shell snapshot; hooks such as the waiter don't) under their claude
+-- process. An idle agent's foreground commands have ended, so for it this is a background job.
+-- shortcut: a background subagent with no shell running isn't seen; add a signal if those lose claims too.
+function M.bg_agents(c, procs)
+  local owner, out = {}, {}
+  for _, r in ipairs(c:all("select name,claude_pid from agent where ended is null and claude_pid is not null")) do
+    owner[r.claude_pid] = r.name
+  end
+  for _, p in pairs(procs) do
+    if owner[p.ppid] and table.concat(p.argv, " "):find("/shell-snapshots/snapshot-", 1, true) then
+      out[owner[p.ppid]] = true
+    end
+  end
+  return out
+end
+
 -- job-start events with no job-end yet, newest first, data unpacked.
 function M.live_jobs(c, t)
   local ended, out = {}, {}
