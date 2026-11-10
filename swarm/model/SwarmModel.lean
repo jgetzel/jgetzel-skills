@@ -6,3 +6,4 @@ import SwarmModel.Inbox
 import SwarmModel.Workers
 import SwarmModel.Findings
 import SwarmModel.Liveness
+import SwarmModel.Fair

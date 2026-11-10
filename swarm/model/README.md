@@ -20,6 +20,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the thirteen counterexamples as runs, and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
+| `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -144,11 +145,22 @@ What carries each proof:
   spawn was shown, and the waiter's snapshot skips nothing between the cursor and its last id (`Inb`).
 - **S2**, **S5**: the ghost flag stays off; done implies evidence.
 
-Liveness is proved only this far: `idleClaim_not_stuck` says that with PR #110 or #111 a state where an idle
-agent holds a claim on a task of the instance always has a fair action enabled (the lease lapses, the owner's background job ends, or the tick reopens the task and tells
-the owner: `tick_reopens`). `deadLive_not_stuck` is L4's part: with watchd running, `hc ls` answering and the row bound, a dead live row always has the reap enabled. That every fair run then reaches "done or open again" is not proved, and nothing
-general is proved for L1 or L3: with the fixes on, the runs of findings #1, #3, #8 and #9 no longer end stuck,
-which is a check of those runs only.
+Liveness: `deadLive_not_stuck` is L4's part (with watchd running, `hc ls` answering and the row bound, a dead live row always has the reap enabled). L2 is proved over fair runs. A run is a sequence of steps (`Run` in `Fair.lean`); it is fair (`Run.Fair`) when
+every action of `fair` that is enabled at infinitely many steps happens at infinitely many steps (strong
+fairness; weak fairness is not enough for L1, see below). `idleClaim_leads_to`: in a fair run of an instance with
+`racy = false`, `release ≠ .ended` (PR #110 or #111), `watchd`, the agent and the task in the instance, no `bgStart` or `die` in the run, and the agent with no job and a live terminal at the start, a state where an
+idle agent holds a claim is followed by one where it doesn't: the lease lapses (`expire`), the tick reopens the task
+(`tick_reopens`) or the owner gets back to work. A slot a spawn refills is a new agent: it boots at once (the proof
+shows `boot` happens), so it doesn't count. The proof is two persistence lemmas (`persist`, `tick_persist`: while an
+idle agent holds the claim, a lapsed lease stays lapsed and a booting agent keeps booting) and fairness of `boot`,
+`expire` and `tick`. `racy` is left out: the race splits are for S2 and S4.
+
+Not proved: **L1** and **L3**. Both need strong fairness of `claim` (a working agent that keeps coming back to an
+empty inbox takes the work; weak fairness lets two agents post to each other forever, so neither's `claim` is
+continuously enabled) and `roster ≤ nagents`. L1 also needs the digest/wake/claim chain of a reusable agent and a
+bound on digests (`told` only grows). L3 needs that a reopened task is taken, which is L1 for the slot its owner's
+end frees. No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the theorem could
+in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
 
 ## Findings
 
@@ -190,8 +202,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L2,
-L3 and L4 as statements about fair runs.
+is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L3 and L4 as statements about fair runs (L2 is, for `racy = false`).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
