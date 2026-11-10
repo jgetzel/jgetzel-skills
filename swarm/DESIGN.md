@@ -70,7 +70,7 @@ rules, not negotiation.
 2. **Pull by default, push only to unblock.** Agents read the board and their
    rooms or channels at breakpoints: after a task, before a push, when
    blocked. Waking someone is the expensive act.
-3. **Pure flat (user decision, 2026-11-07).** The skill defines no roles.
+3. **Pure flat (user decision, 2026-11-07; see decision 9).** The skill defines no roles.
    Agents decide among themselves who plans, reviews or builds, as lanes do
    under /orchestrate. Roles are a later experiment if the baseline shows
    unowned hard work, as Cursor's flat runs did.
@@ -210,6 +210,15 @@ Added 2026-11-07, after the first live run (sr-* on this repo, jk_ledger next):
    say in the PR why one is wrong; the communicator steers by editing the
    board, not by DMing claimed work.
 
+Added 2026-11-09 ([research/sw-roles.md](research/sw-roles.md)):
+
+9. **The skill defines no roles; agents declare them.** `swarm role` is a
+   label shown everywhere and read by nothing. `swarm stay` is the one new
+   thing an agent can hold, beside a claim and a lock: watchd does not end a
+   stayer. The communicator is a stayer too. Phase 3's claimable, structurally
+   enforced `lead/<area>` role is not built. The skill offers two starts: the
+   flat board, and one seeded orchestrator with auto-spawn at 0.
+
 ## What's built
 
 The v1 spec that stood here (touch notices, leased locks, `swarm heavy`,
@@ -277,7 +286,8 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 
 ### Pure flat
 
-No roles in the skill. The communicator is an ordinary session that writes
+No roles in the skill (decision 9: agents declare their own with `swarm role`
+and `swarm stay`; nothing reads the text). The communicator is an ordinary session that writes
 tasks, runs `watchd` and relays questions for the human; it steers through
 the board and never reassigns claimed work by message.
 

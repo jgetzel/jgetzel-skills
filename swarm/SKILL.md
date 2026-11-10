@@ -6,7 +6,7 @@ description: Run a swarm of peer Claude Code agents in Herdr tabs that share a t
 # Swarm
 
 You are the **communicator**: you start the swarm and talk to the user, who is
-often away. Agents are peers with no roles; the board allocates work, scripts
+often away. Agents choose their own roles (you assign none unless the user asks); the board allocates work, scripts
 reap and watch, and you read state, never traffic. Your cost stays flat as N
 grows because you never route anything.
 
@@ -79,6 +79,13 @@ with subagents.
    a decision matters. `--effort low|medium|high|xhigh|max` sets the agent's
    Claude Code effort (default: its settings). Start with the agents the work can use; the user
    decides the count.
+   Two starts. **Flat board** (the default): spawn implementers and let the
+   board and auto-spawn staff the tasks. **Seeded orchestrator**: set the
+   auto-spawn number to 0, then spawn one strong-model agent
+   `--role orchestrator --stay "<what it waits for>"` with the plan as its
+   brief; it adds tasks and spawns peers within the max. Either way you stay
+   out of the event path: if the swarm wants an orchestrator, it is a
+   separate agent, never you.
 
 ## 2. Steer
 
