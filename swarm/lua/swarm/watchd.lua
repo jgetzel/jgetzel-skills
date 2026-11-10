@@ -299,6 +299,22 @@ function M.lifecycle(c, t, comms, terms, opts)
     if x.address then by[x.address] = x end
   end
   local pool = tasks.pool(c)
+  local function told_of(n)  -- the task ids n's digests named
+    local told = {}
+    for _, e in ipairs(c:all("select data from event where kind='digest' and agent=?", n)) do
+      for i in (e.data or ""):gmatch("[^,]+") do told[tonumber(i)] = true end
+    end
+    return told
+  end
+  -- n was told of every startable task, has read what would wake it, and is idle again: it passed them over
+  local function passed_over(n)
+    local told = told_of(n)
+    for _, r in ipairs(pool) do if not told[r.id] then return false end end
+    for _, m in ipairs(msgs.unread(c, n)) do
+      if m.kind ~= "notice" or (m.urgent or 0) ~= 0 then return false end
+    end
+    return true
+  end
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
@@ -308,7 +324,8 @@ function M.lifecycle(c, t, comms, terms, opts)
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)
         or (wts[n] and not M.landed(wts[n], B, main))) then
-      if (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 then
+      -- one that passed the work over is ended, not kept as a reason to spawn no one
+      if (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n) then
         reusable[#reusable + 1] = a
       else
         M.end_agent(c, a, wts[n], main, comms)
@@ -319,10 +336,7 @@ function M.lifecycle(c, t, comms, terms, opts)
   for i, r in ipairs(pool) do ids[i] = r.id end
   table.sort(ids)
   for _, a in ipairs(reusable) do  -- edge-triggered: only when the pool holds an id this agent was never told about
-    local told = {}
-    for _, e in ipairs(c:all("select data from event where kind='digest' and agent=?", a.name)) do
-      for i in (e.data or ""):gmatch("[^,]+") do told[tonumber(i)] = true end
-    end
+    local told = told_of(a.name)
     local new = false
     for _, i in ipairs(ids) do
       if not told[i] then new = true end

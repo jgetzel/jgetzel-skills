@@ -374,6 +374,22 @@ function T.test_digest_edge_triggered(t)
   comms_tick(t); t:eq(digests(), 2)
 end
 
+-- A reusable agent that has read a digest naming every startable task and is idle again had its chance: it is
+-- ended, not kept as a reason to spawn no one. Else a task that reopens after the agent was told of it waits for good
+-- (swarm/model: l_after, L1).
+function T.test_reusable_agent_told_and_idle_again_is_ended(t)
+  t:fakes()
+  idle(t, "comms"); idle(t, "r")
+  t:sw("comms", "task", "add", "t1")
+  comms_tick(t)
+  t:has(t:sw("r", "read").stdout, "1 open task")  -- r wakes, reads it, and stops without taking #1
+  t:q("update agent set status='idle', last_active=? where name='r'", OLD)
+  comms_tick(t)
+  assert(ended(t, "r"), "r, told of #1 and idle again, still holds the slot")
+  t:sw("comms", "watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0")
+  t:eq(t:q1("select state from task where id=1").state, "claimed")  -- the freed slot is filled for #1
+end
+
 function T.test_big_context_finished_even_with_open_tasks(t)
   idle(t, "big", { ctx_tokens = 120000 })
   t:sw("big", "task", "add", "t")
