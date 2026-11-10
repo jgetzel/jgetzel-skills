@@ -1,6 +1,6 @@
 -- swarm run: a build or test here, or on another hc machine against a copy of this worktree, recorded as a job.
 local util, proc, json, re = require "swarm.util", require "swarm.proc", require "swarm.json", require "swarm.re"
-local db = require "swarm.db"
+local db, machine = require "swarm.db", require "swarm.machine"
 local lfs, stdlib = require "lfs", require "posix.stdlib"
 local utf8 = require "lua-utf8"
 local M = {}
@@ -46,7 +46,9 @@ end
 M.LOST_FOR = 3600  -- a job whose terminal is gone this long gets a job-end 'lost', so Running now drops it
 
 -- Load and memory, then (with job terminals as args) every process and each terminal's `hc get`; ps flags work on Linux and macOS.
-local PROBE = "nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null; [ $# -gt 0 ] || exit 0; "
+local PROBE = "if [ \"$(uname)\" = Darwin ]; then echo @darwin; for k in hw.ncpu hw.memsize kern.memorystatus_vm_pressure_level "
+  .. "vm.loadavg; do sysctl -n $k 2>/dev/null || echo; done; vm_stat; "
+  .. "else nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null; fi; [ $# -gt 0 ] || exit 0; "
   .. "echo @ps; LC_ALL=C ps -Ao pid=,ppid=,rss=,pcpu=; "
   .. "for t; do echo \"@hc $t\"; hc get \"$t\" --json 2>&1 | tr -d '\\n'; echo; done"
 
@@ -96,6 +98,20 @@ local function job_readings(c, t, txt, mine, old)
   return out
 end
 
+-- PROBE's head (before @ps) as {cores, load, avail_kb, total_kb, psi (Linux) or level (macOS)}, or nil.
+function M.parse_probe(head)
+  local l = util.splitlines(head)
+  if l[1] == "@darwin" then
+    local avail, total, p = machine.darwin_mem(l[3], table.concat(l, "\n", 6), l[4], l[5], l[2])
+    if not (avail and p.cores and p.load) then return nil end
+    return { cores = p.cores, load = p.load, avail_kb = avail, total_kb = total, level = p.level or "unknown" }
+  end
+  local cores, load = tonumber(l[1] or ""), tonumber((l[2] or ""):match("^%S+") or "")
+  local avail, total = tonumber(head:match("MemAvailable:%s+(%d+)") or ""), tonumber(head:match("MemTotal:%s+(%d+)") or "")
+  if not (cores and load and avail and total) then return nil end
+  return { cores = cores, load = load, avail_kb = avail, total_kb = total, psi = tonumber(head:match("some avg10=([%d.]+)") or "") or 0 }
+end
+
 -- Each hc machine's load and memory and its jobs' process trees, one `hc exec` each, stored in meta 'machines'.
 function M.remote_tick(c, t)
   local term = os.getenv("HC_TERMINAL_ID")
@@ -118,16 +134,10 @@ function M.remote_tick(c, t)
       end
     end
     local txt = m.state == "connected" and proc.run(cmd) or nil
-    local lines = util.splitlines(txt or "")
-    local head = txt and (txt:match("^(.-)\n@ps\n") or txt) or ""
-    local cores = tonumber(lines[1] or "")
-    local load = tonumber((lines[2] or ""):match("^%S+") or "")
-    local avail = tonumber(head:match("MemAvailable:%s+(%d+)") or "")
-    local total = tonumber(head:match("MemTotal:%s+(%d+)") or "")
-    if cores and load and avail and total then
-      out[n] = { state = "connected", ts = t, cores = cores, load = load, avail_kb = avail, total_kb = total,
-        psi = tonumber(head:match("some avg10=([%d.]+)") or "") or 0,
-        jobs = job_readings(c, t, txt, mine, type(o.jobs) == "table" and o.jobs or {}) }
+    local r = txt and M.parse_probe(txt:match("^(.-)\n@ps\n") or txt)
+    if r then
+      r.state, r.ts, r.jobs = "connected", t, job_readings(c, t, txt, mine, type(o.jobs) == "table" and o.jobs or {})
+      out[n] = r
     else
       local st = m.state ~= "connected" and m.state or "unreachable"
       out[n] = { state = st, ts = t, since = o.state == st and o.since or t }

@@ -939,7 +939,7 @@ export default class Swarm extends View {
       .when(Boolean(m), el => el
         .child(h_flex().gap(6).text_size(11.5).child(div().text_color(t.muted).child("Memory")).child(div().flex_1()).child(`${gb(m.avail_kb)}G free`).child(div().text_color(t.dim).child(`of ${gb(m.total_kb)}G`)))
         .child(div().relative().h(6).rounded(3).bg(t.selected).child(div().absolute().left(0).top(0).h(6).rounded(3).bg(t.muted).w(`${Math.round((1 - m.avail_kb / m.total_kb) * 100)}%`)))
-        .child(h_flex().gap(8).child(tile("mem pressure", `${m.psi.memory}%`)).child(tile("cpu pressure", `${m.psi.cpu}%`)).child(tile("high", m.high ? "yes" : "no", m.high ? t.blocked : t.ansi2))));
+        .child(h_flex().gap(8).child(m.psi.level ? tile("mem pressure", m.psi.level) : tile("mem pressure", `${m.psi.memory}%`)).child(m.psi.level ? tile("load", `${m.psi.load} on ${m.psi.cores}`) : tile("cpu pressure", `${m.psi.cpu}%`)).child(tile("high", m.high ? "yes" : "no", m.high ? t.blocked : t.ansi2))));
     const heavy = s.events.filter(e => e.kind === "heavy-start").slice(0, 6), run = s.running ?? [];
     const jobs = this.card(t, "heavy").gap(6)
       .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Running now")).child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child(run.some(j => j.machine) ? "all machines" : "this machine")))
@@ -1074,7 +1074,7 @@ export default class Swarm extends View {
       .child(fixed ? div().flex_1().min_h(0).mt(2).child(body) : v_flex().id(`body-${this.tab}`).flex_1().min_h(0).mt(2).overflow_y_scrollbar().child(body))
       .child(h_flex().h(30).flex_none().px(16).gap(8).items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(t.dim)
         .child(this.dot(m?.high ? t.blocked : t.ansi2, 6))
-        .child(div().truncate().min_w(0).child(m ? `machine ${m.high ? "under pressure" : "ok"} · mem ${m.psi.memory}% · cpu ${m.psi.cpu}%` : "no machine reading"))
+        .child(div().truncate().min_w(0).child(m ? `machine ${m.high ? "under pressure" : "ok"} · ` + (m.psi.level ? `mem ${m.psi.level} · load ${m.psi.load}` : `mem ${m.psi.memory}% · cpu ${m.psi.cpu}%`) : "no machine reading"))
         .child(div().flex_1())
         .when(Boolean(m) && !tiny, el => el.child(div().flex_none().child(`${(m.avail_kb / 1048576).toFixed(1)} of ${(m.total_kb / 1048576).toFixed(1)}G free`))));
   }

@@ -170,7 +170,7 @@ function M.cmd_state(a)
   for i = #episodes, math.max(1, #episodes - 4), -1 do press[#press + 1] = episodes[i] end
 
   local mach = null
-  local avail, total, psi = machine.mem_psi()
+  local avail, total, psi = machine.mem()
   if avail then
     mach = { line = machine.machine_line(avail, total, psi), avail_kb = avail, total_kb = total, psi = psi,
       high = machine.pressure_high(avail, total, psi) }
@@ -214,9 +214,9 @@ function M.cmd_state(a)
     out.events = pushinfo(fill_all(r, n))
   end
   if want.locks then out.locks = fill_all(rows("select * from lock order by since desc")) end
-  if want.running then  -- one /proc scan, only where the System view shows it
+  if want.running then  -- one ps, only where the System view shows it
     local hv = {}
-    local ok, r = pcall(machine.heavy_procs, c, machine.read_procs())
+    local ok, r = pcall(machine.heavy_procs, c, machine.procs())
     if ok then hv = r
     elseif not tostring(r):find("no such column", 1, true) then error(r, 0) end  -- an old db without claude_pid
     table.sort(hv, function(x, y)
@@ -228,7 +228,7 @@ function M.cmd_state(a)
       run[#run + 1] = { agent = h.agent, command = util.cut(h.cmd, 120), elapsed_s = math.floor(h.age),
         start = t - math.floor(h.age), rss_kb = h.rss_kb }
     end
-    -- jobs on other machines (local ones are in the /proc scan), with watchd's reading of each job's process tree;
+    -- jobs on other machines (local ones are in the ps scan), with watchd's reading of each job's process tree;
     -- lost: its `swarm run` is gone and so is its terminal; unreachable: watchd's probe of the machine failed
     local js, gone = {}, {}
     if #rows("select 1 from event where kind='job-start' limit 1") > 0 then

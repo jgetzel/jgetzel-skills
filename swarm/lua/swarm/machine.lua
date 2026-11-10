@@ -1,13 +1,62 @@
--- This machine's memory and pressure, from /proc (SWARM_PROC in tests). Linux only for now (sw-lua §8).
+-- This machine's processes and memory: the one seam that reads the system (sw-roles §6a). procs() is `ps` on Linux
+-- and macOS; mem() and cwds() read /proc (SWARM_PROC in tests) on Linux and sysctl, vm_stat and lsof on macOS.
 local util, json, db, re = require "swarm.util", require "swarm.json", require "swarm.db", require "swarm.re"
 local proc = require "swarm.proc"
 local unistd, lfs = require "posix.unistd", require "lfs"
 local M = {}
 
 M.PROC = os.getenv("SWARM_PROC") or "/proc"
+M.OS = require("posix.sys.utsname").uname().sysname  -- "Linux", "Darwin"
 
--- MemAvailable and MemTotal in KiB and {memory, cpu} PSI some avg10, or nil without /proc/meminfo.
-function M.mem_psi()
+-- `ps` time ([[dd-]hh:]mm:ss[.cc], both systems' etime and time) in seconds.
+function M.ps_secs(s)
+  local dd, rest = s:match("^(%d+)%-(.*)$")
+  local n = 0
+  for x in (rest or s):gmatch("[^:]+") do n = n * 60 + (tonumber(x) or 0) end
+  return math.floor(n + (tonumber(dd) or 0) * 86400)
+end
+
+-- `ps -o pid=,ppid=,rss=,etime=,time=,args=` text as {pid = {pid, ppid, rss_kb, age, cpu_s, args, argv, comm}}.
+function M.parse_ps(txt)
+  local out = {}
+  for l in (txt or ""):gmatch("[^\n]+") do
+    local pid, ppid, rss, et, tm, args = l:match("^%s*(%d+)%s+(%d+)%s+(%d+)%s+(%S+)%s+(%S+)%s?(.*)$")
+    if pid then
+      local argv = util.split(args)
+      out[tonumber(pid)] = { pid = tonumber(pid), ppid = tonumber(ppid), rss_kb = tonumber(rss), age = M.ps_secs(et),
+        cpu_s = M.ps_secs(tm), args = args, argv = argv, comm = util.basename(argv[1] or "") }
+    end
+  end
+  return out
+end
+
+-- Every process, one `ps` (same columns in procps and BSD ps).
+function M.procs()
+  return M.parse_ps(proc.run({ "ps", "-axww", "-o", "pid=,ppid=,rss=,etime=,time=,args=" }, nil, nil, { LC_ALL = "C" }))
+end
+
+-- macOS readings to (avail_kb, total_kb, {level, load, cores}): `sysctl -n` hw.memsize, kern.memorystatus_vm_pressure_level
+-- (1 normal, 2 warn, 4 critical), vm.loadavg ("{ 1.2 1.1 1.0 }"), hw.ncpu; and `vm_stat`.
+function M.darwin_mem(memsize, vmstat, level, loadavg, ncpu)
+  local total = tonumber(memsize or "")
+  if not (total and vmstat) then return nil end
+  local pg = tonumber(vmstat:match("page size of (%d+) bytes")) or 4096
+  local pages = 0
+  for _, k in ipairs({ "free", "inactive", "speculative", "purgeable" }) do
+    pages = pages + (tonumber(vmstat:match("Pages " .. k .. ":%s+(%d+)")) or 0)
+  end
+  return math.floor(pages * pg / 1024), math.floor(total / 1024), { level = ({ "normal", "warn", nil, "critical" })[tonumber(level or "")],
+    load = tonumber((loadavg or ""):match("[%d.]+")), cores = tonumber(ncpu or "") }
+end
+
+-- Memory available and total in KiB and a pressure reading: on Linux PSI {memory, cpu} some avg10, on macOS
+-- {level, load, cores}. nil when unreadable.
+function M.mem()
+  if M.OS == "Darwin" then
+    local function sc(k) return util.strip(proc.run({ "sysctl", "-n", k }) or "") end
+    return M.darwin_mem(sc("hw.memsize"), proc.run({ "vm_stat" }), sc("kern.memorystatus_vm_pressure_level"),
+      sc("vm.loadavg"), sc("hw.ncpu"))
+  end
   local s = util.slurp(M.PROC .. "/meminfo")
   if not s then return nil end
   local mi = {}
@@ -19,14 +68,44 @@ function M.mem_psi()
   return mi.MemAvailable, mi.MemTotal, psi
 end
 
+-- `lsof -Fpn` text as {pid = path}.
+function M.parse_lsof(txt)
+  local out, pid = {}, nil
+  for l in (txt or ""):gmatch("[^\n]+") do
+    local k, v = l:sub(1, 1), l:sub(2)
+    if k == "p" then pid = tonumber(v) elseif k == "n" and pid then out[pid] = v end
+  end
+  return out
+end
+
+-- Each process's cwd as {pid = path}, or nil when no process's can be read (callers then assume every dir is in use).
+function M.cwds()
+  if M.OS == "Darwin" then  -- own processes need no sudo; others' are skipped with a warning on stderr
+    local out = M.parse_lsof(proc.exec({ "lsof", "-a", "-d", "cwd", "-Fpn" }))
+    return next(out) and out or nil
+  end
+  local ok, it, dir = pcall(lfs.dir, M.PROC)
+  if not ok then return nil end
+  local out = {}
+  for e in it, dir do
+    local l = e:match("^%d+$") and unistd.readlink(M.PROC .. "/" .. e .. "/cwd")
+    if l then out[tonumber(e)] = l end
+  end
+  return out
+end
+
 function M.pressure_high(avail, total, psi)
-  return psi.memory > 10 or avail < 0.15 * total
+  if psi.level then return psi.level ~= "normal" end
+  return (psi.memory or 0) > 10 or avail < 0.15 * total
 end
 
 function M.machine_line(avail, total, psi)
-  if not avail then return "machine: unknown (no /proc here)" end
-  return ("machine: %.1f/%.1fG mem available, pressure10 mem %g%% cpu %g%%"):format(
-    avail / 1048576, total / 1048576, psi.memory, psi.cpu)
+  if not avail then return "machine: unknown (memory unreadable)" end
+  local mem = ("machine: %.1f/%.1fG mem available, "):format(avail / 1048576, total / 1048576)
+  if not psi.memory then
+    return mem .. ("pressure %s, load %s on %s cores"):format(psi.level or "unknown", psi.load or "?", psi.cores or "?")
+  end
+  return mem .. ("pressure10 mem %g%% cpu %g%%"):format(psi.memory, psi.cpu)
 end
 
 M.HEAVY_RE = [[\b(cabal|stack|ghc|make|cmake|ninja|gradle|mvn|pytest|tox|tsc|spago|purs|playwright|nix\s+(build|flake\s+check)|docker\s+build|(cargo|go|npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|check|clippy|bench|install))\b]]
@@ -46,40 +125,15 @@ function M.is_heavy(cmd, cwd)
   return false
 end
 
--- Nearest ancestor that is the claude process (its comm contains 'claude').
-function M.claude_pid()
-  local pid = unistd.getppid()
-  while pid > 1 do
-    local comm, st = util.slurp("/proc/" .. pid .. "/comm"), util.slurp("/proc/" .. pid .. "/stat")
-    if not (comm and st) then return nil end
-    if comm:find("claude", 1, true) then return pid end
-    pid = tonumber(st:match("^.*%)%s+%S+%s+(%d+)"))
-    if not pid then return nil end
+-- Nearest ancestor that is the claude process (its command's name contains 'claude').
+function M.claude_pid(procs)
+  procs = procs or M.procs()
+  local p = procs[unistd.getppid()]
+  for _ = 1, 64 do
+    if not p or p.pid <= 1 then return nil end
+    if p.comm:find("claude", 1, true) then return p.pid end
+    p = procs[p.ppid]
   end
-end
-
--- One /proc scan: {pid = {pid, ppid, comm, rss_kb, age, argv, cwd}}.
-function M.read_procs()
-  local up = tonumber((util.slurp(M.PROC .. "/uptime") or ""):match("^%S+")) or 0
-  local tck, pg = unistd.sysconf(unistd._SC_CLK_TCK), unistd.sysconf(unistd._SC_PAGESIZE) / 1024
-  local out = {}
-  local ok, it, dir = pcall(lfs.dir, M.PROC)
-  if not ok then return out end
-  for d in it, dir do
-    local st = d:match("^%d+$") and util.slurp(M.PROC .. "/" .. d .. "/stat")
-    local cl = st and util.slurp(M.PROC .. "/" .. d .. "/cmdline")
-    local a, b = st and st:find("(", 1, true), st and st:match("^.*()%)")
-    if a and b then
-      local rest = util.split(st:sub(b + 2))
-      if cl and tonumber(rest[22]) then
-        local argv = {}
-        for x in cl:gmatch("[^%z]+") do argv[#argv + 1] = x end
-        out[tonumber(d)] = { pid = tonumber(d), ppid = tonumber(rest[2]), comm = st:sub(a + 1, b - 1),
-          rss_kb = tonumber(rest[22]) * pg, age = math.max(0, up - tonumber(rest[20]) / tck), argv = argv }
-      end
-    end
-  end
-  return out
 end
 
 -- argv as 'tool arg ...' with path and interpreter stripped, so `node /x/tsc` reads as `tsc`.
@@ -120,7 +174,7 @@ function M.bg_agents(c, procs)
     owner[r.claude_pid] = r.name
   end
   for _, p in pairs(procs) do
-    if owner[p.ppid] and table.concat(p.argv, " "):find("/shell-snapshots/snapshot-", 1, true) then
+    if owner[p.ppid] and p.args:find("/shell-snapshots/snapshot-", 1, true) then
       out[owner[p.ppid]] = true
     end
   end
@@ -164,8 +218,8 @@ function M.remote_lines(c, t)
       out[#out + 1] = ("%s: %s since %s"):format(n, m.state, util.hhmm(m.since or m.ts))
     else
       local old = t - m.ts > 120 and (" (as of %s ago)"):format(util.ago(m.ts)) or ""
-      out[#out + 1] = ("%s: %.0f/%.0fG available, load %g on %d cores, mem pressure %g%%%s%s"):format(n,
-        m.avail_kb / 1048576, m.total_kb / 1048576, m.load, m.cores, m.psi, old,
+      out[#out + 1] = ("%s: %.0f/%.0fG available, load %g on %d cores, mem pressure %s%s%s"):format(n,
+        m.avail_kb / 1048576, m.total_kb / 1048576, m.load, m.cores, m.level or (("%g%%"):format(m.psi or 0)), old,
         #js > 0 and ", jobs: " .. table.concat(js, ", ") or "")
     end
   end
@@ -175,8 +229,8 @@ end
 -- <= 6 lines: machine state, running heavy processes (attributed), builds other agents started in the last minute;
 -- then one line per other hc machine from watchd's cache.
 function M.machine_note(c, me, procs)
-  local avail, total, psi = M.mem_psi()
-  local hv = M.heavy_procs(c, procs or M.read_procs())
+  local avail, total, psi = M.mem()
+  local hv = M.heavy_procs(c, procs or M.procs())
   table.sort(hv, function(a, b)  -- biggest first, then pid; not `x ~= y and x > y or ...`: that falls through when x < y
     if a.rss_kb ~= b.rss_kb then return a.rss_kb > b.rss_kb end
     return a.pid < b.pid
