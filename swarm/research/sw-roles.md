@@ -133,7 +133,7 @@ inside that window is a short cached turn and renews the cache, so a stayer
 is never a cold wake when it is finally needed. A check after it would
 resend the whole context uncached each time. The cost is about a tenth of
 the stayer's context per check, for as long as it stays; `who` shows how
-long that has been. Whether to repeat or check once is question 4. The
+long that has been. The user approved the repeating check (2026-11-09). The
 communicator is not checked: it has no hooks, and the user is its liveness.
 
 **Context.** `hook.ctx_advice` tells an agent at 350k to "finish this task,
@@ -168,37 +168,47 @@ the gap before it would have said so itself. The free text after `--` is
 already the role brief; no role templates.
 
 **Agents may spawn peers**, as the brief already says. That is what makes an
-orchestrator possible. No spawn is ever refused (the user, 2026-11-09).
-Two numbers, both the user's, tell everyone how many agents the swarm
-should hold:
+orchestrator possible. Two numbers, both the user's, bound how many agents
+the swarm holds (the user, 2026-11-09):
 
 | | Auto-spawn number (the user's "agent min") | Agent max |
 |---|---|---|
-| Means | watchd staffs startable tasks until this many agents are live | the most agents the user wants live at once |
-| Binds | watchd, a script: it never spawns past it | nobody. Agents are told it and are expected to respect it |
+| Means | watchd staffs startable tasks until this many agents are live | the most agents that may be live at once |
+| Binds | watchd: it never spawns past it | **every spawn**: `swarm spawn` refuses at the max |
 | Lives | `meta.agent_min` | `meta.agent_max` |
-| Default | the live count when the first watchd starts (today's rule) | the same number, until the user gives a higher one |
+| Default | the live count when the first watchd starts (today's rule) | none: no max, and no refusal, until the communicator sets one |
 
 Both count every live agent but the communicator, stayers included: each
 holds memory and quota whatever it calls itself.
 
 - **Who sets them:** the communicator, on the user's word, with
   `swarm limits [--min N] [--max M]`. With no flag it prints both and the
-  live count. watchd reads `meta` each tick, so a change needs no restart.
-  `watchd --max-agents N` remains for one release as a way to write the
-  auto-spawn number at start, then goes.
-- **What agents see:** `swarm board` and `swarm who` open with "agents: 9
-  live, auto-spawn to 8, max 12". `swarm spawn` prints the same line as it
-  would be after the launch, with the machine note (§6a), and launches.
+  live count. It refuses a min above the max. watchd reads `meta` each tick,
+  so a change needs no restart. `watchd --max-agents N` remains for one
+  release as a way to write the auto-spawn number at start, then goes.
+- **The refusal is a deterministic check in `spawn`**, not a note. The count
+  and the new agent's row are written in one transaction before the launch
+  (sw-ownership rule 3), so two spawns at once can't both take the last
+  place. Today a spawn without `--task` reserves nothing (`watchd.lua:718`);
+  it must reserve its row like `--task` does. At the max: "12 agents are
+  live and the user's max is 12. The communicator can raise it." Exit
+  non-zero, event `spawn-refused` (the retro then shows unmet demand). It
+  binds the communicator too: it raises the number first.
+- **What agents see before they try:** `swarm board` and `swarm who` open
+  with "agents: 9 live, auto-spawn to 8, max 12" (or "no max set").
+- **SKILL.md's start step** tells the communicator to ask the user for both
+  numbers and set them before the first spawn.
 - **Below the auto-spawn number:** watchd staffs tasks, as today.
 - **Between the two:** watchd spawns nothing. More agents come only from an
   agent that judges one is needed: an orchestrator staffing a plan, an
   implementer who wants a reviewer on another model.
-- **At or past the max:** the spawn still runs. It prints "this makes 13,
-  over the user's max of 12; the communicator can raise it", logs
-  `spawn-over`, and on the edge of crossing the communicator gets one
-  notice naming who spawned. The user sees it; nothing is undone.
 - **Auto-spawn number 0:** watchd staffs nothing; an orchestrator does.
+- A relaunch successor is not a spawn (it takes over a name), so it is
+  never refused.
+
+This is a gate, and decision 6 prefers information. It is recorded as the
+user's budget, like `--max-agents` before it: a limit on spending, not a
+way to settle contention between agents.
 
 **brief.md** (kept short; each line lands with the PR that makes it true):
 
@@ -250,15 +260,17 @@ Neither reaches work done by a daemon on the agent's behalf (`nix build`,
 `docker build`): that runs outside the agent's tree and its cgroup. It shows
 only in the machine-wide numbers.
 
-**Recommendation: A, alone, first.** It is the only one that is per command
-and right for background jobs, it touches nothing the agent sees, and its
-blind spot is commands under one tick, which are not the ones that exhaust a
-machine. C is dropped: A covers it. **B is a later, optional PR**: it makes
-the per-agent totals exact and lets `end_agent` kill what an agent left
-behind with `cgroup.kill` in place of the orphan heuristic, and when an
-agent's `memory.peak` rises while exactly one of its commands is open, that
-command's row gets the exact figure. It is worth building only if the retro
-shows sampled peaks misleading agents (question 2).
+**Recommendation: A for every command, B on top where it exists.** A is the
+only one that is per command and right for background jobs, it touches
+nothing the agent sees, and it is the only one that also works on macOS
+(below). Its blind spot is commands under one tick, which are not the ones
+that exhaust a machine. C is dropped: A covers it. B is built wherever a
+systemd user session exists (the user, 2026-11-09): it makes the per-agent
+totals exact, lets `end_agent` kill what an agent left behind with
+`cgroup.kill` in place of the orphan heuristic, and when an agent's
+`memory.peak` rises while exactly one of its commands is open, that
+command's row gets the exact figure (`exact=1`). Nothing depends on B: with
+no cgroup every number is A's.
 
 Mechanism for A, all in watchd's existing `machine_tick`: keep a table in
 memory of live command shells per agent (pid, start, command text, largest
@@ -276,6 +288,7 @@ One row per finished command:
 |---|---|---|
 | The store | outside `swarm.db`: one SQLite file per user and machine, `$XDG_STATE_HOME/cmd-cost/history.db`, schema documented in this repo | A cost belongs to a command on a machine, not to a swarm. It must outlive a swarm, span repos ("the most intensive commands in which repos") and accept writers that are not the swarm. |
 | Measuring agents' commands | swarm (watchd, means A) | Only the swarm knows which process tree is which agent. About 40 lines in `machine_tick`. |
+| The user's own Claude Code sessions | swarm (watchd), same rows | The user, 2026-11-09. Their builds are much of the load and today show only as "other sessions". watchd records command shells under any claude process whose cwd is in this repo or one of its worktrees, with `agent` set to `user:<its -n name>` or `user`. **Measure only:** no `oom_score_adj`, no kill, no notice, nothing written anywhere but the history. The note lists them by name where it says "other sessions" today. |
 | `swarm run` jobs | swarm, same rows | It already records each job's RSS and CPU, here and on other machines. `machine` says where. |
 | A repo's own build entry point (`nix run .#build`, a `just` recipe) | the repo, optional | It may wrap itself (`systemd-run --scope`, or `time -v`), which is exactly the per-command exactness the swarm can't have without rewriting commands. It writes rows with `source='repo'` and `exact=1`; predictions prefer them. The swarm ships the schema and a five-line shell example, nothing else. |
 | CI | not a source for predictions | A CI runner is another machine, and its rows would only predict CI. A repo that wants them writes them with `machine='ci'`; the swarm neither reads nor needs them. |
@@ -330,9 +343,56 @@ orphan kill takes any process reparented to init whose cwd is in an ended
 agent's worktree; the panel's "heavy" card and `swarm-retro`'s
 `heavy_starts` read history rows.
 
-Off Linux there is no `/proc`: nothing is measured, the history stays empty
-for that machine, and the note has only what `mem_psi` gives. That is today's
-behaviour there.
+### macOS, without sudo
+
+A requirement from the user (2026-11-09): the tool must work on macOS with
+no sudo. There is no `/proc`, PSI or cgroup there. Nothing below was run on
+a Mac; the first job of the PR is to run it on one.
+
+**One seam.** Everything that asks "what is running" or "how full is the
+machine" goes through two functions in `machine.lua`, and nothing else reads
+the system:
+
+- `procs()`: one row per process: pid, ppid, RSS, elapsed time, CPU time,
+  full arguments. One implementation for both systems:
+  `ps -axww -o pid=,ppid=,rss=,etime=,time=,args=`, the column set procps
+  and BSD `ps` share (checked on Linux here). It replaces the hand-written
+  `/proc/<pid>/stat` scan and `claude_pid`'s walk, so the code a Mac runs is
+  the code Linux tests. Cost: one `ps` per tick.
+- `mem()`: memory available, total, and a pressure reading.
+
+| Reading | Linux | macOS |
+|---|---|---|
+| Processes, trees, RSS, command text | `ps` | `ps` |
+| CPU of a command | the shell's `cutime+cstime` from `/proc` (exact for reaped children); else as macOS | the sum of `time` over the tree's processes as last seen: a lower bound, since a child that exits between ticks is missed |
+| Memory available, total | `/proc/meminfo` | `sysctl -n hw.memsize`; `vm_stat` free + inactive + speculative + purgeable pages |
+| Pressure | PSI `some avg10` | `sysctl -n kern.memorystatus_vm_pressure_level` (normal, warn, critical); load from `sysctl -n vm.loadavg` against `hw.ncpu`. "High" is warn or worse. |
+| A process's cwd | `/proc/<pid>/cwd` | `lsof -a -d cwd -Fpn` once per tick (own processes need no sudo) |
+| Exact per-agent peak and CPU | cgroup, with systemd | none; rows stay `exact=0` |
+
+So on a Mac the history, `swarm cost`, the prediction and the machine note
+all work, with sampled memory and a low CPU figure. Wall time and memory
+are what the prediction leans on.
+
+**What else assumes Linux today**
+
+| Where | Assumes | On macOS |
+|---|---|---|
+| `machine.mem_psi`, `machine_line` | `/proc/meminfo`, `/proc/pressure`; prints "unknown (no /proc here)" | `mem()` above |
+| `machine.read_procs`, `claude_pid`, `heavy_procs`, `bg_agents` | `/proc/<pid>/stat`, `cmdline`, `comm` | `procs()`. `bg_agents` matters most: without it an idle owner's background job is invisible and `reap` takes its claim. |
+| `watchd.mem_available_gib` (`--min-free-mem`) | `/proc/meminfo`; without it returns infinity, so the threshold never holds | `mem()` |
+| `sweep_worktrees` | `/proc/<pid>/cwd`; without `/proc` it sweeps nothing | `lsof`; if that fails, still sweep nothing (never guess a tree is unused) |
+| Orphan kill in `machine_tick` | `/proc/<pid>/cwd`, ppid 1 | `procs()` and `lsof`; with a cgroup on Linux, `cgroup.kill` |
+| `oom_score_adj` 500 on agents' processes | Linux OOM killer | nothing, and no substitute: macOS has no per-process knob an unprivileged user can set. It compresses and swaps instead of killing. Skipped silently. |
+| `run.lua` `PROBE` for other machines | `nproc`, `/proc/loadavg`, `/proc/meminfo`, `/proc/pressure` on the far side | the far side runs `swarm machine --json` if it has swarm, else a `uname` branch with the `sysctl` and `vm_stat` calls above |
+| `agents.herdr_stale` | `sha256sum` | `shasum -a 256` when `sha256sum` is absent |
+| Per-agent cgroup (new) | systemd user session | absent; launch unwrapped |
+| The history path | `$XDG_STATE_HOME`, default `~/.local/state` | the same path; it is only a directory |
+| Tests | a fake `/proc` tree (`SWARM_PROC`) | fixtures become canned `ps`, `vm_stat` and `sysctl` output through the seam, so both systems' parsing is tested on either |
+| `hc`, Herdr, `launch.sh` | not Linux as such, but every spawn, liveness check and kill goes through `hc` | not examined: whether `hc` and the Herdr app run on macOS decides whether there is a swarm there at all. The open question in §10. |
+
+Already portable: SQLite, LuaJIT and the rocks (`install.sh` has a Homebrew
+route), `git`, `gh`, `du -sk`, the `swarm` shell wrapper, signals.
 
 ### Auto-spawn's limits
 
@@ -363,7 +423,10 @@ can then decide: spawn anyway, pick a smaller task, use another machine.
 
 - The whole heavy-word system (§6a): `HEAVY_RE`, `NOT_HEAVY`, `is_heavy`,
   `.claude/swarm.json` `heavy`, `heavy-start`, `heavy-count`. With the
-  optional cgroup PR, the orphan-kill heuristic too.
+  cgroup PR, the orphan-kill heuristic on Linux too.
+- The hand-written `/proc/<pid>/stat` scanner (`read_procs`, `claude_pid`):
+  `ps` does it on both systems.
+- `watchd --max-agents`, after one release.
 
 Not deleted, though tempting: `reusable`/`passed_over`/the digest. They are
 about reusing small-context implementers, not about roles.
@@ -394,14 +457,26 @@ Each passes `luajit swarm/lua/test/run.lua` and carries its own brief lines.
    an agent merely named `x-comms` is no longer special.
 5. **Panel (after 1, 2).** Role chip, "staying", the four event kinds.
 6. **SKILL.md and DESIGN.md (after 1-4).** Decision 9, the two starts.
-7. **Measure and record (independent).** Command shells in `machine_tick`,
-   the history file and its schema doc, `swarm run` rows, `swarm cost`.
-   Adds only; the word list still runs. *Tests* (fake `/proc`): a shell seen
-   on three ticks then gone writes one row with the largest RSS sum, the
-   last CPU reading and the command text; two concurrent shells of one agent
-   write two rows; a short, small command writes none; `cost` prints the
-   median and max; pruning keeps 20.
-8. **Read measurements, delete the words (after 7).** The machine note,
+   (The start step's "ask the user for both numbers" lands with 12.)
+7. **The seam, and macOS (independent; first of the telemetry).** `procs()`
+   on `ps` and `mem()` per system; `read_procs`, `claude_pid`, `mem_psi`,
+   `mem_available_gib`, the cwd reads, `PROBE` and `herdr_stale` go through
+   them or get their macOS branch; `oom_score_adj` is skipped off Linux. No
+   behaviour change on Linux. *Tests:* canned `ps` output from both systems
+   parses to the same rows; canned `vm_stat` and `sysctl` give available
+   memory and a pressure level; the existing machine, reap and sweep tests
+   pass on the new fixtures. *Done also needs:* the suite and one live
+   two-agent swarm run on a Mac, with no sudo.
+8. **Measure and record (after 7).** Command shells in `machine_tick`, the
+   history file and its schema doc, `swarm run` rows, `swarm cost`. Adds
+   only; the word list still runs. *Tests:* a shell seen on three ticks
+   then gone writes one row with the largest RSS sum, the last CPU reading
+   and the command text; two concurrent shells of one agent write two rows;
+   a short, small command writes none; `cost` prints the median and max;
+   pruning keeps 20; a shell under a non-swarm claude process in a worktree
+   writes a `user:` row, and one outside the repo writes none; no code path
+   signals or writes `oom_score_adj` for a process outside an agent's tree.
+9. **Read measurements, delete the words (after 8).** The machine note,
    `pressure` recipients, `oom_score_adj`, the orphan kill, the panel card
    and `swarm-retro` read sizes and history rows; the pre-Bash prediction
    replaces the heavy trigger. Then `HEAVY_RE`, `NOT_HEAVY`, `is_heavy`, the
@@ -410,31 +485,35 @@ Each passes `luajit swarm/lua/test/run.lua` and carries its own brief lines.
    history; context when the predicted peak is above half of what is
    available; a process no word names is listed by size; the old heavy
    tests are deleted with the code.
-9. **Telemetry at decisions (independent; `pressure` to stayers after 2).**
-   The machine line on `board` and `task claim`, the note on `spawn`.
-   *Tests:* each command prints the line from a fake `/proc`.
-10. **A cgroup per agent (optional, after 7; question 2).** `spawn` launches
-    through `systemd-run --user --scope` where it exists; exact per-agent
-    peak and CPU; `end_agent` uses `cgroup.kill`. Without systemd nothing
-    changes.
-
-11. **The two numbers (independent).** `meta.agent_min` and `agent_max`,
-    `swarm limits`, watchd reading them each tick, the line on `board`,
-    `who` and `spawn`, `spawn-over` and its notice, `spawn-held` and its
-    board line. *Tests:* watchd spawns up to the auto-spawn number and not
-    past it; a change takes effect on the next tick; a spawn past the max
-    launches, logs `spawn-over` and tells the communicator once; no spawn
-    is refused; one `spawn-held` per edge.
-12. **Hung stayers (after 2).** The two edge notices and the liveness check.
+10. **Telemetry at decisions (after 7; `pressure` to stayers after 2).**
+    The machine line on `board` and `task claim`, the note on `spawn`.
+    *Tests:* each command prints the line from the fixtures.
+11. **A cgroup per agent (after 8).** Where a systemd user session exists,
+    `spawn` launches through `systemd-run --user --scope`; exact per-agent
+    peak and CPU; the exact figure on a command's row when it was the only
+    one open; `end_agent` uses `cgroup.kill`. Elsewhere the launch is
+    unwrapped and nothing changes. *Tests:* with a fake cgroup directory a
+    lone command's row is `exact=1` with `memory.peak`; with two open it
+    stays sampled; with no `systemd-run` on PATH the launch line is today's.
+12. **The two numbers (independent).** `meta.agent_min` and `agent_max`,
+    `swarm limits`, watchd reading them each tick, every spawn reserving its
+    row before launch, the refusal at the max, the line on `board` and
+    `who`, `spawn-held` and its board line. *Tests:* watchd spawns up to the
+    auto-spawn number and not past it; a change takes effect on the next
+    tick; a spawn at the max is refused, launches nothing, leaves no row and
+    logs `spawn-refused`; two spawns racing for the last place: one wins;
+    raising the max lets the next through; with no max set nothing is
+    refused; `limits` refuses a min above the max; one `spawn-held` per edge.
+13. **Hung stayers (after 2).** The two edge notices and the liveness check.
     *Tests:* a waiterless idle stayer is reported once; an unread message
     two ticks old is reported once; a check goes out at 50 idle minutes and
     not before; a moved `last_active` means no `stay-hung` and a new check
     50 minutes later; an unmoved one means one `stay-hung` and no further
     checks; the communicator is never checked.
 
-After 2 lands the roles request is met for agents; 3-6 and 12 are nudges,
-cleanup and views; 11 is the staffing numbers. 7-10 are the telemetry and stand apart from roles: they can go
-first.
+After 2 lands the roles request is met for agents; 3-6 and 13 are nudges,
+cleanup and views; 12 is the staffing numbers. 7-11 are the telemetry and
+stand apart from roles: they can go first.
 
 ## 9. Considered and not proposed
 
@@ -474,9 +553,10 @@ Risks:
 - **An orchestrator is the bottleneck DESIGN was written to avoid**, and its
   messages are peer data, not orders. It has real power only through the
   board and `spawn`. Two orchestrators have no arbiter but claims.
-- **Spawn cost.** An orchestrator that spawns freely spends the user's quota.
-  The max is only told to it; the one check is the notice to the
-  communicator when it is passed.
+- **The max is a gate.** An orchestrator at the max can't staff its plan
+  and can only ask the communicator, which waits on the user. That is the
+  point of a budget, and it is also the manager-attention bottleneck in a
+  new place. `spawn-refused` events show how often it bites.
 - **The liveness check costs tokens for as long as an agent stays**, about
   a tenth of its context every 50 minutes, and it is a timer.
 - **The quiet notice wakes large contexts.** Bounded by the cold guard: cold
@@ -484,34 +564,31 @@ Risks:
 
 - **Sampled peaks run low** (a spike between two 30 s samples), so a
   prediction can understate. The row says `exact=0`; `source='repo'` rows
-  and PR 10 are the two ways to exact figures.
+  and the cgroup (PR 11) are the two ways to exact figures.
 - **The command key is crude.** Three words can merge a one-crate test with
   a workspace test. The median hides that; the max shown beside it doesn't.
+- **macOS is planned from documentation, not run.** The `ps` columns,
+  `vm_stat` arithmetic and the pressure sysctl need a Mac before PR 7 is
+  done. CPU figures there are lower bounds.
 - **Daemon-side work** (`nix build`, `docker build`) is in no agent's tree
   and is never attributed.
 
 Answered by the user, 2026-11-09 (relayed by the communicator):
 
-- No spawn is refused. Two visible numbers: the auto-spawn number and the
-  agent max (§6).
-- `stay` is the word; stayers must be checked for hangs (§4).
+- Two numbers: watchd's auto-spawn number, and an agent max at which
+  `swarm spawn` refuses (§6).
+- `stay` is the word. Stayers are checked for hangs, with the repeating
+  50-minute liveness check (§4).
 - `--min-free-mem` stays as watchd's own threshold, made visible (§6a).
+- PR 4, the communicator as a stayer: wanted.
+- The per-agent cgroup: build it where systemd user sessions exist.
+- The tool must work on macOS without sudo (§6a, PR 7).
+- The user's own sessions in this repo are measured, and only measured
+  (§6a).
+- The agent max has no default: none until the communicator sets one (§6).
 
-Open questions:
+Open, found while planning macOS and not yet put to the user:
 
-1. Is PR 4 wanted now? It makes the communicator a stayer and deletes its
-   special case, but touches the one agent whose wrongful end hurts most.
-2. Build the per-agent cgroup (PR 10)? Recommended: not until a retro shows
-   sampled peaks misleading agents. It is Linux-with-systemd only and
-   changes how every agent is launched.
-3. Should the user's own Claude Code sessions outside a swarm be measured
-   too? Their builds are most of the load on a shared machine and today
-   appear only as "other sessions". watchd could record any command shell
-   under any claude process in the repo's worktrees; not planned unless
-   wanted.
-4. The liveness check: every 50 idle minutes for as long as an agent stays
-   (recommended: the cache stays warm and a hang is found within an hour),
-   or once, with later hangs left to the two edge signs?
-5. Is the agent max's default right (the number launched, so the first
-   agent-made spawn is already "over" until the user raises it)? The
-   alternative is no max until the user sets one.
+1. Do `hc` and the Herdr app run on macOS? If not, macOS support needs a
+   second way to launch, watch and end an agent's terminal, which is a
+   larger piece than anything in PR 7 and is not planned here.
