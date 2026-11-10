@@ -420,9 +420,9 @@ theorem ii_reset {c : Cfg} {x : State} {a : Nat} (f : Agent → Agent) (hf : ∀
   · have hb1 : ¬(a = b ∧ b < x.start.length) := by rw [l1]; exact hb
     have hb2 : ¬(a = b ∧ b < x.seen.length) := by rw [l2]; exact hb
     exact inb_mono (s := x) (Nat.le_refl _) (fun _ _ => rfl)
-      (show (x.cursor.set a x.log.length).getD b 0 = x.cursor.getD b 0 by rw [getD_set, if_neg hb])
-      (show (x.start.set a x.log.length).getD b 0 = x.start.getD b 0 by rw [getD_set, if_neg hb1])
-      (show (x.seen.set a []).getD b [] = x.seen.getD b [] by rw [getD_set, if_neg hb2]) hsn (hI b)
+      (show (x.cursor.set a x.log.length).getD b 0 = x.cursor.getD b 0 by rw [getD_set, ite_eq_right hb])
+      (show (x.start.set a x.log.length).getD b 0 = x.start.getD b 0 by rw [getD_set, ite_eq_right hb1])
+      (show (x.seen.set a []).getD b [] = x.seen.getD b [] by rw [getD_set, ite_eq_right hb2]) hsn (hI b)
 
 theorem ii_takes {c : Cfg} {s : State} {a t : Nat} (h : InbInv c s) : InbInv c (takes c s a t) := by
   unfold takes; simp only []; split

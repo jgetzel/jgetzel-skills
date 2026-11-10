@@ -1,0 +1,594 @@
+import SwarmModel.Inbox
+
+/-! S1, for every reachable state of every instance with the fix on (reap reopens a lapsed claim only when its
+owner is idle or gone). -/
+
+namespace Swarm
+set_option linter.unusedSimpArgs false
+set_option linter.unusedVariables false
+
+-- ---------- the board's ids: the tasks that exist are 1..n, so `add` makes a new one ----------
+def Pfx (s : State) : Prop := ∃ n, n ≤ s.task.length ∧ ∀ u, (s.tk u).st ≠ .absent ↔ (0 < u ∧ u ≤ n)
+
+theorem filter_prefix {α : Type} (p : α → Bool) : ∀ (l : List α) (n : Nat), n ≤ l.length →
+    (∀ i (h : i < l.length), p l[i] = true ↔ i < n) → (l.filter p).length = n
+  | [], n, hn, _ => by simp at hn; simp [hn]
+  | x :: xs, n, hn, h => by
+    have h0 := h 0 (by simp)
+    cases n with
+    | zero =>
+      have hx : p x = false := by simpa using h0
+      have ih := filter_prefix p xs 0 (Nat.zero_le _) (fun i hi => by
+        have := h (i + 1) (by simp; omega); simpa using this)
+      simp [List.filter_cons, hx, ih]
+    | succ n =>
+      have hx : p x = true := by simpa using h0
+      have ih := filter_prefix p xs n (by simp at hn; omega) (fun i hi => by
+        have := h (i + 1) (by simp; omega); simpa using this)
+      simp [List.filter_cons, hx, ih]
+
+theorem pfx_same {s s' : State} (hl : s'.task.length = s.task.length)
+    (h : ∀ u, (s'.tk u).st = .absent ↔ (s.tk u).st = .absent) (hp : Pfx s) : Pfx s' := by
+  obtain ⟨n, h2, h3⟩ := hp
+  exact ⟨n, by rw [hl]; exact h2, fun u => by rw [← h3 u]; exact not_congr (h u)⟩
+theorem pfx_task {s s' : State} (h : s'.task = s.task) (hp : Pfx s) : Pfx s' :=
+  pfx_same (by rw [h]) (fun u => by simp [State.tk, h]) hp
+/-- a change of a task that exists, to a state other than absent -/
+theorem pfx_setTask {s : State} {t : Nat} {f : Task → Task}
+    (h : t ≠ 0 → (s.tk t).st ≠ .absent ∧ (f (s.tk t)).st ≠ .absent) (hp : Pfx s) : Pfx (setTask s t f) := by
+  by_cases h0 : t = 0
+  · subst h0; exact hp
+  · refine pfx_same (by unfold setTask; split <;> simp) (fun u => ?_) hp
+    rcases tk_setTask_or s t u f with e | ⟨rfl, e⟩
+    · rw [e]
+    · rw [e]; exact ⟨fun ha => absurd ha (h h0).2, fun ha => absurd ha (h h0).1⟩
+theorem pfx_map {s s' : State} {g : Task → Task} (hg : g default = default) (h : ∀ k, (g k).st = .absent ↔ k.st = .absent)
+    (ht : s'.task = s.task.map g) (hp : Pfx s) : Pfx s' :=
+  pfx_same (by rw [ht]; simp) (fun u => by rw [tk_map hg ht]; exact h _) hp
+theorem pfx_endAgent {s : State} {a : Nat} (hp : Pfx s) : Pfx (endAgent s a) :=
+  pfx_map (g := fun k => if held k a then { k with st := .opn, owner := none, lease := false, hcq := false } else k)
+    (by simp [held]) (fun k => by
+      split
+      · rename_i h; simp [held] at h; rcases h.2 with e | e <;> simp [e]
+      · exact Iff.rfl) rfl hp
+theorem pfx_reapTask {c : Cfg} {s : State} {t : Nat} (hp : Pfx s) : Pfx (reapTask c s t) := by
+  unfold reapTask; simp only []; split
+  · split
+    · rename_i h
+      exact pfx_task (post_task ..) (pfx_setTask (fun _ => by simp_all) hp)
+    · exact hp
+  · exact hp
+theorem pfx_spawnFor {c : Cfg} {pl : List Nat} {s : State} {t : Nat} (hopn : (s.tk t).st = .opn) (hp : Pfx s) :
+    Pfx (spawnFor c pl s t) := by
+  unfold spawnFor; split
+  · split
+    · refine pfx_setTask (fun _ => ⟨?_, by simp⟩) (pfx_task (s := s) rfl hp)
+      show (s.tk t).st ≠ .absent
+      rw [hopn]; simp
+    · exact hp
+  · exact hp
+
+theorem tk_setTask_at {s : State} {t : Nat} {f : Task → Task} (h0 : t ≠ 0) (hl : t - 1 < s.task.length) :
+    (setTask s t f).tk t = f (s.tk t) := by
+  simp only [setTask, State.tk, h0, ite_false]; rw [getD_modify]; simp [hl]
+theorem nextTask_eq {s : State} {n : Nat} (h2 : n ≤ s.task.length) (h3 : ∀ u, (s.tk u).st ≠ .absent ↔ (0 < u ∧ u ≤ n)) :
+    nextTask s = n + 1 := by
+  unfold nextTask
+  rw [filter_prefix _ _ n h2]
+  intro i hi
+  have := h3 (i + 1)
+  simp [State.tk, List.getD_eq_getElem?_getD, hi] at this
+  simp only [bne_iff_ne, ne_eq]
+  rw [this]; omega
+
+macro "pf_tac" : tactic => `(tactic|
+  repeat (first
+    | with_reducible assumption
+    | ((with_reducible refine pfx_setTask (fun _ => ?_) ?_); focus (simp_all [startable, ownsClaimed, held]; done))
+    | ((with_reducible refine pfx_task (setAg_task ..) ?_))
+    | ((with_reducible refine pfx_task (post_task ..) ?_))
+    | ((with_reducible refine pfx_task (deliver_task ..) ?_))
+    | ((with_reducible refine pfx_task (takes_task ..) ?_))
+    | with_reducible apply pfx_endAgent))
+
+theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
+  refine reachable_induct ?_ ?_ h
+  · refine ⟨0, Nat.zero_le _, fun u => ?_⟩
+    have : ((init c).tk u).st = .absent := by
+      simp only [State.tk, init]; split
+      · rfl
+      · simp only [List.getD_eq_getElem?_getD, List.getElem?_replicate]; split <;> rfl
+    simp [this]; omega
+  intro s s' act _ hs hstep
+  open_step hstep
+  case unblock t =>
+    split at hstep
+    · rw [when_eq_some] at hstep; obtain ⟨hg, rfl⟩ := hstep
+      exact pfx_task (s := setTask s t _) rfl (pfx_setTask (fun _ => by simp_all) hs)
+    · cases hstep
+  case tick =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact tick_inv Pfx (fun _ _ => pfx_reapTask) (fun _ => pfx_task rfl) (fun _ _ => pfx_endAgent)
+      (fun _ _ _ hx => pfx_task rfl hx) (fun _ _ _ hx hopn => pfx_spawnFor hopn hx) hs
+  case lock a p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
+  case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
+  case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact pfx_task (s := s) rfl hs
+  case wakeWrite a =>
+    obtain ⟨_, rfl⟩ := hstep
+    refine pfx_task (s := s) ?_ hs
+    simp only [setAg_task, awake_task, deliver_task]; split <;> simp
+  case claimWrite a =>
+    obtain ⟨_, rfl⟩ := hstep
+    split
+    · rename_i h
+      refine pfx_task (s := claimed s a (s.agt a).reading) (by simp) (pfx_setTask (fun _ => ?_) hs)
+      simp_all
+    · exact pfx_task (setAg_task ..) hs
+  case hcPrompt a =>
+    obtain ⟨_, rfl⟩ := hstep
+    refine pfx_setTask (fun h0 => ?_) (pfx_task (setAg_task ..) hs)
+    have : ownsClaimed s a (firstClaimed c s a) = true := by
+      unfold firstClaimed at h0 ⊢
+      cases hf : c.tasks.find? (ownsClaimed s a) with
+      | none => simp [hf] at h0
+      | some t => simpa using List.find?_some hf
+    simp [ownsClaimed] at this
+    show (s.tk _).st ≠ .absent ∧ _
+    simp [this.1]
+  case hcClear a =>
+    obtain ⟨_, rfl⟩ := hstep
+    refine pfx_task (setAg_task ..) (pfx_task (deliver_task ..) (pfx_map (s := s) (g := fun k =>
+      if k.owner == some a && k.st == .blocked && k.hcq then { k with st := .claimed, hcq := false, lease := true } else k)
+      (by simp) (fun k => ?_) rfl hs))
+    split
+    · rename_i h; simp at h; simp [h.1.2]
+    · exact Iff.rfl
+  case dropOwn a t =>
+    obtain ⟨hg, rfl⟩ := hstep; simp [held] at hg
+    exact pfx_task (unbelieve_task ..) (pfx_setTask (fun _ => ⟨by rcases hg.2.2 with e | e <;> simp [e], by simp⟩) hs)
+  case add deps =>
+    obtain ⟨hg, rfl⟩ := hstep
+    obtain ⟨n, h2, h3⟩ := hs
+    have hn := nextTask_eq h2 h3
+    simp at hg
+    rw [hn] at hg ⊢
+    refine ⟨n + 1, by simp [setTask]; omega, fun u => ?_⟩
+    by_cases hu : u = n + 1
+    · subst hu; rw [tk_setTask_at (by omega) (by omega)]; simp
+    · rw [tk_setTask_ne hu, h3 u]; omega
+  all_goals
+    obtain ⟨hg, rfl⟩ := hstep
+    (try split) <;> (try simp only [unbelieve, awake, claimed]) <;> pf_tac
+
+-- ---------- who believes they hold a task ----------
+/-- a has an unread message that reap reopened its claim of t -/
+def rel (s : State) (a t : Nat) : Prop :=
+  ∃ i, s.cur a < i ∧ i ≤ s.log.length ∧ addressed s a i = true ∧ (s.msg i).kind = .released ∧ (s.msg i).task = t
+/-- a's belief that it holds t is stale, and a will learn so before it works again -/
+def idleRel (s : State) (a t : Nat) : Prop := active (s.agt a) = false ∧ rel s a t
+def HD (s : State) (a t : Nat) : Prop := held (s.tk t) a = true ∨ (s.tk t).st = .dropped
+/-- The invariant behind S1. An agent that believes it holds t does hold it, or t was dropped, or the belief is
+stale; and no two agents have a belief in t that isn't stale. -/
+def J (s : State) : Prop :=
+  (∀ a t, t ∈ (s.agt a).believes → idleRel s a t ∨ HD s a t) ∧
+  (∀ a b t, t ∈ (s.agt a).believes → t ∈ (s.agt b).believes → ¬idleRel s a t → ¬idleRel s b t → a = b)
+
+/-- beliefs only go away, stale ones stay stale, and one that isn't stale is still backed by the board -/
+theorem J_of {s s' : State} (h : J s)
+    (hsub : ∀ a t, t ∈ (s'.agt a).believes → t ∈ (s.agt a).believes)
+    (hir : ∀ a t, t ∈ (s'.agt a).believes → idleRel s a t → idleRel s' a t)
+    (hhd : ∀ a t, t ∈ (s'.agt a).believes → ¬idleRel s a t → HD s a t → idleRel s' a t ∨ HD s' a t) : J s' := by
+  refine ⟨fun a t ht => ?_, fun a b t ha hb na nb => ?_⟩
+  · by_cases hi : idleRel s a t
+    · exact Or.inl (hir a t ht hi)
+    · rcases h.1 a t (hsub a t ht) with h1 | h1
+      · exact absurd h1 hi
+      · exact hhd a t ht hi h1
+  · exact h.2 a b t (hsub a t ha) (hsub b t hb) (fun hi => na (hir a t ha hi)) (fun hi => nb (hir b t hb hi))
+
+theorem rel_congr {s s' : State} {a t : Nat} (hlog : s'.log = s.log) (hcur : s'.cur a = s.cur a) : rel s' a t ↔ rel s a t := by
+  simp only [rel, hlog, hcur, addressed_congr hlog, msg_congr hlog]
+theorem held_unique {k : Task} {a b : Nat} (h1 : held k a = true) (h2 : held k b = true) : a = b := by
+  simp [held] at h1 h2; exact Option.some.inj (h1.1.symm.trans h2.1)
+theorem held_not_dropped {k : Task} {a : Nat} (h : held k a = true) : k.st ≠ .dropped := by
+  simp [held] at h; rcases h.2 with e | e <;> simp [e]
+
+/-- only the board changed -/
+theorem J_tasks {s s' : State} (hag : s'.ag = s.ag) (hlog : s'.log = s.log) (hcur : s'.cursor = s.cursor)
+    (hhd : ∀ a u, u ∈ (s.agt a).believes → ¬idleRel s a u → HD s a u → HD s' a u) (h : J s) : J s' := by
+  have hagt : ∀ a, s'.agt a = s.agt a := fun a => by simp [State.agt, hag]
+  have hir : ∀ a t, idleRel s' a t ↔ idleRel s a t := fun a t => by
+    simp only [idleRel, hagt, rel_congr hlog (show s'.cur a = s.cur a by simp [State.cur, hcur])]
+  exact J_of h (fun a t ht => hagt a ▸ ht) (fun a t _ hi => (hir a t).mpr hi)
+    (fun a t ht hi hd => Or.inr (hhd a t (hagt a ▸ ht) hi hd))
+theorem J_frame {s s' : State} (hag : s'.ag = s.ag) (hlog : s'.log = s.log) (hcur : s'.cursor = s.cursor)
+    (htask : s'.task = s.task) (h : J s) : J s' :=
+  J_tasks hag hlog hcur (fun a u _ _ hd => by simpa [HD, State.tk, htask] using hd) h
+theorem J_setTask {s : State} {t : Nat} {f : Task → Task}
+    (hm : ∀ b, HD s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped) (h : J s) : J (setTask s t f) :=
+  J_tasks (setTask_ag ..) (setTask_log ..) (setTask_cursor ..) (fun b u _ _ hd => by
+    rcases tk_setTask_or s t u f with e | ⟨rfl, e⟩
+    · unfold HD; rw [e]; exact hd
+    · unfold HD; rw [e]; exact hm b hd) h
+
+/-- only agent a changed: it believes no more than before, and it isn't put to work on a stale belief -/
+theorem J_setAg {s : State} {a : Nat} {f : Agent → Agent} (h1 : ∀ u, u ∈ (f (s.agt a)).believes → u ∈ (s.agt a).believes)
+    (h2 : ∀ u, u ∈ (f (s.agt a)).believes → idleRel s a u → active (f (s.agt a)) = false) (h : J s) : J (setAg s a f) := by
+  have hrel : ∀ b t, rel (setAg s a f) b t ↔ rel s b t := fun b t => rel_congr rfl rfl
+  refine J_of h (fun b t ht => ?_) (fun b t ht hi => ?_) (fun b t _ _ hd => Or.inr hd)
+  · by_cases hb : a = b ∧ b < s.ag.length
+    · rw [agt_setAg, ite_eq_left hb] at ht; obtain ⟨rfl, _⟩ := hb; exact h1 t ht
+    · rw [agt_setAg, ite_eq_right hb] at ht; exact ht
+  · refine ⟨?_, (hrel b t).mpr hi.2⟩
+    by_cases hb : a = b ∧ b < s.ag.length
+    · rw [agt_setAg, ite_eq_left hb] at ht ⊢; obtain ⟨rfl, _⟩ := hb; exact h2 t ht hi
+    · rw [agt_setAg, ite_eq_right hb]; exact hi.1
+theorem J_setAg_same {s : State} {a : Nat} {f : Agent → Agent} (hb : ∀ g, (f g).believes = g.believes)
+    (ha : ∀ g, active (f g) = active g) (h : J s) : J (setAg s a f) :=
+  J_setAg (fun u hu => by rw [hb] at hu; exact hu) (fun u _ hi => by rw [ha]; exact hi.1) h
+theorem J_setAg_act {s : State} {a : Nat} {f : Agent → Agent} (hb : ∀ g, (f g).believes = g.believes)
+    (ha : active (s.agt a) = true) (h : J s) : J (setAg s a f) :=
+  J_setAg (fun u hu => by rw [hb] at hu; exact hu) (fun u _ hi => by have := hi.1; rw [ha] at this; cases this) h
+
+theorem J_post {s : State} {m : Msg} (h : J s) : J (post s m) := by
+  refine J_of h (fun _ _ ht => ht) (fun b t _ hi => ⟨hi.1, ?_⟩) (fun _ _ _ _ hd => Or.inr hd)
+  obtain ⟨i, h1, h2, h3, h4, h5⟩ := hi.2
+  exact ⟨i, h1, by rw [post_log_length]; omega, by rw [addressed_post h2]; exact h3, by rw [msg_post h2]; exact h4,
+    by rw [msg_post h2]; exact h5⟩
+
+/-- Showing ids to a, when they skip no message between a's cursor and their last. -/
+theorem J_showAll {s : State} {a : Nat} {ids : List Nat}
+    (hns : ∀ j ∈ ids, ∀ i, s.cur a < i → i ≤ j → addressed s a i = true → i ∈ ids) (h : J s) : J (showAll s a ids) := by
+  have hact : ∀ b, active ((showAll s a ids).agt b) = active (s.agt b) := fun b => showAll_proj (active ·) (fun _ _ => rfl) ..
+  have htk : ∀ t, (showAll s a ids).tk t = s.tk t := fun t => by simp [State.tk]
+  refine J_of h (fun b t ht => ((showAll_bel ..).mp ht).1) (fun b t ht hi => ?_)
+    (fun b t _ _ hd => Or.inr (by unfold HD; rw [htk]; exact hd))
+  refine ⟨by rw [hact]; exact hi.1, ?_⟩
+  obtain ⟨i, i1, i2, i3, i4, i5⟩ := hi.2
+  have hbel := (showAll_bel ..).mp ht
+  refine ⟨i, ?_, by rw [showAll_log]; exact i2, by rw [addressed_congr (showAll_log ..)]; exact i3,
+    by rw [msg_congr (showAll_log ..)]; exact i4, by rw [msg_congr (showAll_log ..)]; exact i5⟩
+  rw [showAll_cur]; split
+  · rename_i hb; obtain ⟨rfl, _⟩ := hb
+    obtain ⟨_, _, m3⟩ := foldl_max ids (s.cur b)
+    apply Nat.lt_of_not_le; intro hle
+    rcases m3 with e | e
+    · omega
+    · exact hbel.2 ⟨rfl, i, hns _ e i i1 hle i3, i4, i5⟩
+  · exact i1
+theorem J_deliver {s : State} {a : Nat} (h : J s) : J (deliver s a) :=
+  J_showAll (fun _ hj i hi hij had => mem_unread.mpr ⟨hi, Nat.le_trans hij (mem_unread.mp hj).2.1, had⟩) h
+/-- after a delivery no belief of a is stale -/
+theorem norel_deliver {s : State} {a u : Nat} (hu : u ∈ ((deliver s a).agt a).believes) : ¬ rel (deliver s a) a u := by
+  rintro ⟨i, i1, i2, i3, i4, i5⟩
+  have hbel := (showAll_bel (unread s a) s a a u).mp hu
+  rw [addressed_congr (deliver_log ..)] at i3; rw [msg_congr (deliver_log ..)] at i4 i5; rw [deliver_log] at i2
+  have hc : s.cur a ≤ (showAll s a (unread s a)).cur a := by
+    rw [showAll_cur]; split
+    · exact (foldl_max _ _).1
+    · exact Nat.le_refl _
+  have i1' : (showAll s a (unread s a)).cur a < i := i1
+  exact hbel.2 ⟨rfl, i, mem_unread.mpr ⟨by omega, i2, i3⟩, i4, i5⟩
+/-- a turn starts: the prompt hook delivers, then the agent is at work -/
+theorem J_wake {s : State} {a : Nat} {f : Agent → Agent} (hf : ∀ g, (f g).believes = g.believes) (h : J s) :
+    J (setAg (deliver s a) a f) :=
+  J_setAg (fun u hu => by rw [hf] at hu; exact hu)
+    (fun u hu hi => absurd hi.2 (norel_deliver (by rw [hf] at hu; exact hu))) (J_deliver h)
+
+/-- a takes a task it holds -/
+theorem J_takes {c : Cfg} {s : State} {a t : Nat} (hheld : held (s.tk t) a = true) (h : J s) : J (takes c s a t) := by
+  suffices hs : J (setAg s a fun g => { g with believes := t :: g.believes }) by
+    unfold takes; simp only []; split
+    · exact J_frame (s := setAg s a fun g => { g with believes := t :: g.believes }) rfl rfl rfl rfl hs
+    · exact hs
+  have hmem : ∀ b u, u ∈ ((setAg s a fun g => { g with believes := t :: g.believes }).agt b).believes →
+      u ∈ (s.agt b).believes ∨ (b = a ∧ u = t) := by
+    intro b u hu; rw [agt_setAg] at hu; split at hu
+    · rename_i hb
+      rcases List.mem_cons.mp hu with e | e
+      · exact Or.inr ⟨hb.1.symm, e⟩
+      · exact Or.inl e
+    · exact Or.inl hu
+  have hact : ∀ b, active ((setAg s a fun g => { g with believes := t :: g.believes }).agt b) = active (s.agt b) := by
+    intro b; rw [agt_setAg]; split <;> rfl
+  have hir : ∀ b u, idleRel (setAg s a fun g => { g with believes := t :: g.believes }) b u ↔ idleRel s b u := fun b u => by
+    simp only [idleRel, hact, rel_congr (s := s) (s' := setAg s a fun g => { g with believes := t :: g.believes }) rfl rfl]
+  have key : ∀ b, t ∈ (s.agt b).believes → ¬idleRel s b t → b = a := by
+    intro b hb hn
+    rcases h.1 b t hb with e | e | e
+    · exact absurd e hn
+    · exact held_unique e hheld
+    · exact absurd e (held_not_dropped hheld)
+  refine ⟨fun b u hu => ?_, fun x y u hx hy nx ny => ?_⟩
+  · rcases hmem b u hu with e | ⟨e1, e2⟩
+    · rcases h.1 b u e with e' | e'
+      · exact Or.inl ((hir b u).mpr e')
+      · exact Or.inr e'
+    · subst e1 e2; exact Or.inr (Or.inl hheld)
+  · rw [hir] at nx ny
+    rcases hmem x u hx with ex | ⟨ex1, ex2⟩ <;> rcases hmem y u hy with ey | ⟨ey1, ey2⟩
+    · exact h.2 x y u ex ey nx ny
+    · subst ey2; rw [ey1]; exact key x ex nx
+    · subst ex2; rw [ex1]; exact (key y ey ny).symm
+    · rw [ex1, ey1]
+
+/-- a gives up a task only it holds: released, done or dropped -/
+theorem J_giveup {s : State} {a t : Nat} {f : Task → Task} (hown : ∀ b, held (s.tk t) b = true → b = a)
+    (hnd : (s.tk t).st ≠ .dropped) (h : J s) : J (unbelieve (setTask s t f) a t) := by
+  have hrel : ∀ b u, rel (unbelieve (setTask s t f) a t) b u ↔ rel s b u := fun b u =>
+    rel_congr (by simp) (by simp [State.cur])
+  have hagt : ∀ b, (setTask s t f).agt b = s.agt b := fun b => by simp [State.agt]
+  have hact : ∀ b, active ((unbelieve (setTask s t f) a t).agt b) = active (s.agt b) := by
+    intro b; unfold unbelieve; rw [agt_setAg, hagt]; split <;> rfl
+  have hbel : ∀ b u, u ∈ ((unbelieve (setTask s t f) a t).agt b).believes → u ∈ (s.agt b).believes ∧ ¬(b = a ∧ u = t) := by
+    intro b u hu; unfold unbelieve at hu; rw [agt_setAg, hagt] at hu
+    split at hu
+    · rename_i hb; simp [List.mem_filter] at hu; exact ⟨hu.1, fun e => hu.2 e.2⟩
+    · rename_i hb; refine ⟨hu, fun e => ?_⟩
+      obtain ⟨rfl, _⟩ := e
+      have : s.ag.length ≤ b := Nat.le_of_not_lt (fun hl => hb ⟨rfl, by simpa using hl⟩)
+      rw [agt_of_ge this] at hu; cases hu
+  refine J_of h (fun b u hu => (hbel b u hu).1) (fun b u _ hi => ⟨by rw [hact]; exact hi.1, (hrel b u).mpr hi.2⟩)
+    (fun b u hu _ hd => ?_)
+  have hne := (hbel b u hu).2
+  by_cases hut : u = t
+  · subst hut
+    rcases hd with e | e
+    · exact absurd ⟨hown b e, rfl⟩ hne
+    · exact absurd e hnd
+  · right
+    show held ((setTask s t f).tk u) b = true ∨ ((setTask s t f).tk u).st = .dropped
+    rw [tk_setTask_ne hut]; exact hd
+
+/-- reap under the fix: the owner of a reopened claim isn't at work, and is told -/
+theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle) (hcur : ∀ a, x.cur a ≤ x.log.length)
+    (h : J x) : J (reapTask c x t) := by
+  unfold reapTask; simp only []
+  split
+  · rename_i o ho
+    split
+    · rename_i hc
+      simp only [Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at hc
+      obtain ⟨⟨hst, _⟩, hk⟩ := hc
+      have hna : active (x.agt o) = false := by
+        cases hs : (x.agt o).st <;> simp_all [keeps, Agent.live, active]
+      have e : ∀ (f : Task → Task) (m : Msg), post (setTask x t f) m = setTask (post x m) t f := by
+        intro f m; unfold setTask; split <;> rfl
+      rw [e]
+      refine J_tasks (setTask_ag ..) (setTask_log ..) (setTask_cursor ..) (fun b u _ hi hd => ?_) (J_post h)
+      rcases tk_setTask_or (post x ⟨none, o, false, .released, t⟩) t u _ with e1 | ⟨rfl, e1⟩
+      · unfold HD; rw [e1]; exact hd
+      · exfalso; apply hi
+        have hd' : held (x.tk u) b = true ∨ (x.tk u).st = .dropped := hd
+        rcases hd' with e2 | e2
+        · have hb : o = b := by simp [held, ho] at e2; exact e2.1
+          subst hb
+          refine ⟨hna, x.log.length + 1, ?_, by simp, ?_, ?_, ?_⟩
+          · have := hcur o; show x.cur o < _; omega
+          · simp [addressed, msg_post_new]
+          · rw [msg_post_new]
+          · rw [msg_post_new]
+        · rw [hst] at e2; cases e2
+    · exact h
+  · exact h
+
+theorem bel_clear {s : State} {a : Nat} {f : Agent → Agent} (hf : ∀ g, (f g).believes = []) :
+    ((setAg s a f).agt a).believes = [] := by
+  rw [agt_setAg]; split
+  · exact hf _
+  · rename_i hb
+    have : s.ag.length ≤ a := Nat.le_of_not_lt (fun hl => hb ⟨rfl, hl⟩)
+    rw [agt_of_ge this]; rfl
+theorem J_clear {s : State} {a : Nat} {f : Agent → Agent} (hf : ∀ g, (f g).believes = []) (h : J s) : J (setAg s a f) :=
+  J_setAg (fun u hu => by rw [hf] at hu; cases hu) (fun u hu => by rw [hf] at hu; cases hu) h
+
+theorem J_endAgent {s : State} {a : Nat} (h : J s) : J (endAgent s a) := by
+  have hf : ∀ g : Agent, ({ g with st := .ended, boot := false, believes := [] } : Agent).believes = [] := fun _ => rfl
+  have h1 := J_clear (s := s) (a := a) hf h
+  have hbel := bel_clear (s := s) (a := a) hf
+  refine J_tasks (s := setAg s a fun g => { g with st := .ended, boot := false, believes := [] }) rfl rfl rfl
+    (fun b u hu _ hd => ?_) h1
+  have hba : b ≠ a := by rintro rfl; rw [hbel] at hu; cases hu
+  unfold HD; rw [endAgent_tk]
+  have hd' : held (s.tk u) b = true ∨ (s.tk u).st = .dropped := hd
+  split
+  · rename_i hh
+    rcases hd' with e | e
+    · exact absurd (held_unique e hh) hba
+    · exact absurd e (held_not_dropped hh)
+  · exact hd'
+
+/-- a spawn: a new agent in slot a, believing nothing, holding a task that was open -/
+theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk t).st = .opn) (h : J x) :
+    J (spawnFor c pl x t) := by
+  unfold spawnFor; split
+  · rename_i a _
+    split
+    · have hf : ∀ g : Agent, ((fun _ => { (default : Agent) with st := .idle, boot := true }) g : Agent).believes = [] :=
+        fun _ => rfl
+      have h1 := J_clear (s := x) (a := a) hf h
+      have hbel := bel_clear (s := x) (a := a) hf
+      have h2 : J { setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true }) with
+          cursor := x.cursor.set a x.log.length, start := x.start.set a x.log.length, seen := x.seen.set a [] } := by
+        refine J_of h1 (fun _ _ ht => ht) (fun b u hu hi => ?_) (fun _ _ _ _ hd => Or.inr hd)
+        have hu' : u ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true })).agt b).believes := hu
+        have hba : ¬ a = b := by rintro rfl; rw [hbel] at hu'; cases hu'
+        refine ⟨hi.1, ?_⟩
+        obtain ⟨i, i1, r⟩ := hi.2
+        refine ⟨i, ?_, r⟩
+        show (x.cursor.set a x.log.length).getD b 0 < i
+        rw [getD_set, ite_eq_right (fun e => hba e.1)]; exact i1
+      refine J_setTask (fun b hd => ?_) h2
+      have hd' : held (x.tk t) b = true ∨ (x.tk t).st = .dropped := hd
+      rcases hd' with e | e
+      · simp [held, hopn] at e
+      · rw [hopn] at e; cases e
+    · exact h
+  · exact h
+
+theorem J_tickOf {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c s) (h : J s) :
+    InbInv c (tickOf c s) ∧ J (tickOf c s) :=
+  tick_inv (fun x => InbInv c x ∧ J x)
+    (fun x t hx => ⟨ii_reapTask hx.1, J_reapTask hfix (fun a => (hx.1.2.2 a).1) hx.2⟩)
+    (fun x hx => ⟨ii_frame rfl rfl rfl rfl rfl hx.1, J_frame rfl rfl rfl rfl hx.2⟩)
+    (fun x a hx => ⟨ii_endAgent hx.1, J_endAgent hx.2⟩)
+    (fun x a pl hx => ⟨ii_post (ii_setAg (fun _ => Or.inl rfl) hx.1), J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hx.2)⟩)
+    (fun pl x t hx hopn => ⟨ii_spawnFor hx.1, J_spawnFor hopn hx.2⟩) ⟨hi, h⟩
+
+theorem fc_owns {c : Cfg} {s : State} {a : Nat} (h : firstClaimed c s a ≠ 0) :
+    (s.tk (firstClaimed c s a)).st = .claimed ∧ (s.tk (firstClaimed c s a)).owner = some a := by
+  unfold firstClaimed at h ⊢
+  cases hf : c.tasks.find? (ownsClaimed s a) with
+  | none => simp [hf] at h
+  | some t => simpa [ownsClaimed] using List.find?_some hf
+theorem own_unique {s : State} {a t : Nat} (h : (s.tk t).owner = some a) : ∀ b, held (s.tk t) b = true → b = a := by
+  intro b hb; simp [held, h] at hb; exact hb.1.symm
+theorem J_claim {c : Cfg} {s : State} {a t : Nat} (hopn : (s.tk t).st = .opn) (h : J s) : J (takes c (claimed s a t) a t) := by
+  refine J_takes ?_ (J_setTask (fun b hd => ?_) h)
+  · unfold claimed; rw [tk_setTask_self (by rw [hopn]; simp)]; simp [held]
+  · rcases hd with e | e
+    · simp [held, hopn] at e
+    · rw [hopn] at e; cases e
+
+theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) : J s := by
+  refine reachable_induct ?_ ?_ h
+  · have hb : ∀ a, ((init c).agt a).believes = [] := fun a => by
+      simp only [State.agt, init, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[a]? <;> rfl
+    exact ⟨fun a t ht => (by rw [hb] at ht; cases ht), fun a b t ht => (by rw [hb] at ht; cases ht)⟩
+  intro s s' act hr hs hstep
+  have hI := inbInv_of_reachable hr
+  have hP := pfx_of_reachable hr
+  open_step hstep
+  case claim a t =>
+    obtain ⟨hg, rfl⟩ := hstep
+    simp [startable] at hg
+    exact J_claim hg.2.1 hs
+  case claimRead a t => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case claimWrite a =>
+    obtain ⟨_, rfl⟩ := hstep
+    split
+    · rename_i hc; simp at hc
+      exact J_setAg_same (fun _ => rfl) (fun _ => rfl)
+        (J_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading) rfl rfl rfl rfl (J_claim hc.1 hs))
+    · exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case renew a t =>
+    obtain ⟨hg, rfl⟩ := hstep
+    exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e) hs
+  case block a t =>
+    obtain ⟨hg, rfl⟩ := hstep
+    simp [ownsClaimed] at hg
+    exact J_setTask (fun b hd => by
+      rcases hd with e | e
+      · left; simp [held] at e ⊢; exact e.1
+      · rw [hg.2.1] at e; cases e) hs
+  case release a t =>
+    obtain ⟨hg, rfl⟩ := hstep; simp [ownsClaimed] at hg
+    exact J_giveup (own_unique hg.2.2) (by rw [hg.2.1]; simp) hs
+  case done a t ev =>
+    obtain ⟨hg, rfl⟩ := hstep; simp [ownsClaimed] at hg
+    exact J_giveup (own_unique hg.1.2.2) (by rw [hg.1.2.1]; simp) hs
+  case dropOwn a t =>
+    obtain ⟨hg, rfl⟩ := hstep; simp at hg
+    exact J_giveup (fun b hb => held_unique hb hg.2) (held_not_dropped hg.2) hs
+  case lock a p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
+  case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
+  case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
+  case postTo a b u => obtain ⟨_, rfl⟩ := hstep; exact J_post hs
+  case readAll a => obtain ⟨_, rfl⟩ := hstep; exact J_deliver hs
+  case stop a big =>
+    obtain ⟨hg, rfl⟩ := hstep; simp [busy] at hg
+    exact J_setAg_act (fun _ => rfl) (by simp [active, hg.1.1]) hs
+  case wake a => obtain ⟨_, rfl⟩ := hstep; exact J_wake (fun _ => rfl) hs
+  case wakeRead a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case wakeWrite a =>
+    obtain ⟨_, rfl⟩ := hstep
+    refine J_setAg_same (fun _ => rfl) (fun _ => rfl) (J_wake (fun _ => rfl) ?_)
+    split
+    · exact hs
+    · exact J_showAll (fun j hj => ((hI.2.2 a).2.1 j hj).2) hs
+  case prompt a => obtain ⟨_, rfl⟩ := hstep; exact J_wake (fun _ => rfl) hs
+  case boot a =>
+    obtain ⟨_, rfl⟩ := hstep
+    split
+    · rename_i ht
+      refine J_takes ?_ (J_wake (fun _ => rfl) hs)
+      have := fc_owns (c := c) (s := s) (a := a) (by omega)
+      have htk : ∀ (x : State) (u : Nat), x.task = s.task → x.tk u = s.tk u := fun x u e => by simp [State.tk, e]
+      rw [htk _ _ (by simp)]
+      simp [held, this.1, this.2]
+    · exact J_wake (fun _ => rfl) hs
+  case waiterGone a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case age a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case expire t =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e) hs
+  case leave a =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_endAgent (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
+  case hcPrompt a =>
+    obtain ⟨hg, rfl⟩ := hstep; simp [busy] at hg
+    refine J_setTask (fun b hd => ?_) (J_setAg_act (fun _ => rfl) (by simp [active, hg.1]) hs)
+    have hd' : held (s.tk (firstClaimed c s a)) b = true ∨ (s.tk (firstClaimed c s a)).st = .dropped := hd
+    rcases hd' with e | e
+    · left; simp [held] at e ⊢; exact e.1
+    · exfalso
+      by_cases h0 : firstClaimed c s a = 0
+      · rw [h0] at e; simp [State.tk] at e
+      · rw [(fc_owns h0).1] at e; cases e
+  case hcClear a =>
+    obtain ⟨_, rfl⟩ := hstep
+    refine J_wake (fun _ => rfl) (J_tasks (s := s) rfl rfl rfl (fun b u _ _ hd => ?_) hs)
+    unfold HD
+    rw [tk_map (s := s) (g := fun k =>
+      if k.owner == some a && k.st == .blocked && k.hcq then { k with st := .claimed, hcq := false, lease := true } else k)
+      (by simp) rfl]
+    split
+    · rcases hd with e | e
+      · left; simp [held] at e ⊢; exact e.1
+      · rename_i hh; simp [e] at hh
+    · exact hd
+  case add deps =>
+    obtain ⟨hg, rfl⟩ := hstep
+    obtain ⟨n, h2, h3⟩ := hP
+    have habs : (s.tk (nextTask s)).st = .absent := by
+      have := h3 (nextTask s)
+      rw [nextTask_eq h2 h3] at this ⊢
+      by_cases e : (s.tk (n + 1)).st = .absent
+      · exact e
+      · have := this.mp e; omega
+    exact J_setTask (fun b hd => by
+      rcases hd with e | e
+      · simp [held, habs] at e
+      · rw [habs] at e; cases e) hs
+  case after t deps =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e) hs
+  case unblock t =>
+    split at hstep
+    · rename_i o ho
+      rw [when_eq_some] at hstep; obtain ⟨hg, rfl⟩ := hstep; simp at hg
+      refine J_frame (s := post (setTask s t _) _) rfl rfl rfl rfl (J_post (J_setTask (fun b hd => ?_) hs))
+      rcases hd with e | e
+      · left; simp [held] at e ⊢; exact e.1
+      · rw [hg] at e; cases e
+    · cases hstep
+  case drop t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask (fun b _ => Or.inr rfl) hs
+  case tick => obtain ⟨_, rfl⟩ := hstep; exact (J_tickOf hfix hI hs).2
+
+/-- S1. With PR #111 (reap reopens a lapsed claim only when its owner is idle), no task has two agents at work
+on it. -/
+theorem oneWorker_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) :
+    oneWorker s = true := by
+  have hJ := J_of_reachable hfix h
+  simp only [oneWorker, List.all_eq_true, List.mem_range, Bool.or_eq_true, beq_iff_eq]
+  intro a _ b _
+  by_cases hab : a = b
+  · exact Or.inl hab
+  right
+  cases ha : active (s.agt a) <;> cases hb : active (s.agt b) <;> simp
+  intro t hta htb
+  exact hab (hJ.2 a b t hta htb (fun hi => by have := hi.1; rw [ha] at this; cases this)
+    (fun hi => by have := hi.1; rw [hb] at this; cases this))
+
+end Swarm
