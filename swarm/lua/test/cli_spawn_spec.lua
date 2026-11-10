@@ -115,6 +115,19 @@ function T.test_auto_spawn_gives_up_after_k_failures(t)
 end
 
 -- ---- spawn ----
+function T.test_spawn_effort(t)
+  t:fakes(); two_haiku(t)
+  local function effort(x) for j, a in ipairs(x.argv) do if a == "--effort" then return x.argv[j + 1] end end end
+  t:sw("a", "spawn", "t-8", "--", "go")
+  t:eq(effort(t:launched()[1]), nil)  -- omitted: claude's own setting
+  t:sw("a", "spawn", "t-9", "--effort", "medium", "--", "go")
+  t:eq(effort(t:launched()[2]), "medium")
+  t:has(t:sw("a", "spawn", "t-7", "--effort", "huge", "--", "go", { ok = false }).stderr, "must be one of")
+  t:sw("a", "task", "add", "do it", "--effort", "low")  -- auto-spawn carries the task's effort
+  tick(t, 5)
+  t:eq(effort(t:launched()[3]), "low")
+end
+
 function T.test_spawn_task_claims_before_launch(t)
   t:fakes()
   t:sw("a", "task", "add", "do it")

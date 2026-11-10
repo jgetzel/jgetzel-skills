@@ -176,8 +176,8 @@ function M.cmd_task(c, a)
       no_task_to_wait_on(c, deps)
       local ds = {}
       for i, x in ipairs(deps) do ds[i] = d(x) end
-      c:exec("insert into task(title,body,created_by,deps,model,created_at) values(?,?,?,?,?,?)",
-        a.title, a.body, n, py(table.concat(ds, ",")), a.model, t)
+      c:exec("insert into task(title,body,created_by,deps,model,effort,created_at) values(?,?,?,?,?,?,?)",
+        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, t)
       local id = c:last_id()
       db.log(c, n, "task-add", nil, ("#%s %s"):format(d(id), a.title))
       return id

@@ -36,6 +36,7 @@ local stdlib = require "posix.stdlib"
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
   ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", lock = "locks", unlock = "locks",
   machine = "machine", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
+local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
 
 local function int(s)  -- Python's type=int
@@ -65,6 +66,7 @@ local function parser()
   local p = ap:command("spawn")
   p:argument("name")
   opt(p, "--model", "sonnet")
+  opt(p, "--effort"):choices(EFFORTS):description("claude --effort for the new agent (default: its settings)")
   opt(p, "--task", nil, int):target("task_id"):description("claim this board task for the new agent before launching")
   p:argument("task"):args("*")
   p = ap:command("join")
@@ -94,6 +96,7 @@ local function parser()
   opt(q, "--body", "")
   opt(q, "--after", nil, id_list):description("ids it waits on: 3 or 3,5")
   opt(q, "--model")
+  opt(q, "--effort"):choices(EFFORTS)
   q = p:command("after")  -- change an open task's dependencies; an empty list clears them
   q:argument("id"):convert(int)
   q:argument("deps"):args("?"):convert(id_list)
@@ -147,6 +150,7 @@ local function parser()
   opt(p, "--max-agents", nil, int):description("cap for auto-spawn (default: live agents now)")
   opt(p, "--min-free-mem", 4, tonumber):description("GiB of MemAvailable needed to auto-spawn")
   opt(p, "--model"):description("model for auto-spawned agents (default: the most common)")
+  opt(p, "--effort"):choices(EFFORTS):description("effort for auto-spawned agents (default: their settings)")
   p = ap:command("hook")
   p:argument("event"):choices({ "pre-tool", "post-tool", "prompt", "stop", "session" })
   return ap
