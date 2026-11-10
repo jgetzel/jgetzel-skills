@@ -263,7 +263,7 @@ export default class Swarm extends View {
   statusColor(t, s) { return { working: t.working, idle: t.idle, blocked: t.blocked, ended: t.dim }[s] ?? t.unknown; }
   statusText(t, a) {
     return div().text_size(10.5).flex_none().text_color(a.status === "idle" ? t.dim : this.statusColor(t, a.status))
-      .child(a.status === "idle" ? `idle ${ago(a.idle_s)}` : a.status);
+      .child(a.status === "idle" ? (a.stay ? "staying" : `idle ${ago(a.idle_s)}`) : a.status);
   }
   cacheChip(t, a, long) {
     if (a.status === "ended") return null;
@@ -419,6 +419,7 @@ export default class Swarm extends View {
         .child(this.dot(this.statusColor(t, a.status)).when(a.status === "working", el => el.loop("opacity", { from: 0.35, to: 1, period: 1400 })))
         .child(div().font_semibold().text_size(12.5).flex_none().child(a.name))
         .child(this.statusText(t, a)).child(div().flex_1())
+        .when(Boolean(a.role), el => el.child(this.chip(t, a.role, t.ansi4, true)))
         .when(!compact && Boolean(a.model), el => el.child(this.chip(t, a.model)))
         .child(this.cacheChip(t, a) ?? div())
         .when(narrow, el => el.child(this.chev(t, open ? "up" : "down"))))
@@ -529,14 +530,15 @@ export default class Swarm extends View {
         .child(h_flex().gap(8).items_center().min_w(0)
           .child(this.dot(this.statusColor(t, a.status), 10).when(a.status === "working", el => el.loop("opacity", { from: 0.35, to: 1, period: 1400 })))
           .child(div().flex_none().text_size(17).font_semibold().child(a.name))
-          .when(!isComms, el => el.child(div().flex_none().text_color(t.muted).child(a.status === "idle" ? `idle ${ago(a.idle_s)}` : a.status)))
+          .when(!isComms, el => el.child(div().flex_none().text_color(t.muted).child(a.status === "idle" ? (a.stay ? "staying" : `idle ${ago(a.idle_s)}`) : a.status)))
+          .when(Boolean(a.role), el => el.child(this.chip(t, a.role, t.ansi4, true)))
           .when(Boolean(a.model), el => el.child(this.chip(t, a.model)))
           .when(!isComms, el => el.child(this.cacheChip(t, a, true) ?? div()))
           .child(div().flex_1())
           .when(Boolean(focusAddr(a)), el => el.child(this.btn(t, `focus-${a.name}`, this.width < 760 && this.width >= 520 ? "↗" : "Focus terminal ↗", () => run("agent.focus", { terminal: focusAddr(a) })))))
         .child(div().pl(18).text_size(10.5).text_color(t.dim).whitespace_normal()
           .child([isComms ? "the comms" : null, a.started ? `started ${hhmm(a.started)}` : null, a.ended ? `ended ${hhmm(a.ended)}` : null, a.hc ? `terminal ${a.hc}` : null,
-            isComms ? "no idle or cache timer: it only sees swarm activity" : null].filter(Boolean).join(" · "))))
+            isComms ? "no idle or cache timer: it only sees swarm activity" : null, a.stay ? `staying: ${a.stay}` : null].filter(Boolean).join(" · "))))
       .child(task
         ? v_flex().gap(5).px(12).py(10).rounded(8).bg(t.background).border_1().border_color(task.state === "blocked" ? t.blocked + "88" : t.border)
           .child(h_flex().gap(6).items_center().text_size(10.5).text_color(t.dim)
@@ -1135,6 +1137,10 @@ const KIND = Object.fromEntries(Object.entries({
   "job-end": ["cpu", "machine", "Run finished", "A build or test on another machine finished.", "", 0],
   "remote-clean": ["trash", "machine", "Run cleaned up", "A finished run's copy on another machine was removed.", "", 0],
   "orphan-kill": ["zap", "machine", "Process stopped", "The swarm stopped a heavy process an agent left running. Nothing for you to do.", "warn", 1],
+  role: ["users", "agents", "Role", "An agent named what it is doing now. Nothing for you to do.", "", 0],
+  stay: ["clock", "agents", "Staying", "An agent said what it is waiting for, so the swarm keeps it while idle. Nothing for you to do.", "", 0],
+  "stay-end": ["log-out", "agents", "Stay over", "An agent stopped staying and is treated like any idle agent.", "", 0],
+  quiet: ["info", "agents", "Swarm quiet", "No task is open or claimed. Staying agents were told.", "", 0],
   other: ["dot", "other", "Other", "An event this panel has no description for.", "", 0],
 }).map(([k, [icon, group, label, what, level, show]]) => [k, { icon, group, label, what, level, show: Boolean(show) }]));
 // Runs of these, within two minutes, fold into one summary row; `same`: only by the same agent.
