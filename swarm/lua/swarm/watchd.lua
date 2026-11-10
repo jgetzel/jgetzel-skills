@@ -389,7 +389,7 @@ function M.lifecycle(c, t, comms, terms, opts)
     local name = nz(bo_name)
     if not name then top = top + 1; name = prefix .. d(top) end
     local model = nz(task.model) or nz(opts.model) or common
-    local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, task_id = task.id, task = {} })
+    local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, effort = nz(task.effort) or nz(opts.effort), task_id = task.id, task = {} })
     if ok then
       c:exec("delete from meta where k='spawn_backoff'")
       c:exec("delete from meta where k='spawn_fails'")
@@ -598,7 +598,7 @@ function M.cmd_watchd(c, a)
       if x.name ~= comms then cap = cap + 1 end
     end
   end
-  local opts = { max_agents = cap, min_free_gib = a.min_free_mem, model = a.model, interval = a.interval }
+  local opts = { max_agents = cap, min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval }
   while true do
     local cur = c:one("select v from meta where k='watchd'")
     if not cur or cur.v ~= mine then
@@ -621,7 +621,7 @@ function M.cmd_spawn(c, a)
       task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
     end
   end
-  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--task N] -- <task>") end
+  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--task N] -- <task>") end
   local here = os.getenv("SWARM_HERE")
   local self_ = util.join(here, "swarm")
   local dbp = db.dbpath()
@@ -644,7 +644,9 @@ function M.cmd_spawn(c, a)
   local rules = c:one("select v from meta where k='rules'")
   if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
   local launch = agents.env("SWARM_LAUNCH") or util.join(here, "..", "relaunch", "launch.sh")  -- tests point this at a fake
-  local out, err, code = proc.exec({ launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf })
+  local argv = { launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf }
+  if a.effort then argv[#argv + 1] = "--effort"; argv[#argv + 1] = a.effort end
+  local out, err, code = proc.exec(argv)
   if code ~= 0 then out = nil end
   M.launch_err = (util.strip(err or ""):gsub("\n.*", ""))  -- launch.sh's reason, for the watchd notice
   if out == nil then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name

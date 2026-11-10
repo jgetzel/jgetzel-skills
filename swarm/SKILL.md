@@ -63,12 +63,13 @@ with subagents.
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:
-   `swarm spawn <prefix>-<n> --model <m> [--task N] -- "<area and first tasks>"`.
+   `swarm spawn <prefix>-<n> --model <m> [--effort <e>] [--task N] -- "<area and first tasks>"`.
    With `--task N` the new agent's name and task #N are reserved in one step
    before launch (rolled back if the launch fails); the text may be omitted.
    Pick the model by kind of work: Opus for planning and hard diagnosis,
    Sonnet for building to a spec, Haiku for mechanical work. Mix models where
-   a decision matters. Start with the agents the work can use; the user
+   a decision matters. `--effort low|medium|high|xhigh|max` sets the agent's
+   Claude Code effort (default: its settings). Start with the agents the work can use; the user
    decides the count.
 
 ## 2. Steer
@@ -90,7 +91,7 @@ with subagents.
   and has no process in it, and deletes its branch: tell the user before the
   first watchd if they park worktrees here. When all tasks are done, tell
   the user. `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
-- **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M]` keeps a
+- **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.
   `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
 

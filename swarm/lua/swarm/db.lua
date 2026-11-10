@@ -13,7 +13,8 @@ create table if not exists msg(id integer primary key autoincrement, ts int, frm
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
 create table if not exists task(id integer primary key autoincrement, title text, body text,
-  state text default 'open', owner text, lease_until int, created_by text, evidence text, deps text, model text, question text);
+  state text default 'open', owner text, lease_until int, created_by text, evidence text, deps text, model text, question text,
+  effort text);
 create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
 create table if not exists pairkey(a text, b text, key text, primary key(a,b));
@@ -29,7 +30,7 @@ M.COLUMNS = { { "agent", "wt text" }, { "lock", "seen int default 0" }, { "task"
   { "agent", "claude_pid int" }, { "task", "created_at int" }, { "task", "first_claimed_at int" }, { "task", "done_at int" },
   { "task", "dropped_at int" }, { "task", "pr int" }, { "task", "merged_at int" }, { "task", "ci_conclusion text" },
   { "task", "ci_green_at int" }, { "task", "claim_ctx int" }, { "task", "done_ctx int" }, { "task", "deps text" },
-  { "ci", "workflow text" }, { "task", "answer text" } }
+  { "ci", "workflow text" }, { "task", "answer text" }, { "task", "effort text" } }
 
 local DB = {}
 DB.__index = DB
