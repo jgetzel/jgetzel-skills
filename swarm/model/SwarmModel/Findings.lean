@@ -52,17 +52,20 @@ example : (run {} [.dirty 0 true true, .dirty 0 true false, .stop 0 false, .age 
     (fun s => (s.agt 0).st == .ended) = true := by decide
 
 -- ---------- liveness ----------
-/-- The actions fairness makes happen if they stay enabled: watchd ticks, leases lapse, idle agents age, a spawned
+/-- The actions fairness makes happen if they stay enabled: watchd ticks (and so the reap of a row whose terminal `hc ls` no longer lists), leases lapse, idle agents age, a spawned
 agent boots, a waiter with a message it wakes on wakes, an hc prompt is answered, a working agent reads its
 messages and takes work, a background job ends, and the second half of a split command follows the first. -/
-def fair (c : Cfg) : List Action :=
-  .tick :: c.tasks.map .expire ++ c.agents.flatMap fun a =>
+def fair (c : Cfg) (s : State) : List Action :=
+  .tick :: c.tasks.map .expire ++ c.agents.map .reapGone ++ (c.agents.filter fun a => !(s.agt a).dead).flatMap fun a =>
     [.age a, .bgEnd a, .nudge a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
       ++ c.tasks.map (.claim a) ++ c.tasks.map (.claimRead a)
-/-- no fair action is enabled: a fair run may stay in this state forever -/
-def stuck (c : Cfg) (s : State) : Bool := (fair c).all fun act => (step c s act).isNone
+/-- no fair action is enabled: a fair run may stay in this state forever. A dead agent's own actions don't count:
+it does nothing more. -/
+def stuck (c : Cfg) (s : State) : Bool := (fair c s).all fun act => (step c s act).isNone
 /-- does the run end in a state that is stuck with `p` true? Then `p` is true forever on a fair run. -/
 def stuckWith (c : Cfg) (acts : List Action) (p : State → Bool) : Bool := (run c acts).any fun s => stuck c s && p s
+/-- L4: a row that reads as live whose terminal is gone -/
+def deadLive (s : State) (a : Nat) : Bool := (s.agt a).live && (s.agt a).dead
 /-- what L1 forbids forever: a startable task and a free slot -/
 def idleSlot (c : Cfg) (s : State) : Bool := slotFree c s && !(pool c s).isEmpty
 
@@ -88,7 +91,22 @@ example : let c : Cfg := { waiterAlive := false }
     stuckWith c [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
       (fun s => idleSlot c s && !answered s 1) = true := by decide
 
+-- #14, L4 (a dead agent is ended). Agent 0 holds #1 and its terminal dies with no `swarm leave`. With no watchd
+-- (`watchd := false`) nothing ever ends the row: it reads as live (`swarm who` and `swarm post` show it gone, from
+-- `hc ls` at read time, but the row stays), and its claim stays with it. Agent 1's message to it is stored, unread.
+example : stuckWith { watchd := false } [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = true := by decide
+example : stuckWith { watchd := false } [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1]
+    (fun s => ownsClaimed s 0 1 && !(unread s 0).isEmpty) = true := by decide
+
+-- #15, L4. watchd runs but can't tell: `hc ls` doesn't answer (`hcSees := false`: `live_addrs` is nil, no row is judged
+-- dead), or the row has no hc address (`unbound`, e.g. a communicator that joined from outside hc). The dead agent was
+-- working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and the task stays claimed forever.
+example : stuckWith { hcSees := false } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide
+example : stuckWith { unbound := [0] } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide
+
 -- The same runs with the fix on: none ends stuck.
+example : stuckWith {} [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = false := by decide
+example : stuckWith {} [.add [], .claim 0 1, .die 0, .expire 1] (deadLive · 0) = false := by decide
 example : stuckWith { nagents := 1, roster := 1 }
     [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = false := by decide
 example : stuckWith { nagents := 1, roster := 1 }

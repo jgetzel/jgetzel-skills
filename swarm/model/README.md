@@ -19,7 +19,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the thirteen counterexamples as runs, and the same runs with the fix on |
-| `SwarmModel/Liveness.lean` | the part of L2 that is proved |
+| `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -48,6 +48,11 @@ One value holds the whole state; every watchd tick is a pure function of it, com
   Stop hook's `swarm wait`), small or big context, cold or not (idle past the prompt cache with a big context).
   An agent's slot is reused by the next spawn after it ends (the Lua gives that agent the next name; the replay
   maps slots to names).
+- **Dead terminals**: `die` ends an agent's terminal with no `swarm leave`: its row stays as it was (it reads as
+  live), it has no waiter, and it does nothing more (`dead`). Watchd's reap ends such a row (`reapGone`: the same as
+  `leave`) only if watchd runs (`Cfg.watchd`), `hc ls` answers (`hcSees`: else `live_addrs` is nil) and the row has an hc
+  address (`unbound` lists the slots without one). `swarm who` and `swarm post` split rows by `hc ls` at read time, so
+  they show a dead row gone even with no watchd; that does not change the row, which the model keeps as live.
 - **Messages** are one log with a cursor per agent. A hook, `swarm read`, a wake, a boot and the end of an hc
   prompt deliver every unread message. The waiter wakes the agent on an urgent message, or on any message if
   the agent isn't cold.
@@ -105,6 +110,9 @@ reads its messages and takes work):
 - **L2** A claimed task whose owner is idle is eventually done or open again, unless its owner gets back to
   work. `idleClaim`
 - **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `answered`
+- **L4** A row whose terminal is gone is eventually ended (its claims and locks released). Its negation in one state:
+  `deadLive`. Fairness: watchd ticks, and an `hc ls` that lists the terminal as gone. `watchd := false` (no watchd), a
+  failing `hc ls`, and an unbound row each break it (findings #14, #15)
 
 ## Results
 
@@ -138,7 +146,7 @@ What carries each proof:
 
 Liveness is proved only this far: `idleClaim_not_stuck` says that with PR #110 or #111 a state where an idle
 agent holds a claim on a task of the instance always has a fair action enabled (the lease lapses, the owner's background job ends, or the tick reopens the task and tells
-the owner: `tick_reopens`). That every fair run then reaches "done or open again" is not proved, and nothing
+the owner: `tick_reopens`). `deadLive_not_stuck` is L4's part: with watchd running, `hc ls` answering and the row bound, a dead live row always has the reap enabled. That every fair run then reaches "done or open again" is not proved, and nothing
 general is proved for L1 or L3: with the fixes on, the runs of findings #1, #3, #8 and #9 no longer end stuck,
 which is a check of those runs only.
 
@@ -166,13 +174,24 @@ Lua.
 | 12 | work loss | `allWts := false` / the run | An agent owns two worktrees; `wt_map` picks the landed one, the other holds work not on main, and lifecycle ends the agent mid-task. | PR #123 (board #116) |
 | 13 | stuck, silent | `uncleanNudge := false` / the run | An agent idle 30 min with an unclean worktree and nothing else holding it: no action is enabled, forever, and nobody is told. With the fix `nudge` is enabled and its urgent message wakes the waiter; a second nudge is refused until the agent has woken and stopped again. | PR #122 (board #114) |
 
-Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent with unlanded work, or that the nudge makes the agent clean (it can ignore it). Nothing is open: every counterexample above has a fix on main.
+Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent with unlanded work, or that the nudge makes the agent clean (it can ignore it). 
+| 14 | L4 | `watchd := false` / `deadLive_not_stuck` | An agent holding #1 loses its terminal. With no watchd nothing ends the row: `swarm who` and `swarm post` show it gone, but it stays live, keeps its claim, and a message to it is stored unread. | open: run watchd, or end the row by hand (`swarm leave` is the agent's own) |
+| 15 | L4 | `hcSees := false`, or `unbound := [0]` / `deadLive_not_stuck` | watchd runs but can't tell. The dead agent was working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and #1 stays claimed forever. An unbound row is a communicator that joined from outside hc; `hc ls` failing makes `live_addrs` nil for every row. | open |
+
+Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed.
+
+The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
+its sender is told" is read from the code, not proved: watchd posts its notices (`lease-late`, `blocked on #N`, idle
+unclean worktrees, quiet) to the communicator's name, `msgs.post` stores them whether or not that row is live, and
+only `swarm post` says anything of the recipient (`no terminal; can't be delivered now`, from `hc ls` at read time).
+So a notice to a dead or unbound communicator, or posted before its terminal died, reaches no one and tells no one:
+the same two causes as #14 and #15, and the sender of a notice is watchd.
 
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L2
-and L3 as statements about fair runs.
+is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L2,
+L3 and L4 as statements about fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
@@ -192,7 +211,7 @@ the communicator is a notice), and none of this is replayed through the CLI (`Tr
 `stale` or `nudge`: PR #122's and #123's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
 launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`); `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
-(`compacted_at`: the model's log only grows); notices to the communicator; the 9000-character delivery budget
+(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 
