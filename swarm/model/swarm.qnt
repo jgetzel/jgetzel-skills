@@ -11,12 +11,12 @@ module swarm {
   const RELEASE: str       // which lapsed claims reap reopens: "ended" (before #106), "notWorking" (b04cf08), "idle" (now)
   const ANSWER_ON_TASK: bool // unblock --answer is stored on the task (since #106)
   const RACY: bool         // claim, and the waiter's delivery, are a read then a write, as the Lua runs them
-  const CLAIM_CHECKS_DEPS: bool // claim's write rechecks the deps (since #112); before, only state='open'
-  // (task done --evidence "" is accepted before #113: "emptyEvidence" in OFF is the code since)
-  const LOCK_OVERLAP: bool // swarm lock refuses any common file (since #114); before, only one covering the other
-  const DELIVER_CAS: bool  // a delivery moves the cursor only from where it read, else reads again (since #115)
-  const PASSED_OVER: bool  // lifecycle ends a reusable agent told of the whole pool, inbox read, idle again (since #116)
-  const WAITER_ALIVE: bool // lifecycle keeps an agent reusable only while its waiter is alive (since #119)
+  const CLAIM_CHECKS_DEPS: bool // claim's write rechecks the deps (since PR #112); before, only state='open'
+  // (task done --evidence "" is accepted before PR #113: "emptyEvidence" in OFF is the code since)
+  const LOCK_OVERLAP: bool // swarm lock refuses any common file (since PR #114); before, only one covering the other
+  const DELIVER_CAS: bool  // a delivery moves the cursor only from where it read, else reads again (since PR #115)
+  const PASSED_OVER: bool  // lifecycle ends a reusable agent told of the whole pool, inbox read, idle again (since PR #116)
+  const WAITER_ALIVE: bool // lifecycle keeps an agent reusable only while its waiter is alive (since PR #119)
   // what the environment can't do in this instance, so the checker can exhaust it: "deps" (add --after, task after),
   // "block" (block, unblock), "big" (a context too big to reuse), "cold", "waiterGone" (the Stop hook's waiter
   // times out at 21000 s), "leave" (swarm leave, a dead terminal), "hc" (permission prompts), "prompt" (a turn the
@@ -43,7 +43,7 @@ module swarm {
   pure def covers(x: str, pat: str): bool = COVERS.contains((x, pat))
   // what a lock is for: some file both patterns cover
   pure def overlap(p: str, q: str): bool = PATHS.exists(f => covers(f, p) and covers(f, q))
-  // what `swarm lock` refuses: before #114, either pattern covering the other taken as a path; since, any common file
+  // what `swarm lock` refuses: before PR #114, either pattern covering the other taken as a path; since, any common file
   pure def refuses(p: str, q: str): bool = if (LOCK_OVERLAP) overlap(p, q) else covers(p, q) or covers(q, p)
 
   // ---------- state ----------
@@ -161,8 +161,8 @@ module swarm {
   }
   pure def lifecycle(st: State): State = {
     val pl = pool(st)
-    // since #116 one told of the whole pool, its inbox read, has passed it over: ended, not reusable;
-    // since #119 one with no live waiter (it would never read a digest) is ended too
+    // since PR #116 one told of the whole pool, its inbox read, has passed it over: ended, not reusable;
+    // since PR #119 one with no live waiter (it would never read a digest) is ended too
     val reusable = NAMES.filter(a => finished(st, a) and not(st.ag.get(a).big) and pl.size() > 0
       and not(PASSED_OVER and pl.subseteq(st.ag.get(a).told) and unread(st, a).length() == 0)
       and (st.ag.get(a).waiter or not(WAITER_ALIVE)))
@@ -277,7 +277,7 @@ module swarm {
     RACY, s.ag.get(a).snap.length() > 0,
     s' = {
       val snap = s.ag.get(a).snap
-      // since #115 the write fails if another delivery moved the cursor past what was read, and reads again
+      // since PR #115 the write fails if another delivery moved the cursor past what was read, and reads again
       val x1 = if (DELIVER_CAS and s.cursor.get(a) >= snap[0]) deliver(s, a) else showAll(s, a, snap)
       setAg(x1, a, g => { ...g, snap: [], st: "working", waiter: false, aged: false, cold: false })
     }
@@ -501,8 +501,8 @@ module swarm {
 
 
 // ---------- instances ----------
-// The switches record each fix as a before and an after: RELEASE (#106 and its follow-up), CLAIM_CHECKS_DEPS (#112),
-// "emptyEvidence" in OFF (#113), LOCK_OVERLAP (#114), DELIVER_CAS (#115), PASSED_OVER (#116), WAITER_ALIVE (#119).
+// The switches record each fix as a before and an after: RELEASE (#106 and its follow-up), CLAIM_CHECKS_DEPS (PR #112),
+// "emptyEvidence" in OFF (PR #113), LOCK_OVERLAP (PR #114), DELIVER_CAS (PR #115), PASSED_OVER (PR #116), WAITER_ALIVE (PR #119).
 // before: 624cf79, every switch off. first106: b04cf08's reap rule, the rest off. after: main now, every fix on.
 // Those three have every feature on, for `quint run`. The s*_ and l*_ ones are what check.sh hands TLC: two agent
 // slots (a spawn fills an ended one), what the property doesn't need turned off, and the switch under test set as
@@ -537,12 +537,12 @@ module s1_after {  // oneWorker
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "big", "cold", "waiterGone", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module s2_racy {  // noEarlyStart: claim before #112, a read, then a write that checks only state
+module s2_racy {  // noEarlyStart: claim before PR #112, a read, then a write that checks only state
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 3, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("block", "big", "cold", "waiterGone", "leave", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module s2_fixed {  // noEarlyStart: claim since #112: the write rechecks the deps
+module s2_fixed {  // noEarlyStart: claim since PR #112: the write rechecks the deps
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 2, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("block", "big", "cold", "waiterGone", "leave", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
@@ -557,7 +557,7 @@ module s3_globs {  // locksDisjoint: two globs neither of which covers the other
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module s3_fixed {  // locksDisjoint since #114: lock refuses any common file
+module s3_fixed {  // locksDisjoint since PR #114: lock refuses any common file
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = false, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
@@ -572,17 +572,17 @@ module s4_racy {  // inboxExact: the waiter delivers as a read then a write
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
-module s4_fixed {  // inboxExact since #115: the waiter reads, then writes only if the cursor hasn't moved
+module s4_fixed {  // inboxExact since PR #115: the waiter reads, then writes only if the cursor hasn't moved
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
-module s4_atomic {  // inboxExact: every delivery one step; doneHasEvidence before #113
+module s4_atomic {  // inboxExact: every delivery one step; doneHasEvidence before PR #113
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
-module s5_fixed {  // doneHasEvidence since #113: done refuses empty evidence
+module s5_fixed {  // doneHasEvidence since PR #113: done refuses empty evidence
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "block", "big", "cold", "waiterGone", "leave", "hc", "emptyEvidence"), COMPACT = false, MAX_LOG = 3, MAX_POSTS = 2, COMMS = "m-comms") .*
@@ -597,27 +597,27 @@ module l_first106 {  // liveness: waiters never time out
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false, WAITER_ALIVE = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_after {  // liveness: waiters never time out; edffafc, before #116
+module l_after {  // liveness: waiters never time out; edffafc, before PR #116
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false, WAITER_ALIVE = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_fixed {  // liveness since #116: a reusable agent that passed the pool over is ended
+module l_fixed {  // liveness since PR #116: a reusable agent that passed the pool over is ended
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_after_waiter {  // liveness: a waiter may time out; before #116
+module l_after_waiter {  // liveness: a waiter may time out; before PR #116
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false, WAITER_ALIVE = false,
     OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_fixed_waiter {  // liveness since #116, before #119: a waiter may time out
+module l_fixed_waiter {  // liveness since PR #116, before PR #119: a waiter may time out
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = false,
     OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_waiter {  // liveness since #119: a waiter may time out; one without a live waiter is ended
+module l_waiter {  // liveness since PR #119: a waiter may time out; one without a live waiter is ended
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true, WAITER_ALIVE = true,
     OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*

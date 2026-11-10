@@ -51,13 +51,14 @@ Each fix the model found or confirmed is a switch, so the spec records the code 
 
 | Switch | Before | After |
 |---|---|---|
-| `RELEASE` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (#110) reopens it unless the owner is working; `idle`: edffafc (#111) only when the owner is idle |
-| `ANSWER_ON_TASK` | the unblock answer is only a DM | #110 stores it on the task |
-| `CLAIM_CHECKS_DEPS` | `task claim`'s write checks only `state='open'` | #112 checks the dependencies in the write |
-| `"emptyEvidence"` in `OFF` | `done --evidence ""` is accepted | #113 refuses it |
-| `LOCK_OVERLAP` | `lock` refuses only a pattern covering the other | #114 refuses any common file |
-| `DELIVER_CAS` | a delivery's cursor write ignores a delivery in between | #115 writes only from where it read |
-| `PASSED_OVER` | a reusable agent holds spawn back forever | #116 ends one that passed the work over |
+| `RELEASE` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (PR #110) reopens it unless the owner is working; `idle`: edffafc (PR #111) only when the owner is idle |
+| `ANSWER_ON_TASK` | the unblock answer is only a DM | PR #110 stores it on the task |
+| `CLAIM_CHECKS_DEPS` | `task claim`'s write checks only `state='open'` | PR #112 checks the dependencies in the write |
+| `"emptyEvidence"` in `OFF` | `done --evidence ""` is accepted | PR #113 refuses it |
+| `LOCK_OVERLAP` | `lock` refuses only a pattern covering the other | PR #114 refuses any common file |
+| `DELIVER_CAS` | a delivery's cursor write ignores a delivery in between | PR #115 writes only from where it read |
+| `PASSED_OVER` | a reusable agent holds spawn back forever | PR #116 ends one that passed the work over |
+| `WAITER_ALIVE` | an idle agent whose waiter exited is kept reusable, and never reads its digest | PR #119 ends it |
 
 `RACY` splits two commands into the read and the write the Lua does separately: `task claim` (the
 dependency check, then the update) and the waiter's delivery (unread, then the cursor). `OFF` turns off
@@ -65,7 +66,7 @@ parts of the environment an instance doesn't need, so TLC can exhaust it. `COMPA
 whose reader has passed them, so inboxes stay finite.
 
 Instances: `before` (624cf79), `first106` (b04cf08) and `after` (main now) have every feature on, for
-the simulator; `quint run --main after --invariant safety` finds nothing in 2000 random 30-step runs,
+the simulator; `replay` is `after` without hc, what the replay drives; `quint run --main after --invariant safety` finds nothing in 2000 random 30-step runs,
 and `--main before` fails at once. The `s*_` and `l*_` instances are what TLC exhausts.
 
 ## Properties
@@ -101,7 +102,24 @@ RESULTS
 
 ## Findings
 
-FINDINGS
+Every counterexample TLC found, and what fixed it. Each was a real execution of the Lua (the replay
+shows the model is the code), and each fix is a switch above, so `check.sh` shows the bug, then the fix.
+
+| # | Property | Instance | The counterexample | Fixed by |
+|---|---|---|---|---|
+| 1 | L2 | `l_before` | An owner goes idle holding a claim and nothing wakes it; its lease lapses, but reap keeps a lapsed claim while the owner is live, so the task stays claimed forever (task #106, seen live for ~6 h). | b04cf08, PR #110 |
+| 2 | S1 | `s1_first106` | #1's first fix reopens a lapsed claim whenever the owner isn't working, including one stuck at an hc permission prompt; a spawned agent claims it, the prompt is answered, and two agents work on the task. | edffafc, PR #111 |
+| 3 | L3 | `l_before` | An unblock answer is only a DM. An idle owner that is cold isn't woken by a non-urgent message, so the answer never reaches it, and no one else can read it. | b04cf08, PR #110 (`ANSWER_ON_TASK`) |
+| 4 | S2 | `s2_racy` | `task claim` checks the dependencies, then a `task after` adds one that isn't done, then the claim's write (`where state='open'`) succeeds: a task starts before what it is after. | 58e9aa6, PR #112 |
+| 5 | S5 | `s4_atomic` | `task done --evidence ""` is accepted. | 89fe2a2, PR #113 |
+| 6 | S3 | `s3_globs` | `m/a*` and `m/*.lua` both match `m/a.lua`, but neither covers the other as a path, so both locks are granted. | cc63217, PR #114 |
+| 7 | S4 | `s4_racy` | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
+| 8 | L1, L3 | `l_after` | A small-context idle agent is reusable while work is open; it reads the digest and stops without taking the task (it may), and lifecycle keeps it reusable, so it spawns no one for a startable task with a free slot. | 1ac83b1, PR #116 |
+| 9 | L1, L3 | `l_fixed_waiter` | The same with a waiter that timed out (21000 s): the agent never reads the digest, so it stays reusable and holds spawn back; an answer to it goes unread. | aeaf44f, PR #119 (board #113) |
+
+Still failing, by design: in `l_after_waiter`, the same model as #9 with PR #116's rule off, L1 and L3 fail
+for both reasons. Nothing is open: every counterexample above has a fix on main. The model doesn't yet
+cover PRs #121–#124 (see *Not modelled*); board tasks #118 and #119 add them.
 
 ## What is proved, what is replayed, what isn't modelled
 
@@ -113,16 +131,24 @@ are real executions of the model at any size.
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a trace runs the command
 it stands for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time
 and the world, writes the db (`lease_until` in the past, `last_active` back 200 s or 4000 s,
-`ctx_tokens`), and then the db must match the model: every task's state, owner, live lease, evidence and
+`ctx_tokens`, the waiter's pid: the test's own while the model's waiter is alive, none once it is gone),
+and then the db must match the model: every task's state, owner, live lease, evidence and
 answer; every agent's status; every lock; every message to an agent, in order; and each agent's unread
-list. The 12 committed traces run in the Lua suite (about 15 s); `replay.sh 60 40` runs 60 fresh ones in
-about a minute. A mutant model with 624cf79's reap rule fails 4 of 40 traces against the current code.
+list. The 12 committed traces (seed 107, 50 steps) run in the Lua suite, about 30 s of its ~50 s;
+`replay.sh 60 40` runs 60 fresh ones in about 2.5 minutes (seeds 124, 1192 and 2026 passed). The replay
+catches drift: before this model gained `WAITER_ALIVE`, PR #119 failed 2 of the 12 committed traces, and a
+mutant `replay` with `WAITER_ALIVE = false` fails 3 of 40 fresh traces. It is weaker where a divergence
+needs a rare sequence: a mutant with 624cf79's reap rule fails 1 of 40 50-step traces (seed 107), and 0 of
+40 40-step ones (seed 106).
 
 Replayed with `RACY` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in
 the replay. Those parts (S1's hc prompt, S2's and S4's races) are checked in the model only.
 
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook; `swarm run` and machines;
-worktrees and `landed` (every agent's work counts as landed); auto-spawn's launch failures, backoff and
+worktrees and `landed` (every agent's work counts as landed), so neither PR #122's nudge to an agent kept only
+by an unclean worktree nor PR #123's every-worktree rule; a background job keeping an idle owner's claim
+(PR #121: the replay's agents have no claude process, so none has one); another swarm's communicator on
+the board (PR #124); auto-spawn's launch failures, backoff and
 halt; the context fence on `task claim` (350k) and the handoff; compaction (`compacted_at`); notices to
 the communicator; the 9000-character delivery budget (every delivery shows all unread); `swarm join`
 (an ended agent never returns; its slot is a new agent); several waiters at once; the `@all` channel;
