@@ -521,6 +521,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
   case age a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case die a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case dirty a w v =>
     obtain ⟨_, rfl⟩ := hstep
@@ -531,6 +532,9 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
     obtain ⟨_, rfl⟩ := hstep
     exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e) hs
   case leave a =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_endAgent (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
+  case reapGone a =>
     obtain ⟨_, rfl⟩ := hstep
     exact J_endAgent (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
   case hcPrompt a =>

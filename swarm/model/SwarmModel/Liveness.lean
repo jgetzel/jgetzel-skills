@@ -69,7 +69,7 @@ theorem lifecycle_log_le (c : Cfg) (x : State) : x.log.length ≤ (lifecycle c x
 
 /-- With PR #110 or #111: once the lease of a claim whose owner is idle has lapsed, watchd's tick does something
 (reap reopens the task and posts `released` to the owner). -/
-theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (ht : t ∈ c.tasks)
+theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (hw : c.watchd = true) (ht : t ∈ c.tasks)
     (hic : idleClaim s a t = true) (hl : (s.tk t).lease = false) (hbg : (s.agt a).bg = false) : tickOf c s ≠ s := by
   simp [idleClaim, ownsClaimed] at hic
   have hk : keeps c (s.agt a) = false := by
@@ -82,25 +82,41 @@ theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .en
   omega
 
 /-- L2, the part that is proved. With PR #110 or #111, a state where an idle agent holds a claim is not stuck: the
-lease can lapse, or the tick is enabled. (That every fair run then reaches "done or open again" is not proved.) -/
-theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (ht : t ∈ c.tasks)
-    (ha : a ∈ c.agents) (hic : idleClaim s a t = true) : stuck c s = false := by
+lease can lapse, or the tick is enabled. (The owner's terminal is alive: a dead one is L4's.) (That every fair run then reaches "done or open again" is not proved.) -/
+theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (hw : c.watchd = true) (ht : t ∈ c.tasks)
+    (ha : a ∈ c.agents) (hnd : (s.agt a).dead = false)
+    (hic : idleClaim s a t = true) : stuck c s = false := by
   cases hs : stuck c s
   · rfl
   · exfalso
     simp only [stuck, List.all_eq_true] at hs
     have h1 := hs .tick (by simp [fair])
     have h2 := hs (.expire t) (by simp [fair, ht])
-    simp [step, tick, when] at h1
+    simp [step, tick, when, hw] at h1
     simp [step, expire, when] at h2
     have hic' := hic
     simp [idleClaim, ownsClaimed] at hic'
-    have h3 := hs (.bgEnd a) (by simp [fair, ha])
+    have h3 := hs (.bgEnd a) (by simp [fair, ha, hnd])
     have hbg : (s.agt a).bg = false := by
       cases hb : (s.agt a).bg
       · rfl
       · exfalso; simp [step, bgEnd, when, Agent.live, hb] at h3
         simp [idleClaim, ownsClaimed] at hic; simp [hic.2] at h3
-    exact tick_reopens hfix ht hic (by simpa [hic'.1.1] using h2) hbg h1
+    exact tick_reopens hfix hw ht hic (by simpa [hic'.1.1] using h2) hbg h1
+
+/-- L4, the part that is proved. If watchd runs, `hc ls` answers and the dead agent's row has an hc address, a row
+whose terminal is gone is never stuck: the reap of it is enabled. Every one of those three is needed (findings #14,
+#15); the model can't say a dead agent is ended without them. -/
+theorem deadLive_not_stuck {c : Cfg} {s : State} {a : Nat} (hw : c.watchd = true) (hh : c.hcSees = true)
+    (hb : c.unbound.contains a = false) (ha : a ∈ c.agents) (hd : deadLive s a = true)
+    (hr : (s.agt a).reading = 0) (hsn : (s.agt a).snap = []) : stuck c s = false := by
+  cases hs : stuck c s
+  · rfl
+  · exfalso
+    simp only [stuck, List.all_eq_true] at hs
+    have h := hs (.reapGone a) (by simp [fair, ha])
+    simp [deadLive] at hd
+    have hb' : a ∉ c.unbound := by simpa using hb
+    simp [step, reapGone, leaveIf, when, hw, hh, hb', hd, hr, hsn] at h
 
 end Swarm

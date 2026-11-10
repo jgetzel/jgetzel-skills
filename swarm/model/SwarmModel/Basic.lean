@@ -11,8 +11,8 @@ theorem when_eq_some {b : Bool} {x s' : State} : when b x = some s' ↔ b = true
 macro "open_step" h:ident : tactic => `(tactic|
   (cases ‹Action› <;>
    simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
-     stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, hcPrompt,
-     hcClear, dirty, stale, nudge, add, after, unblock, drop, tick, when_eq_some] at $h:ident))
+     stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf, hcPrompt,
+     hcClear, die, reapGone, dirty, stale, nudge, add, after, unblock, drop, tick, when_eq_some] at $h:ident))
 
 /-- An invariant of reachable states: true at the start, kept by every step. -/
 theorem reachable_induct {c : Cfg} {P : State → Prop} (h0 : P (init c))
@@ -103,6 +103,7 @@ theorem doneHasEvidence_of_reachable {c : Cfg} (hfix : c.evidenceRequired = true
     · cases hstep
   case tick => obtain ⟨_, rfl⟩ := hstep; exact evL_tickOf hs
   case leave a => obtain ⟨_, rfl⟩ := hstep; exact evL_endAgent _ (by simpa using hs)
+  case reapGone a => obtain ⟨_, rfl⟩ := hstep; exact evL_endAgent _ (by simpa using hs)
   case hcClear a => obtain ⟨_, rfl⟩ := hstep; simp; exact evL_map hs (by intro k hk; dsimp only; split <;> simp_all)
   case done a t ev => obtain ⟨hg, rfl⟩ := hstep; simp; exact evL_setTask _ hs (by intro k hk; simp_all)
   all_goals

@@ -55,6 +55,12 @@ structure Cfg where
   allWts : Bool := true
   /-- watchd nudges an agent kept only by an unclean worktree, once per idle stretch (PR #122); before, silence -/
   uncleanNudge : Bool := true
+  /-- watchd runs: false is the mode with none, where nothing ticks -/
+  watchd : Bool := true
+  /-- `hc ls` answers, so watchd can tell a terminal is gone (else `live_addrs` is nil and no row is judged dead) -/
+  hcSees : Bool := true
+  /-- slots whose row has no hc address (`agent.hc` null): `hc ls` can't show their terminal gone -/
+  unbound : List Nat := []
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -96,6 +102,8 @@ structure Agent where
   stale : Bool
   /-- already nudged in this idle stretch -/
   nudged : Bool
+  /-- the terminal is gone but the row isn't ended: it does nothing more, and the row still reads as live -/
+  dead : Bool
   deriving DecidableEq, Repr, Inhabited
 
 structure Lock where
@@ -374,9 +382,18 @@ def expireLock (s : State) (p : Nat) : Option State :=
   let l := s.lock.getD p default
   when (l.holder != none && !l.exp) { s with lock := s.lock.set p { l with exp := true } }
 /-- swarm leave, or reap of a dead terminal: ended, its claims and locks released -/
-def leave (s : State) (a : Nat) : Option State :=
+def leaveIf (ok : Bool) (s : State) (a : Nat) : Option State :=
   let g := s.agt a
-  when (g.live && g.reading == 0 && g.snap.isEmpty) (endAgent (setAg s a ({ · with waiter := false })) a)
+  when (ok && g.live && g.reading == 0 && g.snap.isEmpty) (endAgent (setAg s a ({ · with waiter := false })) a)
+def leave (s : State) (a : Nat) : Option State := leaveIf true s a
+
+/-- the terminal dies with no `swarm leave` and no reap: the row stays as it was -/
+def die (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (g.live && !g.dead && g.reading == 0 && g.snap.isEmpty) (setAg s a ({ · with dead := true, waiter := false, bg := false }))
+/-- watchd's reap ends a row whose bound terminal `hc ls` no longer lists (the `live_addrs` branch of `reap`) -/
+def reapGone (c : Cfg) (s : State) (a : Nat) : Option State :=
+  leaveIf (c.watchd && c.hcSees && !c.unbound.contains a && (s.agt a).dead) s a
 /-- watchd sees an hc permission prompt: the agent and its first claimed task go blocked -/
 def hcPrompt (c : Cfg) (s : State) (a : Nat) : Option State :=
   when (busy s a && (s.agt a).reading == 0)
@@ -406,7 +423,7 @@ def drop (s : State) (t : Nat) : Option State :=
   when ((s.tk t).st != .absent && (s.tk t).st != .dropped)
     (setTask s t ({ · with st := .dropped, owner := none, lease := false, hcq := false }))
 /-- watchd --once -/
-def tick (c : Cfg) (s : State) : Option State := when (tickOf c s != s) (tickOf c s)
+def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
 
 /-- Everything that can happen: the agents' commands, the environment, the communicator, watchd. -/
 inductive Action where
@@ -417,7 +434,7 @@ inductive Action where
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
   | dirty (a : Nat) (second v : Bool) | stale (a : Nat) | nudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
-  | hcPrompt (a : Nat) | hcClear (a : Nat)
+  | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | tick
   deriving DecidableEq, Repr
 
@@ -432,7 +449,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .dirty a w v => dirty s a w v | .stale a => stale s a | .nudge a => nudge c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
-  | .hcClear a => hcClear s a | .add deps => add s deps | .after t deps => after c s t deps
+  | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
   | .unblock t => unblock c s t | .drop t => drop s t | .tick => tick c s
 
 /-- The states the system can be in. -/
