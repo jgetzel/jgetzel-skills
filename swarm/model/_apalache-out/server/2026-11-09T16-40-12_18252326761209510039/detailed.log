@@ -1,4 +1,0 @@
-2026-11-09T16:40:12,311 [main] INFO  a.f.a.t.Tool$ - # APALACHE version: 0.62.4 | build: 7954daf
-2026-11-09T16:40:12,314 [main] INFO  a.f.a.t.t.o.ServerCmd - Starting checker server on port 8822...
-2026-11-09T16:40:22,465 [zio-default-async-5] INFO  a.f.a.i.p.PassChainExecutor - PASS #0: SanyParser
-2026-11-09T16:40:24,349 [zio-default-async-5] DEBUG a.f.a.i.p.PassChainExecutor - PASS #0: SanyParser [OK]

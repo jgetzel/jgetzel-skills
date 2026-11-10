@@ -45,13 +45,28 @@ Lua composes it (`reap` tasks, `reap` locks, `lifecycle`).
 The agents' choices are free (any command, in any order) with one assumption from the brief: an agent
 with a small context, no claim and work in the pool takes work before it stops.
 
-`RELEASE` picks the reap rule: `ended` is 624cf79 (before #106: a lapsed claim is kept while its owner
-is live), `notWorking` is b04cf08 (reopened unless the owner is working), `idle` is edffafc, the code
-now (reopened only when the owner is idle). `RACY` splits two commands into the read and the write the
-Lua does separately: `task claim` (dependency check, then `update … where state='open'`) and the
-waiter's delivery (unread, then the cursor). `OFF` turns off parts of the environment an instance
-doesn't need, so TLC can exhaust it; `COMPACT` drops messages every reader has passed, so inboxes stay
-finite.
+Agents run a command only with an empty inbox: the PreToolUse hook delivers before every one.
+
+Each fix the model found or confirmed is a switch, so the spec records the code before and after it:
+
+| Switch | Before | After |
+|---|---|---|
+| `RELEASE` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (#110) reopens it unless the owner is working; `idle`: edffafc (#111) only when the owner is idle |
+| `ANSWER_ON_TASK` | the unblock answer is only a DM | #110 stores it on the task |
+| `CLAIM_CHECKS_DEPS` | `task claim`'s write checks only `state='open'` | #112 checks the dependencies in the write |
+| `"emptyEvidence"` in `OFF` | `done --evidence ""` is accepted | #113 refuses it |
+| `LOCK_OVERLAP` | `lock` refuses only a pattern covering the other | #114 refuses any common file |
+| `DELIVER_CAS` | a delivery's cursor write ignores a delivery in between | #115 writes only from where it read |
+| `PASSED_OVER` | a reusable agent holds spawn back forever | #116 ends one that passed the work over |
+
+`RACY` splits two commands into the read and the write the Lua does separately: `task claim` (the
+dependency check, then the update) and the waiter's delivery (unread, then the cursor). `OFF` turns off
+parts of the environment an instance doesn't need, so TLC can exhaust it. `COMPACT` drops messages
+whose reader has passed them, so inboxes stay finite.
+
+Instances: `before` (624cf79), `first106` (b04cf08) and `after` (main now) have every feature on, for
+the simulator; `quint run --main after --invariant safety` finds nothing in 2000 random 30-step runs,
+and `--main before` fails at once. The `s*_` and `l*_` instances are what TLC exhausts.
 
 ## Properties
 
@@ -77,7 +92,8 @@ and takes work it is repeatedly able to; an hc prompt is answered):
 
 ## Results
 
-`check.sh` (TLC 2 agent slots, 1–3 tasks; a few seconds to minutes each, times below from one run):
+`check.sh`: TLC, 2 agent slots, 1 task for S1 and liveness, 1–3 for the rest. Times are from one run on a
+24-core machine. A check that hit the cap (20 or 30 minutes) is *not proved at this bound*.
 
 | Instance | Property | Verdict | States | Time |
 |---|---|---|---|---|

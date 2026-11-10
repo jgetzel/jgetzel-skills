@@ -498,23 +498,25 @@ module swarm {
 
 
 // ---------- instances ----------
-// before: 624cf79, reap keeps a lapsed claim while its owner is live. first106: b04cf08, it reopens one unless the
-// owner is working. after: edffafc (now), it reopens one only when the owner is idle. The three full ones have
-// everything on, for `quint run`; the s*_ and l*_ ones are two agent slots (a spawn fills an ended one) with what a
-// property doesn't need turned off, so TLC exhausts them (check.sh). S1 and liveness are per task: one task.
-module before {  // every feature, for the simulator
+// The switches record each fix as a before and an after: RELEASE (#106 and its follow-up), CLAIM_CHECKS_DEPS (#112),
+// "emptyEvidence" in OFF (#113), LOCK_OVERLAP (#114), DELIVER_CAS (#115), PASSED_OVER (#116).
+// before: 624cf79, every switch off. first106: b04cf08's reap rule, the rest off. after: main now, every fix on.
+// Those three have every feature on, for `quint run`. The s*_ and l*_ ones are what check.sh hands TLC: two agent
+// slots (a spawn fills an ended one), what the property doesn't need turned off, and the switch under test set as
+// the name says (racy/globs/before = the bug, fixed = the fix); S1 and liveness are per task, so one task.
+module before {  // 624cf79: every fix off; every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "ended", ANSWER_ON_TASK = false, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = false,
     OFF = Set(), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
-module first106 {  // every feature, for the simulator
+module first106 {  // b04cf08: its reap rule, later fixes off; every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = false, LOCK_OVERLAP = false, DELIVER_CAS = false, PASSED_OVER = false,
     OFF = Set(), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
-module after {  // every feature, for the simulator
+module after {  // main now: every fix on; every feature, for the simulator
   import swarm(AGENTS = ["m-1", "m-2", "m-3"], ROSTER = 2, NTASKS = 2, PATTERNS = Set("m/*.lua", "m/a*", "m/"),
-    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
+    PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = true, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("emptyEvidence"), COMPACT = false, MAX_LOG = 6, MAX_POSTS = 2, COMMS = "m-comms") .*
 }
 module s1_before {  // oneWorker
@@ -592,7 +594,7 @@ module l_first106 {  // liveness: waiters never time out
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "notWorking", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_after {  // liveness: waiters never time out
+module l_after {  // liveness: waiters never time out; edffafc, before #116
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
@@ -602,7 +604,7 @@ module l_fixed {  // liveness since #116: a reusable agent that passed the pool 
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = true,
     OFF = Set("deps", "waiterGone", "hc", "prompt", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
 }
-module l_after_waiter {  // liveness: a waiter may time out
+module l_after_waiter {  // liveness: a waiter may time out; before #116
   import swarm(AGENTS = ["m-1", "m-2"], ROSTER = 2, NTASKS = 1, PATTERNS = Set(),
     PATHS = Set("m/a.lua", "m/b.lua", "m/a.txt"), RELEASE = "idle", ANSWER_ON_TASK = true, RACY = false, CLAIM_CHECKS_DEPS = true, LOCK_OVERLAP = true, DELIVER_CAS = true, PASSED_OVER = false,
     OFF = Set("deps", "hc", "prompt", "cold", "emptyEvidence"), COMPACT = true, MAX_LOG = 0, MAX_POSTS = 0, COMMS = "m-comms") .*
