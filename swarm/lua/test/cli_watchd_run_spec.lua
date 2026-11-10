@@ -132,6 +132,26 @@ function T.test_pressure_edge_oom_and_orphans(t)
   t:eq(t:q1("select count(*) n from event where kind='pressure-end'").n, 1)
 end
 
+function T.test_machine_line_at_decisions(t)
+  local pr = fake_proc(t)
+  t:hook("a", "session")
+  t:sw("a", "task", "add", "x"); t:sw("a", "task", "add", "y")
+  t:has(swp(t, "a", pr, "board").stdout, "machine: 19.1/30.5G")
+  local c = swp(t, "a", pr, "task", "claim", "1").stdout
+  t:has(c, "machine: 19.1/30.5G"); t:hasnt(c, "started in the last")
+  fake_proc(t, 2000000)  -- high pressure: the full note
+  add_proc(pr, 100, 1, "claude", { "claude" })
+  t:has(swp(t, "a", pr, "task", "claim", "2").stdout, "machine: 1.9/30.5G")
+end
+
+function T.test_pressure_notice_reaches_stayers(t)
+  local pr = fake_proc(t, 2000000)
+  t:hook("a", "session"); t:hook("s", "session")
+  t:q("update agent set stay='review' where name='s'")
+  swp(t, "a", pr, "watchd", "--once")
+  t:eq(t:q1("select count(*) n from msg where kind='notice' and dest='s'").n, 1)
+end
+
 function T.test_ci_red_is_one_task_closed_on_green(t)
   local function commit(who) t:git(t.repo, "commit", "-q", "--allow-empty", "-m", "x\n\nSwarm-Agent: " .. who) end
   local green = rev(t)

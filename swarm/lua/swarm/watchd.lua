@@ -605,8 +605,15 @@ function M.machine_tick(c)
     local line = machine.machine_line(avail, total, psi)
     db.log(c, nil, "pressure", nil, line)
     local who, seen = {}, {}
-    for _, h in ipairs(hv) do
-      if h.agent ~= "other session" and not seen[h.agent] then seen[h.agent] = true; who[#who + 1] = h.agent end
+    table.sort(hv, function(x, y)
+      if x.rss_kb ~= y.rss_kb then return x.rss_kb > y.rss_kb end
+      return x.pid < y.pid
+    end)
+    for _, h in ipairs(hv) do  -- the three agents holding the most memory, then every stayer
+      if h.agent ~= "other session" and not seen[h.agent] and #who < 3 then seen[h.agent] = true; who[#who + 1] = h.agent end
+    end
+    for _, s in ipairs(c:all("select name from agent where ended is null and stay is not null")) do
+      if not seen[s.name] then seen[s.name] = true; who[#who + 1] = s.name end
     end
     table.sort(who)
     for _, w in ipairs(who) do
@@ -755,6 +762,7 @@ function M.cmd_spawn(c, a)
   end
   db.log(c, agents.env("SWARM_NAME") and agents.me() or "human", "spawn", nil, name)
   print(("spawned %s at %s"):format(name, util.strip(out)))
+  print(machine.machine_note(c, name))  -- the cost of the next agent (live and launched counts come with the limits)
 end
 
 return M
