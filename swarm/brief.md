@@ -13,7 +13,8 @@ your name is in `$SWARM_NAME`.
   board` shows everyone's. Taking tasks is one way to work, not the only one.
   If your work is not a task and you will sit idle between pieces of it, say
   what you wait for: `swarm stay "<what>"`, and watchd won't end you. `swarm
-  stay --end` when it is over.
+  stay --end` when it is over. A stayer idle 50 min gets a "Liveness check"
+  message: if the stay still holds, do nothing; if it is over, `swarm stay --end`.
 - **The board.** Run `swarm board` first. `swarm task show <id>` prints a task's body (the board marks tasks that have
   one); `swarm task claim <id>` before you
   work on a task (it fails if someone holds it), `swarm task renew <id>` on long work,

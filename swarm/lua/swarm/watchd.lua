@@ -351,6 +351,53 @@ function M.quiet(c, t, comms)
     .. (#l > 0 and "Stayers:\n" .. table.concat(l, "\n") or "No stayers.") .. "\nIf the work is done, tell the user.", false, "system")
 end
 
+M.LIVENESS_IDLE = 50 * 60  -- a stayer idle this long (inside the 1 h cache) is asked if it still stays
+M.LIVENESS_WAIT = 5 * 60   -- and is hung if its last_active has not moved this long after
+
+-- Hung stayers (sw-roles §4): two edge notices (no live waiter; a message unread two ticks) and the one periodic
+-- check. All state is in events newer than the stayer's last_active, so any wake re-arms everything.
+function M.hung(c, t, comms, terms, opts)
+  local tick = (opts and opts.interval) or 30
+  for _, a in ipairs(agents.live_agents(c)) do
+    local n, last = a.name, a.last_active or 0
+    if n ~= comms and not agents.is_comms(c, n) and nz(a.stay) and a.status == "idle" then
+      local function ev(kind, data)
+        return c:one("select ts from event where agent=? and kind=? and ts>=? and (? is null or data=?) order by id desc limit 1",
+          n, kind, last, data, data)
+      end
+      if not (a.waiter and signal.kill(a.waiter, 0) == 0) then
+        if not ev("stay-nowaiter") then
+          db.log(c, n, "stay-nowaiter")
+          msgs.post(c, "swarm", comms, ("%s stays for '%s' but has no waiter and can't be woken."):format(n, a.stay), false, "system")
+        end
+      else
+        for _, m in ipairs(msgs.unread(c, n)) do
+          if m.dest == n and m.ts <= t - 2 * tick and not m.body:find("^Liveness check:") and not ev("stay-unwoken", d(m.id)) then
+            db.log(c, n, "stay-unwoken", nil, d(m.id))
+            msgs.post(c, "swarm", comms, ("%s did not wake on a message (#%s from %s, %d s ago)."):format(
+              n, d(m.id), m.frm, t - m.ts), false, "system")
+          end
+        end
+        local chk = ev("stay-check")
+        if ev("stay-hung") then  -- no more checks until it is active again
+        elseif chk then
+          if t - chk.ts >= M.LIVENESS_WAIT then
+            local x
+            for _, y in ipairs(terms or {}) do if y.address == a.hc then x = y end end
+            db.log(c, n, "stay-hung")
+            msgs.post(c, "swarm", comms, ("%s stays for '%s' and did not answer the liveness check (terminal %s, hc status %s). "
+              .. "Unstick it with `hc send`, or end it."):format(n, a.stay, a.hc or "?", x and x.status or "unknown"), true, "system")
+          end
+        elseif t - last >= M.LIVENESS_IDLE and not agents.cold_reason(a, t) then  -- a cold wake resends the whole context
+          db.log(c, n, "stay-check")
+          msgs.post(c, "swarm", n, ("Liveness check: you have stayed %d min for '%s'. If that still holds, do nothing. "
+            .. "If it is over, `swarm stay --end`."):format(math.floor((t - last) / 60), a.stay), false, "system")
+        end
+      end
+    end
+  end
+end
+
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
   local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
@@ -580,6 +627,7 @@ function M.watchd_tick(c, comms, repo, opts)
   if comms then  -- ending reports to the communicator; without one, nobody hears what it did
     M.lifecycle(c, t, comms, terms, opts or {})
     M.quiet(c, t, comms)
+    M.hung(c, t, comms, terms, opts)
   end
   M.machine_tick(c)
   run.remote_tick(c, t)

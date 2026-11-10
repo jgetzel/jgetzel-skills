@@ -99,9 +99,9 @@ end
 
 -- the quiet notice (§8 item 3): on the edge into quiet, one message per stayer and one notice to comms; none on the
 -- next tick; a new task re-arms it
-local function to(t, name) return t:q("select body from msg where dest=?", name) end
+local function to(t, name) return t:q("select body from msg where dest=? and body not like '%no waiter%'", name) end
 function T.test_quiet_notice_once_per_edge(t)
-  idle(t, "comms"); idle(t, "r", { stay = "PRs to review", role = "reviewer" })
+  idle(t, "comms"); idle(t, "r", { stay = "PRs to review", role = "reviewer", last_active = os.time() - 60 })
   t:agent("w", { status = "working" })
   t:sw("comms", "task", "add", "t1"); t:sw("comms", "task", "drop", "1")
   comms_tick(t)
@@ -136,6 +136,59 @@ function T.test_quiet_cold_or_waiterless_stayer_not_woken(t)
   t:eq(#n, 1)
   t:has(n[1].body, "cold stays for 'the plan' (cold, not woken)")
   t:has(n[1].body, "gone stays for 'reviews' (no live waiter, not woken)")
+end
+
+-- hung stayers (§8 item 13)
+local function evs(t, kind) return #t:q("select 1 x from event where kind=?", kind) end
+local function live(t, name) return #t:q("select 1 x from msg where dest=? and body like 'Liveness check:%'", name) end
+
+function T.test_hung_waiterless_reported_once(t)
+  local p = io.popen("sh -c 'echo $$'"); local dead = tonumber(p:read("*l")); p:close()
+  idle(t, "comms"); idle(t, "g", { stay = "reviews", waiter = dead, last_active = os.time() - 60 })
+  comms_tick(t); comms_tick(t)
+  t:eq(#t:q("select 1 x from msg where dest='comms' and body like 'g stays for%can''t be woken%'"), 1)
+  t:eq(evs(t, "stay-check"), 0)
+end
+
+function T.test_hung_unread_message_reported_once(t)
+  idle(t, "comms"); idle(t, "r", { stay = "reviews", last_active = os.time() - 60 })
+  t:sw("comms", "post", "r", "PR 5 is ready")
+  comms_tick(t)
+  t:eq(evs(t, "stay-unwoken"), 0)  -- not two ticks old yet
+  t:q("update msg set ts=ts-120 where dest='r'")
+  comms_tick(t); comms_tick(t)
+  t:eq(evs(t, "stay-unwoken"), 1)
+  t:eq(#t:q("select 1 x from msg where dest='comms' and body like 'r did not wake on a message%'"), 1)
+end
+
+function T.test_liveness_check_hung_and_answered(t)
+  idle(t, "comms")
+  idle(t, "s", { stay = "the plan", last_active = os.time() - 49 * 60 })
+  comms_tick(t)
+  t:eq(live(t, "s"), 0)  -- not before 50 minutes
+  t:q("update agent set last_active=? where name='s'", os.time() - 51 * 60)
+  comms_tick(t); comms_tick(t)
+  t:eq(live(t, "s"), 1)
+  -- answered: last_active moved, no stay-hung; a new check goes out 50 idle minutes later
+  t:q("update agent set last_active=? where name='s'", os.time())
+  comms_tick(t)
+  t:eq(evs(t, "stay-hung"), 0)
+  t:q("update event set ts=ts-7200 where kind='stay-check'")  -- the answer came long ago; idle again for 51 min
+  t:q("update agent set last_active=? where name='s'", os.time() - 51 * 60)
+  comms_tick(t)
+  t:eq(live(t, "s"), 2)
+  -- unanswered five minutes on: one urgent stay-hung, then no more checks
+  t:q("update event set ts=ts-400 where kind='stay-check' and id=(select max(id) from event where kind='stay-check')")
+  comms_tick(t); comms_tick(t)
+  t:eq(evs(t, "stay-hung"), 1)
+  t:eq(#t:q("select 1 x from msg where dest='comms' and urgent=1 and body like 's stays for%liveness check%'"), 1)
+  t:eq(live(t, "s"), 2)
+end
+
+function T.test_communicator_never_checked(t)
+  idle(t, "comms", { stay = "the user's channel", last_active = os.time() - 80 * 60 })
+  comms_tick(t)
+  t:eq(evs(t, "stay-check"), 0)
 end
 
 -- spawn --stay: a stayer before its first turn, with --task (at reserve) and without
