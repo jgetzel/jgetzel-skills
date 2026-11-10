@@ -2,6 +2,7 @@
 local util, json, db = require "swarm.util", require "swarm.json", require "swarm.db"
 local agents, msgs, proc = require "swarm.agents", require "swarm.msgs", require "swarm.proc"
 local machine, locks, re = require "swarm.machine", require "swarm.locks", require "swarm.re"
+local cost = require "swarm.cost"
 local glob = require "posix.glob"
 local M = {}
 
@@ -131,9 +132,12 @@ local function pre_tool(c, name, cwd, tool, ti)
     end
   elseif tool == "Bash" then
     local cmd = tostring(ti.command or "")
-    if machine.is_heavy(cmd, cwd) then  -- information at decision time: context only, never a deny or a rewrite
-      emit("PreToolUse", machine.machine_note(c, name))
-      db.log(c, name, "heavy-start", nil, util.cut(cmd, 80))
+    local ok, pr = pcall(cost.predict, cmd, cwd)  -- information at decision time: context only, never a deny or a rewrite
+    local avail, total, psi = machine.mem()
+    if ok and pr and avail and (pr.peak_kb > avail / 2 or machine.pressure_high(avail, total, psi)) then
+      emit("PreToolUse", ("`%s` took ~%.1fG and %d min the last %d time%s here; %.1fG is available now.\n%s"):format(pr.key,
+        pr.peak_kb / 1048576, math.max(1, math.floor(pr.wall_s / 60 + 0.5)), pr.n, pr.n == 1 and "" or "s", avail / 1048576,
+        machine.machine_note(c, name)))
     end
   elseif EDIT_TOOLS[tool] then
     local fp = ti.file_path

@@ -120,23 +120,6 @@ function M.machine_line(avail, total, psi)
   return mem .. ("pressure10 mem %g%% cpu %g%%"):format(psi.memory, psi.cpu)
 end
 
-M.HEAVY_RE = [[\b(cabal|stack|ghc|make|cmake|ninja|gradle|mvn|pytest|tox|tsc|spago|purs|playwright|nix\s+(build|flake\s+check)|docker\s+build|(cargo|go|npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|check|clippy|bench|install))\b]]
-M.NOT_HEAVY = [[\s*(git|gh|swarm|echo|grep|rg|cat|ls|sed|head|tail)\b]]  -- shortcut: first-word skip so `git commit -m make` isn't flagged
-
--- Does a Bash command look like a build/test (built-in words plus the repo's .claude/swarm.json {"heavy": [regex]})?
-function M.is_heavy(cmd, cwd)
-  if re.match([[\s*swarm\s+run\b]], cmd) then return true end
-  if re.match(M.NOT_HEAVY, cmd) then return false end
-  if re.search(M.HEAVY_RE, cmd) then return true end
-  local top = proc.git({ "rev-parse", "--show-toplevel" }, cwd)
-  local j = top and json.decode(util.slurp(util.join(top, ".claude", "swarm.json")) or "")
-  for _, x in ipairs(type(j) == "table" and type(j.heavy) == "table" and j.heavy or {}) do
-    local ok, m = pcall(re.search, x, cmd)
-    if ok and m then return true end
-  end
-  return false
-end
-
 -- Nearest ancestor that is the claude process (its command's name contains 'claude').
 function M.claude_pid(procs)
   procs = procs or M.procs()
@@ -156,24 +139,36 @@ function M.proc_cmd(p)
   return table.concat(w, " ")
 end
 
--- Heavy processes with the swarm agent each belongs to (walk ppid up to an agent's claude pid), else 'other session'.
-function M.heavy_procs(c, procs)
+-- Memory held per owner, by measurement: every process under a claude process, attributed to the agent whose claude it
+-- is under (else "other session"). {agent, kb, top, top_kb, age, procs = {the tree's processes, its claude excluded}},
+-- biggest first. No word picks which processes count.
+function M.holders(c, procs)
   local owner = {}
   for _, r in ipairs(c:all("select name,claude_pid from agent where ended is null and claude_pid is not null")) do
     owner[r.claude_pid] = r.name
   end
-  local out = {}
+  local by = {}
   for _, p in pairs(procs) do
-    local cmd = M.proc_cmd(p)
-    if re.match(M.HEAVY_RE, cmd) or re.match([[ghc(-[\d.]+)?\b]], cmd) then
-      local q, who, hop = p, "other session", 0
-      while q and hop < 64 do
-        if owner[q.pid] then who = owner[q.pid]; break end
-        q, hop = procs[q.ppid], hop + 1
-      end
-      out[#out + 1] = { pid = p.pid, ppid = p.ppid, comm = p.comm, rss_kb = p.rss_kb, age = p.age, cmd = cmd, agent = who }
+    local q, who, hop = p, nil, 0
+    while q and hop < 64 do
+      who = owner[q.pid] or (q.comm:find("claude", 1, true) and "other session") or nil
+      if who then break end
+      q, hop = procs[q.ppid], hop + 1
+    end
+    if who then
+      local h = by[who] or { agent = who, kb = 0, top_kb = -1, procs = {} }
+      by[who] = h
+      h.kb = h.kb + p.rss_kb
+      if not owner[p.pid] then h.procs[#h.procs + 1] = p end
+      if p.rss_kb > h.top_kb and not owner[p.pid] then h.top, h.top_kb, h.age = M.proc_cmd(p), p.rss_kb, p.age end
     end
   end
+  local out = {}
+  for _, h in pairs(by) do out[#out + 1] = h end
+  table.sort(out, function(a, b)
+    if a.kb ~= b.kb then return a.kb > b.kb end
+    return a.agent < b.agent
+  end)
   return out
 end
 
@@ -238,27 +233,17 @@ function M.remote_lines(c, t)
   return out
 end
 
--- <= 6 lines: machine state, running heavy processes (attributed), builds other agents started in the last minute;
+-- <= 6 lines: machine state, memory per owner by measurement (agents, then "other sessions") with its largest process;
 -- then one line per other hc machine from watchd's cache.
 function M.machine_note(c, me, procs)
   local avail, total, psi = M.mem()
-  local hv = M.heavy_procs(c, procs or M.procs())
-  table.sort(hv, function(a, b)  -- biggest first, then pid; not `x ~= y and x > y or ...`: that falls through when x < y
-    if a.rss_kb ~= b.rss_kb then return a.rss_kb > b.rss_kb end
-    return a.pid < b.pid
-  end)
+  local hs = M.holders(c, procs or M.procs())
   local lines = { M.machine_line(avail, total, psi) }
-  for i = 1, math.min(3, #hv) do
-    local h = hv[i]
-    lines[#lines + 1] = ("  running: %s %.1fG %dm (%s)"):format(util.cut(h.cmd, 40), h.rss_kb / 1048576,
-      math.floor(h.age / 60), h.agent)
+  for i = 1, math.min(3, #hs) do
+    local h = hs[i]
+    lines[#lines + 1] = ("  %s %.1fG%s"):format(h.agent, h.kb / 1048576, h.top and (" (%s %.1fG)"):format(util.cut(h.top, 40), h.top_kb / 1048576) or "")
   end
-  if #hv > 3 then lines[#lines + 1] = ("  +%d more heavy processes"):format(#hv - 3) end
-  local st, t = {}, util.now()
-  for _, e in ipairs(c:all("select * from event where kind='heavy-start' and ts>? and agent!=? order by ts", t - 60, me or "")) do
-    st[#st + 1] = ("%s: %s (%ds ago)"):format(e.agent, util.cut(e.data or "", 30), t - e.ts)
-  end
-  if #st > 0 then lines[#lines + 1] = "  started in the last 60s: " .. table.concat(st, "; ", 1, math.min(3, #st)) end
+  if #hs > 3 then lines[#lines + 1] = ("  +%d more holders"):format(#hs - 3) end
   for _, l in ipairs(M.remote_lines(c)) do lines[#lines + 1] = l end
   return table.concat(lines, "\n")
 end

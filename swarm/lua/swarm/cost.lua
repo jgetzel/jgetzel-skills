@@ -64,15 +64,22 @@ function M.record(h, r)
   return true
 end
 
--- The repo's name (its main checkout's directory) and every worktree path.
-local function repo_info()
-  local common = proc.git({ "rev-parse", "--path-format=absolute", "--git-common-dir" })
+-- The repo's name (its main checkout's directory), as seen from cwd.
+function M.repo_name(cwd)
+  local common = proc.git({ "rev-parse", "--path-format=absolute", "--git-common-dir" }, cwd)
   if not common or common == "" then return nil end
+  return util.basename(util.dirname(common))
+end
+
+-- The repo's name and every worktree path.
+local function repo_info()
+  local name = M.repo_name()
+  if not name then return nil end
   local wts = {}
   for l in (proc.git({ "worktree", "list", "--porcelain" }) or ""):gmatch("[^\n]+") do
     wts[#wts + 1] = l:match("^worktree (.+)$") or nil
   end
-  return util.basename(util.dirname(common)), wts
+  return name, wts
 end
 
 local function inside(p, dirs)
@@ -177,6 +184,19 @@ function M.summary(h, repo, key)
   end
   return ("`%s`, this repo, this machine: %d run%s, median %s, peak %s (max %s), %d CPU-min."):format(key, #rows,
     #rows == 1 and "" or "s", mins(median(w)), gib(median(pk)), gib(mx), math.floor(median(cp) / 60 + 0.5))
+end
+
+-- What the history predicts for a command about to run: {n, wall_s, peak_kb} (medians) or nil when it has no rows here.
+-- A missing history file is nil; the hook never creates it.
+function M.predict(cmd, cwd)
+  if not unistd.access(M.path(), "r") then return nil end
+  local repo = M.repo_name(cwd)
+  local rows = repo and M.handle():all("select wall_s,peak_kb from cmd where machine=? and repo=? and key=?", M.hostname(), repo,
+    M.key(cmd))
+  if not rows or #rows == 0 then return nil end
+  local w, pk = {}, {}
+  for i, r in ipairs(rows) do w[i], pk[i] = r.wall_s, r.peak_kb end
+  return { n = #rows, wall_s = median(w), peak_kb = median(pk), key = M.key(cmd) }
 end
 
 function M.cmd_cost(_, a)
