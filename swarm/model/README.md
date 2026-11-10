@@ -23,6 +23,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
+| `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -189,11 +190,16 @@ and kept by every action but `die` (`d_step`).
   is fresh, so reap passes it, and lifecycle neither ends nor replaces it) hold the claim, `boot` is fair, and
   `boot_reads` (the first turn's `takes`) clears the answer. Taken as hypotheses: the run is reachable, and
   `firstClaimed` is the task (a spawned agent holds one).
+- (`holder_leads_to`, `Holder.lean`) L3, the holder half. While an agent holds the claimed task with its answer unread in its
+  inbox (`Pa`; `unblock_pa`: an `unblock` of a live, non-booting owner establishes it), then in a fair run the holder reads it, or
+  stops holding the task (reaped, ended, hc-blocked, done, dropped), or a spawned agent has the slot (`boot`, whose half is
+  `booting_reads`). The step lemma `pa_step`: each of the 40 actions keeps `Pa` or ends it in one of those ways; `Pa` includes "the
+  holder is live", so no separate invariant "held => live" is needed. A working holder's `readAll` and an hc prompt's `hcClear` are
+  fair and deliver; an idle one is L2's (`idleClaim_leads_to`). Needs no `bgStart` or `die` after the start, none live at the start.
 
-Not proved: L1 for the pool (false, #16), and the held half of L3. While the holder keeps the task, the answer is a
-message it reads or a lease that lapses (L2 covers the idle holder; a working holder's `readAll` and an hc prompt's
-`hcClear` are fair and deliver); that half is not a theorem yet (board follow-up). With `bootFirst := false` L3 is
-false (#17). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
+Not proved: L1 for the pool (false, #16), that `unblock` finds its owner live and not booting (an invariant: no spawned agent blocks
+a task before its first turn; `unblock_pa` takes both as hypotheses), and the two halves joined into one statement about a task
+(the reopened half's hypotheses are taken, not derived). With `bootFirst := false` L3 is false (#17). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
 theorems could in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
 
 ## Findings
@@ -239,7 +245,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: the held half of L3 and L4 as statements about fair runs (L1, per task, and L2 are, for `racy = false`).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined, and L4 as statements about fair runs (L1, per task, L2 and L3's two halves are, for `racy = false`).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
