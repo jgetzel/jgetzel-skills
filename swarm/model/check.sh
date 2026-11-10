@@ -29,8 +29,10 @@ s2_racy          noEarlyStart     inv  fails
 s2_atomic        noEarlyStart     inv  holds
 s2_fixed         noEarlyStart     inv  holds
 s3_globs         locksDisjoint    inv  fails
+s3_fixed         locksDisjoint    inv  holds
 s3_plain         locksDisjoint    inv  holds
 s4_racy          inboxExact       inv  fails
+s4_fixed         inboxExact       inv  holds
 s4_atomic        inboxExact       inv  holds
 s4_atomic        doneHasEvidence  inv  fails
 s5_fixed         doneHasEvidence  inv  holds
