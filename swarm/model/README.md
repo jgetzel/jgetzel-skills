@@ -18,9 +18,10 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3 |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the thirteen counterexamples as runs, and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the counterexamples as runs (and finding #16, a lasso), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
+| `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -106,8 +107,8 @@ Liveness, under fairness (the actions of `fair` in `Findings.lean`: watchd ticks
 age; a waiter with a message it wakes on wakes; a spawned agent boots; an hc prompt is answered; a working agent
 reads its messages and takes work):
 
-- **L1** A startable task doesn't stay startable forever while a slot is free. Its negation in one state:
-  `idleSlot`
+- **L1** A startable task doesn't stay startable forever while a slot is free. Its negation in one state, for a task
+  `t`: `startable s t ∧ slotFree c s`. (Of the pool, "some task is startable", `idleSlot`, it is false: finding #16.)
 - **L2** A claimed task whose owner is idle is eventually done or open again, unless its owner gets back to
   work. `idleClaim`
 - **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `answered`
@@ -155,12 +156,33 @@ shows `boot` happens), so it doesn't count. The proof is two persistence lemmas 
 idle agent holds the claim, a lapsed lease stays lapsed and a booting agent keeps booting) and fairness of `boot`,
 `expire` and `tick`. `racy` is left out: the race splits are for S2 and S4.
 
-Not proved: **L1** and **L3**. Both need strong fairness of `claim` (a working agent that keeps coming back to an
-empty inbox takes the work; weak fairness lets two agents post to each other forever, so neither's `claim` is
-continuously enabled) and `roster ≤ nagents`. L1 also needs the digest/wake/claim chain of a reusable agent and a
-bound on digests (`told` only grows). L3 needs that a reopened task is taken, which is L1 for the slot its owner's
-end frees. No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the theorem could
-in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
+L1 is proved over fair runs too, **for each task** (`startable_leads_to`; the core is `startable_taken`). Take an
+instance with `racy = false`, `watchd`, `passedOver` (PR #116), `waiterAlive` (PR #119) and `roster ≤ nagents`, a task
+`t`, and a fair run that starts in a reachable state with no dead terminal and from there has no `leave`, `die`,
+`waiterGone` or `reapGone` (an agent that leaves, dies or loses its waiter can't be waited for). Then some state of the
+run has `t` not startable or no free slot: the task is taken (or finished, dropped), or a spawn fills the roster.
+The proof, by contradiction from "`t` startable and a slot free forever":
+
+- (`lifecycle_fills`) a tick that finds no reusable agent spawns for every pool task while the roster has room, so
+  afterwards `t` is taken or the roster is full. So every tick fires with a reusable agent present, and a tick is
+  enabled whenever there is none.
+- (`reusable_ready`, `lifecycle_unread`) after a tick a reusable agent `a` is *ready*: idle, waiter armed, small context,
+  not cold, and with an unread message (its `released`, or the digest the tick just posted). Where the tick is
+  disabled, the same agent is ready already. Either way some agent is ready at infinitely many steps, so one agent `a` is
+  (finitely many agents; `Cfg.agents`).
+- (`ready_step`) a ready agent stays ready until it gets back to work, through every action but the four excluded: a
+  tick doesn't end it (it is reusable), a delivery to someone else doesn't touch its cursor, a post only adds to its
+  inbox. Its `wake` is enabled until then, so by fairness it wakes: working, inbox empty, small context.
+- (`claim_enabled`) `claim a t` is then enabled, at infinitely many steps, so it happens, and `t` is taken.
+
+Strong fairness is what makes the last two steps work: weak fairness lets two agents post to each other forever, so
+neither's `claim` is continuously enabled. `Run.Fair` already is strong fairness. The invariants used are proved for every
+reachable state (`i1_of_reachable`: there are `nagents` slots and cursors, only a big agent is cold; `inbInv_of_reachable`)
+and kept by every action but `die` (`d_step`).
+
+Not proved: **L3**, and L1 for the pool (false, #16). L3 needs that a reopened task is taken, which is L1 for the slot its
+owner's end frees (board #142). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
+theorems could in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
 
 ## Findings
 
@@ -189,8 +211,9 @@ Lua.
 Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent with unlanded work, or that the nudge makes the agent clean (it can ignore it). 
 | 14 | L4 | `watchd := false` / `deadLive_not_stuck` | An agent holding #1 loses its terminal. With no watchd nothing ends the row: `swarm who` and `swarm post` show it gone, but it stays live, keeps its claim, and a message to it is stored unread. | open: run watchd, or end the row by hand (`swarm leave` is the agent's own) |
 | 15 | L4 | `hcSees := false`, or `unbound := [0]` / `deadLive_not_stuck` | watchd runs but can't tell. The dead agent was working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and #1 stays claimed forever. An unbound row is a communicator that joined from outside hc; `hc ls` failing makes `live_addrs` nil for every row. | open |
+| 16 | L1 (the pool) | `idleSlot` / `lassoOk`, `periodic` | Two tasks, a free slot, one agent. It takes #1, stops holding it, the lease lapses, the tick reaps it: the agent is idle with an unread `released`, so `reusable`, and lifecycle does not spawn into the free slot. It wakes, takes #2, and the same again. Every fair action enabled anywhere in the loop happens in it, and a startable task and a free slot are there at every state. L1 holds of each task (it is taken over and over), not of the pool. Evaluated for 4 periods; one more period changes only the log, the cursor and what was shown (`periodic`). **Not the real watchd**: the loop needs every tick to come after the lease lapsed (a tick while the agent holds a live lease would spawn onto the other task), and watchd ticks every 30 s against a 2 h lease; the model lets fairness delay a tick that long. | not a bug |
 
-Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed.
+Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed. #16 is a statement that is too strong, not a bug.
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
 its sender is told" is read from the code, not proved: watchd posts its notices (`lease-late`, `blocked on #N`, idle
@@ -202,7 +225,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the thirteen counterexamples and their fixed runs. **Not proved**: L1, L3 and L4 as statements about fair runs (L2 is, for `racy = false`).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3 and L4 as statements about fair runs (L1, per task, and L2 are, for `racy = false`).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,

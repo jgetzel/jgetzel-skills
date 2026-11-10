@@ -7,3 +7,4 @@ import SwarmModel.Workers
 import SwarmModel.Findings
 import SwarmModel.Liveness
 import SwarmModel.Fair
+import SwarmModel.Taken

@@ -143,4 +143,40 @@ example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 
 example : (run {} [.dirty 0 false true, .stop 0 false, .age 0, .stale 0, .nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0,
     .nudge 0]).isSome = true := by decide
 
+
+-- ---------- #16, L1 for the pool: a lasso (board #141) ----------
+/-- the states a run visits from `s` on, `s` first -/
+def walk (c : Cfg) : State → List Action → Option (List State)
+  | s, [] => some [s]
+  | s, a :: as => (step c s a).bind fun s' => (walk c s' as).map (s :: ·)
+/-- from the start `pre` leads to, `k` periods of `cyc` keep a startable task and a free slot (`idleSlot`) in every state,
+and every fair action enabled in any of those states is in `cyc`: repeated forever the run is fair (strong fairness of
+each action that is enabled infinitely often), and `idleSlot` holds forever -/
+def lassoOk (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool :=
+  ((run c pre).bind fun s0 => walk c s0 (List.replicate k cyc).flatten).any fun ss =>
+    ss.all fun s => idleSlot c s && (fair c s).all fun f => (step c s f).isNone || cyc.contains f
+/-- one more period changes only the log, the cursor and what was shown: the state at the end of period `k + 1` is the
+state at the end of period `k` with those three replaced, and the log is longer by the two `released` messages -/
+def periodic (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool :=
+  match run c (pre ++ (List.replicate k cyc).flatten), run c (pre ++ (List.replicate (k + 1) cyc).flatten) with
+  | some a, some b => decide ({ b with log := a.log, cursor := a.cursor, seen := a.seen } = a) && decide (b.log.length = a.log.length + 2)
+  | _, _ => false
+
+-- Two tasks, two agent slots, agent 1 gone (so a slot is free). Agent 0 takes #1, stops holding it, its lease lapses, the
+-- tick reaps it: agent 0 is idle with an unread `released`, so it is `reusable` and lifecycle does not spawn into the free
+-- slot. It wakes, takes #2, and the same happens. The tick only runs after the lease lapsed, which fairness allows
+-- (a tick while agent 0 holds a live lease would spawn onto the other task). The pool is never empty and the slot is
+-- never filled, though each task is taken over and over: L1 holds for each task (`startable_leads_to`), not for the pool.
+example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
+    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .tick, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .tick, .wake 0]
+    4 = true := by decide +kernel
+example : periodic { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
+    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .tick, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .tick, .wake 0]
+    2 = true := by decide +kernel
+
+-- the check bites: without the tick in the period, the tick is enabled and never taken
+example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
+    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .wake 0]
+    4 = false := by decide +kernel
+
 end Swarm
