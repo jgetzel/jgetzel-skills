@@ -97,6 +97,47 @@ function T.test_stayer_done_line_and_ctx_note(t)
   t:hasnt(ctx, "go idle")
 end
 
+-- the quiet notice (§8 item 3): on the edge into quiet, one message per stayer and one notice to comms; none on the
+-- next tick; a new task re-arms it
+local function to(t, name) return t:q("select body from msg where dest=?", name) end
+function T.test_quiet_notice_once_per_edge(t)
+  idle(t, "comms"); idle(t, "r", { stay = "PRs to review", role = "reviewer" })
+  t:agent("w", { status = "working" })
+  t:sw("comms", "task", "add", "t1"); t:sw("comms", "task", "drop", "1")
+  comms_tick(t)
+  t:eq(#to(t, "r"), 0)  -- w is still working: not quiet
+  t:q("update agent set ended=1 where name='w'")
+  comms_tick(t)
+  t:eq(#to(t, "r"), 1)
+  t:has(to(t, "r")[1].body, "You stay for: 'PRs to review'")
+  t:eq(#to(t, "comms"), 1)
+  t:has(to(t, "comms")[1].body, "r reviewer stays for 'PRs to review' (asked if that is over)")
+  comms_tick(t)
+  t:eq(#to(t, "r"), 1); t:eq(#to(t, "comms"), 1)
+  t:sw("comms", "task", "add", "t2")
+  comms_tick(t)
+  t:eq(#to(t, "r"), 1)  -- a task is open: not quiet
+  t:sw("comms", "task", "drop", "2")
+  comms_tick(t)
+  t:eq(#to(t, "r"), 2); t:eq(#to(t, "comms"), 2)
+  t:eq(#t:q("select 1 x from event where kind='quiet'"), 2)
+end
+
+-- a cold or waiterless stayer is named to comms, not woken
+function T.test_quiet_cold_or_waiterless_stayer_not_woken(t)
+  local p = io.popen("sh -c 'echo $$'"); local dead = tonumber(p:read("*l")); p:close()
+  idle(t, "comms")
+  idle(t, "cold", { stay = "the plan", ctx_tokens = 140000, compacted_at = 0, last_active = os.time() - 72 * 60 })
+  idle(t, "gone", { stay = "reviews", waiter = dead })
+  t:sw("comms", "task", "add", "t1"); t:sw("comms", "task", "drop", "1")
+  comms_tick(t)
+  t:eq(#to(t, "cold"), 0); t:eq(#to(t, "gone"), 0)
+  local n = to(t, "comms")
+  t:eq(#n, 1)
+  t:has(n[1].body, "cold stays for 'the plan' (cold, not woken)")
+  t:has(n[1].body, "gone stays for 'reviews' (no live waiter, not woken)")
+end
+
 -- spawn --stay: a stayer before its first turn, with --task (at reserve) and without
 function T.test_spawn_stay(t)
   t:fakes()
