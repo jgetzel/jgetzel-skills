@@ -4,8 +4,9 @@
 --   mods/calendar         <- copy of herdr-mods/calendar (re-run after editing it)
 --   mods/jgetzel-tabs     <- Herdr's shipped tabs mod plus Calendar and Swarm buttons (generated: tabs has no
 --                            extension point)
---   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, "swarm" and "calendar" children in
---                            the side panel, and that panel at half the work area
+--   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
+--   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
+--                            children in the side panel, and that panel at half the work area
 -- Switch to it once with: herdr-app do layout.switch --name jgetzel
 -- Calendar config (calendar.json): see herdr-mods/calendar/events.lua.
 -- Run it as: luajit herdr-mods/install.lua (install.sh does).
@@ -94,6 +95,73 @@ import { calendarFeed, markCalendarOpened } from "./feed.js";]==],
   },
 }
 
+-- Herdr's agents/main.js roots every agent with a pane and nests it again under its hc parent. Here an
+-- agent with a pane shows once: under its parent when both are in the same group and space, else as a root.
+local AGENTS_PATCH = {
+  { -- one status per agent: a nested agent with a pane keeps its own (done stays done)
+    [==[  const s = listed.get(k.address) ?? k.status;
+]==],
+    [==[  if (listed.has(k.address)) return listed.get(k.address).status;
+  const s = k.status;
+]==],
+  },
+  {
+    [==[    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+]==],
+    [==[    const kids = all.filter((k) => k.parent === addr && k.state === "live" && (!this.listed.has(k.address) || this.nest.has(k.address)));
+]==],
+  },
+  { -- a nested agent with a pane opens like its root row did
+    [==[    const on = k.address === shown;
+]==],
+    [==[    const own = this.listed.get(k.address);
+    const on = own ? own.focused : k.address === shown;
+]==],
+  },
+  {
+    [==[      .on_click(() => this.peek(k.address))
+]==],
+    [==[      .on_click(() => (own ? run("pane.focus", { pane: own.pane }) : this.peek(k.address)))
+]==],
+  },
+  { -- nest stays empty until the groups are known, so a parent's urgency counts only its paneless sub-agents
+    [==[    this.listed = new Map(list.map((a) => [a.address, a.status]));
+]==],
+    [==[    this.listed = new Map(list.map((a) => [a.address, a]));
+    this.nest = new Set();
+]==],
+  },
+  {
+    [==[    setAgentOrder(list.map((a) => a.address));
+]==],
+    [==[    setAgentOrder(list.map((a) => a.address));
+    const gid = (a) => (pinned.includes(a) ? "pinned" : byPriority ? `sec-${rankOf(a) || RANK.idle}` : `sp-${a.space}`);
+    const machines = {}; // group -> the machines its agents are on
+    for (const a of list) (machines[gid(a)] ??= new Set()).add(a.address.includes("/") ? a.address.split("/")[0] : "");
+    for (const k of all) {
+      const a = this.listed.get(k.address), p = this.listed.get(k.parent);
+      if (a && p && k.state === "live" && a.space === p.space && gid(a) === gid(p)) this.nest.add(a.address);
+    }
+]==],
+  },
+  { -- the machine only where the group's agents aren't all on one
+    [==[      .when(Boolean(machine), el =>]==],
+    [==[      .when(Boolean(machine) && machines[gid(a)].size > 1, el =>]==],
+  },
+  { -- the time says what it measures: how long in this status
+    [==[.child(duration(now - when))]==],
+    [==[.child(`${a.status} ${duration(now - when)}`)]==],
+  },
+  {
+    [==[g.members.flatMap(withKids))]==],
+    [==[g.members.filter((a) => !this.nest.has(a.address)).flatMap(withKids))]==],
+  },
+  { -- the sort menu opens this mod, not the shipped one
+    [==[openOverlay({ mod: "agents",]==],
+    [==[openOverlay({ mod: "jgetzel-agents",]==],
+  },
+}
+
 local function count(s, p)
   local n, i = 0, 1
   while true do
@@ -103,11 +171,12 @@ local function count(s, p)
   end
 end
 
-local function patch(src, edits)
+local function patch(src, edits, mod)
   for _, e in ipairs(edits) do
     local n = count(src, e[1])
     if n ~= 1 then
-      die(("install: Herdr's tabs mod changed (%d matches for %q); update TABS_PATCH in %s"):format(n, util.strip(e[1]):sub(1, 70), arg[0]))
+      die(("install: Herdr's %s mod changed (%d matches for %q); update %s_PATCH in %s"):format(mod, n, util.strip(e[1]):sub(1, 70),
+        mod:upper(), arg[0]))
     end
     local a, b = src:find(e[1], 1, true)
     src = src:sub(1, a - 1) .. e[2] .. src:sub(b + 1)
@@ -145,13 +214,17 @@ local version = (proc.run({ "herdr-app", "--version" }) or ""):match("(%S+)%s*$"
 
 -- Everything that can fail on a changed Herdr runs before the first write: rewriting the tab bar reloads it,
 -- which ends the task that reports a failed re-install (feed.js).
-local tabs_js = patch(assert(util.slurp(mods .. "/tabs/main.js")), TABS_PATCH)
+local tabs_js = patch(assert(util.slurp(mods .. "/tabs/main.js")), TABS_PATCH, "tabs")
+local agents_js = patch(assert(util.slurp(mods .. "/agents/main.js")), AGENTS_PATCH, "agents")
 local lay = assert(json.decode(assert(util.slurp(HOME .. "/layouts/main.json"))))
 local bar, body = find(lay, "tabs"), find(lay, "panel-body")
 if not bar or (bar.content or {}).mod ~= "tabs" or not body then
   die("install: Herdr's main layout changed (no tabs block or panel-body stack); update install.lua")
 end
 bar.content.mod = "jgetzel-tabs"
+local ags = find(lay, "agents")
+if not ags or (ags.content or {}).mod ~= "agents" then die("install: Herdr's main layout changed (no agents block); update install.lua") end
+ags.content.mod = "jgetzel-agents"
 -- The side panel opens at half the work area (weight 1 beside the tab's weight 1); the window's
 -- left sidebar is a fixed px column, so an exact half of the window isn't expressible.
 local panel = find(lay, "panel")
@@ -198,13 +271,22 @@ for _, f in ipairs({ "gpui-kit.d.ts", "jsconfig.json" }) do
 end
 print("wrote " .. tabs)
 
+local agents = mods .. "/jgetzel-agents"
+lfs.mkdir(agents)
+write(agents .. "/main.js", agents_js)
+write(agents .. "/mod.json", json.encode({ place = "none", title = "Agents", cloned_from = { name = "agents", version = version } }))
+for _, f in ipairs({ "gpui-kit.d.ts", "jsconfig.json" }) do
+  if lfs.attributes(mods .. "/agents/" .. f) then copy(mods .. "/agents/" .. f, agents) end
+end
+print("wrote " .. agents)
+
 local out = HOME .. "/layouts/jgetzel.json"
 write(out .. ".tmp", json.encode(lay))
 assert(os.rename(out .. ".tmp", out))
 print("wrote " .. out)
 
 if version then
-  for _, m in ipairs({ tabs, cal }) do
+  for _, m in ipairs({ tabs, agents, cal }) do
     local stdout, stderr, code = proc.exec({ "herdr-app", "check", m })
     if code ~= 0 then die("install: herdr-app check " .. m .. " failed: " .. util.strip(stderr ~= "" and stderr or stdout)) end
   end
