@@ -1,6 +1,6 @@
 /-! The coordination swarm/lua/swarm implements: the board, leases and watchd's reaping and auto-spawn, locks,
 agents, and inboxes, as plain Lean: one `State`, one function per command or event (`none` is "not enabled"),
-`step` over an `Action`, and `Reachable`. The proofs are in `Safety*.lean` and `Findings.lean`; `Traces.lean`
+`step` over an `Action`, and `Reachable`. The proofs are in the other files (README.md says which); `Traces.lean`
 writes random runs that `../lua/test/cli_model_spec.lua` replays through the CLI. README.md lists every
 property as a sentence and says what is proved, replayed and not modelled.
 

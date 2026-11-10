@@ -2,25 +2,30 @@
 
 `SwarmModel/Model.lean` models what `swarm/lua/swarm` does to coordinate agents: the board (tasks and their
 `--after` dependencies), leases and watchd's reaping and auto-spawn, locks, agents, and inboxes. It is plain
-Lean 4: one `State`, and one function per command or event. [Veil](https://github.com/verse-lab/veil) checks
-it exhaustively on small bounds (`check.sh`). Random runs of it are replayed through the real CLI against a
-scratch `swarm.db` (`replay.sh`, and the committed `traces/` in the Lua suite), so a model that drifts from the
-code fails a test.
+Lean 4 with no dependencies: one `State`, one function per command or event, and `Reachable`, the states any run
+can reach. The five safety properties are theorems about every reachable state, for any number of agents, tasks,
+locks and messages. Every bug the model found is a run that Lean evaluates. Random runs are replayed through
+the real CLI against a scratch `swarm.db`, so a model that drifts from the code fails a test.
 
-It replaces the Quint model of board task #107 (branch `sr-92/quint-model`, never merged), whose TLC checks were
-too slow: *Results* compares the two.
+It replaces the Quint model of board task #107 (branch `sr-92/quint-model`, never merged), whose TLC checks
+covered two agents and at most three tasks and mostly didn't finish: *Results* compares the two.
 
 | File | What it is |
 |---|---|
-| `SwarmModel/Model.lean` | the model: state, actions, the properties below as functions, and the instances |
-| `SwarmModel/Checks.lean` | the model as a Veil transition system, and every check with the verdict wanted |
-| `SwarmModel/Expect.lean` | `#expect`: runs one check and compares its verdict |
+| `SwarmModel/Model.lean` | the model: state, actions, `step`, `Reachable`, `run`, and the properties as functions |
+| `SwarmModel/Frame.lean` | which fields of the state each change leaves alone |
+| `SwarmModel/Basic.lean` | induction over reachable states; S2 and S5 |
+| `SwarmModel/Locks.lean` | S3 |
+| `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
+| `SwarmModel/Workers.lean` | S1 |
+| `SwarmModel/Findings.lean` | the nine counterexamples as runs, and the same runs with the fix on |
+| `SwarmModel/Liveness.lean` | the part of L2 that is proved |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON |
-| `check.sh [name]` | runs every check (or those whose name has `name`); exits 1 if a verdict differs |
+| `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) the Lua suite replays |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
-| `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0 and Veil's `v4.35.0` tag, every dependency pinned by commit |
+| `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
 ## The model
 
@@ -60,24 +65,23 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `release` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (PR #110) reopens it unless the owner is working; `idle`: edffafc (PR #111) only when the owner is idle |
 | `answerOnTask` | the unblock answer is only a DM | PR #110 stores it on the task |
 | `claimChecksDeps` | `task claim`'s write checks only `state='open'` | PR #112 checks the dependencies in the write |
-| `"emptyEvidence"` in `off` | `done --evidence ""` is accepted | PR #113 refuses it |
+| `evidenceRequired` | `done --evidence ""` is accepted | PR #113 refuses it |
 | `lockOverlap` | `lock` refuses only a pattern covering the other | PR #114 refuses any common file |
 | `deliverCas` | a delivery's cursor write ignores a delivery in between | PR #115 writes only from where it read |
 | `passedOver` | a reusable agent holds spawn back forever | PR #116 ends one that passed the work over |
 | `waiterAlive` | an idle agent whose waiter exited is kept reusable, and never reads its digest | PR #119 ends it |
 
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
-check, then the update) and the waiter's delivery (unread, then the cursor). `off` turns off parts of the
-environment an instance doesn't need, so a check can exhaust it. `compact` drops messages whose reader has
-passed them, so inboxes stay finite.
+check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
+turn it starts, whose prompt hook delivers whatever is still unread.
 
-Instances: `sim_before` (624cf79), `sim_first106` (b04cf08) and `sim_after` (main now) have every feature on,
-for random runs; `replay` is `sim_after` without hc or races, what the replay drives. The `s*_` and `l*_`
-instances are what Veil exhausts: 2 agent slots, 1 to 3 tasks.
+`Cfg` also has the sizes: agent slots, the roster, tasks, lock patterns. The theorems hold for every `Cfg`
+with the fix's switch on; the log is unbounded. `replay` (4 slots, 4 tasks, 4 patterns, `racy` off) is what the
+replay drives.
 
 ## Properties
 
-Each is a sentence, then its name in `Model.lean` (safety) or `Checks.lean` (liveness).
+Each is a sentence, then the function in `Model.lean` that says it of one state.
 
 Safety:
 
@@ -88,46 +92,79 @@ Safety:
 - **S4** No message is shown twice, and no cursor passes a message it didn't show. `inboxExact`
 - **S5** Every done task has evidence. `doneHasEvidence`
 
-Liveness, under fairness (watchd ticks; leases lapse and idle agents age; a waiter with a message it wakes on
-wakes; a spawned agent boots; a working agent reads its messages and takes work it is repeatedly able to):
+Liveness, under fairness (the actions of `fair` in `Findings.lean`: watchd ticks; leases lapse and idle agents
+age; a waiter with a message it wakes on wakes; a spawned agent boots; an hc prompt is answered; a working agent
+reads its messages and takes work):
 
-- **L1** A startable task doesn't stay startable forever while a slot is free. `L1`
+- **L1** A startable task doesn't stay startable forever while a slot is free. Its negation in one state:
+  `idleSlot`
 - **L2** A claimed task whose owner is idle is eventually done or open again, unless its owner gets back to
-  work. `L2`
-- **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `L3`
+  work. `idleClaim`
+- **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `answered`
 
 ## Results
 
-RESULTS
+`check.sh` (`lake build`) checks everything below in about 12 seconds from nothing (16 s of CPU). No `sorry`,
+no `native_decide`, no axiom beyond the three every Lean proof may use (`propext`, `Classical.choice`,
+`Quot.sound`: `#print axioms` on each theorem).
+
+| Property | Theorem | Holds for every reachable state of every instance with | Quint + TLC, 2 agents |
+|---|---|---|---|
+| S1 | `oneWorker_of_reachable` | `release = .idle` (PR #111) | 883,023 states, 217 s |
+| S2 | `noEarlyStart_of_reachable` | `claimChecksDeps` (PR #112) | stopped at 30 min, unfinished |
+| S3 | `locksDisjoint_of_reachable` | `lockOverlap` (PR #114) | 4.05M states, 577 s |
+| S4 | `inboxExact_of_reachable` | `deliverCas` (PR #115) | stopped at 30 min, unfinished |
+| S5 | `doneHasEvidence_of_reachable` | `evidenceRequired` (PR #113) | 13.9M states, 625 s |
+
+Each theorem is for any sizes and any setting of the other switches, `racy` included. A TLC run that finished
+covered 2 agent slots, 1 to 3 tasks and a bounded log; the four that hit the 30-minute cap had seen 23M to 92M
+states, and no liveness check got past the first instance.
+
+What carries each proof:
+
+- **S1**: an agent that believes it holds a task does hold it, or the task was dropped, or the agent isn't at
+  work and has an unread `released` message for it; and no two agents have a belief that isn't of that last,
+  stale kind (`J`). Reap under PR #111 reopens a claim only when its owner isn't at work, and tells it; every
+  way back to work delivers the inbox first. It needs S4's "no cursor passes a message it didn't show", which
+  holds with or without PR #115, and that `task add` never reuses an id (`Pfx`).
+- **S3**: a lock's holder is live, and unexpired locks of different agents share no file (`LkInv`).
+- **S4**: per agent, what was shown is in order and behind the cursor, everything behind the cursor since the
+  spawn was shown, and the waiter's snapshot skips nothing between the cursor and its last id (`Inb`).
+- **S2**, **S5**: the ghost flag stays off; done implies evidence.
+
+Liveness is proved only this far: `idleClaim_not_stuck` says that with PR #110 or #111 a state where an idle
+agent holds a claim on a task of the instance always has a fair action enabled (the lease lapses, or the tick reopens the task and tells
+the owner: `tick_reopens`). That every fair run then reaches "done or open again" is not proved, and nothing
+general is proved for L1 or L3: with the fixes on, the runs of findings #1, #3, #8 and #9 no longer end stuck,
+which is a check of those runs only.
 
 ## Findings
 
-Every counterexample the Quint model found, and what fixed it. `check.sh` shows each one again in the Lean
-model: the bug with the fix's switch off, no violation with it on (`TRACES=1 check.sh <name>` prints the
-run). Each was a real execution of the Lua.
+Every counterexample the Quint model found, and what fixed it. Each is an `example` in `Findings.lean`: the run,
+with the fix's switch off, ends in a state that violates the property (`by decide`: Lean evaluates the run).
+For a liveness property the run ends in a state where the property fails and no fair action is enabled, so a
+fair run can stay there forever. The same run with the fix on is there too. Each was a real execution of the
+Lua.
 
-| # | Property | Check that fails / holds | The counterexample | Fixed by |
+| # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
 |---|---|---|---|---|
-| 1 | L2 | `l_before` / `l_first106`, `l_after` | An owner goes idle holding a claim and nothing wakes it; its lease lapses, but reap keeps a lapsed claim while the owner is live, so the task stays claimed forever (task #106, seen live for ~6 h). | b04cf08, PR #110 |
-| 2 | S1 | `s1_first106` / `s1_after` | #1's first fix reopens a lapsed claim whenever the owner isn't working, including one stuck at an hc permission prompt; another agent claims it, the prompt is answered, and two agents work on the task. | edffafc, PR #111 |
-| 3 | L3 | `l_before` / `l_fixed` | An unblock answer is only a DM. An idle owner that is cold isn't woken by a non-urgent message, so the answer never reaches it, and no one else can read it. | b04cf08, PR #110 (`answerOnTask`) |
-| 4 | S2 | `s2_racy` / `s2_fixed` | `task claim` checks the dependencies, then a `task after` adds one that isn't done, then the claim's write (`where state='open'`) succeeds: a task starts before what it is after. | 58e9aa6, PR #112 |
-| 5 | S5 | `s4_atomic` / `s5_fixed` | `task done --evidence ""` is accepted. | 89fe2a2, PR #113 |
-| 6 | S3 | `s3_globs` / `s3_fixed` | `m/a*` and `m/*.lua` both match `m/a.lua`, but neither covers the other as a path, so both locks are granted. | cc63217, PR #114 |
-| 7 | S4 | `s4_racy` / `s4_fixed` | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
-| 8 | L1, L3 | `l_after` / `l_fixed` | A small-context idle agent is reusable while work is open; it reads the digest and stops without taking the task (it may), and lifecycle keeps it reusable, so it spawns no one for a startable task with a free slot. | 1ac83b1, PR #116 |
-| 9 | L1, L3 | `l_fixed_waiter` / `l_waiter` | The same with a waiter that timed out (21000 s): the agent never reads the digest, so it stays reusable and holds spawn back; an answer to it goes unread. | aeaf44f, PR #119 (board #113) |
+| 1 | L2 | `release := .ended` / `idleClaim_not_stuck` | An owner goes idle holding a claim and nothing wakes it; its lease lapses, but reap keeps a lapsed claim while the owner is live, so the task stays claimed forever (task #106, seen live for ~6 h). | b04cf08, PR #110 |
+| 2 | S1 | `release := .notWorking` / S1 | #1's first fix reopens a lapsed claim whenever the owner isn't working, including one stuck at an hc permission prompt; another agent claims it, the prompt is answered, and two agents work on the task. | edffafc, PR #111 |
+| 3 | L3 | `answerOnTask := false` / the run | An unblock answer is only a DM. An idle owner that is cold isn't woken by a non-urgent message, so the answer never reaches it; reap reopens the task, and the agent spawned for it can't read the answer either. | b04cf08, PR #110 |
+| 4 | S2 | `claimChecksDeps := false`, `racy` / S2 | `task claim` checks the dependencies, then a `task after` adds one that isn't done, then the claim's write (`where state='open'`) succeeds: a task starts before what it is after. | 58e9aa6, PR #112 |
+| 5 | S5 | `evidenceRequired := false` / S5 | `task done --evidence ""` is accepted. | 89fe2a2, PR #113 |
+| 6 | S3 | `lockOverlap := false` / S3 | `m/a*` and `m/*.lua` both match `m/a.lua`, but neither covers the other as a path, so both locks are granted. | cc63217, PR #114 |
+| 7 | S4 | `deliverCas := false`, `racy` / S4 | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
+| 8 | L1, L3 | `passedOver := false` / the run | A small-context idle agent was told of a task and went idle again without it; the task is open again with a free slot, and lifecycle keeps the agent reusable instead of spawning, so nobody takes the task or reads its answer. | 1ac83b1, PR #116 |
+| 9 | L1, L3 | `waiterAlive := false` / the run | The same with a waiter that exited: the agent never reads the digest, so it stays reusable and holds spawn back. | aeaf44f, PR #119 (board #113) |
 
-Still failing, by design: in `l_after_waiter`, the same model as #9 with PR #116's rule off, L1 and L3 fail for
-both reasons. Nothing is open: every counterexample above has a fix on main.
+Nothing is open: every counterexample above has a fix on main.
 
-## What is checked, what is replayed, what isn't modelled
+## What is proved, what is replayed, what isn't modelled
 
-**Checked** (Veil, exhaustive within the bounds): the verdicts above, for 2 agent slots (a roster of 2, refilled
-as agents end), 1 to 3 tasks, the locks and message counts each instance sets, and the parts of the environment
-it leaves on. A property that holds is checked for those bounds only; the counterexamples are real executions
-of the model at any size. Nothing is proved for every size yet: board task #112 does that for S1 to S5.
-`#temporal_check`'s verdicts are proved correct in Lean by Veil; `#model_check`'s search is not.
+**Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
+is what the replay tests. **Evaluated**: the nine counterexamples and their fixed runs. **Not proved**: L1, L2
+and L3 as statements about fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
@@ -135,10 +172,10 @@ writes the db (`lease_until` in the past, `last_active` back 200 s or 4000 s, `c
 the test's own while the model's waiter is alive, none once it is gone), and then the db must match the model:
 every task's state, owner, live lease, evidence and answer; every agent's status; every lock; every message to
 an agent, in order; and each agent's unread list. The 12 committed runs (seed 107, 50 steps) are in the Lua
-suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes. REPLAY
+suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
 
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.
-Those parts (S1's hc prompt, S2's and S4's races) are checked in the model only.
+Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
 
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook; `swarm run` and machines;
 worktrees and `landed` (every agent's work counts as landed), so neither PR #122's nudge to an agent kept only
@@ -146,18 +183,17 @@ by an unclean worktree nor PR #123's every-worktree rule (board #119); a backgro
 claim (PR #121, board #118); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
 launch failures, backoff and halt; the context fence on `task claim` (350k) and the handoff; compaction
-(`compacted_at`); notices to the communicator; the 9000-character delivery budget (every delivery shows all
-unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
+(`compacted_at`: the model's log only grows); notices to the communicator; the 9000-character delivery budget
+(every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 
 ## Running
 
 ```sh
-swarm/model/check.sh            # every check; or check.sh s1_ for one group; TRACES=1 prints counterexamples
+swarm/model/check.sh            # every theorem and counterexample, about 12 s
 swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
 ```
 
-`check.sh` and `replay.sh` need `lake` (elan) and `unzip` on the PATH, or nix, which they use to fetch both
-(`nix shell nixpkgs#elan nixpkgs#unzip`); the liveness checks also need a C compiler. The first run downloads
-and builds Veil and its dependencies into `.lake/` (about 20 minutes, 3 GB). The Lua suite needs none of it.
+`check.sh` and `replay.sh` need `lake` (elan) on the PATH, or nix, which they use to fetch it
+(`nix shell nixpkgs#elan`). The Lua suite needs neither.
