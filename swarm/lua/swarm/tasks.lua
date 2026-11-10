@@ -264,6 +264,9 @@ function M.cmd_task(c, a)
     print(("renewed #%s until %s"):format(d(a.id), util.hhmm(until_)))
 
   elseif a.act == "done" then
+    if util.strip(a.evidence or "") == "" then
+      util.die("--evidence is empty: give the sha, PR or command output that shows the work is done")
+    end
     if util.startswith(r.title or "", M.RED_TASK) then  -- a run that predates the fix could still go red: green closes it
       if c:exec("update task set evidence=?" .. mine, a.evidence, a.id, n) == 0 then
         util.die(("task #%s is not claimed by you"):format(d(a.id)))
