@@ -94,6 +94,18 @@ function M.cwds()
   return out
 end
 
+M.CGROUP = os.getenv("SWARM_CGROUP") or "/sys/fs/cgroup"
+
+-- The cgroup directory of the swarm-agent scope (relaunch/launch.sh) pid runs in, with its kernel-kept peak memory (KiB)
+-- and CPU seconds; nil where there is none (no systemd user session, macOS, an unwrapped launch).
+function M.cgroup(pid)
+  local rel = (util.slurp(M.PROC .. "/" .. util.d(pid) .. "/cgroup") or ""):match("0::(/[^\n]*/swarm%-agent%-[^/\n]*%.scope)")
+  local peak = rel and tonumber(util.slurp(M.CGROUP .. rel .. "/memory.peak") or "")
+  if not peak then return nil end
+  local usec = (util.slurp(M.CGROUP .. rel .. "/cpu.stat") or ""):match("usage_usec (%d+)")
+  return { dir = M.CGROUP .. rel, peak_kb = math.floor(peak / 1024), cpu_s = math.floor((tonumber(usec) or 0) / 1e6) }
+end
+
 function M.pressure_high(avail, total, psi)
   if psi.level then return psi.level ~= "normal" end
   return (psi.memory or 0) > 10 or avail < 0.15 * total

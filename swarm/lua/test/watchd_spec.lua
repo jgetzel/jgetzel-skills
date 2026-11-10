@@ -105,6 +105,22 @@ watchd.end_agent(c, row, dir .. "/wt", repo, nil)
 proc.run = run
 assert(peer:one("select ended from agent where name='e'").ended == nil)
 
+-- end_agent kills what the agent left in its cgroup scope
+c = fresh()
+local machine = require "swarm.machine"
+local pr, cg0 = machine.PROC, machine.CGROUP
+machine.PROC, machine.CGROUP = dir .. "/proc", dir .. "/cg"
+os.execute(("mkdir -p %s/proc/77 %s/cg/u/swarm-agent-e-1.scope"):format(dir, dir))
+os.execute(("echo '0::/u/swarm-agent-e-1.scope' > %s/proc/77/cgroup; echo 1048576 > %s/cg/u/swarm-agent-e-1.scope/memory.peak"):format(dir, dir))
+peer:exec("insert into agent(name,cwd,status,last_active,started,claude_pid) values('e',?,'idle',1,1,77)", repo)
+row = c:one("select * from agent where name='e'")
+proc.run = function() return nil end
+watchd.end_agent(c, row, dir .. "/wt", repo, nil)
+proc.run = run
+machine.PROC, machine.CGROUP = pr, cg0
+assert(peer:one("select ended from agent where name='e'").ended ~= nil)
+assert(require("swarm.util").slurp(dir .. "/cg/u/swarm-agent-e-1.scope/cgroup.kill") == "1")
+
 -- auto-spawn: a peer claims the task between pool() and the reserve; nothing launches, the peer keeps it
 c = fresh()
 peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)", repo)

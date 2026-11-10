@@ -164,9 +164,14 @@ function M.end_agent(c, a, wt, main, comms)
     return true
   end)
   if not ok then return end
+  local cg = a.claude_pid and machine.cgroup(a.claude_pid)  -- read while claude lives
   if nz(a.hc) then
     proc.run({ "hc", "kill", a.hc })
     proc.run({ "hc", "rm", a.hc })
+  end
+  if cg then  -- whatever the agent left running in its scope
+    local f = io.open(cg.dir .. "/cgroup.kill", "w")
+    if f then f:write("1"); f:close() end
   end
   if not nz(wt) or wt == main then return end
   local real = realpath(wt)

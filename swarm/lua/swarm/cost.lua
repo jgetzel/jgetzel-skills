@@ -92,14 +92,20 @@ local function reaped_cpu(pid)
   return ((tonumber(f[14]) or 0) + (tonumber(f[15]) or 0)) / clk()
 end
 
+M.cg_peak = {}  -- agent -> its cgroup's memory.peak at the last tick
 M.open_cmds = {}  -- shell pid -> {agent, cmd, wall, peak, cpu, repo}: a watchd restart forgets them
 
 -- One watchd tick: update the table of live command shells, and write a row for each that is gone.
 -- procs: machine.procs(); t: now. User sessions (claude processes of no agent) count when their cwd is in this repo.
 function M.tick(c, h, procs, t)
-  local owner = {}
+  local owner, rose, nopen = {}, {}, {}
   for _, r in ipairs(c:all("select name,claude_pid from agent where ended is null and claude_pid is not null")) do
     owner[r.claude_pid] = r.name
+    local cg = machine.cgroup(r.claude_pid)
+    if cg then
+      rose[r.name] = M.cg_peak[r.name] and cg.peak_kb > M.cg_peak[r.name] and cg.peak_kb
+      M.cg_peak[r.name] = cg.peak_kb
+    end
   end
   local kids, shells = {}, {}
   for _, p in pairs(procs) do
@@ -136,14 +142,19 @@ function M.tick(c, h, procs, t)
       o.wall, o.peak = sh.age, math.max(o.peak, rss)
       o.cpu = math.max(o.cpu, cpu, reaped_cpu(sh.pid))
       seen[sh.pid] = true
+      nopen[who] = (nopen[who] or 0) + 1
     end
+  end
+  -- the agent's cgroup peak rose while exactly one of its commands was open: that figure is the command's, exactly
+  for pid, o in pairs(M.open_cmds) do
+    if seen[pid] and rose[o.agent] and nopen[o.agent] == 1 then o.exact_kb = rose[o.agent] end
   end
   for pid, o in pairs(M.open_cmds) do
     if not seen[pid] then
       M.open_cmds[pid] = nil
       repo = repo or repo_info()
       M.record(h, { ts = t, repo = repo or "?", agent = o.agent, cmd = o.cmd, wall_s = o.wall, cpu_s = math.floor(o.cpu),
-        peak_kb = o.peak })
+        peak_kb = math.max(o.peak, o.exact_kb or 0), exact = o.exact_kb and 1 or 0 })
     end
   end
 end

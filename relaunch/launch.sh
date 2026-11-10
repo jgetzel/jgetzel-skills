@@ -33,8 +33,15 @@ labels=(--label "herdr.space=$space")
 unset_vars=()
 for v in $(compgen -e); do case $v in CLAUDE* | HERDR*) unset_vars+=(-u "$v") ;; esac; done
 
+# Where a systemd user session exists, claude runs in its own scope: a cgroup per agent (exact memory.peak and
+# cpu.stat for the swarm, cgroup.kill when it ends). The unit name carries a nonce: a successor shares the name.
+scope=()
+if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]; then
+  scope=(systemd-run --user --scope --quiet --collect "--unit=swarm-agent-$name-$$" --)
+fi
+
 out=$(hc run --json --bg --outlive-parent --no-notify --name "$name" --cwd "$PWD" "${labels[@]}" \
-  -- env "${unset_vars[@]}" claude -n "$name" "$@" "$task")
+  -- env "${unset_vars[@]}" ${scope[@]+"${scope[@]}"} claude -n "$name" "$@" "$task")
 addr=$(luajit -e 'print(require("cjson").decode(io.read("*a")).address)' <<<"$out")
 
 # The agent runs now: report it, and treat naming the tab as best effort.
