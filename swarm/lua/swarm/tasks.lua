@@ -201,9 +201,15 @@ function M.cmd_task(c, a)
       util.die(("context ~%dk, too high to take new work: %s"):format(math.floor(k / 1000), hook.ctx_advice(k)))
     end
     local until_ = t + util.dur(a.lease)
+    -- the deps are checked again in the write: a `task after` since the check above must hold it back
     if c:exec("update task set state='claimed', owner=?, lease_until=?, claim_ctx=?, "
-        .. "first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open'", n, until_, k, t, a.id) == 0 then
-      util.die(("task #%s is %s%s"):format(d(a.id), r.state, owned(r)))
+        .. "first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open' and not exists "
+        .. "(select 1 from task d where d.state!='done' and ','||task.deps||',' like '%,'||d.id||',%')",
+        n, until_, k, t, a.id) == 0 then
+      local r2 = c:one("select * from task where id=?", a.id)
+      local dep2 = r2.state == "open" and M.undone(c, r2)[1]
+      if dep2 then util.die(("#%s waits on #%s (%s)"):format(d(a.id), d(dep2.id), dep2.state)) end
+      util.die(("task #%s is %s%s"):format(d(a.id), r2.state, owned(r2)))
     end
     db.log(c, n, "claim", nil, ("#%s %s"):format(d(a.id), r.title))
     print(("claimed #%s until %s"):format(d(a.id), util.hhmm(until_)))
