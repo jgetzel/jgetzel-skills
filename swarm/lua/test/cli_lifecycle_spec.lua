@@ -123,6 +123,10 @@ function T.test_lock_prefix_and_overlap(t)
   assert(t:sw("b", "lock", "docs/x.md", { ok = false }).code ~= 0)
   assert(t:sw("b", "lock", "migrations/0070_a.sql", { ok = false }).code ~= 0)
   t:sw("b", "lock", "other/")
+  -- two globs neither of which covers the other can still share a file: m/a.lua (swarm/model: locksDisjoint)
+  t:sw("a", "lock", "m/*.lua")
+  assert(t:sw("b", "lock", "m/a*", { ok = false }).code ~= 0)
+  t:sw("b", "lock", "m/*.txt")  -- no file ends in both .lua and .txt
 end
 
 function T.test_lock_released_when_work_lands(t)

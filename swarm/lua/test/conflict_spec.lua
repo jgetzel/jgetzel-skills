@@ -24,3 +24,9 @@ assert(ops({}, chars("ab")) == "insert 0 0 0 2" and ops(chars("ab"), {}) == "del
 
 assert(locks.covers("migrations/0070_x.sql", "migrations/0070*") and locks.covers("docs/x/y.md", "docs/"))
 assert(locks.covers("a/b.txt", "*.txt") and not locks.covers("docsx/y", "docs/") and locks.covers("docs/y", "docs//"))
+
+-- overlaps: some path both patterns cover (as globs, or as directories)
+assert(locks.overlaps("m/*.lua", "m/a*") and locks.overlaps("m/a*", "m/*.lua") and not locks.overlaps("m/*.lua", "m/*.txt"))
+assert(locks.overlaps("docs/", "docs/x.md") and locks.overlaps("docs", "*.md") and not locks.overlaps("docs/", "src/"))
+assert(locks.overlaps("a?c", "ab*") and not locks.overlaps("a?c", "abd") and locks.overlaps("[ab]x", "bx") and locks.overlaps("*", "x"))
+assert(locks.overlaps("migrations/0070*", "migrations/0070_a.sql") and not locks.overlaps("migrations/0070*", "migrations/0071*"))

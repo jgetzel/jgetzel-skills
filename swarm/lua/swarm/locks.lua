@@ -42,6 +42,67 @@ function M.covers(path, pat)
   return path == pat or fnmatch.fnmatch(pat, path, 0) == 0 or util.startswith(path, (pat:gsub("/+$", "")) .. "/")
 end
 
+-- A glob as tokens: "*", "?", { c = char }, or { set = "..." } for a [...] class. As a directory, the pattern is a
+-- literal prefix (covers' startswith) and then anything.
+local function tokens(pat, dir)
+  local r, i = {}, 1
+  if dir then
+    for ch in (pat:gsub("/+$", "") .. "/"):gmatch(".") do r[#r + 1] = { c = ch } end
+    r[#r + 1] = "*"
+    return r
+  end
+  while i <= #pat do
+    local ch, j = pat:sub(i, i), pat:find("]", i + 2, true)
+    if ch == "*" then
+      if r[#r] ~= "*" then r[#r + 1] = "*" end
+    elseif ch == "?" then r[#r + 1] = "?"
+    elseif ch == "[" and j then r[#r + 1] = { set = pat:sub(i + 1, j - 1) }; i = j
+    else
+      if ch == "\\" and i < #pat then i = i + 1; ch = pat:sub(i, i) end
+      r[#r + 1] = { c = ch }
+    end
+    i = i + 1
+  end
+  return r
+end
+
+local function one(a, b)  -- two single-character tokens can match one character (two classes: taken as yes)
+  if a == "?" or b == "?" then return true end
+  if a.c and b.c then return a.c == b.c end
+  if a.set and b.set then return true end
+  local set, ch = a.set or b.set, a.c or b.c
+  return fnmatch.fnmatch("[" .. set .. "]", ch, 0) == 0
+end
+
+local function meet(p, q)  -- some string both globs match
+  local memo = {}
+  local function f(i, j)
+    local k = i * 65536 + j
+    if memo[k] == nil then
+      local a, b = p[i], q[j]
+      if not a and not b then memo[k] = true
+      elseif a == "*" then memo[k] = f(i + 1, j) or (b ~= nil and f(i, j + 1))
+      elseif b == "*" then memo[k] = f(i, j + 1) or (a ~= nil and f(i + 1, j))
+      elseif not a or not b then memo[k] = false
+      else memo[k] = one(a, b) and f(i + 1, j + 1) end
+    end
+    return memo[k]
+  end
+  return f(1, 1)
+end
+
+-- Whether some path is covered by both lock patterns (each as a glob, or as a directory: covers' two forms).
+function M.overlaps(p, q)
+  -- shortcut: a glob's directory form only covers names with a literal * ? or [ in them; left out
+  local function forms(x) return x:find("[*?[]") and { tokens(x) } or { tokens(x), tokens(x, true) } end
+  for _, x in ipairs(forms(p)) do
+    for _, y in ipairs(forms(q)) do
+      if meet(x, y) then return true end
+    end
+  end
+  return false
+end
+
 -- A lock path as typed (absolute, ./x, or relative to a subdirectory) -> repo-relative, which is what the edit
 -- hook matches. A trailing slash (a directory lock) is kept; outside a repo it stays as typed.
 local function norm(path)
@@ -70,7 +131,7 @@ function M.cmd_lock(c, a)
     agents.touch(c, n)
     for _, o in ipairs(c:all("select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? "
       .. "and g.ended is null", n, util.now())) do
-      if M.covers(a.path, o.path) or M.covers(o.path, a.path) then  -- approximate for two globs; errs toward allowing
+      if M.overlaps(a.path, o.path) then
         util.die(("%s overlaps %s, locked by %s; message it"):format(a.path, o.path, o.agent))
       end
     end
