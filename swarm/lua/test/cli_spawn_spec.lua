@@ -196,6 +196,18 @@ function T.test_agent_without_terminal_reads_as_gone(t)
   t:has(t:sw("a", "post", "@all", "hi").stdout, "w, x-comms: no terminal")
 end
 
+function T.test_spawn_role_set_before_and_shown_in_roster(t)
+  t:fakes()
+  t:sw("a", "join"); t:sw("a", "role", "orchestrator")
+  t:sw("a", "task", "add", "do it")
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--role", "reviewer", "--task", "1")
+  t:eq(t:q1("select role from agent where name='t-9'").role, "reviewer")
+  t:sw("a", "spawn", "t-8", "--model", "haiku", "--role", "planner", "--", "go")
+  t:eq(t:q1("select role from agent where name='t-8'").role, "planner")
+  t:has(t:launched()[2].argv[3], "a (idle, orchestrator)")
+  t:eq(t:q1("select count(*) n from event where kind='role' and agent='t-9' and data='reviewer'").n, 1)
+end
+
 function T.test_rules_appended_to_spawn(t)
   t:fakes()
   t:eq(util.strip(t:sw("a", "rules", "set", "never", "edit", "main").stdout), "never edit main")

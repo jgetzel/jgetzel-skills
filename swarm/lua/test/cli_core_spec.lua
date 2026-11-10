@@ -394,4 +394,46 @@ function T.test_shared_tree_notice_once(t)
   t:eq(#t:notices("a"), 1)
 end
 
+-- ---- roles (sw-roles §3, PR 1) ----
+function T.test_role_set_change_print_and_logged(t)
+  t:sw("a", "join", { hc = "t1" })
+  t:eq(util.strip(t:sw("a", "role", { hc = "t1" }).stdout), "(none)")
+  t:sw("a", "role", "model", "checker", { hc = "t1" })
+  t:eq(util.strip(t:sw("a", "role", { hc = "t1" }).stdout), "model checker")
+  t:sw("a", "role", "reviewer\nof   PRs " .. ("x"):rep(100), { hc = "t1" })  -- one line, cut at 80
+  local r = t:q1("select role from agent").role
+  t:eq({ r:find("\n"), #r, r:sub(1, 15) }, { nil, 80, "reviewer of PRs" })
+  t:eq(#t:q("select * from event where kind='role'"), 2)
+  t:eq(t:q1("select data from event where kind='role' order by id limit 1").data, "model checker")
+  -- a write from another terminal is fenced
+  t:has(t:sw("a", "role", "planner", { hc = "t2", ok = false }).stderr, "a is bound to t1; this terminal is t2")
+  t:eq(t:q1("select role from agent").role, r)
+end
+
+function T.test_role_same_text_names_peer_and_survives_takeover(t)
+  t:live_hc("t1", "t2", "t3")
+  t:sw("a", "join", { hc = "t1" }); t:sw("b", "join", { hc = "t3" })
+  t:eq(util.strip(t:sw("a", "role", "reviewer", { hc = "t1" }).stdout), "")
+  t:eq(util.strip(t:sw("b", "role", "Reviewer", { hc = "t3" }).stdout), "a also declares 'Reviewer'")
+  t:sw("a", "join", "--takeover", { hc = "t2" })
+  t:eq(t:q1("select role from agent where name='a'").role, "reviewer")
+  t:sw("a", "role", "planner", { hc = "t2" })
+  t:sw("a", "leave", { hc = "t2" }); t:sw("a", "join", { hc = "t2" })  -- kept like model, past an end
+  t:eq(t:q1("select role from agent where name='a'").role, "planner")
+end
+
+function T.test_role_shown_in_who_board_state(t)
+  t:sw("a", "join"); t:sw("b", "join")
+  t:sw("a", "role", "model checker")
+  t:sw("a", "task", "add", "t1"); t:sw("a", "task", "claim", "1"); t:sw("b", "task", "add", "t2")
+  t:has(t:sw("b", "who").stdout, "a idle role=model checker ctx=")
+  t:has(t:sw("b", "who").stdout, "b idle ctx=")
+  local board = t:sw("b", "board").stdout
+  t:has(board, "#1 claimed a (model checker) lease"); t:has(board, "#2 open    -  ")
+  local st = json.decode(t:sw("b", "state", "--json").stdout)
+  local roles = {}
+  for _, x in ipairs(st.agents) do roles[x.name] = x.role end
+  t:eq(roles, { a = "model checker" })
+end
+
 return T
