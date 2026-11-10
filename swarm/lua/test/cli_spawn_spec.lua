@@ -61,11 +61,28 @@ function T.test_auto_spawn_once_within_cap(t)
   tick(t, 1)
   t:eq(spawned(t), {})  -- at the cap
   tick(t, 2)
-  t:eq(spawned(t), { { "t-2", "haiku" } })
+  t:eq(spawned(t), { { "t-2", "sonnet" } })  -- not the live agents' model
   t:eq(t:q1("select owner,state from task").owner, "t-2")
   assert(t:q1("select first_claimed_at f from task").f, "auto-spawn stamps the claim time")
   tick(t, 2)
   t:eq(#spawned(t), 1)  -- the task is claimed: no second spawn
+end
+
+function T.test_auto_spawn_model_order(t)
+  t:fakes()
+  for _, n in ipairs({ "t-comms", "t-1" }) do t:agent(n, { status = "working", model = "opus" }) end
+  t:sw("a", "task", "add", "plain")
+  t:sw("a", "task", "add", "own", "--model", "haiku")
+  tick(t, 3)
+  tick(t, 4)
+  local m = {}
+  for _, x in ipairs(spawned(t)) do m[#m + 1] = x[2] end
+  table.sort(m)
+  t:eq(m, { "haiku", "sonnet" })
+  t:fakes()
+  t:sw("a", "task", "add", "viaflag")
+  t:sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "5", "--min-free-mem", "0", "--model", "opus")
+  t:eq(spawned(t)[#spawned(t)][2], "opus")
 end
 
 function T.test_auto_spawn_failure_backs_off(t)

@@ -59,7 +59,8 @@ with subagents.
    (and removes their worktree and branch), spawns fresh agents for startable
    tasks when none is free (up to the auto-spawn number, default the live count
    when the first watchd starts; `--min-free-mem` GiB, default 4; while either
-   holds it, the board says so: `auto-spawn holding: …`), reports live
+   holds it, the board says so: `auto-spawn holding: …`; the model is the task's
+   `--model`, else `watchd --model`, else sonnet), reports live
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
    poller: main's push runs once a minute into the board, which agents read with

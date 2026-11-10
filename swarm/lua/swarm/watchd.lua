@@ -449,21 +449,12 @@ end
 function M.auto_spawn(c, comms, opts, pool)
   local _, mn, mx = agents.limits(c)
   if not mn then return end
-  local members, models, count = {}, {}, {}
+  local members = {}
   for _, a in ipairs(agents.live_agents(c)) do
     if a.name ~= comms then
       members[#members + 1] = a
-      if nz(a.model) then
-        if not count[a.model] then models[#models + 1] = a.model end
-        count[a.model] = (count[a.model] or 0) + 1
-      end
     end
   end
-  local common  -- the most common model; a tie goes to the first seen
-  for _, m in ipairs(models) do
-    if not common or count[m] > count[common] then common = m end
-  end
-  common = common or "sonnet"
   local prefix = util.endswith(comms, "comms") and comms:sub(1, -6) or comms .. "-"
   local top = 0
   for _, r in ipairs(c:all("select name from agent")) do
@@ -500,7 +491,7 @@ function M.auto_spawn(c, comms, opts, pool)
     end
     local name = nz(bo_name)
     if not name then top = top + 1; name = prefix .. d(top) end
-    local model = nz(task.model) or nz(opts.model) or common
+    local model = nz(task.model) or nz(opts.model) or "sonnet"
     local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, effort = nz(task.effort) or nz(opts.effort), task_id = task.id, task = {} })
     if ok then
       c:exec("delete from meta where k='spawn_backoff'")
