@@ -2,7 +2,7 @@
 local util, proc, json, re, db = require "swarm.util", require "swarm.proc", require "swarm.json", require "swarm.re", require "swarm.db"
 local agents, msgs, tasks, conflict, machine = require "swarm.agents", require "swarm.msgs", require "swarm.tasks",
   require "swarm.conflict", require "swarm.machine"
-local run, ci = require "swarm.run", require "swarm.ci"
+local run, ci, cost = require "swarm.run", require "swarm.ci", require "swarm.cost"
 local lfs = require "lfs"
 local unistd, stdlib, signal = require "posix.unistd", require "posix.stdlib", require "posix.signal"
 local pstat = require "posix.sys.stat"
@@ -603,6 +603,8 @@ function M.machine_tick(c)
   local avail, total, psi = machine.mem()
   if not avail then return end
   local procs = machine.procs()
+  local ok, err = pcall(function() cost.tick(c, cost.handle(), procs, util.now()) end)  -- the history never stops the tick
+  if not ok then io.stderr:write("cost: ", tostring(err), "\n") end
   local hv = machine.heavy_procs(c, procs)
   local prev = c:one("select data from event where kind='heavy-count' order by id desc limit 1")
   if d(#hv) ~= (prev and prev.data or "0") then db.log(c, nil, "heavy-count", nil, d(#hv)) end

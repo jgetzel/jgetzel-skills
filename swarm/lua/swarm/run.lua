@@ -229,6 +229,17 @@ local function exists(p)
   return lfs.symlinkattributes(p) ~= nil
 end
 
+-- A finished remote job as a history row: its wall time and the last RSS and CPU watchd read from that machine.
+local function record_remote(c, who, mach, jid, cmd, repo, s)
+  local r = c:one("select v from meta where k='machines'")
+  local ms = r and json.decode(r.v)
+  local last = type(ms) == "table" and type(ms[mach]) == "table" and type(ms[mach].jobs) == "table" and ms[mach].jobs[jid]
+  last = type(last) == "table" and last or {}
+  local cost = require "swarm.cost"
+  cost.record(cost.handle(), { repo = repo, agent = who, source = "run", machine = mach, cmd = cmd, wall_s = s,
+    cpu_s = last.cpu, peak_kb = last.rss_kb or 0 })
+end
+
 local function mkdirp(d)
   proc.exec({ "mkdir", "-p", d })
 end
@@ -279,6 +290,9 @@ function M.cmd_run(c, a)
   local function finish(code, tree, sync, back, kept)
     local s = math.floor(now() - t0)
     db.log(c, who, "job-end", jid, json.encode({ machine = a.on, exit = code, s = s, sync_s = sync, back_s = back, tree = tree }))
+    if a.on then  -- a local job is a command under the agent's shell: watchd measures it
+      pcall(record_remote, c, who, a.on, jid, full, repo, s)
+    end
     local lines = util.splitlines(util.slurp(logf) or "")
     local tail = {}
     for i = math.max(1, #lines - JOB_TAIL + 1), #lines do tail[#tail + 1] = lines[i] end

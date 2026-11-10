@@ -35,7 +35,7 @@ local stdlib = require "posix.stdlib"
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
   ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", stay = "agents", lock = "locks", unlock = "locks",
-  machine = "machine", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
+  machine = "machine", cost = "cost", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
 
@@ -139,6 +139,11 @@ local function parser()
   opt(p, "--lease", "2h")
   ap:command("unlock"):argument("path")
   ap:command("machine")
+  p = ap:command("cost")  -- what a command is expected to take here, or the most intensive ones
+  p:argument("words"):args("*")
+  p:flag("--top")
+  opt(p, "--repo")
+  p:flag("--all-repos")
   p = ap:command("run")  -- its command (a.argv) is split off before parsing: Python's REMAINDER
   opt(p, "--on"):description("an hc machine (`hc machine ls`); default: here")
   opt(p, "--env"):count("*"):argname("NAME[=VAL]"):description("also pass this variable (repeatable)")
