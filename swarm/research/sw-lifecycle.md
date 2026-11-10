@@ -112,7 +112,7 @@ An agent is in exactly one of:
 | working | `status='working'` or hc says working | none |
 | blocked | hc says blocked | tell the communicator (today) |
 | waiting | idle, and owns a claimed task, a lock or unlanded work | none; persists |
-| reusable | idle, no claim, nothing unlanded, `ctx_tokens < SMALL_CTX` | gets the digest |
+| reusable | idle, no claim, nothing unlanded, `ctx_tokens < SMALL_CTX`, waiter pid alive | gets the digest |
 | finished | idle, no claim, no lock, nothing unlanded, `ctx_tokens ≥ SMALL_CTX`, or no open task it could take | watchd ends it |
 | ended | `agent.ended` set | release, cleanup |
 

@@ -324,8 +324,10 @@ function M.lifecycle(c, t, comms, terms, opts)
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)
         or (wts[n] and not M.landed(wts[n], B, main))) then
-      -- one that passed the work over is ended, not kept as a reason to spawn no one
-      if (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n) then
+      -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
+      -- not kept as a reason to spawn no one
+      if (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n)
+          and a.waiter and signal.kill(a.waiter, 0) == 0 then
         reusable[#reusable + 1] = a
       else
         M.end_agent(c, a, wts[n], main, comms)

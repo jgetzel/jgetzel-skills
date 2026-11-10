@@ -17,7 +17,7 @@ local function dirname(p) return p:match("^(.*)/[^/]*$") or "." end
 
 local function comms_tick(t) t:sw("a", "watchd", "--once", "--comms", "comms", "--max-agents", "0") end
 local function idle(t, name, kw)
-  local o = { status = "idle", last_active = OLD }
+  local o = { status = "idle", last_active = OLD, waiter = require("posix.unistd").getpid() }  -- a live waiter
   for k, v in pairs(kw or {}) do o[k] = v end
   t:agent(name, o)
 end
@@ -388,6 +388,19 @@ function T.test_reusable_agent_told_and_idle_again_is_ended(t)
   assert(ended(t, "r"), "r, told of #1 and idle again, still holds the slot")
   t:sw("comms", "watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0")
   t:eq(t:q1("select state from task where id=1").state, "claimed")  -- the freed slot is filled for #1
+end
+
+-- An idle agent whose waiter exited (swarm wait timed out) never reads a digest: it is ended, not kept as a reason to
+-- spawn no one (swarm/model: l_after_waiter, L1 and L3).
+function T.test_reusable_agent_with_dead_waiter_is_ended(t)
+  t:fakes()
+  local p = io.popen("sh -c 'echo $$'"); local dead = tonumber(p:read("*l")); p:close()
+  idle(t, "comms"); idle(t, "r", { waiter = dead })
+  t:sw("comms", "task", "add", "t1")
+  comms_tick(t)
+  assert(ended(t, "r"), "r can't wake, yet holds the slot")
+  t:sw("comms", "watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0")
+  t:eq(t:q1("select state from task where id=1").state, "claimed")
 end
 
 function T.test_big_context_finished_even_with_open_tasks(t)
