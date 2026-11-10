@@ -205,4 +205,71 @@ example : lassoP cfg17 (!answered · 1) pre17 [.boot 0] 1 = false := by decide +
 -- a boot beats a lease: with `bootFirst` the new agent's lease can't lapse, so the cycle's second `expire` is not enabled
 example : run { cfg17 with bootFirst := true } (pre17 ++ [.age 1, .expire 1, .tick, .boot 0, .stop 0 true, .age 0, .expire 1]) = none := by decide +kernel
 
+-- ---------- workspaces: W1-W4 on the current Cfg (sw-bases, board #2) ----------
+/-- the tick from the run's end breaks W1: it is enabled, and removes a worktree or deletes a branch W1 forbids -/
+def w1Breaks (c : Cfg) (acts : List Action) : Bool :=
+  (run c acts).any fun s => (step c s .tick).isSome && !gcOk c s (tickOf c s).git
+
+-- #18, W1. A protected ref deleted. Agent 0 lands its commit on `formal` (base 1) and on main, then checks `formal` out in
+-- its worktree and leaves. 30 min on, the sweep finds the worktree clean, unused and on main, removes it and runs
+-- `git branch -D formal`: the swarm's base is gone (the replay's script-sweep run shows the Lua doing it).
+def cfg18 : Cfg := { nwts := 1, nbases := 2 }
+def pre18 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1), .git 0 (.land 0 0),
+  .git 0 (.checkout 0 1), .world 0 .age, .leave 0]
+example : w1Breaks cfg18 pre18 = true := by decide
+example : (run cfg18 (pre18 ++ [.tick])).any (fun s => (s.git.tip 1).isNone) = true := by decide
+-- #18b, W1. A worktree removed with a process inside: end_agent looks at no process. Agent 0's work is on main, a
+-- process sits in its worktree (a dev server, a shell), it stops and ages: the tick ends it and removes the worktree.
+def cfg18b : Cfg := { nwts := 1 }
+def pre18b : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .world 0 (.proc true),
+  .stop 0 false, .age 0]
+example : w1Breaks cfg18b pre18b = true := by decide
+-- with `splitGC` neither: the sweep keeps `formal` (removes the worktree only), end_agent removes nothing
+example : w1Breaks { cfg18 with splitGC := true } pre18 = false := by decide
+example : (run { cfg18 with splitGC := true } (pre18 ++ [.tick])).any
+    (fun s => !(s.git.wt 0).on && (s.git.tip 1).isSome) = true := by decide
+example : w1Breaks { cfg18b with splitGC := true } pre18b = false := by decide
+
+-- #19, W2 (fails by design today). The same run with no process: the worktree was touched within 30 min, so the sweep
+-- keeps it, but the tick that ends agent 0 removes it and deletes its branch. With `splitGC` the tick ends the agent
+-- and leaves git alone.
+def pre19 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0]
+example : violates cfg18b pre19 (endKeepsGit cfg18b) = true := by decide
+example : violates { cfg18b with splitGC := true } pre19 (endKeepsGit { cfg18b with splitGC := true }) = false := by decide
+example : (run { cfg18b with splitGC := true } (pre19 ++ [.tick])).any
+    (fun s => (s.agt 0).st == .ended && (s.git.wt 0).on) = true := by decide
+
+-- #20, W3 with a base that isn't main (the notapki `formal` swarm). Agent 1 starts and ends a background job over and
+-- over, so the run goes on; every other fair action is off (`loopOk`), so the run is fair.
+/-- in s, every enabled fair action is one of `xs` -/
+def onlyFair (c : Cfg) (s : State) (xs : List Action) : Bool := (fair c s).all fun f => (step c s f).isNone || xs.contains f
+/-- a two-state loop after `pre`: `x` then `y` come back to the start, and no other fair action is enabled on the way -/
+def loopOk (c : Cfg) (pre : List Action) (x y : Action) (p : State → Bool) : Bool :=
+  (run c pre).any fun s => (step c s x).any fun s' => step c s' y == some s && p s && p s'
+    && onlyFair c s [x, y] && onlyFair c s' [x, y]
+def cfg20 : Cfg := { nwts := 1, nbases := 2 }
+-- The workspace half. Agent 0 lands on `formal` and leaves; the worktree is clean, unused, untouched 30 min, its HEAD on
+-- a protected ref, but not on main, so the sweep never removes it.
+def pre20 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1), .world 0 .age, .leave 0]
+example : loopOk cfg20 pre20 (.bgStart 1) (.bgEnd 1) (orphan cfg20 · 0) = true := by decide
+-- The agent half. Agent 0 claims #1, lands it on `formal`, marks it done, stops and ages: idle, free, its worktree clean
+-- and on a base. Lifecycle's landed check asks main, so it is never ended (and a waiter it has is woken only by the
+-- unclean nudge, if it goes stale: then it is nudged once per idle stretch, forever).
+def cfg20b : Cfg := { nwts := 1, nbases := 2 }
+def pre20b : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1),
+  .done 0 1 true, .stop 0 false, .age 0]
+example : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true := by decide
+-- with `perTaskBase` the tick removes the worktree, and ends the agent
+example : (run { cfg20 with perTaskBase := true } (pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide
+example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+
+-- #21, W4. Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal`
+-- is refused while a worktree has it checked out). With `recordedWorkspaces` the checkout is refused.
+def cfg21 : Cfg := { nwts := 2, nbases := 2 }
+def pre21 : List Action := [.git 0 (.add 0), .git 0 (.checkout 0 1)]
+example : violates cfg21 pre21 (noBaseOut cfg21) = true := by decide
+example : run cfg21 (pre21 ++ [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)]) = none := by decide
+example : run cfg21 [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)] ≠ none := by decide
+example : run { cfg21 with recordedWorkspaces := true } pre21 = none := by decide
+
 end Swarm

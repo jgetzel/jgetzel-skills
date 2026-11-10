@@ -18,16 +18,17 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3 |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos), and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
+| `SwarmModel/Workspaces.lean` | W1-W4 (sw-bases) as statements, and their refutations on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 2 scripted runs the Lua suite replays |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 3 scripted runs the Lua suite replays |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
@@ -101,6 +102,11 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `retake` | the 350k fence on `task claim` refuses a task reap took from that very agent | PR #121 lets it retake (`reaped`, the Lua's `reaped_from`) |
 | `allWts` | lifecycle keeps an agent only for the one worktree `wt_map` picks | PR #123 keeps it while any worktree it owns is unlanded |
 | `uncleanNudge` | an idle agent kept only by an unclean worktree is kept silently, forever | PR #122 sends one urgent nudge per idle stretch |
+| `perTaskBase` | the landed checks (lifecycle, sweep) ask main only | sw-bases, board #3: they ask the bases (in the model, any base) |
+| `splitGC` | end_agent removes the ended agent's worktree, looking at no process; sweep runs `branch -D` on whatever was checked out but main | sw-bases, board #4: ending kills the terminal only; the sweep checks reachability from a protected ref itself and deletes only a branch that is no base and is reachable |
+| `recordedWorkspaces` | an agent may check out a base in its worktree | sw-bases, board #5: swarm creates and records worktrees; a checkout of a base is refused |
+
+The last three are the fix sw-bases proposes, defined but not yet in the Lua or proved (board #6).
 
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
 check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
@@ -137,6 +143,22 @@ reads its messages and takes work):
 - **L4** A row whose terminal is gone is eventually ended (its claims and locks released). Its negation in one state:
   `deadLive`. Fairness: watchd ticks, and an `hc ls` that lists the terminal as gone. `watchd := false` (no watchd), a
   failing `hc ls`, and an unbound row each break it (findings #14, #15)
+
+Workspaces (sw-bases; `Workspaces.lean` states each as a `Prop`). The protected refs are the bases (`Cfg.bases`: main,
+and a swarm's own such as `formal`); `Git.safe` is reachability from one, checked the way workspace GC must check it
+(an ancestor, or the same content under a squash), never by `git branch -d`:
+
+- **W1** A worktree is removed only if it is clean, unattached (no live agent's agent.wt or `wt_map` pick), no process
+  is inside and its HEAD is reachable from a protected ref; a deleted branch is no protected ref and its tip is
+  reachable from one. `gcOk`, of each step
+- **W2** Ending an agent removes no worktree and deletes no branch: a tick does to git only what the sweep does.
+  `endKeepsGit`
+- **W3** On a fair run no worktree stays an orphan forever (there, clean, on a protected ref, unattached, no process,
+  untouched 30 min: `orphan`), and no agent stays idle and free with its work on a base forever (`doneOnBase`)
+- **W4** No worktree has a base checked out, so landing on a base is never refused for it. `noBaseOut`
+
+All four fail on the current `Cfg` (findings #18 to #21, proved: `Workspaces.lean`). None holds today in a weaker form
+worth stating: W1 fails even with main the only base (#18b).
 
 ## Results
 
@@ -251,7 +273,15 @@ Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent w
 
 | 17 | L3 | `!answered` / `lassoP`, `periodicD` | Two slots, one task. Agent 0 blocks #1, goes idle big and cold, and the answer to it is a DM it never reads. Reap reopens #1, the tick ends agent 0 and spawns a new agent into its slot for #1; the answer is stored on the task but only that agent's first turn (`boot`) reads it. Before it boots its lease lapses and the next tick reaps it and spawns into agent 1's slot; agent 0 now boots (it holds nothing), goes idle big, and the same happens the other way round. Every fair action enabled anywhere in the period happens in it (`boot` and `age` included), and #1 is never open at a state, so no `claim` is enabled: a fair run in which the answer is never read. Evaluated for 4 periods; one more changes only the log, the cursor, what was shown and where inboxes start (`periodicD`). With the period's agent booting before its lease lapses (`[.boot 0]`) the answer is read. **Not the real timing**: a spawned agent holds a fresh 2 h lease and boots in seconds, so the loop needs a launch that hangs for hours, every time; the model has no time between a lease and a boot. | `bootFirst`: a boot beats a lease (`booting_reads`); not a bug |
 
-Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed. #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
+| # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
+|---|---|---|---|---|
+| 18 | W1 | `splitGC := false` / the run (W1 itself is board #6) | Agent 0 lands its commit on `formal` and on main, checks `formal` out in its worktree and leaves. 30 min on the sweep finds the worktree clean, unused and on main, removes it and runs `git branch -D formal`: the swarm's base is gone (`not_W1_branch`; the replay's `script-sweep` is the Lua doing it). With `splitGC` the sweep removes the worktree and keeps `formal`. | open: board #4 |
+| 18b | W1 | `splitGC := false` / the run | end_agent looks at no process: agent 0's work is on main, a process sits in its worktree, it stops and ages, and the tick ends it and removes the worktree under the process (`not_W1_proc`). | open: board #4 |
+| 19 | W2 | `splitGC := false` / the run | By design today: the same run with no process. The worktree was touched within 30 min, so the sweep keeps it, but the tick that ends agent 0 removes it and deletes its branch (`not_W2`). With `splitGC` the tick ends the agent and leaves git alone. | open: board #4 |
+| 20 | W3 | `perTaskBase := false` / the run | A base that isn't main (the notapki `formal` swarm). Agent 0 lands on `formal` and leaves: its worktree is clean, unused, untouched, on a protected ref, and never swept, since the sweep asks main (`not_W3_formal_wt`). Or agent 0 claims #1, lands it on `formal`, marks it done and goes idle: lifecycle asks main, so it is never ended (`not_W3_formal_agent`; if it goes stale, the unclean nudge wakes it once per idle stretch, forever). The fair run: agent 1 starts and ends a background job over and over, and no other fair action is enabled (`loopOk`, `forever_of_loopOk`). The replay's `script-formal` is the Lua keeping both. With `perTaskBase` the tick removes the worktree and ends the agent. | open: board #3 |
+| 21 | W4 | `recordedWorkspaces := false` / the run | Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal` is refused while a worktree has it checked out) (`not_W4`). With `recordedWorkspaces` the checkout is refused. | open: board #5 |
+
+Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #18 to #21 wait for the sw-bases fix (board #3 to #6). #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
 its sender is told" is read from the code, not proved: watchd posts its notices (`lease-late`, `blocked on #N`, idle
@@ -274,8 +304,9 @@ an agent, in order; and each agent's unread list. The git steps run git in the f
 detached, a `formal` branch), and after them and every tick git must match too: every worktree there or not, its branch,
 HEAD, `git status` clean or not and its mtimes (what sweep reads); every branch's tip; each live agent's agent.wt. A
 process inside is a `sleep` started there; 30 min is an mtime set back. The 12 committed runs (seed 107, 50 steps) and
-two scripted ones (`script-end`: a squash-merged worktree is landed by content, its agent ended and the worktree and
-branch removed; `script-sweep`: a fast-forwarded one swept, and one with `formal` checked out swept with `formal`) are in
+three scripted ones (`script-end`: a squash-merged worktree is landed by content, its agent ended and the worktree and
+branch removed; `script-sweep`: a fast-forwarded one swept, and one with `formal` checked out swept with `formal`; `script-formal`: worktrees whose work is on `formal` only
+are kept, by the sweep and by lifecycle) are in
 the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
 
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.

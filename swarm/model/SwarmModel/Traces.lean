@@ -135,11 +135,15 @@ open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
 is landed by content, so lifecycle ends its agent and end_agent removes it and its branch, and a dirty one keeps its
 agent. `sweep`: a fast-forwarded worktree its agent no longer edits in is swept with its branch, and so is one with the
-base `formal` checked out, and `branch -D formal` goes with it. -/
+base `formal` checked out, and `branch -D formal` goes with it. `formal` (W3, board #2): work landed on `formal` only is
+not landed for the Lua: the tick sweeps a worktree on main, keeps one on `formal` its agent left (W3's orphan), and keeps
+the idle agent whose last worktree is on `formal`. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick,
-    gAdd 1 2, gCheckout 1 2 1, wAge 2, tick])]
+    gAdd 1 2, gCheckout 1 2 1, wAge 2, tick]),
+  ("formal", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 2, gEdit 0 2, gCommit 0 2, gSquash 0 2 1,
+    gAdd 0 1, gEdit 0 1, gCommit 0 1, gSquash 0 1 1, wAge 0, wAge 2, stop 0, age 0, tick])]
 
 def main (args : List String) : IO UInt32 := do
   if let ["script", dir] := args then

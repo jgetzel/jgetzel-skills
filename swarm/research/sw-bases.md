@@ -20,8 +20,11 @@ Status: proposed (2026-11-10), developed with the Lean TDD loop below.
 - **Agent GC (non-destructive).** End an agent when idle, no claim/lock/stay, and its task's commits are on that
   task's base. Ending = kill terminal only. `swarm end <agent> [--force]` is the manual trigger.
 - **Workspace GC (refcounted).** Remove a worktree when no live agent is attached, no process cwd is inside, status is
-  clean, and HEAD is reachable from a protected ref (any task base, `main`, `origin/*`; keep the squash-merge content
-  check). Delete the branch with `git branch -d`, never `-D`.
+  clean, and HEAD is reachable from a protected ref (any task base, `main`, `origin/*`). GC checks reachability
+  itself: `git merge-base --is-ancestor <branch> <ref>` for each protected ref, plus the squash-merge content check.
+  Then it deletes the branch with `git branch -D`, and never a protected ref. Not `git branch -d`: that checks merged
+  into HEAD of the checkout it runs from (or the upstream), not our protected refs. In the notapki swarm, branches
+  contained in local `formal` were refused by `-d` run from a main checkout on `main`.
 - **Swarm-created worktrees.** `swarm spawn --task N` runs `git worktree add ../<repo>-<agent> -b <agent>/<task>
   <base>` and records `workspace(path, branch, base)`; agents link to it. Replaces `owned_wts` heuristics. Agents never
   check out a base; landing is a fast-forward of the base from a scratch branch (`git push . HEAD:<base>`, or a PR
@@ -38,7 +41,8 @@ Status: proposed (2026-11-10), developed with the Lean TDD loop below.
 5. Prove the theorem with the switch on (`check.sh`: no `sorry`, `native_decide`, axioms).
 6. Re-replay: the model matches the new Lua; regenerate `traces/`.
 
-Candidate theorems: (W1) a worktree is removed only if clean, unattached and its HEAD is reachable from a protected
-ref; (W2) ending an agent removes no worktree or branch; (W3, fair runs) a landed, clean, unattached workspace is
+Candidate theorems: (W1) a worktree is removed only if clean, unattached, no process is inside and its HEAD is
+reachable from a protected ref (ancestor, or its content under a squash), and a deleted branch is never a protected
+ref and its tip is reachable the same way; (W2) ending an agent removes no worktree or branch; (W3, fair runs) a landed, clean, unattached workspace is
 eventually removed, and an idle agent whose task is on its base is eventually ended; (W4) no agent worktree has a
 base branch checked out.

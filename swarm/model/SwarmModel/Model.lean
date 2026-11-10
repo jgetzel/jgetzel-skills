@@ -69,6 +69,15 @@ structure Cfg where
   /-- base branches: 0 is `main`, the one the Lua's landed checks use; the rest exist from the start (a swarm's own
   base, e.g. `formal`). Branch `nbases + w` is worktree w's own -/
   nbases : Nat := 1
+  /-- sw-bases, board #3: the landed checks use the bases, not only main. The model has no per-task base yet: work counts
+  as landed on any base -/
+  perTaskBase : Bool := false
+  /-- sw-bases, board #4: ending an agent only kills its terminal; workspace GC alone removes worktrees, by reachability
+  from a protected ref, and `branch -D` only of a branch that is no base and is reachable. Before, end_agent removes the
+  ended agent's worktree (with no look at processes) and sweep deletes whatever branch was checked out but main -/
+  splitGC : Bool := false
+  /-- sw-bases, board #5: swarm creates and records each worktree, and an agent never checks out a base -/
+  recordedWorkspaces : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -230,6 +239,16 @@ a fresh file and nothing is deleted, so both are "every patch of k is in main" -
 def Git.onMain (g : Git) (k : Nat) : Bool := (g.cmt k).cont.all (g.cmt (g.tipOf 0)).cont.contains
 /-- watchd.landed(wt, main): clean and on main; a removed worktree has nothing to lose -/
 def Git.landed (g : Git) (w : Nat) : Bool := let x := g.wt w; !x.on || (!x.dirty && g.onMain x.head)
+/-- the protected refs: every base (`main`, and a swarm's own such as `formal`); `origin/*` is outside the model -/
+def Cfg.bases (c : Cfg) : List Nat := List.range c.nbases
+/-- k is reachable from branch b: `git merge-base --is-ancestor k b`, or b holds k's content under other commits (a squash
+or rebase merge). Every ordinary commit adds a fresh patch and none deletes one, so an ancestor is a case of the second -/
+def Git.reachFrom (g : Git) (k b : Nat) : Bool := (g.tip b).any fun t => (g.cmt k).cont.all (g.cmt t).cont.contains
+/-- reachable from a protected ref: what workspace GC checks itself (never `git branch -d`, which asks HEAD or upstream) -/
+def Git.safe (c : Cfg) (g : Git) (k : Nat) : Bool := c.bases.any (g.reachFrom k)
+/-- the landed checks: on main (`watchd.landed`), or with `perTaskBase` on a base -/
+def landedC (c : Cfg) (g : Git) (w : Nat) : Bool :=
+  if c.perTaskBase then let x := g.wt w; !x.on || (!x.dirty && g.safe c x.head) else g.landed w
 /-- some worktree has branch b checked out: git refuses to move it from elsewhere, or check it out twice -/
 def Git.out (g : Git) (b : Nat) : Bool := g.wts.any fun x => x.on && x.br == some b
 /-- owned_wts: w is there and its directory is named after a -/
@@ -241,7 +260,7 @@ def wtmap (c : Cfg) (s : State) (a : Nat) : Option Nat :=
   | none => ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
 /-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns -/
 def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (wtmap c s a).any (!s.git.landed ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !s.git.landed w)
+  (wtmap c s a).any (!landedC c s.git ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git w)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
 def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
@@ -329,24 +348,28 @@ def ends (c : Cfg) (s : State) (a : Nat) : Bool := finished c s a && !reusable c
 /-- sweep's `used`: a live agent's agent.wt, or what wt_map picks for it -/
 def used (c : Cfg) (s : State) (w : Nat) : Bool :=
   c.agents.any fun b => (s.agt b).live && ((s.agt b).wt == some w || wtmap c s b == some w)
-/-- watchd.sweep_worktrees: unused, no process inside, untouched 30 min, clean and on main -/
+/-- watchd.sweep_worktrees: unused, no process inside, untouched 30 min, clean and on main (`splitGC`: reachable from a
+protected ref) -/
 def sweeps (c : Cfg) (s : State) (w : Nat) : Bool :=
   let x := s.git.wt w
-  x.on && !used c s w && !x.proc && !x.recent && s.git.landed w
+  x.on && !used c s w && !x.proc && !x.recent && (if c.splitGC then !x.dirty && s.git.safe c x.head else landedC c s.git w)
 /-- watchd.end_agent: the ended agent's wt_map worktree, unless a live peer's agent.wt is it; `git worktree remove`
 refuses a dirty one. It looks at no process. -/
 def endRemoves (c : Cfg) (s : State) (w : Nat) : Bool :=
   let x := s.git.wt w
-  x.on && !x.dirty && c.agents.any (fun a => ends c s a && wtmap c s a == some w)
+  !c.splitGC && x.on && !x.dirty && c.agents.any (fun a => ends c s a && wtmap c s a == some w)
     && c.agents.all fun b => !((s.agt b).live && (s.agt b).wt == some w) || ends c s b
-/-- `git worktree remove`, then `git branch -D` of the branch it had checked out unless that is main -/
-def Git.rm (g : Git) (w : Nat) : Git :=
+/-- `git worktree remove`, then `git branch -D` of the branch it had checked out unless that is main (`splitGC`: unless
+it is a base or not reachable from one) -/
+def Git.rm (c : Cfg) (g : Git) (w : Nat) : Git :=
   let x := g.wt w
   { g with wts := g.wts.set w { x with on := false },
-           brs := match x.br with | some b => if b == 0 then g.brs else g.brs.set b none | none => g.brs }
+           brs := match x.br with
+             | some b => if b == 0 || (c.splitGC && (b < c.nbases || !g.safe c (g.tipOf b))) then g.brs else g.brs.set b none
+             | none => g.brs }
 /-- what the tick does to git: sweep (before lifecycle's decisions, which it doesn't change) and end_agent's removals -/
 def gitTick (c : Cfg) (s : State) : Git :=
-  c.wtIds.foldl (fun g w => if sweeps c s w || endRemoves c s w then g.rm w else g) s.git
+  c.wtIds.foldl (fun g w => if sweeps c s w || endRemoves c s w then g.rm c w else g) s.git
 def tickOf (c : Cfg) (s : State) : State :=
   let r := reapLocks (reapTasks c s)
   { lifecycle c r with git := gitTick c r }
@@ -508,7 +531,7 @@ def gitDo (c : Cfg) (s : State) (a : Nat) : GitOp → Bool × Git × Option Nat 
       (g.mkSquash k h).setBr b g.next, (s.agt a).wt, (s.agt a).own)
   | .checkout w b =>
     let g := s.git
-    (owns s a w && (b < c.nbases || b == c.wbr w) && (g.tip b).isSome && !g.out b,
+    (owns s a w && (b < c.nbases && !c.recordedWorkspaces || b == c.wbr w) && (g.tip b).isSome && !g.out b,
       g.setWt w ({ · with br := some b, head := g.tipOf b, recent := true }), (s.agt a).wt, (s.agt a).own)
 def gitCmd (c : Cfg) (s : State) (a : Nat) (op : GitOp) : Option State :=
   let r := gitDo c s a op
@@ -651,6 +674,31 @@ def inboxExact (s : State) : Bool := (List.range s.ag.length).all fun a =>
     (List.range' (s.start.getD a 0 + 1) (s.cur a - s.start.getD a 0)).all fun i => !addressed s a i || seen.contains i
 /-- S5. A done task has evidence. -/
 def doneHasEvidence (s : State) : Bool := s.task.all fun k => k.st != .done || k.ev
+
+-- ---------- workspaces (sw-bases) ----------
+/-- W1, of a step from s to git g': each worktree it removes was clean, unattached (no live agent's agent.wt or wt_map
+pick), had no process inside and its HEAD reachable from a protected ref; each branch it deletes is no protected ref
+and its tip was reachable from one -/
+def gcOk (c : Cfg) (s : State) (g' : Git) : Bool :=
+  let g := s.git
+  c.wtIds.all (fun w => let x := g.wt w
+    !(x.on && !(g'.wt w).on) || (!x.dirty && !used c s w && !x.proc && g.safe c x.head))
+  && (List.range g.brs.length).all fun b =>
+    !((g.tip b).isSome && (g'.tip b).isNone) || (decide (c.nbases ≤ b) && g.safe c (g.tipOf b))
+/-- what workspace GC alone does to git in a tick: the sweep -/
+def sweepGit (c : Cfg) (s : State) : Git := c.wtIds.foldl (fun g w => if sweeps c s w then g.rm c w else g) s.git
+/-- W2: a tick does to git only what the sweep does: ending an agent removes no worktree and deletes no branch -/
+def endKeepsGit (c : Cfg) (s : State) : Bool := let r := reapLocks (reapTasks c s); gitTick c r == sweepGit c r
+/-- W3, the workspace half: w is there, clean, its HEAD on a protected ref, unattached, no process inside, untouched -/
+def orphan (c : Cfg) (s : State) (w : Nat) : Bool :=
+  let x := s.git.wt w
+  w < c.nwts && x.on && !x.dirty && s.git.safe c x.head && !used c s w && !x.proc && !x.recent
+/-- W3, the agent half: idle, free of claims and locks, and every worktree it owns clean with its HEAD on a base -/
+def doneOnBase (c : Cfg) (s : State) (a : Nat) : Bool :=
+  idleFree s a && (s.agt a).own.all fun (w, _) => !owns s a w || (!(s.git.wt w).dirty && s.git.safe c (s.git.wt w).head)
+/-- W4: no worktree has a base checked out (so no base is ever refused to `git push . HEAD:<base>`) -/
+def noBaseOut (c : Cfg) (s : State) : Bool :=
+  c.wtIds.all fun w => let x := s.git.wt w; !(x.on && x.br.any (· < c.nbases))
 
 -- ---------- what liveness speaks of ----------
 def slotFree (c : Cfg) (s : State) : Bool := members s < c.roster
