@@ -34,7 +34,7 @@ local stdlib = require "posix.stdlib"
 
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
-  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", stay = "agents", lock = "locks", unlock = "locks",
+  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", stay = "agents", lock = "locks", unlock = "locks",
   machine = "machine", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
@@ -130,6 +130,9 @@ local function parser()
   p = ap:command("stay")  -- what I wait for; watchd doesn't end an agent that stays
   p:argument("text"):args("*")
   p:flag("--end"):description("clear it: judged as any agent again")
+  p = ap:command("limits")  -- the user's staffing numbers (sw-roles §6)
+  opt(p, "--min", nil, int):description("auto-spawn number: watchd staffs tasks until this many agents are live")
+  opt(p, "--max", nil, int):description("agent max: `swarm spawn` refuses at this many live agents")
   p = ap:command("lock")
   p:argument("path")
   opt(p, "--reason", "")
@@ -153,7 +156,7 @@ local function parser()
   p:flag("--ci"):description("also watch main CI with gh")
   p:flag("--takeover"):description("replace a live watchd; it exits on its next tick")
   p:flag("--dry-run"):description("only list the worktrees the sweep would remove, then exit")
-  opt(p, "--max-agents", nil, int):description("cap for auto-spawn (default: live agents now)")
+  opt(p, "--max-agents", nil, int):description("set the auto-spawn number (`swarm limits --min`; default: live agents when first started)")
   opt(p, "--min-free-mem", 4, tonumber):description("GiB of MemAvailable needed to auto-spawn")
   opt(p, "--model"):description("model for auto-spawned agents (default: the most common)")
   opt(p, "--effort"):choices(EFFORTS):description("effort for auto-spawned agents (default: their settings)")
@@ -220,7 +223,7 @@ end, arg)
 io.stdout:flush()
 if ok then os.exit(0) end
 if type(err) == "table" then
-  if err.lost then io.stderr:write(err.lost .. "\n") end  -- tasks.reserve's lost race, uncaught: Python prints SystemExit's text
+  if err.lost or err.refused then io.stderr:write((err.lost or err.refused) .. "\n") end  -- tasks.reserve's lost race, uncaught: Python prints SystemExit's text
   os.exit(err.exit)
 end
 io.stderr:write("swarm: " .. tostring(err) .. "\n")

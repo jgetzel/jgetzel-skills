@@ -32,6 +32,13 @@ with subagents.
 
 0. Set the rules every spawn's first message carries, auto-spawns included:
    `swarm rules set "<what CLAUDE.md and orchestration.md ask of agents, e.g. never edit the main checkout>"`.
+   Ask the user for the two staffing numbers and set them before the first
+   spawn: `swarm limits --min N --max M`. `--min` is the auto-spawn number
+   (watchd staffs startable tasks until N agents are live; 0: it staffs
+   none); `--max` is the agent max, at which every `swarm spawn`, yours
+   included, refuses. Neither counts you. No max is set until you set one.
+   `swarm limits` prints both and the live count; change them only on the
+   user's word, and watchd reads them on its next tick.
 1. Write the goal as tasks, each independently doable with a definition of
    done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
@@ -50,8 +57,9 @@ with subagents.
    the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (and removes their worktree and branch), spawns fresh agents for startable
-   tasks when none is free (at most `--max-agents`, default the live count now;
-   raise it only with the user; `--min-free-mem` GiB, default 4), reports live
+   tasks when none is free (up to the auto-spawn number, default the live count
+   when the first watchd starts; `--min-free-mem` GiB, default 4; while either
+   holds it, the board says so: `auto-spawn holding: …`), reports live
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
    poller: main's push runs once a minute into the board, which agents read with

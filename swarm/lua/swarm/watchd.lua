@@ -427,7 +427,21 @@ function M.lifecycle(c, t, comms, terms, opts)
       msgs.post(c, "swarm", a.name, ("%d open task(s) and you are idle: `swarm board`."):format(#pool), false, "system")
     end
   end
-  if #reusable > 0 or #pool == 0 or opts.max_agents == nil then return end
+  local held = #reusable == 0 and #pool > 0 and M.auto_spawn(c, comms, opts, pool) or nil
+  local old = c:one("select v from meta where k='spawn_held'")
+  if held then
+    c:exec("insert or replace into meta(k,v) values('spawn_held',?)", held)
+    if not old then db.log(c, "swarm", "spawn-held", nil, held) end  -- one per edge; the board shows it while it holds
+  elseif old then
+    c:exec("delete from meta where k='spawn_held'")
+  end
+end
+
+-- Staff startable tasks up to the auto-spawn number; returns the board's "auto-spawn holding" line when a limit
+-- stops it, else nil.
+function M.auto_spawn(c, comms, opts, pool)
+  local _, mn, mx = agents.limits(c)
+  if not mn then return end
   local members, models, count = {}, {}, {}
   for _, a in ipairs(agents.live_agents(c)) do
     if a.name ~= comms then
@@ -462,9 +476,21 @@ function M.lifecycle(c, t, comms, terms, opts)
     for _, t in ipairs(pool) do if tostring(t.id) == halt.v then still = true end end
     if not still then c:exec("delete from meta where k='spawn_halt'"); halt = nil end  -- claimed, done or dropped: lifted
   end
-  for _, task in ipairs(pool) do
+  local function startable(k)  -- tasks auto-spawn would still staff, from pool[k] on
+    local n = 0
+    for j = k, #pool do if not (halt and tostring(pool[j].id) == halt.v) then n = n + 1 end end
+    return n
+  end
+  for k, task in ipairs(pool) do
     if halt and tostring(task.id) == halt.v then goto next_task end
-    if #members >= opts.max_agents or M.mem_available_gib() < (opts.min_free_gib or 4) then break end
+    if #members >= mn then
+      return ("auto-spawn holding: %d live, the auto-spawn number is %d; %d task(s) startable%s"):format(
+        #members, mn, startable(k), mx and "; max " .. mx or "")
+    end
+    local free, want = M.mem_available_gib(), opts.min_free_gib or 4
+    if free < want then
+      return ("auto-spawn holding: %.1fG free, wants %gG; %d task(s) startable"):format(free, want, startable(k))
+    end
     local name = nz(bo_name)
     if not name then top = top + 1; name = prefix .. d(top) end
     local model = nz(task.model) or nz(opts.model) or common
@@ -476,6 +502,8 @@ function M.lifecycle(c, t, comms, terms, opts)
       members[#members + 1] = { name = name }
       bo_name, bo_delay = nil, 0  -- the retry took the name: later tasks this tick get fresh ones
     elseif type(e) == "table" and e.lost then  -- a peer claimed it between pool() and now
+    elseif type(e) == "table" and e.refused then  -- an agent spawned between limits() and now: the max holds
+      return ("auto-spawn holding: %s; %d task(s) startable"):format(e.refused:match("^[^.]*"), startable(k))
     elseif type(e) == "table" and e.exit then  -- launch failed; cmd_spawn already reopened the task
       local delay = bo_delay == 0 and 300 or math.min(bo_delay * 2, 3600)  -- 5 min, doubling, capped at 1 h
       c:exec("insert or replace into meta(k,v) values('spawn_backoff',?)", ("%d,%d,%s"):format(util.now() + delay, delay, name))
@@ -672,15 +700,13 @@ function M.cmd_watchd(c, a)
     c:exec("insert or replace into meta(k,v) values('watchd',?)", mine)
     if comms then c:exec("insert or replace into meta(k,v) values('comms',?)", comms) end
   end)
-  -- default cap: the roster the human launched, so watchd refills it but doesn't grow it
-  local cap = a.max_agents
-  if cap == nil then
-    cap = 0
-    for _, x in ipairs(agents.live_agents(c)) do
-      if x.name ~= comms then cap = cap + 1 end
-    end
+  -- the auto-spawn number (sw-roles §6): --max-agents writes it (deprecated: `swarm limits --min`); else the first
+  -- watchd sets it to the roster the human launched, so watchd refills it but doesn't grow it
+  local live, mn = agents.limits(c)
+  if a.max_agents or not mn then
+    c:exec("insert or replace into meta(k,v) values('agent_min',?)", d(a.max_agents or live))
   end
-  local opts = { max_agents = cap, min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval }
+  local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval }
   while true do
     local cur = c:one("select v from meta where k='watchd'")
     if not cur or cur.v ~= mine then
@@ -696,16 +722,20 @@ end
 function M.cmd_spawn(c, a)
   local name, tid = a.name, a.task_id
   local task = table.concat(a.task or {}, " ")
-  local r
-  if tid then
-    r = tasks.reserve(c, name, tid, a.model)
-    if a.role then agents.set_role(c, name, a.role) end
-    if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
-    if task == "" then
-      task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
-    end
+  if not tid and task == "" then
+    util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] -- <task>")
   end
-  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] -- <task>") end
+  local spawner = agents.env("SWARM_NAME") and agents.me() or "human"
+  local ok, r = pcall(function() return tid and tasks.reserve(c, name, tid, a.model) or agents.reserve(c, name, a.model) end)
+  if not ok then
+    if type(r) == "table" and r.refused then db.log(c, spawner, "spawn-refused", nil, name) end
+    error(r, 0)
+  end
+  if a.role then agents.set_role(c, name, a.role) end
+  if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
+  if tid and task == "" then
+    task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
+  end
   local here = os.getenv("SWARM_HERE")
   local self_ = util.join(here, "swarm")
   local dbp = db.dbpath()
@@ -741,19 +771,13 @@ function M.cmd_spawn(c, a)
     end
   end
   if out == nil then
-    if tid then tasks.unreserve(c, name, r) end
+    tasks.unreserve(c, name, tid and r or nil)
     util.die("launch.sh failed")
   end
   local lines = util.splitlines(util.strip(out))
   local addr = lines[#lines]
-  if tid then
-    c:exec("update agent set hc=? where name=? and hc is null", addr, name)
-  else  -- shortcut: without --task nothing reserved the name, so a live one is overwritten; reserve here too if it bites
-    agents.bind(c, name, unistd.getcwd(), addr, a.model, true)
-    if a.role then agents.set_role(c, name, a.role) end
-    if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end
-  end
-  db.log(c, agents.env("SWARM_NAME") and agents.me() or "human", "spawn", nil, name)
+  c:exec("update agent set hc=? where name=? and hc is null", addr, name)
+  db.log(c, spawner, "spawn", nil, name)
   print(("spawned %s at %s"):format(name, util.strip(out)))
 end
 
