@@ -122,7 +122,7 @@ end
 function M.is_comms(c, name)
   if not name or name == "" then return false end
   local cm = c:one("select v from meta where k='comms'")
-  return util.endswith(name, "comms") or name == (cm and cm.v or M.env("SWARM_COMMS"))
+  return name == (cm and cm.v or M.env("SWARM_COMMS"))
 end
 
 -- ---------- cold-cache rule ----------

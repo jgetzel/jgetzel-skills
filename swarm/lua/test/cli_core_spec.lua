@@ -215,6 +215,7 @@ function T.test_drop_claimed_only_by_owner_or_comms(t)
   for i = 0, 2 do t:sw("a", "task", "add", "t" .. i) end
   t:sw("a", "task", "claim", "1")
   t:sw("a", "task", "claim", "2")
+  t:q("insert or replace into meta(k,v) values('comms','x-comms')")  -- the communicator is the address, not the name
   t:has(t:sw("b", "task", "drop", "1", { ok = false }).stderr, "only it or the communicator")
   t:sw("b", "task", "drop", "3")  -- open: anyone
   t:sw("a", "task", "drop", "1")
@@ -270,6 +271,7 @@ end
 
 function T.test_comms_ctx_note_from_commands(t)
   t:agent("x-comms")
+  t:q("insert or replace into meta(k,v) values('comms','x-comms')")
   local s = sid("c")
   local home = t.d .. "/home/.claude/projects/p"
   os.execute("mkdir -p " .. util.shquote(home))

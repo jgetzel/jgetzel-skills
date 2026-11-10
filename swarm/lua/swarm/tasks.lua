@@ -312,9 +312,8 @@ function M.cmd_task(c, a)
     print(("blocked #%s; watchd tells the communicator. It stays yours until `swarm task unblock`."):format(d(a.id)))
 
   elseif a.act == "unblock" then
-    local comms = os.getenv("SWARM_COMMS")
     if r.state ~= "blocked" then util.die(("task #%s is not blocked"):format(d(a.id))) end
-    if n ~= r.owner and n ~= comms and not util.endswith(n, "comms") then
+    if n ~= r.owner and not agents.is_comms(c, n) then
       util.die(("only %s or the communicator can unblock #%s"):format(tostring(r.owner), d(a.id)))
     end
     c:tx(function()
