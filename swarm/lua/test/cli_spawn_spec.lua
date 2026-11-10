@@ -461,6 +461,7 @@ local function fake_proc(t, avail_kb, psi)
   put(r .. "/uptime", "10000.0 0\n")
   put(r .. "/meminfo", ("MemTotal: 32000000 kB\nMemAvailable: %d kB\n"):format(avail_kb))
   for _, k in ipairs({ "memory", "cpu" }) do put(r .. "/pressure/" .. k, ("some avg10=%s avg60=0 avg300=0 total=0\n"):format(psi)) end
+  t:fake("ps", '#!/bin/sh\ncat "$SWARM_PROC"/[0-9]*/ps 2>/dev/null; exit 0\n')  -- machine.procs() reads the fixture
   return r
 end
 
@@ -476,6 +477,7 @@ local function add_proc(r, pid, ppid, comm, argv, rss_pages, age_s)
   put(d .. "/stat", ("%d (%s) "):format(pid, comm) .. table.concat(f, " "))
   put(d .. "/cmdline", table.concat(argv, "\0") .. "\0")
   put(d .. "/oom_score_adj", "0")
+  put(d .. "/ps", ("%d %d %d %d:%02d 0:00 %s\n"):format(pid, ppid, (rss_pages or 0) * 4, math.floor((age_s or 240) / 60), (age_s or 240) % 60, table.concat(argv, " ")))
 end
 
 function T.test_state_json_running(t)

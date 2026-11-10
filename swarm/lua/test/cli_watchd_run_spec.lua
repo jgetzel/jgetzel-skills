@@ -20,6 +20,7 @@ local function fake_proc(t, avail_kb, psi)
   for _, k in ipairs { "memory", "cpu" } do
     put(r .. "/pressure/" .. k, ("some avg10=%s avg60=0 avg300=0 total=0\n"):format(psi or "1.0"))
   end
+  t:fake("ps", '#!/bin/sh\ncat "$SWARM_PROC"/[0-9]*/ps 2>/dev/null; exit 0\n')  -- machine.procs() reads the fixture
   return r
 end
 
@@ -37,6 +38,7 @@ local function add_proc(r, pid, ppid, comm, argv, o)
   put(d .. "/stat", ("%d (%s) %s"):format(pid, comm, table.concat(f, " ")))
   put(d .. "/cmdline", table.concat(argv, "\0") .. "\0")
   put(d .. "/oom_score_adj", "0")
+  put(d .. "/ps", ("%d %d %d %d:%02d 0:00 %s\n"):format(pid, ppid, (o.rss_pages or 0) * 4, math.floor((o.age_s or 240) / 60), (o.age_s or 240) % 60, table.concat(argv, " ")))
   if o.cwd then assert(unistd.link(o.cwd, d .. "/cwd", true)) end
 end
 

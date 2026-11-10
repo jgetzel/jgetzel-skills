@@ -196,7 +196,7 @@ function M.herdr_stale()
   local f = io.open(home .. "/jgetzel-install.stamp")
   local have = f and util.strip(f:read("*a")) or ""
   if f then f:close() end
-  local out = require("swarm.proc").run({ "sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | sha256sum" },
+  local out = require("swarm.proc").run({ "sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | { sha256sum 2>/dev/null || shasum -a 256; }" },
     here .. "/../herdr-mods")
   if out and util.strip(out):sub(1, 64) ~= have then return "herdr panel: out of date: run install.sh" end
 end
@@ -205,7 +205,7 @@ function M.cmd_who(c, a)
   local machine, conflict = require "swarm.machine", require "swarm.conflict"
   local t = util.now()
   local wts = conflict.wt_map(c)
-  local avail, total, psi = machine.mem_psi()
+  local avail, total, psi = machine.mem()
   if avail then print(machine.machine_line(avail, total, psi)) end
   local stale = M.herdr_stale()
   if stale then print(stale) end

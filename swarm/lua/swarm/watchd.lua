@@ -63,7 +63,7 @@ function M.reap(c, live_addrs, t, comms)
   local out, bg = {}, nil
   for _, r in ipairs(c:all("select * from task where state='claimed' and lease_until<?", t)) do
     local o = c:one("select * from agent where name=?", r.owner)
-    if o and o.ended == nil and o.status == "idle" and not bg then bg = machine.bg_agents(c, machine.read_procs()) end
+    if o and o.ended == nil and o.status == "idle" and not bg then bg = machine.bg_agents(c, machine.procs()) end
     if o and o.ended == nil and (o.status ~= "idle" or bg[o.name])
         and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
       -- a working, prompt-blocked or background-waiting owner past its lease: its work is live: tell the communicator, keep it
@@ -200,7 +200,7 @@ function M.end_agent(c, a, wt, main, comms)
 end
 
 function M.mem_available_gib()
-  local kb = tonumber((util.slurp("/proc/meminfo") or ""):match("MemAvailable:%s+(%d+)"))
+  local kb = machine.mem()
   return kb and kb / 2 ^ 20 or math.huge
 end
 
@@ -229,13 +229,9 @@ function M.sweep_worktrees(c, comms, dry)
     end
   end
   for _, w in pairs(conflict.wt_map(c)) do used[#used + 1] = w end
-  local pcwd = {}
-  local ok, it, dir = pcall(lfs.dir, machine.PROC)
-  if not ok then return {} end  -- no /proc (macOS): which worktrees a process sits in is unknown, so sweep none
-  for e in it, dir do
-    local l = unistd.readlink(machine.PROC .. "/" .. e .. "/cwd")
-    if l then pcwd[#pcwd + 1] = realpath(l) end
-  end
+  local pcwd, cw = {}, machine.cwds()
+  if not cw then return {} end  -- which worktrees a process sits in is unknown, so sweep none
+  for _, l in pairs(cw) do pcwd[#pcwd + 1] = realpath(l) end
   local function in_any(list, wt)
     for _, p in ipairs(list) do
       if M.inside(p, wt) then return true end
@@ -547,14 +543,14 @@ end
 
 -- Edge-triggered pressure notice, heavy-count log, oom bias for agents' builds, orphan kills.
 function M.machine_tick(c)
-  local avail, total, psi = machine.mem_psi()
+  local avail, total, psi = machine.mem()
   if not avail then return end
-  local procs = machine.read_procs()
+  local procs = machine.procs()
   local hv = machine.heavy_procs(c, procs)
   local prev = c:one("select data from event where kind='heavy-count' order by id desc limit 1")
   if d(#hv) ~= (prev and prev.data or "0") then db.log(c, nil, "heavy-count", nil, d(#hv)) end
   for _, h in ipairs(hv) do  -- hygiene that rations nothing: the OOM killer picks agents' builds before the dev db and Claude
-    if h.agent ~= "other session" then
+    if h.agent ~= "other session" and machine.OS == "Linux" then  -- macOS has no unprivileged per-process knob
       local f = machine.PROC .. "/" .. d(h.pid) .. "/oom_score_adj"
       local v = tonumber(util.strip(util.slurp(f) or "x"))
       if v and v < 500 then
@@ -602,8 +598,10 @@ function M.machine_tick(c)
       if x.ended == nil then live_tops[k] = true end
     end
   end
+  local cw
   for _, h in ipairs(hv) do
-    local l = h.ppid == 1 and unistd.readlink(machine.PROC .. "/" .. d(h.pid) .. "/cwd")
+    if h.ppid == 1 then cw = cw or machine.cwds() or {} end
+    local l = h.ppid == 1 and cw[h.pid]
     if l then
       local cwd = realpath(l)
       for _, k in ipairs(order) do
