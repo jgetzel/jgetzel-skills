@@ -1,0 +1,6 @@
+name = "swarm-model"
+defaultTargets = ["SwarmModel"]
+
+# Lean core only: no dependencies.
+[[lean_lib]]
+name = "SwarmModel"
