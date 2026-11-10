@@ -321,6 +321,36 @@ function M.unclean(c, a, wt, B, t, comms)
   end
 end
 
+-- The swarm is quiet when no task is open, claimed or blocked and only stayers and comms are live. On the edge into
+-- quiet (re-armed by the next task add or claim) each wakeable stayer is asked once whether its stay is over, and comms
+-- gets one notice naming the stayers: the "all tasks done" signal (sw-roles §4).
+function M.quiet(c, t, comms)
+  if c:one("select 1 from task where state in ('open','claimed','blocked')") then return end
+  local q = c:one("select id from event where kind='quiet' order by id desc limit 1")
+  if not c:one("select 1 from event where kind in ('task-add','claim') and id>?", q and q.id or 0) then return end
+  local stayers = {}
+  for _, a in ipairs(agents.live_agents(c)) do
+    if a.name ~= comms and not agents.is_comms(c, a.name) then
+      if not nz(a.stay) then return end  -- someone is still working
+      stayers[#stayers + 1] = a
+    end
+  end
+  db.log(c, nil, "quiet", nil, d(#stayers))
+  local l = {}
+  for _, a in ipairs(stayers) do
+    local waits = a.waiter and signal.kill(a.waiter, 0) == 0
+    local woken = waits and not agents.cold_reason(a, t)
+    if woken then
+      msgs.post(c, "swarm", a.name, ("The board is empty and nobody is working. You stay for: '%s'. If that is over, "
+        .. "`swarm stay --end` and stop; if not, carry on."):format(a.stay), false, "system")
+    end
+    l[#l + 1] = ("%s%s stays for '%s' (%s)"):format(a.name, nz(a.role) and " " .. a.role or "", a.stay,
+      woken and "asked if that is over" or waits and "cold, not woken" or "no live waiter, not woken")
+  end
+  msgs.post(c, "swarm", comms, "The swarm is quiet: no task is open, claimed or blocked and nobody else is working. "
+    .. (#l > 0 and "Stayers:\n" .. table.concat(l, "\n") or "No stayers.") .. "\nIf the work is done, tell the user.", false, "system")
+end
+
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
   local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
@@ -523,6 +553,7 @@ function M.watchd_tick(c, comms, repo, opts)
   conflict.conflict_tick(c, t)
   if comms then  -- without a communicator there is nobody to exempt from ending
     M.lifecycle(c, t, comms, terms, opts or {})
+    M.quiet(c, t, comms)
   end
   M.machine_tick(c)
   run.remote_tick(c, t)
