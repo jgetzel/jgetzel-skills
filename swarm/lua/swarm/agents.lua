@@ -168,7 +168,41 @@ function M.release(c, name)
   c:tx(function() M._release(c, name) end)
 end
 
+-- One line of at most 80 characters: a field peers read (and peers are data).
+function M.one_line(s)
+  return util.cut(util.strip((s:gsub("%s+", " "))), 80)
+end
+
+-- Set name's role (a label nothing decides by) and log it; returns the live peers declaring the same text.
+function M.set_role(c, name, text)
+  text = M.one_line(text)
+  c:exec("update agent set role=? where name=?", text ~= "" and text or nil, name)
+  db.log(c, name, "role", nil, text)
+  local same = {}
+  if text == "" then return same end
+  for _, r in ipairs(c:all("select name from agent where ended is null and name!=? and lower(role)=lower(?) order by name",
+    name, text)) do
+    same[#same + 1] = ("%s also declares '%s'"):format(r.name, text)
+  end
+  return same
+end
+
 -- ---------- commands ----------
+
+function M.cmd_role(c, a)
+  local n = M.me()
+  if #a.text == 0 then
+    local r = c:one("select role from agent where name=?", n)
+    print(r and r.role or "(none)")
+    return
+  end
+  local same = c:tx(function()
+    local why = M.touch(c, n, unistd.getcwd(), false)
+    if why then util.die(why) end
+    return M.set_role(c, n, table.concat(a.text, " "))
+  end)
+  for _, s in ipairs(same) do print(s) end
+end
 
 function M.cmd_join(c, a)
   local n = a.name or M.me()
@@ -221,7 +255,8 @@ function M.cmd_who(c, a)
     local fs = type(sn) == "table" and type(sn.files) == "table" and sn.files or {}
     local lk = {}
     for _, r in ipairs(c:all("select path from lock where agent=?", x.name)) do lk[#lk + 1] = r.path end
-    local s = ("%s %s ctx=%dk idle=%s cache=%s"):format(x.name, x.status, k, util.ago(last), cache)
+    local s = ("%s %s%s ctx=%dk idle=%s cache=%s"):format(x.name, x.status, x.role and (" role=" .. x.role) or "", k,
+      util.ago(last), cache)
       .. (M.cold_reason(x, t) and " COLD-GUARDED" or "")
       .. " wt: " .. (wts[x.name] and util.basename(wts[x.name]) or "?")
     if #fs > 0 then

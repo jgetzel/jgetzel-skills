@@ -670,11 +670,12 @@ function M.cmd_spawn(c, a)
   local r
   if tid then
     r = tasks.reserve(c, name, tid, a.model)
+    if a.role then agents.set_role(c, name, a.role) end
     if task == "" then
       task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
     end
   end
-  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--task N] -- <task>") end
+  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--task N] -- <task>") end
   local here = os.getenv("SWARM_HERE")
   local self_ = util.join(here, "swarm")
   local dbp = db.dbpath()
@@ -690,7 +691,9 @@ function M.cmd_spawn(c, a)
     "{{PATH}}", bindir .. ":" .. (os.getenv("PATH") or "")))
   f:close()
   local roster = {}
-  for _, x in ipairs((agents.split_agents(c))) do roster[#roster + 1] = ("%s (%s)"):format(x.name, x.status or "None") end
+  for _, x in ipairs((agents.split_agents(c))) do
+    roster[#roster + 1] = ("%s (%s%s)"):format(x.name, x.status or "None", x.role and (", " .. x.role) or "")
+  end
   local brief = (util.slurp(util.join(here, "brief.md")) or "")
     .. ("\n\n---\nYour name: %s. Roster: %s.\nYour area and first task:\n%s\n"):format(
       name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
@@ -717,6 +720,7 @@ function M.cmd_spawn(c, a)
     c:exec("update agent set hc=? where name=? and hc is null", addr, name)
   else  -- shortcut: without --task nothing reserved the name, so a live one is overwritten; reserve here too if it bites
     agents.bind(c, name, unistd.getcwd(), addr, a.model, true)
+    if a.role then agents.set_role(c, name, a.role) end
   end
   db.log(c, agents.env("SWARM_NAME") and agents.me() or "human", "spawn", nil, name)
   print(("spawned %s at %s"):format(name, util.strip(out)))

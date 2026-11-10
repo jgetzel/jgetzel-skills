@@ -35,7 +35,7 @@ local stdlib = require "posix.stdlib"
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
   ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", lock = "locks", unlock = "locks",
-  machine = "machine", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
+  machine = "machine", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
 
@@ -68,6 +68,7 @@ local function parser()
   opt(p, "--model", "sonnet")
   opt(p, "--effort"):choices(EFFORTS):description("claude --effort for the new agent (default: its settings)")
   opt(p, "--task", nil, int):target("task_id"):description("claim this board task for the new agent before launching")
+  opt(p, "--role"):description("the new agent's role label (`swarm role`)")
   p:argument("task"):args("*")
   p = ap:command("join")
   p:argument("name"):args("?")
@@ -124,6 +125,7 @@ local function parser()
   p = ap:command("board")
   p:flag("--all")
   ap:command("who")
+  ap:command("role"):argument("text"):args("*")
   p = ap:command("lock")
   p:argument("path")
   opt(p, "--reason", "")

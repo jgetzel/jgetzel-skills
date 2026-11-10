@@ -30,7 +30,8 @@ M.COLUMNS = { { "agent", "wt text" }, { "lock", "seen int default 0" }, { "task"
   { "agent", "claude_pid int" }, { "task", "created_at int" }, { "task", "first_claimed_at int" }, { "task", "done_at int" },
   { "task", "dropped_at int" }, { "task", "pr int" }, { "task", "merged_at int" }, { "task", "ci_conclusion text" },
   { "task", "ci_green_at int" }, { "task", "claim_ctx int" }, { "task", "done_ctx int" }, { "task", "deps text" },
-  { "ci", "workflow text" }, { "task", "answer text" }, { "task", "effort text" } }
+  { "ci", "workflow text" }, { "task", "answer text" }, { "task", "effort text" },
+  { "agent", "role text" } }
 
 local DB = {}
 DB.__index = DB

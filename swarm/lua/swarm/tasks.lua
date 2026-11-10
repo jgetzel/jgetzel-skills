@@ -354,10 +354,12 @@ function M.cmd_task(c, a)
 end
 
 function M.cmd_board(c, a)
+  local role = {}
+  for _, x in ipairs(c:all("select name, role from agent where ended is null and role is not null")) do role[x.name] = x.role end
   local rows = c:all("select * from task " .. (a.all and "" or "where state in ('open','claimed','blocked') ")
     .. "order by title like '" .. M.RED_TASK .. "%' and state!='done' desc, id")
   for _, r in ipairs(rows) do
-    local who = py(r.owner) or "-"
+    local who = (py(r.owner) or "-") .. (role[r.owner] and (" (" .. role[r.owner] .. ")") or "")
     if r.state == "blocked" then
       print(("#%s blocked by %s: %s  %s"):format(d(r.id), who, r.question or "None", r.title))
     else
