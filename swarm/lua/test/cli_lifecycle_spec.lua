@@ -330,6 +330,31 @@ function T.test_idle_owner_past_lease_loses_claim(t)
   t:has(t:sw("e", "read").stdout, "lease expired while idle")
 end
 
+function T.test_idle_owner_with_background_job_keeps_claim(t)
+  local pr = fake_proc(t)
+  local function tick() t:sw("a", "watchd", "--once", "--comms", "comms", "--max-agents", "0", { env = { SWARM_PROC = pr } }) end
+  idle(t, "e", { wt = t.wt, claude_pid = 400 })
+  t:sw("e", "task", "add", "t"); t:sw("e", "task", "claim", "1")
+  t:q("update task set lease_until=1")
+  add_proc(pr, 401, 400, "luajit", { "luajit", "main.lua", "wait" })  -- the hook waiter: not a job
+  add_proc(pr, 402, 400, "zsh", { "zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'make'" })
+  tick()
+  t:eq(t:q1("select state from task").state, "claimed")
+  rmtree(pr .. "/402")  -- the job ended
+  tick()
+  t:eq(t:q1("select state from task").state, "open")
+end
+
+function T.test_high_context_agent_retakes_only_its_reaped_task(t)
+  idle(t, "e", { wt = t.wt })
+  t:sw("e", "task", "add", "t"); t:sw("e", "task", "add", "u"); t:sw("e", "task", "claim", "1")
+  t:q("update task set lease_until=1")
+  comms_tick(t)
+  t:q("update agent set ctx_tokens=400000 where name='e'")
+  t:has(t:sw("e", "task", "claim", "2", { ok = false }).stderr, "too high to take new work")
+  t:has(t:sw("e", "task", "claim", "1").stdout, "claimed #1")
+end
+
 function T.test_working_owner_past_lease_keeps_claim(t)
   t:fakes()
   t:agent("e", { status = "working" }); t:agent("comms")
