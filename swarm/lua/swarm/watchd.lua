@@ -153,7 +153,7 @@ function M.end_agent(c, a, wt, main, comms)
   local n = a.name
   local br = wt and nz(proc.git({ "-C", wt, "rev-parse", "--abbrev-ref", "HEAD" }))
   local ok = c:tx(function()  -- re-check what lifecycle judged: still idle, same terminal, no claim, no lock
-    if not c:one([[select 1 from agent where name=? and ended is null and status='idle' and hc is ?
+    if not c:one([[select 1 from agent where name=? and ended is null and status='idle' and hc is ? and stay is null
         and not exists (select 1 from task where owner=? and state in ('claimed','blocked'))
         and not exists (select 1 from lock where agent=?)]], n, a.hc, n, n) then
       return false
@@ -368,7 +368,7 @@ function M.lifecycle(c, t, comms, terms, opts)
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
     local x = nz(a.hc) and terms ~= nil and by[a.hc] or nil
-    if not (agents.is_comms(c, n) or a.status ~= "idle" or t - (a.last_active or 0) < 120
+    if not (agents.is_comms(c, n) or nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
@@ -671,11 +671,12 @@ function M.cmd_spawn(c, a)
   if tid then
     r = tasks.reserve(c, name, tid, a.model)
     if a.role then agents.set_role(c, name, a.role) end
+    if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
     if task == "" then
       task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
     end
   end
-  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--task N] -- <task>") end
+  if task == "" then util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] -- <task>") end
   local here = os.getenv("SWARM_HERE")
   local self_ = util.join(here, "swarm")
   local dbp = db.dbpath()
@@ -721,6 +722,7 @@ function M.cmd_spawn(c, a)
   else  -- shortcut: without --task nothing reserved the name, so a live one is overwritten; reserve here too if it bites
     agents.bind(c, name, unistd.getcwd(), addr, a.model, true)
     if a.role then agents.set_role(c, name, a.role) end
+    if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end
   end
   db.log(c, agents.env("SWARM_NAME") and agents.me() or "human", "spawn", nil, name)
   print(("spawned %s at %s"):format(name, util.strip(out)))

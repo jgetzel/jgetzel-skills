@@ -292,8 +292,10 @@ function M.cmd_task(c, a)
       db.log(c, n, "done", nil, ("#%s %s"):format(d(a.id), a.evidence))
     end)
     print("done #" .. d(a.id))
-    local k = math.floor(ctx_of(c, n) / 1000)
-    if k * 1000 < agents.SMALL_CTX and #M.pool(c) > 0 then
+    local k, stay = math.floor(ctx_of(c, n) / 1000), agents.stay_of(c, n)
+    if stay then
+      print(("context ~%dk: you stay for '%s'. `swarm stay --end` when that is over."):format(k, stay))
+    elseif k * 1000 < agents.SMALL_CTX and #M.pool(c) > 0 then
       print(("context ~%dk: take the next task (swarm board)."):format(k))
     else
       print(("context ~%dk: go idle. watchd ends you once your work lands; a fresh agent takes new work."):format(k))
@@ -381,6 +383,9 @@ function M.cmd_board(c, a)
     print(("(%d tasks)"):format(#rows))
   else
     print(("(%d shown, %d done)"):format(#rows, c:one("select count(*) n from task where state='done'").n))
+  end
+  for _, x in ipairs(c:all("select name, role, stay from agent where ended is null and stay is not null order by name")) do
+    print(("staying: %s%s: %s"):format(x.name, x.role and (" " .. x.role) or "", x.stay))
   end
 end
 
