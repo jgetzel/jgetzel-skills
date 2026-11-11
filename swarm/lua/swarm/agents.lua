@@ -438,8 +438,8 @@ end
 -- `swarm stay --end NAME`: human (the panel) or the communicator clears another agent's stay; watchd then judges it
 -- like any agent, every other check still applied.
 function M.end_stay(c, n)
-  local me = M.env("SWARM_NAME") or "human"
-  if me ~= "human" and not M.is_comms(c, me) then util.die("only human or the communicator ends another agent's stay") end
+  local me = M.env("SWARM_NAME") or M.HUMAN
+  if not M.in_charge(c, me) then util.die("only human or the communicator ends another agent's stay") end
   c:tx(function()
     local r = c:one("select stay from agent where name=? and ended is null", n)
     if not r then util.die(n .. " is not a live agent") end
@@ -454,7 +454,7 @@ M.NUDGE = "read your messages and continue, or say what you wait for"
 
 -- `swarm nudge NAME`: type one fixed line into a live agent's terminal (hc send) and log it.
 function M.cmd_nudge(c, a)
-  local me = M.env("SWARM_NAME") or "human"
+  local me = M.env("SWARM_NAME") or M.HUMAN
   local r = c:one("select hc, ended from agent where name=?", a.agent)
   if not r then util.die(a.agent .. " is not an agent") end
   if r.ended then util.die(a.agent .. " has ended; nothing to nudge") end
