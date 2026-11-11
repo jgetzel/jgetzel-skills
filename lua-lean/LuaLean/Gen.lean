@@ -484,7 +484,7 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
 -- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
 -- the run
 #guard [("return collectgarbage(\"count\")", "effect collectgarbage"),
-    ("return pcall(setfenv, 1, {})", "effect setfenv"), ("return string.dump(print)", "effect string.dump"),
+    ("return pcall(setfenv, 1, {})", "effect setfenv"),
     ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
     ("return require(\"jit\").off()", "effect jit.off"), ("return jit.status()", "effect jit.status"),
     -- a goto but the continue idiom stops the run too, pcall or not
@@ -808,6 +808,71 @@ local f, e = {src}
 if not f then return e end
 return pcall(f{args})"
 
+/-- string.dump and load of a dump: the function back, its upvalues new and nil, stripped or not (a stripped one's
+errors at `?:0:`, an upvalue unnamed, a global or field by name; debug.getupvalue without names), the strip flag's
+forms, load's modes; the dump as a string whose bytes are not read (type, tostring, `==` with itself and another
+value, in a table, an error value at level 0, arithmetic, a comparison with a number, a call, a `for`, tonumber);
+string.dump's bad arguments -/
+def dumps : G String := do
+  let body ← pick ["return a, b, u, w", "return u.x", "return gl_x.y", "return a + b", "return ({}).k.j",
+    "error('m')", "error({a})", "return w()", "local r = w() return r", "return function() return u, w.x end",
+    "local function g(x) if x then return g(nil) end return u end return g(1)", "return select('#', ...)",
+    "u = a; return u, w", "return string.rep(a, b)", "local r = string.rep() return r", "return math.floor()",
+    "for i = 1, a do u = i end return u", "return #...", "return (...)[1]"]
+  let flag ← pick ["", ", true", ", false", ", nil", ", \"s\"", ", \"\"", ", \"d\"", ", \"ds\"", ", 0", ", {}"]
+  let flag2 ← pick ["", ", true", ", false", ", \"s\""]
+  let ld ← pick ["load(d)", "loadstring(d)", "load(d, \"=n\")", "loadstring(d, \"@x.lua\")", "load(d, nil, \"b\")",
+    "load(d, nil, \"bt\")", "load(d, nil, \"t\")", "load(d, \"n\", \"\")", "load(d, 1)"]
+  let args ← pick [", 1, 2", ", 'x', 3", "", ", 2, 3, 4", ", {5}, 6", ", nil, 2"]
+  let use ← pick ["type(d)", "tostring(d) == d", "d == d", s!"d == string.dump(f{flag2})", "d == 1", "d ~= nil",
+    "#{d, d}", "type(({d})[1])", "select('#', pcall(error, d, 0))", "(pcall(error, d, 0))", "tonumber(d)",
+    "P(function() return d + 1 end)", "P(function() return d < 1 end)", "P(function() return 2 >= d end)",
+    "P(function() local x = d() return x end)", "P(function() for i = d, 2 do end end)",
+    "P(function() return -d end)", "P(function() return d .. setmetatable({}, {__concat = function() return 7 end}) end)",
+    "P(function() d.x = 1 end)", "rawequal(d, {})", "P(function() return ({} .. d) end)", "not d"]
+  let bad ← pick ["print", "string.rep", "1", "nil", "{}", "coroutine.create(f)"]
+  return helper ++ s!"local u, w = \{x = 1}, print
+local function f(a, b, ...)
+  {body}
+end
+local d = string.dump(f{flag})
+local g, e = {ld}
+if not g then return e end
+local r = \{pcall(g{args})}
+local h = r[2]
+local R = \{r, \{debug.getupvalue(g, 1)}, \{debug.getupvalue(g, 2)}, g == f, debug.getinfo(g, \"u\").nups,
+  {use}, P(string.dump, {bad}), P(string.dump), P(load, string.dump(g){flag2})}
+if type(h) == \"function\" then R.h = \{pcall(h), debug.getupvalue(h, 1)} end
+return R"
+
+-- what reads a dump's bytes stops the run: its length, a concatenation, a method, a key, as a result, `==` with a
+-- string or another closure's dump, print, format, error's place, string.dump's flag; and a local's name in a
+-- stripped function's error (LuaJIT finds it in the bytecode)
+#guard [("return #string.dump(f)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) .. \"\"", "effect string.dump: a dump's bytes"),
+    ("local t = {} t[string.dump(f)] = 1", "effect string.dump: a dump's bytes"),
+    ("return ({})[string.dump(f)]", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) == \"x\"", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) == string.dump(function() end)", "effect string.dump: a dump's bytes"),
+    ("print(string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f):sub(1, 4)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) < \"x\"", "effect string.dump: a dump's bytes"),
+    ("return (\"%s\"):format(string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return pcall(error, string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f, string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return pcall(loadstring(string.dump(f, true)), 1)", "effect a stripped function's local named in an error"),
+    ("return pcall(loadstring(string.dump(f, false)), 1)", "ok:false,\"c:1: attempt to index local 't' (a number value)\""),
+    ("return type(string.dump(f)), string.dump(f) == string.dump(f), string.dump(f, true) == string.dump(f), string.dump(f) ~= {}",
+      "ok:\"string\",true,false,true"),
+    ("local u = 1 local function g() u = u + 1 return u end local h = load(string.dump(g)) return pcall(h), debug.getupvalue(h, 1), u",
+      "ok:false,\"u\",1"),
+    ("local u = 1 local function g() return u.x end return pcall(load(string.dump(g, true))), debug.getupvalue(load(string.dump(g, \"s\")), 1)",
+      "ok:false,\"\",nil"),
+    ("return pcall(string.dump, print), pcall(string.dump), pcall(string.dump, 1), load(string.dump(f), nil, \"t\")",
+      "ok:false,false,false,nil,\"attempt to load chunk with wrong mode\"")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] ("local function f(a) local t = a return t.x end " ++ src).toList == out
+
 /-- the modules under test/mods, by both their names -/
 def modNames : List String := ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
 
@@ -896,7 +961,7 @@ def chunk : G String := do
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
   | 10 => match ← rnd 2 with | 0 => libs | 1 => debugs | _ => bitOps
   | 11 => traverse
-  | 12 => loads
+  | 12 => if ← chance 4 then dumps else loads
   | 13 => coros
   | 14 => effects
   | _ => numbers
