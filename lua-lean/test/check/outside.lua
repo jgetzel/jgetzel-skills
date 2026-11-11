@@ -37,6 +37,15 @@ function M.loop()
   end
 end
 
+function M.env(f)
+  setfenv(f, {})
+  return getfenv(2), setfenv(0, {}), getfenv()
+end
+
+function M.tail()
+  return getfenv()
+end
+
 function M.dbg(f)
   return debug.getinfo(1, "l"), debug.traceback("x"), debug.getlocal(1, 1), xpcall(f, debug.traceback),
     debug.getmetatable(f), debug.getinfo(f, "u").nups

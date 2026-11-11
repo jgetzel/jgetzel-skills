@@ -107,6 +107,21 @@ def debugNote (f : String) (as : List Exp) : W Unit :=
     note "debug.setmetatable of a value not a table: the metatable of its type, the run stops"
   | _, _ => pure ()
 
+/-- getfenv's and setfenv's levels the semantics has no frame for (`fenvLevel` in LuaLean/Interp.lean): past 1, 1 in
+a tail call (`tail`), and setfenv's 0, the thread's -/
+def fenvNote (f : String) (as : List Exp) (tail : Bool) : W Unit :=
+  let lvl : Option Int := match f, as with
+    | "getfenv", [] => some 1
+    | _, .num (.int k) :: _ => some k
+    | _, _ => none
+  match lvl with
+  | some k => do
+    if tail && k == 1 then note s!"{f} of level 1 in a tail call: the semantics keeps no call stack, the run stops"
+    else if !tail && k ≥ 2 then note s!"{f} of level {k}: the semantics keeps no call stack, the run stops"
+    else if !tail && k == 0 && f == "setfenv" then
+      note "setfenv of level 0: the thread's environment is not modelled, the run stops"
+  | none => pure ()
+
 mutual
 partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
   match e with
@@ -125,8 +140,6 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
     match strip f, as.map strip with
     | .var "require", .str m :: _ => if !sc.contains "require" then
         modify fun s => { s with requires := s.requires.push (s.line, String.ofList m) }
-    | .var "load", _ :: _ :: _ :: _ :: _ => if !sc.contains "load" then
-        note "load with an environment: outside the subset"
     | .var "setmetatable", .var "_G" :: _ => if !sc.contains "_G" then
         note "setmetatable(_G, ...): a metatable on _G stops the run"
     | .index (.var "string") (.str f), .str fmt :: _ => if f == "format".toList then fmtNote fmt
@@ -134,12 +147,17 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
     | .var "xpcall", [_, .index (.var "debug") (.str f)] =>
       if !sc.contains "debug" && f == "traceback".toList then
         note "xpcall with debug.traceback: a string error's traceback is the call stack's, the run stops"
+    | .var g, as => if (g == "getfenv" || g == "setfenv") && !sc.contains g then fenvNote g as false
     | _, _ => pure ()
   | .method o m as =>
     exp sc bs o; see m; as.forM (exp sc bs)
     if let .str fmt := strip o then if m == "format" then fmtNote fmt
   | .bin _ a b | .and a b | .or a b => exp sc bs a; exp sc bs b
-  | .un _ a | .paren a | .site _ a => exp sc bs a
+  | .site st a =>
+    exp sc bs a
+    if let .call (.var g) as := strip a then
+      if st.tail && (g == "getfenv" || g == "setfenv") && !sc.contains g then fenvNote g (as.map strip) true
+  | .un _ a | .paren a => exp sc bs a
   | .table fs => fs.forM (field sc bs)
   | _ => pure ()
 
