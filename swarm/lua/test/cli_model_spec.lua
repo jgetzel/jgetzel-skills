@@ -109,7 +109,10 @@ local function git_setup(t, s0)
   for b = 1, G.nbases - 1 do
     G.BR[b] = b == 1 and "formal" or ("base" .. b)
     t:git(t.repo, "branch", G.BR[b])
+    -- bases are data (sw-bases): a dropped task names each one, so the sweep protects it as the model's bases are
+    t:q("insert into task(id,title,state,base) values(?,?,'dropped',?)", -b, "base " .. b, G.BR[b])
   end
+  t:q("update sqlite_sequence set seq=0 where name='task'")  -- the model's tasks are still #1..
   t:git(t.repo, "checkout", "-q", "--detach")
   G.C[0] = out(t, t.repo, "rev-parse", "HEAD")
   t:defer(function() for _, pid in pairs(G.pid) do os.execute("kill " .. pid .. " 2>/dev/null") end end)

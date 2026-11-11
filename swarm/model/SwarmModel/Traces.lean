@@ -138,9 +138,9 @@ def tick : String × List (String × Json) := ("tick", [])
 end S
 open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
-is landed by content, so lifecycle ends its agent and end_agent removes it and its branch, and a dirty one keeps its
+is landed by content, so lifecycle ends its agent (the terminal only), and the sweep removes the worktree and its branch; a dirty one keeps its
 agent. `sweep`: a fast-forwarded worktree its agent no longer edits in is swept with its branch, and so is one with the
-base `formal` checked out, and `branch -D formal` goes with it. `formal` (W3, board #2): work landed on `formal` only is
+base `formal` checked out, and the branch `formal` stays (`splitGC`). `formal` (W3, board #2): work landed on `formal` only is
 not landed for the Lua: the tick sweeps a worktree on main, keeps one on `formal` its agent left (W3's orphan), and keeps
 the idle agent whose last worktree is on `formal`. `base` (board #3): task #2 is on `formal`; its agent lands on main
 only and goes idle (big context, so never reusable), and the tick, which reaps the idle agent 1's lapsed #1, keeps it; once the work is on `formal` too, the tick ends it. -/

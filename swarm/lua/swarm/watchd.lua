@@ -155,22 +155,23 @@ function M.landed(wt, B, main)
   return wt == main or M.landed_ref(wt, "HEAD", B)
 end
 
--- Release a finished agent, kill its terminal, and remove its worktree and branch without losing work.
-function M.end_agent(c, a, wt, main, comms)
+-- Agent GC: release a finished agent and kill its terminal (and what it left in its cgroup scope). Touches no
+-- worktree or branch: the sweep owns those (sw-bases). `force` skips the re-check lifecycle's judgment needs.
+function M.end_agent(c, a, force)
   local n = a.name
-  local br = wt and nz(proc.git({ "-C", wt, "rev-parse", "--abbrev-ref", "HEAD" }))
   local ok = c:tx(function()  -- re-check what lifecycle judged: still idle, same terminal, no claim, no lock
-    if not c:one([[select 1 from agent where name=? and ended is null and status='idle' and hc is ? and stay is null
+    if not (force and c:one("select 1 from agent where name=? and ended is null", n) or c:one([[select 1 from agent
+        where name=? and ended is null and status='idle' and hc is ? and stay is null
         and not exists (select 1 from task where owner=? and state in ('claimed','blocked'))
-        and not exists (select 1 from lock where agent=?)]], n, a.hc, n, n) then
+        and not exists (select 1 from lock where agent=?)]], n, a.hc, n, n)) then
       return false
     end
     agents._release(c, n)
     c:exec("update agent set ended=?, status='ended' where name=?", util.now(), n)
-    db.log(c, n, "end", nil, "landed")
+    db.log(c, n, "end", nil, force and "forced" or "landed")
     return true
   end)
-  if not ok then return end
+  if not ok then return false end
   local cg = a.claude_pid and machine.cgroup(a.claude_pid)  -- read while claude lives
   if nz(a.hc) then
     proc.run({ "hc", "kill", a.hc })
@@ -180,35 +181,7 @@ function M.end_agent(c, a, wt, main, comms)
     local f = io.open(cg.dir .. "/cgroup.kill", "w")
     if f then f:write("1"); f:close() end
   end
-  if not nz(wt) or wt == main then return end
-  local real = realpath(wt)
-  for _, x in ipairs(agents.live_agents(c)) do
-    for _, p in ipairs({ x.wt or "", x.cwd or "" }) do
-      if p ~= "" and M.inside(realpath(p), real) then return end  -- a live peer uses this worktree
-    end
-  end
-  run.clean_remote(c, real)
-  if not exists(wt) then
-    proc.run({ "git", "-C", main, "worktree", "prune" })
-    return
-  end
-  local steps = { { "-C", main, "worktree", "remove", wt } }
-  if br and br ~= "HEAD" and br ~= "main" and br ~= "master" then
-    steps[#steps + 1] = { "-C", main, "branch", "-D", br }
-    if nz(proc.git({ "-C", main, "remote", "get-url", "origin" })) and nz(proc.git({ "-C", main, "ls-remote", "--heads", "origin", br })) then
-      steps[#steps + 1] = { "-C", main, "push", "-q", "origin", "--delete", br }
-    end
-  end
-  for _, st in ipairs(steps) do
-    local rc, err = proc.gx(st)
-    if rc ~= 0 then
-      if comms then
-        msgs.post(c, "swarm", comms, ("%s ended; %s not removed: %s."):format(n, wt, err ~= "" and util.splitlines(err)[1] or "git failed"),
-          false, "notice")
-      end
-      return
-    end
-  end
+  return true
 end
 
 function M.shas(refs, main)
@@ -224,12 +197,25 @@ end
 
 -- ---------- sweep ----------
 
--- Remove clean, landed worktrees (and their local branch) that no live agent or process uses. Returns {{path, branch, MB}}.
+-- Delete the local branch of a removed worktree: never a protected one (a base), never master. `branch -d` when git
+-- agrees it is merged into the checkout's HEAD; else the sweep's own landed check stands in, so the delete is guarded
+-- by the tip it checked (`update-ref -d <ref> <sha>` fails if the branch moved). Never `branch -D`.
+function M.delete_branch(main, br, tip, protected)
+  if not br or not tip or protected[br] or br == "master" then return end
+  if proc.gx({ "-C", main, "branch", "-d", br }) ~= 0 then
+    proc.gx({ "-C", main, "update-ref", "-d", "refs/heads/" .. br, tip })
+  end
+end
+
+-- Workspace GC: remove clean, landed worktrees (and their local branch) that no live agent or process uses. Returns {{path, branch, MB}}.
 function M.sweep_worktrees(c, comms, dry)
   local lines = util.splitlines(proc.run({ "git", "worktree", "list", "--porcelain" }))
   if #lines == 0 then return {} end
   local main = realpath(lines[1]:sub(10))
-  local B = bases.refs(bases.protected(c, main), main)  -- every base is protected, not only the repo's
+  local names = bases.protected(c, main)  -- every base is protected, not only the repo's
+  local protected = {}
+  for _, b in ipairs(names) do protected[b] = true end
+  local B = bases.refs(names, main)
   local wts, cur = {}, nil
   for i = 2, #lines do
     local l = lines[i]
@@ -272,13 +258,15 @@ function M.sweep_worktrees(c, comms, dry)
           if not M.landed(wt, B, main) then
             M.NOT_LANDED[key] = true
           else
+            local head = nz(proc.git({ "-C", wt, "rev-parse", "HEAD" }))
             local mb = math.floor((tonumber((proc.run({ "du", "-sk", wt }) or "0"):match("%d+")) or 0) / 1024)
             local removed = true
             if not dry then
               if proc.gx({ "-C", main, "worktree", "remove", wt }) ~= 0 then
                 removed = false
               else
-                if br and br ~= "main" and br ~= "master" then proc.gx({ "-C", main, "branch", "-D", br }) end
+                run.clean_remote(c, wt)
+                M.delete_branch(main, br, head, protected)
                 db.log(c, nil, "sweep", wt, ("%s %dMB"):format(br or "None", mb))
               end
             end
@@ -295,6 +283,16 @@ function M.sweep_worktrees(c, comms, dry)
     msgs.post(c, "swarm", comms, ("swept %d landed worktree(s), %d MB freed."):format(#out, freed), false, "notice")
   end
   return out
+end
+
+-- A worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked; and those bases.
+function M.unlanded(c, n, main, wts, all_wts)
+  local B = bases.refs(bases.of_agent(c, n, main), main)
+  local own = conflict.owned_wts(n, all_wts)
+  if wts[n] then table.insert(own, 1, wts[n]) end
+  for _, w in ipairs(own) do
+    if not M.landed(w, B, main) then return w, B end
+  end
 end
 
 -- ---------- lifecycle ----------
@@ -445,14 +443,6 @@ function M.lifecycle(c, t, comms, terms, opts)
     end
     return true
   end
-  local function unlanded(n)  -- a worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked
-    local B = bases.refs(bases.of_agent(c, n, main), main)
-    local own = conflict.owned_wts(n, all_wts)
-    if wts[n] then table.insert(own, 1, wts[n]) end
-    for _, w in ipairs(own) do
-      if not M.landed(w, B, main) then return w, B end
-    end
-  end
   local function ours(cwd)  -- in this repo or one of its worktrees: else another swarm's terminal (#117)
     cwd = realpath(cwd)
     for _, w in ipairs(all_wts) do
@@ -468,7 +458,7 @@ function M.lifecycle(c, t, comms, terms, opts)
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
-      local held, B = unlanded(n)
+      local held, B = M.unlanded(c, n, main, wts, all_wts)
       if held then
         M.unclean(c, a, held, B[1], t, comms)
       -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
@@ -477,7 +467,7 @@ function M.lifecycle(c, t, comms, terms, opts)
           and a.waiter and signal.kill(a.waiter, 0) == 0 then
         reusable[#reusable + 1] = a
       else
-        M.end_agent(c, a, wts[n], main, comms)
+        M.end_agent(c, a)
       end
     end
   end
@@ -743,6 +733,31 @@ function M.machine_tick(c)
       end
     end
   end
+end
+
+-- `swarm end <agent> [--force]`: the communicator's manual agent GC. Same checks as lifecycle (idle, no claim, lock or
+-- stay, work landed on its bases); --force skips them. Kills the terminal only; the sweep removes worktrees.
+function M.cmd_end(c, a)
+  local me = agents.me()
+  if not agents.is_comms(c, me) then util.die("only the communicator ends agents") end
+  local row = c:one("select * from agent where name=? and ended is null", a.agent)
+  if not row then util.die(("%s is not a live agent"):format(a.agent)) end
+  if not a.force then
+    local why
+    if row.status ~= "idle" then why = "is " .. tostring(row.status)
+    elseif nz(row.stay) then why = "stays for: " .. row.stay
+    elseif c:one("select 1 from task where owner=? and state in ('claimed','blocked')", a.agent) then why = "owns a claimed task"
+    elseif c:one("select 1 from lock where agent=?", a.agent) then why = "holds a lock"
+    else
+      local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
+      main = main and realpath(main)
+      local held = M.unlanded(c, a.agent, main, conflict.wt_map(c), conflict.worktrees())
+      if held then why = "has work not on its base in " .. held end
+    end
+    if why then util.die(("%s %s; `swarm end %s --force` ends it anyway."):format(a.agent, why, a.agent)) end
+  end
+  if not M.end_agent(c, row, a.force) then util.die(a.agent .. " changed state; try again") end
+  print(a.agent .. " ended")
 end
 
 -- ---------- commands ----------
