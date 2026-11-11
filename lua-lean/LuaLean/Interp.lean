@@ -1455,7 +1455,7 @@ def execSeq (n : Nat) (cx : Ctx) (full rest : Block) (fin : Option Exp) : M Flow
     | .norm => execSeq n cx full rest fin
     | .goto l =>
       if labelAtEnd full l then pure .norm
-      else if hasLabel full l then die "goto: only to a label that ends its block"
+      else if hasLabel full l then throw (.eff "goto: a label that does not end its block" [])
       else pure (.goto l)
     | fl => pure fl
 
@@ -2029,6 +2029,11 @@ def basics : List String :=
   ["type", "tostring", "tonumber", "ipairs", "pairs", "next", "select", "unpack", "rawget", "rawset", "rawequal",
    "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile"]
 
+/-- LuaJIT 2.1's globals the semantics does not model: handles, so a run that uses one stops (`lua-lean check` names
+each use) -/
+def unmodelled : List String :=
+  ["bit", "jit", "collectgarbage", "gcinfo", "getfenv", "setfenv", "module", "newproxy", "loadfile", "arg"]
+
 def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
@@ -2037,10 +2042,10 @@ def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
      (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
-     (lstr "print", .prim "print" []),
-     (lstr "debug", .eff "debug")] }
+     (lstr "print", .prim "print" []), (lstr "_VERSION", lstr "Lua 5.1"),
+     (lstr "debug", .eff "debug")] ++ unmodelled.map fun f => (lstr f, .eff f) }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
-    "match", "gmatch", "gsub"]
+    "match", "gmatch", "gsub"] |>.set (lstr "dump") (.eff "string.dump")
   let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn", "getn", "move", "foreach", "foreachi"]
   let math := (libTable "math" ["floor", "ceil", "abs", "sqrt", "max", "min", "exp", "log", "log10", "sin", "cos", "tan",
     "asin", "acos", "atan", "sinh", "cosh", "tanh", "pow", "atan2", "fmod", "modf", "frexp", "ldexp", "deg", "rad"]).set
@@ -2048,10 +2053,12 @@ def initHeap : Heap :=
     -- LuaJIT's generator state is the oracle's
     |>.set (lstr "random") (.eff "math.random") |>.set (lstr "randomseed") (.eff "math.randomseed")
   -- package.path is LUA_PATH=./?.lua's: LuaJIT's default adds directories of the system's
-  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] }
+  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] ++
+    ["cpath", "config", "preload", "loadlib", "searchpath", "seeall", "loaders"].map fun f =>
+      (lstr f, .eff ("package." ++ f)) }
   let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
     (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
-    (lstr "debug", .eff "debug")] }
+    (lstr "debug", .eff "debug"), (lstr "bit", .eff "bit"), (lstr "jit", .eff "jit"), (lstr "jit.opt", .eff "jit.opt")] }
   -- the rest of io and os are the world's
   let fx (lib : String) (names : List String) : List (Val × Val) := names.map fun f => (lstr f, .eff (lib ++ "." ++ f))
   let io : Tbl := { kv := (lstr "write", .prim "io.write" []) :: fx "io" ["close", "flush", "input", "lines", "open",
