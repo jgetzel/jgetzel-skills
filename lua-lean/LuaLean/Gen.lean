@@ -447,7 +447,8 @@ def loads : G String := do
   let body ← pick ["return 1 + 2", "return ...", "local t = nil\nreturn t.x", "error('m')", "error('m', 2)",
     "ld_g = (ld_g or 0) + 1 return ld_g", "return select('#', ...)", "local a, b = ...\nreturn b, a", "return",
     "\n\nreturn nil .. 1", "return function(y) return y * 2 end", "return loadstring('return 5, ...')(...)",
-    "return (loadstring('error(\"in\")', '=inner'))()", "local x = 1\n\n\nerror({x})", "return 1 + #(...)"]
+    "return (loadstring('error(\"in\")', '=inner'))()", "local x = 1\n\n\nerror({x})", "return 1 + #(...)",
+    "local t = {}; (t).x, (t)['y'] = ...; return t.x, t.y"]
   let long := "long name of a chunk, longer than forty-five bytes at least"
   let name ← pick ["", ", nil", ", \"=n\"", ", \"@f.lua\"", s!", {q long}", s!", \"={long}{long}\"",
     s!", \"@d/{long}/{long}.lua\"", ", \"a\\nb\"", ", \"\"", ", 12", ", \"=\""]
