@@ -48,7 +48,11 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
   is `chunk`), `f_body` (its parsed body), `f` (a shallow function built from `LuaLean/Shallow.lean`'s combinators,
   one per interpreter clause, every local the Lean variable naming its cell) and `f_ok : CFn I (f I env0 …) clo`:
   for all arguments and every fuel, `f` gives the interpreter's result and heap for the closure. Its hypotheses are
-  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global). A `load` or
+  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global). Its proof is one
+  theorem for every program, `D.fn_ok` (`LuaLean/Denote.lean`): `D.fn` is the translator as a Lean function, from the
+  closure to the combinators, and `D.fn_ok` that its result is the interpreter's call. `f` is the printed form of
+  `D.fn` at `f_body`, so `f_ok` is `D.fn_ok` applied to the closure, and the kernel checks by computation that `f` is
+  `D.fn`'s (`research/translator-proof.md`). A `load` or
   `loadstring` of a constant source is lifted too, as `f_loadN`: `call_load` says the call makes its closure, given
   the parse (`parseChunk s name = .ok f_loadN_body`, the parser's, as `f_body` is). A script of several modules is
   lifted one file at a time; `call_require` and `call_dofile` (`RunP.require`, `RunP.dofile`) say that requiring or
@@ -69,8 +73,9 @@ What a proved spec rests on, and how each piece is checked:
 | The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
 | The user's effect axioms | each its own test against the world, as above (`check.sh` runs the example's, `Examples/world_axioms.lua`, and refuses an axiom there without a case of its name) |
 
-Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
-fails), the case generator, and any proof search.
+Not trusted: the translator. `D.fn_ok` is proved once, in the library, so `Audit.lean` covers it; `tools/Lift.lean`
+only prints `f`, and a printed `f` that is not `D.fn`'s fails `f_ok` (one `+` turned into `-` in a lifted function
+and its `f_ok` does not check: a type mismatch, or the kernel gives up computing). Nor are the case generator and any proof search.
 
 ## The reference LuaJIT
 
@@ -262,7 +267,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |
 | `LuaLean/Show.lean` | a syntax tree as the Lean term that builds it |
 | `LuaLean/Shallow.lean` | the translator's target: one combinator and one lemma per interpreter clause |
-| `LuaLean/Denote.lean` | a prototype: the translator as a Lean function and one proof for every program (`research/translator-proof.md`, `lua-lean lift1`) |
+| `LuaLean/Denote.lean` | the translator as a Lean function, `D.fn`, and the one proof for every program, `D.fn_ok`, that each `f_ok` is (`research/translator-proof.md`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
 | `LuaLean/Gen.lean` | random chunks for the differential test; a user adds its own (`swarm/model/SwarmModel/LuaCases.lean`) |
 | `tools/*.lean` | the CLI's programs, run with `lake env lean --run` |
@@ -313,6 +318,5 @@ proof; a statement is never weakened to make a proof go through.
   with a proof they equal the heap-monadic lift.
 - **G8** end to end: an LLM writes a script and its spec, the tool lifts it, the spec is proved; measured on a few
   realistic scripts.
-- One proof that the translator is correct for every program, replacing the per-output proofs: prototyped for the
-  whole language (`LuaLean/Denote.lean`, `lua-lean lift1`); `research/translator-proof.md` has the measurements and
-  the recommendation to switch `lift` to it.
+- Done: one proof that the translator is correct for every program (`D.fn_ok`, `LuaLean/Denote.lean`) replaces the
+  per-output proofs (boards #24, #38; `research/translator-proof.md`).
