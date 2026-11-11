@@ -89,6 +89,24 @@ function M.run(src)
   return #out > 0 and r .. " stdout:" .. str(out) or r
 end
 
+-- `^` is libm's pow, and the committed cases hold glibc's (DESIGN.md, the host's libm): off Linux a chunk with `^`
+-- may give the Lean text with each number within 1e-12 of it (macOS's pow is 1 ulp off glibc's near a halfway case)
+local function nearPow(src, got, want)
+  if jit.os == "Linux" or not src:find("^", 1, true) then return false end
+  local gs, ws = {}, {}
+  local function skel(s, t)
+    return (s:gsub("%-?%d[%d.]*e?[-+]?%d*", function(n) t[#t + 1] = tonumber(n) or n return "#" end))
+  end
+  if skel(got, gs) ~= skel(want, ws) then return false end
+  for i, g in ipairs(gs) do
+    local w = ws[i]
+    if g ~= w and not (type(g) == "number" and type(w) == "number" and math.abs(g - w) <= 1e-12 * math.abs(w)) then
+      return false
+    end
+  end
+  return true
+end
+
 -- a cases file (LuaLean/Gen.lean's writeCases, gzipped or not): each chunk under LuaJIT must give the Lean
 -- interpreter's results for M.target (`single`, where given, else `out`); errors with the first differences.
 -- `any`: errors may be most of them (`lua-lean check`'s random arguments)
@@ -100,7 +118,9 @@ function M.check(file, any)
   local bad, errs = {}, 0
   for i, k in ipairs(cases) do
     local got, want = M.run(k.src), M.target == "single" and k.single or k.out
-    if got ~= want then bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, want) end
+    if got ~= want and not nearPow(k.src, got, want) then
+      bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, want)
+    end
     if k.out:match("^error:") then errs = errs + 1 end
   end
   if #bad > 0 then
