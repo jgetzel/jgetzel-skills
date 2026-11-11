@@ -41,7 +41,7 @@ if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/s
 fi
 
 out=$(hc run --json --bg --outlive-parent --no-notify --name "$name" --cwd "$PWD" "${labels[@]}" \
-  -- env "${unset_vars[@]}" ${scope[@]+"${scope[@]}"} claude -n "$name" "$@" "$task")
+  -- env "${unset_vars[@]+"${unset_vars[@]}"}" ${scope[@]+"${scope[@]}"} claude -n "$name" "$@" "$task")
 addr=$(luajit -e 'print(require("cjson").decode(io.read("*a")).address)' <<<"$out")
 
 # The agent runs now: report it, and treat naming the tab as best effort.
