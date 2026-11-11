@@ -39,13 +39,17 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Lua/Run.lean` | running a chunk as `luasem_spec.lua` does, and its results as text |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua` |
 | `SwarmModel/LuaRun.lean`, `LuaDump.lean` | run Lua files through the interpreter; print a parsed file as Lean |
-| `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
+| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays` |
+| `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
+| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 5 scripted runs the Lua suite replays |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.json.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
 | `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
+| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
@@ -222,7 +226,8 @@ also conditional on watchd running: who restarts a dead watchd is board #18. C1 
 
 `check.sh` (`lake build`) checks everything below in about 12 seconds from nothing (16 s of CPU). No `sorry`,
 no `native_decide`, no axiom beyond the three every Lean proof may use (`propext`, `Classical.choice`,
-`Quot.sound`: `#print axioms` on each theorem).
+`Quot.sound`) and the environment's (`Env.lean`, only under `Real.lean`'s eight): `Audit.lean` collects each
+theorem's axioms and prints the eight.
 
 | Property | Theorem | Holds for every reachable state of every instance with | Quint + TLC, 2 agents |
 |---|---|---|---|
@@ -430,8 +435,9 @@ with string, table or function), `table` (`sort` is ltablib.c's quicksort, so ti
 LuaJIT's do), `math`, `select`, `unpack`, `pairs`, `ipairs`, `setmetatable`, `require`. Not in it: coroutines, `load`,
 FFI, `__newindex` and the other metamethods, `string.format("%a")`. Effects are not interpreted: `io`, `os`, `print`, `debug`
 and each module not given as source (`swarm.db`, `swarm.proc`, `posix.*`, `lfs`, `cjson`, `lua-utf8`, …) are handles,
-and calling one asks an oracle (`Run.lean`: an opaque handle while modules load, nothing after). Board #34 makes that
-oracle one explicit file.
+and calling one asks an oracle (`Run.lean`: an opaque handle while modules load, nothing after). What the oracle stands
+for in a real run is `Env.lean`'s `Tools`; wiring one to the other waits for a proof about a run that calls them
+(board #30): the oracle sees `List Val`, and a `proc.gx` argv is a table, a heap address it can't read.
 
 Tested the "Decoding Lua" way: `LuaCases.lean` writes random chunks (arithmetic, strings, patterns against random
 subjects with every repl kind, `string.format` with random flags, widths and precisions, tables and sorts, control
@@ -470,6 +476,46 @@ rule per interpreter clause and per Lua function (`glob`, `startswith`, `lit`, `
 `find("^[!^]")`, `find("]", i, true)`, `find("[*?[]")`, `gsub("/+$", "")` and `gmatch(".")`, and the bounds the task
 names (#p < 32767 for i*65536+j in 32 bits; the memo key collides once #q >= 65535, under PATH_MAX 4096).
 
+**Environment** (board #34, rung 4c): `Env.lean` holds every assumption about the world outside the db, and `check.sh`
+fails on a theorem resting on any other axiom. The model's view of the repo is `Tools.git`, under the replay's name map;
+only the direction the code needs is assumed (a tool saying "landed" means landed). The twelve, each tested by the case
+of its name in `env_spec.lua` (a random 24-step history of commits, squash merges and fast-forwards for the first two, run
+through the Lua's own `landed_ref`, `delete_branch`, `machine.cwds`, `agents.hc_terminals`):
+
+| Assumption | Tool | Says |
+|---|---|---|
+| `ancestor_reach` | `git merge-base --is-ancestor` | exit 0 is ancestry (checked against the parents the test recorded), and an ancestor's files are in the tip |
+| `same_content_reach` | landed_ref's `diff --quiet` | landed_ref saying landed means the base holds the commit's files |
+| `status_clean` | `git status --porcelain` | empty exactly when nothing is uncommitted, untracked and nested files included |
+| `listed_on` | `git worktree list` | lists exactly the worktrees there |
+| `wt_remove` | `git worktree remove` | removes a clean worktree and nothing else; refuses a dirty one and changes nothing |
+| `del_ref` | `git update-ref -d refs/heads/b k` | deletes b only if its tip is k |
+| `hc_ls_live` | `hc ls --json` | lists a terminal live exactly when it is |
+| `hc_kill_ends` | `hc kill` | ends that terminal, no other, and leaves worktrees, branches and commits alone |
+| `kill0_alive` | `kill(p, 0)` | 0 exactly when p is in the process table |
+| `cwds_proc` | `machine.cwds()` | sees a process inside a worktree exactly when the model's `proc` is set |
+| `touched_recent` | mtimes, SWEEP_IDLE | the model's `recent` is the sweep's reading: touched within 1800 s |
+| `now_mono` | `os.time()` | never goes back |
+
+`Real.lean` writes each Lua decision as its lines and proves it is the model's: `sweepGate_W1` (the sweep's gate on the
+tools, with no `gh` answer, is W1's premise: there, unused, no process inside, not recent, clean, HEAD reachable from a
+protected ref), `landedRef_reach`, `wtRemove_only`, `delRef_guarded` (a deleted branch's tip was the HEAD the sweep
+checked), `endAgent_keepsGit` (W2 at the tools: `hc kill` changes no worktree, branch or commit), `reap_gone`,
+`waiter_alive` and `lapsed_stays` (a lapsed lease never reads live again, so `expire` needs no inverse). `consistent`
+gives a machine with all twelve, and `real` is defined as it, so they can't prove `False`.
+
+What the tests taught, and what the assumptions leave out: a zombie (dead, not yet reaped) answers `kill 0`, so
+`kill0_alive`'s "alive" is "in the process table"; pid reuse makes a dead waiter's pid answer for another process
+(the model's reading of a pid as our waiter, not an assumption here). An edit of a file below a worktree's top
+directory moves neither mtime the sweep reads, though the model's `edit` sets `recent`; the edit leaves the worktree
+dirty and the sweep never takes a dirty one, so no decision differs. `os.time()` is the wall clock, which NTP or a
+person can step back: `now_mono` is then false and a lapsed lease reads live again. `gh`'s merged-PR answer is not
+assumed (`sweepGate_W1` takes none, `landedRef_reach` passes it through): `gh pr list --head <br> --state merged`
+names no base, so a PR merged into main makes landed_ref say landed on any base, `formal` too (board #43); and a PR
+merged and then reverted still answers merged. `branch -d`, which `delete_branch` tries first, is not assumed
+either: it checks merged into the main checkout's HEAD, and only differs from the guarded `update-ref` when the branch
+moved after the sweep's check.
+
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check, rebases, the worktree a spawn makes
@@ -497,6 +543,7 @@ swarm/model/check.sh            # every theorem and counterexample, about 12 s
 swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI, and fresh glob and Lua cases
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
 luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
+SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
 cd swarm/model && lake env lean --run SwarmModel/LuaRun.lean f.lua   # f.lua under the Lean semantics, and
 luajit ../lua/test/luasem.lua f.lua                                 # under LuaJIT, written alike
 ```
