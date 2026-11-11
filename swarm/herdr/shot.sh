@@ -67,10 +67,12 @@ trap 'exit 1' INT TERM HUP
 # The board: the panel unsets SWARM_DB and reads <cwd's git common dir>/swarm/swarm.db, so a demo repo holds it.
 mkdir -p "$D/demo/.git/swarm" "$H"
 git -C "$D/demo" init -q
-luajit - "$db" "$D/demo/.git/swarm/swarm.db" <<'L'
+# A fixture's live watchd is recorded as pid 1 (demo.lua), which this user can't signal: make it this script's pid.
+luajit - "$db" "$D/demo/.git/swarm/swarm.db" ${fx:+$$} <<'L'
 local s = require "lsqlite3"
 local h = assert(s.open("file:" .. arg[1] .. "?mode=ro", s.OPEN_READONLY + s.OPEN_URI))
 assert(h:exec("vacuum into '" .. arg[2]:gsub("'", "''") .. "'") == s.OK, h:errmsg())
+if arg[3] then assert(assert(s.open(arg[2])):exec("update meta set v='" .. tonumber(arg[3]) .. " t3' where k='watchd' and v like '1 %'") == s.OK) end
 L
 
 # The panel runs <app home>/../swarm: this checkout's CLI.

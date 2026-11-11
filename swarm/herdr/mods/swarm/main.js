@@ -175,7 +175,7 @@ export default class Swarm extends View {
   }
 
   get r() { return this.stack.at(-1); }
-  // The `state --view` the shown screen reads, and the old tab name the Activity and System code branch on.
+  // The `state --view` the shown screen reads.
   get tab() { const r = this.r; return r.s === "more" ? r.tab : r.s === "home" ? "overview" : r.s === "task" || r.s === "board" ? "board" : "agents"; }
   view() { return JSON.stringify(this.r); }
   due() {
@@ -314,7 +314,7 @@ export default class Swarm extends View {
   askWatchd() {
     this.ask("Restart watchd?", "The swarm's daemon is replaced by a new one with the flags it was started with. The bar says whether the new one is alive.", ["watchd", "--restart"]);
   }
-  nudge(cx, a) { this.nudged.set(a.name, Date.now()); this.act(cx, ["nudge", a.name]); }
+  nudge(cx, a) { this.act(cx, ["nudge", a.name], { ok: () => this.nudged.set(a.name, Date.now()) }); }
   sendMsg(cx) {
     const name = this.r.name, text = this.in.msg.value().trim();
     if (!name || !text || this.busy) return;

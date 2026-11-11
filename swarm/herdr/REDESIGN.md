@@ -1,7 +1,9 @@
 # Swarm panel redesign (board #39)
 
-Status: **design, revision 2, waiting for approval.** Revision 2 adds the nav bar (§2), the "why it is still here" section (§2), and the wider list of actions (§3b); nothing in the CLI is built beyond what §6 names. The shots below are a working prototype in this branch
-(`ll-ui/39`), drawn by a private Herdr from a made-up swarm (`demo.lua`). The installed panel is untouched.
+Status: **built** (board #40 the rights and away, #41 state and the new commands, #42 the panel). §8 is what the
+user approved and overrides the text above it; the answer field on a waiting task is not built. Every shot below is
+this checkout's panel in a private Herdr on a made-up swarm (`demo.lua`), from `shot.sh`; `shots/redesign/` holds each
+screen at 420, 520 and 860px, dark and light (`<screen>-<width>[-light].png`).
 
 Before, for comparison: [the current first screen](shots/redesign/before-home-520.png).
 
@@ -77,6 +79,7 @@ model, context against the 350k and 550k marks, cache, branch, PR; files it is e
 tasks it finished; latest events. Ended agents open the same screen, without actions.
 
 ![Agent](shots/redesign/agent-520.png)
+![Agent screen of a working agent: actions and the message field](shots/redesign/agent-860.png)
 ![Hung agent, light](shots/redesign/agent-hung-420-light.png)
 
 **Why an idle agent is still here.** On the Agent screen of an idle agent: the conclusion in words,
@@ -185,6 +188,12 @@ that `limits` already logs when no agent is set. The CLI gives `human` the commu
   `drop` and `unblock` do). The ex-owner gets an urgent message: "the user released #N: stop work on it".
 - Events log `human` as the actor, so Activity shows "you" did it.
 
+As built:
+
+![New task](shots/redesign/board-new-520.png)
+![watchd dead](shots/redesign/home-watchd-dead-520.png)
+![Restart watchd](shots/redesign/system-restart-confirm-520.png)
+
 ## 4. Away
 
 Swarm has no away today. Proposal:
@@ -211,6 +220,7 @@ While away:
 Not proposed: answering for you, going away by itself after idle time, or changing the staffing numbers.
 
 ![Away](shots/redesign/home-away-520.png)
+![Back: while you were away](shots/redesign/home-back-520.png)
 
 Cost: rule 1 changes a transition `swarm/model` covers (a block reaching the communicator), so the
 model and its replay traces are updated with it. `away`, `--back` and the new rights get CLI tests.
@@ -276,14 +286,5 @@ The user approved revision 2 through the communicator. Their answers, which over
 The build lands on the branch **`swarm-panel`** (it holds this doc, the shots and the prototype), then one PR
 takes `swarm-panel` to main. Nothing from it is on main before that, so the installed panel keeps working.
 
-State of the prototype on `swarm-panel`, for whoever builds:
-
-- `swarm/herdr/mods/swarm/main.js`: nav bar, Home, Agents, Agent, Board, Task, More and `act`/`ask`/`banner` are
-  real. Left over from the old tabs and unused: `statusText`, `cacheChip`, `lastEvent`, `ctxLabels`, the board
-  half of `filters()`. `agentScreen` draws `a.fate` ({verdict, says, short, checks: [{label, on, detail}]}) when
-  the CLI sends it. CI and PRs still come from the panel's own `gh` calls (`refreshPrs`).
-- `swarm/herdr/shot.sh --screen …[+ask]`: `+ask` sends the mod command `ask`, which opens the shown screen's
-  confirmation. The refusal and why-kept shots were made with a temporary line in main.js (an `act` call, sample
-  `fate`), removed after the shot; a scratch db that produces the state for real is the better way now.
-- CLI already on the branch, without tests: `state --json --task N`, `state`'s `away` field, `swarm away [note]`
-  and `--back` as a bare flag (meta `away` = "<since> <note>", events `away`/`back`).
+How it was checked: `herdr-app check`, the shots, and each action clicked in `shot.sh`'s private display
+(`--before`, xdotool) against a copy of the fixture's board, reading the bar and the board afterwards.
