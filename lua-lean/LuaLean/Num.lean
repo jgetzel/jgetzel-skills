@@ -85,11 +85,13 @@ def foldArith (op : Nat) (a b : Num) : Option Num :=
   if n.isNaN || isNegZero n then none else some (narrow n)
 
 /-- unary minus on a constant (bcemit_unop): never a zero, which would fold to -0; an integer stays one (but -2^31),
-a double flips its sign -/
+a double flips its sign and is narrowed, as fs_fixup_k narrows every constant (-2^31 is the one that becomes an integer) -/
 def foldNeg : Num → Option Num
   | .int 0 => none
   | .int k => some (if k == -2147483648 then .flt (-(Float.ofInt k)) else .int (-k))
-  | .flt f => if f == 0 then none else some (.flt (-f))
+  | .flt f => if f == 0 then none else some (narrow (-f))
+
+#guard match foldNeg (.flt 2147483648) with | some (.int k) => k == -2147483648 | _ => false
 
 /-- the integer a C cast gives a double in its range (truncation); 0 for inf and NaN -/
 def trunc : Num → Int
