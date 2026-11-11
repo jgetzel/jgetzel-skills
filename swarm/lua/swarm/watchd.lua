@@ -926,38 +926,43 @@ function M.cmd_spawn(c, a)
     if type(r) == "table" and r.refused then db.log(c, spawner, "spawn-refused", nil, name) end
     error(r, 0)
   end
-  if a.role then agents.set_role(c, name, a.role) end
-  if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
-  if tid and task == "" then
-    task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
-  end
+  -- From here on any failure undoes the reservation (model Spawn.lean, `rollbackAll`): launch.sh's exit, and an error
+  -- raised before it runs (launch_agent can't write the settings file), which used to leave the row live with no
+  -- terminal, holding the task (finding #28).
   local wt, wt_branch  -- swarm makes the agent's worktree (--task) or links it read-only to a peer's (--attach), and it starts there
-  if tid or a.attach then
-    local ok2, path, br, base = pcall(function()
-      if a.attach then return workspaces.attach(c, name, a.attach) end
-      return workspaces.create(c, name, c:one("select * from task where id=?", tid), nil)
-    end)
-    if not ok2 then tasks.unreserve(c, name, tid and r or nil); error(path, 0) end
-    wt, wt_branch = path, br
-    task = task .. (a.attach and ("\n\nYou are attached READ-ONLY to %s (branch %s): read and run, never edit or commit there. "
-      .. "Make your own worktree for changes."):format(path, br) or
-      ("\n\nYour worktree: %s (branch %s, base %s). Work only there. Never check out %s: land by a fast-forward of it from "
-      .. "this branch (`git push . HEAD:%s`, or a PR for a remote base)."):format(path, br, base, base, base))
-  end
-  local here = os.getenv("SWARM_HERE")
-  local roster = {}
-  for _, x in ipairs((agents.split_agents(c))) do
-    roster[#roster + 1] = ("%s (%s%s)"):format(x.name, x.status or "None", x.role and (", " .. x.role) or "")
-  end
-  local brief = (util.slurp(util.join(here, "brief.md")) or "")
-    .. ("\n\n---\nYour name: %s. Roster: %s.\nYour area and first task:\n%s\n"):format(
-      name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
-  local rules = c:one("select v from meta where k='rules'")
-  if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
-  local out = M.launch_agent(c, name, brief, a.model, a.effort, wt)
-  if out == nil then
+  M.launch_err = nil
+  local ok2, out = pcall(function()
+    if a.role then agents.set_role(c, name, a.role) end
+    if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
+    if tid and task == "" then
+      task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
+    end
+    if tid or a.attach then
+      local path, br, base
+      if a.attach then path, br, base = workspaces.attach(c, name, a.attach)
+      else path, br, base = workspaces.create(c, name, c:one("select * from task where id=?", tid), nil) end
+      wt, wt_branch = path, br
+      task = task .. (a.attach and ("\n\nYou are attached READ-ONLY to %s (branch %s): read and run, never edit or commit there. "
+        .. "Make your own worktree for changes."):format(path, br) or
+        ("\n\nYour worktree: %s (branch %s, base %s). Work only there. Never check out %s: land by a fast-forward of it from "
+        .. "this branch (`git push . HEAD:%s`, or a PR for a remote base)."):format(path, br, base, base, base))
+    end
+    local here = os.getenv("SWARM_HERE")
+    local roster = {}
+    for _, x in ipairs((agents.split_agents(c))) do
+      roster[#roster + 1] = ("%s (%s%s)"):format(x.name, x.status or "None", x.role and (", " .. x.role) or "")
+    end
+    local brief = (util.slurp(util.join(here, "brief.md")) or "")
+      .. ("\n\n---\nYour name: %s. Roster: %s.\nYour area and first task:\n%s\n"):format(
+        name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
+    local rules = c:one("select v from meta where k='rules'")
+    if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
+    return M.launch_agent(c, name, brief, a.model, a.effort, wt)
+  end)
+  if not ok2 or out == nil then
     if wt then workspaces.discard(c, name, wt, wt_branch, not a.attach) end
     tasks.unreserve(c, name, tid and r or nil)
+    if not ok2 then error(out, 0) end
     util.die("launch.sh failed")
   end
   local lines = util.splitlines(util.strip(out))

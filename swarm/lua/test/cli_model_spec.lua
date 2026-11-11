@@ -223,6 +223,37 @@ local function gitcheck(t, st, where, G, N)
   end
 end
 
+-- the name auto-spawn launches next: the failed one the backoff keeps, else m-<the highest number + 1>
+local function next_name(t)
+  local r = t:q1("select v from meta where k='spawn_backoff'")
+  local nm = r and r.v:match("^%d+,%d+,(.+)$")
+  if nm then return nm end
+  local top = 0
+  for _, x in ipairs(t:q("select name from agent")) do
+    local n = x.name:match("^m%-(%d+)$")
+    if n then top = math.max(top, tonumber(n)) end
+  end
+  return "m-" .. (top + 1)
+end
+
+-- auto-spawn's meta rows against the model's (Spawn.lean's SWorld)
+local function spawncheck(t, sp, where)
+  if not sp then return end
+  local function fail(what, got, want)
+    error(("%s: %s: db has %s, model has %s"):format(where, what, tostring(got), tostring(want)), 0)
+  end
+  local bo = t:q1("select v from meta where k='spawn_backoff'")
+  local til = bo and tonumber(bo.v:match("^(%d+)")) or 0
+  if (bo ~= nil) ~= sp.bo then fail("spawn_backoff row", bo and bo.v, sp.bo) end
+  if (til > util.now()) ~= sp.backoff then fail("spawn_backoff time ahead", bo and bo.v, sp.backoff) end
+  local f = t:q1("select v from meta where k='spawn_fails'")
+  local want = sp.fails[2] > 0 and ("%d,%d"):format(sp.fails[1], sp.fails[2]) or nil
+  if (f and f.v) ~= want then fail("spawn_fails", f and f.v, want) end
+  local h = t:q1("select v from meta where k='spawn_halt'")
+  want = sp.halt > 0 and tostring(sp.halt) or nil
+  if (h and h.v) ~= want then fail("spawn_halt", h and h.v, want) end
+end
+
 -- one model action, done to the db the way the code (or the world) does it
 local function act(t, name, p, N, G, prev)
   local now = util.now()
@@ -284,6 +315,22 @@ local function act(t, name, p, N, G, prev)
   elseif name == "unblock" then sw(COMMS, "task", "unblock", tostring(p.t30), "--answer", "go left")
   elseif name == "drop" then sw(COMMS, "task", "drop", tostring(p.t31))
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+  elseif name == "failExit" then  -- the tick's launch fails: launch.sh exits non-zero
+    local f = t.d .. "/launch.fail"
+    io.open(f, "w"):close()
+    local ok, e = pcall(sw, COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+    os.remove(f)
+    if not ok then error(e, 0) end
+  elseif name == "failRaise" then  -- launch_agent raises before launch.sh: the new agent's settings file can't be written
+    local d = t.d .. "/agents/" .. next_name(t) .. ".settings.json"
+    os.remove(d)  -- a launch of that name wrote it before; each launch writes it anew
+    os.execute("mkdir -p " .. util.shquote(d))
+    local ok, e = pcall(sw, COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+    os.execute("rmdir " .. util.shquote(d))
+    if not ok then error(e, 0) end
+  elseif name == "lapse" then  -- the backoff's time passes
+    setdb(t, "update meta set v=? where k='spawn_backoff'",
+      (t:q1("select v from meta where k='spawn_backoff'").v:gsub("^%d+", tostring(now - 1))))
   elseif not gitact(t, name, p, G, hc) then error("no replay for model action " .. name, 0) end
 end
 
@@ -317,8 +364,9 @@ local function replay(t, file)
     for k, n in pairs(N) do M[k] = n end
     -- a spawn: the slot's agent is whoever the db gave its task to. The same tick may end a booting slot's agent
     -- and fill the slot again, so a booting slot is remapped whenever the db's owner differs, if the old one ended.
+    -- A launch that raised and was not undone (Spawn.lean's leak) is the same: a row that holds its task, not booting.
     for slot, g in pairs(st.ag) do
-      if g.boot then
+      if g.boot or name == "failRaise" then
         for id, k in pairs(st.task) do
           if k.owner == slot and k.st == "claimed" then
             local r = t:q1("select owner, state from task where id=?", id)
@@ -326,7 +374,7 @@ local function replay(t, file)
               error(("%s: the model spawned %s for task #%d; the db's is %s with no owner"):format(where, slot, id, r and r.state), 0)
             end
             if r.owner ~= N[slot] then
-              local old = N[slot] and prev.ag[slot].boot and t:q1("select status from agent where name=?", N[slot])
+              local old = N[slot] and (prev.ag[slot].boot or name == "failRaise") and t:q1("select status from agent where name=?", N[slot])
               if old and old.status ~= "ended" then
                 error(("%s: task #%d went to %s while %s (slot %s) is %s"):format(where, id, r.owner, N[slot], slot, old.status), 0)
               end
@@ -337,7 +385,8 @@ local function replay(t, file)
       end
     end
     check(t, st, where, N, seen, M)
-    if name == "tick" or name:match("^git") or name:match("^wt") then  -- nothing else changes git or agent.wt
+    spawncheck(t, st.spawn, where)
+    if name == "tick" or name:match("^fail") or name:match("^git") or name:match("^wt") then  -- nothing else changes git or agent.wt
       learn(t, st, G, where)
       gitcheck(t, st, where, G, N)
     end
