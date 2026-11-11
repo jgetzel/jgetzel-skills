@@ -29,7 +29,7 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
 - **Effects** are not interpreted. The world's part of `print`, `io` and `os`, `debug`, and every module not given as
   source are effects: a handle (`io.open`, `os.getenv`, `math.random`), or a builtin's call into the world after the
   part LuaJIT computes, which the semantics computes too (`print` and `io.write` convert their arguments and make one
-  write, `"print"` or `"io.write"`; `os.time()` asks `"os.time"`, `os.time(t)` reads t's fields and asks
+  write, `"print"` or `"io.write"`, print one more before each `__tostring` it calls; `os.time()` asks `"os.time"`, `os.time(t)` reads t's fields and asks
   `"os.mktime"` the struct tm's; `os.date` formats a UTC date itself and asks `"os.localtime"` a local one;
   `os.difftime` is computed). Calling one asks an *oracle* (`Oracle`: the effect, its arguments, and the trace of the
   effects before it), and the call joins the trace (`trace`, the heap's cell `LOG`, newest first: what it was, its
@@ -130,9 +130,9 @@ the replay leaves. A cell at a fixed address holds the running coroutine
 (nil in the main thread), for `running`, `status` and `isyieldable`.
 
 `Err.yld` is not a Lua error: `pcall`, sites and frames let it pass, so a yield crosses `pcall`, metamethods
-(`__index`, `__newindex`, `__call`, the operators'), `for` iterators and `table.foreach`/`foreachi` (Lua in LuaJIT 2.1), as LuaJIT's
-fully resumable VM lets it. A builtin that calls back into Lua from C (`table.sort`'s comparator, `gsub`'s function
-or table, `require`'s and `dofile`'s chunks, `load`'s reader) marks the coroutine (`bounded`), and a yield there is
+(`__index`, `__newindex`, `__call`, the operators' and comparisons', `__tostring` in `tostring`), `for` iterators and `table.foreach`/`foreachi` (Lua in LuaJIT 2.1), as LuaJIT's
+fully resumable VM lets it. A builtin that calls back into Lua from C (`table.sort`'s comparator and `__lt`, `gsub`'s function
+or table, `__tostring` in `print` and `string.format`, `require`'s and `dofile`'s chunks, `load`'s reader) marks the coroutine (`bounded`), and a yield there is
 LuaJIT's error, `attempt to yield across C-call boundary`, as it is in the main thread. A resume returns LuaJIT's
 values and messages (`cannot resume dead coroutine`, `cannot resume running coroutine` for a running or normal one);
 a function of `wrap` raises the coroutine's error again, a string with its caller's place. The rules
@@ -148,7 +148,15 @@ instead), `__call`, the arithmetic ones (`__add`, `__sub`, `__mul`, `__div`, `__
 operand twice) and `__concat` (`a .. b .. c` right to left, as BC_CAT), each read from the metatable when the
 operation runs, the left operand's before the right's, as LuaJIT does; an operator's metamethod is called as a call
 is (a table through its `__call`), its first value the result (a builtin's bad argument names it by the event,
-`bad argument #1 to '__add'`), and one that cannot be called is LuaJIT's error with no place; `#t` the border whatever `__len` is (LuaJIT 2.1 without its 5.2 compatibility); closures; varargs;
+`bad argument #1 to '__add'`), and one that cannot be called is LuaJIT's error with no place; `__eq` (two distinct tables, by the left one's, when
+the right has the same metatable or one with the same `__eq`: lj_meta_equal), `__lt` and `__le` (two values of one
+type neither numbers nor strings, both with the same metamethod; `a <= b` without `__le` is `not (b < a)`, a bad
+argument of a builtin one still named `'__le'`), each its first value's truth, `__lt` also in `table.sort` (a builtin
+one's bad argument named `'?'`, as from C); `__tostring` in `tostring` (a tail call: all its values, its frame in
+tostring's place), `print` (its first value, a string or number, else `'tostring' must return a string to 'print'`;
+print writes what it has before each call, as LuaJIT writes each argument) and `%s`/`%q` (called once, in order, its
+first value as tostring would give it); `__metatable` (getmetatable gives it instead of the metatable,
+setmetatable is `cannot change a protected metatable`); `#t` the border whatever `__len` is (LuaJIT 2.1 without its 5.2 compatibility); closures; varargs;
 `pcall`/`error` (a failed call keeps what it wrote); error values as LuaJIT's: a runtime error, a builtin's
 (`bad argument #1 to 'rep' (...)`, named as the call names the callee) and `error`/`assert` with a string or number
 carry `chunk:line:` of the place LuaJIT reports (the operator or call raising it, or the call `error`'s level counts
@@ -173,7 +181,7 @@ arguments before it are written; `os.time` of a date table (each field through `
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
 but those below; `os.difftime` (each time truncated, as C's cast does); the rest of `io` and `os` as handles.
 
-Out: `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3c), `string.format("%a")`,
+Out: `setfenv` and `load`'s environment argument, FFI, `__gc`, `__mode`, `string.format("%a")`,
 `string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
@@ -182,9 +190,7 @@ How a script outside it is reported, from strongest to weakest:
    translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
    nothing that parses fails to translate.
 2. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
-   reaches it can be proved: an operation that would call a metamethod the semantics does not model yet (`t == u`
-   with `__eq` in their metatables: `effect metamethod __eq`; likewise `__lt`, `__le`, `__tostring` in `tostring` and
-   `%s`, `__metatable` in `getmetatable` and `setmetatable`), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
+   reaches it can be proved: a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), `error` with a level that counts out past a
    builtin (`pcall(error, "x", 2)`: its place is a call the builtin's frame hides), `string.format`'s `%a`, `%o`, `%u`
@@ -216,6 +222,7 @@ How a script outside it is reported, from strongest to weakest:
      LuaJIT names a file as it was given to it, and `require` and `dofile` by the path they open (the name `lua-lean
      run --lib` and the generator give a module);
    - `tostring` of a table, function or coroutine (an address in LuaJIT);
+   - `getmetatable` of a string: nil, where LuaJIT gives the string metatable (`{__index = string}`);
    - a source `load` is given that LuaJIT rejects and the parser accepts (a `goto` with no visible label, more than
      200 locals, a call's `(` on the line after its function: "ambiguous syntax"): LuaJIT returns nil and a message,
      the semantics a function. `lua-lean parsecheck` finds these in a file, nothing in a string made at run time;
@@ -274,7 +281,8 @@ proof; a statement is never weakened to make a proof go through.
   LuaJIT scripts.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
-  `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
+  `__tostring`, `__metatable` (G3c, done). `LuaLean/Hoare.lean` has a rule for each operator's metamethod and for
+  comparisons of two tables of one metatable (`RunP.eq_meta`, `lt_meta`, `le_lt`).
 - **G4** the standard library. Done: the rest of string, table and math, `select`/`tostring`/`tonumber` corners
   (G4a); `pairs` order opaque, `#t` with holes a stop (G4b); `os` and `io` as effects with named axioms (G4c). A model
   of LuaJIT's layout for number keys would make their order and every `#t` known.
