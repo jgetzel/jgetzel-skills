@@ -29,6 +29,8 @@ structure St where
   jobs : Array Job := #[]
   used : List String := []
   names : List String := []
+  /-- `lift1`: each `f_ok` from the one theorem (`D.fn_ok`), not a proof of its own -/
+  one : Bool := false
 
 abbrev T := StateM St
 
@@ -365,12 +367,18 @@ def fnDef (j : Job) : T String := do
   let cellsT := if upEnts.isEmpty then "" else s!" ({" ".intercalate (upEnts.map (·.lean))} : Nat)"
   let hyps := String.join (upEnts.map fun e => s!"\n    (h_{leanName e.lua} : env0.lookup {nm e.lua} = some {e.lean})") ++
     String.join (globs.map fun x => s!"\n    (h_{leanName x} : env0.lookup {nm x} = none)")
+  -- the free names' cells, as `D.fn` takes them, and that they are `env0`'s
+  let frees := upEnts.map (fun e => (e.lua, s!"(some {e.lean})")) ++ globs.map (·, "none")
+  let res := frees.foldr (fun (x, v) r => s!"(res1 {nm x} {v} {r})") "(fun x => env0.lookup x)"
+  let resP := frees.foldr (fun (x, _) r => s!"(res1_ok h_{leanName x} {r})") "(fun _ => rfl)"
+  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0⟩"
+  let pf := if (← get).one then s!"D.fn_ok I {res} {clo} {resP}" else s!"CFn_fn fun args n => {letsP cs}CBs_end ({pk} n)"
   pure s!"def {j.name} (I : Sem) (env0 : Env){cellsT} : List Val → Nat → M (List Val) :=
   S.fn fun args n => {lets cs}S.letEnd ({k} n)
 
 theorem {j.name}_ok (I : Sem) (env0 : Env){cellsT}{hyps} :
-    CFn I ({j.name} I env0{cells}) ⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0⟩ :=
-  CFn_fn fun args n => {letsP cs}CBs_end ({pk} n)
+    CFn I ({j.name} I env0{cells}) {clo} :=
+  {pf}
 "
 
 partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × String)) := do
@@ -382,7 +390,8 @@ partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × Str
   else pure acc
 
 def main (args : List String) : IO UInt32 := do
-  let (modName, file, src) ← match args with
+  let one := args.head? == some "--one"
+  let (modName, file, src) ← match (if one then args.tail else args) with
     | [m, f] => pure (m, f, none)
     | [m, f, s] => pure (m, f, some s)
     | _ => do IO.eprintln "usage: Lift.lean <Namespace> <file.lua> [<Import>:<Const>]"; return 1
@@ -390,7 +399,7 @@ def main (args : List String) : IO UInt32 := do
   match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln e; return 1
   | .ok b =>
-    let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"] }
+    let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"], one }
     let (out, _) := (drain 0 #[]).run st
     if out.any (fun (_, d) => (d.splitOn "UNSUPPORTED").length > 1) then
       IO.eprintln s!"{file}: a tree the parser does not make (an assignment target other than a name or an index)"; return 1
@@ -399,7 +408,7 @@ def main (args : List String) : IO UInt32 := do
         | [m, c] => (s!"\nimport {m}", some c)
         | _ => ("", none)
       | none => ("", none)
-    IO.println s!"import LuaLean.Shallow{imp}
+    IO.println s!"import LuaLean.{if one then "Denote" else "Shallow"}{imp}
 
 /-! {(System.FilePath.mk file).fileName.getD file} lifted by `lua-lean lift`: each function's parsed body, its shallow form, and the proof
 that the two are the same. GENERATED: do not edit. -/

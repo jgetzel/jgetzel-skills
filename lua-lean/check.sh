@@ -2,7 +2,8 @@
 # lua-lean's checks: no open proof and no axiom (Audit.lean: every theorem rests on Lean's three), the library builds,
 # the example's specs check on their named axioms (Examples/),
 # the committed chunks (test/cases.lua.gz) give the Lean semantics' results for this LuaJIT's target, JIT on and off,
-# and the test scripts parse to LuaJIT's bytecode and lift with their proofs. Needs lake (elan) on the PATH, or nix
+# and the test scripts parse to LuaJIT's bytecode and lift with their proofs (test/stmts.lua also through the one
+# theorem, LuaLean/Denote.lean). Needs lake (elan) on the PATH, or nix
 # to fetch it, and nix or luajit (the reference LuaJIT, as lua-lean finds it).
 cd "$(dirname "$0")" || exit 1
 LUAJIT=$(./lua-lean luajit) && export LUAJIT || exit 1
@@ -23,4 +24,4 @@ lean_do build Examples && "$LUAJIT" Examples/world_axioms.lua || exit 1
 "$LUAJIT" -e 'for l in io.lines("test/out.txt") do assert(loadstring(l), l) end' &&
   lean_do env lean --run test/Refused.lean test/out.txt || exit 1
 p=$(./lua-lean parsecheck test/*.lua test/mods/*.lua) || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
-./lua-lean prove test/*.lua test/mods/*.lua
+./lua-lean prove test/*.lua test/mods/*.lua && ./lua-lean prove1 test/stmts.lua

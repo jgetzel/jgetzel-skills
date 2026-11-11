@@ -262,6 +262,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |
 | `LuaLean/Show.lean` | a syntax tree as the Lean term that builds it |
 | `LuaLean/Shallow.lean` | the translator's target: one combinator and one lemma per interpreter clause |
+| `LuaLean/Denote.lean` | a prototype: the translator as a Lean function and one proof for every program (`research/translator-proof.md`, `lua-lean lift1`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
 | `LuaLean/Gen.lean` | random chunks for the differential test; a user adds its own (`swarm/model/SwarmModel/LuaCases.lean`) |
 | `tools/*.lean` | the CLI's programs, run with `lake env lean --run` |
@@ -312,4 +313,6 @@ proof; a statement is never weakened to make a proof go through.
   with a proof they equal the heap-monadic lift.
 - **G8** end to end: an LLM writes a script and its spec, the tool lifts it, the spec is proved; measured on a few
   realistic scripts.
-- Research: one proof that the translator is correct for every program, replacing the per-output proofs.
+- One proof that the translator is correct for every program, replacing the per-output proofs: prototyped for the
+  whole language (`LuaLean/Denote.lean`, `lua-lean lift1`); `research/translator-proof.md` has the measurements and
+  the recommendation to switch `lift` to it.
