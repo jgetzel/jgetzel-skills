@@ -100,7 +100,7 @@ theorem greet_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (s : List Char) 
     Nat.ne_of_lt hG]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_write, ioWrite]
+    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_write, ioWrite]
   simp [effect, trace_push _ hs6, hw, frame, EStateM.bind, EStateM.pure, atSite, List.findIdx?_cons,
     List.findIdx?_nil]
 
@@ -128,18 +128,18 @@ theorem readings_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (t0 t1 : Int)
     EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf,
+    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump,
     call_prim, callPrim_time, timeFx, effect, e0, frame, atSite]
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_time, timeFx,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
     effect, tr1, e1]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_time, timeFx,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
     effect, tr1, e1, trace_push, trace_set, Array.size_setIfInBounds, Array.size_push, Nat.ne_of_lt hs6,
     (Nat.ne_of_lt hs6).symm]
 

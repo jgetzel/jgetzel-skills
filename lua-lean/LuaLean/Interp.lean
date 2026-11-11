@@ -25,6 +25,9 @@ inductive Val where
   | eff (name : String)
   /-- a coroutine -/
   | thr (a : Nat)
+  /-- `string.dump` of the closure at `f`, stripped or not: a string whose bytes (LuaJIT's bytecode) are not
+  modelled, so a run that reads them stops; `load` gives the function back -/
+  | dump (f : Nat) (strip : Bool)
   deriving Inhabited
 
 /-- one call into the world: the effect, its arguments, and the world's answer -/
@@ -138,6 +141,8 @@ def rawEq : Val → Val → Bool
   | .prim a xs, .prim b ys => a == b && rawEqs xs ys
   | .eff a, .eff b => a == b
   | .thr a, .thr b => a == b
+  -- equal bytes; dumps of two closures may be equal too, so `==` and a key stop there (`noDump2`, `noDump`)
+  | .dump a s, .dump b t => a == b && s == t
   | _, _ => false
 def rawEqs : List Val → List Val → Bool
   | [], [] => true
@@ -146,7 +151,8 @@ def rawEqs : List Val → List Val → Bool
 end
 
 def typeName : Val → String
-  | .nil => "nil" | .bool _ => "boolean" | .num _ => "number" | .str _ => "string" | .tbl _ => "table"
+  | .nil => "nil" | .bool _ => "boolean" | .num _ => "number" | .str _ | .dump .. => "string"
+  | .tbl _ => "table"
   | .fn _ | .prim .. => "function" | .eff _ => "userdata" | .thr _ => "thread"
 
 /-- an object the collector frees when nothing holds it, so a weak table may lose it; strings, numbers and booleans
@@ -171,6 +177,12 @@ def text : Val → List Char
   | .prim n _ => s!"function: builtin {n}".toList
   | .eff n => s!"userdata: {n}".toList
   | .thr a => s!"thread: {a}".toList
+  -- not LuaJIT's bytes: every reader of a dump's text stops first
+  | .dump a _ => s!"dump: {a}".toList
+
+def isDump : Val → Bool
+  | .dump .. => true
+  | _ => false
 end Val
 
 namespace Tbl
@@ -226,6 +238,21 @@ def callerErr {α} (msg : String) : M α := throw (.rt 1 (.val (lstr msg)))
 /-- a builtin's bad argument (lj_err_arg): `narg` counts from 1 -/
 def argErr {α} (narg : Nat) (msg : String) : M α := throw (.rt 1 (.arg narg msg))
 
+/-- a dump's bytes, LuaJIT's bytecode, are not modelled: a run that reads them stops -/
+def dumpBytes {α} : M α := throw (.eff "string.dump: a dump's bytes" [])
+
+/-- a value whose bytes the operation reads: a dump stops the run -/
+def noDump (v : Val) : M Unit := if v.isDump then dumpBytes else pure ()
+
+/-- two values compared by their bytes: a dump with a string or another closure's dump stops (its bytes may be the
+other's); two of one closure are equal if both are stripped or neither (the header's flag); a dump and any other
+value are unequal -/
+def noDump2 (x y : Val) : M Unit :=
+  match x, y with
+  | .dump .., .str _ | .str _, .dump .. => dumpBytes
+  | .dump a _, .dump b _ => if a == b then pure () else dumpBytes
+  | _, _ => pure ()
+
 namespace Msg
 /-- the message with no place: raised in a builtin, or reported in one -/
 def bare : Msg → Val
@@ -250,6 +277,12 @@ def render (s : Site) : Msg → Val
   | .val v => .str (s!"{s.src}:{s.line}: ".toList ++ v.text)
 end Msg
 
+/-- the name the message gives the operand or callee at `s` is a local's in a stripped function (`Site.strip`) -/
+def Msg.strippedName (s : Site) : Msg → Bool
+  | .op _ i _ => (match i with | some i => s.names.getD i ("", "") | none => s.fn).1 == "stripped"
+  | .arg .. => s.fn.1 == "stripped"
+  | .val _ => false
+
 /-- the node at site `s`: an error of its own frame gets the place; a tail call's callee reports out of the frame
 the call replaces -/
 def atSite {α} (s : Site) (m : M α) : M α := fun h =>
@@ -257,7 +290,8 @@ def atSite {α} (s : Site) (m : M α) : M α := fun h =>
   | .error (.rt k msg) h =>
     let k := if s.tail && (match msg with | .op .. => false | _ => true) then k + 1 else k
     match k with
-    | 0 => .error (.val (msg.render s)) h
+    | 0 => if msg.strippedName s then .error (.eff "a stripped function's local named in an error" []) h
+      else .error (.val (msg.render s)) h
     | k => .error (.rt k msg) h
   | r => r
 
@@ -322,6 +356,7 @@ def weakOf (t : Tbl) : M (Bool × Bool) := do
   | none => pure (false, false)
   | some m => match (← getTbl m).get (lstr "__mode") with
     | .str s => let s := s.takeWhile (· != '\x00'); pure (s.contains 'k', s.contains 'v')
+    | .dump .. => dumpBytes
     | _ => pure (false, false)
 
 /-- value v read from table t by its key: an object under weak values may be gone in LuaJIT. The reader holds the
@@ -351,6 +386,7 @@ def tlen (a : Nat) : M Nat := do
 /-- `next` from key k. A key the table does not hold is LuaJIT's error, but where its array part may hold it (an
 integer) or a node may still (a key the table had): there the run stops -/
 def tnext (a : Nat) (k : Val) : M (Option (Val × Val)) := do
+  noDump k
   let t ← getTbl a
   match t.next a k with
   | some r =>
@@ -370,6 +406,7 @@ def rawset (a : Nat) (k v : Val) : M Unit := do
     let old := (← getTbl a).get k
     if !old.isNil && !old.rawEq v then throw (.eff "__mode changed" [])
   match k with
+  | .dump .. => dumpBytes
   | .nil => rtErr "table index is nil"
   | .num (.flt f) =>
     if f.isNaN then rtErr "table index is NaN" else
@@ -490,6 +527,7 @@ the caller's place (lj_ffh_coroutine_wrap_err) -/
 def wrapVals : Except Val (Bool × List Val) → M (List Val)
   | .ok (_, vs) => pure vs
   | .error v@(.str _) => throw (.rt 1 (.val v))
+  | .error (.dump ..) => dumpBytes
   | .error v => throw (.val v)
 
 /-- coroutine.yield: in a replay, the next resume's arguments and heap; else the run stops here (`Err.yld`) -/
@@ -563,6 +601,7 @@ def argStr (_fname : String) (i : Nat) (args : List Val) : M (List Char) :=
   match args.getD i .nil with
   | .str s => pure s
   | .num n => pure n.toText
+  | .dump .. => dumpBytes
   | _ => badType "string" i args
 
 def argNum (_fname : String) (i : Nat) (args : List Val) : M Num :=
@@ -666,7 +705,9 @@ def format (fmt : List Char) (args : List Val) (ts : Val → M Val) : M (List Ch
         if "Aaoup".toList.contains c then throw (.eff s!"string.format %{c}" []) else
         if i ≥ args.length then argErr (i + 1) "value expected" else
         let arg := args.getD i .nil
-        let strArg (v : Val) : M Val := match v with | .str _ | .num _ => pure v | v => ts v
+        let strArg (v : Val) : M Val := do
+          let r ← match v with | .str _ | .num _ => pure v | v => ts v
+          noDump r; pure r
         let fn := "format"
         let piece ← match c with
           | 'd' | 'i' => do
@@ -961,6 +1002,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     let mut r : List (List Char) := []
     let mut k := i
     for _ in [0:(j - i + 1).toNat] do
+      noDump (← wget t (nums k))
       match concatText (← wget t (nums k)) with
       | some s => r := r ++ [s]
       | none => callerErr s!"invalid value ({(← wget t (nums k)).typeName}) at index {k} in table for 'concat'"
@@ -1154,6 +1196,101 @@ the order the parser meets them, each with its cell -/
 def Clo.upvals (c : Clo) : List (String × Nat) :=
   (freeB c.params c.body).1.eraseDups.filterMap fun x => (c.env.lookup x).map (x, ·)
 
+-- ---------- string.dump ----------
+
+/-- a site as a stripped dump reports it: the chunk named as load names it (`src`), line 0, an upvalue without its
+name, a global, field or method by its constant. A local's name LuaJIT finds by scanning the bytecode back
+(lj_debug_slotname without varinfo), not modelled: `atSite` stops where a message names one -/
+def Site.strip (src : String) (s : Site) : Site :=
+  let nm := fun (p : String × String) =>
+    if p.1 == "local" then ("stripped", p.2) else if p.1 == "upvalue" then ("upvalue", "") else p
+  { s with src := src, line := 0, names := s.names.map nm, fn := nm s.fn }
+
+/-- the first statement of a function body that a stripped dump made: its upvalues have no names -/
+def STRIPPED : Stat := .label "(stripped)"
+
+def Block.stripped : Block → Bool
+  | .label "(stripped)" :: _ => true
+  | _ => false
+
+mutual
+def stripE (src : String) : Exp → Exp
+  | .func ps va b => .func ps va (STRIPPED :: stripSs src b)
+  | .index t k => .index (stripE src t) (stripE src k)
+  | .call f as => .call (stripE src f) (stripEs src as)
+  | .method o m as => .method (stripE src o) m (stripEs src as)
+  | .bin op a b => .bin op (stripE src a) (stripE src b)
+  | .and a b => .and (stripE src a) (stripE src b)
+  | .or a b => .or (stripE src a) (stripE src b)
+  | .un op a => .un op (stripE src a)
+  | .table fs => .table (stripFs src fs)
+  | .paren e => .paren (stripE src e)
+  | .site s e => .site (s.strip src) (stripE src e)
+  | e => e
+def stripEs (src : String) : List Exp → List Exp
+  | [] => []
+  | e :: es => stripE src e :: stripEs src es
+def stripFs (src : String) : List Field → List Field
+  | [] => []
+  | .pos e :: fs => .pos (stripE src e) :: stripFs src fs
+  | .named k e :: fs => .named k (stripE src e) :: stripFs src fs
+  | .keyed k e :: fs => .keyed (stripE src k) (stripE src e) :: stripFs src fs
+def stripS (src : String) : Stat → Stat
+  | .loc ns es => .loc ns (stripEs src es)
+  | .assign ts es => .assign (stripEs src ts) (stripEs src es)
+  | .call e => .call (stripE src e)
+  | .block b => .block (stripSs src b)
+  | .while c b => .while (stripE src c) (stripSs src b)
+  | .rpt b c => .rpt (stripSs src b) (stripE src c)
+  | .ite c t e => .ite (stripE src c) (stripSs src t) (stripSs src e)
+  | .fornum v a b st body => .fornum v (stripE src a) (stripE src b) (stripO src st) (stripSs src body)
+  | .forin vs es body => .forin vs (stripEs src es) (stripSs src body)
+  | .locfn x ps va b => .locfn x ps va (STRIPPED :: stripSs src b)
+  | .ret es => .ret (stripEs src es)
+  | .site s st => .site (s.strip src) (stripS src st)
+  | st => st
+def stripSs (src : String) : List Stat → List Stat
+  | [] => []
+  | st :: ss => stripS src st :: stripSs src ss
+def stripO (src : String) : Option Exp → Option Exp
+  | none => none
+  | some e => some (stripE src e)
+end
+
+/-- a function body as a stripped dump of it loads, as chunk `src`: no lines, no names of locals or upvalues, nested
+functions too -/
+def stripBody (src : String) (b : Block) : Block := STRIPPED :: stripSs src (if b.stripped then b.tail else b)
+
+/-- a closure's upvalues as debug.getupvalue names them: no names once stripped -/
+def Clo.dbgUpvals (c : Clo) : List (String × Nat) :=
+  if c.body.stripped then c.upvals.map fun (_, u) => ("", u) else c.upvals
+
+/-- string.dump's second argument: a string strips if it has an `s` (lib_string's mode), any other value if it is
+true (a dump, whose bytes it would read, stops first: `dumpFn`) -/
+def dumpStrip : Val → Bool
+  | .str m => m.contains 's'
+  | v => v.truthy
+
+/-- `string.dump(f, strip)`: a Lua function's dump. A builtin cannot be dumped (lj_err_caller) -/
+def dumpFn (args : List Val) : M (List Val) := do
+  match args.headD .nil with
+  | .fn a => do noDump (args.getD 1 .nil); return [.dump a (dumpStrip (args.getD 1 .nil))]
+  | .prim .. => callerErr "unable to dump given function"
+  | .eff _ => throw (.eff "string.dump of a handle" [])
+  | _ => badType "function" 0 args
+
+/-- `load` of a dump: a closure of the dumped one's function, each upvalue a new cell holding nil (lj_func_newL_empty),
+stripped as the dump was: a stripped one is chunk `src`, what load names it (lj_bcread), an unstripped one keeps its
+own -/
+def loadDump (a : Nat) (strip : Bool) (src : String) (mode : Option (List Char)) : M (List Val) := do
+  if let some m := mode then
+    if !m.contains 'b' then return [.nil, lstr "attempt to load chunk with wrong mode"]
+  match ← getObj a with
+  | .clo c =>
+    let env ← c.upvals.mapM fun (x, _) => do pure (x, ← alloc (.cell .nil))
+    return [.fn (← alloc (.clo ⟨c.params, c.va, if strip then stripBody src c.body else c.body, env⟩))]
+  | _ => die "not a function"
+
 -- ---------- debug ----------
 
 /-- setmetatable's write, `debug.setmetatable`'s too -/
@@ -1176,7 +1313,7 @@ effect handle, or a builtin with upvalues, stops the run -/
 def upvalsOf (f : Val) : M (List (String × Nat)) := do
   match f with
   | .fn a => match ← getObj a with
-    | .clo c => pure c.upvals
+    | .clo c => pure c.dbgUpvals
     | _ => die "not a function"
   | .prim p _ => if primNups p == 0 then pure [] else throw (.eff s!"debug: the upvalues of {p}" [])
   | _ => throw (.eff "debug: a handle's upvalues" [])
@@ -1190,7 +1327,7 @@ def debugFn (name : String) (args : List Val) : M (List Val) := do
     anyArg 0 args
     match args.headD .nil with
     | .tbl t => return [((← getTbl t).mt.map Val.tbl).getD .nil]
-    | .str _ => throw (.eff "debug.getmetatable of a string" [])
+    | .str _ | .dump .. => throw (.eff "debug.getmetatable of a string" [])
     | .eff _ => throw (.eff "debug.getmetatable of a handle" [])
     | _ => return [.nil]
   | "debug.setmetatable" => do
@@ -1246,13 +1383,14 @@ def debugFn (name : String) (args : List Val) : M (List Val) := do
     return [.tbl (← alloc (.tbl t))]
   | "debug.traceback" => do
     match args.drop off with
-    | .str _ :: _ | .num _ :: _ | [] => throw (.eff "debug.traceback: the stack" [])
+    | .str _ :: _ | .dump .. :: _ | .num _ :: _ | [] => throw (.eff "debug.traceback: the stack" [])
     | v :: _ => return [v]
   | _ => die s!"{name}: not in the subset"
 
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
+  | "string.dump" => dumpFn args
   | "os.difftime" => do
     -- difftime((time_t)a, (time_t)b), a double; past 2^53 C libraries round it differently
     let a ← argIntN 64 "difftime" 0 args
@@ -1295,11 +1433,15 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
       if n == 0 then argErr 1 "index out of range"
       return rest.drop (n.toNat - 1)
   | "unpack" => unpackFn args
-  | "rawget" => do let t ← argTbl name 0 args; anyArg 1 args; return [← wget t (args.getD 1 .nil)]
+  | "rawget" => do
+    let t ← argTbl name 0 args; anyArg 1 args; noDump (args.getD 1 .nil); return [← wget t (args.getD 1 .nil)]
   | "rawset" => do
     let t ← argTbl name 0 args; anyArg 1 args; anyArg 2 args
     rawset t (args.getD 1 .nil) (args.getD 2 .nil); return [.tbl t]
-  | "rawequal" => do anyArg 0 args; anyArg 1 args; return [.bool ((args.getD 0 .nil).rawEq (args.getD 1 .nil))]
+  | "rawequal" => do
+    anyArg 0 args; anyArg 1 args
+    noDump2 (args.getD 0 .nil) (args.getD 1 .nil)
+    return [.bool ((args.getD 0 .nil).rawEq (args.getD 1 .nil))]
   | "setmetatable" => do
     let t ← argTbl name 0 args
     let m ← match args.getD 1 .nil with
@@ -1324,6 +1466,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     let level ← optInt "error" 1 args 1
     match args.headD .nil with
     | v@(.str _) | v@(.num _) => if level > 0 then throw (.rt level.toNat (.val v)) else throw (.val v)
+    | v@(.dump ..) => if level > 0 then dumpBytes else throw (.val v)
     | v => throw (.val v)
   | "assert" => do
     anyArg 0 args
@@ -1331,6 +1474,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     else match args with
       | [_] => callerErr "assertion failed!"
       | _ :: m@(.str _) :: _ | _ :: m@(.num _) :: _ => throw (.rt 1 (.val (.str m.text)))
+      | _ :: .dump .. :: _ => dumpBytes
       | _ => throw (.val (args.getLast?.getD .nil))
   | "coroutine.create" | "coroutine.wrap" => do
     let f ← match args.headD .nil with
@@ -1469,6 +1613,7 @@ def printFn (args : List Val) : M (List Val) := do
   match ← rawget G (lstr "tostring") with
   | .prim "tostring" [] => pure ()
   | _ => throw (.eff "print with a tostring of its own" [])
+  if args.any Val.isDump then dumpBytes
   let _ ← effect oracle "print" [.str (List.intercalate ['\t'] (args.map Val.text) ++ ['\n'])]
   pure []
 
@@ -1476,6 +1621,7 @@ def printFn (args : List Val) : M (List Val) := do
 answer is io.write's (true, or nil and the error); a bad argument raises its error after those before it are
 written (io_file_write) -/
 def ioWrite (args : List Val) : M (List Val) := do
+  if args.any Val.isDump then dumpBytes
   let pieces := args.map fun v => match v with | .str s => some s | .num n => some n.toText | _ => none
   let good := (pieces.takeWhile Option.isSome).filterMap id
   let rs ← if good.isEmpty then pure [.bool true] else effect oracle "io.write" [.str good.flatten]
@@ -1630,6 +1776,7 @@ def index (n : Nat) (o k : Val) : M Val :=
   | n + 1 =>
   match o with
   | .tbl a => do
+    noDump k
     let t ← getTbl a
     let v := t.get k
     if !v.isNil then do held t v; pure v else
@@ -1641,6 +1788,8 @@ def index (n : Nat) (o k : Val) : M Val :=
       | h@(.fn _) | h@(.prim ..) => do pure ((← call n h [o, k]).headD .nil)
       | h => index n h k
   | .str _ => wget STRING k
+  -- a method of the string library: its bytes next
+  | .dump .. => dumpBytes
   | .eff name => match k with
     | .str s => pure (.eff (name ++ "." ++ String.ofList s))
     | _ => pure (.eff name)
@@ -1782,6 +1931,7 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
   | n + 1 =>
   match o with
   | .tbl a => do
+    noDump k
     let t ← getTbl a
     let old := t.get k
     if !old.isNil then do
@@ -1811,7 +1961,11 @@ def binop (n : Nat) (op : BinOp) (x y : Val) : M Val :=
       | 0 => throw .fuel
       | n + 1 => do
         match ← metaOf2 "__concat" x y with
-        | .nil => if (concatText x).isNone then opErr "concatenate" (some 0) x else opErr "concatenate" (some 1) y
+        | .nil =>
+          -- the first operand neither a string nor a number; a dump is a string, whose bytes are not modelled
+          let cat (v : Val) := (concatText v).isSome || v.isDump
+          if !cat x then opErr "concatenate" (some 0) x else if !cat y then opErr "concatenate" (some 1) y
+          else dumpBytes
         | h => do pure ((← mmFrame "__concat" (call n h [x, y])).headD .nil)
   | op =>
     match x.toNum, y.toNum with
@@ -1832,6 +1986,7 @@ def less (n : Nat) (x y : Val) (orEq : Bool) (nm : Option String) : M Bool :=
   match x, y with
   | .num a, .num b => pure (if orEq then a.le b else a.lt b)
   | .str a, .str b => pure (if orEq then a == b || strLt a b else strLt a b)
+  | .dump .., .str _ | .str _, .dump .. | .dump .., .dump .. => dumpBytes
   | _, _ => match n with
     | 0 => throw .fuel
     | n + 1 => do
@@ -1857,7 +2012,7 @@ def eqv (n : Nat) (x y : Val) : M Bool :=
       if h.isNil then return false
       if (← getTbl a).mt != (← getTbl b).mt && !h.rawEq (← metaOf y "__eq") then return false
       return ((← mmFrame "__eq" (call n (← metaFn h) [x, y])).headD .nil).truthy
-  | _, _ => pure (x.rawEq y)
+  | _, _ => do noDump2 x y; pure (x.rawEq y)
 
 /-- print (lj_cf_print) with a `__tostring` among its arguments, from `vs` on, `acc` what is not written yet: a string
 or number as it is, any other value as the builtin tostring gives it, a call for one with `__tostring`; before that
@@ -1870,12 +2025,14 @@ def printArgs (n : Nat) (vs : List Val) (acc : List Char) (first : Bool) : M (Li
   | [] => do let _ ← effect oracle "print" [.str (acc ++ ['\n'])]; pure []
   | v :: vs => do
     let sep := if first then [] else ['\t']
+    noDump v
     let plain := match v with | .str _ | .num _ => true | _ => false
     if plain || (← metaOf v "__tostring").isNil then return ← printArgs n vs (acc ++ sep ++ v.text) false
     if !acc.isEmpty then let _ ← effect oracle "print" [.str acc]
     let s ← match (← bounded 1 (call n (.prim "tostring" []) [v])).headD .nil with
       | .str s => pure s
       | .num x => pure x.toText
+      | .dump .. => dumpBytes
       | _ => callerErr "'tostring' must return a string to 'print'"
     printArgs n vs (sep ++ s) false
 
@@ -1894,6 +2051,7 @@ def unop (n : Nat) (op : UnOp) (x : Val) : M Val :=
   -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT; only tables have metatables
   | .len => match x with
     | .str s => pure (.num (.int s.length))
+    | .dump .. => dumpBytes
     | .tbl a => do pure (.num (.int (← tlen a)))
     | _ => opErr "get length of" (some 0) x
 
@@ -1984,6 +2142,8 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     match args.headD .nil with
     | .str s => loadSrc s (cn.getD s) mode
     | .num x => loadSrc x.toText (cn.getD x.toText) mode
+    -- a string's own name for itself (its bytes) is `=?` (lj_bcread)
+    | .dump a s => loadDump a s (shortSrc (cn.getD "=?".toList)) mode
     | _ => do
       let f ← argFn name 0 args
       -- LuaJIT checks the mode after the reader's first piece, not after all of them
@@ -2035,7 +2195,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     anyArg 0 args
     let v := args.headD .nil
     match ← metaOf v "__tostring" with
-    | .nil => return [.str v.text]
+    | .nil => return [if v.isDump then v else .str v.text]
     -- FFH_TAILCALL: the metamethod's frame takes tostring's place
     | h => unframe (call n h [v])
   | "string.format" => do
@@ -2092,6 +2252,7 @@ def readChunk (n : Nat) (f : Val) (acc : List Char) : M (List Char) :=
   | n + 1 => do
     match ← catchVal (bounded 1 (call n f [])) (fun vs => pure (some (vs.headD .nil))) (fun _ => pure none) with
     | some .nil | some (.str []) => pure acc
+    | some (.dump ..) => throw (.eff "load: a reader's dump" [])
     | some (.str s) => readChunk n f (acc ++ s)
     | none => throw (.eff "load: an error in the reader" [])
     | some _ => throw (.eff "load: a reader result not a string" [])
@@ -2203,6 +2364,7 @@ def gsub (n : Nat) (args : List Val) : M (List Val) :=
     let repl := args.getD 2 .nil
     match repl with
     | .str _ | .num _ | .tbl _ | .fn _ | .prim .. => pure ()
+    | .dump .. => dumpBytes
     | _ => argErr 3 "string/function/table expected"
     let maxS ← optInt "gsub" 3 args (s.length + 1)
     let anchor := p.head? == some '^'
@@ -2262,6 +2424,7 @@ def addValue (n : Nat) (ms : Pat.MS) (repl : Val) (caps : Array Pat.Cap) (s e : 
       | .nil | .bool false => pure whole
       | .str x => pure x
       | .num x => pure x.toText
+      | .dump .. => dumpBytes
       | v => callerErr s!"invalid replacement value (a {v.typeName})"
 end
 
@@ -2299,7 +2462,7 @@ def initHeap : Heap :=
      (lstr "print", .prim "print" []), (lstr "_VERSION", lstr "Lua 5.1"),
      (lstr "debug", .tbl 11), (lstr "bit", .tbl 12)] ++ unmodelled.map fun f => (lstr f, .eff f) }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
-    "match", "gmatch", "gsub"] |>.set (lstr "dump") (.eff "string.dump")
+    "match", "gmatch", "gsub", "dump"]
   let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn", "getn", "move", "foreach", "foreachi"]
   let math := (libTable "math" ["floor", "ceil", "abs", "sqrt", "max", "min", "exp", "log", "log10", "sin", "cos", "tan",
     "asin", "acos", "atan", "sinh", "cosh", "tanh", "pow", "atan2", "fmod", "modf", "frexp", "ldexp", "deg", "rad"]).set

@@ -195,16 +195,25 @@ setmetatable is `cannot change a protected metatable`); `#t` the border whatever
 carry `chunk:line:` of the place LuaJIT reports (the operator or call raising it, or the call `error`'s level counts
 out to, a tail call's frame gone), or none where that place is a builtin, and the operand's name (`attempt to index
 local 't' (a nil value)`); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
-them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` but `dump` (patterns after
+them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after
 lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table`, all of LuaJIT 2.1's
 (`sort` is ltablib.c's quicksort, so ties and bad comparators come out as LuaJIT's do; `move`, `remove`, `foreach`,
-`foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`), `math` but `random` and
+`foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`; `string.dump`
+below), `math` but `random` and
 `randomseed` (effects: the generator's state is the oracle's), `select`, `unpack` (at most 8000 values with its
 arguments, lua_checkstack's bound), `pairs`, `next` and `table.foreach` in an order no proof can know ("Tables"),
 `#t` with one border, `ipairs`, `type`, `tostring`, `tonumber` (a base other than 10
 as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
 `setmetatable`/`getmetatable` (weak tables too: "Tables"), `assert`; `load` and `loadstring` of a source (a string, or a reader function's pieces)
-with a chunk name and a mode, `dofile` and `require` of files given as source, `require` through `package.path`,
+with a chunk name and a mode, or of a dump: `string.dump(f, strip)` of a Lua function is a string whose bytes, LuaJIT's
+bytecode, are not modelled (`Val.dump`: the closure and the strip flag, an `s` in a string or any other true value).
+What does not read the bytes is LuaJIT's: `type` is `"string"`, `tostring` gives it back, it is a value in tables,
+calls and coroutines, `==` with itself (true when both or neither are stripped) or with a value not a string, an error
+value at level 0, `tonumber` nil, and arithmetic, a comparison with a number, a call, an index assignment or a `for`
+fail with LuaJIT's message for a string; a builtin cannot be dumped. `load` of it (mode with `b`) is a closure of the
+dumped function, each upvalue a new cell holding nil; an unstripped one keeps its chunk name and lines whatever load
+calls it, a stripped one is the chunk load names (`=?` if none) at line 0, its upvalues without names (in errors and
+`debug.getupvalue`; `Site.strip`), `dofile` and `require` of files given as source, `require` through `package.path`,
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
 lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`); `coroutine`, all of LuaJIT 2.1's (`create`,
@@ -233,7 +242,7 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); `setfenv` and `load`'s environment argument, FFI,
 `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
 `getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
-`collectgarbage`, `gcinfo`, `getfenv`, `setfenv`, `module`, `newproxy`, `loadfile`, `arg`, `string.dump` and
+`collectgarbage`, `gcinfo`, `getfenv`, `setfenv`, `module`, `newproxy`, `loadfile`, `arg` and
 `package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
 run; `_VERSION` is LuaJIT's `"Lua 5.1"`.
 
@@ -271,6 +280,11 @@ a run meets (a `#t` with two borders, a double past a C cast's range) only that 
    world, `Run.caseFx`, does not answer), `os.exit`; `load` or `loadstring` of a source the parser rejects (its
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
+what reads a dump's bytes (`dumpBytes`): its length, `..` with a string or number, its methods (`d:sub`), a builtin
+taking it as a string (`string.*`, `format`'s `%s`, `print`, `io.write`, `table.concat`, a `gsub` replacement,
+`error` at a level, `assert`'s message, string.dump's flag), a table key, `==`, `<` or `rawequal` with a string or
+another closure's dump, a result of the chunk; a message of a stripped function that names a local (LuaJIT finds
+the name by scanning the bytecode back);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
    `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`); a call of one of LuaJIT's
    functions outside the subset (`jit.flush`, `collectgarbage`, `debug.getlocal`; above); a `goto` to a label of its
@@ -299,6 +313,10 @@ a run meets (a `#t` with two borders, a double past a C cast's range) only that 
      light userdata in LuaJIT (which LuaJIT 2.1 may show as a number);
    - a module not found on `package.path` is a handle, a C module the oracle answers, where LuaJIT may find no such
      module and raise an error;
+   - a dump as the metamethod of two tables' different metatables, compared to decide `__eq`, `__lt` or `__le`: two
+     dumps of distinct closures are unequal, where LuaJIT's bytes may be equal (one function made twice), and calls
+     the dump (an error);
+   - `getmetatable` of a dump: nil, as of any string above;
    - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
      handle read rather than called (`jit.os`, `package.preload`) is a handle where LuaJIT has a
      string or a table. `lua-lean check` names each use.
@@ -309,7 +327,8 @@ checker under the semantics only (it runs no effect, so nothing fetched runs out
 them adds LuaJIT. On 2026-11-11: 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in
 the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`), 29 are in the subset (20 before
 G3c's metamethods), and their 1192 top-level functions give 4575 calls that reach no effect. Outside it, by the
-files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3, `setfenv` 3, `getfenv` 2, `jit` 2, `bit` 2 (in the subset since #35),
+files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3 (in the subset since #34), `setfenv` 3, `getfenv` 2, `jit` 2,
+`bit` 2 (in the subset since #35),
 `package.config` 2.
 
 ## Layout and use
@@ -364,7 +383,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33),
-  `string.dump` (#34), `bit` (#35, done: "The subset"), an FFI subset (#36), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) is #44.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,

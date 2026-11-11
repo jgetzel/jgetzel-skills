@@ -225,7 +225,7 @@ def findings (st : St) (isGiven : String → Bool) : List (Nat × String × Bool
     else if st.writes.contains lib || st.fieldWrites.contains (lib, f) then [] else
     match libField lib f with
     | .eff n =>
-      if n == "string.dump" || n.startsWith "package." || n.startsWith "debug." then
+      if n.startsWith "package." || n.startsWith "debug." then
         [(l, s!"{lib}.{f}: LuaJIT's, not modelled (a handle: a run that uses it stops)", true)]
       else [(l, s!"effect {lib}.{f}: the world's (DESIGN.md, Effects), so a function calling it is not pure", false)]
     | _ => []

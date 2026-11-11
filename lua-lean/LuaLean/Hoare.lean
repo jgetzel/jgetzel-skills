@@ -59,6 +59,24 @@ theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "l
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load I n fname hf s cn b h hb hp, p⟩
 
+/-- `string.dump(f)` of a closure, or with a flag not a dump: its dump -/
+theorem RunP.dump {I : Sem} {a : Nat} {rest : List Val} {P : List Val → Heap → Prop}
+    (hr : (rest.headD .nil).isDump = false) (p : P [.dump a (dumpStrip (rest.headD .nil))] h) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "string.dump" []) (.fn a :: rest)) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 2) _ _ h = _; rw [call_dump I n a rest hr]; rfl, p⟩
+
+/-- `load(d)`, `loadstring(d)` of a dump, with a chunk name or none: what `loadDump` gives -/
+theorem RunP.load_dump {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {a : Nat} {s : Bool}
+    {cn : Option (List Char)} {vs : List Val} {h' : Heap} {P : List Val → Heap → Prop}
+    (e : loadDump a s (shortSrc (cn.getD "=?".toList)) none h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.dump a s :: cn.toList.map .str)) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 2) _ _ h = _
+    rw [call_load_dump I n fname hf a s cn]; simp only [Lua.frame, e], p⟩
+
 /-- `dofile(p)` of a file given as source, its chunk `k`: what `k` does on no arguments -/
 theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : List Val → Nat → M (List Val)}
     {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b)
@@ -225,8 +243,9 @@ theorem RunP.concat_meta {I : Sem} {x y f : Val} {P : Val → Heap → Prop}
     (hn : concatText x = none ∨ concatText y = none) (hm : metaOf2 "__concat" x y h = .ok f h) (hf : f ≠ .nil)
     (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [x, y]) h fun vs h' => P (vs.headD .nil) h') :
     RunP (fun n => binop I.srcs I.oracle I.tgt n .concat x y) h P := by
-  refine RunP.metaStep (err := if (concatText x).isNone then opErr "concatenate" (some 0) x
-    else opErr "concatenate" (some 1) y) (fun n => ?_) hm hf r
+  refine RunP.metaStep (err := if !((concatText x).isSome || x.isDump) then opErr "concatenate" (some 0) x
+    else if !((concatText y).isSome || y.isDump) then opErr "concatenate" (some 1) y else dumpBytes)
+    (fun n => ?_) hm hf r
   rw [binop]; split <;> first | rfl | (rcases hn with hn | hn <;> simp_all)
 
 theorem RunP.unm_meta {I : Sem} {x f : Val} {P : Val → Heap → Prop}
@@ -356,8 +375,9 @@ theorem Tbl.next_mem {a : Nat} {t : Tbl} {k k' v : Val} (e : t.next a k = some (
 
 /-! ## The debug library
 
-A closure's upvalues are the cells of the outer locals its body names (`Clo.upvals`), so `debug.getupvalue` reads one
-and `debug.setupvalue` writes it, as an assignment inside the closure would. -/
+A closure's upvalues are the cells of the outer locals its body names (`Clo.upvals`, named by `Clo.dbgUpvals`: no
+names in a stripped dump's function), so `debug.getupvalue` reads one and `debug.setupvalue` writes it, as an
+assignment inside the closure would. -/
 
 /-- a call of one of the debug library's modelled functions is its `debugFn` -/
 theorem RunP.debug {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
@@ -371,7 +391,7 @@ theorem RunP.debug {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} 
     rw [call_prim, callPrim_debug I n name args hn]; simp only [Lua.frame, e], p⟩
 
 theorem debug_getupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
-    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.upvals[(i - 1).toNat]? = some (x, cell))
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell))
     (hv : h[cell]? = some (.cell v)) :
     debugFn "debug.getupvalue" (.fn a :: .num (.int i) :: rest) h = .ok [lstr x, v] h := by
   have hn : ¬ i < 1 := by omega
@@ -380,7 +400,7 @@ theorem debug_getupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : Stri
     bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure]
 
 theorem debug_setupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
-    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.upvals[(i - 1).toNat]? = some (x, cell)) :
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell)) :
     debugFn "debug.setupvalue" (.fn a :: .num (.int i) :: v :: rest) h = .ok [lstr x] (h.set! cell (.cell v)) := by
   have hn : ¬ i < 1 := by omega
   rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu

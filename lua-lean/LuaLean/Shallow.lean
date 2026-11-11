@@ -667,6 +667,22 @@ theorem call_load (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ 
     simp_all [call, callPrim, optStr, argStr, loadSrc, frame, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
       MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
 
+/-- `string.dump(f)`, or with a flag not a dump: f's dump, stripped as `dumpStrip` reads the flag -/
+theorem call_dump (I : Sem) (n a : Nat) (rest : List Val) (hr : (rest.headD .nil).isDump = false) :
+    call I.srcs I.oracle I.tgt (n + 2) (.prim "string.dump" []) (.fn a :: rest) =
+      pure [.dump a (dumpStrip (rest.headD .nil))] := by
+  funext h; rw [call, callPrim] <;> try decide
+  rw [basicFn] <;> try decide
+  cases rest <;> simp_all [dumpFn, noDump, frame, bind, EStateM.bind, pure, EStateM.pure]
+
+/-- `load(d)` or `loadstring(d)` of a dump, with a chunk name or none: `loadDump`, the dumped closure's function -/
+theorem call_load_dump (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ fname = "loadstring")
+    (a : Nat) (s : Bool) (cn : Option (List Char)) :
+    call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.dump a s :: cn.toList.map .str) = frame (loadDump a s (shortSrc (cn.getD "=?".toList)) none) := by
+  funext h
+  rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
+    simp [call, callPrim, optStr, argStr, frame, bind, EStateM.bind, pure, EStateM.pure, Functor.map, EStateM.map]
+
 /-- a chunk's closure, made and called at once: `k`, the function it is (a lifted `chunk`), on the arguments -/
 theorem alloc_call {β} (I : Sem) (n : Nat) (c : Clo) (args : List Val) (k : List Val → Nat → M (List Val))
     (hk : CFn I k c) (r : List Val → M β) :
