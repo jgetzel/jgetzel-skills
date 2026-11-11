@@ -36,7 +36,7 @@ def ser (h : Heap) (fuel : Nat) (path : List Nat) (v : Val) : List Char :=
       '{' :: List.intercalate [','] (es.foldr insertSorted []) ++ ['}']
     | _ => "<bad>".toList
   | .fn _ | .prim .. => "function".toList
-  | .eff _ => "userdata".toList
+  | .eff _ | .cdata _ => "userdata".toList
   | .thr _ => "thread".toList
   -- not LuaJIT's text, which is the bytes: `outcome` makes it a stop
   | .dump .. => ['\x00']

@@ -92,6 +92,26 @@ theorem callPrim_bit (I : Sem) (n : Nat) (name : String) (args : List Val) (hn :
   rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;>
     simp
 
+/-- the FFI's modelled functions -/
+theorem callPrim_ffi (I : Sem) (n : Nat) (name : String) (args : List Val) (hn : name ∈ ffis.map ("ffi." ++ ·)) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = ffiFn name args := by
+  simp only [ffis, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+
+/-- a cdata's call: a ctype's, its ffi.new -/
+theorem call_cdata (I : Sem) (n a : Nat) (args : List Val) :
+    call I.srcs I.oracle I.tgt (n + 1) (.cdata a) args = frame (ctypeCall a args) := by
+  rw [call]
+
+/-- a cdata's element or field, and a write of one (lj_cdata_index, lj_cdata_set) -/
+theorem index_cdata (I : Sem) (n a : Nat) (k : Val) :
+    index I.srcs I.oracle I.tgt (n + 1) (.cdata a) k = cdIndex a k := by
+  rw [index]
+
+theorem setindex_cdata (I : Sem) (n a : Nat) (k v : Val) :
+    setindex I.srcs I.oracle I.tgt (n + 1) (.cdata a) k v = cdSet a k v := by
+  rw [setindex]
+
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
 abbrev W := Nat → Val → M Unit
 

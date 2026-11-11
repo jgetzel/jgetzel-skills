@@ -611,6 +611,89 @@ return {commas calls}, named, 1 / (z * -1), type(bit), require(\"bit\") == bit, 
       "bit.tobit(1/0), bit.bnot(0)").toList ==
   "ok:\"\",\"00FF\",\"00ffffffff\",254,\"01\",2,-2,3,2,2018915346,-16,-1,2,15,7,0,-1"
 
+-- ---------- the FFI ----------
+
+/-- the FFI's pure subset: cdata of scalars, arrays, structs and unions, their initializers (values, tables zero-
+and one-based, by name, strings) and conversions (numbers past a type's range, fractions, booleans, nil, strings,
+tables, cdata), element and field reads and writes, references into an aggregate, ffi.cast between numbers,
+ffi.sizeof, ffi.string, ==, tonumber, a ctype's call, and their errors. Tags and typedef names are fresh per chunk:
+LuaJIT's declarations outlive one, as test/luasem.lua runs every chunk in one state -/
+def ffiOps : G String := do
+  let id ← rnd 999999999
+  let sc : G String := pick ["int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int", "unsigned int",
+    "short", "unsigned short", "float", "double", "bool", "char", "int64_t", "int", "double", "uint32_t", "int16_t",
+    "float", "unsigned short", "bool", "int32_t"]
+  let v : G String := pick ["0", "1", "-1", "7", "300", "-129", "65535", "65537", "1.5", "-2.75", "2^31", "2^32 + 5",
+    "-2^31 - 1", "2^40 + 0.5", "1e20", "2^53", "0.1", "1/3", "-0.0", "true", "false", "nil", "\"5\"", "\"ab\"", "{}",
+    "{1, 2}", "1/0", "0/0", "255.9", "-0.9", "2^62", "-2^63", "100000", "42", "3", "-7.5", "print", "x", "s.sub",
+    "ffi.new(\"int\", 9)", "ffi.new(\"double\", -2.5)", "ffi.new(\"bool\", true)", "u"]
+  let nv : G String := pick ["0", "1", "-1", "7", "300", "-129", "65535", "1.5", "-2.75", "2^31", "2^32 + 5", "0.1",
+    "true", "false", "42", "-7.5", "255.9", "1e10"]
+  let st := s!"s{id}"
+  let tf := s!"t{id}"
+  let fields ← (List.range (← pick [1, 2, 3])).mapM fun i => do pure (s!"f{i}", ← sc)
+  let decl := String.join (fields.map fun (f, t) => s!"{t} {f}; ")
+  let fk ← pick (fields.map (·.1))
+  let n ← pick [1, 2, 3, 4]
+  let et ← sc
+  let idx : G String := do pick ((List.range n).map toString ++ ["0", "0.5", "-0.5", s!"{n - 1}.9"])
+  let tbl : G String := do
+    match ← rnd 4 with
+    | 0 => pure s!"\{{← v}, {← v}}"
+    | 1 => pure s!"\{[0] = {← nv}, {← nv}}"
+    | 2 => pure s!"\{{fk} = {← nv}}"
+    | 3 => pure s!"\{{← nv}}"
+    | _ => pure s!"\{{← nv}, nil, {← nv}}"
+  let init : G String := do
+    match ← rnd 5 with
+    | 0 => pure ""
+    | 1 => pure s!", {← v}"
+    | 2 => pure s!", {← v}, {← v}"
+    | 3 => pure s!", {← tbl}"
+    | 4 => pure s!", {← nv}, {← nv}, {← nv}, {← nv}, {← nv}"
+    | _ => pure s!", {q (String.ofList ((List.range (4 * n)).map fun _ => 'z'))}"
+  let op : G String := do
+    match ← rnd 15 with
+    | 0 => pure s!"local a = ffi.new(\"{et}[{n}]\"{← init}) return a[{← idx}], a[0], ffi.sizeof(a)"
+    | 1 => pure s!"local a = ffi.new(\"{et}[{n}]\") a[{← idx}] = {← v} return a[0], a[{n - 1}]"
+    | 2 => pure s!"return tonumber(ffi.cast(\"{← sc}\", {← v}))"
+    | 3 => pure s!"local s = ffi.new(\"struct {st}\"{← init}) return s.{fk}, s.sub.g, s.a[1], s.a[0]"
+    | 4 => pure s!"local s = ffi.new(\"struct {st}\") s.{← pick ["sub", "a", fk, "nope"]} = {← if ← chance 2 then tbl else v} return s.{fk}, s.sub.g, s.sub.h, s.a[0], s.a[1]"
+    | 5 => pure s!"local u = ffi.new(\"union u{id}\", {← if ← chance 2 then tbl else nv}) return u.i, u.b[0], u.b[3], u.h[1], u.c"
+    | 6 => do
+      let w ← (List.range (n + 1)).mapM fun _ => pick "ab\x00c".toList
+      pure s!"local a = ffi.new(\"{← pick ["char", "uint8_t", "int8_t", "unsigned char"]}[{n + 2}]\", {q (String.ofList w)}) a[{← idx}] = {← nv} return ffi.string(a), ffi.string(a, {← pick ["0", "1", "2", "1.5"]}), #ffi.string(x, {← pick ["0", "1", "4", "3"]})"
+    | 7 => pure s!"return ffi.sizeof(\"struct {st}\"), ffi.sizeof(\"{et}[{n}]\"), ffi.sizeof(\"{et}[?]\", {← pick ["0", "3", "2.5", "-1"]}), ffi.sizeof(\"union u{id}\"), ffi.sizeof({tf}), ffi.sizeof(x)"
+    | 8 => pure s!"return s == s, s.sub == s.sub, s.a == s.sub, s == x, s == nil, x ~= {← v}, ffi.typeof(\"{et}\") == ffi.typeof(\"{← sc}\"), {tf} == ffi.typeof(\"struct {st}\")"
+    | 9 => pure s!"return type(x), type({tf}), tonumber(x), tonumber(ffi.new(\"{← sc}\", {← nv})), getmetatable(s), rawequal(x, x), ({← pick ["{}", "{[x] = 1}"]})[x]"
+    | 10 => pure s!"local a = ffi.new(\"{et}[?]\", {← pick ["1", "2", "3", "0", "\"2\"", "nil"]}{← pick ["", s!", {← nv}", s!", {← nv}, {← nv}", s!", {← nv}, {← nv}, {← nv}"]}) return a[0], ffi.sizeof(a)"
+    | 11 => pure s!"local c = ffi.typeof(\"{et}[{n}]\") local a = c({← nv}) return a[{n - 1}], ffi.sizeof(c)"
+    | 12 => pure s!"return {← pick ["x.f", "x[true]", "s[1]", "s.nope", "u.i[0]", "x[nil]", "s.sub.nope", "u[0]"]}"
+    | 13 => pure s!"local k = ffi.new(\"const {← sc}[2]\", {← nv}) {← pick ["k[0] = 1", "return k[1]"]}"
+    | _ => pure s!"return ffi.string(s, {← pick ["1", "4", "8"]}), ffi.string(u, 4), ffi.string(x, ffi.sizeof(x)), {← pick ["ffi.string(1)", "ffi.string(x, \"2\")", "ffi.string({})", "ffi.string(s)", "ffi.string(true, 1)"]}"
+  let ops ← (List.range 6).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
+  return s!"local ffi = require(\"ffi\")
+ffi.cdef[[struct {st}a \{ int16_t g; uint8_t h; }; struct {st} \{ {decl}struct {st}a sub; int32_t a[2]; };
+union u{id} \{ int32_t i; float f; uint8_t b[4]; uint16_t h[2]; uint8_t c; }; typedef struct {st} {tf};]]
+local x = ffi.new(\"{et}[{n}]\", {← nv})
+local s = ffi.new(\"{tf}\", \{sub = \{g = {← nv}}, a = \{{← nv}, {← nv}}})
+local u = ffi.new(\"union u{id}\", {← nv})
+local c = ffi.typeof(\"double[3]\")
+return {commas ops}"
+
+-- the values of LuaJIT 2.1 on x64 (single-number): conversions into integers by int64, a struct's layout, a union's
+-- bytes, ffi.string's, and the error messages
+#guard runCase (fun _ => none) .single []
+    ("local ffi = require('ffi') ffi.cdef[[struct a { char c; double d; short s; }; union u { int i; float f; " ++
+      "uint8_t b[4]; };]] local x = ffi.new('int[3]', 1.7, -2.9) local b = ffi.new('uint8_t[2]', 300, -1) " ++
+      "local s = ffi.new('struct a', {[0] = 5, 2}) local u = ffi.new('union u', {b = {1, 2, 3, 4}}) " ++
+      "return x[0], x[1], x[2], b[0], b[1], s.c, s.d, s.s, ffi.sizeof(s), u.i, " ++
+      "tonumber(ffi.cast('uint16_t', -1)), tonumber(ffi.cast('int32_t', 2^32 + 5)), ffi.string(ffi.new('int[1]', " ++
+      "0x41424344), 4), select(2, pcall(function() s.z = 1 end)), select(2, pcall(function() x[0] = 'a' end)), " ++
+      "select(2, pcall(ffi.new, 'int[2]', 1, 2, 3)), s == s, x == nil, ffi.typeof('int') == ffi.typeof('int32_t')").toList ==
+  "ok:1,-2,0,44,255,5,2,0,24,67305985,65535,5,\"DCBA\",\"c:1: 'struct a' has no member named 'z'\"," ++
+    "\"c:1: cannot convert 'string' to 'int'\",\"too many initializers for 'int [2]'\",true,false,true"
+
 -- ---------- the world: print, io.write, os ----------
 
 /-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
@@ -1019,7 +1102,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => match ← rnd 2 with | 0 => libs | 1 => debugs | _ => bitOps
+  | 10 => match ← rnd 3 with | 0 => libs | 1 => debugs | 2 => bitOps | _ => ffiOps
   | 11 => traverse
   | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros

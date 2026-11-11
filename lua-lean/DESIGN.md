@@ -236,7 +236,22 @@ thread as the first argument of either; `bit`, all of LuaJIT 2.1's (`tobit`, `to
 number or a string read as one, an integer mod 2^32 and a double through lj_num2bit (plus 2^52 + 2^51, the low 32
 bits: rounded to even, inf and NaN 0; `Num.toBit`, which the kernel computes), a shift's count mod 32, each result an
 int32 (an integer on dual-number, a double on single-number), `tohex`'s width negative for upper case and at most 254;
-`bitFn`, `RunP.bit` and `bit_tobit`, `bit_band`, `bit_lshift`. The world (*Effects*): `print` (with
+`bitFn`, `RunP.bit` and `bit_tobit`, `bit_band`, `bit_lshift`; the FFI's pure part (`require "ffi"`; #36: `ffiFn`,
+`cdIndex`, `cdSet`, `cdEq`, `RunP.ffi`, `RunP.ctype`, `RunP.cdIndex`): C types of `bool`, the 1- to 8-byte integers
+(LuaJIT's built-in `int8_t` … `uint64_t`, `size_t`, `intptr_t`, …), `float`, `double`, `const`, fixed and
+variable-length (`[?]`) arrays, structs and unions, as LP64 (x64's and arm64's alike) lays them out
+(`LuaLean/CDecl.lean`, which parses `ffi.cdef`'s typedefs, struct and union definitions, and skips a C function's
+declaration: `ffi.C`'s symbols are the world's handles); `ffi.new` and a ctype's call (zeroed; one value of the
+type, a table from `[0]` or `[1]` to the first nil or by field name, a string into a byte array, or values in order,
+one element filling an array, a union's first field), `ffi.typeof`, `ffi.cast` to a number type, `ffi.sizeof`,
+`ffi.string` with and without a length; a cdata is a typed view of bytes (`Obj.cdata` over `Obj.bytes`), an element
+or field read a number (an integer of up to 4 bytes, a float) or a boolean, or of an array or struct a new reference
+to the same bytes; a write converts as lj_cconv.c (an integer mod 2^bits, a double truncated through int64, a
+boolean 0 or 1, a table or cdata of the type into an aggregate), and LuaJIT's errors at the index's site or the
+ffi call's caller (`'T' has no member named 'k'`, `cannot be indexed with`, `cannot convert 'X' to 'T'`, `too many
+initializers`, `attempt to write to constant location`); `==` of two arrays or structs where their bytes start at
+one place, of one and a value not a cdata false, of two ctypes as one type; `type` `cdata`, `tonumber` of a scalar,
+`getmetatable` `"ffi"`. The world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
 arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
@@ -247,8 +262,8 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `~`, `<<`, `>>`, `~>>`), `!`, `&&`, `||`, `!=`, the conditional `a ? b : c`, safe navigation (`t?.k`, `t?.[k]`,
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
-underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); FFI,
-`__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
+underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); FFI pointers (#57), 64-bit integer cdata (#58),
+`ffi.metatype`, enums and C calls with cdata (#59): `ffi`'s other fields are handles; `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
 `getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
 `collectgarbage`, `gcinfo`, `module`, `newproxy`, `loadfile`, `arg` and
 `package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
@@ -306,7 +321,16 @@ the name by scanning the bytecode back);
    function (its default options have `S`), `debug.traceback` of a string, a number or nothing (its text is the
    stack's, the host's frames below the script's among them); `debug.setmetatable` of a value not a table (the
    metatable of its type), `debug.getmetatable` of a string, and the upvalues of a builtin that has some (`print`,
-   `pairs`, `ipairs`, `type`, a `gmatch` iterator, a `coroutine.wrap` function: LuaJIT's own values).
+   `pairs`, `ipairs`, `type`, a `gmatch` iterator, a `coroutine.wrap` function: LuaJIT's own values); of the FFI
+   (`ffiStop`, `effect ffi: …`): what is the ABI's (plain `char`'s sign: a `char` past 127 read, two types equal on
+   one ABI only; a 1-byte integer's or an anonymous struct's name in a message, `char`/`signed char` and `struct 102`
+   being the ABI's and LuaJIT's numbering), undefined in C or on the CPU (an index out of bounds, a read past a
+   cdata's bytes, a double past int64's range or NaN into an integer, a NaN stored or read, a string or table that
+   leaves a new array partly uninitialized), another task's (a pointer's value, an 8-byte integer read: LuaJIT's
+   boxed one, arithmetic, `<`, `..`, `#`, `tostring` and `==` of a scalar cdata, a ctype indexed or used as a
+   value), a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
+   a reference's type given to `ffi.typeof`, `new` or `cast`, a ctype call's bad argument (LuaJIT names no function),
+   an allocation past 64 KiB.
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where
@@ -331,7 +355,7 @@ the name by scanning the bytecode back);
      the dump (an error);
    - `getmetatable` of a dump: nil, as of any string above;
    - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
-     handle read rather than called (`jit.os`, `package.preload`) is a handle where LuaJIT has a
+     handle read rather than called (`jit.os`, `package.preload`, `ffi.os`) is a handle where LuaJIT has a
      string or a table. `lua-lean check` names each use.
 
 The corpus (`test/corpus.txt`: 59 files of 29 projects, MIT, BSD or public domain, fetched at a pinned commit by
@@ -340,7 +364,8 @@ checker under the semantics only (it runs no effect, so nothing fetched runs out
 them adds LuaJIT. On 2026-11-11: 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in
 the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`), 29 are in the subset (20 before
 G3c's metamethods), and their 1192 top-level functions give 4575 calls that reach no effect. Outside it, by the
-files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3 (in the subset since #34), `setfenv` 3, `getfenv` 2 (both in the subset since #33 but Microlight's
+files that use each: `debug` 8, FFI 5 (its pure part in the subset since #36: md5.lua's `ffi.string(int1(i), 4)`; the
+rest are pointers, #57, and C calls, #59), `__mode` 4, `string.dump` 3 (in the subset since #34), `setfenv` 3, `getfenv` 2 (both in the subset since #33 but Microlight's
 `getfenv(2)`), `jit` 2,
 `bit` 2 (in the subset since #35),
 `package.config` 2.
@@ -352,6 +377,7 @@ files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3 (in the subse
 | `LuaLean/Num.lean` | numbers: the targets, integer and double arithmetic, printf's conversions on the exact value, `tonumber` (lj_strscan, with its 2^20 exponent bound) |
 | `LuaLean/Syntax.lean`, `Parse.lean` | the syntax tree, with a `Site` (chunk, line, operand names) on each node that can raise an error, and the parser |
 | `LuaLean/Pat.lean` | Lua patterns, after lstrlib.c's matcher |
+| `LuaLean/CDecl.lean` | the FFI's C types, their layout and names, and the C declarations `ffi.cdef` and `ffi.new` parse |
 | `LuaLean/Interp.lean` | the semantics |
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |
 | `LuaLean/Show.lean` | a syntax tree as the Lean term that builds it |
@@ -397,7 +423,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) is #44, and with it #33's levels past 1.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
