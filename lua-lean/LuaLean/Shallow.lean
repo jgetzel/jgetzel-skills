@@ -630,8 +630,9 @@ theorem bind_ok {α β} {x : M α} {f : α → M β} {h h' : Heap} {a : α} (e :
 theorem getTbl_ok {h : Heap} {a : Nat} {t : Tbl} (ha : h[a]? = some (.tbl t)) : getTbl a h = .ok t h := by
   simp only [getTbl, getObj, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
 theorem metaOf_ok {h : Heap} {a m : Nat} {t tm : Tbl} {ev : String} (ha : h[a]? = some (.tbl t)) (hma : t.mt = some m)
-    (hm : h[m]? = some (.tbl tm)) : metaOf (.tbl a) ev h = .ok (tm.get (lstr ev)) h := by
-  simp only [metaOf, bind, EStateM.bind, getTbl_ok ha, hma, rawget, getTbl_ok hm]; rfl
+    (hm : h[m]? = some (.tbl tm)) (hw : tm.mt = none) : metaOf (.tbl a) ev h = .ok (tm.get (lstr ev)) h := by
+  simp only [metaOf, bind, EStateM.bind, getTbl_ok ha, hma, wget, getTbl_ok hm, held, weakOf, hw, pure,
+    EStateM.pure, Bool.false_and]; rfl
 
 /-- tostring of a value with `__tostring`: the metamethod's call in tostring's place -/
 theorem callPrim_tostring {I : Sem} {n : Nat} {v f : Val} {rest : List Val} {h : Heap}

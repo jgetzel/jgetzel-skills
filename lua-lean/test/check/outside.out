@@ -1,6 +1,5 @@
 test/check/outside.lua:2: require 'bit': outside the subset (a handle: a run that uses it stops)
 test/check/outside.lua:3: require 'ffi': outside the subset (a handle: a run that uses it stops)
-test/check/outside.lua:16: metatable field __mode: a weak table stops the run
 test/check/outside.lua:22: global 'jit': LuaJIT's, not modelled (a handle: a run that uses it stops)
 test/check/outside.lua:22: undefined global 'love': nil, as in LuaJIT (a host that defines it is outside the subset)
 test/check/outside.lua:22: string.dump: LuaJIT's, not modelled (a handle: a run that uses it stops)
@@ -10,6 +9,6 @@ test/check/outside.lua:27: effect io.open: the world's (DESIGN.md, Effects), so 
 test/check/outside.lua:27: require 'no.such.module': a module not given as source (a handle: a run that uses it stops)
 test/check/outside.lua:27: load with an environment: outside the subset
 test/check/outside.lua:33: goto back: to a label that does not end its block (the subset has the continue idiom only)
-test/check/outside.lua: parses, 10 outside the subset, 7 functions, 8 cases (20 left out, the first: effect bit.band)
-cases: 8 cases agree
-cases: 8 cases agree
+test/check/outside.lua: parses, 9 outside the subset, 7 functions, 12 cases (16 left out, the first: effect bit.band)
+cases: 12 cases agree
+cases: 12 cases agree

@@ -129,6 +129,22 @@ part's size, which the rehashes set. A table with one border gives it; one with 
 library function that takes the length (`table.insert`, `remove`, `concat` and `unpack` without an end, `sort`,
 `foreachi`, `getn`).
 
+A weak table (`__mode`) loses an entry when the collector frees its weak key or value, and when the collector runs
+is not a function of the program (an allocation anywhere, the JIT's own among them). The semantics never collects, so
+a weak table is an ordinary one, and a read that could see an entry the collector freed stops the run; every other
+read is the same with or without a collection. The weak parts are those of the metatable's `__mode` at the time
+(LuaJIT reads it at each collection: `k` and `v` up to a NUL, a value not a string none), and the collector frees an
+object (a table, function, coroutine or userdata), never a string, number or boolean (lj_gc's gc_mayclear). A read
+by key holds the key, so a weak key keeps its entry; what stops (`weakOf`, `held`, `wget` in `LuaLean/Interp.lean`):
+an object read as a weak value (indexing, `rawget`, `ipairs`, the table library, a metamethod from a weak metatable,
+the presence check of an assignment where `__newindex` would run), `next` to an entry with an object as a weak part
+or from a key whose weak value is one, and `#t` with an object as a weak value at an integer key. A mode stays once
+set: changing or clearing `__mode` (`table.clear` too), or giving a weak table another metatable, stops, since the
+entries it may have lost under the old mode would come back; and `package.loaded`, read raw by `require`, takes no
+metatable. A proof about a weak table's traversal with objects in it needs a model of the collector's choice (an
+opaque one, as `Tbl.rank` is for the order); none is written yet. The generator's chunks hold their objects in
+locals, so LuaJIT's collector frees none of them.
+
 ## Coroutines
 
 A coroutine is a heap object (`Thr` in `LuaLean/Interp.lean`), and `M` stays `EStateM Err Heap`: the heap cannot hold
@@ -187,7 +203,7 @@ lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function
 arguments, lua_checkstack's bound), `pairs`, `next` and `table.foreach` in an order no proof can know ("Tables"),
 `#t` with one border, `ipairs`, `type`, `tostring`, `tonumber` (a base other than 10
 as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
-`setmetatable`/`getmetatable`, `assert`; `load` and `loadstring` of a source (a string, or a reader function's pieces)
+`setmetatable`/`getmetatable` (weak tables too: "Tables"), `assert`; `load` and `loadstring` of a source (a string, or a reader function's pieces)
 with a chunk name and a mode, `dofile` and `require` of files given as source, `require` through `package.path`,
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
@@ -204,7 +220,7 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
 underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); `setfenv` and `load`'s environment argument, FFI,
-`__gc`, `__mode`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `bit`, `jit`, `debug`,
+`__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `bit`, `jit`, `debug`,
 `collectgarbage`, `gcinfo`, `getfenv`, `setfenv`, `module`, `newproxy`, `loadfile`, `arg`, `string.dump` and
 `package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
 run; `_VERSION` is LuaJIT's `"Lua 5.1"`.
@@ -212,8 +228,7 @@ run; `_VERSION` is LuaJIT's `"Lua 5.1"`.
 How a script outside it is reported, from strongest to weakest. `lua-lean check f.lua` (`tools/Check.lean`) names,
 by line and before anything is lifted, what of it the source shows: a parse error; a global LuaJIT has and the
 semantics holds as a handle, or one neither defines (a host's: `ngx`, `love`); a library field that is a handle; a
-`require` of a module outside the subset or not found as a file under the script's directories; a metamethod the
-semantics stops at (a constant key `__mode`); `string.format`'s
+`require` of a module outside the subset or not found as a file under the script's directories; `string.format`'s
 `%a %o %u %p` in a constant format; `load` with an environment; `setmetatable(_G, …)`; a `goto` but the continue
 idiom. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
 calls each function the chunk defines at its top level with random arguments under the semantics and under LuaJIT
@@ -224,7 +239,8 @@ a run meets (a `#t` with two borders, a double past a C cast's range) only that 
    translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
    nothing that parses fails to translate.
 2. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
-   reaches it can be proved: a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
+   reaches it can be proved: a read of a weak table that could see an entry the collector freed and a change of its
+   mode or metatable ("Tables"), a metatable on `_G` or `package.loaded`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), `error` with a level that counts out past a
    builtin (`pcall(error, "x", 2)`: its place is a call the builtin's frame hides), `string.format`'s `%a`, `%o`, `%u`
@@ -248,7 +264,6 @@ a run meets (a `#t` with two borders, a double past a C cast's range) only that 
    not end it (`effect goto: …`, pcall or not).
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
-   - `__mode` added to a metatable after `setmetatable`;
    - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where
      lj_parse.c emits each instruction): `o:m(...)` with `:m` and `(` on two lines reports a failed index of `o` on the
      line of `(`, LuaJIT on that of `m`; a constructor's `[k] = v` with `k` nil or NaN is reported at the enclosing
@@ -330,7 +345,7 @@ proof; a statement is never weakened to make a proof go through.
 ## Roadmap
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
-  tasks of their own: `debug` (#31), weak tables (#32), function environments (#33),
+  tasks of their own: `debug` (#31), weak tables (#32, done: "Tables"), function environments (#33),
   `string.dump` (#34), `bit` (#35), an FFI subset (#36), check's own (#37: a script's sibling modules as source).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
