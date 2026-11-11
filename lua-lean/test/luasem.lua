@@ -26,7 +26,7 @@ local function ser(v, path, depth)
     table.sort(es)
     return "{" .. table.concat(es, ",") .. "}"
   end
-  if t == "function" then return "function" end
+  if t == "function" or t == "thread" then return t end
   return "userdata"
 end
 

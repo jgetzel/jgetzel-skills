@@ -62,7 +62,7 @@ theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "l
 /-- `dofile(p)` of a file given as source, its chunk `k`: what `k` does on no arguments -/
 theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : List Val → Nat → M (List Val)}
     {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b)
-    (r : RunP (fun n => do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n) h P) :
+    (r : RunP (fun n => bounded 1 (do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n)) h P) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "dofile" []) [.str p]) h P := by
   obtain ⟨N, a, h', e, q⟩ := RunP.frame r
   refine ⟨N + 3, a, h', fun n hn => ?_, q⟩
@@ -82,6 +82,112 @@ theorem RunP.require {I : Sem} {m p : List Char} {b : Block} {k : List Val → N
   refine ⟨N + 3, a, h', fun n hN => ?_, q⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 3 := ⟨n - 3, by omega⟩
   show call _ _ _ _ _ _ h = _; rw [call_require I n m p b k h v hk hl hv hn hp hf]; exact e n (by omega)
+
+-- ---------- coroutines ----------
+
+/-- `m` suspends: from some fuel on, the running coroutine yields values and a heap satisfying `P` (`Err.yld`); its
+resume replays it to there (DESIGN.md, *Coroutines*) -/
+def SuspP {α : Type} (m : Nat → M α) (h : Heap) (P : List Val → Heap → Prop) : Prop :=
+  ∃ N vs h', (∀ n ≥ N, m n h = .error (.yld vs) h') ∧ P vs h'
+
+theorem SuspP.mono {Q : List Val → Heap → Prop} {P' : List Val → Heap → Prop} (r : SuspP m h Q)
+    (hq : ∀ vs h', Q vs h' → P' vs h') : SuspP m h P' := by
+  obtain ⟨N, vs, h', e, p⟩ := r; exact ⟨N, vs, h', e, hq _ _ p⟩
+
+/-- what runs after a suspension does not run: the replay runs it -/
+theorem SuspP.bind {f : Nat → α → M β} {Q : List Val → Heap → Prop} (r : SuspP m h Q) :
+    SuspP (fun n => m n >>= f n) h Q := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, vs, h', fun n hn => by show EStateM.bind (m n) (f n) h = _; rw [EStateM.bind, e n hn], p⟩
+
+/-- a computation that runs, then one that suspends -/
+theorem SuspP.seq {f : Nat → α → M β} {Q : List Val → Heap → Prop}
+    (r : RunP m h (fun a h1 => SuspP (fun n => f n a) h1 Q)) : SuspP (fun n => m n >>= f n) h Q := by
+  obtain ⟨N, a, h1, e, N2, vs, h2, e2, p⟩ := r
+  refine ⟨max N N2, vs, h2, fun n hn => ?_, p⟩
+  show EStateM.bind (m n) (f n) h = _
+  rw [EStateM.bind, e n (Nat.le_trans (Nat.le_max_left _ _) hn)]
+  exact e2 n (Nat.le_trans (Nat.le_max_right _ _) hn)
+
+theorem SuspP.succ {Q : List Val → Heap → Prop} (r : SuspP (fun n => m (n + 1)) h Q) : SuspP m h Q := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N + 1, vs, h', fun n hn => by obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩; exact e k (by omega), p⟩
+
+/-- a yield passes sites, frames and pcall: none of them looks at it -/
+theorem SuspP.site {s : Site} {Q : List Val → Heap → Prop} (r : SuspP m h Q) :
+    SuspP (fun n => atSite s (m n)) h Q := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, vs, h', fun n hn => by simp only [atSite, e n hn], p⟩
+
+theorem SuspP.frame {Q : List Val → Heap → Prop} (r : SuspP m h Q) : SuspP (fun n => frame (m n)) h Q := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, vs, h', fun n hn => by simp only [Lua.frame, e n hn], p⟩
+
+theorem SuspP.catchVal {ok : α → M β} {bad : Val → M β} {Q : List Val → Heap → Prop} (r : SuspP m h Q) :
+    SuspP (fun n => catchVal (m n) ok bad) h Q := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, vs, h', fun n hn => by simp only [Lua.catchVal, e n hn], p⟩
+
+/-- `coroutine.yield(vs)` in coroutine `a` with no resume left to replay, and not inside a builtin calling back: the
+coroutine suspends with `vs` -/
+theorem SuspP.yield {I : Sem} {a : Nat} {t : Thr Heap} {vs : List Val} (hc : h[CUR]? = some (.cell (.thr a)))
+    (ht : h[a]? = some (.thr t)) (hb : t.bound = 0) (hs : t.script = []) :
+    SuspP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.yield" []) vs) h (fun ws h' => ws = vs ∧ h' = h) := by
+  refine ⟨2, vs, h, fun n hn => ?_, rfl, rfl⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, yield_susp hc ht hb hs]
+
+/-- `coroutine.yield` in a replay: the next resume's arguments `ws`, in the heap it went on in, `h1` -/
+theorem RunP.yield {I : Sem} {a : Nat} {t t1 : Thr Heap} {vs ws : List Val} {h1 : Heap} {rest : List (List Val × Heap)}
+    {P : List Val → Heap → Prop} (hc : h[CUR]? = some (.cell (.thr a))) (ht : h[a]? = some (.thr t))
+    (hb : t.bound = 0) (hs : t.script = (ws, h1) :: rest) (ht1 : h1[a]? = some (.thr t1))
+    (p : P ws (h1.set! a (.thr { t1 with script := rest }))) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.yield" []) vs) h P := by
+  refine ⟨2, ws, _, fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, yield_replay hc ht hb hs ht1]
+
+/-- a coroutine's run that returns -/
+theorem RunP.coRun_ret {m : Nat → M (List Val)} {Q : List Val → Heap → Prop} (r : RunP m h Q) :
+    RunP (fun n => coRun (m n)) h (fun o h' => ∃ vs, o = .ok (false, vs) ∧ Q vs h') := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, _, h', fun n hn => by simp only [coRun, e n hn], vs, rfl, p⟩
+
+/-- a coroutine's run that suspends -/
+theorem RunP.coRun_yield {m : Nat → M (List Val)} {Q : List Val → Heap → Prop} (r : SuspP m h Q) :
+    RunP (fun n => coRun (m n)) h (fun o h' => ∃ vs, o = .ok (true, vs) ∧ Q vs h') := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  exact ⟨N, _, h', fun n hn => by simp only [coRun, e n hn], vs, rfl, p⟩
+
+/-- `coroutine.resume(co, args)` of a coroutine that can be resumed (`resumeBegin`, which gives the heap `h0` its run
+starts from): what its run's outcome and `resumeEnd` give -/
+theorem RunP.resume {I : Sem} {a : Nat} {args a1 : List Val} {prev f : Val} {hist : List (List Val × Heap)}
+    {h0 : Heap} {P : List Val → Heap → Prop}
+    (hb : resumeBegin a args h = .ok (.ok (prev, hist, f, a1)) h0)
+    (r : RunP (fun n => coRun (call I.srcs I.oracle I.tgt n f a1)) h0
+      (fun o h1 => RunP (fun _ => resumeEnd a prev hist o) h1 (fun _ h2 => P (resumeVals o) h2))) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.resume" []) (.thr a :: args)) h P := by
+  obtain ⟨N, o, h1, e, N2, u, h2, e2, p⟩ := r
+  refine ⟨N + 2, _, h2, fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_resume]
+  have ef : ∀ X : M (List Val), X h = .ok (resumeVals o) h2 → Lua.frame X h = .ok (resumeVals o) h2 :=
+    fun X ex => by simp only [Lua.frame, ex]
+  apply ef
+  rw [bind_ok hb]; dsimp only
+  rw [bind_ok (e n (by omega)), bind_ok (e2 N2 (Nat.le_refl _))]; rfl
+
+/-- `coroutine.resume(co, args)` of a coroutine that cannot be: false and LuaJIT's message -/
+theorem RunP.resume_fail {I : Sem} {a : Nat} {args : List Val} {m : String} {h0 : Heap} {P : List Val → Heap → Prop}
+    (hb : resumeBegin a args h = .ok (.error m) h0) (p : P [.bool false, lstr m] h0) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.resume" []) (.thr a :: args)) h P := by
+  refine ⟨2, _, h0, fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_resume]
+  have ef : ∀ X : M (List Val), X h = .ok [.bool false, lstr m] h0 → Lua.frame X h = .ok [.bool false, lstr m] h0 :=
+    fun X ex => by simp only [Lua.frame, ex]
+  apply ef
+  rw [bind_ok hb]; rfl
 
 end rules
 

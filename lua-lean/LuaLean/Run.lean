@@ -36,6 +36,7 @@ def ser (h : Heap) (fuel : Nat) (path : List Nat) (v : Val) : List Char :=
     | _ => "<bad>".toList
   | .fn _ | .prim .. => "function".toList
   | .eff _ => "userdata".toList
+  | .thr _ => "thread".toList
 
 def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   match r with
@@ -45,6 +46,7 @@ def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   | .error (.rt k _) _ => s!"effect error level {k} past the chunk"
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
+  | .error (.yld _) _ => "effect a yield past the chunk"
 
 /-- every module under dir as source, by its path, dir/x.lua (`require` finds it through package.path), named by
 that path in its error messages as LuaJIT names a file it loads -/

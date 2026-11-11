@@ -106,6 +106,31 @@ part's size, which the rehashes set. A table with one border gives it; one with 
 library function that takes the length (`table.insert`, `remove`, `concat` and `unpack` without an end, `sort`,
 `foreachi`, `getn`).
 
+## Coroutines
+
+A coroutine is a heap object (`Thr` in `LuaLean/Interp.lean`), and `M` stays `EStateM Err Heap`: the heap cannot hold
+a Lean continuation (the heap would occur in its own argument), so a coroutine is resumed by replay. It keeps its
+function and, for each resume so far, the arguments and the heap the coroutine went on in. Resume number k adds its
+own, sets the heap to the first one's and calls the function on the first arguments; each yield of the replay sets
+the heap to the next resume's and returns its arguments (`yieldFn`), so the run comes to resume k's heap with its
+locals as they were, and goes on from there; the yield after that stops the run with `Err.yld`, which `resume`
+catches (`coRun`). The interpreter is a function of the heap and the arguments, so each replayed stretch is the
+stretch that ran, and putting the next heap in place undoes what it wrote again; what the main thread changed
+between two resumes is in the heap the coroutine goes on in. A cell at a fixed address holds the running coroutine
+(nil in the main thread), for `running`, `status` and `isyieldable`.
+
+`Err.yld` is not a Lua error: `pcall`, sites and frames let it pass, so a yield crosses `pcall`, metamethods
+(`__index`, `__newindex`, `__call`), `for` iterators and `table.foreach`/`foreachi` (Lua in LuaJIT 2.1), as LuaJIT's
+fully resumable VM lets it. A builtin that calls back into Lua from C (`table.sort`'s comparator, `gsub`'s function
+or table, `require`'s and `dofile`'s chunks, `load`'s reader) marks the coroutine (`bounded`), and a yield there is
+LuaJIT's error, `attempt to yield across C-call boundary`, as it is in the main thread. A resume returns LuaJIT's
+values and messages (`cannot resume dead coroutine`, `cannot resume running coroutine` for a running or normal one);
+a function of `wrap` raises the coroutine's error again, a string with its caller's place. The rules
+(`LuaLean/Hoare.lean`) are `SuspP` (a run that suspends) and its passage through bind, sites, frames and `pcall`,
+yield with and without a resume to replay, and resume in terms of its coroutine's run. A resume replays every earlier
+stretch, so k resumes cost k^2 / 2 stretches; and an effect a coroutine called is asked of the oracle again in each
+replay, which a stateless oracle answers as before.
+
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
@@ -127,9 +152,10 @@ as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1
 with a chunk name and a mode, `dofile` and `require` of files given as source, `require` through `package.path`,
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
-lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`).
+lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`); `coroutine`, all of LuaJIT 2.1's (`create`,
+`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines").
 
-Out: coroutines, `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
+Out: `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
 `string.dump`, the rest of the standard library (`os`, `io`, `debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
@@ -153,7 +179,8 @@ How a script outside it is reported, from strongest to weakest:
    module not given as source when no oracle answers it; `load` or `loadstring` of a source the parser rejects (its
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
-   `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string.
+   `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
+   `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`).
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
@@ -165,7 +192,7 @@ How a script outside it is reported, from strongest to weakest:
    - the chunk's name: `c` in the differential test (`loadstring(src, "=c")`), a lifted file's base name, where
      LuaJIT names a file as it was given to it, and `require` and `dofile` by the path they open (the name `lua-lean
      run --lib` and the generator give a module);
-   - `tostring` of a table or function (an address in LuaJIT);
+   - `tostring` of a table, function or coroutine (an address in LuaJIT);
    - a source `load` is given that LuaJIT rejects and the parser accepts (a `goto` with no visible label, more than
      200 locals, a call's `(` on the line after its function: "ambiguous syntax"): LuaJIT returns nil and a message,
      the semantics a function. `lua-lean parsecheck` finds these in a file, nothing in a string made at run time;
@@ -229,8 +256,7 @@ proof; a statement is never weakened to make a proof go through.
   (G4b). A model of LuaJIT's layout for number keys would make their order and every `#t` known.
 - **G5** `load`, `dofile`, `require` of arbitrary modules: done (see the subset; `setfenv` and `load`'s environment
   wait for a model of function environments).
-- **G6** coroutines: thread state in the interpreter, a suspension effect in the shallow monad, rules for
-  resume/yield.
+- **G6** coroutines: done ("Coroutines").
 - **G7** heap abstraction, proof-producing: functions whose tables are provably unshared become pure Lean functions,
   with a proof they equal the heap-monadic lift.
 - **G8** end to end: an LLM writes a script and its spec, the tool lifts it, the spec is proved; measured on a few
