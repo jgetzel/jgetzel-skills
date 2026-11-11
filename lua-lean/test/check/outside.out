@@ -13,6 +13,6 @@ test/check/outside.lua:41: debug.getlocal: LuaJIT's, not modelled (a handle: a r
 test/check/outside.lua:41: debug.getinfo of a stack level: the semantics has no call stack, the run stops
 test/check/outside.lua:41: debug.traceback of a message: its text is the call stack's, the run stops
 test/check/outside.lua:41: xpcall with debug.traceback: a string error's traceback is the call stack's, the run stops
-test/check/outside.lua: parses, 13 outside the subset, 8 functions, 11 cases (21 left out, the first: effect bit.band)
-cases: 11 cases agree
-cases: 11 cases agree
+test/check/outside.lua: parses, 13 outside the subset, 8 functions, 12 cases (20 left out, the first: effect bit.band)
+cases: 12 cases agree
+cases: 12 cases agree
