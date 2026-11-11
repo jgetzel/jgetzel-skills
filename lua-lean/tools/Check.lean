@@ -15,7 +15,7 @@ namespace Check
 
 /-- modules LuaJIT has that are outside the subset: `require` gives a handle -/
 def outsideModules : List String :=
-  ["ffi", "bit", "jit", "jit.util", "jit.opt", "jit.profile", "string.buffer", "debug"]
+  ["ffi", "bit", "jit", "jit.util", "jit.opt", "jit.profile", "string.buffer"]
 
 /-- string.format's conversions the semantics stops at -/
 def badConvs : List Char := ['a', 'A', 'o', 'u', 'p']
@@ -92,6 +92,21 @@ def gotoNote (l : String) (bs : List Block) : W Unit :=
     note s!"goto {l}: to a label that does not end its block (the subset has the continue idiom only)"
   | none => note s!"goto {l}: no visible label (LuaJIT rejects the file, the parser does not)"
 
+/-- the debug library's calls that need what the semantics lacks: a call stack, a Lua function's lines, a type's
+metatable (`debugFn` in LuaLean/Interp.lean) -/
+def debugNote (f : String) (as : List Exp) : W Unit :=
+  let lines := "a Lua function's lines are not modelled: the run stops at one"
+  match f, as with
+  | "getinfo", .num _ :: _ => note "debug.getinfo of a stack level: the semantics has no call stack, the run stops"
+  | "getinfo", [_] => note s!"debug.getinfo with its default options, 'S' among them: {lines}"
+  | "getinfo", _ :: .str o :: _ =>
+    if o.contains 'S' || o.contains 'L' then note s!"debug.getinfo with 'S' or 'L': {lines}" else pure ()
+  | "traceback", [] | "traceback", .str _ :: _ | "traceback", .num _ :: _ =>
+    note "debug.traceback of a message: its text is the call stack's, the run stops"
+  | "setmetatable", .str _ :: _ | "setmetatable", .num _ :: _ | "setmetatable", .nil :: _ =>
+    note "debug.setmetatable of a value not a table: the metatable of its type, the run stops"
+  | _, _ => pure ()
+
 mutual
 partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
   match e with
@@ -115,6 +130,10 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
     | .var "setmetatable", .var "_G" :: _ => if !sc.contains "_G" then
         note "setmetatable(_G, ...): a metatable on _G stops the run"
     | .index (.var "string") (.str f), .str fmt :: _ => if f == "format".toList then fmtNote fmt
+    | .index (.var "debug") (.str f), as => if !sc.contains "debug" then debugNote (String.ofList f) as
+    | .var "xpcall", [_, .index (.var "debug") (.str f)] =>
+      if !sc.contains "debug" && f == "traceback".toList then
+        note "xpcall with debug.traceback: a string error's traceback is the call stack's, the run stops"
     | _, _ => pure ()
   | .method o m as =>
     exp sc bs o; see m; as.forM (exp sc bs)
@@ -206,7 +225,7 @@ def findings (st : St) (isGiven : String → Bool) : List (Nat × String × Bool
     else if st.writes.contains lib || st.fieldWrites.contains (lib, f) then [] else
     match libField lib f with
     | .eff n =>
-      if n == "string.dump" || n.startsWith "package." then
+      if n == "string.dump" || n.startsWith "package." || n.startsWith "debug." then
         [(l, s!"{lib}.{f}: LuaJIT's, not modelled (a handle: a run that uses it stops)", true)]
       else [(l, s!"effect {lib}.{f}: the world's (DESIGN.md, Effects), so a function calling it is not pure", false)]
     | _ => []
