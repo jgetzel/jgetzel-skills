@@ -580,6 +580,78 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
       rw [execSeq] <;> first | rfl | (intros; subst_vars; simp [Stat.isDecl] at hns)
     rw [e]; simp only [qStat, tick, hs, hq, gotos, trail_ok, labels_ok]
 
+-- ---------- chunks loaded at run time: load, loadstring, dofile, require ----------
+
+theorem bind_ok {α β} {x : M α} {f : α → M β} {h h' : Heap} {a : α} (e : x h = .ok a h') :
+    (x >>= f) h = f a h' := by
+  show EStateM.bind x f h = _; simp only [EStateM.bind, e]
+
+/-- `load(s)` or `loadstring(s)`, and a chunk name or none: the parse of `s` as a closure. The parse is the parser's
+(trusted, as `f_body` is), so a proof takes it as a hypothesis: `lua-lean lift` writes a source known when it lifts
+as `f_loadN_body` -/
+theorem call_load (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ fname = "loadstring")
+    (s : List Char) (cn : Option (List Char)) (b : Block) (h : Heap)
+    (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b) :
+    call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.str s :: cn.toList.map .str) h =
+      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, []⟩)) := by
+  rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
+    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
+      MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
+
+/-- a chunk's closure, made and called at once: `k`, the function it is (a lifted `chunk`), on the arguments -/
+theorem alloc_call {β} (I : Sem) (n : Nat) (c : Clo) (args : List Val) (k : List Val → Nat → M (List Val))
+    (hk : CFn I k c) (r : List Val → M β) :
+    (alloc (.clo c) >>= fun f => call I.srcs I.oracle I.tgt (n + 1) (.fn f) args >>= r) =
+      (alloc (.clo c) >>= fun _ => k args n >>= r) := by
+  funext h
+  simp only [bind, EStateM.bind, alloc, get, getThe, MonadStateOf.get, EStateM.get, set, MonadStateOf.set,
+    EStateM.set, pure, EStateM.pure]
+  rw [call_fn I n _ args _ c (by simp), hk]
+
+/-- `dofile(p)` of a file given as source: its chunk, `k`, on no arguments -/
+theorem call_dofile (I : Sem) (n : Nat) (p : List Char) (b : Block) (k : List Val → Nat → M (List Val)) (h : Heap)
+    (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b) :
+    call I.srcs I.oracle I.tgt (n + 3) (.prim "dofile" []) [.str p] h =
+      frame (do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n) h := by
+  have e : ∀ X Y : M (List Val), X h = Y h → frame X h = frame Y h := fun X Y e => by simp only [frame, e]
+  rw [call, callPrim]; apply e
+  have ho : optStr "dofile" 0 [.str p] = pure (some p) := rfl
+  simp only [ho, pure_bind, hs]
+  have := alloc_call I n ⟨[], true, b, []⟩ [] k hk pure
+  simp only [bind_pure] at this
+  rw [this]
+
+/-- `require m` of a module given as source and not yet loaded (lib_package.c): its chunk, `k`, on its name -/
+def S.requireK (m : List Char) (c : Clo) (k : List Val → Nat → M (List Val)) (n : Nat) : M (List Val) := do
+  rawset LOADED (.str m) SENTINEL
+  let _ ← alloc (.clo c)
+  let r := (← k [.str m] n).headD .nil
+  if !r.isNil then rawset LOADED (.str m) r
+  let v ← rawget LOADED (.str m)
+  if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
+  return [v]
+
+/-- `require m`: not in package.loaded, not `table.new` or `table.clear`, the first file of package.path given as
+source is `b`, its chunk `k` -/
+theorem call_require (I : Sem) (n : Nat) (m p : List Char) (b : Block) (k : List Val → Nat → M (List Val))
+    (h : Heap) (v : Val) (hk : CFn I k ⟨[], true, b, []⟩)
+    (hl : rawget LOADED (.str m) h = .ok v h) (hv : v.truthy = false)
+    (hn : m ≠ "table.new".toList ∧ m ≠ "table.clear".toList)
+    (hp : rawget PACKAGE (lstr "path") h = .ok (.str p) h)
+    (hf : (pathFiles p (modPath m)).findSome? I.srcs = some b) :
+    call I.srcs I.oracle I.tgt (n + 3) (.prim "require" []) [.str m] h =
+      frame (S.requireK m ⟨[], true, b, []⟩ k n) h := by
+  have e : ∀ X Y : M (List Val), X h = Y h → frame X h = frame Y h := fun X Y e => by simp only [frame, e]
+  rw [call, callPrim]; apply e
+  simp only [List.getD_cons_zero, argStr, pure_bind]
+  rw [bind_ok hl]
+  have h1 : (m == "table.new".toList || m == "table.clear".toList) = false := by
+    rw [Bool.or_eq_false_iff]; exact ⟨beq_false_of_ne hn.1, beq_false_of_ne hn.2⟩
+  simp only [hv, Bool.false_eq_true, ↓reduceIte, h1]
+  rw [bind_ok hp]
+  simp only [hf, S.requireK]
+  rw [alloc_call I n _ _ k hk]
+
 -- functions
 theorem CFn_fn {c : Clo} {k : List Val → Nat → List Val → M Flow} (hk : ∀ args n, CBs (k args n) ⟨c.env, []⟩ c.params (fun cx =>
       execBlock I.srcs I.oracle I.tgt n { cx with va := if c.va then args.drop c.params.length else [] } c.body)) :

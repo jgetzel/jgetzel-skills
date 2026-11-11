@@ -18,7 +18,7 @@ def main (args : List String) : IO UInt32 := do
   if files.isEmpty then IO.eprintln "usage: Run.lean [--lib <prefix>=<dir>]... <file.lua>..."; return 1
   let srcs ← libs.flatMapM fun (_, d) => loadSources d
   let some paths := libs.mapM fun (p, d) => libPath p d
-    | do IO.eprintln "--lib p=dir: dir must end in p's directories (swarm.x=a/swarm/x)"; return 1
+    | do IO.eprintln "--lib p=dir: dir must end in p's directories (--lib swarm=a/swarm)"; return 1
   let path := ";".intercalate (paths ++ ["./?.lua"])
   for f in files do
     let b ← IO.FS.readBinFile f

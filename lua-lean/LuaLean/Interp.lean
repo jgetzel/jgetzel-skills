@@ -901,6 +901,9 @@ def shortSrc (s : List Char) : String :=
 def pathFiles (path name : List Char) : List String :=
   ((String.ofList path).splitOn ";").filter (· != "") |>.map fun t => t.replace "?" (String.ofList name)
 
+/-- a module's name as a path: `.` the directory separator -/
+def modPath (m : List Char) : List Char := m.map fun c => if c == '.' then '/' else c
+
 /-- what `require` leaves in package.loaded while a module loads: a light userdata in LuaJIT -/
 def SENTINEL : Val := .eff "require sentinel"
 
@@ -1333,7 +1336,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       | .str p => pure p
       | _ => throw (.eff "require: package.path not a string" [])
     -- the first file of the path given as source (lib_package.c's loader_Lua), else a C module: a handle
-    match (pathFiles path (m.map fun c => if c == '.' then '/' else c)).findSome? srcs with
+    match (pathFiles path (modPath m)).findSome? srcs with
     | some b => do
       rawset LOADED (.str m) SENTINEL
       let r := (← call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [.str m]).headD .nil

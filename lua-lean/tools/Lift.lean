@@ -22,6 +22,8 @@ structure Job where
   va : Bool
   body : Block
   scope : List Ent
+  /-- a chunk `load` makes from a source known here: what its body is the parse of -/
+  note : String := ""
 
 structure St where
   jobs : Array Job := #[]
@@ -96,8 +98,23 @@ def job (name : String) (ps : List String) (va : Bool) (body : Block) (scope : L
   let s ← get
   let base := leanName name
   let n := freshIn s.names (if leanKeywords.contains base then base ++ "_" else base)
-  set { s with names := n :: s.names, jobs := s.jobs.push ⟨n, ps, va, body, scope⟩ }
+  set { s with names := n :: s.names, jobs := s.jobs.push ⟨n, ps, va, body, scope, ""⟩ }
   pure n
+
+/-- `load(s)` or `loadstring(s)` with `s` (and the chunk name, if given) a constant and the global `load` or
+`loadstring`: the chunk it makes, lifted as a function of its own (`call_load` says the call makes its closure) -/
+def loadJob (cx : Cx) (f : Exp) (as : List Exp) : T Unit := do
+  let (g, s, cn) := match f, as with
+    | .var g, [.str s] => (g, s, none)
+    | .var g, [.str s, .str c] => (g, s, some c)
+    | _, _ => ("", [], none)
+  if !(g == "load" || g == "loadstring") || cx.scope.any (·.lua == g) then return
+  let name := cn.getD s
+  if let .ok b := parseChunk s (shortSrc name) then
+    let st ← get
+    let n := freshIn st.names (leanName cx.fname ++ "_load")
+    let j : Job := ⟨n, [], true, b, [], s!"/-- `{g}`'s chunk: `parseChunk {chars s} (shortSrc {chars name}) = .ok {n}_body` -/\n"⟩
+    set { st with names := n :: st.names, jobs := st.jobs.push j }
 
 /-- the runtime env: the function's own locals, innermost first, then `env0` -/
 def envOf (cx : Cx) : String :=
@@ -172,6 +189,7 @@ partial def tBin2 (cx : Cx) (sh pf : String) (a b : Exp) : T (String × String) 
 partial def tMulti (cx : Cx) (e : Exp) : T (String × String) := do
   match e with
   | .call f as => do
+    loadJob cx f as
     let (sf, pf) ← tExp cx f
     let (sl, pl) ← tList cx as
     pure (s!"(S.mCall I {sf} {sl})", s!"(CM_call {pf} {pl})")
@@ -372,7 +390,7 @@ def main (args : List String) : IO UInt32 := do
   match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln e; return 1
   | .ok b =>
-    let st : St := { jobs := #[⟨"chunk", [], true, b, []⟩], names := ["chunk"] }
+    let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"] }
     let (out, _) := (drain 0 #[]).run st
     if out.any (fun (_, d) => (d.splitOn "UNSUPPORTED").length > 1) then
       IO.eprintln s!"{file}: an assignment target the translator does not handle"; return 1
@@ -395,7 +413,7 @@ open Lua
 
 "
     for (j, _) in out do
-      IO.println s!"def {j.name}_body : Block :={Show.block j.body}\n"
+      IO.println s!"{j.note}def {j.name}_body : Block :={Show.block j.body}\n"
     if let some c := srcConst then
       IO.println s!"/-- the chunk is the file as `{c}` has it -/\ntheorem chunk_body_eq : chunk_body = {c} := rfl\n"
     for (_, d) in out do
