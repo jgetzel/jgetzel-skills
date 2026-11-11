@@ -2,7 +2,6 @@
 local util, proc, db = require "swarm.util", require "swarm.proc", require "swarm.db"
 local agents = require "swarm.agents"
 local stdlib, lfs = require "posix.stdlib", require "lfs"
-local fnmatch = require "posix.fnmatch"
 local M = {}
 
 -- os.path.realpath, non-strict: the longest existing prefix resolved, the rest appended.
@@ -37,26 +36,31 @@ function M.repo_rel(path, cwd)
   return nil
 end
 
--- Whether lock pattern pat covers path: a glob, or a directory prefix (`migrations/`).
-function M.covers(path, pat)
-  return path == pat or fnmatch.fnmatch(pat, path, 0) == 0 or util.startswith(path, (pat:gsub("/+$", "")) .. "/")
+-- Lock patterns: covers and overlaps read a pattern one way, lifted to swarm/model/SwarmModel/Glob.lean and proved
+-- there (overlaps is exactly "some path both cover"). A glob as tokens: "*", "?", { c = char }, or { set = "..." }
+-- for a [...] class's text.
+local function lit(s)  -- the tokens that match s only
+  local r = {}
+  for ch in s:gmatch(".") do r[#r + 1] = { c = ch } end
+  return r
 end
 
--- A glob as tokens: "*", "?", { c = char }, or { set = "..." } for a [...] class. As a directory, the pattern is a
--- literal prefix (covers' startswith) and then anything.
+-- The glob; as a directory, a literal prefix (covers' startswith) and then anything.
 local function tokens(pat, dir)
-  local r, i = {}, 1
   if dir then
-    for ch in (pat:gsub("/+$", "") .. "/"):gmatch(".") do r[#r + 1] = { c = ch } end
+    local r = lit((pat:gsub("/+$", "")) .. "/")
     r[#r + 1] = "*"
     return r
   end
+  local r, i = {}, 1
   while i <= #pat do
-    local ch, j = pat:sub(i, i), pat:find("]", i + 2, true)
+    -- a class ends at the first ] after one character, or after a leading ! or ^ and one character
+    local ch = pat:sub(i, i)
+    local j = ch == "[" and pat:find("]", i + (pat:find("^[!^]", i + 1) and 3 or 2), true)
     if ch == "*" then
       if r[#r] ~= "*" then r[#r + 1] = "*" end
     elseif ch == "?" then r[#r + 1] = "?"
-    elseif ch == "[" and j then r[#r + 1] = { set = pat:sub(i + 1, j - 1) }; i = j
+    elseif j then r[#r + 1] = { set = pat:sub(i + 1, j - 1) }; i = j
     else
       if ch == "\\" and i < #pat then i = i + 1; ch = pat:sub(i, i) end
       r[#r + 1] = { c = ch }
@@ -66,23 +70,41 @@ local function tokens(pat, dir)
   return r
 end
 
-local function one(a, b)  -- two single-character tokens can match one character (two classes: taken as yes)
-  if a == "?" or b == "?" then return true end
-  if a.c and b.c then return a.c == b.c end
-  if a.set and b.set then return true end
-  local set, ch = a.set or b.set, a.c or b.c
-  return fnmatch.fnmatch("[" .. set .. "]", ch, 0) == 0
+local function in_set(s, ch)  -- a class's text: a leading ! or ^ negates, x-y is a range, anything else is itself
+  local neg, c = s:find("^[!^]") ~= nil, ch:byte()
+  local i, hit = neg and 2 or 1, false
+  while i <= #s do
+    if s:sub(i + 1, i + 1) == "-" and i + 2 <= #s then
+      hit = hit or (s:byte(i) <= c and c <= s:byte(i + 2)); i = i + 3
+    else
+      hit = hit or s:byte(i) == c; i = i + 1
+    end
+  end
+  return hit ~= neg
 end
 
-local function meet(p, q)  -- some string both globs match
+local function single(t, ch)  -- whether a token other than "*" matches the one character ch
+  return t == "?" or (type(t) == "table" and (t.c == ch or (t.set ~= nil and in_set(t.set, ch))))
+end
+
+local function one(a, b)  -- some byte both single-character tokens match
+  if type(a) == "table" and a.c then return single(b, a.c) end
+  if type(b) == "table" and b.c then return single(a, b.c) end
+  for k = 0, 255 do
+    if single(a, string.char(k)) and single(b, string.char(k)) then return true end
+  end
+  return false
+end
+
+local function meet(p, q)  -- some string both token lists match
   local memo = {}
   local function f(i, j)
     local k = i * 65536 + j
     if memo[k] == nil then
       local a, b = p[i], q[j]
       if not a and not b then memo[k] = true
-      elseif a == "*" then memo[k] = f(i + 1, j) or (b ~= nil and f(i, j + 1))
-      elseif b == "*" then memo[k] = f(i, j + 1) or (a ~= nil and f(i + 1, j))
+      elseif a == "*" then memo[k] = f(i + 1, j) or (b ~= nil and (b == "*" or one(b, b)) and f(i, j + 1))
+      elseif b == "*" then memo[k] = f(i, j + 1) or (a ~= nil and one(a, a) and f(i + 1, j))
       elseif not a or not b then memo[k] = false
       else memo[k] = one(a, b) and f(i + 1, j + 1) end
     end
@@ -91,10 +113,18 @@ local function meet(p, q)  -- some string both globs match
   return f(1, 1)
 end
 
--- Whether some path is covered by both lock patterns (each as a glob, or as a directory: covers' two forms).
+local function glob(x) return x:find("[*?[]") ~= nil end
+
+-- Whether lock pattern pat covers path: the path is the pattern, or the glob matches it, or (a pattern with no
+-- * ? or [) it is under the pattern as a directory (`migrations/`).
+function M.covers(path, pat)
+  return path == pat or meet(tokens(pat), lit(path))
+    or (not glob(pat) and util.startswith(path, (pat:gsub("/+$", "")) .. "/"))
+end
+
+-- Whether some path is covered by both lock patterns: some form of each (covers' three) meets one of the other.
 function M.overlaps(p, q)
-  -- shortcut: a glob's directory form only covers names with a literal * ? or [ in them; left out
-  local function forms(x) return x:find("[*?[]") and { tokens(x) } or { tokens(x), tokens(x, true) } end
+  local function forms(x) return glob(x) and { lit(x), tokens(x) } or { lit(x), tokens(x), tokens(x, true) } end
   for _, x in ipairs(forms(p)) do
     for _, y in ipairs(forms(q)) do
       if meet(x, y) then return true end
@@ -151,4 +181,5 @@ function M.cmd_unlock(c, a)
   print("unlocked " .. a.path)
 end
 
+M.tokens = tokens  -- for test/locks_model_spec.lua
 return M

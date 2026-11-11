@@ -85,8 +85,10 @@ theorem shrinks_set (lk : List Lock) (p : Nat) (x : Lock)
     · cases hq
   · exact ⟨l', hq, Or.inr ⟨rfl, id⟩⟩
 
-theorem overlap_comm (p q : String) : overlap p q = overlap q p := by
-  simp [overlap, Bool.and_comm]
+theorem refuses_eq {c : Cfg} {p q : String} (h1 : c.lockOverlap = true) (h2 : c.lockForms = true) :
+    refuses c p q = overlap p q := by simp [refuses, overlap, h1, h2]
+
+theorem overlap_comm (p q : String) : overlap p q = overlap q p := Glob.overlaps_comm _ _
 
 theorem lk_endAgent {c : Cfg} {s : State} (a : Nat) (h : LkInv c s.lock s.ag) :
     LkInv c (endAgent s a).lock (endAgent s a).ag := by
@@ -150,7 +152,7 @@ macro "live_tac" : tactic => `(tactic|
     | with_reducible apply liveL_takes
     | ((with_reducible refine liveL_modify _ ?_ ?hf); case hf => (intro g hg; first | rfl | simp_all [Agent.live]))))
 
-theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (h : Reachable c s) :
+theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State} (h : Reachable c s) :
     LkInv c s.lock s.ag := by
   refine reachable_induct (P := fun s => LkInv c s.lock s.ag) ?_ ?_ h
   · refine ⟨fun p l a hp ha => ?_, fun p q l m a b hp hq _ ha => ?_⟩ <;>
@@ -182,7 +184,7 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (
       have hm : s.lock.getD q default = m := by simp [List.getD_eq_getElem?_getD, hq]
       have hlive := hs.1 q m b hq hb
       rw [hm] at this
-      simp [hb, hba, he, State.owned, State.agt, refuses, hfix] at this
+      simp [hb, hba, he, State.owned, State.agt, refuses_eq hfix hforms] at this
       rw [List.getD_eq_getElem?_getD] at hlive
       rcases this with h0 | h0
       · rw [hlive] at h0; cases h0
@@ -220,10 +222,11 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (
     (try split) <;> (try simp only [unbelieve, awake, claimed]) <;> simp <;>
       ((with_reducible refine lk_live hs ?_); live_tac)
 
-/-- S3. With PR #114 (swarm lock refuses any common file), no two live locks of different agents cover a common file. -/
-theorem locksDisjoint_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : State} (h : Reachable c s) :
-    locksDisjoint c s = true := by
-  have hinv := lkInv_of_reachable hfix h
+/-- S3. With PR #114 (swarm lock refuses any common file) and board #26 (exactly the patterns that share a file),
+no two live locks of different agents cover a common file. -/
+theorem locksDisjoint_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State}
+    (h : Reachable c s) : locksDisjoint c s = true := by
+  have hinv := lkInv_of_reachable hfix hforms h
   simp only [locksDisjoint, List.all_eq_true, List.mem_range]
   intro p hp q hq
   have h1 : s.lock[p]? = some (s.lock.getD p default) := by simp [List.getD_eq_getElem?_getD, hp]
@@ -242,5 +245,17 @@ theorem locksDisjoint_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) {s : 
       · simp [hab]
       cases he1 : l.exp <;> cases he2 : m.exp <;> simp [hpq, hab]
       exact Or.inr (hinv.2 p q l m a b h1 h2 hpq hl hm hab he1 he2)
+
+/-- S3 as files: with both fixes on, no path is covered by two unexpired locks of different agents, for any
+patterns (a path is a Lua string: bytes; `Glob.overlaps_complete`). -/
+theorem noSharedFile_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State}
+    (h : Reachable c s) {p q : Nat} {l m : Lock} {a b : Nat} (hp : s.lock[p]? = some l) (hq : s.lock[q]? = some m)
+    (hpq : p ≠ q) (ha : l.holder = some a) (hb : m.holder = some b) (hab : a ≠ b) (he1 : l.exp = false)
+    (he2 : m.exp = false) (x : String) (hx : Glob.Bytes x.toList) :
+    ¬ (covers c x (c.pat p) = true ∧ covers c x (c.pat q) = true) := by
+  rintro ⟨h1, h2⟩
+  have hd := (lkInv_of_reachable hfix hforms h).2 p q l m a b hp hq hpq ha hb hab he1 he2
+  simp only [covers, hforms] at h1 h2
+  rw [overlap, Glob.overlaps_complete hx h1 h2] at hd; cases hd
 
 end Swarm

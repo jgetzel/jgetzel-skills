@@ -26,6 +26,16 @@ example : violates { evidenceRequired := false } [.add [], .claim 0 1, .done 0 1
 example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"], lockOverlap := false }
     violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide
 
+-- #25, S3 (board #26). covers takes `m/?` as a glob and as a directory, so it covers `m/?/x`; overlaps leaves a
+-- glob's directory form out, so agent 1's `swarm lock m/?/x` is granted: the edit hook gives both agents that file.
+example : let c : Cfg := { patterns := ["m/?", "m/?/x"], lockForms := false }
+    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?" && covers c "m/?/x" "m/?/x") = true := by decide
+-- With the fix a glob is only a glob (`m/?/x` is not under `m/?`), and S3's `overlap` is exact (`Glob.overlaps_iff`).
+-- Before, overlaps also left out the pattern as a literal path and took `[!]a]` as the class `[!]` then `a]`
+-- (covers: one character, not `]` or `a`): `[!]a]` and `b` share the file `b`, and both are granted.
+example : let c : Cfg := { patterns := ["[!]a]", "b"], lockForms := false }
+    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide
+
 -- #7, S4. The waiter reads agent 0's unread list, a hook delivers it and moves the cursor, the waiter writes its
 -- cursor and shows the same message again.
 example : violates { racy := true, deliverCas := false }
@@ -40,6 +50,18 @@ example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"] }
     violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = false := by decide
 example : violates { racy := true }
     [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide
+example : let c : Cfg := { patterns := ["m/?", "m/?/x"] }
+    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?") = false := by decide
+example : let c : Cfg := { patterns := ["[!]a]", "b"] }
+    (run c [.lock 0 0, .lock 1 1]).isSome = false := by decide
+-- #25's other half: overlaps over-approximated, refusing locks that share no file. A `?` met any class, even an
+-- empty one (`[z-a]`), two classes always met, and a `*` met an empty class.
+example : Glob.overlaps false "?".toList "[z-a]".toList = true := by decide
+example : Glob.overlaps false "[a]".toList "[b]".toList = true := by decide
+example : Glob.overlaps false "*c".toList "[z-a][c]".toList = true := by decide
+example : Glob.overlaps true "?".toList "[z-a]".toList = false := by decide +kernel
+example : Glob.overlaps true "[a]".toList "[b]".toList = false := by decide +kernel
+example : Glob.overlaps true "*c".toList "[z-a][c]".toList = false := by decide +kernel
 
 -- #12, work loss. Agent 0 owns two worktrees; the one wt_map picks (agent.wt: it edited there last) is landed, the
 -- other has an uncommitted file. Before PR #123 lifecycle looks only at the first, so it ends the agent mid-task.

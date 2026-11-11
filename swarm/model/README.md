@@ -15,7 +15,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Model.lean` | the model: state, actions, `step`, `Reachable`, `run`, and the properties as functions |
 | `SwarmModel/Frame.lean` | which fields of the state each change leaves alone |
 | `SwarmModel/Basic.lean` | induction over reachable states; S2 and S5 |
-| `SwarmModel/Locks.lean` | S3 |
+| `SwarmModel/Glob.lean` | locks.lua's lock patterns lifted (`tokens`, `one`, `meet`, `covers`, `overlaps`), the glob semantics `gm`, and what they are: `covers_iff`, `overlaps_iff` (board #26) |
+| `SwarmModel/Locks.lean` | S3, and `noSharedFile_of_reachable`: S3 as files |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`), and the same runs with the fix on |
@@ -30,10 +31,13 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
+| `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 4 scripted runs the Lua suite replays |
+| `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
+| `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
 ## The model
@@ -99,6 +103,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `claimChecksDeps` | `task claim`'s write checks only `state='open'` | PR #112 checks the dependencies in the write |
 | `evidenceRequired` | `done --evidence ""` is accepted | PR #113 refuses it |
 | `lockOverlap` | `lock` refuses only a pattern covering the other | PR #114 refuses any common file |
+| `lockForms` | covers takes a glob as a directory too (`m/?` covers `m/?/x`), but overlaps leaves that form out, and the pattern as a literal path; it reads `[!]a]` as the class `[!]`, and a `?` or `*` meets any class, two classes always | board #26: a glob is only a glob; overlaps compares every form, classes by the bytes they match, and reads classes as covers does (`Glob.overlaps_iff`) |
 | `deliverCas` | a delivery's cursor write ignores a delivery in between | PR #115 writes only from where it read |
 | `passedOver` | a reusable agent holds spawn back forever | PR #116 ends one that passed the work over |
 | `waiterAlive` | an idle agent whose waiter exited is kept reusable, and never reads its digest | PR #119 ends it |
@@ -137,7 +142,8 @@ Safety:
 - **S1** No task has two agents at work on it: no two agents, each working or at an hc prompt, both believe they
   hold the same task. `oneWorker`
 - **S2** No task is claimed while a task it is after isn't done. `noEarlyStart`
-- **S3** No two live locks of different agents cover a common file. `locksDisjoint`
+- **S3** No two live locks of different agents cover a common file. `locksDisjoint` (with `overlap`, which is
+  exactly "a common file": `Glob.overlaps_iff`; `noSharedFile_of_reachable` says it of every path)
 - **S4** No message is shown twice, and no cursor passes a message it didn't show. `inboxExact`
 - **S5** Every done task has evidence. `doneHasEvidence`
 
@@ -201,7 +207,7 @@ no `native_decide`, no axiom beyond the three every Lean proof may use (`propext
 |---|---|---|---|
 | S1 | `oneWorker_of_reachable` | `release = .idle` (PR #111) | 883,023 states, 217 s |
 | S2 | `noEarlyStart_of_reachable` | `claimChecksDeps` (PR #112) | stopped at 30 min, unfinished |
-| S3 | `locksDisjoint_of_reachable` | `lockOverlap` (PR #114) | 4.05M states, 577 s |
+| S3 | `locksDisjoint_of_reachable`, `noSharedFile_of_reachable` | `lockOverlap` (PR #114), `lockForms` (board #26) | 4.05M states, 577 s |
 | S4 | `inboxExact_of_reachable` | `deliverCas` (PR #115) | stopped at 30 min, unfinished |
 | S5 | `doneHasEvidence_of_reachable` | `evidenceRequired` (PR #113) | 13.9M states, 625 s |
 
@@ -216,7 +222,8 @@ What carries each proof:
   stale kind (`J`). Reap under PR #111 reopens a claim only when its owner isn't at work, and tells it; every
   way back to work delivers the inbox first. It needs S4's "no cursor passes a message it didn't show", which
   holds with or without PR #115, and that `task add` never reuses an id (`Pfx`).
-- **S3**: a lock's holder is live, and unexpired locks of different agents share no file (`LkInv`).
+- **S3**: a lock's holder is live, and unexpired locks of different agents share no file (`LkInv`). As files:
+  `overlaps_complete` (a path both cover makes `overlaps` true).
 - **S4**: per agent, what was shown is in order and behind the cursor, everything behind the cursor since the
   spawn was shown, and the waiter's snapshot skips nothing between the cursor and its last id (`Inb`).
 - **S2**, **S5**: the ghost flag stays off; done implies evidence.
@@ -344,6 +351,7 @@ Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent w
 | 22 | C1 | `ensureComms := false` / the run (C1 itself is board #10) | One terminal is the communicator of two swarms (2026-11-10: sk-comms and fm-comms both on t87, in the notapki space). fm-comms joins swarm 1 from t87, then sk-comms joins swarm 0 from the same terminal: bind looks only at swarm 0's own row. The session is sk-comms now, its `swarm wait` reads swarm 0's db, and swarm 1's notices are stored and read by no one; swarm 0's communicator also sits outside its space (`not_C1_shared`). With `ensureComms` the second join is refused, with `--takeover` too. | open: board #9 |
 | 23 | C1 | `ensureComms := false` / the run | The communicator's terminal dies and the swarm runs on. Watchd runs from another terminal of the swarm's space; agent 0 blocks #1 and the communicator's terminal dies. The tick reaps its row, and no tick ever binds a new one (`tick_binds_none`), so the notice that #1 is blocked goes to a name no one reads (`not_C1_dead`). With `ensureComms` the tick launches a communicator in the swarm's space. | open: board #9 |
 | 24 | C1 | `ensureComms := false` / the run | Watchd started from a terminal in another space spawns there: launch.sh opens the tab in the space of `HC_TERMINAL_ID`, which for auto-spawn is watchd's terminal (`not_C1_space`). With `ensureComms` the spawn lands in the swarm's space. | open: board #9 |
+| 25 | S3 | `lockForms := false` / the runs | covers takes `m/?` as a glob and also as a directory, so it covers `m/?/x`; overlaps leaves a glob's directory form out, so agent 1's `swarm lock m/?/x` is granted and the edit hook gives both agents `m/?/x`. With S3's exact `overlap`: overlaps also left out the pattern as a literal path and read `[!]a]` as the class `[!]`, so `[!]a]` and `b` (which share `b`) are both granted. The other way, it refused locks that share no file: a `?` met any class, even an empty `[z-a]`; two classes always met; a `*` met an empty class. With `lockForms` a glob is only a glob and overlaps is exact (`Glob.overlaps_iff`). | board #26 |
 
 Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #18 to #21 wait for the sw-bases fix (board #3 to #6); #22 to #24 for `ensureComms` (board #9, #10). #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -376,7 +384,23 @@ the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.
 Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
 
-**Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt); `swarm run` and machines;
+**Lifted** (board #26, rung 3): `Glob.lean` is locks.lua's lock-pattern functions line for line (a Lua string is its
+bytes; fuel in place of the memo table, so `decide` runs them), and the model's `covers`, `overlap` and `refuses` are
+those functions, no longer a table. Proved: `covers_iff` (covers is the pattern itself, its glob, and, for a pattern
+with no `*`, `?` or `[`, everything under it as a directory), `overlaps_iff` (for byte-string patterns, overlaps is
+true exactly when some path both cover; `overlaps_complete`, the half S3 uses, for any patterns) and `overlaps_comm`.
+The task's other statement, "covers p q iff every path matching q matches p", is false either way round
+(`covers_not_subsumed`, `covers_not_subsumes`): covers takes a path and a pattern, and `covers_iff` is what holds.
+`locks_model_spec.lua` checks the Lua against Glob.lean on the 3000 committed cases and on 3000 fresh ones per
+`replay.sh`: every token list, covers and overlaps agree (15,000 fresh cases at the fix); `gm` agrees with fnmatch
+(flags 0) on tame patterns (`*`, `?`, plain characters, `[ab]`, `[!a]`, `[a-b]`). Elsewhere the dialect is ours, not
+fnmatch's: no `[:alpha:]`, no escapes inside a class; locks.lua no longer calls fnmatch, so covers and overlaps read a
+pattern alike. Before the fix (the model with `lockForms` off against the Lua before it, 9000 cases): overlaps agreed
+on all but 2, where the old Lua asked fnmatch about a class fnmatch reads otherwise (`[^]`, `[]\]`); covers agreed on
+every tame pattern and differed on 225 untame ones (fnmatch's escapes and brackets against the tokens').
+
+**Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt, and the lock patterns
+it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check, rebases, an agent removing its own
 worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
 `nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
