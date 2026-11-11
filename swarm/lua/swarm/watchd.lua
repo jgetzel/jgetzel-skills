@@ -510,6 +510,7 @@ end
 function M.auto_spawn(c, comms, opts, pool)
   local _, mn, mx = agents.limits(c)
   if not mn then return end
+  if opts.comms_hold then return "auto-spawn holding: " .. opts.comms_hold end
   local members = {}
   for _, a in ipairs(agents.live_agents(c)) do
     if a.name ~= comms then
@@ -592,6 +593,38 @@ M.SPAWN_FAILS = 5  -- failed launches in a row before auto-spawn gives up on a t
 
 -- ---------- the tick ----------
 
+-- A swarm with work always has its own communicator (model Comms.lean, ensureComms): its row bound to a live terminal in
+-- the swarm's space (meta.space) whose session is this db's communicator. If not, launch one there and bind it
+-- (join --takeover). Returns nil, or why it can't, for the board's auto-spawn line. No recorded space: as before.
+function M.ensure_comms(c, comms, terms)
+  local sp = c:one("select v from meta where k='space'")
+  if not (sp and terms) then return end
+  local work = c:one("select 1 from agent where ended is null and name<>? union all select 1 from task where state='open'", comms)
+  if not work then return end
+  local r = c:one("select hc from agent where name=? and ended is null", comms)
+  for _, x in ipairs(terms) do
+    if r and r.hc == x.address and x.state == "live" then
+      local i = agents.hc_info(x.address)
+      if i and i.space == sp.v and i.comms == db.dbpath() then return end
+    end
+  end
+  local bo = c:one("select v from meta where k='comms_backoff'")
+  if bo and util.now() < tonumber(bo.v) then return "no communicator can be launched (last launch failed)" end
+  local brief = "You are the communicator of this swarm (your name: " .. comms .. "), started by watchd because the swarm had work "
+    .. "and no communicator in its Herdr space. Load the swarm skill, run `swarm board` and `swarm read`, and carry on as the communicator."
+  local model = c:one("select model from agent where name=?", comms)
+  local out = M.launch_agent(c, comms, brief, model and model.model or "opus", nil, unistd.getcwd())
+  if not out then
+    c:exec("insert or replace into meta(k,v) values('comms_backoff',?)", d(util.now() + 300))
+    return "no communicator can be launched: " .. (M.launch_err or "launch error")
+  end
+  local lines = util.splitlines(util.strip(out))
+  agents.bind(c, comms, unistd.getcwd(), lines[#lines], nil, true)
+  agents.label_comms(lines[#lines])
+  c:exec("delete from meta where k='comms_backoff'")
+  db.log(c, comms, "comms-launch", nil, lines[#lines])
+end
+
 function M.watchd_tick(c, comms, repo, opts)
   local terms = agents.hc_terminals()
   local live
@@ -602,6 +635,8 @@ function M.watchd_tick(c, comms, repo, opts)
     end
   end
   M.reap(c, live, nil, comms)
+  opts = opts or {}
+  if comms then opts.comms_hold = M.ensure_comms(c, comms, terms) end
   local t = util.now()
   if terms and #terms > 0 then
     local by = {}
@@ -814,6 +849,37 @@ function M.cmd_watchd(c, a)
   end
 end
 
+-- Settings file and launch of agent name in cwd, in the swarm's Herdr space; returns launch.sh's output, nil on failure.
+function M.launch_agent(c, name, brief, model, effort, cwd)
+  local here = os.getenv("SWARM_HERE")
+  local self_ = util.join(here, "swarm")
+  local dbp = db.dbpath()
+  local tpl = util.slurp(util.join(here, "settings.template.json")) or util.die("no settings.template.json in " .. here)
+  local sd = util.join(util.dirname(dbp), "agents")
+  makedirs(sd)
+  local sf = util.join(sd, name .. ".settings.json")
+  local bindir = util.join(util.dirname(dbp), "bin")  -- puts `swarm` on the agent's PATH
+  makedirs(bindir)
+  if not pstat.lstat(util.join(bindir, "swarm")) then unistd.link(self_, util.join(bindir, "swarm"), true) end
+  local f = io.open(sf, "w") or util.die("can't write " .. sf)
+  f:write(replace(replace(replace(replace(tpl, "{{SWARM}}", self_), "{{DB}}", dbp), "{{NAME}}", name),
+    "{{PATH}}", bindir .. ":" .. (os.getenv("PATH") or "")))
+  f:close()
+  local launch = agents.env("SWARM_LAUNCH") or util.join(here, "..", "relaunch", "launch.sh")  -- tests point this at a fake
+  local argv = { launch, name, "tab", brief, "--permission-mode", "auto", "--model", model, "--settings", sf }
+  if effort then argv[#argv + 1] = "--effort"; argv[#argv + 1] = effort end
+  local space = c:one("select v from meta where k='space'")  -- spawns land in the swarm's space, not the spawner's
+  local out, err, code = proc.exec(argv, { cwd = cwd, env = space and { SWARM_SPACE = space.v } or nil })
+  if code ~= 0 then out = nil end
+  M.launch_err = (util.strip(err or ""):gsub("\n.*", ""))  -- launch.sh's reason, for the watchd notice
+  if out == nil then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
+    for _, x in ipairs(agents.hc_terminals() or {}) do
+      if x.name == name and x.state == "live" and x.address then out = x.address; break end
+    end
+  end
+  return out
+end
+
 function M.cmd_spawn(c, a)
   local name, tid = a.name, a.task_id
   local task = table.concat(a.task or {}, " ")
@@ -845,19 +911,6 @@ function M.cmd_spawn(c, a)
       .. "this branch (`git push . HEAD:%s`, or a PR for a remote base)."):format(path, br, base, base, base))
   end
   local here = os.getenv("SWARM_HERE")
-  local self_ = util.join(here, "swarm")
-  local dbp = db.dbpath()
-  local tpl = util.slurp(util.join(here, "settings.template.json")) or util.die("no settings.template.json in " .. here)
-  local sd = util.join(util.dirname(dbp), "agents")
-  makedirs(sd)
-  local sf = util.join(sd, name .. ".settings.json")
-  local bindir = util.join(util.dirname(dbp), "bin")  -- puts `swarm` on the agent's PATH
-  makedirs(bindir)
-  if not pstat.lstat(util.join(bindir, "swarm")) then unistd.link(self_, util.join(bindir, "swarm"), true) end
-  local f = io.open(sf, "w") or util.die("can't write " .. sf)
-  f:write(replace(replace(replace(replace(tpl, "{{SWARM}}", self_), "{{DB}}", dbp), "{{NAME}}", name),
-    "{{PATH}}", bindir .. ":" .. (os.getenv("PATH") or "")))
-  f:close()
   local roster = {}
   for _, x in ipairs((agents.split_agents(c))) do
     roster[#roster + 1] = ("%s (%s%s)"):format(x.name, x.status or "None", x.role and (", " .. x.role) or "")
@@ -867,17 +920,7 @@ function M.cmd_spawn(c, a)
       name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
   local rules = c:one("select v from meta where k='rules'")
   if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
-  local launch = agents.env("SWARM_LAUNCH") or util.join(here, "..", "relaunch", "launch.sh")  -- tests point this at a fake
-  local argv = { launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf }
-  if a.effort then argv[#argv + 1] = "--effort"; argv[#argv + 1] = a.effort end
-  local out, err, code = proc.exec(argv, { cwd = wt })
-  if code ~= 0 then out = nil end
-  M.launch_err = (util.strip(err or ""):gsub("\n.*", ""))  -- launch.sh's reason, for the watchd notice
-  if out == nil then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
-    for _, x in ipairs(agents.hc_terminals() or {}) do
-      if x.name == name and x.state == "live" and x.address then out = x.address; break end
-    end
-  end
+  local out = M.launch_agent(c, name, brief, a.model, a.effort, wt)
   if out == nil then
     if wt then workspaces.discard(c, name, wt, wt_branch, not a.attach) end
     tasks.unreserve(c, name, tid and r or nil)
