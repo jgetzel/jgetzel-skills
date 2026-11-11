@@ -82,6 +82,15 @@ with subagents.
    with nothing enforced. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
+   The panel also acts, always through this CLI as `SWARM_NAME=human` (the user, with your rights), so expect
+   `human` in events and messages: Away switch (`swarm away` / `--back`; the digest is a card on Home),
+   auto-spawn and max steppers and Pause/Resume (`limits --min/--max`), + New task (`task add`), Release and
+   Drop on a task (`task release`, `task drop`), on an agent End / End anyway (`end [--force]`), Nudge
+   (`nudge NAME`), a message with an Urgent tick (`post [--urgent]`), End its stay (`stay --end NAME`); on a
+   red main Open run and Re-run failed jobs (`gh run rerun ID --failed`); Restart watchd
+   (`watchd --restart`) when watchd is dead or older than the code; "Communicator ↗" focuses your terminal.
+   Destructive ones ask first; what the command printed, or its refusal, shows in a bar. The panel cannot
+   answer a blocked task, message @all, spawn, free a lock or claim: those stay with you.
 4. Spawn agents, each with its own area so no two get identical prompts:
    `swarm spawn <prefix>-<n> --model <m> [--effort <e>] [--task N] -- "<area and first tasks>"`.
    With `--task N` the new agent's name and task #N are reserved in one step

@@ -38,6 +38,8 @@ def ser (h : Heap) (fuel : Nat) (path : List Nat) (v : Val) : List Char :=
   | .fn _ | .prim .. => "function".toList
   | .eff _ => "userdata".toList
   | .thr _ => "thread".toList
+  -- not LuaJIT's text, which is the bytes: `outcome` makes it a stop
+  | .dump .. => ['\x00']
 
 /-- what print and io.write wrote, in order (`caseFx`'s default output is stdout) -/
 def stdoutOf (h : Heap) : List Char :=
@@ -50,6 +52,10 @@ def withOut (h : Heap) (s : String) : String :=
   if o.isEmpty then s else s ++ " stdout:" ++ String.ofList (serStr o)
 
 def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
+  let o := outcome' r
+  -- a dump in what the chunk gives (`ser`): its bytes are not modelled
+  if o.contains '\x00' then "effect string.dump: a dump's bytes" else o
+where outcome' (r : EStateM.Result Err Heap (List Val)) : String :=
   match r with
   | .ok vs h => withOut h ("ok:" ++ String.ofList (List.intercalate [','] (vs.map (ser h 100 []))))
   | .error (.val v) h => withOut h ("error:" ++ String.ofList (ser h 100 [] v))

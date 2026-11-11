@@ -171,6 +171,128 @@ theorem fate_reuse {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver 
   cases hi : idleFree s a <;> cases hu : unlanded c s a <;> cases hre : reusable c s a <;> cases hg : (s.agt a).bg <;>
     simp_all [finished]
 
+/-! F1 (board #41): what `swarm state --json` reports of an idle agent (its `fate`) is watchd's decision. The Lua runs
+`watchd.fate` itself with `f.rec`, a recorder each check calls with its value; `f.all` makes no check hold, so every
+check is made. `fateRec` is that recorder lifted, line for line: its verdict is `fateL` (`fateRec_verdict`, and so the
+model's lifecycle verdict: `report_lifted`), each check it records is one of fate's inputs with that input's value
+(`fateRec_vals`), the agent screen's run records every check (`fateRec_all`), and Home's short reason is the one check
+that held, all before it false (`fateRec_short`). -/
+
+/-- fate's checks, as watchd.fate's `k(label, v)` names them -/
+inductive Check where | stay | idle | terminal | task | lock | unlanded | job | context | waiter
+  deriving DecidableEq, Repr, Inhabited
+
+/-- each check's value: the input of `fateL` it stands for -/
+def Check.val (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) : Check → Bool
+  | .stay => nz a.stay
+  | .idle => a.status != "idle" || decide (t - a.lastActive.getD 0 < 120)
+  | .terminal => x.any (fun x => nz x.cwd && !f.ours) || (nz a.hc && hasTerms && x.all fun x => x.status != "idle" && x.status != "done")
+  | .task => f.claims
+  | .lock => f.locks
+  | .unlanded => f.unlanded
+  | .job => f.job
+  | .context => decide (a.ctx.getD 0 < smallCtx) && decide (f.pool > 0) && !f.passedOver
+  | .waiter => a.waiter.isSome && f.alive
+
+/-- every check, in the order fate makes them -/
+def Check.order : List Check := [.stay, .idle, .terminal, .task, .lock, .unlanded, .job, .context, .waiter]
+
+/-- the Lua's `or` chain of `k` calls: each check is recorded with its value; one that holds (`v and not all`) stops it -/
+def orRec (val : Check → Bool) (all : Bool) : List Check → List (Check × Bool) × Bool
+  | [] => ([], false)
+  | k :: ks => if val k && !all then ([(k, true)], true) else let r := orRec val all ks; ((k, val k) :: r.1, r.2)
+
+/-- watchd.fate run with f.rec (and f.all): its return and what it recorded, in order -/
+def fateRecV (val : Check → Bool) (all : Bool) : Verdict × List (Check × Bool) :=
+  let r1 := orRec val all [.stay, .idle, .terminal, .task, .lock]
+  if r1.2 then (.keep, r1.1) else
+  let r2 := r1.1 ++ [(.unlanded, val .unlanded)]
+  if val .unlanded && !all then (.unclean, r2) else
+  let r3 := r2 ++ [(.job, val .job)]
+  if val .job && !all then (.keep, r3) else
+  let r4 := r3 ++ [(.context, val .context), (.waiter, val .waiter)]
+  if (val .waiter && !all) && (val .context && !all) then (.reuse, r4) else (.end_, r4)
+
+def fateRec (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) (all : Bool) :
+    Verdict × List (Check × Bool) :=
+  fateRecV (Check.val a t x hasTerms f) all
+
+/-- `fateL` is a function of the checks' values -/
+theorem fateL_val (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) :
+    fateL a t x hasTerms f = (let v := Check.val a t x hasTerms f
+      if v .stay || v .idle || v .terminal || v .task || v .lock then .keep else if v .unlanded then .unclean
+      else if v .job then .keep else if v .context && v .waiter then .reuse else .end_) := by
+  simp only [fateL, Check.val, Bool.or_assoc, Bool.and_assoc]
+
+/-- the verdict state --json reports is fate's -/
+theorem fateRec_verdict (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) :
+    (fateRec a t x hasTerms f false).1 = fateL a t x hasTerms f := by
+  rw [fateL_val]
+  simp only [fateRec, fateRecV, orRec, Bool.not_false, Bool.and_true]
+  generalize Check.val a t x hasTerms f = v
+  cases h1 : v .stay <;> try simp [h1]
+  cases h2 : v .idle <;> try simp [h2]
+  cases h3 : v .terminal <;> try simp [h3]
+  cases h4 : v .task <;> try simp [h4]
+  cases h5 : v .lock <;> try simp [h5]
+  cases h6 : v .unlanded <;> try simp [h6]
+  cases h7 : v .job <;> try simp [h7]
+  cases v .context <;> cases v .waiter <;> rfl
+
+/-- F1: the reported verdict is the model's lifecycle verdict, on the hypotheses of `fate_lifted` -/
+theorem report_lifted {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver = true) (hw : c.waiterAlive = true)
+    (hb : c.bgLives = true) (hr : (s.agt a).reading = 0) (hs : (s.agt a).snap = []) :
+    (fateRec (fateRow (s.agt a) t) t none false (factsOf c s a) false).1 = modelFate c s a := by
+  rw [fateRec_verdict, fate_lifted hp hw hb hr hs]
+
+theorem orRec_vals (val : Check → Bool) (all : Bool) (ks : List Check) : ∀ p ∈ (orRec val all ks).1, p.2 = val p.1 := by
+  induction ks with
+  | nil => simp [orRec]
+  | cons k ks ih =>
+    intro p hp
+    simp only [orRec] at hp
+    split at hp
+    · simp only [List.mem_singleton] at hp; subst hp; simp_all
+    · simp only [List.mem_cons] at hp; rcases hp with rfl | hp
+      · rfl
+      · exact ih p hp
+
+/-- each check shown is one of fate's inputs, with its value -/
+theorem fateRec_vals (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) (all : Bool) :
+    ∀ p ∈ (fateRec a t x hasTerms f all).2, p.2 = p.1.val a t x hasTerms f := by
+  have h := orRec_vals (Check.val a t x hasTerms f) all [.stay, .idle, .terminal, .task, .lock]
+  intro p hp
+  simp only [fateRec, fateRecV] at hp
+  repeat' split at hp
+  all_goals simp only [List.mem_append, List.mem_cons, List.not_mem_nil, or_false] at hp
+  all_goals first
+    | exact h p hp
+    | (rcases hp with ((hp | rfl) | rfl) | rfl | rfl <;> first | exact h p hp | rfl)
+    | (rcases hp with (hp | rfl) | rfl <;> first | exact h p hp | rfl)
+    | (rcases hp with hp | rfl <;> first | exact h p hp | rfl)
+
+/-- the agent screen's run (`f.all`) records every check, in order, each with its value -/
+theorem fateRec_all (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) :
+    (fateRec a t x hasTerms f true).2 = Check.order.map fun k => (k, k.val a t x hasTerms f) := by
+  simp [fateRec, fateRecV, orRec, Check.order]
+
+/-- Home's short reason: when fate keeps an agent before the reuse checks (keep or unclean), the plain run's last record
+is the check that held, and every check before it is false: that check is what keeps it -/
+theorem fateRec_short (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts)
+    (hv : (fateRec a t x hasTerms f false).1 = .keep ∨ (fateRec a t x hasTerms f false).1 = .unclean) :
+    ∃ k, (fateRec a t x hasTerms f false).2.getLast? = some (k, true)
+      ∧ ∀ p ∈ (fateRec a t x hasTerms f false).2.dropLast, p.2 = false := by
+  simp only [fateRec, fateRecV, orRec, Bool.not_false, Bool.and_true] at hv ⊢
+  generalize Check.val a t x hasTerms f = v at hv ⊢
+  cases h1 : v .stay <;> try simp [h1] at hv ⊢
+  cases h2 : v .idle <;> try simp [h2] at hv ⊢
+  cases h3 : v .terminal <;> try simp [h3] at hv ⊢
+  cases h4 : v .task <;> try simp [h4] at hv ⊢
+  cases h5 : v .lock <;> try simp [h5] at hv ⊢
+  cases h6 : v .unlanded <;> try simp [h6] at hv ⊢
+  cases h7 : v .job <;> try simp [h7] at hv ⊢
+  cases h8 : v .context <;> cases h9 : v .waiter <;> simp_all
+
 def kindOf : Kind → String
   | .dm => "dm" | _ => "system"
 

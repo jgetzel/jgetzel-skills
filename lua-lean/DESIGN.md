@@ -22,11 +22,13 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
 
 - **Semantics** (`LuaLean/Interp.lean`): an interpreter on fuel in `M = EStateM Err Heap`. Every local is a heap
   cell (closures share upvalues as Lua's do); a value is nil, boolean, number, string (bytes), table, closure,
-  builtin, or effect handle. Fuel bounds the evaluation's depth; running out is `Err.fuel`, never a Lua error.
+  builtin, or effect handle. A closure carries its environment (`Clo.fenv`, lj_func's `env`): the table its globals
+  are fields of, read and written through its metamethods, its creator's when it is made, `setfenv`'s after; the
+  running closure is the context's `self`. Fuel bounds the evaluation's depth; running out is `Err.fuel`, never a Lua error.
   A runtime error is raised without its place (`Err.rt lvl msg`): the innermost site of the frame it is reported in
   gives it `chunk:line:` and the operand's name (`atSite`), each call's frame passes it one frame out (`frame`), a
   tail call's site one further, and a builtin's frame, which has no place, leaves it bare.
-- **Effects** are not interpreted. The world's part of `print`, `io` and `os`, `debug`, and every module not given as
+- **Effects** are not interpreted. The world's part of `print`, `io` and `os`, and every module not given as
   source are effects: a handle (`io.open`, `os.getenv`, `math.random`), or a builtin's call into the world after the
   part LuaJIT computes, which the semantics computes too (`print` and `io.write` convert their arguments and make one
   write, `"print"` or `"io.write"`, print one more before each `__tostring` it calls; `os.time()` asks `"os.time"`, `os.time(t)` reads t's fields and asks
@@ -46,9 +48,14 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
   to anything but a name or an index (`(x) = 1`, `f() = 1`) is a syntax error, as in LuaJIT.
 - **Translator** (`tools/Lift.lean`), after AutoCorres's first stages: for each function `f` of the file (the chunk
   is `chunk`), `f_body` (its parsed body), `f` (a shallow function built from `LuaLean/Shallow.lean`'s combinators,
-  one per interpreter clause, every local the Lean variable naming its cell) and `f_ok : CFn I (f I env0 …) clo`:
-  for all arguments and every fuel, `f` gives the interpreter's result and heap for the closure. Its hypotheses are
-  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global). A `load` or
+  one per interpreter clause, every local the Lean variable naming its cell) and `f_ok : CFn I (f I env0 fn0 …) fn0
+  clo`: for all arguments and every fuel, `f` gives the interpreter's result and heap for the closure at address `fn0`
+  (its globals are fields of its environment, read from the heap when used). Its hypotheses are
+  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global). Its proof is one
+  theorem for every program, `D.fn_ok` (`LuaLean/Denote.lean`): `D.fn` is the translator as a Lean function, from the
+  closure to the combinators, and `D.fn_ok` that its result is the interpreter's call. `f` is the printed form of
+  `D.fn` at `f_body`, so `f_ok` is `D.fn_ok` applied to the closure, and the kernel checks by computation that `f` is
+  `D.fn`'s (`research/translator-proof.md`). A `load` or
   `loadstring` of a constant source is lifted too, as `f_loadN`: `call_load` says the call makes its closure, given
   the parse (`parseChunk s name = .ok f_loadN_body`, the parser's, as `f_body` is). A script of several modules is
   lifted one file at a time; `call_require` and `call_dofile` (`RunP.require`, `RunP.dofile`) say that requiring or
@@ -69,8 +76,9 @@ What a proved spec rests on, and how each piece is checked:
 | The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
 | The user's effect axioms | each its own test against the world, as above (`check.sh` runs the example's, `Examples/world_axioms.lua`, and refuses an axiom there without a case of its name) |
 
-Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
-fails), the case generator, and any proof search.
+Not trusted: the translator. `D.fn_ok` is proved once, in the library, so `Audit.lean` covers it; `tools/Lift.lean`
+only prints `f`, and a printed `f` that is not `D.fn`'s fails `f_ok` (one `+` turned into `-` in a lifted function
+and its `f_ok` does not check: a type mismatch, or the kernel gives up computing). Nor are the case generator and any proof search.
 
 ## The reference LuaJIT
 
@@ -124,6 +132,22 @@ part's size, which the rehashes set. A table with one border gives it; one with 
 library function that takes the length (`table.insert`, `remove`, `concat` and `unpack` without an end, `sort`,
 `foreachi`, `getn`).
 
+A weak table (`__mode`) loses an entry when the collector frees its weak key or value, and when the collector runs
+is not a function of the program (an allocation anywhere, the JIT's own among them). The semantics never collects, so
+a weak table is an ordinary one, and a read that could see an entry the collector freed stops the run; every other
+read is the same with or without a collection. The weak parts are those of the metatable's `__mode` at the time
+(LuaJIT reads it at each collection: `k` and `v` up to a NUL, a value not a string none), and the collector frees an
+object (a table, function, coroutine or userdata), never a string, number or boolean (lj_gc's gc_mayclear). A read
+by key holds the key, so a weak key keeps its entry; what stops (`weakOf`, `held`, `wget` in `LuaLean/Interp.lean`):
+an object read as a weak value (indexing, `rawget`, `ipairs`, the table library, a metamethod from a weak metatable,
+the presence check of an assignment where `__newindex` would run), `next` to an entry with an object as a weak part
+or from a key whose weak value is one, and `#t` with an object as a weak value at an integer key. A mode stays once
+set: changing or clearing `__mode` (`table.clear` too), or giving a weak table another metatable, stops, since the
+entries it may have lost under the old mode would come back; and `package.loaded`, read raw by `require`, takes no
+metatable. A proof about a weak table's traversal with objects in it needs a model of the collector's choice (an
+opaque one, as `Tbl.rank` is for the order); none is written yet. The generator's chunks hold their objects in
+locals, so LuaJIT's collector frees none of them.
+
 ## Coroutines
 
 A coroutine is a heap object (`Thr` in `LuaLean/Interp.lean`), and `M` stays `EStateM Err Heap`: the heap cannot hold
@@ -174,20 +198,45 @@ setmetatable is `cannot change a protected metatable`); `#t` the border whatever
 carry `chunk:line:` of the place LuaJIT reports (the operator or call raising it, or the call `error`'s level counts
 out to, a tail call's frame gone), or none where that place is a builtin, and the operand's name (`attempt to index
 local 't' (a nil value)`); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
-them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` but `dump` (patterns after
+them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after
 lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table`, all of LuaJIT 2.1's
 (`sort` is ltablib.c's quicksort, so ties and bad comparators come out as LuaJIT's do; `move`, `remove`, `foreach`,
-`foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`), `math` but `random` and
+`foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`; `string.dump`
+below), `math` but `random` and
 `randomseed` (effects: the generator's state is the oracle's), `select`, `unpack` (at most 8000 values with its
 arguments, lua_checkstack's bound), `pairs`, `next` and `table.foreach` in an order no proof can know ("Tables"),
 `#t` with one border, `ipairs`, `type`, `tostring`, `tonumber` (a base other than 10
 as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
-`setmetatable`/`getmetatable`, `assert`; `load` and `loadstring` of a source (a string, or a reader function's pieces)
-with a chunk name and a mode, `dofile` and `require` of files given as source, `require` through `package.path`,
+`setmetatable`/`getmetatable` (weak tables too: "Tables"), `assert`; `getfenv` and `setfenv` (lib_base.c) of a
+closure, of a builtin (getfenv's is `_G`, the thread's; setfenv's LuaJIT's error), of level 0 (getfenv: `_G`) and
+of level 1 in a call from Lua that is not a tail call (the function calling, `Ctx.caller`: `setfenv(1, env)`), their
+bad arguments (`getfenvFn`, `setfenvFn`; `RunP.fenv`, `getfenv_fn`, `getfenv_caller`, `setfenv_fn`,
+`setfenv_caller`); `load` and `loadstring` of a source (a string, or a reader function's pieces)
+with a chunk name, a mode and an environment (a table becomes the chunk's, anything else is ignored, as load_aux
+does; `RunP.loadEnv`), or of a dump: `string.dump(f, strip)` of a Lua function is a string whose bytes, LuaJIT's
+bytecode, are not modelled (`Val.dump`: the closure and the strip flag, an `s` in a string or any other true value).
+What does not read the bytes is LuaJIT's: `type` is `"string"`, `tostring` gives it back, it is a value in tables,
+calls and coroutines, `==` with itself (true when both or neither are stripped) or with a value not a string, an error
+value at level 0, `tonumber` nil, and arithmetic, a comparison with a number, a call, an index assignment or a `for`
+fail with LuaJIT's message for a string; a builtin cannot be dumped. `load` of it (mode with `b`) is a closure of the
+dumped function, each upvalue a new cell holding nil; an unstripped one keeps its chunk name and lines whatever load
+calls it, a stripped one is the chunk load names (`=?` if none) at line 0, its upvalues without names (in errors and
+`debug.getupvalue`; `Site.strip`), `dofile` and `require` of files given as source, `require` through `package.path`,
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
 lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`); `coroutine`, all of LuaJIT 2.1's (`create`,
-`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines"). The world (*Effects*): `print` (with
+`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines"); `debug` without a call stack
+(`debugFn`): `getmetatable` and `setmetatable` of a table raw (`__metatable` neither hides nor protects it;
+setmetatable returns true), `getupvalue` and `setupvalue` of a closure (its upvalues are the outer locals its body
+names, numbered in the order LuaJIT's parser meets them: `Clo.upvals`) or of a builtin that has none, `getinfo` of
+a function (`u`, `f`, `l`, `n`, a builtin's `S` and `L` too: `[C]`, its count of upvalues LuaJIT's), of a negative
+level (nil) and its bad arguments, `traceback` of a value neither a string nor a number (returned as it is), a
+thread as the first argument of either; `bit`, all of LuaJIT 2.1's (`tobit`, `tohex`, `bnot`, `band`, `bor`, `bxor`,
+`lshift`, `rshift`, `arshift`, `rol`, `ror`, `bswap`; the global and `require "bit"`), on int32: each argument a
+number or a string read as one, an integer mod 2^32 and a double through lj_num2bit (plus 2^52 + 2^51, the low 32
+bits: rounded to even, inf and NaN 0; `Num.toBit`, which the kernel computes), a shift's count mod 32, each result an
+int32 (an integer on dual-number, a double on single-number), `tohex`'s width negative for upper case and at most 254;
+`bitFn`, `RunP.bit` and `bit_tobit`, `bit_band`, `bit_lshift`. The world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
 arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
@@ -198,16 +247,31 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `~`, `<<`, `>>`, `~>>`), `!`, `&&`, `||`, `!=`, the conditional `a ? b : c`, safe navigation (`t?.k`, `t?.[k]`,
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
-underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); `setfenv` and `load`'s environment argument, FFI,
-`__gc`, `__mode`, `string.format("%a")`, `string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
+underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); FFI,
+`__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
+`getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
+`collectgarbage`, `gcinfo`, `module`, `newproxy`, `loadfile`, `arg` and
+`package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
+run; `_VERSION` is LuaJIT's `"Lua 5.1"`.
 
-How a script outside it is reported, from strongest to weakest:
+How a script outside it is reported, from strongest to weakest. `lua-lean check f.lua` (`tools/Check.lean`) names,
+by line and before anything is lifted, what of it the source shows: a parse error; a global LuaJIT has and the
+semantics holds as a handle, or one neither defines (a host's: `ngx`, `love`); a library field that is a handle; a
+`require` of a module outside the subset or not found as a file under the script's directories; `string.format`'s
+`%a %o %u %p` in a constant format; `getfenv` or `setfenv` of a constant level past 1 or of level 1 (or none) in a
+tail call, `setfenv` of level 0; `setmetatable(_G, …)`; a `goto` but the continue
+idiom; `debug.getinfo` of a constant level or with `S` or `L` (or its default options), `debug.traceback` of a
+constant message or none, `xpcall(f, debug.traceback)`, `debug.setmetatable` of a constant not a table. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
+calls each function the chunk defines at its top level with random arguments under the semantics and under LuaJIT
+(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. What only
+a run meets (a `#t` with two borders, a double past a C cast's range) only that test, or a proof, finds.
 
 1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1). The
    translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
    nothing that parses fails to translate.
 2. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
-   reaches it can be proved: a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
+   reaches it can be proved: a read of a weak table that could see an entry the collector freed and a change of its
+   mode or metatable ("Tables"), a metatable on `_G` or `package.loaded`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), `error` with a level that counts out past a
    builtin (`pcall(error, "x", 2)`: its place is a call the builtin's frame hides), `string.format`'s `%a`, `%o`, `%u`
@@ -223,13 +287,28 @@ How a script outside it is reported, from strongest to weakest:
    are the C locale's), a time past 2^53 to `os.date` or a difference past 2^53 from `os.difftime`, a field of
    `os.time`'s table past 2^30 or a date in it before 1900 (C libraries differ: macOS's mktime answers -1; the test's
    world, `Run.caseFx`, does not answer), `os.exit`; `load` or `loadstring` of a source the parser rejects (its
-   message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
+   message would be LuaJIT's parser's), of bytecode, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
+what reads a dump's bytes (`dumpBytes`): its length, `..` with a string or number, its methods (`d:sub`), a builtin
+taking it as a string (`string.*`, `format`'s `%s`, `print`, `io.write`, `table.concat`, a `gsub` replacement,
+`error` at a level, `assert`'s message, string.dump's flag), a table key, `==`, `<` or `rawequal` with a string or
+another closure's dump, a result of the chunk; a message of a stripped function that names a local (LuaJIT finds
+the name by scanning the bytecode back);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
-   `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`).
+   `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`); a call of one of LuaJIT's
+   functions outside the subset (`jit.flush`, `collectgarbage`, `debug.getlocal`; above); `getfenv` or `setfenv` of
+   a level the semantics keeps no frame for (`fenvLevel`): past 1, level 1 of a builtin's call (`pcall(getfenv, 1)`)
+   or of a tail call (`return getfenv(1)`: its level 1 is below the frame the call replaced; inside a tail call's
+   arguments too), and `setfenv(0, …)`, the thread's environment (`load` and `print` read it); either of an effect
+   handle; a `goto` to a label of its
+   block that does not end it (`effect goto: …`, pcall or not); what of `debug` needs a call stack the semantics does
+   not keep or lines a closure does not carry: `debug.getinfo` of a level 0 or above or with `S` or `L` for a Lua
+   function (its default options have `S`), `debug.traceback` of a string, a number or nothing (its text is the
+   stack's, the host's frames below the script's among them); `debug.setmetatable` of a value not a table (the
+   metatable of its type), `debug.getmetatable` of a string, and the upvalues of a builtin that has some (`print`,
+   `pairs`, `ipairs`, `type`, a `gmatch` iterator, a `coroutine.wrap` function: LuaJIT's own values).
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
-   - `__mode` added to a metatable after `setmetatable`;
    - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where
      lj_parse.c emits each instruction): `o:m(...)` with `:m` and `(` on two lines reports a failed index of `o` on the
      line of `(`, LuaJIT on that of `m`; a constructor's `[k] = v` with `k` nil or NaN is reported at the enclosing
@@ -247,9 +326,24 @@ How a script outside it is reported, from strongest to weakest:
      light userdata in LuaJIT (which LuaJIT 2.1 may show as a number);
    - a module not found on `package.path` is a handle, a C module the oracle answers, where LuaJIT may find no such
      module and raise an error;
-   - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT.
+   - a dump as the metamethod of two tables' different metatables, compared to decide `__eq`, `__lt` or `__le`: two
+     dumps of distinct closures are unequal, where LuaJIT's bytes may be equal (one function made twice), and calls
+     the dump (an error);
+   - `getmetatable` of a dump: nil, as of any string above;
+   - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
+     handle read rather than called (`jit.os`, `package.preload`) is a handle where LuaJIT has a
+     string or a table. `lua-lean check` names each use.
 
-G2 turns this list into a checker that names each construct with its line before anything is lifted.
+The corpus (`test/corpus.txt`: 59 files of 29 projects, MIT, BSD or public domain, fetched at a pinned commit by
+`lua-lean corpus`, never committed) measures the subset on scripts written for LuaJIT by others. `corpus` runs the
+checker under the semantics only (it runs no effect, so nothing fetched runs outside it); `lua-lean check` on one of
+them adds LuaJIT. On 2026-11-11: 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in
+the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`), 29 are in the subset (20 before
+G3c's metamethods), and their 1192 top-level functions give 4575 calls that reach no effect. Outside it, by the
+files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3 (in the subset since #34), `setfenv` 3, `getfenv` 2 (both in the subset since #33 but Microlight's
+`getfenv(2)`), `jit` 2,
+`bit` 2 (in the subset since #35),
+`package.config` 2.
 
 ## Layout and use
 
@@ -261,8 +355,9 @@ G2 turns this list into a checker that names each construct with its line before
 | `LuaLean/Interp.lean` | the semantics |
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |
 | `LuaLean/Show.lean` | a syntax tree as the Lean term that builds it |
+| `LuaLean/Print.lean` | a syntax tree printed back as Lua (`lua-lean print`, `parsecheck`, `check`'s chunks) |
 | `LuaLean/Shallow.lean` | the translator's target: one combinator and one lemma per interpreter clause |
-| `LuaLean/Denote.lean` | a prototype: the translator as a Lean function and one proof for every program (`research/translator-proof.md`, `lua-lean lift1`) |
+| `LuaLean/Denote.lean` | the translator as a Lean function, `D.fn`, and the one proof for every program, `D.fn_ok`, that each `f_ok` is (`research/translator-proof.md`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
 | `LuaLean/Gen.lean` | random chunks for the differential test; a user adds its own (`swarm/model/SwarmModel/LuaCases.lean`) |
 | `tools/*.lean` | the CLI's programs, run with `lake env lean --run` |
@@ -270,6 +365,8 @@ G2 turns this list into a checker that names each construct with its line before
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
+| `test/check/` | `lua-lean check`'s test: a script with each kind of construct outside the subset, and what check says |
+| `test/corpus.txt` | the third-party scripts `lua-lean corpus` fetches and checks |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
 
@@ -280,6 +377,8 @@ lua-lean/lua-lean prove f.lua...               # lift each and check its proofs 
 lua-lean/lua-lean parsecheck f.lua...          # the parser against LuaJIT's bytecode
 lua-lean/lua-lean run [--lib p=dir] f.lua      # f.lua under the semantics; luajit lua-lean/test/luasem.lua f.lua under LuaJIT
 lua-lean/lua-lean difftest 3000                # fresh chunks under LuaJIT
+lua-lean/lua-lean check f.lua...               # what is outside the subset, by line; its functions under LuaJIT
+lua-lean/lua-lean corpus [dir]                 # the third-party corpus, fetched and checked (the semantics only)
 lua-lean/lua-lean dump Name f.lua              # the tree as `def NameSrc : Block`, for proofs about the source itself
 ```
 
@@ -296,9 +395,10 @@ proof; a statement is never weakened to make a proof go through.
 
 ## Roadmap
 
-- **G2** subset checker: `lua-lean check f.lua` lists every construct and library call outside the subset with its
-  line, and runs the differential test on the script's own pure functions; coverage on a corpus of real third-party
-  LuaJIT scripts.
+- **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
+  tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
+  to `getinfo`, `traceback`'s text, a closure's source and lines) is #44, and with it #33's levels past 1.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c, done). `LuaLean/Hoare.lean` has a rule for each operator's metamethod and for
@@ -306,13 +406,11 @@ proof; a statement is never weakened to make a proof go through.
 - **G4** the standard library. Done: the rest of string, table and math, `select`/`tostring`/`tonumber` corners
   (G4a); `pairs` order opaque, `#t` with holes a stop (G4b); `os` and `io` as effects with named axioms (G4c). A model
   of LuaJIT's layout for number keys would make their order and every `#t` known.
-- **G5** `load`, `dofile`, `require` of arbitrary modules: done (see the subset; `setfenv` and `load`'s environment
-  wait for a model of function environments).
+- **G5** `load`, `dofile`, `require` of arbitrary modules: done (see the subset), `load`'s environment too (#33).
 - **G6** coroutines: done ("Coroutines").
 - **G7** heap abstraction, proof-producing: functions whose tables are provably unshared become pure Lean functions,
   with a proof they equal the heap-monadic lift.
 - **G8** end to end: an LLM writes a script and its spec, the tool lifts it, the spec is proved; measured on a few
   realistic scripts.
-- One proof that the translator is correct for every program, replacing the per-output proofs: prototyped for the
-  whole language (`LuaLean/Denote.lean`, `lua-lean lift1`); `research/translator-proof.md` has the measurements and
-  the recommendation to switch `lift` to it.
+- Done: one proof that the translator is correct for every program (`D.fn_ok`, `LuaLean/Denote.lean`) replaces the
+  per-output proofs (boards #24, #38; `research/translator-proof.md`).

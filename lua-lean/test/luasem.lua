@@ -80,12 +80,13 @@ function M.run(src)
 end
 
 -- a cases file (LuaLean/Gen.lean's writeCases, gzipped or not): each chunk under LuaJIT must give the Lean
--- interpreter's results for M.target (`single`, where given, else `out`); errors with the first differences
-function M.check(file)
+-- interpreter's results for M.target (`single`, where given, else `out`); errors with the first differences.
+-- `any`: errors may be most of them (`lua-lean check`'s random arguments)
+function M.check(file, any)
   local h = assert(io.popen((file:match("%.gz$") and "gzip -dc '" or "cat '") .. file .. "'"))
   local cases = assert(loadstring(h:read("*a"), "=" .. file))()
   h:close()
-  assert(cases and #cases > 0, "no cases in " .. file)
+  assert(cases and (any or #cases > 0), "no cases in " .. file)
   local bad, errs = {}, 0
   for i, k in ipairs(cases) do
     local got, want = M.run(k.src), M.target == "single" and k.single or k.out
@@ -96,14 +97,14 @@ function M.check(file)
     error(("%d of %d cases differ; the first:\n%s"):format(#bad, #cases, table.concat(bad, "\n", 1, math.min(3, #bad))), 0)
   end
   -- the cases must mostly run
-  assert(errs < #cases / 4, ("%d of %d cases end in an error"):format(errs, #cases))
+  assert(any or errs < #cases / 4, ("%d of %d cases end in an error"):format(errs, #cases))
   return #cases
 end
 
 -- luajit luasem.lua <file.lua>...: each chunk's results; luajit luasem.lua --cases <file>: M.check
 if arg and arg[0] and arg[0]:match("luasem%.lua$") then
   if arg[1] == "--cases" then
-    local n = M.check(arg[2])
+    local n = M.check(arg[2], arg[3] == "--any")
     print(("%s: %d cases agree (%s-number; %s %s, JIT %s)"):format(arg[2], n, M.target, jit.version, jit.arch,
       jit.status() and "on" or "off"))
   else

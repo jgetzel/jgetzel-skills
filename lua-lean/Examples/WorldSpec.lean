@@ -63,16 +63,16 @@ theorem consistent : TakesWrites ideal ∧ ClockAnswers ideal ∧ ClockMono idea
 
 /-! ## The script -/
 
-/-- the heap has io.write and os.time where the script reads them, and the trace -/
+/-- the heap has io.write and os.time where the script reads them, in `_G` (no metatable), and the trace -/
 structure Lib (h : Heap) : Prop where
   log : ∃ l, h[LOG]? = some (.log l)
-  g : ∃ gt, h[G]? = some (.tbl gt) ∧ ∃ io os, gt.get (lstr "io") = .tbl io ∧ gt.get (lstr "os") = .tbl os ∧
-    (∃ t, h[io]? = some (.tbl t) ∧ t.get (lstr "write") = .prim "io.write" []) ∧
-    (∃ t, h[os]? = some (.tbl t) ∧ t.get (lstr "time") = .prim "os.time" [])
+  g : ∃ gt, h[G]? = some (.tbl gt) ∧ gt.mt = none ∧ ∃ io os, gt.get (lstr "io") = .tbl io ∧ gt.get (lstr "os") = .tbl os ∧
+    (∃ t, h[io]? = some (.tbl t) ∧ t.get (lstr "write") = .prim "io.write" [] ∧ t.mt = none) ∧
+    (∃ t, h[os]? = some (.tbl t) ∧ t.get (lstr "time") = .prim "os.time" [] ∧ t.mt = none)
 
 /-- as the semantics starts -/
 theorem lib_init : Lib initHeap :=
-  ⟨⟨_, rfl⟩, _, rfl, 9, 10, rfl, rfl, ⟨_, rfl, rfl⟩, ⟨_, rfl, rfl⟩⟩
+  ⟨⟨_, rfl⟩, _, rfl, rfl, 9, 10, rfl, rfl, ⟨_, rfl, rfl, rfl⟩, ⟨_, rfl, rfl, rfl⟩⟩
 
 theorem lt_of_some {h : Heap} {a : Nat} {o : Obj} (e : h[a]? = some o) : a < h.size := by
   rcases Nat.lt_or_ge a h.size with h1 | h1
@@ -82,37 +82,45 @@ theorem lt_of_some {h : Heap} {a : Nat} {o : Obj} (e : h[a]? = some o) : a < h.s
 theorem get_of_some {h : Heap} {a : Nat} {o : Obj} (e : h[a]? = some o) : h[a]'(lt_of_some e) = o := by
   rw [Array.getElem?_eq_getElem (lt_of_some e)] at e; exact Option.some.inj e
 
-theorem greet_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (s : List Char) (vs : List Val)
+theorem greet_run (I : Sem) (env0 : Env) (fn0 : Nat) (c : Clo) (h : Heap) (L : Lib h)
+    (hc : h[fn0]? = some (.clo c)) (hcf : c.fenv = G) (s : List Char) (vs : List Val)
     (hw : I.oracle "io.write" [.str ("hello, ".toList ++ s ++ "\n".toList)] (trace h) = some vs) (n : Nat) :
-    greet I env0 [.str s] (n + 20) h = .ok [] ((h.push (.cell (.str s))).setIfInBounds LOG
+    greet I env0 fn0 [.str s] (n + 20) h = .ok [] ((h.push (.cell (.str s))).setIfInBounds LOG
       (.log (⟨"io.write", [.str ("hello, ".toList ++ s ++ "\n".toList)], vs⟩ :: trace h))) := by
-  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, ⟨t, ht, htw⟩, -⟩ := L
+  obtain ⟨⟨l, hl⟩, gt, hg, hgm, io, os, hio, hos, ⟨t, ht, htw, htm⟩, -⟩ := L
   have hs6 := lt_of_some hl
   have hG := lt_of_some hg
   have hI := lt_of_some ht
   have hg' := get_of_some hg
   have ht' := get_of_some ht
+  have hF := lt_of_some hc
+  have hc' := get_of_some hc
   simp [lstr] at hio htw hos hw
   simp only [greet, S.fn, S.let1, S.letEnd, S.block, S.qStat, S.sCall, S.mSite, S.mCall, S.eSite, S.eIndex, S.eGlob,
     S.eStr, S.lCons, S.lLast, S.mOne, S.eCell, S.qEnd, tick]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, alloc, get, set, getThe,
     MonadStateOf.get, MonadStateOf.set, EStateM.get, EStateM.set, frame, atSite, Array.getElem?_push, hG, hg', hio,
-    Nat.ne_of_lt hG]
+    Nat.ne_of_lt hG, fenvOf, hc, Nat.ne_of_lt hF, hcf]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, call_prim, callPrim_write, ioWrite]
+    EStateM.get, Array.getElem?_push, hG, hg', hio, Nat.ne_of_lt hG, Val.isNil, held, weakOf, noDump, Val.isDump, hgm]
+  rw [index.eq_def]
+  simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
+    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_write, ioWrite,
+    fenvCall]
   simp [effect, trace_push _ hs6, hw, frame, EStateM.bind, EStateM.pure, atSite, List.findIdx?_cons,
     List.findIdx?_nil]
 
-theorem readings_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (t0 t1 : Int)
+theorem readings_run (I : Sem) (env0 : Env) (fn0 : Nat) (c : Clo) (h : Heap) (L : Lib h)
+    (hc : h[fn0]? = some (.clo c)) (hcf : c.fenv = G) (t0 t1 : Int)
     (e0 : I.oracle "os.time" [] (trace h) = some [.num (.int t0)])
     (e1 : I.oracle "os.time" [] (⟨"os.time", [], [.num (.int t0)]⟩ :: trace h) = some [.num (.int t1)]) (n : Nat) :
-    readings I env0 [] (n + 30) h = .ok [timeVal t0, timeVal t1]
+    readings I env0 fn0 [] (n + 30) h = .ok [timeVal t0, timeVal t1]
       ((((h.setIfInBounds LOG (.log (⟨"os.time", [], [.num (.int t0)]⟩ :: trace h))).push
         (.cell (timeVal t0))).setIfInBounds LOG
         (.log (⟨"os.time", [], [.num (.int t1)]⟩ :: ⟨"os.time", [], [.num (.int t0)]⟩ :: trace h))).push
         (.cell (timeVal t1))) := by
-  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, -, ⟨t, ht, htw⟩⟩ := L
+  obtain ⟨⟨l, hl⟩, gt, hg, hgm, io, os, hio, hos, -, ⟨t, ht, htw, htm⟩⟩ := L
   have hs6 := lt_of_some hl
   have hG := lt_of_some hg
   have hI := lt_of_some ht
@@ -121,33 +129,50 @@ theorem readings_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (t0 t1 : Int)
   have hoL : os ≠ LOG := by rintro rfl; simp [ht] at hl
   have hGL : G ≠ LOG := by decide
   have tr1 := trace_set (⟨"os.time", [], [.num (.int t0)]⟩ :: trace h) hs6
+  have hF := lt_of_some hc
+  have hc' := get_of_some hc
+  have hfL : fn0 ≠ LOG := by rintro rfl; simp [hc] at hl
   simp [lstr] at hio htw hos
   simp only [readings, S.fn, S.let1, S.letEnd, S.block, S.qStat, S.qLocal, S.sReturn, S.mSite, S.mCall, S.eSite,
     S.eIndex, S.eGlob, S.eStr, S.lCons, S.lLast, S.lNil, S.mOne, S.eCell, S.qEnd, tick]
-  simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite]
-  rw [index.eq_def]
-  simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, Val.isNil,
-    call_prim, callPrim_time, timeFx, effect, e0, frame, atSite]
+  -- each global, `_G`'s field, then its field
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, call_prim, callPrim_time, timeFx,
-    effect, tr1, e1]
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
+    effect, tr1, e0, e1, fenvOf, hc, hcf, hgm, Nat.ne_of_lt hF, hfL, Ne.symm hfL, fenvCall]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, call_prim, callPrim_time, timeFx,
-    effect, tr1, e1, trace_push, trace_set, Array.size_setIfInBounds, Array.size_push, Nat.ne_of_lt hs6,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
+    effect, tr1, e0, e1, fenvOf, hc, hcf, hgm, Nat.ne_of_lt hF, hfL, Ne.symm hfL, fenvCall]
+  rw [index.eq_def]
+  simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
+    pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
+    Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
+    effect, tr1, e0, e1, fenvOf, hc, hcf, hgm, Nat.ne_of_lt hF, hfL, Ne.symm hfL, fenvCall]
+  rw [index.eq_def]
+  simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
+    pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
+    Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
+    effect, tr1, e0, e1, fenvOf, hc, hcf, hgm, Nat.ne_of_lt hF, hfL, Ne.symm hfL, fenvCall]
+  rw [index.eq_def]
+  simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
+    pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
+    Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, noDump, Val.isDump, call_prim, callPrim_time, timeFx,
+    effect, tr1, e0, e1, fenvOf, hc, hcf, hgm, Nat.ne_of_lt hF, hfL, Ne.symm hfL, fenvCall, trace_push, trace_set, Array.size_setIfInBounds, Array.size_push, Nat.ne_of_lt hs6,
     (Nat.ne_of_lt hs6).symm]
 
 /-! ## The specs -/
 
 /-- greet writes its line to the default output, and does nothing else in the world -/
-theorem greet_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (h : Heap) (L : Lib h) (s : List Char) :
-    RunP (greet I env0 [.str s]) h fun r h' => r = [] ∧
+theorem greet_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (fn0 : Nat) (c : Clo) (h : Heap) (L : Lib h)
+    (hc : h[fn0]? = some (.clo c)) (hcf : c.fenv = G) (s : List Char) :
+    RunP (greet I env0 fn0 [.str s]) h fun r h' => r = [] ∧
       ∃ vs, trace h' = ⟨"io.write", [.str ("hello, ".toList ++ s ++ "\n".toList)], vs⟩ :: trace h := by
   obtain ⟨vs, e⟩ := takes_writes ("hello, ".toList ++ s ++ "\n".toList) (trace h)
   rw [← hI] at e
@@ -156,11 +181,12 @@ theorem greet_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (h : Heap) (L :
     (.log (⟨"io.write", [.str ("hello, ".toList ++ s ++ "\n".toList)], vs⟩ :: trace h)), fun n hn => ?_, rfl, vs,
     trace_set _ (by simp [Array.size_push]; omega)⟩
   obtain ⟨k, rfl⟩ : ∃ k, n = k + 20 := ⟨n - 20, by omega⟩
-  exact greet_run I env0 h L s vs e k
+  exact greet_run I env0 fn0 c h L hc hcf s vs e k
 
 /-- readings reads the clock twice, and the second reading is no earlier than the first -/
-theorem readings_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (h : Heap) (L : Lib h) :
-    RunP (readings I env0 []) h fun r h' => ∃ t0 t1 : Int, t0 ≤ t1 ∧ r = [timeVal t0, timeVal t1] ∧
+theorem readings_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (fn0 : Nat) (c : Clo) (h : Heap) (L : Lib h)
+    (hc : h[fn0]? = some (.clo c)) (hcf : c.fenv = G) :
+    RunP (readings I env0 fn0 []) h fun r h' => ∃ t0 t1 : Int, t0 ≤ t1 ∧ r = [timeVal t0, timeVal t1] ∧
       trace h' = ⟨"os.time", [], [.num (.int t1)]⟩ :: ⟨"os.time", [], [.num (.int t0)]⟩ :: trace h := by
   obtain ⟨t0, e0⟩ := clock_answers (trace h)
   obtain ⟨t1, e1⟩ := clock_answers (⟨"os.time", [], [.num (.int t0)]⟩ :: trace h)
@@ -172,7 +198,7 @@ theorem readings_spec (I : Sem) (hI : I.oracle = real) (env0 : Env) (h : Heap) (
     (.log (⟨"os.time", [], [.num (.int t1)]⟩ :: ⟨"os.time", [], [.num (.int t0)]⟩ :: trace h))).push
     (.cell (timeVal t1)), fun n hn => ?_, t0, t1, le, rfl, ?_⟩
   · obtain ⟨k, rfl⟩ : ∃ k, n = k + 30 := ⟨n - 30, by omega⟩
-    exact readings_run I env0 h L t0 t1 e0 e1 k
+    exact readings_run I env0 fn0 c h L hc hcf t0 t1 e0 e1 k
   · simp [trace_push, trace_set, Array.size_setIfInBounds, Array.size_push, hs6, Nat.lt_succ_of_lt]
 
 /-- info: 'World.greet_spec' depends on axioms: [propext, Classical.choice, Quot.sound, takes_writes] -/

@@ -1,9 +1,9 @@
 import LuaLean.Shallow
 
-/-! A prototype (research/translator-proof.md): the translator as a Lean function, `D.fn`, from a parsed function to
-`Shallow.lean`'s combinators, and one theorem, `D.fn_ok`, that it is the interpreter's call for every program. A
-lifted function's shallow form is `D.fn` of its body, unfolded: the kernel checks that by computation, so a
-function's `f_ok` is `D.fn_ok` itself and no proof is written per function (`lua-lean lift1`). -/
+/-! The translator as a Lean function, `D.fn`, from a parsed function to `Shallow.lean`'s combinators, and one theorem,
+`D.fn_ok`, that it is the interpreter's call for every program (research/translator-proof.md). A lifted function's
+shallow form is `D.fn` of its body, unfolded: the kernel checks that by computation, so a function's `f_ok` is
+`D.fn_ok` itself and no proof is written per function (`lua-lean lift`). -/
 
 namespace Lua
 
@@ -29,6 +29,8 @@ namespace Sc
 def ok (s : Sc) : Prop := ∀ x, s.cx.env.lookup x = s.res x
 /-- a new local `x` in cell `c` -/
 def bind (s : Sc) (x : String) (c : Nat) : Sc := ⟨{ s.cx with env := (x, c) :: s.cx.env }, res1 x (some c) s.res⟩
+/-- inside a call at site `st`: a tail call's callee does not see this function as level 1 -/
+def untail (s : Sc) (st : Site) : Sc := ⟨{ s.cx with top := s.cx.top && !st.tail }, s.res⟩
 theorem bind_ok {s : Sc} (h : s.ok) (x : String) (c : Nat) : (s.bind x c).ok := by
   intro y; show List.lookup y ((x, c) :: s.cx.env) = res1 x (some c) s.res y
   rw [List.lookup_cons]; unfold res1; cases y == x
@@ -56,15 +58,15 @@ def exp (I : Sem) (s : Sc) : Exp → SE × SM
   | .num x => one (eNum x)
   | .str x => one (eStr x)
   | .vararg => (eVa s.cx.va, mVa s.cx.va)
-  | .func ps va b => one (eFunc ps va b s.cx.env)
+  | .func ps va b => one (eFunc ps va b s.cx.env s.cx.self)
   | .var x => one (match s.res x with
     | some c => eCell c
-    | none => eGlob x)
+    | none => eGlob I s.cx.self x)
   | .index t k => one (eIndex I (exp I s t).1 (exp I s k).1)
-  | .call f as => let m := mCall I (exp I s f).1 (list I s as); (eFirst m, m)
-  | .method o x as => let m := mMethod I (exp I s o).1 x (list I s as); (eFirst m, m)
+  | .call f as => let m := mCall I s.cx.caller (exp I s f).1 (list I s as); (eFirst m, m)
+  | .method o x as => let m := mMethod I s.cx.caller (exp I s o).1 x (list I s as); (eFirst m, m)
   | .paren a => one (eParen (exp I s a).1)
-  | .site st a => (eSite st (exp I s a).1, mSite st (exp I s a).2)
+  | .site st a => (eSite st (exp I s a).1, mSite st (exp I (s.untail st) a).2)
   | .and a b => one (eAnd (exp I s a).1 (exp I s b).1)
   | .or a b => one (eOr (exp I s a).1 (exp I s b).1)
   | .bin op a b => one (eBin I op (exp I s a).1 (exp I s b).1)
@@ -87,7 +89,7 @@ def places (I : Sem) (s : Sc) : List Exp → SP
   | [] => pNil
   | .var x :: ts => pVar (match s.res x with
     | some c => wCell c
-    | none => wGlob x) (places I s ts)
+    | none => wGlob I s.cx.self x) (places I s ts)
   | .site st (.index t k) :: ts => pIndex I (some st) (exp I s t).1 (exp I s k).1 (places I s ts)
   | .index t k :: ts => pIndex I none (exp I s t).1 (exp I s k).1 (places I s ts)
   -- no target: the parser makes none, and the interpreter's error is left to it
@@ -116,13 +118,13 @@ def stat (I : Sem) (s : Sc) : Stat → SB
 def seq (I : Sem) (s : Sc) (full : Block) : Block → (Sc → SB) → SB
   | [], fin => fin s
   | .loc ns es :: rest, fin => qLocal (list I s es) fun n => lets ns s fun s' => seq I s' full rest fin n
-  | .locfn x ps va b :: rest, fin => qLocalFn x ps va b s.cx.env fun c => seq I (s.bind x c) full rest fin
+  | .locfn x ps va b :: rest, fin => qLocalFn x ps va b s.cx.env s.cx.self fun c => seq I (s.bind x c) full rest fin
   | st :: rest, fin => qStat (stat I s st) (gotos (trail full) (labels full)) (seq I s full rest fin)
 end
 
-/-- a closure as a function: `res` its free names' cells -/
-def fn (I : Sem) (res : String → Option Nat) (c : Clo) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => lets c.params ⟨⟨c.env, []⟩, res⟩ fun s =>
+/-- a closure as a function: `res` its free names' cells, `a` its address -/
+def fn (I : Sem) (res : String → Option Nat) (a : Nat) (c : Clo) : List Val → Nat → M (List Val) :=
+  S.fn fun args n => lets c.params ⟨⟨c.env, [], a, true⟩, res⟩ fun s =>
     block (seq I { s with cx := { s.cx with va := if c.va then args.drop c.params.length else [] } }
       c.body c.body fun _ => qEnd) n
 
@@ -135,16 +137,16 @@ theorem one_ok {cx e} {s : SE} (he : e.single = true) (h : CE I s cx e) : CE I (
   ⟨h, CM_one he h⟩
 
 theorem var_ok {s : Sc} (hs : s.ok) (x : String) :
-    CE I (match s.res x with | some c => eCell c | none => eGlob x) s.cx (.var x) := by
+    CE I (match s.res x with | some c => eCell c | none => eGlob I s.cx.self x) s.cx (.var x) := by
   have h := hs x; split
   · next e => exact CE_cell (h.trans e)
-  · next e => exact CE_glob (h.trans e)
+  · next e => exact CE_glob (h.trans e) rfl
 
 theorem wvar_ok {s : Sc} (hs : s.ok) (x : String) :
-    (match s.res x with | some c => wCell c | none => wGlob x) = fun _ => setVar s.cx x := by
+    (match s.res x with | some c => wCell c | none => wGlob I s.cx.self x) = wVar I s.cx x := by
   have h := hs x; split
   · next e => exact wCell_ok (h.trans e)
-  · next e => exact wGlob_ok (h.trans e)
+  · next e => exact wGlob_ok (h.trans e) rfl
 
 theorem lets_ok {α} {K : Ctx → M α} : ∀ (xs : List String) (s : Sc) (k : Sc → M α), s.ok →
     (∀ s' : Sc, s'.ok → k s' = K s'.cx) → CBs (lets xs s k) s.cx xs K
@@ -159,13 +161,13 @@ theorem exp_ok : (e : Exp) → (s : Sc) → s.ok → CE I (exp I s e).1 s.cx e �
   | .num _, _, _ => one_ok rfl CE_num
   | .str _, _, _ => one_ok rfl CE_str
   | .vararg, _, _ => ⟨CE_va rfl, CM_va rfl⟩
-  | .func .., _, _ => one_ok rfl (CE_func rfl)
+  | .func .., _, _ => one_ok rfl (CE_func rfl rfl)
   | .var x, _, hs => one_ok rfl (var_ok hs x)
   | .index t k, s, hs => one_ok rfl (CE_index (exp_ok t s hs).1 (exp_ok k s hs).1)
-  | .call f as, s, hs => have h := CM_call (exp_ok f s hs).1 (list_ok as s hs); ⟨CE_call h, h⟩
-  | .method o _ as, s, hs => have h := CM_method (exp_ok o s hs).1 (list_ok as s hs); ⟨CE_method h, h⟩
+  | .call f as, s, hs => have h := CM_call rfl (exp_ok f s hs).1 (list_ok as s hs); ⟨CE_call h, h⟩
+  | .method o _ as, s, hs => have h := CM_method rfl (exp_ok o s hs).1 (list_ok as s hs); ⟨CE_method h, h⟩
   | .paren a, s, hs => one_ok rfl (CE_paren (exp_ok a s hs).1)
-  | .site _ a, s, hs => ⟨CE_site (exp_ok a s hs).1, CM_site (exp_ok a s hs).2⟩
+  | .site st a, s, hs => ⟨CE_site (exp_ok a s hs).1, CM_site (exp_ok a (s.untail st) hs).2⟩
   | .and a b, s, hs => one_ok rfl (CE_and (exp_ok a s hs).1 (exp_ok b s hs).1)
   | .or a b, s, hs => one_ok rfl (CE_or (exp_ok a s hs).1 (exp_ok b s hs).1)
   | .bin _ a b, s, hs => one_ok rfl (CE_bin (exp_ok a s hs).1 (exp_ok b s hs).1)
@@ -227,15 +229,15 @@ theorem seq_ok : (rest : Block) → (s : Sc) → s.ok → (full : Block) → (fi
     cases st with
     | loc ns es =>
       exact CQ_local (list_ok es s hs) fun n => lets_ok ns s _ hs fun s' hs' => seq_ok rest s' hs' full fin k hk n
-    | locfn x ps va b => exact CQ_localFn rfl fun c => seq_ok rest (s.bind x c) (Sc.bind_ok hs x c) full fin k hk
+    | locfn x ps va b => exact CQ_localFn rfl rfl fun c => seq_ok rest (s.bind x c) (Sc.bind_ok hs x c) full fin k hk
     | _ => exact CQ_stat hst hq rfl rfl rfl
 end
 
 /-- the translator is correct, for every function: `fn` of a closure is the interpreter's call of it -/
-theorem fn_ok (I : Sem) (res : String → Option Nat) (c : Clo) (hr : ∀ x, c.env.lookup x = res x) :
-    CFn I (fn I res c) c :=
-  CFn_fn fun args n => lets_ok c.params ⟨⟨c.env, []⟩, res⟩ _ hr fun s' hs' =>
-    CK_block (seq_ok c.body ⟨⟨s'.cx.env, if c.va then args.drop c.params.length else []⟩, s'.res⟩ hs' c.body none _
+theorem fn_ok (I : Sem) (res : String → Option Nat) (a : Nat) (c : Clo) (hr : ∀ x, c.env.lookup x = res x) :
+    CFn I (fn I res a c) a c :=
+  CFn_fn fun args n => lets_ok c.params ⟨⟨c.env, [], a, true⟩, res⟩ _ hr fun s' hs' =>
+    CK_block (seq_ok c.body ⟨{ s'.cx with va := if c.va then args.drop c.params.length else [] }, s'.res⟩ hs' c.body none _
       fun _ _ => CQ_end) n
 
 end

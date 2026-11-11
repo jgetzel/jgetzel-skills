@@ -359,13 +359,68 @@ return log, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14"
       "ok:\"locked\",false,false,\"bad argument #1 to '?' (value expected)\"")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
 
--- a table's `__len` is never called (LuaJIT 2.1 without its 5.2 compatibility); `__mode` and a metatable on _G stop
--- the run
+-- a table's `__len` is never called (LuaJIT 2.1 without its 5.2 compatibility); a metatable on _G stops the run
 #guard [("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
       "ok:true,false,\"c:1: attempt to compare table with number\""),
     ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
-    ("return setmetatable({}, {__mode = \"k\"})", "effect metamethod __mode"),
     ("return setmetatable(_G, {})", "effect setmetatable(_G)")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
+/-- weak tables (`__mode`), its objects held by locals, so LuaJIT's collector frees none of them: a mode of `k`, `v`,
+both, none, cut by a NUL or not a string, set before `setmetatable` or after; reads by key, raw and through
+`__index`, writes through `__newindex`, `#t`, `ipairs`, `pairs` (counted, by the order no proof knows) and the table
+library. A read that could see an entry the collector freed stops the run (the `#guard` below), so a chunk that
+makes one is left out -/
+def weaks : G String := do
+  let key : G String := pick ["o1", "o2", "f", "\"s\"", "1", "2", "3", "true", "2.5"]
+  let val : G String := pick ["o1", "o2", "f", "\"x\"", "7", "false", "nil", "\"y\"", "8"]
+  let mode ← pick ["\"k\"", "\"k\"", "\"v\"", "\"kv\"", "\"vk\"", "\"\"", "\"x\"", q "k\x00v", q "v\x00k", "1", "\"K\""]
+  let late ← chance 3
+  let step : G String := do
+    match ← rnd 12 with
+    | 0 | 1 | 2 => return s!"t[{← key}] = {← val}"
+    | 3 | 4 => return s!"R[#R + 1] = P(function() return V(t[{← key}]) end)"
+    | 5 => return s!"R[#R + 1] = P(function() return V(rawget(t, {← key})) end)"
+    | 6 => return "R[#R + 1] = P(function() return #t end)"
+    | 7 => return "R[#R + 1] = P(function() local n, ty = 0, {} for k, v in pairs(t) do n = n + 1; ty[#ty + 1] = type(k) .. type(v) end table.sort(ty) return n, table.concat(ty, \" \") end)"
+    | 8 => return "R[#R + 1] = P(function() local n = 0 for i, v in ipairs(t) do n = n + i end return n end)"
+    | 9 => return s!"m.{← pick ["__index", "__newindex"]} = {← pick ["function(_, k) R[#R + 1] = \"mm\" end", "nil", "{}"]}"
+    | 10 => return s!"R[#R + 1] = P(function() return {← pick ["table.concat(t, \",\", 1, 2)", "V(unpack(t, 1, 2))", "V(table.remove(t))", "table.insert(t, 1, \"z\")"]} end)"
+    | _ => return "R[#R + 1] = P(function() return rawequal(setmetatable(t, m), t), getmetatable(t) == m end)"
+  let pre ← (List.range ((← rnd 4) + 1)).mapM fun _ => step
+  let post ← (List.range ((← rnd 5) + 1)).mapM fun _ => step
+  return helper ++ s!"local o1, o2, f = \{}, \{n = 1}, function() return 1 end
+local function V(x) if x == o1 then return \"o1\" elseif x == o2 then return \"o2\" elseif x == f then return \"f\" end return x end
+local R = \{}
+local m = {if late then "{}" else s!"\{__mode = {mode}}"}
+local t = setmetatable(\{}, m)
+{"\n".intercalate pre}
+{if late then s!"m.__mode = {mode}" else ""}
+{"\n".intercalate post}
+return R, o1, o2, f()"
+
+-- weak tables: a key held by the reader keeps its entry, and a weak string or number is never freed; a read that
+-- could see an object the collector freed stops the run (a weak value read, `next` to a weak entry, `#t` over weak
+-- values), and so does a change that would hide one (a mode changed or cleared, a weak table's metatable changed,
+-- a metatable on package.loaded)
+#guard [("local o = {} local t = setmetatable({}, {__mode = \"k\"}) t[o] = o; t.s = \"x\"; t[1] = o return t[o] == o, t.s, rawget(t, o) == o, t[1] == o, #t, select(\"#\", ipairs(t))",
+      "ok:true,\"x\",true,true,1,3"),
+    ("local t = setmetatable({\"a\", \"b\", s = 2}, {__mode = \"kv\"}) local n = 0 for k, v in pairs(t) do n = n + 1 end return n, #t, t[1], table.concat(t)",
+      "ok:3,2,\"a\",\"ab\""),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"k\\0v\"}) return t[1] == o, #t", "ok:true,1"),
+    ("local o = {} local t = setmetatable({o}, {__mode = 1}) return t[1] == o, #t", "ok:true,1"),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"v\"}) return t[1]", "effect weak table: a value the collector may free"),
+    ("local o = {} local m = {} local t = setmetatable({o}, m) m.__mode = \"v\" return rawget(t, 1)", "effect weak table: a value the collector may free"),
+    ("local o = {} local t = setmetatable({}, {__mode = \"k\"}) t[o] = 1 return next(t)", "effect next in a weak table"),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"v\"}) return pcall(next, t, 1)", "effect next in a weak table"),
+    ("local t = setmetatable({{}}, {__mode = \"v\"}) return #t", "effect #t of a weak table"),
+    ("local m = setmetatable({__index = function() return 1 end}, {__mode = \"v\"}) return setmetatable({}, m).x", "effect weak table: a value the collector may free"),
+    ("local o = {} local t = setmetatable({x = o}, {__mode = \"v\", __newindex = rawset}) t.x = 1 return t.x", "effect weak table: a value the collector may free"),
+    ("local m = {__mode = \"k\"} m.__mode = \"v\"", "effect __mode changed"),
+    ("local m = {__mode = \"k\"} m.__mode = \"k\" return getmetatable(setmetatable({}, m)) == m", "ok:true"),
+    ("local m = {__mode = \"k\"} require(\"table.clear\")(m)", "effect __mode changed"),
+    ("local t = setmetatable({}, {__mode = \"k\"}) return setmetatable(t, nil)", "effect setmetatable of a weak table"),
+    ("return pcall(setmetatable, package.loaded, {})", "effect setmetatable(package.loaded)")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
 
 /-- doubles outside the integer ranges, and calls that want an integer: LuaJIT leaves the C cast to the CPU, so the
@@ -423,8 +478,138 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   P(function() return math.fmod(x, y), math.modf(x), math.frexp(y) end), P(math.ldexp, x, {e}), P(math.deg, x),
   P(math.rad, y), math.pi, P(math.fmod, y, x), P(math.modf, y), {commas tn}, P(tonumber, {tn2}), r1, r2, acc, n0, m1, m2, r3, rm,
   table.new == new, table.clear == clear, z, w, getmetatable(w) ~= nil, P(tostring), P(tonumber), P(tostring, nil),
-  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
+  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end),
+  _VERSION"
 
+-- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
+-- the run
+#guard [("return collectgarbage(\"count\")", "effect collectgarbage"),
+    ("return pcall(module, \"m\")", "effect module"),
+    ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
+    ("return require(\"jit\").off()", "effect jit.off"), ("return jit.status()", "effect jit.status"),
+    -- a goto but the continue idiom stops the run too, pcall or not
+    ("return pcall(function() local i = 0 ::top:: i = i + 1 if i < 3 then goto top end return i end)",
+      "effect goto: a label that does not end its block")].all
+  fun (src, out) => runCase (fun _ => none) .dual [] src.toList == out
+
+
+-- ---------- debug ----------
+
+/-- every builtin of the initial heap's library tables, as a Lua expression -/
+def builtins : List String :=
+  [("", 0), ("string.", 2), ("table.", 3), ("math.", 4), ("coroutine.", 6), ("io.", 9), ("os.", 10), ("debug.", 11),
+    ("bit.", 12)].flatMap
+    fun (lib, a) => match (initHeap[a]? : Option Obj) with
+      | some (.tbl t) => t.kv.filterMap fun (k, v) => match k, v with
+        | .str k, .prim .. => some (lib ++ String.ofList k)
+        | _, _ => none
+      | _ => []
+
+/-- the debug library: a closure's upvalues in LuaJIT's order (the outer locals its body reads and writes, through
+each statement, shadowed, in nested functions), set and read back; getinfo of a closure or builtin with any options,
+a bad one, a negative level or no function; getmetatable and setmetatable raw (`__metatable` ignored), their bad
+arguments; traceback of a value it returns as it is; each builtin's count of upvalues -/
+def debugs : G String := do
+  let ref : G String := pick ["a", "b", "c", "d", "e"]
+  let stats ← (List.range ((← rnd 5) + 1)).mapM fun _ => do
+    match ← rnd 10 with
+    | 0 => pure s!"x = {← ref} + {← ref}"
+    | 1 => pure s!"{← ref} = {← ref}"
+    | 2 => pure s!"local {← ref} = 9; x = {← ref}"
+    | 3 => pure s!"do local {← ref} = 0; x = {← ref} end"
+    | 4 => pure s!"x = function(p, ...) return {← ref}, p end"
+    | 5 => pure s!"for {← ref} = {← ref}, {← ref} do x = {← ref} end"
+    | 6 => pure s!"repeat local {← ref} = 2 until {← ref}"
+    | 7 => pure s!"if {← ref} then x = \{[{← ref}] = {← ref}, {← ref}} elseif {← ref} then x = {← ref} end"
+    | 8 => pure s!"local function g() return g, {← ref} end; x = g"
+    | _ => pure s!"x = (function() local {← ref} = 1; return function() return {← ref}, {← ref} end end)()"
+  let ps ← pick ["", "p", "p, q", "...", "p, ..."]
+  let k ← pick ["1", "2", "3", "0", "-1", "6", "\"2\"", "1.5"]
+  let target ← pick ["f", "f", "g0", "print", "string.rep", "next", "(ipairs({}))", "(pairs({}))",
+    "coroutine.wrap(f)", "(\"x\"):gmatch(\".\")", "type", "-1", "\"-2\"", "{}", "nil", "-0.5"]
+  let opts ← pick ["\"u\"", "\"f\"", "\"l\"", "\"n\"", "\"nluf\"", "\"fu\"", "\"\"", "\"x\"", "\"uL\"", "\"Sl\"",
+    "\"flnSu\"", "nil", "{}", "5"]
+  let opts := if (target == "f" || target == "g0") && (opts.contains 'S' || opts.contains 'L' || opts == "nil") then
+    "\"un\"" else opts
+  let up ← pick ["f", "g0", "next", "string.rep", "debug.getinfo", "nil", "5"]
+  let prot ← pick ["nil", "false", "\"locked\""]
+  let m2 ← pick ["nil", "{}", "m"]
+  let bad ← pick ["", ", 1", ", \"x\"", ", nil", ", true"]
+  let gm ← pick ["1", "nil", "true", "f", "print", "coroutine.create(f)", "o"]
+  let tb ← pick ["{}", "nil", "false", "f", "co, {}", "co, nil", "o"]
+  let all := if ← chance 4 then
+    s!"local N = \{}\nfor i, h in ipairs(\{{commas builtins}}) do N[i] = debug.getinfo(h, \"u\").nups end\n" else
+    "local N = 0\n"
+  return all ++ s!"local a, b, c, d, e = 1, 2, 3, 4, 5
+local function f({ps})
+  local x
+  {"\n  ".intercalate stats}
+  return x
+end
+local g0 = function() return a, e end
+local U = \{}
+for i = 1, 7 do U[i] = \{pcall(debug.getupvalue, {up}, i)} end
+local S = \{pcall(debug.setupvalue, {up}, {k}, 50)}
+local after = \{a, b, c, d, e, pcall(f, 1, 2, 3)}
+local I = \{pcall(debug.getinfo, {target}, {opts})}
+local fi = I[2] and type(I[2]) == \"table\" and I[2].func
+if fi then I[2].func = fi == {target} end
+local m = \{__metatable = {prot}, __index = function(_, key) return key end}
+local o = setmetatable(\{}, m)
+local M = \{debug.getmetatable(o) == m, getmetatable(o), pcall(debug.setmetatable, o, {m2}), o.key,
+  rawequal(getmetatable(o), {m2}), pcall(debug.setmetatable, o{bad}), pcall(debug.getmetatable, {gm})}
+local co = coroutine.create(f)
+local tr = debug.traceback({tb})
+return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), require(\"debug\") == debug, N"
+
+-- what needs a call stack (a level, a traceback's text, a Lua function's lines) or sets the metatable of a type
+-- stops the run
+#guard [("return debug.traceback(\"x\")", "effect debug.traceback: the stack"),
+    ("return debug.traceback()", "effect debug.traceback: the stack"),
+    ("return debug.getinfo(1, \"l\")", "effect debug.getinfo of a stack level"),
+    ("return debug.getinfo(function() end)", "effect debug.getinfo: a Lua function's lines"),
+    ("return debug.setmetatable(1, {})", "effect debug.setmetatable of a number"),
+    ("return debug.getmetatable(\"\")", "effect debug.getmetatable of a string"),
+    ("return debug.getupvalue(print, 1)", "effect debug: the upvalues of print"),
+    ("return debug.getlocal(1, 1)", "effect debug.getlocal"),
+    ("return debug.setmetatable(package.loaded, {})", "effect setmetatable(package.loaded)"),
+    ("local a, b = 1, 2 local function f() b = a; return function() return b, f end end return debug.getupvalue(f, 1), debug.getupvalue(f, 2), debug.getupvalue(f, 3)",
+      "ok:\"b\",\"a\",\"f\",function")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
+-- ---------- bit ----------
+
+/-- the bit library: each function on integers, on doubles (lj_num2bit's rounding to even, past 2^31, 2^51 and 2^53,
+inf, NaN), on strings and on bad arguments or too few; shift counts past 31 and negative; tohex's widths; a result's
+zero times -1 (an integer on dual-number, a double on single-number) -/
+def bitOps : G String := do
+  let n : G String := pick ["0", "1", "-1", "5", "0x7fffffff", "0x80000000", "-0x80000000", "2^32", "2^32 + 3",
+    "0xffffffff", "1.5", "2.5", "-0.5", "-1.5", "0.49999999999999994", "2^51 + 3", "2^52 + 2^51 + 5", "2^53 + 3",
+    "2^60 - 2^9", "-2^63", "1e300", "1/0", "-1/0", "0/0", "-0.0", "\"0x10\"", "\" 7 \"", "\"1e3\"", "\"x\"",
+    "nil", "{}", "true", "12345678", "-87654321", "0x12345678", "31", "32", "33", "-33", "255", "-9", "16", "300"]
+  let call : G (String × List String) := do
+    let f ← pick ["tobit", "bnot", "bswap", "band", "bor", "bxor", "lshift", "rshift", "arshift", "rol", "ror", "tohex"]
+    let k ← match f with
+      | "tobit" | "bnot" | "bswap" => pick [1, 1, 1, 0, 2]
+      | "band" | "bor" | "bxor" => pick [1, 2, 2, 3, 4, 0]
+      | _ => pick [2, 2, 2, 1, 0, 3]
+    let as ← (List.range k).mapM fun _ => n
+    pure (f, as)
+  let calls ← (List.range 8).mapM fun _ => do
+    let (f, as) ← call
+    pure s!"\{pcall(bit.{f}{String.join (as.map (", " ++ ·))})}"
+  let (f, as) ← call
+  return s!"local x, y = {← n}, {← n}
+local named = \{pcall(function() local r = bit.{f}({commas as}) return r end)}
+local z = bit.band(x == x and 0 or 1, 0)
+return {commas calls}, named, 1 / (z * -1), type(bit), require(\"bit\") == bit, bit.tohex(bit.bxor(12, 10), -2)"
+
+#guard runCase (fun _ => none) .dual []
+    ("return bit.tohex(-1, 0), bit.tohex(255, -4), bit.tohex(-1, 10), #bit.tohex(1, 300), bit.tohex(1, 1.9), " ++
+      "bit.tobit(2^53 + 3), bit.tobit(-1.5), bit.rol(0x80000001, 1), bit.ror(1, -1), bit.bswap(0x12345678), " ++
+      "bit.arshift(-256, 4), bit.rshift(-1, 32), bit.lshift(1, 33), bit.bor(1, 2, 4, 8.7), bit.tobit(\" 7 \"), " ++
+      "bit.tobit(1/0), bit.bnot(0)").toList ==
+  "ok:\"\",\"00FF\",\"00ffffffff\",254,\"01\",2,-2,3,2,2018915346,-16,-1,2,15,7,0,-1"
 
 -- ---------- the world: print, io.write, os ----------
 
@@ -623,6 +808,131 @@ local f, e = {src}
 if not f then return e end
 return pcall(f{args})"
 
+/-- string.dump and load of a dump: the function back, its upvalues new and nil, stripped or not (a stripped one's
+errors at `?:0:`, an upvalue unnamed, a global or field by name; debug.getupvalue without names), the strip flag's
+forms, load's modes; the dump as a string whose bytes are not read (type, tostring, `==` with itself and another
+value, in a table, an error value at level 0, arithmetic, a comparison with a number, a call, a `for`, tonumber);
+string.dump's bad arguments -/
+def dumps : G String := do
+  let body ← pick ["return a, b, u, w", "return u.x", "return gl_x.y", "return a + b", "return ({}).k.j",
+    "error('m')", "error({a})", "return w()", "local r = w() return r", "return function() return u, w.x end",
+    "local function g(x) if x then return g(nil) end return u end return g(1)", "return select('#', ...)",
+    "u = a; return u, w", "return string.rep(a, b)", "local r = string.rep() return r", "return math.floor()",
+    "for i = 1, a do u = i end return u", "return #...", "return (...)[1]"]
+  let flag ← pick ["", ", true", ", false", ", nil", ", \"s\"", ", \"\"", ", \"d\"", ", \"ds\"", ", 0", ", {}"]
+  let flag2 ← pick ["", ", true", ", false", ", \"s\""]
+  let ld ← pick ["load(d)", "loadstring(d)", "load(d, \"=n\")", "loadstring(d, \"@x.lua\")", "load(d, nil, \"b\")",
+    "load(d, nil, \"bt\")", "load(d, nil, \"t\")", "load(d, \"n\", \"\")", "load(d, 1)"]
+  let args ← pick [", 1, 2", ", 'x', 3", "", ", 2, 3, 4", ", {5}, 6", ", nil, 2"]
+  let use ← pick ["type(d)", "tostring(d) == d", "d == d", s!"d == string.dump(f{flag2})", "d == 1", "d ~= nil",
+    "#{d, d}", "type(({d})[1])", "select('#', pcall(error, d, 0))", "(pcall(error, d, 0))", "tonumber(d)",
+    "P(function() return d + 1 end)", "P(function() return d < 1 end)", "P(function() return 2 >= d end)",
+    "P(function() local x = d() return x end)", "P(function() for i = d, 2 do end end)",
+    "P(function() return -d end)", "P(function() return d .. setmetatable({}, {__concat = function() return 7 end}) end)",
+    "P(function() d.x = 1 end)", "rawequal(d, {})", "P(function() return ({} .. d) end)", "not d"]
+  let bad ← pick ["print", "string.rep", "1", "nil", "{}", "coroutine.create(f)"]
+  return helper ++ s!"local u, w = \{x = 1}, print
+local function f(a, b, ...)
+  {body}
+end
+local d = string.dump(f{flag})
+local g, e = {ld}
+if not g then return e end
+local r = \{pcall(g{args})}
+local h = r[2]
+local R = \{r, \{debug.getupvalue(g, 1)}, \{debug.getupvalue(g, 2)}, g == f, debug.getinfo(g, \"u\").nups,
+  {use}, P(string.dump, {bad}), P(string.dump), P(load, string.dump(g){flag2})}
+if type(h) == \"function\" then R.h = \{pcall(h), debug.getupvalue(h, 1)} end
+return R"
+
+-- what reads a dump's bytes stops the run: its length, a concatenation, a method, a key, as a result, `==` with a
+-- string or another closure's dump, print, format, error's place, string.dump's flag; and a local's name in a
+-- stripped function's error (LuaJIT finds it in the bytecode)
+#guard [("return #string.dump(f)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) .. \"\"", "effect string.dump: a dump's bytes"),
+    ("local t = {} t[string.dump(f)] = 1", "effect string.dump: a dump's bytes"),
+    ("return ({})[string.dump(f)]", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) == \"x\"", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) == string.dump(function() end)", "effect string.dump: a dump's bytes"),
+    ("print(string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f):sub(1, 4)", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f) < \"x\"", "effect string.dump: a dump's bytes"),
+    ("return (\"%s\"):format(string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return pcall(error, string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return string.dump(f, string.dump(f))", "effect string.dump: a dump's bytes"),
+    ("return pcall(loadstring(string.dump(f, true)), 1)", "effect a stripped function's local named in an error"),
+    ("return pcall(loadstring(string.dump(f, false)), 1)", "ok:false,\"c:1: attempt to index local 't' (a number value)\""),
+    ("return type(string.dump(f)), string.dump(f) == string.dump(f), string.dump(f, true) == string.dump(f), string.dump(f) ~= {}",
+      "ok:\"string\",true,false,true"),
+    ("local u = 1 local function g() u = u + 1 return u end local h = load(string.dump(g)) return pcall(h), debug.getupvalue(h, 1), u",
+      "ok:false,\"u\",1"),
+    ("local u = 1 local function g() return u.x end return pcall(load(string.dump(g, true))), debug.getupvalue(load(string.dump(g, \"s\")), 1)",
+      "ok:false,\"\",nil"),
+    ("return pcall(string.dump, print), pcall(string.dump), pcall(string.dump, 1), load(string.dump(f), nil, \"t\")",
+      "ok:false,false,false,nil,\"attempt to load chunk with wrong mode\"")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] ("local function f(a) local t = a return t.x end " ++ src).toList == out
+
+/-- function environments: setfenv and getfenv of closures, builtins, level 0 and 1 (non-tail calls) and bad
+arguments; globals read and written through an environment with and without `__index`/`__newindex`; a closure made
+under an environment keeps it; load and loadstring with an environment (a table, or anything else, ignored) -/
+def fenvs : G String := do
+  let env : G String := pick ["E1", "E2", "E3", "_G"]
+  let fn : G String := pick ["f", "g", "h", "mk", "lf"]
+  let body ← pick ["x = V(a); return x, y, V(getfenv(1)), V(getfenv()), V(getfenv(0))",
+    "local r = {setfenv(1, a)} ; return V(r[1]), x, y, V(getfenv(1))",
+    "function gf() return x end; x = V(a); return gf(), V(getfenv(gf))",
+    "local old = getfenv(1); setfenv(1, a); local v = x; setfenv(1, old); return v, x, V(getfenv(f))",
+    "return pcall(function() local r = setfenv(print, a) return r end)",
+    "return z, V(getfenv(function() end))"]
+  let step : G String := do
+    match ← rnd 12 with
+    | 0 | 1 => return s!"R[#R + 1] = \{pcall(setfenv, {← fn}, {← env})}"
+    | 2 => return s!"R[#R + 1] = \{pcall(f, {← pick ["1", "\"s\"", "E1", "E2", "E3", "_G"]})}"
+    | 3 => return s!"R[#R + 1] = \{pcall(g)}; h = mk()"
+    | 4 => return "R[#R + 1] = {pcall(h)}"
+    | 5 => return s!"R[#R + 1] = \{V(getfenv({← pick ["f", "g", "h", "mk", "lf", "print", "string.rep", "0", "1", "nil", "\"1\"", "1.5", ""]}))}"
+    | 6 => return s!"R[#R + 1] = \{pcall(function() return V(getfenv({← pick ["-1", "{}", "true", "\"x\"", "0", "f", "print", "h"]})) end)}"
+    | 7 => return s!"R[#R + 1] = \{pcall(setfenv, {← pick ["print", "string.rep", "{}", "nil", "-1", "\"x\"", "f"]}{← pick ["", ", 5", ", E1", ", nil"]})}"
+    | 8 => return s!"lf = {← pick ["load", "loadstring"]}(\"x = tostring(x) .. 'L' return x, y, ...\", \"=l\", nil, {← pick ["E1", "E2", "E3", "nil", "5", "\"e\""]}); R[#R + 1] = \{V(getfenv(lf)), pcall(lf, 1)}"
+    | 9 => return s!"R[#R + 1] = \{pcall(function() local r = \{setfenv({← fn}, {← env})} return V(r[1]) end)}"
+    | 10 => return s!"R[#R + 1] = \{x, y, V(getfenv(1)), pcall(function() local e = getfenv(1) return V(e), V(getfenv(0)), x end)}"
+    | _ => return s!"R[#R + 1] = \{pcall(f, {← env})}; R[#R + 1] = \{pcall(h)}"
+  let steps ← (List.range ((← rnd 6) + 2)).mapM fun _ => step
+  return s!"local getfenv, setfenv, pcall, tostring, print, ipairs, rawset = getfenv, setfenv, pcall, tostring, print, ipairs, rawset
+x, y, z, gf = \"gx\", \"gy\", nil, nil
+local E1 = \{x = 1, y = \"e1\"}
+local E2 = setmetatable(\{y = \"e2\"}, \{__index = _G})
+local E3 = setmetatable(\{}, \{__index = function(_, k) return tostring(k) .. \"?\" end, __newindex = function(t, k, v) rawset(t, k, tostring(v) .. \"!\") end})
+local f, g, h, mk, lf
+local names
+local function V(v) for _, p in ipairs(names) do if v == p[1] then return p[2] end end if type(v) == \"table\" then return \"table\" end return v end
+function f(a) {body} end
+function g() local e = getfenv(1) return x, y, z, V(e) end
+function mk() return function() return x, y, V(getfenv(1)) end end
+h = mk()
+names = \{\{E1, \"E1\"}, \{E2, \"E2\"}, \{E3, \"E3\"}, \{_G, \"_G\"}, \{f, \"f\"}, \{g, \"g\"}, \{h, \"h\"}, \{mk, \"mk\"}, \{print, \"print\"}}
+local R = \{}
+{"\n".intercalate steps}
+return R, x, y, E1.x, E2.x, E3.x, gf ~= nil"
+
+-- what needs a level the semantics keeps no frame for stops the run: a level past 1, level 1 of a builtin's call
+-- or of a tail call, and the thread's environment (setfenv 0)
+#guard [("return pcall(getfenv, 1)", "effect getfenv of level 1"),
+    ("return getfenv(2)", "effect getfenv of level 2"),
+    ("local function f() return getfenv(1) end return f()", "effect getfenv of level 1"),
+    ("local function f() return setfenv(1, {}) end return pcall(f)", "effect setfenv of level 1"),
+    ("setfenv(0, _G)", "effect setfenv of level 0: the thread's environment"),
+    ("return pcall(debug.getfenv, print)", "effect debug.getfenv"),
+    ("local e = setmetatable({}, {__index = _G}) local function f() y = 1 return x end x = 3 setfenv(f, e) return f(), e.y, y, getfenv(f) == e, setfenv(f, _G) == f, getfenv(1) == _G",
+      "ok:3,1,nil,true,true,true"),
+    ("local function f() setfenv(1, {}) end return pcall(f)", "ok:true"),
+    ("return load(\"return x\", \"=l\", \"t\", {x = 4})(), loadstring(\"return x\", \"=l\", nil, {x = 5})(), load(\"return 6\", nil, nil, 1)()",
+      "ok:4,5,6"),
+    ("local f = function() return x end x = 1 return load(string.dump(f), nil, \"b\", {x = 7})(), load(string.dump(f))()",
+      "ok:7,1")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 /-- the modules under test/mods, by both their names -/
 def modNames : List String := ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
 
@@ -708,10 +1018,10 @@ def chunk : G String := do
   | 5 => tables
   | 6 => ctrl
   | 7 | 8 => diffs
-  | 9 => match ← rnd 2 with | 0 => metas | 1 => opMetas | _ => compares
-  | 10 => libs
+  | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
+  | 10 => match ← rnd 2 with | 0 => libs | 1 => debugs | _ => bitOps
   | 11 => traverse
-  | 12 => loads
+  | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros
   | 14 => effects
   | _ => numbers

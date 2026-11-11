@@ -54,15 +54,42 @@ theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P)
 theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
     {cn : Option (List Char)} {b : Block} {P : List Val → Heap → Prop}
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
-    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, []⟩))) :
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], G⟩))) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.str s :: cn.toList.map .str)) h P :=
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load I n fname hf s cn b h hb hp, p⟩
 
+/-- `string.dump(f)` of a closure, or with a flag not a dump: its dump -/
+theorem RunP.dump {I : Sem} {a : Nat} {rest : List Val} {P : List Val → Heap → Prop}
+    (hr : (rest.headD .nil).isDump = false) (p : P [.dump a (dumpStrip (rest.headD .nil))] h) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "string.dump" []) (.fn a :: rest)) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 2) _ _ h = _; rw [call_dump I n a rest hr]; rfl, p⟩
+
+/-- `load(d)`, `loadstring(d)` of a dump, with a chunk name or none: what `loadDump` gives -/
+theorem RunP.load_dump {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {a : Nat} {s : Bool}
+    {cn : Option (List Char)} {vs : List Val} {h' : Heap} {P : List Val → Heap → Prop}
+    (e : loadDump a s (shortSrc (cn.getD "=?".toList)) none G h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.dump a s :: cn.toList.map .str)) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 2) _ _ h = _
+    rw [call_load_dump I n fname hf a s cn]; simp only [Lua.frame, e], p⟩
+
+/-- `load(s, name, nil, t)`, `loadstring`'s: the closure of `s`'s parse, its environment `t` -/
+theorem RunP.loadEnv {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
+    {cn : Option (List Char)} {t : Nat} {b : Block} {P : List Val → Heap → Prop}
+    (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], t⟩))) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t]) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load_env I n fname hf s cn t b h hb hp, p⟩
+
 /-- `dofile(p)` of a file given as source, its chunk `k`: what `k` does on no arguments -/
-theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : List Val → Nat → M (List Val)}
-    {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b)
-    (r : RunP (fun n => bounded 1 (do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n)) h P) :
+theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : Nat → List Val → Nat → M (List Val)}
+    {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩) (hs : I.srcs (String.ofList p) = some b)
+    (r : RunP (fun n => bounded 1 (do let a ← alloc (.clo ⟨[], true, b, [], G⟩); k a [] n)) h P) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "dofile" []) [.str p]) h P := by
   obtain ⟨N, a, h', e, q⟩ := RunP.frame r
   refine ⟨N + 3, a, h', fun n hn => ?_, q⟩
@@ -70,13 +97,13 @@ theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : List Val → Nat 
   show call _ _ _ _ _ _ h = _; rw [call_dofile I n p b k h hk hs]; exact e n (by omega)
 
 /-- `require m` of a module given as source and not yet loaded, its chunk `k`: `S.requireK` -/
-theorem RunP.require {I : Sem} {m p : List Char} {b : Block} {k : List Val → Nat → M (List Val)} {v : Val}
-    {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩)
+theorem RunP.require {I : Sem} {m p : List Char} {b : Block} {k : Nat → List Val → Nat → M (List Val)} {v : Val}
+    {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩)
     (hl : rawget LOADED (.str m) h = .ok v h) (hv : v.truthy = false)
     (hn : m ≠ "table.new".toList ∧ m ≠ "table.clear".toList)
     (hp : rawget PACKAGE (lstr "path") h = .ok (.str p) h)
     (hf : (pathFiles p (modPath m)).findSome? I.srcs = some b)
-    (r : RunP (S.requireK m ⟨[], true, b, []⟩ k) h P) :
+    (r : RunP (S.requireK m ⟨[], true, b, [], G⟩ k) h P) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "require" []) [.str m]) h P := by
   obtain ⟨N, a, h', e, q⟩ := RunP.frame r
   refine ⟨N + 3, a, h', fun n hN => ?_, q⟩
@@ -225,8 +252,9 @@ theorem RunP.concat_meta {I : Sem} {x y f : Val} {P : Val → Heap → Prop}
     (hn : concatText x = none ∨ concatText y = none) (hm : metaOf2 "__concat" x y h = .ok f h) (hf : f ≠ .nil)
     (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [x, y]) h fun vs h' => P (vs.headD .nil) h') :
     RunP (fun n => binop I.srcs I.oracle I.tgt n .concat x y) h P := by
-  refine RunP.metaStep (err := if (concatText x).isNone then opErr "concatenate" (some 0) x
-    else opErr "concatenate" (some 1) y) (fun n => ?_) hm hf r
+  refine RunP.metaStep (err := if !((concatText x).isSome || x.isDump) then opErr "concatenate" (some 0) x
+    else if !((concatText y).isSome || y.isDump) then opErr "concatenate" (some 1) y else dumpBytes)
+    (fun n => ?_) hm hf r
   rw [binop]; split <;> first | rfl | (rcases hn with hn | hn <;> simp_all)
 
 theorem RunP.unm_meta {I : Sem} {x f : Val} {P : Val → Heap → Prop}
@@ -240,11 +268,11 @@ theorem RunP.unm_meta {I : Sem} {x f : Val} {P : Val → Heap → Prop}
 truth of the metamethod's first value; `<=` without `__le` is `not (y < x)`. A spec of `tostring` takes its
 metamethod's call through `callPrim_tostring` and `RunP.unframe` -/
 
-/-- two tables of one metatable `m` whose `ev` is the function `f` -/
+/-- two tables of one metatable `m` whose `ev` is the function `f`; `m` has no metatable, so is not weak -/
 structure SameMeta (h : Heap) (a b m : Nat) (ev : String) (f : Val) : Prop where
   ha : ∃ ta, h[a]? = some (.tbl ta) ∧ ta.mt = some m
   hb : ∃ tb, h[b]? = some (.tbl tb) ∧ tb.mt = some m
-  hm : ∃ tm, h[m]? = some (.tbl tm) ∧ tm.get (lstr ev) = f
+  hm : ∃ tm, h[m]? = some (.tbl tm) ∧ tm.get (lstr ev) = f ∧ tm.mt = none
   hf : ∃ c, f = .fn c
 
 /-- `x == y`: `__eq` -/
@@ -252,15 +280,15 @@ theorem RunP.eq_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {P : Bool → 
     (hab : a ≠ b) (hs : SameMeta h a b m "__eq" f)
     (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [.tbl a, .tbl b]) h fun vs h' => P (vs.headD .nil).truthy h') :
     RunP (fun n => eqv I.srcs I.oracle I.tgt n (.tbl a) (.tbl b)) h P := by
-  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl⟩, ⟨c, hc⟩⟩ := hs
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl, hw⟩, ⟨c, hc⟩⟩ := hs
   obtain ⟨N, vs, h', e, p⟩ := r
   refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
   have e := e n (by omega); dsimp only at e ⊢
   have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) "__eq" >>= k) h = k (tm.get (lstr "__eq")) h :=
-    fun k => bind_ok (metaOf_ok ha hma hm)
+    fun k => bind_ok (metaOf_ok ha hma hm hw)
   have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) "__eq" >>= k) h = k (tm.get (lstr "__eq")) h :=
-    fun k => bind_ok (metaOf_ok hb hmb hm)
+    fun k => bind_ok (metaOf_ok hb hmb hm hw)
   have b3 : ∀ {β} (k : Tbl → M β), (getTbl a >>= k) h = k ta h := fun k => bind_ok (getTbl_ok ha)
   have b4 : ∀ {β} (k : Tbl → M β), (getTbl b >>= k) h = k tb h := fun k => bind_ok (getTbl_ok hb)
   have b5 : ∀ {β} (k : Val → M β), (metaFn (tm.get (lstr "__eq")) >>= k) h = k (tm.get (lstr "__eq")) h :=
@@ -278,16 +306,16 @@ theorem RunP.lt_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {orEq : Bool} 
     {P : Bool → Heap → Prop} (hs : SameMeta h a b m (if orEq then "__le" else "__lt") f)
     (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [.tbl a, .tbl b]) h fun vs h' => P (vs.headD .nil).truthy h') :
     RunP (fun n => less I.srcs I.oracle I.tgt n (.tbl a) (.tbl b) orEq nm) h P := by
-  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl⟩, ⟨c, hc⟩⟩ := hs
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl, hw⟩, ⟨c, hc⟩⟩ := hs
   obtain ⟨N, vs, h', e, p⟩ := r
   refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
   have e := e n (by omega); dsimp only at e ⊢
   generalize hev : (if orEq then "__le" else "__lt") = ev at hc e
   have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) ev >>= k) h = k (tm.get (lstr ev)) h :=
-    fun k => bind_ok (metaOf_ok ha hma hm)
+    fun k => bind_ok (metaOf_ok ha hma hm hw)
   have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) ev >>= k) h = k (tm.get (lstr ev)) h :=
-    fun k => bind_ok (metaOf_ok hb hmb hm)
+    fun k => bind_ok (metaOf_ok hb hmb hm hw)
   have b5 : ∀ {β} (k : Val → M β), (metaFn (tm.get (lstr ev)) >>= k) h = k (tm.get (lstr ev)) h :=
     fun k => bind_ok (by rw [hc]; rfl)
   rw [less.eq_def]; dsimp only
@@ -308,13 +336,13 @@ theorem RunP.le_lt {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {nm : Option Str
   refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
   have e := e n (by omega); dsimp only at e ⊢
-  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, -⟩, -⟩ := hs
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, -, hw⟩, -⟩ := hs
   obtain ⟨tm', hm', hle⟩ := hle
   rw [hm] at hm'; cases hm'
   have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) "__le" >>= k) h = k .nil h :=
-    fun k => bind_ok (hle ▸ metaOf_ok ha hma hm)
+    fun k => bind_ok (hle ▸ metaOf_ok ha hma hm hw)
   have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) "__le" >>= k) h = k .nil h :=
-    fun k => bind_ok (hle ▸ metaOf_ok hb hmb hm)
+    fun k => bind_ok (hle ▸ metaOf_ok hb hmb hm hw)
   rw [less.eq_def]; dsimp only
   simp only [Val.typeName, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
   rw [b1, b2]
@@ -353,6 +381,121 @@ theorem Tbl.next_mem {a : Nat} {t : Tbl} {k k' v : Val} (e : t.next a k = some (
     simp only [Option.map_some, Option.some.injEq] at e
     have := List.find?_some e
     exact ⟨hr r rfl _ (List.mem_of_find?_eq_some e), by simpa using this⟩
+
+/-! ## The debug library
+
+A closure's upvalues are the cells of the outer locals its body names (`Clo.upvals`, named by `Clo.dbgUpvals`: no
+names in a stripped dump's function), so `debug.getupvalue` reads one and `debug.setupvalue` writes it, as an
+assignment inside the closure would. -/
+
+/-- a call of one of the debug library's modelled functions is its `debugFn` -/
+theorem RunP.debug {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name = "debug.getmetatable" ∨ name = "debug.setmetatable" ∨ name = "debug.getupvalue" ∨
+      name = "debug.setupvalue" ∨ name = "debug.getinfo" ∨ name = "debug.traceback")
+    (e : debugFn name args h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_debug I n name args hn]; simp only [Lua.frame, e], p⟩
+
+theorem debug_getupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell))
+    (hv : h[cell]? = some (.cell v)) :
+    debugFn "debug.getupvalue" (.fn a :: .num (.int i) :: rest) h = .ok [lstr x, v] h := by
+  have hn : ¬ i < 1 := by omega
+  rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
+  simp [debugFn, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, readCell, ha, hv, hu, hn,
+    bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure]
+
+theorem debug_setupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell)) :
+    debugFn "debug.setupvalue" (.fn a :: .num (.int i) :: v :: rest) h = .ok [lstr x] (h.set! cell (.cell v)) := by
+  have hn : ¬ i < 1 := by omega
+  rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
+  simp [debugFn, anyArg, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, writeCell, ha, hu, hn,
+    bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure, modify, modifyGet,
+    MonadStateOf.modifyGet, EStateM.modifyGet]
+
+/-- `debug.getmetatable` of a table: its metatable, `__metatable` or not -/
+theorem debug_getmetatable {h : Heap} {a : Nat} {t : Tbl} {rest : List Val} (ha : h[a]? = some (.tbl t)) :
+    debugFn "debug.getmetatable" (.tbl a :: rest) h = .ok [(t.mt.map Val.tbl).getD .nil] h := by
+  simp [debugFn, anyArg, getTbl, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure,
+    EStateM.pure]
+
+/-! ## The bit library
+
+Each argument is an int32 by `Num.toBit` (an integer mod 2^32; a double through lj_num2bit), each result one. -/
+
+/-- a call of one of the bit library's functions is its `bitFn` -/
+theorem RunP.bit {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name ∈ bits.map ("bit." ++ ·)) (e : bitFn name args h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_bit I n name args hn]; simp only [Lua.frame, e], p⟩
+
+/-- an int32 is its own int32 -/
+theorem wrap32_of_inInt32 {i : Int} (hi : -2147483648 ≤ i ∧ i < 2147483648) : wrap32 i = i := by
+  unfold wrap32; rw [Int.bmod_eq_of_le] <;> omega
+
+theorem bit_tobit {h : Heap} {i : Int} {rest : List Val} :
+    bitFn "bit.tobit" (.num (.int i) :: rest) h = .ok [.num (.int (wrap32 i))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure]
+
+theorem bit_band {h : Heap} {a b : Int} :
+    bitFn "bit.band" [.num (.int a), .num (.int b)] h = .ok [.num (.int (wrap32 ↑(u32 (wrap32 a) &&& u32 (wrap32 b))))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure, List.range, List.range.loop,
+    List.mapM, List.mapM.loop]
+
+theorem bit_lshift {h : Heap} {a b : Int} :
+    bitFn "bit.lshift" [.num (.int a), .num (.int b)] h =
+      .ok [.num (.int (wrap32 ↑(u32 (wrap32 a) <<< (u32 (wrap32 b) % 32))))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure]
+
+/-! ## Function environments
+
+A closure's environment is `Clo.fenv`, the table its globals are fields of (`eGlob`, `wGlob`). `setfenv` rewrites
+it, of a closure or of level 1: the function calling, in a call from Lua that is not a tail call (`fenvCall`). -/
+
+theorem fenvOf_ok {h : Heap} {a : Nat} {c : Clo} (ha : h[a]? = some (.clo c)) : fenvOf a h = .ok c.fenv h := by
+  simp [fenvOf, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure]
+
+theorem getfenv_fn {h : Heap} {a : Nat} {c : Clo} {caller : Option Nat} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) : getfenvFn caller (.fn a :: rest) h = .ok [.tbl c.fenv] h := by
+  simp [getfenvFn, fenvOf, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure,
+    EStateM.pure]
+
+/-- `getfenv()`: the calling function's -/
+theorem getfenv_caller {h : Heap} {a : Nat} {c : Clo} (ha : h[a]? = some (.clo c)) :
+    getfenvFn (some a) [] h = .ok [.tbl c.fenv] h := by
+  simp [getfenvFn, optInt, fenvLevel, fenvOf, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get,
+    EStateM.get, pure, EStateM.pure]
+
+theorem setfenv_fn {h : Heap} {a t : Nat} {c : Clo} {caller : Option Nat} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) :
+    setfenvFn caller (.fn a :: .tbl t :: rest) h = .ok [.fn a] (h.set! a (.clo { c with fenv := t })) := by
+  simp [setfenvFn, argTbl, setFenv, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get,
+    pure, EStateM.pure, modify, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet]
+
+/-- `setfenv(1, t)`: the calling function's, which it returns -/
+theorem setfenv_caller {h : Heap} {a t : Nat} {c : Clo} {rest : List Val} (ha : h[a]? = some (.clo c)) :
+    setfenvFn (some a) (.num (.int 1) :: .tbl t :: rest) h = .ok [.fn a] (h.set! a (.clo { c with fenv := t })) := by
+  simp [setfenvFn, argTbl, argInt, argIntN, argNum, Val.toNum, Num.trunc, fenvLevel, setFenv, getObj, ha, bind,
+    EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure, modify, modifyGet,
+    MonadStateOf.modifyGet, EStateM.modifyGet]
+
+/-- a call from Lua of getfenv or setfenv is its function, whatever the call `k` -/
+theorem RunP.fenv {name : String} {caller : Option Nat} {args vs : List Val} {h h' : Heap} {k : Nat → M (List Val)}
+    {P : List Val → Heap → Prop} (hn : name = "getfenv" ∨ name = "setfenv")
+    (e : (if name = "getfenv" then getfenvFn caller args else setfenvFn caller args) h = .ok vs h') (p : P vs h') :
+    RunP (fun n => fenvCall caller (.prim name []) args (k n)) h P := by
+  refine RunP.const (m := fenvCall caller (.prim name []) args (k 0)) ?_ p |>.cong fun n => ?_
+  · rcases hn with rfl | rfl <;> simp at e
+    · show Lua.frame (getfenvFn caller args) h = _; simp only [Lua.frame, e]
+    · show Lua.frame (setfenvFn caller args) h = _; simp only [Lua.frame, e]
+  · rcases hn with rfl | rfl <;> rfl
 
 /-! ## Effects
 
