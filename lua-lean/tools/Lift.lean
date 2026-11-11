@@ -393,7 +393,7 @@ def main (args : List String) : IO UInt32 := do
     let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"] }
     let (out, _) := (drain 0 #[]).run st
     if out.any (fun (_, d) => (d.splitOn "UNSUPPORTED").length > 1) then
-      IO.eprintln s!"{file}: an assignment target the translator does not handle"; return 1
+      IO.eprintln s!"{file}: a tree the parser does not make (an assignment target other than a name or an index)"; return 1
     let (imp, srcConst) := match src with
       | some s => match s.splitOn ":" with
         | [m, c] => (s!"\nimport {m}", some c)

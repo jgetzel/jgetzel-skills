@@ -34,7 +34,8 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
   through `package.path` (`./?.lua` to begin with: LUA_PATH=./?.lua; LuaJIT's default adds the system's directories)
   among them, as lib_package.c's Lua loader does, and `dofile` reads one; `load` and `loadstring` run the parser
   inside the semantics.
-- **Parser** (`LuaLean/Parse.lean`): Lua 5.1's grammar with LuaJIT's lexer and its constant folding.
+- **Parser** (`LuaLean/Parse.lean`): Lua 5.1's grammar with LuaJIT's lexer and its constant folding; an assignment
+  to anything but a name or an index (`(x) = 1`, `f() = 1`) is a syntax error, as in LuaJIT.
 - **Translator** (`tools/Lift.lean`), after AutoCorres's first stages: for each function `f` of the file (the chunk
   is `chunk`), `f_body` (its parsed body), `f` (a shallow function built from `LuaLean/Shallow.lean`'s combinators,
   one per interpreter clause, every local the Lean variable naming its cell) and `f_ok : CFn I (f I env0 …) clo`:
@@ -133,9 +134,10 @@ Out: coroutines, `setfenv` and `load`'s environment argument, FFI, the other met
 
 How a script outside it is reported, from strongest to weakest:
 
-1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1).
-2. **Fails to translate**: an assignment target the translator does not handle (`not translated`).
-3. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
+1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1). The
+   translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
+   nothing that parses fails to translate.
+2. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
    reaches it can be proved: an operation that would call a metamethod the semantics does not model yet (`t + 1`
    with `__add` in `t`'s metatable: `effect metamethod __add`; likewise `__sub`…`__pow`, `__unm`, `__concat`, `__eq`,
    `__lt`, `__le`, `__tostring` in `tostring` and `%s`, `__metatable` in `getmetatable` and `setmetatable`; a table's
@@ -152,7 +154,7 @@ How a script outside it is reported, from strongest to weakest:
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string.
-4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
+3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
    - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where

@@ -488,6 +488,8 @@ partial def stat : P Stat := do
     if isSym (← peek) "=" || isSym (← peek) "," then
       let mut ts := #[e]
       while ← acceptSym "," do ts := ts.push (← suffixedExp)
+      -- a name or an index, as lj_parse.c's parse_assignment checks: not `(x)`, `f()`, `o:m()`
+      unless ts.all (fun | .var _ | .site _ (.index ..) => true | _ => false) do throw s!"syntax error at {← where_}"
       expectSym "="
       let es ← exprList
       -- the stores come after the values: on the line the list ends
