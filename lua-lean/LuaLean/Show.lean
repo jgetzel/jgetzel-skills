@@ -1,9 +1,9 @@
-import SwarmModel.Lua.Parse
+import LuaLean.Parse
 
-/-! A syntax tree as the Lean term that builds it (`LuaDump.lean`, `LuaLift.lean`). -/
+/-! A syntax tree as the Lean term that builds it (`tools/Dump.lean`, `tools/Lift.lean`). -/
 
-namespace Swarm.Lua.Show
-open Swarm.Lua
+namespace Lua.Show
+open Lua
 
 def chars (s : List Char) : String :=
   let esc := String.join (s.map fun c =>
@@ -71,4 +71,4 @@ end
 /-- a cheap checksum of the source text, which `lua/test/locksrc_spec.lua` computes alike -/
 def checksum (b : ByteArray) : Nat := b.foldl (fun h x => (h * 31 + x.toNat) % 4294967296) 7
 
-end Swarm.Lua.Show
+end Lua.Show

@@ -1,10 +1,10 @@
-import SwarmModel.Lua.Interp
-import SwarmModel.Lua.Parse
+import LuaLean.Interp
+import LuaLean.Parse
 
-/-! Running a chunk the way `../lua/test/luasem_spec.lua` runs it under LuaJIT, and its results as text both sides
-write alike: `ok:` and each value, or `error`. -/
+/-! Running a chunk the way `test/luasem.lua` runs it under LuaJIT, and its results as text both sides write alike:
+`ok:` and each value, or `error`. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 /-- bytes 32..126 but `"` and `\` as themselves, the rest as \ddd -/
 def serStr (s : List Char) : List Char :=
@@ -44,14 +44,14 @@ def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
 
-/-- every module under dir as source: swarm.x is dir/x.lua -/
-def loadSources (dir : System.FilePath) : IO (List (String × Block)) := do
+/-- every module under dir as source: `pfx.x` is dir/x.lua -/
+def loadSources (dir : System.FilePath) (pfx : String) : IO (List (String × Block)) := do
   let mut r := []
   for e in ← dir.readDir do
     if e.fileName.endsWith ".lua" then
       let b ← IO.FS.readBinFile e.path
       match parseChunk (bytesOf b) with
-      | .ok blk => r := ("swarm." ++ (e.fileName.take (e.fileName.length - 4)).toString, blk) :: r
+      | .ok blk => r := (pfx ++ "." ++ (e.fileName.take (e.fileName.length - 4)).toString, blk) :: r
       | .error err => throw (IO.userError s!"{e.path}: {err}")
   return r
 
@@ -76,4 +76,4 @@ def runCase (srcs : String → Option Block) (mods : List String) (src : List Ch
     | .error e _ => s!"load failed: {outcome (.error e initHeap)}"
     | .ok () h => outcome ((runChunk srcs strictFx FUEL b).run h)
 
-end Swarm.Lua
+end Lua

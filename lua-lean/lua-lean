@@ -1,0 +1,87 @@
+#!/bin/sh
+# lua-lean: LuaJIT scripts to Lean, with proofs (DESIGN.md). Needs lake (elan) on the PATH, or nix to fetch it; parsecheck
+# and difftest need luajit (stock 2.1).
+#   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]  the Lean module: each function's body, shallow form and proof
+#   lua-lean prove <file.lua>...          lift each into a scratch directory and check its proofs
+#   lua-lean dump (<Name> <file.lua>)...  each file's syntax tree as `def <Name>Src : Block`
+#   lua-lean print <file.lua>             the parsed file printed back as Lua
+#   lua-lean parsecheck <file.lua>...     the parser against LuaJIT: printed back, each compiles to the source's bytecode
+#   lua-lean run [--lib <prefix>=<dir>]... <file.lua>...  each chunk's results under the Lean semantics
+#   lua-lean cases <n> <seed> <file>      random chunks with the Lean semantics' results
+#   lua-lean difftest [<n> [<seed>]]      that many fresh chunks (3000) under LuaJIT, which must give the same results
+here=$(cd "$(dirname "$0")" && pwd)
+abs() { case $1 in /*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
+lake_do() { (cd "$here" && if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi); }
+tool() { t=$1; shift; lake_do build -q LuaLean >&2 && lake_do env lean --run "tools/$t.lean" "$@"; }
+usage() { sed -n '4,11s/^#   //p' "$0" >&2; exit 2; }
+files() { r=; for f in "$@"; do r="$r $(abs "$f")"; done; printf %s "$r"; }
+
+cmd=$1; [ $# -gt 0 ] && shift
+case $cmd in
+lift)
+  [ $# -ge 1 ] || usage
+  f=$(abs "$1"); shift
+  ns=${1:-$(basename "$f" .lua | awk '{print toupper(substr($0,1,1)) substr($0,2)}')}
+  [ $# -gt 0 ] && shift
+  tool Lift "$ns" "$f" "$@" ;;
+prove)
+  [ $# -ge 1 ] || usage
+  tmp=$(mktemp -d) || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  bad=0
+  for f in $(files "$@"); do
+    m=$(basename "$f" .lua)
+    if ! tool Lift Lifted "$f" >"$tmp/$m.lean"; then echo "$m: not translated"; bad=1; continue; fi
+    if grep -nEw 'sorry|admit|native_decide|axiom' "$tmp/$m.lean"; then echo "$m: an open proof or an axiom"; bad=1; continue; fi
+    if lake_do env lean "$tmp/$m.lean" >"$tmp/$m.out" 2>&1; then echo "$m: $(grep -c '^theorem .*_ok' "$tmp/$m.lean") functions proved"
+    else echo "$m: proof fails"; grep error "$tmp/$m.out" | head -5; bad=1; fi
+  done
+  exit $bad ;;
+dump)
+  [ $# -ge 2 ] || usage
+  a=; while [ $# -ge 2 ]; do a="$a $1 $(abs "$2")"; shift 2; done
+  tool Dump $a ;;
+print) [ $# -eq 1 ] || usage; tool Print "$(abs "$1")" ;;
+run)
+  a=; while [ $# -gt 0 ]; do
+    if [ "$1" = --lib ]; then a="$a --lib ${2%%=*}=$(abs "${2#*=}")"; shift 2; else a="$a $(abs "$1")"; shift; fi
+  done
+  [ -n "$a" ] || usage
+  tool Run $a ;;
+cases) [ $# -eq 3 ] || usage; tool Cases "$1" "$2" "$(abs "$3")" ;;
+difftest)
+  tmp=$(mktemp -d) || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  seed=${2:-$(date +%s)}
+  echo "seed $seed"
+  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && luajit "$here/test/luasem.lua" --cases "$tmp/cases.lua" ;;
+parsecheck)
+  [ $# -ge 1 ] || usage
+  tmp=$(mktemp -d) || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  lake_do build -q LuaLean || exit 1
+  # every number constant at full precision: the listing shows them at %.14g
+  cat > "$tmp/k.lua" <<'EOF'
+local u = require("jit.util")
+local function dump(f)
+  for n = -1, -1e9, -1 do local k = u.funck(f, n); if k == nil then break end; if type(k) == "proto" then dump(k) end end
+  for n = 0, 1e9 do local k = u.funck(f, n); if k == nil then break end; print(string.format("KNUM %.17g", k)) end
+end
+dump(assert(loadfile(arg[1])))
+EOF
+  # the listing without file names and line numbers, then the number constants
+  bc() {
+    luajit -bl "$1" > "$2.raw" && LC_ALL=C sed -e 's/^-- BYTECODE -- .*/-- BYTECODE --/' -e '/ FNEW /s/ *;.*$//' "$2.raw" > "$2" &&
+    luajit "$tmp/k.lua" "$1" >> "$2"
+  }
+  fail=0
+  for f in $(files "$@"); do
+    n=$(basename "$f")
+    if ! lake_do env lean --run tools/Print.lean "$f" > "$tmp/$n"; then echo "$n: parse error"; fail=1; continue; fi
+    if ! bc "$f" "$tmp/$n.src" || ! bc "$tmp/$n" "$tmp/$n.out"; then echo "$n: luajit failed"; fail=1; continue; fi
+    if diff -u "$tmp/$n.src" "$tmp/$n.out" > "$tmp/$n.diff"; then echo "$n: same bytecode"
+    else echo "$n: bytecode differs"; cat "$tmp/$n.diff"; fail=1; fi
+  done
+  exit $fail ;;
+*) usage ;;
+esac

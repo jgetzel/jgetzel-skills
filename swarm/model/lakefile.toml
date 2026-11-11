@@ -1,6 +1,10 @@
 name = "swarm-model"
 defaultTargets = ["SwarmModel"]
 
-# Lean core only: no dependencies.
+# The Lua semantics, parser, translator and program logic (../../lua-lean); Lean core otherwise.
+[[require]]
+name = "lua-lean"
+path = "../../lua-lean"
+
 [[lean_lib]]
 name = "SwarmModel"

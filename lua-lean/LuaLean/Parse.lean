@@ -1,9 +1,9 @@
-import SwarmModel.Lua.Syntax
+import LuaLean.Syntax
 
 /-! A parser for the subset: Lua 5.1's grammar and precedence, LuaJIT's lexer (`\x`, `\z`, `goto`). It is not part
 of what is proved: proofs are about the syntax tree it gives, written out as Lean (`LuaSrc.lean`). -/
 
-namespace Swarm.Lua
+namespace Lua
 
 inductive Token where
   | name (s : String) | kw (s : String) | num (n : Num) | str (s : List Char) | sym (s : String) | eof
@@ -371,4 +371,4 @@ def parseChunk (src : List Char) : Except String Block := do
 /-- a file's bytes, one `Char` each -/
 def bytesOf (b : ByteArray) : List Char := b.toList.map fun x => Char.ofNat x.toNat
 
-end Swarm.Lua
+end Lua

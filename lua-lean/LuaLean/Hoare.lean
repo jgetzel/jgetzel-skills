@@ -1,11 +1,11 @@
-import SwarmModel.Lua.Interp
+import LuaLean.Interp
 
 /-! A program logic for the interpreter (board #39): `RunP m h P` says the computation `m` (a function of the fuel),
 started in heap `h`, returns a result and heap satisfying `P` at every fuel from some bound on. Running out of
 fuel is never the answer for a large enough fuel: so a `RunP` is total correctness, and says what the run is
 (for every fuel that suffices), which is what the Lua suite sees from LuaJIT. One rule per interpreter clause. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 def RunP {α : Type} (m : Nat → M α) (h : Heap) (P : α → Heap → Prop) : Prop :=
   ∃ N a h', (∀ n ≥ N, m n h = .ok a h') ∧ P a h'
@@ -41,4 +41,4 @@ theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P)
   subst this; exact r
 
 end rules
-end Swarm.Lua
+end Lua

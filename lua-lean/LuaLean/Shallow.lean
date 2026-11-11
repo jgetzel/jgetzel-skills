@@ -1,8 +1,8 @@
-import SwarmModel.Lua.Interp
+import LuaLean.Interp
 
-/-! The target of the Lua→Lean translator (board #31), as AutoCorres's first two stages are for C: a shallow
+/-! The target of the Lua→Lean translator (`tools/Lift.lean`), as AutoCorres's first two stages are for C: a shallow
 embedding in the interpreter's monad `M`, one combinator per clause of `Interp.lean`, and one lemma per combinator
-saying it is that clause. The translator (`LuaLift.lean`) writes each Lua function as a term of these combinators
+saying it is that clause. The translator writes each Lua function as a term of these combinators
 with no syntax tree left in it but the bodies of the closures it creates, and every local resolved: a local is the
 Lean variable naming its cell, a global is `_G`'s field. With it comes the proof, a term of the lemmas below, that
 the shallow function is the interpreter's run of the parsed function for every fuel; the kernel checks it.
@@ -10,7 +10,7 @@ the shallow function is the interpreter's run of the parsed function for every f
 Fuel is threaded as the interpreter threads it (`tick`), so the two are equal, not just alike, and the heap is the
 same heap: the shallow code allocates the same cells. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 /-- one unit of fuel, as each clause of the interpreter takes it -/
 def tick {α} (n : Nat) (k : Nat → M α) : M α :=
@@ -566,4 +566,4 @@ theorem CFn_fn {c : Clo} {k : List Val → Nat → List Val → M Flow} (hk : �
   intro args n; simp only [fn, callClo, hk, bind_assoc]
 
 end
-end Swarm.Lua
+end Lua

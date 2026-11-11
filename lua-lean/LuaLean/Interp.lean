@@ -1,16 +1,16 @@
-import SwarmModel.Lua.Syntax
-import SwarmModel.Lua.Pat
+import LuaLean.Syntax
+import LuaLean.Pat
 
 /-! The semantics: an interpreter for the subset, on fuel. A value is nil, a boolean, a number, a string (its bytes),
 a table or a closure (heap addresses), a builtin, or an effect handle. Every local is a heap cell, so closures share
 upvalues as Lua's do; `pcall` keeps what the failed call wrote, as Lua does (`EStateM` keeps the state on error).
 
-Effects are not interpreted: `io`, `os`, `print`, and every module not given as source (`swarm.db`, `swarm.proc`,
-`posix.*`, `lfs`, `cjson`, …) are `Val.eff` handles, and calling one asks `oracle`; `none` stops the run with
+Effects are not interpreted: `io`, `os`, `print`, and every module not given as source (`posix.*`, `lfs`, `cjson`, a
+script's own C modules, …) are `Val.eff` handles, and calling one asks `oracle`; `none` stops the run with
 `Err.eff`. Fuel bounds the depth of the evaluation (each nested evaluation, call and loop iteration takes one);
 running out is `Err.fuel`, never a Lua error, so `pcall` does not catch it. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 inductive Val where
   | nil
@@ -617,7 +617,13 @@ def basicFn (name : String) (bound args : List Val) : M (List Val) := do
     let t ← argTbl name 0 args
     let m ← match args.getD 1 .nil with
       | .nil => pure none
-      | .tbl m => pure (some m)
+      | .tbl m => do
+        -- a metamethod the semantics does not model stops the run (DESIGN.md, *The subset*)
+        let other := (← getTbl m).kv.filterMap fun (k, v) => match k with
+          | .str s => if !v.isNil && s.take 2 == ['_', '_'] && s != "__index".toList then some s else none
+          | _ => none
+        if let s :: _ := other then throw (.eff s!"metamethod {String.ofList s}" [])
+        pure (some m)
       | _ => die "bad argument #2 to 'setmetatable' (nil or table expected)"
     putTbl t { (← getTbl t) with mt := m }
     return [.tbl t]
@@ -1157,4 +1163,4 @@ def initHeap : Heap :=
   let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "")] }
   #[.tbl g, .tbl {}, .tbl str, .tbl tab, .tbl math, .tbl pkg]
 
-end Swarm.Lua
+end Lua

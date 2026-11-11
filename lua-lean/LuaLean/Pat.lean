@@ -1,9 +1,9 @@
-import SwarmModel.Lua.Num
+import LuaLean.Num
 
 /-! Lua 5.1 patterns, after lstrlib.c's matcher (`match`, `max_expand`, `min_expand`, `%b`, `%f`, back-references).
 Recursion runs on fuel: running out is the error lstrlib.c gives for a pattern too complex (its C stack). -/
 
-namespace Swarm.Lua.Pat
+namespace Lua.Pat
 
 /-- a capture: its start, and its length, `none` while open; `pos` for a position capture `()` -/
 inductive Len where | open_ | pos | len (n : Nat)
@@ -254,4 +254,4 @@ def findPlain (s p : List Char) (init : Nat) : Option Nat :=
 
 def hasSpecials (p : List Char) : Bool := p.any fun c => "^$*+?.([%-".toList.contains c
 
-end Swarm.Lua.Pat
+end Lua.Pat
