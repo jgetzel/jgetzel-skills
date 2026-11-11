@@ -4,8 +4,8 @@ import LuaLean.Interp
 embedding in the interpreter's monad `M`, one combinator per clause of `Interp.lean`, and one lemma per combinator
 saying it is that clause. The translator writes each Lua function as a term of these combinators
 with no syntax tree left in it but the bodies of the closures it creates, and every local resolved: a local is the
-Lean variable naming its cell, a global is `_G`'s field. With it comes the proof, a term of the lemmas below, that
-the shallow function is the interpreter's run of the parsed function for every fuel; the kernel checks it.
+Lean variable naming its cell, a global is `_G`'s field. That the shallow function is the interpreter's run of the
+parsed function for every fuel is `D.fn_ok` (`Denote.lean`), a proof made of the lemmas below.
 
 Fuel is threaded as the interpreter threads it (`tick`), so the two are equal, not just alike, and the heap is the
 same heap: the shallow code allocates the same cells. -/
@@ -309,10 +309,10 @@ def qLocalFn (name : String) (ps : List String) (va : Bool) (b : Block) (env : E
     writeCell c (.fn f)
     k c n
 /-- a goto out of a statement: to a label ending the block (`ends`) it ends the block, to another of the block's
-labels (`all`) it is an error, else it leaves the block -/
+labels (`all`) the run stops (outside the subset), else it leaves the block -/
 def gotos (ends all : List String) (l : String) : M Flow :=
   if ends.contains l then pure .norm
-  else if all.contains l then die "goto: only to a label that ends its block"
+  else if all.contains l then throw (.eff "goto: a label that does not end its block" [])
   else pure (.goto l)
 /-- a statement, then the rest `q` -/
 def qStat (s : SB) (g : String → M Flow) (q : SB) : SB := fun n => tick n fun n => do
@@ -615,7 +615,7 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
         | .norm => execSeq I.srcs I.oracle I.tgt n cx full rest fin
         | .goto l =>
           if labelAtEnd full l then pure .norm
-          else if hasLabel full l then die "goto: only to a label that ends its block"
+          else if hasLabel full l then throw (.eff "goto: a label that does not end its block" [])
           else pure (.goto l)
         | fl => pure fl) := by
       rw [execSeq] <;> first | rfl | (intros; subst_vars; simp [Stat.isDecl] at hns)
@@ -630,8 +630,9 @@ theorem bind_ok {α β} {x : M α} {f : α → M β} {h h' : Heap} {a : α} (e :
 theorem getTbl_ok {h : Heap} {a : Nat} {t : Tbl} (ha : h[a]? = some (.tbl t)) : getTbl a h = .ok t h := by
   simp only [getTbl, getObj, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
 theorem metaOf_ok {h : Heap} {a m : Nat} {t tm : Tbl} {ev : String} (ha : h[a]? = some (.tbl t)) (hma : t.mt = some m)
-    (hm : h[m]? = some (.tbl tm)) : metaOf (.tbl a) ev h = .ok (tm.get (lstr ev)) h := by
-  simp only [metaOf, bind, EStateM.bind, getTbl_ok ha, hma, rawget, getTbl_ok hm]; rfl
+    (hm : h[m]? = some (.tbl tm)) (hw : tm.mt = none) : metaOf (.tbl a) ev h = .ok (tm.get (lstr ev)) h := by
+  simp only [metaOf, bind, EStateM.bind, getTbl_ok ha, hma, wget, getTbl_ok hm, held, weakOf, hw, pure,
+    EStateM.pure, Bool.false_and]; rfl
 
 /-- tostring of a value with `__tostring`: the metamethod's call in tostring's place -/
 theorem callPrim_tostring {I : Sem} {n : Nat} {v f : Val} {rest : List Val} {h : Heap}

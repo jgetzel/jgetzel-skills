@@ -67,12 +67,12 @@ theorem consistent : TakesWrites ideal ∧ ClockAnswers ideal ∧ ClockMono idea
 structure Lib (h : Heap) : Prop where
   log : ∃ l, h[LOG]? = some (.log l)
   g : ∃ gt, h[G]? = some (.tbl gt) ∧ ∃ io os, gt.get (lstr "io") = .tbl io ∧ gt.get (lstr "os") = .tbl os ∧
-    (∃ t, h[io]? = some (.tbl t) ∧ t.get (lstr "write") = .prim "io.write" []) ∧
-    (∃ t, h[os]? = some (.tbl t) ∧ t.get (lstr "time") = .prim "os.time" [])
+    (∃ t, h[io]? = some (.tbl t) ∧ t.get (lstr "write") = .prim "io.write" [] ∧ t.mt = none) ∧
+    (∃ t, h[os]? = some (.tbl t) ∧ t.get (lstr "time") = .prim "os.time" [] ∧ t.mt = none)
 
 /-- as the semantics starts -/
 theorem lib_init : Lib initHeap :=
-  ⟨⟨_, rfl⟩, _, rfl, 9, 10, rfl, rfl, ⟨_, rfl, rfl⟩, ⟨_, rfl, rfl⟩⟩
+  ⟨⟨_, rfl⟩, _, rfl, 9, 10, rfl, rfl, ⟨_, rfl, rfl, rfl⟩, ⟨_, rfl, rfl, rfl⟩⟩
 
 theorem lt_of_some {h : Heap} {a : Nat} {o : Obj} (e : h[a]? = some o) : a < h.size := by
   rcases Nat.lt_or_ge a h.size with h1 | h1
@@ -86,7 +86,7 @@ theorem greet_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (s : List Char) 
     (hw : I.oracle "io.write" [.str ("hello, ".toList ++ s ++ "\n".toList)] (trace h) = some vs) (n : Nat) :
     greet I env0 [.str s] (n + 20) h = .ok [] ((h.push (.cell (.str s))).setIfInBounds LOG
       (.log (⟨"io.write", [.str ("hello, ".toList ++ s ++ "\n".toList)], vs⟩ :: trace h))) := by
-  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, ⟨t, ht, htw⟩, -⟩ := L
+  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, ⟨t, ht, htw, htm⟩, -⟩ := L
   have hs6 := lt_of_some hl
   have hG := lt_of_some hg
   have hI := lt_of_some ht
@@ -100,7 +100,7 @@ theorem greet_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (s : List Char) 
     Nat.ne_of_lt hG]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, call_prim, callPrim_write, ioWrite]
+    EStateM.get, Array.getElem?_push, ht', htw, hI, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_write, ioWrite]
   simp [effect, trace_push _ hs6, hw, frame, EStateM.bind, EStateM.pure, atSite, List.findIdx?_cons,
     List.findIdx?_nil]
 
@@ -112,7 +112,7 @@ theorem readings_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (t0 t1 : Int)
         (.cell (timeVal t0))).setIfInBounds LOG
         (.log (⟨"os.time", [], [.num (.int t1)]⟩ :: ⟨"os.time", [], [.num (.int t0)]⟩ :: trace h))).push
         (.cell (timeVal t1))) := by
-  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, -, ⟨t, ht, htw⟩⟩ := L
+  obtain ⟨⟨l, hl⟩, gt, hg, io, os, hio, hos, -, ⟨t, ht, htw, htm⟩⟩ := L
   have hs6 := lt_of_some hl
   have hG := lt_of_some hg
   have hI := lt_of_some ht
@@ -128,18 +128,18 @@ theorem readings_run (I : Sem) (env0 : Env) (h : Heap) (L : Lib h) (t0 t1 : Int)
     EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, bind, EStateM.bind, pure, EStateM.pure, get, getThe, MonadStateOf.get,
-    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, Val.isNil,
+    EStateM.get, Array.getElem?_push, hG, hg', hos, ht', htw, hI, Nat.ne_of_lt hG, Nat.ne_of_lt hI, Val.isNil, htm, wget, held, weakOf,
     call_prim, callPrim_time, timeFx, effect, e0, frame, atSite]
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, call_prim, callPrim_time, timeFx,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_time, timeFx,
     effect, tr1, e1]
   rw [index.eq_def]
   simp [lstr, rawget, getTbl, getObj, readCell, alloc, set, MonadStateOf.set, EStateM.set, bind, EStateM.bind,
     pure, EStateM.pure, get, getThe, MonadStateOf.get, EStateM.get, Array.getElem?_push, Array.getElem?_setIfInBounds,
     Array.getElem_setIfInBounds, Array.getElem_push, hG, hg', hI, ht', hos, htw, hs6, hoL, Ne.symm hoL, hGL,
-    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, call_prim, callPrim_time, timeFx,
+    Ne.symm hGL, Nat.ne_of_lt hG, Nat.ne_of_lt hI, frame, atSite, Val.isNil, htm, wget, held, weakOf, call_prim, callPrim_time, timeFx,
     effect, tr1, e1, trace_push, trace_set, Array.size_setIfInBounds, Array.size_push, Nat.ne_of_lt hs6,
     (Nat.ne_of_lt hs6).symm]
 
