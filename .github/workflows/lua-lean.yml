@@ -1,0 +1,50 @@
+# lua-lean on three targets: x86-64 (single-number), arm64 Linux and arm64 macOS (dual-number; macos-14 is retired). Arm64 Linux beside
+# macOS tells a CPU difference from a libm one. Pushes and PRs run check.sh on the committed cases; the schedule runs
+# a fresh difftest, whose seed is the first line of its log.
+name: lua-lean
+on:
+  push:
+    branches: [main]
+    paths: [lua-lean/**, flake.nix, flake.lock, .github/workflows/lua-lean.yml]
+  pull_request:
+    paths: [lua-lean/**, flake.nix, flake.lock, .github/workflows/lua-lean.yml]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  lua-lean:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: LuaJIT from the repo flake
+        run: |
+          nix build .#luajit -o "$RUNNER_TEMP/luajit"
+          echo "$RUNNER_TEMP/luajit/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lua-lean/lean-toolchain') }}
+      - name: Lean through elan (lean-toolchain picks the version)
+        run: |
+          [ -x ~/.elan/bin/elan ] || curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: lua-lean/.lake
+          key: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lua-lean/lean-toolchain') }}-${{ hashFiles('lua-lean/LuaLean/**', 'lua-lean/LuaLean.lean') }}
+          restore-keys: lake-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lua-lean/lean-toolchain') }}-
+      - name: Target
+        run: luajit -e 'local z, n = 0, -1; print(jit.arch, jit.version, 1/(z*n) < 0 and "single-number" or "dual-number")'
+      - name: check.sh (committed cases)
+        if: github.event_name != 'schedule'
+        run: lua-lean/check.sh
+      - name: difftest (fresh seed)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: lua-lean/lua-lean difftest 3000
