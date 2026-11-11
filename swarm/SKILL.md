@@ -69,7 +69,15 @@ with subagents.
    `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it
    is on its base, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
-   first, told to any live author (else to you), done on the next green run. The user watches in Herdr's Swarm panel
+   first, told to any live author (else to you), done on the next green run.
+   It also polls, once a minute while a live agent holds a claim, the PRs from task branches (`<agent>/<task>`):
+   a merged PR closes its task with the merge sha and tells the owner, in every flow.
+   The swarm enforces no CI flow; a repo names its own in `.claude/swarm.json` `{"ci": {"flow": "…"}}`:
+   `none` (no CI: nothing is polled; land on green local checks), `post-merge` (merge on green local checks; CI
+   runs on the base after, and a red run is the board task above), `pr-gated` (a PR's checks gate its merge: the
+   agent stays for them and stops, and watchd wakes it, urgent, once per head, when they finish green or red),
+   `promoted` (CI on a dev base that promotes itself: tasks land on that base, as post-merge). Unset is post-merge
+   with nothing enforced. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
 4. Spawn agents, each with its own area so no two get identical prompts:

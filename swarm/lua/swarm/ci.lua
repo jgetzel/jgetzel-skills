@@ -78,12 +78,104 @@ function M.pr_ci(c, repo)
   end
 end
 
+-- .claude/swarm.json's ci table, or {}
+local function ci_cfg(repo)
+  local top = proc.git({ "rev-parse", "--show-toplevel" }, repo)
+  local ok, cfg = pcall(json.decode, top and util.slurp(util.join(top, ".claude", "swarm.json")) or "")
+  return ok and type(cfg) == "table" and type(cfg.ci) == "table" and cfg.ci or {}
+end
+
+-- The repo's CI flow, `ci.flow` in .claude/swarm.json: "none" (no CI: nothing to poll), "post-merge" (CI runs on the
+-- base after a merge; a red run is a board task), "pr-gated" (a PR's checks gate its merge: watchd wakes the owner when
+-- they finish), "promoted" (CI on a dev base that promotes itself); nil: unset, the post-merge polling with nothing enforced.
+M.FLOWS = { none = true, ["post-merge"] = true, ["pr-gated"] = true, promoted = true }
+function M.flow(repo)
+  local f = ci_cfg(repo).flow
+  return M.FLOWS[f] and f or nil
+end
+
+-- A PR's checks from gh's statusCheckRollup: "green" when every check finished well, "red" when every one finished and
+-- some did not, else "pending". shortcut: no checks at all reads as pending (right after a push none have registered),
+-- so a pr-gated repo whose PRs have no checks never wakes on them.
+function M.verdict(rollup)
+  if type(rollup) ~= "table" or #rollup == 0 then return "pending" end
+  local red = false
+  for _, x in ipairs(rollup) do
+    local st = x.__typename == "StatusContext" and x.state or (x.status == "COMPLETED" and x.conclusion or nil)
+    if st == nil or st == "" or st == "PENDING" or st == "EXPECTED" then return "pending" end
+    if st ~= "SUCCESS" and st ~= "NEUTRAL" and st ~= "SKIPPED" then red = true end
+  end
+  return red and "red" or "green"
+end
+
+-- The poll's decision on a claimed task of a live owner and the PR from its branch (model PrWatch.lean, prActL): "done"
+-- once the PR merged (any flow); "wake" once its checks all finished, the flow is pr-gated and the owner was not told of
+-- this head's verdict; else nil.
+function M.pr_act(pr, gated, told)
+  if pr.state == "MERGED" then return "done" end
+  if gated and pr.state == "OPEN" and pr.verdict ~= "pending" and not told then return "wake" end
+end
+
+-- Board #28: PRs from live owners' task branches, one `gh pr list` a minute while a live agent holds a claim (ci_poll reads
+-- the base's push runs, and agents don't poll gh, so nothing else sees a PR). A merged PR closes its task with the merge
+-- sha; in a pr-gated repo a finished verdict wakes the owner, once per head and verdict (urgent: a stayer waits for it).
+function M.pr_watch(c, repo)
+  local held = c:all("select t.id, t.owner, t.base, t.first_claimed_at from task t join agent a on a.name=t.owner "
+    .. "where t.state='claimed' and a.ended is null order by t.id")
+  if #held == 0 or not M.due(c, "pr_watched", 60) then return end
+  local prs = json.decode(proc.run({ "gh", "pr", "list", "--state", "all", "--limit", "50", "--json",
+    "number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeCommit,statusCheckRollup" }, repo) or "")
+  if type(prs) ~= "table" then return end  -- rate limited or offline: next minute
+  local gated = M.flow(repo) == "pr-gated"
+  for _, t in ipairs(held) do
+    -- its branch: <owner>/<task>, as spawn names it, or a worktree recorded for the owner when this is its one task
+    local br = { [t.owner .. "/" .. d(t.id)] = true }
+    if c:one("select count(*) n from task where owner=? and state in ('claimed','blocked')", t.owner).n == 1 then
+      for _, w in ipairs(c:all("select branch from workspace where agent=?", t.owner)) do br[w.branch] = true end
+    end
+    local base, pr = bases.base_for(t, repo), nil
+    for _, x in ipairs(prs) do  -- the newest open or merged PR into the task's base; a merge from before the claim is old work
+      if br[x.headRefName] and x.baseRefName == base and (x.state == "OPEN" or x.state == "MERGED" and x.mergedAt
+          and ts(x.mergedAt) >= (t.first_claimed_at or 0)) and (not pr or x.number > pr.number) then
+        pr = x
+      end
+    end
+    if pr then
+      local v = M.verdict(pr.statusCheckRollup)
+      local key = ("%s %s %s"):format(d(pr.number), tostring(pr.headRefOid), v)
+      local told = c:one("select 1 from event where kind='pr-wake' and agent=? and data=?", t.owner, key) ~= nil
+      local act = M.pr_act({ state = pr.state, verdict = v }, gated, told)
+      if act == "done" then
+        local ev = ("PR #%s merged as %s"):format(d(pr.number), tostring(pr.mergeCommit and pr.mergeCommit.oid or "?"):sub(1, 7))
+        if c:exec("update task set state='done', evidence=?, lease_until=null, done_at=?, pr=?, merged_at=? where id=? and state='claimed'",
+            ev, now(), pr.number, ts(pr.mergedAt), t.id) > 0 then
+          db.log(c, "swarm", "done", nil, ("#%s %s"):format(d(t.id), ev))
+          msgs.post(c, "swarm", t.owner, ("%s: watchd marked #%s done, so no `task done` is needed. If you stay for it, "
+            .. "`swarm stay --end`."):format(ev, d(t.id)), true, "system")
+        end
+      elseif act == "wake" then
+        db.log(c, t.owner, "pr-wake", nil, key)
+        local failed = {}
+        for _, x in ipairs(pr.statusCheckRollup) do
+          local st = x.__typename == "StatusContext" and x.state or x.conclusion
+          if st ~= "SUCCESS" and st ~= "NEUTRAL" and st ~= "SKIPPED" then failed[#failed + 1] = x.name or x.context or "?" end
+        end
+        msgs.post(c, "swarm", t.owner, v == "green"
+          and ("PR #%s's checks are green (head %s): merge it; watchd marks #%s done once it is merged."):format(
+            d(pr.number), tostring(pr.headRefOid):sub(1, 7), d(t.id))
+          or ("PR #%s's checks failed (%s, head %s): fix and push; watchd wakes you on the next verdict."):format(
+            d(pr.number), table.concat(failed, ", "), tostring(pr.headRefOid):sub(1, 7)), true, "system")
+      end
+    end
+  end
+end
+
 -- The one place the swarm asks GitHub about main's CI: a run list a minute into the ci table, and each red run's
 -- failed jobs once. Agents read the table (`swarm ci`), so N agents cost one poll, not N.
 function M.ci_poll(c, repo, every)
   local err = c:one("select v from meta where k='ci_error'")
   if err and now() - tonumber(err.v) < 300 then return end  -- refused: GitHub's secondary limit grows with retries
-  if not M.due(c, "ci_polled", every or 60) then return end
+  if M.flow(repo) == "none" or not M.due(c, "ci_polled", every or 60) then return end
   -- The runs endpoint itself: one request, where `gh run list` first lists every workflow (a second request).
   -- Push runs only: a scheduled workflow (an uptime check) on main's head isn't main's CI, and its green hid a red.
   -- shortcut: a check run started by hand (workflow_dispatch) isn't counted. .claude/swarm.json {"ci": {"workflow":
@@ -100,10 +192,8 @@ function M.ci_poll(c, repo, every)
     return
   end
   c:exec("delete from meta where k='ci_error'")
-  local top = proc.git({ "rev-parse", "--show-toplevel" }, repo)
-  local ok, cfg = pcall(json.decode, top and util.slurp(util.join(top, ".claude", "swarm.json")) or "")
-  cfg = ok and cfg
-  local wf = type(cfg) == "table" and type(cfg.ci) == "table" and type(cfg.ci.workflow) == "string" and cfg.ci.workflow
+  local wf = ci_cfg(repo).workflow
+  wf = type(wf) == "string" and wf
   c:exec("delete from ci where workflow is null")  -- rows from before this filter: any event, any workflow
   for _, r in ipairs(runs) do
     if r.event == "push" and (not wf or tostring(r.path):find(wf, 1, true)) then

@@ -1,4 +1,5 @@
 import SwarmModel.Env
+import SwarmModel.Decide
 
 /-! What the Lua decides from the tools' answers is what the model decides on its view of the world, given `Env`'s
 assumptions about `real`. Each decision is written as the Lua line it stands for; `check.sh` prints the assumptions
@@ -122,5 +123,14 @@ theorem real_busyClean {w0 w w' : realDb.World} {d0 : Sql.DB} {c : Nat} {op : Is
     b = true ∧ (realDb.view w).mode c = .auto ∧ realDb.view w' = realDb.view w := by
   obtain ⟨t, hs⟩ := realDb_step hd
   exact Iso.busyClean_of rfl _ c op t b _ (realDb_reach h0 h) hs
+
+/-- ci.pr_act on gh's answers for PR p (board #28) is its decision on the world's PR, which `Decide.prAct_lifted` shows is
+the model's poll: k is task whose PR p is, as the model has it -/
+theorem prAct_real {w : real.World} {p : Nat} {k : PrW.PTask} (hc : k.pr.checks = real.prChecks w p)
+    (hm : k.pr.merged = real.prMerged w p) (gated told : Bool) :
+    Decide.prActL { state := real.ghState w p, verdict := real.ghVerdict w p } gated told
+      = Decide.prActL (Decide.prRow k) gated told := by
+  rw [gh_checks w p, gh_state w p]
+  simp [Decide.prRow, hc, hm]
 
 end Swarm.Env

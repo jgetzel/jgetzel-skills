@@ -1,8 +1,9 @@
 import SwarmModel.Model
 import SwarmModel.Iso
+import SwarmModel.PrWatch
 
 /-! The environment (board #34): every assumption the model makes about the world outside the swarm's db, and about
-sqlite itself (board #33, at the end), in one file. `Tools` is what the swarm runs (git, hc, the kernel's process table, the filesystem, the clock) and `Tools.git`
+sqlite itself (board #33, at the end), in one file. `Tools` is what the swarm runs (git, hc, gh, the kernel's process table, the filesystem, the clock) and `Tools.git`
 is the model's view of the repo: commits as patch sets, branches, worktree slots, under the replay's name map (a slot
 is a worktree path, a branch id a branch name, a commit id a sha). Each assumption is a `Prop` on `Tools` and an
 axiom about `real`, the machine the swarm runs on; `check.sh` refuses a theorem resting on any axiom but these and
@@ -51,6 +52,14 @@ structure Tools where
   touched : World → Nat → Nat
   /-- w' comes after w: whatever the swarm and the world did in between -/
   Later : World → World → Prop
+  /-- PR p's head's checks as GitHub runs them (board #28) -/
+  prChecks : World → Nat → PrW.Checks
+  /-- PR p is merged into its base -/
+  prMerged : World → Nat → Bool
+  /-- ci.verdict of PR p's `statusCheckRollup` in `gh pr list --json` -/
+  ghVerdict : World → Nat → String
+  /-- PR p's `state` in `gh pr list --json`, for a PR the poll keeps (ci.pr_watch drops closed ones) -/
+  ghState : World → Nat → String
 
 /-- watchd.SWEEP_IDLE: a worktree untouched this long (s) may be swept -/
 def sweepIdle : Nat := 1800
@@ -98,6 +107,11 @@ touches `logs/HEAD`; an edit of a file below the top directory touches neither, 
 def TouchedRecent : Prop := ∀ w x, ((t.git w).wt x).recent = decide (t.now w < t.touched w x + sweepIdle)
 /-- clock: `os.time()` never goes back (NTP stepping the clock back breaks it: a lapsed lease would read live again) -/
 def NowMono : Prop := ∀ w w', t.Later w w' → t.now w ≤ t.now w'
+/-- `gh pr list`'s statusCheckRollup, read by ci.verdict, is the state of the head's checks: pending until every check
+has finished, then green or red -/
+def GhChecks : Prop := ∀ w p, t.ghVerdict w p = (t.prChecks w p).name
+/-- `gh pr list`'s state of a PR the poll keeps is MERGED when it is merged, else OPEN -/
+def GhState : Prop := ∀ w p, t.ghState w p = if t.prMerged w p then "MERGED" else "OPEN"
 
 /-- all of them -/
 structure Sound : Prop where
@@ -113,6 +127,8 @@ structure Sound : Prop where
   cwdsProc : CwdsProc t
   touchedRecent : TouchedRecent t
   nowMono : NowMono t
+  ghChecks : GhChecks t
+  ghState : GhState t
 
 /-- a machine where every tool tells the truth: the repo, the live terminals, the live processes, and the clock
 (offset by `sweepIdle`, so an untouched worktree has a last touch) -/
@@ -121,6 +137,8 @@ structure IdealWorld where
   terms : Nat → Bool
   procs : Nat → Bool
   clock : Nat
+  checks : Nat → PrW.Checks
+  merged : Nat → Bool
 
 def ideal : Tools where
   World := IdealWorld
@@ -140,6 +158,10 @@ def ideal : Tools where
   now w := w.clock + sweepIdle
   touched w x := if (w.git.wt x).recent then w.clock + sweepIdle else w.clock
   Later w w' := w.clock ≤ w'.clock
+  prChecks w p := w.checks p
+  prMerged w p := w.merged p
+  ghVerdict w p := (w.checks p).name
+  ghState w p := if w.merged p then "MERGED" else "OPEN"
 
 /-- the assumptions hold together: the ideal machine has them all -/
 theorem consistent : Sound ideal where
@@ -155,6 +177,8 @@ theorem consistent : Sound ideal where
   cwdsProc _ _ := rfl
   touchedRecent w x := by simp only [ideal]; split <;> simp_all [sweepIdle]
   nowMono _ _ h := Nat.add_le_add_right h _
+  ghChecks _ _ := rfl
+  ghState _ _ := rfl
 
 instance : Inhabited Tools := ⟨ideal⟩
 
@@ -185,6 +209,10 @@ axiom cwds_proc : CwdsProc real
 axiom touched_recent : TouchedRecent real
 /-- `os.time()` (env_spec: now_mono) -/
 axiom now_mono : NowMono real
+/-- `gh pr list`'s check rollup (env_spec: gh_checks) -/
+axiom gh_checks : GhChecks real
+/-- `gh pr list`'s state (env_spec: gh_state) -/
+axiom gh_state : GhState real
 
 /-! ## sqlite (board #33)
 

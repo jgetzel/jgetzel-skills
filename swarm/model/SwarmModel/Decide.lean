@@ -1,9 +1,10 @@
 import SwarmModel.Model
+import SwarmModel.PrWatch
 
 /-! Lifted (rung 3, board #27): the Lua's pure decisions with a counterpart in the model, line for line on the rows
 they read, and each proved to be the model's decision on its view of the state. `watchd.keeps` (reap: does a lapsed
-claim's owner keep it), `watchd.fate` (lifecycle: keep, unclean, reuse or end an agent) and `msgs.wakes` (the
-waiter). A Lua nil, or a NULL column, is `none`; a read the Lua makes through a callback (`f.claims()`, `cold()`) is
+claim's owner keep it), `watchd.fate` (lifecycle: keep, unclean, reuse or end an agent), `msgs.wakes` (the
+waiter) and `ci.pr_act` (watchd's poll of a PR, board #28, PrWatch.lean). A Lua nil, or a NULL column, is `none`; a read the Lua makes through a callback (`f.claims()`, `cold()`) is
 its answer, a `Bool`: what the read returns is the SQL's, rung 4. `DecideCases.lean` writes random inputs with these
 functions' answers, which `../lua/test/decide_model_spec.lua` checks the Lua against. -/
 
@@ -200,5 +201,37 @@ theorem wakes_lifted {s : State} {a : Nat} :
   have : (MRow.urg ∘ msgRow s) = fun i => (s.msg i).urgent := by
     funext i; simp only [Function.comp, MRow.urg, msgRow]; cases (s.msg i).urgent <;> rfl
   rw [this]; cases (unread s a).isEmpty <;> cases (s.agt a).cold <;> simp [Bool.or_comm]
+
+open PrW
+
+/-- the PR ci.pr_act reads: gh's state and ci.verdict of its checks -/
+structure PrRow where
+  state : String
+  verdict : String
+  deriving Repr, Inhabited, DecidableEq
+
+inductive PrAct where | done | wake
+  deriving Repr, Inhabited, DecidableEq
+
+/-- ci.pr_act(pr, gated, told) -/
+def prActL (pr : PrRow) (gated told : Bool) : Option PrAct :=
+  if pr.state == "MERGED" then some .done
+  else if gated && pr.state == "OPEN" && pr.verdict != "pending" && !told then some .wake
+  else none
+
+/-- the model's PR of task k as gh shows it -/
+def prRow (k : PTask) : PrRow := { state := if k.pr.merged then "MERGED" else "OPEN", verdict := k.pr.checks.name }
+
+/-- what the poll does to task k on the Lua's decision: done, told, or nothing -/
+def applyAct (k : PTask) : Option PrAct → PTask
+  | some .done => { k with st := .done }
+  | some .wake => { k with pr := { k.pr with told := true } }
+  | none => k
+
+/-- watchd's poll of a claimed task with a PR, with the fix on, does what ci.pr_act decides on the PR as gh shows it -/
+theorem prAct_lifted {c : PCfg} (hw : c.wakeFix = true) (hc : c.closeFix = true) {k : PTask} (hs : k.st = .claimed)
+    (ho : k.pr.opened = true) : pollTask c k = applyAct k (prActL (prRow k) c.gated k.pr.told) := by
+  cases hm : k.pr.merged <;> cases hk : k.pr.checks <;> cases hg : c.gated <;> cases ht : k.pr.told <;>
+    simp [pollTask, prActL, prRow, applyAct, Checks.name, hs, ho, hm, hk, hg, ht, hw, hc]
 
 end Swarm.Decide

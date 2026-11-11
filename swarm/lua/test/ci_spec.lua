@@ -1,4 +1,5 @@
--- ci: pr_ci merge-to-green, ci_poll's one request and backoff, ci_check's one red task closed by green. A fake gh on PATH.
+-- ci: pr_ci merge-to-green, ci_poll's one request and backoff, ci_check's one red task closed by green, pr_watch (board
+-- #28) and the flows. A fake gh on PATH.
 local db, ci, json = require "swarm.db", require "swarm.ci", require "swarm.json"
 local stdlib, unistd = require "posix.stdlib", require "posix.unistd"
 local dir = stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-spec-XXXXXX")
@@ -109,3 +110,52 @@ local rows = c:all("select id, workflow from ci")
 assert(#rows == 1 and rows[1].id == 20 and rows[1].workflow == "ci", json.encode(rows))
 assert(c:one("select count(*) n from task where title like 'main red: run 20%' and state='open'").n == 1)
 assert(ci.ci_for(c, red, dir) == "failure")
+
+-- verdict: every check finished well, or one did not; else pending
+assert(ci.verdict({}) == "pending" and ci.verdict(nil) == "pending")
+assert(ci.verdict({ { status = "COMPLETED", conclusion = "SUCCESS" }, { status = "COMPLETED", conclusion = "SKIPPED" } }) == "green")
+assert(ci.verdict({ { status = "COMPLETED", conclusion = "FAILURE" }, { status = "IN_PROGRESS", conclusion = "" } }) == "pending")
+assert(ci.verdict({ { status = "COMPLETED", conclusion = "FAILURE" }, { __typename = "StatusContext", state = "SUCCESS" } }) == "red")
+assert(ci.verdict({ { __typename = "StatusContext", state = "PENDING" } }) == "pending")
+
+-- pr_watch: no gh call while no live agent holds a claim; then one a minute, matched by <owner>/<task> into the base
+c:exec("delete from meta"); c:exec("delete from task"); c:exec("delete from msg"); c:exec("delete from event")
+f = io.open(dir .. "/.claude/swarm.json", "w"); f:write('{"ci": {"flow": "pr-gated"}}'); f:close()
+assert(ci.flow(dir) == "pr-gated")
+io.open(dir .. "/calls", "w"):close()
+local ok = { { status = "COMPLETED", conclusion = "SUCCESS", name = "ci" } }
+gh("", json.encode({
+  { number = 30, headRefName = "a/9", headRefOid = "h9", baseRefName = "main", state = "OPEN", statusCheckRollup = ok },
+  { number = 31, headRefName = "b/9", headRefOid = "hb", baseRefName = "main", state = "OPEN", statusCheckRollup = ok },  -- not a's
+  { number = 32, headRefName = "a/9", headRefOid = "h0", baseRefName = "main", state = "MERGED", mergedAt = "2000-01-01T00:00:00Z",
+    statusCheckRollup = ok } }))  -- merged before the claim: old work
+ci.pr_watch(c, dir)
+assert(calls("^pr ") == 0)
+c:exec("update agent set ended=null where name='a'")  -- live: earlier cases ended it
+c:exec("insert into task(id,title,state,owner,first_claimed_at) values(9,'t9','claimed','a',?)", os.time() - 60)
+ci.pr_watch(c, dir); ci.pr_watch(c, dir)
+assert(calls("^pr ") == 1)  -- once a minute
+local m = c:all("select body, urgent from msg where dest='a'")
+assert(#m == 1 and m[1].urgent == 1 and m[1].body:find("PR #30's checks are green", 1, true), json.encode(m))
+c:exec("delete from meta where k='pr_watched'"); ci.pr_watch(c, dir)
+assert(#c:all("select 1 x from msg where dest='a'") == 1)  -- told once per head and verdict
+assert(c:one("select state from task where id=9").state == "claimed")
+-- merged: done with the merge sha, in any flow
+f = io.open(dir .. "/.claude/swarm.json", "w"); f:write('{"ci": {"flow": "post-merge"}}'); f:close()
+gh("", json.encode({ { number = 30, headRefName = "a/9", headRefOid = "h9", baseRefName = "main", state = "MERGED",
+  mergedAt = "2030-01-01T00:00:00Z", mergeCommit = { oid = "abcdef123" }, statusCheckRollup = ok } }))
+c:exec("delete from meta where k='pr_watched'"); ci.pr_watch(c, dir)
+local r = c:one("select state, evidence, pr from task where id=9")
+assert(r.state == "done" and r.evidence == "PR #30 merged as abcdef1" and r.pr == 30, json.encode(r))
+assert(#c:all("select 1 x from msg where dest='a' and urgent=1") == 2)
+-- not pr-gated: green checks wake no one
+c:exec("insert into task(id,title,state,owner,first_claimed_at) values(10,'t10','claimed','a',?)", os.time() - 60)
+gh("", json.encode({ { number = 40, headRefName = "a/10", headRefOid = "h10", baseRefName = "main", state = "OPEN", statusCheckRollup = ok } }))
+c:exec("delete from meta where k='pr_watched'"); ci.pr_watch(c, dir)
+assert(#c:all("select 1 x from msg where dest='a'") == 2)
+-- flow none: no CI, so ci_poll asks nothing
+f = io.open(dir .. "/.claude/swarm.json", "w"); f:write('{"ci": {"flow": "none"}}'); f:close()
+io.open(dir .. "/calls", "w"):close()
+c:exec("delete from meta"); ci.ci_poll(c, dir)
+assert(calls("^api") == 0)
+os.execute("rm -rf " .. dir)

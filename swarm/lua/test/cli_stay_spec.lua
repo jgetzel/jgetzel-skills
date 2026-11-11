@@ -161,6 +161,15 @@ function T.test_hung_unread_message_reported_once(t)
   t:eq(#t:q("select 1 x from msg where dest='comms' and body like 'r did not wake on a message%'"), 1)
 end
 
+-- board #28: a conflict notice never wakes a waiter, by design, so it is no sign of a hung stayer
+function T.test_hung_notice_not_reported(t)
+  idle(t, "comms"); idle(t, "r", { stay = "CI on PR #5", last_active = os.time() - 60 })
+  t:q("insert into msg(ts,frm,dest,body,urgent,kind) values(?,'swarm','r','Your uncommitted work conflicts',0,'notice')",
+    os.time() - 120)
+  comms_tick(t); comms_tick(t)
+  t:eq(evs(t, "stay-unwoken"), 0)
+end
+
 function T.test_liveness_check_hung_and_answered(t)
   idle(t, "comms")
   idle(t, "s", { stay = "the plan", last_active = os.time() - 49 * 60 })
