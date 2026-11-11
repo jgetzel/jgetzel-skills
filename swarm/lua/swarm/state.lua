@@ -50,6 +50,110 @@ local function head_branch(wt)
   return util.startswith(s, "ref: refs/heads/") and s:sub(17) or "HEAD"
 end
 
+-- fate's checks in the order the agent screen shows them (REDESIGN.md §2), and each one's line
+local CHECKS = { "stay", "task", "lock", "unlanded", "job", "unread", "terminal", "waiter", "idle", "context" }
+local LABEL = { stay = "Stays", task = "Holds a task", lock = "Holds a lock", unlanded = "Work not on its base",
+  job = "Background process", unread = "Unread messages", terminal = "Terminal", waiter = "Waiter", idle = "Idle",
+  context = "Context" }
+
+local function dur(s) return util.ago(util.now() - s) end
+
+-- watchd's verdict on live idle agent row x, and the checks behind it: watchd.fate with recording reads. all: every
+-- check (the agent screen); else only those fate made, which end at the first that holds (Home's chip).
+-- R: watchd.reads; by: hc terminals by address (nil: hc did not answer).
+function M.fate(c, x, t, R, by, all)
+  local watchd = require "swarm.watchd"
+  local hx = by and x.hc and x.hc ~= "" and by[x.hc] or nil
+  local g, order, last = R.f(x.name), {}, nil
+  g.rec = function(label, v) order[#order + 1] = label; if v then last = label end end
+  local v = watchd.fate(x, t, hx, by ~= nil, g)  -- the plain run: watchd's verdict, ending at the check that holds
+  local f, on = g, {}
+  for _, k in ipairs(order) do on[k] = k == last end
+  if all then  -- every check, from a second run in which none holds
+    f, on = R.f(x.name), {}
+    f.all, f.rec = true, function(label, h) on[label] = h end
+    watchd.fate(x, t, hx, by ~= nil, f)
+    on.unread = false
+  end
+  local reuse = v == "reuse"
+  if on.context ~= nil then on.context, on.waiter = reuse, reuse end  -- they keep it only together
+  if v ~= nil and v ~= "unclean" then last = nil end  -- a verdict past every keeping check: none of them holds
+  local pool = tasks.pool(c)
+  local w, u = R.waking(x.name)
+  if on.unread ~= nil then on.unread = reuse and w > 0 end
+  local detail, short = {}, {}
+  if on.stay ~= nil then
+    local e = c:one("select ts from event where agent=? and kind='stay' order by id desc limit 1", x.name)
+    detail.stay = x.stay and ("'%s'%s"):format(x.stay, e and ", for " .. dur(t - e.ts) or "") or "no stay"
+    short.stay = "stays"
+  end
+  if on.task ~= nil then
+    local r = c:one("select id,title,lease_until from task where owner=? and state in ('claimed','blocked') order by id", x.name)
+    detail.task = r and ("#%d %s%s"):format(r.id, r.title, r.lease_until and (", lease %s left"):format(
+      dur(math.max(0, r.lease_until - t))) or "") or "none"
+    short.task = r and ("holds #%d"):format(r.id) or "holds a task"
+  end
+  if on.lock ~= nil then
+    local l = {}
+    for _, r in ipairs(c:all("select path from lock where agent=? order by path", x.name)) do l[#l + 1] = r.path end
+    detail.lock, short.lock = #l > 0 and table.concat(l, ", ") or "none", "holds a lock"
+  end
+  if on.unlanded ~= nil then
+    if f.held then
+      local files, commits = 0, 0
+      for _, l in ipairs(util.splitlines(watchd.unclean_list(f.held, f.B[1]))) do
+        if l:match("^commit ") then commits = commits + 1 elseif l ~= "" then files = files + 1 end
+      end
+      local pr = c:one("select pr from task where owner=? and pr is not null order by id desc limit 1", x.name)
+      detail.unlanded = ("%s: %d uncommitted file%s, %d commit%s not on %s%s"):format(f.held, files, files == 1 and "" or "s",
+        commits, commits == 1 and "" or "s", f.B[1], pr and (" (PR #%d)"):format(pr.pr) or "")
+      short.unlanded = files > 0 and "uncommitted work" or "unlanded commits"
+    else
+      detail.unlanded = "all on its base"
+    end
+  end
+  if on.job ~= nil then
+    detail.job = f.proc and ("%s, %s"):format(util.cut(f.proc.args, 80), dur(f.proc.age or 0)) or "none"
+    short.job = "background job"
+  end
+  detail.unread = w > 0 and ("%d%s"):format(w, u > 0 and (", %d urgent"):format(u) or "") or "none"
+  if on.terminal ~= nil then
+    local other = hx and hx.cwd and hx.cwd ~= "" and not f.ours(hx.cwd)
+    detail.terminal = not (x.hc and x.hc ~= "") and "none bound" or not by and x.hc .. ": hc did not answer"
+      or not hx and x.hc .. " gone" or other and ("%s in another repo (%s)"):format(x.hc, hx.cwd)
+      or ("%s %s"):format(x.hc, hx.status or "?")
+    short.terminal = not hx and "terminal gone" or other and "in another repo" or "terminal " .. (hx.status or "busy")
+  end
+  if on.waiter ~= nil then
+    detail.waiter = x.waiter and f.alive(x.waiter) and ("present (pid %d)"):format(x.waiter) or "gone: no message can wake it"
+  end
+  if on.idle ~= nil then
+    detail.idle = x.status ~= "idle" and tostring(x.status) or ("%s (watchd waits 2m)"):format(dur(t - (x.last_active or 0)))
+    short.idle = x.status ~= "idle" and tostring(x.status) or "idle under 2 min"
+  end
+  if on.context ~= nil then
+    local k = math.floor((x.ctx_tokens or 0) / 1000)
+    detail.context = (x.ctx_tokens or 0) >= agents.SMALL_CTX and ("%dk: too big to be given another task"):format(k)
+      or #pool == 0 and ("%dk: small enough, but no task is ready"):format(k)
+      or f.passed_over() and ("%dk: small enough, but it passed over the ready tasks"):format(k)
+      or ("%dk: small enough for another task; #%d is ready"):format(k, pool[1].id)
+    short.context = pool[1] and ("#%d is ready"):format(pool[1].id) or "a task is ready"
+  end
+  local checks, held = {}, {}
+  for _, k in ipairs(CHECKS) do
+    if on[k] ~= nil then
+      checks[#checks + 1] = { label = LABEL[k], on = on[k], detail = detail[k] or "" }
+      if on[k] and k ~= "waiter" and k ~= "unread" then held[#held + 1] = short[k] end
+    end
+  end
+  local verdict = v or "kept"
+  return { verdict = verdict,
+    says = verdict == "end" and "watchd ends it at its next tick" or verdict == "reuse" and "Kept for reuse: " .. short.context
+      or "Kept: " .. table.concat(held, " and "),
+    short = verdict == "end" and "ending" or verdict == "reuse" and short.context or N(last and short[last]),
+    checks = array(all and checks or {}) }
+end
+
 local function pid_alive(pid)
   pid = tonumber(pid)
   return pid ~= nil and signal.kill(pid, 0) == 0
@@ -117,7 +221,7 @@ function M.cmd_state(a)
   local want = a.view and M.VIEWS[a.view] or ALL
   local lanes = want.lanes
   local wts = lanes and conflict.wt_map(c) or {}
-  local ags = {}
+  local ags, R, by = {}, nil, nil
   for _, x in ipairs(rows("select * from agent order by ended is not null, name")) do
     local own = {}
     for _, r in ipairs(tk) do
@@ -159,6 +263,22 @@ function M.cmd_state(a)
     if full or (lanes and live) or x.name == a.agent then
       ag.events = fill_all(rows("select ts,kind,path,data from event where agent=? and kind not in ('touch','status') "
         .. "order by id desc limit 5", x.name))
+    end
+    if live and x.status == "idle" and (lanes or x.name == a.agent) then  -- watchd's verdict and why (REDESIGN.md §2)
+      local ok, r = pcall(function()
+        if not R then
+          local watchd = require "swarm.watchd"
+          local terms = agents.hc_terminals()
+          if terms then
+            by = {}
+            for _, h in ipairs(terms) do if h.address then by[h.address] = h end end
+          end
+          R = watchd.reads(c, watchd.main_wt(), lanes and wts or conflict.wt_map(c), conflict.worktrees(), tasks.pool(c))
+        end
+        return M.fate(c, x, t, R, by, x.name == a.agent)
+      end)
+      if not ok and not tostring(r):find("no such", 1, true) then error(r, 0) end  -- an old db: no verdict
+      ag.fate = ok and r or null
     end
     if full or x.name == a.agent then  -- the detail pane's messages
       ag.messages = array(rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg "
@@ -217,6 +337,32 @@ function M.cmd_state(a)
   }
   for _, x in ipairs(ags) do
     if x.ended == null then out.active = true end
+  end
+  -- the latest runs on the base, from the ci table watchd fills, and how many of the newest finished ones are red
+  local runs = rows("select id,status,conclusion,url,created from ci order by created desc limit 5")
+  local streak = 0
+  for _, r in ipairs(rows("select conclusion from ci where status='completed' and conclusion!='cancelled' order by created desc limit 50")) do
+    if r.conclusion == "success" then break end
+    streak = streak + 1
+  end
+  out.ci = { runs = fill_all(runs, { "id", "status", "conclusion", "url", "created" }), red_streak = streak }
+  -- watchd: its record (pid, terminal), what it was started with, and whether the swarm code changed since it started
+  local wr = meta("watchd")
+  local run_ = meta("watchd_run")
+  run_ = run_ and json.decode(run_)
+  run_ = type(run_) == "table" and run_ or {}
+  if wr then
+    local pid, term = wr:match("^(%S+)%s*(%S*)")
+    local newest = 0
+    for f in lfs.dir(util.join(os.getenv("SWARM_HERE") or ".", "lua", "swarm")) do
+      local m = f:match("%.lua$") and lfs.attributes(util.join(os.getenv("SWARM_HERE"), "lua", "swarm", f), "modification")
+      if m and m > newest then newest = m end
+    end
+    out.watchd = { pid = tonumber(pid), terminal = term ~= "" and term ~= "-" and term or null, started = N(run_.started),
+      alive = pid_alive(pid), stale = run_.started ~= nil and newest > run_.started,
+      flags = run_.flags and array(run_.flags) or null }
+  else
+    out.watchd = null
   end
   local aw = meta("away")  -- "<since> <note>" while the user is away (`swarm away`)
   out.away = aw and { since = tonumber(aw:match("^%d+")), note = N(aw:match("^%d+ (.+)$")) } or null

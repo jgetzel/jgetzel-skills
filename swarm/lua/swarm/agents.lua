@@ -416,6 +416,7 @@ function M.stay_of(c, name)
 end
 
 function M.cmd_stay(c, a)
+  if a["end"] and #a.text > 0 then return M.end_stay(c, a.text[1]) end
   local n = M.me()
   if #a.text == 0 and not a["end"] then
     local s = M.stay_of(c, n)
@@ -432,6 +433,36 @@ function M.cmd_stay(c, a)
   end)
   print(v and ("you stay for '%s'; watchd won't end you. `swarm stay --end` when it is over."):format(v)
     or "stay ended: watchd ends you once you are idle, hold nothing and your work is on your task's base.")
+end
+
+-- `swarm stay --end NAME`: human (the panel) or the communicator clears another agent's stay; watchd then judges it
+-- like any agent, every other check still applied.
+function M.end_stay(c, n)
+  local me = M.env("SWARM_NAME") or "human"
+  if me ~= "human" and not M.is_comms(c, me) then util.die("only human or the communicator ends another agent's stay") end
+  c:tx(function()
+    local r = c:one("select stay from agent where name=? and ended is null", n)
+    if not r then util.die(n .. " is not a live agent") end
+    if not r.stay then util.die(n .. " stays for nothing") end
+    c:exec("update agent set stay=null where name=?", n)
+    db.log(c, me, "stay-end", n, r.stay)
+  end)
+  print(("%s's stay ended: watchd ends it once it is idle, holds nothing and its work is on its base."):format(n))
+end
+
+M.NUDGE = "read your messages and continue, or say what you wait for"
+
+-- `swarm nudge NAME`: type one fixed line into a live agent's terminal (hc send) and log it.
+function M.cmd_nudge(c, a)
+  local me = M.env("SWARM_NAME") or "human"
+  local r = c:one("select hc, ended from agent where name=?", a.agent)
+  if not r then util.die(a.agent .. " is not an agent") end
+  if r.ended then util.die(a.agent .. " has ended; nothing to nudge") end
+  if not r.hc or r.hc == "" then util.die(a.agent .. " has no terminal") end
+  local _, err, code = proc.exec({ "hc", "send", r.hc, M.NUDGE })
+  if code ~= 0 then util.die(("hc send %s failed: %s"):format(r.hc, util.strip(err or ""))) end
+  db.log(c, me, "nudge", a.agent)
+  print(("nudged %s (%s)"):format(a.agent, r.hc))
 end
 
 function M.cmd_leave(c, a)
