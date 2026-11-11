@@ -321,11 +321,12 @@ function M.cmd_task(c, a)
       end
       db.log(c, n, "block", nil, ("#%s %s"):format(d(a.id), a.question))
     end)
-    print(("blocked #%s; watchd tells the communicator. It stays yours until `swarm task unblock`."):format(d(a.id)))
+    print(("blocked #%s; %s It stays yours until `swarm task unblock`."):format(d(a.id), agents.away(c)
+      and "the user is away: park this and take work that doesn't need the answer." or "watchd tells the communicator."))
 
   elseif a.act == "unblock" then
     if r.state ~= "blocked" then util.die(("task #%s is not blocked"):format(d(a.id))) end
-    if n ~= r.owner and not agents.is_comms(c, n) then
+    if n ~= r.owner and not agents.in_charge(c, n) then
       util.die(("only %s or the communicator can unblock #%s"):format(tostring(r.owner), d(a.id)))
     end
     c:tx(function()
@@ -341,20 +342,33 @@ function M.cmd_task(c, a)
     print(("unblocked #%s; claimed by %s again"):format(d(a.id), r.owner))
 
   elseif a.act == "release" then
+    -- the user or the communicator may take back a task another holds, claimed or blocked; its ex-owner is told
+    local from = r.owner ~= n and agents.in_charge(c, n) and py(r.owner)
     c:tx(function()
-      if c:exec("update task set state='open', owner=null, lease_until=null where id=? and owner=? and state='claimed'",
+      if from then
+        if c:exec("update task set state='open', owner=null, lease_until=null, question=null where id=? and owner=? "
+            .. "and state in ('claimed','blocked')", a.id, from) == 0 then
+          local r2 = c:one("select * from task where id=?", a.id)
+          util.die(("task #%s is %s%s"):format(d(a.id), r2.state, owned(r2)))
+        end
+      elseif c:exec("update task set state='open', owner=null, lease_until=null where id=? and owner=? and state='claimed'",
           a.id, n) == 0 then
         util.die(("task #%s is not claimed by you"):format(d(a.id)))
       end
       if a.after then M.set_deps(c, a.id, a.after) end
-      db.log(c, n, "release", nil, "#" .. d(a.id))
+      db.log(c, n, "release", nil, "#" .. d(a.id) .. (from and " from " .. from or ""))
+      if from then
+        require("swarm.msgs").post(c, n, from, ("%s released #%s: stop work on it"):format(
+          n == agents.HUMAN and "the user" or n, d(a.id)), true)
+      end
     end)
-    print(("released #%s; it is open again%s"):format(d(a.id), a.after and #a.after > 0 and (" after " .. ids(a.after)) or ""))
+    print(("released #%s%s; it is open again%s"):format(d(a.id), from and (" from " .. from) or "",
+      a.after and #a.after > 0 and (" after " .. ids(a.after)) or ""))
 
   elseif a.act == "drop" then
     c:tx(function()
       local r2 = c:one("select * from task where id=?", a.id)
-      if (r2.state == "claimed" or r2.state == "blocked") and r2.owner ~= n and not agents.is_comms(c, n) then
+      if (r2.state == "claimed" or r2.state == "blocked") and r2.owner ~= n and not agents.in_charge(c, n) then
         util.die(("#%s is %s by %s; only it or the communicator can drop it"):format(d(a.id), r2.state, tostring(r2.owner)))
       end
       c:exec("update task set state='dropped', owner=null, lease_until=null, dropped_at=? where id=?", t, a.id)

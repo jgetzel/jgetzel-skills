@@ -5,6 +5,7 @@ local M = {}
 
 M.COLD_IDLE = 55 * 60   -- prompt cache (1 h TTL) counts as warm for this long
 M.SMALL_CTX = 40000     -- a wake of a context this small is cheap whatever the cache
+M.HUMAN = "human"       -- the user's name (the panel runs the CLI as it): the communicator's rights, never an agent row
 
 function M.env(k)  -- an env var, nil when unset or empty (Python's `os.environ.get(k)` truthiness)
   local v = os.getenv(k)
@@ -54,6 +55,7 @@ end
 -- Bind name to terminal hc (join, spawn): a new, ended or unbound row, or one whose terminal isn't live.
 -- A live binding elsewhere moves only with takeover, logged old -> new.
 function M.bind(c, name, cwd, hc, model, takeover)
+  M.not_human(name)
   local r = c:one("select hc, ended from agent where name=?", name)
   local old = r and not r.ended and r.hc ~= "" and r.hc or nil
   local here = hc or "outside Herdr"
@@ -92,6 +94,7 @@ end
 -- Write name's own fields, fenced: nothing for an ended row or another terminal's (returns why).
 -- A new row is bound here; bind=true (wait) also binds an unbound one. Only join moves a binding.
 function M.touch(c, name, cwd, bind, kw)
+  if name == M.HUMAN then return nil end
   local why = M.fence(c, name)
   if why then return why end
   local here, t = M.env("HC_TERMINAL_ID"), util.now()
@@ -151,6 +154,7 @@ end
 -- Intent before effect (sw-ownership rule 3): the max check and the new agent's row in one transaction, before
 -- the launch, so two spawns can't both take the last place. At the max raises {exit = 1, refused = msg}.
 function M.reserve(c, name, model)
+  M.not_human(name)
   c:tx(function()
     if c:one("select 1 from agent where name=? and ended is null", name) then util.die(name .. " is a live agent") end
     local live, _, mx = M.limits(c)
@@ -175,33 +179,131 @@ function M.cmd_limits(c, a)
       if mn and mx and mn > mx then util.die(("the auto-spawn number %d is above the max %d"):format(mn, mx)) end
       if a.min then c:exec("insert or replace into meta(k,v) values('agent_min',?)", tostring(a.min)) end
       if a.max then c:exec("insert or replace into meta(k,v) values('agent_max',?)", tostring(a.max)) end
-      db.log(c, M.env("SWARM_NAME") or "human", "limits", nil, ("min %s max %s"):format(tostring(mn), tostring(mx)))
+      db.log(c, M.env("SWARM_NAME") or M.HUMAN, "limits", nil, ("min %s max %s"):format(tostring(mn), tostring(mx)))
     end)
   end
   print(M.limits_line(c))
 end
 
--- swarm away [note] | --back: the user's away flag (meta away = "<since> <note>").
-function M.cmd_away(c, a)
-  if a.back then
-    c:tx(function()
-      if c:exec("delete from meta where k='away'") > 0 then db.log(c, M.env("SWARM_NAME") or "human", "back") end
-    end)
-    print("back")
-  else
-    local note = table.concat(a.note, " ")
-    c:tx(function()
-      c:exec("insert or replace into meta(k,v) values('away',?)", util.strip(util.now() .. " " .. note))
-      db.log(c, M.env("SWARM_NAME") or "human", "away", nil, note)
-    end)
-    print("away" .. (note ~= "" and ": " .. note or ""))
+-- The user's away flag (meta away = "<since> <note>"): {since, note}, or nil when they are here.
+function M.away(c)
+  local r = c:one("select v from meta where k='away'")
+  return r and { since = tonumber(r.v:match("^%d+")), note = r.v:match("^%d+ (.+)$") } or nil
+end
+
+-- What the communicator is told while the user is away (on `swarm away`, and on its read/wait/board).
+function M.away_line(aw)
+  return ("the user is away since %s%s: don't ask them; decide what is yours to decide, queue the rest."):format(
+    util.hhmm(aw.since), aw.note and (" (" .. aw.note .. ")") or "")
+end
+
+function M.comms_name(c)
+  local cm = c:one("select v from meta where k='comms'")
+  return cm and cm.v ~= "" and cm.v or M.env("SWARM_COMMS")
+end
+
+-- What happened since `since`, for `swarm away --back` (and state --json's `back`, until the next away).
+function M.digest(c, since, note)
+  local A, t = json.array, util.now()
+  local qs = A()
+  for _, r in ipairs(c:all("select id,title,owner,question from task where state='blocked'")) do
+    local e = c:one("select max(ts) as ts from event where (kind='block' and (data=? or data like ?)) "
+      .. "or (kind='task-blocked' and path=?)", "#" .. util.d(r.id), "#" .. util.d(r.id) .. " %", util.d(r.id))
+    r.since = e and e.ts or since
+    qs[#qs + 1] = r
   end
+  table.sort(qs, function(x, y) return x.since < y.since or (x.since == y.since and x.id < y.id) end)
+  local ended = A()
+  for _, r in ipairs(c:all("select name, ended from agent where ended>=? order by ended", since)) do
+    local why = c:one("select data from event where agent=? and kind in ('reap','leave','end') and ts>=? order by id desc limit 1",
+      r.name, since)
+    ended[#ended + 1] = { name = r.name, at = r.ended, why = why and why.data or json.null }
+  end
+  local hung = A()
+  for _, r in ipairs(c:all("select distinct e.agent as name from event e join agent g on g.name=e.agent "
+      .. "where e.kind='stay-hung' and e.ts>=? and g.ended is null order by e.agent", since)) do
+    hung[#hung + 1] = r.name
+  end
+  local ci = c:one("select sha,status,conclusion,url from ci order by created desc limit 1")
+  return { since = since, back = t, note = note or json.null, questions = qs,
+    done = A(c:all("select id,title,owner,evidence,done_at from task where state='done' and done_at>=? order by done_at", since)),
+    merged = A(c:all("select id,title,pr,merged_at from task where merged_at>=? order by merged_at", since)),
+    ci = ci or json.null, ended = ended, hung = hung }
+end
+
+function M.digest_text(g)
+  local L = { ("back: away since %s%s, %s"):format(util.hhmm(g.since), type(g.note) == "string" and (" (" .. g.note .. ")") or "",
+    util.ago(g.since)) }
+  L[#L + 1] = #g.questions == 0 and "no questions wait" or ("%d question%s wait, oldest first:"):format(
+    #g.questions, #g.questions == 1 and "" or "s")
+  for _, q in ipairs(g.questions) do
+    L[#L + 1] = ("  #%s %s (%s): %s  [%s]"):format(util.d(q.id), q.owner or "-", util.hhmm(q.since), q.question or "?", q.title)
+  end
+  local function list(head, rows, f)
+    if #rows == 0 then return end
+    local p = {}
+    for i, r in ipairs(rows) do p[i] = f(r) end
+    L[#L + 1] = head .. table.concat(p, ", ")
+  end
+  list("finished: ", g.done, function(r) return ("#%s %s"):format(util.d(r.id), r.title) end)
+  list("merged: ", g.merged, function(r) return ("PR #%s (#%s)"):format(r.pr and util.d(r.pr) or "?", util.d(r.id)) end)
+  local ci = type(g.ci) == "table" and g.ci or nil
+  L[#L + 1] = "main CI: " .. (ci and ("%s %s"):format(ci.conclusion or ci.status or "?", (ci.sha or ""):sub(1, 7)) or "no run seen")
+  list("ended: ", g.ended, function(r) return r.name .. (type(r.why) == "string" and (" (" .. r.why .. ")") or "") end)
+  list("hung: ", g.hung, function(r) return r end)
+  return table.concat(L, "\n")
+end
+
+-- swarm away [note] | --back: the user's away flag. Away: the communicator is told once; questions queue (watchd and
+-- `task block`). Back: one urgent message to the communicator and the digest, kept in meta away_digest until the next away.
+function M.cmd_away(c, a)
+  local me, comms = M.env("SWARM_NAME") or M.HUMAN, M.comms_name(c)
+  local msgs = require "swarm.msgs"
+  if a.back then
+    local g = c:tx(function()
+      local aw = M.away(c)
+      if not aw then return nil end
+      local g = M.digest(c, aw.since, aw.note)
+      c:exec("delete from meta where k='away'")
+      c:exec("insert or replace into meta(k,v) values('away_digest',?)", json.encode(g))
+      db.log(c, me, "back")
+      if comms then
+        local ids = {}
+        for i, q in ipairs(g.questions) do ids[i] = "#" .. util.d(q.id) end
+        msgs.post(c, me, comms, ("the user is back: %d question%s wait%s"):format(#ids, #ids == 1 and "" or "s",
+          #ids > 0 and " (" .. table.concat(ids, ", ") .. ")" or ""), true, "system")
+      end
+      return g
+    end)
+    print(g and M.digest_text(g) or "you were not away")
+    return
+  end
+  local note = util.strip(table.concat(a.note, " "))
+  local was = c:tx(function()
+    local aw = M.away(c)
+    if aw then return aw end
+    c:exec("delete from meta where k='away_digest'")
+    c:exec("insert or replace into meta(k,v) values('away',?)", util.strip(util.now() .. " " .. note))
+    db.log(c, me, "away", nil, note)
+    if comms then msgs.post(c, me, comms, M.away_line(M.away(c)), false, "system") end
+  end)
+  if was then print(("already away since %s"):format(util.hhmm(was.since))) return end
+  print("away" .. (note ~= "" and ": " .. note or "") .. "; questions wait for you, work goes on")
 end
 
 function M.is_comms(c, name)
   if not name or name == "" then return false end
   local cm = c:one("select v from meta where k='comms'")
   return name == (cm and cm.v or M.env("SWARM_COMMS"))
+end
+
+-- The communicator's rights (end, release or drop another's task, unblock): it, or the user.
+function M.in_charge(c, name)
+  return name == M.HUMAN or M.is_comms(c, name)
+end
+
+function M.not_human(name)
+  if name == M.HUMAN then util.die("'human' is the user's name (the panel acts as it); an agent can't take it") end
 end
 
 -- ---------- cold-cache rule ----------
