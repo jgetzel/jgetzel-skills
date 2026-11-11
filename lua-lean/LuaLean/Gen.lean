@@ -442,10 +442,57 @@ example : True := by
   fail_if_success (have : Tbl.rank 0 0 .nil = 0 := by decide)
   trivial
 
+/-- load and loadstring: a source and its chunk name, errors raised in the chunk, a reader's pieces, the mode -/
+def loads : G String := do
+  let body ← pick ["return 1 + 2", "return ...", "local t = nil\nreturn t.x", "error('m')", "error('m', 2)",
+    "ld_g = (ld_g or 0) + 1 return ld_g", "return select('#', ...)", "local a, b = ...\nreturn b, a", "return",
+    "\n\nreturn nil .. 1", "return function(y) return y * 2 end", "return loadstring('return 5, ...')(...)",
+    "return (loadstring('error(\"in\")', '=inner'))()", "local x = 1\n\n\nerror({x})", "return 1 + #(...)"]
+  let long := "long name of a chunk, longer than forty-five bytes at least"
+  let name ← pick ["", ", nil", ", \"=n\"", ", \"@f.lua\"", s!", {q long}", s!", \"={long}{long}\"",
+    s!", \"@d/{long}/{long}.lua\"", ", \"a\\nb\"", ", \"\"", ", 12", ", \"=\""]
+  let mode ← pick ["", "", "", ", \"t\"", ", \"b\"", ", \"bt\"", ", \"\""]
+  let name := if mode != "" && name == "" then ", nil" else name
+  let cut ← rnd body.length
+  let pieces := [(body.take cut).toString, (body.drop cut).toString] ++ (if ← chance 4 then ["", "error()"] else [])
+  let src ← match ← rnd 4 with
+    | 0 => pure s!"load({q body}{name}{mode})"
+    | 1 => pure s!"load(rd({commas (pieces.map q)}){name})"
+    | 2 => pure s!"load(rd({commas (pieces.map q)}){name}, nil, \{})"
+    | _ => pure s!"loadstring({q body}{name}{mode})"
+  let args ← pick ["", ", 1, 2", ", nil, 'ab'", ", 'xyz'"]
+  return s!"local function rd(...) local p, i = \{...}, 0 return function() i = i + 1 return p[i] end end
+ld_g = nil
+local f, e = {src}
+if not f then return e end
+return pcall(f{args})"
+
+/-- the modules under test/mods, by both their names -/
+def modNames : List String := ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+
+/-- require and dofile of the modules in test/mods, through a package.path that finds them, LuaJIT run from
+lua-lean/: each chunk forgets what an earlier one loaded -/
+def files : G String := do
+  let (path, pfx) ← pick [("test/?.lua", "mods."), ("test/nope/?.lua;test/?.lua", "mods."), (";;test/?.lua;", "mods."),
+    ("test/mods/?.lua", ""), ("test/x?y/?.lua;test/mods/?.lua", "")]
+  let mut src := s!"package.path = {q path}\nfor _, m in ipairs(\{{commas (modNames.flatMap fun m => [q m, q ("mods." ++ m)])}}) do package.loaded[m] = nil end\nlocal R = \{}\n"
+  for _ in [0:(← rnd 4) + 1] do
+    let m := pfx ++ (← pick modNames)
+    let st ← match ← rnd 6 with
+      | 0 => pure s!"R[#R + 1] = \{pcall(require, {q m})}"
+      | 1 => pure s!"R[#R + 1] = \{pcall(function() return require({q m}) end)}"
+      | 2 => pure s!"R[#R + 1] = \{pcall(dofile, \"test/mods/{← pick modNames}.lua\")}"
+      -- not one whose load fails: LuaJIT leaves a light userdata there (DESIGN.md, known gaps)
+      | 3 => do let m := pfx ++ (← pick ["a", "b", "c", "d", "g", "i", "j"]); pure s!"R[#R + 1] = \{require({q m}), package.loaded[{q m}]}"
+      | 4 => pure s!"R[#R + 1] = \{pcall(function() return require({q (pfx ++ "j")}).f(21), require({q (pfx ++ "j")}) == require({q (pfx ++ "j")}) end)}"
+      | _ => pure s!"R[#R + 1] = \{require == _G.require, require(\"string\") == string, require(\"_G\") == _G, require(\"package\") == package}"
+    src := src ++ st ++ "\n"
+  return src ++ "return R"
+
 /-- one of the chunks above -/
 def chunk : G String := do
   if ← chance 8 then return ← errors
-  match ← rnd 12 with
+  match ← rnd 13 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -456,19 +503,21 @@ def chunk : G String := do
   | 9 => metas
   | 10 => libs
   | 11 => traverse
+  | 12 => loads
   | _ => numbers
 
-/-- `n` chunks from `gen` (each with the modules to load first, from `srcs`) and their results, to `file` -/
+/-- `n` chunks from `gen` (each with the modules to load first, from `srcs` through package.path `path`) and their
+results, to `file` -/
 def writeCases (gen : G (String × List String)) (srcs : String → Option Block) (n seed : Nat)
-    (file : System.FilePath) : IO Unit := do
+    (file : System.FilePath) (path : String := "./?.lua") : IO Unit := do
   let mut g := mkStdGen seed
   let mut cases : Array String := #[]
   let mut skipped : List String := []
   for _ in [0:n] do
     let ((src, mods), g') := gen.run g
     g := g'
-    let out := runCase srcs .dual mods src.toList
-    let out1 := runCase srcs .single mods src.toList
+    let out := runCase srcs .dual mods src.toList path
+    let out1 := runCase srcs .single mods src.toList path
     if out.startsWith "ok:" || out.startsWith "error:" then
       let single := if out1 == out then "" else s!", single = {String.ofList (serStr out1.toList)}"
       cases := cases.push s!"\{src = {String.ofList (serStr src.toList)}, out = {String.ofList (serStr out.toList)}{single}},"

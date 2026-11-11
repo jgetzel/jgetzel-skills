@@ -30,12 +30,20 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
   calling one asks an *oracle* (`String → List Val → Option (List Val)`); `none` stops the run with `Err.eff`. What an
   oracle answer means in the world is the user's assumption, written as a named Lean axiom with its own test against
   the real thing (the swarm's `SwarmModel/Env.lean` and `swarm/lua/test/env_spec.lua` are the pattern).
+- **Files** are the ones given as source: `Sem.srcs` maps a path to its parsed chunk. `require` looks for a module
+  through `package.path` (`./?.lua` to begin with: LUA_PATH=./?.lua; LuaJIT's default adds the system's directories)
+  among them, as lib_package.c's Lua loader does, and `dofile` reads one; `load` and `loadstring` run the parser
+  inside the semantics.
 - **Parser** (`LuaLean/Parse.lean`): Lua 5.1's grammar with LuaJIT's lexer and its constant folding.
 - **Translator** (`tools/Lift.lean`), after AutoCorres's first stages: for each function `f` of the file (the chunk
   is `chunk`), `f_body` (its parsed body), `f` (a shallow function built from `LuaLean/Shallow.lean`'s combinators,
   one per interpreter clause, every local the Lean variable naming its cell) and `f_ok : CFn I (f I env0 …) clo`:
   for all arguments and every fuel, `f` gives the interpreter's result and heap for the closure. Its hypotheses are
-  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global).
+  the closure's free names (`env0.lookup "x" = some c` for an upvalue, `= none` for a global). A `load` or
+  `loadstring` of a constant source is lifted too, as `f_loadN`: `call_load` says the call makes its closure, given
+  the parse (`parseChunk s name = .ok f_loadN_body`, the parser's, as `f_body` is). A script of several modules is
+  lifted one file at a time; `call_require` and `call_dofile` (`RunP.require`, `RunP.dofile`) say that requiring or
+  running a file given as source is its lifted `chunk`.
 - **Program logic** (`LuaLean/Hoare.lean`): `RunP m h P`, total correctness: from some fuel on, `m` returns, and the
   result and heap satisfy `P`. A spec is a `RunP` about a lifted `f`; `f_ok` carries it to the interpreter's run.
 
@@ -46,7 +54,7 @@ What a proved spec rests on, and how each piece is checked:
 | Trusted | Checked by |
 |---|---|
 | Lean's kernel and its three axioms (`propext`, `Classical.choice`, `Quot.sound`) | `Audit.lean`: every theorem of LuaLean uses those and nothing else; `check.sh` refuses `sorry`, `admit`, `native_decide`, `axiom` |
-| The parser, and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
+| The parser (also as `load` runs it, and as it made each `Sem.srcs` file a proof assumes), and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
 | The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
 | The host's libm | `^`, `math.pow`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, their inverses and hyperbolics, `atan2` are libm's in LuaJIT and in Lean's `Float`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel evaluates part of `Float` and not the rest (tested on Lean 4.35 with `decide` and `decide +kernel`). It computes `+ - *`, `/` (`decide +kernel` only; plain `decide` times out), `<`, `≤`, `==`, negation, `abs`, `isFinite`, `isNaN`, `Float.ofInt`, `Float.ofNat`, `toBits`, `ofBits`, `toUInt64` and `Float.sqrt` (`decide +kernel` only; plain `decide` is stuck). It cannot compute `Float.floor`, `ceil`, `round`, `scaleB`, `frExp`, `pow`, `exp`, `log`, `sin`, `cos`: `decide` is stuck on each, so `Num.narrow`, `floatToInt` and `fmod`, which use `floor`, and `ofRatio`, which uses `scaleB`, cannot be evaluated by a proof on a non-integer `Float`. No proof rests on such a value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz` (its generator prints the `math` ones at `%.12g`, `^` exactly). A `pow` case that fails on another machine is this before anything else. `fmod`, `modf`, `frexp`, `ldexp` are exact and modelled exactly (`Num.fmodC`, …) |
 | The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
@@ -114,9 +122,13 @@ lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function
 arguments, lua_checkstack's bound), `pairs`, `next` and `table.foreach` in an order no proof can know ("Tables"),
 `#t` with one border, `ipairs`, `type`, `tostring`, `tonumber` (a base other than 10
 as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
-`setmetatable`/`getmetatable`, `assert`, `require` of modules given as source.
+`setmetatable`/`getmetatable`, `assert`; `load` and `loadstring` of a source (a string, or a reader function's pieces)
+with a chunk name and a mode, `dofile` and `require` of files given as source, `require` through `package.path`,
+`package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
+LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
+lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`).
 
-Out: coroutines, `load`/`loadstring`/`dofile`, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
+Out: coroutines, `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
 `string.dump`, the rest of the standard library (`os`, `io`, `debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
@@ -136,7 +148,10 @@ How a script outside it is reported, from strongest to weakest:
    past 32 bits; "Targets"), `tonumber(s, 2)` of `0b` and a binary digit (glibc 2.38's strtoul reads the prefix,
    older C libraries do not), `table.new` of a size above 65536, `#t` of a table with more than one border and `next`
    from an integer or a dropped key the table does not hold ("Tables"), a call into `io`, `os`, `math.random` or a
-   module not given as source when no oracle answers it.
+   module not given as source when no oracle answers it; `load` or `loadstring` of a source the parser rejects (its
+   message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
+   returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
+   `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string.
 4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
@@ -145,9 +160,17 @@ How a script outside it is reported, from strongest to weakest:
      line of `(`, LuaJIT on that of `m`; a constructor's `[k] = v` with `k` nil or NaN is reported at the enclosing
      site, or with no place; the name of an `and`/`or` operand, which LuaJIT may find by scanning the bytecode back;
      a builtin called as `__index` is named `?`;
-   - the chunk's name: `c` in the differential test (`loadstring(src, "=c")`), a lifted file's base name, a module
-     given as source its path under the `--lib` directory; LuaJIT names a file as it was given to it;
+   - the chunk's name: `c` in the differential test (`loadstring(src, "=c")`), a lifted file's base name, where
+     LuaJIT names a file as it was given to it, and `require` and `dofile` by the path they open (the name `lua-lean
+     run --lib` and the generator give a module);
    - `tostring` of a table or function (an address in LuaJIT);
+   - a source `load` is given that LuaJIT rejects and the parser accepts (a `goto` with no visible label, more than
+     200 locals, a call's `(` on the line after its function: "ambiguous syntax"): LuaJIT returns nil and a message,
+     the semantics a function. `lua-lean parsecheck` finds these in a file, nothing in a string made at run time;
+   - what `require` leaves in `package.loaded` while a module loads and after its load fails: an effect handle, a
+     light userdata in LuaJIT (which LuaJIT 2.1 may show as a number);
+   - a module not found on `package.path` is a handle, a C module the oracle answers, where LuaJIT may find no such
+     module and raise an error;
    - `type` of an effect handle (`print`, `io.write`, `math.random`): `userdata`, a function in LuaJIT.
 
 G2 turns this list into a checker that names each construct with its line before anything is lifted.
@@ -169,6 +192,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `test/luasem.lua` | the LuaJIT side of the differential test |
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
+| `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 
 ```sh
 lua-lean/check.sh                              # gates, build, audit, committed chunks, test scripts: about 15 s
@@ -201,7 +225,8 @@ proof; a statement is never weakened to make a proof go through.
 - **G4** the standard library: `os` and `io` as effect interfaces with named axioms (G4c). Done: the rest of
   string, table and math, `select`/`tostring`/`tonumber` corners (G4a); `pairs` order opaque, `#t` with holes a stop
   (G4b). A model of LuaJIT's layout for number keys would make their order and every `#t` known.
-- **G5** `load`, `dofile`, `require` of arbitrary modules: multi-module scripts lift end to end.
+- **G5** `load`, `dofile`, `require` of arbitrary modules: done (see the subset; `setfenv` and `load`'s environment
+  wait for a model of function environments).
 - **G6** coroutines: thread state in the interpreter, a suspension effect in the shallow monad, rules for
   resume/yield.
 - **G7** heap abstraction, proof-producing: functions whose tables are provably unshared become pure Lean functions,

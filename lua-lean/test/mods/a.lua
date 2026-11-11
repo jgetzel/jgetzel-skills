@@ -1,0 +1,3 @@
+local name = ...
+local b = require((name:gsub("a$", "b")))
+return {name = name, v = b.v + 1}

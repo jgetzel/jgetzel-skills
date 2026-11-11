@@ -46,16 +46,23 @@ def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
 
-/-- every module under dir as source: `pfx.x` is dir/x.lua, named by that path in its error messages -/
-def loadSources (dir : System.FilePath) (pfx : String) : IO (List (String × Block)) := do
+/-- every module under dir as source, by its path, dir/x.lua (`require` finds it through package.path), named by
+that path in its error messages as LuaJIT names a file it loads -/
+def loadSources (dir : System.FilePath) : IO (List (String × Block)) := do
   let mut r := []
   for e in ← dir.readDir do
     if e.fileName.endsWith ".lua" then
       let b ← IO.FS.readBinFile e.path
-      match parseChunk (bytesOf b) e.path.toString with
-      | .ok blk => r := (pfx ++ "." ++ (e.fileName.take (e.fileName.length - 4)).toString, blk) :: r
+      match parseChunk (bytesOf b) (shortSrc ("@" ++ e.path.toString).toList) with
+      | .ok blk => r := (e.path.toString, blk) :: r
       | .error err => throw (IO.userError s!"{e.path}: {err}")
   return r
+
+/-- the package.path template under which `require "p.x"` is dir/x.lua: dir without p's directories -/
+def libPath (p dir : String) : Option String :=
+  let sub := p.replace "." "/"
+  if dir == sub then some "?.lua"
+  else if dir.endsWith ("/" ++ sub) then some ((dir.dropEnd sub.length).toString ++ "?.lua") else none
 
 def srcsOf (l : List (String × Block)) (m : String) : Option Block := l.lookup m
 
@@ -65,15 +72,18 @@ def strictFx (_ : String) (_ : List Val) : Option (List Val) := none
 
 def FUEL : Nat := 100000
 
-/-- the chunk's results on target `tgt`: the modules `mods` loaded first (effects opaque), then the chunk (no
-effects) -/
-def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String) (src : List Char) : String :=
+/-- the chunk's results on target `tgt`, package.path `path`: the modules `mods` loaded first (effects opaque),
+then the chunk (no effects) -/
+def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String) (src : List Char)
+    (path : String := "./?.lua") : String :=
   match parseChunk src "c" with
   | .error e => s!"parse error: {e}"
   | .ok b =>
-    let pre : M Unit := mods.forM fun m => do
-      let _ ← catchVal (callPrim srcs opaqueFx tgt FUEL "require" [] [lstr m]) pure
-        (fun e => die s!"{m}: {String.ofList e.text}")
+    let pre : M Unit := do
+      rawset PACKAGE (lstr "path") (lstr path)
+      mods.forM fun m => do
+        let _ ← catchVal (callPrim srcs opaqueFx tgt FUEL "require" [] [lstr m]) pure
+          (fun e => die s!"{m}: {String.ofList e.text}")
     match pre.run initHeap with
     | .error (.val e) _ => s!"load failed: {String.ofList e.text}"
     | .error e _ => s!"load failed: {outcome (.error e initHeap)}"

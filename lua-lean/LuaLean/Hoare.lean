@@ -1,4 +1,4 @@
-import LuaLean.Interp
+import LuaLean.Shallow
 
 /-! A program logic for the interpreter (board #39): `RunP m h P` says the computation `m` (a function of the fuel),
 started in heap `h`, returns a result and heap satisfying `P` at every fuel from some bound on. Running out of
@@ -49,6 +49,39 @@ theorem RunP.frame (r : RunP m h P) : RunP (fun n => frame (m n)) h P := by
 theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P) : RunP m' h P := by
   have : m = m' := funext e
   subst this; exact r
+
+/-- `load(s)`, `loadstring(s)`, with a chunk name or none: the closure of `s`'s parse -/
+theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
+    {cn : Option (List Char)} {b : Block} {P : List Val → Heap → Prop}
+    (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, []⟩))) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.str s :: cn.toList.map .str)) h P :=
+  ⟨2, _, _, fun n hn => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load I n fname hf s cn b h hb hp, p⟩
+
+/-- `dofile(p)` of a file given as source, its chunk `k`: what `k` does on no arguments -/
+theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : List Val → Nat → M (List Val)}
+    {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b)
+    (r : RunP (fun n => do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n) h P) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "dofile" []) [.str p]) h P := by
+  obtain ⟨N, a, h', e, q⟩ := RunP.frame r
+  refine ⟨N + 3, a, h', fun n hn => ?_, q⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 3 := ⟨n - 3, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_dofile I n p b k h hk hs]; exact e n (by omega)
+
+/-- `require m` of a module given as source and not yet loaded, its chunk `k`: `S.requireK` -/
+theorem RunP.require {I : Sem} {m p : List Char} {b : Block} {k : List Val → Nat → M (List Val)} {v : Val}
+    {P : List Val → Heap → Prop} (hk : CFn I k ⟨[], true, b, []⟩)
+    (hl : rawget LOADED (.str m) h = .ok v h) (hv : v.truthy = false)
+    (hn : m ≠ "table.new".toList ∧ m ≠ "table.clear".toList)
+    (hp : rawget PACKAGE (lstr "path") h = .ok (.str p) h)
+    (hf : (pathFiles p (modPath m)).findSome? I.srcs = some b)
+    (r : RunP (S.requireK m ⟨[], true, b, []⟩ k) h P) :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "require" []) [.str m]) h P := by
+  obtain ⟨N, a, h', e, q⟩ := RunP.frame r
+  refine ⟨N + 3, a, h', fun n hN => ?_, q⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 3 := ⟨n - 3, by omega⟩
+  show call _ _ _ _ _ _ h = _; rw [call_require I n m p b k h v hk hl hv hn hp hf]; exact e n (by omega)
 
 end rules
 
