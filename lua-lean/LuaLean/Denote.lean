@@ -1,9 +1,9 @@
 import LuaLean.Shallow
 
-/-! A prototype (research/translator-proof.md): the translator as a Lean function, `D.fn`, from a parsed function to
-`Shallow.lean`'s combinators, and one theorem, `D.fn_ok`, that it is the interpreter's call for every program. A
-lifted function's shallow form is `D.fn` of its body, unfolded: the kernel checks that by computation, so a
-function's `f_ok` is `D.fn_ok` itself and no proof is written per function (`lua-lean lift1`). -/
+/-! The translator as a Lean function, `D.fn`, from a parsed function to `Shallow.lean`'s combinators, and one theorem,
+`D.fn_ok`, that it is the interpreter's call for every program (research/translator-proof.md). A lifted function's
+shallow form is `D.fn` of its body, unfolded: the kernel checks that by computation, so a function's `f_ok` is
+`D.fn_ok` itself and no proof is written per function (`lua-lean lift`). -/
 
 namespace Lua
 

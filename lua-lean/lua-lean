@@ -1,10 +1,8 @@
 #!/bin/sh
 # lua-lean: LuaJIT scripts to Lean, with proofs (DESIGN.md). Needs lake (elan) on the PATH, or nix to fetch it; parsecheck
 # and difftest run the reference LuaJIT (DESIGN.md): $LUAJIT if set, else the repo flake's, else the PATH's.
-#   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]  the Lean module: each function's body, shallow form and proof
+#   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]  the Lean module: each function's body, shallow form and proof (D.fn_ok)
 #   lua-lean prove <file.lua>...          lift each into a scratch directory and check its proofs
-#   lua-lean lift1 <file.lua> [<Namespace>]  the prototype (research/translator-proof.md): each proof the one theorem
-#   lua-lean prove1 <file.lua>...         prove, through lift1
 #   lua-lean dump (<Name> <file.lua>)...  each file's syntax tree as `def <Name>Src : Block`
 #   lua-lean print <file.lua>             the parsed file printed back as Lua
 #   lua-lean parsecheck <file.lua>...     the parser against LuaJIT: printed back, each compiles to the source's bytecode
@@ -16,7 +14,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 abs() { case $1 in /*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
 lake_do() { (cd "$here" && if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi); }
 tool() { t=$1; shift; lake_do build -q LuaLean >&2 && lake_do env lean --run "tools/$t.lean" "$@"; }
-usage() { sed -n '4,14s/^#   //p' "$0" >&2; exit 2; }
+usage() { sed -n '4,12s/^#   //p' "$0" >&2; exit 2; }
 # the reference LuaJIT's version: bump it with flake.lock, then regenerate test/cases.lua.gz (DESIGN.md)
 ref=2.1.1791890110
 luajit_ref() {
@@ -40,16 +38,14 @@ lift)
   ns=${1:-$(basename "$f" .lua | awk '{print toupper(substr($0,1,1)) substr($0,2)}')}
   [ $# -gt 0 ] && shift
   tool Lift "$ns" "$f" "$@" ;;
-lift1) [ $# -ge 1 ] || usage; tool Lift --one "${2:-Lifted}" "$(abs "$1")" ;;
-prove|prove1)
+prove)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1
   trap 'rm -rf "$tmp"' EXIT
   bad=0
-  one=; [ "$cmd" = prove1 ] && one=--one
   for f in $(files "$@"); do
     m=$(basename "$f" .lua)
-    if ! tool Lift $one Lifted "$f" >"$tmp/$m.lean"; then echo "$m: not translated"; bad=1; continue; fi
+    if ! tool Lift Lifted "$f" >"$tmp/$m.lean"; then echo "$m: not translated"; bad=1; continue; fi
     if grep -nEw 'sorry|admit|native_decide|axiom' "$tmp/$m.lean"; then echo "$m: an open proof or an axiom"; bad=1; continue; fi
     if lake_do env lean "$tmp/$m.lean" >"$tmp/$m.out" 2>&1; then echo "$m: $(grep -c '^theorem .*_ok' "$tmp/$m.lean") functions proved"
     else echo "$m: proof fails"; grep error "$tmp/$m.out" | head -5; bad=1; fi

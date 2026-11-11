@@ -4,8 +4,8 @@ import LuaLean.Interp
 embedding in the interpreter's monad `M`, one combinator per clause of `Interp.lean`, and one lemma per combinator
 saying it is that clause. The translator writes each Lua function as a term of these combinators
 with no syntax tree left in it but the bodies of the closures it creates, and every local resolved: a local is the
-Lean variable naming its cell, a global is `_G`'s field. With it comes the proof, a term of the lemmas below, that
-the shallow function is the interpreter's run of the parsed function for every fuel; the kernel checks it.
+Lean variable naming its cell, a global is `_G`'s field. That the shallow function is the interpreter's run of the
+parsed function for every fuel is `D.fn_ok` (`Denote.lean`), a proof made of the lemmas below.
 
 Fuel is threaded as the interpreter threads it (`tick`), so the two are equal, not just alike, and the heap is the
 same heap: the shallow code allocates the same cells. -/

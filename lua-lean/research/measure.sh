@@ -1,5 +1,6 @@
 #!/bin/sh
 # measure.sh <outdir> <file.lua>...: per file, lift+check seconds and bytes, today's proofs and the one theorem's
+# (lift1 is the one theorem's lift as of 91b52d7, before board #38 made it lift; check that commit out to rerun)
 # run from lua-lean/, with lake and bc on the PATH (nix shell nixpkgs#elan nixpkgs#bc -c research/measure.sh /tmp/out test/*.lua)
 out=$1; shift
 t() { s=$(date +%s.%N); "$@" >/dev/null 2>"$out/err" ; r=$?; e=$(date +%s.%N); echo "$e - $s" | bc; return $r; }
