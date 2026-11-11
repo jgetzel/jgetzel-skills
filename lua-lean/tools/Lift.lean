@@ -226,7 +226,7 @@ partial def tPlaces (cx : Cx) (ts : List Exp) : T (String × String) := do
     let (st, pt) ← tExp cx t
     let (sk, pk) ← tExp cx k
     let (sp, pp) ← tPlaces cx ts
-    pure (s!"(S.pIndex {st} {sk} {sp})", s!"(CP_index {pt} {pk} {pp})")
+    pure (s!"(S.pIndex I {st} {sk} {sp})", s!"(CP_index {pt} {pk} {pp})")
   | _ => pure ("UNSUPPORTED", "UNSUPPORTED")
 
 /-- a name for the function an assignment or local makes -/

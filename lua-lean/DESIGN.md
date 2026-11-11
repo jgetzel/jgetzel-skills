@@ -69,15 +69,16 @@ saturate, unmeasured), so the semantics stops the run there (`argIntN`).
 
 ## The subset
 
-In: Lua 5.1 syntax as LuaJIT parses it; tables with `__index` (classes); closures; varargs; `pcall`/`error`
-(a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
+In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
+instead) and `__call`, each read from the metatable when the operation runs, as LuaJIT does; closures; varargs;
+`pcall`/`error` (a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
 them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after lstrlib.c,
 `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table` (`sort` is ltablib.c's quicksort,
 so ties and bad comparators come out as LuaJIT's do), `math`, `select`, `unpack`, `pairs`, `ipairs`, `next`,
 `type`, `tostring`, `tonumber`, `rawget`/`rawset`/`rawequal`, `setmetatable`/`getmetatable`, `assert`, `require` of
 modules given as source.
 
-Out: coroutines, `load`/`loadstring`/`dofile`, FFI, metamethods other than `__index`, `string.format("%a")`, the
+Out: coroutines, `load`/`loadstring`/`dofile`, FFI, the other metamethods (G3b, G3c), `string.format("%a")`, the
 rest of the standard library.
 
 How a script outside it is reported, from strongest to weakest:
@@ -85,13 +86,17 @@ How a script outside it is reported, from strongest to weakest:
 1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1).
 2. **Fails to translate**: an assignment target the translator does not handle (`not translated`).
 3. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
-   reaches it can be proved: `setmetatable` with a metamethod other than `__index` (`effect metamethod __newindex`),
+   reaches it can be proved: an operation that would call a metamethod the semantics does not model yet (`t + 1`
+   with `__add` in `t`'s metatable: `effect metamethod __add`; likewise `__sub`…`__pow`, `__unm`, `__concat`, `__eq`,
+   `__lt`, `__le`, `__tostring` in `tostring` and `%s`, `__metatable` in `getmetatable` and `setmetatable`; a table's
+   `__len` LuaJIT 2.1 never calls), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
+   tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), a double outside the integer range where a
    builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`; "Targets"), a call into `io`, `os` or a module not given
    as source when no oracle answers it.
 4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
-   - a metamethod added to a metatable *after* `setmetatable` (G3);
+   - `__mode` added to a metatable after `setmetatable`;
    - `pairs`/`next` order: the semantics visits keys in insertion order; LuaJIT's order is its hash layout (G4);
    - `#t` of a table with holes: the semantics takes the least border, LuaJIT may give another;
    - error values of runtime errors: the semantics' messages have no `file:line:` prefix;
@@ -142,8 +147,9 @@ proof; a statement is never weakened to make a proof go through.
 - **G2** subset checker: `lua-lean check f.lua` lists every construct and library call outside the subset with its
   line, and runs the differential test on the script's own pure functions; coverage on a corpus of real third-party
   LuaJIT scripts.
-- **G3** metamethods: `__newindex`, `__call`, `__eq`/`__lt`/`__le`, `__concat`, `__len`, `__unm`, arithmetic,
-  `__tostring`, as LuaJIT 2.1 does them, in the interpreter, translator and rules.
+- **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
+  `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b); `__eq`/`__lt`/`__le`,
+  `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
 - **G4** the standard library: the rest of string, table, math, `select`/`tostring`/`tonumber` corners, `pairs`
   order; `os` and `io` as effect interfaces with named axioms.
 - **G5** `load`, `dofile`, `require` of arbitrary modules: multi-module scripts lift end to end.

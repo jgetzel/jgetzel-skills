@@ -38,30 +38,31 @@ theorem call_fn (I : Sem) (n a : Nat) (args : List Val) (h : Heap) (c : Clo) (ha
     call I.srcs I.oracle I.tgt (n + 1) (.fn a) args h = callClo I n c args h := by
   rw [call]; simp only [bind, EStateM.bind, getObj, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
 
-/-- an assignment target as the shallow code writes it -/
-def wtbl (tv kv : Val) (v : Val) : M Unit :=
-  match tv with
-  | .tbl a => rawset a kv v
-  | o => die s!"attempt to index a {o.typeName} value"
+/-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
+abbrev W := Nat → Val → M Unit
 
-def writer (cx : Ctx) : String ⊕ (Val × Val) → Val → M Unit
-  | .inl x => setVar cx x
-  | .inr (tv, kv) => wtbl tv kv
+/-- a table's field, through `__newindex` -/
+def wtbl (I : Sem) (tv kv : Val) : W := fun n v => setindex I.srcs I.oracle I.tgt n tv kv v
+
+def writer (I : Sem) (cx : Ctx) : String ⊕ (Val × Val) → W
+  | .inl x => fun _ => setVar cx x
+  | .inr (tv, kv) => wtbl I tv kv
 
 /-- `assign`, with each target a writer -/
-def assignW : List (Val → M Unit) → List Val → M Unit
-  | [], _ => pure ()
-  | w :: ws, vs => do w (vs.headD .nil); assignW ws vs.tail
+def assignW : Nat → List W → List Val → M Unit
+  | 0, _, _ => throw .fuel
+  | _ + 1, [], _ => pure ()
+  | n + 1, w :: ws, vs => do w n (vs.headD .nil); assignW n ws vs.tail
 
 theorem assign_writers (I : Sem) (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List Val) :
-    assign I.srcs I.oracle I.tgt n cx ps vs = assignW (ps.map (writer cx)) vs := by
-  induction ps generalizing vs with
-  | nil => simp only [assign]; rfl
-  | cons p ps ih =>
-    simp only [assign, List.map_cons, assignW, ← ih]
-    rcases p with x | ⟨tv, kv⟩
-    · rfl
-    · cases tv <;> rfl
+    assign I.srcs I.oracle I.tgt n cx ps vs = assignW n (ps.map (writer I cx)) vs := by
+  induction n generalizing ps vs with
+  | zero => rw [assign]; rfl
+  | succ n ih =>
+    rcases ps with _ | ⟨p, ps⟩
+    · rw [assign]; rfl
+    · rw [assign.eq_def]; simp only [List.map_cons, assignW, ← ih]
+      rcases p with x | ⟨tv, kv⟩ <;> rfl
 
 /-- the labels ending a block, and all its labels: what a `goto` out of one of its statements does -/
 def trail (b : Block) : List String :=
@@ -160,22 +161,22 @@ def fKeyed (k e : SE) (fs : Nat → SM) : Nat → SM := fun t n => tick n fun n 
   fs t n
 
 -- ---------- assignment targets, as writers ----------
-abbrev SP := Nat → M (List (Val → M Unit))
+abbrev SP := Nat → M (List W)
 def pNil : SP := fun n => tick n fun _ => pure []
-def pVar (w : Val → M Unit) (ps : SP) : SP := fun n => tick n fun n => do pure (w :: (← ps n))
-def pIndex (t k : SE) (ps : SP) : SP := fun n => tick n fun n => do
+def pVar (w : W) (ps : SP) : SP := fun n => tick n fun n => do pure (w :: (← ps n))
+def pIndex (I : Sem) (t k : SE) (ps : SP) : SP := fun n => tick n fun n => do
   let tv ← t n
   let kv ← k n
-  pure (wtbl tv kv :: (← ps n))
+  pure (wtbl I tv kv :: (← ps n))
 /-- a local's cell, or a global -/
-def wCell (c : Nat) : Val → M Unit := writeCell c
-def wGlob (x : String) : Val → M Unit := rawset G (lstr x)
+def wCell (c : Nat) : W := fun _ => writeCell c
+def wGlob (x : String) : W := fun _ => rawset G (lstr x)
 
 -- ---------- statements ----------
 def sAssign (ps : SP) (es : SM) : SB := fun n => tick n fun n => do
   let ws ← ps n
   let vs ← es n
-  assignW ws.reverse (vs ++ List.replicate ws.length Val.nil |>.take ws.length).reverse
+  assignW n ws.reverse (vs ++ List.replicate ws.length Val.nil |>.take ws.length).reverse
   pure .norm
 def sCall (m : SM) : SB := fun n => tick n fun n => do let _ ← m n; pure .norm
 def sBlock (b : SB) : SB := fun n => tick n fun n => b n
@@ -295,7 +296,7 @@ abbrev CM (s : SM) (cx : Ctx) (e : Exp) : Prop := ∀ n, s n = evalMulti I.srcs 
 abbrev CL (s : SM) (cx : Ctx) (es : List Exp) : Prop := ∀ n, s n = evalList I.srcs I.oracle I.tgt n cx es
 abbrev CF (s : Nat → SM) (cx : Ctx) (fs : List Field) : Prop := ∀ t n, s t n = fields I.srcs I.oracle I.tgt n cx t fs
 abbrev CP (s : SP) (cx : Ctx) (ts : List Exp) : Prop :=
-  ∀ n, s n = (fun ps => ps.map (writer cx)) <$> places I.srcs I.oracle I.tgt n cx ts
+  ∀ n, s n = (fun ps => ps.map (writer I cx)) <$> places I.srcs I.oracle I.tgt n cx ts
 abbrev CS (s : SB) (cx : Ctx) (st : Stat) : Prop := ∀ n, s n = execStat I.srcs I.oracle I.tgt n cx st
 abbrev CK (s : SB) (cx : Ctx) (b : Block) : Prop := ∀ n, s n = execBlock I.srcs I.oracle I.tgt n cx b
 abbrev CQ (s : SB) (cx : Ctx) (full rest : Block) (fin : Option Exp) : Prop :=
@@ -376,17 +377,18 @@ theorem CF_keyed {cx k e fs sk s r} (hk : CE I sk cx k) (he : CE I s cx e) (hr :
   intro t n; cases n <;> rw [fields] <;> simp [fKeyed, tick, hk, he, hr]
 
 -- assignment targets
-theorem wCell_ok {cx x c} (h : cx.env.lookup x = some c) : wCell c = setVar cx x := by
-  funext v; simp [wCell, setVar, h]
-theorem wGlob_ok {cx x} (h : cx.env.lookup x = none) : wGlob x = setVar cx x := by
-  funext v; simp [wGlob, setVar, h]
+theorem wCell_ok {cx x c} (h : cx.env.lookup x = some c) : wCell c = fun _ => setVar cx x := by
+  funext _ v; simp [wCell, setVar, h]
+theorem wGlob_ok {cx x} (h : cx.env.lookup x = none) : wGlob x = fun _ => setVar cx x := by
+  funext _ v; simp [wGlob, setVar, h]
 theorem CP_nil {cx} : CP I pNil cx [] := by intro n; cases n <;> rw [places] <;> rfl
-theorem CP_var {cx x ts w ps} (hw : w = setVar cx x) (hp : CP I ps cx ts) : CP I (pVar w ps) cx (.var x :: ts) := by
+theorem CP_var {cx x ts w ps} (hw : w = fun _ => setVar cx x) (hp : CP I ps cx ts) :
+    CP I (pVar w ps) cx (.var x :: ts) := by
   intro n; cases n with
   | zero => rw [places]; rfl
   | succ n => rw [places]; simp [pVar, tick, hp, hw, writer]
 theorem CP_index {cx t k ts st sk ps} (ht : CE I st cx t) (hk : CE I sk cx k) (hp : CP I ps cx ts) :
-    CP I (pIndex st sk ps) cx (.index t k :: ts) := by
+    CP I (pIndex I st sk ps) cx (.index t k :: ts) := by
   intro n; cases n with
   | zero => rw [places]; rfl
   | succ n => rw [places]; simp [pIndex, tick, ht, hk, hp, writer]

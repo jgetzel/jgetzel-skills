@@ -205,6 +205,21 @@ def bindLocals (cx : Ctx) : List String → List Val → M Ctx
     let c ← alloc (.cell (vs.headD .nil))
     bindLocals { cx with env := (x, c) :: cx.env } xs vs.tail
 
+/-- v's metamethod `ev`, read from its metatable when the operation runs (lj_meta_lookup); only tables have one here,
+but strings, whose metatable has `__index` alone (`index`) -/
+def metaOf (v : Val) (ev : String) : M Val := do
+  match v with
+  | .tbl a => match (← getTbl a).mt with
+    | some m => rawget m (lstr ev)
+    | none => pure .nil
+  | _ => pure .nil
+
+/-- a metamethod the semantics does not model yet stops the run where LuaJIT would call it (DESIGN.md, *The subset*) -/
+def noMeta (vs : List Val) (evs : List String) : M Unit := do
+  for v in vs do
+    for ev in evs do
+      if !(← metaOf v ev).isNil then throw (.eff s!"metamethod {ev}" [])
+
 -- ---------- operators ----------
 
 def strLt : List Char → List Char → Bool
@@ -217,13 +232,25 @@ def arith (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   match x.toNum, y.toNum with
   | some a, some b => pure (.num (match op with
       | .add => a.add b | .sub => a.sub b | .mul => a.mul tgt b | .div => a.div b | .mod => a.mod b | _ => a.pow b))
-  | _, _ => die s!"attempt to perform arithmetic on a {(if x.toNum.isNone then x else y).typeName} value"
+  | _, _ => do
+    noMeta [x, y] [match op with
+      | .add => "__add" | .sub => "__sub" | .mul => "__mul" | .div => "__div" | .mod => "__mod" | _ => "__pow"]
+    die s!"attempt to perform arithmetic on a {(if x.toNum.isNone then x else y).typeName} value"
 
 def less (x y : Val) (orEq : Bool) : M Bool :=
   match x, y with
   | .num a, .num b => pure (if orEq then a.le b else a.lt b)
   | .str a, .str b => pure (if orEq then a == b || strLt a b else strLt a b)
-  | _, _ => die s!"attempt to compare {x.typeName} with {y.typeName}"
+  | _, _ => do
+    -- LuaJIT looks for `__lt`/`__le` only on two values of one type
+    if let (.tbl _, .tbl _) := (x, y) then noMeta [x, y] ["__lt", "__le"]
+    die s!"attempt to compare {x.typeName} with {y.typeName}"
+
+/-- `==`: two distinct tables may have `__eq` -/
+def eqv (x y : Val) : M Bool := do
+  if let (.tbl a, .tbl b) := (x, y) then
+    if a != b then noMeta [x, y] ["__eq"]
+  pure (x.rawEq y)
 
 def concatText : Val → Option (List Char)
   | .str s => some s
@@ -232,8 +259,8 @@ def concatText : Val → Option (List Char)
 
 def binop (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   match op with
-  | .eq => pure (.bool (x.rawEq y))
-  | .ne => pure (.bool !(x.rawEq y))
+  | .eq => do pure (.bool (← eqv x y))
+  | .ne => do pure (.bool !(← eqv x y))
   | .lt => .bool <$> less x y false
   | .le => .bool <$> less x y true
   | .gt => .bool <$> less y x false
@@ -241,7 +268,9 @@ def binop (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   | .concat =>
     match concatText x, concatText y with
     | some a, some b => pure (.str (a ++ b))
-    | _, _ => die s!"attempt to concatenate a {(if (concatText x).isNone then x else y).typeName} value"
+    | _, _ => do
+      noMeta [x, y] ["__concat"]
+      die s!"attempt to concatenate a {(if (concatText x).isNone then x else y).typeName} value"
   | op => arith tgt op x y
 
 def unop (op : UnOp) (x : Val) : M Val :=
@@ -249,7 +278,10 @@ def unop (op : UnOp) (x : Val) : M Val :=
   | .not => pure (.bool !x.truthy)
   | .neg => match x.toNum with
     | some a => pure (.num a.neg)
-    | none => die s!"attempt to perform arithmetic on a {x.typeName} value"
+    | none => do
+      noMeta [x] ["__unm"]
+      die s!"attempt to perform arithmetic on a {x.typeName} value"
+  -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT
   | .len => match x with
     | .str s => pure (.num (.int s.length))
     | .tbl a => do pure (.num (.int (← getTbl a).len))
@@ -386,6 +418,7 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
             let s ← argStr fn i args
             pure (quoteStr s)
           | 's' => do
+            noMeta [arg] ["__tostring"]
             let s := match arg with
               | .str s => s
               | v => v.text
@@ -584,7 +617,7 @@ def basicFn (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => if args.isEmpty then die "bad argument #1 to 'type' (value expected)" else
     return [lstr (args.headD .nil).typeName]
-  | "tostring" => return [.str (args.headD .nil).text]
+  | "tostring" => do noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
   | "tonumber" => do
     match args.getD 1 .nil with
     | .nil => match args.headD .nil with
@@ -629,17 +662,17 @@ def basicFn (name : String) (bound args : List Val) : M (List Val) := do
     let m ← match args.getD 1 .nil with
       | .nil => pure none
       | .tbl m => do
-        -- a metamethod the semantics does not model stops the run (DESIGN.md, *The subset*)
-        let other := (← getTbl m).kv.filterMap fun (k, v) => match k with
-          | .str s => if !v.isNil && s.take 2 == ['_', '_'] && s != "__index".toList then some s else none
-          | _ => none
-        if let s :: _ := other then throw (.eff s!"metamethod {String.ofList s}" [])
+        -- weak tables lose entries when the collector runs, which the semantics does not model
+        if !((← getTbl m).get (lstr "__mode")).isNil then throw (.eff "metamethod __mode" [])
         pure (some m)
       | _ => die "bad argument #2 to 'setmetatable' (nil or table expected)"
+    noMeta [.tbl t] ["__metatable"]
+    -- globals are read and written raw (`getVar`), so _G takes no metatable
+    if t == G then throw (.eff "setmetatable(_G)" [])
     putTbl t { (← getTbl t) with mt := m }
     return [.tbl t]
   | "getmetatable" => match args.headD .nil with
-    | .tbl t => do return [((← getTbl t).mt.map Val.tbl).getD .nil]
+    | .tbl t => do noMeta [.tbl t] ["__metatable"]; return [((← getTbl t).mt.map Val.tbl).getD .nil]
     | _ => return [.nil]
   | "error" => throw (.val (args.headD .nil))
   | "assert" =>
@@ -829,6 +862,11 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   | .eff name => match oracle name args with
     | some vs => pure vs
     | none => throw (.eff name args)
+  | .tbl _ => do
+    -- `__call`, which must be a function: LuaJIT follows no chain of them (lj_meta_call)
+    match ← metaOf f "__call" with
+    | h@(.fn _) | h@(.prim ..) => call n h (f :: args)
+    | _ => die "attempt to call a table value"
   | v => die s!"attempt to call a {v.typeName} value"
 
 def execBlock (n : Nat) (cx : Ctx) (b : Block) : M Flow :=
@@ -916,14 +954,32 @@ def places (n : Nat) (cx : Ctx) (ts : List Exp) : M (List (String ⊕ (Val × Va
   | _ :: _ => die "cannot assign"
 
 /-- the assignments, last first, as Lua 5.1 does them -/
-def assign (n : Nat) (cx : Ctx) : List (String ⊕ (Val × Val)) → List Val → M Unit
-  | [], _ => pure ()
-  | p :: ps, vs => do
+def assign (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List Val) : M Unit :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 =>
+  match ps with
+  | [] => pure ()
+  | p :: ps => do
     match p with
     | .inl x => setVar cx x (vs.headD .nil)
-    | .inr (.tbl a, k) => rawset a k (vs.headD .nil)
-    | .inr (o, _) => die s!"attempt to index a {o.typeName} value"
+    | .inr (o, k) => setindex n o k (vs.headD .nil)
     assign n cx ps vs.tail
+
+/-- o[k] = v, with `__newindex` (lj_meta_tset): a key with a value is set raw, else the metamethod, a function called
+with (o, k, v) or a value to assign into instead -/
+def setindex (n : Nat) (o k v : Val) : M Unit :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 =>
+  match o with
+  | .tbl a => do
+    if !((← getTbl a).get k).isNil then rawset a k v else
+    match ← metaOf o "__newindex" with
+    | .nil => rawset a k v
+    | h@(.fn _) | h@(.prim ..) => do let _ ← call n h [o, k, v]
+    | h => setindex n h k v
+  | _ => die s!"attempt to index a {o.typeName} value"
 
 def whileLoop (n : Nat) (cx : Ctx) (c : Exp) (b : Block) : M Flow :=
   match n with
