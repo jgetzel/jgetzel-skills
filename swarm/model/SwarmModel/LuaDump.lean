@@ -1,6 +1,6 @@
 import SwarmModel.Lua.Parse
 
-/-! `lake env lean --run SwarmModel/LuaDump.lean <module> <file.lua>` prints the parsed file as a Lean definition
+/-! `lake env lean --run SwarmModel/LuaDump.lean (<module> <file.lua>)...` prints each parsed file as a Lean definition
 `<module>Src : Block`: a syntax tree proofs can be about (board #39). -/
 
 open Swarm.Lua
@@ -67,10 +67,20 @@ partial def stat : Stat → String
 partial def block (b : Block) : String := "\n  " ++ lst (b.map stat)
 end
 
-def main (args : List String) : IO UInt32 := do
-  let [name, file] := args | do IO.eprintln "usage: LuaDump.lean <module> <file.lua>"; return 1
-  match parseChunk (bytesOf (← IO.FS.readBinFile file)) with
-  | .error e => IO.eprintln e; return 1
+/-- a cheap checksum of the source text, which `lua/test/locksrc_spec.lua` computes alike -/
+def checksum (b : ByteArray) : Nat := b.foldl (fun h x => (h * 31 + x.toNat) % 4294967296) 7
+
+def dump (name file : String) : IO Bool := do
+  let bytes ← IO.FS.readBinFile file
+  match parseChunk (bytesOf bytes) with
+  | .error e => IO.eprintln s!"{file}: {e}"; return false
   | .ok b =>
-    IO.println s!"/-- {file}, parsed -/\ndef {name}Src : Block :={block b}\n"
-    return 0
+    IO.println s!"/-- {file}, parsed -/\ndef {name}Src : Block :={block b}\n-- checksum {name} {checksum bytes}\n"
+    return true
+
+def main (args : List String) : IO UInt32 := do
+  let rec go : List String → IO Bool
+    | [] => pure true
+    | name :: file :: rest => do let a ← dump name file; let b ← go rest; pure (a && b)
+    | _ => do IO.eprintln "usage: LuaDump.lean (<module> <file.lua>)..."; pure false
+  return if args.isEmpty || !(← go args) then 1 else 0

@@ -452,7 +452,23 @@ make none. Two LuaJIT bugs are left out, not modelled: `%f` of a number below ab
 64-limb buffer and prints garbage (`string.format("%.3f", 9e-160)` is `410188913345336914.062`), and the interpreter
 stops on it as an unmodelled effect; and `table.unpack` does not exist in LuaJIT 2.1, so `swarm cost --top` crashes
 (cost.lua:212, board #37).
-Not yet: the rung-3 functions proved equal to the interpreter's run of locks.lua (board #39).
+Rung 4's last link (board #39), what is in and what is not. In: `LockSrc.lean`, locks.lua and util.lua as syntax trees
+(`gen-lock-src.sh`, which prints them with `LuaDump.lean`; `locksrc_spec.lua` in the Lua suite and `replay.sh` fail when
+the file is stale), and `LuaHoare.lean`, the program logic: `RunP m h P` says a computation, a function of the fuel, returns
+a result and heap with `P` at every fuel from some bound on (so a total-correctness statement, stronger than "some
+fuel gives ok", and it needs no partial-correctness case for small fuel: the run is what it is once the fuel suffices),
+with `bind`, `succ` (the interpreter's clauses match on `n + 1`), `const` and `mono`. Not in: the proof that
+locks.lua's `tokens`, `covers` and `overlaps` are Glob.lean's. What the first attempt found: the heap after
+`require "swarm.locks"` is 63 objects and the kernel evaluates it (`decide +kernel` gives `H0.size = 63` and a closure's
+params and environment), but a closure's body cannot be compared to the parsed source, because `Exp`/`Stat` are mutual
+nested types with no `DecidableEq` (deriving refuses them) and the derived `BEq` is not kernel-reducible; the elaborator's
+`rfl` times out on the load (the interpreter is well-founded recursion). So the next step is a kernel-reducible, sound
+`Block` equality (hand-written structural `eqb` with `eqb = true → =`, `Num.flt` compared as unequal), then the
+closure facts `H0[a]? = some (.clo ⟨ps, va, locfnBody LocksSrc name, env⟩)` by `decide +kernel`, then one `RunP`
+rule per interpreter clause and per Lua function (`glob`, `startswith`, `lit`, `single`, `in_set`, `one`, `tokens`,
+`meet` by induction on (#p - i) + (#q - j) with the memo invariant, `covers`, `overlaps`), the pattern lemmas for
+`find("^[!^]")`, `find("]", i, true)`, `find("[*?[]")`, `gsub("/+$", "")` and `gmatch(".")`, and the bounds the task
+names (#p < 32767 for i*65536+j in 32 bits; the memo key collides once #q >= 65535, under PATH_MAX 4096).
 
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
