@@ -37,4 +37,9 @@ function M.loop()
   end
 end
 
+function M.dbg(f)
+  return debug.getinfo(1, "l"), debug.traceback("x"), debug.getlocal(1, 1), xpcall(f, debug.traceback),
+    debug.getmetatable(f), debug.getinfo(f, "u").nups
+end
+
 return M

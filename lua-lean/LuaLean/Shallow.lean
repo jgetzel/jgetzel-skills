@@ -78,6 +78,13 @@ theorem callPrim_time (I : Sem) (n : Nat) :
     callPrim I.srcs I.oracle I.tgt (n + 1) "os.time" [] [] = (do pure [timeVal (← timeFx I.oracle "os.time" [])]) := by
   rw [callPrim]; rfl
 
+/-- the debug library's modelled functions -/
+theorem callPrim_debug (I : Sem) (n : Nat) (name : String) (args : List Val)
+    (hn : name = "debug.getmetatable" ∨ name = "debug.setmetatable" ∨ name = "debug.getupvalue" ∨
+      name = "debug.setupvalue" ∨ name = "debug.getinfo" ∨ name = "debug.traceback") :
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = debugFn name args := by
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
 abbrev W := Nat → Val → M Unit
 
