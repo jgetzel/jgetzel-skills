@@ -1,4 +1,4 @@
-# lua-lean on three targets: x86-64 (single-number), arm64 Linux and arm64 macOS (dual-number). Arm64 Linux beside
+# lua-lean on three targets: x86-64 (single-number), arm64 Linux and arm64 macOS (dual-number; macos-14 is retired). Arm64 Linux beside
 # macOS tells a CPU difference from a libm one. Pushes and PRs run check.sh on the committed cases; the schedule runs
 # a fresh difftest, whose seed is the first line of its log.
 name: lua-lean
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
