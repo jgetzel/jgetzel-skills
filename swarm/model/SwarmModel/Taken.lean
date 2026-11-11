@@ -525,6 +525,9 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
     · rw [when_eq_some] at hs; obtain ⟨hg, rfl⟩ := hs
       exact Or.inl (ready_frame (ready_post (ready_frame hR' (setTask_ag ..) (setTask_log ..) (setTask_cursor ..))) rfl rfl rfl)
     · cases hs
+  case releaseOther t₀ =>
+    obtain ⟨hg, rfl⟩ := hs
+    exact Or.inl (ready_frame (ready_post (ready_frame hR' (setTask_ag ..) (setTask_log ..) (setTask_cursor ..))) rfl rfl rfl)
   case postTo b d u =>
     obtain ⟨hg, rfl⟩ := hs
     left; refine ready_of_fields hR' (by simp [State.agt]) (by simp [State.agt]) (by simp [State.agt]) (by simp [State.agt]) ?_

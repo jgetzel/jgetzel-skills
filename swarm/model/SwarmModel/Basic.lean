@@ -12,7 +12,7 @@ macro "open_step" h:ident : tactic => `(tactic|
   (cases ‹Action› <;>
    simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
      stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf, hcPrompt,
-     hcClear, die, reapGone, gitCmd, world, stale, nudge, add, after, unblock, drop, tick, when_eq_some] at $h:ident))
+     hcClear, die, reapGone, gitCmd, world, stale, nudge, add, after, unblock, drop, releaseOther, tick, when_eq_some] at $h:ident))
 
 /-- An invariant of reachable states: true at the start, kept by every step. -/
 theorem reachable_induct {c : Cfg} {P : State → Prop} (h0 : P (init c))
