@@ -12,6 +12,17 @@ inductive BinOp where
 inductive UnOp where | neg | not | len
   deriving DecidableEq, Repr, Inhabited
 
+/-- where LuaJIT reports a runtime error of the node it wraps: the chunk's name and the line, and the names its
+messages give the operands and the callee: `("local", "x")`, `("global", "x")`, `("upvalue", "x")`, `("field", "k")`,
+`("method", "m")`, or `("", "")` for none (lj_debug_slotname). `tail`: `return f(...)`, a tail call. -/
+structure Site where
+  src : String
+  line : Nat
+  names : List (String × String) := []
+  fn : String × String := ("", "")
+  tail : Bool := false
+  deriving Inhabited
+
 mutual
 inductive Exp where
   | nil | tru | fls | vararg
@@ -29,6 +40,8 @@ inductive Exp where
   | table (fields : List Field)
   /-- `(e)`: one value -/
   | paren (e : Exp)
+  /-- `e`, its runtime errors reported at `s`: an index, call, method call, operator, or assignment target -/
+  | site (s : Site) (e : Exp)
 
 inductive Field where
   | pos (e : Exp)
@@ -51,6 +64,8 @@ inductive Stat where
   | brk
   | goto (l : String)
   | label (l : String)
+  /-- a `for` loop, its errors reported at `s` -/
+  | site (s : Site) (st : Stat)
 end
 
 instance : Inhabited Exp := ⟨.nil⟩

@@ -12,6 +12,12 @@ def chars (s : List Char) : String :=
   s!"\"{esc}\".toList"
 
 def nm (s : String) : String := s!"\"{s}\""
+/-- any string, as a Lean literal -/
+def lit (s : String) : String :=
+  "\"" ++ String.join (s.toList.map fun c =>
+    if c == '"' then "\\\"" else if c == '\\' then "\\\\" else if c == '\n' then "\\n"
+    else if c.toNat < 32 || c.toNat == 127 then "\\x" ++ String.ofList (Num.padLeft '0' 2 (Nat.toDigits 16 c.toNat))
+    else c.toString) ++ "\""
 def lst (l : List String) : String := "[" ++ ", ".intercalate l ++ "]"
 
 def num : Num → String
@@ -22,6 +28,11 @@ def num : Num → String
 def binop : BinOp → String
   | .add => ".add" | .sub => ".sub" | .mul => ".mul" | .div => ".div" | .mod => ".mod" | .pow => ".pow"
   | .concat => ".concat" | .eq => ".eq" | .ne => ".ne" | .lt => ".lt" | .le => ".le" | .gt => ".gt" | .ge => ".ge"
+
+def pair (p : String × String) : String := s!"({lit p.1}, {lit p.2})"
+
+def site (s : Site) : String :=
+  s!"⟨{lit s.src}, {s.line}, {lst (s.names.map pair)}, {pair s.fn}, {s.tail}⟩"
 
 def unop : UnOp → String
   | .neg => ".neg" | .not => ".not" | .len => ".len"
@@ -42,6 +53,7 @@ partial def exp : Exp → String
   | .un op a => s!"(.un {unop op} {exp a})"
   | .table fs => s!"(.table {lst (fs.map field)})"
   | .paren e => s!"(.paren {exp e})"
+  | .site s e => s!"(.site {site s} {exp e})"
 
 partial def field : Field → String
   | .pos e => s!"(.pos {exp e})"
@@ -64,6 +76,7 @@ partial def stat : Stat → String
   | .brk => ".brk"
   | .goto l => s!"(.goto {nm l})"
   | .label l => s!"(.label {nm l})"
+  | .site s st => s!"(.site {site s} {stat st})"
 
 partial def block (b : Block) : String := "\n  " ++ lst (b.map stat)
 end

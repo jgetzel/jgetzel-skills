@@ -23,6 +23,9 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
 - **Semantics** (`LuaLean/Interp.lean`): an interpreter on fuel in `M = EStateM Err Heap`. Every local is a heap
   cell (closures share upvalues as Lua's do); a value is nil, boolean, number, string (bytes), table, closure,
   builtin, or effect handle. Fuel bounds the evaluation's depth; running out is `Err.fuel`, never a Lua error.
+  A runtime error is raised without its place (`Err.rt lvl msg`): the innermost site of the frame it is reported in
+  gives it `chunk:line:` and the operand's name (`atSite`), each call's frame passes it one frame out (`frame`), a
+  tail call's site one further, and a builtin's frame, which has no place, leaves it bare.
 - **Effects** are not interpreted. `io`, `os`, `print`, `debug` and every module not given as source are handles;
   calling one asks an *oracle* (`String → List Val → Option (List Val)`); `none` stops the run with `Err.eff`. What an
   oracle answer means in the world is the user's assumption, written as a named Lean axiom with its own test against
@@ -46,7 +49,7 @@ What a proved spec rests on, and how each piece is checked:
 | The parser, and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
 | The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
 | The host's libm | `^`, `math.pow`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, their inverses and hyperbolics, `atan2` are libm's in LuaJIT and in Lean's `Float`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel evaluates part of `Float` and not the rest (tested on Lean 4.35 with `decide` and `decide +kernel`). It computes `+ - *`, `/` (`decide +kernel` only; plain `decide` times out), `<`, `≤`, `==`, negation, `abs`, `isFinite`, `isNaN`, `Float.ofInt`, `Float.ofNat`, `toBits`, `ofBits`, `toUInt64` and `Float.sqrt` (`decide +kernel` only; plain `decide` is stuck). It cannot compute `Float.floor`, `ceil`, `round`, `scaleB`, `frExp`, `pow`, `exp`, `log`, `sin`, `cos`: `decide` is stuck on each, so `Num.narrow`, `floatToInt` and `fmod`, which use `floor`, and `ofRatio`, which uses `scaleB`, cannot be evaluated by a proof on a non-integer `Float`. No proof rests on such a value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz` (its generator prints the `math` ones at `%.12g`, `^` exactly). A `pow` case that fails on another machine is this before anything else. `fmod`, `modf`, `frexp`, `ldexp` are exact and modelled exactly (`Num.fmodC`, …) |
-
+| The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
 | The user's effect axioms | each its own test against the world, as above |
 
 Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
@@ -76,7 +79,11 @@ key. So `table.remove(t, 1.5)` shifts by halves on single-number (`libInt`, `lib
 
 In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
 instead) and `__call`, each read from the metatable when the operation runs, as LuaJIT does; closures; varargs;
-`pcall`/`error` (a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
+`pcall`/`error` (a failed call keeps what it wrote); error values as LuaJIT's: a runtime error, a builtin's
+(`bad argument #1 to 'rep' (...)`, named as the call names the callee) and `error`/`assert` with a string or number
+carry `chunk:line:` of the place LuaJIT reports (the operator or call raising it, or the call `error`'s level counts
+out to, a tail call's frame gone), or none where that place is a builtin, and the operand's name (`attempt to index
+local 't' (a nil value)`); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
 them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` but `dump` (patterns after
 lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table`, all of LuaJIT 2.1's
 (`sort` is ltablib.c's quicksort, so ties and bad comparators come out as LuaJIT's do; `move`, `remove`, `foreach`,
@@ -99,7 +106,9 @@ How a script outside it is reported, from strongest to weakest:
    `__lt`, `__le`, `__tostring` in `tostring` and `%s`, `__metatable` in `getmetatable` and `setmetatable`; a table's
    `__len` LuaJIT 2.1 never calls), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
-   `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), a double outside the integer range where a
+   `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), `error` with a level that counts out past a
+   builtin (`pcall(error, "x", 2)`: its place is a call the builtin's frame hides), `string.format`'s `%a`, `%o`, `%u`
+   and `%p`, a double outside the integer range where a
    builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`, `math.ldexp(1, 2^31)`, a key of `table.move`
    past 32 bits; "Targets"), `tonumber(s, 2)` of `0b` and a binary digit (glibc 2.38's strtoul reads the prefix,
    older C libraries do not), `table.new` of a size above 65536, a call into `io`, `os`, `math.random` or a module not
@@ -109,7 +118,13 @@ How a script outside it is reported, from strongest to weakest:
    - `__mode` added to a metatable after `setmetatable`;
    - `pairs`/`next` order: the semantics visits keys in insertion order; LuaJIT's order is its hash layout (G4);
    - `#t` of a table with holes: the semantics takes the least border, LuaJIT may give another;
-   - error values of runtime errors: the semantics' messages have no `file:line:` prefix;
+   - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where
+     lj_parse.c emits each instruction): `o:m(...)` with `:m` and `(` on two lines reports a failed index of `o` on the
+     line of `(`, LuaJIT on that of `m`; a constructor's `[k] = v` with `k` nil or NaN is reported at the enclosing
+     site, or with no place; the name of an `and`/`or` operand, which LuaJIT may find by scanning the bytecode back;
+     a builtin called as `__index` is named `?`;
+   - the chunk's name: `c` in the differential test (`loadstring(src, "=c")`), a lifted file's base name, a module
+     given as source its path under the `--lib` directory; LuaJIT names a file as it was given to it;
    - `tostring` of a table or function (an address in LuaJIT);
    - `type` of an effect handle (`print`, `io.write`, `math.random`): `userdata`, a function in LuaJIT.
 
@@ -120,7 +135,7 @@ G2 turns this list into a checker that names each construct with its line before
 | Path | What it is |
 |---|---|
 | `LuaLean/Num.lean` | numbers: the targets, integer and double arithmetic, printf's conversions on the exact value, `tonumber` (lj_strscan, with its 2^20 exponent bound) |
-| `LuaLean/Syntax.lean`, `Parse.lean` | the syntax tree and the parser |
+| `LuaLean/Syntax.lean`, `Parse.lean` | the syntax tree, with a `Site` (chunk, line, operand names) on each node that can raise an error, and the parser |
 | `LuaLean/Pat.lean` | Lua patterns, after lstrlib.c's matcher |
 | `LuaLean/Interp.lean` | the semantics |
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |

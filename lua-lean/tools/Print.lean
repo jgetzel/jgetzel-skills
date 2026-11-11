@@ -44,11 +44,13 @@ partial def exp : Exp → String
   | .un op a => s!"({unop op}{exp a})"
   | .table fs => "{" ++ ", ".intercalate (fs.map field) ++ "}"
   | .paren e => s!"({exp e})"
+  | .site _ e => exp e
 
 /-- a prefix expression: one that can be called or indexed -/
 partial def pre (e : Exp) : String :=
   match e with
   | .var _ | .index .. | .call .. | .method .. | .paren _ => exp e
+  | .site _ e => pre e
   | _ => s!"({exp e})"
 
 partial def args (as : List Exp) : String := ", ".intercalate (as.map exp)
@@ -75,6 +77,7 @@ partial def stat : Stat → String
   | .brk => "break"
   | .goto l => s!"goto {l}"
   | .label l => s!"::{l}::"
+  | .site _ st => stat st
 
 /-- an `if`'s else part: `elseif` for a lone nested `if` -/
 partial def els : Block → String
@@ -87,6 +90,6 @@ end
 
 def main (args : List String) : IO UInt32 := do
   let [file] := args | do IO.eprintln "usage: Print.lean <file.lua>"; return 1
-  match parseChunk (bytesOf (← IO.FS.readBinFile file)) with
+  match parseChunk (bytesOf (← IO.FS.readBinFile file)) file with
   | .error e => IO.eprintln e; return 1
   | .ok b => IO.print (block b); return 0

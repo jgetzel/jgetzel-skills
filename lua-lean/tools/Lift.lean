@@ -44,7 +44,7 @@ partial def fvE (b : List String) : Exp → List String
   | .call f as => fvE b f ++ as.flatMap (fvE b)
   | .method o _ as => fvE b o ++ as.flatMap (fvE b)
   | .bin _ x y | .and x y | .or x y => fvE b x ++ fvE b y
-  | .un _ x | .paren x => fvE b x
+  | .un _ x | .paren x | .site _ x => fvE b x
   | .table fs => fs.flatMap fun
     | .pos e | .named _ e => fvE b e
     | .keyed k e => fvE b k ++ fvE b e
@@ -64,6 +64,7 @@ partial def fvT (b : List String) : Stat → List String
   | .fornum v x y st body => fvE b x ++ fvE b y ++ ((st.map (fvE b)).getD []) ++ fvS (v :: b) body none
   | .forin vs es body => es.flatMap (fvE b) ++ fvS (vs.reverse ++ b) body none
   | .ret es => es.flatMap (fvE b)
+  | .site _ s => fvT b s
   | _ => []
 end
 
@@ -150,6 +151,9 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T (String × String
   | .paren a => do
     let (s, p) ← tExp cx a
     pure (s!"(S.eParen {s})", s!"(CE_paren {p})")
+  | .site st a => do
+    let (s, p) ← tExp cx a name
+    pure (s!"(S.eSite {site st} {s})", s!"(CE_site {p})")
   | .and a b => tBin2 cx "S.eAnd" "CE_and" a b
   | .or a b => tBin2 cx "S.eOr" "CE_or" a b
   | .bin op a b => tBin2 cx s!"S.eBin I {Show.binop op}" "CE_bin" a b
@@ -176,6 +180,9 @@ partial def tMulti (cx : Cx) (e : Exp) : T (String × String) := do
     let (sl, pl) ← tList cx as
     pure (s!"(S.mMethod I {so} {nm m} {sl})", s!"(CM_method {po} {pl})")
   | .vararg => pure (s!"(S.mVa {cx.va})", "(CM_va (by rfl))")
+  | .site st a => do
+    let (m, p) ← tMulti cx a
+    pure (s!"(S.mSite {site st} {m})", s!"(CM_site {p})")
   | e => do
     let (s, p) ← tExp cx e
     pure (s!"(S.mOne {s})", s!"(CM_one rfl {p})")
@@ -222,17 +229,23 @@ partial def tPlaces (cx : Cx) (ts : List Exp) : T (String × String) := do
       | none => (s!"(S.wGlob {nm x})", s!"(wGlob_ok h_{leanName x})")
     let (sp, pp) ← tPlaces cx ts
     pure (s!"(S.pVar {w} {sp})", s!"(CP_var {pw} {pp})")
+  | .site s (.index t k) :: ts => do
+    let (st, pt) ← tExp cx t
+    let (sk, pk) ← tExp cx k
+    let (sp, pp) ← tPlaces cx ts
+    pure (s!"(S.pIndex I (some {site s}) {st} {sk} {sp})", s!"(CP_site {pt} {pk} {pp})")
   | .index t k :: ts => do
     let (st, pt) ← tExp cx t
     let (sk, pk) ← tExp cx k
     let (sp, pp) ← tPlaces cx ts
-    pure (s!"(S.pIndex I {st} {sk} {sp})", s!"(CP_index {pt} {pk} {pp})")
+    pure (s!"(S.pIndex I none {st} {sk} {sp})", s!"(CP_index {pt} {pk} {pp})")
   | _ => pure ("UNSUPPORTED", "UNSUPPORTED")
 
 /-- a name for the function an assignment or local makes -/
 partial def targetName : Exp → String
   | .var x => x
   | .index t (.str k) => targetName t ++ "_" ++ String.ofList k
+  | .site _ e => targetName e
   | _ => ""
 
 partial def tStat (cx : Cx) (s : Stat) : T (String × String) := do
@@ -280,6 +293,9 @@ partial def tStat (cx : Cx) (s : Stat) : T (String × String) := do
   | .brk => pure ("S.sBreak", "CS_break")
   | .goto l => pure (s!"(S.sGoto {nm l})", "CS_goto")
   | .label _ => pure ("S.sLabel", "CS_label")
+  | .site st s => do
+    let (ss, ps) ← tStat cx s
+    pure (s!"(S.sSite {site st} {ss})", s!"(CS_site {ps})")
   | .loc .. | .locfn .. => pure ("UNSUPPORTED", "UNSUPPORTED")
 
 partial def tBlock (cx : Cx) (b : Block) : T (String × String) := do
@@ -353,7 +369,7 @@ def main (args : List String) : IO UInt32 := do
     | [m, f, s] => pure (m, f, some s)
     | _ => do IO.eprintln "usage: Lift.lean <Namespace> <file.lua> [<Import>:<Const>]"; return 1
   let bytes ← IO.FS.readBinFile file
-  match parseChunk (bytesOf bytes) with
+  match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln e; return 1
   | .ok b =>
     let st : St := { jobs := #[⟨"chunk", [], true, b, []⟩], names := ["chunk"] }
