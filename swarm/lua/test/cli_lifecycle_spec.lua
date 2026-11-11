@@ -246,11 +246,42 @@ end
 -- ---- landed agents ----
 function T.test_landed_agent_ended_and_cleaned(t)
   idle(t, "e", { wt = t.wt })
+  lfs.touch(t.wt)
   comms_tick(t)
   assert(ended(t, "e"))
+  assert(exists(t.wt) and branches(t) ~= "", "ending an agent removes no worktree or branch")
+  old_wt(t, t.wt)
+  comms_tick(t)  -- workspace GC: nobody attached now
   assert(not exists(t.wt))
   t:eq(branches(t), "")
   t:eq(t:q1("select data from event where kind='end'").data, "landed")
+end
+
+-- workspace GC removes the worktree of a base but never the base branch
+function T.test_sweep_keeps_a_checked_out_base(t)
+  t:git(t.wt, "checkout", "-q", "-B", "formal")
+  t:sw("a", "task", "add", "t", "--base", "formal")
+  old_wt(t, t.wt)
+  comms_tick(t)
+  assert(not exists(t.wt))
+  t:eq(t:git(t.repo, "branch", "--list", "formal") ~= "", true)
+end
+
+-- `swarm end`: the communicator only; checks unless --force; the worktree stays
+function T.test_swarm_end(t)
+  t:fakes()
+  t:agent("comms", { status = "idle" })
+  t:q("insert or replace into meta(k,v) values('comms','comms')")
+  idle(t, "e", { wt = t.wt })
+  t:sw("a", "task", "add", "x"); t:sw("e", "task", "claim", "1")
+  t:eq(t:sw("e", "end", "e", { ok = false }).code, 1)  -- not the communicator
+  local r = t:sw("comms", "end", "e", { ok = false })
+  t:has(r.stderr, "owns a claimed task")
+  assert(not ended(t, "e"))
+  t:sw("comms", "end", "e", "--force")
+  assert(ended(t, "e"))
+  t:eq(t:q1("select data from event where kind='end'").data, "forced")
+  assert(exists(t.wt))
 end
 
 -- another swarm's communicator that joined this board (a waiter it once ran here) is not ended (#117): its

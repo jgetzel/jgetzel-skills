@@ -334,6 +334,10 @@ function T.test_run_note_state_and_cleanup(t)
   idle(t, "e", { wt = t.wt })
   comms_tick(t)
   assert(ended(t, "e"))
+  assert(not read(t.hclog):find("rm -rf", 1, true), "ending an agent cleans nothing")
+  local gd = util.strip(t:git(t.wt, "rev-parse", "--absolute-git-dir"))
+  for _, p in ipairs({ t.wt, gd .. "/logs/HEAD" }) do require("lfs").touch(p, os.time() - 3600, os.time() - 3600) end
+  comms_tick(t)  -- the sweep removes the worktree, then its remote dirs
   t:has(read(t.hclog), "exec --on laptop --timeout 120 rm -rf " .. d)
   assert(not exists(t.home .. "/" .. d))
 end

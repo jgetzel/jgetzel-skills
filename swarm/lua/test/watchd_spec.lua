@@ -90,7 +90,7 @@ local row = c:one("select * from agent where name='e'")
 peer:exec("insert into task(title,state,owner,lease_until) values('t','claimed','e',?)", os.time() + 3600)
 local run = proc.run
 proc.run = function() return nil end
-watchd.end_agent(c, row, dir .. "/wt", repo, nil)
+watchd.end_agent(c, row)
 proc.run = run
 assert(peer:one("select ended from agent where name='e'").ended == nil)
 assert(task1().owner == "e")
@@ -101,7 +101,7 @@ peer:exec("insert into agent(name,cwd,status,last_active,started) values('e',?,'
 row = c:one("select * from agent where name='e'")
 peer:exec("update agent set stay='reviews' where name='e'")
 proc.run = function() return nil end
-watchd.end_agent(c, row, dir .. "/wt", repo, nil)
+watchd.end_agent(c, row)
 proc.run = run
 assert(peer:one("select ended from agent where name='e'").ended == nil)
 
@@ -115,7 +115,7 @@ os.execute(("echo '0::/u/swarm-agent-e-1.scope' > %s/proc/77/cgroup; echo 104857
 peer:exec("insert into agent(name,cwd,status,last_active,started,claude_pid) values('e',?,'idle',1,1,77)", repo)
 row = c:one("select * from agent where name='e'")
 proc.run = function() return nil end
-watchd.end_agent(c, row, dir .. "/wt", repo, nil)
+watchd.end_agent(c, row)
 proc.run = run
 machine.PROC, machine.CGROUP = pr, cg0
 assert(peer:one("select ended from agent where name='e'").ended ~= nil)

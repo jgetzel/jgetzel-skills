@@ -56,7 +56,7 @@ with subagents.
    Auto-spawn goes through `swarm spawn --task N`, which claims the task for
    the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
-   (and removes their worktree and branch), spawns fresh agents for startable
+   (the terminal only; the sweep removes worktrees), spawns fresh agents for startable
    tasks when none is free (up to the auto-spawn number, default the live count
    when the first watchd starts; `--min-free-mem` GiB, default 4; while either
    holds it, the board says so: `auto-spawn holding: …`; the model is the task's
@@ -102,9 +102,11 @@ with subagents.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
-- **Ending.** `watchd` ends agents; you don't. It also removes any worktree of
-  this repo (yours included) that is clean, on main, untouched for 30 minutes
-  and has no process in it, and deletes its branch: tell the user before the
+- **Ending.** `watchd` ends agents (kills the terminal, nothing else) once they are idle with no claim, lock or
+  stay and their work is on their task's base. `swarm end <agent> [--force]` does it by hand with the same checks.
+  Worktrees are a separate sweep: watchd removes any worktree of this repo (yours included) that is clean, has no
+  live agent attached and no process in it, was untouched for 30 minutes and is on a ref some task base, `main` or
+  `origin/*` already has, then deletes its branch with `git branch -d` (never a base): tell the user before the
   first watchd if they park worktrees here. When all tasks are done, tell
   the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
   waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `hc send`, or end it.
