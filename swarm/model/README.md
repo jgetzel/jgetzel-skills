@@ -32,11 +32,20 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
+| `SwarmModel/Lua/Syntax.lean`, `Parse.lean` | our Lua subset's syntax, and a parser for it (Lua 5.1's grammar, LuaJIT's lexer and its constant folding); every file under `../lua` parses |
+| `SwarmModel/Lua/Num.lean` | numbers as LuaJIT on arm64 has them (dual-number: 32-bit integers and doubles), printf's conversions on the exact value with LuaJIT's rounding, `tonumber` |
+| `SwarmModel/Lua/Pat.lean` | Lua patterns, after lstrlib.c's matcher |
+| `SwarmModel/Lua/Interp.lean` | the semantics: an interpreter on fuel, with the builtins the code uses; effects (`io`, `os`, `db`, processes, every module not given as source) are calls to an oracle, not interpreted (board #28) |
+| `SwarmModel/Lua/Run.lean` | running a chunk as `luasem_spec.lua` does, and its results as text |
+| `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua` |
+| `SwarmModel/LuaRun.lean`, `LuaDump.lean` | run Lua files through the interpreter; print a parsed file as Lean |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 4 scripted runs the Lua suite replays |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
+| `luasem.json.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
+| `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
@@ -399,6 +408,38 @@ pattern alike. Before the fix (the model with `lockForms` off against the Lua be
 on all but 2, where the old Lua asked fnmatch about a class fnmatch reads otherwise (`[^]`, `[]\]`); covers agreed on
 every tame pattern and differed on 225 untame ones (fnmatch's escapes and brackets against the tokens').
 
+**Lua semantics** (board #28, rung 4): `SwarmModel/Lua` is an executable semantics of the Lua subset `swarm/lua/swarm`
+is written in: tables with `__index` classes, closures with shared upvalues (every local is a heap cell), varargs,
+`pcall`/`error` (a failed call keeps what it wrote), `goto` as the continue idiom (a label ending its block; any other
+goto is an error), numbers, strings as bytes, and the library the code calls: `string` (patterns, `format`, `gsub`
+with string, table or function), `table` (`sort` is ltablib.c's quicksort, so ties and bad comparators come out as
+LuaJIT's do), `math`, `select`, `unpack`, `pairs`, `ipairs`, `setmetatable`, `require`. Not in it: coroutines, `load`,
+FFI, `__newindex` and the other metamethods, `string.format("%a")`. Effects are not interpreted: `io`, `os`, `print`, `debug`
+and each module not given as source (`swarm.db`, `swarm.proc`, `posix.*`, `lfs`, `cjson`, `lua-utf8`, …) are handles,
+and calling one asks an oracle (`Run.lean`: an opaque handle while modules load, nothing after). Board #34 makes that
+oracle one explicit file.
+
+Tested the "Decoding Lua" way: `LuaCases.lean` writes random chunks (arithmetic, strings, patterns against random
+subjects with every repl kind, `string.format` with random flags, widths and precisions, tables and sorts, control
+flow, closures, varargs, metatables, `tonumber` on odd text) and calls of the code's own pure functions (`util.lua`,
+`locks.lua`, `difflib.lua`), each with the interpreter's results; `luasem_spec.lua` runs each under LuaJIT and the
+results must be the same text (numbers to the last bit, `%.17g`; table entries sorted; a top-level error only as
+`error`, messages not compared, positions not being modelled). 3000 are committed, `replay.sh` checks 3000 fresh ones;
+30,000 over six seeds agreed at the end. What the differences taught, now in the semantics:
+LuaJIT on arm64 runs in dual-number mode, so a number is a 32-bit integer or a double, which shows only in the sign
+of zero (`0 * -1` is 0, `0.5 * 0 * -1` is -0); the parser folds arithmetic on two constants and narrows the result to
+an integer, but never folds to -0 or NaN, and never negates a zero constant; `math.min`/`max` keep the running value
+only when it is strictly better (so NaN and -0 land where arm64's `fcsel` puts them); LuaJIT formats numbers itself
+(lj_strfmt_num.c): NaN takes the space flag but not `+`, upper-case conversions write `INF`/`NAN`, and an exact tie
+rounds to even except in an integer whose cut digit is 10^9 or above, which rounds up (`%.0e` of 2.5e10 is `3e+10`,
+of 2.5e9 `2e+09`: nd_round's scan for a nonzero rest starts at the cut's own 9-digit limb); `%.0d` of 0 is empty;
+`#t` of a table with holes is any border (Lua's rule), and the model's, the least, is not LuaJIT's, so the cases
+make none. Two LuaJIT bugs are left out, not modelled: `%f` of a number below about 1e-155 overruns lj_strfmt_num.c's
+64-limb buffer and prints garbage (`string.format("%.3f", 9e-160)` is `410188913345336914.062`), and the interpreter
+stops on it as an unmodelled effect; and `table.unpack` does not exist in LuaJIT 2.1, so `swarm cost --top` crashes
+(cost.lua:212, board #37).
+Not yet: the rung-3 functions proved equal to the interpreter's run of locks.lua (board #39).
+
 **Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check, rebases, an agent removing its own
@@ -422,8 +463,11 @@ it is replayed: the replay has no hc.
 
 ```sh
 swarm/model/check.sh            # every theorem and counterexample, about 12 s
-swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI
+swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI, and fresh glob and Lua cases
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
+luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
+cd swarm/model && lake env lean --run SwarmModel/LuaRun.lean f.lua   # f.lua under the Lean semantics, and
+luajit ../lua/test/luasem.lua f.lua                                 # under LuaJIT, written alike
 ```
 
 `check.sh` and `replay.sh` need `lake` (elan) on the PATH, or nix, which they use to fetch it
