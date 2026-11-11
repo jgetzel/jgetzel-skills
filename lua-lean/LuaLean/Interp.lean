@@ -260,6 +260,12 @@ def atSite? {α} : Option Site → M α → M α
   | some s, m => atSite s m
   | none, m => m
 
+/-- `m` in the frame of the call it replaces, as a builtin's tail call is (tostring's of `__tostring`) -/
+def unframe {α} (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.rt k msg) h => .error (.rt (k + 1) msg) h
+  | r => r
+
 /-- a call's frame: an error reported in it that no site took is in a builtin, so it has no place; the rest are
 one frame further out -/
 def frame {α} (m : M α) : M α := fun h =>
@@ -374,12 +380,6 @@ def metaOf (v : Val) (ev : String) : M Val := do
     | none => pure .nil
   | _ => pure .nil
 
-/-- a metamethod the semantics does not model yet stops the run where LuaJIT would call it (DESIGN.md, *The subset*) -/
-def noMeta (vs : List Val) (evs : List String) : M Unit := do
-  for v in vs do
-    for ev in evs do
-      if !(← metaOf v ev).isNil then throw (.eff s!"metamethod {ev}" [])
-
 -- ---------- coroutines ----------
 
 def getThr (a : Nat) : M (Thr Heap) := do
@@ -480,33 +480,26 @@ def strLt : List Char → List Char → Bool
 def arithEv : BinOp → String
   | .add => "__add" | .sub => "__sub" | .mul => "__mul" | .div => "__div" | .mod => "__mod" | _ => "__pow"
 
-/-- an operator's metamethod `ev` (lj_meta_arith, lj_meta_cat): x's, else y's; nil when neither has one. It is called
-as a call is, a table through its `__call`; one that cannot be is LuaJIT's error, with no place -/
-def metaOf2 (ev : String) (x y : Val) : M Val := do
-  let h ← metaOf x ev
-  let h ← if h.isNil then metaOf y ev else pure h
+/-- a metamethod as an operator calls it: a table through its `__call`; any other value it cannot call is LuaJIT's
+error, with no place (nil stays nil) -/
+def metaFn (h : Val) : M Val :=
   match h with
   | .nil | .fn _ | .prim .. | .eff _ => pure h
-  | .tbl _ => match ← metaOf h "__call" with
+  | .tbl _ => do
+    match ← metaOf h "__call" with
     | .fn _ | .prim .. => pure h
     | _ => throw (.val (lstr s!"attempt to call a {h.typeName} value"))
   | _ => throw (.val (lstr s!"attempt to call a {h.typeName} value"))
 
-def less (x y : Val) (orEq : Bool) : M Bool :=
-  match x, y with
-  | .num a, .num b => pure (if orEq then a.le b else a.lt b)
-  | .str a, .str b => pure (if orEq then a == b || strLt a b else strLt a b)
-  | _, _ => do
-    -- LuaJIT looks for `__lt`/`__le` only on two values of one type
-    if let (.tbl _, .tbl _) := (x, y) then noMeta [x, y] ["__lt", "__le"]
-    if x.typeName == y.typeName then rtErr s!"attempt to compare two {x.typeName} values"
-    else rtErr s!"attempt to compare {x.typeName} with {y.typeName}"
+/-- an operator's metamethod `ev` (lj_meta_arith, lj_meta_cat): x's, else y's; nil when neither has one. It is called
+as a call is, a table through its `__call`; one that cannot be is LuaJIT's error, with no place -/
+def metaOf2 (ev : String) (x y : Val) : M Val := do
+  let h ← metaOf x ev
+  metaFn (← if h.isNil then metaOf y ev else pure h)
 
-/-- `==`: two distinct tables may have `__eq` -/
-def eqv (x y : Val) : M Bool := do
-  if let (.tbl a, .tbl b) := (x, y) then
-    if a != b then noMeta [x, y] ["__eq"]
-  pure (x.rawEq y)
+def compErr {α} (x y : Val) : M α :=
+  if x.typeName == y.typeName then rtErr s!"attempt to compare two {x.typeName} values"
+  else rtErr s!"attempt to compare {x.typeName} with {y.typeName}"
 
 def concatText : Val → Option (List Char)
   | .str s => some s
@@ -598,8 +591,9 @@ def quoteStr (s : List Char) : List Char :=
 def hexDigits (n : Nat) (upper : Bool) : List Char :=
   (Nat.toDigits 16 n).map fun c => if upper then Pat.toLower c |> fun c => if 'a' ≤ c && c ≤ 'f' then Char.ofNat (c.toNat - 32) else c else c
 
-/-- string.format: `args` its arguments, the format the first (lj_strfmt_parse, lj_strfmt_putarg) -/
-def format (fmt : List Char) (args : List Val) : M (List Char) := do
+/-- string.format: `args` its arguments, the format the first (lj_strfmt_parse, lj_strfmt_putarg); `ts` is what `%s`
+and `%q` do first to a value neither a string nor a number (a `__tostring` call, which LuaJIT makes once and in order) -/
+def format (fmt : List Char) (args : List Val) (ts : Val → M Val) : M (List Char) := do
   let rec go (f : List Char) (i : Nat) (fuel : Nat) : M (List Char) := do
     match fuel with
     | 0 => pure []
@@ -632,6 +626,7 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
         if "Aaoup".toList.contains c then throw (.eff s!"string.format %{c}" []) else
         if i ≥ args.length then argErr (i + 1) "value expected" else
         let arg := args.getD i .nil
+        let strArg (v : Val) : M Val := match v with | .str _ | .num _ => pure v | v => ts v
         let fn := "format"
         let piece ← match c with
           | 'd' | 'i' => do
@@ -663,9 +658,9 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
               throw (.eff "lj_strfmt %f below 1e-150" [])
             let sign := if fl.isNaN then (if space then [' '] else []) else if Num.negative fl then ['-'] else if plus then ['+'] else if space then [' '] else []
             pure (pad left (zero && fl.isFinite) w sign body)
-          | 'q' => do noMeta [arg] ["__tostring"]; pure (quoteStr arg.text)
+          | 'q' => do pure (quoteStr (← strArg arg).text)
           | _ => do
-            noMeta [arg] ["__tostring"]
+            let arg ← strArg arg
             let s := match pr with | some p => arg.text.take (toN p) | none => arg.text
             pure (pad left false w [] s)
         pure (piece ++ (← go r (i + 1) fuel))
@@ -800,7 +795,6 @@ def strFn (name : String) (args : List Val) : M (List Val) := do
       if c < 0 || c > 255 then argErr (i + 1) "invalid value"
       r := r ++ [Char.ofNat c.toNat]
     return [.str r]
-  | "format" => return [.str (← format (← argStr name 0 args) args)]
   | "find" => strFind true args
   | "match" => strFind false args
   | "gmatch" => do
@@ -1007,7 +1001,6 @@ def strftime (tm : Tm) : List Char → Option (List Char)
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
-  | "tostring" => do anyArg 0 args; noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
   | "os.difftime" => do
     -- difftime((time_t)a, (time_t)b), a double; past 2^53 C libraries round it differently
     let a ← argIntN 64 "difftime" 0 args
@@ -1059,18 +1052,25 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     let t ← argTbl name 0 args
     let m ← match args.getD 1 .nil with
       | .nil => pure none
-      | .tbl m => do
-        -- weak tables lose entries when the collector runs, which the semantics does not model
-        if !((← getTbl m).get (lstr "__mode")).isNil then throw (.eff "metamethod __mode" [])
-        pure (some m)
+      | .tbl m => pure (some m)
       | _ => argErr 2 "nil or table expected"
-    noMeta [.tbl t] ["__metatable"]
+    if !(← metaOf (.tbl t) "__metatable").isNil then callerErr "cannot change a protected metatable"
+    -- weak tables lose entries when the collector runs, which the semantics does not model
+    if let some m := m then
+      if !((← getTbl m).get (lstr "__mode")).isNil then throw (.eff "metamethod __mode" [])
     -- globals are read and written raw (`getVar`), so _G takes no metatable
     if t == G then throw (.eff "setmetatable(_G)" [])
     putTbl t { (← getTbl t) with mt := m }
     return [.tbl t]
-  | "getmetatable" => match args.headD .nil with
-    | .tbl t => do noMeta [.tbl t] ["__metatable"]; return [((← getTbl t).mt.map Val.tbl).getD .nil]
+  | "getmetatable" => do
+    anyArg 0 args
+    match args.headD .nil with
+    | .tbl t => match (← getTbl t).mt with
+      | some m => do
+        -- a protected metatable: its `__metatable` instead
+        let p ← rawget m (lstr "__metatable")
+        return [if p.isNil then .tbl m else p]
+      | none => return [.nil]
     | _ => return [.nil]
   | "error" => do
     -- a string or number gets the place of the function `level` calls out (1: error's caller)
@@ -1217,13 +1217,13 @@ def timeFx (name : String) (args : List Val) : M Int := do
 /-- a time_t as os.time returns it: a double (-1 too: LuaJIT 2.1 returns it) -/
 def timeVal (t : Int) : Val := .num (.flt (Float.ofInt t))
 
-/-- print: each value as the builtin `tostring` gives it, tab-separated, and a newline: one write to stdout
-(lj_cf_print). A `tostring` of the script's own stops the run, its calls coming between print's writes -/
+/-- print without a `__tostring` to call: each value as the builtin `tostring` gives it, tab-separated, and a newline:
+one write to stdout (lj_cf_print). A `tostring` of the script's own stops the run, its calls coming between print's
+writes -/
 def printFn (args : List Val) : M (List Val) := do
   match ← rawget G (lstr "tostring") with
   | .prim "tostring" [] => pure ()
   | _ => throw (.eff "print with a tostring of its own" [])
-  noMeta args ["__tostring"]
   let _ ← effect oracle "print" [.str (List.intercalate ['\t'] (args.map Val.text) ++ ['\n'])]
   pure []
 
@@ -1547,12 +1547,12 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
 /-- a binary operator; fuel only for a metamethod -/
 def binop (n : Nat) (op : BinOp) (x y : Val) : M Val :=
   match op with
-  | .eq => do pure (.bool (← eqv x y))
-  | .ne => do pure (.bool !(← eqv x y))
-  | .lt => .bool <$> less x y false
-  | .le => .bool <$> less x y true
-  | .gt => .bool <$> less y x false
-  | .ge => .bool <$> less y x true
+  | .eq => do pure (.bool (← eqv n x y))
+  | .ne => do pure (.bool !(← eqv n x y))
+  | .lt => .bool <$> less n x y false (some "__lt")
+  | .le => .bool <$> less n x y true (some "__le")
+  | .gt => .bool <$> less n y x false (some "__lt")
+  | .ge => .bool <$> less n y x true (some "__le")
   | .concat =>
     match concatText x, concatText y with
     | some a, some b => pure (.str (a ++ b))
@@ -1573,6 +1573,60 @@ def binop (n : Nat) (op : BinOp) (x y : Val) : M Val :=
         | .nil =>
           if x.toNum.isNone then opErr "perform arithmetic on" (some 0) x else opErr "perform arithmetic on" (some 1) y
         | h => do pure ((← mmFrame (arithEv op) (call n h [x, y])).headD .nil)
+
+/-- `<` (`orEq` false) and `<=` (lj_meta_comp): numbers and strings by value; two other values of one type by `__lt`
+or `__le`, which both must have, the same; without `__le`, `not (y < x)`. A builtin metamethod's bad argument names
+`nm`, the operator's event (none from C: table.sort). Fuel only for a metamethod -/
+def less (n : Nat) (x y : Val) (orEq : Bool) (nm : Option String) : M Bool :=
+  match x, y with
+  | .num a, .num b => pure (if orEq then a.le b else a.lt b)
+  | .str a, .str b => pure (if orEq then a == b || strLt a b else strLt a b)
+  | _, _ => match n with
+    | 0 => throw .fuel
+    | n + 1 => do
+      if x.typeName != y.typeName then compErr x y
+      let ev := if orEq then "__le" else "__lt"
+      let h ← metaOf x ev
+      if !h.isNil && h.rawEq (← metaOf y ev) then
+        let r ← match nm with
+          | some e => mmFrame e (call n (← metaFn h) [x, y])
+          | none => call n (← metaFn h) [x, y]
+        return (r.headD .nil).truthy
+      if orEq then return !(← less n y x false nm)
+      compErr x y
+
+/-- `==` (lj_meta_equal): two distinct tables by x's `__eq`, if y has x's metatable or one with the same `__eq`; the
+first value's truth. Fuel only for a metamethod -/
+def eqv (n : Nat) (x y : Val) : M Bool :=
+  match x, y with
+  | .tbl a, .tbl b => if a == b then pure true else match n with
+    | 0 => throw .fuel
+    | n + 1 => do
+      let h ← metaOf x "__eq"
+      if h.isNil then return false
+      if (← getTbl a).mt != (← getTbl b).mt && !h.rawEq (← metaOf y "__eq") then return false
+      return ((← mmFrame "__eq" (call n (← metaFn h) [x, y])).headD .nil).truthy
+  | _, _ => pure (x.rawEq y)
+
+/-- print (lj_cf_print) with a `__tostring` among its arguments, from `vs` on, `acc` what is not written yet: a string
+or number as it is, any other value as the builtin tostring gives it, a call for one with `__tostring`; before that
+call what is ready is written, as LuaJIT writes each argument once it has its text -/
+def printArgs (n : Nat) (vs : List Val) (acc : List Char) (first : Bool) : M (List Val) :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 =>
+  match vs with
+  | [] => do let _ ← effect oracle "print" [.str (acc ++ ['\n'])]; pure []
+  | v :: vs => do
+    let sep := if first then [] else ['\t']
+    let plain := match v with | .str _ | .num _ => true | _ => false
+    if plain || (← metaOf v "__tostring").isNil then return ← printArgs n vs (acc ++ sep ++ v.text) false
+    if !acc.isEmpty then let _ ← effect oracle "print" [.str acc]
+    let s ← match (← bounded 1 (call n (.prim "tostring" []) [v])).headD .nil with
+      | .str s => pure s
+      | .num x => pure x.toText
+      | _ => callerErr "'tostring' must return a string to 'print'"
+    printArgs n vs (sep ++ s) false
 
 /-- a unary operator; `__unm` is called with (x, x), as BC_UNM calls lj_meta_arith -/
 def unop (n : Nat) (op : UnOp) (x : Val) : M Val :=
@@ -1721,7 +1775,25 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       rawset LOADED (.str m) v
       return [v]
   | "string.gsub" => gsub n args
-  | "print" => printFn oracle args
+  | "print" => do
+    if !(← args.anyM fun v => do pure !(← metaOf v "__tostring").isNil) then return ← printFn oracle args
+    match ← rawget G (lstr "tostring") with
+    | .prim "tostring" [] => printArgs n args [] true
+    | _ => throw (.eff "print with a tostring of its own" [])
+  | "tostring" => do
+    anyArg 0 args
+    let v := args.headD .nil
+    match ← metaOf v "__tostring" with
+    | .nil => return [.str v.text]
+    -- FFH_TAILCALL: the metamethod's frame takes tostring's place
+    | h => unframe (call n h [v])
+  | "string.format" => do
+    -- each `__tostring` through lua_call, its first value
+    let ts (v : Val) : M Val := do
+      match ← metaOf v "__tostring" with
+      | .nil => pure v
+      | h => do pure ((← bounded 1 (call n h [v])).headD .nil)
+    return [.str (← format (← argStr name 0 args) args ts)]
   | "io.write" => ioWrite oracle args
   | "os.date" => osDate oracle args
   -- the run ends there, with no result for a spec to be about
@@ -1800,7 +1872,7 @@ def lessThan (n : Nat) (cmp a b : Val) : M Bool :=
   | 0 => throw .fuel
   | n + 1 =>
   match cmp with
-  | .nil => less a b false
+  | .nil => less n a b false none
   | f => do pure ((← call n f [a, b]).headD .nil).truthy
 
 /-- ltablib.c's auxsort -/

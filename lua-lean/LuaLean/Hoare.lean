@@ -236,6 +236,97 @@ theorem RunP.unm_meta {I : Sem} {x f : Val} {P : Val → Heap → Prop}
   refine RunP.metaStep (err := opErr "perform arithmetic on" (some 0) x) (fun n => ?_) hm hf r
   rw [unop]; split <;> first | rfl | simp_all
 
+/-! Comparisons' metamethods (lj_meta_equal, lj_meta_comp) for two tables of one metatable: the comparison is the
+truth of the metamethod's first value; `<=` without `__le` is `not (y < x)`. A spec of `tostring` takes its
+metamethod's call through `callPrim_tostring` and `RunP.unframe` -/
+
+/-- two tables of one metatable `m` whose `ev` is the function `f` -/
+structure SameMeta (h : Heap) (a b m : Nat) (ev : String) (f : Val) : Prop where
+  ha : ∃ ta, h[a]? = some (.tbl ta) ∧ ta.mt = some m
+  hb : ∃ tb, h[b]? = some (.tbl tb) ∧ tb.mt = some m
+  hm : ∃ tm, h[m]? = some (.tbl tm) ∧ tm.get (lstr ev) = f
+  hf : ∃ c, f = .fn c
+
+/-- `x == y`: `__eq` -/
+theorem RunP.eq_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {P : Bool → Heap → Prop}
+    (hab : a ≠ b) (hs : SameMeta h a b m "__eq" f)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [.tbl a, .tbl b]) h fun vs h' => P (vs.headD .nil).truthy h') :
+    RunP (fun n => eqv I.srcs I.oracle I.tgt n (.tbl a) (.tbl b)) h P := by
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl⟩, ⟨c, hc⟩⟩ := hs
+  obtain ⟨N, vs, h', e, p⟩ := r
+  refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+  have e := e n (by omega); dsimp only at e ⊢
+  have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) "__eq" >>= k) h = k (tm.get (lstr "__eq")) h :=
+    fun k => bind_ok (metaOf_ok ha hma hm)
+  have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) "__eq" >>= k) h = k (tm.get (lstr "__eq")) h :=
+    fun k => bind_ok (metaOf_ok hb hmb hm)
+  have b3 : ∀ {β} (k : Tbl → M β), (getTbl a >>= k) h = k ta h := fun k => bind_ok (getTbl_ok ha)
+  have b4 : ∀ {β} (k : Tbl → M β), (getTbl b >>= k) h = k tb h := fun k => bind_ok (getTbl_ok hb)
+  have b5 : ∀ {β} (k : Val → M β), (metaFn (tm.get (lstr "__eq")) >>= k) h = k (tm.get (lstr "__eq")) h :=
+    fun k => bind_ok (by rw [hc]; rfl)
+  have b6 : ∀ {β} (k : List Val → M β), (mmFrame "__eq" (call I.srcs I.oracle I.tgt n (tm.get (lstr "__eq"))
+      [.tbl a, .tbl b]) >>= k) h = k vs h' := fun k => bind_ok (by simp only [mmFrame]; rw [e])
+  rw [eqv.eq_def]; dsimp only
+  split
+  · next hh => exact absurd (by simpa using hh) hab
+  rw [b1]; simp only [hc, Val.isNil, Bool.false_eq_true, ↓reduceIte]; rw [← hc]
+  rw [b3, b4, b2]; simp only [hma, hmb, bne_self_eq_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]; rw [b5, b6]; rfl
+
+/-- `x < y` and `x <= y`: `__lt`, `__le` -/
+theorem RunP.lt_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {orEq : Bool} {nm : Option String}
+    {P : Bool → Heap → Prop} (hs : SameMeta h a b m (if orEq then "__le" else "__lt") f)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [.tbl a, .tbl b]) h fun vs h' => P (vs.headD .nil).truthy h') :
+    RunP (fun n => less I.srcs I.oracle I.tgt n (.tbl a) (.tbl b) orEq nm) h P := by
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, rfl⟩, ⟨c, hc⟩⟩ := hs
+  obtain ⟨N, vs, h', e, p⟩ := r
+  refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+  have e := e n (by omega); dsimp only at e ⊢
+  generalize hev : (if orEq then "__le" else "__lt") = ev at hc e
+  have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) ev >>= k) h = k (tm.get (lstr ev)) h :=
+    fun k => bind_ok (metaOf_ok ha hma hm)
+  have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) ev >>= k) h = k (tm.get (lstr ev)) h :=
+    fun k => bind_ok (metaOf_ok hb hmb hm)
+  have b5 : ∀ {β} (k : Val → M β), (metaFn (tm.get (lstr ev)) >>= k) h = k (tm.get (lstr ev)) h :=
+    fun k => bind_ok (by rw [hc]; rfl)
+  rw [less.eq_def]; dsimp only
+  simp only [Val.typeName, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte, hev]
+  rw [b1]; rw [b2]
+  simp only [hc, Val.isNil, Val.rawEq, Bool.not_false, Bool.true_and, beq_self_eq_true, ↓reduceIte]; rw [← hc]
+  cases nm <;> dsimp only <;> rw [b5]
+  · rw [bind_ok e]; rfl
+  · rw [bind_ok (by simp only [mmFrame]; rw [e])]; rfl
+
+/-- `x <= y` without `__le`: `not (y < x)` -/
+theorem RunP.le_lt {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {nm : Option String} {P : Bool → Heap → Prop}
+    (hs : SameMeta h a b m "__lt" f) (hle : ∃ tm, h[m]? = some (.tbl tm) ∧ tm.get (lstr "__le") = .nil)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [.tbl b, .tbl a]) h fun vs h' => P (!(vs.headD .nil).truthy) h') :
+    RunP (fun n => less I.srcs I.oracle I.tgt n (.tbl a) (.tbl b) true nm) h P := by
+  have r := RunP.lt_meta (orEq := false) (nm := nm) (P := fun x h' => P (!x) h') ⟨hs.hb, hs.ha, hs.hm, hs.hf⟩ r
+  obtain ⟨N, x, h', e, p⟩ := r
+  refine ⟨N + 1, _, h', fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+  have e := e n (by omega); dsimp only at e ⊢
+  obtain ⟨⟨ta, ha, hma⟩, ⟨tb, hb, hmb⟩, ⟨tm, hm, -⟩, -⟩ := hs
+  obtain ⟨tm', hm', hle⟩ := hle
+  rw [hm] at hm'; cases hm'
+  have b1 : ∀ {β} (k : Val → M β), (metaOf (.tbl a) "__le" >>= k) h = k .nil h :=
+    fun k => bind_ok (hle ▸ metaOf_ok ha hma hm)
+  have b2 : ∀ {β} (k : Val → M β), (metaOf (.tbl b) "__le" >>= k) h = k .nil h :=
+    fun k => bind_ok (hle ▸ metaOf_ok hb hmb hm)
+  rw [less.eq_def]; dsimp only
+  simp only [Val.typeName, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte]
+  rw [b1, b2]
+  simp only [Val.isNil, Bool.not_true, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
+  rw [bind_ok e]; rfl
+
+/-- a builtin's tail call changes only where an error is reported -/
+theorem RunP.unframe {α} {m : Nat → M α} {h : Heap} {P : α → Heap → Prop} (r : RunP m h P) :
+    RunP (fun n => unframe (m n)) h P := by
+  obtain ⟨N, a, h', e, p⟩ := r
+  exact ⟨N, a, h', fun n hn => by simp only [Lua.unframe, e n hn], p⟩
+
 end rules
 
 /-- whatever the order (`Tbl.rank` is opaque), `next` gives an entry of the table, one with a value: what a spec

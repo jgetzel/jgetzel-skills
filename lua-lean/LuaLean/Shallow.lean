@@ -49,9 +49,21 @@ theorem call_eff (I : Sem) (n : Nat) (name : String) (args : List Val) :
     call I.srcs I.oracle I.tgt (n + 1) (.eff name) args = effect I.oracle name args := by
   rw [call]
 
-theorem callPrim_print (I : Sem) (n : Nat) (args : List Val) :
+/-- print of strings and numbers: no `__tostring` to call, one write -/
+theorem callPrim_print (I : Sem) (n : Nat) (args : List Val)
+    (hs : args.all fun v => match v with | .str _ | .num _ => true | _ => false) :
     callPrim I.srcs I.oracle I.tgt (n + 1) "print" [] args = printFn I.oracle args := by
-  rw [callPrim]
+  have any : ∀ h, (args.anyM (m := M) fun v => do pure !(← metaOf v "__tostring").isNil) h = .ok false h := by
+    intro h
+    induction args with
+    | nil => rfl
+    | cons v vs ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at hs
+      obtain ⟨hv, hs⟩ := hs
+      have ih := ih hs
+      cases v <;> simp at hv <;> simp only [List.anyM, metaOf, bind, EStateM.bind, pure, EStateM.pure, Val.isNil] at ih ⊢ <;>
+        simpa using ih
+  rw [callPrim]; funext h; simp only [bind, EStateM.bind] at any ⊢; simp [any]
 
 theorem callPrim_write (I : Sem) (n : Nat) (args : List Val) :
     callPrim I.srcs I.oracle I.tgt (n + 1) "io.write" [] args = ioWrite I.oracle args := by
@@ -614,6 +626,19 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
 theorem bind_ok {α β} {x : M α} {f : α → M β} {h h' : Heap} {a : α} (e : x h = .ok a h') :
     (x >>= f) h = f a h' := by
   show EStateM.bind x f h = _; simp only [EStateM.bind, e]
+
+theorem getTbl_ok {h : Heap} {a : Nat} {t : Tbl} (ha : h[a]? = some (.tbl t)) : getTbl a h = .ok t h := by
+  simp only [getTbl, getObj, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
+theorem metaOf_ok {h : Heap} {a m : Nat} {t tm : Tbl} {ev : String} (ha : h[a]? = some (.tbl t)) (hma : t.mt = some m)
+    (hm : h[m]? = some (.tbl tm)) : metaOf (.tbl a) ev h = .ok (tm.get (lstr ev)) h := by
+  simp only [metaOf, bind, EStateM.bind, getTbl_ok ha, hma, rawget, getTbl_ok hm]; rfl
+
+/-- tostring of a value with `__tostring`: the metamethod's call in tostring's place -/
+theorem callPrim_tostring {I : Sem} {n : Nat} {v f : Val} {rest : List Val} {h : Heap}
+    (hm : metaOf v "__tostring" h = .ok f h) (hf : f ≠ .nil) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "tostring" [] (v :: rest) h = unframe (call I.srcs I.oracle I.tgt n f [v]) h := by
+  rw [callPrim]; simp only [anyArg, List.length_cons, Nat.zero_lt_succ, ↓reduceIte, List.headD_cons]
+  rw [bind_ok (rfl : (pure () : M Unit) h = .ok () h), bind_ok hm]; cases f <;> first | exact (hf rfl).elim | rfl
 
 /-- `load(s)` or `loadstring(s)`, and a chunk name or none: the parse of `s` as a closure. The parse is the parser's
 (trusted, as `f_body` is), so a proof takes it as a hypothesis: `lua-lean lift` writes a source known when it lifts

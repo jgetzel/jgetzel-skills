@@ -290,18 +290,80 @@ return r"
       "ok:\"1tablestring\",\"tabletable\",\"astringtable\""),
     ("local t = setmetatable({}, {__add = function() end}) return t + 1, '3' + t", "ok:nil,nil")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
+/-- comparison and conversion metamethods: `__eq` of one metatable or two (the same function, another, none), a table
+against itself; `__lt` and `__le`, without `__le` (`not (b < a)`), each with any result, a wrong value (a number, a
+callable table, NaN) or an error, and through table.sort; `__tostring` through tostring, print and `%s`/`%q`,
+returning a string, a number, several values, a boolean, or failing; a yield in each; `__metatable` in getmetatable
+and setmetatable -/
+def compares : G String := do
+  let eqs := ["function(x, y) log[#log + 1] = \"eq\" .. x.n .. y.n; return x.n == y.n end", "function() return nil end",
+    "function() return 0 end", "5", "callable", "rawequal", "function() error(\"bad eq\") end",
+    "function() return false, true end", "nil", "0/0"]
+  let lts := ["function(x, y) log[#log + 1] = \"lt\" .. x.n .. y.n; return x.n < y.n end", "function() return \"yes\" end",
+    "function() return nil end", "callable", "true", "nil", "function(x) error({code = x.n}) end",
+    "function() error(\"lt\", 2) end", "string.rep"]
+  let eq ← pick eqs
+  let lt ← pick lts
+  let le ← pick ["nil", "nil", "function(x, y) log[#log + 1] = \"le\" .. x.n .. y.n; return x.n <= y.n end", "callable",
+    "function() return 1 end"]
+  let ts ← pick ["function(o) return \"T\" .. o.n end", "function(o) return o.n end", "function(o) return o.n * 1.5, \"x\" end",
+    "function(o) io.write(\"<\" .. o.n .. \">\"); return \"w\" end", "function() return nil end", "function() return true end",
+    "function() error(\"ts\") end", "function() error(\"ts2\", 2) end", "callable", "5", "type", "string.rep"]
+  let m2 ← pick ["m1", "{__eq = f_eq, __lt = f_lt, __le = f_le, __tostring = f_ts}",
+    s!"\{__eq = {← pick eqs}, __lt = {← pick lts}}", "{}", "nil"]
+  let prot ← pick ["nil", "false", "\"locked\"", "0", "{}"]
+  let late ← chance 3
+  let yop ← pick ["x < x", "x <= x", "x == setmetatable({}, getmetatable(x))", "tostring(x)", "(\"%s\"):format(x)",
+    "print(x)", "table.sort({x, x, x})"]
+  return s!"local function Q(...) return \{pcall(...)} end
+local log = \{}
+local callable = setmetatable(\{}, \{__call = function(self, x, y) log[#log + 1] = \"call\"; return y == nil end})
+local f_eq, f_lt, f_le, f_ts = {eq}, {lt}, {le}, {ts}
+local m1 = {if late then "{}" else "{__eq = f_eq, __lt = f_lt, __le = f_le, __tostring = f_ts}"}
+local m2 = {m2}
+local a, b, c = setmetatable(\{n = 1}, m1), setmetatable(\{n = 2}, m2), setmetatable(\{n = 1}, m1)
+{if late then "m1.__eq, m1.__lt, m1.__le = f_eq, f_lt, f_le; rawset(m1, \"__tostring\", f_ts)" else ""}
+local r1 = Q(function() return a == b, a ~= b, b == a, a == c, a == a, a == \{}, rawequal(a, c), a == 1 end)
+local r2 = Q(function() return a < b end)
+local r3 = Q(function() return a <= b, b >= a end)
+local r4 = Q(function() return a > c, c >= a, b > a end)
+local r5 = Q(function() return a < 1, a <= \"x\" end)
+local r6 = Q(function() local t = \{b, a, c}; table.sort(t); return t[1].n, t[2].n, t[3].n end)
+local r7 = Q(function() return tostring(a), select(\"#\", tostring(a)) end)
+local r8 = Q(function() return (\"%s|%6s|%.2s|%q|%d\"):format(a, c, a, c, 3) end)
+local r9 = Q(print, \"p\", a, 2.5, c)
+local co = coroutine.wrap(function()
+  local x = setmetatable(\{n = 3}, \{__lt = function() coroutine.yield(\"lt\"); return true end,
+    __eq = function() coroutine.yield(\"eq\"); return 1 end, __tostring = function() coroutine.yield(\"ts\"); return \"s\" end})
+  return {yop}
+end)
+local r10 = Q(function() return co(), co(), co(), co() end)
+m1.__metatable = {prot}
+local r11 = Q(function() local g = getmetatable(a); return g == m1, g, getmetatable(b) == m2 end)
+local r12 = Q(setmetatable, a, m2)
+local r13 = Q(function() setmetatable(b, m1); return rawequal(getmetatable(b), m1), getmetatable(b) end)
+m1.__metatable = nil
+local r14 = Q(function() return getmetatable(a) == m1, getmetatable(setmetatable(a, nil)) end)
+return log, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14"
 
--- the metamethods whose task has not landed stop the run where LuaJIT would call them, and only there; `__len` on
--- a table is never called (LuaJIT 2.1 without its 5.2 compatibility)
+-- `<=` without `__le` is `not (y < x)`; `__eq` and `__lt` want both metamethods the same (one metatable, or two with
+-- the same function); tostring is a tail call of `__tostring`, all its values; `%s` and `%q` take its first;
+-- `__metatable` hides the metatable and protects it
+#guard [("local m = {__lt = function(a, b) return a.n < b.n end} local x, y = setmetatable({n = 1}, m), setmetatable({n = 2}, m) return x <= y, y <= x, x >= y, pcall(function() return x < setmetatable({n = 0}, {__lt = m.__lt}) end)",
+      "ok:true,false,false,true,false"),
+    ("local f = function() return 1 end local m = {__eq = f} return setmetatable({}, m) == setmetatable({}, {__eq = f}), setmetatable({}, m) == setmetatable({}, {__eq = function() return 1 end}), setmetatable({}, m) == setmetatable({}, {}), setmetatable({}, {}) == setmetatable({}, m)",
+      "ok:true,false,false,false"),
+    ("local t = setmetatable({}, {__tostring = function() return 1, 2 end}) return select('#', tostring(t)), (\"%s|%q\"):format(t, t), pcall(tostring, setmetatable({}, {__tostring = 5}))",
+      "ok:2,\"1|\\0341\\034\",false,\"attempt to call a number value\""),
+    ("return getmetatable(setmetatable({}, {__metatable = \"locked\"})), pcall(setmetatable, setmetatable({}, {__metatable = false}), {}), pcall(getmetatable)",
+      "ok:\"locked\",false,false,\"bad argument #1 to '?' (value expected)\"")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
+-- a table's `__len` is never called (LuaJIT 2.1 without its 5.2 compatibility); `__mode` and a metatable on _G stop
+-- the run
 #guard [("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
       "ok:true,false,\"c:1: attempt to compare table with number\""),
     ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
-    ("local t = setmetatable({}, {__eq = 1}) return t == {}", "effect metamethod __eq"),
-    ("local t = setmetatable({}, {}) getmetatable(t).__lt = 1 return t < t", "effect metamethod __lt"),
-    ("return tostring(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
-    ("return (\"%s\"):format(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
-    ("return getmetatable(setmetatable({}, {__metatable = 1}))", "effect metamethod __metatable"),
-    ("local t = setmetatable({}, {__metatable = 1}) return pcall(setmetatable, t, {})", "effect metamethod __metatable"),
     ("return setmetatable({}, {__mode = \"k\"})", "effect metamethod __mode"),
     ("return setmetatable(_G, {})", "effect setmetatable(_G)")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
@@ -646,7 +708,7 @@ def chunk : G String := do
   | 5 => tables
   | 6 => ctrl
   | 7 | 8 => diffs
-  | 9 => if ← chance 2 then metas else opMetas
+  | 9 => match ← rnd 2 with | 0 => metas | 1 => opMetas | _ => compares
   | 10 => libs
   | 11 => traverse
   | 12 => loads
