@@ -246,17 +246,23 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
   trial-merges pairs with overlapping files (`git merge-tree`). Only a real
   token-level conflict becomes an episode and one `notice` per agent; a
   line-only conflict that merges compatibly is logged as `conflict-compat`.
-  Each side is the agent's own changes replayed onto `origin/main` (local
-  `main` only if ahead), so commits merged in from main belong to no one; an
-  agent whose own changes conflict with main is skipped (`conflict-stale`).
+  Each side is the agent's own changes replayed onto its task's base (`origin/<base>`, local
+  branch only if ahead or origin lacks it), so commits merged in from the base belong to no one; an
+  agent whose own changes conflict with the base is skipped (`conflict-stale`).
 - **Reservation locks.** `swarm lock '<glob>'` or `dir/` reserves what git
   can't see, such as a migration number. Overlapping locks are refused; a
   lock frees itself when the holder's work lands.
 
 ### Lifecycle: [research/sw-lifecycle.md](research/sw-lifecycle.md)
 
-- **`watchd` ends landed agents**: idle, no claim, no lock, work on main.
-  It removes their terminal, worktree and branch. One kept only by an unclean
+- **Bases are data** (sw-bases.md, implemented): a task's `--base`, else `.claude/swarm.json`
+  `base`, else main; one `base_for(task)` serves the landed checks, conflict snapshots, brief and CI.
+- **Agent GC and workspace GC are split.** `watchd` (or `swarm end`) ends landed agents:
+  idle, no claim, no lock, work on its task's base; that kills the terminal only. A
+  separate sweep removes a worktree that is clean, unattached, has no process inside and is
+  reachable from a protected ref, then deletes its branch (never a base). `swarm spawn --task`
+  makes and records the worktree; agents never check out a base. All proved in
+  `swarm/model` (W1-W4, B1; Workspaces.lean). An agent kept only by an unclean
   worktree is told what holds it after 30 min idle. The communicator is a
   stayer (watchd's start gives it one) and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
