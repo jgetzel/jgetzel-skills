@@ -91,6 +91,9 @@ structure Cfg where
   splitGC : Bool := false
   /-- sw-bases, board #5: swarm creates and records each worktree, and an agent never checks out a base -/
   recordedWorkspaces : Bool := false
+  /-- H2, board #40: the user or the communicator may `swarm task release` a task another agent holds (claimed or
+  blocked); the ex-owner is sent an urgent stop. Main has it -/
+  humanRelease : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -627,6 +630,13 @@ def unblock (c : Cfg) (s : State) (t : Nat) : Option State :=
 def drop (s : State) (t : Nat) : Option State :=
   when ((s.tk t).st != .absent && (s.tk t).st != .dropped)
     (setTask s t ({ · with st := .dropped, owner := none, lease := false, hcq := false }))
+/-- H2: `swarm task release N` by the user or the communicator of a task another holds, claimed or blocked (by `task
+block` or an hc prompt): open again, its question cleared, and the ex-owner sent an urgent stop (`.released`, so reading
+it drops the belief, as for reap) -/
+def releaseOther (c : Cfg) (s : State) (t : Nat) : Option State :=
+  when (c.humanRelease && (s.tk t).owner.isSome && ((s.tk t).st == .claimed || (s.tk t).st == .blocked))
+    (post (setTask s t ({ · with st := .opn, owner := none, lease := false, hcq := false }))
+      ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩)
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
 
@@ -640,7 +650,7 @@ inductive Action where
   | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
-  | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | tick
+  | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat) | tick
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
@@ -655,7 +665,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
-  | .unblock t => unblock c s t | .drop t => drop s t | .tick => tick c s
+  | .unblock t => unblock c s t | .drop t => drop s t | .releaseOther t => releaseOther c s t | .tick => tick c s
 
 /-- The states the system can be in. -/
 inductive Reachable (c : Cfg) : State → Prop

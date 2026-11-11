@@ -360,6 +360,7 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .after b u, hs => exact step_gen (by simp) hl hs
   | .unblock b, hs => exact step_gen (by simp) hl hs
   | .drop b, hs => exact step_gen (by simp) hl hs
+  | .releaseOther b, hs => exact step_gen (by simp) hl hs
 
 
 -- ---------- no agent starts a background job ----------
