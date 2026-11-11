@@ -51,8 +51,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 4940 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (287 sites, 247 statements) |
+| `sqlcases.json.gz` | 5180 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (301 sites, 259 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 9 scripted runs the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`) |
@@ -731,7 +731,7 @@ it is replayed: the replay has no hc.
 statements does to the db. It is the subset the Lua uses, no more: `sql_inventory.lua` reads every db call
 (`:exec`, `:one`, `:all`, `:all_cols`, `:script`) in `swarm/lua/swarm`; a call whose text is literals is its statement,
 and one built from code (a column name in `agents.touch`, a `?` list, a `:format`) is a template whose statements
-are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 287 sites, 247 statements: SELECT
+are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 301 sites, 259 statements: SELECT
 (DISTINCT, an inner JOIN, WHERE, GROUP BY with `count(*)` and `max`, ORDER BY expressions, LIMIT, correlated `exists`
 and scalar subqueries, `in` lists and subqueries; `union all` of two), INSERT (`or ignore`, `or replace`, from a SELECT, `on conflict ..
 do update` with `excluded`, `returning`), UPDATE, DELETE, `create table|index if not exists`, `alter table add|drop
@@ -764,7 +764,7 @@ script on no tables or all; `begin`, `commit`, `rollback` in sequences around a 
 `sql_model_spec.lua` builds the same tables in a scratch file and runs each step through db.lua (`prepare`, which
 inlines integers, `all_cols`, `exec`, `script`), on a fresh connection: every step's error or success, rows, column
 names, `changes()`, `last_insert_rowid()`, and after the case every table's `table_info`, rows with their storage
-classes, and `sqlite_sequence` must be Lean's. 4940 committed cases and 4940 fresh per `replay.sh`, green, and about 35,000
+classes, and `sqlite_sequence` must be Lean's. 5180 committed cases and 5180 fresh per `replay.sh`, green, and about 35,000
 more at other seeds while it was built. Of the committed cases' 4807 steps, 2449 return rows or change one, 46 are
 errors (on both sides), and the rest are misses (a WHERE no row meets) or DDL and transaction steps. Checked to bite: with NULL sorted last, with an int written to a
 `text` column as an int, or with `like` case-sensitive (this one needs about 25 cases per statement), the spec fails.
