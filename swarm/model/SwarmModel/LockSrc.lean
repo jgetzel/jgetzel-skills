@@ -4,7 +4,7 @@ import SwarmModel.Lua.Syntax
 
 namespace Swarm.Lua
 
-/-- /Users/jakob.getzel/notarize/jgetzel-skills-sk-18/swarm/model/../lua/swarm/locks.lua, parsed -/
+/-- swarm/lua/swarm/locks.lua, parsed -/
 def LocksSrc : Block :=
   [(.loc ["util", "proc", "db"] [(.call (.var "require") [(.str "swarm.util".toList)]), (.call (.var "require") [(.str "swarm.proc".toList)]), (.call (.var "require") [(.str "swarm.db".toList)])]), (.loc ["agents"] [(.call (.var "require") [(.str "swarm.agents".toList)])]), (.loc ["stdlib", "lfs"] [(.call (.var "require") [(.str "posix.stdlib".toList)]), (.call (.var "require") [(.str "lfs".toList)])]), (.loc ["M"] [(.table [])]), (.locfn "realpath" ["p"] false 
   [(.loc ["parts"] [(.table [])]), (.forin ["x"] [(.method (.var "p") "gmatch" [(.str "[^/]+".toList)])] 
@@ -91,7 +91,7 @@ def LocksSrc : Block :=
   [(.loc ["n"] [(.call (.index (.var "agents") (.str "me".toList)) [])]), (.assign [(.index (.var "a") (.str "path".toList))] [(.call (.var "norm") [(.index (.var "a") (.str "path".toList))])]), (.call (.method (.var "c") "exec" [(.str "delete from lock where path=? and agent=?".toList), (.index (.var "a") (.str "path".toList)), (.var "n")])), (.call (.call (.index (.var "db") (.str "log".toList)) [(.var "c"), (.var "n"), (.str "unlock".toList), (.index (.var "a") (.str "path".toList))])), (.call (.call (.var "print") [(.bin .concat (.str "unlocked ".toList) (.index (.var "a") (.str "path".toList)))]))])]), (.assign [(.index (.var "M") (.str "tokens".toList))] [(.var "tokens")]), (.ret [(.var "M")])]
 -- checksum Locks 2843101959
 
-/-- /Users/jakob.getzel/notarize/jgetzel-skills-sk-18/swarm/model/../lua/swarm/util.lua, parsed -/
+/-- swarm/lua/swarm/util.lua, parsed -/
 def UtilSrc : Block :=
   [(.loc ["utf8"] [(.call (.var "require") [(.str "lua-utf8".toList)])]), (.loc ["M"] [(.table [])]), (.assign [(.index (.var "M") (.str "exit".toList))] [(.func ["code"] false 
   [(.call (.call (.var "error") [(.table [(.named "exit" (.or (.var "code") (.num (.int 0))))]), (.num (.int 0))]))])]), (.assign [(.index (.var "M") (.str "die".toList))] [(.func ["msg", "code"] false 

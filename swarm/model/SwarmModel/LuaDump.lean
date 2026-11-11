@@ -75,7 +75,7 @@ def dump (name file : String) : IO Bool := do
   match parseChunk (bytesOf bytes) with
   | .error e => IO.eprintln s!"{file}: {e}"; return false
   | .ok b =>
-    IO.println s!"/-- {file}, parsed -/\ndef {name}Src : Block :={block b}\n-- checksum {name} {checksum bytes}\n"
+    IO.println s!"/-- swarm/lua/swarm/{(System.FilePath.mk file).fileName.getD file}, parsed -/\ndef {name}Src : Block :={block b}\n-- checksum {name} {checksum bytes}\n"
     return true
 
 def main (args : List String) : IO UInt32 := do
