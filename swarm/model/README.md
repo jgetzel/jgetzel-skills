@@ -19,13 +19,14 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`), and the same runs with the fix on |
-| `SwarmModel/Liveness.lean` | the parts of L2 and L4 that are proved |
+| `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck`, `deadLive_not_stuck` |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, and their refutations (`not_B1`; `B1_of`: B1 with `perTaskBase`) on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`. The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
+| `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
@@ -152,7 +153,7 @@ reads its messages and takes work):
   `bootFirst` (a boot beats a lease, as in the Lua: a fresh 2 h lease, a boot in seconds) is on by default
 - **L4** A row whose terminal is gone is eventually ended (its claims and locks released). Its negation in one state:
   `deadLive`. Fairness: watchd ticks, and an `hc ls` that lists the terminal as gone. `watchd := false` (no watchd), a
-  failing `hc ls`, and an unbound row each break it (findings #14, #15)
+  failing `hc ls`, and an unbound row each break it (findings #14, #15). Proved over fair runs: `deadLive_leads_to`
 
 Workspaces (sw-bases; `Workspaces.lean` states each as a `Prop`). The protected refs are the bases (`Cfg.bases`: main,
 and a swarm's own such as `formal`); `Git.safe` is reachability from one, checked the way workspace GC must check it
@@ -219,7 +220,7 @@ What carries each proof:
   spawn was shown, and the waiter's snapshot skips nothing between the cursor and its last id (`Inb`).
 - **S2**, **S5**: the ghost flag stays off; done implies evidence.
 
-Liveness: `deadLive_not_stuck` is L4's part (with watchd running, `hc ls` answering and the row bound, a dead live row always has the reap enabled). L2 is proved over fair runs. A run is a sequence of steps (`Run` in `Fair.lean`); it is fair (`Run.Fair`) when
+Liveness: L1 (per task), L2, L3's two halves and L4 are proved over fair runs. A run is a sequence of steps (`Run` in `Fair.lean`); it is fair (`Run.Fair`) when
 every action of `fair` that is enabled at infinitely many steps happens at infinitely many steps (strong
 fairness; weak fairness is not enough for L1, see below). `idleClaim_leads_to`: in a fair run of an instance with
 `racy = false`, `release ≠ .ended` (PR #110 or #111), `watchd`, the agent and the task in the instance, no `bgStart` or `die` in the run, and the agent with no job and a live terminal at the start, a state where an
@@ -265,8 +266,16 @@ and kept by every action but `die` (`d_step`).
   `booting_reads`). The step lemma `pa_step`: each of the 41 actions keeps `Pa` or ends it in one of those ways; `Pa` includes "the
   holder is live", so no separate invariant "held => live" is needed. A working holder's `readAll` and an hc prompt's `hcClear` are
   fair and deliver; an idle one is L2's (`idleClaim_leads_to`). Needs no `bgStart` or `die` after the start, none live at the start.
+- (`deadLive_leads_to`, `Gone.lean`) L4. In a fair run of an instance with `racy = false`, `watchd` and `hcSees`, from a reachable
+  state, an agent of the instance that is live with its terminal gone and not `unbound` is eventually not so: watchd's
+  `reapGone` ends it (`endAgent`: its claims reopened, its locks freed), or something ends it first. No action is excluded from
+  the run. `reapGone a` is in `fair` and stays enabled while the row is dead and live, because no agent is ever between a read
+  and its write (`Rz`, `rz_of_reachable`: `claimRead` and `wakeRead` need `racy`); by fairness it fires. A dead row stays dead
+  while live (a spawn takes only a slot that isn't live), so "not dead and live" means the row was ended. The three
+  hypotheses are each needed: findings #14 and #15 (`deadLive_not_stuck` is the one-state form).
 
-Not proved: L1 for the pool (false, #16), that `unblock` finds its owner live and not booting (an invariant: no spawned agent blocks
+Not proved: L1 for the pool (false, #16), L4 with `racy` (a dead agent's own `claimRead` would disable its reap; the model
+lets a dead agent act, the code doesn't), that `unblock` finds its owner live and not booting (an invariant: no spawned agent blocks
 a task before its first turn; `unblock_pa` takes both as hypotheses), and the two halves joined into one statement about a task
 (the reopened half's hypotheses are taken, not derived). With `bootFirst := false` L3 is false (#17).
 
@@ -277,8 +286,8 @@ and 1 take turns claiming it, letting the lease lapse and releasing it), from th
 terminal and no background job at any state, and no `leave`, `die`, `waiterGone`, `reapGone` or `bgStart`: the side
 conditions of `startable_leads_to`, `idleClaim_leads_to` and `holder_leads_to` at every step (an `example` applies L1 to it).
 The same cycle is fair with sw-bases' switches on; with agent 1's claim left out it is not (the check bites). It shows the
-fairness and side conditions satisfiable together, not that L2's or L3's antecedent (an idle holder, an unread answer)
-occurs in a fair run: on this one both agents stay working.
+fairness and side conditions satisfiable together, not that L2's, L3's or L4's antecedent (an idle holder, an unread answer, a dead
+terminal) occurs in a fair run: on this one both agents stay working.
 
 ## Findings
 
@@ -335,7 +344,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined, and L4 as statements about fair runs (L1, per task, L2 and L3's two halves are, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined as one statement about fair runs (L1, per task, L2, L3's two halves and L4 are, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
