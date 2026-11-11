@@ -79,12 +79,17 @@ end
 -- The communicator is a normal session with no swarm hooks: read/wait/board/who stand in for post-tool.
 function M.comms_nudge(c, cmd)
   local name, sid = agents.env("SWARM_NAME"), agents.env("CLAUDE_CODE_SESSION_ID")
-  if not (name and sid) or not agents.is_comms(c, name) then return end
-  local home = os.getenv("HOME") or ""
-  local tr = (glob.glob(home .. "/.claude/projects/*/" .. sid .. ".jsonl", 0) or {})[1]
-  local n = M.handoff_nudge(c, name, { transcript_path = tr, session_id = sid }, true)
-  if n then
-    if cmd == "wait" then io.stderr:write(n .. "\n") else print(n) end
+  if not name or not agents.is_comms(c, name) then return end
+  local aw, n = agents.away(c), nil
+  if sid then
+    local home = os.getenv("HOME") or ""
+    local tr = (glob.glob(home .. "/.claude/projects/*/" .. sid .. ".jsonl", 0) or {})[1]
+    n = M.handoff_nudge(c, name, { transcript_path = tr, session_id = sid }, true)
+  end
+  local say = { aw and agents.away_line(aw) or nil }  -- away rule 2: reminded on every read/wait/board
+  say[#say + 1] = n
+  for _, s in ipairs(say) do
+    if cmd == "wait" then io.stderr:write(s .. "\n") else print(s) end
   end
 end
 

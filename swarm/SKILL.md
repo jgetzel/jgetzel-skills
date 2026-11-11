@@ -51,8 +51,10 @@ with subagents.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
    One watchd per repo: a second is refused while the first lives, naming it;
-   `--takeover` replaces it (the old one exits on its next tick). A relaunched
-   communicator starts its watchd with `--takeover`.
+   `--takeover` replaces it (the old one exits once the new one has ticked). A relaunched
+   communicator starts its watchd with `--takeover`. `swarm watchd --restart` starts the same watchd (the flags
+   it recorded) in a hidden hc terminal and reports success only once the new one has ticked; else it exits 1
+   and the old one runs on.
    Auto-spawn goes through `swarm spawn --task N`, which makes the agent's worktree (`../<repo>-<agent>`, branch
    `<agent>/<task>`, from the task's base) and records it; `--attach <wt>` starts a read-only peer in one. It claims the task for
    the new agent before launching, so a task a peer claimed first is skipped.
@@ -80,6 +82,15 @@ with subagents.
    with nothing enforced. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
+   The panel also acts, always through this CLI as `SWARM_NAME=human` (the user, with your rights), so expect
+   `human` in events and messages: Away switch (`swarm away` / `--back`; the digest is a card on Home),
+   auto-spawn and max steppers and Pause/Resume (`limits --min/--max`), + New task (`task add`), Release and
+   Drop on a task (`task release`, `task drop`), on an agent End / End anyway (`end [--force]`), Nudge
+   (`nudge NAME`), a message with an Urgent tick (`post [--urgent]`), End its stay (`stay --end NAME`); on a
+   red main Open run and Re-run failed jobs (`gh run rerun ID --failed`); Restart watchd
+   (`watchd --restart`) when watchd is dead or older than the code; "Communicator ↗" focuses your terminal.
+   Destructive ones ask first; what the command printed, or its refusal, shows in a bar. The panel cannot
+   answer a blocked task, message @all, spawn, free a lock or claim: those stay with you.
 4. Spawn agents, each with its own area so no two get identical prompts:
    `swarm spawn <prefix>-<n> --model <m> [--effort <e>] [--task N] -- "<area and first tasks>"`.
    With `--task N` the new agent's name and task #N are reserved in one step
@@ -118,7 +129,9 @@ with subagents.
   `origin/*` already has, then deletes its branch (`git branch -d`, else `update-ref -d` guarded by the tip it checked; never a base, never `-D`): tell the user before the
   first watchd if they park worktrees here. When all tasks are done, tell
   the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
-  waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `hc send`, or end it.
+  waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `swarm nudge <agent>`
+  (one fixed line typed into its terminal), or end it. `swarm stay --end <agent>` (you or `human`) ends another
+  agent's stay; watchd then judges it as any agent.
   `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.

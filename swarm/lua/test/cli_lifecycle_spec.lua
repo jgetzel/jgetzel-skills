@@ -280,7 +280,7 @@ function T.test_swarm_end(t)
   assert(not ended(t, "e"))
   t:sw("comms", "end", "e", "--force")
   assert(ended(t, "e"))
-  t:eq(t:q1("select data from event where kind='end'").data, "forced")
+  t:eq(t:q1("select data from event where kind='end'").data, "forced by comms")
   assert(exists(t.wt))
 end
 
