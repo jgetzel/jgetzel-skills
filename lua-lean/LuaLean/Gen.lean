@@ -493,6 +493,89 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   fun (src, out) => runCase (fun _ => none) .dual [] src.toList == out
 
 
+-- ---------- debug ----------
+
+/-- every builtin of the initial heap's library tables, as a Lua expression -/
+def builtins : List String :=
+  [("", 0), ("string.", 2), ("table.", 3), ("math.", 4), ("coroutine.", 6), ("io.", 9), ("os.", 10), ("debug.", 11)].flatMap
+    fun (lib, a) => match (initHeap[a]? : Option Obj) with
+      | some (.tbl t) => t.kv.filterMap fun (k, v) => match k, v with
+        | .str k, .prim .. => some (lib ++ String.ofList k)
+        | _, _ => none
+      | _ => []
+
+/-- the debug library: a closure's upvalues in LuaJIT's order (the outer locals its body reads and writes, through
+each statement, shadowed, in nested functions), set and read back; getinfo of a closure or builtin with any options,
+a bad one, a negative level or no function; getmetatable and setmetatable raw (`__metatable` ignored), their bad
+arguments; traceback of a value it returns as it is; each builtin's count of upvalues -/
+def debugs : G String := do
+  let ref : G String := pick ["a", "b", "c", "d", "e"]
+  let stats ← (List.range ((← rnd 5) + 1)).mapM fun _ => do
+    match ← rnd 10 with
+    | 0 => pure s!"x = {← ref} + {← ref}"
+    | 1 => pure s!"{← ref} = {← ref}"
+    | 2 => pure s!"local {← ref} = 9; x = {← ref}"
+    | 3 => pure s!"do local {← ref} = 0; x = {← ref} end"
+    | 4 => pure s!"x = function(p, ...) return {← ref}, p end"
+    | 5 => pure s!"for {← ref} = {← ref}, {← ref} do x = {← ref} end"
+    | 6 => pure s!"repeat local {← ref} = 2 until {← ref}"
+    | 7 => pure s!"if {← ref} then x = \{[{← ref}] = {← ref}, {← ref}} elseif {← ref} then x = {← ref} end"
+    | 8 => pure s!"local function g() return g, {← ref} end; x = g"
+    | _ => pure s!"x = (function() local {← ref} = 1; return function() return {← ref}, {← ref} end end)()"
+  let ps ← pick ["", "p", "p, q", "...", "p, ..."]
+  let k ← pick ["1", "2", "3", "0", "-1", "6", "\"2\"", "1.5"]
+  let target ← pick ["f", "f", "g0", "print", "string.rep", "next", "(ipairs({}))", "(pairs({}))",
+    "coroutine.wrap(f)", "(\"x\"):gmatch(\".\")", "type", "-1", "\"-2\"", "{}", "nil", "-0.5"]
+  let opts ← pick ["\"u\"", "\"f\"", "\"l\"", "\"n\"", "\"nluf\"", "\"fu\"", "\"\"", "\"x\"", "\"uL\"", "\"Sl\"",
+    "\"flnSu\"", "nil", "{}", "5"]
+  let opts := if (target == "f" || target == "g0") && (opts.contains 'S' || opts.contains 'L' || opts == "nil") then
+    "\"un\"" else opts
+  let up ← pick ["f", "g0", "next", "string.rep", "debug.getinfo", "nil", "5"]
+  let prot ← pick ["nil", "false", "\"locked\""]
+  let m2 ← pick ["nil", "{}", "m"]
+  let bad ← pick ["", ", 1", ", \"x\"", ", nil", ", true"]
+  let gm ← pick ["1", "nil", "true", "f", "print", "coroutine.create(f)", "o"]
+  let tb ← pick ["{}", "nil", "false", "f", "co, {}", "co, nil", "o"]
+  let all := if ← chance 4 then
+    s!"local N = \{}\nfor i, h in ipairs(\{{commas builtins}}) do N[i] = debug.getinfo(h, \"u\").nups end\n" else
+    "local N = 0\n"
+  return all ++ s!"local a, b, c, d, e = 1, 2, 3, 4, 5
+local function f({ps})
+  local x
+  {"\n  ".intercalate stats}
+  return x
+end
+local g0 = function() return a, e end
+local U = \{}
+for i = 1, 7 do U[i] = \{pcall(debug.getupvalue, {up}, i)} end
+local S = \{pcall(debug.setupvalue, {up}, {k}, 50)}
+local after = \{a, b, c, d, e, pcall(f, 1, 2, 3)}
+local I = \{pcall(debug.getinfo, {target}, {opts})}
+local fi = I[2] and type(I[2]) == \"table\" and I[2].func
+if fi then I[2].func = fi == {target} end
+local m = \{__metatable = {prot}, __index = function(_, key) return key end}
+local o = setmetatable(\{}, m)
+local M = \{debug.getmetatable(o) == m, getmetatable(o), pcall(debug.setmetatable, o, {m2}), o.key,
+  rawequal(getmetatable(o), {m2}), pcall(debug.setmetatable, o{bad}), pcall(debug.getmetatable, {gm})}
+local co = coroutine.create(f)
+local tr = debug.traceback({tb})
+return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), require(\"debug\") == debug, N"
+
+-- what needs a call stack (a level, a traceback's text, a Lua function's lines) or sets the metatable of a type
+-- stops the run
+#guard [("return debug.traceback(\"x\")", "effect debug.traceback: the stack"),
+    ("return debug.traceback()", "effect debug.traceback: the stack"),
+    ("return debug.getinfo(1, \"l\")", "effect debug.getinfo of a stack level"),
+    ("return debug.getinfo(function() end)", "effect debug.getinfo: a Lua function's lines"),
+    ("return debug.setmetatable(1, {})", "effect debug.setmetatable of a number"),
+    ("return debug.getmetatable(\"\")", "effect debug.getmetatable of a string"),
+    ("return debug.getupvalue(print, 1)", "effect debug: the upvalues of print"),
+    ("return debug.getlocal(1, 1)", "effect debug.getlocal"),
+    ("return debug.setmetatable(package.loaded, {})", "effect setmetatable(package.loaded)"),
+    ("local a, b = 1, 2 local function f() b = a; return function() return b, f end end return debug.getupvalue(f, 1), debug.getupvalue(f, 2), debug.getupvalue(f, 3)",
+      "ok:\"b\",\"a\",\"f\",function")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 -- ---------- the world: print, io.write, os ----------
 
 /-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
@@ -776,7 +859,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => libs
+  | 10 => if ← chance 2 then libs else debugs
   | 11 => traverse
   | 12 => loads
   | 13 => coros

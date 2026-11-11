@@ -354,6 +354,46 @@ theorem Tbl.next_mem {a : Nat} {t : Tbl} {k k' v : Val} (e : t.next a k = some (
     have := List.find?_some e
     exact ⟨hr r rfl _ (List.mem_of_find?_eq_some e), by simpa using this⟩
 
+/-! ## The debug library
+
+A closure's upvalues are the cells of the outer locals its body names (`Clo.upvals`), so `debug.getupvalue` reads one
+and `debug.setupvalue` writes it, as an assignment inside the closure would. -/
+
+/-- a call of one of the debug library's modelled functions is its `debugFn` -/
+theorem RunP.debug {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name = "debug.getmetatable" ∨ name = "debug.setmetatable" ∨ name = "debug.getupvalue" ∨
+      name = "debug.setupvalue" ∨ name = "debug.getinfo" ∨ name = "debug.traceback")
+    (e : debugFn name args h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_debug I n name args hn]; simp only [Lua.frame, e], p⟩
+
+theorem debug_getupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.upvals[(i - 1).toNat]? = some (x, cell))
+    (hv : h[cell]? = some (.cell v)) :
+    debugFn "debug.getupvalue" (.fn a :: .num (.int i) :: rest) h = .ok [lstr x, v] h := by
+  have hn : ¬ i < 1 := by omega
+  rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
+  simp [debugFn, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, readCell, ha, hv, hu, hn,
+    bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure]
+
+theorem debug_setupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+    (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.upvals[(i - 1).toNat]? = some (x, cell)) :
+    debugFn "debug.setupvalue" (.fn a :: .num (.int i) :: v :: rest) h = .ok [lstr x] (h.set! cell (.cell v)) := by
+  have hn : ¬ i < 1 := by omega
+  rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
+  simp [debugFn, anyArg, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, writeCell, ha, hu, hn,
+    bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure, modify, modifyGet,
+    MonadStateOf.modifyGet, EStateM.modifyGet]
+
+/-- `debug.getmetatable` of a table: its metatable, `__metatable` or not -/
+theorem debug_getmetatable {h : Heap} {a : Nat} {t : Tbl} {rest : List Val} (ha : h[a]? = some (.tbl t)) :
+    debugFn "debug.getmetatable" (.tbl a :: rest) h = .ok [(t.mt.map Val.tbl).getD .nil] h := by
+  simp [debugFn, anyArg, getTbl, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure,
+    EStateM.pure]
+
 /-! ## Effects
 
 A call into the world adds its event to the trace (`trace`, the heap's cell `LOG`); a spec says what a function adds
