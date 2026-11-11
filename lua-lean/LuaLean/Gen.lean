@@ -386,10 +386,66 @@ def errors : G String := do
   if ← chance 4 then return src ++ "local t, s = nil, \"x\"\ndo\n" ++ (← layout (← errStat)) ++ "\nend\nreturn E"
   return src ++ "return E"
 
+/-- pairs, next and table.foreach where the result does not hang on the order, which in LuaJIT is its layout and
+strings' hashes, seeded per process (`Tbl.rank`): what a traversal visits, keys cleared before it, values cleared and
+changed during it, nested traversals, next by hand; #t of tables without holes (one border), trimmed, with other keys -/
+def traverse : G String := do
+  let key : G String := pick ["1", "2", "3", "4", "7", "100", "-1", "0", "1.5", "2^31", "-0.0", "\"a\"", "\"b\"",
+    "\"cc\"", "\"1\"", "true", "false"]
+  let ks ← (List.range (← rnd 10)).mapM fun _ => key
+  let dels ← (List.range (← rnd 4)).mapM fun _ => key
+  let n ← rnd 8
+  let trim ← rnd 3
+  let other ← pick ["", "s.x = 1", "s[0] = 0", "s[-1] = 1", "s[1.5] = 1", "s[2^31] = 1"]
+  return helper ++ s!"local t = \{}
+for i, k in ipairs(\{{commas ks}}) do t[k] = i end
+for _, k in ipairs(\{{commas dels}}) do t[k] = nil end
+local n, sum, keys = 0, 0, \{}
+for k, v in pairs(t) do n = n + 1; sum = sum + v; keys[#keys + 1] = type(k) .. \":\" .. tostring(k) end
+table.sort(keys)
+local m, k = 0, next(t)
+while k ~= nil do m = m + 1; k = next(t, k) end
+local nn = 0
+for _ in pairs(t) do for _ in pairs(t) do nn = nn + 1 end end
+for k, v in pairs(t) do if v % 2 == 0 then t[k] = nil else t[k] = v * 10 end end
+local after = \{}
+for k, v in pairs(t) do after[#after + 1] = type(k) .. \":\" .. tostring(k) .. \"=\" .. v end
+table.sort(after)
+local f = 0
+table.foreach(t, function(_, v) f = f + v end)
+for k in pairs(t) do t[k] = nil end
+local s = \{}
+for i = 1, {n} do s[i] = i end
+for _ = 1, {trim} do s[#s] = nil end
+{other}
+return n, sum, keys, m, nn, after, f, next(t), t, #s, #\{1, 2, nil}, #\{nil}, s"
+
+-- #t of a table with more than one border stops the run (LuaJIT's answer is its array part's size: 2 for the second,
+-- the least border 0), and so does `next` from a key the table does not hold where LuaJIT's array part (an
+-- integer) or a dead node (a key it had) may; a key cleared during a traversal is held until a key is added
+#guard [("return #{1, nil, 3}", "effect #t of a table with holes"),
+    ("local t = {1, 2} t[1] = nil return #t", "effect #t of a table with holes"),
+    ("local t = {1, nil, 3} return pcall(table.insert, t, 4)", "effect #t of a table with holes"),
+    ("return unpack({1, nil, 3}, 1, 3)", "ok:1,nil,3"),
+    ("return table.concat({1, nil, 3}, \",\", 1, 1)", "ok:\"1\""),
+    ("return #{1, 2, nil}, #{n = 1}, #{nil}", "ok:2,0,0"),
+    ("return pcall(next, {}, \"a\")", "ok:false,\"invalid key to 'next'\""),
+    ("return pcall(next, {}, 1)", "effect next of a key not in the table"),
+    ("return pcall(next, {nil, nil}, 1)", "effect next of a key not in the table"),
+    ("local t = {a = 1} t.a = nil return next(t, \"a\")", "ok:nil"),
+    ("local t = {a = 1} t.a = nil t.b = 2 return next(t, \"a\")", "effect next of a key not in the table")].all
+  fun (src, out) => runCase (fun _ => none) .dual [] src.toList == out
+
+-- the order is opaque: run, it is the insertion order; no proof can compute it
+example : True := by
+  fail_if_success (have : Tbl.rank 0 0 .nil = 0 := rfl)
+  fail_if_success (have : Tbl.rank 0 0 .nil = 0 := by decide)
+  trivial
+
 /-- one of the chunks above -/
 def chunk : G String := do
   if ← chance 8 then return ← errors
-  match ← rnd 11 with
+  match ← rnd 12 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -399,6 +455,7 @@ def chunk : G String := do
   | 7 | 8 => diffs
   | 9 => metas
   | 10 => libs
+  | 11 => traverse
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs`) and their results, to `file` -/

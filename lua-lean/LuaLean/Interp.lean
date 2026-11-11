@@ -34,6 +34,10 @@ structure Clo where
 structure Tbl where
   kv : List (Val × Val) := []
   mt : Option Nat := none
+  /-- moves on when a key gets a value it lacked, the one time LuaJIT may move keys (a new node, a rehash) -/
+  ver : Nat := 0
+  /-- the dead keys dropped so far: a node of LuaJIT's may still hold one -/
+  gone : List Val := []
 
 inductive Obj where
   | tbl (t : Tbl)
@@ -132,16 +136,20 @@ def get (t : Tbl) (k : Val) : Val :=
   | some (_, v) => v
   | none => .nil
 
-/-- an existing key keeps its place; a new key goes last -/
+/-- a key with a value keeps its place, and set to nil stays as a dead key (`next` goes on from it, as LuaJIT's
+node keeps it); a key that gets a value it lacked goes last, the dead keys go (LuaJIT's rehash drops them), and the
+version moves on -/
 def set (t : Tbl) (k v : Val) : Tbl :=
-  if t.kv.any (fun (x, _) => Val.rawEq x k) then
+  if !(t.get k).isNil then
     { t with kv := t.kv.map fun (x, w) => if Val.rawEq x k then (x, v) else (x, w) }
   else if v.isNil then t
-  else { t with kv := t.kv ++ [(k, v)] }
+  else
+    let (live, dead) := t.kv.partition fun (_, w) => !w.isNil
+    { t with kv := live ++ [(k, v)], ver := t.ver + 1, gone := dead.map (·.1) ++ t.gone }
 
 def int (i : Int) : Val := .num (.int i)
 
-/-- the border #t: the least n with t[n+1] nil -/
+/-- the least border: the least n with t[n+1] nil -/
 def len (t : Tbl) : Nat :=
   let rec go (i : Nat) (fuel : Nat) : Nat :=
     match fuel with
@@ -149,11 +157,17 @@ def len (t : Tbl) : Nat :=
     | fuel + 1 => if (t.get (int (i + 1))).isNil then i else go (i + 1) fuel
   go 0 (t.kv.length + 1)
 
-/-- the entry after key k with a value (k nil: the first) -/
-def next (t : Tbl) (k : Val) : Option (Option (Val × Val)) :=
-  let rest := if k.isNil then some t.kv else
-    match t.kv.findIdx? (fun (x, _) => Val.rawEq x k) with
-    | some i => some (t.kv.drop (i + 1))
+/-- where LuaJIT's layout puts key k of the table at address a, version ver. LuaJIT hashes strings with a seed
+drawn per process and tables and functions by address, so its order is not a function of the program: the rank is
+opaque, no proof can compute it, and a proved spec holds for every order. Run, it keeps the insertion order. -/
+opaque rank (a ver : Nat) (k : Val) : Nat := 0
+
+/-- the entry after key k with a value (k nil: the first), in rank order; none if k is not a key -/
+def next (a : Nat) (t : Tbl) (k : Val) : Option (Option (Val × Val)) :=
+  let kv := t.kv.mergeSort fun x y => rank a t.ver x.1 ≤ rank a t.ver y.1
+  let rest := if k.isNil then some kv else
+    match kv.findIdx? (fun (x, _) => Val.rawEq x k) with
+    | some i => some (kv.drop (i + 1))
     | none => none
   rest.map fun r => r.find? fun (_, v) => !v.isNil
 end Tbl
@@ -244,6 +258,26 @@ def readCell (a : Nat) : M Val := do
 def writeCell (a : Nat) (v : Val) : M Unit := modify fun h => h.set! a (.cell v)
 
 def rawget (a : Nat) (k : Val) : M Val := do pure ((← getTbl a).get k)
+
+/-- #t when it has one border. With holes LuaJIT's binary search finds one of them by its array part's size, which
+the rehashes set and string hashing moves, so the run stops -/
+def tlen (a : Nat) : M Nat := do
+  let t ← getTbl a
+  let b := t.len
+  if t.kv.any fun (k, v) => !v.isNil && match k with | .num (.int i) => i > b + 1 | _ => false then
+    throw (.eff "#t of a table with holes" [])
+  pure b
+
+/-- `next` from key k. A key the table does not hold is LuaJIT's error, but where its array part may hold it (an
+integer) or a node may still (a key the table had): there the run stops -/
+def tnext (a : Nat) (k : Val) : M (Option (Val × Val)) := do
+  let t ← getTbl a
+  match t.next a k with
+  | some r => pure r
+  | none =>
+    let held := match k with | .num (.int _) => true | _ => t.gone.any (Val.rawEq · k)
+    if held then throw (.eff "next of a key not in the table" []) else rtErr "invalid key to 'next'"
+
 
 def rawset (a : Nat) (k v : Val) : M Unit := do
   match k with
@@ -357,7 +391,7 @@ def unop (op : UnOp) (x : Val) : M Val :=
   -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT
   | .len => match x with
     | .str s => pure (.num (.int s.length))
-    | .tbl a => do pure (.num (.int (← getTbl a).len))
+    | .tbl a => do pure (.num (.int (← tlen a)))
     | _ => opErr "get length of" (some 0) x
 
 -- ---------- arguments of builtins ----------
@@ -679,7 +713,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
   match name with
   | "insert" => do
     let t ← argTbl name 0 args
-    let n := (← getTbl t).len
+    let n := (← tlen t)
     match args.length with
     | 2 => rawset t (nums (n + 1)) (args.getD 1 .nil); return []
     | 3 => do
@@ -694,7 +728,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     | _ => callerErr "wrong number of arguments to 'insert'"
   | "remove" => do
     let t ← argTbl name 0 args
-    let n := (← getTbl t).len
+    let n := (← tlen t)
     match args.getD 1 .nil with
     | .nil =>
       if n == 0 then return []
@@ -714,7 +748,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     let t ← argTbl name 0 args
     let sep ← match args.getD 1 .nil with | .nil => pure [] | _ => argStr name 1 args
     let i ← optInt name 2 args 1
-    let j ← optInt name 3 args (← getTbl t).len
+    let j ← match args.getD 3 .nil with | .nil => Int.ofNat <$> tlen t | _ => argInt name 3 args
     let mut r : List (List Char) := []
     let mut k := i
     for _ in [0:(j - i + 1).toNat] do
@@ -730,7 +764,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
       | .num x, _ => if m.lt x then x else m
       | _, _ => m) (Num.int 0)
     return [.num m]
-  | "getn" => do return [nums (← getTbl (← argTbl name 0 args)).len]
+  | "getn" => do return [nums (← tlen (← argTbl name 0 args))]
   | "move" => do
     -- lib_table.c's Lua, its tables raw (CHECK_tab)
     let a1 ← argTbl name 0 args
@@ -756,7 +790,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
 def unpackFn (args : List Val) : M (List Val) := do
   let t ← argTbl "unpack" 0 args
   let i ← optInt "unpack" 1 args 1
-  let j ← optInt "unpack" 2 args (← getTbl t).len
+  let j ← match args.getD 2 .nil with | .nil => Int.ofNat <$> tlen t | _ => argInt "unpack" 2 args
   -- lua_checkstack: the results and the arguments within LUAI_MAXCSTACK
   if i ≤ j && j - i + 1 + args.length > 8000 then callerErr "too many results to unpack"
   (List.range (j - i + 1).toNat).mapM fun (k : Nat) => rawget t (nums (i + k))
@@ -786,11 +820,9 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     return if v.isNil then [.nil] else [nums (i + 1), v]
   | "pairs" => do anyArg 0 args; let t ← argTbl name 0 args; return [.prim "next" [], .tbl t, .nil]
   | "next" => do
-    let t ← getTbl (← argTbl name 0 args)
-    match t.next (args.getD 1 .nil) with
-    | none => rtErr "invalid key to 'next'"
-    | some none => return [.nil]
-    | some (some (k, v)) => return [k, v]
+    match ← tnext (← argTbl name 0 args) (args.getD 1 .nil) with
+    | none => return [.nil]
+    | some (k, v) => return [k, v]
   | "select" => do
     match args.headD .nil with
     | .str ('#' :: _) => return [nums (args.length - 1)]
@@ -1242,7 +1274,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
   | "table.foreachi" => do
     let t ← argTbl "foreachi" 0 args
     let f ← argFn "foreachi" 1 args
-    foreachi n t f 1 (← getTbl t).len
+    foreachi n t f 1 (← tlen t)
   | "table.foreach" => do
     let t ← argTbl "foreach" 0 args
     foreachK n t (← argFn "foreach" 1 args) .nil
@@ -1252,7 +1284,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     match cmp with
     | .nil | .fn _ | .prim .. => pure ()
     | _ => badType "function" 1 args
-    let len := (← getTbl t).len
+    let len := (← tlen t)
     sortAux n t cmp 1 len
     pure []
   | _ => basicFn tgt name bound args
@@ -1272,10 +1304,9 @@ def foreachK (n : Nat) (t : Nat) (f k : Val) : M (List Val) :=
   match n with
   | 0 => throw .fuel
   | n + 1 => do
-    match (← getTbl t).next k with
-    | none => rtErr "invalid key to 'next'"
-    | some none => return []
-    | some (some (k, v)) =>
+    match ← tnext t k with
+    | none => return []
+    | some (k, v) =>
       let r := (← call n f [k, v]).headD .nil
       if !r.isNil then return [r]
       foreachK n t f k
