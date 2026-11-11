@@ -189,6 +189,53 @@ theorem RunP.resume_fail {I : Sem} {a : Nat} {args : List Val} {m : String} {h0 
   apply ef
   rw [bind_ok hb]; rfl
 
+/-! Operators' metamethods: where the operands are not numbers (or strings, for `..`) and `metaOf2` finds one, the
+operator is its call's first value -/
+
+/-- the shape all three share: a metamethod found, then its call -/
+private theorem RunP.metaStep {I : Sem} {ev : String} {x y a b f : Val} {err : M Val} {k : Nat → M Val}
+    {P : Val → Heap → Prop}
+    (hk : ∀ n, k (n + 1) = (do
+      match ← metaOf2 ev x y with
+      | .nil => err
+      | f => do pure ((← mmFrame ev (call I.srcs I.oracle I.tgt n f [a, b])).headD .nil)))
+    (hm : metaOf2 ev x y h = .ok f h) (hf : f ≠ .nil)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [a, b]) h fun vs h' => P (vs.headD .nil) h') :
+    RunP k h P := by
+  obtain ⟨N, vs, h', e, p⟩ := r
+  dsimp only at e
+  refine ⟨N + 1, vs.headD .nil, h', fun n hn => ?_, p⟩
+  obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+  rw [hk]
+  show EStateM.bind _ _ h = _
+  rw [EStateM.bind, hm]
+  cases f <;> first | exact (hf rfl).elim | (show EStateM.bind _ _ h = _; rw [EStateM.bind, mmFrame, e n (by omega)]; rfl)
+
+theorem RunP.arith_meta {I : Sem} {op : BinOp} {x y f : Val} {P : Val → Heap → Prop}
+    (hop : op = .add ∨ op = .sub ∨ op = .mul ∨ op = .div ∨ op = .mod ∨ op = .pow)
+    (hn : x.toNum = none ∨ y.toNum = none) (hm : metaOf2 (arithEv op) x y h = .ok f h) (hf : f ≠ .nil)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [x, y]) h fun vs h' => P (vs.headD .nil) h') :
+    RunP (fun n => binop I.srcs I.oracle I.tgt n op x y) h P := by
+  refine RunP.metaStep (err := if x.toNum.isNone then opErr "perform arithmetic on" (some 0) x
+    else opErr "perform arithmetic on" (some 1) y) (fun n => ?_) hm hf r
+  rcases hop with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [binop] <;> (try (intro hc; cases hc)) <;> split <;>
+    first | rfl | (rcases hn with hn | hn <;> simp_all)
+
+theorem RunP.concat_meta {I : Sem} {x y f : Val} {P : Val → Heap → Prop}
+    (hn : concatText x = none ∨ concatText y = none) (hm : metaOf2 "__concat" x y h = .ok f h) (hf : f ≠ .nil)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [x, y]) h fun vs h' => P (vs.headD .nil) h') :
+    RunP (fun n => binop I.srcs I.oracle I.tgt n .concat x y) h P := by
+  refine RunP.metaStep (err := if (concatText x).isNone then opErr "concatenate" (some 0) x
+    else opErr "concatenate" (some 1) y) (fun n => ?_) hm hf r
+  rw [binop]; split <;> first | rfl | (rcases hn with hn | hn <;> simp_all)
+
+theorem RunP.unm_meta {I : Sem} {x f : Val} {P : Val → Heap → Prop}
+    (hn : x.toNum = none) (hm : metaOf2 "__unm" x x h = .ok f h) (hf : f ≠ .nil)
+    (r : RunP (fun n => call I.srcs I.oracle I.tgt n f [x, x]) h fun vs h' => P (vs.headD .nil) h') :
+    RunP (fun n => unop I.srcs I.oracle I.tgt n .neg x) h P := by
+  refine RunP.metaStep (err := opErr "perform arithmetic on" (some 0) x) (fun n => ?_) hm hf r
+  rw [unop]; split <;> first | rfl | simp_all
+
 end rules
 
 /-- whatever the order (`Tbl.rank` is opaque), `next` gives an entry of the table, one with a value: what a spec

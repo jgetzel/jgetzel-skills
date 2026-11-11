@@ -245,17 +245,59 @@ mt.__newindex = nil
 local r6 = P(function() t.later = 4; return t.zz, t.b, rawget(t, \"later\") end)
 return r1, r2, r3, r4, r5, r6, log, store, proto, t"
 
+/-- the operators' metamethods (`__add`…`__pow`, `__unm`, `__concat`) on either operand or both, x's before y's: a
+function of what it is given, one returning nothing or two values, one raising an error, a builtin, a callable table,
+values that cannot be called; set before or after `setmetatable`; a yield inside one; `__len`, which LuaJIT 2.1 does
+not call on a table -/
+def opMetas : G String := do
+  let mm (tag : String) : G String := pick [s!"function(a, b) return \"{tag}\" .. type(a) .. type(b) end",
+    "function() end", s!"function(a, b) return \"{tag}\", 2 end", "rawequal", "function(a, b) error(\"mm\") end",
+    "string.rep", "math.floor",
+    s!"setmetatable(\{}, \{__call = function(_, a, b) return \"{tag}\" .. type(b) end})", "5", "{}", "nil",
+    "function(a, b) if type(b) == \"number\" then return b * 2 end return a == b end"]
+  let evs := ["__add", "__sub", "__mul", "__div", "__mod", "__pow", "__unm", "__concat", "__len"]
+  let sets ← (List.range 8).mapM fun i => do
+    pure s!"mt{(← rnd 1) + 1}.{← pick evs} = {← mm s!"m{i}"}"
+  let late ← chance 2
+  let opnd : G String := pick ["t", "t", "t", "u", "u", "u", "s", "x", "n", "b", "z"]
+  let ex : G String := do
+    match ← rnd 5 with
+    | 0 => return s!"-{← opnd}"
+    | 1 => return s!"#{← opnd}"
+    | 2 => return s!"{← opnd} .. {← opnd} .. {← opnd}"
+    | _ => return s!"{← opnd} {← pick ["+", "-", "*", "/", "%", "^", ".."]} {← opnd}"
+  let es ← (List.range 8).mapM fun _ => ex
+  let co := if ← chance 3 then "\nlocal w = coroutine.wrap(function() return setmetatable({}, {__add = function(a, b) return coroutine.yield(b) end}) + 5 end)\nlocal y1 = w()\nlocal y2 = w(7)\nr[#r + 1] = {y1, y2}" else ""
+  return s!"local mt1, mt2 = \{}, \{}
+{if late then "" else "\n".intercalate sets}
+local t, u = setmetatable(\{1, 2}, mt1), setmetatable(\{}, {← pick ["mt2", "mt1"]})
+{if late then "\n".intercalate sets else ""}
+local s, x, n, b, z = \"10\", \"x\", 3, true, nil
+local r = \{}
+{"\n".intercalate (es.map fun e => s!"r[#r + 1] = \{pcall(function() return {e} end)}")}{co}
+return r"
+
+-- an operator's metamethod that is not a function is called through `__call`, or fails with no place; `__unm` gets
+-- its operand twice; `..` goes right to left (as LuaJIT's BC_CAT); a metamethod's first value, nil if none
+#guard [("local mt = {} local t = setmetatable({}, mt) mt.__add = 1 return pcall(function() return t + 1 end)",
+      "ok:false,\"attempt to call a number value\""),
+    ("return pcall(function() return -setmetatable({}, {__unm = 1}) end)", "ok:false,\"attempt to call a number value\""),
+    ("return pcall(function() return setmetatable({}, {__sub = {}}) - 1 end)", "ok:false,\"attempt to call a table value\""),
+    ("return 2 ^ setmetatable({}, {__pow = setmetatable({}, {__call = function(_, a, b) return type(a), type(b) end})})",
+      "ok:\"number\""),
+    ("local t = setmetatable({}, {__unm = function(a, b) return rawequal(a, b), select('#', a, b) end}) return -t", "ok:true"),
+    ("local t = setmetatable({}, {__concat = function(a, b) return type(a) .. type(b) end}) return 1 .. t .. 'x' .. 2, t .. t, 'a' .. 'b' .. t",
+      "ok:\"1tablestring\",\"tabletable\",\"astringtable\""),
+    ("local t = setmetatable({}, {__add = function() end}) return t + 1, '3' + t", "ok:nil,nil")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 -- the metamethods whose task has not landed stop the run where LuaJIT would call them, and only there; `__len` on
 -- a table is never called (LuaJIT 2.1 without its 5.2 compatibility)
-#guard [("local mt = {} local t = setmetatable({}, mt) mt.__add = 1 return pcall(function() return t + 1 end)",
-      "effect metamethod __add"),
-    ("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
+#guard [("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
       "ok:true,false,\"c:1: attempt to compare table with number\""),
     ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
     ("local t = setmetatable({}, {__eq = 1}) return t == {}", "effect metamethod __eq"),
     ("local t = setmetatable({}, {}) getmetatable(t).__lt = 1 return t < t", "effect metamethod __lt"),
-    ("return -setmetatable({}, {__unm = 1})", "effect metamethod __unm"),
-    ("return setmetatable({}, {__concat = 1}) .. \"x\"", "effect metamethod __concat"),
     ("return tostring(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
     ("return (\"%s\"):format(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
     ("return getmetatable(setmetatable({}, {__metatable = 1}))", "effect metamethod __metatable"),
@@ -604,7 +646,7 @@ def chunk : G String := do
   | 5 => tables
   | 6 => ctrl
   | 7 | 8 => diffs
-  | 9 => metas
+  | 9 => if ← chance 2 then metas else opMetas
   | 10 => libs
   | 11 => traverse
   | 12 => loads
