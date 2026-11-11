@@ -23,8 +23,10 @@ lean_do build Examples && "$LUAJIT" Examples/world_axioms.lua || exit 1
 "$LUAJIT" -e 'for l in io.lines("test/out.txt") do assert(loadstring(l), l) end' &&
   lean_do env lean --run test/Refused.lean test/out.txt || exit 1
 # lua-lean check: each construct outside the subset of test/check/outside.lua by its line, and its functions' calls
-# the same under LuaJIT
-./lua-lean check -n 4 test/check/outside.lua | sed 's|^/.*/cases.lua: \([0-9]* cases agree\).*|cases: \1|' | cmp -s - test/check/outside.out ||
-  { echo "lua-lean check test/check/outside.lua is not test/check/outside.out" >&2; exit 1; }
+# the same under LuaJIT. The summary and case-count lines are left out of the comparison: they change with every
+# feature that moves a construct into the subset, so two such merges would make a stale count that no diff shows.
+./lua-lean check -n 4 test/check/outside.lua | grep -v ': parses, \|^cases: \|cases agree' > "${TMPDIR:-/tmp}/outside.got"
+diff test/check/outside.out "${TMPDIR:-/tmp}/outside.got" ||
+  { echo "lua-lean check test/check/outside.lua is not test/check/outside.out (< expected, > got; if the > lines are right: ./lua-lean check -n 4 test/check/outside.lua | grep -v ': parses, \\|cases agree' > test/check/outside.out)" >&2; exit 1; }
 p=$(./lua-lean parsecheck test/*.lua test/mods/*.lua) || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
 ./lua-lean prove test/*.lua test/mods/*.lua
