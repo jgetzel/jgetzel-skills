@@ -39,6 +39,18 @@ function M.hc_terminals()
   return type(j) == "table" and type(j.terminals) == "table" and j.terminals or nil
 end
 
+-- The labels hc keeps on terminal addr: its Herdr space and, for a communicator, the db it is the communicator of.
+function M.hc_info(addr)
+  local out = addr and proc.run({ "hc", "get", addr })
+  local j = out and json.decode(out)
+  local l = type(j) == "table" and type(j.labels) == "table" and j.labels or {}
+  return { space = l["herdr.space"], comms = l["swarm.comms"] }
+end
+
+function M.label_comms(addr)
+  proc.run({ "hc", "label", addr, "swarm.comms=" .. db.dbpath() })
+end
+
 -- Bind name to terminal hc (join, spawn): a new, ended or unbound row, or one whose terminal isn't live.
 -- A live binding elsewhere moves only with takeover, logged old -> new.
 function M.bind(c, name, cwd, hc, model, takeover)
@@ -255,9 +267,27 @@ function M.cmd_role(c, a)
   for _, s in ipairs(same) do print(s) end
 end
 
+-- The communicator's terminal is in the swarm's space (meta.space, set by the first communicator) and is no other
+-- swarm's communicator, takeover or not for the space, only by takeover for the other swarm.
 function M.cmd_join(c, a)
   local n = a.name or M.me()
-  M.bind(c, n, unistd.getcwd(), M.env("HC_TERMINAL_ID"), a.model, a.takeover)
+  local here = M.env("HC_TERMINAL_ID")
+  local comms = here and M.is_comms(c, n)
+  if comms then
+    local i, sp = M.hc_info(here), c:one("select v from meta where k='space'")
+    if sp and i.space and i.space ~= sp.v then
+      util.die(("%s is the communicator of a swarm in space %s; this terminal is in space %s."):format(n, sp.v, i.space))
+    end
+    if i.comms and i.comms ~= db.dbpath() and not a.takeover then
+      util.die(("this terminal is the communicator of another swarm (%s). `swarm join --takeover` takes it for this one."):format(i.comms))
+    end
+  end
+  M.bind(c, n, unistd.getcwd(), here, a.model, a.takeover)
+  if comms then
+    M.label_comms(here)
+    local sp = M.hc_info(here).space
+    if sp then c:exec("insert or ignore into meta(k,v) values('space',?)", sp) end
+  end
   db.log(c, n, "join")
 end
 

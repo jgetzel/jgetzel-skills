@@ -19,7 +19,8 @@ for _, s in ipairs(ok and d.spaces or {}) do for _, t in ipairs(s.tabs) do for _
   if x.terminal == os.getenv("ADDR") then print(s.id .. " " .. t.id) return end end end end print("")'; }
 # The window labels every terminal it shows with its space and tab, and hc keeps the labels, so this works
 # when the window runs on another machine; ask the local window only when the labels are missing.
-read -r space tab <<<"$(hc get "$HC_TERMINAL_ID" 2>/dev/null | luajit -e 'local ok, d = pcall(require("cjson").decode, io.read("*a"))
+space=${SWARM_SPACE:-} tab=
+[ -n "$space" ] || read -r space tab <<<"$(hc get "$HC_TERMINAL_ID" 2>/dev/null | luajit -e 'local ok, d = pcall(require("cjson").decode, io.read("*a"))
 local l = ok and type(d.labels) == "table" and d.labels or {}
 print((l["herdr.space"] or "") .. " " .. (l["herdr.tab"] or ""))')"
 [ -n "$space" ] || read -r space tab <<<"$(where "$HC_TERMINAL_ID")"
