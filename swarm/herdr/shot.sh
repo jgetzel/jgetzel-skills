@@ -22,7 +22,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$out" ] || { sed -n 3p "$0" >&2; exit 2; }
-case ${screen%+ask} in home|agents|board|board:done|board:dropped|task:[0-9]*|agent:?*|more:activity|more:system) ;; *) echo "shot.sh: no screen $screen" >&2; exit 2 ;; esac
+case ${screen%+*} in home|agents|board|board:done|board:dropped|task:[0-9]*|agent:?*|more:activity|more:system) ;; *) echo "shot.sh: no screen $screen" >&2; exit 2 ;; esac
 case $width in ''|*[!0-9]*) echo "shot.sh: --width takes px" >&2; exit 2 ;; esac
 case $out in /*) ;; *) out=$PWD/$out ;; esac
 

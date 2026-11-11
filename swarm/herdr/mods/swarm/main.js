@@ -1,10 +1,10 @@
 // Screenshot it from a worktree: swarm/herdr/shot.sh --screen task:5 --width 520 out.png (a private Herdr, never yours).
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, HoverCard, TextView } from "gpui-base";
-import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder, openOverlay, nextCommand } from "herdr";
+import { v_flex, h_flex, HoverCard, TextView, InputState, Input } from "gpui-base";
+import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder, openOverlay, nextCommand, shared, setShared } from "herdr";
 
 // The screen the panel opens on; shot.sh rewrites this line. home | agents | board[:done|dropped] | task:<id> |
-// agent:<name> | more:<activity|system>; "+ask" also opens that screen's confirmation.
+// agent:<name> | more:<activity|system>; "+ask" also opens that screen's confirmation, "+new" Board's new-task form.
 const SCREEN = "home";
 // Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
 // machine it is that machine's installed skill. It runs as "human": the user, with the communicator's rights.
@@ -16,11 +16,10 @@ const swarm = (cwd, on, args) => on
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;
 const CTX_MAX = 600000, FINISH = 350000, HANDOFF = 550000; // the context bar's scale and its two ticks
 const route = spec => {
-  const [s, x] = spec.replace(/\+ask$/, "").split(":");
+  const [s, x] = spec.replace(/\+(ask|new)$/, "").split(":");
   return s === "task" ? { s, id: Number(x) } : s === "agent" ? { s, name: x } : s === "board" ? { s, f: x ?? "active" } : s === "more" ? { s, tab: x ?? "activity" } : { s };
 };
 const RED = new Set(["overlap", "conflict", "conflict-error", "pressure", "ci-red", "orphan-kill", "lock-violation", "blocked", "task-blocked", "stay-hung"]);
-const QUIET = new Set(["post", "wake", "status", "digest", "startable", "deny-cold"]);
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -108,8 +107,6 @@ function evidence(s) {
   const rest = s.replace(/PR #\d+( merged)?:?\s*/, "").replace(sha ?? "\0", "").replace(/^[\s:;·,()-]+/, "").trim();
   return { chip, sha: sha?.slice(0, 8), rest };
 }
-// shortcut: wrapped-text height from an average glyph width; a real measure would need a layout pass.
-const lines = (text, px, charW) => Math.max(1, Math.ceil(String(text ?? "").length * charW / Math.max(60, px)));
 // Lines `text` takes when wrapped at spaces in `px`, a word longer than a line broken anywhere. Errs high:
 // the renderer also breaks after "/" and its glyphs average under `charW`.
 function wrapLines(text, px, charW) {
@@ -135,9 +132,15 @@ const openUrl = url => exec(window()?.platform === "macos" ? "open" : "xdg-open"
 
 export default class Swarm extends View {
   init(_props, cx) {
-    this.s = null; this.prs = null; this.runs = null; this.error = null;
+    this.s = null; this.prs = null; this.error = null;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 520;
     const r0 = route(SCREEN); this.stack = r0.s === "task" ? [{ s: "board", f: "active" }, r0] : r0.s === "agent" ? [{ s: "agents" }, r0] : [r0]; this.flash = null; this.pending = null; this.actFilter = "all";
+    // Text fields: Enter sends, Esc clears (field()).
+    const input = (placeholder, send) => { const st = InputState.new({ placeholder }); st.on("submit", (_e, cx) => send(cx)); return st; };
+    const add = cx => this.addTask(cx);
+    this.in = { msg: input("Message this agent", cx => this.sendMsg(cx)), title: input("Title", add), body: input("Description (optional)", add),
+      after: input("After tasks, e.g. 3,5", add), model: input("Model, e.g. opus", add) };
+    this.urgent = false; this.adding = SCREEN.endsWith("+new"); this.moreOpts = false; this.nudged = new Map();
     this.refresh(cx); this.copyIcons(cx);
     // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
     cx.timer.every(POLL, cx => { if (this.visible() && this.due()) this.refresh(cx); });
@@ -146,10 +149,10 @@ export default class Swarm extends View {
     cx.spawn(async cx => {
       for (;;) {
         const c = await nextCommand(), p = this.pending;
-        if (c === "yes" && p) { this.pending = null; this.act(cx, p); }
+        if (c === "yes" && p) { this.pending = null; this.act(cx, p.args, p); }
         if (c === "ask") { // shot.sh: the shown screen's confirmation
           const r = this.r, a = this.s?.agents?.find(x => x.name === r.name), k = this.s?.tasks?.find(x => x.id === r.id);
-          if (a) this.askEnd(a); else if (k) this.askRelease(k);
+          if (a) this.askEnd(a); else if (k) this.askRelease(k); else if (r.s === "more") this.askWatchd();
         }
       }
     });
@@ -199,7 +202,7 @@ export default class Swarm extends View {
         const same = s.db === this.s?.db && on === this.on;
         if (!same) {
           if (this.s) { this.seen.clear(); this.stack = [{ s: "home" }]; this.flash = null; } // another repo: its swarm, not the last one's
-          this.prs = null; this.runs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
+          this.prs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
         }
         // A view sends only its sections; the others keep their last values (empty at first) until their screen asks.
         this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
@@ -222,21 +225,17 @@ export default class Swarm extends View {
     });
   }
 
-  // CI runs feed "needs you" on Home; PRs only show on an agent's screen and System.
+  // Open PRs, for an agent's screen and System. CI comes from state --json's `ci` (the table watchd fills).
   refreshPrs(cx) {
-    const cwd = this.cwd, on = this.on, prs = this.tab === "agents" || this.tab === "system";
-    if (!cwd || this.prLoading) return;
+    const cwd = this.cwd, on = this.on;
+    if (!cwd || this.prLoading || (this.tab !== "agents" && this.tab !== "system")) return;
     this.prLoading = true;
     cx.spawn(async cx => {
       try {
-        if (prs) {
-          const pr = await exec("gh", ["pr", "list", "--limit", "30", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd, on });
-          this.prs = pr.code === 0 ? JSON.parse(pr.stdout) : null;
-        }
-        const ci = await exec("gh", ["run", "list", "--branch", "main", "--limit", "6", "--json", "databaseId,status,conclusion,displayTitle,createdAt,url"], { cwd, on });
-        this.runs = ci.code === 0 ? JSON.parse(ci.stdout) : null;
-      } catch { this.prs = null; this.runs = null; } // no gh: those parts just say so
-      finally { this.prLoading = false; this.prAt = Date.now(); if (prs) this.prsAt = this.prAt; cx.notify(); }
+        const pr = await exec("gh", ["pr", "list", "--limit", "30", "--json", "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,url"], { cwd, on });
+        this.prs = pr.code === 0 ? JSON.parse(pr.stdout) : null;
+      } catch { this.prs = null; } // no gh: that part just says so
+      finally { this.prLoading = false; this.prsAt = Date.now(); cx.notify(); }
     });
   }
 
@@ -278,26 +277,23 @@ export default class Swarm extends View {
     this.seen = new Set([...this.seen].filter(k => k.startsWith("bar:"))); this.delay.clear(); this.flash = null;
     cx.notify();
   }
-  // The Activity and System code names its targets by the old tabs.
-  go(tab, cx, sel) {
-    this.push(tab === "agents" ? (sel ? { s: "agent", name: sel } : { s: "agents" }) : tab === "board" ? { s: "board", f: "active" } : { s: "more", tab }, cx);
-  }
-
   // Runs one swarm command for the user. What it printed, or why it refused, shows at the top of the screen.
-  act(cx, args) {
+  // o.gh: a `gh` command instead (re-run CI); o.ok(): after it succeeded.
+  act(cx, args, o = {}) {
     const { cwd, on } = location();
     this.busy = true; cx.notify();
     cx.spawn(async cx => {
       try {
-        const r = await swarm(cwd, on, args);
-        this.flash = r.code === 0 ? { ok: one(r.stdout) } : { error: (r.stderr.trim() || r.stdout.trim() || `swarm exited ${r.code}`).replace(/^swarm: /, ""), args };
+        const r = await (o.gh ? exec("gh", args, { cwd, on }) : swarm(cwd, on, args));
+        this.flash = r.code === 0 ? { ok: one(r.stdout) || "Done" } : { error: (r.stderr.trim() || r.stdout.trim() || `${o.gh ? "gh" : "swarm"} exited ${r.code}`).replace(/^swarm: /, ""), args };
+        if (r.code === 0) o.ok?.();
       } catch (e) { this.flash = { error: String(e.message ?? e), args }; }
       this.busy = false; this.dirty = true; this.at = 0; cx.notify();
     });
   }
   // A destructive command: Herdr's confirm dialog first; its Confirm sends this mod "yes".
-  ask(title, detail, args) {
-    this.pending = args;
+  ask(title, detail, args, o = {}) {
+    this.pending = { ...o, args };
     openOverlay({ mod: "confirm", kind: "dialog", width: 440, height: 200, props: { title, detail, command: { name: "swarm.yes" } } });
   }
   askEnd(a, force) {
@@ -305,6 +301,30 @@ export default class Swarm extends View {
       force ? `Its terminal closes now, with whatever it was doing. ${a.task ? `Task #${a.task.id} goes back to the board. ` : ""}Its worktree and branch stay.`
         : `Closes ${a.name}'s terminal. The swarm refuses if it is working, holds a task or a lock, or has work that is not on main yet. Its worktree and branch stay.`,
       ["end", a.name, ...(force ? ["--force"] : [])]);
+  }
+  askDrop(k) {
+    this.ask(`Drop #${k.id}?`, `"${k.title}" leaves the board for good; tasks that wait on it stay held.${k.owner && k.state !== "open" ? ` ${k.owner} is told to stop.` : ""}`, ["task", "drop", String(k.id)]);
+  }
+  askStayEnd(a) {
+    this.ask(`End ${a.name}'s stay?`, `${a.name} stops waiting for "${one(a.stay)}". watchd then ends it once its work is on main; every other check still applies.`, ["stay", "--end", a.name]);
+  }
+  askRerun(run) {
+    this.ask(`Re-run the failed jobs of run ${run}?`, "It spends CI minutes, and an agent may be mid-fix.", ["run", "rerun", String(run), "--failed"], { gh: true });
+  }
+  askWatchd() {
+    this.ask("Restart watchd?", "The swarm's daemon is replaced by a new one with the flags it was started with. The bar says whether the new one is alive.", ["watchd", "--restart"]);
+  }
+  nudge(cx, a) { this.nudged.set(a.name, Date.now()); this.act(cx, ["nudge", a.name]); }
+  sendMsg(cx) {
+    const name = this.r.name, text = this.in.msg.value().trim();
+    if (!name || !text || this.busy) return;
+    this.act(cx, ["post", ...(this.urgent ? ["--urgent"] : []), "--", name, text], { ok: () => { this.in.msg.set_value(""); this.urgent = false; } });
+  }
+  addTask(cx) {
+    const v = k => this.in[k].value().trim(), title = v("title"), after = v("after").replace(/[#\s]/g, "");
+    if (!title || this.busy) return;
+    this.act(cx, ["task", "add", ...(v("body") ? ["--body", v("body")] : []), ...(after ? ["--after", after] : []), ...(v("model") ? ["--model", v("model")] : []), "--", title],
+      { ok: () => { for (const k in this.in) if (k !== "msg") this.in[k].set_value(""); this.adding = false; } });
   }
   askRelease(k) {
     this.ask(`Release #${k.id} from ${k.owner}?`, `"${k.title}" goes back to the board as open, for any agent to claim. ${k.owner} is told to stop; what it already wrote stays in its worktree.`, ["task", "release", String(k.id)]);
@@ -316,47 +336,33 @@ export default class Swarm extends View {
       .border_color(fill ? color : color ? color + "66" : t.border).bg(fill ? color + "22" : t.background).text_color(color ?? t.muted).child(text);
   }
   dot(color, n = 8) { return div().size(n).rounded(n / 2).flex_none().bg(color); }
-  k(t, text) { return div().text_size(10).text_color(t.dim).flex_none().child(text.toUpperCase()); }
   mono(el) { return el.font_family(settings().font_family ?? "JetBrains Mono"); }
   chev(t, dir) { return div().flex_none().text_size(11).text_color(t.dim).child({ right: "›", up: "⌃", down: "⌄" }[dir]); }
   btn(t, id, label, onClick) {
     return h_flex().id(id).h(24).px(10).gap(5).flex_none().items_center().rounded(6).border_1().border_color(t.border).bg(t.surface)
       .text_size(11).cursor_pointer().hover(s => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
-  card(t, id, red) {
-    return v_flex().id(id).w_full().min_w(0).px(12).py(10).gap(7).rounded(8).bg(t.surface).border_1().border_color(red ? t.blocked + "88" : t.border);
+  // A one-line text field: Enter sends (the state's submit), Esc clears.
+  field(t, id, st) {
+    return div().id(id).flex_1().min_w(0).h(30).px(10).flex().items_center().rounded(7).border_1().border_color(t.input ?? t.border).bg(t.background).cursor_text()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_key_down((e, cx) => { if (e.key === "escape") { st.set_value(""); cx.notify(); } })
+      .child(Input.new(st).h_full().text_size(12.5).text_color(t.foreground));
   }
-  sec(t, label, note, right) {
-    return h_flex().h(26).px(4).pt(6).gap(6).items_center().min_w(0)
-      .child(div().text_size(10.5).font_semibold().text_color(t.muted).flex_none().child(label.toUpperCase()))
-      .when(Boolean(note), el => el.child(div().text_size(10.5).truncate().min_w(0).text_color(t.dim).child(note)))
-      .child(div().flex_1()).when(Boolean(right), el => el.child(right));
+  tick(t, id, label, on, set) {
+    return h_flex().id(id).flex_none().h(24).gap(6).items_center().text_size(11).text_color(on ? t.foreground : t.muted).cursor_pointer()
+      .on_click((_e, cx) => { cx.stop_propagation(); set(cx); })
+      .child(div().size(14).flex().items_center().justify_center().rounded(4).border_1().border_color(on ? t.accent : t.input ?? t.border).bg(on ? t.accent : t.background)
+        .text_size(10).text_color(t.accent_foreground).child(on ? "✓" : ""))
+      .child(label);
   }
   link(t, id, text, onClick) {
-    return div().id(id).flex_none().text_size(10.5).text_color(t.dim).cursor_pointer().hover(s => s.text_color(t.foreground))
+    return div().id(id).flex_none().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(text);
   }
 
   statusColor(t, s) { return { working: t.working, idle: t.idle, blocked: t.blocked, ended: t.dim }[s] ?? t.unknown; }
-  statusText(t, a) {
-    return div().text_size(10.5).flex_none().text_color(a.status === "idle" ? t.dim : this.statusColor(t, a.status))
-      .child(a.status === "idle" ? `${a.stay ? "staying" : "idle"} ${ago(a.idle_s)}` : a.status);
-  }
   signChip(t, a) { const g = SIGN[a.stay_sign]; return g ? this.chip(t, g[0], g[2] ? t.blocked : t.ansi3, true).tooltip(g[1]) : null; }
-  cacheChip(t, a, long) {
-    if (a.status === "ended") return null;
-    if (SIGN[a.stay_sign]) return this.signChip(t, a); // it can't be woken: its cache is beside the point
-    if (a.cold_guarded) return this.chip(t, "cold-guarded", t.ansi3, true);
-    const left = a.cache === "warm" && a.cold_at ? a.cold_at - this.s.now : null;
-    return a.cache === "warm" ? this.chip(t, `warm${long ? " cache" : ""}${left > 0 ? ` · ${ago(left)}` : ""}`, t.ansi2)
-      : this.chip(t, long ? "cold cache" : "cold", t.ansi4);
-  }
-  lastEvent(a) {
-    const e = a.events?.find(e => !QUIET.has(e.kind));
-    if (!e) return "";
-    const l = evLine(e);
-    return `${l.text}${l.sub ? ` · ${l.sub}` : ""} · ${hhmm(e.ts)}`;
-  }
 
   // Context bar on a 0..600k scale with ticks at the 350k finish note and the 550k hand-off; it fills
   // 0 -> value once per key (a lane, or the detail pane for one agent).
@@ -368,12 +374,6 @@ export default class Swarm extends View {
         .w(first ? "0%" : `${pct}%`).transition("width", { duration: 400, easing: "ease-out" }))
       .child(tick(FINISH, t.dim)).child(tick(HANDOFF, t.blocked));
   }
-  ctxLabels(t, n) {
-    return div().relative().w_full().h(14).text_size(10.5).text_color(t.dim)
-      .child(div().absolute().left(0).text_color(n ? t.foreground : t.dim).child(n ? kilo(n) : "0"))
-      .child(div().absolute().left(`${(FINISH / CTX_MAX) * 100}%`).pl(4).child(this.width < 760 ? "350k" : "350k finish"))
-      .child(div().absolute().right(`${(1 - HANDOFF / CTX_MAX) * 100}%`).pr(4).text_color(t.blocked).child(this.width < 760 ? "550k" : "550k hand off"));
-  }
 
   // ---- derived data -------------------------------------------------------------------------
   derive() {
@@ -384,13 +384,14 @@ export default class Swarm extends View {
       .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.name.localeCompare(b.name));
     const ended = s.agents.filter(a => a.status === "ended" && a.name !== comms).sort((a, b) => (b.ended ?? 0) - (a.ended ?? 0));
     const count = st => s.tasks.filter(k => k.state === st).length;
-    const done = (this.runs ?? []).filter(r => r.status === "completed");
-    let reds = 0;
-    while (reds < done.length && done[reds].conclusion === "failure") reds++;
+    // main's CI, from the table watchd fills: [word, color] of the latest run, and the newest finished run when it is red.
+    const runs = s.ci?.runs ?? [], last = runs.find(r => r.status === "completed" && r.conclusion !== "cancelled"), reds = s.ci?.red_streak ?? 0;
+    const ci = !runs.length ? null : runs[0].status !== "completed" ? ["pending", "ansi3"] : reds ? ["red", "blocked"] : last?.conclusion === "success" ? ["green", "ansi2"] : [runs[0].conclusion ?? "?", "ansi3"];
+    const w = s.watchd, watchdDead = Boolean(s.active && w && !w.alive);
     // shortcut: the CI fixer is the claimed task that mentions red/CI; a ci-red -> task link in the db would be exact.
     const fix = s.tasks.find(k => (k.state === "claimed" || k.state === "blocked") && /\b(red|ci)\b/i.test(k.title));
     const told = id => s.messages.filter(m => m.kind === "system" && m.body.startsWith(`main CI is red (run ${id}`)).length;
-    return { comms, commsAgent: s.agents.find(a => a.name === comms), live, ended, count, reds, redRuns: done.slice(0, reds), fix, told };
+    return { comms, commsAgent: s.agents.find(a => a.name === comms), live, ended, count, runs, reds, redRun: reds ? last : null, ci, watchdDead, fix, told };
   }
 
   // ---- shared parts of the screens ------------------------------------------------------------
@@ -460,17 +461,20 @@ export default class Swarm extends View {
   // What needs the user, most urgent first; each opens the screen where they can act on it.
   needs(t, d) {
     const s = this.s, out = [];
-    if (d.reds) {
-      const r = d.redRuns[0];
-      out.push({ key: "ci", title: "main CI is red", detail: `${r.displayTitle} · red since ${hhmm(iso(d.redRuns[d.reds - 1].createdAt))}`,
-        owner: d.fix ? `${d.fix.owner} is fixing it (#${d.fix.id})` : "Nobody is on it yet", to: { s: "more", tab: "system" } });
+    if (d.watchdDead) out.push({ key: "watchd", title: "watchd is not running", detail: "Nothing is reaped, spawned or told until it runs again.", to: { s: "more", tab: "system" },
+      acts: [["Restart watchd…", () => this.askWatchd(), true]] });
+    if (d.redRun) {
+      const r = d.redRun;
+      out.push({ key: "ci", title: "main CI is red", detail: `Run ${r.id} failed at ${hhmm(iso(r.created))}${d.reds > 1 ? `; ${d.reds} red runs in a row` : ""}`,
+        owner: d.fix ? `${d.fix.owner} is fixing it (#${d.fix.id})` : "Nobody is on it yet", to: { s: "more", tab: "system" },
+        acts: [["Open run ↗", () => openUrl(r.url)], ["Re-run failed jobs…", () => this.askRerun(r.id), true]] });
     }
     for (const k of s.tasks.filter(k => k.state === "blocked"))
       out.push({ key: `t${k.id}`, title: `${k.owner} asks about #${k.id}`, detail: one(k.question) || k.title, owner: `#${k.id} ${k.title}`, to: { s: "task", id: k.id } });
     for (const a of d.live.filter(a => a.status === "blocked" && !s.tasks.some(k => k.state === "blocked" && k.owner === a.name)))
       out.push({ key: `a${a.name}`, title: `${a.name} stopped at a prompt`, detail: "Open its terminal and answer.", to: { s: "agent", name: a.name } });
     for (const a of d.live.filter(a => a.stay_sign === "hung"))
-      out.push({ key: `h${a.name}`, title: `${a.name} is hung`, detail: SIGN.hung[1], to: { s: "agent", name: a.name } });
+      out.push({ key: `h${a.name}`, title: `${a.name} is hung`, detail: SIGN.hung[1], to: { s: "agent", name: a.name }, nudge: a });
     if (s.machine?.high) out.push({ key: "mem", title: "The machine is short on memory", detail: (s.machine.line ?? "").replace(/^machine: /, ""), to: { s: "more", tab: "system" } });
     return out;
   }
@@ -486,9 +490,18 @@ export default class Swarm extends View {
         .on_click((_e, cx) => this.push(x.to, cx))
         .child(h_flex().gap(8).items_center().min_w(0).child(div().flex_1().min_w(0).truncate().font_semibold().child(x.title)).child(this.chev(t, "right")))
         .child(div().text_size(12).line_height("17px").whitespace_normal().child(x.detail))
-        .when(Boolean(x.owner), el => el.child(div().truncate().text_size(11).text_color(t.dim).child(x.owner)))));
+        .when(Boolean(x.owner), el => el.child(div().truncate().text_size(11).text_color(t.dim).child(x.owner)))
+        .when(Boolean(x.acts || x.nudge), el => el.child(h_flex().pt(4).gap(8).flex_wrap()
+          .when(Boolean(x.nudge), el => el.child(this.nudgeBtn(t, x.nudge)))
+          .children((x.acts ?? []).map(([label, fn, danger], i) => (danger ? this.danger : this.btn).call(this, t, `need-${x.key}-${i}`, label, fn)))))));
   }
 
+  // Rests for a minute after use (drawn at the next data refresh; no timer of its own).
+  nudgeBtn(t, a) {
+    const rests = Date.now() - (this.nudged.get(a.name) ?? 0) < 60000;
+    return rests ? this.btn(t, `nudge-${a.name}`, "Nudged", () => {}).text_color(t.dim).tooltip("Rests for a minute after a nudge.")
+      : this.btn(t, `nudge-${a.name}`, "Nudge", cx => this.nudge(cx, a)).tooltip("Types one line into its terminal: read your messages and continue, or say what you wait for.");
+  }
   // The user's two staffing numbers, each with − and + (`swarm limits`), and the board's holding line.
   stepper(t, id, label, v, set) {
     const b = (k, ch, n) => div().id(`${id}-${k}`).size(22).flex().items_center().justify_center().rounded(5).text_size(13).text_color(t.muted).cursor_pointer()
@@ -501,12 +514,37 @@ export default class Swarm extends View {
         .child(b("up", "+", v == null ? this.s.limits.live : v + 1)));
   }
   staffing(t) {
-    const l = this.s.limits ?? { live: 0 };
+    // Pause sets the auto-spawn number to 0 and remembers it (Herdr's shared store, per board) for Resume.
+    const l = this.s.limits ?? { live: 0 }, key = `swarm.resume:${this.s.db}`, saved = Number(shared(key)) || 0;
     return v_flex().gap(8).min_w(0)
       .child(h_flex().gap(12).items_center().flex_wrap().min_w(0)
-        .child(this.stepper(t, "min", "Auto-spawn to", l.min, (cx, n) => this.act(cx, ["limits", "--min", String(n)]))).child(div().flex_1())
+        .child(this.stepper(t, "min", "Auto-spawn to", l.min, (cx, n) => this.act(cx, ["limits", "--min", String(n)])))
+        .when(l.min > 0, el => el.child(this.btn(t, "pause", "Pause", cx => { setShared(key, l.min); this.act(cx, ["limits", "--min", "0"]); }).tooltip("Stops auto-spawn; running agents go on.")))
+        .when(l.min === 0 && saved > 0, el => el.child(this.btn(t, "resume", `Resume (${saved})`, cx => this.act(cx, ["limits", "--min", String(saved)]))))
+        .child(div().flex_1())
         .child(this.stepper(t, "max", "Max", l.max, (cx, n) => this.act(cx, ["limits", "--max", String(n)]))))
       .when(Boolean(l.held), el => el.child(div().text_size(11).line_height("15px").whitespace_normal().text_color(t.ansi3).child(`Auto-spawn is ${held(l.held)}`)));
+  }
+
+  // `swarm away --back`'s digest (state --json's `back`), on Home until dismissed or the next away.
+  backCard(t) {
+    const g = this.s.back, key = `swarm.back:${this.s.db}`;
+    if (!g || this.s.away || shared(key) === g.back) return null;
+    const dim = text => div().text_color(t.dim).child(text), wrap = text => div().line_height("17px").whitespace_normal().child(text);
+    const ci = g.ci ? `${g.ci.conclusion ?? g.ci.status ?? "?"} ${(g.ci.sha ?? "").slice(0, 7)}`.trim() : "no run seen";
+    return v_flex().min_w(0)
+      .child(this.title(t, "While you were away", `${hhmm(g.since)}–${hhmm(g.back)}${g.note ? ` · ${g.note}` : ""}`, this.more(t, "back-x", "Dismiss", cx => { setShared(key, g.back); cx.notify(); })))
+      .child(this.facts(t, "g-back", [
+        ["Questions", g.questions.length ? v_flex().gap(6).children(g.questions.map(q => v_flex().id(`back-q-${q.id}`).gap(1).min_w(0).cursor_pointer().hover(st => st.text_color(t.accent))
+            .on_click((_e, cx) => this.push({ s: "task", id: q.id }, cx))
+            .child(wrap(one(q.question) || q.title)).child(div().truncate().text_size(11).text_color(t.dim).child(`#${q.id} ${q.owner ?? ""} · asked ${hhmm(q.since)} ›`))))
+          : dim("none wait")],
+        g.done.length ? ["Finished", wrap(g.done.map(k => `#${k.id} ${k.title}`).join(" · "))] : null,
+        g.merged.length ? ["Merged", wrap(g.merged.map(k => `PR #${k.pr ?? "?"} (#${k.id})`).join(" · "))] : null,
+        ["main CI", ci],
+        g.ended.length ? ["Ended", wrap(g.ended.map(a => `${a.name}${a.why ? ` (${a.why})` : ""}`).join(" · "))] : null,
+        g.hung.length ? ["Hung", div().text_color(t.ansi3).child(g.hung.join(" · "))] : null,
+      ]));
   }
 
   // ---- Home: what needs you, who is running and on what, what is left ---------------------------
@@ -530,7 +568,7 @@ export default class Swarm extends View {
           .child(this.more(t, "done-link", `${nd} done ›`, cx => this.push({ s: "board", f: "done" }, cx)))
           .when(ndrop > 0, el => el.child(this.more(t, "drop-link", `${ndrop} dropped ›`, cx => this.push({ s: "board", f: "dropped" }, cx))))));
     const staff = v_flex().min_w(0).child(this.title(t, "Staffing")).child(this.group(t, "g-staff").px(12).py(10).child(this.staffing(t)));
-    const att = this.attention(t, d);
+    const back = this.backCard(t), att = back ? v_flex().gap(10).child(back).child(this.attention(t, d)) : this.attention(t, d);
     if (two) return h_flex().gap(16).items_start()
       .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(att).child(agents))
       .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(tasks).child(staff));
@@ -553,7 +591,18 @@ export default class Swarm extends View {
     const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
       : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first"]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
+    const form = this.adding ? this.group(t, "new-task").px(12).py(10).gap(8)
+      .child(div().text_size(12.5).font_semibold().child("New task"))
+      .child(h_flex().child(this.field(t, "nt-title", this.in.title)))
+      .child(h_flex().child(this.field(t, "nt-body", this.in.body)))
+      .when(this.moreOpts, el => el.child(h_flex().gap(8).child(this.field(t, "nt-after", this.in.after)).child(this.field(t, "nt-model", this.in.model))))
+      .child(h_flex().gap(8).items_center()
+        .child(this.more(t, "nt-more", this.moreOpts ? "Fewer options" : "More options", cx => { this.moreOpts = !this.moreOpts; cx.notify(); })).child(div().flex_1())
+        .child(this.btn(t, "nt-cancel", "Cancel", cx => { this.adding = false; cx.notify(); }))
+        .child(this.btn(t, "nt-add", "Add task", cx => this.addTask(cx)).bg(t.solid).text_color(t.solid_foreground).border_color(t.solid)))
+      : h_flex().child(this.btn(t, "nt-open", "+ New task", cx => { this.adding = true; this.in.title.focus(); cx.notify(); })).child(div().flex_1());
     return v_flex().gap(10)
+      .child(form)
       .child(this.seg(t, "bf", [["active", "Active", by("blocked").length + by("claimed").length + open.length], ["done", "Done", by("done").length], ["dropped", "Dropped", by("dropped").length]], f,
         (id, cx) => { this.r.f = id; this.landed(cx); }))
       .children(sets.map(([label, ks, note]) => v_flex().child(this.title(t, label, note ? `${ks.length} · ${note}` : ks.length))
@@ -595,9 +644,10 @@ export default class Swarm extends View {
       .child(v_flex().gap(7).px(2)
         .child(h_flex().gap(8).items_center().child(this.chip(t, this.taskWord(k), this.taskColor(t, k), true)).child(div().text_size(11).text_color(t.dim).child(`#${k.id}`)))
         .child(div().text_size(16).line_height("22px").font_semibold().whitespace_normal().child(k.title))
-        .when(live && Boolean(k.owner), el => el.child(h_flex().pt(3).gap(8)
-          .when(Boolean(addr), el => el.child(this.btn(t, "t-focus", `Open ${k.owner}'s terminal ↗`, () => run("agent.focus", { terminal: addr }))))
-          .child(this.danger(t, "t-release", "Release task…", () => this.askRelease(k))))))
+        .when(live || k.state === "open", el => el.child(h_flex().pt(3).gap(8).flex_wrap()
+          .when(live && Boolean(addr), el => el.child(this.btn(t, "t-focus", `Open ${k.owner}'s terminal ↗`, () => run("agent.focus", { terminal: addr }))))
+          .when(live && Boolean(k.owner), el => el.child(this.danger(t, "t-release", "Release task…", () => this.askRelease(k))))
+          .child(this.danger(t, "t-drop", "Drop task…", () => this.askDrop(k))))))
       .when(k.state === "blocked", el => el.child(this.group(t, "t-q", true).px(12).py(10).gap(5)
         .child(div().text_size(11).font_semibold().text_color(t.blocked).child(`${k.owner} asks`))
         .child(div().line_height("18px").whitespace_normal().child(k.question ?? ""))
@@ -622,35 +672,28 @@ export default class Swarm extends View {
   moreScreen(t, d) {
     const tab = this.r.tab;
     return v_flex()
-      .child(div().px(12).child(this.seg(t, "more", [["activity", "Activity"], ["system", "System"]], tab, (id, cx) => { this.r.tab = id; this.landed(cx); })))
-      .when(tab === "activity", el => el.child(div().px(12).pt(10).child(this.filters(t, d))))
+      .child(div().px(16).child(this.seg(t, "more", [["activity", "Activity"], ["system", "System"]], tab, (id, cx) => { this.r.tab = id; this.landed(cx); })))
+      .when(tab === "activity", el => el.child(div().px(16).pt(10).child(this.filters(t, d))))
       .child(tab === "activity" ? this.activity(t, d) : this.system(t, d));
   }
 
+  // Activity: Summary | Full log first, the filters, then the key's toggle at the end.
   filters(t, d) {
-    const s = this.s, board = this.tab === "board";
-    const opts = board
-      ? [["all", "All", s.tasks.length], ["active", "Active", d.count("blocked") + d.count("claimed") + d.count("open")], ["done", "Done", d.count("done")], ["dropped", "Dropped", d.count("dropped")]]
-      : [["all", "All"], ["you", "Needs you", this.actRows(t, d, "you").length], ["tasks", "Tasks"], ["code", "Code"], ["agents", "Agents"], ["messages", "Messages"], ["machine", "Machine"]];
-    const cur = board ? this.boardFilter : this.actFilter;
-    // Activity: Summary | Full log first, the filters, then the key's toggle at the end.
-    const view = (id, label, log, tip) => div().id(id).h(20).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer().tooltip(tip)
-      .bg(Boolean(this.actLog) === log ? t.selected : t.background).text_color(Boolean(this.actLog) === log ? t.foreground : t.muted)
-      .hover(st => st.bg(t.hover)).on_click((_e, cx) => { this.actLog = log; cx.notify(); }).child(label);
+    const opts = [["all", "All"], ["you", "Needs you", this.actRows(t, d, "you").length], ["tasks", "Tasks"], ["code", "Code"], ["agents", "Agents"], ["messages", "Messages"], ["machine", "Machine"]];
+    const pill = (id, label, on, pick) => h_flex().id(id).h(24).px(9).gap(5).items_center().rounded(6).border_1().border_color(t.border)
+      .bg(on ? t.selected : t.background).text_size(11).text_color(on ? t.foreground : t.muted).cursor_pointer().hover(st => st.bg(t.hover))
+      .on_click((_e, cx) => { pick(); cx.notify(); }).child(label);
     return h_flex().gap(4).items_center().flex_wrap()
-      .when(!board, el => el.child(h_flex().flex_none().mr(6).p(1).gap(1).rounded(5).border_1().border_color(t.border)
-        .child(view("v-sum", "Summary", false, "What happened, in plain words. Routine events are left to the full log."))
-        .child(view("v-log", "Full log", true, "Every event and message, with its raw kind. Nothing folded or hidden."))))
-      .children(opts.map(([id, label, n]) => h_flex().id(`f-${id}`).h(22).px(9).gap(5).items_center().rounded(4).border_1().border_color(t.border)
-        .bg(id === cur ? t.selected : t.background).text_size(11).text_color(id === cur ? t.foreground : t.muted).cursor_pointer().hover(st => st.bg(t.hover))
-        .on_click((_e, cx) => { if (board) this.boardFilter = id; else this.actFilter = id; cx.notify(); })
-        .child(board ? `${label} ${n}` : label).when(!board && n != null && n > 0, el => el.child(div().text_size(10).text_color(id === "you" ? t.blocked : t.dim).child(String(n))))))
-      .when(!board, el => el.child(div().flex_1()).child(this.link(t, "key-toggle", this.open.key ? "Hide key" : "What these mean", cx => { this.open.key = !this.open.key; cx.notify(); }).pl(8)));
+      .child(pill("v-sum", "Summary", !this.actLog, () => { this.actLog = false; }).tooltip("What happened, in plain words. Routine events are left to the full log."))
+      .child(pill("v-log", "Full log", Boolean(this.actLog), () => { this.actLog = true; }).mr(8).tooltip("Every event and message, with its raw kind. Nothing folded or hidden."))
+      .children(opts.map(([id, label, n]) => pill(`f-${id}`, label, id === this.actFilter, () => { this.actFilter = id; })
+        .when(n > 0, el => el.child(div().text_size(11).text_color(id === "you" ? t.blocked : t.dim).child(String(n))))))
+      .child(div().flex_1()).child(this.more(t, "key-toggle", this.open.key ? "Hide key" : "What these mean", cx => { this.open.key = !this.open.key; cx.notify(); }).pl(8));
   }
 
   fileRow(t, f) {
     const i = f.lastIndexOf("/") + 1;
-    return this.mono(h_flex().h(18).min_w(0).text_size(10.5).truncate()
+    return this.mono(h_flex().h(18).min_w(0).text_size(11).truncate()
       .child(div().flex_none().text_color(t.dim).child(f.slice(0, i))).child(div().truncate().min_w(0).text_color(t.muted).child(f.slice(i))));
   }
 
@@ -676,7 +719,11 @@ export default class Swarm extends View {
           .when(Boolean(a.role), el => el.child(div().min_w(0).flex_shrink(1).overflow_hidden().child(this.chip(t, a.role, t.ansi4, true)))))
         .when(!ended, el => el.child(h_flex().gap(8)
           .when(Boolean(addr), el => el.child(this.btn(t, "a-focus", "Open terminal ↗", () => run("agent.focus", { terminal: addr }))))
-          .when(!isComms, el => el.child(this.danger(t, "a-end", "End agent…", () => this.askEnd(a)))))))
+          .when(a.stay_sign === "hung" || (a.status === "idle" && Boolean(a.task)), el => el.child(this.nudgeBtn(t, a)))
+          .when(!isComms, el => el.child(this.danger(t, "a-end", "End agent…", () => this.askEnd(a)))))
+          .child(h_flex().gap(8).items_center().child(this.field(t, "a-msg", this.in.msg))
+            .child(this.tick(t, "a-urgent", "Urgent", this.urgent, cx => { this.urgent = !this.urgent; cx.notify(); }).tooltip("Wakes it at once, even with a cold cache."))
+            .child(this.btn(t, "a-send", "Send", cx => this.sendMsg(cx))))))
       .when(Boolean(sign), el => el.child(this.group(t, "a-sign", sign[2]).px(12).py(10).child(div().line_height("17px").whitespace_normal().text_color(sign[2] ? t.foreground : t.ansi3).child(sign[1]))))
       .child(v_flex().child(this.title(t, "Working on"))
         .child(task ? this.group(t, "a-task", task.state === "blocked").child(this.taskRow(t, task, 0))
@@ -689,7 +736,8 @@ export default class Swarm extends View {
           .children(a.fate.checks.map((c, i) => this.row(t, `a-fate-${i}`, 1).h(30).text_size(12)
             .child(this.dot(c.on ? t.ansi3 : t.selected, 7))
             .child(div().flex_none().text_color(c.on ? t.foreground : t.dim).child(c.label))
-            .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.dim).child(c.detail ?? "")))))))
+            .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.dim).child(c.detail ?? ""))
+            .when(c.label === "Stays" && c.on && !isComms, el => el.child(this.danger(t, "a-stay-end", "End its stay…", () => this.askStayEnd(a)).h(22))))))))
       .child(this.facts(t, "a-facts", [
         a.stay ? ["Waits for", a.stay] : null,
         ["Model", [a.model ?? "?", a.started ? `started ${hhmm(a.started)}` : null, a.hc ? `terminal ${a.hc}` : null].filter(Boolean).join(" · ")],
@@ -853,26 +901,26 @@ export default class Swarm extends View {
     const text = `${fold ? i.who + " " : ""}${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
     const tip = `${k.label}: ${k.what}${i.full?.length > 1 ? `\n\n${i.full.join("\n")}` : log && text.length > 70 ? `\n\n${text}` : ""}`;
     const [tailText, tailEl] = log ? [] : hot ? ["needs you", this.chip(t, "needs you", t.blocked, true)]
-      : k.level === "you" ? ["answered", div().flex_none().text_size(10.5).text_color(t.dim).child("answered")]
+      : k.level === "you" ? ["answered", div().flex_none().text_size(11).text_color(t.dim).child("answered")]
       : k.level === "warn" && i.open ? (x => [x, this.chip(t, x, t.ansi3)])(i.kind === "pressure" || i.kind === "spawn-held" ? "ongoing" : "unresolved")
       : i.chip ? [i.chip, this.chip(t, i.chip, i.chip.startsWith("PR") ? t.ansi2 : null)] : [];
     const meta = i.meta && !narrow && (!tailEl || k.group === "messages") ? i.meta : null;
     // Text column: panel minus border, list and row padding, a scrollbar's room, time, icon, who and tails;
-    // glyphs at 11.5px measured 5.1-5.4 wide on average in 320-860 shots; 5.6 errs high, never low.
-    const textW = W - 2 - 24 - 20 - 8 - (34 + 10) - (14 + 10) - (fold ? 0 : whoW + 10) - (log && !narrow ? 106 : 0)
+    // glyphs at 11.5px measured 5.1-5.4 wide on average in 320-860 shots; 5.6 errs high, never low (6.1 at 12.5px).
+    const textW = W - 2 - 12 - 20 - 8 - (34 + 10) - (14 + 10) - (fold ? 0 : whoW + 10) - (log && !narrow ? 106 : 0)
       - (tailText ? tailText.length * 6 + 22 : 0) - (meta ? meta.length * 6 + 10 : 0);
-    const n = log ? 1 : wrapLines(text, textW, 5.6), h = n * 16 + 10;
-    const lead = el => el.h(16).flex().items_center();
-    const el = h_flex().id(`act-${i.key}`).h(h).px(10).py(5).gap(10).items_start().w_full().min_w(0).rounded(5)
+    const n = log ? 1 : wrapLines(text, textW, 6.1), h = n * 17 + 10;
+    const lead = el => el.h(17).flex().items_center();
+    const el = h_flex().id(`act-${i.key}`).h(h).px(10).py(5).gap(10).items_start().w_full().min_w(0).rounded(6)
       .when(hot, el => el.bg(t.blocked + "14")).hover(st => st.bg(hot ? t.blocked + "1f" : t.surface))
       .child(lead(div().w(34).flex_none().text_size(11).text_color(t.dim)).child(hhmm(i.ts)))
       .child(lead(div().flex_none()).child(this.icon(t, i)))
       .when(!fold, el => el.child(lead(div().w(whoW).flex_none().min_w(0)).child(div().truncate().text_size(11).text_color(t.muted).child(who))))
-      .when(log && !narrow, el => el.child(lead(div().w(96).flex_none().min_w(0)).child(this.mono(div().truncate().text_size(10.5).text_color(t.dim).child(i.raw)))))
-      .child(div().flex_1().min_w(0).line_height("16px").text_size(11.5).when(log, el => el.truncate()).when(!log, el => el.whitespace_normal())
+      .when(log && !narrow, el => el.child(lead(div().w(96).flex_none().min_w(0)).child(this.mono(div().truncate().text_size(11).text_color(t.dim).child(i.raw)))))
+      .child(div().flex_1().min_w(0).line_height("17px").text_size(12.5).when(log, el => el.truncate()).when(!log, el => el.whitespace_normal())
         .text_color(hot || (k.level === "warn" && i.open !== false) || k.group === "messages" ? t.foreground : t.muted).child(text))
       .when(Boolean(tailEl), el => el.child(lead(div().flex_none()).child(tailEl)))
-      .when(Boolean(meta), el => el.child(lead(div().flex_none().text_size(10.5).text_color(t.dim)).child(meta)));
+      .when(Boolean(meta), el => el.child(lead(div().flex_none().text_size(11).text_color(t.dim)).child(meta)));
     const card = v_flex().max_w(W - 48).px(8).py(6).gap(2).rounded(6).bg(t.surface).border_1().border_color(t.border)
       .text_size(11).line_height("16px").children(tip.split("\n").map(l => l ? div().whitespace_normal().child(l) : div().h(4)));
     return { h, el: HoverCard.new(`tip-${i.key}`).anchor("top_left").open_delay(500).trigger(el).content(card) };
@@ -881,14 +929,14 @@ export default class Swarm extends View {
   // The key: each kind on screen with its icon, name and meaning (the row tooltips say the same).
   actKey(t, items) {
     const kinds = Object.keys(KIND).filter(k => items.some(i => i.kind === k));
-    return v_flex().id("act-key").mb(8).px(12).py(10).gap(6).rounded(8).bg(t.surface).border_1().border_color(t.border)
-      .child(h_flex().gap(8).items_center().child(div().text_size(12).font_semibold().child("What these mean"))
-        .child(div().text_size(10.5).text_color(t.dim).child("kinds in this view")).child(div().flex_1())
-        .child(this.link(t, "key-hide", "Hide", cx => { this.open.key = false; cx.notify(); })))
+    return this.group(t, "act-key").mx(10).mb(8).px(12).py(10).gap(6)
+      .child(h_flex().gap(8).items_center().child(div().text_size(12.5).font_semibold().child("What these mean"))
+        .child(div().text_size(11).text_color(t.dim).child("kinds in this view")).child(div().flex_1())
+        .child(this.more(t, "key-hide", "Hide", cx => { this.open.key = false; cx.notify(); })))
       .when(!kinds.length, el => el.child(div().text_size(11).text_color(t.dim).child("Nothing in this view")))
       .children(kinds.map(k => h_flex().items_start().gap(10).min_w(0)
         .child(div().pt(1).flex_none().child(this.icon(t, { kind: k, open: true })))
-        .child(div().w(this.width < 520 ? 92 : 124).flex_none().text_size(11.5).child(KIND[k].label))
+        .child(div().w(this.width < 520 ? 92 : 124).flex_none().text_size(12).child(KIND[k].label))
         .child(div().flex_1().min_w(0).whitespace_normal().line_height("16px").text_size(11).text_color(t.muted).child(KIND[k].what))));
   }
 
@@ -900,12 +948,12 @@ export default class Swarm extends View {
       const h = hhmm(i.ts).slice(0, 2);
       if (h !== hour) {
         hour = h;
-        rows.push({ key: `hr${i.ts}`, h: 28, el: h_flex().h(28).px(10).pt(8).gap(10).items_center().text_size(10.5).text_color(t.dim).child(`${h}:00`).child(div().flex_1().h(1).bg(t.border)) });
+        rows.push({ key: `hr${i.ts}`, h: 28, el: h_flex().h(28).px(10).pt(8).gap(10).items_center().text_size(11).text_color(t.dim).child(`${h}:00`).child(div().flex_1().h(1).bg(t.border)) });
       }
       rows.push({ key: i.key, ...this.actRow(t, d, i, log) });
     }
-    if (!rows.length) rows.push({ key: "none", h: 30, el: div().px(10).py(8).text_size(11).text_color(t.dim).child(this.actFilter === "you" ? "Nothing needs you right now." : "Nothing here yet") });
-    return div().px(12).pt(4).pb(8).when(Boolean(this.open.key), el => el.child(this.actKey(t, all)))
+    if (!rows.length) rows.push({ key: "none", h: 30, el: div().px(10).py(8).text_size(12).text_color(t.dim).child(this.actFilter === "you" ? "Nothing needs you right now." : "Nothing here yet") });
+    return div().px(6).pt(6).pb(8).when(Boolean(this.open.key), el => el.child(this.actKey(t, all)))
       .child(this.list(`act-${log ? "log" : "sum"}-${this.actFilter}`, rows));
   }
 
@@ -915,123 +963,121 @@ export default class Swarm extends View {
     const c = !r.length ? null : r.some(c => ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"].includes(c.conclusion ?? c.state)) ? ["failing", t.blocked]
       : r.some(c => c.status && c.status !== "COMPLETED" || c.state === "PENDING") ? ["running", t.ansi3] : ["passing", t.ansi2];
     const agent = withAgent && this.s.agents.find(a => (a.branch ?? base(a.worktree)) === p.headRefName);
-    return h_flex().id(`pr-${p.number}`).h(26).px(6).gap(8).items_center().rounded(6).text_size(11.5).min_w(0).cursor_pointer().hover(s => s.bg(t.hover))
+    return h_flex().id(`pr-${p.number}`).h(30).px(12).gap(8).items_center().text_size(12).min_w(0).cursor_pointer().hover(s => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); openUrl(p.url); })
       .child(div().text_color(t.dim).flex_none().child(`#${p.number}`))
       .child(div().flex_1().min_w(0).truncate().child(p.title))
-      .when(withAgent, el => el.child(div().flex_none().max_w(90).truncate().text_size(10.5).text_color(agent ? t.foreground : t.dim).child(agent ? agent.name : p.headRefName)))
+      .when(withAgent, el => el.child(div().flex_none().max_w(90).truncate().text_size(11).text_color(agent ? t.foreground : t.dim).child(agent ? agent.name : p.headRefName)))
       .when(p.isDraft, el => el.child(this.chip(t, "draft")))
       .when(p.reviewDecision === "APPROVED", el => el.child(this.chip(t, "approved", t.ansi2)))
       .when(p.reviewDecision === "CHANGES_REQUESTED", el => el.child(this.chip(t, "changes", t.ansi3)))
       .when(Boolean(c), el => el.child(this.chip(t, c[0], c[1], true)));
   }
 
+  // Each part is a titled group, as on the other screens; a problem here also shows in Needs you.
   system(t, d) {
-    const s = this.s, m = s.machine, two = this.width >= 700, runs = this.runs;
-    const latest = runs?.find(r => r.status === "completed"), red = d.reds > 0;
-    const state = !runs ? null : runs[0] && runs[0].status !== "completed" ? ["running", t.ansi3] : !latest ? null : red ? ["red", t.blocked] : latest.conclusion === "success" ? ["green", t.ansi2] : [latest.conclusion, t.ansi3];
-    const ci = this.card(t, "ci", red).gap(4)
-      .child(h_flex().pb(6).gap(6).items_center().child(div().text_size(12).font_semibold().child("CI on main")).when(Boolean(state), el => el.child(this.chip(t, state[0], state[1], true)))
-        .child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child(red ? `${plural(d.reds, "red run")} since ${hhmm(iso(d.redRuns.at(-1).createdAt))}` : "")))
-      .when(!runs, el => el.child(div().text_size(11).text_color(t.dim).child(this.prLoading ? "…" : "No CI data (gh not available here)")))
-      .when(Boolean(runs) && !runs?.length, el => el.child(div().text_size(11).text_color(t.dim).child("No runs on main")))
-      .children((runs ?? []).slice(0, 5).map(r => {
-        const bad = r.status === "completed" && r.conclusion !== "success", n = d.told(r.databaseId);
-        return h_flex().id(`run-${r.databaseId}`).h(30).px(6).gap(10).items_center().rounded(6).text_size(11.5).min_w(0).cursor_pointer().hover(st => st.bg(t.hover))
-          .on_click(() => openUrl(r.url))
-          .child(div().w(14).flex_none().text_color(r.status !== "completed" ? t.ansi3 : r.conclusion === "failure" ? t.blocked : bad ? t.dim : t.ansi2)
-            .child(r.status !== "completed" ? "●" : r.conclusion === "failure" ? "✕" : bad ? "–" : "✓"))
-          .when(this.width >= 520, el => el.child(this.mono(div().flex_none().text_size(11).child(String(r.databaseId)))))
-          .child(div().w(40).flex_none().text_color(t.dim).child(hhmm(iso(r.createdAt))))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${r.displayTitle}${n ? ` · told ${plural(n, "agent")}` : ""}`))
-          .child(div().flex_none().text_size(10.5).text_color(t.dim).child("Open run ↗"));
-      }))
-      .when(red && Boolean(d.fix), el => el.child(h_flex().id("ci-owner").mt(6).h(34).px(8).gap(8).items_center().min_w(0).rounded(7).bg(t.hover).border_1().border_color(t.border)
-        .cursor_pointer().on_click((_e, cx) => this.go("agents", cx, d.fix.owner))
-        .child(div().flex_none().text_color(t.dim).child("Owner")).child(div().flex_none().font_semibold().child(d.fix.owner))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`#${d.fix.id} ${d.fix.title}`)).child(this.chev(t, "right"))));
-    const prs = this.card(t, "prs").gap(6)
-      .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Pull requests")).child(div().flex_1())
-        .child(div().text_size(10.5).text_color(t.dim).child(this.prs ? `${this.prs.length} open` : this.prLoading ? "…" : "")))
-      .when(!this.prs, el => el.child(div().text_size(11).text_color(t.dim).child(this.prLoading ? "…" : "No PR data (gh not available here)")))
-      .when(Boolean(this.prs) && !this.prs?.length, el => el.child(div().text_size(11).text_color(t.dim).child("No open PRs")))
-      .children((this.prs ?? []).map(p => this.prRow(t, p, true)));
-    const c = d.commsAgent, staff = this.staffing(t), refused = (s.events ?? []).filter(e => e.kind === "spawn-refused").slice(0, 3);
-    const comms = this.card(t, "staff").gap(8).when(Boolean(s.limits?.held), el => el.border_color(t.ansi3 + "88"))
-      .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Staffing"))
-        .when(Boolean(s.limits?.held), el => el.child(this.chip(t, "holding", t.ansi3, true)))
-        .child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child("swarm limits")))
-      .child(staff ?? div().text_size(11).text_color(t.dim).child(`${d.live.length} live. No auto-spawn number or max set.`))
-      .children(refused.map(e => h_flex().h(20).gap(8).items_center().text_size(11).min_w(0)
-        .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(e.ts)))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent} ${evLine(e).text}`))))
-      .child(d.comms
-        ? h_flex().pt(7).gap(8).items_center().text_size(11.5).min_w(0).border_t(1).border_color(t.border).child(this.k(t, "Comms")).child(div().flex_none().font_semibold().child(d.comms))
-          .child(div().truncate().min_w(0).text_color(t.dim).child(["not counted", c?.hc ? `terminal ${c.hc}` : null, c?.started ? `started ${hhmm(c.started)}` : null].filter(Boolean).join(" · ")))
-        : div().text_size(11).text_color(t.dim).child("No comms recorded"))
-      .child(div().text_size(10.5).line_height("15px").whitespace_normal().text_color(t.dim)
-        .child("The communicator sets both numbers on your word. Auto-spawn staffs startable tasks up to the first; every spawn refuses at the max."));
+    const s = this.s, m = s.machine, two = this.width >= 700, small = this.width < 520;
+    const part = (label, note, right, g) => v_flex().min_w(0).child(this.title(t, label, note, right)).child(g);
+    const dim = text => div().text_size(11).text_color(t.dim).child(text), lab = text => div().flex_none().text_size(11).text_color(t.dim).child(text);
+    const pad = (id, red) => this.group(t, id, red).px(12).py(10).gap(6);
+    const line = (key, i, open) => this.row(t, key, i, open).h(30).text_size(12);
+    const red = d.reds > 0, runs = d.runs;
+    const ci = part("CI on main", red ? `${plural(d.reds, "red run")} in a row` : !s.ci ? "" : "from watchd's polls", d.ci && this.chip(t, d.ci[0], t[d.ci[1]], true),
+      !runs.length ? this.empty(t, s.ci ? "No runs seen on main yet" : "No CI data: this swarm's CLI is older than the panel")
+      : this.group(t, "ci", red)
+        .children(runs.map((r, i) => {
+          const live = r.status !== "completed", bad = !live && r.conclusion !== "success", n = d.told(r.id);
+          return line(`run-${r.id}`, i, () => openUrl(r.url))
+            .child(div().w(12).flex_none().text_color(live ? t.ansi3 : r.conclusion === "failure" ? t.blocked : bad ? t.dim : t.ansi2).child(live ? "●" : r.conclusion === "failure" ? "✕" : bad ? "–" : "✓"))
+            .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(iso(r.created))))
+            .child(this.mono(div().flex_none().text_size(11.5).child(String(r.id))))
+            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${live ? r.status.replace("_", " ") : r.conclusion ?? "?"}${n ? ` · told ${plural(n, "agent")}` : ""}`))
+            .child(dim("Open run ↗"));
+        }))
+        .when(red, el => el.child(h_flex().px(12).py(8).gap(8).items_center().min_w(0).border_t(1).border_color(t.border)
+          .child(d.fix ? h_flex().id("ci-owner").flex_1().min_w(0).gap(6).text_size(12).cursor_pointer().hover(st => st.text_color(t.accent)).on_click((_e, cx) => this.push({ s: "agent", name: d.fix.owner }, cx))
+              .child(div().flex_none().font_semibold().child(d.fix.owner)).child(div().truncate().min_w(0).text_color(t.muted).child(`is fixing it: #${d.fix.id} ${d.fix.title}`))
+            : div().flex_1().min_w(0).text_size(12).text_color(t.muted).child("Nobody is on it yet"))
+          .child(this.danger(t, "ci-rerun", "Re-run failed jobs…", () => this.askRerun(d.redRun.id))))));
+    const w = s.watchd, wOk = w?.alive && !w.stale;
+    const watchd = part("watchd", "the swarm's daemon: reaps, spawns, tells", w ? this.chip(t, !w.alive ? "not running" : w.stale ? "older than the code" : "running", !w.alive ? t.blocked : w.stale ? t.ansi3 : t.ansi2, !wOk) : null,
+      !w ? this.empty(t, s.watchd === undefined ? "No watchd reading: this swarm's CLI is older than the panel" : "No watchd has run for this swarm")
+      : pad("watchd", !w.alive)
+        .child(div().text_size(12).line_height("17px").whitespace_normal().text_color(wOk ? t.muted : t.foreground)
+          .child(!w.alive ? `watchd (pid ${w.pid}) is not running: nothing is reaped, spawned or told until it runs again.`
+            : `${w.stale ? "The swarm's code changed after this watchd started; restart it to run the new code. " : ""}pid ${w.pid}${w.started ? ` · started ${hhmm(w.started)}` : ""}${w.terminal ? ` · terminal ${w.terminal}` : ""}`))
+        .when(Boolean(w.flags?.length), el => el.child(this.mono(div().truncate().text_size(11).text_color(t.dim).child(`watchd ${w.flags.join(" ")}`))))
+        .child(h_flex().pt(2).child(this.danger(t, "watchd-restart", "Restart watchd…", () => this.askWatchd()))));
+    const prs = part("Pull requests", this.prs ? `${this.prs.length} open` : "", null,
+      !this.prs?.length ? this.empty(t, this.prs ? "No open PRs" : this.prLoading ? "…" : "No PR data (gh is not available here)")
+      : this.group(t, "prs").children(this.prs.map((p, i) => this.prRow(t, p, true).when(i > 0, el => el.border_t(1).border_color(t.border)))));
+    const c = d.commsAgent, refused = (s.events ?? []).filter(e => e.kind === "spawn-refused").slice(0, 3);
+    const staff = part("Staffing", `${d.live.length} running`, s.limits?.held ? this.chip(t, "holding", t.ansi3, true) : null,
+      pad("staff").gap(8).child(this.staffing(t))
+        .children(refused.map(e => h_flex().h(20).gap(8).items_center().text_size(11).min_w(0)
+          .child(div().w(34).flex_none().text_color(t.dim).child(hhmm(e.ts)))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent} ${evLine(e).text}`))))
+        .child(h_flex().pt(8).gap(8).items_center().text_size(12).min_w(0).border_t(1).border_color(t.border).child(lab("Communicator"))
+          .child(d.comms ? div().flex_none().font_semibold().child(d.comms) : dim("none recorded"))
+          .child(div().truncate().min_w(0).text_size(11).text_color(t.dim).child(d.comms ? ["not counted", c?.hc ? `terminal ${c.hc}` : null, c?.started ? `started ${hhmm(c.started)}` : null].filter(Boolean).join(" · ") : "")))
+        .child(div().text_size(11).line_height("15px").whitespace_normal().text_color(t.dim)
+          .child("Auto-spawn staffs startable tasks up to the first number; every spawn refuses at the max. Pause stops auto-spawn and keeps the running agents.")));
     const tile = (label, value, color) => v_flex().flex_1().min_w(0).px(10).py(8).gap(3).rounded(8).bg(t.background).border_1().border_color(t.border)
-      .child(this.k(t, label)).child(div().text_size(15).font_semibold().text_color(color ?? t.foreground).child(value));
+      .child(lab(label)).child(div().text_size(16).font_semibold().text_color(color ?? t.foreground).child(value));
     const gb = kb => (kb / 1048576).toFixed(1);
-    const machine = this.card(t, "machine").gap(9)
-      .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Machine"))
-        .when(Boolean(m), el => el.child(this.chip(t, m.high ? "pressure" : "ok", m.high ? t.blocked : t.ansi2, m.high)))
-        .child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child(this.on ? this.on : "this computer")))
-      .when(!m, el => el.child(div().text_size(11).text_color(t.dim).child("No machine reading")))
-      .when(Boolean(m), el => el
-        .child(h_flex().gap(6).text_size(11.5).child(div().text_color(t.muted).child("Memory")).child(div().flex_1()).child(`${gb(m.avail_kb)}G free`).child(div().text_color(t.dim).child(`of ${gb(m.total_kb)}G`)))
-        .child(div().relative().h(6).rounded(3).bg(t.selected).child(div().absolute().left(0).top(0).h(6).rounded(3).bg(t.muted).w(`${Math.round((1 - m.avail_kb / m.total_kb) * 100)}%`)))
-        .child(h_flex().gap(8).child(m.psi.level ? tile("mem pressure", m.psi.level) : tile("mem pressure", `${m.psi.memory}%`)).child(m.psi.level ? tile("load", `${m.psi.load} on ${m.psi.cores}`) : tile("cpu pressure", `${m.psi.cpu}%`)).child(tile("high", m.high ? "yes" : "no", m.high ? t.blocked : t.ansi2))));
     // Memory per owner, measured: each agent's whole process tree, then other claude sessions on this machine.
     const costly = (s.costly ?? []).slice(0, 4), run = s.running ?? [], here = run.filter(j => !j.machine), away = run.filter(j => j.machine);
-    const most = Math.max(1, ...here.map(j => j.rss_kb ?? 0)), small = this.width < 520;
-    machine.when(here.length > 0, el => el
-      .child(h_flex().pt(3).gap(8).items_center().child(this.k(t, "Held by")).child(div().truncate().min_w(0).text_size(10.5).text_color(t.dim).child("each agent's whole process tree, and its biggest process")))
-      .children(here.slice(0, 7).map(j => {
-        const ag = s.agents.find(a => a.name === j.agent);
-        return h_flex().id(`held-${j.agent}`).h(22).px(4).gap(8).items_center().text_size(11.5).min_w(0).rounded(5)
-          .when(Boolean(ag), el => el.cursor_pointer().hover(st => st.bg(t.hover)).on_click((_e, cx) => this.go("agents", cx, j.agent)))
-          .child(div().w(small ? 64 : 84).flex_none().truncate().text_color(ag ? t.foreground : t.dim).child(ag ? j.agent : small ? "others" : "other sessions"))
-          .when(!small, el => el.child(div().relative().w(56).flex_none().h(4).rounded(2).bg(t.selected)
-            .child(div().absolute().left(0).top(0).h(4).rounded(2).bg(ag ? t.ansi4 : t.dim).w(`${Math.max(3, (j.rss_kb / most) * 100)}%`))))
-          .child(div().w(38).flex_none().text_right().child(`${gb(j.rss_kb)}G`))
-          .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(j.command ? `${j.command} ${gb(j.top_kb ?? 0)}G · ${ago(j.elapsed_s)}` : "its session only"));
-      }))
-      .when(here.length > 7, el => el.child(div().px(4).text_size(10.5).text_color(t.dim).child(`+${here.length - 7} more`))));
-    machine.when(away.length > 0, el => el
-      .child(div().pt(3).child(this.k(t, "On other machines")))
-      .children(away.slice(0, 6).map((j, i) => h_flex().id(`run-${i}`).h(22).px(4).gap(8).items_center().text_size(11.5).min_w(0)
-        .child(div().w(40).flex_none().text_color(t.dim).child(ago(j.elapsed_s))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${j.agent} · ${j.command}`))
-        .child(div().flex_none().text_color(j.lost ? t.blocked : t.dim).child(`${j.machine}${j.unreachable ? " unreachable" : j.lost ? " lost" : j.rss_kb != null ? ` · ${gb(j.rss_kb)}G` : ""}`)))));
+    const most = Math.max(1, ...here.map(j => j.rss_kb ?? 0));
+    const machine = part("Machine", this.on ? this.on : "this computer", m ? this.chip(t, m.high ? "pressure" : "ok", m.high ? t.blocked : t.ansi2, m.high) : null,
+      !m ? this.empty(t, "No machine reading")
+      : pad("machine", m.high).gap(9)
+        .child(h_flex().gap(6).text_size(12).child(div().text_color(t.muted).child("Memory")).child(div().flex_1()).child(`${gb(m.avail_kb)}G free`).child(div().text_color(t.dim).child(`of ${gb(m.total_kb)}G`)))
+        .child(div().relative().h(6).rounded(3).bg(t.selected).child(div().absolute().left(0).top(0).h(6).rounded(3).bg(t.muted).w(`${Math.round((1 - m.avail_kb / m.total_kb) * 100)}%`)))
+        .child(h_flex().gap(8).child(m.psi.level ? tile("Memory pressure", m.psi.level) : tile("Memory pressure", `${m.psi.memory}%`)).child(m.psi.level ? tile("Load", `${m.psi.load} on ${m.psi.cores}`) : tile("CPU pressure", `${m.psi.cpu}%`)).child(tile("High", m.high ? "yes" : "no", m.high ? t.blocked : t.ansi2)))
+        .when(here.length > 0, el => el
+          .child(h_flex().pt(3).gap(8).items_center().child(lab("Held by")).child(div().truncate().min_w(0).text_size(11).text_color(t.dim).child("each agent's whole process tree, and its biggest process")))
+          .children(here.slice(0, 7).map(j => {
+            const ag = s.agents.find(a => a.name === j.agent);
+            return h_flex().id(`held-${j.agent}`).h(24).gap(8).items_center().text_size(12).min_w(0).rounded(5)
+              .when(Boolean(ag), el => el.cursor_pointer().hover(st => st.bg(t.hover)).on_click((_e, cx) => this.push({ s: "agent", name: j.agent }, cx)))
+              .child(div().w(small ? 64 : 84).flex_none().truncate().text_color(ag ? t.foreground : t.dim).child(ag ? j.agent : small ? "others" : "other sessions"))
+              .when(!small, el => el.child(div().relative().w(56).flex_none().h(4).rounded(2).bg(t.selected)
+                .child(div().absolute().left(0).top(0).h(4).rounded(2).bg(ag ? t.ansi4 : t.dim).w(`${Math.max(3, (j.rss_kb / most) * 100)}%`))))
+              .child(div().w(40).flex_none().text_right().child(`${gb(j.rss_kb)}G`))
+              .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(j.command ? `${j.command} ${gb(j.top_kb ?? 0)}G · ${ago(j.elapsed_s)}` : "its session only"));
+          }))
+          .when(here.length > 7, el => el.child(dim(`+${here.length - 7} more`))))
+        .when(away.length > 0, el => el
+          .child(div().pt(3).child(lab("On other machines")))
+          .children(away.slice(0, 6).map((j, i) => h_flex().id(`away-${i}`).h(24).gap(8).items_center().text_size(12).min_w(0)
+            .child(div().w(40).flex_none().text_color(t.dim).child(ago(j.elapsed_s))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${j.agent} · ${j.command}`))
+            .child(div().flex_none().text_color(j.lost ? t.blocked : t.dim).child(`${j.machine}${j.unreachable ? " unreachable" : j.lost ? " lost" : j.rss_kb != null ? ` · ${gb(j.rss_kb)}G` : ""}`))))));
     // The cmd-cost history: what a build or test here has cost before (`swarm cost --top`), then the latest.
     const tops = s.cost_top ?? [], mins = sec => `${Math.max(1, Math.round(sec / 60))} min`;
-    const jobs = this.card(t, "jobs").gap(4)
-      .child(h_flex().pb(4).gap(6).items_center().child(div().text_size(12).font_semibold().child("Command cost")).child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child("this repo, this machine")))
-      .when(!tops.length && !costly.length, el => el.child(div().text_size(11).line_height("15px").whitespace_normal().text_color(t.dim).child("No history yet. The swarm records a command that runs a minute or takes 1G.")))
-      .when(tops.length > 0, el => el.child(h_flex().h(18).gap(8).items_center().child(this.k(t, "Most intensive")).child(div().flex_1())
-          .child(div().text_size(10).text_color(t.dim).child(small ? "PEAK" : "LONGEST · PEAK")))
-        .children(tops.map(r => h_flex().h(22).gap(8).items_center().text_size(11.5).min_w(0)
-          .child(this.mono(div().flex_shrink(1).min_w(0).truncate().text_size(11).child(r.key)))
-          .child(div().flex_none().text_size(10.5).text_color(t.dim).child(`×${r.n}`)).child(div().flex_1())
-          .when(!small, el => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(mins(r.wall_s))))
-          .child(div().w(42).flex_none().text_right().text_color(r.peak_kb >= 8 * 1048576 ? t.ansi3 : t.foreground).child(`${gb(r.peak_kb)}G`)))))
-      .when(costly.length > 0, el => el.child(div().h(18).mt(4).flex().items_center().child(this.k(t, "Latest")))
-        .children(costly.map(e => h_flex().h(22).gap(8).items_center().text_size(11.5).min_w(0)
-          .child(div().w(34).flex_none().text_size(10.5).text_color(t.dim).child(hhmm(e.ts)))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent ?? "?"} · ${one(e.cmd)}`))
-          .child(div().w(42).flex_none().text_right().text_color(t.dim).child(`${gb(e.peak_kb)}G`)))));
-    const line = (key, text, color) => div().id(key).h(20).truncate().text_size(11).text_color(color ?? t.muted).child(text);
+    const jobs = part("Command cost", "this repo, this machine", null,
+      !tops.length && !costly.length ? this.empty(t, "No history yet: a command is recorded once it runs a minute or takes 1G")
+      : pad("jobs").gap(4)
+        .when(tops.length > 0, el => el.child(h_flex().h(20).gap(8).items_center().child(lab("Most intensive")).child(div().flex_1()).child(lab(small ? "peak" : "longest · peak")))
+          .children(tops.map(r => h_flex().h(24).gap(8).items_center().text_size(12).min_w(0)
+            .child(this.mono(div().flex_shrink(1).min_w(0).truncate().text_size(11.5).child(r.key)))
+            .child(dim(`×${r.n}`)).child(div().flex_1())
+            .when(!small, el => el.child(dim(mins(r.wall_s))))
+            .child(div().w(42).flex_none().text_right().text_color(r.peak_kb >= 8 * 1048576 ? t.ansi3 : t.foreground).child(`${gb(r.peak_kb)}G`)))))
+        .when(costly.length > 0, el => el.child(div().h(20).mt(4).flex().items_center().child(lab("Latest")))
+          .children(costly.map(e => h_flex().h(24).gap(8).items_center().text_size(12).min_w(0)
+            .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(e.ts)))
+            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${e.agent ?? "?"} · ${one(e.cmd)}`))
+            .child(div().w(42).flex_none().text_right().text_color(t.dim).child(`${gb(e.peak_kb)}G`))))));
+    const row = (key, text, color) => div().id(key).h(22).truncate().text_size(12).text_color(color ?? t.muted).child(text);
     const calm = !s.locks.length && !s.conflicts.length && !s.pressure.length;
-    const locks = this.card(t, "locks").gap(8)
-      .child(h_flex().gap(6).items_center().child(div().text_size(12).font_semibold().child("Locks and conflicts")).child(div().flex_1()).child(div().text_size(10.5).text_color(t.dim).child(calm ? "all clear" : "")))
-      .child(h_flex().gap(8).child(tile("locks", String(s.locks.length))).child(tile("conflicts", String(s.conflicts.length), s.conflicts.length ? t.blocked : null)).child(tile("episodes", String(s.pressure.length), s.pressure.some(p => !p.end) ? t.blocked : null)))
-      .children(s.locks.map(l => line(`lock-${l.path}`, `🔒 ${l.path} · ${l.agent}${l.reason ? " · " + l.reason : ""}`)))
-      .children(s.conflicts.map(c => line(`cf-${c.a}-${c.b}-${c.path}`, `⚠ ${c.a} × ${c.b} · ${c.path} · ${ago(s.now - c.since)}`, t.blocked)))
-      .children(s.pressure.map(p => line(`pr-${p.start}`, `${hhmm(p.start)}–${p.end ? hhmm(p.end) : "now"} · ${p.line.replace(/^machine: /, "")}`, p.end ? t.dim : t.blocked)));
-    const left = v_flex().gap(12).min_w(0).child(ci).child(prs).child(comms), right = v_flex().gap(12).min_w(0).child(machine).child(jobs).child(locks);
-    return two ? h_flex().p(12).gap(14).items_start().child(left.flex_grow(1.15).flex_basis(0)).child(right.flex_grow(1).flex_basis(0))
-      : v_flex().p(12).gap(12).child(left).child(right);
+    const locks = part("Locks and conflicts", calm ? "all clear" : "", null, pad("locks").gap(8)
+      .child(h_flex().gap(8).child(tile("Locks", String(s.locks.length))).child(tile("Conflicts", String(s.conflicts.length), s.conflicts.length ? t.blocked : null)).child(tile("Memory episodes", String(s.pressure.length), s.pressure.some(p => !p.end) ? t.blocked : null)))
+      .children(s.locks.map(l => row(`lock-${l.path}`, `🔒 ${l.path} · ${l.agent}${l.reason ? " · " + l.reason : ""}`)))
+      .children(s.conflicts.map(c => row(`cf-${c.a}-${c.b}-${c.path}`, `⚠ ${c.a} × ${c.b} · ${c.path} · ${ago(s.now - c.since)}`, t.blocked)))
+      .children(s.pressure.map(p => row(`pr-${p.start}`, `${hhmm(p.start)}–${p.end ? hhmm(p.end) : "now"} · ${p.line.replace(/^machine: /, "")}`, p.end ? t.dim : t.blocked))));
+    const left = v_flex().gap(10).min_w(0).child(ci).child(watchd).child(prs).child(staff), right = v_flex().gap(10).min_w(0).child(machine).child(jobs).child(locks);
+    return two ? h_flex().px(16).pt(10).gap(16).items_start().child(left.flex_grow(1.15).flex_basis(0)).child(right.flex_grow(1).flex_basis(0))
+      : v_flex().px(16).pt(10).gap(10).child(left).child(right);
   }
 
   // ---- frame ---------------------------------------------------------------------------------
@@ -1039,7 +1085,7 @@ export default class Swarm extends View {
     const t = theme(), el = this.draw(t);
     if (this.visible()) {
       if (!this.loading && this.due()) this.refresh(cx);
-      if ((this.tab === "agents" || this.tab === "system") && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx);
+      if (Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx);
     }
     // Keys first drawn in this frame sit at their start values; a frame later they move, staggered.
     if (this.fresh.size && !this.entering) {
@@ -1067,7 +1113,7 @@ export default class Swarm extends View {
   navBar(t, d) {
     const s = this.s, r = this.r, cur = r.s === "task" ? "board" : r.s === "agent" ? "agents" : r.s;
     const need = this.needs(t, d).length, left = d.count("blocked") + d.count("claimed") + d.count("open"), tiny = this.width <= 340;
-    const alert = d.reds > 0 || s.conflicts.length > 0 || s.pressure.some(p => !p.end) || s.machine?.high;
+    const alert = d.reds > 0 || d.watchdDead || s.watchd?.stale || s.conflicts.length > 0 || s.pressure.some(p => !p.end) || s.machine?.high;
     const items = [["home", "Home", need || null, true], ["agents", "Agents", d.live.length], ["board", "Board", left], ["more", "More", alert ? "" : null, true]];
     const w = (this.width - 2 - 32 - 6) / 4, at = Math.max(0, items.findIndex(i => i[0] === cur));
     return div().flex_none().mx(16).mb(2).relative().h(34).rounded(9).bg(t.surface).border_1().border_color(t.border)
@@ -1092,7 +1138,7 @@ export default class Swarm extends View {
       return root.child(h_flex().h(48).flex_none().px(16).items_center().border_b(1).border_color(t.border).child(div().font_semibold().text_size(14).child("Swarm")))
         .child(note(this.error ?? (this.loading || !s ? "loading…" : "No live swarm in this repo")));
     }
-    const d = this.derive(), away = s.away;
+    const d = this.derive(), away = s.away, commsAddr = d.commsAgent && focusAddr(d.commsAgent);
     const toggle = h_flex().id("away").flex_none().h(28).pl(10).pr(5).gap(8).items_center().rounded(14).border_1().border_color(away ? t.accent : t.border).bg(away ? t.accent + "1c" : t.surface).cursor_pointer()
       .tooltip(away ? "You are away. Click when you are back." : "Going away? Questions will wait here instead of pinging you.")
       .on_click((_e, cx) => this.act(cx, away ? ["away", "--back"] : ["away"]))
@@ -1102,7 +1148,13 @@ export default class Swarm extends View {
     const head = h_flex().h(48).flex_none().px(16).gap(8).items_center().min_w(0)
       .child(div().flex_none().font_semibold().text_size(14).child("Swarm"))
       .child(div().truncate().min_w(0).text_size(12).text_color(t.dim).child(base(this.cwd)))
-      .child(div().flex_1()).child(toggle);
+      .when(Boolean(d.ci), el => el.child(h_flex().id("ci-dot").flex_none().gap(5).items_center().text_size(11).text_color(d.ci[0] === "green" ? t.dim : t[d.ci[1]]).cursor_pointer()
+        .tooltip(`main's CI: ${d.ci[0]}`).on_click((_e, cx) => this.push({ s: "more", tab: "system" }, cx))
+        .child(this.dot(t[d.ci[1]], 7)).when(this.width >= 420, el => el.child(d.ci[0]))))
+      .child(div().flex_1())
+      .when(Boolean(commsAddr), el => el.child(this.link(t, "comms-link", this.width >= 480 ? "Communicator ↗" : "Comms ↗", () => run("agent.focus", { terminal: commsAddr })).text_size(11).text_color(t.muted)
+        .tooltip("Open the communicator's terminal: your channel to the swarm.")))
+      .child(toggle);
     const prev = deep ? this.stack.at(-2) : null;
     const backRow = deep ? h_flex().flex_none().h(32).px(10).items_center().child(h_flex().id("back").h(24).px(6).gap(6).items_center().rounded(6).text_size(12).text_color(t.muted).cursor_pointer()
       .hover(st => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.back(cx))
