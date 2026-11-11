@@ -57,6 +57,13 @@ end
 
 -- ---------- reap ----------
 
+-- Whether owner row o keeps a claim past its lease (model Decide.lean, keepsL): live, and working, prompt-blocked or
+-- running a background job (bg), unless hc no longer lists its bound terminal (live_addrs: nil when hc can't tell).
+function M.keeps(o, bg, live_addrs)
+  return o ~= nil and o.ended == nil and (o.status ~= "idle" or bg)
+    and not (live_addrs ~= nil and nz(o.hc) ~= nil and not live_addrs[o.hc])
+end
+
 -- Reopen expired task leases, drop expired locks, end dead agents.
 -- live_addrs: set of live hc terminal addresses, or nil to skip the dead-agent check.
 function M.reap(c, live_addrs, t, comms)
@@ -65,8 +72,7 @@ function M.reap(c, live_addrs, t, comms)
   for _, r in ipairs(c:all("select * from task where state='claimed' and lease_until<?", t)) do
     local o = c:one("select * from agent where name=?", r.owner)
     if o and o.ended == nil and o.status == "idle" and not bg then bg = machine.bg_agents(c, machine.procs()) end
-    if o and o.ended == nil and (o.status ~= "idle" or bg[o.name])
-        and not (live_addrs and nz(o.hc) and not live_addrs[o.hc]) then
+    if M.keeps(o, o ~= nil and bg ~= nil and bg[o.name] == true, live_addrs) then
       -- a working, prompt-blocked or background-waiting owner past its lease: its work is live: tell the communicator, keep it
       if comms and not c:one("select 1 from event where kind='lease-late' and path=? and ts>?", d(r.id), t - M.LEASE) then
         db.log(c, r.owner, "lease-late", d(r.id))
@@ -420,6 +426,26 @@ function M.hung(c, t, comms, terms, opts)
   end
 end
 
+-- Lifecycle's verdict on live agent row a (model Decide.lean, fateL): nil, kept (staying, busy, idle under 2 min, in
+-- another swarm's or a busy terminal, holding a claim or lock, or, once its work is landed, running a background job);
+-- "unclean", idle but kept by work not on its bases; "reuse",
+-- small, the pool not empty and not passed over, its waiter alive; else "end". One that passed the work over, or whose
+-- waiter is gone (never wakes on a digest), is ended, not kept as a reason to spawn no one. x: its hc terminal;
+-- has_terms: hc answered; f: the reads, each made only when the verdict needs it.
+function M.fate(a, t, x, has_terms, f)
+  if nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120 or (x and nz(x.cwd) and not f.ours(x.cwd))
+      or (nz(a.hc) and has_terms and (not x or (x.status ~= "idle" and x.status ~= "done")))
+      or f.claims() or f.locks() then
+    return nil
+  end
+  if f.unlanded() then return "unclean" end
+  if f.job() then return nil end  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
+  if (a.ctx_tokens or 0) < agents.SMALL_CTX and f.pool > 0 and not f.passed_over() and a.waiter and f.alive(a.waiter) then
+    return "reuse"
+  end
+  return "end"
+end
+
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
   local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
@@ -472,24 +498,19 @@ function M.lifecycle(c, t, comms, terms, opts)
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
-    local x = nz(a.hc) and terms ~= nil and by[a.hc] or nil
-    if not (nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120 or (x and nz(x.cwd) and not ours(x.cwd))
-        or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
-        or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
-        or c:one("select 1 from lock where agent=?", n)) then
-      local held, B = M.unlanded(c, n, main, wts, all_wts)
-      if held then
-        M.unclean(c, a, held, B[1], t, comms)
-      elseif job(n) then  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
-      -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
-      -- not kept as a reason to spawn no one
-      elseif (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n)
-          and a.waiter and signal.kill(a.waiter, 0) == 0 then
-        reusable[#reusable + 1] = a
-      else
-        M.end_agent(c, a)
-      end
-    end
+    local held, B
+    local v = M.fate(a, t, nz(a.hc) and terms ~= nil and by[a.hc] or nil, terms ~= nil, {
+      ours = ours,
+      claims = function() return c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n) ~= nil end,
+      locks = function() return c:one("select 1 from lock where agent=?", n) ~= nil end,
+      unlanded = function() held, B = M.unlanded(c, n, main, wts, all_wts); return held ~= nil end,
+      job = function() return job(n) == true end,
+      pool = #pool,
+      passed_over = function() return passed_over(n) end,
+      alive = function(p) return signal.kill(p, 0) == 0 end })
+    if v == "unclean" then M.unclean(c, a, held, B[1], t, comms)
+    elseif v == "reuse" then reusable[#reusable + 1] = a
+    elseif v == "end" then M.end_agent(c, a) end
   end
   local ids = {}
   for i, r in ipairs(pool) do ids[i] = r.id end

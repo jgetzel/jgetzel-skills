@@ -137,6 +137,19 @@ function M.cmd_read(c)
   print(#rows > 0 and M.fmt_msgs(rows) or "no unread messages")
 end
 
+-- The waiter's decision on unread rows (model Decide.lean, wakesL): the rows that wake it and whether one is urgent, or
+-- nil. Notices ride along and never wake; an urgent message always wakes, others unless cold() (asked only then).
+function M.wakes(rows, cold)
+  local wake, urgent = {}, false
+  for _, r in ipairs(rows) do
+    if r.kind ~= "notice" or (r.urgent or 0) ~= 0 then
+      wake[#wake + 1] = r
+      urgent = urgent or (r.urgent or 0) ~= 0
+    end
+  end
+  if #wake > 0 and (urgent or not cold()) then return wake, urgent end
+end
+
 local function sleep(s)
   ptime.nanosleep({ tv_sec = math.floor(s), tv_nsec = math.floor((s % 1) * 1e9) })
 end
@@ -155,14 +168,8 @@ function M.cmd_wait(c, a)
   while util.now() < deadline do
     local ag = c:one("select * from agent where name=?", n)
     if ag.waiter ~= pid or ag.status == "working" then return end  -- superseded, or its hooks deliver
-    local wake, urgent = {}, false
-    for _, r in ipairs(M.unread(c, n)) do
-      if r.kind ~= "notice" or (r.urgent or 0) ~= 0 then  -- notices ride along, never wake
-        wake[#wake + 1] = r
-        urgent = urgent or (r.urgent or 0) ~= 0
-      end
-    end
-    if #wake > 0 and (urgent or not agents.cold_reason(ag)) then
+    local wake, urgent = M.wakes(M.unread(c, n), function() return agents.cold_reason(ag) ~= nil end)
+    if wake then
       db.log(c, n, "wake", nil, ("%d msg%s"):format(#wake, urgent and " urgent" or ""))
       io.stderr:write(M.deliver(c, n) .. "\n")
       util.exit(2)

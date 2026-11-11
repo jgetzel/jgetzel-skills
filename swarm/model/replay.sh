@@ -1,16 +1,17 @@
 #!/bin/sh
 # Fresh random runs of the Lean model's `replay` instance, each replayed through the real CLI (cli_model_spec.lua);
 # first, fresh random lock patterns checked against locks.lua (GlobCases.lean, locks_model_spec.lua), fresh random
-# Lua chunks run by the Lean semantics of our Lua subset and by LuaJIT (LuaCases.lean, luasem_spec.lua), and fresh
-# random cases of every SQL statement checked against sqlite (SqlCases.lean, sql_model_spec.lua); the parser against
-# LuaJIT's bytecode (parsecheck.sh), and every module lifted and its proofs checked (lift.sh --all).
+# Lua chunks run by the Lean semantics of our Lua subset and by LuaJIT (LuaCases.lean, luasem_spec.lua), fresh
+# random cases of every SQL statement checked against sqlite (SqlCases.lean, sql_model_spec.lua), and fresh inputs to
+# the lifted decisions (DecideCases.lean, decide_model_spec.lua); the parser against LuaJIT's bytecode (parsecheck.sh),
+# and every module lifted and its proofs checked (lift.sh --all).
 # Usage: swarm/model/replay.sh [traces (20)] [steps (40)] [seed]. Needs lake (elan), or nix to fetch it, and the
 # swarm LuaJIT rocks. KEEP=<dir> keeps the traces there.
 here=$(cd "$(dirname "$0")" && pwd)
 n=${1:-20} steps=${2:-40} seed=${3:-$(date +%s)}
 out=${KEEP:-$(mktemp -d)} || exit 1
-g=$(mktemp) && l=$(mktemp) && i=$(mktemp) && q=$(mktemp) || exit 1
-trap 'rm -f "$g" "$l" "$i" "$q"; [ -n "$KEEP" ] || rm -rf "$out"' EXIT
+g=$(mktemp) && l=$(mktemp) && i=$(mktemp) && q=$(mktemp) && dc=$(mktemp) || exit 1
+trap 'rm -f "$g" "$l" "$i" "$q" "$dc"; [ -n "$KEEP" ] || rm -rf "$out"' EXIT
 lean() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 "$here/gen-lock-src.sh" --check || exit 1
 "$here/lift.sh" --check || exit 1
@@ -22,6 +23,8 @@ SWARM_LUASEM_CASES=$l luajit "$here/../lua/test/run.lua" luasem || exit 1
 luajit "$here/../lua/test/sql_inventory.lua" > "$i" || exit 1
 (cd "$here" && lean env lean --run SwarmModel/SqlCases.lean "$i" 20 "$seed" "$q") || exit 1
 SWARM_MODEL_SQL=$q luajit "$here/../lua/test/run.lua" sql_model || exit 1
+(cd "$here" && lean env lean --run SwarmModel/DecideCases.lean 3000 "$seed" "$dc") || exit 1
+SWARM_MODEL_DECIDE=$dc luajit "$here/../lua/test/run.lua" decide_model || exit 1
 p=$("$here/parsecheck.sh") || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
 "$here/lift.sh" --all || exit 1
 echo "seed $seed: $(ls "$out" | wc -l) traces of up to $steps steps"
