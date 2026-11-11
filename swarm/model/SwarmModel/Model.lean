@@ -1,3 +1,5 @@
+import SwarmModel.Glob
+
 /-! The coordination swarm/lua/swarm implements: the board, leases and watchd's reaping and auto-spawn, locks,
 agents, and inboxes, as plain Lean: one `State`, one function per command or event (`none` is "not enabled"),
 `step` over an `Action`, and `Reachable`. The proofs are in the other files (README.md says which); `Traces.lean`
@@ -40,6 +42,9 @@ structure Cfg where
   evidenceRequired : Bool := true
   /-- swarm lock refuses any common file (PR #114); before, only one pattern covering the other -/
   lockOverlap : Bool := true
+  /-- a glob is not also a directory, and `overlaps` is exact: every form of both patterns, `?` and classes by
+  the bytes they match (board #26); before, `m/?` covered `m/?/x` but `swarm lock` let another agent lock it -/
+  lockForms : Bool := true
   /-- a delivery moves the cursor only from where it read, else reads again (PR #115) -/
   deliverCas : Bool := true
   /-- lifecycle ends a reusable agent told of the whole pool, inbox read, idle again (PR #116) -/
@@ -188,17 +193,14 @@ def Cfg.tasks (c : Cfg) : List Nat := List.range' 1 c.ntasks
 def Cfg.agents (c : Cfg) : List Nat := List.range c.nagents
 def Cfg.pat (c : Cfg) (p : Nat) : String := c.patterns.getD p ""
 
-/-- locks.covers(path, pat) for the strings the instances use, from the Lua's rule: equal, fnmatch (no
-FNM_PATHNAME), or under the pattern as a directory. The replay checks the CLI agrees. -/
-def covers (x pat : String) : Bool := [
-  ("m/", "m/"), ("m/a.lua", "m/"), ("m/*.lua", "m/"), ("m/a*", "m/"), ("m/b.lua", "m/"), ("m/a.txt", "m/"),
-  ("m/a.lua", "m/a.lua"), ("m/b.lua", "m/b.lua"),
-  ("m/a.lua", "m/*.lua"), ("m/*.lua", "m/*.lua"), ("m/b.lua", "m/*.lua"),
-  ("m/a.lua", "m/a*"), ("m/a*", "m/a*"), ("m/a.txt", "m/a*")].contains (x, pat)
-/-- what a lock is for: some file both patterns cover -/
-def overlap (p q : String) : Bool := ["m/a.lua", "m/b.lua", "m/a.txt"].any fun f => covers f p && covers f q
+/-- locks.covers(path, pat): the path is the pattern, its glob, or under it as a directory (Glob.lean, lifted from
+the Lua) -/
+def covers (c : Cfg) (x pat : String) : Bool := Glob.covers c.lockForms x.toList pat.toList
+/-- what a lock is for: some file both patterns cover (`Glob.overlaps_iff`) -/
+def overlap (p q : String) : Bool := Glob.overlaps true p.toList q.toList
 /-- what `swarm lock` refuses -/
-def refuses (c : Cfg) (p q : String) : Bool := if c.lockOverlap then overlap p q else covers p q || covers q p
+def refuses (c : Cfg) (p q : String) : Bool :=
+  if c.lockOverlap then Glob.overlaps c.lockForms p.toList q.toList else covers c p q || covers c q p
 
 -- ---------- queries ----------
 def State.tk (s : State) (t : Nat) : Task := if t = 0 then default else s.task.getD (t - 1) default
