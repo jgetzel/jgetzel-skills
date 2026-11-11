@@ -107,7 +107,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
-  all_goals (try simp_all [Booting, idleClaim, ownsClaimed, claimed, awake, unbelieve, tk_setTask', agt_setAg, setAg_ag_length, working, busy, held, startable])
+  all_goals (try simp_all [Booting, idleClaim, ownsClaimed, claimed, awake, unbelieve, tk_setTask', agt_setAg, setAg_ag_length, working, busy, held, claimable, startable])
   all_goals (try ((repeat' split at *) <;> simp_all))
   all_goals (try (simp_all [State.agt, State.tk]; done))
   all_goals (try (simp only [agt_setAg, deliver_ag_length, deliver_boot, deliver_st, deliver_bg, deliver_dead] at *; (repeat' split at *) <;> simp_all; done))
@@ -120,7 +120,7 @@ theorem releaseOther_fc {c : Cfg} {s s' : State} {a t : Nat} (hs : step c s (.re
   obtain ⟨_, rfl⟩ := hs
   have hst : (s.tk t).st = .claimed := by simp [Booting, idleClaim, ownsClaimed] at h; exact h.1.1.1
   intro e
-  have h0 : firstClaimed c (post (setTask s t ({ · with st := .opn, owner := none, lease := false, hcq := false }))
+  have h0 : firstClaimed c (post (setTask s t (fun k => { k with st := .opn, owner := none, lease := false, hcq := false, stopTo := if c.stopFirst then k.owner else none, stopMsg := s.log.length + 1 }))
       ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩) a ≠ 0 := by
     rw [e]; rintro rfl; simp [State.tk] at hst
   have := (fc_owns h0).1
@@ -183,7 +183,7 @@ theorem Q_spawn {c : Cfg} {a t t' : Nat} {pl : List Nat} {z y : State} (hpl : pl
 theorem lifecycle_Q {c : Cfg} {a t : Nat} {z : State} (hst : (z.tk t).st = .claimed) (ho : (z.tk t).owner = some a)
     (h0 : Q a t z z) : Q a t z (lifecycle c z) := by
   have hfin : finished c z a = false := by simp [finished, idleFree, holds_of hst ho]
-  have hpl : (pool c z).contains t = false := by simp [pool, startable, hst]
+  have hpl : (pool c z).contains t = false := by simp [pool, claimable, startable, hst]
   unfold lifecycle; simp only []
   have h2 := foldl_inv (fun y b => if finished c z b && !reusable c z b then endAgent y b else y) (Q a t z) c.agents z h0
     (fun y b hy => by

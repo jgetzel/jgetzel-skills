@@ -15,52 +15,52 @@ def violates (c : Cfg) (acts : List Action) (p : State → Bool) : Bool := (run 
 -- #2, S1. b04cf08 reopens a lapsed claim whenever the owner isn't working, including one at an hc permission
 -- prompt: agent 1 claims #1 and stops at a prompt; the lease lapses, reap reopens #1, agent 0 claims it.
 example : violates { release := .notWorking }
-    [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1, .tick, .claim 0 1] oneWorker = true := by decide
+    [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1, .tick, .claim 0 1] oneWorker = true := by decide +kernel
 
 -- #4, S2. `task claim` reads #2's dependencies, `task after` adds #1 (not done), the claim's write succeeds.
 example : violates { ntasks := 2, racy := true, claimChecksDeps := false }
-    [.add [], .add [], .claimRead 0 2, .after 2 [1], .claimWrite 0] noEarlyStart = true := by decide
+    [.add [], .add [], .claimRead 0 2, .after 2 [1], .claimWrite 0] noEarlyStart = true := by decide +kernel
 
 -- #5, S5. `task done --evidence ""` is accepted.
-example : violates { evidenceRequired := false } [.add [], .claim 0 1, .done 0 1 false] doneHasEvidence = true := by decide
+example : violates { evidenceRequired := false } [.add [], .claim 0 1, .done 0 1 false] doneHasEvidence = true := by decide +kernel
 
 -- #6, S3. `m/*.lua` and `m/a*` both match `m/a.lua`; neither covers the other as a path, so both are granted.
 example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"], lockOverlap := false }
-    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide
+    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide +kernel
 
 -- #25, S3 (board #26). covers takes `m/?` as a glob and as a directory, so it covers `m/?/x`; overlaps leaves a
 -- glob's directory form out, so agent 1's `swarm lock m/?/x` is granted: the edit hook gives both agents that file.
 example : let c : Cfg := { patterns := ["m/?", "m/?/x"], lockForms := false }
-    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?" && covers c "m/?/x" "m/?/x") = true := by decide
+    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?" && covers c "m/?/x" "m/?/x") = true := by decide +kernel
 -- With the fix a glob is only a glob (`m/?/x` is not under `m/?`), and S3's `overlap` is exact (`Glob.overlaps_iff`).
 -- Before, overlaps also left out the pattern as a literal path and took `[!]a]` as the class `[!]` then `a]`
 -- (covers: one character, not `]` or `a`): `[!]a]` and `b` share the file `b`, and both are granted.
 example : let c : Cfg := { patterns := ["[!]a]", "b"], lockForms := false }
-    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide
+    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = true := by decide +kernel
 
 -- #7, S4. The waiter reads agent 0's unread list, a hook delivers it and moves the cursor, the waiter writes its
 -- cursor and shows the same message again.
 example : violates { racy := true, deliverCas := false }
-    [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = true := by decide
+    [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = true := by decide +kernel
 
 -- The same runs with the fix on: none ends in a violation (the theorems say no run does).
-example : violates {} [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1, .tick, .claim 0 1] oneWorker = false := by decide
+example : violates {} [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1, .tick, .claim 0 1] oneWorker = false := by decide +kernel
 example : violates { ntasks := 2, racy := true }
-    [.add [], .add [], .claimRead 0 2, .after 2 [1], .claimWrite 0] noEarlyStart = false := by decide
-example : violates {} [.add [], .claim 0 1, .done 0 1 false] doneHasEvidence = false := by decide
+    [.add [], .add [], .claimRead 0 2, .after 2 [1], .claimWrite 0] noEarlyStart = false := by decide +kernel
+example : violates {} [.add [], .claim 0 1, .done 0 1 false] doneHasEvidence = false := by decide +kernel
 example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"] }
-    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = false := by decide
+    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = false := by decide +kernel
 example : violates { racy := true }
-    [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide
+    [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide +kernel
 example : let c : Cfg := { patterns := ["m/?", "m/?/x"] }
-    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?") = false := by decide
+    ((run c [.lock 0 0, .lock 1 1]).isSome && covers c "m/?/x" "m/?") = false := by decide +kernel
 example : let c : Cfg := { patterns := ["[!]a]", "b"] }
-    (run c [.lock 0 0, .lock 1 1]).isSome = false := by decide
+    (run c [.lock 0 0, .lock 1 1]).isSome = false := by decide +kernel
 -- #25's other half: overlaps over-approximated, refusing locks that share no file. A `?` met any class, even an
 -- empty one (`[z-a]`), two classes always met, and a `*` met an empty class.
-example : Glob.overlaps false "?".toList "[z-a]".toList = true := by decide
-example : Glob.overlaps false "[a]".toList "[b]".toList = true := by decide
-example : Glob.overlaps false "*c".toList "[z-a][c]".toList = true := by decide
+example : Glob.overlaps false "?".toList "[z-a]".toList = true := by decide +kernel
+example : Glob.overlaps false "[a]".toList "[b]".toList = true := by decide +kernel
+example : Glob.overlaps false "*c".toList "[z-a][c]".toList = true := by decide +kernel
 example : Glob.overlaps true "?".toList "[z-a]".toList = false := by decide +kernel
 example : Glob.overlaps true "[a]".toList "[b]".toList = false := by decide +kernel
 example : Glob.overlaps true "*c".toList "[z-a][c]".toList = false := by decide +kernel
@@ -72,11 +72,11 @@ def endedWithWork (s : State) : Bool := (List.range s.ag.length).any fun a =>
   (s.agt a).st == .ended && (s.agt a).own.any fun (w, _) => owns s a w && !s.git.landed w
 def twoWts : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.add 1), .git 0 (.edit 1), .git 0 (.edit 0),
   .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0, .tick]
-example : violates { nwts := 2, allWts := false } twoWts (!endedWithWork ·) = true := by decide
-example : violates { nwts := 2 } twoWts (!endedWithWork ·) = false := by decide
+example : violates { nwts := 2, allWts := false } twoWts (!endedWithWork ·) = true := by decide +kernel
+example : violates { nwts := 2 } twoWts (!endedWithWork ·) = false := by decide +kernel
 -- a landed worktree does not keep the agent, and end_agent removes it and deletes its branch
 example : (run { nwts := 1 } [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0,
-    .tick]).any (fun s => (s.agt 0).st == .ended && !(s.git.wt 0).on && (s.git.tip 1).isNone) = true := by decide
+    .tick]).any (fun s => (s.agt 0).st == .ended && !(s.git.wt 0).on && (s.git.tip 1).isNone) = true := by decide +kernel
 
 -- ---------- liveness ----------
 /-- The actions fairness makes happen if they stay enabled: watchd ticks (and so the reap of a row whose terminal `hc ls` no longer lists), leases lapse, idle agents age, a spawned
@@ -98,52 +98,52 @@ def idleSlot (c : Cfg) (s : State) : Bool := slotFree c s && !(pool c s).isEmpty
 
 -- #1, L2. 624cf79 keeps a lapsed claim while its owner is live: agent 0 goes idle holding #1 and nothing wakes it.
 example : stuckWith { nagents := 1, roster := 1, release := .ended }
-    [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = true := by decide
+    [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = true := by decide +kernel
 
 -- #3, L3. The unblock answer is only a DM to the owner, who is idle with a big context and cold, so a message
 -- that isn't urgent doesn't wake it. Reap reopens #1, the owner is ended, a new agent is spawned for #1: it never
 -- gets the answer.
 example : stuckWith { nagents := 1, roster := 1, answerOnTask := false }
     [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .tick, .boot 0, .expire 1]
-    (!answered · 1) = true := by decide
+    (!answered · 1) = true := by decide +kernel
 
 -- #8, L1 and L3. Agent 0 was told of #1 and went idle again without it (agent 1 had it by then). Agent 1 leaves:
 -- #1 is open with its answer, a slot is free, and lifecycle keeps agent 0 reusable instead of spawning.
 example : let c : Cfg := { passedOver := false }
     stuckWith c [.stop 0 false, .age 0, .add [], .tick, .wake 0, .claim 1 1, .block 1 1, .unblock 1, .stop 0 false,
-      .age 0, .leave 1] (fun s => idleSlot c s && !answered s 1) = true := by decide
+      .age 0, .leave 1] (fun s => idleSlot c s && !answered s 1) = true := by decide +kernel
 
 -- #9, L1 and L3. The same with agent 0's waiter gone: it never reads the digest, so PR #116 doesn't end it.
 set_option maxHeartbeats 400000 in
 example : let c : Cfg := { waiterAlive := false }
     stuckWith c [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
-      (fun s => idleSlot c s && !answered s 1) = true := by decide
+      (fun s => idleSlot c s && !answered s 1) = true := by decide +kernel
 
 -- #14, L4 (a dead agent is ended). Agent 0 holds #1 and its terminal dies with no `swarm leave`. With no watchd
 -- (`watchd := false`) nothing ever ends the row: it reads as live (`swarm who` and `swarm post` show it gone, from
 -- `hc ls` at read time, but the row stays), and its claim stays with it. Agent 1's message to it is stored, unread.
-example : stuckWith { watchd := false } [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = true := by decide
+example : stuckWith { watchd := false } [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = true := by decide +kernel
 example : stuckWith { watchd := false } [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1]
-    (fun s => ownsClaimed s 0 1 && !(unread s 0).isEmpty) = true := by decide
+    (fun s => ownsClaimed s 0 1 && !(unread s 0).isEmpty) = true := by decide +kernel
 
 -- #15, L4. watchd runs but can't tell: `hc ls` doesn't answer (`hcSees := false`: `live_addrs` is nil, no row is judged
 -- dead), or the row has no hc address (`unbound`, e.g. a communicator that joined from outside hc). The dead agent was
 -- working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and the task stays claimed forever.
-example : stuckWith { hcSees := false } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide
-example : stuckWith { unbound := [0] } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide
+example : stuckWith { hcSees := false } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide +kernel
+example : stuckWith { unbound := [0] } [.add [], .claim 0 1, .die 0, .expire 1] (fun s => deadLive s 0 && ownsClaimed s 0 1) = true := by decide +kernel
 
 -- The same runs with the fix on: none ends stuck.
-example : stuckWith {} [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = false := by decide
-example : stuckWith {} [.add [], .claim 0 1, .die 0, .expire 1] (deadLive · 0) = false := by decide
+example : stuckWith {} [.add [], .claim 0 1, .die 0, .postTo 1 0 false, .expire 1] (deadLive · 0) = false := by decide +kernel
+example : stuckWith {} [.add [], .claim 0 1, .die 0, .expire 1] (deadLive · 0) = false := by decide +kernel
 example : stuckWith { nagents := 1, roster := 1 }
-    [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = false := by decide
+    [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = false := by decide +kernel
 example : stuckWith { nagents := 1, roster := 1 }
     [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .tick, .boot 0, .expire 1]
-    (!answered · 1) = false := by decide
+    (!answered · 1) = false := by decide +kernel
 example : stuckWith {} [.stop 0 false, .age 0, .add [], .tick, .wake 0, .claim 1 1, .block 1 1, .unblock 1, .stop 0 false,
-    .age 0, .leave 1] (fun s => idleSlot {} s && !answered s 1) = false := by decide
+    .age 0, .leave 1] (fun s => idleSlot {} s && !answered s 1) = false := by decide +kernel
 example : stuckWith {} [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
-    (fun s => idleSlot {} s && !answered s 1) = false := by decide
+    (fun s => idleSlot {} s && !answered s 1) = false := by decide +kernel
 
 -- ---------- the idle owner with a background job (board #115, found on #107) ----------
 /-- task 1 is held by agent 1 while agent 0, who had it, is live with its background job running -/
@@ -152,24 +152,24 @@ def takenFromJob (s : State) : Bool := ((s.tk 1).owner == some 1 && (s.agt 0).bg
 -- #10, S1-like (work lost). Agent 0 claims #1, starts a long job and stops; the lease lapses; with `bgKeeps` off
 -- reap reopens #1 (its owner is idle) and, agent 1 having left, watchd spawns agent 1 onto it while 0's job runs.
 example : violates { bgKeeps := false } [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick]
-    (!takenFromJob ·) = true := by decide
+    (!takenFromJob ·) = true := by decide +kernel
 
 -- #11. Reap took #1 from agent 0, whose context is big (the 350k fence): with `retake` off `task claim` refuses it
 -- the task it held, so the run cannot continue; with it on the claim goes through.
-example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isNone = true := by decide
+example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isNone = true := by decide +kernel
 
 -- The same runs with the fix on.
-example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide
-example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide
+example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide +kernel
+example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide +kernel
 -- #13, L5. Agent 0 is idle 30 min, kept only by an unclean worktree. Before PR #122 nothing is enabled, forever and
 -- silently; with it, `nudge` is (the urgent message wakes the waiter), once per idle stretch.
 def keptByWt (s : State) : Bool := (s.agt 0).st == .idle && (s.agt 0).own.any fun (w, _) => owns s 0 w && !s.git.landed w
 def unclean : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .stop 0 false, .age 0, .stale 0]
-example : stuckWith { nwts := 1, uncleanNudge := false } unclean keptByWt = true := by decide
-example : stuckWith { nwts := 1 } unclean keptByWt = false := by decide
+example : stuckWith { nwts := 1, uncleanNudge := false } unclean keptByWt = true := by decide +kernel
+example : stuckWith { nwts := 1 } unclean keptByWt = false := by decide +kernel
 -- one nudge per idle stretch: a second is refused until the agent has woken and stopped again
-example : (run { nwts := 1 } (unclean ++ [.nudge 0])).bind (step { nwts := 1 } · (.nudge 0)) = none := by decide
-example : (run { nwts := 1 } (unclean ++ [.nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0, .nudge 0])).isSome = true := by decide
+example : (run { nwts := 1 } (unclean ++ [.nudge 0])).bind (step { nwts := 1 } · (.nudge 0)) = none := by decide +kernel
+example : (run { nwts := 1 } (unclean ++ [.nudge 0, .wake 0, .stop 0 false, .age 0, .stale 0, .nudge 0])).isSome = true := by decide +kernel
 
 
 -- ---------- #16, L1 for the pool: a lasso (board #141) ----------
@@ -240,28 +240,28 @@ def w1Breaks (c : Cfg) (acts : List Action) : Bool :=
 def cfg18 : Cfg := { nwts := 1, nbases := 2 }
 def pre18 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1), .git 0 (.land 0 0),
   .git 0 (.checkout 0 1), .world 0 .age, .leave 0]
-example : w1Breaks cfg18 pre18 = true := by decide
-example : (run cfg18 (pre18 ++ [.tick])).any (fun s => (s.git.tip 1).isNone) = true := by decide
+example : w1Breaks cfg18 pre18 = true := by decide +kernel
+example : (run cfg18 (pre18 ++ [.tick])).any (fun s => (s.git.tip 1).isNone) = true := by decide +kernel
 -- #18b, W1. A worktree removed with a process inside: end_agent looks at no process. Agent 0's work is on main, a
 -- process sits in its worktree (a dev server, a shell), it stops and ages: the tick ends it and removes the worktree.
 def cfg18b : Cfg := { nwts := 1 }
 def pre18b : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .world 0 (.proc true),
   .stop 0 false, .age 0]
-example : w1Breaks cfg18b pre18b = true := by decide
+example : w1Breaks cfg18b pre18b = true := by decide +kernel
 -- with `splitGC` neither: the sweep keeps `formal` (removes the worktree only), end_agent removes nothing
-example : w1Breaks { cfg18 with splitGC := true } pre18 = false := by decide
+example : w1Breaks { cfg18 with splitGC := true } pre18 = false := by decide +kernel
 example : (run { cfg18 with splitGC := true } (pre18 ++ [.tick])).any
-    (fun s => !(s.git.wt 0).on && (s.git.tip 1).isSome) = true := by decide
-example : w1Breaks { cfg18b with splitGC := true } pre18b = false := by decide
+    (fun s => !(s.git.wt 0).on && (s.git.tip 1).isSome) = true := by decide +kernel
+example : w1Breaks { cfg18b with splitGC := true } pre18b = false := by decide +kernel
 
 -- #19, W2 (fails by design today). The same run with no process: the worktree was touched within 30 min, so the sweep
 -- keeps it, but the tick that ends agent 0 removes it and deletes its branch. With `splitGC` the tick ends the agent
 -- and leaves git alone.
 def pre19 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0]
-example : violates cfg18b pre19 (endKeepsGit cfg18b) = true := by decide
-example : violates { cfg18b with splitGC := true } pre19 (endKeepsGit { cfg18b with splitGC := true }) = false := by decide
+example : violates cfg18b pre19 (endKeepsGit cfg18b) = true := by decide +kernel
+example : violates { cfg18b with splitGC := true } pre19 (endKeepsGit { cfg18b with splitGC := true }) = false := by decide +kernel
 example : (run { cfg18b with splitGC := true } (pre19 ++ [.tick])).any
-    (fun s => (s.agt 0).st == .ended && (s.git.wt 0).on) = true := by decide
+    (fun s => (s.agt 0).st == .ended && (s.git.wt 0).on) = true := by decide +kernel
 
 -- #20, W3 with a base that isn't main (the notapki `formal` swarm). Agent 1 starts and ends a background job over and
 -- over, so the run goes on; every other fair action is off (`loopOk`), so the run is fair.
@@ -275,18 +275,18 @@ def cfg20 : Cfg := { nwts := 1, nbases := 2 }
 -- The workspace half. Agent 0 lands on `formal` and leaves; the worktree is clean, unused, untouched 30 min, its HEAD on
 -- a protected ref, but not on main, so the sweep never removes it.
 def pre20 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1), .world 0 .age, .leave 0]
-example : loopOk cfg20 pre20 (.bgStart 1) (.bgEnd 1) (orphan cfg20 · 0) = true := by decide
+example : loopOk cfg20 pre20 (.bgStart 1) (.bgEnd 1) (orphan cfg20 · 0) = true := by decide +kernel
 -- The agent half. Agent 0 claims #1, whose base is `formal`, lands it there, marks it done, stops and ages: idle, free,
 -- its worktree clean and on its task's base. Lifecycle's landed check asks main, so it is never ended (and a waiter it
 -- has is woken only by the unclean nudge, if it goes stale: then it is nudged once per idle stretch, forever).
 def cfg20b : Cfg := { nwts := 1, nbases := 2, taskBase := [0, 1] }
 def pre20b : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1),
   .done 0 1 true, .stop 0 false, .age 0]
-example : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true := by decide
+example : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true := by decide +kernel
 -- with `perTaskBase` the tick removes the worktree, and ends the agent
 -- (the sweep protects a base some task names: #1 is on `formal`; the agent's task is #1)
-example : (run { cfg20 with perTaskBase := true, taskBase := [0, 1] } ([.add []] ++ pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide
-example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+example : (run { cfg20 with perTaskBase := true, taskBase := [0, 1] } ([.add []] ++ pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide +kernel
+example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide +kernel
 
 -- #B1 (finding, board #3), B1 (sw-bases, board #3). Work is landed on the base of the task it was done for. Agent 0's task #1 is on `formal`;
 -- it lands on main, not on `formal`, marks #1 done and goes idle. Lifecycle's check asks main only, so it ends the agent:
@@ -294,17 +294,17 @@ example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun
 def cfgB1 : Cfg := { nwts := 1, nbases := 2, taskBase := [0, 1] }
 def preB1 : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0),
   .done 0 1 true, .stop 0 false, .age 0]
-example : (run cfgB1 (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
-example : (run { cfgB1 with perTaskBase := true } (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = false := by decide
+example : (run cfgB1 (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide +kernel
+example : (run { cfgB1 with perTaskBase := true } (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = false := by decide +kernel
 
 -- #21, W4. Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal`
 -- is refused while a worktree has it checked out). With `recordedWorkspaces` the checkout is refused.
 def cfg21 : Cfg := { nwts := 2, nbases := 2 }
 def pre21 : List Action := [.git 0 (.add 0), .git 0 (.checkout 0 1)]
-example : violates cfg21 pre21 (noBaseOut cfg21) = true := by decide
-example : run cfg21 (pre21 ++ [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)]) = none := by decide
-example : run cfg21 [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)] ≠ none := by decide
-example : run { cfg21 with recordedWorkspaces := true } pre21 = none := by decide
+example : violates cfg21 pre21 (noBaseOut cfg21) = true := by decide +kernel
+example : run cfg21 (pre21 ++ [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)]) = none := by decide +kernel
+example : run cfg21 [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)] ≠ none := by decide +kernel
+example : run { cfg21 with recordedWorkspaces := true } pre21 = none := by decide +kernel
 
 -- ---------- the communicator: C1 on the current CCfg (board #8) ----------
 -- #22, C1. One terminal is the communicator of two swarms (2026-11-10: sk-comms and fm-comms both on t87, in the notapki
@@ -314,13 +314,13 @@ example : run { cfg21 with recordedWorkspaces := true } pre21 = none := by decid
 -- communicator sits outside its space as well.
 def cfg22 : CCfg := {}
 def pre22 : List CAction := [.open 1, .join 1 0 false, .join 0 0 false, .watchd 1 0]
-example : c1Breaks cfg22 pre22 1 = true := by decide
-example : c1Breaks cfg22 (pre22 ++ [.watchd 0 0]) 0 = true := by decide
+example : c1Breaks cfg22 pre22 1 = true := by decide +kernel
+example : c1Breaks cfg22 (pre22 ++ [.watchd 0 0]) 0 = true := by decide +kernel
 -- with `ensureComms` the second join is refused (another swarm's communicator, outside swarm 0's space), with
 -- `--takeover` too (the space); swarm 1 alone is fine
-example : crun { cfg22 with ensureComms := true } pre22 = none := by decide
-example : crun { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .join 0 0 true] = none := by decide
-example : c1Breaks { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .watchd 1 0] 1 = false := by decide
+example : crun { cfg22 with ensureComms := true } pre22 = none := by decide +kernel
+example : crun { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .join 0 0 true] = none := by decide +kernel
+example : c1Breaks { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .watchd 1 0] 1 = false := by decide +kernel
 
 -- #23, C1. The communicator's terminal dies and the swarm runs on. Watchd runs from another terminal of the swarm's
 -- space; agent 0 blocks #1 and the communicator's terminal dies. The tick reaps the communicator's row and nothing binds
@@ -328,24 +328,24 @@ example : c1Breaks { cfg22 with ensureComms := true } [.open 1, .join 1 0 false,
 def cfg23 : CCfg := { nswarms := 1, home := [0] }
 def pre23 : List CAction := [.open 0, .join 0 0 false, .open 0, .watchd 0 1, .sw 0 (.add []), .sw 0 (.claim 0 1),
   .sw 0 (.block 0 1), .die 0]
-example : c1Breaks cfg23 pre23 0 = true := by decide
+example : c1Breaks cfg23 pre23 0 = true := by decide +kernel
 example : (crun cfg23 (pre23 ++ [.tick 0, .tick 0])).any
-    (fun w => w.cm 0 == none && ((w.st 0).tk 1).st == .blocked) = true := by decide
+    (fun w => w.cm 0 == none && ((w.st 0).tk 1).st == .blocked) = true := by decide +kernel
 -- with `ensureComms` the tick launches a communicator in the swarm's space
-example : c1Breaks { cfg23 with ensureComms := true } pre23 0 = false := by decide
+example : c1Breaks { cfg23 with ensureComms := true } pre23 0 = false := by decide +kernel
 -- but between the death and the tick no fix helps: C1 of every reachable state is false
 example : (crun { cfg23 with ensureComms := true } pre23).any (fun w => watchdUp w 0 && !c1 { cfg23 with ensureComms := true } w 0)
-    = true := by decide
+    = true := by decide +kernel
 
 -- #24, C1. Watchd started from a terminal in another space spawns there. The communicator is in the swarm's space,
 -- watchd runs from terminal 1 in space 1; agent 0 leaves and #1 is added: the tick spawns for #1, and launch.sh opens the
 -- tab in the space of watchd's terminal.
 def cfg24 : CCfg := { sw := { nagents := 1, roster := 1 }, nswarms := 1, home := [0] }
 def pre24 : List CAction := [.open 0, .join 0 0 false, .open 1, .watchd 0 1, .sw 0 (.leave 0), .sw 0 (.add [])]
-example : c1Breaks cfg24 pre24 0 = true := by decide
-example : (crun cfg24 (pre24 ++ [.tick 0])).any (fun w => ((w.st 0).agt 0).boot && w.spaceOf 0 0 == 1) = true := by decide
+example : c1Breaks cfg24 pre24 0 = true := by decide +kernel
+example : (crun cfg24 (pre24 ++ [.tick 0])).any (fun w => ((w.st 0).agt 0).boot && w.spaceOf 0 0 == 1) = true := by decide +kernel
 -- with `ensureComms` the spawn lands in the swarm's space
-example : c1Breaks { cfg24 with ensureComms := true } pre24 0 = false := by decide
+example : c1Breaks { cfg24 with ensureComms := true } pre24 0 = false := by decide +kernel
 
 /-- #22: one terminal is the communicator of two swarms -/
 theorem not_C1_shared : ¬ C1 cfg22 := not_C1_of (by decide : c1Breaks cfg22 pre22 1 = true)
@@ -366,14 +366,14 @@ example : C1 { cfg22 with ensureComms := true } ∧ C1 { cfg23 with ensureComms 
 def cfg28 : SCfg := { sw := { nagents := 2, roster := 2 } }
 def pre28 : List SAction := [.sw (.leave 1), .sw (.add [])]
 example : (srun cfg28 (pre28 ++ [.fail true])).any (fun w =>
-    held (w.s.tk 1) 1 && (w.s.agt 1).live && (w.s.agt 1).dead && !startable w.s 1) = true := by decide
+    held (w.s.tk 1) 1 && (w.s.agt 1).live && (w.s.agt 1).dead && !startable w.s 1) = true := by decide +kernel
 -- a failed exit was undone before the fix too
-example : (srun cfg28 (pre28 ++ [.fail false])).any (fun w => (w.s.tk 1).owner == none && startable w.s 1) = true := by decide
+example : (srun cfg28 (pre28 ++ [.fail false])).any (fun w => (w.s.tk 1).owner == none && startable w.s 1) = true := by decide +kernel
 -- with `rollbackAll` the raise is undone like the exit: no row, #1 in the pool, and the retry spawns for it
 example : (srun { cfg28 with rollbackAll := true } (pre28 ++ [.fail true])).any (fun w =>
-    (w.s.tk 1).owner == none && !(w.s.agt 1).live && startable w.s 1 && w.backoff) = true := by decide
+    (w.s.tk 1).owner == none && !(w.s.agt 1).live && startable w.s 1 && w.backoff) = true := by decide +kernel
 example : (srun { cfg28 with rollbackAll := true } (pre28 ++ [.fail true, .lapse, .tick])).any (fun w =>
-    held (w.s.tk 1) 1 && (w.s.agt 1).boot && !w.backoff && w.bo == none) = true := by decide
+    held (w.s.tk 1) 1 && (w.s.agt 1).boot && !w.backoff && w.bo == none) = true := by decide +kernel
 
 /-- #28, Sp1: with the switch off a failed launch leaves a claim behind -/
 theorem not_Sp1 : ¬ ∀ (w w' : SWorld) (raise : Bool), sstep cfg28 w (.fail raise) = some w' → w'.s = noSpawn cfg28.sw w.s := by
@@ -413,9 +413,9 @@ theorem not_P1 : ¬ P1 cfg30 := not_P1_of (by decide : stall cfg30 pre30 .poll (
 -- with `wakeFix` the tick tells it, an urgent message, and the waiter wakes it
 open PrW in
 example : (prun { cfg30 with wakeFix := true } (pre30 ++ [.poll])).any (fun w => (w.agt 0).urgent && !(w.agt 0).working)
-    = true := by decide
+    = true := by decide +kernel
 open PrW in
-example : (prun { cfg30 with wakeFix := true } (pre30 ++ [.poll, .wake 0])).any (fun w => (w.agt 0).working) = true := by decide
+example : (prun { cfg30 with wakeFix := true } (pre30 ++ [.poll, .wake 0])).any (fun w => (w.agt 0).working) = true := by decide +kernel
 
 -- #31, P2 (board #28). The PR is merged and its task stays claimed while the owner idles (ll-3 merged #180 and never
 -- ran `task done`, so a task after it could not start): in any flow, nothing but the owner closes a task.
@@ -427,6 +427,6 @@ open PrW in
 theorem not_P2 : ¬ P2 cfg31 := not_P2_of (by decide : stall cfg31 pre31 .poll (mergedClaimed · 0) = true)
 -- with `closeFix` the tick marks #1 done and tells its owner
 open PrW in
-example : (prun {} (pre31 ++ [.poll])).any (fun w => (w.tk 0).st == .done && (w.agt 0).urgent) = true := by decide
+example : (prun {} (pre31 ++ [.poll])).any (fun w => (w.tk 0).st == .done && (w.agt 0).urgent) = true := by decide +kernel
 
 end Swarm

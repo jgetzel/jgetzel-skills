@@ -234,8 +234,8 @@ theorem first_pool {c : SCfg} {w : SWorld} {a t : Nat} (h : first c w = some (a,
       split at hm
       · simp at hm
       · have := (List.mem_filter.mp hm).1
-        simp only [pool, List.mem_filter] at this
-        exact this.2
+        simp only [pool, List.mem_filter, claimable, Bool.and_eq_true] at this
+        exact this.2.1
     · simp at h
   · simp at h
 
