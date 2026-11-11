@@ -1,4 +1,5 @@
 import SwarmModel.Comms
+import SwarmModel.Spawn
 
 /-! The counterexamples the Quint model found, as runs of this model with the fix's switch off: each `example`
 is checked by evaluating the run. README.md has the table; the theorems that a safety property holds with the fix
@@ -357,5 +358,45 @@ theorem not_C1all_fixed : ¬ C1all { cfg23 with ensureComms := true } :=
 /-- #22 to #24 with `ensureComms` (board #10): C1 holds in each one's world, so no run of it breaks C1 -/
 example : C1 { cfg22 with ensureComms := true } ∧ C1 { cfg23 with ensureComms := true } ∧
     C1 { cfg24 with ensureComms := true } := ⟨C1_of _ rfl, C1_of _ rfl, C1_of _ rfl⟩
+
+-- #28, Sp1 and Sp2 (board #16). A spawn's launch raises before launch.sh runs (launch_agent's `die`: it can't write the
+-- agent's settings file), and only launch.sh's exit was undone. Agent 1 leaves, #1 is added, and the tick's launch for
+-- #1 raises: slot 1's row is live with no terminal and holds #1, which is out of the pool until its lease lapses.
+def cfg28 : SCfg := { sw := { nagents := 2, roster := 2 } }
+def pre28 : List SAction := [.sw (.leave 1), .sw (.add [])]
+example : (srun cfg28 (pre28 ++ [.fail true])).any (fun w =>
+    held (w.s.tk 1) 1 && (w.s.agt 1).live && (w.s.agt 1).dead && !startable w.s 1) = true := by decide
+-- a failed exit was undone before the fix too
+example : (srun cfg28 (pre28 ++ [.fail false])).any (fun w => (w.s.tk 1).owner == none && startable w.s 1) = true := by decide
+-- with `rollbackAll` the raise is undone like the exit: no row, #1 in the pool, and the retry spawns for it
+example : (srun { cfg28 with rollbackAll := true } (pre28 ++ [.fail true])).any (fun w =>
+    (w.s.tk 1).owner == none && !(w.s.agt 1).live && startable w.s 1 && w.backoff) = true := by decide
+example : (srun { cfg28 with rollbackAll := true } (pre28 ++ [.fail true, .lapse, .tick])).any (fun w =>
+    held (w.s.tk 1) 1 && (w.s.agt 1).boot && !w.backoff && w.bo == none) = true := by decide
+
+/-- #28, Sp1: with the switch off a failed launch leaves a claim behind -/
+theorem not_Sp1 : ¬ ∀ (w w' : SWorld) (raise : Bool), sstep cfg28 w (.fail raise) = some w' → w'.s = noSpawn cfg28.sw w.s := by
+  intro h
+  have hw := h ((srun cfg28 pre28).getD default) ((srun cfg28 (pre28 ++ [.fail true])).getD default) true (by decide)
+  revert hw; decide
+/-- #28, Sp2: with the switch off the failed launch's task is out of the pool -/
+theorem not_Sp2 : ¬ ∀ (w w' : SWorld) (raise : Bool) (a t : Nat), first cfg28 w = some (a, t) →
+    sstep cfg28 w (.fail raise) = some w' → startable w'.s t = true := by
+  intro h
+  have hw := h ((srun cfg28 pre28).getD default) ((srun cfg28 (pre28 ++ [.fail true])).getD default) true 1 1 (by decide) (by decide)
+  revert hw; decide
+
+-- #29 (board #16). The leaked row's name is the one the retry reuses (spawn_backoff keeps the failed name), and
+-- agents.reserve refuses a live agent's name: every later auto-spawn fails before launching, each counted against the
+-- first task in the pool, and after 5 auto-spawn halts #2, none of whose launches ran. Agents 1 and 2 leave, #1 and #2
+-- are added; #1's launch raises (slot 1 holds #1), then five times the backoff lapses and the tick's launch is refused.
+def cfg29 : SCfg := { sw := { nagents := 3, roster := 3, ntasks := 2 } }
+def pre29 : List SAction := [.sw (.leave 1), .sw (.leave 2), .sw (.add []), .sw (.add []), .fail true,
+  .lapse, .tick, .lapse, .tick, .lapse, .tick, .lapse, .tick, .lapse, .tick]
+example : (srun cfg29 pre29).any (fun w => w.halt == some 2 && held (w.s.tk 1) 1 && startable w.s 2
+    && !(w.s.agt 2).live) = true := by decide +kernel
+-- with `rollbackAll` the first retry spawns both
+example : (srun { cfg29 with rollbackAll := true } (pre29.take 7)).any (fun w => w.halt == none && held (w.s.tk 1) 1
+    && held (w.s.tk 2) 2 && (w.s.agt 1).boot && (w.s.agt 2).boot) = true := by decide +kernel
 
 end Swarm

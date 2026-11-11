@@ -1,9 +1,11 @@
 import Lean.Data.Json
-import SwarmModel.Model
+import SwarmModel.Spawn
 
-/-! Random runs of the `replay` instance as JSON, for ../lua/test/cli_model_spec.lua to replay through the CLI.
+/-! Random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures, Spawn.lean) as JSON, for
+../lua/test/cli_model_spec.lua to replay through the CLI.
 `lake env lean --run SwarmModel/Traces.lean <n> <steps> <seed> <dir>` (replay.sh) writes `<dir>/seed<seed>-<i>.json`:
-`{"states": [{"s": state}, {"action": name, "picks": {..}, "s": state}, ..]}`. -/
+`{"states": [{"s": state}, {"action": name, "picks": {..}, "s": state}, ..]}`; a state has auto-spawn's meta rows as
+`spawn`. -/
 
 open Lean Swarm
 
@@ -32,7 +34,14 @@ def stateJson (c : Cfg) (s : State) : Json :=
       [("on", x.on), ("br", (x.br.map toJson).getD (-1 : Int)), ("head", x.head), ("dirty", x.dirty), ("recent", x.recent)]),
     ("brs", Json.arr <| (List.range (c.nbases + c.nwts)).toArray.map fun b => ((s.git.tip b).map toJson).getD (-1 : Int))]
 
+def worldJson (c : SCfg) (w : SWorld) : Json :=
+  match stateJson c.sw w.s with
+  | .obj kv => .obj (kv.insert "spawn" (Json.mkObj [("backoff", w.backoff), ("bo", w.bo.isSome),
+      ("fails", toJson [w.fails.1, w.fails.2]), ("halt", w.halt.getD 0)]))
+  | j => j
+
 abbrev Step := String × List (String × Json) × Option State
+abbrev SStep := String × List (String × Json) × Option SWorld
 
 /-- every action with every argument, in four groups: the agents' commands, the environment, the communicator,
 watchd. -/
@@ -85,13 +94,20 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
       ++ c.wtIds.flatMap fun w => [("wtAge", [n "w46" w], world s w .age)]
         ++ bs.map fun v => ("wtProc", [n "w47" w, ("v47", toJson v)], world s w (.proc v)) ]
 
-def run (c : Cfg) (maxSteps : Nat) (g : StdGen) : Json := Id.run do
-  let mut s := init c
+/-- the model's steps, its tick watchd's (launches working), and the tick whose first launch fails: launch.sh exits
+non-zero (`failExit`) or launch_agent raises before it (`failRaise`); and the backoff's time passing -/
+def ssteps (c : SCfg) (w : SWorld) : List (List SStep) :=
+  (steps c.sw w.s).map (·.map fun (n, p, r) => if n == "tick" then (n, p, sstep c w .tick) else (n, p, r.map ({ w with s := · })))
+    |>.modify 3 (· ++ [("failExit", [], sstep c w (.fail false)), ("failRaise", [], sstep c w (.fail true)),
+      ("lapse", [], sstep c w .lapse)])
+
+def run (c : SCfg) (maxSteps : Nat) (g : StdGen) : Json := Id.run do
+  let mut s := sinit c
   let mut g := g
-  let mut out := #[Json.mkObj [("s", stateJson c s)]]
+  let mut out := #[Json.mkObj [("s", worldJson c s)]]
   for _ in [0:maxSteps] do
     -- the agents' group is never empty: a dead end there (no live agent) still leaves the rest
-    let groups := ((steps c s).map fun grp => grp.filterMap fun (name, picks, r) => r.map (name, picks, ·)).filter (!·.isEmpty)
+    let groups := ((ssteps c s).map fun grp => grp.filterMap fun (name, picks, r) => r.map (name, picks, ·)).filter (!·.isEmpty)
     if groups.isEmpty then break
     -- a group (the agents' twice), then one of its enabled actions, then its arguments: each evenly
     let groups := groups.take 1 ++ groups
@@ -103,18 +119,18 @@ def run (c : Cfg) (maxSteps : Nat) (g : StdGen) : Json := Id.run do
     g := g3
     if let some (name, picks, s') := grp[j]? then
       s := s'
-      out := out.push (Json.mkObj [("action", name), ("picks", Json.mkObj picks), ("s", stateJson c s)])
+      out := out.push (Json.mkObj [("action", name), ("picks", Json.mkObj picks), ("s", worldJson c s)])
   return Json.mkObj [("states", Json.arr out)]
 
 /-- a run given as steps' names and picks: each must be enabled -/
-def script (c : Cfg) (acts : List (String × List (String × Json))) : Except String Json := do
-  let mut s := init c
-  let mut out := #[Json.mkObj [("s", stateJson c s)]]
+def script (c : SCfg) (acts : List (String × List (String × Json))) : Except String Json := do
+  let mut s := sinit c
+  let mut out := #[Json.mkObj [("s", worldJson c s)]]
   for (name, picks) in acts do
-    match (steps c s).flatten.filter (fun (n, p, _) => n == name && p == picks) with
+    match (ssteps c s).flatten.filter (fun (n, p, _) => n == name && p == picks) with
     | [(_, _, some s')] =>
       s := s'
-      out := out.push (Json.mkObj [("action", name), ("picks", Json.mkObj picks), ("s", stateJson c s)])
+      out := out.push (Json.mkObj [("action", name), ("picks", Json.mkObj picks), ("s", worldJson c s)])
     | _ => throw s!"step {out.size}: {name} {(Json.mkObj picks).compress} is not enabled"
   return Json.mkObj [("states", Json.arr out)]
 
@@ -136,6 +152,9 @@ def claim (x t : Nat) := ("claim", [ag "a1" x, ("t1", toJson t)])
 def done (x t : Nat) := ("done", [ag "a7" x, ("t7", toJson t), ("ev7", toJson true)])
 def tick : String × List (String × Json) := ("tick", [])
 def boot (x : Nat) := ("boot", [ag "a19" x])
+def failExit : String × List (String × Json) := ("failExit", [])
+def failRaise : String × List (String × Json) := ("failRaise", [])
+def lapse : String × List (String × Json) := ("lapse", [])
 end S
 open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
@@ -147,7 +166,9 @@ only and goes idle (big context, so never reusable), and the tick, which reaps t
 `spawned` (board #5): a spawned agent has the worktree spawn recorded, so a worktree it adds itself and leaves is not
 the one `wt_map` picks, and the tick sweeps it while the agent works on. `added` (board #15, finding #27): a spawned agent
 adds two worktrees, lands the one it last edited in and marks its task done; the other holds an uncommitted file, so the
-tick that ends idle agent 1 keeps it (`ownAdded`). -/
+tick that ends idle agent 1 keeps it (`ownAdded`). `retry` (board #16): the tick's launch fails, auto-spawn backs off,
+and once the time is past it spawns with the failed name. `raise`: the launch raises before launch.sh runs. `halt`: five
+failed launches of #1 in a row halt it; once #1 is claimed the next tick lifts the halt and spawns for #2. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
@@ -156,17 +177,21 @@ def scripts : List (String × List (String × List (String × Json))) := [
     gAdd 0 1, gEdit 0 1, gCommit 0 1, gSquash 0 1 1, wAge 0, wAge 2, stop 0, age 0, tick]),
   ("spawned", [stop 0, age 0, tick, add, tick, boot 0, gAdd 0 0, wAge 0, tick]),
   ("added", [stop 0, age 0, tick, add, tick, boot 0, gAdd 0 0, gEdit 0 0, gAdd 0 1, gEdit 0 1, gEdit 0 0, gCommit 0 0,
-    gLand 0 0 0, done 0 1, stop 0, age 0, stop 1, age 1, tick])]
+    gLand 0 0 0, done 0 1, stop 0, age 0, stop 1, age 1, tick]),
+  ("retry", [stop 0, age 0, tick, add, failExit, lapse, tick, boot 0]),
+  ("raise", [stop 0, age 0, tick, add, failRaise, lapse]),
+  ("halt", [stop 0, age 0, tick, add, failExit, lapse, failExit, lapse, failExit, lapse, failExit, lapse, failExit,
+    add, claim 1 1, tick])]
 
 def main (args : List String) : IO UInt32 := do
   if let ["script", dir] := args then
     for (name, acts) in scripts do
-      match script replay acts with
+      match script sreplay acts with
       | .ok j => IO.FS.writeFile (System.FilePath.mk dir / s!"script-{name}.json") j.compress
       | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
     return 0
   let [n, maxSteps, seed, dir] := args | do IO.eprintln "usage: Traces.lean <n> <steps> <seed> <dir> | script <dir>"; return 1
   let seed := seed.toNat!
   for i in [0:n.toNat!] do
-    IO.FS.writeFile (System.FilePath.mk dir / s!"seed{seed}-{i}.json") (run replay maxSteps.toNat! (mkStdGen (seed * 1000 + i))).compress
+    IO.FS.writeFile (System.FilePath.mk dir / s!"seed{seed}-{i}.json") (run sreplay maxSteps.toNat! (mkStdGen (seed * 1000 + i))).compress
   return 0

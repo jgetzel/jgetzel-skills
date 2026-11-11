@@ -19,7 +19,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3, and `noSharedFile_of_reachable`: S3 as files |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`), and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck`, `deadLive_not_stuck` |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
@@ -27,11 +27,12 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, refuted with the fix's switch off (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`, `not_B1`) and proved with it on (`W1_of`, `W2_of`, `W3_of` over fair runs, `W4_of`, `B1_of`; `replay_W`: all five of `replay`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
+| `SwarmModel/Spawn.lean` | spawn reservation and launch failure (board #16): `SWorld` (the `State` and auto-spawn's backoff, failures and halt), the tick whose launch fails, `rollbackAll`; Sp1-Sp3 (`Sp1_of`, `Sp2_of`, `Sp3_of`) |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
-| `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
+| `SwarmModel/Traces.lean` | writes random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures) as JSON, and the scripted runs (`script`) |
 | `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
 | `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
@@ -265,6 +266,27 @@ liveness half: on a run fair to watchd (a swarm whose watchd runs at infinitely 
 `CRun.Fair`), from a reachable world, a swarm whose watchd keeps running has its communicator again at some step after
 any step, however often it dies (`comms_replaced`). Who restarts a dead watchd is still board #18.
 
+Spawn reservation and launch failure (`Spawn.lean`, board #16). `swarm spawn --task N` reserves the name and the task in
+one transaction (a row with no terminal, the task claimed for it), makes the worktree, then launches. `SWorld` is the
+model's `State` with auto-spawn's meta rows: `backoff` (spawn_backoff's time is ahead), `bo` (the failed name the next
+launch reuses, as the slot it was for), `fails` (spawn_fails) and `halt` (spawn_halt). Actions: the model's, but its tick;
+watchd's tick with its launches working (`stick`: the model's spawns, drawn from the pool minus a halted task, none in a
+backoff; a launch whose reused name a live row holds is refused, which auto_spawn counts as a failure); the tick whose
+first launch fails (`fail`: launch.sh exits non-zero, or `raise`, launch_agent errors before running it); the backoff's
+time passing (`lapse`). The fix is `rollbackAll`: undo the reservation on any failure, not only launch.sh's exit.
+
+- **Sp1** A failed launch leaves nothing behind: the tick in which it fails ends where the same tick with no spawn ends,
+  so no row of the failed agent and no claim of it remain. `Sp1_of`
+- **Sp2** Right after a failed launch its task is startable: back in the pool at once, not when a leaked claim's 2 h lease
+  lapses. `Sp2_of`
+- **Sp3** On a fair run (the backoff's time passes: `lapse` enabled at infinitely many steps happens at infinitely many)
+  a backoff lifts. `Sp3_of`
+
+Sp1 and Sp2 fail with `rollbackAll` off (finding #28, `not_Sp1`, `not_Sp2`) and hold with it on, of every step. Sp3 holds
+either way: the backoff is time. What the leak breaks after it is the next launch (#29). Not proved: that a halt only
+lands on a task whose own launches failed (it needs "a slot whose launch failed stays not live until a spawn", over every
+action); #29 is the run where it doesn't, with the switch off.
+
 ## Results
 
 `check.sh` (`lake build`) checks everything below in about 12 seconds from nothing (16 s of CPU). No `sorry`,
@@ -280,7 +302,10 @@ theorem's axioms and prints the eight.
 | S4 | `inboxExact_of_reachable` | `deliverCas` (PR #115) | stopped at 30 min, unfinished |
 | S5 | `doneHasEvidence_of_reachable` | `evidenceRequired` (PR #113) | 13.9M states, 625 s |
 
-Each theorem is for any sizes and any setting of the other switches, `racy` included. A TLC run that finished
+| Sp1, Sp2 | `Sp1_of`, `Sp2_of` (of each failing tick) | `rollbackAll` (board #16) | not checked |
+
+Each theorem is for any sizes and any setting of the other switches, `racy` included. Sp3 (`Sp3_of`) is over fair runs
+of the spawn layer, for every instance. A TLC run that finished
 covered 2 agent slots, 1 to 3 tasks and a bounded log; the four that hit the 30-minute cap had seen 23M to 92M
 states, and no liveness check got past the first instance.
 
@@ -426,6 +451,8 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 |---|---|---|---|---|
 | 26 | N1 | `bgLives := false` / N1 (`not_N1_bgLives`, `N1_of`) | Agent 0 starts a long background job (a build, a CI wait), stops holding no claim and goes idle. Lifecycle never looks at the job (only reap does, PR #121), so the next tick ends agent 0 and its terminal, and the job with it. With `bgLives` the tick keeps it until the job ends. | board #15 (`cli_lifecycle_spec`: `test_idle_agent_with_background_job_not_ended`) |
 | 27 | N1 | `ownAdded := false` / N1 (`not_N1_ownAdded`, `N1_of`) | A spawned agent, whose worktree swarm recorded, adds a second worktree, edits in it, edits back in the first, lands that and marks its task done. The second holds an uncommitted file, but lifecycle reads a recorded agent's worktrees from its record and agent.wt alone, so the tick ends the agent. With `ownAdded` the worktrees named after it count too. The replay's `script-added` is the Lua keeping it. | board #15 (`test_recorded_agent_with_a_worktree_it_added_not_ended`) |
+| 28 | Sp1, Sp2 | `rollbackAll := false` / Sp1, Sp2 (`Sp1_of`, `Sp2_of`) | A spawn's launch_agent raises before launch.sh runs (it can't write the agent's settings file: a disk full, a permission, the directory a test puts there), and cmd_spawn undid only launch.sh's exit. Agent 1 leaves, #1 is added, the tick's launch for #1 raises: slot 1's row is live with no terminal (status idle, `hc` null) and holds #1, which is out of the pool until its 2 h lease lapses and lifecycle ends the row (`not_Sp1`, `not_Sp2`; `test_spawn_task_raise_rolls_back`, and the replay at the fix's parent, `rollbackAll` off, 39 runs with raises agreed). With `rollbackAll` the raise is undone like the exit and the retry spawns for #1. | board #16: cmd_spawn runs everything after the reservation under one `pcall` |
+| 29 | a halt is earned | `rollbackAll := false` / the run | The leak's knock-on: spawn_backoff keeps the failed name for the retry, and agents.reserve refuses a live row's name, which auto_spawn counts as a failed launch. Agents 1 and 2 leave, #1 and #2 are added, #1's launch raises (slot 1 holds #1); five times the backoff lapses and the tick's launch, for #2 now, is refused: auto-spawn halts #2, none of whose launches ran, and tells the communicator to spawn it by hand. A scripted replay of this run at the fix's parent (not kept: it is a run of the switch off) was the Lua doing it. With `rollbackAll` the first retry spawns both. | board #16 (as #28) |
 
 
 Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
@@ -456,7 +483,12 @@ branch removed; `script-sweep`: a fast-forwarded one its agent no longer edits i
 `script-formal`: worktrees on main and on `formal` swept, the idle agent whose last worktree is on `formal` only, and who
 owns no task, kept; `script-base`: an agent whose task's base is `formal` kept until its work is there; `script-spawned`:
 a worktree a spawned agent adds and leaves swept while it works, since `wt_map` picks its recorded one; `script-added`: a
-spawned agent kept by an unlanded worktree it added itself, by the tick that ends idle agent 1) are in the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
+spawned agent kept by an unlanded worktree it added itself, by the tick that ends idle agent 1; `script-retry`,
+`script-raise`, `script-halt`: a failed launch and its backoff, a raise undone, five failures halting a task and the halt
+lifted once it is claimed) are in the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes. The runs are of
+`sreplay` (Spawn.lean): `failExit` is a tick with the fake launch.sh failing, `failRaise` one whose next agent's settings
+file is a directory (so launch_agent's `io.open` fails and it dies), `lapse` sets spawn_backoff's time back, and after
+every step auto-spawn's meta rows must match `backoff`, `bo`, `fails` and `halt`.
 
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.
 Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
@@ -660,8 +692,11 @@ it once its agent ends is not compared), an agent removing its own worktree, edi
 live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` doesn't
 generate `stale` or `nudge`, nor `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
 the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
-(no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
-launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
+(no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; of auto-spawn
+(`Spawn.lean`): a launch failing after another spawned in the same tick (the model's `fail` is the tick's first launch),
+its memory gate and the `lost` and `refused` branches (a peer's claim or spawn between the pool and the reservation),
+an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and launch.sh failing after hc started the
+terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
 generates none (`bgLives` is checked by `cli_lifecycle_spec`); `swarm end`'s refusals; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the

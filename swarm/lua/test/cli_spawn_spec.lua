@@ -262,6 +262,19 @@ function T.test_spawn_task_launch_failure_rolls_back(t)
   assert(t:q1("select ended from agent where name='t-9'").ended)
 end
 
+-- launch_agent raises before launch.sh runs (its settings file can't be written): the reservation is undone too
+-- (model Spawn.lean, Sp1: finding #28)
+function T.test_spawn_task_raise_rolls_back(t)
+  t:fakes()
+  os.execute("mkdir -p " .. util.shquote(t.d .. "/agents/t-9.settings.json"))
+  t:sw("a", "task", "add", "do it")
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", { ok = false })
+  local r = t:q1("select owner,state from task")
+  t:eq({ r.owner, r.state }, { nil, "open" })
+  assert(t:q1("select ended from agent where name='t-9'").ended)
+  t:eq(#t:launched(), 0)
+end
+
 function T.test_agent_without_terminal_reads_as_gone(t)
   t:fakes(); t:set_hc({ address = "t1" })  -- only t1 is live
   t:agent("a"); t:agent("alive"); t:agent("x-comms", { status = "idle" }); t:agent("w", { status = "idle" })
