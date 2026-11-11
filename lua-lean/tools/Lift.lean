@@ -38,6 +38,11 @@ structure Cx where
   va : String
   fname : String
   ind : String
+  /-- outside a tail call: the function is its calls' level 1 (`Ctx.top`) -/
+  top : Bool := true
+
+/-- `Ctx.caller` as the lifted code has it: `fn0` is the function's address -/
+def Cx.caller (cx : Cx) : String := if cx.top then "(some fn0)" else "none"
 
 mutual
 partial def fvE (b : List String) : Exp → List String
@@ -143,11 +148,11 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T String := do
   | .vararg => pure s!"(S.eVa {cx.va})"
   | .func ps va b =>
     let f ← job (if name == "" then cx.fname ++ "_fn" else name) ps va b cx.scope
-    pure s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body ({envOf cx}))"
+    pure s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fn0)"
   | .var x =>
     match cx.scope.find? (·.lua == x) with
     | some ent => pure s!"(S.eCell {ent.lean})"
-    | none => pure s!"(S.eGlob {nm x})"
+    | none => pure s!"(S.eGlob I fn0 {nm x})"
   | .index t k => pure s!"(S.eIndex I {← tExp cx t} {← tExp cx k})"
   | .call .. | .method .. => pure s!"(S.eFirst {← tMulti cx e})"
   | .paren a => pure s!"(S.eParen {← tExp cx a})"
@@ -163,12 +168,12 @@ partial def tMulti (cx : Cx) (e : Exp) : T String := do
   | .call f as => do
     loadJob cx f as
     let sf ← tExp cx f
-    pure s!"(S.mCall I {sf} {← tList cx as})"
+    pure s!"(S.mCall I {cx.caller} {sf} {← tList cx as})"
   | .method o m as => do
     let so ← tExp cx o
-    pure s!"(S.mMethod I {so} {nm m} {← tList cx as})"
+    pure s!"(S.mMethod I {cx.caller} {so} {nm m} {← tList cx as})"
   | .vararg => pure s!"(S.mVa {cx.va})"
-  | .site st a => pure s!"(S.mSite {site st} {← tMulti cx a})"
+  | .site st a => pure s!"(S.mSite {site st} {← tMulti { cx with top := cx.top && !st.tail } a})"
   | e => pure s!"(S.mOne {← tExp cx e})"
 
 partial def tList (cx : Cx) (es : List Exp) (names : List String := []) : T String := do
@@ -204,7 +209,7 @@ partial def tPlaces (cx : Cx) (ts : List Exp) : T String := do
   | .var x :: ts => do
     let w := match cx.scope.find? (·.lua == x) with
       | some ent => s!"(S.wCell {ent.lean})"
-      | none => s!"(S.wGlob {nm x})"
+      | none => s!"(S.wGlob I fn0 {nm x})"
     pure s!"(S.pVar {w} {← tPlaces cx ts})"
   | .site s (.index t k) :: ts => do
     let st ← tExp cx t
@@ -273,7 +278,7 @@ partial def tSeq (cx : Cx) (full rest : Block) (fin : Option Exp) : T String := 
   | .locfn x ps va b :: rest => do
     let (cx', cs) ← bindCells cx [x]
     let f ← job x ps va b cx'.scope
-    pure s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fun {cs.headD ""} =>{nl}{← tSeq cx' full rest fin})"
+    pure s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fn0 fun {cs.headD ""} =>{nl}{← tSeq cx' full rest fin})"
   | s :: rest => do
     let ss ← tStat cx s
     pure s!"(S.qStat {ss} (S.gotos {lst ((trail full).map nm)} {lst ((labels full).map nm)}){nl}{← tSeq cx full rest fin})"
@@ -290,7 +295,7 @@ def fnDef (j : Job) : T String := do
   for x in ups do
     upEnts := upEnts ++ [(⟨x, ← fresh x, true⟩ : Ent)]
   let va := if j.va then s!"(args.drop {j.ps.length})" else "[]"
-  let cx0 : Cx := ⟨upEnts.reverse, va, j.name, "    "⟩
+  let cx0 : Cx := ⟨upEnts.reverse, va, j.name, "    ", true⟩
   let (cx, cs) ← bindCells cx0 j.ps
   let k ← tBlock cx j.body
   let cells := String.join (upEnts.map fun e => s!" {e.lean}")
@@ -300,13 +305,13 @@ def fnDef (j : Job) : T String := do
   let frees := upEnts.map (fun e => (e.lua, s!"(some {e.lean})")) ++ globs.map (·, "none")
   let res := frees.foldr (fun (x, v) r => s!"(res1 {nm x} {v} {r})") "(fun x => env0.lookup x)"
   let resP := frees.foldr (fun (x, _) r => s!"(res1_ok h_{leanName x} {r})") "(fun _ => rfl)"
-  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0⟩"
-  pure s!"def {j.name} (I : Sem) (env0 : Env){cellsT} : List Val → Nat → M (List Val) :=
+  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0, fenv0⟩"
+  pure s!"def {j.name} (I : Sem) (env0 : Env) (fn0 : Nat){cellsT} : List Val → Nat → M (List Val) :=
   S.fn fun args n => {lets cs}S.letEnd ({k} n)
 
-theorem {j.name}_ok (I : Sem) (env0 : Env){cellsT}{hyps} :
-    CFn I ({j.name} I env0{cells}) {clo} :=
-  D.fn_ok I {res} {clo} {resP}
+theorem {j.name}_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat){cellsT}{hyps} :
+    CFn I ({j.name} I env0 fn0{cells}) fn0 {clo} :=
+  D.fn_ok I {res} fn0 {clo} {resP}
 "
 
 partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × String)) := do

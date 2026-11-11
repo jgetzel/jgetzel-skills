@@ -46,6 +46,8 @@ structure Clo where
   va : Bool
   body : Block
   env : Env
+  /-- its environment, the table its globals are (lj_func's `env`): its creator's when made, `setfenv`'s after -/
+  fenv : Nat
 
 structure Tbl where
   kv : List (Val × Val) := []
@@ -115,6 +117,10 @@ inductive Flow where
 structure Ctx where
   env : Env
   va : List Val
+  /-- the running closure: its environment holds the globals, and it is level 1 of `getfenv` and `setfenv` -/
+  self : Nat
+  /-- false inside a tail call, whose callee's level 1 is a frame the semantics does not keep -/
+  top : Bool := true
 
 def lstr (s : String) : Val := .str s.toList
 /-- an error of the semantics' own (a run outside what it models), not LuaJIT's -/
@@ -432,15 +438,11 @@ def trace (h : Heap) : List Event :=
   | some (.log l) => l
   | _ => []
 
-def getVar (cx : Ctx) (x : String) : M Val :=
-  match cx.env.lookup x with
-  | some c => readCell c
-  | none => rawget G (lstr x)
-
-def setVar (cx : Ctx) (x : String) (v : Val) : M Unit :=
-  match cx.env.lookup x with
-  | some c => writeCell c v
-  | none => rawset G (lstr x) v
+/-- the environment of closure `a` -/
+def fenvOf (a : Nat) : M Nat := do
+  match ← getObj a with
+  | .clo c => pure c.fenv
+  | _ => die "not a function"
 
 def bindLocals (cx : Ctx) : List String → List Val → M Ctx
   | [], _ => pure cx
@@ -1281,14 +1283,14 @@ def dumpFn (args : List Val) : M (List Val) := do
 
 /-- `load` of a dump: a closure of the dumped one's function, each upvalue a new cell holding nil (lj_func_newL_empty),
 stripped as the dump was: a stripped one is chunk `src`, what load names it (lj_bcread), an unstripped one keeps its
-own -/
-def loadDump (a : Nat) (strip : Bool) (src : String) (mode : Option (List Char)) : M (List Val) := do
+own; its environment `fenv`, as a source's -/
+def loadDump (a : Nat) (strip : Bool) (src : String) (mode : Option (List Char)) (fenv : Nat := G) : M (List Val) := do
   if let some m := mode then
     if !m.contains 'b' then return [.nil, lstr "attempt to load chunk with wrong mode"]
   match ← getObj a with
   | .clo c =>
     let env ← c.upvals.mapM fun (x, _) => do pure (x, ← alloc (.cell .nil))
-    return [.fn (← alloc (.clo ⟨c.params, c.va, if strip then stripBody src c.body else c.body, env⟩))]
+    return [.fn (← alloc (.clo ⟨c.params, c.va, if strip then stripBody src c.body else c.body, env, fenv⟩))]
   | _ => die "not a function"
 
 -- ---------- debug ----------
@@ -1298,7 +1300,7 @@ def setMeta (t : Nat) (m : Option Nat) : M Unit := do
   -- a weak table may have lost entries under the mode it has: it keeps its metatable
   let tt ← getTbl t
   if (← weakOf tt) != (false, false) && m != tt.mt then throw (.eff "setmetatable of a weak table" [])
-  -- globals and package.loaded are read raw (`getVar`, `require`), so they take no metatable (one with `__mode`
+  -- _G and package.loaded are read raw (print's tostring, `require`), so they take no metatable (one with `__mode`
   -- could lose entries)
   if t == G then throw (.eff "setmetatable(_G)" [])
   if t == LOADED then throw (.eff "setmetatable(package.loaded)" [])
@@ -1387,10 +1389,62 @@ def debugFn (name : String) (args : List Val) : M (List Val) := do
     | v :: _ => return [v]
   | _ => die s!"{name}: not in the subset"
 
+/-- the closure at a level of the stack, for getfenv and setfenv (lj_debug_frame): `caller`, the Lua function
+calling, is level 1 when it is known (a call from Lua, not a tail call: `Ctx.top`). Another level stops the run: the
+semantics keeps no stack -/
+def fenvLevel (fname : String) (caller : Option Nat) (lvl : Int) : M Nat := do
+  if lvl < 0 then argErr 1 "invalid level"
+  match lvl, caller with
+  | 1, some a => pure a
+  | _, _ => throw (.eff s!"{fname} of level {lvl}" [])
+
+/-- getfenv (lib_base.c): a builtin's environment is the thread's, `_G` (`setfenv(0, …)` stops) -/
+def getfenvFn (caller : Option Nat) (args : List Val) : M (List Val) := do
+  match args.headD .nil with
+  | .fn a => return [.tbl (← fenvOf a)]
+  | .prim .. => return [.tbl G]
+  | .eff e => throw (.eff s!"getfenv of {e}" [])
+  | _ =>
+    let l ← optInt "getfenv" 0 args 1
+    if l == 0 then return [.tbl G]
+    return [.tbl (← fenvOf (← fenvLevel "getfenv" caller l))]
+
+def setFenv (a t : Nat) : M Unit := do
+  match ← getObj a with
+  | .clo c => modify fun h => h.set! a (.clo { c with fenv := t })
+  | _ => die "not a function"
+
+/-- setfenv (lib_base.c): of a Lua function, which it returns; a builtin's is LuaJIT's error, the thread's (level 0)
+stops the run -/
+def setfenvFn (caller : Option Nat) (args : List Val) : M (List Val) := do
+  let t ← argTbl "setfenv" 1 args
+  match args.headD .nil with
+  | .fn a => setFenv a t; return [.fn a]
+  | .prim .. => callerErr "'setfenv' cannot change environment of given object"
+  | .eff e => throw (.eff s!"setfenv of {e}" [])
+  | _ =>
+    let l ← argInt "setfenv" 0 args
+    if l == 0 then throw (.eff "setfenv of level 0: the thread's environment" [])
+    let a ← fenvLevel "setfenv" caller l
+    setFenv a t
+    return [.fn a]
+
+/-- level 1 of a call from Lua in `cx`, when the semantics knows it -/
+def Ctx.caller (cx : Ctx) : Option Nat := if cx.top then some cx.self else none
+
+/-- a call from Lua whose level 1 is `caller`: getfenv and setfenv see it, the rest are `k`, the call -/
+def fenvCall (caller : Option Nat) (f : Val) (args : List Val) (k : M (List Val)) : M (List Val) :=
+  match f with
+  | .prim "getfenv" [] => frame (getfenvFn caller args)
+  | .prim "setfenv" [] => frame (setfenvFn caller args)
+  | _ => k
+
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
   | "string.dump" => dumpFn args
+  | "getfenv" => getfenvFn none args
+  | "setfenv" => setfenvFn none args
   | "os.difftime" => do
     -- difftime((time_t)a, (time_t)b), a double; past 2^53 C libraries round it differently
     let a ← argIntN 64 "difftime" 0 args
@@ -1546,12 +1600,12 @@ def isSentinel : Val → Bool
 
 /-- a chunk's source as a function of no parameters and every argument, its free names globals; a source
 LuaJIT would load as bytecode, or the parser rejects, stops the run: its messages are LuaJIT's parser's -/
-def loadSrc (src name : List Char) (mode : Option (List Char)) : M (List Val) := do
+def loadSrc (src name : List Char) (mode : Option (List Char)) (env : Nat := G) : M (List Val) := do
   if src.head? == some '\x1b' then throw (.eff "load: a bytecode chunk" [])
   if let some m := mode then
     if !m.contains 't' then return [.nil, lstr "attempt to load chunk with wrong mode"]
   match parseChunk src (shortSrc name) with
-  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, []⟩))]
+  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, [], env⟩))]
   | .error _ => throw (.eff "load: a syntax error" [])
 
 -- ---------- evaluation ----------
@@ -1682,8 +1736,10 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .str s => pure (.str s)
   | .vararg => pure (cx.va.headD .nil)
   | .site s e => atSite s (eval n cx e)
-  | .func ps va b => do pure (.fn (← alloc (.clo ⟨ps, va, b, cx.env⟩)))
-  | .var x => getVar cx x
+  | .func ps va b => do pure (.fn (← alloc (.clo ⟨ps, va, b, cx.env, ← fenvOf cx.self⟩)))
+  | .var x => match cx.env.lookup x with
+    | some c => readCell c
+    | none => do index n (.tbl (← fenvOf cx.self)) (lstr x)
   | .index t k => do
     let tv ← eval n cx t
     let kv ← eval n cx k
@@ -1712,14 +1768,14 @@ def evalMulti (n : Nat) (cx : Ctx) (e : Exp) : M (List Val) :=
   | .call f args => do
     let fv ← eval n cx f
     let as ← evalList n cx args
-    call n fv as
+    fenvCall cx.caller fv as (call n fv as)
   | .method o m args => do
     let ov ← eval n cx o
     let fv ← index n ov (.str m.toList)
     let as ← evalList n cx args
-    call n fv (ov :: as)
+    fenvCall cx.caller fv (ov :: as) (call n fv (ov :: as))
   | .vararg => pure cx.va
-  | .site s e => atSite s (evalMulti n cx e)
+  | .site s e => atSite s (evalMulti n { cx with top := cx.top && !s.tail } e)
   | e => do pure [← eval n cx e]
 
 /-- an expression list: one value each, all of the last's -/
@@ -1803,7 +1859,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   | .fn a => do
     match ← getObj a with
     | .clo c => frame do
-      let cx ← bindLocals ⟨c.env, []⟩ c.params args
+      let cx ← bindLocals ⟨c.env, [], a, true⟩ c.params args
       let cx := { cx with va := if c.va then args.drop c.params.length else [] }
       match ← execBlock n cx c.body with
       | .ret vs => pure vs
@@ -1841,7 +1897,7 @@ def execSeq (n : Nat) (cx : Ctx) (full rest : Block) (fin : Option Exp) : M Flow
   | .locfn name ps va b :: rest => do
     let c ← alloc (.cell .nil)
     let cx := { cx with env := (name, c) :: cx.env }
-    let f ← alloc (.clo ⟨ps, va, b, cx.env⟩)
+    let f ← alloc (.clo ⟨ps, va, b, cx.env, ← fenvOf cx.self⟩)
     writeCell c (.fn f)
     execSeq n cx full rest fin
   | s :: rest => do
@@ -1919,7 +1975,9 @@ def assign (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val × Option Sit
   | [] => pure ()
   | p :: ps => do
     match p with
-    | .inl x => setVar cx x (vs.headD .nil)
+    | .inl x => (match cx.env.lookup x with
+      | some c => writeCell c (vs.headD .nil)
+      | none => do setindex n (.tbl (← fenvOf cx.self)) (lstr x) (vs.headD .nil))
     | .inr (o, k, s) => atSite? s (setindex n o k (vs.headD .nil))
     assign n cx ps vs.tail
 
@@ -2137,25 +2195,27 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
   | "load" | "loadstring" => do
     let cn ← optStr name 1 args
     let mode ← optStr name 2 args
-    -- an environment table becomes the chunk's (setfenv), which the semantics does not model
-    if let .tbl _ := args.getD 3 .nil then throw (.eff "load: an environment" [])
+    -- a table becomes the chunk's environment, anything else is ignored (load_aux)
+    let env := match args.getD 3 .nil with
+      | .tbl t => t
+      | _ => G
     match args.headD .nil with
-    | .str s => loadSrc s (cn.getD s) mode
-    | .num x => loadSrc x.toText (cn.getD x.toText) mode
+    | .str s => loadSrc s (cn.getD s) mode env
+    | .num x => loadSrc x.toText (cn.getD x.toText) mode env
     -- a string's own name for itself (its bytes) is `=?` (lj_bcread)
-    | .dump a s => loadDump a s (shortSrc (cn.getD "=?".toList)) mode
+    | .dump a s => loadDump a s (shortSrc (cn.getD "=?".toList)) mode env
     | _ => do
       let f ← argFn name 0 args
       -- LuaJIT checks the mode after the reader's first piece, not after all of them
       if mode.any (!·.contains 't') then throw (.eff "load: a reader and a mode without t" [])
-      loadSrc (← readChunk n f []) (cn.getD "=(load)".toList) mode
+      loadSrc (← readChunk n f []) (cn.getD "=(load)".toList) mode env
   | "dofile" => do
     -- no name: stdin
     let p ← match ← optStr "dofile" 0 args with
       | some p => pure (String.ofList p)
       | none => throw (.eff "dofile: stdin" [])
     match srcs p with
-    | some b => bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [])
+    | some b => bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, [], G⟩))) [])
     | none => throw (.eff s!"dofile {p}" [])
   | "require" => do
     let m ← argStr "require" 0 args
@@ -2176,7 +2236,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     match (pathFiles path (modPath m)).findSome? srcs with
     | some b => do
       rawset LOADED (.str m) SENTINEL
-      let r := (← bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [.str m])).headD .nil
+      let r := (← bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, [], G⟩))) [.str m])).headD .nil
       if !r.isNil then rawset LOADED (.str m) r
       let v ← rawget LOADED (.str m)
       if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
@@ -2430,7 +2490,7 @@ end
 
 /-- a chunk run as a function of no arguments -/
 def runChunk (n : Nat) (b : Block) (args : List Val := []) : M (List Val) := do
-  let f ← alloc (.clo ⟨[], true, b, []⟩)
+  let f ← alloc (.clo ⟨[], true, b, [], G⟩)
   call srcs oracle tgt n (.fn f) args
 end
 
@@ -2441,12 +2501,12 @@ def libTable (lib : String) (names : List String) : Tbl :=
 
 def basics : List String :=
   ["type", "tostring", "tonumber", "ipairs", "pairs", "next", "select", "unpack", "rawget", "rawset", "rawequal",
-   "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile"]
+   "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile", "getfenv", "setfenv"]
 
 /-- LuaJIT 2.1's globals the semantics does not model: handles, so a run that uses one stops (`lua-lean check` names
 each use) -/
 def unmodelled : List String :=
-  ["jit", "collectgarbage", "gcinfo", "getfenv", "setfenv", "module", "newproxy", "loadfile", "arg"]
+  ["jit", "collectgarbage", "gcinfo", "module", "newproxy", "loadfile", "arg"]
 
 def bits : List String :=
   ["tobit", "bnot", "band", "bor", "bxor", "lshift", "rshift", "arshift", "rol", "ror", "bswap", "tohex"]

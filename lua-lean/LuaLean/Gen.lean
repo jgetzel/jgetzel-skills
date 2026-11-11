@@ -484,7 +484,7 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
 -- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
 -- the run
 #guard [("return collectgarbage(\"count\")", "effect collectgarbage"),
-    ("return pcall(setfenv, 1, {})", "effect setfenv"),
+    ("return pcall(module, \"m\")", "effect module"),
     ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
     ("return require(\"jit\").off()", "effect jit.off"), ("return jit.status()", "effect jit.status"),
     -- a goto but the continue idiom stops the run too, pcall or not
@@ -873,6 +873,66 @@ return R"
       "ok:false,false,false,nil,\"attempt to load chunk with wrong mode\"")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] ("local function f(a) local t = a return t.x end " ++ src).toList == out
 
+/-- function environments: setfenv and getfenv of closures, builtins, level 0 and 1 (non-tail calls) and bad
+arguments; globals read and written through an environment with and without `__index`/`__newindex`; a closure made
+under an environment keeps it; load and loadstring with an environment (a table, or anything else, ignored) -/
+def fenvs : G String := do
+  let env : G String := pick ["E1", "E2", "E3", "_G"]
+  let fn : G String := pick ["f", "g", "h", "mk", "lf"]
+  let body ← pick ["x = V(a); return x, y, V(getfenv(1)), V(getfenv()), V(getfenv(0))",
+    "local r = {setfenv(1, a)} ; return V(r[1]), x, y, V(getfenv(1))",
+    "function gf() return x end; x = V(a); return gf(), V(getfenv(gf))",
+    "local old = getfenv(1); setfenv(1, a); local v = x; setfenv(1, old); return v, x, V(getfenv(f))",
+    "return pcall(function() local r = setfenv(print, a) return r end)",
+    "return z, V(getfenv(function() end))"]
+  let step : G String := do
+    match ← rnd 12 with
+    | 0 | 1 => return s!"R[#R + 1] = \{pcall(setfenv, {← fn}, {← env})}"
+    | 2 => return s!"R[#R + 1] = \{pcall(f, {← pick ["1", "\"s\"", "E1", "E2", "E3", "_G"]})}"
+    | 3 => return s!"R[#R + 1] = \{pcall(g)}; h = mk()"
+    | 4 => return "R[#R + 1] = {pcall(h)}"
+    | 5 => return s!"R[#R + 1] = \{V(getfenv({← pick ["f", "g", "h", "mk", "lf", "print", "string.rep", "0", "1", "nil", "\"1\"", "1.5", ""]}))}"
+    | 6 => return s!"R[#R + 1] = \{pcall(function() return V(getfenv({← pick ["-1", "{}", "true", "\"x\"", "0", "f", "print", "h"]})) end)}"
+    | 7 => return s!"R[#R + 1] = \{pcall(setfenv, {← pick ["print", "string.rep", "{}", "nil", "-1", "\"x\"", "f"]}{← pick ["", ", 5", ", E1", ", nil"]})}"
+    | 8 => return s!"lf = {← pick ["load", "loadstring"]}(\"x = tostring(x) .. 'L' return x, y, ...\", \"=l\", nil, {← pick ["E1", "E2", "E3", "nil", "5", "\"e\""]}); R[#R + 1] = \{V(getfenv(lf)), pcall(lf, 1)}"
+    | 9 => return s!"R[#R + 1] = \{pcall(function() local r = \{setfenv({← fn}, {← env})} return V(r[1]) end)}"
+    | 10 => return s!"R[#R + 1] = \{x, y, V(getfenv(1)), pcall(function() local e = getfenv(1) return V(e), V(getfenv(0)), x end)}"
+    | _ => return s!"R[#R + 1] = \{pcall(f, {← env})}; R[#R + 1] = \{pcall(h)}"
+  let steps ← (List.range ((← rnd 6) + 2)).mapM fun _ => step
+  return s!"local getfenv, setfenv, pcall, tostring, print, ipairs, rawset = getfenv, setfenv, pcall, tostring, print, ipairs, rawset
+x, y, z, gf = \"gx\", \"gy\", nil, nil
+local E1 = \{x = 1, y = \"e1\"}
+local E2 = setmetatable(\{y = \"e2\"}, \{__index = _G})
+local E3 = setmetatable(\{}, \{__index = function(_, k) return tostring(k) .. \"?\" end, __newindex = function(t, k, v) rawset(t, k, tostring(v) .. \"!\") end})
+local f, g, h, mk, lf
+local names
+local function V(v) for _, p in ipairs(names) do if v == p[1] then return p[2] end end if type(v) == \"table\" then return \"table\" end return v end
+function f(a) {body} end
+function g() local e = getfenv(1) return x, y, z, V(e) end
+function mk() return function() return x, y, V(getfenv(1)) end end
+h = mk()
+names = \{\{E1, \"E1\"}, \{E2, \"E2\"}, \{E3, \"E3\"}, \{_G, \"_G\"}, \{f, \"f\"}, \{g, \"g\"}, \{h, \"h\"}, \{mk, \"mk\"}, \{print, \"print\"}}
+local R = \{}
+{"\n".intercalate steps}
+return R, x, y, E1.x, E2.x, E3.x, gf ~= nil"
+
+-- what needs a level the semantics keeps no frame for stops the run: a level past 1, level 1 of a builtin's call
+-- or of a tail call, and the thread's environment (setfenv 0)
+#guard [("return pcall(getfenv, 1)", "effect getfenv of level 1"),
+    ("return getfenv(2)", "effect getfenv of level 2"),
+    ("local function f() return getfenv(1) end return f()", "effect getfenv of level 1"),
+    ("local function f() return setfenv(1, {}) end return pcall(f)", "effect setfenv of level 1"),
+    ("setfenv(0, _G)", "effect setfenv of level 0: the thread's environment"),
+    ("return pcall(debug.getfenv, print)", "effect debug.getfenv"),
+    ("local e = setmetatable({}, {__index = _G}) local function f() y = 1 return x end x = 3 setfenv(f, e) return f(), e.y, y, getfenv(f) == e, setfenv(f, _G) == f, getfenv(1) == _G",
+      "ok:3,1,nil,true,true,true"),
+    ("local function f() setfenv(1, {}) end return pcall(f)", "ok:true"),
+    ("return load(\"return x\", \"=l\", \"t\", {x = 4})(), loadstring(\"return x\", \"=l\", nil, {x = 5})(), load(\"return 6\", nil, nil, 1)()",
+      "ok:4,5,6"),
+    ("local f = function() return x end x = 1 return load(string.dump(f), nil, \"b\", {x = 7})(), load(string.dump(f))()",
+      "ok:7,1")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 /-- the modules under test/mods, by both their names -/
 def modNames : List String := ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
 
@@ -961,7 +1021,7 @@ def chunk : G String := do
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
   | 10 => match ← rnd 2 with | 0 => libs | 1 => debugs | _ => bitOps
   | 11 => traverse
-  | 12 => if ← chance 4 then dumps else loads
+  | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros
   | 14 => effects
   | _ => numbers
