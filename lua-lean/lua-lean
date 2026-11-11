@@ -8,7 +8,7 @@
 #   lua-lean parsecheck <file.lua>...     the parser against LuaJIT: printed back, each compiles to the source's bytecode
 #   lua-lean run [--lib <prefix>=<dir>]... <file.lua>...  each chunk's results under the Lean semantics
 #   lua-lean cases <n> <seed> <file>      random chunks with the Lean semantics' results
-#   lua-lean difftest [<n> [<seed>]]      that many fresh chunks (3000) under LuaJIT, which must give the same results
+#   lua-lean difftest [<n> [<seed>]]      that many fresh chunks (3000) under LuaJIT, JIT on and off: the same results
 here=$(cd "$(dirname "$0")" && pwd)
 abs() { case $1 in /*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
 lake_do() { (cd "$here" && if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi); }
@@ -54,7 +54,8 @@ difftest)
   trap 'rm -rf "$tmp"' EXIT
   seed=${2:-$(date +%s)}
   echo "seed $seed"
-  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && luajit "$here/test/luasem.lua" --cases "$tmp/cases.lua" ;;
+  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && luajit "$here/test/luasem.lua" --cases "$tmp/cases.lua" &&
+    luajit -joff "$here/test/luasem.lua" --cases "$tmp/cases.lua" ;;
 parsecheck)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1

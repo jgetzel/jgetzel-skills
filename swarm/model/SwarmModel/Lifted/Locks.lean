@@ -295,15 +295,15 @@ theorem chunk_ok (I : Sem) (env0 : Env)
 
 def realpath (I : Sem) (env0 : Env) (c_stdlib c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_p => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_parts => S.letEnd
-      ((S.qStat (S.sForIn I (S.lLast (S.mMethod I (S.eCell c_p) "gmatch" (S.lLast (S.mOne (S.eStr "[^/]+".toList))))) fun n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin .eq (S.eCell c_x) (S.eStr "..".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_parts) (S.eUn .len (S.eCell c_parts)) S.pNil) (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
-          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin .ne (S.eCell c_x) (S.eStr ".".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_parts) (S.eBin .add (S.eUn .len (S.eCell c_parts)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eCell c_x)))) (S.gotos [] [])
+      ((S.qStat (S.sForIn I (S.lLast (S.mMethod I (S.eCell c_p) "gmatch" (S.lLast (S.mOne (S.eStr "[^/]+".toList))))) fun n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eCell c_x) (S.eStr "..".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_parts) (S.eUn .len (S.eCell c_parts)) S.pNil) (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
+          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin I .ne (S.eCell c_x) (S.eStr ".".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_parts) (S.eBin I .add (S.eUn .len (S.eCell c_parts)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eCell c_x)))) (S.gotos [] [])
             S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
           S.qEnd))) (S.gotos [] [])
         S.qEnd)) n)) (S.gotos [] [])
       (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_tail => S.letEnd
-      ((S.qStat (S.sWhile S.eTrue (S.block (S.qLocal (S.lLast (S.mOne (S.eBin .concat (S.eStr "/".toList) (S.eFirst (S.mCall I (S.eIndex I (S.eGlob "table") (S.eStr "concat".toList)) (S.lCons (S.eCell c_parts) (S.lLast (S.mOne (S.eStr "/".toList))))))))) fun n => S.let1 fun c_head => S.letEnd
+      ((S.qStat (S.sWhile S.eTrue (S.block (S.qLocal (S.lLast (S.mOne (S.eBin I .concat (S.eStr "/".toList) (S.eFirst (S.mCall I (S.eIndex I (S.eGlob "table") (S.eStr "concat".toList)) (S.lCons (S.eCell c_parts) (S.lLast (S.mOne (S.eStr "/".toList))))))))) fun n => S.let1 fun c_head => S.letEnd
         ((S.qLocal (S.lLast (S.mCall I (S.eIndex I (S.eCell c_stdlib) (S.eStr "realpath".toList)) (S.lLast (S.mOne (S.eCell c_head))))) fun n => S.let1 fun c_r => S.letEnd
-        ((S.qStat (S.sIf (S.eCell c_r) (S.block (S.qStat (S.sIf (S.eBin .eq (S.eUn .len (S.eCell c_tail)) (S.eNum (.int 0))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
+        ((S.qStat (S.sIf (S.eCell c_r) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eUn .len (S.eCell c_tail)) (S.eNum (.int 0))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
             S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
           (S.qStat (S.sReturn (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "join".toList)) (S.lCons (S.eCell c_r) (S.lLast (S.mCall I (S.eIndex I (S.eGlob "table") (S.eStr "concat".toList)) (S.lCons (S.eCell c_tail) (S.lLast (S.mOne (S.eStr "/".toList)))))))))) (S.gotos [] [])
           S.qEnd))) (S.block S.qEnd)) (S.gotos [] [])
@@ -336,15 +336,15 @@ theorem realpath_ok (I : Sem) (env0 : Env) (c_stdlib c_util : Nat)
 def M_repo_rel (I : Sem) (env0 : Env) (c_realpath c_util c_stdlib c_lfs c_proc : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_path => S.let1 fun c_cwd => S.letEnd ((S.block (S.qLocal (S.lLast (S.mCall I (S.eCell c_realpath) (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "join".toList)) (S.lCons (S.eOr (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_stdlib) (S.eStr "realpath".toList)) (S.lLast (S.mOne (S.eStr ".".toList))))) (S.eStr "/".toList)) (S.lCons (S.eOr (S.eCell c_cwd) (S.eStr ".".toList)) (S.lLast (S.mOne (S.eCell c_path))))))))) fun n => S.let1 fun c_p => S.letEnd
       ((S.qLocal (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "dirname".toList)) (S.lLast (S.mOne (S.eCell c_p))))) fun n => S.let1 fun c_d => S.letEnd
-      ((S.qStat (S.sWhile (S.eAnd (S.eBin .ne (S.eCell c_d) (S.eStr "/".toList)) (S.eBin .ne (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_lfs) (S.eStr "attributes".toList)) (S.lCons (S.eCell c_d) (S.lLast (S.mOne (S.eStr "mode".toList)))))) (S.eStr "directory".toList))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_d) S.pNil) (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "dirname".toList)) (S.lLast (S.mOne (S.eCell c_d)))))) (S.gotos [] [])
+      ((S.qStat (S.sWhile (S.eAnd (S.eBin I .ne (S.eCell c_d) (S.eStr "/".toList)) (S.eBin I .ne (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_lfs) (S.eStr "attributes".toList)) (S.lCons (S.eCell c_d) (S.lLast (S.mOne (S.eStr "mode".toList)))))) (S.eStr "directory".toList))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_d) S.pNil) (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "dirname".toList)) (S.lLast (S.mOne (S.eCell c_d)))))) (S.gotos [] [])
         S.qEnd))) (S.gotos [] [])
       (S.qLocal (S.lLast (S.mCall I (S.eIndex I (S.eCell c_proc) (S.eStr "git".toList)) (S.lCons (S.eTable (S.fPos (S.eStr "rev-parse".toList) (S.fLast (S.mOne (S.eStr "--show-toplevel".toList))))) (S.lLast (S.mOne (S.eCell c_d)))))) fun n => S.let1 fun c_top => S.letEnd
-      ((S.qStat (S.sIf (S.eOr (S.eUn .not (S.eCell c_top)) (S.eBin .eq (S.eCell c_top) (S.eStr "".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
+      ((S.qStat (S.sIf (S.eOr (S.eUn .not (S.eCell c_top)) (S.eBin I .eq (S.eCell c_top) (S.eStr "".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
       (S.qStat (S.sAssign (S.pVar (S.wCell c_top) S.pNil) (S.lLast (S.mCall I (S.eCell c_realpath) (S.lLast (S.mOne (S.eCell c_top)))))) (S.gotos [] [])
-      (S.qStat (S.sIf (S.eBin .eq (S.eCell c_p) (S.eCell c_top)) (S.block (S.qStat (S.sReturn (S.lCons (S.eCell c_top) (S.lLast (S.mOne (S.eStr ".".toList))))) (S.gotos [] [])
+      (S.qStat (S.sIf (S.eBin I .eq (S.eCell c_p) (S.eCell c_top)) (S.block (S.qStat (S.sReturn (S.lCons (S.eCell c_top) (S.lLast (S.mOne (S.eStr ".".toList))))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
-      (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "startswith".toList)) (S.lCons (S.eCell c_p) (S.lLast (S.mOne (S.eOr (S.eAnd (S.eBin .eq (S.eCell c_top) (S.eStr "/".toList)) (S.eStr "/".toList)) (S.eBin .concat (S.eCell c_top) (S.eStr "/".toList)))))))) (S.block (S.qStat (S.sReturn (S.lCons (S.eCell c_top) (S.lLast (S.mMethod I (S.eCell c_p) "sub" (S.lLast (S.mOne (S.eBin .add (S.eUn .len (S.eCell c_top)) (S.eParen (S.eOr (S.eAnd (S.eBin .eq (S.eCell c_top) (S.eStr "/".toList)) (S.eNum (.int 1))) (S.eNum (.int 2))))))))))) (S.gotos [] [])
+      (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "startswith".toList)) (S.lCons (S.eCell c_p) (S.lLast (S.mOne (S.eOr (S.eAnd (S.eBin I .eq (S.eCell c_top) (S.eStr "/".toList)) (S.eStr "/".toList)) (S.eBin I .concat (S.eCell c_top) (S.eStr "/".toList)))))))) (S.block (S.qStat (S.sReturn (S.lCons (S.eCell c_top) (S.lLast (S.mMethod I (S.eCell c_p) "sub" (S.lLast (S.mOne (S.eBin I .add (S.eUn .len (S.eCell c_top)) (S.eParen (S.eOr (S.eAnd (S.eBin I .eq (S.eCell c_top) (S.eStr "/".toList)) (S.eNum (.int 1))) (S.eNum (.int 2))))))))))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
       S.qEnd))))) n))) n)) n))) n)
@@ -373,7 +373,7 @@ theorem M_repo_rel_ok (I : Sem) (env0 : Env) (c_realpath c_util c_stdlib c_lfs c
 
 def lit (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_s => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r => S.letEnd
-      ((S.qStat (S.sForIn I (S.lLast (S.mMethod I (S.eCell c_s) "gmatch" (S.lLast (S.mOne (S.eStr ".".toList))))) fun n => S.let1 fun c_ch => S.letEnd ((S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r) (S.eBin .add (S.eUn .len (S.eCell c_r)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "c" (S.eCell c_ch) S.fNil))))) (S.gotos [] [])
+      ((S.qStat (S.sForIn I (S.lLast (S.mMethod I (S.eCell c_s) "gmatch" (S.lLast (S.mOne (S.eStr ".".toList))))) fun n => S.let1 fun c_ch => S.letEnd ((S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r) (S.eBin I .add (S.eUn .len (S.eCell c_r)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "c" (S.eCell c_ch) S.fNil))))) (S.gotos [] [])
         S.qEnd)) n)) (S.gotos [] [])
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
       S.qEnd)) n))) n)
@@ -387,26 +387,26 @@ theorem lit_ok (I : Sem) (env0 : Env) :
       CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
 
 def tokens (I : Sem) (env0 : Env) (c_lit : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_pat => S.let1 fun c_dir => S.letEnd ((S.block (S.qStat (S.sIf (S.eCell c_dir) (S.block (S.qLocal (S.lLast (S.mCall I (S.eCell c_lit) (S.lLast (S.mOne (S.eBin .concat (S.eParen (S.eFirst (S.mMethod I (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList))))))) (S.eStr "/".toList)))))) fun n => S.let1 fun c_r => S.letEnd
-        ((S.qStat (S.sAssign (S.pIndex (S.eCell c_r) (S.eBin .add (S.eUn .len (S.eCell c_r)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "*".toList)))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_pat => S.let1 fun c_dir => S.letEnd ((S.block (S.qStat (S.sIf (S.eCell c_dir) (S.block (S.qLocal (S.lLast (S.mCall I (S.eCell c_lit) (S.lLast (S.mOne (S.eBin I .concat (S.eParen (S.eFirst (S.mMethod I (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList))))))) (S.eStr "/".toList)))))) fun n => S.let1 fun c_r => S.letEnd
+        ((S.qStat (S.sAssign (S.pIndex (S.eCell c_r) (S.eBin I .add (S.eUn .len (S.eCell c_r)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "*".toList)))) (S.gotos [] [])
         (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
         S.qEnd)) n))) (S.block S.qEnd)) (S.gotos [] [])
       (S.qLocal (S.lCons (S.eTable S.fNil) (S.lLast (S.mOne (S.eNum (.int 1))))) fun n => S.let1 fun c_r1 => S.let1 fun c_i => S.letEnd
-      ((S.qStat (S.sWhile (S.eBin .le (S.eCell c_i) (S.eUn .len (S.eCell c_pat))) (S.block (S.qLocal (S.lLast (S.mMethod I (S.eCell c_pat) "sub" (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eCell c_i)))))) fun n => S.let1 fun c_ch => S.letEnd
-        ((S.qLocal (S.lLast (S.mOne (S.eAnd (S.eBin .eq (S.eCell c_ch) (S.eStr "[".toList)) (S.eFirst (S.mMethod I (S.eCell c_pat) "find" (S.lCons (S.eStr "]".toList) (S.lCons (S.eBin .add (S.eCell c_i) (S.eParen (S.eOr (S.eAnd (S.eFirst (S.mMethod I (S.eCell c_pat) "find" (S.lCons (S.eStr "^[!^]".toList) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 1)))))))) (S.eNum (.int 3))) (S.eNum (.int 2))))) (S.lLast (S.mOne S.eTrue))))))))) fun n => S.let1 fun c_j => S.letEnd
-        ((S.qStat (S.sIf (S.eBin .eq (S.eCell c_ch) (S.eStr "*".toList)) (S.block (S.qStat (S.sIf (S.eBin .ne (S.eIndex I (S.eCell c_r1) (S.eUn .len (S.eCell c_r1))) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "*".toList)))) (S.gotos [] [])
+      ((S.qStat (S.sWhile (S.eBin I .le (S.eCell c_i) (S.eUn .len (S.eCell c_pat))) (S.block (S.qLocal (S.lLast (S.mMethod I (S.eCell c_pat) "sub" (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eCell c_i)))))) fun n => S.let1 fun c_ch => S.letEnd
+        ((S.qLocal (S.lLast (S.mOne (S.eAnd (S.eBin I .eq (S.eCell c_ch) (S.eStr "[".toList)) (S.eFirst (S.mMethod I (S.eCell c_pat) "find" (S.lCons (S.eStr "]".toList) (S.lCons (S.eBin I .add (S.eCell c_i) (S.eParen (S.eOr (S.eAnd (S.eFirst (S.mMethod I (S.eCell c_pat) "find" (S.lCons (S.eStr "^[!^]".toList) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1)))))))) (S.eNum (.int 3))) (S.eNum (.int 2))))) (S.lLast (S.mOne S.eTrue))))))))) fun n => S.let1 fun c_j => S.letEnd
+        ((S.qStat (S.sIf (S.eBin I .eq (S.eCell c_ch) (S.eStr "*".toList)) (S.block (S.qStat (S.sIf (S.eBin I .ne (S.eIndex I (S.eCell c_r1) (S.eUn .len (S.eCell c_r1))) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin I .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "*".toList)))) (S.gotos [] [])
             S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
-          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin .eq (S.eCell c_ch) (S.eStr "?".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "?".toList)))) (S.gotos [] [])
-            S.qEnd)) (S.block (S.qStat (S.sIf (S.eCell c_j) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "set" (S.eFirst (S.mMethod I (S.eCell c_pat) "sub" (S.lCons (S.eBin .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin .sub (S.eCell c_j) (S.eNum (.int 1)))))))) S.fNil))))) (S.gotos [] [])
+          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eCell c_ch) (S.eStr "?".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin I .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eStr "?".toList)))) (S.gotos [] [])
+            S.qEnd)) (S.block (S.qStat (S.sIf (S.eCell c_j) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin I .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "set" (S.eFirst (S.mMethod I (S.eCell c_pat) "sub" (S.lCons (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin I .sub (S.eCell c_j) (S.eNum (.int 1)))))))) S.fNil))))) (S.gotos [] [])
               (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eCell c_j)))) (S.gotos [] [])
-              S.qEnd))) (S.block (S.qStat (S.sIf (S.eAnd (S.eBin .eq (S.eCell c_ch) (S.eStr "\\".toList)) (S.eBin .lt (S.eCell c_i) (S.eUn .len (S.eCell c_pat)))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
+              S.qEnd))) (S.block (S.qStat (S.sIf (S.eAnd (S.eBin I .eq (S.eCell c_ch) (S.eStr "\\".toList)) (S.eBin I .lt (S.eCell c_i) (S.eUn .len (S.eCell c_pat)))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
                 (S.qStat (S.sAssign (S.pVar (S.wCell c_ch) S.pNil) (S.lLast (S.mMethod I (S.eCell c_pat) "sub" (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eCell c_i))))))) (S.gotos [] [])
                 S.qEnd))) (S.block S.qEnd)) (S.gotos [] [])
-              (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "c" (S.eCell c_ch) S.fNil))))) (S.gotos [] [])
+              (S.qStat (S.sAssign (S.pIndex (S.eCell c_r1) (S.eBin I .add (S.eUn .len (S.eCell c_r1)) (S.eNum (.int 1))) S.pNil) (S.lLast (S.mOne (S.eTable (S.fNamed "c" (S.eCell c_ch) S.fNil))))) (S.gotos [] [])
               S.qEnd)))) (S.gotos [] [])
             S.qEnd))) (S.gotos [] [])
           S.qEnd))) (S.gotos [] [])
-        (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
+        (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
         S.qEnd)) n)) n)))) (S.gotos [] [])
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r1)))) (S.gotos [] [])
       S.qEnd)) n)))) n)
@@ -439,15 +439,15 @@ theorem tokens_ok (I : Sem) (env0 : Env) (c_lit : Nat)
       CQ_end rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl)) n)
 
 def in_set (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_s => S.let1 fun c_ch => S.letEnd ((S.block (S.qLocal (S.lCons (S.eBin .ne (S.eFirst (S.mMethod I (S.eCell c_s) "find" (S.lLast (S.mOne (S.eStr "^[!^]".toList))))) S.eNil) (S.lLast (S.mMethod I (S.eCell c_ch) "byte" S.lNil))) fun n => S.let1 fun c_neg => S.let1 fun c_c => S.letEnd
+  S.fn fun args n => S.let1 fun c_s => S.let1 fun c_ch => S.letEnd ((S.block (S.qLocal (S.lCons (S.eBin I .ne (S.eFirst (S.mMethod I (S.eCell c_s) "find" (S.lLast (S.mOne (S.eStr "^[!^]".toList))))) S.eNil) (S.lLast (S.mMethod I (S.eCell c_ch) "byte" S.lNil))) fun n => S.let1 fun c_neg => S.let1 fun c_c => S.letEnd
       ((S.qLocal (S.lCons (S.eOr (S.eAnd (S.eCell c_neg) (S.eNum (.int 2))) (S.eNum (.int 1))) (S.lLast (S.mOne S.eFalse))) fun n => S.let1 fun c_i => S.let1 fun c_hit => S.letEnd
-      ((S.qStat (S.sWhile (S.eBin .le (S.eCell c_i) (S.eUn .len (S.eCell c_s))) (S.block (S.qStat (S.sIf (S.eAnd (S.eBin .eq (S.eFirst (S.mMethod I (S.eCell c_s) "sub" (S.lCons (S.eBin .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 1)))))))) (S.eStr "-".toList)) (S.eBin .le (S.eBin .add (S.eCell c_i) (S.eNum (.int 2))) (S.eUn .len (S.eCell c_s)))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_hit) S.pNil) (S.lLast (S.mOne (S.eOr (S.eCell c_hit) (S.eParen (S.eAnd (S.eBin .le (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eCell c_i))))) (S.eCell c_c)) (S.eBin .le (S.eCell c_c) (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 2)))))))))))))) (S.gotos [] [])
-          (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 3)))))) (S.gotos [] [])
-          S.qEnd))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_hit) S.pNil) (S.lLast (S.mOne (S.eOr (S.eCell c_hit) (S.eBin .eq (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eCell c_i))))) (S.eCell c_c)))))) (S.gotos [] [])
-          (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
+      ((S.qStat (S.sWhile (S.eBin I .le (S.eCell c_i) (S.eUn .len (S.eCell c_s))) (S.block (S.qStat (S.sIf (S.eAnd (S.eBin I .eq (S.eFirst (S.mMethod I (S.eCell c_s) "sub" (S.lCons (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1)))))))) (S.eStr "-".toList)) (S.eBin I .le (S.eBin I .add (S.eCell c_i) (S.eNum (.int 2))) (S.eUn .len (S.eCell c_s)))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_hit) S.pNil) (S.lLast (S.mOne (S.eOr (S.eCell c_hit) (S.eParen (S.eAnd (S.eBin I .le (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eCell c_i))))) (S.eCell c_c)) (S.eBin I .le (S.eCell c_c) (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 2)))))))))))))) (S.gotos [] [])
+          (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 3)))))) (S.gotos [] [])
+          S.qEnd))) (S.block (S.qStat (S.sAssign (S.pVar (S.wCell c_hit) S.pNil) (S.lLast (S.mOne (S.eOr (S.eCell c_hit) (S.eBin I .eq (S.eFirst (S.mMethod I (S.eCell c_s) "byte" (S.lLast (S.mOne (S.eCell c_i))))) (S.eCell c_c)))))) (S.gotos [] [])
+          (S.qStat (S.sAssign (S.pVar (S.wCell c_i) S.pNil) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1)))))) (S.gotos [] [])
           S.qEnd)))) (S.gotos [] [])
         S.qEnd))) (S.gotos [] [])
-      (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin .ne (S.eCell c_hit) (S.eCell c_neg))))) (S.gotos [] [])
+      (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin I .ne (S.eCell c_hit) (S.eCell c_neg))))) (S.gotos [] [])
       S.qEnd)) n)) n))) n)
 
 theorem in_set_ok (I : Sem) (env0 : Env) :
@@ -464,7 +464,7 @@ theorem in_set_ok (I : Sem) (env0 : Env) :
       CQ_end rfl rfl rfl) rfl rfl rfl) n)) n))) n)
 
 def single (I : Sem) (env0 : Env) (c_in_set : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_t => S.let1 fun c_ch => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eBin .eq (S.eCell c_t) (S.eStr "?".toList)) (S.eParen (S.eAnd (S.eBin .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_t))))) (S.eStr "table".toList)) (S.eParen (S.eOr (S.eBin .eq (S.eIndex I (S.eCell c_t) (S.eStr "c".toList)) (S.eCell c_ch)) (S.eParen (S.eAnd (S.eBin .ne (S.eIndex I (S.eCell c_t) (S.eStr "set".toList)) S.eNil) (S.eFirst (S.mCall I (S.eCell c_in_set) (S.lCons (S.eIndex I (S.eCell c_t) (S.eStr "set".toList)) (S.lLast (S.mOne (S.eCell c_ch)))))))))))))))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_t => S.let1 fun c_ch => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eBin I .eq (S.eCell c_t) (S.eStr "?".toList)) (S.eParen (S.eAnd (S.eBin I .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_t))))) (S.eStr "table".toList)) (S.eParen (S.eOr (S.eBin I .eq (S.eIndex I (S.eCell c_t) (S.eStr "c".toList)) (S.eCell c_ch)) (S.eParen (S.eAnd (S.eBin I .ne (S.eIndex I (S.eCell c_t) (S.eStr "set".toList)) S.eNil) (S.eFirst (S.mCall I (S.eCell c_in_set) (S.lCons (S.eIndex I (S.eCell c_t) (S.eStr "set".toList)) (S.lLast (S.mOne (S.eCell c_ch)))))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
 theorem single_ok (I : Sem) (env0 : Env) (c_in_set : Nat)
@@ -475,9 +475,9 @@ theorem single_ok (I : Sem) (env0 : Env) (c_in_set : Nat)
       CQ_end rfl rfl rfl)) n)
 
 def one (I : Sem) (env0 : Env) (c_single : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd ((S.block (S.qStat (S.sIf (S.eAnd (S.eBin .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_a))))) (S.eStr "table".toList)) (S.eIndex I (S.eCell c_a) (S.eStr "c".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_b) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "c".toList)))))))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd ((S.block (S.qStat (S.sIf (S.eAnd (S.eBin I .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_a))))) (S.eStr "table".toList)) (S.eIndex I (S.eCell c_a) (S.eStr "c".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_b) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "c".toList)))))))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
-      (S.qStat (S.sIf (S.eAnd (S.eBin .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_b))))) (S.eStr "table".toList)) (S.eIndex I (S.eCell c_b) (S.eStr "c".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eIndex I (S.eCell c_b) (S.eStr "c".toList)))))))) (S.gotos [] [])
+      (S.qStat (S.sIf (S.eAnd (S.eBin I .eq (S.eFirst (S.mCall I (S.eGlob "type") (S.lLast (S.mOne (S.eCell c_b))))) (S.eStr "table".toList)) (S.eIndex I (S.eCell c_b) (S.eStr "c".toList))) (S.block (S.qStat (S.sReturn (S.lLast (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eIndex I (S.eCell c_b) (S.eStr "c".toList)))))))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
       (S.qStat (S.sForNum (S.eNum (.int 0)) (S.eNum (.int 255)) none fun c_k => (S.block (S.qStat (S.sIf (S.eAnd (S.eFirst (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_a) (S.lLast (S.mCall I (S.eIndex I (S.eGlob "string") (S.eStr "char".toList)) (S.lLast (S.mOne (S.eCell c_k)))))))) (S.eFirst (S.mCall I (S.eCell c_single) (S.lCons (S.eCell c_b) (S.lLast (S.mCall I (S.eIndex I (S.eGlob "string") (S.eStr "char".toList)) (S.lLast (S.mOne (S.eCell c_k))))))))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eTrue))) (S.gotos [] [])
           S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
@@ -515,7 +515,7 @@ theorem meet_ok (I : Sem) (env0 : Env) (c_one : Nat)
       CQ_end rfl rfl rfl)) n))) n)
 
 def glob (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin .ne (S.eFirst (S.mMethod I (S.eCell c_x) "find" (S.lLast (S.mOne (S.eStr "[*?[]".toList))))) S.eNil)))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin I .ne (S.eFirst (S.mMethod I (S.eCell c_x) "find" (S.lLast (S.mOne (S.eStr "[*?[]".toList))))) S.eNil)))) (S.gotos [] [])
       S.qEnd)) n)
 
 theorem glob_ok (I : Sem) (env0 : Env) :
@@ -524,7 +524,7 @@ theorem glob_ok (I : Sem) (env0 : Env) :
       CQ_end rfl rfl rfl)) n)
 
 def M_covers (I : Sem) (env0 : Env) (c_meet c_tokens c_lit c_glob c_util : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_path => S.let1 fun c_pat => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eOr (S.eBin .eq (S.eCell c_path) (S.eCell c_pat)) (S.eFirst (S.mCall I (S.eCell c_meet) (S.lCons (S.eFirst (S.mCall I (S.eCell c_tokens) (S.lLast (S.mOne (S.eCell c_pat))))) (S.lLast (S.mCall I (S.eCell c_lit) (S.lLast (S.mOne (S.eCell c_path))))))))) (S.eParen (S.eAnd (S.eUn .not (S.eFirst (S.mCall I (S.eCell c_glob) (S.lLast (S.mOne (S.eCell c_pat)))))) (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "startswith".toList)) (S.lCons (S.eCell c_path) (S.lLast (S.mOne (S.eBin .concat (S.eParen (S.eFirst (S.mMethod I (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList))))))) (S.eStr "/".toList))))))))))))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_path => S.let1 fun c_pat => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eOr (S.eBin I .eq (S.eCell c_path) (S.eCell c_pat)) (S.eFirst (S.mCall I (S.eCell c_meet) (S.lCons (S.eFirst (S.mCall I (S.eCell c_tokens) (S.lLast (S.mOne (S.eCell c_pat))))) (S.lLast (S.mCall I (S.eCell c_lit) (S.lLast (S.mOne (S.eCell c_path))))))))) (S.eParen (S.eAnd (S.eUn .not (S.eFirst (S.mCall I (S.eCell c_glob) (S.lLast (S.mOne (S.eCell c_pat)))))) (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "startswith".toList)) (S.lCons (S.eCell c_path) (S.lLast (S.mOne (S.eBin I .concat (S.eParen (S.eFirst (S.mMethod I (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList))))))) (S.eStr "/".toList))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
 theorem M_covers_ok (I : Sem) (env0 : Env) (c_meet c_tokens c_lit c_glob c_util : Nat)
@@ -565,7 +565,7 @@ def norm (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) 
   S.fn fun args n => S.let1 fun c_path => S.letEnd ((S.block (S.qLocal (S.lLast (S.mCall I (S.eIndex I (S.eCell c_M) (S.eStr "repo_rel".toList)) (S.lLast (S.mOne (S.eCell c_path))))) fun n => S.let1 fun c__ => S.let1 fun c_rel => S.letEnd
       ((S.qStat (S.sIf (S.eUn .not (S.eCell c_rel)) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_path)))) (S.gotos [] [])
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
-      (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin .concat (S.eCell c_rel) (S.eParen (S.eOr (S.eAnd (S.eParen (S.eAnd (S.eBin .eq (S.eFirst (S.mMethod I (S.eCell c_path) "sub" (S.lLast (S.mOne (S.eNum (.int (-1))))))) (S.eStr "/".toList)) (S.eBin .ne (S.eCell c_rel) (S.eStr ".".toList)))) (S.eStr "/".toList)) (S.eStr "".toList))))))) (S.gotos [] [])
+      (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin I .concat (S.eCell c_rel) (S.eParen (S.eOr (S.eAnd (S.eParen (S.eAnd (S.eBin I .eq (S.eFirst (S.mMethod I (S.eCell c_path) "sub" (S.lLast (S.mOne (S.eNum (.int (-1))))))) (S.eStr "/".toList)) (S.eBin I .ne (S.eCell c_rel) (S.eStr ".".toList)))) (S.eStr "/".toList)) (S.eStr "".toList))))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
 theorem norm_ok (I : Sem) (env0 : Env) (c_M : Nat)
@@ -578,7 +578,7 @@ theorem norm_ok (I : Sem) (env0 : Env) (c_M : Nat)
       CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
 
 def M_lock_holder (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_c => S.let1 fun c_me_ => S.let1 fun c_path => S.let1 fun c_t => S.letEnd ((S.block (S.qStat (S.sForIn I (S.lLast (S.mCall I (S.eGlob "ipairs") (S.lLast (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eBin .concat (S.eStr "select l.* from lock l join agent a on a.name=l.agent ".toList) (S.eStr "where l.agent!=? and l.lease_until>? and a.ended is null".toList)) (S.lCons (S.eCell c_me_) (S.lLast (S.mOne (S.eCell c_t))))))))) fun n => S.let1 fun c__ => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_M) (S.eStr "covers".toList)) (S.lCons (S.eCell c_path) (S.lLast (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "path".toList))))))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
+  S.fn fun args n => S.let1 fun c_c => S.let1 fun c_me_ => S.let1 fun c_path => S.let1 fun c_t => S.letEnd ((S.block (S.qStat (S.sForIn I (S.lLast (S.mCall I (S.eGlob "ipairs") (S.lLast (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eBin I .concat (S.eStr "select l.* from lock l join agent a on a.name=l.agent ".toList) (S.eStr "where l.agent!=? and l.lease_until>? and a.ended is null".toList)) (S.lCons (S.eCell c_me_) (S.lLast (S.mOne (S.eCell c_t))))))))) fun n => S.let1 fun c__ => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_M) (S.eStr "covers".toList)) (S.lCons (S.eCell c_path) (S.lLast (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "path".toList))))))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
           S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
         S.qEnd)) n)) (S.gotos [] [])
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
@@ -609,7 +609,7 @@ def M_cmd_lock (I : Sem) (env0 : Env) (c_agents c_norm c_util c_M c_db : Nat) : 
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mCall I (S.eIndex I (S.eCell c_agents) (S.eStr "me".toList)) S.lNil)) fun n => S.let1 fun c_n => S.letEnd
       ((S.qStat (S.sAssign (S.pIndex (S.eCell c_a) (S.eStr "path".toList) S.pNil) (S.lLast (S.mCall I (S.eCell c_norm) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
       (S.qStat (S.sCall (S.mMethod I (S.eCell c_c) "tx" (S.lLast (S.mOne (S.eFunc [] false M_cmd_lock_fn_body (("n", c_n) :: ("a", c_a) :: ("c", c_c) :: env0)))))) (S.gotos [] [])
-      (S.qStat (S.sCall (S.mCall I (S.eGlob "print") (S.lLast (S.mOne (S.eBin .concat (S.eStr "locked ".toList) (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
+      (S.qStat (S.sCall (S.mCall I (S.eGlob "print") (S.lLast (S.mOne (S.eBin I .concat (S.eStr "locked ".toList) (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
       S.qEnd))) n))) n)
 
 theorem M_cmd_lock_ok (I : Sem) (env0 : Env) (c_agents c_norm c_util c_M c_db : Nat)
@@ -632,7 +632,7 @@ def M_cmd_unlock (I : Sem) (env0 : Env) (c_agents c_norm c_db : Nat) : List Val 
       ((S.qStat (S.sAssign (S.pIndex (S.eCell c_a) (S.eStr "path".toList) S.pNil) (S.lLast (S.mCall I (S.eCell c_norm) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
       (S.qStat (S.sCall (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "delete from lock where path=? and agent=?".toList) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eCell c_n))))))) (S.gotos [] [])
       (S.qStat (S.sCall (S.mCall I (S.eIndex I (S.eCell c_db) (S.eStr "log".toList)) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "unlock".toList) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))))) (S.gotos [] [])
-      (S.qStat (S.sCall (S.mCall I (S.eGlob "print") (S.lLast (S.mOne (S.eBin .concat (S.eStr "unlocked ".toList) (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
+      (S.qStat (S.sCall (S.mCall I (S.eGlob "print") (S.lLast (S.mOne (S.eBin I .concat (S.eStr "unlocked ".toList) (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))))))) (S.gotos [] [])
       S.qEnd)))) n))) n)
 
 theorem M_cmd_unlock_ok (I : Sem) (env0 : Env) (c_agents c_norm c_db : Nat)
@@ -649,13 +649,13 @@ theorem M_cmd_unlock_ok (I : Sem) (env0 : Env) (c_agents c_norm c_db : Nat)
       CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n))) n)
 
 def f (I : Sem) (env0 : Env) (c_memo c_p c_q c_f c_one : Nat) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => S.let1 fun c_i => S.let1 fun c_j => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eBin .add (S.eBin .mul (S.eCell c_i) (S.eNum (.int 65536))) (S.eCell c_j)))) fun n => S.let1 fun c_k => S.letEnd
-      ((S.qStat (S.sIf (S.eBin .eq (S.eIndex I (S.eCell c_memo) (S.eCell c_k)) S.eNil) (S.block (S.qLocal (S.lCons (S.eIndex I (S.eCell c_p) (S.eCell c_i)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_q) (S.eCell c_j))))) fun n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd
+  S.fn fun args n => S.let1 fun c_i => S.let1 fun c_j => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eBin I .add (S.eBin I .mul (S.eCell c_i) (S.eNum (.int 65536))) (S.eCell c_j)))) fun n => S.let1 fun c_k => S.letEnd
+      ((S.qStat (S.sIf (S.eBin I .eq (S.eIndex I (S.eCell c_memo) (S.eCell c_k)) S.eNil) (S.block (S.qLocal (S.lCons (S.eIndex I (S.eCell c_p) (S.eCell c_i)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_q) (S.eCell c_j))))) fun n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd
         ((S.qStat (S.sIf (S.eAnd (S.eUn .not (S.eCell c_a)) (S.eUn .not (S.eCell c_b))) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne S.eTrue))) (S.gotos [] [])
-          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin .eq (S.eCell c_a) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eOr (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eCell c_j)))))) (S.eParen (S.eAnd (S.eAnd (S.eBin .ne (S.eCell c_b) S.eNil) (S.eParen (S.eOr (S.eBin .eq (S.eCell c_b) (S.eStr "*".toList)) (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_b) (S.lLast (S.mOne (S.eCell c_b))))))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eBin .add (S.eCell c_j) (S.eNum (.int 1)))))))))))))) (S.gotos [] [])
-            S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin .eq (S.eCell c_b) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eOr (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eBin .add (S.eCell c_j) (S.eNum (.int 1)))))))) (S.eParen (S.eAnd (S.eAnd (S.eBin .ne (S.eCell c_a) S.eNil) (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eCell c_a))))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eCell c_j)))))))))))) (S.gotos [] [])
+          S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eCell c_a) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eOr (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eCell c_j)))))) (S.eParen (S.eAnd (S.eAnd (S.eBin I .ne (S.eCell c_b) S.eNil) (S.eParen (S.eOr (S.eBin I .eq (S.eCell c_b) (S.eStr "*".toList)) (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_b) (S.lLast (S.mOne (S.eCell c_b))))))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_j) (S.eNum (.int 1)))))))))))))) (S.gotos [] [])
+            S.qEnd)) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eCell c_b) (S.eStr "*".toList)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eOr (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eCell c_i) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_j) (S.eNum (.int 1)))))))) (S.eParen (S.eAnd (S.eAnd (S.eBin I .ne (S.eCell c_a) S.eNil) (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eCell c_a))))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eCell c_j)))))))))))) (S.gotos [] [])
               S.qEnd)) (S.block (S.qStat (S.sIf (S.eOr (S.eUn .not (S.eCell c_a)) (S.eUn .not (S.eCell c_b))) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne S.eFalse))) (S.gotos [] [])
-                S.qEnd)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eAnd (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eCell c_b)))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin .add (S.eCell c_j) (S.eNum (.int 1)))))))))))) (S.gotos [] [])
+                S.qEnd)) (S.block (S.qStat (S.sAssign (S.pIndex (S.eCell c_memo) (S.eCell c_k) S.pNil) (S.lLast (S.mOne (S.eAnd (S.eFirst (S.mCall I (S.eCell c_one) (S.lCons (S.eCell c_a) (S.lLast (S.mOne (S.eCell c_b)))))) (S.eFirst (S.mCall I (S.eCell c_f) (S.lCons (S.eBin I .add (S.eCell c_i) (S.eNum (.int 1))) (S.lLast (S.mOne (S.eBin I .add (S.eCell c_j) (S.eNum (.int 1)))))))))))) (S.gotos [] [])
                 S.qEnd))) (S.gotos [] [])
               S.qEnd))) (S.gotos [] [])
             S.qEnd))) (S.gotos [] [])
@@ -700,10 +700,10 @@ theorem forms_ok (I : Sem) (env0 : Env) (c_glob c_lit c_tokens : Nat)
 
 def M_cmd_lock_fn (I : Sem) (env0 : Env) (c_agents c_c c_n c_util c_M c_a c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mCall I (S.eIndex I (S.eCell c_agents) (S.eStr "touch".toList)) (S.lCons (S.eCell c_c) (S.lLast (S.mOne (S.eCell c_n)))))) (S.gotos [] [])
-      (S.qStat (S.sForIn I (S.lLast (S.mCall I (S.eGlob "ipairs") (S.lLast (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eBin .concat (S.eStr "select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? ".toList) (S.eStr "and g.ended is null".toList)) (S.lCons (S.eCell c_n) (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)))))))) fun n => S.let1 fun c__ => S.let1 fun c_o => S.letEnd ((S.block (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_M) (S.eStr "overlaps".toList)) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_o) (S.eStr "path".toList))))))) (S.block (S.qStat (S.sCall (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "die".toList)) (S.lLast (S.mMethod I (S.eParen (S.eStr "%s overlaps %s, locked by %s; message it".toList)) "format" (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lCons (S.eIndex I (S.eCell c_o) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_o) (S.eStr "agent".toList)))))))))) (S.gotos [] [])
+      (S.qStat (S.sForIn I (S.lLast (S.mCall I (S.eGlob "ipairs") (S.lLast (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eBin I .concat (S.eStr "select l.* from lock l join agent g on g.name=l.agent where l.agent!=? and l.lease_until>? ".toList) (S.eStr "and g.ended is null".toList)) (S.lCons (S.eCell c_n) (S.lLast (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)))))))) fun n => S.let1 fun c__ => S.let1 fun c_o => S.letEnd ((S.block (S.qStat (S.sIf (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_M) (S.eStr "overlaps".toList)) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_o) (S.eStr "path".toList))))))) (S.block (S.qStat (S.sCall (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "die".toList)) (S.lLast (S.mMethod I (S.eParen (S.eStr "%s overlaps %s, locked by %s; message it".toList)) "format" (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lCons (S.eIndex I (S.eCell c_o) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_o) (S.eStr "agent".toList)))))))))) (S.gotos [] [])
           S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
         S.qEnd)) n)) (S.gotos [] [])
-      (S.qStat (S.sCall (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)".toList) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lCons (S.eCell c_n) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "reason".toList)) (S.lCons (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)) (S.lLast (S.mOne (S.eBin .add (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)) (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "dur".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "lease".toList)))))))))))))))) (S.gotos [] [])
+      (S.qStat (S.sCall (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "insert or replace into lock(path,agent,reason,since,lease_until,seen) values(?,?,?,?,?,0)".toList) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lCons (S.eCell c_n) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "reason".toList)) (S.lCons (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)) (S.lLast (S.mOne (S.eBin I .add (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "now".toList)) S.lNil)) (S.eFirst (S.mCall I (S.eIndex I (S.eCell c_util) (S.eStr "dur".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "lease".toList)))))))))))))))) (S.gotos [] [])
       (S.qStat (S.sCall (S.mCall I (S.eIndex I (S.eCell c_db) (S.eStr "log".toList)) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "lock".toList) (S.lCons (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)) (S.lLast (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "reason".toList)))))))))) (S.gotos [] [])
       S.qEnd))))) n)
 

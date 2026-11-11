@@ -578,9 +578,10 @@ results must be the same text (numbers to the last bit, `%.17g`; table entries s
 `error`, messages not compared, positions not being modelled). 3000 are committed, `replay.sh` checks 3000 fresh ones;
 30,000 over six seeds agreed at the end. What the differences taught, now in the semantics:
 LuaJIT on arm64 runs in dual-number mode, so a number is a 32-bit integer or a double, which shows only in the sign
-of zero (`0 * -1` is 0, `0.5 * 0 * -1` is -0); the parser folds arithmetic on two constants and narrows the result to
-an integer, but never folds to -0 or NaN, and never negates a zero constant; `math.min`/`max` keep the running value
-only when it is strictly better (so NaN and -0 land where arm64's `fcsel` puts them); LuaJIT formats numbers itself
+of zero (`0 * -1` is 0, `0.5 * 0 * -1` is -0; on x86-64, doubles only, `0 * -1` is -0: lua-lean/DESIGN.md "Targets",
+and a case holds both results where they differ); the parser folds arithmetic on two constants and narrows the result
+to an integer, but never folds to -0 or NaN, and never negates a zero constant; `math.min`/`max` keep the running
+value only when it is strictly better (so NaN and -0 land where the comparison leaves them); LuaJIT formats numbers itself
 (lj_strfmt_num.c): NaN takes the space flag but not `+`, upper-case conversions write `INF`/`NAN`, and an exact tie
 rounds to even except in an integer whose cut digit is 10^9 or above, which rounds up (`%.0e` of 2.5e10 is `3e+10`,
 of 2.5e9 `2e+09`: nd_round's scan for a nonzero rest starts at the cut's own 9-digit limb); `%.0d` of 0 is empty;

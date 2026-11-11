@@ -18,23 +18,24 @@ def tick {α} (n : Nat) (k : Nat → M α) : M α :=
   | 0 => throw .fuel
   | n + 1 => k n
 
-/-- the interpreter's parameters: the modules given as source, and the oracle for effects -/
+/-- the interpreter's parameters: the modules given as source, the oracle for effects, and the LuaJIT build -/
 structure Sem where
   srcs : String → Option Block
   oracle : String → List Val → Option (List Val)
+  tgt : Target
 
 /-- what calling a closure does, once its address has been read (`call`'s `.fn` clause) -/
 def callClo (I : Sem) (n : Nat) (c : Clo) (args : List Val) : M (List Val) := do
   let cx ← bindLocals ⟨c.env, []⟩ c.params args
   let cx := { cx with va := if c.va then args.drop c.params.length else [] }
-  match ← execBlock I.srcs I.oracle n cx c.body with
+  match ← execBlock I.srcs I.oracle I.tgt n cx c.body with
   | .ret vs => pure vs
   | .norm => pure []
   | .brk => die "break outside a loop"
   | .goto l => die s!"no visible label '{l}' for goto"
 
 theorem call_fn (I : Sem) (n a : Nat) (args : List Val) (h : Heap) (c : Clo) (ha : h[a]? = some (.clo c)) :
-    call I.srcs I.oracle (n + 1) (.fn a) args h = callClo I n c args h := by
+    call I.srcs I.oracle I.tgt (n + 1) (.fn a) args h = callClo I n c args h := by
   rw [call]; simp only [bind, EStateM.bind, getObj, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
 
 /-- an assignment target as the shallow code writes it -/
@@ -53,7 +54,7 @@ def assignW : List (Val → M Unit) → List Val → M Unit
   | w :: ws, vs => do w (vs.headD .nil); assignW ws vs.tail
 
 theorem assign_writers (I : Sem) (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List Val) :
-    assign I.srcs I.oracle n cx ps vs = assignW (ps.map (writer cx)) vs := by
+    assign I.srcs I.oracle I.tgt n cx ps vs = assignW (ps.map (writer cx)) vs := by
   induction ps generalizing vs with
   | nil => simp only [assign]; rfl
   | cons p ps ih =>
@@ -96,7 +97,7 @@ def eGlob (x : String) : SE := fun n => tick n fun _ => rawget G (lstr x)
 def eIndex (I : Sem) (t k : SE) : SE := fun n => tick n fun n => do
   let tv ← t n
   let kv ← k n
-  index I.srcs I.oracle n tv kv
+  index I.srcs I.oracle I.tgt n tv kv
 /-- a call's first value -/
 def eFirst (m : SM) : SE := fun n => tick n fun n => do pure ((← m n).headD .nil)
 def eParen (e : SE) : SE := fun n => tick n fun n => e n
@@ -107,10 +108,10 @@ def eOr (a b : SE) : SE := fun n => tick n fun n => do
   let x ← a n
   if x.truthy then pure x else b n
 def eUn (op : UnOp) (a : SE) : SE := fun n => tick n fun n => do unop op (← a n)
-def eBin (op : BinOp) (a b : SE) : SE := fun n => tick n fun n => do
+def eBin (I : Sem) (op : BinOp) (a b : SE) : SE := fun n => tick n fun n => do
   let x ← a n
   let y ← b n
-  binop op x y
+  binop I.tgt op x y
 /-- a table constructor: `fs` the fields, given the new table's address -/
 def eTable (fs : Nat → SM) : SE := fun n => tick n fun n => tick n fun n => do
   let t ← alloc (.tbl {})
@@ -125,12 +126,12 @@ def eTable (fs : Nat → SM) : SE := fun n => tick n fun n => tick n fun n => do
 def mCall (I : Sem) (f : SE) (as : SM) : SM := fun n => tick n fun n => do
   let fv ← f n
   let as ← as n
-  call I.srcs I.oracle n fv as
+  call I.srcs I.oracle I.tgt n fv as
 def mMethod (I : Sem) (o : SE) (m : String) (as : SM) : SM := fun n => tick n fun n => do
   let ov ← o n
-  let fv ← index I.srcs I.oracle n ov (.str m.toList)
+  let fv ← index I.srcs I.oracle I.tgt n ov (.str m.toList)
   let as ← as n
-  call I.srcs I.oracle n fv (ov :: as)
+  call I.srcs I.oracle I.tgt n fv (ov :: as)
 def mVa (va : List Val) : SM := fun n => tick n fun _ => pure va
 def mOne (e : SE) : SM := fun n => tick n fun n => do pure [← e n]
 
@@ -224,7 +225,7 @@ def sForNum (a b : SE) (st : Option SE) (body : Nat → SB) : SB := fun n => tic
 def inL (I : Sem) (body : Nat → List Val → M Flow) : Nat → Val → Val → Val → M Flow
   | 0, _, _, _ => throw .fuel
   | n + 1, f, s, ctl => do
-    let rs ← call I.srcs I.oracle n f [s, ctl]
+    let rs ← call I.srcs I.oracle I.tgt n f [s, ctl]
     let v1 := rs.headD .nil
     if v1.isNil then return .norm
     match ← body n rs with
@@ -289,16 +290,16 @@ section
 variable (I : Sem)
 open S
 
-abbrev CE (s : SE) (cx : Ctx) (e : Exp) : Prop := ∀ n, s n = eval I.srcs I.oracle n cx e
-abbrev CM (s : SM) (cx : Ctx) (e : Exp) : Prop := ∀ n, s n = evalMulti I.srcs I.oracle n cx e
-abbrev CL (s : SM) (cx : Ctx) (es : List Exp) : Prop := ∀ n, s n = evalList I.srcs I.oracle n cx es
-abbrev CF (s : Nat → SM) (cx : Ctx) (fs : List Field) : Prop := ∀ t n, s t n = fields I.srcs I.oracle n cx t fs
+abbrev CE (s : SE) (cx : Ctx) (e : Exp) : Prop := ∀ n, s n = eval I.srcs I.oracle I.tgt n cx e
+abbrev CM (s : SM) (cx : Ctx) (e : Exp) : Prop := ∀ n, s n = evalMulti I.srcs I.oracle I.tgt n cx e
+abbrev CL (s : SM) (cx : Ctx) (es : List Exp) : Prop := ∀ n, s n = evalList I.srcs I.oracle I.tgt n cx es
+abbrev CF (s : Nat → SM) (cx : Ctx) (fs : List Field) : Prop := ∀ t n, s t n = fields I.srcs I.oracle I.tgt n cx t fs
 abbrev CP (s : SP) (cx : Ctx) (ts : List Exp) : Prop :=
-  ∀ n, s n = (fun ps => ps.map (writer cx)) <$> places I.srcs I.oracle n cx ts
-abbrev CS (s : SB) (cx : Ctx) (st : Stat) : Prop := ∀ n, s n = execStat I.srcs I.oracle n cx st
-abbrev CK (s : SB) (cx : Ctx) (b : Block) : Prop := ∀ n, s n = execBlock I.srcs I.oracle n cx b
+  ∀ n, s n = (fun ps => ps.map (writer cx)) <$> places I.srcs I.oracle I.tgt n cx ts
+abbrev CS (s : SB) (cx : Ctx) (st : Stat) : Prop := ∀ n, s n = execStat I.srcs I.oracle I.tgt n cx st
+abbrev CK (s : SB) (cx : Ctx) (b : Block) : Prop := ∀ n, s n = execBlock I.srcs I.oracle I.tgt n cx b
 abbrev CQ (s : SB) (cx : Ctx) (full rest : Block) (fin : Option Exp) : Prop :=
-  ∀ n, s n = execSeq I.srcs I.oracle n cx full rest fin
+  ∀ n, s n = execSeq I.srcs I.oracle I.tgt n cx full rest fin
 /-- a chain of `bind`s: binding `names` to the values, then `K` -/
 abbrev CBs {α} (k : List Val → M α) (cx : Ctx) (names : List String) (K : Ctx → M α) : Prop :=
   ∀ vs, k vs = bindLocals cx names vs >>= K
@@ -333,7 +334,7 @@ theorem CE_or {cx a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eOr
   intro n; cases n <;> rw [eval] <;> simp [eOr, tick, ha, hb]
 theorem CE_un {cx op a sa} (ha : CE I sa cx a) : CE I (eUn op sa) cx (.un op a) := by
   intro n; cases n <;> rw [eval] <;> simp [eUn, tick, ha]
-theorem CE_bin {cx op a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eBin op sa sb) cx (.bin op a b) := by
+theorem CE_bin {cx op a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eBin I op sa sb) cx (.bin op a b) := by
   intro n; cases n <;> rw [eval] <;> simp [eBin, tick, ha, hb]
 theorem CE_table {cx fs s} (h : CF I s cx fs) : CE I (eTable s) cx (.table fs) := by
   intro n; cases n with
@@ -402,13 +403,14 @@ theorem CS_call {cx e m} (h : CM I m cx e) : CS I (sCall m) cx (.call e) := by
 theorem CS_block {cx b s} (h : CK I s cx b) : CS I (sBlock s) cx (.block b) := by
   intro n; cases n <;> rw [execStat] <;> simp [sBlock, tick, h]
 theorem whileL_ok {cx c b sc sb} (hc : CE I sc cx c) (hb : CK I sb cx b) :
-    ∀ n, whileL sc sb n = whileLoop I.srcs I.oracle n cx c b := by
+    ∀ n, whileL sc sb n = whileLoop I.srcs I.oracle I.tgt n cx c b := by
   intro n; induction n with
   | zero => rw [whileLoop]; rfl
   | succ n ih => rw [whileLoop, whileL, hc, hb]; simp only [ih]; rfl
 theorem CS_while {cx c b sc sb} (hc : CE I sc cx c) (hb : CK I sb cx b) : CS I (sWhile sc sb) cx (.while c b) := by
   intro n; cases n <;> rw [execStat] <;> simp [sWhile, tick, whileL_ok hc hb]
-theorem rptL_ok {cx b c sb} (hb : CQ I sb cx b b (some c)) : ∀ n, rptL sb n = rptLoop I.srcs I.oracle n cx b c := by
+theorem rptL_ok {cx b c sb} (hb : CQ I sb cx b b (some c)) :
+    ∀ n, rptL sb n = rptLoop I.srcs I.oracle I.tgt n cx b c := by
   intro n; induction n with
   | zero => rw [rptLoop]; rfl
   | succ n ih => rw [rptLoop, rptL, hb]; simp only [ih]; rfl
@@ -418,7 +420,7 @@ theorem CS_if {cx c t e sc st se} (hc : CE I sc cx c) (ht : CK I st cx t) (he : 
     CS I (sIf sc st se) cx (.ite c t e) := by
   intro n; cases n <;> rw [execStat] <;> simp [sIf, tick, hc, ht, he]
 theorem numL_ok {cx v body sb} (hb : ∀ c, CK I (sb c) { cx with env := (v, c) :: cx.env } body) :
-    ∀ n i lim st, numL sb n i lim st = numLoop I.srcs I.oracle n cx v i lim st body := by
+    ∀ n i lim st, numL sb n i lim st = numLoop I.srcs I.oracle I.tgt n cx v i lim st body := by
   intro n; induction n with
   | zero => intro i lim st; rw [numLoop]; rfl
   | succ n ih =>
@@ -435,13 +437,14 @@ theorem CS_fornum {cx v a b st body sa sb sst sbody}
     rcases st with _ | e <;> rcases sst with _ | s <;> simp only at hst
     · simp only [sForNum, tick, ha, hb, numL_ok hbody]; rfl
     · simp only [sForNum, tick, ha, hb, hst, numL_ok hbody]; rfl
-theorem inL_ok {cx vs body sbody} (hb : ∀ n, CBs (sbody n) cx vs (fun cx' => execBlock I.srcs I.oracle n cx' body)) :
-    ∀ n f s ctl, inL I sbody n f s ctl = inLoop I.srcs I.oracle n cx vs f s ctl body := by
+theorem inL_ok {cx vs body sbody}
+    (hb : ∀ n, CBs (sbody n) cx vs (fun cx' => execBlock I.srcs I.oracle I.tgt n cx' body)) :
+    ∀ n f s ctl, inL I sbody n f s ctl = inLoop I.srcs I.oracle I.tgt n cx vs f s ctl body := by
   intro n; induction n with
   | zero => intro f s ctl; rw [inLoop]; rfl
   | succ n ih => intro f s ctl; rw [inLoop, inL]; simp only [hb, ih, bind_assoc]; rfl
 theorem CS_forin {cx vs es body sl sbody} (hl : CL I sl cx es)
-    (hb : ∀ n, CBs (sbody n) cx vs (fun cx' => execBlock I.srcs I.oracle n cx' body)) :
+    (hb : ∀ n, CBs (sbody n) cx vs (fun cx' => execBlock I.srcs I.oracle I.tgt n cx' body)) :
     CS I (sForIn I sl sbody) cx (.forin vs es body) := by
   intro n; cases n <;> rw [execStat] <;> simp [sForIn, tick, hl, inL_ok hb]
 theorem CS_return {cx es s} (h : CL I s cx es) : CS I (sReturn s) cx (.ret es) := by
@@ -457,7 +460,7 @@ theorem CQ_end {cx full} : CQ I qEnd cx full [] none := by intro n; cases n <;> 
 theorem CQ_endRpt {cx full c s} (h : CE I s cx c) : CQ I (qEndRpt s) cx full [] (some c) := by
   intro n; cases n <;> rw [execSeq] <;> simp [qEndRpt, tick, h]
 theorem CQ_local {cx full names es rest fin sl k} (hl : CL I sl cx es)
-    (hk : ∀ n, CBs (k n) cx names (fun cx' => execSeq I.srcs I.oracle n cx' full rest fin)) :
+    (hk : ∀ n, CBs (k n) cx names (fun cx' => execSeq I.srcs I.oracle I.tgt n cx' full rest fin)) :
     CQ I (qLocal sl k) cx full (.loc names es :: rest) fin := by
   intro n; cases n <;> rw [execSeq] <;> simp [qLocal, tick, hl, hk]
 theorem CBs_end {α cx K} {x : M α} (h : x = K cx) : CBs (letEnd x) cx [] K := by
@@ -548,9 +551,9 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
   intro n; cases n with
   | zero => rw [execSeq]; rfl
   | succ n =>
-    have e : execSeq I.srcs I.oracle (n + 1) cx full (s :: rest) fin = (do
-        match ← execStat I.srcs I.oracle n cx s with
-        | .norm => execSeq I.srcs I.oracle n cx full rest fin
+    have e : execSeq I.srcs I.oracle I.tgt (n + 1) cx full (s :: rest) fin = (do
+        match ← execStat I.srcs I.oracle I.tgt n cx s with
+        | .norm => execSeq I.srcs I.oracle I.tgt n cx full rest fin
         | .goto l =>
           if labelAtEnd full l then pure .norm
           else if hasLabel full l then die "goto: only to a label that ends its block"
@@ -561,7 +564,7 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
 
 -- functions
 theorem CFn_fn {c : Clo} {k : List Val → Nat → List Val → M Flow} (hk : ∀ args n, CBs (k args n) ⟨c.env, []⟩ c.params (fun cx =>
-      execBlock I.srcs I.oracle n { cx with va := if c.va then args.drop c.params.length else [] } c.body)) :
+      execBlock I.srcs I.oracle I.tgt n { cx with va := if c.va then args.drop c.params.length else [] } c.body)) :
     CFn I (fn k) c := by
   intro args n; simp only [fn, callClo, hk, bind_assoc]
 

@@ -152,7 +152,7 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T (String × String
     pure (s!"(S.eParen {s})", s!"(CE_paren {p})")
   | .and a b => tBin2 cx "S.eAnd" "CE_and" a b
   | .or a b => tBin2 cx "S.eOr" "CE_or" a b
-  | .bin op a b => tBin2 cx s!"S.eBin {Show.binop op}" "CE_bin" a b
+  | .bin op a b => tBin2 cx s!"S.eBin I {Show.binop op}" "CE_bin" a b
   | .un op a => do
     let (s, p) ← tExp cx a
     pure (s!"(S.eUn {Show.unop op} {s})", s!"(CE_un {p})")

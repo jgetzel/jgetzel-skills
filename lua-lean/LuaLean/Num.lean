@@ -1,14 +1,21 @@
-/-! Lua numbers: IEEE doubles, as LuaJIT 2.1 on arm64 has them, which is its dual-number mode: a number is a 32-bit
-integer (`int`) or a double (`flt`), and only the sign of a zero tells them apart (`0 * -1` is 0, `0.5 * 0 * -1` is
--0). Integers come from literals and `tonumber` (an integral value in range that is not -0), from constant folding
-in the parser (`foldArith`), and from integer +, -, * and % that stay in range; / and ^ give doubles, and a double is
-never narrowed back. Formatting (`%.14g`, `%f`, `%e`, `%g`) and reading (`tonumber`, literals) work on the exact
-binary value with round-half-even, as C's printf and LuaJIT's strscan do. -/
+/-! Lua numbers: IEEE doubles, as LuaJIT 2.1 has them. A number is a 32-bit integer (`int`) or a double (`flt`), as
+in LuaJIT's dual-number mode (arm64's default); only the sign of a zero tells them apart (`0 * -1` is 0,
+`0.5 * 0 * -1` is -0). A single-number build (x86-64's default) keeps doubles only, which `.int i` models exactly but
+in one place: there an integer product of 0 with a negative factor is -0 (`Target`, `mul`). Integers come from
+literals and `tonumber` (an integral value in range that is not -0), from constant folding in the parser
+(`foldArith`), and from integer +, -, * and % that stay in range; / and ^ give doubles, and a double is never
+narrowed back. Formatting (`%.14g`, `%f`, `%e`, `%g`) and reading (`tonumber`, literals) work on the exact binary
+value with round-half-even, as C's printf and LuaJIT's strscan do. -/
 
 namespace Lua
 
 inductive Num where | int (i : Int) | flt (f : Float)
   deriving Inhabited
+
+/-- the LuaJIT build: dual-number (arm64's default) or single-number (x86-64's default), told apart by
+`local z, n = 0, -1; return 1/(z*n)` (inf, -inf) -/
+inductive Target where | dual | single
+  deriving DecidableEq, Inhabited
 
 namespace Num
 
@@ -37,8 +44,8 @@ def add : Num → Num → Num
 def sub : Num → Num → Num
   | .int a, .int b => ofInt (a - b)
   | a, b => .flt (a.toFloat - b.toFloat)
-def mul : Num → Num → Num
-  | .int a, .int b => ofInt (a * b)
+def mul (t : Target) : Num → Num → Num
+  | .int a, .int b => if t = .single ∧ a * b = 0 ∧ (a < 0 ∨ b < 0) then .flt (-0.0) else ofInt (a * b)
   | a, b => .flt (a.toFloat * b.toFloat)
 def div (a b : Num) : Num := .flt (a.toFloat / b.toFloat)
 /-- Lua 5.1: a - floor(a/b)*b -/
@@ -84,7 +91,7 @@ def foldNeg : Num → Option Num
   | .int k => some (if k == -2147483648 then .flt (-(Float.ofInt k)) else .int (-k))
   | .flt f => if f == 0 then none else some (.flt (-f))
 
-/-- the integer a C cast to int64 gives (truncation), for `%d` -/
+/-- the integer a C cast gives a double in its range (truncation); 0 for inf and NaN -/
 def trunc : Num → Int
   | .int a => a
   | .flt f => if f.isFinite then (if f < 0 then -floatToInt (-f).floor else floatToInt f.floor) else 0

@@ -3,6 +3,10 @@
 -- numbers %.17g; a table's entries sorted; one already on the path <cycle>.
 local M = {}
 
+-- the build, LuaLean/Num.lean's Target: single-number (x86-64's default) makes an integer 0 times -1 a -0
+local z, n = 0, -1
+M.target = 1 / (z * n) < 0 and "single" or "dual"
+
 local function str(s)
   return '"' .. s:gsub('[%z\1-\31"\\\127-\255]', function(c) return ("\\%03d"):format(c:byte()) end) .. '"'
 end
@@ -41,7 +45,7 @@ function M.run(src)
 end
 
 -- a cases file (LuaLean/Gen.lean's writeCases, gzipped or not): each chunk under LuaJIT must give the Lean
--- interpreter's results; errors with the first differences
+-- interpreter's results for M.target (`single`, where given, else `out`); errors with the first differences
 function M.check(file)
   local h = assert(io.popen((file:match("%.gz$") and "gzip -dc '" or "cat '") .. file .. "'"))
   local cases = assert(loadstring(h:read("*a"), "=" .. file))()
@@ -49,8 +53,8 @@ function M.check(file)
   assert(cases and #cases > 0, "no cases in " .. file)
   local bad, errs = {}, 0
   for i, k in ipairs(cases) do
-    local got = M.run(k.src)
-    if got ~= k.out then bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, k.out) end
+    local got, want = M.run(k.src), M.target == "single" and k.single or k.out
+    if got ~= want then bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, want) end
     if k.out == "error" then errs = errs + 1 end
   end
   if #bad > 0 then
@@ -64,7 +68,9 @@ end
 -- luajit luasem.lua <file.lua>...: each chunk's results; luajit luasem.lua --cases <file>: M.check
 if arg and arg[0] and arg[0]:match("luasem%.lua$") then
   if arg[1] == "--cases" then
-    print(("%s: %d cases agree"):format(arg[2], M.check(arg[2])))
+    local n = M.check(arg[2])
+    print(("%s: %d cases agree (%s-number; %s %s, JIT %s)"):format(arg[2], n, M.target, jit.version, jit.arch,
+      jit.status() and "on" or "off"))
   else
     for i = 1, #arg do
       local h = assert(io.open(arg[i], "rb")); local src = h:read("*a"); h:close()

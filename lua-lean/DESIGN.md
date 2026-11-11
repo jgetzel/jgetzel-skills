@@ -44,20 +44,33 @@ What a proved spec rests on, and how each piece is checked:
 |---|---|
 | Lean's kernel and its three axioms (`propext`, `Classical.choice`, `Quot.sound`) | `Audit.lean`: every theorem of LuaLean uses those and nothing else; `check.sh` refuses `sorry`, `admit`, `native_decide`, `axiom` |
 | The parser, and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
-| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build); results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
+| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
+| The host's `pow` | `^` is libm's `pow` in LuaJIT and in Lean's `Float.pow`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel cannot evaluate a `Float`, so no proof rests on a `pow` value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz`. A `pow` case that fails on another machine is this before anything else |
 | The user's effect axioms | each its own test against the world, as above |
 
 Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
 fails), the case generator, and any proof search.
 
-The target is LuaJIT 2.1 on arm64, which runs in dual-number mode: a number is a 32-bit integer or a double, which
-shows in the sign of zero (`0 * -1` is 0). On x86-64 LuaJIT keeps doubles only; the semantics would need a switch.
+## Targets
+
+LuaJIT 2.1 is built dual-number (a number is a 32-bit integer or a double: arm64's default) or single-number (doubles
+only: x86-64's default). The semantics has both, `Target` in `LuaLean/Num.lean`, carried by `Sem.tgt`, so every
+`f_ok` holds for both. Its numbers are integers or doubles on both targets: `.int i` is the double `i` exactly, and
+every operation on integers gives the double result but one, a product of 0 with a negative factor, which is 0 on
+dual-number and -0 on single-number (`Num.mul`). The parser's constants are the same on both (its folder makes no
+-0), so a lifted module is too. `test/luasem.lua` tells the targets apart by that product (`1/(z*n)`), not by
+`jit.arch`; a cases file holds the dual-number results (`out`) and the single-number ones where they differ
+(`single`).
+
+A double outside the integer range a C cast wants (int32 for `lj_lib_checkint`, int64 for `%d` and `%x`; inf and NaN
+too) is undefined behaviour in C that LuaJIT leaves to the CPU (x86-64 gives the least integer; arm64 is expected to
+saturate, unmeasured), so the semantics stops the run there (`argIntN`).
 
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it; tables with `__index` (classes); closures; varargs; `pcall`/`error`
-(a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT on
-arm64 has them, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after lstrlib.c,
+(a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
+them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after lstrlib.c,
 `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table` (`sort` is ltablib.c's quicksort,
 so ties and bad comparators come out as LuaJIT's do), `math`, `select`, `unpack`, `pairs`, `ipairs`, `next`,
 `type`, `tostring`, `tonumber`, `rawget`/`rawset`/`rawequal`, `setmetatable`/`getmetatable`, `assert`, `require` of
@@ -72,7 +85,8 @@ How a script outside it is reported, from strongest to weakest:
 2. **Fails to translate**: an assignment target the translator does not handle (`not translated`).
 3. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
    reaches it can be proved: `setmetatable` with a metamethod other than `__index` (`effect metamethod __newindex`),
-   `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), a call into `io`, `os` or a module not given
+   `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), a double outside the integer range where a
+   builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`; "Targets"), a call into `io`, `os` or a module not given
    as source when no oracle answers it.
 4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
@@ -88,7 +102,7 @@ G2 turns this list into a checker that names each construct with its line before
 
 | Path | What it is |
 |---|---|
-| `LuaLean/Num.lean` | numbers: dual-number arithmetic, printf's conversions on the exact value, `tonumber` (lj_strscan, with its 2^20 exponent bound) |
+| `LuaLean/Num.lean` | numbers: the targets, integer and double arithmetic, printf's conversions on the exact value, `tonumber` (lj_strscan, with its 2^20 exponent bound) |
 | `LuaLean/Syntax.lean`, `Parse.lean` | the syntax tree and the parser |
 | `LuaLean/Pat.lean` | Lua patterns, after lstrlib.c's matcher |
 | `LuaLean/Interp.lean` | the semantics |

@@ -2,7 +2,8 @@ import LuaLean.Run
 
 /-! `lua-lean run [--lib <prefix>=<dir>]... <file.lua>...`: each chunk's results under the Lean interpreter, as
 `test/luasem.lua` writes LuaJIT's (`luajit test/luasem.lua <file.lua>...`). With `--lib p=dir`, `require "p.x"` loads
-dir/x.lua; a module the chunk requires is loaded first, its effects opaque handles. -/
+dir/x.lua; a module the chunk requires is loaded first, its effects opaque handles. The results are the dual-number
+target's, then the single-number target's where they differ (`Target`). -/
 
 open Lua
 
@@ -20,5 +21,8 @@ def main (args : List String) : IO UInt32 := do
     let text := String.fromUTF8! b
     let mods := libs.flatMap fun (p, _) =>
       (text.splitOn s!"require \"{p}.").tail.map fun s => s!"{p}." ++ (s.takeWhile (· != '"')).toString
-    IO.println s!"{f}: {runCase (srcsOf srcs) mods (bytesOf b)}"
+    let r := runCase (srcsOf srcs) .dual mods (bytesOf b)
+    let r1 := runCase (srcsOf srcs) .single mods (bytesOf b)
+    IO.println s!"{f}: {r}"
+    if r1 != r then IO.println s!"{f} (single-number): {r1}"
   return 0
