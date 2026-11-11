@@ -42,6 +42,11 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
+| `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
+| `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
+| `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
+| `sqlcases.json.gz` | 4600 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (264 sites, 230 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 5 scripted runs the Lua suite replays |
@@ -51,6 +56,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
 | `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
+| `../lua/test/sql_model_spec.lua` | each case through db.lua on real sqlite, against Sql.lean's answer; and the cases' statements are exactly the inventory's |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
 ## The model
@@ -536,11 +542,83 @@ session's ListAgents name is its `SWARM_NAME`, set by its last join; `swarm watc
 #18); the human's `swarm spawn` (only watchd's spawns are placed: the starting roster is in the swarm's space). None of
 it is replayed: the replay has no hc.
 
+## The SQL (rung 4, board #29)
+
+`Sql.lean` gives the SQL the Lua runs a meaning, so a proof about a command (board #30) can say what each of its
+statements does to the db. It is the subset the Lua uses, no more: `sql_inventory.lua` reads every db call
+(`:exec`, `:one`, `:all`, `:all_cols`, `:script`) in `swarm/lua/swarm`; a call whose text is literals is its statement,
+and one built from code (a column name in `agents.touch`, a `?` list, a `:format`) is a template whose statements
+are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 264 sites, 230 statements: SELECT
+(DISTINCT, an inner JOIN, WHERE, GROUP BY with `count(*)` and `max`, ORDER BY expressions, LIMIT, correlated `exists`
+and scalar subqueries, `in` lists and subqueries; `union all` of two), INSERT (`or ignore`, `or replace`, from a SELECT, `on conflict ..
+do update` with `excluded`, `returning`), UPDATE, DELETE, `create table|index if not exists`, `alter table add|drop
+column`, `pragma table_info` and `journal_mode`, `begin immediate`, `commit`, `rollback`; expressions `= != < <= > >=
+is [not] like [not] in || + - and or not case cast coalesce lower`.
+
+- **Values** are NULL, INTEGER, REAL (its IEEE bits) or TEXT; no BLOB. A column's affinity comes from its declared
+  type by sqlite's rules and is applied on every write (`'5'` into an `int` column is 5, 5 into a `text` one `'5'`);
+  a comparison applies the affinities sqlite applies to its operands (a column's, a cast's, none); NULL is unknown in
+  `= < like in and or not`, and `is` is NULL-safe. Order is NULL, numbers, text (code points, UTF-8's byte order).
+- **Tables** are lists of rows with their declared columns, defaults and primary key. An `integer primary key` is the
+  rowid (the next is max + 1, and with `autoincrement` past `sqlite_sequence` too, so an id is never reused); a key
+  clash aborts, is ignored, replaces or updates by the statement's conflict clause; a NULL in a non-rowid key is
+  allowed and clashes with nothing, as in sqlite.
+- **A statement** is `exec : Conn → Stmt → List Val → Except String (Out × Conn)`: its table and column names are
+  checked first, as sqlite's prepare does (`Stmt.names`); atomic (an error leaves the connection as it was), with `changes()` and `last_insert_rowid()` in the connection. A WHERE (and ON) is its
+  AND-terms in order, and the row is skipped at the first that isn't true: a later term, which could fail, isn't
+  evaluated (as sqlite's code does). `begin` saves the tables, `rollback` restores them, `commit` drops the copy.
+  A script runs its statements in turn and stops at an error, keeping what ran.
+- **A result** is column names (an alias, a column's name, else the expression's text) and rows, each in a tie group:
+  rows with equal ORDER BY keys, or all rows with no ORDER BY, come out in an order sqlite doesn't define, and LIMIT may
+  cut a group (`Out.cut`). The test compares a group as a multiset and a cut one by count.
+
+**Tested**: `SqlCases.lean` builds the swarm's tables by running the inventory's own schema scripts and migrations
+through `exec`, then, for each statement, random cases: 0 to 4 rows in each table it names, values by affinity from
+small pools (its own literals, the same in capitals, a few others; half the time the value it compares a column with),
+each `?` mostly from one random row's value of the column it is compared with (a neighbour for `<`, never for `!=`).
+A migration runs on the tables without its column, the old `after` statements on a task table with one, a schema
+script on no tables or all; `begin`, `commit`, `rollback` in sequences around a random write, and alone (errors).
+`sql_model_spec.lua` builds the same tables in a scratch file and runs each step through db.lua (`prepare`, which
+inlines integers, `all_cols`, `exec`, `script`), on a fresh connection: every step's error or success, rows, column
+names, `changes()`, `last_insert_rowid()`, and after the case every table's `table_info`, rows with their storage
+classes, and `sqlite_sequence` must be Lean's. 4600 committed cases and 4600 fresh per `replay.sh`, green, and about 35,000
+more at other seeds while it was built. Of the committed cases' 4707 steps, 2422 return rows or change one, 46 are
+errors (on both sides), and the rest are misses (a WHERE no row meets) or DDL and transaction steps. Checked to bite: with NULL sorted last, with an int written to a
+`text` column as an int, or with `like` case-sensitive (this one needs about 25 cases per statement), the spec fails.
+
+**Divergences found**: three, all gaps in the model, not bugs in the Lua, so no `Cfg` switch: sqlite (3.37 on) writes
+the standard type names in capitals in `table_info` (`TEXT` for `text`; the Lua reads only `name`); a WHERE stops at
+its first term that isn't true, so `delete from cmd where machine=? .. and id not in (.. limit ?)` with a NULL
+`machine` doesn't fail on a text `limit`, where evaluating every term would (cost.lua passes a number there); and
+sqlite resolves names when it prepares a statement, so db.connect's old `update task set deps=after where deps is
+null ..` fails on a table with no `after` column even when no row has a NULL `deps` (`Stmt.names`; found by a fresh
+`replay.sh` seed after the rest was green).
+
+**Not modelled**: concurrency (one connection; board #33); the rowid of a table without an integer key, so
+`last_insert_rowid()` after an insert into `agent`, `cursor`, `lock`, `meta`, `conflict` or `pairkey` is unknown
+(the Lua reads it only after inserts into `task` and `msg`); an exponent in numeric text (`1e3`); a REAL's text beyond
+whole numbers and short decimals; a compound SELECT other than one `union all` at the top (ORDER BY or LIMIT on it); a subquery in an UPDATE's SET that reads the table being updated (it would see
+the table before the update; none does); ambiguous column names; an ORDER BY naming a result alias; indexes (`create
+index` does nothing; an index changes only the undefined row order); the SQL's line breaks (a statement's text is
+taken with each line break as a space, which changes only the name of an unaliased expression column, which no
+multi-line statement has). Which row of a tie group a positional `c:one` reads is not checked against the Lua.
+
+The kernel evaluates `exec` (`decide +kernel` in `SqlParse.lean`: `task claim`'s write refused while a dependency is
+not done, taken once it is, a few seconds) and `parse` (about two minutes for that statement's text), so #30 can state
+the commands' statements as `Stmt`s and their effect by evaluation. Nothing is proved about the semantics itself
+yet (that a key stays unique, that `autoincrement` never reuses an id); the differential test is what ties it to
+sqlite.
+
 ## Running
 
 ```sh
 swarm/model/check.sh            # every theorem and counterexample, about 12 s
-swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI, and fresh glob and Lua cases
+swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI, and fresh glob, Lua and SQL cases
+luajit swarm/lua/test/run.lua sql_model   # the committed SQL cases
+# after a change to a statement or the schema, regenerate the SQL cases:
+luajit swarm/lua/test/sql_inventory.lua > /tmp/inv &&
+  (cd swarm/model && lake env lean --run SwarmModel/SqlCases.lean /tmp/inv 20 29 /tmp/sql.json) &&
+  gzip -9c /tmp/sql.json > swarm/model/sqlcases.json.gz
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
 luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
 SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
