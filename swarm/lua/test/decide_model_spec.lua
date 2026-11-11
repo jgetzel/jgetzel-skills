@@ -1,13 +1,14 @@
 -- The Lua's pure decisions against their lifts in the Lean model (swarm/model/SwarmModel/Decide.lean): random inputs
--- from SwarmModel/DecideCases.lean, each with Lean's answer, which watchd.keeps, watchd.fate and msgs.wakes must give.
+-- from SwarmModel/DecideCases.lean, each with Lean's answer, which watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act
+-- must give.
 -- Cases: $SWARM_MODEL_DECIDE, else the committed swarm/model/decide.json.gz (swarm/model/replay.sh makes fresh ones).
-local json, watchd, msgs = require "swarm.json", require "swarm.watchd", require "swarm.msgs"
+local json, watchd, msgs, ci = require "swarm.json", require "swarm.watchd", require "swarm.msgs", require "swarm.ci"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local file = os.getenv("SWARM_MODEL_DECIDE") or (here .. "/../../model/decide.json.gz")
 local h = assert(io.popen((file:match("%.gz$") and "gzip -dc '" or "cat '") .. file .. "'"))
 local cases = json.decode(h:read("*a"))
 h:close()
-assert(#cases.keeps > 0 and #cases.fate > 0 and #cases.wakes > 0, "no cases in " .. file)
+assert(#cases.keeps > 0 and #cases.fate > 0 and #cases.wakes > 0 and #cases.pr > 0, "no cases in " .. file)
 
 local function check(what, i, k, got, want)
   if got ~= want then
@@ -41,7 +42,13 @@ for i, k in ipairs(cases.wakes) do
   if w then check("wakes urgent", i, k, u, k.r.urgent) end
   seen["wakes " .. tostring(k.r ~= nil)] = true
 end
+for i, k in ipairs(cases.pr) do
+  local r = ci.pr_act(k.pr, k.gated, k.told)
+  check("pr_act", i, k, r, k.r)
+  seen["pr " .. tostring(k.r)] = true
+end
 -- every answer turns up
-for _, s in ipairs({ "keeps true", "keeps false", "fate nil", "fate unclean", "fate reuse", "fate end", "wakes true", "wakes false" }) do
+for _, s in ipairs({ "keeps true", "keeps false", "fate nil", "fate unclean", "fate reuse", "fate end", "wakes true", "wakes false",
+    "pr nil", "pr done", "pr wake" }) do
   assert(seen[s], "no case answers " .. s)
 end

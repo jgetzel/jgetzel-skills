@@ -1,5 +1,6 @@
 import SwarmModel.Comms
 import SwarmModel.Spawn
+import SwarmModel.PrWatch
 
 /-! The counterexamples the Quint model found, as runs of this model with the fix's switch off: each `example`
 is checked by evaluating the run. README.md has the table; the theorems that a safety property holds with the fix
@@ -398,5 +399,34 @@ example : (srun cfg29 pre29).any (fun w => w.halt == some 2 && held (w.s.tk 1) 1
 -- with `rollbackAll` the first retry spawns both
 example : (srun { cfg29 with rollbackAll := true } (pre29.take 7)).any (fun w => w.halt == none && held (w.s.tk 1) 1
     && held (w.s.tk 2) 2 && (w.s.agt 1).boot && (w.s.agt 2).boot) = true := by decide +kernel
+
+-- #30, P1 (board #28). The stall seen four times on 2026-11-11 (ll-2 on PR #178, ll-3 on #180, ll-4 on #181, ll-6 on
+-- #182), here in a pr-gated repo: agent 0 claims #1, opens its PR, stays for its checks and stops; CI goes green and
+-- nothing tells it, as watchd polled the base's push runs only and agents don't poll gh. Watchd's tick is the one step;
+-- no other fair action is enabled. (What made watchd say "did not wake" was a conflict notice, which never wakes.)
+open PrW in
+def cfg30 : PCfg := { gated := true, wakeFix := false }
+open PrW in
+def pre30 : List PAction := [.claim 0 0, .openPr 0 0, .stay 0 true, .stop 0, .finish 0 true]
+open PrW in
+theorem not_P1 : ¬ P1 cfg30 := not_P1_of (by decide : stall cfg30 pre30 .poll (waitsGreen · 0 0) = true)
+-- with `wakeFix` the tick tells it, an urgent message, and the waiter wakes it
+open PrW in
+example : (prun { cfg30 with wakeFix := true } (pre30 ++ [.poll])).any (fun w => (w.agt 0).urgent && !(w.agt 0).working)
+    = true := by decide
+open PrW in
+example : (prun { cfg30 with wakeFix := true } (pre30 ++ [.poll, .wake 0])).any (fun w => (w.agt 0).working) = true := by decide
+
+-- #31, P2 (board #28). The PR is merged and its task stays claimed while the owner idles (ll-3 merged #180 and never
+-- ran `task done`, so a task after it could not start): in any flow, nothing but the owner closes a task.
+open PrW in
+def cfg31 : PCfg := { closeFix := false }
+open PrW in
+def pre31 : List PAction := [.claim 0 0, .openPr 0 0, .merge 0 0, .stay 0 true, .stop 0]
+open PrW in
+theorem not_P2 : ¬ P2 cfg31 := not_P2_of (by decide : stall cfg31 pre31 .poll (mergedClaimed · 0) = true)
+-- with `closeFix` the tick marks #1 done and tells its owner
+open PrW in
+example : (prun {} (pre31 ++ [.poll])).any (fun w => (w.tk 0).st == .done && (w.agt 0).urgent) = true := by decide
 
 end Swarm

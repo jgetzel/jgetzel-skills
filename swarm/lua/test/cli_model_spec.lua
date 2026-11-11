@@ -394,13 +394,114 @@ local function replay(t, file)
   end
 end
 
+-- ---- PrWatch.lean's layer (board #28): a trace with "pr" replays through the CLI and a fake gh ----
+-- The model's tasks are #1.., its agents m-1..; task t's PR is #100+t from branch <owner>/<t> into main, and gh's `pr list`
+-- answers what the model has of it. Checked after each step: each task's state and owner, each agent's status, whether
+-- an urgent message to it is unread, and whether watchd told it of its PR's current head and verdict (a pr-wake event).
+local function replay_pr(t, trace)
+  t:fakes()
+  t:q("insert or replace into meta(k,v) values('comms',?)", COMMS)
+  if trace.pr.gated then
+    os.execute("mkdir -p " .. util.shquote(t.repo .. "/.claude"))
+    local f = assert(io.open(t.repo .. "/.claude/swarm.json", "w"))
+    f:write('{"ci": {"flow": "pr-gated"}}'); f:close()
+  end
+  local s0 = trace.states[1].s
+  for i, g in ipairs(s0.ag) do
+    t:agent("m-" .. i)
+    t:hook("m-" .. i, "prompt", {})
+  end
+  for _ = 1, #s0.task do t:sw(COMMS, "task", "add", "a task") end
+  local prs, heads = {}, {}  -- task id -> its PR as gh lists it; how many heads it had
+  local function gh()
+    local l = {}
+    for id = 1, #s0.task do if prs[id] then l[#l + 1] = prs[id] end end
+    t:set_gh("pr", l)
+  end
+  local function rollup(v)
+    if v == "pending" then return { { __typename = "CheckRun", name = "ci", status = "IN_PROGRESS", conclusion = "" } } end
+    return { { __typename = "CheckRun", name = "ci", status = "COMPLETED", conclusion = v == "green" and "SUCCESS" or "FAILURE" } }
+  end
+  local function iso(x) return os.date("!%Y-%m-%dT%H:%M:%SZ", x) end
+  local function sw(who, ...) return t:sw(who, ...) end
+  gh()
+  local function check(st, where)
+    local function fail(what, got, want)
+      error(("%s: %s: db has %s, model has %s"):format(where, what, tostring(got), tostring(want)), 0)
+    end
+    for id, k in ipairs(st.task) do
+      local r = t:q1("select state, owner from task where id=?", id)
+      if r.state ~= k.st then fail("task #" .. id .. " state", r.state, k.st) end
+      if k.st ~= "open" and r.owner ~= k.owner then fail("task #" .. id .. " owner", r.owner, k.owner) end
+      local pr = prs[id]
+      if pr and pr.state == "OPEN" then
+        local key = ("%d %s %s"):format(pr.number, pr.headRefOid, k.pr.checks)
+        local told = t:q1("select 1 x from event where kind='pr-wake' and data=?", key) ~= nil
+        if told ~= k.pr.told then fail("task #" .. id .. " told (" .. key .. ")", told, k.pr.told) end
+      end
+    end
+    for i, g in ipairs(st.ag) do
+      local name = "m-" .. i
+      local r = t:q1("select status from agent where name=?", name)
+      local want = g.working and "working" or "idle"
+      if r.status ~= want then fail("agent " .. name .. " status", r.status, want) end
+      local cur = t:q1("select last_msg_id from cursor where agent=?", name)
+      local u = t:q1("select count(*) n from msg where id>? and dest=? and urgent=1", cur and cur.last_msg_id or 0, name).n > 0
+      if u ~= g.urgent then fail("agent " .. name .. " urgent unread", u, g.urgent) end
+    end
+  end
+  check(s0, "init")
+  for i = 2, #trace.states do
+    local x = trace.states[i]
+    local p, name = x.picks, x.action
+    local where = ("step %d %s %s"):format(i - 1, name, t.repr(p))
+    local ok, err = pcall(function()
+      if name == "claim" then sw(p.a, "task", "claim", tostring(p.t))
+      elseif name == "openPr" then
+        heads[p.t] = 1
+        prs[p.t] = { number = 100 + p.t, headRefName = p.a .. "/" .. p.t, headRefOid = ("h%d-1"):format(p.t),
+          baseRefName = "main", state = "OPEN", statusCheckRollup = rollup("pending") }
+        gh()
+      elseif name == "push" then
+        heads[p.t] = heads[p.t] + 1
+        prs[p.t].headRefOid = ("h%d-%d"):format(p.t, heads[p.t])
+        prs[p.t].statusCheckRollup = rollup("pending")
+        gh()
+      elseif name == "finish" then prs[p.t].statusCheckRollup = rollup(p.ok and "green" or "red"); gh()
+      elseif name == "merge" then
+        prs[p.t].state, prs[p.t].mergedAt, prs[p.t].mergeCommit = "MERGED", iso(util.now()), { oid = ("m%d000000"):format(p.t) }
+        gh()
+      elseif name == "stay" then
+        if p.v then sw(p.a, "stay", "CI on its PR, then merge") else sw(p.a, "stay", "--end") end
+      elseif name == "stop" then
+        t:hook(p.a, "stop", {})
+        setdb(t, "update agent set waiter=? where name=?", unistd.getpid(), p.a)
+      elseif name == "read" then sw(p.a, "read")
+      elseif name == "done" then sw(p.a, "task", "done", tostring(p.t), "--evidence", "abc1234")
+      elseif name == "poll" then
+        setdb(t, "delete from meta where k='pr_watched'")  -- a minute has passed
+        sw(COMMS, "watchd", "--once", "--ci", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+      elseif name == "wake" then
+        local r = sw(p.a, "wait", "--timeout", "5", "--poll", "0.1", { ok = false })
+        if r.code ~= 2 then error(("swarm wait exited %d, the model woke it: %s"):format(r.code, r.stderr), 0) end
+        t:hook(p.a, "prompt", {})
+      else error("no replay for PrWatch action " .. name, 0) end
+    end)
+    if not ok then error(where .. ": " .. tostring(err), 0) end
+    check(x.s, where)
+  end
+end
+
 local T = {}
 if lfs.attributes(DIR, "mode") == "directory" then
   for f in lfs.dir(DIR) do
     if f:match("%.json$") or f:match("%.json%.gz$") then
       T["trace " .. f] = function(t)
         t.repr = require("test.cli").repr
-        replay(t, DIR .. "/" .. f)
+        local file = DIR .. "/" .. f
+        local text = file:match("%.gz$") and t:exec({ "gzip", "-dc", file }).stdout or util.slurp(file)
+        local trace = json.decode(text)
+        if trace.pr then replay_pr(t, trace) else replay(t, file) end
       end
     end
   end

@@ -382,8 +382,9 @@ end
 M.LIVENESS_IDLE = 50 * 60  -- a stayer idle this long (inside the 1 h cache) is asked if it still stays
 M.LIVENESS_WAIT = 5 * 60   -- and is hung if its last_active has not moved this long after
 
--- Hung stayers (sw-roles §4): two edge notices (no live waiter; a message unread two ticks) and the one periodic
--- check. All state is in events newer than the stayer's last_active, so any wake re-arms everything.
+-- Hung stayers (sw-roles §4): two edge notices (no live waiter; a message that wakes, unread two ticks: a notice never
+-- wakes, board #28) and the one periodic check. All state is in events newer than the stayer's last_active, so any wake
+-- re-arms everything.
 function M.hung(c, t, comms, terms, opts)
   local tick = (opts and opts.interval) or 30
   for _, a in ipairs(agents.live_agents(c)) do
@@ -400,7 +401,7 @@ function M.hung(c, t, comms, terms, opts)
         end
       else
         for _, m in ipairs(msgs.unread(c, n)) do
-          if m.dest == n and m.ts <= t - 2 * tick and not m.body:find("^Liveness check:") and not ev("stay-unwoken", d(m.id)) then
+          if m.dest == n and m.kind ~= "notice" and m.ts <= t - 2 * tick and not m.body:find("^Liveness check:") and not ev("stay-unwoken", d(m.id)) then
             db.log(c, n, "stay-unwoken", nil, d(m.id))
             msgs.post(c, "swarm", comms, ("%s did not wake on a message (#%s from %s, %d s ago)."):format(
               n, d(m.id), m.frm, t - m.ts), false, "system")
@@ -717,6 +718,7 @@ function M.watchd_tick(c, comms, repo, opts)
     ci.ci_poll(c, repo)
     ci.ci_check(c, repo, comms)
     ci.pr_ci(c, repo)
+    ci.pr_watch(c, repo)
   end
 end
 

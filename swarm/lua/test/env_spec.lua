@@ -1,7 +1,8 @@
 -- Differential tests of swarm/model/SwarmModel/Env.lean: each environment assumption against the real tool, in a
 -- scratch repo, through the Lua the swarm runs where there is one. A case carries its assumption's name; check.sh
 -- refuses an assumption with no case here. hc_ls_live and hc_kill_ends start a terminal in your hc: they run only
--- with SWARM_TEST_HC=1.
+-- with SWARM_TEST_HC=1. gh_checks and gh_state ask GitHub about this repo's latest PRs: they run only with
+-- SWARM_TEST_GH=1.
 local proc, util, watchd, machine, agents = require "swarm.proc", require "swarm.util", require "swarm.watchd",
   require "swarm.machine", require "swarm.agents"
 local stdlib, unistd, signal, wait = require "posix.stdlib", require "posix.unistd", require "posix.signal",
@@ -11,6 +12,7 @@ local lfs = require "lfs"
 local d = stdlib.realpath(stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-env-XXXXXX"))
 for k, v in pairs({ GIT_CONFIG_NOSYSTEM = "1", GIT_CONFIG_GLOBAL = "/dev/null", GIT_AUTHOR_NAME = "t",
     GIT_AUTHOR_EMAIL = "t@t", GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@t" }) do stdlib.setenv(k, v) end
+local PATH0 = os.getenv("PATH")
 os.execute("mkdir -p " .. d .. "/bin && printf '#!/bin/sh\\nexit 1\\n' > " .. d .. "/bin/gh && chmod +x " .. d .. "/bin/gh")
 stdlib.setenv("PATH", d .. "/bin:" .. os.getenv("PATH"))  -- landed_ref's gh finds no merged PR: only git's answers count
 
@@ -229,6 +231,50 @@ if os.getenv("SWARM_TEST_HC") == "1" then
   proc.run({ "hc", "rm", addr })
 else
   io.stderr:write("env_spec: hc_ls_live, hc_kill_ends skipped (SWARM_TEST_HC=1 runs them)\n")
+end
+
+-- ---------- gh_checks, gh_state ----------
+-- What ci.pr_watch reads from `gh pr list` against what GitHub's REST API says of the same PRs: their check runs and
+-- commit statuses, and whether they are merged (the merge commit then on the base, by git).
+if os.getenv("SWARM_TEST_GH") == "1" then
+  local json, ci = require "swarm.json", require "swarm.ci"
+  local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
+  local top = util.strip(proc.run({ "git", "rev-parse", "--show-toplevel" }, here) or "")
+  stdlib.setenv("PATH", PATH0)
+  local function api(path, jq) return json.decode(assert(proc.run({ "gh", "api", path, "--jq", jq }, top), "gh api " .. path)) end
+  local prs = json.decode(assert(proc.run({ "gh", "pr", "list", "--state", "all", "--limit", "6", "--json",
+    "number,headRefOid,baseRefName,state,mergeCommit,statusCheckRollup" }, top), "gh pr list answers"))
+  local n = 0
+  for _, pr in ipairs(prs) do
+    if pr.state == "OPEN" or pr.state == "MERGED" then
+      n = n + 1
+      local sha = pr.headRefOid
+      local runs = api("repos/{owner}/{repo}/commits/" .. sha .. "/check-runs?per_page=100", "[.check_runs[] | {status, conclusion}]")
+      local sts = api("repos/{owner}/{repo}/commits/" .. sha .. "/status", "[.statuses[] | .state]")
+      local want, red = (#runs + #sts > 0) and "green" or "pending", false
+      for _, r in ipairs(runs) do
+        if r.status ~= "completed" then want = "pending"
+        elseif r.conclusion ~= "success" and r.conclusion ~= "neutral" and r.conclusion ~= "skipped" then red = true end
+      end
+      for _, st in ipairs(sts) do
+        if st == "pending" then want = "pending" elseif st ~= "success" then red = true end
+      end
+      if want == "green" and red then want = "red" end
+      assert(ci.verdict(pr.statusCheckRollup) == want, ("gh_checks: PR #%d: the rollup reads %s, its check runs and statuses %s"):format(
+        pr.number, ci.verdict(pr.statusCheckRollup), want))
+      local merged = api("repos/{owner}/{repo}/pulls/" .. pr.number, ".merged")
+      assert((pr.state == "MERGED") == merged, ("gh_state: PR #%d is %s, and merged is %s"):format(pr.number, pr.state, tostring(merged)))
+      if merged then
+        proc.run({ "git", "fetch", "-q", "origin", pr.baseRefName }, top)
+        assert(proc.gx({ "merge-base", "--is-ancestor", pr.mergeCommit.oid, "origin/" .. pr.baseRefName }, top) == 0,
+          ("gh_state: PR #%d's merge commit is on %s"):format(pr.number, pr.baseRefName))
+      end
+    end
+  end
+  assert(n > 0, "gh_checks: the repo has an open or merged PR")
+  stdlib.setenv("PATH", d .. "/bin:" .. PATH0)
+else
+  io.stderr:write("env_spec: gh_checks, gh_state skipped (SWARM_TEST_GH=1 runs them)\n")
 end
 
 os.execute("rm -rf " .. d)

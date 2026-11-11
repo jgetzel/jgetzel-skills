@@ -1,5 +1,6 @@
 import Lean.Data.Json
 import SwarmModel.Spawn
+import SwarmModel.PrWatch
 
 /-! Random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures, Spawn.lean) as JSON, for
 ../lua/test/cli_model_spec.lua to replay through the CLI.
@@ -183,10 +184,66 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("halt", [stop 0, age 0, tick, add, failExit, lapse, failExit, lapse, failExit, lapse, failExit, lapse, failExit,
     add, claim 1 1, tick])]
 
+-- ---------- PrWatch.lean's layer (board #28) ----------
+namespace P
+open Swarm.PrW
+
+def worldJson (w : PWorld) : Json :=
+  Json.mkObj [
+    ("task", Json.arr (w.task.toArray.map fun k => Json.mkObj [
+      ("st", match k.st with | .opn => "open" | .claimed => "claimed" | .done => "done"),
+      ("owner", if k.st == .opn then "" else slot k.owner),
+      ("pr", Json.mkObj [("opened", k.pr.opened), ("checks", k.pr.checks.name), ("merged", k.pr.merged), ("told", k.pr.told)])])),
+    ("ag", Json.arr (w.ag.toArray.map fun g => Json.mkObj [("working", g.working), ("stays", g.stays), ("urgent", g.urgent)]))]
+
+/-- an action as its name and picks: agents as slot names, tasks as their ids from 1 -/
+def actJson : PAction → String × Json
+  | .claim a t => ("claim", Json.mkObj [("a", slot a), ("t", toJson (t + 1))])
+  | .openPr a t => ("openPr", Json.mkObj [("a", slot a), ("t", toJson (t + 1))])
+  | .push a t => ("push", Json.mkObj [("a", slot a), ("t", toJson (t + 1))])
+  | .stay a v => ("stay", Json.mkObj [("a", slot a), ("v", v)])
+  | .stop a => ("stop", Json.mkObj [("a", slot a)])
+  | .read a => ("read", Json.mkObj [("a", slot a)])
+  | .merge a t => ("merge", Json.mkObj [("a", slot a), ("t", toJson (t + 1))])
+  | .done a t => ("done", Json.mkObj [("a", slot a), ("t", toJson (t + 1))])
+  | .finish t ok => ("finish", Json.mkObj [("t", toJson (t + 1)), ("ok", ok)])
+  | .poll => ("poll", Json.mkObj [])
+  | .wake a => ("wake", Json.mkObj [("a", slot a)])
+
+/-- a run of the layer, each step enabled: `{"pr": {"gated"}, "states": [{"s"}, {"action", "picks", "s"}, ..]}` -/
+def script (c : PCfg) (acts : List PAction) : Except String Json := do
+  let mut w := pinit c
+  let mut out := #[Json.mkObj [("s", worldJson w)]]
+  for x in acts do
+    match pstep c w x with
+    | some w' =>
+      w := w'
+      let (n, p) := actJson x
+      out := out.push (Json.mkObj [("action", n), ("picks", p), ("s", worldJson w)])
+    | none => throw s!"step {out.size}: {(actJson x).1} is not enabled"
+  return Json.mkObj [("pr", Json.mkObj [("gated", c.gated)]), ("states", Json.arr out)]
+
+/-- `pr-green`: the stall of finding #30 (an agent stays idle for its PR's checks; CI goes green), then the fix: the poll
+wakes it, it merges, and the next poll marks the task done. `pr-red`: the checks fail, the poll wakes it once for that
+head, it pushes and stops, the poll says nothing while the new head's checks run, they go green and the poll wakes it
+again. `pr-merged` (finding #31, a repo that isn't pr-gated): the owner merges, stays and stops with the task claimed;
+the poll marks it done and wakes it, and its green checks wake no one. -/
+def scripts : List (String × PCfg × List PAction) := [
+  ("pr-green", { gated := true }, [.claim 0 0, .openPr 0 0, .stay 0 true, .stop 0, .finish 0 true, .poll, .wake 0,
+    .merge 0 0, .poll, .read 0, .stay 0 false]),
+  ("pr-red", { gated := true }, [.claim 0 0, .openPr 0 0, .stay 0 true, .stop 0, .finish 0 false, .poll, .poll, .wake 0,
+    .push 0 0, .stop 0, .poll, .finish 0 true, .poll, .wake 0]),
+  ("pr-merged", {}, [.claim 0 0, .openPr 0 0, .finish 0 true, .merge 0 0, .stay 0 true, .stop 0, .poll, .wake 0, .poll])]
+end P
+
 def main (args : List String) : IO UInt32 := do
   if let ["script", dir] := args then
     for (name, acts) in scripts do
       match script sreplay acts with
+      | .ok j => IO.FS.writeFile (System.FilePath.mk dir / s!"script-{name}.json") j.compress
+      | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
+    for (name, c, acts) in P.scripts do
+      match P.script c acts with
       | .ok j => IO.FS.writeFile (System.FilePath.mk dir / s!"script-{name}.json") j.compress
       | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
     return 0

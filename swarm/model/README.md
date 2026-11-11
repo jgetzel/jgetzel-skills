@@ -19,7 +19,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Locks.lean` | S3, and `noSharedFile_of_reachable`: S3 as files |
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
-| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2), and the same runs with the fix on |
+| `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2; #30, #31, P1-P2, stalls), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck`, `deadLive_not_stuck` |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
@@ -28,39 +28,40 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Spawn.lean` | spawn reservation and launch failure (board #16): `SWorld` (the `State` and auto-spawn's backoff, failures and halt), the tick whose launch fails, `rollbackAll`; Sp1-Sp3 (`Sp1_of`, `Sp2_of`, `Sp3_of`) |
+| `SwarmModel/PrWatch.lean` | PRs and the wait on their checks (board #28): `PWorld` (tasks, each with its PR: opened, checks pending, green or red, merged, `told`; agents working or idle, staying, an urgent message unread), `pstep`, watchd's poll (`pollTask`), the switches `gated` (`ci.flow` is pr-gated), `wakeFix`, `closeFix`; fair runs (`PRun`, `PRun.Fair`); P1 and P2, refuted with a switch off by `stall` (`fair_of_stall`) and proved with it on (`P1_of`, `P2_of`; `main_P1`, `main_P2`) |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
-| `SwarmModel/Traces.lean` | writes random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures) as JSON, and the scripted runs (`script`) |
+| `SwarmModel/Traces.lean` | writes random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures) as JSON, and the scripted runs (`script`; `P.script`, PrWatch.lean's) |
 | `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
 | `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
 | `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
 | `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
-| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
-| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`; a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real` (ci.pr_act on gh's answers); a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
-| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`), and the gap `keeps_gap` |
+| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap` |
 | `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 4600 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (264 sites, 230 statements) |
+| `sqlcases.json.gz` | 4700 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (269 sites, 235 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 6 scripted runs the Lua suite replays |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 9 scripted runs the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
 | `../lua/test/luasem_spec.lua` | each chunk under LuaJIT must give the Lean interpreter's results (`lua-lean/test/luasem.lua`) |
-| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
+| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`, gh's two with `SWARM_TEST_GH=1`: this repo's latest PRs, `gh pr list` against GitHub's REST API and git) |
 | `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
-| `decide.json.gz` | 3000 cases each of keeps, fate and wakes (seed 27) the Lua suite checks |
-| `../lua/test/decide_model_spec.lua` | watchd.keeps, watchd.fate and msgs.wakes against Decide.lean's on each case |
+| `decide.json.gz` | 3000 cases each of keeps, fate, wakes and pr_act (seed 28) the Lua suite checks |
+| `../lua/test/decide_model_spec.lua` | watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against Decide.lean's on each case |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `../lua/test/sql_model_spec.lua` | each case through db.lua on real sqlite, against Sql.lean's answer; and the cases' statements are exactly the inventory's |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
@@ -189,6 +190,15 @@ reads its messages and takes work):
 - **L4** A row whose terminal is gone is eventually ended (its claims and locks released). Its negation in one state:
   `deadLive`. Fairness: watchd ticks, and an `hc ls` that lists the terminal as gone. `watchd := false` (no watchd), a
   failing `hc ls`, and an unbound row each break it (findings #14, #15). Proved over fair runs: `deadLive_leads_to`
+
+PRs (board #28; `PrWatch.lean`, a layer of its own: tasks, their PRs and checks, agents that stay, watchd's poll, under
+its own fairness: watchd polls, a waiter with an urgent message wakes, a working agent reads, CI finishes):
+
+- **P1** In a repo whose `ci.flow` is pr-gated, an agent that stays idle for its PR's checks does not stay idle forever
+  once they are green: it is woken. `waitsGreen` (idle, staying, owning the claimed task, its PR open and green, not told).
+  Refuted with `wakeFix` off (finding #30), proved with it on (`P1_of`)
+- **P2** In every flow, a task whose PR is merged does not stay claimed forever. `mergedClaimed`. Refuted with `closeFix`
+  off (finding #31), proved with it on (`P2_of`)
 
 Workspaces (sw-bases; `Workspaces.lean` states each as a `Prop`). The protected refs are the bases (`Cfg.bases`: main,
 and a swarm's own such as `formal`); `Git.safe` is reachability from one, checked the way workspace GC must check it
@@ -455,6 +465,11 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 | 29 | a halt is earned | `rollbackAll := false` / the run | The leak's knock-on: spawn_backoff keeps the failed name for the retry, and agents.reserve refuses a live row's name, which auto_spawn counts as a failed launch. Agents 1 and 2 leave, #1 and #2 are added, #1's launch raises (slot 1 holds #1); five times the backoff lapses and the tick's launch, for #2 now, is refused: auto-spawn halts #2, none of whose launches ran, and tells the communicator to spawn it by hand. A scripted replay of this run at the fix's parent (not kept: it is a run of the switch off) was the Lua doing it. With `rollbackAll` the first retry spawns both. | board #16 (as #28) |
 
 
+| # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
+|---|---|---|---|---|
+| 30 | P1 | `wakeFix := false` / P1 (`not_P1`, `P1_of`) | Seen four times on 2026-11-11 (ll-2 on PR #178, ll-3 on #180, ll-4 on #181, ll-6 on #182): an agent opens its PR, runs `swarm stay 'CI on PR #N, then merge'` and stops; the checks go green and nothing tells it. watchd's `--ci` polls the base's push runs, not PR checks, and agents are told not to poll `gh`. watchd's "ll-X did not wake on a message (#M)" was about a conflict notice, which by design never wakes (`msgs.wakes`), so the alarm was false and only the communicator's `hc send` moved the agent. The stall: agent 0 claims #1, opens its PR, stays and stops, CI goes green; watchd's poll is the one step and changes nothing, and no other fair action is enabled (`stall`, `fair_of_stall`). With `wakeFix` the poll posts an urgent message and the waiter wakes it (`script-pr-green`, `script-pr-red` are the Lua doing it). | board #28: `ci.pr_watch` in pr-gated repos; `hung` ignores notices |
+| 31 | P2 | `closeFix := false` / P2 (`not_P2`, `P2_of`) | ll-3 merged #180 and never ran `task done`, holding its claim, so a task after it could not start. Agent 0 claims #1, opens its PR, merges it, stays and stops: #1 stays claimed while watchd polls. With `closeFix` the poll marks #1 done with the merge sha and tells the owner (`script-pr-merged`). | board #28: `ci.pr_watch`, every flow |
+
 Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
@@ -467,7 +482,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist.
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist. P1 and P2 (board #28) are proved over `PrWatch.lean`'s fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
@@ -684,9 +699,9 @@ merged and then reverted still answers merged. `branch -d`, which `delete_branch
 either: it checks merged into the main checkout's HEAD, and only differs from the guarded `update-ref` when the branch
 moved after the sweep's check.
 
-**Not modelled**: the red-main task and CI; conflict notices and the edit hook (but for agent.wt, and the lock patterns
+**Not modelled**: the red-main task and CI on the base (a PR's checks are, in `PrWatch.lean`, a layer with no leases and no time: in the main model an idle owner's lapsed claim is reaped, L2, which is how finding #30's stall ended without the fix, two hours on, the task reopened with its PR green); conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
-of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check, rebases, the worktree a spawn makes
+of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check in landed_ref (ci.pr_watch's is `gh_state`), rebases, the worktree a spawn makes
 (a spawned agent's `recorded` flag stands for it: no action edits it, so it stays clean on its task's base; the sweep of
 it once its agent ends is not compared), an agent removing its own worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
 `nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
@@ -714,7 +729,7 @@ it is replayed: the replay has no hc.
 statements does to the db. It is the subset the Lua uses, no more: `sql_inventory.lua` reads every db call
 (`:exec`, `:one`, `:all`, `:all_cols`, `:script`) in `swarm/lua/swarm`; a call whose text is literals is its statement,
 and one built from code (a column name in `agents.touch`, a `?` list, a `:format`) is a template whose statements
-are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 264 sites, 230 statements: SELECT
+are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 269 sites, 235 statements: SELECT
 (DISTINCT, an inner JOIN, WHERE, GROUP BY with `count(*)` and `max`, ORDER BY expressions, LIMIT, correlated `exists`
 and scalar subqueries, `in` lists and subqueries; `union all` of two), INSERT (`or ignore`, `or replace`, from a SELECT, `on conflict ..
 do update` with `excluded`, `returning`), UPDATE, DELETE, `create table|index if not exists`, `alter table add|drop
@@ -747,8 +762,8 @@ script on no tables or all; `begin`, `commit`, `rollback` in sequences around a 
 `sql_model_spec.lua` builds the same tables in a scratch file and runs each step through db.lua (`prepare`, which
 inlines integers, `all_cols`, `exec`, `script`), on a fresh connection: every step's error or success, rows, column
 names, `changes()`, `last_insert_rowid()`, and after the case every table's `table_info`, rows with their storage
-classes, and `sqlite_sequence` must be Lean's. 4600 committed cases and 4600 fresh per `replay.sh`, green, and about 35,000
-more at other seeds while it was built. Of the committed cases' 4707 steps, 2422 return rows or change one, 46 are
+classes, and `sqlite_sequence` must be Lean's. 4700 committed cases and 4700 fresh per `replay.sh`, green, and about 35,000
+more at other seeds while it was built. Of the committed cases' 4807 steps, 2449 return rows or change one, 46 are
 errors (on both sides), and the rest are misses (a WHERE no row meets) or DDL and transaction steps. Checked to bite: with NULL sorted last, with an int written to a
 `text` column as an int, or with `like` case-sensitive (this one needs about 25 cases per statement), the spec fails.
 

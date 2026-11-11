@@ -2,9 +2,10 @@ import Lean.Data.Json
 import SwarmModel.Decide
 
 /-! Random inputs to Decide.lean's lifted functions, with their answers, for ../lua/test/decide_model_spec.lua to
-check watchd.keeps, watchd.fate and msgs.wakes against. A `none` is a missing field (the Lua's nil).
+check watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against. A `none` is a missing field (the Lua's nil).
 `lake env lean --run SwarmModel/DecideCases.lean <n> <seed> <file>` (replay.sh) writes
-`{"keeps": [{"o", "bg", "live", "r"}, ..], "fate": [{"a", "t", "x", "terms", "f", "r"}, ..], "wakes": [{"rows", "cold", "r"}, ..]}`. -/
+`{"keeps": [{"o", "bg", "live", "r"}, ..], "fate": [{"a", "t", "x", "terms", "f", "r"}, ..], "wakes": [{"rows", "cold", "r"}, ..],
+"pr": [{"pr", "gated", "told", "r"}, ..]}`. -/
 
 open Lean Swarm.Decide
 
@@ -66,6 +67,14 @@ def wakesCase : G Json := do
               ("cold", some (toJson cold)),
               ("r", r.map fun (w, u) => obj [("n", some (toJson w.length)), ("urgent", some (toJson u))])]
 
+def prCase : G Json := do
+  let pr : PrRow := { state := ← oneOf ["OPEN", "MERGED", "CLOSED", ""], verdict := ← oneOf ["pending", "green", "red"] }
+  let gated ← coin
+  let told ← coin
+  let r := prActL pr gated told
+  return obj [("pr", some (Json.mkObj [("state", pr.state), ("verdict", pr.verdict)])), ("gated", some (toJson gated)),
+              ("told", some (toJson told)), ("r", r.map fun | .done => "done" | .wake => "wake")]
+
 def main (args : List String) : IO UInt32 := do
   let [n, seed, file] := args | do IO.eprintln "usage: DecideCases.lean <n> <seed> <file>"; return 1
   let k := n.toNat!
@@ -73,7 +82,9 @@ def main (args : List String) : IO UInt32 := do
     let ks ← (List.range k).mapM fun _ => keepsCase
     let fs ← (List.range k).mapM fun _ => fateCase
     let ws ← (List.range k).mapM fun _ => wakesCase
-    return Json.mkObj [("keeps", Json.arr ks.toArray), ("fate", Json.arr fs.toArray), ("wakes", Json.arr ws.toArray)])
+    let ps ← (List.range k).mapM fun _ => prCase
+    return Json.mkObj [("keeps", Json.arr ks.toArray), ("fate", Json.arr fs.toArray), ("wakes", Json.arr ws.toArray),
+      ("pr", Json.arr ps.toArray)])
     |>.run' (mkStdGen seed.toNat!)
   IO.FS.writeFile file j.compress
   return 0
