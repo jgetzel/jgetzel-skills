@@ -45,7 +45,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
-| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap` |
+| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
 | `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
@@ -539,6 +539,18 @@ status by its `ASt`, `aged` as idle 120 s, `big` as a context of SMALL_CTX (40k)
 (`Env.waiter_alive`), a slot's hc address its number, live unless `dead`. `decide_model_spec.lua` checks the Lua against
 Lean on the 3000 committed cases of each (seed 27) and on 3000 fresh ones per `replay.sh`; mutating any one of
 fate's pool test, keeps' bg clause, fate's terminal-status test or wakes' urgent clause fails it.
+
+**F1** (board #41): what `swarm state --json` reports of an idle agent (its `fate`: the verdict, the reason Home shows,
+the checks the agent screen lists) is watchd's decision. The Lua does not re-derive it: state.lua runs `watchd.fate`
+itself on the reads lifecycle uses (`watchd.reads`), with `f.rec`, a recorder each check calls with its value, and for
+the agent screen once more with `f.all`, under which no check holds so every one is made. `fateRec` is that recorder
+lifted. Proved: its verdict is `fateL` (`fateRec_verdict`), so the model's lifecycle verdict (`report_lifted`, on
+`fate_lifted`'s hypotheses); every check it records is one of fate's inputs, with that input's value (`fateRec_vals`,
+`Check.val`); the `f.all` run records all nine in order (`fateRec_all`); and when fate keeps the agent before the reuse
+checks, the plain run's last record is the check that held, every one before it false (`fateRec_short`: Home's chip is
+the reason, not a guess). `decide_model_spec.lua` checks both recorded lists on every fate case; renaming one label in
+watchd.fate fails it. Not lifted: state.lua's wording of each check's detail, and its lighting of Context and Waiter
+together only on a reuse verdict (display, from the same values).
 
 What the lift found, each now a board task: reap's keep test reads the owner's terminal and the model's doesn't
 (`keeps_gap`, #46): a working or prompt-blocked owner whose bound terminal hc no longer lists has its lapsed claim

@@ -4,7 +4,7 @@ import SwarmModel.Decide
 /-! Random inputs to Decide.lean's lifted functions, with their answers, for ../lua/test/decide_model_spec.lua to
 check watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against. A `none` is a missing field (the Lua's nil).
 `lake env lean --run SwarmModel/DecideCases.lean <n> <seed> <file>` (replay.sh) writes
-`{"keeps": [{"o", "bg", "live", "r"}, ..], "fate": [{"a", "t", "x", "terms", "f", "r"}, ..], "wakes": [{"rows", "cold", "r"}, ..],
+`{"keeps": [{"o", "bg", "live", "r"}, ..], "fate": [{"a", "t", "x", "terms", "f", "r", "rec", "all"}, ..], "wakes": [{"rows", "cold", "r"}, ..],
 "pr": [{"pr", "gated", "told", "r"}, ..]}`. -/
 
 open Lean Swarm.Decide
@@ -41,6 +41,13 @@ def keepsCase : G Json := do
   return obj [("o", o.map rowJson), ("bg", some (toJson bg)), ("live", live.map toJson),
               ("r", some (toJson (keepsL o bg live)))]
 
+def checkName : Check → String
+  | .stay => "stay" | .idle => "idle" | .terminal => "terminal" | .task => "task" | .lock => "lock"
+  | .unlanded => "unlanded" | .job => "job" | .context => "context" | .waiter => "waiter"
+
+/-- what watchd.fate's f.rec hears, in order: [[label, value], ..] -/
+def recJson (l : List (Check × Bool)) : Json := Json.arr (l.map fun (k, v) => Json.arr #[checkName k, toJson v]).toArray
+
 def fateCase : G Json := do
   -- mostly idle, aged, staying for nothing: else nearly every case is a keep
   let r ← row
@@ -55,7 +62,8 @@ def fateCase : G Json := do
               ("f", some (obj [("ours", some (toJson f.ours)), ("claims", some (toJson f.claims)), ("locks", some (toJson f.locks)),
                 ("unlanded", some (toJson f.unlanded)), ("job", some (toJson f.job)), ("pool", some (toJson f.pool)), ("passed_over", some (toJson f.passedOver)),
                 ("alive", some (toJson f.alive))])),
-              ("r", some (verdict (fateL r now x terms f)))]
+              ("r", some (verdict (fateL r now x terms f))),
+              ("rec", some (recJson (fateRec r now x terms f false).2)), ("all", some (recJson (fateRec r now x terms f true).2))]
 
 def wakesCase : G Json := do
   let mut rows := []
