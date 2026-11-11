@@ -175,17 +175,18 @@ end
 -- Agents running a Bash-tool shell (it sources a shell snapshot; hooks such as the waiter don't) under their claude
 -- process. An idle agent's foreground commands have ended, so for it this is a background job.
 -- shortcut: a background subagent with no shell running isn't seen; add a signal if those lose claims too.
-function M.bg_agents(c, procs)
-  local owner, out = {}, {}
+function M.bg_agents(c, procs)  -- also each agent's job process (state --json's detail)
+  local owner, out, ps = {}, {}, {}
   for _, r in ipairs(c:all("select name,claude_pid from agent where ended is null and claude_pid is not null")) do
     owner[r.claude_pid] = r.name
   end
   for _, p in pairs(procs) do
     if owner[p.ppid] and p.args:find("/shell-snapshots/snapshot-", 1, true) then
       out[owner[p.ppid]] = true
+      ps[owner[p.ppid]] = p
     end
   end
-  return out
+  return out, ps
 end
 
 -- job-start events with no job-end yet, newest first, data unpacked.

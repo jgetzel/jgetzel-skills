@@ -34,7 +34,7 @@ local stdlib = require "posix.stdlib"
 
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
-  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", away = "agents", stay = "agents", lock = "locks", unlock = "locks",
+  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", away = "agents", stay = "agents", nudge = "agents", lock = "locks", unlock = "locks",
   machine = "machine", cost = "cost", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", ["end"] = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
@@ -136,7 +136,9 @@ local function parser()
   ap:command("role"):argument("text"):args("*")
   p = ap:command("stay")  -- what I wait for; watchd doesn't end an agent that stays
   p:argument("text"):args("*")
-  p:flag("--end"):description("clear it: judged as any agent again")
+  p:flag("--end"):description("clear it: judged as any agent again; `--end NAME` clears NAME's (human or the communicator)")
+  p = ap:command("nudge"):description("type one fixed line into an agent's terminal: read your messages and continue")
+  p:argument("agent")
   p = ap:command("limits")  -- the user's staffing numbers (sw-roles §6)
   opt(p, "--min", nil, int):description("auto-spawn number: watchd staffs tasks until this many agents are live")
   opt(p, "--max", nil, int):description("agent max: `swarm spawn` refuses at this many live agents")
@@ -171,6 +173,7 @@ local function parser()
   p:flag("--once")
   p:flag("--ci"):description("also watch main CI with gh")
   p:flag("--takeover"):description("replace a live watchd; it exits on its next tick")
+  p:flag("--restart"):description("start the same watchd (its recorded flags) in a hidden hc terminal, taking over")
   p:flag("--dry-run"):description("only list the worktrees the sweep would remove, then exit")
   opt(p, "--max-agents", nil, int):description("set the auto-spawn number (`swarm limits --min`; default: live agents when first started)")
   opt(p, "--min-free-mem", 4, tonumber):description("GiB of MemAvailable needed to auto-spawn")
