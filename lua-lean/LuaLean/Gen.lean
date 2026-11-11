@@ -250,7 +250,7 @@ return r1, r2, r3, r4, r5, r6, log, store, proto, t"
 #guard [("local mt = {} local t = setmetatable({}, mt) mt.__add = 1 return pcall(function() return t + 1 end)",
       "effect metamethod __add"),
     ("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
-      "ok:true,false,\"attempt to compare table with number\""),
+      "ok:true,false,\"c:1: attempt to compare table with number\""),
     ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
     ("local t = setmetatable({}, {__eq = 1}) return t == {}", "effect metamethod __eq"),
     ("local t = setmetatable({}, {}) getmetatable(t).__lt = 1 return t < t", "effect metamethod __lt"),
@@ -321,8 +321,74 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   table.new == new, table.clear == clear, z, w, getmetatable(w) ~= nil, P(tostring), P(tonumber), P(tostring, nil),
   P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
 
+
+-- ---------- error values: where LuaJIT reports them, and how it names the operands ----------
+
+/-- tokens joined by a space or, at random, a newline; never one before `(`, which LuaJIT reads as a new statement -/
+def layout (toks : List String) : G String := do
+  let mut r := ""
+  for t in toks do
+    let nl ← chance 3
+    if r != "" then r := r ++ (if t == "(" then " " else if nl then "\n" else " ")
+    r := r ++ t
+  return r
+
+/-- something to index or call: a local, an upvalue, a global, a field, a call's value, a constant, a parenthesis -/
+def prefixOp : G (List String) := pick [["t"], ["up"], ["gx"], ["g", ".", "a", ".", "b"], ["f", "(", ")"],
+  ["(", "nil", ")"], ["(", "\"a\"", ")"], ["(", "{", "}", ")"], ["g", "[", "1", "]"], ["(", "t", ")"], ["s"],
+  ["g", ".", "n"], ["g", "[", "k", "]"]]
+def valueOp : G (List String) := do
+  if ← chance 3 then pick [["nil"], ["\"a\""], ["{", "}"], ["1"], ["true"]] else prefixOp
+
+/-- a statement that raises a runtime error, or not -/
+def errStat : G (List String) := do
+  let p ← prefixOp
+  let v ← valueOp
+  let w ← valueOp
+  match ← rnd 16 with
+  | 0 => return ["return"] ++ p ++ [".", "x"]
+  | 1 => return ["local", "r", "="] ++ p ++ ["[", "k", "]", ",", "1"]
+  | 2 => return ["local", "r", "="] ++ p ++ [":", "m", "(", ")"]
+  | 3 => return ["local", "r", "="] ++ p ++ ["(", "1", ")"]
+  | 4 => return ["return"] ++ p ++ ["(", "1", ")"]
+  | 5 => return ["return"] ++ v ++ [← pick ["+", "*", "-", "%", "..", "<", "<=", ">", "/", "^"]] ++ w
+  | 6 => return ["local", "r", "=", ← pick ["-", "#"]] ++ v
+  | 7 => return p ++ [".", "x", "=", "1"]
+  | 8 => return ["g", ".", "x", ",", "t", ".", "y", ",", "up", "[", "1", "]", "=", "1", ",", "2", ",", "3"]
+  | 9 => pick [["local", "r", "=", "string", ".", "rep", "(", ")"], ["local", "r", "=", "s", ":", "rep", "(", "{", "}", ")"],
+      ["local", "r", "=", "s", ":", "rep", "(", "1", ",", "{", "}", ")"], ["return", "string", ".", "sub", "(", ")"],
+      ["local", "r", "=", "math", ".", "floor", "(", "\"z\"", ")"], ["local", "r", "=", "tostring", "(", ")"],
+      ["local", "r", "=", "select", "(", "0", ")"], ["local", "r", "=", "(", "\"%d\"", ")", ":", "format", "(", "\"q\"", ")"],
+      ["local", "r", "=", "setmetatable", "(", "{", "}", ",", "1", ")"], ["local", "r", "=", "string", ".", "char", "(", "300", ")"],
+      ["local", "r", "=", "table", ".", "concat", "(", "{", "{", "}", "}", ")"], ["local", "q", "=", "string", ".", "rep", "local", "r", "=", "q", "(", ")"],
+      ["local", "r", "=", "(", "\"%y\"", ")", ":", "format", "(", "1", ")"], ["local", "r", "=", "s", ":", "find", "(", "\"(\"", ")"],
+      ["local", "r", "=", "next", "(", "{", "}", ",", "1", ")"], ["local", "r", "=", "ipairs", "(", ")"],
+      ["local", "r", "=", "table", ".", "sort", "(", "{", "1", ",", "2", "}", ",", "3", ")"]]
+  | 10 => pick [["error", "(", "\"m\"", ")"], ["error", "(", "\"m\"", ",", "2", ")"], ["error", "(", "\"m\"", ",", "0", ")"],
+      ["error", "(", "{", "}", ")"], ["error", "(", "5", ")"], ["return", "error", "(", "\"m\"", ")"], ["error", "(", ")"]]
+  | 11 => pick [["assert", "(", "false", ")"], ["assert", "(", "nil", ",", "\"m\"", ")"], ["assert", "(", "false", ",", "7", ")"],
+      ["assert", "(", "1", "==", "2", ",", "{", "}", ")"]]
+  | 12 => pick [["for", "i", "=", "1", ",", "t", "do", "end"], ["for", "i", "=", "s", ",", "2", "do", "end"],
+      ["for", "k", "in", "1", "do", "end"], ["for", "k", "in", "next", ",", "5", "do", "end"], ["for", "k", "in", "pairs", "(", "t", ")", "do", "end"]]
+  | 13 => pick [["local", "function", "h", "(", ")", "error", "(", "\"m\"", ",", "2", ")", "end", "local", "r", "=", "h", "(", ")"],
+      ["local", "function", "h", "(", ")", "error", "(", "\"m\"", ",", "2", ")", "end", "return", "h", "(", ")"],
+      ["local", "function", "h", "(", ")", "return", "string", ".", "rep", "(", ")", "end", "local", "r", "=", "h", "(", ")"],
+      ["local", "function", "h", "(", ")", "return", "t", ".", "x", "end", "local", "r", "=", "h", "(", ")"],
+      ["local", "function", "h", "(", "o", ")", "return", "o", ".", "x", "end", "local", "r", "=", "pcall", "(", "h", ")"]]
+  | 14 => return ["function", "t", ".", "a", "(", ")", "end"]
+  | _ => return ["local", "r", "=", "{"] ++ v ++ [",", "x", "="] ++ w ++ ["}"]
+
+/-- statements raising errors, each under pcall, and the values they raised; now and then one not caught -/
+def errors : G String := do
+  let mut src := "local up\nlocal g = {a = {}, n = 5}\nlocal E = {}\nlocal function c(f) local ok, e = pcall(f) E[#E + 1] = ok and \"ok\" or e end\n"
+  for _ in [0:(← rnd 5) + 2] do
+    src := src ++ s!"c(function()\nlocal t, k, f, s = nil, \"x\", function() end, \"x\"\n{← layout (← errStat)}\nend)\n"
+  if ← chance 4 then return src ++ "local t, s = nil, \"x\"\ndo\n" ++ (← layout (← errStat)) ++ "\nend\nreturn E"
+  return src ++ "return E"
+
 /-- one of the chunks above -/
 def chunk : G String := do
+  if ← chance 8 then return ← errors
   match ← rnd 11 with
   | 0 => arith
   | 1 => strings
@@ -346,7 +412,7 @@ def writeCases (gen : G (String × List String)) (srcs : String → Option Block
     g := g'
     let out := runCase srcs .dual mods src.toList
     let out1 := runCase srcs .single mods src.toList
-    if out.startsWith "ok:" || out == "error" then
+    if out.startsWith "ok:" || out.startsWith "error:" then
       let single := if out1 == out then "" else s!", single = {String.ofList (serStr out1.toList)}"
       cases := cases.push s!"\{src = {String.ofList (serStr src.toList)}, out = {String.ofList (serStr out.toList)}{single}},"
     else skipped := out :: skipped

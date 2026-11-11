@@ -44,12 +44,23 @@ instance : Inhabited Obj := ⟨.cell .nil⟩
 
 abbrev Heap := Array Obj
 
+/-- a runtime error's message before it has a place: LuaJIT's message for an operator on an operand (`i`, of the
+site's names; `none`, the callee), a bad argument to a builtin, or a value (a string or number) -/
+inductive Msg where
+  | op (what : String) (i : Option Nat) (tname : String)
+  | arg (narg : Nat) (msg : String)
+  | val (v : Val)
+  deriving Inhabited
+
 inductive Err where
   /-- a Lua error and its value -/
   | val (v : Val)
   | fuel
   /-- an effect the oracle does not answer -/
   | eff (name : String) (args : List Val)
+  /-- a runtime error to be reported in the frame `lvl` calls out from the one raising it (0: that frame, at its
+  innermost site; `Site`): LuaJIT adds `chunk:line:` there, or nothing if that frame is a builtin's -/
+  | rt (lvl : Nat) (m : Msg)
   deriving Inhabited
 
 abbrev M := EStateM Err Heap
@@ -64,6 +75,7 @@ structure Ctx where
   va : List Val
 
 def lstr (s : String) : Val := .str s.toList
+/-- an error of the semantics' own (a run outside what it models), not LuaJIT's -/
 def die {α} (msg : String) : M α := throw (.val (lstr msg))
 
 namespace Val
@@ -146,6 +158,65 @@ def next (t : Tbl) (k : Val) : Option (Option (Val × Val)) :=
   rest.map fun r => r.find? fun (_, v) => !v.isNil
 end Tbl
 
+-- ---------- runtime errors ----------
+
+/-- an error of the running instruction (index, call, an operator, a `for`), reported at its site -/
+def rtErr {α} (msg : String) : M α := throw (.rt 0 (.val (lstr msg)))
+/-- an operator's error on operand `i` (`none`: the callee) -/
+def opErr {α} (what : String) (i : Option Nat) (v : Val) : M α := throw (.rt 0 (.op what i v.typeName))
+/-- a builtin's error, reported where it was called from (lj_err_caller) -/
+def callerErr {α} (msg : String) : M α := throw (.rt 1 (.val (lstr msg)))
+/-- a builtin's bad argument (lj_err_arg): `narg` counts from 1 -/
+def argErr {α} (narg : Nat) (msg : String) : M α := throw (.rt 1 (.arg narg msg))
+
+namespace Msg
+/-- the message with no place: raised in a builtin, or reported in one -/
+def bare : Msg → Val
+  | .op what _ t => lstr s!"attempt to {what} a {t} value"
+  | .arg narg msg => lstr s!"bad argument #{narg} to '?' ({msg})"
+  | .val v => .str v.text
+
+/-- the message at site `s` (lj_debug_addloc; err_argmsg names the callee and counts a method's arguments from its
+self) -/
+def render (s : Site) : Msg → Val
+  | .op what i t =>
+    let (kind, x) := match i with | some i => s.names.getD i ("", "") | none => s.fn
+    if kind == "" then lstr s!"{s.src}:{s.line}: attempt to {what} a {t} value"
+    else lstr s!"{s.src}:{s.line}: attempt to {what} {kind} '{x}' (a {t} value)"
+  | .arg narg msg =>
+    let (kind, x) := s.fn
+    let x := if kind == "" then "?" else x
+    if kind == "method" then
+      if narg == 1 then lstr s!"{s.src}:{s.line}: calling '{x}' on bad self ({msg})"
+      else lstr s!"{s.src}:{s.line}: bad argument #{narg - 1} to '{x}' ({msg})"
+    else lstr s!"{s.src}:{s.line}: bad argument #{narg} to '{x}' ({msg})"
+  | .val v => .str (s!"{s.src}:{s.line}: ".toList ++ v.text)
+end Msg
+
+/-- the node at site `s`: an error of its own frame gets the place; a tail call's callee reports out of the frame
+the call replaces -/
+def atSite {α} (s : Site) (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.rt k msg) h =>
+    let k := if s.tail && (match msg with | .op .. => false | _ => true) then k + 1 else k
+    match k with
+    | 0 => .error (.val (msg.render s)) h
+    | k => .error (.rt k msg) h
+  | r => r
+
+/-- `m`, its errors reported at `s` if there is one -/
+def atSite? {α} : Option Site → M α → M α
+  | some s, m => atSite s m
+  | none, m => m
+
+/-- a call's frame: an error reported in it that no site took is in a builtin, so it has no place; the rest are
+one frame further out -/
+def frame {α} (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.rt 0 msg) h => .error (.val msg.bare) h
+  | .error (.rt (k + 1) msg) h => .error (.rt k msg) h
+  | r => r
+
 -- ---------- the heap ----------
 
 def getObj (a : Nat) : M Obj := do
@@ -176,9 +247,9 @@ def rawget (a : Nat) (k : Val) : M Val := do pure ((← getTbl a).get k)
 
 def rawset (a : Nat) (k v : Val) : M Unit := do
   match k with
-  | .nil => die "table index is nil"
+  | .nil => rtErr "table index is nil"
   | .num (.flt f) =>
-    if f.isNaN then die "table index is NaN" else
+    if f.isNaN then rtErr "table index is NaN" else
     -- an integral key is stored as an integer, -0 as 0
     let k := if f.floor == f && f.abs < 2147483648.0 then Val.num (.int (Num.floatToInt f)) else k
     putTbl a ((← getTbl a).set k v)
@@ -236,7 +307,7 @@ def arith (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   | _, _ => do
     noMeta [x, y] [match op with
       | .add => "__add" | .sub => "__sub" | .mul => "__mul" | .div => "__div" | .mod => "__mod" | _ => "__pow"]
-    die s!"attempt to perform arithmetic on a {(if x.toNum.isNone then x else y).typeName} value"
+    if x.toNum.isNone then opErr "perform arithmetic on" (some 0) x else opErr "perform arithmetic on" (some 1) y
 
 def less (x y : Val) (orEq : Bool) : M Bool :=
   match x, y with
@@ -245,7 +316,8 @@ def less (x y : Val) (orEq : Bool) : M Bool :=
   | _, _ => do
     -- LuaJIT looks for `__lt`/`__le` only on two values of one type
     if let (.tbl _, .tbl _) := (x, y) then noMeta [x, y] ["__lt", "__le"]
-    die s!"attempt to compare {x.typeName} with {y.typeName}"
+    if x.typeName == y.typeName then rtErr s!"attempt to compare two {x.typeName} values"
+    else rtErr s!"attempt to compare {x.typeName} with {y.typeName}"
 
 /-- `==`: two distinct tables may have `__eq` -/
 def eqv (x y : Val) : M Bool := do
@@ -271,7 +343,7 @@ def binop (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
     | some a, some b => pure (.str (a ++ b))
     | _, _ => do
       noMeta [x, y] ["__concat"]
-      die s!"attempt to concatenate a {(if (concatText x).isNone then x else y).typeName} value"
+      if (concatText x).isNone then opErr "concatenate" (some 0) x else opErr "concatenate" (some 1) y
   | op => arith tgt op x y
 
 def unop (op : UnOp) (x : Val) : M Val :=
@@ -281,25 +353,36 @@ def unop (op : UnOp) (x : Val) : M Val :=
     | some a => pure (.num a.neg)
     | none => do
       noMeta [x] ["__unm"]
-      die s!"attempt to perform arithmetic on a {x.typeName} value"
+      opErr "perform arithmetic on" (some 0) x
   -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT
   | .len => match x with
     | .str s => pure (.num (.int s.length))
     | .tbl a => do pure (.num (.int (← getTbl a).len))
-    | _ => die s!"attempt to get length of a {x.typeName} value"
+    | _ => opErr "get length of" (some 0) x
 
 -- ---------- arguments of builtins ----------
 
-def argStr (fname : String) (i : Nat) (args : List Val) : M (List Char) :=
+/-- an argument's type in lj_err_argtype: "no value" past the last -/
+def argType (i : Nat) (args : List Val) : String :=
+  if i < args.length then (args.getD i .nil).typeName else "no value"
+
+/-- lj_lib_checkany -/
+def anyArg (i : Nat) (args : List Val) : M Unit :=
+  if i < args.length then pure () else argErr (i + 1) "value expected"
+
+def badType {α} (what : String) (i : Nat) (args : List Val) : M α :=
+  argErr (i + 1) s!"{what} expected, got {argType i args}"
+
+def argStr (_fname : String) (i : Nat) (args : List Val) : M (List Char) :=
   match args.getD i .nil with
   | .str s => pure s
   | .num n => pure n.toText
-  | v => die s!"bad argument #{i + 1} to '{fname}' (string expected, got {v.typeName})"
+  | _ => badType "string" i args
 
-def argNum (fname : String) (i : Nat) (args : List Val) : M Num :=
+def argNum (_fname : String) (i : Nat) (args : List Val) : M Num :=
   match (args.getD i .nil).toNum with
   | some n => pure n
-  | none => die s!"bad argument #{i + 1} to '{fname}' (number expected, got {(args.getD i .nil).typeName})"
+  | none => badType "number" i args
 
 /-- the argument through a C cast to a `bits`-bit integer; a double outside that range (inf, NaN) stops the run:
 the cast is undefined in C and LuaJIT leaves it to the CPU (x86-64 gives the least integer) -/
@@ -320,15 +403,15 @@ def optInt (fname : String) (i : Nat) (args : List Val) (d : Int) : M Int :=
   | _ => argInt fname i args
 
 /-- a function (CHECK_func); an effect handle passes, the oracle answers its calls -/
-def argFn (fname : String) (i : Nat) (args : List Val) : M Val :=
+def argFn (_fname : String) (i : Nat) (args : List Val) : M Val :=
   match args.getD i .nil with
   | f@(.fn _) | f@(.prim ..) | f@(.eff _) => pure f
-  | v => die s!"bad argument #{i + 1} to '{fname}' (function expected, got {v.typeName})"
+  | _ => badType "function" i args
 
-def argTbl (fname : String) (i : Nat) (args : List Val) : M Nat :=
+def argTbl (_fname : String) (i : Nat) (args : List Val) : M Nat :=
   match args.getD i .nil with
   | .tbl a => pure a
-  | v => die s!"bad argument #{i + 1} to '{fname}' (table expected, got {v.typeName})"
+  | _ => badType "table" i args
 
 /-- a negative position counts from the end -/
 def posrelat (pos : Int) (len : Nat) : Int := if pos ≥ 0 then pos else len + pos + 1
@@ -362,6 +445,7 @@ def quoteStr (s : List Char) : List Char :=
 def hexDigits (n : Nat) (upper : Bool) : List Char :=
   (Nat.toDigits 16 n).map fun c => if upper then Pat.toLower c |> fun c => if 'a' ≤ c && c ≤ 'f' then Char.ofNat (c.toNat - 32) else c else c
 
+/-- string.format: `args` its arguments, the format the first (lj_strfmt_parse, lj_strfmt_putarg) -/
 def format (fmt : List Char) (args : List Val) : M (List Char) := do
   let rec go (f : List Char) (i : Nat) (fuel : Nat) : M (List Char) := do
     match fuel with
@@ -373,12 +457,14 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
     | '%' :: r =>
       let flags := r.takeWhile fun c => "-+ #0".toList.contains c
       let r := r.drop flags.length
-      let wd := r.takeWhile Num.isDigit
+      let wd := (r.takeWhile Num.isDigit).take 2
       let r := r.drop wd.length
       let (pr, r) := match r with
-        | '.' :: r => let p := r.takeWhile Num.isDigit; (some p, r.drop p.length)
+        | '.' :: r => let p := (r.takeWhile Num.isDigit).take 2; (some p, r.drop p.length)
         | r => (none, r)
-      if flags.length > 5 || wd.length > 2 || (pr.map (·.length)).getD 0 > 2 then die "invalid format (repeated flags)" else
+      let spec := '%' :: flags ++ wd ++ (match pr with | some p => '.' :: p | none => [])
+      let bad (c : List Char) : M (List Char) :=
+        callerErr s!"invalid option '{String.ofList (spec ++ c.filter (·.toNat ≥ 32))}' to 'format'"
       let toN (l : List Char) := l.foldl (fun a c => 10 * a + (c.toNat - '0'.toNat)) 0
       let w := toN wd
       let left := flags.contains '-'
@@ -387,8 +473,11 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
       let space := flags.contains ' '
       let alt := flags.contains '#'
       match r with
-      | [] => die "invalid option '%' to 'format'"
+      | [] => bad []
       | c :: r =>
+        if !"AEFGXacdefgiopqsux".toList.contains c then bad [c] else
+        if "Aaoup".toList.contains c then throw (.eff s!"string.format %{c}" []) else
+        if i ≥ args.length then argErr (i + 1) "value expected" else
         let arg := args.getD i .nil
         let fn := "format"
         let piece ← match c with
@@ -421,21 +510,14 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
               throw (.eff "lj_strfmt %f below 1e-150" [])
             let sign := if fl.isNaN then (if space then [' '] else []) else if Num.negative fl then ['-'] else if plus then ['+'] else if space then [' '] else []
             pure (pad left (zero && fl.isFinite) w sign body)
-          | 'q' => do
-            let s ← argStr fn i args
-            pure (quoteStr s)
-          | 's' => do
+          | 'q' => do noMeta [arg] ["__tostring"]; pure (quoteStr arg.text)
+          | _ => do
             noMeta [arg] ["__tostring"]
-            let s := match arg with
-              | .str s => s
-              | v => v.text
-            if (match arg with | .nil => decide (i ≥ args.length) | _ => false) then die s!"bad argument #{i + 2} to 'format' (no value)" else
-            let s := match pr with | some p => s.take (toN p) | none => s
+            let s := match pr with | some p => arg.text.take (toN p) | none => arg.text
             pure (pad left false w [] s)
-          | c => die s!"invalid option '%{c}' to 'format'"
         pure (piece ++ (← go r (i + 1) fuel))
     | c :: r => pure (c :: (← go r i fuel))
-  go fmt 0 (fmt.length + 1)
+  go fmt 1 (fmt.length + 1)
 
 -- ---------- builtins without callbacks ----------
 
@@ -455,12 +537,12 @@ def strFind (find : Bool) (args : List Val) : M (List Val) := do
     | some i => return [nums (i + 1), nums (i + p.length)]
     | none => return [.nil]
   match Pat.find s p init with
-  | .error e => die e
+  | .error e => callerErr e
   | .ok none => return [.nil]
   | .ok (some (st, e, caps)) =>
     let ms : Pat.MS := ⟨s.toArray, (if p.head? == some '^' then p.tail else p).toArray⟩
     match Pat.captures ms caps st e (!find) with
-    | .error e => die e
+    | .error e => callerErr e
     | .ok cs => return (if find then [nums (st + 1), nums e] else []) ++ capVals cs
 
 /-- one step of a gmatch iterator: the bound subject, pattern and a cell with the position -/
@@ -476,11 +558,11 @@ def gmatchStep (s p : List Char) (cell : Nat) : M (List Val) := do
     | k + 1 =>
       if src > s.length then pure [] else
       match Pat.doMatch ms fuel src 0 #[] with
-      | .error e => die e
+      | .error e => callerErr e
       | .ok (some (e, caps)) =>
         writeCell cell (.num (.int (if e == src then e + 1 else e)))
         match Pat.captures ms caps src e true with
-        | .error e => die e
+        | .error e => callerErr e
         | .ok cs => pure (capVals cs)
       | .ok none => go (src + 1) k
   go pos (s.length + 2)
@@ -562,10 +644,10 @@ def strFn (name : String) (args : List Val) : M (List Val) := do
     let mut r := []
     for i in [0:args.length] do
       let c ← argInt name i args
-      if c < 0 || c > 255 then die "bad argument to 'char' (invalid value)"
+      if c < 0 || c > 255 then argErr (i + 1) "invalid value"
       r := r ++ [Char.ofNat c.toNat]
     return [.str r]
-  | "format" => return [.str (← format (← argStr name 0 args) args.tail)]
+  | "format" => return [.str (← format (← argStr name 0 args) args)]
   | "find" => strFind true args
   | "match" => strFind false args
   | "gmatch" => do
@@ -609,7 +691,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
           i := i - 1
       rawset t (nums i) (args.getD 2 .nil)
       return []
-    | _ => die "wrong number of arguments to 'insert'"
+    | _ => callerErr "wrong number of arguments to 'insert'"
   | "remove" => do
     let t ← argTbl name 0 args
     let n := (← getTbl t).len
@@ -638,7 +720,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     for _ in [0:(j - i + 1).toNat] do
       match concatText (← rawget t (nums k)) with
       | some s => r := r ++ [s]
-      | none => die s!"invalid value (at index {k}) in table for 'concat'"
+      | none => callerErr s!"invalid value ({(← rawget t (nums k)).typeName}) at index {k} in table for 'concat'"
       k := k + 1
     return [.str (List.intercalate sep r)]
   | "maxn" => do
@@ -676,39 +758,37 @@ def unpackFn (args : List Val) : M (List Val) := do
   let i ← optInt "unpack" 1 args 1
   let j ← optInt "unpack" 2 args (← getTbl t).len
   -- lua_checkstack: the results and the arguments within LUAI_MAXCSTACK
-  if i ≤ j && j - i + 1 + args.length > 8000 then die "too many results to unpack"
+  if i ≤ j && j - i + 1 + args.length > 8000 then callerErr "too many results to unpack"
   (List.range (j - i + 1).toNat).mapM fun (k : Nat) => rawget t (nums (i + k))
 
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
-  | "type" => if args.isEmpty then die "bad argument #1 to 'type' (value expected)" else
-    return [lstr (args.headD .nil).typeName]
-  | "tostring" => do
-    if args.isEmpty then die "bad argument #1 to 'tostring' (value expected)"
-    noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
+  | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
+  | "tostring" => do anyArg 0 args; noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
   | "tonumber" => do
-    if args.isEmpty then die "bad argument #1 to 'tonumber' (value expected)"
     let b ← optInt "tonumber" 1 args 10
     if b == 10 then
+      anyArg 0 args
       match args.headD .nil with
       | .num n => return [.num n]
       | .str s => return [(Num.parse s).elim .nil .num]
       | _ => return [.nil]
-    let s ← argStr "tonumber" 0 args
-    if b < 2 || b > 36 then die "bad argument #2 to 'tonumber' (base out of range)"
-    if Num.binPrefix s b.toNat then throw (.eff "tonumber: 0b in base 2" [])
-    return [(Num.parseBase tgt s b.toNat).elim .nil .num]
-  | "ipairs" => do let t ← argTbl name 0 args; return [.prim "ipairs_it" [], .tbl t, .num (.int 0)]
+    else
+      let s ← argStr "tonumber" 0 args
+      if b < 2 || b > 36 then argErr 2 "base out of range"
+      if Num.binPrefix s b.toNat then throw (.eff "tonumber: 0b in base 2" [])
+      return [(Num.parseBase tgt s b.toNat).elim .nil .num]
+  | "ipairs" => do anyArg 0 args; let t ← argTbl name 0 args; return [.prim "ipairs_it" [], .tbl t, .num (.int 0)]
   | "ipairs_it" => do
     let t ← argTbl name 0 args
     let i ← argInt name 1 args
     let v ← rawget t (nums (i + 1))
     return if v.isNil then [.nil] else [nums (i + 1), v]
-  | "pairs" => do let t ← argTbl name 0 args; return [.prim "next" [], .tbl t, .nil]
+  | "pairs" => do anyArg 0 args; let t ← argTbl name 0 args; return [.prim "next" [], .tbl t, .nil]
   | "next" => do
     let t ← getTbl (← argTbl name 0 args)
     match t.next (args.getD 1 .nil) with
-    | none => die "invalid key to 'next'"
+    | none => rtErr "invalid key to 'next'"
     | some none => return [.nil]
     | some (some (k, v)) => return [k, v]
   | "select" => do
@@ -718,14 +798,16 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
       let n ← argInt "select" 0 args
       let rest := args.tail
       if n < 0 then
-        if -n > rest.length then die "bad argument #1 to 'select' (index out of range)"
+        if -n > rest.length then argErr 1 "index out of range"
         return rest.drop (rest.length - n.natAbs)
-      if n == 0 then die "bad argument #1 to 'select' (index out of range)"
+      if n == 0 then argErr 1 "index out of range"
       return rest.drop (n.toNat - 1)
   | "unpack" => unpackFn args
-  | "rawget" => do let t ← argTbl name 0 args; return [← rawget t (args.getD 1 .nil)]
-  | "rawset" => do let t ← argTbl name 0 args; rawset t (args.getD 1 .nil) (args.getD 2 .nil); return [.tbl t]
-  | "rawequal" => return [.bool ((args.getD 0 .nil).rawEq (args.getD 1 .nil))]
+  | "rawget" => do let t ← argTbl name 0 args; anyArg 1 args; return [← rawget t (args.getD 1 .nil)]
+  | "rawset" => do
+    let t ← argTbl name 0 args; anyArg 1 args; anyArg 2 args
+    rawset t (args.getD 1 .nil) (args.getD 2 .nil); return [.tbl t]
+  | "rawequal" => do anyArg 0 args; anyArg 1 args; return [.bool ((args.getD 0 .nil).rawEq (args.getD 1 .nil))]
   | "setmetatable" => do
     let t ← argTbl name 0 args
     let m ← match args.getD 1 .nil with
@@ -734,7 +816,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
         -- weak tables lose entries when the collector runs, which the semantics does not model
         if !((← getTbl m).get (lstr "__mode")).isNil then throw (.eff "metamethod __mode" [])
         pure (some m)
-      | _ => die "bad argument #2 to 'setmetatable' (nil or table expected)"
+      | _ => argErr 2 "nil or table expected"
     noMeta [.tbl t] ["__metatable"]
     -- globals are read and written raw (`getVar`), so _G takes no metatable
     if t == G then throw (.eff "setmetatable(_G)" [])
@@ -743,10 +825,19 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
   | "getmetatable" => match args.headD .nil with
     | .tbl t => do noMeta [.tbl t] ["__metatable"]; return [((← getTbl t).mt.map Val.tbl).getD .nil]
     | _ => return [.nil]
-  | "error" => throw (.val (args.headD .nil))
-  | "assert" =>
+  | "error" => do
+    -- a string or number gets the place of the function `level` calls out (1: error's caller)
+    let level ← optInt "error" 1 args 1
+    match args.headD .nil with
+    | v@(.str _) | v@(.num _) => if level > 0 then throw (.rt level.toNat (.val v)) else throw (.val v)
+    | v => throw (.val v)
+  | "assert" => do
+    anyArg 0 args
     if (args.headD .nil).truthy then return args
-    else throw (.val (match args.getD 1 .nil with | .nil => lstr "assertion failed!" | m => m))
+    else match args with
+      | [_] => callerErr "assertion failed!"
+      | _ :: m@(.str _) :: _ | _ :: m@(.num _) :: _ => throw (.rt 1 (.val (.str m.text)))
+      | _ => throw (.val (args.getLast?.getD .nil))
   | "gmatch_it" => match bound with
     | [.str s, .str p, .num (.int c)] => gmatchStep s p c.toNat
     | _ => die "bad gmatch iterator"
@@ -768,10 +859,14 @@ def labelAtEnd (b : Block) (l : String) : Bool :=
 
 def hasLabel (b : Block) (l : String) : Bool := b.any fun s => match s with | .label x => x == l | _ => false
 
+/-- pcall's catch: a runtime error reported in the builtin catching it has no place; one reported further out has
+the place of a call this one cannot see, so the run stops -/
 def catchVal {α} (x : M α) (ok : α → M β) (bad : Val → M β) : M β := fun h =>
   match x h with
   | .ok a h => ok a h
   | .error (.val v) h => bad v h
+  | .error (.rt 0 m) h => bad m.bare h
+  | .error (.rt (k + 1) _) h => .error (.eff s!"error level {k + 1} past a builtin" []) h
   | .error e h => .error e h
 
 /-- a replacement string: %0 the match, %1-%9 a capture, %x the character x -/
@@ -802,6 +897,7 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .num x => pure (.num x)
   | .str s => pure (.str s)
   | .vararg => pure (cx.va.headD .nil)
+  | .site s e => atSite s (eval n cx e)
   | .func ps va b => do pure (.fn (← alloc (.clo ⟨ps, va, b, cx.env⟩)))
   | .var x => getVar cx x
   | .index t k => do
@@ -839,6 +935,7 @@ def evalMulti (n : Nat) (cx : Ctx) (e : Exp) : M (List Val) :=
     let as ← evalList n cx args
     call n fv (ov :: as)
   | .vararg => pure cx.va
+  | .site s e => atSite s (evalMulti n cx e)
   | e => do pure [← eval n cx e]
 
 /-- an expression list: one value each, all of the last's -/
@@ -909,7 +1006,7 @@ def index (n : Nat) (o k : Val) : M Val :=
   | .eff name => match k with
     | .str s => pure (.eff (name ++ "." ++ String.ofList s))
     | _ => pure (.eff name)
-  | _ => die s!"attempt to index a {o.typeName} value"
+  | _ => opErr "index" (some 0) o
 
 def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   match n with
@@ -918,7 +1015,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   match f with
   | .fn a => do
     match ← getObj a with
-    | .clo c => do
+    | .clo c => frame do
       let cx ← bindLocals ⟨c.env, []⟩ c.params args
       let cx := { cx with va := if c.va then args.drop c.params.length else [] }
       match ← execBlock n cx c.body with
@@ -927,7 +1024,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
       | .brk => die "break outside a loop"
       | .goto l => die s!"no visible label '{l}' for goto"
     | _ => die "not a function"
-  | .prim name bound => callPrim n name bound args
+  | .prim name bound => frame (callPrim n name bound args)
   | .eff name => match oracle name args with
     | some vs => pure vs
     | none => throw (.eff name args)
@@ -935,8 +1032,8 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
     -- `__call`, which must be a function: LuaJIT follows no chain of them (lj_meta_call)
     match ← metaOf f "__call" with
     | h@(.fn _) | h@(.prim ..) => call n h (f :: args)
-    | _ => die "attempt to call a table value"
-  | v => die s!"attempt to call a {v.typeName} value"
+    | _ => opErr "call" none f
+  | v => opErr "call" none v
 
 def execBlock (n : Nat) (cx : Ctx) (b : Block) : M Flow :=
   match n with
@@ -990,7 +1087,7 @@ def execStat (n : Nat) (cx : Ctx) (s : Stat) : M Flow :=
   | .fornum v a b st body => do
     let num (x : Val) (what : String) : M Num := match x.toNum with
       | some x => pure x
-      | none => die s!"'for' {what} must be a number"
+      | none => rtErr s!"'for' {what} must be a number"
     let a ← num (← eval n cx a) "initial value"
     let b ← num (← eval n cx b) "limit"
     let st ← match st with
@@ -1006,24 +1103,30 @@ def execStat (n : Nat) (cx : Ctx) (s : Stat) : M Flow :=
   | .ret es => do pure (.ret (← evalList n cx es))
   | .brk => pure .brk
   | .goto l => pure (.goto l)
+  | .site s st => atSite s (execStat n cx st)
   | .label _ | .loc .. | .locfn .. => pure .norm
 
-/-- assignment targets, their table and key evaluated first: `none` is a name -/
-def places (n : Nat) (cx : Ctx) (ts : List Exp) : M (List (String ⊕ (Val × Val))) :=
+/-- assignment targets, their table and key evaluated first: `inl` is a name, `inr` a table write and where its
+errors are reported -/
+def places (n : Nat) (cx : Ctx) (ts : List Exp) : M (List (String ⊕ (Val × Val × Option Site))) :=
   match n with
   | 0 => throw .fuel
   | n + 1 =>
   match ts with
   | [] => pure []
   | .var x :: ts => do pure (.inl x :: (← places n cx ts))
+  | .site s (.index t k) :: ts => do
+    let tv ← eval n cx t
+    let kv ← eval n cx k
+    pure (.inr (tv, kv, some s) :: (← places n cx ts))
   | .index t k :: ts => do
     let tv ← eval n cx t
     let kv ← eval n cx k
-    pure (.inr (tv, kv) :: (← places n cx ts))
+    pure (.inr (tv, kv, none) :: (← places n cx ts))
   | _ :: _ => die "cannot assign"
 
 /-- the assignments, last first, as Lua 5.1 does them -/
-def assign (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List Val) : M Unit :=
+def assign (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val × Option Site))) (vs : List Val) : M Unit :=
   match n with
   | 0 => throw .fuel
   | n + 1 =>
@@ -1032,7 +1135,7 @@ def assign (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List
   | p :: ps => do
     match p with
     | .inl x => setVar cx x (vs.headD .nil)
-    | .inr (o, k) => setindex n o k (vs.headD .nil)
+    | .inr (o, k, s) => atSite? s (setindex n o k (vs.headD .nil))
     assign n cx ps vs.tail
 
 /-- o[k] = v, with `__newindex` (lj_meta_tset): a key with a value is set raw, else the metamethod, a function called
@@ -1048,7 +1151,7 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
     | .nil => rawset a k v
     | h@(.fn _) | h@(.prim ..) => do let _ ← call n h [o, k, v]
     | h => setindex n h k v
-  | _ => die s!"attempt to index a {o.typeName} value"
+  | _ => opErr "index" (some 0) o
 
 def whileLoop (n : Nat) (cx : Ctx) (c : Exp) (b : Block) : M Flow :=
   match n with
@@ -1080,11 +1183,19 @@ def numLoop (n : Nat) (cx : Ctx) (v : String) (i lim st : Num) (body : Block) : 
     | .brk => pure .norm
     | fl => pure fl
 
+/-- ITERC: its error for a value it cannot call names no operand -/
+def iterCall (n : Nat) (f s ctl : Val) : M (List Val) := do
+  let callable ← match f with
+    | .fn _ | .prim .. | .eff _ => pure true
+    | .tbl _ => do pure (match ← metaOf f "__call" with | .fn _ | .prim .. => true | _ => false)
+    | _ => pure false
+  if callable then call n f [s, ctl] else opErr "call" (some 0) f
+
 def inLoop (n : Nat) (cx : Ctx) (vs : List String) (f s ctl : Val) (body : Block) : M Flow :=
   match n with
   | 0 => throw .fuel
   | n + 1 => do
-    let rs ← call n f [s, ctl]
+    let rs ← iterCall n f s ctl
     let v1 := rs.headD .nil
     if v1.isNil then return .norm
     let cx' ← bindLocals cx vs rs
@@ -1099,9 +1210,15 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
   | 0 => throw .fuel
   | n + 1 =>
   match name with
-  | "pcall" => catchVal (call n (args.headD .nil) args.tail) (fun vs => pure (.bool true :: vs))
-      (fun e => pure [.bool false, e])
-  | "xpcall" => catchVal (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
+  | "pcall" => do
+    anyArg 0 args
+    catchVal (call n (args.headD .nil) args.tail) (fun vs => pure (.bool true :: vs)) (fun e => pure [.bool false, e])
+  | "xpcall" => do
+    anyArg 0 args
+    match args.getD 1 .nil with
+    | .fn _ | .prim .. => pure ()
+    | _ => badType "function" 1 args
+    catchVal (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
       (fun e => do pure [.bool false, (← call n (args.getD 1 .nil) [e]).headD .nil])
   | "require" => do
     let m ← argStr "require" 0 args
@@ -1132,6 +1249,9 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
   | "table.sort" => do
     let t ← argTbl "sort" 0 args
     let cmp := args.getD 1 .nil
+    match cmp with
+    | .nil | .fn _ | .prim .. => pure ()
+    | _ => badType "function" 1 args
     let len := (← getTbl t).len
     sortAux n t cmp 1 len
     pure []
@@ -1153,7 +1273,7 @@ def foreachK (n : Nat) (t : Nat) (f k : Val) : M (List Val) :=
   | 0 => throw .fuel
   | n + 1 => do
     match (← getTbl t).next k with
-    | none => die "invalid key to 'next'"
+    | none => rtErr "invalid key to 'next'"
     | some none => return []
     | some (some (k, v)) =>
       let r := (← call n f [k, v]).headD .nil
@@ -1221,7 +1341,7 @@ def sortUp (n : Nat) (t : Nat) (cmp p : Val) (u i : Int) : M Int :=
   | 0 => throw .fuel
   | n + 1 => do
     if ← lessThan n cmp (← rawget t (nums i)) p then
-      if i ≥ u then die "invalid order function for sorting"
+      if i ≥ u then callerErr "invalid order function for sorting"
       sortUp n t cmp p u (i + 1)
     else return i
 
@@ -1231,7 +1351,7 @@ def sortDown (n : Nat) (t : Nat) (cmp p : Val) (l j : Int) : M Int :=
   | 0 => throw .fuel
   | n + 1 => do
     if ← lessThan n cmp p (← rawget t (nums j)) then
-      if j ≤ l then die "invalid order function for sorting"
+      if j ≤ l then callerErr "invalid order function for sorting"
       sortDown n t cmp p l (j - 1)
     else return j
 
@@ -1245,7 +1365,7 @@ def gsub (n : Nat) (args : List Val) : M (List Val) :=
     let repl := args.getD 2 .nil
     match repl with
     | .str _ | .num _ | .tbl _ | .fn _ | .prim .. => pure ()
-    | _ => die "bad argument #3 to 'gsub' (string/function/table expected)"
+    | _ => argErr 3 "string/function/table expected"
     let maxS ← optInt "gsub" 3 args (s.length + 1)
     let anchor := p.head? == some '^'
     let ms : Pat.MS := ⟨s.toArray, (if anchor then p.tail else p).toArray⟩
@@ -1260,7 +1380,7 @@ def gsubGo (n : Nat) (ms : Pat.MS) (repl : Val) (anchor : Bool) (maxS : Int) (sr
     let rest := fun () => pure [Val.str (acc ++ (s.extract src s.size).toList), nums cnt]
     if !((cnt : Int) < maxS) then return ← rest ()
     let r ← match Pat.doMatch ms (Pat.fuelFor s.size ms.p.size) src 0 #[] with
-      | .error e => die e
+      | .error e => callerErr e
       | .ok r => pure r
     let (acc, cnt) ← match r with
       | some (e, caps) => do pure (acc ++ (← addValue n ms repl caps src e), cnt + 1)
@@ -1286,7 +1406,7 @@ def addValue (n : Nat) (ms : Pat.MS) (repl : Val) (caps : Array Pat.Cap) (s e : 
   | n + 1 => do
     let whole := (ms.s.extract s e).toList
     let cap (i : Nat) : M Val := match Pat.getCapture ms caps i s e with
-      | .error m => die m
+      | .error m => callerErr m
       | .ok (.str x) => pure (.str x)
       | .ok (.pos k) => pure (nums k)
     match repl with
@@ -1304,7 +1424,7 @@ def addValue (n : Nat) (ms : Pat.MS) (repl : Val) (caps : Array Pat.Cap) (s e : 
       | .nil | .bool false => pure whole
       | .str x => pure x
       | .num x => pure x.toText
-      | v => die s!"invalid replacement value (a {v.typeName})"
+      | v => callerErr s!"invalid replacement value (a {v.typeName})"
 end
 
 /-- a chunk run as a function of no arguments -/

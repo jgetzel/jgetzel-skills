@@ -7,7 +7,7 @@ open Lua Lua.Show
 
 def dump (name file : String) : IO Bool := do
   let bytes ← IO.FS.readBinFile file
-  match parseChunk (bytesOf bytes) with
+  match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln s!"{file}: {e}"; return false
   | .ok b =>
     IO.println s!"/-- {(System.FilePath.mk file).fileName.getD file}, parsed -/\ndef {name}Src : Block :={block b}\n-- checksum {name} {checksum bytes}\n"

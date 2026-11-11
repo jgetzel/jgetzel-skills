@@ -25,7 +25,7 @@ structure Sem where
   tgt : Target
 
 /-- what calling a closure does, once its address has been read (`call`'s `.fn` clause) -/
-def callClo (I : Sem) (n : Nat) (c : Clo) (args : List Val) : M (List Val) := do
+def callClo (I : Sem) (n : Nat) (c : Clo) (args : List Val) : M (List Val) := frame do
   let cx ← bindLocals ⟨c.env, []⟩ c.params args
   let cx := { cx with va := if c.va then args.drop c.params.length else [] }
   match ← execBlock I.srcs I.oracle I.tgt n cx c.body with
@@ -41,12 +41,12 @@ theorem call_fn (I : Sem) (n a : Nat) (args : List Val) (h : Heap) (c : Clo) (ha
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
 abbrev W := Nat → Val → M Unit
 
-/-- a table's field, through `__newindex` -/
-def wtbl (I : Sem) (tv kv : Val) : W := fun n v => setindex I.srcs I.oracle I.tgt n tv kv v
+/-- a table's field, through `__newindex`, its errors reported at `s` -/
+def wtbl (I : Sem) (s : Option Site) (tv kv : Val) : W := fun n v => atSite? s (setindex I.srcs I.oracle I.tgt n tv kv v)
 
-def writer (I : Sem) (cx : Ctx) : String ⊕ (Val × Val) → W
+def writer (I : Sem) (cx : Ctx) : String ⊕ (Val × Val × Option Site) → W
   | .inl x => fun _ => setVar cx x
-  | .inr (tv, kv) => wtbl I tv kv
+  | .inr (tv, kv, s) => wtbl I s tv kv
 
 /-- `assign`, with each target a writer -/
 def assignW : Nat → List W → List Val → M Unit
@@ -54,7 +54,7 @@ def assignW : Nat → List W → List Val → M Unit
   | _ + 1, [], _ => pure ()
   | n + 1, w :: ws, vs => do w n (vs.headD .nil); assignW n ws vs.tail
 
-theorem assign_writers (I : Sem) (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val))) (vs : List Val) :
+theorem assign_writers (I : Sem) (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Val × Val × Option Site))) (vs : List Val) :
     assign I.srcs I.oracle I.tgt n cx ps vs = assignW n (ps.map (writer I cx)) vs := by
   induction n generalizing ps vs with
   | zero => rw [assign]; rfl
@@ -62,7 +62,7 @@ theorem assign_writers (I : Sem) (n : Nat) (cx : Ctx) (ps : List (String ⊕ (Va
     rcases ps with _ | ⟨p, ps⟩
     · rw [assign]; rfl
     · rw [assign.eq_def]; simp only [List.map_cons, assignW, ← ih]
-      rcases p with x | ⟨tv, kv⟩ <;> rfl
+      rcases p with x | ⟨tv, kv, s⟩ <;> rfl
 
 /-- the labels ending a block, and all its labels: what a `goto` out of one of its statements does -/
 def trail (b : Block) : List String :=
@@ -99,6 +99,8 @@ def eIndex (I : Sem) (t k : SE) : SE := fun n => tick n fun n => do
   let tv ← t n
   let kv ← k n
   index I.srcs I.oracle I.tgt n tv kv
+/-- `e`, its errors reported at `s` -/
+def eSite (s : Site) (e : SE) : SE := fun n => tick n fun n => atSite s (e n)
 /-- a call's first value -/
 def eFirst (m : SM) : SE := fun n => tick n fun n => do pure ((← m n).headD .nil)
 def eParen (e : SE) : SE := fun n => tick n fun n => e n
@@ -133,6 +135,7 @@ def mMethod (I : Sem) (o : SE) (m : String) (as : SM) : SM := fun n => tick n fu
   let fv ← index I.srcs I.oracle I.tgt n ov (.str m.toList)
   let as ← as n
   call I.srcs I.oracle I.tgt n fv (ov :: as)
+def mSite (s : Site) (m : SM) : SM := fun n => tick n fun n => atSite s (m n)
 def mVa (va : List Val) : SM := fun n => tick n fun _ => pure va
 def mOne (e : SE) : SM := fun n => tick n fun n => do pure [← e n]
 
@@ -164,10 +167,11 @@ def fKeyed (k e : SE) (fs : Nat → SM) : Nat → SM := fun t n => tick n fun n 
 abbrev SP := Nat → M (List W)
 def pNil : SP := fun n => tick n fun _ => pure []
 def pVar (w : W) (ps : SP) : SP := fun n => tick n fun n => do pure (w :: (← ps n))
-def pIndex (I : Sem) (t k : SE) (ps : SP) : SP := fun n => tick n fun n => do
+/-- a table's field, `s` where its errors are reported -/
+def pIndex (I : Sem) (s : Option Site) (t k : SE) (ps : SP) : SP := fun n => tick n fun n => do
   let tv ← t n
   let kv ← k n
-  pure (wtbl I tv kv :: (← ps n))
+  pure (wtbl I s tv kv :: (← ps n))
 /-- a local's cell, or a global -/
 def wCell (c : Nat) : W := fun _ => writeCell c
 def wGlob (x : String) : W := fun _ => rawset G (lstr x)
@@ -212,7 +216,7 @@ def numL (body : Nat → SB) : Nat → Num → Num → Num → M Flow
     | fl => pure fl
 def forNum (x : Val) (what : String) : M Num := match x.toNum with
   | some x => pure x
-  | none => die s!"'for' {what} must be a number"
+  | none => rtErr s!"'for' {what} must be a number"
 def sForNum (a b : SE) (st : Option SE) (body : Nat → SB) : SB := fun n => tick n fun n => do
   let a ← forNum (← a n) "initial value"
   let b ← forNum (← b n) "limit"
@@ -226,7 +230,7 @@ def sForNum (a b : SE) (st : Option SE) (body : Nat → SB) : SB := fun n => tic
 def inL (I : Sem) (body : Nat → List Val → M Flow) : Nat → Val → Val → Val → M Flow
   | 0, _, _, _ => throw .fuel
   | n + 1, f, s, ctl => do
-    let rs ← call I.srcs I.oracle I.tgt n f [s, ctl]
+    let rs ← iterCall I.srcs I.oracle I.tgt n f s ctl
     let v1 := rs.headD .nil
     if v1.isNil then return .norm
     match ← body n rs with
@@ -237,6 +241,7 @@ def sForIn (I : Sem) (es : SM) (body : Nat → List Val → M Flow) : SB := fun 
   let r ← es n
   inL I body n (r.getD 0 .nil) (r.getD 1 .nil) (r.getD 2 .nil)
 def sReturn (es : SM) : SB := fun n => tick n fun n => do pure (.ret (← es n))
+def sSite (s : Site) (b : SB) : SB := fun n => tick n fun n => atSite s (b n)
 def sBreak : SB := fun n => tick n fun _ => pure .brk
 def sGoto (l : String) : SB := fun n => tick n fun _ => pure (.goto l)
 def sLabel : SB := fun n => tick n fun _ => pure .norm
@@ -276,7 +281,7 @@ def qStat (s : SB) (g : String → M Flow) (q : SB) : SB := fun n => tick n fun 
   | fl => pure fl
 
 /-- a function: `k args n` binds the parameters to `args` and runs the body at fuel `n` -/
-def fn (k : List Val → Nat → List Val → M Flow) : List Val → Nat → M (List Val) := fun args n => do
+def fn (k : List Val → Nat → List Val → M Flow) : List Val → Nat → M (List Val) := fun args n => frame do
   match ← k args n args with
   | .ret vs => pure vs
   | .norm => pure []
@@ -329,6 +334,8 @@ theorem CE_method {cx o x as m} (h : CM I m cx (.method o x as)) : CE I (eFirst 
   intro n; cases n <;> rw [eval] <;> simp [eFirst, tick, h]
 theorem CE_paren {cx e s} (h : CE I s cx e) : CE I (eParen s) cx (.paren e) := by
   intro n; cases n <;> rw [eval] <;> simp [eParen, tick, h]
+theorem CE_site {cx st e s} (h : CE I s cx e) : CE I (eSite st s) cx (.site st e) := by
+  intro n; cases n <;> rw [eval] <;> simp [eSite, tick, h]
 theorem CE_and {cx a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eAnd sa sb) cx (.and a b) := by
   intro n; cases n <;> rw [eval] <;> simp [eAnd, tick, ha, hb]
 theorem CE_or {cx a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eOr sa sb) cx (.or a b) := by
@@ -349,9 +356,11 @@ theorem CM_method {cx o m as so sl} (ho : CE I so cx o) (hl : CL I sl cx as) :
     CM I (mMethod I so m sl) cx (.method o m as) := by
   intro n; cases n <;> rw [evalMulti] <;> simp [mMethod, tick, ho, hl]
 theorem CM_va {cx va} (h : va = cx.va) : CM I (mVa va) cx .vararg := by subst h; intro n; cases n <;> rw [evalMulti] <;> rfl
+theorem CM_site {cx st e m} (h : CM I m cx e) : CM I (mSite st m) cx (.site st e) := by
+  intro n; cases n <;> rw [evalMulti] <;> simp [mSite, tick, h]
 /-- an expression of one value: not a call, a method call or `...` -/
 def Exp.single : Exp → Bool
-  | .call .. | .method .. | .vararg => false
+  | .call .. | .method .. | .vararg | .site .. => false
   | _ => true
 theorem CM_one {cx e s} (he : e.single = true) (h : CE I s cx e) : CM I (mOne s) cx e := by
   intro n; cases n with
@@ -388,7 +397,12 @@ theorem CP_var {cx x ts w ps} (hw : w = fun _ => setVar cx x) (hp : CP I ps cx t
   | zero => rw [places]; rfl
   | succ n => rw [places]; simp [pVar, tick, hp, hw, writer]
 theorem CP_index {cx t k ts st sk ps} (ht : CE I st cx t) (hk : CE I sk cx k) (hp : CP I ps cx ts) :
-    CP I (pIndex I st sk ps) cx (.index t k :: ts) := by
+    CP I (pIndex I none st sk ps) cx (.index t k :: ts) := by
+  intro n; cases n with
+  | zero => rw [places]; rfl
+  | succ n => rw [places]; simp [pIndex, tick, ht, hk, hp, writer]
+theorem CP_site {cx s t k ts st sk ps} (ht : CE I st cx t) (hk : CE I sk cx k) (hp : CP I ps cx ts) :
+    CP I (pIndex I (some s) st sk ps) cx (.site s (.index t k) :: ts) := by
   intro n; cases n with
   | zero => rw [places]; rfl
   | succ n => rw [places]; simp [pIndex, tick, ht, hk, hp, writer]
@@ -454,6 +468,8 @@ theorem CS_return {cx es s} (h : CL I s cx es) : CS I (sReturn s) cx (.ret es) :
 theorem CS_break {cx} : CS I sBreak cx .brk := by intro n; cases n <;> rw [execStat] <;> rfl
 theorem CS_goto {cx l} : CS I (sGoto l) cx (.goto l) := by intro n; cases n <;> rw [execStat] <;> rfl
 theorem CS_label {cx l} : CS I sLabel cx (.label l) := by intro n; cases n <;> rw [execStat] <;> rfl
+theorem CS_site {cx st s b} (h : CS I b cx s) : CS I (sSite st b) cx (.site st s) := by
+  intro n; cases n <;> rw [execStat] <;> simp [sSite, tick, h]
 
 -- blocks
 theorem CK_block {cx b q} (h : CQ I q cx b b none) : CK I (block q) cx b := by

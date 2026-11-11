@@ -36,6 +36,16 @@ theorem RunP.succ {m : Nat → M α} (r : RunP (fun n => m (n + 1)) h P) : RunP 
   obtain ⟨N, a, h', e, p⟩ := r
   exact ⟨N + 1, a, h', fun n hn => by obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩; exact e k (by omega), p⟩
 
+/-- a site changes only where an error is reported: a run that returns is the same run -/
+theorem RunP.site {s : Site} (r : RunP m h P) : RunP (fun n => atSite s (m n)) h P := by
+  obtain ⟨N, a, h', e, p⟩ := r
+  exact ⟨N, a, h', fun n hn => by simp only [atSite, e n hn], p⟩
+
+/-- and so does a call's frame -/
+theorem RunP.frame (r : RunP m h P) : RunP (fun n => frame (m n)) h P := by
+  obtain ⟨N, a, h', e, p⟩ := r
+  exact ⟨N, a, h', fun n hn => by simp only [Lua.frame, e n hn], p⟩
+
 theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P) : RunP m' h P := by
   have : m = m' := funext e
   subst this; exact r

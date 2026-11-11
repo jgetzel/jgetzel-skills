@@ -2,7 +2,7 @@ import LuaLean.Interp
 import LuaLean.Parse
 
 /-! Running a chunk the way `test/luasem.lua` runs it under LuaJIT, and its results as text both sides write alike:
-`ok:` and each value, or `error`. -/
+`ok:` and each value, or `error:` and the error's value. A chunk is named `c`, as `loadstring(src, "=c")` names it. -/
 
 namespace Lua
 
@@ -40,17 +40,19 @@ def ser (h : Heap) (fuel : Nat) (path : List Nat) (v : Val) : List Char :=
 def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   match r with
   | .ok vs h => "ok:" ++ String.ofList (List.intercalate [','] (vs.map (ser h 100 [])))
-  | .error (.val _) _ => "error"
+  | .error (.val v) h => "error:" ++ String.ofList (ser h 100 [] v)
+  | .error (.rt 0 m) h => "error:" ++ String.ofList (ser h 100 [] m.bare)
+  | .error (.rt k _) _ => s!"effect error level {k} past the chunk"
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
 
-/-- every module under dir as source: `pfx.x` is dir/x.lua -/
+/-- every module under dir as source: `pfx.x` is dir/x.lua, named by that path in its error messages -/
 def loadSources (dir : System.FilePath) (pfx : String) : IO (List (String × Block)) := do
   let mut r := []
   for e in ← dir.readDir do
     if e.fileName.endsWith ".lua" then
       let b ← IO.FS.readBinFile e.path
-      match parseChunk (bytesOf b) with
+      match parseChunk (bytesOf b) e.path.toString with
       | .ok blk => r := (pfx ++ "." ++ (e.fileName.take (e.fileName.length - 4)).toString, blk) :: r
       | .error err => throw (IO.userError s!"{e.path}: {err}")
   return r
@@ -66,7 +68,7 @@ def FUEL : Nat := 100000
 /-- the chunk's results on target `tgt`: the modules `mods` loaded first (effects opaque), then the chunk (no
 effects) -/
 def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String) (src : List Char) : String :=
-  match parseChunk src with
+  match parseChunk src "c" with
   | .error e => s!"parse error: {e}"
   | .ok b =>
     let pre : M Unit := mods.forM fun m => do

@@ -1,5 +1,5 @@
 -- What is compared with the Lean interpreter (LuaLean/Run.lean): a chunk's results
--- as text, `ok:` and each value, or `error`. Strings: bytes 32..126 but " and \ as themselves, the rest \ddd;
+-- as text, `ok:` and each value, or `error:` and the error's value. Strings: bytes 32..126 but " and \ as themselves, the rest \ddd;
 -- numbers %.17g; a table's entries sorted; one already on the path <cycle>.
 local M = {}
 
@@ -31,7 +31,7 @@ local function ser(v, path, depth)
 end
 
 function M.outcome(ok, ...)
-  if not ok then return "error" end
+  if not ok then return "error:" .. ser((...), {}, 0) end
   local r = {}
   for i = 1, select("#", ...) do r[i] = ser((select(i, ...)), {}, 0) end
   return "ok:" .. table.concat(r, ",")
@@ -55,7 +55,7 @@ function M.check(file)
   for i, k in ipairs(cases) do
     local got, want = M.run(k.src), M.target == "single" and k.single or k.out
     if got ~= want then bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, want) end
-    if k.out == "error" then errs = errs + 1 end
+    if k.out:match("^error:") then errs = errs + 1 end
   end
   if #bad > 0 then
     error(("%d of %d cases differ; the first:\n%s"):format(#bad, #cases, table.concat(bad, "\n", 1, math.min(3, #bad))), 0)
