@@ -50,6 +50,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`; a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
+| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`), and the gap `keeps_gap` |
+| `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
@@ -65,6 +67,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
 | `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
 | `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
+| `decide.json.gz` | 3000 cases each of keeps, fate and wakes (seed 27) the Lua suite checks |
+| `../lua/test/decide_model_spec.lua` | watchd.keeps, watchd.fate and msgs.wakes against Decide.lean's on each case |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `../lua/test/sql_model_spec.lua` | each case through db.lua on real sqlite, against Sql.lean's answer; and the cases' statements are exactly the inventory's |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
@@ -480,6 +484,56 @@ fnmatch's: no `[:alpha:]`, no escapes inside a class; locks.lua no longer calls 
 pattern alike. Before the fix (the model with `lockForms` off against the Lua before it, 9000 cases): overlaps agreed
 on all but 2, where the old Lua asked fnmatch about a class fnmatch reads otherwise (`[^]`, `[]\]`); covers agreed on
 every tame pattern and differed on 225 untame ones (fnmatch's escapes and brackets against the tokens').
+
+**Lifted, the decisions** (board #27, rung 3): `Decide.lean` writes three of the Lua's decisions line for line on the
+row columns they read, and proves each the model's on its view of the state. For it the Lua's inline decisions became
+functions, unchanged in behaviour (the callers make the same reads, each only when the decision needs it):
+`watchd.keeps(o, bg, live_addrs)`, reap's test of a lapsed claim's owner; `watchd.fate(a, t, x, has_terms, f)`,
+lifecycle's verdict on a live agent (kept, `unclean`, `reuse`, `end`; `f` holds its reads as callbacks); and
+`msgs.wakes(rows, cold)`, the waiter's. A read through a callback (`f.claims()`, `f.unlanded()`, `cold()`) is a `Bool` in
+Lean: what it returns is the SQL's or git's (rung 4, `Env.lean`). Proved: `keeps_lifted` (on the current `Cfg`, the
+row's `keeps` is the model's `keeps`), `fate_lifted` (with no hc terminals, as the replay, and `bgLives` on, the verdict is the
+model's `idleFree`, `unlanded`, the background job, `reusable` in that order; `fate_end` and `fate_reuse`: `end` is `ends`, `reuse` is `reusable`),
+and `wakes_lifted` (the waiter wakes exactly when `wakes`: the model has no notices, which never wake). The view: a slot's
+status by its `ASt`, `aged` as idle 120 s, `big` as a context of SMALL_CTX (40k) or more, `waiter` as a live waiter pid
+(`Env.waiter_alive`), a slot's hc address its number, live unless `dead`. `decide_model_spec.lua` checks the Lua against
+Lean on the 3000 committed cases of each (seed 27) and on 3000 fresh ones per `replay.sh`; mutating any one of
+fate's pool test, keeps' bg clause, fate's terminal-status test or wakes' urgent clause fails it.
+
+What the lift found, each now a board task: reap's keep test reads the owner's terminal and the model's doesn't
+(`keeps_gap`, #46): a working or prompt-blocked owner whose bound terminal hc no longer lists has its lapsed claim
+reopened as a lease reap (a released message, `reaped_from` set) before the same reap ends it, where the model keeps the
+claim until `reapGone` releases it with no message; `keeps_lifted` takes the case's absence as a hypothesis. The model's
+one `big` bit is two thresholds in the Lua (#47): CTX_WARN (350k) for `task claim`'s fence, SMALL_CTX (40k) for
+lifecycle's reuse and the cold rule, so an agent between the two (claims freely, never reused) is not modelled;
+`fate_lifted` reads `big` as the second. Still to lift: `tasks.dep_path` against `reaches` (#45, a DFS with a seen set
+against iterated expansion) and `conflict.owned_wts`' name matching against `owns` (#48).
+
+The inventory, every function in `swarm/lua/swarm` by what it decides. Pure, with a counterpart in the model: locks.lua's
+`tokens`, `covers`, `overlaps` (`Glob.lean`, #26); `watchd.keeps`, `watchd.fate`, `msgs.wakes` (here); `tasks.dep_path`'s
+search (#45); `conflict.owned_wts` without a db (#48); `tasks.deps_of`, the `deps` column as a list (the model's
+`Task.deps` is the list); `watchd.inside`, a path in a worktree (`Env.cwds_proc`). Pure, with nothing in the model to be
+equal to: `msgs.capped` and `deliver`'s pick (the 9000-character budget), `fmt_msgs`, `peer_note`; `tasks.event_task`,
+`task_timing`; `agents.one_line`, `hook.ctx_advice`; machine.lua's `ps_secs`, `parse_ps`, `parse_lsof`, `darwin_mem`,
+`pressure_high`, `machine_line`, `claude_pid`, `proc_cmd`; conflict.lua's `edits`, `clash`, `real_hunk`, and difflib;
+`cost.key`, `shell_cmd`, `median`; `run.parse_probe`; util.lua. Impure, the decision made by the SQL it runs (rung 4's
+input), with the model's counterpart: `task claim`, `tasks.undone` (`select * from task where id in (..) and
+state!='done'`) and the write `update task set state='claimed', .. where id=? and state='open' and not exists (select 1
+from task d where d.state!='done' and ','||task.deps||',' like '%,'||d.id||',%')` (`claim`, `claimChecksDeps`), and the
+fence `ctx >= CTX_WARN and not reaped_from` (`reaped_from`: the last claim or spawn event and a `reap` event; `fenced`);
+`tasks.pool` (the same `not exists`, `order by title like 'main red: %' desc, id`; `pool`); `msgs.unread` and `take`
+(`id>cursor and frm!=name and (dest=name or dest='@all')`, the cursor moved `where last_msg_id=from`; `unread`,
+`deliverCas`); `watchd.reap` (`state='claimed' and lease_until<t`, the reopen `where id=? and owner=? and state='claimed'
+and lease_until<t`; `delete from lock where path=? and agent=? and lease_until<t`; `update agent set ended=.. where
+name=? and hc=? and ended is null`: `reapTask`, `reapLocks`, `reapGone`); `agents._release` (`releaseAll`); fate's reads
+(`select 1 from task where owner=? and state in ('claimed','blocked')`: `holds`; `select 1 from lock where agent=?`:
+`lockHeld`; the `digest` events and `unread`: `told` and passed over; `watchd.unlanded`: `unlanded`, through git);
+`bases.of_agent` (`select base from task where owner=?`: `abases`) and `protected` (`select distinct base from task where
+base is not null`: `pbases`); `swarm lock` (`refuses` over the held rows); `auto_spawn` (live members against meta
+`agent_min`: `spawnFor`); `task after` (`dep_path` over `c:one`: `reaches`); `sweep_worktrees` (`Real.sweepGate`);
+`conflict.wt_map` (agent.wt, the `workspace` rows, the branch name: `wtmap`); `agents.cold_reason` (`hc get` for a
+session's last turn: the model's `cold`). The rest (ci.lua, cost.lua, run.lua, machine.lua's readers, state.lua, hook.lua's
+writers, `watchd.quiet`, `hung`, `unclean`, `ensure_comms`) is outside the model (*Not modelled*).
 
 **Lua semantics** (board #28, rung 4): `SwarmModel/Lua` is an executable semantics of the Lua subset `swarm/lua/swarm`
 is written in: tables with `__index` classes, closures with shared upvalues (every local is a heap cell), varargs,
