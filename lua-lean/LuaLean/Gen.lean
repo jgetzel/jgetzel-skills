@@ -270,7 +270,8 @@ def rangeXs : List String :=
   ["2^31", "-2^31 - 1", "2^32 + 65", "2^63", "2^64", "-2^63", "1e300", "1/0", "-1/0", "0/0", "2^53"]
 def rangeCalls : List String :=
   ["(\"%d\"):format(x)", "(\"%x\"):format(x)", "(\"%c\"):format(x)", "(\"abcdef\"):sub(x)", "(\"abcdef\"):sub(2, x)",
-   "select(x, \"a\", \"b\")", "(\"x\"):rep(x)", "string.char(x)", "(\"abc\"):byte(x)"]
+   "select(x, \"a\", \"b\")", "(\"x\"):rep(x)", "string.char(x)", "(\"abc\"):byte(x)", "math.ldexp(1, x)",
+   "tonumber(\"1\", x)", "table.move({}, 1, x, 1)"]
 def rangeChunk (x call : String) : String := s!"local x = {x}\nreturn pcall(function() return {call} end)"
 
 -- in range only: `%d` and `%x` (int64) of a value up to 2^63 in magnitude
@@ -278,9 +279,51 @@ def rangeChunk (x call : String) : String := s!"local x = {x}\nreturn pcall(func
   (runCase (fun _ => none) .dual [] (rangeChunk x c).toList).startsWith "effect" ==
     !((c.startsWith "(\"%d" || c.startsWith "(\"%x") && ["2^31", "-2^31 - 1", "2^32 + 65", "-2^63", "2^53"].contains x)
 
+/-- the rest of the libraries: math's libm functions through `%.12g` (libms differ in the last bits, and the
+committed cases run on three), its exact ones as they are; table.move, foreach, foreachi, getn, new and clear;
+tonumber with a base, select and tostring at their corners -/
+def libs : G String := do
+  let n : G String := pick ["0", "-0.0", "1", "-1", "0.5", "-2.5", "3", "7", "1e300", "5e-324", "2^53", "0/0", "1/0",
+    "-1/0", "\"4\"", "100", "-7.25", "1e-310", "2^-1074 * 3", "6"]
+  let x ← n
+  let y ← n
+  let f1 ← pick ["exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "sqrt"]
+  let f2 ← pick ["pow", "atan2", "log"]
+  let e ← pick ["0", "1", "-1", "1.5", "-1.5", "52", "-1074", "1023", "1024", "-2000", "\"3\""]
+  let tn ← (List.range 3).mapM fun _ => do
+    pure s!"P(tonumber, {q (← str "-+ 0xX19afzAZ" 5)}, {← pick ["2", "8", "10", "16", "36", "10.5", "\"16\"", "1", "37", "nil"]})"
+  let tn2 ← pick ["\"ffffffffffffffffffff\", 16", "\"-0\", 16", "\"-80000000\", 16", "\"7fffffff\", 16",
+    "\"80000000\", 16", "\"1e5\", 10", "\" 0x1F \", 16", "\"-0x10\", 16", "\"+12\", 8", "15, 16", "\"0x\", 16",
+    "\"zz\", 36", "\"- 1\", 10", "\"1\\t\", 2"]
+  let elems ← (List.range ((← rnd 5) + 1)).mapM fun _ => pick ["1", "2", "\"a\"", "false", "3.5"]
+  let el := commas elems
+  let ix : G String := pick ["1", "2", "3", "0", "-1", "1.5", "\"2\"", "5", "-1.5", "2.5", "\" 3.5 \"", "4"]
+  let mv ← (List.range 2).mapM fun _ => do pure s!"{← ix}, {← ix}, {← ix}"
+  let sel ← pick ["\"#x\"", "\"#\"", "-1", "-3", "2.5", "\"2\"", "4", "-4", "0"]
+  let un ← pick ["1, 7997", "1, 7998", "1, 7996, nil", "-3996, 4000", "5, 1"]
+  return helper ++ s!"local x, y = {x}, {y}
+local function g(v) return (\"%.12g\"):format(v) end
+local t = \{{el}}
+local acc = \{}
+local r1 = P(table.foreachi, t, function(i, v) acc[#acc + 1] = i; if v == false then return \"stop\", 2 end end)
+local r2 = P(table.foreach, \{{el}}, function(k, v) acc[#acc + 1] = v; if v == 2 then return k end end)
+local n0 = table.getn(t)
+local m1 = P(table.move, t, {mv.getD 0 ""})
+local m2 = P(table.move, \{{el}}, {mv.getD 1 ""}, \{9})
+local rm = \{{el}}
+local r3 = P(table.remove, rm, {← ix})
+local new, clear = require(\"table.new\"), require(\"table.clear\")
+local z = new(4, 2); z[1] = x; z.k = y
+local w = setmetatable(\{1, 2, k = 3}, \{}); clear(w)
+return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)), g(math.log(x)) end),
+  P(function() return math.fmod(x, y), math.modf(x), math.frexp(y) end), P(math.ldexp, x, {e}), P(math.deg, x),
+  P(math.rad, y), math.pi, P(math.fmod, y, x), P(math.modf, y), {commas tn}, P(tonumber, {tn2}), r1, r2, acc, n0, m1, m2, r3, rm,
+  table.new == new, table.clear == clear, z, w, getmetatable(w) ~= nil, P(tostring), P(tonumber), P(tostring, nil),
+  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
+
 /-- one of the chunks above -/
 def chunk : G String := do
-  match ← rnd 10 with
+  match ← rnd 11 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -289,6 +332,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => metas
+  | 10 => libs
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs`) and their results, to `file` -/

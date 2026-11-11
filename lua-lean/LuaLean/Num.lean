@@ -230,6 +230,30 @@ def ofRatio (num den : Nat) : Float :=
     let v := q k
     (Float.ofNat v).scaleB (-k)
 
+/-- C's fmod: x minus y times the truncated quotient, exact, with x's sign -/
+def fmodC (x y : Float) : Float :=
+  if x.isNaN || y.isNaN || !x.isFinite || y == 0 then 0.0 / 0.0
+  else if !y.isFinite || x == 0 then x
+  else
+    let (nx, dx) := ratio x
+    let (ny, dy) := ratio y
+    let d := max dx dy
+    let m := ofRatio ((nx * (d / dx)) % (ny * (d / dy))) d
+    if x < 0 then -m else m
+
+/-- C's modf: the integral part, truncated, and the rest, both with x's sign -/
+def modfC (x : Float) : Float × Float :=
+  if x.isNaN then (x, x) else
+  let z : Float := if x < 0 || isNegZero x then -0.0 else 0.0
+  if !x.isFinite then (x, z) else
+  let i := if x < 0 then -(-x).floor else x.floor
+  let r := x - i
+  (i, if r == 0 then z else r)
+
+/-- C's frexp: m in [0.5, 1) and e with x = m * 2^e; 0, inf and NaN with 0 -/
+def frexpC (x : Float) : Float × Int :=
+  if x == 0 || !x.isFinite then (x, 0) else x.frExp
+
 def isSpace (c : Char) : Bool := c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
 def isDigit (c : Char) : Bool := '0' ≤ c && c ≤ '9'
 def hexVal (c : Char) : Option Nat :=
@@ -316,12 +340,30 @@ def parse (s : List Char) : Option Num :=
   | some (f, r) => if r.all isSpace then some (narrow (if neg then -f else f)) else none
   | none => none
 
-/-- tonumber(s, base) for a base other than 10 -/
-def parseBase (s : List Char) (b : Nat) : Option Num :=
+/-- the digits tonumber(s, base) hands strtoul: blanks around, then one sign (true: `-`) -/
+def baseDigits (s : List Char) : Bool × List Char :=
   let s := (s.dropWhile isSpace).reverse.dropWhile isSpace |>.reverse
-  let (neg, s) := match s with | '-' :: r => (true, r) | r => (false, r)
-  let (v, n, r) := spanDigits b (s.map lower) 0 0
-  if n == 0 || !r.isEmpty then none else some (narrow (Float.ofInt (if neg then -(v : Int) else v)))
+  match s with | '-' :: r => (true, r) | '+' :: r => (false, r) | r => (false, r)
+
+/-- base 2 and a `0b` prefix before a binary digit, which glibc 2.38's strtoul reads (C23) and older C libraries
+do not: the semantics stops the run there -/
+def binPrefix (s : List Char) (b : Nat) : Bool :=
+  b == 2 && match (baseDigits s).2 with | '0' :: c :: d :: _ => (c == 'b' || c == 'B') && (d == '0' || d == '1') | _ => false
+
+/-- tonumber(s, base) for a base other than 10, as lib_base.c does it: strtoul on the digits (base 16 may start
+`0x`), saturated at 2^64 - 1, then the sign; dual-number keeps an integer below 2^31 (-2^31 negated), single-number a
+double (so `-0` is -0) -/
+def parseBase (tgt : Target) (s : List Char) (b : Nat) : Option Num :=
+  let (neg, s) := baseDigits s
+  let s := s.map lower
+  let s := match s with
+    | '0' :: 'x' :: d :: r => if b == 16 && (digitVal d).any (· < 16) then d :: r else s
+    | s => s
+  let (v, n, r) := spanDigits b s 0 0
+  if n == 0 || !r.isEmpty then none else
+  let v := min v (2 ^ 64 - 1)
+  if tgt == .dual && v < 2 ^ 31 + (if neg then 1 else 0) then some (.int (if neg then -(v : Int) else v))
+  else let f := ofRatio v 1; some (.flt (if neg then -f else f))
 
 end Num
 end Lua
