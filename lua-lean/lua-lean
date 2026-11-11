@@ -1,6 +1,6 @@
 #!/bin/sh
 # lua-lean: LuaJIT scripts to Lean, with proofs (DESIGN.md). Needs lake (elan) on the PATH, or nix to fetch it; parsecheck
-# and difftest need luajit (stock 2.1).
+# and difftest run the reference LuaJIT (DESIGN.md): $LUAJIT if set, else the repo flake's, else the PATH's.
 #   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]  the Lean module: each function's body, shallow form and proof
 #   lua-lean prove <file.lua>...          lift each into a scratch directory and check its proofs
 #   lua-lean dump (<Name> <file.lua>)...  each file's syntax tree as `def <Name>Src : Block`
@@ -9,11 +9,25 @@
 #   lua-lean run [--lib <prefix>=<dir>]... <file.lua>...  each chunk's results under the Lean semantics
 #   lua-lean cases <n> <seed> <file>      random chunks with the Lean semantics' results
 #   lua-lean difftest [<n> [<seed>]]      that many fresh chunks (3000) under LuaJIT, JIT on and off: the same results
+#   lua-lean luajit                       the path of the LuaJIT the others run
 here=$(cd "$(dirname "$0")" && pwd)
 abs() { case $1 in /*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
 lake_do() { (cd "$here" && if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi); }
 tool() { t=$1; shift; lake_do build -q LuaLean >&2 && lake_do env lean --run "tools/$t.lean" "$@"; }
-usage() { sed -n '4,11s/^#   //p' "$0" >&2; exit 2; }
+usage() { sed -n '4,12s/^#   //p' "$0" >&2; exit 2; }
+# the reference LuaJIT's version: bump it with flake.lock, then regenerate test/cases.lua.gz (DESIGN.md)
+ref=2.1.1791890110
+luajit_ref() {
+  if [ -z "$LUAJIT" ]; then
+    if command -v nix >/dev/null && p=$(nix build "$here/..#luajit" --no-link --print-out-paths 2>/dev/null); then
+      LUAJIT=$p/bin/luajit
+    else LUAJIT=$(command -v luajit) || { echo "lua-lean needs nix or luajit on the PATH" >&2; exit 1; }; fi
+    shown=
+  else shown=1; fi
+  v=$("$LUAJIT" -v | cut -d' ' -f2)
+  [ -n "$shown" ] || echo "luajit $v: $LUAJIT" >&2
+  [ "$v" = "$ref" ] || echo "WARNING: luajit $v is not the reference LuaJIT $ref (DESIGN.md); its results may differ" >&2
+}
 files() { r=; for f in "$@"; do r="$r $(abs "$f")"; done; printf %s "$r"; }
 
 cmd=$1; [ $# -gt 0 ] && shift
@@ -52,15 +66,17 @@ cases) [ $# -eq 3 ] || usage; tool Cases "$1" "$2" "$(abs "$3")" ;;
 difftest)
   tmp=$(mktemp -d) || exit 1
   trap 'rm -rf "$tmp"' EXIT
+  luajit_ref
   seed=${2:-$(date +%s)}
   echo "seed $seed"
   # from lua-lean/, where the chunks find test/mods
-  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && cd "$here" && luajit test/luasem.lua --cases "$tmp/cases.lua" &&
-    luajit -joff test/luasem.lua --cases "$tmp/cases.lua" ;;
+  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && cd "$here" && "$LUAJIT" test/luasem.lua --cases "$tmp/cases.lua" &&
+    "$LUAJIT" -joff test/luasem.lua --cases "$tmp/cases.lua" ;;
 parsecheck)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1
   trap 'rm -rf "$tmp"' EXIT
+  luajit_ref
   lake_do build -q LuaLean || exit 1
   # every number constant at full precision: the listing shows them at %.14g
   cat > "$tmp/k.lua" <<'EOF'
@@ -73,8 +89,8 @@ dump(assert(loadfile(arg[1])))
 EOF
   # the listing without file names and line numbers, then the number constants
   bc() {
-    luajit -bl "$1" > "$2.raw" && LC_ALL=C sed -e 's/^-- BYTECODE -- .*/-- BYTECODE --/' -e '/ FNEW /s/ *;.*$//' "$2.raw" > "$2" &&
-    luajit "$tmp/k.lua" "$1" >> "$2"
+    "$LUAJIT" -bl "$1" > "$2.raw" && LC_ALL=C sed -e 's/^-- BYTECODE -- .*/-- BYTECODE --/' -e '/ FNEW /s/ *;.*$//' "$2.raw" > "$2" &&
+    "$LUAJIT" "$tmp/k.lua" "$1" >> "$2"
   }
   fail=0
   for f in $(files "$@"); do
@@ -85,5 +101,6 @@ EOF
     else echo "$n: bytecode differs"; cat "$tmp/$n.diff"; fail=1; fi
   done
   exit $fail ;;
+luajit) luajit_ref; printf '%s\n' "$LUAJIT" ;;
 *) usage ;;
 esac

@@ -64,13 +64,23 @@ What a proved spec rests on, and how each piece is checked:
 |---|---|
 | Lean's kernel and its three axioms (`propext`, `Classical.choice`, `Quot.sound`) | `Audit.lean`: every theorem of LuaLean uses those and nothing else; `check.sh` refuses `sorry`, `admit`, `native_decide`, `axiom` |
 | The parser (also as `load` runs it, and as it made each `Sem.srcs` file a proof assumes), and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
-| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit, and what the chunk wrote to stdout the same bytes (luasem.lua puts fd 1 on a file through the FFI; the Lean side's world is `Run.caseFx`, whose stdout takes every write and whose local zone is UTC, as luasem.lua sets `TZ`). 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
+| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under the reference LuaJIT ("The reference LuaJIT"), JIT on and off, against its target's results; results must be the same text, numbers to the last bit, and what the chunk wrote to stdout the same bytes (luasem.lua puts fd 1 on a file through the FFI; the Lean side's world is `Run.caseFx`, whose stdout takes every write and whose local zone is UTC, as luasem.lua sets `TZ`). 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
 | The host's libm | `^`, `math.pow`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, their inverses and hyperbolics, `atan2` are libm's in LuaJIT and in Lean's `Float`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel evaluates part of `Float` and not the rest (tested on Lean 4.35 with `decide` and `decide +kernel`). It computes `+ - *`, `/` (`decide +kernel` only; plain `decide` times out), `<`, `≤`, `==`, negation, `abs`, `isFinite`, `isNaN`, `Float.ofInt`, `Float.ofNat`, `toBits`, `ofBits`, `toUInt64` and `Float.sqrt` (`decide +kernel` only; plain `decide` is stuck). It cannot compute `Float.floor`, `ceil`, `round`, `scaleB`, `frExp`, `pow`, `exp`, `log`, `sin`, `cos`: `decide` is stuck on each, so `Num.narrow`, `floatToInt` and `fmod`, which use `floor`, and `ofRatio`, which uses `scaleB`, cannot be evaluated by a proof on a non-integer `Float`. No proof rests on such a value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz` (its generator prints the `math` ones at `%.12g`, `^` exactly). A `pow` case that fails on another machine is this before anything else. `fmod`, `modf`, `frexp`, `ldexp` are exact and modelled exactly (`Num.fmodC`, …) |
 | The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
 | The user's effect axioms | each its own test against the world, as above (`check.sh` runs the example's, `Examples/world_axioms.lua`, and refuses an axiom there without a case of its name) |
 
 Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
 fails), the case generator, and any proof search.
+
+## The reference LuaJIT
+
+LuaJIT 2.1 is a rolling release whose parser and library move between versions, so lua-lean is checked against one:
+**LuaJIT 2.1.1791890110**, the repo flake's (`nix build .#luajit`, pinned by `flake.lock`; a default build: not
+5.2-compatible, FFI and JIT on). CI runs that one; `check.sh`, `lua-lean parsecheck` and `difftest` run `$LUAJIT` if
+it is set, else the flake's (through nix), else the PATH's, print the version, and warn when it is not this one
+(`ref` in `lua-lean`). To bump it: update `flake.lock`, set `ref` and this paragraph to the new version, regenerate
+`test/cases.lua.gz` (`lua-lean cases 3000 <seed> test/cases.lua`, then `gzip`), and run `check.sh` and `lua-lean
+difftest`; a difference is the semantics' to follow, and new syntax goes under "The subset" as in or out.
 
 ## Targets
 
@@ -143,7 +153,9 @@ replay, which a stateless oracle answers as before.
 
 ## The subset
 
-In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
+In: Lua 5.1 syntax as LuaJIT parses it, with its lexer's `\u{...}` escapes, empty statements (`;;`) anywhere, and
+`continue` and `const` as names (soft keywords in LuaJIT; `test/lex.lua`); metatables with `__index` and
+`__newindex` (a function, or a value to index
 instead), `__call`, the arithmetic ones (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`), `__unm` (given its
 operand twice) and `__concat` (`a .. b .. c` right to left, as BC_CAT), each read from the metatable when the
 operation runs, the left operand's before the right's, as LuaJIT does; an operator's metamethod is called as a call
@@ -181,8 +193,13 @@ arguments before it are written; `os.time` of a date table (each field through `
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
 but those below; `os.difftime` (each time truncated, as C's cast does); the rest of `io` and `os` as handles.
 
-Out: `setfenv` and `load`'s environment argument, FFI, `__gc`, `__mode`, `string.format("%a")`,
-`string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
+Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.html`), each a parse error
+(`test/out.txt`, which `check.sh` loads under LuaJIT and has the parser refuse): the bit operators (`~x`, `&`, `|`,
+`~`, `<<`, `>>`, `~>>`), `!`, `&&`, `||`, `!=`, the conditional `a ? b : c`, safe navigation (`t?.k`, `t?.[k]`,
+`f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
+`continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
+underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); `setfenv` and `load`'s environment argument, FFI,
+`__gc`, `__mode`, `string.format("%a")`, `string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
 
@@ -251,6 +268,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `test/luasem.lua` | the LuaJIT side of the differential test |
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
+| `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
 
@@ -265,11 +283,12 @@ lua-lean/lua-lean dump Name f.lua              # the tree as `def NameSrc : Bloc
 ```
 
 A Lake package uses it with `[[require]] name = "lua-lean" path = "<dir>"` (as `swarm/model/lakefile.toml` does)
-and `import LuaLean`. Needs Lean 4.35 (elan, or nix, which the scripts fall back to) and LuaJIT 2.1.
+and `import LuaLean`. Needs Lean 4.35 (elan, or nix, which the scripts fall back to) and the reference LuaJIT
+(nix, or a `luajit` on the PATH).
 
 ## Gates
 
-Every change keeps these: each semantics change is differentially tested against stock LuaJIT 2.1 (new behaviour
+Every change keeps these: each semantics change is differentially tested against the reference LuaJIT (new behaviour
 gets generator cases, as the exponent bound did); no `sorry`, `native_decide`, or axiom beyond Lean's three and the
 user's named effect axioms; a feature outside the subset fails to parse, translate or prove, never yields a wrong
 proof; a statement is never weakened to make a proof go through.

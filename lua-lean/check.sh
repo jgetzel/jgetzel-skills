@@ -3,8 +3,9 @@
 # the example's specs check on their named axioms (Examples/),
 # the committed chunks (test/cases.lua.gz) give the Lean semantics' results for this LuaJIT's target, JIT on and off,
 # and the test scripts parse to LuaJIT's bytecode and lift with their proofs. Needs lake (elan) on the PATH, or nix
-# to fetch it, and luajit.
+# to fetch it, and nix or luajit (the reference LuaJIT, as lua-lean finds it).
 cd "$(dirname "$0")" || exit 1
+LUAJIT=$(./lua-lean luajit) && export LUAJIT || exit 1
 if grep -rnEw 'sorry|admit|native_decide|axiom' LuaLean tools; then echo "an open proof or an axiom" >&2; exit 1; fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build && lean_do env lean Audit.lean || exit 1
@@ -16,7 +17,10 @@ if grep -rnEw 'sorry|admit|native_decide' Examples; then echo "an open proof in 
 for a in $(sed -n 's/^axiom \([A-Za-z0-9_]*\) :.*/\1/p' Examples/*.lean); do
   grep -qw "$a" Examples/world_axioms.lua || { echo "axiom $a has no case in Examples/world_axioms.lua" >&2; exit 1; }
 done
-lean_do build Examples && luajit Examples/world_axioms.lua || exit 1
-luajit test/luasem.lua --cases test/cases.lua.gz && luajit -joff test/luasem.lua --cases test/cases.lua.gz || exit 1
+lean_do build Examples && "$LUAJIT" Examples/world_axioms.lua || exit 1
+"$LUAJIT" test/luasem.lua --cases test/cases.lua.gz && "$LUAJIT" -joff test/luasem.lua --cases test/cases.lua.gz || exit 1
+# LuaJIT's syntax beyond Lua 5.1 that the subset leaves out: LuaJIT loads each line, the parser refuses it
+"$LUAJIT" -e 'for l in io.lines("test/out.txt") do assert(loadstring(l), l) end' &&
+  lean_do env lean --run test/Refused.lean test/out.txt || exit 1
 p=$(./lua-lean parsecheck test/*.lua test/mods/*.lua) || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
 ./lua-lean prove test/*.lua test/mods/*.lua
