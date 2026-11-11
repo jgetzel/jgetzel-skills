@@ -56,7 +56,9 @@ function M.worktrees()
 end
 
 -- Every worktree name owns: its branch is <name>/…, or its directory ends in -<name> or -<name>-…
-function M.owned_wts(name, wts)
+function M.owned_wts(name, wts, c)
+  local rec = c and require("swarm.workspaces").owned(c, name, wts)  -- swarm made them: no guessing (older agents fall back)
+  if rec then return rec end
   local res = {}
   for _, pb in ipairs(wts) do
     local b = util.basename(pb[1])
@@ -74,8 +76,8 @@ function M.wt_map(c)
   for _, a in ipairs(require("swarm.agents").live_agents(c)) do
     local w = a.wt
     if not w or w == "" then
-      w = nil
-      for _, pb in ipairs(wts) do
+      w = (require("swarm.workspaces").owned(c, a.name, wts) or {})[1]
+      for _, pb in ipairs(w and {} or wts) do
         if util.startswith(pb[2], a.name .. "/") then w = pb[1]; break end
       end
     end

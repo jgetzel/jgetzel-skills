@@ -720,6 +720,6 @@ def idleClaim (s : State) (a t : Nat) : Bool := ownsClaimed s a t && (s.agt a).s
 def answered (s : State) (t : Nat) : Bool := !s.pend.contains t || (s.tk t).st == .done || (s.tk t).st == .dropped
 
 /-- what cli_model_spec.lua drives the CLI with (atomic commands; Traces.lean leaves hc and leave out) -/
-def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2, perTaskBase := true, splitGC := true, taskBase := [0, 0, 1, 0, 1] }
+def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2, perTaskBase := true, splitGC := true, recordedWorkspaces := true, taskBase := [0, 0, 1, 0, 1] }
 
 end Swarm

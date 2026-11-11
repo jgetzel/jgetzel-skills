@@ -21,6 +21,7 @@ create table if not exists pairkey(a text, b text, key text, primary key(a,b));
 create table if not exists meta(k text primary key, v text);
 create table if not exists event(id integer primary key autoincrement, ts int, agent text, kind text,
   path text, data text);
+create table if not exists workspace(path text, branch text, base text, agent text, ro int default 0, primary key(path, agent));
 create table if not exists ci(id integer primary key, sha text, status text, conclusion text, url text,
   created text, updated text, failed text);
 ]]

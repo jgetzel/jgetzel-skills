@@ -132,6 +132,12 @@ local function pre_tool(c, name, cwd, tool, ti)
     end
   elseif tool == "Bash" then
     local cmd = tostring(ti.command or "")
+    local base = require("swarm.workspaces").base_checkout(c, name, cmd, cwd)
+    if base then
+      db.log(c, name, "deny-base", base, util.cut(cmd, 120))
+      return emit("PreToolUse", nil, ("Don't check out %s in your worktree: a base checked out here blocks `git push . HEAD:%s` "
+        .. "for everyone. Land by a fast-forward of it from your branch (`git push . HEAD:%s`), or a PR for a remote base."):format(base, base, base))
+    end
     local ok, pr = pcall(cost.predict, cmd, cwd)  -- information at decision time: context only, never a deny or a rewrite
     local avail, total, psi = machine.mem()
     if ok and pr and avail and (pr.peak_kb > avail / 2 or machine.pressure_high(avail, total, psi)) then
