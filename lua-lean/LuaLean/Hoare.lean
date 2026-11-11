@@ -215,4 +215,26 @@ theorem Tbl.next_mem {a : Nat} {t : Tbl} {k k' v : Val} (e : t.next a k = some (
     simp only [Option.map_some, Option.some.injEq] at e
     have := List.find?_some e
     exact ⟨hr r rfl _ (List.mem_of_find?_eq_some e), by simpa using this⟩
+
+/-! ## Effects
+
+A call into the world adds its event to the trace (`trace`, the heap's cell `LOG`); a spec says what a function adds
+there, under axioms of the user's about what the world answers (`Oracle`; DESIGN.md, *Effects*). -/
+
+theorem trace_push {h : Heap} (o : Obj) (hs : LOG < h.size) : trace (h.push o) = trace h := by
+  simp [trace, Array.getElem?_push, Nat.ne_of_lt hs]
+
+theorem trace_set {h : Heap} (l : List Event) (hs : LOG < h.size) : trace (h.setIfInBounds LOG (.log l)) = l := by
+  simp [trace, hs]
+
+theorem effect_ok {o : Oracle} {name : String} {args vs : List Val} {h : Heap} (e : o name args (trace h) = some vs) :
+    effect o name args h = .ok vs (h.setIfInBounds LOG (.log (⟨name, args, vs⟩ :: trace h))) := by
+  simp [effect, e]
+
+/-- an effect the world answers: its answer, and the trace one event longer -/
+theorem RunP.effect {o : Oracle} {name : String} {args vs : List Val} {h : Heap} {P : List Val → Heap → Prop}
+    (e : o name args (trace h) = some vs) (p : P vs (h.setIfInBounds LOG (.log (⟨name, args, vs⟩ :: trace h)))) :
+    RunP (fun _ => Lua.effect o name args) h P :=
+  RunP.const (effect_ok e) p
+
 end Lua

@@ -26,10 +26,18 @@ script.lua ──parse──▶ Block (LuaLean/Syntax) ──lift──▶ f_bod
   A runtime error is raised without its place (`Err.rt lvl msg`): the innermost site of the frame it is reported in
   gives it `chunk:line:` and the operand's name (`atSite`), each call's frame passes it one frame out (`frame`), a
   tail call's site one further, and a builtin's frame, which has no place, leaves it bare.
-- **Effects** are not interpreted. `io`, `os`, `print`, `debug` and every module not given as source are handles;
-  calling one asks an *oracle* (`String → List Val → Option (List Val)`); `none` stops the run with `Err.eff`. What an
-  oracle answer means in the world is the user's assumption, written as a named Lean axiom with its own test against
-  the real thing (the swarm's `SwarmModel/Env.lean` and `swarm/lua/test/env_spec.lua` are the pattern).
+- **Effects** are not interpreted. The world's part of `print`, `io` and `os`, `debug`, and every module not given as
+  source are effects: a handle (`io.open`, `os.getenv`, `math.random`), or a builtin's call into the world after the
+  part LuaJIT computes, which the semantics computes too (`print` and `io.write` convert their arguments and make one
+  write, `"print"` or `"io.write"`; `os.time()` asks `"os.time"`, `os.time(t)` reads t's fields and asks
+  `"os.mktime"` the struct tm's; `os.date` formats a UTC date itself and asks `"os.localtime"` a local one;
+  `os.difftime` is computed). Calling one asks an *oracle* (`Oracle`: the effect, its arguments, and the trace of the
+  effects before it), and the call joins the trace (`trace`, the heap's cell `LOG`, newest first: what it was, its
+  arguments, the answer), so a world with state (a clock, files) is a function of the trace; `none` stops the run with
+  `Err.eff`. What an oracle answer means in the world is the user's assumption, written as a named Lean axiom with its
+  own test against the real thing (`Examples/WorldSpec.lean` and `Examples/world_axioms.lua`, or the swarm's
+  `SwarmModel/Env.lean` and `swarm/lua/test/env_spec.lua`, are the pattern). A spec says what a function adds to the
+  trace (`Examples/WorldSpec.lean`: `greet` writes its line, `readings` reads the clock twice, in order).
 - **Files** are the ones given as source: `Sem.srcs` maps a path to its parsed chunk. `require` looks for a module
   through `package.path` (`./?.lua` to begin with: LUA_PATH=./?.lua; LuaJIT's default adds the system's directories)
   among them, as lib_package.c's Lua loader does, and `dofile` reads one; `load` and `loadstring` run the parser
@@ -56,10 +64,10 @@ What a proved spec rests on, and how each piece is checked:
 |---|---|
 | Lean's kernel and its three axioms (`propext`, `Classical.choice`, `Quot.sound`) | `Audit.lean`: every theorem of LuaLean uses those and nothing else; `check.sh` refuses `sorry`, `admit`, `native_decide`, `axiom` |
 | The parser (also as `load` runs it, and as it made each `Sem.srcs` file a proof assumes), and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
-| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
+| The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit, and what the chunk wrote to stdout the same bytes (luasem.lua puts fd 1 on a file through the FFI; the Lean side's world is `Run.caseFx`, whose stdout takes every write and whose local zone is UTC, as luasem.lua sets `TZ`). 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
 | The host's libm | `^`, `math.pow`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, their inverses and hyperbolics, `atan2` are libm's in LuaJIT and in Lean's `Float`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel evaluates part of `Float` and not the rest (tested on Lean 4.35 with `decide` and `decide +kernel`). It computes `+ - *`, `/` (`decide +kernel` only; plain `decide` times out), `<`, `≤`, `==`, negation, `abs`, `isFinite`, `isNaN`, `Float.ofInt`, `Float.ofNat`, `toBits`, `ofBits`, `toUInt64` and `Float.sqrt` (`decide +kernel` only; plain `decide` is stuck). It cannot compute `Float.floor`, `ceil`, `round`, `scaleB`, `frExp`, `pow`, `exp`, `log`, `sin`, `cos`: `decide` is stuck on each, so `Num.narrow`, `floatToInt` and `fmod`, which use `floor`, and `ofRatio`, which uses `scaleB`, cannot be evaluated by a proof on a non-integer `Float`. No proof rests on such a value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz` (its generator prints the `math` ones at `%.12g`, `^` exactly). A `pow` case that fails on another machine is this before anything else. `fmod`, `modf`, `frexp`, `ldexp` are exact and modelled exactly (`Num.fmodC`, …) |
 | The parser's sites: the line and the operands' names each runtime error is reported with | the differential test: `Gen.lean`'s `errors` chunks raise errors under `pcall` from statements broken across lines at random, and the error values must be LuaJIT's |
-| The user's effect axioms | each its own test against the world, as above |
+| The user's effect axioms | each its own test against the world, as above (`check.sh` runs the example's, `Examples/world_axioms.lua`, and refuses an axiom there without a case of its name) |
 
 Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
 fails), the case generator, and any proof search.
@@ -116,7 +124,9 @@ the heap to the next resume's and returns its arguments (`yieldFn`), so the run 
 locals as they were, and goes on from there; the yield after that stops the run with `Err.yld`, which `resume`
 catches (`coRun`). The interpreter is a function of the heap and the arguments, so each replayed stretch is the
 stretch that ran, and putting the next heap in place undoes what it wrote again; what the main thread changed
-between two resumes is in the heap the coroutine goes on in. A cell at a fixed address holds the running coroutine
+between two resumes is in the heap the coroutine goes on in. So is an effect's: the trace is in the heap and the
+oracle a function of it, so a replayed call into the world gets the answer it got, and its event goes with the heap
+the replay leaves. A cell at a fixed address holds the running coroutine
 (nil in the main thread), for `running`, `status` and `isyieldable`.
 
 `Err.yld` is not a Lua error: `pcall`, sites and frames let it pass, so a yield crosses `pcall`, metamethods
@@ -153,10 +163,14 @@ with a chunk name and a mode, `dofile` and `require` of files given as source, `
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
 lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`); `coroutine`, all of LuaJIT 2.1's (`create`,
-`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines").
+`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines"). The world (*Effects*): `print` (with
+the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
+arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
+`field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
+but those below; `os.difftime` (each time truncated, as C's cast does); the rest of `io` and `os` as handles.
 
 Out: `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
-`string.dump`, the rest of the standard library (`os`, `io`, `debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
+`string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
 
@@ -175,8 +189,13 @@ How a script outside it is reported, from strongest to weakest:
    builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`, `math.ldexp(1, 2^31)`, a key of `table.move`
    past 32 bits; "Targets"), `tonumber(s, 2)` of `0b` and a binary digit (glibc 2.38's strtoul reads the prefix,
    older C libraries do not), `table.new` of a size above 65536, `#t` of a table with more than one border and `next`
-   from an integer or a dropped key the table does not hold ("Tables"), a call into `io`, `os`, `math.random` or a
-   module not given as source when no oracle answers it; `load` or `loadstring` of a source the parser rejects (its
+   from an integer or a dropped key the table does not hold ("Tables"), a call into the world (*Effects*) no oracle
+   answers or answers out of its form (`os.time`'s and `os.mktime`'s answer `[.num (.int t)]`, `os.localtime`'s the
+   `*t` fields or none), `print` with a `tostring` of the script's own (its calls would come between print's writes),
+   `os.date`'s `%Z %z %s %G %g %V`, glibc's flags, widths and `%E`/`%O`, a conversion it does not have or a year
+   outside 1000..9999 in a format (C libraries print them their own ways), a format after `os.setlocale` (its names
+   are the C locale's), a time past 2^53 to `os.date` or a difference past 2^53 from `os.difftime`, a field of
+   `os.time`'s table past 2^30, `os.exit`; `load` or `loadstring` of a source the parser rejects (its
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
@@ -200,7 +219,7 @@ How a script outside it is reported, from strongest to weakest:
      light userdata in LuaJIT (which LuaJIT 2.1 may show as a number);
    - a module not found on `package.path` is a handle, a C module the oracle answers, where LuaJIT may find no such
      module and raise an error;
-   - `type` of an effect handle (`print`, `io.write`, `math.random`): `userdata`, a function in LuaJIT.
+   - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT.
 
 G2 turns this list into a checker that names each construct with its line before anything is lifted.
 
@@ -222,6 +241,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
+| `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
 
 ```sh
 lua-lean/check.sh                              # gates, build, audit, committed chunks, test scripts: about 15 s
@@ -251,9 +271,9 @@ proof; a statement is never weakened to make a proof go through.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
-- **G4** the standard library: `os` and `io` as effect interfaces with named axioms (G4c). Done: the rest of
-  string, table and math, `select`/`tostring`/`tonumber` corners (G4a); `pairs` order opaque, `#t` with holes a stop
-  (G4b). A model of LuaJIT's layout for number keys would make their order and every `#t` known.
+- **G4** the standard library. Done: the rest of string, table and math, `select`/`tostring`/`tonumber` corners
+  (G4a); `pairs` order opaque, `#t` with holes a stop (G4b); `os` and `io` as effects with named axioms (G4c). A model
+  of LuaJIT's layout for number keys would make their order and every `#t` known.
 - **G5** `load`, `dofile`, `require` of arbitrary modules: done (see the subset; `setfenv` and `load`'s environment
   wait for a model of function environments).
 - **G6** coroutines: done ("Coroutines").

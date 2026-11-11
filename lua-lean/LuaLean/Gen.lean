@@ -322,6 +322,57 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
 
 
+-- ---------- the world: print, io.write, os ----------
+
+/-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
+os.time of a date table (the zone UTC), os.date of a given time (`!` UTC, computed; else the local date), difftime;
+each under pcall, by name at a site now and then -/
+def effects : G String := do
+  let wa : G String := pick ["\"a\"", "1.5", "2^53", "-0.0", "\"\\n\"", "\"x y\"", "10", "0/0", "1e100", "\"\"",
+    "-7", "{}", "true", "nil"]
+  let pa : G String := pick ["1", "\"s\"", "nil", "true", "false", "-0.0", "2.5", "1e15", "0/0", "\"\\t\"", "x"]
+  let args (a : G String) : G String := do return commas (← (List.range (← rnd 4)).mapM fun _ => a)
+  let fld (k : String) (vs : List String) : G String := do
+    if ← chance 5 then return "" else return s!"{k} = {← pick vs}, "
+  let year : G String := do
+    pick [toString (1900 + (← rnd 200)), toString (1970 + (← rnd 68)), "\"2000\"", "2000.9", "1e3", "-1"]
+  let date : G String := do
+    let fs := (← fld "year" [← year, ← year]) ++
+      (← fld "month" ["1", "2", "12", "13", "0", "-1", "1.5", "\"3\"", toString (← rnd 12)]) ++
+      (← fld "day" ["1", "28", "29", "31", "0", "32", "-5", "1.7", toString (← rnd 31)]) ++
+      (← fld "hour" ["0", "23", "24", "-1", "12.9", "\"10\"", "x"]) ++ (← fld "min" ["0", "59", "60", "-30", "1e3"]) ++
+      (← fld "sec" ["0", "59", "61", "-1", "86400"]) ++ (if ← chance 6 then "isdst = false, " else "")
+    if ← chance 6 then return s!"setmetatable(\{}, \{__index = \{{fs}}})" else return s!"\{{fs}}"
+  let time : G String := pick ["0", "1", "59", "86399", "86400", "951782400", "951868800", "1e9", "1234567890",
+    "2147483647", "2147483648", "-1", "-86400", "-2208988800", "4102444800", "1.5", "-0.5", "1e9 + 0.9", "\"1e9\"",
+    toString (← rnd 4000000000), s!"-{← rnd 2000000000}"]
+  let conv : G String := pick ["%a", "%A", "%b", "%B", "%c", "%C", "%d", "%D", "%e", "%F", "%h", "%H", "%I", "%j",
+    "%m", "%M", "%n", "%p", "%r", "%R", "%S", "%t", "%T", "%u", "%U", "%w", "%W", "%x", "%X", "%y", "%Y", "%%", "-",
+    " ", "at ", ":"]
+  let fmt : G String := do
+    match ← rnd 9 with
+    | 0 => pick ["\"*t\"", "\"!*t\"", "\"\"", "\"!\"", "nil", "{}"]
+    | _ =>
+      let cs ← (List.range ((← rnd 4) + 1)).mapM fun _ => conv
+      return q ((if ← chance 2 then "!" else "") ++ String.join cs)
+  let dt : G String := pick ["5.7, 1.2", "3", "", "\"5\", \"2\"", "-1.9, 1.9", "1e9, 2e9", "0, 0", "{}", "1, nil"]
+  let mut src := "local E = {}\nlocal x = 2\nlocal function c(f, ...) E[#E + 1] = {pcall(f, ...)} end\n"
+  for _ in [0:(← rnd 6) + 2] do
+    let call ← match ← rnd 8 with
+      | 0 => pure s!"io.write, {← args wa}"
+      | 1 => pure s!"print, {← args pa}"
+      | 2 | 3 => pure s!"os.time, {← date}"
+      | 4 | 5 | 6 => pure s!"os.date, {← fmt}, {← time}"
+      | _ => pure s!"os.difftime, {← dt}"
+    let call := if call.endsWith ", " then call.dropEnd 2 |>.toString else call
+    src := src ++ (if ← chance 4 then
+      -- a call at a site of its own: a bad argument is named, a missing field has its place
+      let (f, as) := match call.splitOn ", " with | f :: as => (f, ", ".intercalate as) | [] => (call, "")
+      s!"E[#E + 1] = \{pcall(function() local r = \{{f}({as})} return r end)}\n"
+    else s!"c({call})\n")
+  return src ++ "E[#E + 1] = 1 / (os.difftime(3, 3) * -1)\nreturn E"
+
+
 -- ---------- error values: where LuaJIT reports them, and how it names the operands ----------
 
 /-- tokens joined by a space or, at random, a newline; never one before `(`, which LuaJIT reads as a new statement -/
@@ -545,7 +596,7 @@ return log, sh.n"
 /-- one of the chunks above -/
 def chunk : G String := do
   if ← chance 8 then return ← errors
-  match ← rnd 14 with
+  match ← rnd 15 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -558,6 +609,7 @@ def chunk : G String := do
   | 11 => traverse
   | 12 => loads
   | 13 => coros
+  | 14 => effects
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs` through package.path `path`) and their

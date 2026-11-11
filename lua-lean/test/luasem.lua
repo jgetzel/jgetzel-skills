@@ -1,6 +1,6 @@
--- What is compared with the Lean interpreter (LuaLean/Run.lean): a chunk's results
--- as text, `ok:` and each value, or `error:` and the error's value. Strings: bytes 32..126 but " and \ as themselves, the rest \ddd;
--- numbers %.17g; a table's entries sorted; one already on the path <cycle>.
+-- What is compared with the Lean interpreter (LuaLean/Run.lean): a chunk's results as text, `ok:` and each value, or
+-- `error:` and the error's value, then ` stdout:` and what it wrote there. Strings: bytes 32..126 but " and \ as
+-- themselves, the rest \ddd; numbers %.17g; a table's entries sorted; one already on the path <cycle>.
 local M = {}
 
 -- the build, LuaLean/Num.lean's Target: single-number (x86-64's default) makes an integer 0 times -1 a -0
@@ -37,11 +37,46 @@ function M.outcome(ok, ...)
   return "ok:" .. table.concat(r, ",")
 end
 
--- src's results under LuaJIT, as text
+-- the world of LuaLean/Run.lean's caseFx: the local zone is UTC, and what a chunk writes to stdout (fd 1: print's
+-- and io.write's) goes to a temporary file, to be read back
+local ffi = require("ffi")
+ffi.cdef [[
+int setenv(const char *, const char *, int); void tzset(void);
+int mkstemp(char *); int unlink(const char *); int dup(int); int dup2(int, int); int close(int); int fflush(void *);
+int64_t lseek(int, int64_t, int); int ftruncate(int, int64_t); int64_t read(int, void *, size_t);
+]]
+ffi.C.setenv("TZ", "UTC", 1)
+ffi.C.tzset()
+local outFd
+local function captured(f)
+  if not outFd then
+    local path = ffi.new("char[?]", 32, "/tmp/luasemXXXXXX")
+    outFd = ffi.C.mkstemp(path)
+    assert(outFd >= 0, "mkstemp failed")
+    ffi.C.unlink(path)
+  end
+  ffi.C.fflush(nil)
+  ffi.C.lseek(outFd, 0, 0)
+  ffi.C.ftruncate(outFd, 0)
+  local saved = ffi.C.dup(1)
+  ffi.C.dup2(outFd, 1)
+  local r = f()
+  ffi.C.fflush(nil)
+  ffi.C.dup2(saved, 1)
+  ffi.C.close(saved)
+  local n = tonumber(ffi.C.lseek(outFd, 0, 1))
+  ffi.C.lseek(outFd, 0, 0)
+  local buf = ffi.new("char[?]", n + 1)
+  assert(ffi.C.read(outFd, buf, n) == n, "reading stdout back failed")
+  return r, ffi.string(buf, n)
+end
+
+-- src's results under LuaJIT, as text, and what it wrote to stdout
 function M.run(src)
   local f, err = loadstring(src, "=c")
   if not f then return "parse error: " .. err end
-  return M.outcome(pcall(f))
+  local r, out = captured(function() return M.outcome(pcall(f)) end)
+  return #out > 0 and r .. " stdout:" .. str(out) or r
 end
 
 -- a cases file (LuaLean/Gen.lean's writeCases, gzipped or not): each chunk under LuaJIT must give the Lean

@@ -5,10 +5,12 @@ import LuaLean.Pat
 a table or a closure (heap addresses), a builtin, or an effect handle. Every local is a heap cell, so closures share
 upvalues as Lua's do; `pcall` keeps what the failed call wrote, as Lua does (`EStateM` keeps the state on error).
 
-Effects are not interpreted: `io`, `os`, `print`, and every module not given as source (`posix.*`, `lfs`, `cjson`, a
-script's own C modules, …) are `Val.eff` handles, and calling one asks `oracle`; `none` stops the run with
-`Err.eff`. Fuel bounds the depth of the evaluation (each nested evaluation, call and loop iteration takes one);
-running out is `Err.fuel`, never a Lua error, so `pcall` does not catch it. -/
+Effects are not interpreted: the world's part of `io`, `os` and `print`, and every module not given as source
+(`posix.*`, `lfs`, `cjson`, a script's own C modules, …) are effects: `Val.eff` handles, or a builtin's call into the
+world (`print`'s write, `os.time`'s clock). Calling one asks `oracle`, which answers from the trace of the effects
+before it (the heap's cell `LOG`), and the call joins the trace; `none` stops the run with `Err.eff`. Fuel bounds the
+depth of the evaluation (each nested evaluation, call and loop iteration takes one); running out is `Err.fuel`,
+never a Lua error, so `pcall` does not catch it. -/
 
 namespace Lua
 
@@ -24,6 +26,15 @@ inductive Val where
   /-- a coroutine -/
   | thr (a : Nat)
   deriving Inhabited
+
+/-- one call into the world: the effect, its arguments, and the world's answer -/
+structure Event where
+  name : String
+  args : List Val
+  res : List Val
+
+/-- the world: an effect's answer to its arguments, after the trace of the calls before it (newest first) -/
+abbrev Oracle := String → List Val → List Event → Option (List Val)
 
 abbrev Env := List (String × Nat)
 
@@ -63,6 +74,8 @@ inductive Obj where
   | clo (c : Clo)
   | cell (v : Val)
   | thr (t : Thr (Array Obj))
+  /-- the trace of effects, newest first: the cell `LOG` -/
+  | log (evs : List Event)
 
 instance : Inhabited Obj := ⟨.cell .nil⟩
 
@@ -322,6 +335,13 @@ def PACKAGE : Nat := 5
 def COROUTINE : Nat := 6
 /-- a cell holding the running coroutine, nil in the main thread -/
 def CUR : Nat := 7
+def LOG : Nat := 8
+
+/-- the effects so far, newest first -/
+def trace (h : Heap) : List Event :=
+  match h[LOG]? with
+  | some (.log l) => l
+  | _ => []
 
 def getVar (cx : Ctx) (x : String) : M Val :=
   match cx.env.lookup x with
@@ -911,10 +931,106 @@ def unpackFn (args : List Val) : M (List Val) := do
   if i ≤ j && j - i + 1 + args.length > 8000 then callerErr "too many results to unpack"
   (List.range (j - i + 1).toNat).mapM fun (k : Nat) => rawget t (nums (i + k))
 
+-- ---------- os: dates ----------
+
+/-- a broken-down time as `os.date("*t")` gives it: month 1..12, wday 1..7 from Sunday, yday 1..366 -/
+structure Tm where
+  sec : Int
+  min : Int
+  hour : Int
+  day : Int
+  month : Int
+  year : Int
+  wday : Int
+  yday : Int
+  isdst : Bool
+
+/-- the days from 1970-01-01 to a date of the proleptic Gregorian calendar (H. Hinnant's days_from_civil) -/
+def daysFromCivil (y m d : Int) : Int :=
+  let y := if m ≤ 2 then y - 1 else y
+  let era := y / 400
+  let yoe := y - era * 400
+  let doy := (153 * ((m + 9) % 12) + 2) / 5 + d - 1
+  era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+
+/-- gmtime: the UTC date of a time -/
+def gmtime (t : Int) : Tm :=
+  let days := t / 86400
+  let s := t % 86400
+  let z := days + 719468
+  let era := z / 146097
+  let doe := z - era * 146097
+  let yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  let doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+  let mp := (5 * doy + 2) / 153
+  let m := if mp < 10 then mp + 3 else mp - 9
+  let y := yoe + era * 400 + (if m ≤ 2 then 1 else 0)
+  { sec := s % 60, min := s / 60 % 60, hour := s / 3600, day := doy - (153 * mp + 2) / 5 + 1, month := m, year := y,
+    wday := (days + 4) % 7 + 1, yday := days - daysFromCivil y 1 1 + 1, isdst := false }
+
+def tmTable (tm : Tm) : Tbl :=
+  { kv := [(lstr "sec", nums tm.sec), (lstr "min", nums tm.min), (lstr "hour", nums tm.hour), (lstr "day", nums tm.day),
+      (lstr "month", nums tm.month), (lstr "year", nums tm.year), (lstr "wday", nums tm.wday),
+      (lstr "yday", nums tm.yday), (lstr "isdst", .bool tm.isdst)] }
+
+def dayNames : List String := ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+def monthNames : List String := ["January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December"]
+
+/-- one of strftime's conversions in the C locale, but those that expand to others; `none`: one the semantics leaves
+out (glibc's and macOS's differ, or it needs the zone: `%Z %z %s %G %g %V`, flags, widths, `%E`, `%O`) -/
+def tmConv (tm : Tm) (c : Char) : Option (List Char) :=
+  let pad (w : Nat) (p : Char) (n : Int) := Num.padLeft p w (Num.digits n.toNat)
+  let name (l : List String) (i : Int) := (l.getD (i.toNat - 1) "?").toList
+  match c with
+  | 'a' => some ((name dayNames tm.wday).take 3) | 'A' => some (name dayNames tm.wday)
+  | 'b' | 'h' => some ((name monthNames tm.month).take 3) | 'B' => some (name monthNames tm.month)
+  | 'C' => some (pad 2 '0' (tm.year / 100)) | 'y' => some (pad 2 '0' (tm.year % 100)) | 'Y' => some (pad 4 '0' tm.year)
+  | 'd' => some (pad 2 '0' tm.day) | 'e' => some (pad 2 ' ' tm.day) | 'm' => some (pad 2 '0' tm.month)
+  | 'H' => some (pad 2 '0' tm.hour) | 'I' => some (pad 2 '0' (if tm.hour % 12 == 0 then 12 else tm.hour % 12))
+  | 'M' => some (pad 2 '0' tm.min) | 'S' => some (pad 2 '0' tm.sec)
+  | 'p' => some (if tm.hour < 12 then "AM" else "PM").toList
+  | 'j' => some (pad 3 '0' tm.yday) | 'w' => some (pad 1 '0' (tm.wday - 1))
+  | 'u' => some (pad 1 '0' (if tm.wday == 1 then 7 else tm.wday - 1))
+  | 'U' => some (pad 2 '0' ((tm.yday - 1 + 7 - (tm.wday - 1)) / 7))
+  | 'W' => some (pad 2 '0' ((tm.yday - 1 + 7 - (tm.wday + 5) % 7) / 7))
+  | 'n' => some ['\n'] | 't' => some ['\t'] | '%' => some ['%']
+  | _ => none
+
+/-- the conversions that stand for others -/
+def tmAlias : Char → Option String
+  | 'c' => some "%a %b %e %H:%M:%S %Y" | 'D' | 'x' => some "%m/%d/%y" | 'F' => some "%Y-%m-%d"
+  | 'r' => some "%I:%M:%S %p" | 'R' => some "%H:%M" | 'T' | 'X' => some "%H:%M:%S"
+  | _ => none
+
+def strftimeBasic (tm : Tm) : List Char → Option (List Char)
+  | [] => some []
+  | '%' :: c :: rest => do pure ((← tmConv tm c) ++ (← strftimeBasic tm rest))
+  | ['%'] => none
+  | c :: rest => (c :: ·) <$> strftimeBasic tm rest
+
+/-- strftime in the C locale, for years 1000..9999 (C libraries pad and sign other years their own ways) -/
+def strftime (tm : Tm) : List Char → Option (List Char)
+  | [] => some []
+  | '%' :: c :: rest => do
+    if tm.year < 1000 || tm.year > 9999 then none
+    let x ← match tmAlias c with
+      | some f => strftimeBasic tm f.toList
+      | none => tmConv tm c
+    pure (x ++ (← strftime tm rest))
+  | ['%'] => none
+  | c :: rest => (c :: ·) <$> strftime tm rest
+
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
   | "tostring" => do anyArg 0 args; noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
+  | "os.difftime" => do
+    -- difftime((time_t)a, (time_t)b), a double; past 2^53 C libraries round it differently
+    let a ← argIntN 64 "difftime" 0 args
+    let b ← match args.getD 1 .nil with | .nil => pure 0 | _ => argIntN 64 "difftime" 1 args
+    if (a - b).natAbs ≥ 2 ^ 53 then throw (.eff "os.difftime past 2^53" [])
+    return [.num (.flt (Float.ofInt (a - b)))]
   | "tonumber" => do
     let b ← optInt "tonumber" 1 args 10
     if b == 10 then
@@ -1101,7 +1217,82 @@ def substRepl (r whole : List Char) (cap : Nat → M Val) : M (List Char) :=
 set_option maxRecDepth 100000
 
 section
-variable (srcs : String → Option Block) (oracle : String → List Val → Option (List Val)) (tgt : Target)
+variable (srcs : String → Option Block) (oracle : Oracle) (tgt : Target)
+
+/-- a call into the world: the oracle answers it after the trace so far, and it joins the trace -/
+def effect (name : String) (args : List Val) : M (List Val) := fun h =>
+  match oracle name args (trace h) with
+  | some vs => .ok vs (h.set! LOG (.log (⟨name, args, vs⟩ :: trace h)))
+  | none => .error (.eff name args) h
+
+/-- an effect answering a time_t, `[.num (.int t)]` -/
+def timeFx (name : String) (args : List Val) : M Int := do
+  match ← effect oracle name args with
+  | [.num (.int t)] => pure t
+  | _ => throw (.eff s!"{name}: an answer not a time" [])
+
+/-- a time_t as os.time returns it: a double (-1 too: LuaJIT 2.1 returns it) -/
+def timeVal (t : Int) : Val := .num (.flt (Float.ofInt t))
+
+/-- print: each value as the builtin `tostring` gives it, tab-separated, and a newline: one write to stdout
+(lj_cf_print). A `tostring` of the script's own stops the run, its calls coming between print's writes -/
+def printFn (args : List Val) : M (List Val) := do
+  match ← rawget G (lstr "tostring") with
+  | .prim "tostring" [] => pure ()
+  | _ => throw (.eff "print with a tostring of its own" [])
+  noMeta args ["__tostring"]
+  let _ ← effect oracle "print" [.str (List.intercalate ['\t'] (args.map Val.text) ++ ['\n'])]
+  pure []
+
+/-- io.write: each argument a string or a number (as tostring writes it), one write to the default output, whose
+answer is io.write's (true, or nil and the error); a bad argument raises its error after those before it are
+written (io_file_write) -/
+def ioWrite (args : List Val) : M (List Val) := do
+  let pieces := args.map fun v => match v with | .str s => some s | .num n => some n.toText | _ => none
+  let good := (pieces.takeWhile Option.isSome).filterMap id
+  let rs ← if good.isEmpty then pure [.bool true] else effect oracle "io.write" [.str good.flatten]
+  match pieces.findIdx? Option.isNone with
+  | some i => badType "string" i args
+  | none => pure rs
+
+/-- os.date(fmt, t): `!` the UTC date, computed; else the local one, the world's (`os.localtime`, answering the
+`*t` fields, or nothing where localtime fails); no t, the clock's (`os.time`) -/
+def osDate (args : List Val) : M (List Val) := do
+  let fmt ← match args.getD 0 .nil with | .nil => pure "%c".toList | _ => argStr "date" 0 args
+  let t ← match args.getD 1 .nil with | .nil => timeFx oracle "os.time" [] | _ => argIntN 64 "date" 1 args
+  -- gmtime fails past an int's years, 2^55 s or so
+  if t.natAbs ≥ 2 ^ 53 then throw (.eff "os.date of a time past 2^53" [])
+  let (utc, fmt) := match fmt with | '!' :: f => (true, f) | f => (false, f)
+  let tm ← if utc then pure (some (gmtime t)) else do
+    match ← effect oracle "os.localtime" [.num (.int t)] with
+    | [] => pure none
+    | [.num (.int sec), .num (.int min), .num (.int hour), .num (.int day), .num (.int month), .num (.int year),
+       .num (.int wday), .num (.int yday), .bool isdst] =>
+      if 0 ≤ sec && sec ≤ 60 && 0 ≤ min && min < 60 && 0 ≤ hour && hour < 24 && 1 ≤ day && day ≤ 31 &&
+        1 ≤ month && month ≤ 12 && 1 ≤ wday && wday ≤ 7 && 1 ≤ yday && yday ≤ 366 then
+        pure (some ⟨sec, min, hour, day, month, year, wday, yday, isdst⟩)
+      else throw (.eff "os.localtime: an answer not a date" [])
+    | _ => throw (.eff "os.localtime: an answer not a date" [])
+  match tm with
+  | none => return [.nil]
+  | some tm =>
+    if fmt == "*t".toList then return [.tbl (← alloc (.tbl (tmTable tm)))]
+    -- the names and %c, %x, %X are the C locale's
+    if (trace (← get)).any (·.name == "os.setlocale") then throw (.eff "os.date after os.setlocale" [])
+    match strftime tm fmt with
+    | some s => return [.str s]
+    | none => throw (.eff s!"os.date {String.ofList fmt}" [])
+
+/-- a field of os.time's table (getfield): a number truncated to an int, or the default `d`, or (none) an error -/
+def tmField (k : String) (d : Option Int) (v : Val) : M Int :=
+  match v.toNum, d with
+  | some x, _ => do
+    let i := x.trunc
+    -- (int)(lua_Integer)x: undefined in C past int64, the low 32 bits past int32; far inside both here
+    if !(x.toFloat.isFinite && i.natAbs < 2 ^ 30) then throw (.eff "os.time: a field past 2^30" [])
+    pure i
+  | none, some d => pure d
+  | none, none => callerErr s!"field '{k}' missing in date table"
 
 mutual
 def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
@@ -1243,9 +1434,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
       | .goto l => die s!"no visible label '{l}' for goto"
     | _ => die "not a function"
   | .prim name bound => frame (callPrim n name bound args)
-  | .eff name => match oracle name args with
-    | some vs => pure vs
-    | none => throw (.eff name args)
+  | .eff name => effect oracle name args
   | .tbl _ => do
     -- `__call`, which must be a function: LuaJIT follows no chain of them (lj_meta_call)
     match ← metaOf f "__call" with
@@ -1500,6 +1689,27 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       rawset LOADED (.str m) v
       return [v]
   | "string.gsub" => gsub n args
+  | "print" => printFn oracle args
+  | "io.write" => ioWrite oracle args
+  | "os.date" => osDate oracle args
+  -- the run ends there, with no result for a spec to be about
+  | "os.exit" => throw (.eff "os.exit" args)
+  | "os.time" => do
+    match args.headD .nil with
+    | .nil => return [timeVal (← timeFx oracle "os.time" [])]
+    | t@(.tbl _) => do
+      -- lua_getfield, metamethods and all; mktime is the world's (`os.mktime`, the struct tm's fields)
+      let sec ← tmField "sec" (some 0) (← index n t (lstr "sec"))
+      let min ← tmField "min" (some 0) (← index n t (lstr "min"))
+      let hour ← tmField "hour" (some 12) (← index n t (lstr "hour"))
+      let day ← tmField "day" none (← index n t (lstr "day"))
+      let month ← tmField "month" none (← index n t (lstr "month"))
+      let year ← tmField "year" none (← index n t (lstr "year"))
+      let d ← index n t (lstr "isdst")
+      let isdst : Int := if d.isNil then -1 else if d.truthy then 1 else 0
+      let tm := [sec, min, hour, day, month - 1, year - 1900, isdst].map (.num ∘ .int)
+      return [timeVal (← timeFx oracle "os.mktime" tm)]
+    | _ => badType "table" 0 args
   | "table.foreachi" => do
     let t ← argTbl "foreachi" 0 args
     let f ← argFn "foreachi" 1 args
@@ -1718,11 +1928,12 @@ def basics : List String :=
 def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
-(7: the main thread) -/
+(7: the main thread), the trace (8), io (9), os (10) -/
 def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
-     (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .eff "io"), (lstr "os", .eff "os"), (lstr "print", .eff "print"),
+     (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
+     (lstr "print", .prim "print" []),
      (lstr "debug", .eff "debug")] }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
     "match", "gmatch", "gsub"]
@@ -1735,8 +1946,16 @@ def initHeap : Heap :=
   -- package.path is LUA_PATH=./?.lua's: LuaJIT's default adds directories of the system's
   let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] }
   let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
-    (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .eff "io"), (lstr "os", .eff "os"),
+    (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
     (lstr "debug", .eff "debug")] }
-  #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil]
+  -- the rest of io and os are the world's
+  let fx (lib : String) (names : List String) : List (Val × Val) := names.map fun f => (lstr f, .eff (lib ++ "." ++ f))
+  let io : Tbl := { kv := (lstr "write", .prim "io.write" []) :: fx "io" ["close", "flush", "input", "lines", "open",
+    "output", "popen", "read", "tmpfile", "type", "stdin", "stdout", "stderr"] }
+  let os : Tbl := { kv := [(lstr "date", .prim "os.date" []), (lstr "difftime", .prim "os.difftime" []),
+    (lstr "time", .prim "os.time" []), (lstr "exit", .prim "os.exit" [])] ++ (fx "os" ["clock", "execute", "getenv",
+    "remove", "rename", "setlocale", "tmpname"]) }
+  #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil,
+    .log [], .tbl io, .tbl os]
 
 end Lua

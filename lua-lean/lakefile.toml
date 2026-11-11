@@ -4,3 +4,8 @@ defaultTargets = ["LuaLean"]
 # Lean core only: no dependencies.
 [[lean_lib]]
 name = "LuaLean"
+
+# test/world.lua lifted and its specs under named axioms (check.sh builds it; a user of the library does not)
+[[lean_lib]]
+name = "Examples"
+globs = ["Examples.+"]

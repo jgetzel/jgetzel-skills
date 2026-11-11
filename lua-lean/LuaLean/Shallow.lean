@@ -21,7 +21,7 @@ def tick {α} (n : Nat) (k : Nat → M α) : M α :=
 /-- the interpreter's parameters: the modules given as source, the oracle for effects, and the LuaJIT build -/
 structure Sem where
   srcs : String → Option Block
-  oracle : String → List Val → Option (List Val)
+  oracle : Oracle
   tgt : Target
 
 /-- what calling a closure does, once its address has been read (`call`'s `.fn` clause) -/
@@ -37,6 +37,34 @@ def callClo (I : Sem) (n : Nat) (c : Clo) (args : List Val) : M (List Val) := fr
 theorem call_fn (I : Sem) (n a : Nat) (args : List Val) (h : Heap) (c : Clo) (ha : h[a]? = some (.clo c)) :
     call I.srcs I.oracle I.tgt (n + 1) (.fn a) args h = callClo I n c args h := by
   rw [call]; simp only [bind, EStateM.bind, getObj, get, getThe, MonadStateOf.get, EStateM.get, ha]; rfl
+
+/-! What a call into a builtin or the world is: a spec of a lifted function unfolds its calls with these. -/
+
+theorem call_prim (I : Sem) (n : Nat) (name : String) (bound args : List Val) :
+    call I.srcs I.oracle I.tgt (n + 1) (.prim name bound) args =
+      frame (callPrim I.srcs I.oracle I.tgt n name bound args) := by
+  rw [call]
+
+theorem call_eff (I : Sem) (n : Nat) (name : String) (args : List Val) :
+    call I.srcs I.oracle I.tgt (n + 1) (.eff name) args = effect I.oracle name args := by
+  rw [call]
+
+theorem callPrim_print (I : Sem) (n : Nat) (args : List Val) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "print" [] args = printFn I.oracle args := by
+  rw [callPrim]
+
+theorem callPrim_write (I : Sem) (n : Nat) (args : List Val) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "io.write" [] args = ioWrite I.oracle args := by
+  rw [callPrim]
+
+theorem callPrim_date (I : Sem) (n : Nat) (args : List Val) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "os.date" [] args = osDate I.oracle args := by
+  rw [callPrim]
+
+/-- `os.time()`: the clock -/
+theorem callPrim_time (I : Sem) (n : Nat) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "os.time" [] [] = (do pure [timeVal (← timeFx I.oracle "os.time" [])]) := by
+  rw [callPrim]; rfl
 
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
 abbrev W := Nat → Val → M Unit
