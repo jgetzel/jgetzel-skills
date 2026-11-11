@@ -11,6 +11,7 @@ import SwarmModel.Taken
 import SwarmModel.Boot
 import SwarmModel.Holder
 import SwarmModel.Workspaces
+import SwarmModel.NoWorkLost
 import SwarmModel.Exists
 import SwarmModel.Comms
 import SwarmModel.Gone

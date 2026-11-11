@@ -60,6 +60,12 @@ structure Cfg where
   allWts : Bool := true
   /-- watchd nudges an agent kept only by an unclean worktree, once per idle stretch (PR #122); before, silence -/
   uncleanNudge : Bool := true
+  /-- lifecycle keeps an idle agent while its background job runs (board #15); before, only reap looked at the job, and
+  lifecycle ended an agent with no claim mid-job -/
+  bgLives : Bool := false
+  /-- lifecycle also counts the worktrees a spawned agent added itself (board #15); before, a recorded agent's worktrees
+  were its record alone, so one it added and left unlanded did not keep it -/
+  ownAdded : Bool := false
   /-- watchd runs: false is the mode with none, where nothing ticks -/
   watchd : Bool := true
   /-- `hc ls` answers, so watchd can tell a terminal is gone (else `live_addrs` is nil and no row is judged dead) -/
@@ -278,9 +284,9 @@ def wtmap (c : Cfg) (s : State) (a : Nat) : Option Nat :=
   | none => if (s.agt a).recorded then none else
     ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
 /-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns (owned_wts:
-for a spawned agent with a recorded worktree, that one alone) -/
+for a spawned agent with a recorded worktree, that one alone; with `ownAdded` also those it added) -/
 def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && !(s.agt a).recorded
+  (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && (!(s.agt a).recorded || c.ownAdded)
     && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git (abases c s a) w)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
@@ -333,7 +339,8 @@ def reapLocks (s : State) : State := { s with lock := s.lock.map fun l => if l.e
 def idleFree (s : State) (a : Nat) : Bool :=
   let g := s.agt a
   g.st == .idle && g.aged && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
-def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c s a
+/-- lifecycle may end or reuse a: idle and free, no unlanded worktree, and (`bgLives`) no background job running -/
+def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c s a && !(c.bgLives && (s.agt a).bg)
 /-- lifecycle's reusable agents: since PR #116 one told of the whole pool, its inbox read, has passed it over:
 ended, not reusable; since PR #119 one with no live waiter (it would never read a digest) is ended too -/
 def reusable (c : Cfg) (s : State) (a : Nat) : Bool :=
@@ -714,11 +721,12 @@ def endKeepsGit (c : Cfg) (s : State) : Bool := let r := reapLocks (reapTasks c 
 def orphan (c : Cfg) (s : State) (w : Nat) : Bool :=
   let x := s.git.wt w
   w < c.nwts && x.on && !x.dirty && s.git.safe c x.head && !used c s w && !x.proc && !x.recent
-/-- W3, the agent half: idle, free of claims and locks, and the worktree it works in (wt_map) and every worktree it owns
-clean with its HEAD on the base of one of its tasks (main if none): its task's work is on that task's base -/
+/-- W3, the agent half: idle, free of claims and locks, no background job running, and the worktree it works in (wt_map)
+and every worktree it owns clean with its HEAD on the base of one of its tasks (main if none): its task's work is on that
+task's base -/
 def doneOnBase (c : Cfg) (s : State) (a : Nat) : Bool :=
   idleFree s a && !(wtmap c s a).any (!s.git.landedIn (abases c s a) ·)
-    && !(s.agt a).own.any fun (w, _) => owns s a w && !s.git.landedIn (abases c s a) w
+    && !(s.agt a).own.any (fun (w, _) => owns s a w && !s.git.landedIn (abases c s a) w) && !(s.agt a).bg
 /-- W4: no worktree has a base checked out (so no base is ever refused to `git push . HEAD:<base>`) -/
 def noBaseOut (c : Cfg) (s : State) : Bool :=
   c.wtIds.all fun w => let x := s.git.wt w; !(x.on && x.br.any (· < c.nbases))
@@ -729,6 +737,6 @@ def idleClaim (s : State) (a t : Nat) : Bool := ownsClaimed s a t && (s.agt a).s
 def answered (s : State) (t : Nat) : Bool := !s.pend.contains t || (s.tk t).st == .done || (s.tk t).st == .dropped
 
 /-- what cli_model_spec.lua drives the CLI with (atomic commands; Traces.lean leaves hc and leave out) -/
-def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2, perTaskBase := true, splitGC := true, recordedWorkspaces := true, taskBase := [0, 0, 1, 0, 1] }
+def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2, perTaskBase := true, splitGC := true, recordedWorkspaces := true, taskBase := [0, 0, 1, 0, 1], bgLives := true, ownAdded := true }
 
 end Swarm

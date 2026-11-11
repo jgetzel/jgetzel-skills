@@ -601,7 +601,7 @@ theorem reusable_ready {c : Cfg} {s : State} {a : Nat} (hp : c.passedOver = true
   have hext := reapTasks_ext c s a
   have hr0 := hr
   simp only [reusable, finished, idleFree, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq, hag, and_assoc] at hr
-  obtain ⟨h1, _, _, _, _, _, _, h3, _, _, hw⟩ := hr
+  obtain ⟨h1, _, _, _, _, _, _, _, h3, _, _, hw⟩ := hr
   have h2 : (s.agt a).waiter = true := by simpa [hwa] using hw
   have h4 : (s.agt a).cold = false := by
     cases hc : (s.agt a).cold

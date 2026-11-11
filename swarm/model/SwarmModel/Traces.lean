@@ -145,14 +145,18 @@ whose work is on `formal` only (both reachable from a base), and keeps the idle 
 only, as it owns no task and so its base is main. `base` (board #3): task #2 is on `formal`; its agent lands on main
 only and goes idle (big context, so never reusable), and the tick, which reaps the idle agent 1's lapsed #1, keeps it; once the work is on `formal` too, the tick ends it.
 `spawned` (board #5): a spawned agent has the worktree spawn recorded, so a worktree it adds itself and leaves is not
-the one `wt_map` picks, and the tick sweeps it while the agent works on. -/
+the one `wt_map` picks, and the tick sweeps it while the agent works on. `added` (board #15, finding #27): a spawned agent
+adds two worktrees, lands the one it last edited in and marks its task done; the other holds an uncommitted file, so the
+tick that ends idle agent 1 keeps it (`ownAdded`). -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
   ("base", [add, add, claim 1 1, claim 0 2, gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, done 0 2, stopBig 0, age 0, stop 1, expire 1, tick]),
   ("formal", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 2, gEdit 0 2, gCommit 0 2, gSquash 0 2 1,
     gAdd 0 1, gEdit 0 1, gCommit 0 1, gSquash 0 1 1, wAge 0, wAge 2, stop 0, age 0, tick]),
-  ("spawned", [stop 0, age 0, tick, add, tick, boot 0, gAdd 0 0, wAge 0, tick])]
+  ("spawned", [stop 0, age 0, tick, add, tick, boot 0, gAdd 0 0, wAge 0, tick]),
+  ("added", [stop 0, age 0, tick, add, tick, boot 0, gAdd 0 0, gEdit 0 0, gAdd 0 1, gEdit 0 1, gEdit 0 0, gCommit 0 0,
+    gLand 0 0 0, done 0 1, stop 0, age 0, stop 1, age 1, tick])]
 
 def main (args : List String) : IO UInt32 := do
   if let ["script", dir] := args then
