@@ -148,6 +148,10 @@ theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
   case dropOwn a t =>
     obtain ⟨hg, rfl⟩ := hstep; simp [held] at hg
     exact pfx_task (unbelieve_task ..) (pfx_setTask (fun _ => ⟨by rcases hg.2.2 with e | e <;> simp [e], by simp⟩) hs)
+  case releaseOther t =>
+    obtain ⟨hg, rfl⟩ := hstep
+    have hg' : (s.tk t).st = .claimed ∨ (s.tk t).st = .blocked := by simp at hg; exact hg.2
+    exact pfx_task (post_task ..) (pfx_setTask (fun _ => ⟨by rcases hg' with e | e <;> simp [e], by simp⟩) hs)
   case add deps =>
     obtain ⟨hg, rfl⟩ := hstep
     obtain ⟨n, h2, h3⟩ := hs
@@ -452,7 +456,8 @@ theorem J_claim {c : Cfg} {s : State} {a t : Nat} (hopn : (s.tk t).st = .opn) (h
     · simp [held, hopn] at e
     · rw [hopn] at e; cases e
 
-theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) : J s := by
+theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) :
+    J s := by
   refine reachable_induct ?_ ?_ h
   · have hb : ∀ a, ((init c).agt a).believes = [] := fun a => by
       simp only [State.agt, init, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[a]? <;> rfl
@@ -586,13 +591,14 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Rea
       · rw [hg] at e; cases e
     · cases hstep
   case drop t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask (fun b _ => Or.inr rfl) hs
+  case releaseOther t => simp [hhr] at hstep
   case tick => obtain ⟨_, rfl⟩ := hstep; exact (J_tickOf hfix hI hs).2
 
-/-- S1. With PR #111 (reap reopens a lapsed claim only when its owner is idle), no task has two agents at work
-on it. -/
-theorem oneWorker_of_reachable {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) :
-    oneWorker s = true := by
-  have hJ := J_of_reachable hfix h
+/-- S1. With PR #111 (reap reopens a lapsed claim only when its owner is idle), and no H2 (`humanRelease`: the user's
+release of a working agent's task breaks it, `not_S1_humanRelease`), no task has two agents at work on it. -/
+theorem oneWorker_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State}
+    (h : Reachable c s) : oneWorker s = true := by
+  have hJ := J_of_reachable hfix hhr h
   simp only [oneWorker, List.all_eq_true, List.mem_range, Bool.or_eq_true, beq_iff_eq]
   intro a _ b _
   by_cases hab : a = b

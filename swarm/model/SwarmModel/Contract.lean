@@ -7,6 +7,7 @@ import SwarmModel.NoWorkLost
 import SwarmModel.Fair
 import SwarmModel.Gone
 import SwarmModel.Real
+import SwarmModel.Release
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -25,15 +26,17 @@ open Env
 /-! ## Safety: every reachable state, any number of agents, tasks, locks and messages -/
 
 /-- S1: no two agents, each working or at an hc prompt, both believe they hold one task.
-Switches: `release = .idle`. Env: none. -/
-theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) : oneWorker s = true :=
-  oneWorker_of_reachable hfix h
+Switches: `release = .idle`, and `humanRelease` off: the user's release of a working agent's task breaks it
+(`not_S1_humanRelease`, board task #53). Env: none. -/
+theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) :
+    oneWorker s = true :=
+  oneWorker_of_reachable hfix hhr h
 
 /-- S1 at the board: a task an agent at work believes it holds is held by it on the board (claimed or blocked, it the
-owner), or was dropped. Switches: `release = .idle`. Env: none. -/
-theorem s1_believes_held {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) {a t : Nat}
+owner), or was dropped. Switches: `release = .idle`, `humanRelease` off. Env: none. -/
+theorem s1_believes_held {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) {a t : Nat}
     (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) : held (s.tk t) a = true ∨ (s.tk t).st = .dropped := by
-  rcases (J_of_reachable hfix h).1 a t ht with hi | hd
+  rcases (J_of_reachable hfix hhr h).1 a t ht with hi | hd
   · exact absurd hi.1 (by simp [ha])
   · exact hd
 
@@ -91,6 +94,15 @@ theorem l4_deadLive {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hh :
     (ha : a ∈ c.agents) (hb : c.unbound.contains a = false) (r : Run c) (hf : r.Fair) {n : Nat}
     (hR : Reachable c (r.st n)) (h : deadLive (r.st n) a = true) : ∃ m, n ≤ m ∧ deadLive (r.st m) a = false :=
   deadLive_leads_to hr hw hh ha hb r hf hR h
+
+/-- H2: after the user's or the communicator's release of a task another holds, its ex-owner is sent a stop and does
+not keep at work unaware of it forever: it reads it, stops being at work, or its terminal is gone (which `l4_deadLive`
+ends). Switches: none. Env: none. -/
+theorem h2_released_reads {c : Cfg} (r : Run c) (hf : r.Fair) {n t : Nat} (hR : Reachable c (r.st n))
+    (hact : r.act n = .releaseOther t) :
+    ∃ o i, held ((r.st n).tk t) o = true ∧ ((r.st (n + 1)).msg i).kind = .released ∧ ((r.st (n + 1)).msg i).task = t ∧
+      ∃ m, n + 1 ≤ m ∧ (active ((r.st m).agt o) = false ∨ ((r.st m).agt o).dead = true ∨ i ≤ (r.st m).cur o) :=
+  released_reads r hf hR hact
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 

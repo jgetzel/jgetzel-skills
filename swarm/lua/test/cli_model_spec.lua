@@ -70,7 +70,9 @@ local function check(t, st, where, N, seen, M)
   if #rows ~= #st.log then fail("messages", #rows, #st.log) end
   for i, r in ipairs(rows) do
     local m = st.log[i]
-    if i > seen.n and (r.dest ~= M[m.to] or r.kind ~= SYS[m.kind] or (r.urgent ~= 0) ~= m.urgent) then
+    -- the user's or the communicator's release of another's task (H2) is its own urgent message, not the system's
+    local kind = (m.kind == "released" and m.urgent) and "dm" or SYS[m.kind]
+    if i > seen.n and (r.dest ~= M[m.to] or r.kind ~= kind or (r.urgent ~= 0) ~= m.urgent) then
       fail("message " .. i, r.dest .. " " .. r.kind, tostring(M[m.to]) .. " " .. m.kind)
     end
     idx[r.id] = i
@@ -314,6 +316,7 @@ local function act(t, name, p, N, G, prev)
     else sw(COMMS, "task", "after", tostring(p.t29)) end
   elseif name == "unblock" then sw(COMMS, "task", "unblock", tostring(p.t30), "--answer", "go left")
   elseif name == "drop" then sw(COMMS, "task", "drop", tostring(p.t31))
+  elseif name == "releaseOther" then sw(COMMS, "task", "release", tostring(p.t32))
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
   elseif name == "failExit" then  -- the tick's launch fails: launch.sh exits non-zero
     local f = t.d .. "/launch.fail"

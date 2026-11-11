@@ -759,6 +759,7 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
     exact l3_setTask hs (fun o ho => by simp [held, hg.1] at ho) id
   case add deps => obtain ⟨_, rfl⟩ := hstep; exact l3_setTask hs (fun o ho => by simp [held] at ho) id
   case drop t => obtain ⟨_, rfl⟩ := hstep; exact l3_setTask hs (fun o ho => by simp [held] at ho) id
+  case releaseOther t => obtain ⟨_, rfl⟩ := hstep; exact l3_post (l3_setTask hs (fun o ho => by simp [held] at ho) id)
   case release a t =>
     obtain ⟨_, rfl⟩ := hstep
     exact ag_trivial (l3_setTask hs (fun o ho => by simp [held] at ho) id) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
@@ -831,6 +832,9 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
   case after u deps => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (ow_setTask (fun _ _ => rfl) h1 h2)
   case add deps => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (ow_setTask (fun _ _ => rfl) h1 h2)
   case drop u => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (ow_setTask (fun h _ => by simp [held] at h) h1 h2)
+  case releaseOther u =>
+    obtain ⟨_, rfl⟩ := hstep; rw [post_tk] at h2
+    exact ow_of h1 h2 (ow_setTask (fun h _ => by simp [held] at h) h1 h2)
   case release a u =>
     obtain ⟨_, rfl⟩ := hstep; simp only [unbelieve_tk] at h2
     exact ow_of h1 h2 (ow_setTask (fun h _ => by simp [held] at h) h1 h2)
@@ -967,6 +971,13 @@ theorem drop_frees {c : Cfg} {s s' : State} {t : Nat} (hs : step c s (.drop t) =
   have : (s.tk t).st ≠ .absent := by simp at hg; exact hg.1
   intro o; rw [tk_setTask_self this]; simp [held]
 
+theorem releaseOther_frees {c : Cfg} {s s' : State} {t : Nat} (hs : step c s (.releaseOther t) = some s') :
+    ∀ o, held (s'.tk t) o = false := by
+  simp only [step, releaseOther, when_eq_some] at hs
+  obtain ⟨hg, rfl⟩ := hs
+  have : (s.tk t).st ≠ .absent := by simp at hg; rcases hg.2 with e | e <;> simp [e]
+  intro o; rw [post_tk, tk_setTask_self this]; simp [held]
+
 theorem hcClear_clears' {c : Cfg} {s s' : State} {o t : Nat} (hs : step c s (.hcClear o) = some s')
     (ho : (s.tk t).owner = some o) (ha : AnsIn s o t) : t ∉ s'.pend := by
   simp only [step, hcClear, when_eq_some] at hs
@@ -1056,7 +1067,11 @@ theorem answer_reaches {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true
         · rw [e5] at hok
           obtain ⟨o', ho'⟩ := (hJ (k'+1) (by omega)).2
           rw [drop_frees hok o'] at ho'; cases ho'
-        exact keep hr hbf ⟨e1, e2, e3, e4, e5⟩ (hq k' (by omega)) (pfx_of_reachable (hRk k' (by omega))) hok ih
+        by_cases e6 : r.act k' = .releaseOther t
+        · rw [e6] at hok
+          obtain ⟨o', ho'⟩ := (hJ (k'+1) (by omega)).2
+          rw [releaseOther_frees hok o'] at ho'; cases ho'
+        exact keep hr hbf ⟨e1, e2, e3, e4, e5, e6⟩ (hq k' (by omega)) (pfx_of_reachable (hRk k' (by omega))) hok ih
       obtain ⟨k', hk', hact⟩ := Run.fair_ev hf (f := .boot o) (N0 := k) (fun k' hk' => by
           have := (hall k' hk').2.2.2.2.2
           simp [fair, ha, this]) (fun k' hk' => by

@@ -29,16 +29,16 @@ theorem leaveIf_keep {ok : Bool} {s s' : State} {a b t : Nat} (hs : leaveIf ok s
 
 /-- Any action but the tick, the boot, and the ones that end the agent's claim: a booting holder stays one. -/
 theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = false) (hbf : c.bootFirst = true)
-    (hn : act ≠ .tick ∧ act ≠ .boot a ∧ act ≠ .leave a ∧ act ≠ .reapGone a ∧ act ≠ .drop t)
+    (hn : act ≠ .tick ∧ act ≠ .boot a ∧ act ≠ .leave a ∧ act ≠ .reapGone a ∧ act ≠ .drop t ∧ act ≠ .releaseOther t)
     (hq : ∀ b, act ≠ .bgStart b ∧ act ≠ .die b)
     (hp : Pfx s) (hs : step c s act = some s') (h : Booting s a t) : Booting s' a t := by
   have h0 := h
   obtain ⟨h, hb, hl, hans, hw, hd⟩ := h
   simp only [idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h
   obtain ⟨⟨hst, hown⟩, hidle⟩ := h
-  obtain ⟨n1, n2, n3, n4, n5⟩ := hn
+  obtain ⟨n1, n2, n3, n4, n5, n6⟩ := hn
   cases act
-  all_goals first | exact absurd rfl n1 | exact absurd rfl n2 | exact absurd rfl n3 | exact absurd rfl n4 | exact absurd rfl n5 | skip
+  all_goals first | exact absurd rfl n1 | exact absurd rfl n2 | exact absurd rfl n3 | exact absurd rfl n4 | exact absurd rfl n5 | exact absurd rfl n6 | skip
   case bgStart => exact absurd rfl (hq _).1
   case die => exact absurd rfl (hq _).2
   case leave b =>
@@ -103,7 +103,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     simpa [Booting, idleClaim, ownsClaimed, setTask_agt, tk_setTask_ne hne] using h0
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, hcClear, unblock, add, after, drop, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
+    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -112,6 +112,24 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
   all_goals (try (simp_all [State.agt, State.tk]; done))
   all_goals (try (simp only [agt_setAg, deliver_ag_length, deliver_boot, deliver_st, deliver_bg, deliver_dead] at *; (repeat' split at *) <;> simp_all; done))
   all_goals (trace_state; done)
+
+/-- the user's release of the task a booting agent holds leaves it owning no claimed `t` -/
+theorem releaseOther_fc {c : Cfg} {s s' : State} {a t : Nat} (hs : step c s (.releaseOther t) = some s') (h : Booting s a t) :
+    firstClaimed c s' a ≠ t := by
+  simp only [step, releaseOther, when_eq_some] at hs
+  obtain ⟨_, rfl⟩ := hs
+  have hst : (s.tk t).st = .claimed := by simp [Booting, idleClaim, ownsClaimed] at h; exact h.1.1.1
+  intro e
+  have h0 : firstClaimed c (post (setTask s t ({ · with st := .opn, owner := none, lease := false, hcq := false }))
+      ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩) a ≠ 0 := by
+    rw [e]; rintro rfl; simp [State.tk] at hst
+  have := (fc_owns h0).1
+  rw [e] at this
+  simp only [State.tk, post_task] at this hst
+  simp only [setTask] at this
+  split at this
+  · simp at hst; simp_all
+  · rw [getD_modify] at this; split at this <;> simp_all
 
 -- ---------- the tick ----------
 
@@ -242,7 +260,8 @@ theorem booting_reads {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true)
       · rw [ht] at hok; exact tick_keep hok ih
       · have hb : r.act k ≠ .boot a := fun e => hex ⟨k, hk, e, ih⟩
         obtain ⟨q1, q2, q3, q4⟩ := hq k hk
-        exact keep hr hbf ⟨ht, hb, q2, q3, q4⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih
+        have q5 : r.act k ≠ .releaseOther t := fun e => releaseOther_fc (e ▸ hok) ih (hfc (k + 1) (by omega))
+        exact keep hr hbf ⟨ht, hb, q2, q3, q4, q5⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih
     obtain ⟨k, hk, hact⟩ := Run.fair_ev hf (f := .boot a) (N0 := n) (fun k hk => by
         have := (hall k hk).2.2.2.2.2
         simp [fair, ha, this]) (fun k hk => by

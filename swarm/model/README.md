@@ -42,6 +42,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -171,7 +172,8 @@ Each is a sentence, then the function in `Model.lean` that says it of one state.
 Safety:
 
 - **S1** No task has two agents at work on it: no two agents, each working or at an hc prompt, both believe they
-  hold the same task. `oneWorker`
+  hold the same task. `oneWorker`. Proved with `humanRelease` off only: the user's release of a working agent's task
+  breaks it (finding #32, board #53)
 - **S2** No task is claimed while a task it is after isn't done. `noEarlyStart`
 - **S3** No two live locks of different agents cover a common file. `locksDisjoint` (with `overlap`, which is
   exactly "a common file": `Glob.overlaps_iff`; `noSharedFile_of_reachable` says it of every path)
@@ -229,6 +231,20 @@ tick is enabled wherever the agent's `wake` (`wakeRead` with `racy`) is not. Str
 `reapGone` for a dead row, and either ends the idle stretch. W3 also takes PR #116 and #119 (`passedOver`, `waiterAlive`),
 watchd, and `hc ls` seeing every row (`hcSees`, `unbound = []`): a reusable row whose terminal is gone is woken by
 nothing else.
+
+The user's release (board #40, #45; `Release.lean`). `swarm task release N` by the user (the panel's `human`) or the
+communicator of a task another agent holds is the action `releaseOther` of `step` (the communicator's actions have no
+actor, as `unblock` and `drop`, so the user and the communicator are one action; `humanRelease`, on as in main, switches
+it). So S2-S5, N1, W1-W4 and L1-L4 above are proved with it in `step`; S1 is not (finding #32).
+
+- **H2** The user's release of a task another holds, claimed or blocked (by `task block` or an hc prompt), is always
+  enabled (`releaseOther_enabled`); afterwards the task is open with no owner and no hc prompt, the ex-owner is sent an
+  urgent `.released` stop, and nothing else on the board, no agent and no cursor changes (`releaseOther_spec`); a
+  delivery that shows the stop drops the ex-owner's belief that it holds the task, as for reap's (`deliver_released`);
+  an answered hc prompt does not take the task back. Liveness: on a fair run from a reachable state the ex-owner does
+  not keep at work unaware of the stop forever: it reads it (its cursor passes it), or stops being at work, or its
+  terminal is gone, which L4 then ends (`stop_read`, `released_reads`). No switch refutes H2 (the stop is there or the
+  feature is not); what it refutes is S1.
 
 No work lost (board #15, `NoWorkLost.lean`):
 
@@ -327,7 +343,8 @@ What carries each proof:
   work and has an unread `released` message for it; and no two agents have a belief that isn't of that last,
   stale kind (`J`). Reap under PR #111 reopens a claim only when its owner isn't at work, and tells it; every
   way back to work delivers the inbox first. It needs S4's "no cursor passes a message it didn't show", which
-  holds with or without PR #115, and that `task add` never reuses an id (`Pfx`).
+  holds with or without PR #115, and that `task add` never reuses an id (`Pfx`). The user's release (H2) is not of that
+  kind: it tells an owner that may be at work, so `J` takes `humanRelease` off (finding #32).
 - **S3**: a lock's holder is live, and unexpired locks of different agents share no file (`LkInv`). As files:
   `overlaps_complete` (a path both cover makes `overlaps` true).
 - **S4**: per agent, what was shown is in order and behind the cursor, everything behind the cursor since the
@@ -472,7 +489,11 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 | 30 | P1 | `wakeFix := false` / P1 (`not_P1`, `P1_of`) | Seen four times on 2026-11-11 (ll-2 on PR #178, ll-3 on #180, ll-4 on #181, ll-6 on #182): an agent opens its PR, runs `swarm stay 'CI on PR #N, then merge'` and stops; the checks go green and nothing tells it. watchd's `--ci` polls the base's push runs, not PR checks, and agents are told not to poll `gh`. watchd's "ll-X did not wake on a message (#M)" was about a conflict notice, which by design never wakes (`msgs.wakes`), so the alarm was false and only the communicator's `hc send` moved the agent. The stall: agent 0 claims #1, opens its PR, stays and stops, CI goes green; watchd's poll is the one step and changes nothing, and no other fair action is enabled (`stall`, `fair_of_stall`). With `wakeFix` the poll posts an urgent message and the waiter wakes it (`script-pr-green`, `script-pr-red` are the Lua doing it). | board #28: `ci.pr_watch` in pr-gated repos; `hung` ignores notices |
 | 31 | P2 | `closeFix := false` / P2 (`not_P2`, `P2_of`) | ll-3 merged #180 and never ran `task done`, holding its claim, so a task after it could not start. Agent 0 claims #1, opens its PR, merges it, stays and stops: #1 stays claimed while watchd polls. With `closeFix` the poll marks #1 done with the merge sha and tells the owner (`script-pr-merged`). | board #28: `ci.pr_watch`, every flow |
 
-Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
+| # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
+|---|---|---|---|---|
+| 32 | S1 | `humanRelease := true` (main, board #40) / S1 with it off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | open: board #53 (claim refuses the task to others until the ex-owner has read the stop) |
+
+Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
 its sender is told" is read from the code, not proved (C1 says a live one is there to read them after each tick): watchd posts its notices (`lease-late`, `blocked on #N`, idle
@@ -483,7 +504,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 
 ## What is proved, what is replayed, what isn't modelled
 
-**Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
+**Proved**: S1 to S5, as *Results* says, of the model (S1 with `humanRelease` off, finding #32), and H2 (`Release.lean`). A proof is about `Model.lean`; that the model is the code
 is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist. P1 and P2 (board #28) are proved over `PrWatch.lean`'s fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
@@ -728,7 +749,8 @@ the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_
 its memory gate and the `lost` and `refused` branches (a peer's claim or spawn between the pool and the reservation),
 an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and launch.sh failing after hc started the
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
-generates none (`bgLives` is checked by `cli_lifecycle_spec`); `swarm end`'s refusals; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
+generates none (`bgLives` is checked by `cli_lifecycle_spec`); `swarm end`'s refusals; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
+actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).

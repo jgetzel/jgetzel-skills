@@ -169,7 +169,7 @@ theorem git_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = som
     | (right; left; exact ⟨_, _, rfl⟩) | (right; right; left; exact ⟨_, _, rfl⟩) | (right; right; right; rfl)
     | (left; simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
         readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf,
-        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, stale, nudge, when] at h
+        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, stale, nudge, when] at h
        (repeat' split at h) <;> first | (simp only [Option.some.injEq] at h; subst h; simp; done) | simp at h)
 
 /-- no worktree that is there has a base checked out, per worktree -/
