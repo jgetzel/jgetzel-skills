@@ -58,7 +58,8 @@ only: x86-64's default). The semantics has both, `Target` in `LuaLean/Num.lean`,
 `f_ok` holds for both. Its numbers are integers or doubles on both targets: `.int i` is the double `i` exactly, and
 every operation on integers gives the double result but one, a product of 0 with a negative factor, which is 0 on
 dual-number and -0 on single-number (`Num.mul`). The parser's constants are the same on both (its folder makes no
--0), so a lifted module is too. `test/luasem.lua` tells the targets apart by that product (`1/(z*n)`), not by
+-0), so a lifted module is too. Every constant is narrowed, as LuaJIT's constant table is on dual-number: `-2147483648`
+is the double 2^31 negated, and an integer (`Num.foldNeg`). `test/luasem.lua` tells the targets apart by that product (`1/(z*n)`), not by
 `jit.arch`; a cases file holds the dual-number results (`out`) and the single-number ones where they differ
 (`single`).
 
