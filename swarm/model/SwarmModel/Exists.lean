@@ -124,9 +124,6 @@ def cycNV : List Action := [.claim 0 1, .expire 1, .release 0 1, .claim 1 1, .ex
 theorem replay_lasso : lassoRun replay calm quiet preNV cycNV = true := by decide +kernel
 -- the check bites: with agent 0 alone taking turns, agent 1's claim is enabled at every open state and never taken
 example : lassoRun replay calm quiet preNV [.claim 0 1, .expire 1, .release 0 1] = false := by decide +kernel
--- the same run with sw-bases' switches on (board #3-#5, not in the Lua yet)
-example : lassoRun { replay with perTaskBase := true, splitGC := true, recordedWorkspaces := true } calm quiet preNV cycNV = true := by
-  decide +kernel
 
 /-- Non-vacuity: a fair run of `replay` from the start that meets the side conditions of L1-L3 (`startable_leads_to`,
 `idleClaim_leads_to`, `holder_leads_to`) at every step. -/

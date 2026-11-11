@@ -123,6 +123,10 @@ structure Agent where
   wt : Option Nat := none
   /-- the worktrees it added, with their generation: their directory is named after it (`owned_wts`) -/
   own : List (Nat × Nat) := []
+  /-- swarm spawned it into a worktree it made and recorded (board #5, `recordedWorkspaces`): conflict's wt_map and
+  owned_wts read the record alone, so they see none of the worktrees it adds. That worktree is outside the model; no
+  action edits it, so it stays clean on its task's base -/
+  recorded : Bool := false
   /-- idle 30+ min (UNCLEAN_IDLE) -/
   stale : Bool
   /-- already nudged in this idle stretch -/
@@ -271,10 +275,13 @@ def owns (s : State) (a w : Nat) : Bool := (s.git.wt w).on && (s.agt a).own.cont
 def wtmap (c : Cfg) (s : State) (a : Nat) : Option Nat :=
   match (s.agt a).wt with
   | some w => some w
-  | none => ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
-/-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns -/
+  | none => if (s.agt a).recorded then none else
+    ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
+/-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns (owned_wts:
+for a spawned agent with a recorded worktree, that one alone) -/
 def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git (abases c s a) w)
+  (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && !(s.agt a).recorded
+    && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git (abases c s a) w)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
 def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
@@ -341,7 +348,7 @@ def spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : State :=
   match nextAgent c x with
   | some a =>
     if pl.contains t && members x < c.roster then
-      let x1 := setAg x a fun _ => { (default : Agent) with st := .idle, boot := true }
+      let x1 := setAg x a fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces }
       claimed { x1 with
         cursor := x1.cursor.set a x1.log.length
         start := x1.start.set a x1.log.length
@@ -707,9 +714,11 @@ def endKeepsGit (c : Cfg) (s : State) : Bool := let r := reapLocks (reapTasks c 
 def orphan (c : Cfg) (s : State) (w : Nat) : Bool :=
   let x := s.git.wt w
   w < c.nwts && x.on && !x.dirty && s.git.safe c x.head && !used c s w && !x.proc && !x.recent
-/-- W3, the agent half: idle, free of claims and locks, and every worktree it owns clean with its HEAD on a base -/
+/-- W3, the agent half: idle, free of claims and locks, and the worktree it works in (wt_map) and every worktree it owns
+clean with its HEAD on the base of one of its tasks (main if none): its task's work is on that task's base -/
 def doneOnBase (c : Cfg) (s : State) (a : Nat) : Bool :=
-  idleFree s a && (s.agt a).own.all fun (w, _) => !owns s a w || (!(s.git.wt w).dirty && s.git.safe c (s.git.wt w).head)
+  idleFree s a && !(wtmap c s a).any (!s.git.landedIn (abases c s a) ·)
+    && !(s.agt a).own.any fun (w, _) => owns s a w && !s.git.landedIn (abases c s a) w
 /-- W4: no worktree has a base checked out (so no base is ever refused to `git push . HEAD:<base>`) -/
 def noBaseOut (c : Cfg) (s : State) : Bool :=
   c.wtIds.all fun w => let x := s.git.wt w; !(x.on && x.br.any (· < c.nbases))

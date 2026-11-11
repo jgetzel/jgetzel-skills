@@ -595,8 +595,8 @@ def RInv (c : Cfg) (s : State) : Prop :=
 
 
 theorem reusable_ready {c : Cfg} {s : State} {a : Nat} (hp : c.passedOver = true) (hwa : c.waiterAlive = true)
-    (hI : RInv c s) (ha : a ∈ c.agents) (hr : reusable c (reapLocks (reapTasks c s)) a = true) : Ready (tickOf c s) a := by
-  obtain ⟨hl, hcl, hcur, hcold, hdead⟩ := hI
+    (hcur : ∀ b, s.cur b ≤ s.log.length) (hcold : ∀ b, (s.agt b).cold = true → (s.agt b).big = true)
+    (ha : a ∈ c.agents) (hr : reusable c (reapLocks (reapTasks c s)) a = true) : Ready (tickOf c s) a := by
   have hag : ∀ b, (reapLocks (reapTasks c s)).agt b = s.agt b := fun b => by simp [State.agt]
   have hext := reapTasks_ext c s a
   have hr0 := hr
@@ -691,7 +691,7 @@ theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
             simp only [step, tick, when] at hh
             refine Classical.byContradiction fun hne2 => ?_
             simp [hw, hne2] at hh
-        have := reusable_ready hp hwa (hI m (by omega)) ha hra
+        have := reusable_ready hp hwa (hI m (by omega)).2.2.1 (hI m (by omega)).2.2.2.1 ha hra
         rw [htick] at this
         exact hno' m hm a ha this
       · have hnr : ∀ a ∈ c.agents, reusable c (reapLocks (reapTasks c (r.st m))) a = false := by
@@ -708,7 +708,7 @@ theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
     obtain ⟨_, _, hst⟩ := step_tick hok
     by_cases hz : ∃ a ∈ c.agents, reusable c (reapLocks (reapTasks c (r.st k))) a = true
     · obtain ⟨a, ha, hra⟩ := hz
-      have := reusable_ready hp hwa (hI k (by omega)) ha hra
+      have := reusable_ready hp hwa (hI k (by omega)).2.2.1 (hI k (by omega)).2.2.2.1 ha hra
       rw [← hst] at this
       exact hno' (k+1) (by omega) a ha this
     · have hnr : ∀ a ∈ c.agents, reusable c (reapLocks (reapTasks c (r.st k))) a = false := by
