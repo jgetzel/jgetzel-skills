@@ -29,11 +29,24 @@ for i, k in ipairs(cases.keeps) do
   check("keeps", i, k, r and true or false, k.r)
   seen["keeps " .. tostring(k.r)] = true
 end
-for i, k in ipairs(cases.fate) do
-  local f = k.f
+-- F1 (Decide.lean fateRec): what fate's recorder hears, plain and with f.all, is Lean's list of checks and values
+local function recorded(k, all)
+  local f, got = k.f, {}
   local v = watchd.fate(k.a, k.t, k.x, k.terms, { ours = const(f.ours), claims = const(f.claims), locks = const(f.locks),
-    unlanded = const(f.unlanded), job = const(f.job), pool = f.pool, passed_over = const(f.passed_over), alive = const(f.alive) })
+    unlanded = const(f.unlanded), job = const(f.job), pool = f.pool, passed_over = const(f.passed_over), alive = const(f.alive),
+    all = all, rec = function(label, h) got[#got + 1] = label .. "=" .. tostring(h) end })
+  return v, table.concat(got, " ")
+end
+local function want(l)
+  local r = {}
+  for i, p in ipairs(l) do r[i] = p[1] .. "=" .. tostring(p[2]) end
+  return table.concat(r, " ")
+end
+for i, k in ipairs(cases.fate) do
+  local v, rec = recorded(k, false)
   check("fate", i, k, v, k.r)
+  check("fate rec", i, k, rec, want(k.rec))
+  check("fate rec all", i, k, select(2, recorded(k, true)), want(k.all))
   seen["fate " .. tostring(k.r)] = true
 end
 for i, k in ipairs(cases.wakes) do
