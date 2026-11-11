@@ -1,7 +1,8 @@
 import SwarmModel.Model
+import SwarmModel.Iso
 
-/-! The environment (board #34): every assumption the model makes about the world outside the swarm's db, in one
-file. `Tools` is what the swarm runs (git, hc, the kernel's process table, the filesystem, the clock) and `Tools.git`
+/-! The environment (board #34): every assumption the model makes about the world outside the swarm's db, and about
+sqlite itself (board #33, at the end), in one file. `Tools` is what the swarm runs (git, hc, the kernel's process table, the filesystem, the clock) and `Tools.git`
 is the model's view of the repo: commits as patch sets, branches, worktree slots, under the replay's name map (a slot
 is a worktree path, a branch id a branch name, a commit id a sha). Each assumption is a `Prop` on `Tools` and an
 axiom about `real`, the machine the swarm runs on; `check.sh` refuses a theorem resting on any axiom but these and
@@ -184,5 +185,92 @@ axiom cwds_proc : CwdsProc real
 axiom touched_recent : TouchedRecent real
 /-- `os.time()` (env_spec: now_mono) -/
 axiom now_mono : NowMono real
+
+/-! ## sqlite (board #33)
+
+The db as the swarm's processes see it: `Iso.lean`'s engine (committed versions, the write lock, each connection's
+transaction, SQLITE_BUSY), on `Sql.lean`'s statements (`Iso.sqlLang`), with the code's choices (`Iso.Cfg`'s defaults:
+`begin immediate`; WAL and `busy_timeout(10000)` on every connection, as db.lua sets them). One assumption per kind of
+operation: it does what the engine says. They are sqlite's documented guarantees for a WAL db (isolation.html,
+wal.html, lang_transaction.html), not a model of its internals; each is stress-tested against real sqlite through
+db.lua, many processes at once, by the case of its name in `../lua/test/sqlite_spec.lua`. -/
+
+/-- sqlite as the swarm's processes see it -/
+structure Db where
+  World : Type
+  /-- the engine's reading of the db: its committed versions, each connection's transaction, who holds the write lock,
+  and (ghost) the statements each transaction ran -/
+  view : World → Iso.Eng Sql.DB (Sql.Stmt × List Sql.Val)
+  /-- connection c asked op, got r, and the world became w'. sqlite takes each op at one point (it orders access to
+  the db file and the WAL index with locks, and a statement's rows all come from the snapshot its first step took), so
+  a run is a sequence of these -/
+  Does : World → Nat → Iso.Op (Sql.Stmt × List Sql.Val) → Iso.Res Sql.Out → World → Prop
+
+/-- a run of the db: one op after another -/
+inductive Db.Run (db : Db) (w0 : db.World) : db.World → Prop
+  | refl : db.Run w0 w0
+  | step {w w' c op r} : db.Run w0 w → db.Does w c op r w' → db.Run w0 w'
+
+/-- the ops k picks do what the engine does with the code's `Cfg`, waiting out the busy timeout or not (t) -/
+def Db.ByEngine (db : Db) (k : Iso.Op (Sql.Stmt × List Sql.Val) → Prop) : Prop :=
+  ∀ w c op r w', k op → db.Does w c op r w' → ∃ t, Iso.step {} Iso.sqlLang (db.view w) c op t = some (r, db.view w')
+
+variable (db : Db)
+
+/-- `begin immediate`: takes the write lock if no connection holds it, and the transaction runs on the latest
+committed version; else waits, and gets SQLITE_BUSY once busy_timeout runs out, nothing changed; inside a transaction
+it is an error -/
+def SqliteBegin : Prop := db.ByEngine (· = .begin)
+/-- a statement that only reads: runs on the latest committed version outside a transaction, on the transaction's own
+db inside one; it never waits (WAL: readers don't block on the writer) -/
+def SqliteRead : Prop := db.ByEngine fun op => ∃ s, op = .stmt s ∧ Iso.sqlLang.writes s = false
+/-- a statement that writes: outside a transaction it waits for the write lock (SQLITE_BUSY once busy_timeout runs out,
+nothing changed), runs on the latest committed version and commits at once, all or nothing; inside one it runs on the
+transaction's db; an error changes nothing -/
+def SqliteWrite : Prop := db.ByEngine fun op => ∃ s, op = .stmt s ∧ Iso.sqlLang.writes s = true
+/-- `commit`: the transaction's db becomes the next committed version, all at once, and the lock is freed; WAL: it
+never waits -/
+def SqliteCommit : Prop := db.ByEngine (· = .commit)
+/-- `rollback`, and the process ending (exit or kill -9) in a transaction: the transaction's writes are discarded and
+the lock is freed -/
+def SqliteRollback : Prop := db.ByEngine fun op => op = .rollback ∨ op = .close
+
+/-- all of them -/
+structure SqliteSound : Prop where
+  begin : SqliteBegin db
+  read : SqliteRead db
+  write : SqliteWrite db
+  commit : SqliteCommit db
+  rollback : SqliteRollback db
+
+/-- a db that is the engine -/
+def idealDb : Db where
+  World := Iso.Eng Sql.DB (Sql.Stmt × List Sql.Val)
+  view := id
+  Does w c op r w' := ∃ t, Iso.step {} Iso.sqlLang w c op t = some (r, w')
+
+/-- the assumptions hold together: the engine has them all -/
+theorem sqlite_consistent : SqliteSound idealDb where
+  begin _ _ _ _ _ _ h := h
+  read _ _ _ _ _ _ h := h
+  write _ _ _ _ _ _ h := h
+  commit _ _ _ _ _ _ h := h
+  rollback _ _ _ _ _ _ h := h
+
+instance : Inhabited Db := ⟨idealDb⟩
+
+/-- the swarm's db, as real sqlite runs it -/
+opaque realDb : Db
+
+/-- `begin immediate` (sqlite_spec: sqlite_begin) -/
+axiom sqlite_begin : SqliteBegin realDb
+/-- reads (sqlite_spec: sqlite_read) -/
+axiom sqlite_read : SqliteRead realDb
+/-- writes (sqlite_spec: sqlite_write) -/
+axiom sqlite_write : SqliteWrite realDb
+/-- `commit` (sqlite_spec: sqlite_commit) -/
+axiom sqlite_commit : SqliteCommit realDb
+/-- `rollback` and death (sqlite_spec: sqlite_rollback) -/
+axiom sqlite_rollback : SqliteRollback realDb
 
 end Swarm.Env

@@ -44,4 +44,25 @@ db.log(c, "a", "join")
 local ev = c:one("select * from event")
 assert(ev.agent == "a" and ev.kind == "join" and ev.path == nil and ev.ts >= util.now() - 5)
 c.h:close()
+-- db.connect, eight at once, on fresh dbs and on old ones missing columns (board #33, Iso.migrate_ok): none fails.
+-- Before, two that both read a column missing both added it, and the second died of "duplicate column name".
+local unistd, wait = require "posix.unistd", require "posix.sys.wait"
+for trial = 1, 12 do
+  stdlib.setenv("SWARM_DB", ("%s/race%d/swarm.db"):format(dir, trial))
+  if trial % 2 == 0 then
+    local x = db.connect()
+    x:exec("alter table task drop column base"); x:exec("alter table agent drop column stay")
+    x.h:close()
+  end
+  local pids = {}
+  for i = 1, 8 do
+    pids[i] = unistd.fork()
+    if pids[i] == 0 then
+      local ok, e = pcall(db.connect)
+      if not ok then io.stderr:write(tostring(type(e) == "table" and e.exit or e), "\n") end
+      unistd._exit(ok and 0 or 1)
+    end
+  end
+  for _, p in ipairs(pids) do assert(select(3, wait.wait(p)) == 0, "db.connect failed alongside others") end
+end
 os.execute("rm -rf '" .. dir .. "'")

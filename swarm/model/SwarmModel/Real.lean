@@ -83,4 +83,44 @@ needs no inverse -/
 theorem lapsed_stays {w' : real.World} {lease : Nat} (hl : lease < real.now w) (h : real.Later w w') :
     lease < real.now w' := Nat.lt_of_lt_of_le hl (now_mono w w' h)
 
+/-! ## The real db (board #33): every run of it is a run of the engine, so `Iso.lean`'s theorems hold of it -/
+
+/-- every op of the real db is an engine step -/
+theorem realDb_step {w w' : realDb.World} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)} {r : Iso.Res Sql.Out}
+    (h : realDb.Does w c op r w') : ∃ t, Iso.step {} Iso.sqlLang (realDb.view w) c op t = some (r, realDb.view w') := by
+  cases op with
+  | begin => exact sqlite_begin _ _ _ _ _ rfl h
+  | stmt s =>
+    cases hw : Iso.sqlLang.writes s
+    · exact sqlite_read _ _ _ _ _ ⟨s, rfl, hw⟩ h
+    · exact sqlite_write _ _ _ _ _ ⟨s, rfl, hw⟩ h
+  | commit => exact sqlite_commit _ _ _ _ _ rfl h
+  | rollback => exact sqlite_rollback _ _ _ _ _ (.inl rfl) h
+  | close => exact sqlite_rollback _ _ _ _ _ (.inr rfl) h
+
+/-- a run of the real db from a fresh one is a run of the engine -/
+theorem realDb_reach {w0 w : realDb.World} {d0 : Sql.DB} (h0 : realDb.view w0 = Iso.Eng.init d0)
+    (h : realDb.Run w0 w) : Iso.Reach {} Iso.sqlLang d0 (realDb.view w) := by
+  induction h with
+  | refl => exact h0 ▸ .init
+  | step _ hd ih => obtain ⟨t, hs⟩ := realDb_step hd; exact .step ih hs
+
+/-- the real db is serializable: every committed version is its transaction's statements run on the version before,
+and a transaction holding the lock runs on the latest version -/
+theorem real_serializable {w0 w : realDb.World} {d0 : Sql.DB} (h0 : realDb.view w0 = Iso.Eng.init d0)
+    (h : realDb.Run w0 w) : Iso.Inv Iso.sqlLang (realDb.view w) :=
+  Iso.serializable (realDb_reach h0 h)
+
+/-- every statement answers on its transaction's db -/
+theorem real_stmt_out {w w' : realDb.World} {c : Nat} {s : Sql.Stmt × List Sql.Val} {r : Except String Sql.Out}
+    (h : realDb.Does w c (.stmt s) (.out r) w') : r = Iso.sqlLang.out s ((realDb.view w).view c) := by
+  obtain ⟨t, hs⟩ := realDb_step h; exact Iso.stmt_out hs
+
+/-- SQLITE_BUSY only after waiting out busy_timeout, with no transaction open, and nothing changed -/
+theorem real_busyClean {w0 w w' : realDb.World} {d0 : Sql.DB} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)}
+    {b : Bool} (h0 : realDb.view w0 = Iso.Eng.init d0) (h : realDb.Run w0 w) (hd : realDb.Does w c op (.busy b) w') :
+    b = true ∧ (realDb.view w).mode c = .auto ∧ realDb.view w' = realDb.view w := by
+  obtain ⟨t, hs⟩ := realDb_step hd
+  exact Iso.busyClean_of rfl _ c op t b _ (realDb_reach h0 h) hs
+
 end Swarm.Env
