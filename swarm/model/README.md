@@ -28,6 +28,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
+| `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -274,17 +275,29 @@ and kept by every action but `die` (`d_step`).
   while live (a spawn takes only a slot that isn't live), so "not dead and live" means the row was ended. The three
   hypotheses are each needed: findings #14 and #15 (`deadLive_not_stuck` is the one-state form).
 
+- (`answer_reaches`, `Answer.lean`) L3, joined: one statement about a task. From any reachable state of a fair run, an answer
+  pending on task `t` is eventually read by whoever holds `t`, or `t` ends: done, dropped, or open again with nobody holding it
+  (whoever takes it next reads the answer on the task as it takes it: `claim`'s `takes`, or a spawned agent's first turn, which
+  the theorem covers again). Built from the invariant `L3I`, proved of every reachable state (`l3_of_reachable`, for `racy =
+  false`, `answerOnTask`, `bootFirst`): a booting agent is idle with no waiter and holds at most one task, claimed with a live
+  lease, so no spawned agent blocks a task before its first turn and `firstClaimed` is its task (`booting_fc`); whoever holds a
+  task is live, so `unblock` finds its owner live and not booting (`unblock_owner`, the hypotheses of `unblock_pa`); and for a
+  pending answer the holder is booting or has the answer unread in its inbox, and if the task is blocked it is an hc prompt the
+  holder sits at. `owner_step`: a held task changes hands only in a tick, to an agent spawned for it. The proof: a booting
+  holder boots (`keep`, `tick_keep`, `boot_reads`), unless it leaves or the task is dropped; otherwise the holder never changes,
+  and it reads its inbox (`readAll` when it works infinitely often, `hcClear` when it sits at a prompt infinitely often), or it is
+  idle holding the task claimed from some point on, which L2 (`idleClaim_leads_to`) says doesn't last. Same hypotheses on the run
+  as the holder half: no `bgStart` or `die` after the start, none dead or running one at it.
+
 Not proved: L1 for the pool (false, #16), L4 with `racy` (a dead agent's own `claimRead` would disable its reap; the model
-lets a dead agent act, the code doesn't), that `unblock` finds its owner live and not booting (an invariant: no spawned agent blocks
-a task before its first turn; `unblock_pa` takes both as hypotheses), and the two halves joined into one statement about a task
-(the reopened half's hypotheses are taken, not derived). With `bootFirst := false` L3 is false (#17).
+lets a dead agent act, the code doesn't). With `bootFirst := false` L3 is false (#17).
 
 Non-vacuity (`Exists.lean`): fair runs exist, so the theorems above are not true of nothing. `lasso_run`: a run from the
 start that ends in a cycle (`lassoRun`: the cycle comes back to the state it left, and every fair action enabled at a state of
 the cycle is in the cycle) is a fair `Run`. `fair_run_exists`: one on `replay` with every shipped fix on (task #1 added; agents 0
 and 1 take turns claiming it, letting the lease lapse and releasing it), from the start, every state reachable, no dead
 terminal and no background job at any state, and no `leave`, `die`, `waiterGone`, `reapGone` or `bgStart`: the side
-conditions of `startable_leads_to`, `idleClaim_leads_to` and `holder_leads_to` at every step (an `example` applies L1 to it).
+conditions of `startable_leads_to`, `idleClaim_leads_to`, `holder_leads_to` and `answer_reaches` at every step (an `example` applies L1 to it).
 The same cycle is fair with sw-bases' switches on; with agent 1's claim left out it is not (the check bites). It shows the
 fairness and side conditions satisfiable together, not that L2's, L3's or L4's antecedent (an idle holder, an unread answer, a dead
 terminal) occurs in a fair run: on this one both agents stay working.
@@ -344,7 +357,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined as one statement about fair runs (L1, per task, L2, L3's two halves and L4 are, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
