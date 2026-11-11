@@ -20,3 +20,5 @@ import SwarmModel.LockSrc
 import SwarmModel.LuaHoare
 import SwarmModel.Real
 import SwarmModel.SqlParse
+import SwarmModel.Lifted.Locks
+import SwarmModel.Lifted.Tasks

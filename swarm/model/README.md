@@ -39,6 +39,13 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Lua/Run.lean` | running a chunk as `luasem_spec.lua` does, and its results as text |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua` |
 | `SwarmModel/LuaRun.lean`, `LuaDump.lean` | run Lua files through the interpreter; print a parsed file as Lean |
+| `SwarmModel/Lua/Show.lean` | a syntax tree as the Lean term that builds it (for `LuaDump.lean` and `LuaLift.lean`) |
+| `SwarmModel/Lua/Shallow.lean` | the translator's target (board #31): one combinator per clause of the interpreter, in its monad, and one lemma per combinator saying it is that clause (`CE_bin`, `CQ_stat`, …, `CFn_fn`) |
+| `SwarmModel/LuaLift.lean` | the translator: a Lua file to each function's parsed body, shallow form and proof that the two are the same |
+| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
+| `SwarmModel/LuaPrint.lean` | a parsed file printed back as Lua, fully parenthesised |
+| `lift.sh [--check \| --all]` | writes `Lifted/`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof |
+| `parsecheck.sh` | the parser against LuaJIT: each module, parsed and printed back, compiles to the source's bytecode |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
@@ -489,6 +496,42 @@ rule per interpreter clause and per Lua function (`glob`, `startswith`, `lit`, `
 `find("^[!^]")`, `find("]", i, true)`, `find("[*?[]")`, `gsub("/+$", "")` and `gmatch(".")`, and the bounds the task
 names (#p < 32767 for i*65536+j in 32 bits; the memo key collides once #q >= 65535, under PATH_MAX 4096).
 
+**Lifted by a translator** (board #31, rung 4): AutoCorres's first stages for our Lua. `LuaLift.lean` writes each
+function of a file (the chunk itself is `chunk`) as three things: `f_body`, its parsed body; `f`, a shallow function in
+the interpreter's monad, built from `Lua/Shallow.lean`'s combinators; and `f_ok`, a proof term that `f` is the
+interpreter's call of the closure. `CFn I (f I env0 c_x …) ⟨ps, va, f_body, env0⟩` says: for all arguments and every
+fuel, `f args n = callClo I n clo args`, the same result and the same heap (`call_fn`: that is `call (n + 1) (.fn a)`
+when the heap holds the closure at `a`). Its hypotheses are the closure's free names: `env0.lookup "x" = some c_x` for
+an upvalue, `= none` for a global. What the shallow form drops: the syntax tree (but the bodies of the closures it
+creates, which are data in the heap) and every name lookup: a local is the Lean variable naming its cell, a global is
+`_G`'s field, a `goto` out of a statement is `gotos` of the block's labels. What it keeps: the fuel, threaded as each
+clause threads it (`tick`), so the two are equal rather than alike; the cells, so the heap is the same heap; and
+calls, which go through the interpreter's `call` (each function is lifted alone, so nothing links a call to the lifted
+callee). The translator is untrusted: Lean checks each proof, so what is trusted is the parser and `Interp.lean`. A
+wrong shallow function is refused: one `+` turned into `-` in a lifted function and its proof does not check. Each
+proof is a term in which every lemma meets its goal by first-order unification; where a lemma's conclusion had to be
+computed (`trail full`) or a projection inverted (`cx.va`), the elaborator searched for minutes, so those are side
+conditions closed by `rfl`.
+
+Results: locks.lua (20 functions, 2 s) and tasks.lua (37, 7 s) are committed (`lift.sh`; `locksrc_spec.lua` and
+`replay.sh` fail when they are stale), and `chunk_body_eq` says locks.lua's chunk is #39's `LocksSrc`. Every module
+under `swarm/lua/swarm`, 366 functions in 21 files, lifts and proves (`lift.sh --all`, about a minute; run.lua is the
+slowest at 30 s); `replay.sh` runs it. No code/model divergence came up, and none could at this stage: the shallow
+form is the interpreter, re-expressed. Rung 3's functions equal to #26's (`tokens`, `covers`, `overlaps` against
+Glob.lean) is functional correctness, not translation: board #44 (RunP rules per combinator, then `glob` to `one` on
+the lifted functions) and #42. The parser, checked (`parsecheck.sh`, in `replay.sh`): each module printed back from
+its tree compiles under LuaJIT to the source's bytecode, every number constant compared at `%.17g` (the listing shows
+`%.14g`); all 21 agree. A printer that re-associated `(x op y) op z` made 16 of 21 differ, so the check sees a tree's
+shape. It replaces "diff the printed text against the source modulo whitespace", which the tree cannot pass: it keeps
+no surface form, and the sources have 2767 `a.b`, 434 `f"s"`, 215 `function M.f`, 111 escaped strings, 45 `;`, 22
+folded constants and more that print otherwise. The one thing the tree loses that bytecode sees is `else end` (an
+empty else is one more `JMP`); no module has one.
+
+Not yet, AutoCorres's later stages: locals as values (board #49: a cell no closure can write and the function writes
+only at its `local` is a Lean `let`; this needs a frame theorem over the interpreter: which steps write a cell); calls
+linked to lifted callees (#50: `call_fn` and the loaded heap's closure facts, #40); and a pure function lifted to a
+pure Lean function without fuel or heap (#44, #42 for locks.lua).
+
 **Environment** (board #34, rung 4c): `Env.lean` holds every assumption about the world outside the db, and `check.sh`
 fails on a theorem resting on any other axiom. The model's view of the repo is `Tools.git`, under the replay's name map;
 only the direction the code needs is assumed (a tool saying "landed" means landed). The twelve, each tested by the case
@@ -628,6 +671,9 @@ luajit swarm/lua/test/sql_inventory.lua > /tmp/inv &&
   gzip -9c /tmp/sql.json > swarm/model/sqlcases.json.gz
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
 luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
+swarm/model/lift.sh                       # after a change to locks.lua or tasks.lua: regenerate Lifted/
+swarm/model/lift.sh --all                 # every module lifted and proved, in a scratch directory
+swarm/model/parsecheck.sh                 # the parser against LuaJIT's bytecode
 SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
 cd swarm/model && lake env lean --run SwarmModel/LuaRun.lean f.lua   # f.lua under the Lean semantics, and
 luajit ../lua/test/luasem.lua f.lua                                 # under LuaJIT, written alike
