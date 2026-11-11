@@ -1,0 +1,123 @@
+import SwarmModel.Workers
+import SwarmModel.Basic
+import SwarmModel.Locks
+import SwarmModel.Inbox
+import SwarmModel.Workspaces
+import SwarmModel.NoWorkLost
+import SwarmModel.Fair
+import SwarmModel.Gone
+import SwarmModel.Real
+
+/-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
+here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
+breaks this statement breaks the build. Import this module alone (`example/Client.lean` does).
+
+Each says what it guarantees and what it rests on. "Switches" are the `Cfg` fields it takes as hypotheses: the fixes,
+all on in `Cfg`'s defaults but `splitGC`, `perTaskBase`, `recordedWorkspaces`, `bgLives` and `ownAdded` (main has
+them; `replay` sets them).
+"Env" is which of `Env.lean`'s assumptions it takes, as hypotheses on any `Tools` or `Db`: the model theorems take
+none. For the machine the swarm runs on, `Env.real` and `Env.realDb`, `Real.lean` supplies them from the axioms
+(`Env.landedRef_reach`, `Env.realDb_sound`, …); for another, supply proofs (`Env.consistent` for `Env.ideal`). -/
+
+namespace Swarm.Contract
+open Env
+
+/-! ## Safety: every reachable state, any number of agents, tasks, locks and messages -/
+
+/-- S1: no two agents, each working or at an hc prompt, both believe they hold one task.
+Switches: `release = .idle`. Env: none. -/
+theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) : oneWorker s = true :=
+  oneWorker_of_reachable hfix h
+
+/-- S1 at the board: a task an agent at work believes it holds is held by it on the board (claimed or blocked, it the
+owner), or was dropped. Switches: `release = .idle`. Env: none. -/
+theorem s1_believes_held {c : Cfg} (hfix : c.release = .idle) {s : State} (h : Reachable c s) {a t : Nat}
+    (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) : held (s.tk t) a = true ∨ (s.tk t).st = .dropped := by
+  rcases (J_of_reachable hfix h).1 a t ht with hi | hd
+  · exact absurd hi.1 (by simp [ha])
+  · exact hd
+
+/-- S2: no task was ever claimed while a task it is after wasn't done. Switches: `claimChecksDeps`. Env: none. -/
+theorem s2_noEarlyStart {c : Cfg} (hfix : c.claimChecksDeps = true) {s : State} (h : Reachable c s) :
+    noEarlyStart s = true :=
+  noEarlyStart_of_reachable hfix h
+
+/-- S3, as files: two live locks of different agents never both cover one path. Switches: `lockOverlap`, `lockForms`.
+Env: none. -/
+theorem s3_noSharedFile {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State}
+    (h : Reachable c s) {p q : Nat} {l m : Lock} {a b : Nat} (hp : s.lock[p]? = some l) (hq : s.lock[q]? = some m)
+    (hpq : p ≠ q) (ha : l.holder = some a) (hb : m.holder = some b) (hab : a ≠ b) (he1 : l.exp = false)
+    (he2 : m.exp = false) (x : String) (hx : Glob.Bytes x.toList) :
+    ¬ (covers c x (c.pat p) = true ∧ covers c x (c.pat q) = true) :=
+  noSharedFile_of_reachable hfix hforms h hp hq hpq ha hb hab he1 he2 x hx
+
+/-- S4: no message is shown twice, and no cursor passes a message it didn't show. Switches: `deliverCas`. Env: none. -/
+theorem s4_inboxExact {c : Cfg} (hfix : c.deliverCas = true) {s : State} (h : Reachable c s) : inboxExact s = true :=
+  inboxExact_of_reachable hfix h
+
+/-- S5: every done task has evidence. Switches: `evidenceRequired`. Env: none. -/
+theorem s5_doneHasEvidence {c : Cfg} (hfix : c.evidenceRequired = true) {s : State} (h : Reachable c s) :
+    doneHasEvidence s = true :=
+  doneHasEvidence_of_reachable hfix h
+
+/-- W1: a step removes a worktree only if it was clean, unattached, had no process inside and its HEAD on a protected
+ref, and deletes a branch only if it is no protected ref and its tip was on one. Switches: `splitGC`. Env: none
+(`env_sweepGate` is the same gate on the tools' answers). -/
+theorem w1_gcOk (c : Cfg) (hc : c.splitGC = true) {s s' : State} (act : Action) (h : Reachable c s)
+    (hs : step c s act = some s') : gcOk c s s'.git = true :=
+  W1_of c hc s act s' h hs
+
+/-- N1: watchd never discards work that isn't landed (`N1`'s four parts). Switches: `release = .idle`, `bgKeeps`,
+`retake`, `allWts`, `bgLives`, `ownAdded`, `perTaskBase`, `splitGC`. Env: none. -/
+theorem n1_noWorkLost (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hret : c.retake = true)
+    (haw : c.allWts = true) (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true)
+    (hs : c.splitGC = true) : N1 c :=
+  N1_of c hrel hbk hret haw hbl hoa hp hs
+
+/-! ## Liveness: over fair runs (`Run.Fair`: every action enabled infinitely often in `fair` is taken) -/
+
+/-- L2: a claimed task whose owner is idle is eventually done or open again, or its owner back at work, while no agent
+starts a background job or dies. Switches: `racy = false`, `release ≠ .ended`, `watchd`. Env: none. -/
+theorem l2_idleClaim {c : Cfg} (hr : c.racy = false) (hfix : c.release ≠ .ended) (hw : c.watchd = true) {a t : Nat}
+    (ha : a ∈ c.agents) (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .bgStart b ∧ r.act k ≠ .die b)
+    (hbg0 : ((r.st n).agt a).bg = false) (hdd0 : ((r.st n).agt a).dead = false)
+    (h : idleClaim (r.st n) a t = true) : ∃ m, n ≤ m ∧ idleClaim (r.st m) a t = false :=
+  idleClaim_leads_to hr hfix hw ha ht r hf hq hbg0 hdd0 h
+
+/-- L4: a row whose terminal is gone is eventually ended (its claims and locks released). Switches: `racy = false`,
+`watchd`, `hcSees`, the row bound (`unbound`). Env: none (`env_reapGone` is `hc ls` telling it). -/
+theorem l4_deadLive {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hh : c.hcSees = true) {a : Nat}
+    (ha : a ∈ c.agents) (hb : c.unbound.contains a = false) (r : Run c) (hf : r.Fair) {n : Nat}
+    (hR : Reachable c (r.st n)) (h : deadLive (r.st n) a = true) : ∃ m, n ≤ m ∧ deadLive (r.st m) a = false :=
+  deadLive_leads_to hr hw hh ha hb r hf hR h
+
+/-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
+
+/-- watchd.landed_ref saying "landed" means the commit is reachable from the branch, or `gh` said so.
+Env: `AncestorReach`, `SameContentReach`. -/
+theorem env_landedRef {t : Tools} (ha : AncestorReach t) (hsc : SameContentReach t) {w : t.World} {k b : Nat}
+    {gh : Bool} (h : landedRef t w k b gh = true) : (t.git w).reachFrom k b = true ∨ gh = true :=
+  Tools.landedRef_reach ha hsc h
+
+/-- The sweep's gate on the tools' answers (no `gh`) is W1's premise on the model's view.
+Env: `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent`. -/
+theorem env_sweepGate {t : Tools} (ha : AncestorReach t) (hsc : SameContentReach t) (hsl : StatusClean t)
+    (hlo : ListedOn t) (hcp : CwdsProc t) (htr : TouchedRecent t) {w : t.World} {c : Cfg} {used : Bool} {x : Nat}
+    (h : sweepGate t w c used x (fun _ => false) = true) :
+    let y := (t.git w).wt x
+    y.on = true ∧ used = false ∧ y.proc = false ∧ y.recent = false ∧ y.dirty = false ∧ (t.git w).safe c y.head = true :=
+  Tools.sweepGate_W1 ha hsc hsl hlo hcp htr h
+
+/-- reap reads a bound row as gone exactly when its terminal is. Env: `HcLsLive`. -/
+theorem env_reapGone {t : Tools} (hl : HcLsLive t) {w : t.World} {h : Nat} :
+    t.hcLs w h = false ↔ t.termLive w h = false :=
+  Tools.reap_gone hl
+
+/-- The db is serializable: every committed version is its transaction's statements run on the one before, and a
+transaction holding the write lock runs on the latest. Env: `SqliteSound` (all five sqlite assumptions). -/
+theorem db_serializable {db : Db} (hdb : SqliteSound db) {w0 w : db.World} {d0 : Sql.DB}
+    (h0 : db.view w0 = Iso.Eng.init d0) (h : db.Run w0 w) : Iso.Inv Iso.sqlLang (db.view w) :=
+  Db.serializable hdb h0 h
+
+end Swarm.Contract
