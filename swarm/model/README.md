@@ -25,6 +25,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 (sw-bases) as statements, and their refutations on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
+| `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -239,8 +240,17 @@ and kept by every action but `die` (`d_step`).
 
 Not proved: L1 for the pool (false, #16), that `unblock` finds its owner live and not booting (an invariant: no spawned agent blocks
 a task before its first turn; `unblock_pa` takes both as hypotheses), and the two halves joined into one statement about a task
-(the reopened half's hypotheses are taken, not derived). With `bootFirst := false` L3 is false (#17). No fair run is shown to exist (strong fairness could be unsatisfiable in principle), so the
-theorems could in principle be vacuous; the runs of findings #1, #3, #8, #9 still show the three properties fail without the fixes.
+(the reopened half's hypotheses are taken, not derived). With `bootFirst := false` L3 is false (#17).
+
+Non-vacuity (`Exists.lean`): fair runs exist, so the theorems above are not true of nothing. `lasso_run`: a run from the
+start that ends in a cycle (`lassoRun`: the cycle comes back to the state it left, and every fair action enabled at a state of
+the cycle is in the cycle) is a fair `Run`. `fair_run_exists`: one on `replay` with every shipped fix on (task #1 added; agents 0
+and 1 take turns claiming it, letting the lease lapse and releasing it), from the start, every state reachable, no dead
+terminal and no background job at any state, and no `leave`, `die`, `waiterGone`, `reapGone` or `bgStart`: the side
+conditions of `startable_leads_to`, `idleClaim_leads_to` and `holder_leads_to` at every step (an `example` applies L1 to it).
+The same cycle is fair with sw-bases' switches on; with agent 1's claim left out it is not (the check bites). It shows the
+fairness and side conditions satisfiable together, not that L2's or L3's antecedent (an idle holder, an unread answer)
+occurs in a fair run: on this one both agents stay working.
 
 ## Findings
 
@@ -293,7 +303,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 ## What is proved, what is replayed, what isn't modelled
 
 **Proved**: S1 to S5, as *Results* says, of the model. A proof is about `Model.lean`; that the model is the code
-is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined, and L4 as statements about fair runs (L1, per task, L2 and L3's two halves are, for `racy = false`).
+is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. **Not proved**: L3's two halves joined, and L4 as statements about fair runs (L1, per task, L2 and L3's two halves are, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist).
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
 for (`task claim`, `lock`, `post`, `hook stop`, `swarm wait`, `watchd --once`, …) or, for time and the world,
