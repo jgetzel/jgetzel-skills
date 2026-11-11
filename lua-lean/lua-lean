@@ -54,8 +54,9 @@ difftest)
   trap 'rm -rf "$tmp"' EXIT
   seed=${2:-$(date +%s)}
   echo "seed $seed"
-  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && luajit "$here/test/luasem.lua" --cases "$tmp/cases.lua" &&
-    luajit -joff "$here/test/luasem.lua" --cases "$tmp/cases.lua" ;;
+  # from lua-lean/, where the chunks find test/mods
+  tool Cases "${1:-3000}" "$seed" "$tmp/cases.lua" && cd "$here" && luajit test/luasem.lua --cases "$tmp/cases.lua" &&
+    luajit -joff test/luasem.lua --cases "$tmp/cases.lua" ;;
 parsecheck)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1

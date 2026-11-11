@@ -49,6 +49,6 @@ def swarmChunk : G (String × List String) := do
 
 def main (args : List String) : IO UInt32 := do
   let [n, seed, file] := args | do IO.eprintln "usage: LuaCases.lean <n> <seed> <file>"; return 1
-  let srcs ← loadSources "../lua/swarm" "swarm"
-  writeCases swarmChunk (srcsOf srcs) n.toNat! seed.toNat! file
+  let srcs ← loadSources "../lua/swarm"
+  writeCases swarmChunk (srcsOf srcs) n.toNat! seed.toNat! file "../lua/?.lua"
   return 0

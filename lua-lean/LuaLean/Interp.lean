@@ -1,4 +1,4 @@
-import LuaLean.Syntax
+import LuaLean.Parse
 import LuaLean.Pat
 
 /-! The semantics: an interpreter for the subset, on fuel. A value is nil, a boolean, a number, a string (its bytes),
@@ -294,6 +294,7 @@ def G : Nat := 0
 def LOADED : Nat := 1
 def STRING : Nat := 2
 def TABLE : Nat := 3
+def PACKAGE : Nat := 5
 
 def getVar (cx : Ctx) (x : String) : M Val :=
   match cx.env.lookup x with
@@ -880,6 +881,49 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     | ["math", f] => mathFn f args
     | _ => die s!"{name}: not in the subset"
 
+-- ---------- chunks: load, dofile, require ----------
+
+/-- a chunk's name as its error messages give it (lj_debug_shortname, LUA_IDSIZE 60): `=name` as its first 59 bytes,
+`@file` as the file, its last 56 bytes after `...` when it has 60 or more, a source as `[string "..."]` of its first
+line, cut to 45 bytes and `...` when that line is cut or longer than 48. The name is a C string: it ends at a NUL -/
+def shortSrc (s : List Char) : String :=
+  let c (l : List Char) := l.takeWhile (· != '\x00')
+  String.ofList <| match s with
+  | '=' :: r => (c r).take 59
+  | '@' :: r => if r.length ≥ 60 then "...".toList ++ c (r.drop (r.length - 56)) else c r
+  | _ =>
+    let s := c s
+    let len := (s.takeWhile (·.toNat ≥ 32)).length.min 48
+    if len < s.length then "[string \"".toList ++ s.take (len.min 45) ++ "...\"]".toList
+    else "[string \"".toList ++ s ++ "\"]".toList
+
+/-- package.path's templates (`;` between them, empty ones skipped), each with `?` the name -/
+def pathFiles (path name : List Char) : List String :=
+  ((String.ofList path).splitOn ";").filter (· != "") |>.map fun t => t.replace "?" (String.ofList name)
+
+/-- what `require` leaves in package.loaded while a module loads: a light userdata in LuaJIT -/
+def SENTINEL : Val := .eff "require sentinel"
+
+def isSentinel : Val → Bool
+  | .eff "require sentinel" => true
+  | _ => false
+
+/-- load's and loadstring's optional string arguments (lj_lib_optstr) -/
+def optStr (fname : String) (i : Nat) (args : List Val) : M (Option (List Char)) :=
+  match args.getD i .nil with
+  | .nil => pure none
+  | _ => some <$> argStr fname i args
+
+/-- a chunk's source as a function of no parameters and every argument, its free names globals; a source
+LuaJIT would load as bytecode, or the parser rejects, stops the run: its messages are LuaJIT's parser's -/
+def loadSrc (src name : List Char) (mode : Option (List Char)) : M (List Val) := do
+  if src.head? == some '\x1b' then throw (.eff "load: a bytecode chunk" [])
+  if let some m := mode then
+    if !m.contains 't' then return [.nil, lstr "attempt to load chunk with wrong mode"]
+  match parseChunk src (shortSrc name) with
+  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, []⟩))]
+  | .error _ => throw (.eff "load: a syntax error" [])
+
 -- ---------- evaluation ----------
 
 /-- the label l ends the block: the continue idiom, the one goto the subset has -/
@@ -1252,24 +1296,55 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     | _ => badType "function" 1 args
     catchVal (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
       (fun e => do pure [.bool false, (← call n (args.getD 1 .nil) [e]).headD .nil])
+  | "load" | "loadstring" => do
+    let cn ← optStr name 1 args
+    let mode ← optStr name 2 args
+    -- an environment table becomes the chunk's (setfenv), which the semantics does not model
+    if let .tbl _ := args.getD 3 .nil then throw (.eff "load: an environment" [])
+    match args.headD .nil with
+    | .str s => loadSrc s (cn.getD s) mode
+    | .num x => loadSrc x.toText (cn.getD x.toText) mode
+    | _ => do
+      let f ← argFn name 0 args
+      -- LuaJIT checks the mode after the reader's first piece, not after all of them
+      if mode.any (!·.contains 't') then throw (.eff "load: a reader and a mode without t" [])
+      loadSrc (← readChunk n f []) (cn.getD "=(load)".toList) mode
+  | "dofile" => do
+    -- no name: stdin
+    let p ← match ← optStr "dofile" 0 args with
+      | some p => pure (String.ofList p)
+      | none => throw (.eff "dofile: stdin" [])
+    match srcs p with
+    | some b => call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) []
+    | none => throw (.eff s!"dofile {p}" [])
   | "require" => do
     let m ← argStr "require" 0 args
     let v ← rawget LOADED (.str m)
-    if !v.isNil then return [v]
+    if v.truthy then
+      if isSentinel v then callerErr s!"loop or previous error loading module '{String.ofList m}'"
+      return [v]
     -- package.preload's two: each also becomes a field of `table`
     if m == "table.new".toList || m == "table.clear".toList then
       let f := Val.prim (String.ofList m) []
       rawset TABLE (.str (m.drop 6)) f
       rawset LOADED (.str m) f
       return [f]
-    let v ← match srcs (String.ofList m) with
-      | some b => do
-        let f ← alloc (.clo ⟨[], true, b, []⟩)
-        let rs ← call n (.fn f) [.str m]
-        pure (match rs.headD .nil with | .nil => .bool true | v => v)
-      | none => pure (.eff (String.ofList m))
-    rawset LOADED (.str m) v
-    return [v]
+    let path ← match ← rawget PACKAGE (lstr "path") with
+      | .str p => pure p
+      | _ => throw (.eff "require: package.path not a string" [])
+    -- the first file of the path given as source (lib_package.c's loader_Lua), else a C module: a handle
+    match (pathFiles path (m.map fun c => if c == '.' then '/' else c)).findSome? srcs with
+    | some b => do
+      rawset LOADED (.str m) SENTINEL
+      let r := (← call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [.str m]).headD .nil
+      if !r.isNil then rawset LOADED (.str m) r
+      let v ← rawget LOADED (.str m)
+      if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
+      return [v]
+    | none =>
+      let v := Val.eff (String.ofList m)
+      rawset LOADED (.str m) v
+      return [v]
   | "string.gsub" => gsub n args
   | "table.foreachi" => do
     let t ← argTbl "foreachi" 0 args
@@ -1288,6 +1363,19 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     sortAux n t cmp 1 len
     pure []
   | _ => basicFn tgt name bound args
+
+/-- load's reader: f's results concatenated until nil or the empty string. LuaJIT's parser calls the reader as it
+reads, so an error in it, which load returns, may come at another call, and a result neither nil nor a string is
+LuaJIT's own error (`load(function() return 1 end)` is "not enough memory"): both stop the run -/
+def readChunk (n : Nat) (f : Val) (acc : List Char) : M (List Char) :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 => do
+    match ← catchVal (call n f []) (fun vs => pure (some (vs.headD .nil))) (fun _ => pure none) with
+    | some .nil | some (.str []) => pure acc
+    | some (.str s) => readChunk n f (acc ++ s)
+    | none => throw (.eff "load: an error in the reader" [])
+    | some _ => throw (.eff "load: a reader result not a string" [])
 
 /-- table.foreachi from i: f(i, t[i]) until a result is not nil -/
 def foreachi (n : Nat) (t : Nat) (f : Val) (i len : Int) : M (List Val) :=
@@ -1471,7 +1559,7 @@ def libTable (lib : String) (names : List String) : Tbl :=
 
 def basics : List String :=
   ["type", "tostring", "tonumber", "ipairs", "pairs", "next", "select", "unpack", "rawget", "rawset", "rawequal",
-   "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require"]
+   "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5) -/
 def initHeap : Heap :=
@@ -1487,7 +1575,11 @@ def initHeap : Heap :=
     (lstr "huge") (.num (.flt (1.0 / 0.0))) |>.set (lstr "pi") (.num (.flt (Float.ofBits 0x400921FB54442D18)))
     -- LuaJIT's generator state is the oracle's
     |>.set (lstr "random") (.eff "math.random") |>.set (lstr "randomseed") (.eff "math.randomseed")
-  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "")] }
-  #[.tbl g, .tbl {}, .tbl str, .tbl tab, .tbl math, .tbl pkg]
+  -- package.path is LUA_PATH=./?.lua's: LuaJIT's default adds directories of the system's
+  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] }
+  let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
+    (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "io", .eff "io"), (lstr "os", .eff "os"),
+    (lstr "debug", .eff "debug")] }
+  #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg]
 
 end Lua
