@@ -5,7 +5,7 @@ in the parser (`foldArith`), and from integer +, -, * and % that stay in range; 
 never narrowed back. Formatting (`%.14g`, `%f`, `%e`, `%g`) and reading (`tonumber`, literals) work on the exact
 binary value with round-half-even, as C's printf and LuaJIT's strscan do. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 inductive Num where | int (i : Int) | flt (f : Float)
   deriving Inhabited
@@ -246,6 +246,13 @@ def spanDigits (b : Nat) : List Char → Nat → Nat → (Nat × Nat × List Cha
     | none => (acc, n, c :: s)
   | [], acc, n => (acc, n, [])
 
+/-- the exponent after its letter `p`, and the rest (no digits: no exponent, `p` left in the rest); none, so no
+number, when its digits reach LuaJIT's STRSCAN_MAXEXP, 2^20 (`tonumber("1e1048576")` is nil) -/
+def scanExp (p : Char) (r : List Char) : Option (Int × List Char) :=
+  let (neg, r') := match r with | '-' :: q => (true, q) | '+' :: q => (false, q) | q => (false, q)
+  let (ev, ne, r3) := spanDigits 10 r' 0 0
+  if ne == 0 then some (0, p :: r) else if ev ≥ 1048576 then none else some (if neg then -(ev : Int) else ev, r3)
+
 /-- an unsigned decimal or hex number at the start of s, and the rest (LuaJIT's lj_strscan, without its
 FFI suffixes) -/
 def scanNum (s : List Char) : Option (Float × List Char) :=
@@ -258,14 +265,11 @@ def scanNum (s : List Char) : Option (Float × List Char) :=
         | r => (0, 0, r)
       if ni + nf == 0 then none else
       let m := ip * 16 ^ nf + fp
-      let (e, r) : Int × List Char := match r with
-        | p :: r =>
-          if p == 'p' || p == 'P' then
-            let (neg, r) := match r with | '-' :: r => (true, r) | '+' :: r => (false, r) | r => (false, r)
-            let (ev, ne, r) := spanDigits 10 r 0 0
-            if ne == 0 then (0, p :: r) else ((if neg then -(ev : Int) else ev), r)
-          else (0, p :: r)
-        | [] => (0, [])
+      match (match r with
+        | p :: r => if p == 'p' || p == 'P' then scanExp p r else some (0, p :: r)
+        | [] => some (0, [])) with
+      | none => none
+      | some (e, r) =>
       let e := e - 4 * nf
       some (if e ≥ 0 then ofRatio (m * 2 ^ e.toNat) 1 else ofRatio m (2 ^ e.natAbs), r)
     else dec s
@@ -285,14 +289,11 @@ where
       else none
     else
     let m := ip * 10 ^ nf + fp
-    let (e, r) : Int × List Char := match r with
-      | p :: r' =>
-        if p == 'e' || p == 'E' then
-          let (neg, r'') := match r' with | '-' :: q => (true, q) | '+' :: q => (false, q) | q => (false, q)
-          let (ev, ne, r3) := spanDigits 10 r'' 0 0
-          if ne == 0 then (0, p :: r') else ((if neg then -(ev : Int) else ev), r3)
-        else (0, p :: r')
-      | [] => (0, [])
+    match (match r with
+      | p :: r' => if p == 'e' || p == 'E' then scanExp p r' else some (0, p :: r')
+      | [] => some (0, [])) with
+    | none => none
+    | some (e, r) =>
     let e := e - nf
     let v := if m == 0 then 0.0 else if e > 400 then 1.0 / 0.0 else if e < -400 then 0.0 else
       if e ≥ 0 then ofRatio (m * 10 ^ e.toNat) 1 else ofRatio m (10 ^ e.natAbs)
@@ -314,4 +315,4 @@ def parseBase (s : List Char) (b : Nat) : Option Num :=
   if n == 0 || !r.isEmpty then none else some (narrow (Float.ofInt (if neg then -(v : Int) else v)))
 
 end Num
-end Swarm.Lua
+end Lua

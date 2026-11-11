@@ -33,20 +33,11 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
-| `SwarmModel/Lua/Syntax.lean`, `Parse.lean` | our Lua subset's syntax, and a parser for it (Lua 5.1's grammar, LuaJIT's lexer and its constant folding); every file under `../lua` parses |
-| `SwarmModel/Lua/Num.lean` | numbers as LuaJIT on arm64 has them (dual-number: 32-bit integers and doubles), printf's conversions on the exact value with LuaJIT's rounding, `tonumber` |
-| `SwarmModel/Lua/Pat.lean` | Lua patterns, after lstrlib.c's matcher |
-| `SwarmModel/Lua/Interp.lean` | the semantics: an interpreter on fuel, with the builtins the code uses; effects (`io`, `os`, `db`, processes, every module not given as source) are calls to an oracle, not interpreted (board #28) |
-| `SwarmModel/Lua/Run.lean` | running a chunk as `luasem_spec.lua` does, and its results as text |
-| `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua` |
-| `SwarmModel/LuaRun.lean`, `LuaDump.lean` | run Lua files through the interpreter; print a parsed file as Lean |
-| `SwarmModel/Lua/Show.lean` | a syntax tree as the Lean term that builds it (for `LuaDump.lean` and `LuaLift.lean`) |
-| `SwarmModel/Lua/Shallow.lean` | the translator's target (board #31): one combinator per clause of the interpreter, in its monad, and one lemma per combinator saying it is that clause (`CE_bin`, `CQ_stat`, …, `CFn_fn`) |
-| `SwarmModel/LuaLift.lean` | the translator: a Lua file to each function's parsed body, shallow form and proof that the two are the same |
+| `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
+| `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
+| `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
 | `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
-| `SwarmModel/LuaPrint.lean` | a parsed file printed back as Lua, fully parenthesised |
-| `lift.sh [--check \| --all]` | writes `Lifted/`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof |
-| `parsecheck.sh` | the parser against LuaJIT: each module, parsed and printed back, compiles to the source's bytecode |
+| `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`; a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -63,8 +54,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 6 scripted runs the Lua suite replays |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
-| `luasem.json.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
-| `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
+| `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
+| `../lua/test/luasem_spec.lua` | each chunk under LuaJIT must give the Lean interpreter's results (`lua-lean/test/luasem.lua`) |
 | `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
 | `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
 | `decide.json.gz` | 3000 cases each of keeps, fate and wakes (seed 27) the Lua suite checks |
@@ -535,7 +526,7 @@ base is not null`: `pbases`); `swarm lock` (`refuses` over the held rows); `auto
 session's last turn: the model's `cold`). The rest (ci.lua, cost.lua, run.lua, machine.lua's readers, state.lua, hook.lua's
 writers, `watchd.quiet`, `hung`, `unclean`, `ensure_comms`) is outside the model (*Not modelled*).
 
-**Lua semantics** (board #28, rung 4): `SwarmModel/Lua` is an executable semantics of the Lua subset `swarm/lua/swarm`
+**Lua semantics** (board #28, rung 4): `SwarmModel/Lua`, now `lua-lean/LuaLean` (lua-lean/DESIGN.md), is an executable semantics of the Lua subset `swarm/lua/swarm`
 is written in: tables with `__index` classes, closures with shared upvalues (every local is a heap cell), varargs,
 `pcall`/`error` (a failed call keeps what it wrote), `goto` as the continue idiom (a label ending its block; any other
 goto is an error), numbers, strings as bytes, and the library the code calls: `string` (patterns, `format`, `gsub`
@@ -567,8 +558,8 @@ make none. Two LuaJIT bugs are left out, not modelled: `%f` of a number below ab
 stops on it as an unmodelled effect; and `table.unpack` does not exist in LuaJIT 2.1, so `swarm cost --top` crashes
 (cost.lua:212, board #37).
 Rung 4's last link (board #39), what is in and what is not. In: `LockSrc.lean`, locks.lua and util.lua as syntax trees
-(`gen-lock-src.sh`, which prints them with `LuaDump.lean`; `locksrc_spec.lua` in the Lua suite and `replay.sh` fail when
-the file is stale), and `LuaHoare.lean`, the program logic: `RunP m h P` says a computation, a function of the fuel, returns
+(`gen-lock-src.sh`, which prints them with `lua-lean dump`; `locksrc_spec.lua` in the Lua suite and `replay.sh` fail when
+the file is stale), and `LuaHoare.lean` (now `lua-lean/LuaLean/Hoare.lean`), the program logic: `RunP m h P` says a computation, a function of the fuel, returns
 a result and heap with `P` at every fuel from some bound on (so a total-correctness statement, stronger than "some
 fuel gives ok", and it needs no partial-correctness case for small fuel: the run is what it is once the fuel suffices),
 with `bind`, `succ` (the interpreter's clauses match on `n + 1`), `const` and `mono`. Not in: the proof that
@@ -584,9 +575,9 @@ rule per interpreter clause and per Lua function (`glob`, `startswith`, `lit`, `
 `find("^[!^]")`, `find("]", i, true)`, `find("[*?[]")`, `gsub("/+$", "")` and `gmatch(".")`, and the bounds the task
 names (#p < 32767 for i*65536+j in 32 bits; the memo key collides once #q >= 65535, under PATH_MAX 4096).
 
-**Lifted by a translator** (board #31, rung 4): AutoCorres's first stages for our Lua. `LuaLift.lean` writes each
+**Lifted by a translator** (board #31, rung 4): AutoCorres's first stages for our Lua. `LuaLift.lean` (now `lua-lean lift`, `lua-lean/tools/Lift.lean`) writes each
 function of a file (the chunk itself is `chunk`) as three things: `f_body`, its parsed body; `f`, a shallow function in
-the interpreter's monad, built from `Lua/Shallow.lean`'s combinators; and `f_ok`, a proof term that `f` is the
+the interpreter's monad, built from `LuaLean/Shallow.lean`'s combinators; and `f_ok`, a proof term that `f` is the
 interpreter's call of the closure. `CFn I (f I env0 c_x …) ⟨ps, va, f_body, env0⟩` says: for all arguments and every
 fuel, `f args n = callClo I n clo args`, the same result and the same heap (`call_fn`: that is `call (n + 1) (.fn a)`
 when the heap holds the closure at `a`). Its hypotheses are the closure's free names: `env0.lookup "x" = some c_x` for
@@ -607,7 +598,7 @@ under `swarm/lua/swarm`, 366 functions in 21 files, lifts and proves (`lift.sh -
 slowest at 30 s); `replay.sh` runs it. No code/model divergence came up, and none could at this stage: the shallow
 form is the interpreter, re-expressed. Rung 3's functions equal to #26's (`tokens`, `covers`, `overlaps` against
 Glob.lean) is functional correctness, not translation: board #44 (RunP rules per combinator, then `glob` to `one` on
-the lifted functions) and #42. The parser, checked (`parsecheck.sh`, in `replay.sh`): each module printed back from
+the lifted functions) and #42. The parser, checked (`lua-lean parsecheck`, in `replay.sh`): each module printed back from
 its tree compiles under LuaJIT to the source's bytecode, every number constant compared at `%.17g` (the listing shows
 `%.14g`); all 21 agree. A printer that re-associated `(x op y) op z` made 16 of 21 differ, so the check sees a tree's
 shape. It replaces "diff the printed text against the source modulo whitespace", which the tree cannot pass: it keeps
@@ -828,11 +819,12 @@ luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the
 luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
 swarm/model/lift.sh                       # after a change to locks.lua or tasks.lua: regenerate Lifted/
 swarm/model/lift.sh --all                 # every module lifted and proved, in a scratch directory
-swarm/model/parsecheck.sh                 # the parser against LuaJIT's bytecode
+lua-lean/check.sh                         # lua-lean on its own
+lua-lean/lua-lean parsecheck swarm/lua/swarm/*.lua   # the parser against LuaJIT's bytecode
 SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
 luajit swarm/lua/test/run.lua sqlite      # and its sqlite assumptions against sqlite, many processes at once
-cd swarm/model && lake env lean --run SwarmModel/LuaRun.lean f.lua   # f.lua under the Lean semantics, and
-luajit ../lua/test/luasem.lua f.lua                                 # under LuaJIT, written alike
+lua-lean/lua-lean run --lib swarm=swarm/lua/swarm f.lua   # f.lua under the Lean semantics, and
+LUA_PATH='swarm/lua/?.lua;;' luajit lua-lean/test/luasem.lua f.lua   # under LuaJIT, written alike
 ```
 
 `check.sh` and `replay.sh` need `lake` (elan) on the PATH, or nix, which they use to fetch it

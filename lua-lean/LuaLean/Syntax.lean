@@ -1,9 +1,9 @@
-import SwarmModel.Lua.Num
+import LuaLean.Num
 
-/-! The abstract syntax of the Lua 5.1 subset swarm/lua/swarm is written in (README.md, *Lua semantics*). A string is
+/-! The abstract syntax of the Lua 5.1 subset (DESIGN.md, *The subset*). A string is
 its bytes, as `Char`s below 256. -/
 
-namespace Swarm.Lua
+namespace Lua
 
 inductive BinOp where
   | add | sub | mul | div | mod | pow | concat | eq | ne | lt | le | gt | ge
@@ -58,4 +58,4 @@ instance : Inhabited Stat := ⟨.brk⟩
 
 abbrev Block := List Stat
 
-end Swarm.Lua
+end Lua

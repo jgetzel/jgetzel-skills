@@ -16,9 +16,8 @@ import SwarmModel.Exists
 import SwarmModel.Comms
 import SwarmModel.Gone
 import SwarmModel.Answer
-import SwarmModel.Lua.Run
+import LuaLean
 import SwarmModel.LockSrc
-import SwarmModel.LuaHoare
 import SwarmModel.Real
 import SwarmModel.SqlParse
 import SwarmModel.Lifted.Locks

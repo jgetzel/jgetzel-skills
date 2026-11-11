@@ -1,4 +1,4 @@
--- What luasem_spec.lua compares with the Lean interpreter (swarm/model/SwarmModel/Lua/Run.lean): a chunk's results
+-- What is compared with the Lean interpreter (LuaLean/Run.lean): a chunk's results
 -- as text, `ok:` and each value, or `error`. Strings: bytes 32..126 but " and \ as themselves, the rest \ddd;
 -- numbers %.17g; a table's entries sorted; one already on the path <cycle>.
 local M = {}
@@ -40,15 +40,36 @@ function M.run(src)
   return M.outcome(pcall(f))
 end
 
--- luajit luasem.lua <file.lua>...: each chunk's results
+-- a cases file (LuaLean/Gen.lean's writeCases, gzipped or not): each chunk under LuaJIT must give the Lean
+-- interpreter's results; errors with the first differences
+function M.check(file)
+  local h = assert(io.popen((file:match("%.gz$") and "gzip -dc '" or "cat '") .. file .. "'"))
+  local cases = assert(loadstring(h:read("*a"), "=" .. file))()
+  h:close()
+  assert(cases and #cases > 0, "no cases in " .. file)
+  local bad, errs = {}, 0
+  for i, k in ipairs(cases) do
+    local got = M.run(k.src)
+    if got ~= k.out then bad[#bad + 1] = ("case %d:\n%s\n  LuaJIT: %s\n  Lean:   %s"):format(i, k.src, got, k.out) end
+    if k.out == "error" then errs = errs + 1 end
+  end
+  if #bad > 0 then
+    error(("%d of %d cases differ; the first:\n%s"):format(#bad, #cases, table.concat(bad, "\n", 1, math.min(3, #bad))), 0)
+  end
+  -- the cases must mostly run
+  assert(errs < #cases / 4, ("%d of %d cases end in an error"):format(errs, #cases))
+  return #cases
+end
+
+-- luajit luasem.lua <file.lua>...: each chunk's results; luajit luasem.lua --cases <file>: M.check
 if arg and arg[0] and arg[0]:match("luasem%.lua$") then
-  local dir = arg[0]:match("^(.*)/[^/]*$") or "."
-  local tree = (os.getenv("XDG_DATA_HOME") or ((os.getenv("HOME") or "") .. "/.local/share")) .. "/swarm/lua"
-  package.path = dir .. "/../?.lua;" .. tree .. "/share/lua/5.1/?.lua;" .. package.path  -- as run.lua does
-  package.cpath = tree .. "/lib/lua/5.1/?.so;" .. package.cpath
-  for i = 1, #arg do
-    local h = assert(io.open(arg[i], "rb")); local src = h:read("*a"); h:close()
-    print(arg[i] .. ": " .. M.run(src))
+  if arg[1] == "--cases" then
+    print(("%s: %d cases agree"):format(arg[2], M.check(arg[2])))
+  else
+    for i = 1, #arg do
+      local h = assert(io.open(arg[i], "rb")); local src = h:read("*a"); h:close()
+      print(arg[i] .. ": " .. M.run(src))
+    end
   end
 end
 

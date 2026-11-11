@@ -1,0 +1,6 @@
+name = "lua-lean"
+defaultTargets = ["LuaLean"]
+
+# Lean core only: no dependencies.
+[[lean_lib]]
+name = "LuaLean"
