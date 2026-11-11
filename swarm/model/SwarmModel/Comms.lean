@@ -2,8 +2,8 @@ import SwarmModel.Model
 
 /-! The communicator (board #8): several swarms (one per repo db, each a `State` of the model), hc terminals with a
 Herdr space, each swarm's communicator row and its watchd. Theorem C1 is stated here; the runs that refute it on the
-current `CCfg` (findings #22 to #24) are in Findings.lean. `ensureComms` is the fix, defined and not yet proved
-(board #9 is the Lua, #10 the proof).
+current `CCfg` (findings #22 to #24) are in Findings.lean. `ensureComms` is the fix (board #9, the Lua);
+with it C1 holds (`C1_of`, below) and a dead communicator is replaced on fair runs (`comms_replaced`; board #10).
 
 What it models, from the Lua: `swarm join` (agents.bind) binds the name's row to this terminal and refuses only a live
 binding of that same row elsewhere (`--takeover` moves it); nothing looks at the terminal's other swarms, since each repo
@@ -179,5 +179,125 @@ theorem tick_binds_none {c : CCfg} {w : World} {i : Nat} (h : c.ensureComms = fa
     (tickW c w i).cm i = none := by
   simp [tickW, h, World.cm, List.getD_eq_getElem?_getD, List.getElem?_set]
   split <;> simp_all [World.cm, List.getD_eq_getElem?_getD]
+
+-- ---------- C1 with `ensureComms` (board #10) ----------
+
+/-- what every reachable world keeps: a state and a communicator row per swarm, and with the fix the spaces agents were
+launched in never change -/
+structure CInv (c : CCfg) (w : World) : Prop where
+  sw : w.sw.length = c.nswarms
+  comms : w.comms.length = c.nswarms
+  spc : c.ensureComms = true → w.spc = (cinit c).spc
+
+theorem set_all_eq {l : List Nat} {v : Nat} (h : ∀ x ∈ l, x = v) (a : Nat) : l.set a v = l :=
+  List.ext_getElem (by simp) fun n h1 h2 => by
+    rw [List.getElem_set]; split
+    · subst_vars; exact (h _ (List.getElem_mem h2)).symm
+    · rfl
+
+theorem foldl_fix {f : List Nat → Nat → List Nat} {l : List Nat} (h : ∀ a, f l a = l) :
+    ∀ as : List Nat, as.foldl f l = l
+  | [] => rfl
+  | a :: as => by rw [List.foldl_cons, h]; exact foldl_fix h as
+
+theorem cinit_spc_all (c : CCfg) (i : Nat) : ∀ x ∈ (cinit c).spc.getD i [], x = c.homeOf i := by
+  simp only [cinit, CCfg.swarms, List.getD_eq_getElem?_getD, List.getElem?_map]
+  by_cases h : i < c.nswarms <;> simp [h]
+
+theorem set_getD_self (l : List (List Nat)) (i : Nat) : l.set i (l.getD i []) = l := by
+  rw [List.getD_eq_getElem?_getD]
+  by_cases h : i < l.length
+  · simp [List.getElem?_eq_getElem h]
+  · simp [List.set_eq_of_length_le (Nat.le_of_not_lt h)]
+
+/-- with the fix the tick launches into the swarm's space, where every agent already was -/
+theorem tickW_spc {c : CCfg} {w : World} (hc : c.ensureComms = true) (hs : w.spc = (cinit c).spc) (i : Nat) :
+    (tickW c w i).spc = w.spc := by
+  have hall : ∀ x ∈ w.spc.getD i [], x = c.homeOf i := by rw [hs]; exact cinit_spc_all c i
+  unfold tickW; simp only [hc, ite_true]
+  rw [foldl_fix (l := w.spc.getD i []), set_getD_self]
+  · split <;> rfl
+  · intro a; split
+    · exact set_all_eq hall a
+    · rfl
+
+theorem cinv_tickW {c : CCfg} {w : World} (h : CInv c w) (i : Nat) : CInv c (tickW c w i) where
+  sw := by unfold tickW; split <;> simp [apply_ite (f := World.sw), h.sw]
+  comms := by unfold tickW; split <;> simp [apply_ite (f := World.comms), apply_ite (f := List.length), h.comms]
+  spc := fun hc => (tickW_spc hc (h.spc hc) i).trans (h.spc hc)
+
+theorem cinv_of_reachable {c : CCfg} {w : World} (h : CReachable c w) : CInv c w := by
+  induction h with
+  | init => exact ⟨by simp [cinit, CCfg.swarms], by simp [cinit, CCfg.swarms], fun _ => rfl⟩
+  | step act _ hs ih =>
+    cases act with
+    | sw i a =>
+      simp only [cstep] at hs; split at hs; · simp at hs
+      obtain ⟨s, -, rfl⟩ := Option.map_eq_some_iff.mp hs
+      exact ⟨by simp [ih.sw], ih.comms, ih.spc⟩
+    | «open» sp => simp only [cstep, Option.some.injEq] at hs; subst hs; exact ⟨ih.sw, ih.comms, ih.spc⟩
+    | join i x tk =>
+      simp only [cstep, cjoin, cwhen] at hs; split at hs <;> simp at hs; subst hs
+      exact ⟨ih.sw, by simp [ih.comms], ih.spc⟩
+    | watchd i x =>
+      simp only [cstep, startWd, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact ⟨ih.sw, ih.comms, ih.spc⟩
+    | die x =>
+      simp only [cstep, cdie, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact ⟨ih.sw, ih.comms, ih.spc⟩
+    | tick i =>
+      simp only [cstep, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact cinv_tickW ih i
+
+/-- C1 with `ensureComms`: after every tick a swarm with work has its communicator, live, at home and in session, and
+every agent was launched at home -/
+theorem C1_of (c : CCfg) (hc : c.ensureComms = true) : C1 c := by
+  intro w i hr hi _
+  have h := cinv_of_reachable hr
+  have home : spawnsHome c (tickW c w i) i = true := by
+    simp only [spawnsHome, List.all_eq_true, World.spaceOf, tickW_spc hc (h.spc hc), h.spc hc]
+    intro a ha
+    simp [cinit, CCfg.swarms, Cfg.agents, hi, List.getD_eq_getElem?_getD] at ha ⊢
+    simp [ha]
+  simp only [c1, home, Bool.and_true]
+  simp only [tickW, hc, ite_true]
+  generalize tickOf c.sw (w.st i) = s'
+  have hst : ∀ cm wd tm sp, (World.mk (w.sw.set i s') cm wd tm sp).st i = s' := by
+    intro _ _ _ _; simp [World.st, List.getD_eq_getElem?_getD, h.sw, hi]
+  split
+  · simp [commsOk, World.cm, World.tm, List.getD_eq_getElem?_getD, h.comms, hi]
+  · rename_i hw
+    simp only [hst] at hw ⊢
+    revert hw; cases hasWork s' <;> simp
+
+-- ---------- C1, the liveness half: a dead communicator is replaced ----------
+
+structure CRun (c : CCfg) where
+  st : Nat → World
+  act : Nat → CAction
+  ok : ∀ n, cstep c (st n) (act n) = some (st (n + 1))
+
+/-- watchd ticks: a swarm whose watchd runs at infinitely many steps is ticked at infinitely many -/
+def CRun.Fair {c : CCfg} (r : CRun c) : Prop :=
+  ∀ i, (∀ N, ∃ n ≥ N, watchdUp (r.st n) i = true) → ∀ N, ∃ n ≥ N, r.act n = .tick i
+
+theorem CRun.reachable {c : CCfg} (r : CRun c) (h0 : CReachable c (r.st 0)) : ∀ n, CReachable c (r.st n)
+  | 0 => h0
+  | n + 1 => .step _ (r.reachable h0 n) (r.ok n)
+
+/-- with `ensureComms`, on a fair run from a reachable world where swarm i's watchd keeps running, a swarm with work
+whose communicator is gone (its terminal dead, its row reaped, another swarm's session in it) gets one again: from every
+step on, some later step has it at home and in session -/
+theorem comms_replaced {c : CCfg} (hc : c.ensureComms = true) (r : CRun c) (hf : r.Fair) (h0 : CReachable c (r.st 0))
+    {i : Nat} (hi : i < c.nswarms) (hw : ∀ N, ∃ n ≥ N, watchdUp (r.st n) i = true) (N : Nat) :
+    ∃ n ≥ N, c1 c (r.st n) i = true := by
+  obtain ⟨n, hn, ha⟩ := hf i hw N
+  have hs := r.ok n
+  rw [ha] at hs
+  simp only [cstep, cwhen] at hs
+  split at hs
+  · rename_i hu
+    refine ⟨n + 1, by omega, ?_⟩
+    simp only [Option.some.injEq] at hs
+    rw [← hs]
+    exact C1_of c hc _ _ (r.reachable h0 n) hi hu
+  · simp at hs
 
 end Swarm

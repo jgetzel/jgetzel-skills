@@ -354,5 +354,8 @@ theorem not_C1_space : ¬ C1 cfg24 := not_C1_of (by decide : c1Breaks cfg24 pre2
 /-- C1 of every reachable state fails with the fix on: a terminal dies before watchd's next tick -/
 theorem not_C1all_fixed : ¬ C1all { cfg23 with ensureComms := true } :=
   not_C1all_of (acts := pre23) (i := 0) (by decide)
+/-- #22 to #24 with `ensureComms` (board #10): C1 holds in each one's world, so no run of it breaks C1 -/
+example : C1 { cfg22 with ensureComms := true } ∧ C1 { cfg23 with ensureComms := true } ∧
+    C1 { cfg24 with ensureComms := true } := ⟨C1_of _ rfl, C1_of _ rfl, C1_of _ rfl⟩
 
 end Swarm
