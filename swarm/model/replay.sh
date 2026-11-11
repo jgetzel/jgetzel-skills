@@ -11,6 +11,7 @@ g=$(mktemp) || exit 1
 l=$(mktemp) || exit 1
 trap 'rm -f "$g" "$l"; [ -n "$KEEP" ] || rm -rf "$out"' EXIT
 lean() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
+"$here/gen-lock-src.sh" --check || exit 1
 (cd "$here" && lean build >/dev/null && lean env lean --run SwarmModel/Traces.lean "$n" "$steps" "$seed" "$out") || exit 1
 (cd "$here" && lean env lean --run SwarmModel/GlobCases.lean 3000 "$seed" true "$g") || exit 1
 SWARM_MODEL_GLOBS=$g luajit "$here/../lua/test/run.lua" locks_model || exit 1
