@@ -433,26 +433,85 @@ end
 -- "unclean", idle but kept by work not on its bases; "reuse",
 -- small, the pool not empty and not passed over, its waiter alive; else "end". One that passed the work over, or whose
 -- waiter is gone (never wakes on a digest), is ended, not kept as a reason to spawn no one. x: its hc terminal;
--- has_terms: hc answered; f: the reads, each made only when the verdict needs it.
+-- has_terms: hc answered; f: the reads (M.reads), each made only when the verdict needs it. f.rec(label, holds), if
+-- given, hears every check made; with f.all set no check holds, so every one is made (the verdict is then meaningless).
 function M.fate(a, t, x, has_terms, f)
-  if nz(a.stay) or a.status ~= "idle" or t - (a.last_active or 0) < 120 or (x and nz(x.cwd) and not f.ours(x.cwd))
-      or (nz(a.hc) and has_terms and (not x or (x.status ~= "idle" and x.status ~= "done")))
-      or f.claims() or f.locks() then
+  local function k(label, v)  -- one check: f.rec records it (state --json); with f.all every check is read, none holds
+    v = v and true or false
+    if f.rec then f.rec(label, v) end
+    return v and not f.all
+  end
+  if k("stay", nz(a.stay)) or k("idle", a.status ~= "idle" or t - (a.last_active or 0) < 120)
+      or k("terminal", (x and nz(x.cwd) and not f.ours(x.cwd))
+        or (nz(a.hc) and has_terms and (not x or (x.status ~= "idle" and x.status ~= "done"))))
+      or k("task", f.claims()) or k("lock", f.locks()) then
     return nil
   end
-  if f.unlanded() then return "unclean" end
-  if f.job() then return nil end  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
-  if (a.ctx_tokens or 0) < agents.SMALL_CTX and f.pool > 0 and not f.passed_over() and a.waiter and f.alive(a.waiter) then
-    return "reuse"
-  end
+  if k("unlanded", f.unlanded()) then return "unclean" end
+  if k("job", f.job()) then return nil end  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
+  local small = k("context", (a.ctx_tokens or 0) < agents.SMALL_CTX and f.pool > 0 and not f.passed_over())
+  if k("waiter", a.waiter and f.alive(a.waiter)) and small then return "reuse" end
   return "end"
+end
+
+-- fate's reads for one tick (lifecycle) or one snapshot (state --json): reads(n) is agent n's f. Its unlanded() leaves
+-- the worktree and bases in f.held, f.B; job() leaves the process in f.proc.
+function M.reads(c, main, wts, all_wts, pool)
+  local R = {}
+  function R.told_of(n)  -- the task ids n's digests named
+    local told = {}
+    for _, e in ipairs(c:all("select data from event where kind='digest' and agent=?", n)) do
+      for i in (e.data or ""):gmatch("[^,]+") do told[tonumber(i)] = true end
+    end
+    return told
+  end
+  function R.waking(n)  -- unread messages that would wake n, and how many of them are urgent
+    local w, u = 0, 0
+    for _, m in ipairs(msgs.unread(c, n)) do
+      if m.kind ~= "notice" or (m.urgent or 0) ~= 0 then w = w + 1 end
+      if (m.urgent or 0) ~= 0 then u = u + 1 end
+    end
+    return w, u
+  end
+  -- n was told of every startable task, has read what would wake it, and is idle again: it passed them over
+  local function passed_over(n)
+    local told = R.told_of(n)
+    for _, r in ipairs(pool) do if not told[r.id] then return false end end
+    return R.waking(n) == 0
+  end
+  local function ours(cwd)  -- in this repo or one of its worktrees: else another swarm's terminal (#117)
+    cwd = realpath(cwd)
+    for _, w in ipairs(all_wts) do
+      if cwd == w[1] or util.startswith(cwd, w[1] .. "/") then return true end
+    end
+    return main ~= nil and (cwd == main or util.startswith(cwd, main .. "/"))
+  end
+  local bg, bgp  -- machine.bg_agents, read once
+  function R.f(n)
+    local f = { ours = ours, pool = #pool, alive = function(p) return signal.kill(p, 0) == 0 end }
+    f.claims = function() return c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n) ~= nil end
+    f.locks = function() return c:one("select 1 from lock where agent=?", n) ~= nil end
+    f.unlanded = function() f.held, f.B = M.unlanded(c, n, main, wts, all_wts); return f.held ~= nil end
+    f.job = function()
+      if not bg then bg, bgp = machine.bg_agents(c, machine.procs()) end
+      f.proc = bgp[n]
+      return bg[n] == true
+    end
+    f.passed_over = function() return passed_over(n) end
+    return f
+  end
+  return R
+end
+
+function M.main_wt()  -- the main worktree, resolved
+  local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
+  return main and realpath(main)
 end
 
 -- End finished agents, digest reusable ones, spawn fresh ones for startable tasks (sw-lifecycle §4).
 function M.lifecycle(c, t, comms, terms, opts)
   local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
-  local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
-  main = main and realpath(main)
+  local main = M.main_wt()
   local pb = bases.protected(c, main)
   for _, b in ipairs(pb) do bases.fetch(b, main) end
   M.sweep_worktrees(c, comms)
@@ -469,48 +528,12 @@ function M.lifecycle(c, t, comms, terms, opts)
     if x.address then by[x.address] = x end
   end
   local pool = tasks.pool(c)
-  local function told_of(n)  -- the task ids n's digests named
-    local told = {}
-    for _, e in ipairs(c:all("select data from event where kind='digest' and agent=?", n)) do
-      for i in (e.data or ""):gmatch("[^,]+") do told[tonumber(i)] = true end
-    end
-    return told
-  end
-  -- n was told of every startable task, has read what would wake it, and is idle again: it passed them over
-  local function passed_over(n)
-    local told = told_of(n)
-    for _, r in ipairs(pool) do if not told[r.id] then return false end end
-    for _, m in ipairs(msgs.unread(c, n)) do
-      if m.kind ~= "notice" or (m.urgent or 0) ~= 0 then return false end
-    end
-    return true
-  end
-  local function ours(cwd)  -- in this repo or one of its worktrees: else another swarm's terminal (#117)
-    cwd = realpath(cwd)
-    for _, w in ipairs(all_wts) do
-      if cwd == w[1] or util.startswith(cwd, w[1] .. "/") then return true end
-    end
-    return main ~= nil and (cwd == main or util.startswith(cwd, main .. "/"))
-  end
-  local bg
-  local function job(n)  -- n's background job runs (machine.bg_agents, read once per tick)
-    bg = bg or machine.bg_agents(c, machine.procs())
-    return bg[n]
-  end
+  local R = M.reads(c, main, wts, all_wts, pool)
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
-    local n = a.name
-    local held, B
-    local v = M.fate(a, t, nz(a.hc) and terms ~= nil and by[a.hc] or nil, terms ~= nil, {
-      ours = ours,
-      claims = function() return c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n) ~= nil end,
-      locks = function() return c:one("select 1 from lock where agent=?", n) ~= nil end,
-      unlanded = function() held, B = M.unlanded(c, n, main, wts, all_wts); return held ~= nil end,
-      job = function() return job(n) == true end,
-      pool = #pool,
-      passed_over = function() return passed_over(n) end,
-      alive = function(p) return signal.kill(p, 0) == 0 end })
-    if v == "unclean" then M.unclean(c, a, held, B[1], t, comms)
+    local f = R.f(a.name)
+    local v = M.fate(a, t, nz(a.hc) and terms ~= nil and by[a.hc] or nil, terms ~= nil, f)
+    if v == "unclean" then M.unclean(c, a, f.held, f.B[1], t, comms)
     elseif v == "reuse" then reusable[#reusable + 1] = a
     elseif v == "end" then M.end_agent(c, a) end
   end
@@ -518,7 +541,7 @@ function M.lifecycle(c, t, comms, terms, opts)
   for i, r in ipairs(pool) do ids[i] = r.id end
   table.sort(ids)
   for _, a in ipairs(reusable) do  -- edge-triggered: only when the pool holds an id this agent was never told about
-    local told = told_of(a.name)
+    local told = R.told_of(a.name)
     local new = false
     for _, i in ipairs(ids) do
       if not told[i] then new = true end
@@ -832,9 +855,7 @@ function M.cmd_end(c, a)
     elseif c:one("select 1 from lock where agent=?", a.agent) then why = "holds a lock"
     elseif machine.bg_agents(c, machine.procs())[a.agent] then why = "has a background job running"
     else
-      local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
-      main = main and realpath(main)
-      local held = M.unlanded(c, a.agent, main, conflict.wt_map(c), conflict.worktrees())
+      local held = M.unlanded(c, a.agent, M.main_wt(), conflict.wt_map(c), conflict.worktrees())
       if held then why = "has work not on its base in " .. held end
     end
     if why then util.die(("%s %s; `swarm end %s --force` ends it anyway."):format(a.agent, why, a.agent)) end
@@ -845,6 +866,61 @@ end
 
 -- ---------- commands ----------
 
+-- The flags watchd ran with, as argv for `swarm watchd --restart`: comms resolved, --max-agents left out (it would
+-- overwrite the user's `swarm limits --min` on every restart).
+function M.flags(a, comms)
+  local f = { "--interval", d(a.interval), "--min-free-mem", tostring(a.min_free_mem) }
+  if comms then f[#f + 1] = "--comms"; f[#f + 1] = comms end
+  if a.ci then f[#f + 1] = "--ci" end
+  if a.model then f[#f + 1] = "--model"; f[#f + 1] = a.model end
+  if a.effort then f[#f + 1] = "--effort"; f[#f + 1] = a.effort end
+  return f
+end
+
+M.UP_WAIT = 90  -- s `--restart` waits for the new watchd's first tick
+
+-- `swarm watchd --restart`: the same watchd (recorded flags and cwd) in a hidden hc terminal, taking over; success only
+-- once it has finished a tick. Never leaves the repo without a watchd: the old one hands over only to a live watchd that
+-- has ticked (cmd_watchd's loop), and a failed start is killed and the record given back.
+function M.restart(c)
+  local rec = c:one("select v from meta where k='watchd_run'")
+  rec = rec and json.decode(rec.v)
+  if type(rec) ~= "table" then util.die("no recorded watchd flags (it predates them); start it by hand once") end
+  local old = c:one("select v from meta where k='watchd'")
+  old = old and old.v
+  local argv = { "hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--cwd", rec.cwd, "--",
+    util.join(os.getenv("SWARM_HERE"), "swarm"), "watchd", "--takeover" }
+  for _, x in ipairs(rec.flags) do argv[#argv + 1] = x end
+  local _, err, code = proc.exec(argv, { env = { SWARM_DB = db.dbpath() } })
+  local function fail(why)
+    local o = old and old:match("^%S+")
+    util.die(("watchd restart failed: %s; %s"):format(why, o and run.pid_alive(o)
+      and ("the old watchd (pid %s) still runs"):format(o) or "NO watchd runs: start one by hand"))
+  end
+  if code ~= 0 then fail("`hc run` exited " .. d(code) .. ": " .. util.strip(err or "")) end
+  local wait = tonumber(agents.env("SWARM_WATCHD_UP_WAIT")) or M.UP_WAIT
+  local t0, seen = util.now(), nil  -- seen: the record of the watchd that took over (it may already have given it back)
+  while util.now() - t0 < wait do
+    local r = c:one("select v from meta where k='watchd'")
+    if r and r.v ~= old then seen = r.v end
+    if seen and not run.pid_alive(seen:match("^%S+")) then break end
+    local up = c:one("select v from meta where k='watchd_up'")
+    if seen and r and r.v == seen and up and up.v == seen then
+      print(("watchd restarted: pid %s, terminal %s"):format(seen:match("^%S+"), seen:match("^%S+%s+(%S+)") or "-"))
+      return
+    end
+    require("posix.time").nanosleep({ tv_sec = 0, tv_nsec = 200000000 })
+  end
+  if seen then  -- it took the record but never ticked: stop it and give the record back
+    local pid = tonumber(seen:match("^%S+"))
+    local alive = run.pid_alive(pid)
+    if alive then signal.kill(pid, signal.SIGTERM) end
+    if old then c:exec("update meta set v=? where k='watchd' and v=?", old, seen) end
+    fail(("the new watchd (%s) %s"):format(seen, alive and "did not finish a tick" or "died before its first tick"))
+  end
+  fail(("no new watchd took over within %d s"):format(wait))
+end
+
 function M.cmd_watchd(c, a)
   if a.dry_run then
     for _, x in ipairs(M.sweep_worktrees(c, nil, true)) do
@@ -852,6 +928,7 @@ function M.cmd_watchd(c, a)
     end
     return
   end
+  if a.restart then return M.restart(c) end
   local repo = a.ci and proc.git({ "rev-parse", "--show-toplevel" }) or nil
   local comms = nz(a.comms) or agents.env("SWARM_COMMS")
   local mine = d(unistd.getpid()) .. " " .. (agents.env("HC_TERMINAL_ID") or "-")  -- sw-ownership §4.6: the watchd record
@@ -863,6 +940,10 @@ function M.cmd_watchd(c, a)
       util.die(("watchd already runs (pid %s, terminal %s); `swarm watchd --takeover` replaces it."):format(pid, term))
     end
     c:exec("insert or replace into meta(k,v) values('watchd',?)", mine)
+    if not a.once then  -- what --restart starts again, and state --json's watchd
+      c:exec("insert or replace into meta(k,v) values('watchd_run',?)",
+        json.encode({ flags = json.array(M.flags(a, comms)), cwd = unistd.getcwd(), started = util.now() }))
+    end
     if comms then  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
       c:exec("insert or replace into meta(k,v) values('comms',?)", comms)
       if c:exec("update agent set stay=? where name=? and ended is null and stay is null", "the user's channel", comms) > 0 then
@@ -877,12 +958,24 @@ function M.cmd_watchd(c, a)
     c:exec("insert or replace into meta(k,v) values('agent_min',?)", d(a.max_agents or live))
   end
   local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval }
+  local up = false
   while true do
     local cur = c:one("select v from meta where k='watchd'")
-    if not cur or cur.v ~= mine then
-      util.die(("watchd (pid %s) was replaced by %s; exiting"):format(d(unistd.getpid()), cur and cur.v or "none"))
+    if not cur then util.die(("watchd (pid %s): its record is gone; exiting"):format(d(unistd.getpid()))) end
+    if cur.v ~= mine then
+      -- hand over only to a live watchd that has finished a tick; a replacement that died gets the record back
+      local by = c:one("select v from meta where k='watchd_up'")
+      if by and by.v == cur.v and run.pid_alive(cur.v:match("^%S+")) then
+        util.die(("watchd (pid %s) was replaced by %s; exiting"):format(d(unistd.getpid()), cur.v))
+      elseif not run.pid_alive(cur.v:match("^%S+")) then
+        if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
+          db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
+        end
+      end
+    else
+      M.watchd_tick(c, comms, repo, opts)
+      if not up then up = true; c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine) end
     end
-    M.watchd_tick(c, comms, repo, opts)
     if a.once then return end
     io.stdout:flush()
     unistd.sleep(a.interval)

@@ -534,7 +534,7 @@ function T.test_state_json_view(t)
     table.sort(r)
     return r
   end
-  local head = { "active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits" }
+  local head = { "active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci" }
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
   local views = { board = {}, activity = { "messages", "events" }, system = { "events", "locks", "running", "costly", "cost_top" },
                   overview = { "messages", "events" }, agents = {} }
@@ -653,7 +653,7 @@ function T.test_state_json_hc_only_where_shown(t)
   t:sw("a", "state", "--json", "--view", "board")
   t:eq(calls(), {})  -- board shows no idle timers
   t:sw("a", "state", "--json")
-  t:eq(calls(), { "t-live" })  -- never an ended agent's terminal
+  t:eq(calls(), { "t-live", "--json" })  -- never an ended agent's terminal; one `hc ls --json` for the live one's fate
 end
 
 function T.test_state_json_old_db(t)
