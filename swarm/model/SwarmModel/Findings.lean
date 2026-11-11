@@ -1,4 +1,4 @@
-import SwarmModel.Model
+import SwarmModel.Comms
 
 /-! The counterexamples the Quint model found, as runs of this model with the fix's switch off: each `example`
 is checked by evaluating the run. README.md has the table; the theorems that a safety property holds with the fix
@@ -271,5 +271,56 @@ example : violates cfg21 pre21 (noBaseOut cfg21) = true := by decide
 example : run cfg21 (pre21 ++ [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)]) = none := by decide
 example : run cfg21 [.git 1 (.add 1), .git 1 (.edit 1), .git 1 (.commit 1), .git 1 (.land 1 1)] ≠ none := by decide
 example : run { cfg21 with recordedWorkspaces := true } pre21 = none := by decide
+
+-- ---------- the communicator: C1 on the current CCfg (board #8) ----------
+-- #22, C1. One terminal is the communicator of two swarms (2026-11-10: sk-comms and fm-comms both on t87, in the notapki
+-- space). Terminal 0 opens in space 1, swarm 1's home; fm-comms joins swarm 1 from it, then sk-comms joins swarm 0 from
+-- the same terminal: bind looks only at swarm 0's own row, so nothing refuses. The session is sk-comms now: its
+-- `swarm wait` reads swarm 0's db, and swarm 1's notices to fm-comms are stored and read by no one. Swarm 0's
+-- communicator sits outside its space as well.
+def cfg22 : CCfg := {}
+def pre22 : List CAction := [.open 1, .join 1 0 false, .join 0 0 false, .watchd 1 0]
+example : c1Breaks cfg22 pre22 1 = true := by decide
+example : c1Breaks cfg22 (pre22 ++ [.watchd 0 0]) 0 = true := by decide
+-- with `ensureComms` the second join is refused (another swarm's communicator, outside swarm 0's space), with
+-- `--takeover` too (the space); swarm 1 alone is fine
+example : crun { cfg22 with ensureComms := true } pre22 = none := by decide
+example : crun { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .join 0 0 true] = none := by decide
+example : c1Breaks { cfg22 with ensureComms := true } [.open 1, .join 1 0 false, .watchd 1 0] 1 = false := by decide
+
+-- #23, C1. The communicator's terminal dies and the swarm runs on. Watchd runs from another terminal of the swarm's
+-- space; agent 0 blocks #1 and the communicator's terminal dies. The tick reaps the communicator's row and nothing binds
+-- a new one (`tick_binds_none`: no tick ever does), so the notice that #1 is blocked goes to a name no one reads.
+def cfg23 : CCfg := { nswarms := 1, home := [0] }
+def pre23 : List CAction := [.open 0, .join 0 0 false, .open 0, .watchd 0 1, .sw 0 (.add []), .sw 0 (.claim 0 1),
+  .sw 0 (.block 0 1), .die 0]
+example : c1Breaks cfg23 pre23 0 = true := by decide
+example : (crun cfg23 (pre23 ++ [.tick 0, .tick 0])).any
+    (fun w => w.cm 0 == none && ((w.st 0).tk 1).st == .blocked) = true := by decide
+-- with `ensureComms` the tick launches a communicator in the swarm's space
+example : c1Breaks { cfg23 with ensureComms := true } pre23 0 = false := by decide
+-- but between the death and the tick no fix helps: C1 of every reachable state is false
+example : (crun { cfg23 with ensureComms := true } pre23).any (fun w => watchdUp w 0 && !c1 { cfg23 with ensureComms := true } w 0)
+    = true := by decide
+
+-- #24, C1. Watchd started from a terminal in another space spawns there. The communicator is in the swarm's space,
+-- watchd runs from terminal 1 in space 1; agent 0 leaves and #1 is added: the tick spawns for #1, and launch.sh opens the
+-- tab in the space of watchd's terminal.
+def cfg24 : CCfg := { sw := { nagents := 1, roster := 1 }, nswarms := 1, home := [0] }
+def pre24 : List CAction := [.open 0, .join 0 0 false, .open 1, .watchd 0 1, .sw 0 (.leave 0), .sw 0 (.add [])]
+example : c1Breaks cfg24 pre24 0 = true := by decide
+example : (crun cfg24 (pre24 ++ [.tick 0])).any (fun w => ((w.st 0).agt 0).boot && w.spaceOf 0 0 == 1) = true := by decide
+-- with `ensureComms` the spawn lands in the swarm's space
+example : c1Breaks { cfg24 with ensureComms := true } pre24 0 = false := by decide
+
+/-- #22: one terminal is the communicator of two swarms -/
+theorem not_C1_shared : ¬ C1 cfg22 := not_C1_of (by decide : c1Breaks cfg22 pre22 1 = true)
+/-- #23: the communicator's terminal dies and no one replaces it -/
+theorem not_C1_dead : ¬ C1 cfg23 := not_C1_of (by decide : c1Breaks cfg23 pre23 0 = true)
+/-- #24: watchd's spawns land in its own terminal's space -/
+theorem not_C1_space : ¬ C1 cfg24 := not_C1_of (by decide : c1Breaks cfg24 pre24 0 = true)
+/-- C1 of every reachable state fails with the fix on: a terminal dies before watchd's next tick -/
+theorem not_C1all_fixed : ¬ C1all { cfg23 with ensureComms := true } :=
+  not_C1all_of (acts := pre23) (i := 0) (by decide)
 
 end Swarm

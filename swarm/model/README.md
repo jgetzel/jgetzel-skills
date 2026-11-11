@@ -24,6 +24,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 (sw-bases) as statements, and their refutations on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
+| `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`. The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
@@ -109,6 +110,14 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 
 The last three are the fix sw-bases proposes, defined but not yet in the Lua or proved (board #6).
 
+The communicator's world (`Comms.lean`) has its own switch, `CCfg.ensureComms`:
+
+| Switch | Before | After |
+|---|---|---|
+| `ensureComms` | `swarm join` refuses only a live binding of the same row elsewhere; reap ends a communicator row whose terminal is gone and nothing binds a new one; auto-spawn opens tabs in the space of watchd's own terminal | board #9: watchd's tick launches a communicator in the swarm's space when the swarm has work and none is bound to a live terminal there whose session is it; auto-spawn launches into the swarm's space; `join` refuses a terminal outside the swarm's space, and one that is another swarm's communicator unless `--takeover` |
+
+Defined, not yet in the Lua or proved (board #9, #10).
+
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
 check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
 turn it starts, whose prompt hook delivers whatever is still unread.
@@ -160,6 +169,25 @@ and a swarm's own such as `formal`); `Git.safe` is reachability from one, checke
 
 All four fail on the current `Cfg` (findings #18 to #21, proved: `Workspaces.lean`). None holds today in a weaker form
 worth stating: W1 fails even with main the only base (#18b).
+
+The communicator (`Comms.lean`). The model above is one swarm with an anonymous communicator; C1 needs several swarms
+(one per repo db) sharing hc terminals, so `World` holds a `State` per swarm, the terminals (live or dead, a Herdr space,
+the swarm whose communicator the session is: its `SWARM_NAME`, ListAgents name and the db its `swarm wait` reads), each
+swarm's communicator row (the terminal meta.comms's row is bound to) and its watchd (the terminal it was started from).
+Actions: any action of a swarm's model but its tick; a terminal opens in a space; `join [--takeover]` from a terminal;
+watchd started from a terminal; a terminal dies (and the watchd started from it, the communicator's background Bash);
+watchd's tick of a swarm (reap of a dead communicator row, the model's `tickOf`, spawns placed in watchd's terminal's
+space).
+
+- **C1** Whenever watchd ticks a swarm, the state it leaves, if the swarm has a live agent or an open task, has exactly one
+  live communicator: the row meta.comms names, bound to a live terminal in the swarm's own space whose session is that
+  communicator (reachable by its ListAgents name; its `swarm wait` reads this swarm's inbox). And every live agent was
+  launched in that space. `c1` of `tickW`, for every reachable state where watchd runs: `C1`
+
+C1 is said of the state each tick leaves, not of every state (`C1all`): a terminal can die between two ticks, and no fix
+makes the death and watchd's next look at it one step, so `C1all` is false with the fix on (`not_C1all_fixed`). It is
+also conditional on watchd running: who restarts a dead watchd is board #18. C1 fails three ways on the current `CCfg`
+(findings #22 to #24, proved: `not_C1_shared`, `not_C1_dead`, `not_C1_space`).
 
 ## Results
 
@@ -291,10 +319,14 @@ Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent w
 | 20 | W3 | `perTaskBase := false` / the run | A base that isn't main (the notapki `formal` swarm). Agent 0 lands on `formal` and leaves: its worktree is clean, unused, untouched, on a protected ref, and never swept, since the sweep asks main (`not_W3_formal_wt`). Or agent 0 claims #1, lands it on `formal`, marks it done and goes idle: lifecycle asks main, so it is never ended (`not_W3_formal_agent`; if it goes stale, the unclean nudge wakes it once per idle stretch, forever). The fair run: agent 1 starts and ends a background job over and over, and no other fair action is enabled (`loopOk`, `forever_of_loopOk`). The replay's `script-formal` is the Lua keeping both. With `perTaskBase` the tick removes the worktree and ends the agent. | open: board #3 |
 | 21 | W4 | `recordedWorkspaces := false` / the run | Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal` is refused while a worktree has it checked out) (`not_W4`). With `recordedWorkspaces` the checkout is refused. | open: board #5 |
 
-Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #18 to #21 wait for the sw-bases fix (board #3 to #6). #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
+| 22 | C1 | `ensureComms := false` / the run (C1 itself is board #10) | One terminal is the communicator of two swarms (2026-11-10: sk-comms and fm-comms both on t87, in the notapki space). fm-comms joins swarm 1 from t87, then sk-comms joins swarm 0 from the same terminal: bind looks only at swarm 0's own row. The session is sk-comms now, its `swarm wait` reads swarm 0's db, and swarm 1's notices are stored and read by no one; swarm 0's communicator also sits outside its space (`not_C1_shared`). With `ensureComms` the second join is refused, with `--takeover` too. | open: board #9 |
+| 23 | C1 | `ensureComms := false` / the run | The communicator's terminal dies and the swarm runs on. Watchd runs from another terminal of the swarm's space; agent 0 blocks #1 and the communicator's terminal dies. The tick reaps its row, and no tick ever binds a new one (`tick_binds_none`), so the notice that #1 is blocked goes to a name no one reads (`not_C1_dead`). With `ensureComms` the tick launches a communicator in the swarm's space. | open: board #9 |
+| 24 | C1 | `ensureComms := false` / the run | Watchd started from a terminal in another space spawns there: launch.sh opens the tab in the space of `HC_TERMINAL_ID`, which for auto-spawn is watchd's terminal (`not_C1_space`). With `ensureComms` the spawn lands in the swarm's space. | open: board #9 |
+
+Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #18 to #21 wait for the sw-bases fix (board #3 to #6); #22 to #24 for `ensureComms` (board #9, #10). #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
 The notices to the communicator are not rows of the model, so "a notice for the communicator reaches a live one, or
-its sender is told" is read from the code, not proved: watchd posts its notices (`lease-late`, `blocked on #N`, idle
+its sender is told" is read from the code, not proved (C1 says a live one is there to read them after each tick): watchd posts its notices (`lease-late`, `blocked on #N`, idle
 unclean worktrees, quiet) to the communicator's name, `msgs.post` stores them whether or not that row is live, and
 only `swarm post` says anything of the recipient (`no terminal; can't be delivered now`, from `hc ls` at read time).
 So a notice to a dead or unbound communicator, or posted before its terminal died, reaches no one and tells no one:
@@ -334,6 +366,11 @@ launch failures, backoff and halt; the handoff and the fence's other half (ctx_t
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
+Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a worker agent's own terminal is the model's
+`die`, not a `Term`); `hc ls` always answers and lists the communicator's terminal right; a launch never fails; a
+session's ListAgents name is its `SWARM_NAME`, set by its last join; `swarm watchd --takeover` and a second watchd (board
+#18); the human's `swarm spawn` (only watchd's spawns are placed: the starting roster is in the swarm's space). None of
+it is replayed: the replay has no hc.
 
 ## Running
 
