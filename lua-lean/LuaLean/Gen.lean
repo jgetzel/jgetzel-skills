@@ -214,6 +214,56 @@ return P(function() return a {op} b, (a {op} b) * c, a * b * c, -a, a % b, b % a
   P(function() return x, x * -1, x * 0, -x, x + 0, x == a end),
   P(function() return tostring(a * b), (a * b) .. \"\", (\"%.14s\"):format(a * b), (\"%g\"):format(a * b) end)"
 
+/-- metamethods read when the operation runs: `__index` and `__newindex` as functions, tables, chains and wrong
+values, set before or after `setmetatable` and removed after; `__call` (a function, a builtin, a callable table,
+which LuaJIT does not follow); raw access past them -/
+def metas : G String := do
+  let k ← pick ["\"a\"", "\"b\"", "\"zz\"", "1", "2", "nil", "0/0", "1.5", "true"]
+  let v ← pick ["1", "\"v\"", "nil", "false", "{}"]
+  let idx ← pick ["function(_, key) return tostring(key) .. \"?\" end", "{a = \"A\", [1] = \"one\", zz = 0}", "proto",
+    "setmetatable({}, {__index = proto})", "\"str\"", "nil", "5", "function() error(\"no\") end"]
+  let nidx ← pick ["function(_, key, val) log[#log + 1] = tostring(key) .. \"=\" .. type(val) end", "store", "nil",
+    "function(o, key, val) rawset(o, key, val); log[#log + 1] = \"raw\" end", "setmetatable({}, {__newindex = store})",
+    "\"str\"", "5"]
+  let cl ← pick ["function(self, ...) return select('#', ...), self == t, ... end", "rawequal", "{}", "nil",
+    "setmetatable({}, {__call = function() return 1 end})", "function(_, a) if a == nil then return nil end return a end"]
+  let set := s!"mt.__index = {idx}; mt.__newindex = {nidx}; mt.__call = {cl}"
+  let late ← chance 2
+  return helper ++ s!"local log, store = \{}, \{}
+local proto = \{a = \"pa\", b = false, zz = \"pz\"}
+local mt, t = \{}
+{if late then "" else set}
+t = setmetatable(\{a = 1}, mt)
+{if late then set else ""}
+local r1 = P(function() return t[{k}], t.a, t.zz, rawget(t, {k}) end)
+local r2 = P(function() t[{k}] = {v}; t.a = 2; t.new = 3; return rawget(t, {k}), rawget(t, \"new\"), t.a, t.new end)
+local r3 = P(function() return t({k}, {v}) end)
+local r4 = P(function() local n = 0; for x in t do n = n + 1; if n > 3 then break end end; return n end)
+local r5 = P(function() rawset(t, \"q\", 7); return t.q, rawget(t, \"zz\") end)
+mt.__index = nil
+mt.__newindex = nil
+local r6 = P(function() t.later = 4; return t.zz, t.b, rawget(t, \"later\") end)
+return r1, r2, r3, r4, r5, r6, log, store, proto, t"
+
+-- the metamethods whose task has not landed stop the run where LuaJIT would call them, and only there; `__len` on
+-- a table is never called (LuaJIT 2.1 without its 5.2 compatibility)
+#guard [("local mt = {} local t = setmetatable({}, mt) mt.__add = 1 return pcall(function() return t + 1 end)",
+      "effect metamethod __add"),
+    ("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
+      "ok:true,false,\"attempt to compare table with number\""),
+    ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
+    ("local t = setmetatable({}, {__eq = 1}) return t == {}", "effect metamethod __eq"),
+    ("local t = setmetatable({}, {}) getmetatable(t).__lt = 1 return t < t", "effect metamethod __lt"),
+    ("return -setmetatable({}, {__unm = 1})", "effect metamethod __unm"),
+    ("return setmetatable({}, {__concat = 1}) .. \"x\"", "effect metamethod __concat"),
+    ("return tostring(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
+    ("return (\"%s\"):format(setmetatable({}, {__tostring = 1}))", "effect metamethod __tostring"),
+    ("return getmetatable(setmetatable({}, {__metatable = 1}))", "effect metamethod __metatable"),
+    ("local t = setmetatable({}, {__metatable = 1}) return pcall(setmetatable, t, {})", "effect metamethod __metatable"),
+    ("return setmetatable({}, {__mode = \"k\"})", "effect metamethod __mode"),
+    ("return setmetatable(_G, {})", "effect setmetatable(_G)")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 /-- doubles outside the integer ranges, and calls that want an integer: LuaJIT leaves the C cast to the CPU, so the
 semantics stops the run (`argIntN`), which the `#guard` checks; no chunk of `chunk` is one, it would be left out -/
 def rangeXs : List String :=
@@ -230,7 +280,7 @@ def rangeChunk (x call : String) : String := s!"local x = {x}\nreturn pcall(func
 
 /-- one of the chunks above -/
 def chunk : G String := do
-  match ← rnd 9 with
+  match ← rnd 10 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -238,6 +288,7 @@ def chunk : G String := do
   | 5 => tables
   | 6 => ctrl
   | 7 | 8 => diffs
+  | 9 => metas
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs`) and their results, to `file` -/
