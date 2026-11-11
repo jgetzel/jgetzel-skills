@@ -213,10 +213,10 @@ def strLt : List Char → List Char → Bool
   | _ :: _, [] => false
   | a :: s, b :: t => if a == b then strLt s t else a < b
 
-def arith (op : BinOp) (x y : Val) : M Val :=
+def arith (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   match x.toNum, y.toNum with
   | some a, some b => pure (.num (match op with
-      | .add => a.add b | .sub => a.sub b | .mul => a.mul b | .div => a.div b | .mod => a.mod b | _ => a.pow b))
+      | .add => a.add b | .sub => a.sub b | .mul => a.mul tgt b | .div => a.div b | .mod => a.mod b | _ => a.pow b))
   | _, _ => die s!"attempt to perform arithmetic on a {(if x.toNum.isNone then x else y).typeName} value"
 
 def less (x y : Val) (orEq : Bool) : M Bool :=
@@ -230,7 +230,7 @@ def concatText : Val → Option (List Char)
   | .num n => some n.toText
   | _ => none
 
-def binop (op : BinOp) (x y : Val) : M Val :=
+def binop (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
   match op with
   | .eq => pure (.bool (x.rawEq y))
   | .ne => pure (.bool !(x.rawEq y))
@@ -242,7 +242,7 @@ def binop (op : BinOp) (x y : Val) : M Val :=
     match concatText x, concatText y with
     | some a, some b => pure (.str (a ++ b))
     | _, _ => die s!"attempt to concatenate a {(if (concatText x).isNone then x else y).typeName} value"
-  | op => arith op x y
+  | op => arith tgt op x y
 
 def unop (op : UnOp) (x : Val) : M Val :=
   match op with
@@ -268,7 +268,18 @@ def argNum (fname : String) (i : Nat) (args : List Val) : M Num :=
   | some n => pure n
   | none => die s!"bad argument #{i + 1} to '{fname}' (number expected, got {(args.getD i .nil).typeName})"
 
-def argInt (fname : String) (i : Nat) (args : List Val) : M Int := do pure (← argNum fname i args).trunc
+/-- the argument through a C cast to a `bits`-bit integer; a double outside that range (inf, NaN) stops the run:
+the cast is undefined in C and LuaJIT leaves it to the CPU (x86-64 gives the least integer) -/
+def argIntN (bits : Nat) (fname : String) (i : Nat) (args : List Val) : M Int := do
+  let v ← argNum fname i args
+  let k := v.trunc
+  if let .flt f := v then
+    if !(f.isFinite && -2 ^ (bits - 1) ≤ k && k < 2 ^ (bits - 1)) then
+      throw (.eff s!"{fname}: {bits}-bit cast out of range" [])
+  pure k
+
+/-- lj_lib_checkint -/
+def argInt (fname : String) (i : Nat) (args : List Val) : M Int := argIntN 32 fname i args
 
 def optInt (fname : String) (i : Nat) (args : List Val) (d : Int) : M Int :=
   match args.getD i .nil with
@@ -343,14 +354,14 @@ def format (fmt : List Char) (args : List Val) : M (List Char) := do
         let fn := "format"
         let piece ← match c with
           | 'd' | 'i' => do
-            let v ← argInt fn i args
+            let v ← argIntN 64 fn i args
             let body := Num.digits v.natAbs
             -- precision: the fewest digits; none at all for 0 at precision 0
             let body := match pr with | some p => if toN p == 0 && v == 0 then [] else Num.padLeft '0' (toN p) body | none => body
             let sign := if v < 0 then ['-'] else if plus then ['+'] else if space then [' '] else []
             pure (pad left (zero && pr.isNone) w sign body)
           | 'x' | 'X' => do
-            let v ← argInt fn i args
+            let v ← argIntN 64 fn i args
             let u : Nat := if v < 0 then (2 ^ 64 - v.natAbs) else v.natAbs
             let body := hexDigits u (c == 'X')
             let body := match pr with | some p => if toN p == 0 && u == 0 then [] else Num.padLeft '0' (toN p) body | none => body
@@ -443,8 +454,8 @@ def mathFn (name : String) (args : List Val) : M (List Val) := do
     | .flt f => return [.num (.flt f.abs)]
   | "sqrt" => return [.num (.flt (← argNum name 0 args).toFloat.sqrt)]
   | "max" | "min" => do
-    -- LuaJIT on arm64: the running result is replaced unless it is strictly better (so NaN and -0 fall where
-    -- its fcsel puts them); integers stay integers only if all are
+    -- LuaJIT, on arm64 and x86-64 alike: the running result is replaced unless it is strictly better (so NaN and -0
+    -- fall where the comparison leaves them); integers stay integers only if all are
     let x ← argNum name 0 args
     let mut best := x
     let mut allInt := match x with | .int _ => true | _ => false
@@ -675,7 +686,7 @@ def substRepl (r whole : List Char) (cap : Nat → M Val) : M (List Char) :=
 set_option maxRecDepth 100000
 
 section
-variable (srcs : String → Option Block) (oracle : String → List Val → Option (List Val))
+variable (srcs : String → Option Block) (oracle : String → List Val → Option (List Val)) (tgt : Target)
 
 mutual
 def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
@@ -707,7 +718,7 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .bin op a b => do
     let x ← eval n cx a
     let y ← eval n cx b
-    binop op x y
+    binop tgt op x y
   | .table fs => tableCons n cx fs
 
 /-- an expression's values: all of a call's, all of `...`, else one -/
@@ -1138,7 +1149,7 @@ end
 /-- a chunk run as a function of no arguments -/
 def runChunk (n : Nat) (b : Block) (args : List Val := []) : M (List Val) := do
   let f ← alloc (.clo ⟨[], true, b, []⟩)
-  call srcs oracle n (.fn f) args
+  call srcs oracle tgt n (.fn f) args
 end
 
 -- ---------- the initial heap ----------

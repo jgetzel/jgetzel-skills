@@ -3,8 +3,9 @@ import LuaLean.Run
 /-! Random Lua chunks with the Lean interpreter's results, for `test/luasem.lua` to run under LuaJIT and compare (the
 "Decoding Lua" check: the semantics is tested against the implementation). A chunk is a random program over the
 subset's numbers, strings, patterns, string.format, tables and table.sort, and its control flow (closures, varargs,
-metatables, goto, pcall). `writeCases` writes them as a Lua chunk, `return {{src = .., out = ..}, ..}`; a chunk whose
-Lean run needs an effect or more fuel is left out. A user of the library adds chunks of its own (calls of its modules'
+metatables, goto, pcall). `writeCases` writes them as a Lua chunk, `return {{src = .., out = ..}, ..}`, `out` the
+dual-number target's results and `single = ..` the single-number target's where they differ; a chunk whose Lean run
+needs an effect or more fuel is left out. A user of the library adds chunks of its own (calls of its modules'
 functions: swarm/model/SwarmModel/LuaCases.lean). -/
 
 namespace Lua.Gen
@@ -115,7 +116,8 @@ def fmtSpec : G (String × String) := do
   let arg ← match conv with
     | 'c' => pick ["65", "97", "48", "126"]
     | 's' | 'q' => if ← chance 4 then numE 1 else strE 1
-    | 'd' | 'i' | 'x' | 'X' => pick ["0", "7", "-3", "255", "1e15", "3.7", "-2.5", "42", "123456789"]
+    | 'd' | 'i' | 'x' | 'X' => pick ["0", "7", "-3", "255", "1e15", "3.7", "-2.5", "42", "123456789", "2^31",
+      "-2^31 - 1", "2^32 + 65", "-2^63", "2^53"]
     | _ => numE 1
   let pr := if conv == 'c' then "" else pr
   return (s!"%{flags}{w}{pr}{conv}", arg)
@@ -196,15 +198,46 @@ def numbers : G String := do
   let vs ← (List.range 4).mapM fun _ => numE 2
   return helper ++ s!"return {commas (ns.map fun s => s!"tonumber({s})")}, {commas bs}, {commas (vs.map fun v => s!"P(function() local x = {v}; return tostring(x), x .. \"\", x == math.floor(x), x < 1, -x end)")}"
 
+/-- where the targets and the CPUs may differ (DESIGN.md "Targets"), through locals: the parser folds constants -/
+def diffs : G String := do
+  let n : G String := pick ["0", "-0.0", "-4", "3", "-1", "0.5", "-2.5", "2147483647", "-2147483648", "2147483648",
+    "65536", "-65536", "46341", "0/0", "1/0", "1e300", "123456789012", "0.1", "7"]
+  let vs ← (List.range 3).mapM fun _ => n
+  let op ← pick ["*", "*", "+", "-", "%", "/"]
+  let s ← pick ["-0", "0", "2147483648", "2147483647", "-2147483648", "0x7fffffff", "1e9", "-0.0", "4294967296"]
+  return helper ++ s!"local a, b, c = {commas vs}
+local x = tonumber({q s})
+return P(function() return a {op} b, (a {op} b) * c, a * b * c, -a, a % b, b % a end),
+  P(function() return math.max(a, b), math.min(a, b), math.max(a, b, c), math.min(c, b, a) end),
+  P(function() return a + 1, a - 1, a * 2, a * a, math.abs(a), math.floor(a / 2), math.ceil(a / 2) end),
+  P(function() return 1 / math.ceil(a / 2), 1 / math.floor(a), math.floor(a), math.ceil(a) end),
+  P(function() return x, x * -1, x * 0, -x, x + 0, x == a end),
+  P(function() return tostring(a * b), (a * b) .. \"\", (\"%.14s\"):format(a * b), (\"%g\"):format(a * b) end)"
+
+/-- doubles outside the integer ranges, and calls that want an integer: LuaJIT leaves the C cast to the CPU, so the
+semantics stops the run (`argIntN`), which the `#guard` checks; no chunk of `chunk` is one, it would be left out -/
+def rangeXs : List String :=
+  ["2^31", "-2^31 - 1", "2^32 + 65", "2^63", "2^64", "-2^63", "1e300", "1/0", "-1/0", "0/0", "2^53"]
+def rangeCalls : List String :=
+  ["(\"%d\"):format(x)", "(\"%x\"):format(x)", "(\"%c\"):format(x)", "(\"abcdef\"):sub(x)", "(\"abcdef\"):sub(2, x)",
+   "select(x, \"a\", \"b\")", "(\"x\"):rep(x)", "string.char(x)", "(\"abc\"):byte(x)"]
+def rangeChunk (x call : String) : String := s!"local x = {x}\nreturn pcall(function() return {call} end)"
+
+-- in range only: `%d` and `%x` (int64) of a value up to 2^63 in magnitude
+#guard rangeCalls.all fun c => rangeXs.all fun x =>
+  (runCase (fun _ => none) .dual [] (rangeChunk x c).toList).startsWith "effect" ==
+    !((c.startsWith "(\"%d" || c.startsWith "(\"%x") && ["2^31", "-2^31 - 1", "2^32 + 65", "-2^63", "2^53"].contains x)
+
 /-- one of the chunks above -/
 def chunk : G String := do
-  match ← rnd 7 with
+  match ← rnd 9 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
   | 4 => formats
   | 5 => tables
   | 6 => ctrl
+  | 7 | 8 => diffs
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs`) and their results, to `file` -/
@@ -216,9 +249,11 @@ def writeCases (gen : G (String × List String)) (srcs : String → Option Block
   for _ in [0:n] do
     let ((src, mods), g') := gen.run g
     g := g'
-    let out := runCase srcs mods src.toList
+    let out := runCase srcs .dual mods src.toList
+    let out1 := runCase srcs .single mods src.toList
     if out.startsWith "ok:" || out == "error" then
-      cases := cases.push s!"\{src = {String.ofList (serStr src.toList)}, out = {String.ofList (serStr out.toList)}},"
+      let single := if out1 == out then "" else s!", single = {String.ofList (serStr out1.toList)}"
+      cases := cases.push s!"\{src = {String.ofList (serStr src.toList)}, out = {String.ofList (serStr out.toList)}{single}},"
     else skipped := out :: skipped
   IO.FS.writeFile file ("return {\n" ++ "\n".intercalate cases.toList ++ "\n}\n")
   IO.eprintln s!"{cases.size} cases, {skipped.length} left out{if skipped.isEmpty then "" else s!" (first: {skipped.getLast!})"}"

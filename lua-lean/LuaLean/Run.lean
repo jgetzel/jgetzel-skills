@@ -63,17 +63,18 @@ def strictFx (_ : String) (_ : List Val) : Option (List Val) := none
 
 def FUEL : Nat := 100000
 
-/-- the chunk's results: the modules `mods` loaded first (effects opaque), then the chunk (no effects) -/
-def runCase (srcs : String → Option Block) (mods : List String) (src : List Char) : String :=
+/-- the chunk's results on target `tgt`: the modules `mods` loaded first (effects opaque), then the chunk (no
+effects) -/
+def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String) (src : List Char) : String :=
   match parseChunk src with
   | .error e => s!"parse error: {e}"
   | .ok b =>
     let pre : M Unit := mods.forM fun m => do
-      let _ ← catchVal (callPrim srcs opaqueFx FUEL "require" [] [lstr m]) pure
+      let _ ← catchVal (callPrim srcs opaqueFx tgt FUEL "require" [] [lstr m]) pure
         (fun e => die s!"{m}: {String.ofList e.text}")
     match pre.run initHeap with
     | .error (.val e) _ => s!"load failed: {String.ofList e.text}"
     | .error e _ => s!"load failed: {outcome (.error e initHeap)}"
-    | .ok () h => outcome ((runChunk srcs strictFx FUEL b).run h)
+    | .ok () h => outcome ((runChunk srcs strictFx tgt FUEL b).run h)
 
 end Lua
