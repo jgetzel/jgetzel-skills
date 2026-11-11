@@ -531,7 +531,8 @@ export default class Swarm extends View {
     const g = this.s.back, key = `swarm.back:${this.s.db}`;
     if (!g || this.s.away || shared(key) === g.back) return null;
     const dim = text => div().text_color(t.dim).child(text), wrap = text => div().line_height("17px").whitespace_normal().child(text);
-    const ci = g.ci ? `${g.ci.conclusion ?? g.ci.status ?? "?"} ${(g.ci.sha ?? "").slice(0, 7)}`.trim() : "no run seen";
+    const word = g.ci && ({ success: "green", failure: "red" }[g.ci.conclusion] ?? g.ci.conclusion ?? g.ci.status ?? "?");
+    const ci = g.ci ? h_flex().gap(6).items_center().child(this.dot(word === "green" ? t.ansi2 : word === "red" ? t.blocked : t.ansi3, 7)).child(word).child(this.mono(dim((g.ci.sha ?? "").slice(0, 7)).text_size(11))) : dim("no run seen");
     return v_flex().min_w(0)
       .child(this.title(t, "While you were away", `${hhmm(g.since)}–${hhmm(g.back)}${g.note ? ` · ${g.note}` : ""}`, this.more(t, "back-x", "Dismiss", cx => { setShared(key, g.back); cx.notify(); })))
       .child(this.facts(t, "g-back", [
@@ -1171,7 +1172,8 @@ export default class Swarm extends View {
       .when(Boolean(away), el => el.child(h_flex().flex_none().px(16).py(7).gap(8).items_center().min_w(0).bg(t.accent + "14").border_b(1).border_color(t.border).text_size(11.5)
         .child(div().flex_1().min_w(0).whitespace_normal().line_height("16px").text_color(t.muted)
           .child(`Away since ${hhmm(away.since)}${away.note ? ` (${away.note})` : ""}. Questions wait here and nobody pings you${waiting ? `; ${waiting} waiting now` : ""}.`))))
-      .when(Boolean(this.flash), el => el.child(this.banner(t)))
+      .when(Boolean(this.flash) && !this.busy, el => el.child(this.banner(t)))
+      .when(Boolean(this.busy), el => el.child(div().flex_none().mx(16).mt(10).px(12).py(8).rounded(8).border_1().border_color(t.border).bg(t.surface).text_size(12).text_color(t.muted).child("Working…")))
       .when(!s.active, el => el.child(note("No live swarm in this repo; showing its last state.")))
       .when(Boolean(this.error), el => el.child(note(this.error)))
       .child(v_flex().id(`body-${k}`).flex_1().min_h(0).overflow_y_scrollbar().items_center().child(page));

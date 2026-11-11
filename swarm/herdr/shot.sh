@@ -1,14 +1,17 @@
 #!/bin/sh
 # Screenshot this checkout's Swarm panel in a private, headless Herdr; never the person's window, mods or board.
-#   swarm/herdr/shot.sh [--screen home|agents|board[:done|dropped]|task:ID|agent:NAME|more:activity|more:system][+ask] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] out.png
-# --screen: the screen the panel opens on (default home); +ask also opens its confirmation (End agent, Release task).
+#   swarm/herdr/shot.sh [--screen home|agents|board[:done|dropped]|task:ID|agent:NAME|more:activity|more:system][+ask] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] [--before CMD] out.png
+# --screen: the screen the panel opens on (default home); +ask also opens its confirmation (End agent, Release task,
+#   Restart watchd on more:system); board+new opens the new-task form.
+# --before: a shell command run just before the shot, in the sandbox (its DISPLAY, HERDR_APP_HOME, and $DEMO_DB the
+#   board's copy): clicks and keys for the private display (xdotool), or a swarm command against the copy.
 # --db (default $SWARM_DB): the board to show, copied in; with neither, a backup of this repo's real board.
 # --theme: light/dark set settings.json's appearance; anything else is a theme name (themes/ or Herdr's own).
 # --fixture: a made-up swarm from `luajit swarm/herdr/demo.lua DIR`: its board, machine reading, processes and cost history.
 # Everything lives under one /tmp/hs.* dir (socket paths must be shorter than SUN_LEN): its own Xvfb display,
 # HERDR_APP_HOME, hc session and a demo repo holding the board; on exit it stops only what it started.
 set -eu
-screen=home width=860 db=${SWARM_DB:-} theme= fx= out=
+screen=home width=860 db=${SWARM_DB:-} theme= fx= out= before=
 while [ $# -gt 0 ]; do
   case $1 in
     --screen) screen=$2; shift 2 ;;
@@ -16,7 +19,8 @@ while [ $# -gt 0 ]; do
     --db) db=$2; shift 2 ;;
     --theme) theme=$2; shift 2 ;;
     --fixture) fx=$(cd "$2" && pwd); shift 2 ;;
-    -h|--help) sed -n 2,8p "$0"; exit 0 ;;
+    --before) before=$2; shift 2 ;;
+    -h|--help) sed -n 2,11p "$0"; exit 0 ;;
     -*) echo "shot.sh: unknown option $1" >&2; exit 2 ;;
     *) out=$1; shift ;;
   esac
@@ -130,6 +134,7 @@ for o in $(herdr-app status | luajit -e 'for _, o in ipairs(require("cjson").dec
 done
 case $screen in *+ask) hd swarm.ask ;; esac
 sleep 1
+[ -z "$before" ] || { DEMO_DB=$D/demo/.git/swarm/swarm.db sh -c "$before"; sleep 5; } # 5 s: the command's result and the next poll
 errs=$(herdr-app status | luajit -e 'local e = require("cjson").decode(io.read "*a").errors or {}
 for _, x in ipairs(e) do print(type(x) == "table" and require("cjson").encode(x) or x) end')
 [ -z "$errs" ] || echo "shot.sh: Herdr reports: $errs" >&2

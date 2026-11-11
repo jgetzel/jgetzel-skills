@@ -1,9 +1,11 @@
--- A made-up swarm for shot.sh: luajit swarm/herdr/demo.lua DIR, then swarm/herdr/shot.sh --fixture DIR out.png.
+-- A made-up swarm for shot.sh: luajit swarm/herdr/demo.lua DIR [away|back|dead], then swarm/herdr/shot.sh --fixture DIR out.png.
 -- Writes DIR/swarm.db (a board mid-work: the limits reached, auto-spawn holding, a hung stayer, a blocked task),
 -- DIR/proc (the machine reading and `ps` output), DIR/bin/ps and DIR/state (a cmd-cost history for repo "demo").
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 package.path = here .. "/../lua/?.lua;" .. package.path
-local dir = assert(arg[1], "usage: luajit demo.lua DIR")
+local dir = assert(arg[1], "usage: luajit demo.lua DIR [away|back|dead]...")
+local want = {}  -- variants: the user away, just back (the digest card), watchd dead
+for i = 2, #arg do want[arg[i]] = true end
 local stdlib = require "posix.stdlib"
 os.execute(("mkdir -p '%s/proc/pressure' '%s/bin' '%s/state'"):format(dir, dir, dir))
 stdlib.setenv("SWARM_DB", dir .. "/swarm.db")
@@ -83,6 +85,23 @@ for _, x in ipairs({
   { 3, "swarm", "ox-comms", "ox-2 stays for 'PR reviews' and did not answer the liveness check (terminal t12, hc status idle). Unstick it with `hc send`, or end it.", 1, "system" },
 }) do
   c:exec("insert into msg(ts,frm,dest,body,urgent,kind) values(?,?,?,?,?,?)", m(x[1]), x[2], x[3], x[4], x[5], x[6])
+end
+-- main's CI as watchd polled it (newest red), and watchd's own record: pid 1 is always alive, an absent one never
+local function isot(min) return os.date("!%Y-%m-%dT%H:%M:%SZ", m(min)) end
+for i, r in ipairs({ { 9100412, 14, "failure", "5d02e6ab" }, { 9100377, 52, "success", "1c3d5e7f" }, { 9100301, 71, "success", "9be01d77" },
+    { 9100266, 100, "success", "4f2a9c1e" } }) do
+  c:exec("insert into ci(id,sha,status,conclusion,url,created,updated) values(?,?,'completed',?,?,?,?)", r[1], r[4], r[3],
+    "https://github.com/example/atlas/actions/runs/" .. r[1], isot(r[2]), isot(r[2] - 6))
+end
+c:exec("insert into meta(k,v) values('watchd',?)", (want.dead and "2147483646" or "1") .. " t3")
+c:exec("insert into meta(k,v) values('watchd_run',?)", json.encode({ started = m(190), flags = { "--comms", "ox-comms", "--auto-spawn" } }))
+if want.back or want.away then  -- the user left an hour ago; "back": and returned just now
+  c:exec("insert into meta(k,v) values('away',?)", m(60) .. " lunch")
+  c:exec("update task set done_at=?, merged_at=?, pr=34 where id=3", m(52), m(51))
+  if want.back then
+    stdlib.setenv("SWARM_NAME", "human")
+    require("swarm.agents").cmd_away(c, { back = true, note = {} })
+  end
 end
 c:exec("insert into lock(path,agent,reason,since) values('migrations/0042*','ox-3','tenants migration',?)", m(90))
 
