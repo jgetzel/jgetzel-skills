@@ -73,10 +73,6 @@ def stripS : Stat → Stat
   | .site _ s => stripS s
   | s => s
 
-/-- the one metatable field the semantics stops at (`setmetatable` in LuaLean/Interp.lean) -/
-def metaNote (k : String) : W Unit :=
-  if k == "__mode" then note "metatable field __mode: a weak table stops the run" else pure ()
-
 partial def convs : List Char → List Char
   | '%' :: '%' :: r => convs r
   | '%' :: r =>
@@ -102,7 +98,7 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
   | .var x =>
     see x
     if !sc.contains x then modify fun s => { s with reads := s.reads.push (s.line, x) }
-  | .str c => let k := String.ofList c; see k; metaNote k
+  | .str c => let k := String.ofList c; see k
   | .func ps _ b => func sc ps b
   | .index t k =>
     exp sc bs t; exp sc bs k
@@ -130,7 +126,7 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
 
 partial def field (sc : List String) (bs : List Block) : Field → W Unit
   | .pos e => exp sc bs e
-  | .named k e => do see k; metaNote k; exp sc bs e
+  | .named k e => do see k; exp sc bs e
   | .keyed k e => do exp sc bs k; exp sc bs e
 
 partial def func (sc : List String) (ps : List String) (b : Block) : W Unit := do

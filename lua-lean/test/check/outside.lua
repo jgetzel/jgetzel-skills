@@ -13,7 +13,7 @@ end
 
 function M.same(a, b)
   local mt = {
-    __eq = function() return true end, __mode = "k",
+    __eq = function() return true end,
   }
   return setmetatable({}, mt) == setmetatable({}, mt)
 end
