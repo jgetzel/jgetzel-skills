@@ -209,7 +209,7 @@ function M.cmd_cost(_, a)
     for _, by in ipairs({ { "peak_kb", "peak" }, { "cpu_s", "cpu" } }) do
       print("by " .. by[2] .. ":")
       for _, r in ipairs(h:all(("select repo,key,count(*) n,max(peak_kb) peak,max(cpu_s) cpu,max(wall_s) wall from cmd %s group by repo,key "
-          .. "order by max(%s) desc limit 5"):format(where, by[1]), table.unpack(args))) do
+          .. "order by max(%s) desc limit 5"):format(where, by[1]), unpack(args))) do
         print(("  %s%s: %d run%s, peak %s, %s, %d CPU-min"):format(a.all_repos and r.repo .. " " or "", r.key, r.n,
           r.n == 1 and "" or "s", gib(r.peak), mins(r.wall), math.floor(r.cpu / 60 + 0.5)))
       end
