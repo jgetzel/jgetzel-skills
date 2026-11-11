@@ -406,14 +406,14 @@ theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk
   unfold spawnFor; split
   · rename_i a _
     split
-    · have hf : ∀ g : Agent, ((fun _ => { (default : Agent) with st := .idle, boot := true }) g : Agent).believes = [] :=
+    · have hf : ∀ g : Agent, ((fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces }) g : Agent).believes = [] :=
         fun _ => rfl
       have h1 := J_clear (s := x) (a := a) hf h
       have hbel := bel_clear (s := x) (a := a) hf
-      have h2 : J { setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true }) with
+      have h2 : J { setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces }) with
           cursor := x.cursor.set a x.log.length, start := x.start.set a x.log.length, seen := x.seen.set a [] } := by
         refine J_of h1 (fun _ _ ht => ht) (fun b u hu hi => ?_) (fun _ _ _ _ hd => Or.inr hd)
-        have hu' : u ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true })).agt b).believes := hu
+        have hu' : u ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces })).agt b).believes := hu
         have hba : ¬ a = b := by rintro rfl; rw [hbel] at hu'; cases hu'
         refine ⟨hi.1, ?_⟩
         obtain ⟨i, i1, r⟩ := hi.2

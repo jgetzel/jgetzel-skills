@@ -274,17 +274,17 @@ def cfg20 : Cfg := { nwts := 1, nbases := 2 }
 -- a protected ref, but not on main, so the sweep never removes it.
 def pre20 : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1), .world 0 .age, .leave 0]
 example : loopOk cfg20 pre20 (.bgStart 1) (.bgEnd 1) (orphan cfg20 · 0) = true := by decide
--- The agent half. Agent 0 claims #1, lands it on `formal`, marks it done, stops and ages: idle, free, its worktree clean
--- and on a base. Lifecycle's landed check asks main, so it is never ended (and a waiter it has is woken only by the
--- unclean nudge, if it goes stale: then it is nudged once per idle stretch, forever).
-def cfg20b : Cfg := { nwts := 1, nbases := 2 }
+-- The agent half. Agent 0 claims #1, whose base is `formal`, lands it there, marks it done, stops and ages: idle, free,
+-- its worktree clean and on its task's base. Lifecycle's landed check asks main, so it is never ended (and a waiter it
+-- has is woken only by the unclean nudge, if it goes stale: then it is nudged once per idle stretch, forever).
+def cfg20b : Cfg := { nwts := 1, nbases := 2, taskBase := [0, 1] }
 def pre20b : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 1),
   .done 0 1 true, .stop 0 false, .age 0]
 example : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true := by decide
 -- with `perTaskBase` the tick removes the worktree, and ends the agent
 -- (the sweep protects a base some task names: #1 is on `formal`; the agent's task is #1)
 example : (run { cfg20 with perTaskBase := true, taskBase := [0, 1] } ([.add []] ++ pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide
-example : (run { cfg20b with perTaskBase := true, taskBase := [0, 1] } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
 
 -- #B1 (finding, board #3), B1 (sw-bases, board #3). Work is landed on the base of the task it was done for. Agent 0's task #1 is on `formal`;
 -- it lands on main, not on `formal`, marks #1 done and goes idle. Lifecycle's check asks main only, so it ends the agent:
