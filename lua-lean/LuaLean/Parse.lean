@@ -1,7 +1,7 @@
 import LuaLean.Syntax
 
-/-! A parser for the subset: Lua 5.1's grammar and precedence, LuaJIT's lexer (`\x`, `\z`, `goto`). It is not part
-of what is proved: proofs are about the syntax tree it gives, written out as Lean (`LuaSrc.lean`). -/
+/-! A parser for the subset: Lua 5.1's grammar and precedence, LuaJIT's lexer (`\x`, `\z`, `\u{...}`, `goto`). It is
+not part of what is proved: proofs are about the syntax tree it gives, written out as Lean (`LuaSrc.lean`). -/
 
 namespace Lua
 
@@ -56,6 +56,12 @@ partial def countNl : List Char → Nat
     | some r' => countNl r' + 1
     | none => countNl r
 
+/-- the UTF-8 bytes of a code point, as `\u{...}` writes them -/
+def utf8 (v : Nat) : List Char :=
+  let b := fun (k : Nat) => 0x80 ||| ((v >>> k) &&& 0x3f)
+  (if v < 0x80 then [v] else if v < 0x800 then [0xc0 ||| (v >>> 6), b 0]
+   else if v < 0x10000 then [0xe0 ||| (v >>> 12), b 6, b 0] else [0xf0 ||| (v >>> 18), b 12, b 6, b 0]).map Char.ofNat
+
 /-- a quoted string's text up to its close, the rest, and the newlines in it (escaped) -/
 partial def quoted (q : Char) (s : List Char) (acc : List Char) (nl : Nat := 0) :
     Except String (List Char × List Char × Nat) :=
@@ -83,12 +89,21 @@ partial def quoted (q : Char) (s : List Char) (acc : List Char) (nl : Nat := 0) 
     | 'z' :: r =>
       let ws := r.takeWhile Num.isSpace
       quoted q (r.drop ws.length) acc (nl + countNl ws)
+    | 'u' :: '{' :: r =>
+      let ds := r.takeWhile fun c => (Num.hexVal c).isSome
+      let v := ds.foldl (fun a c => 16 * a + (Num.hexVal c).getD 0) 0
+      match r.drop ds.length with
+      | '}' :: r =>
+        if ds.isEmpty || v ≥ 0x110000 || (0xd800 ≤ v && v < 0xe000) then .error "invalid escape sequence"
+        else quoted q r ((utf8 v).reverse ++ acc) nl
+      | _ => .error "invalid escape sequence"
     | d :: r =>
       if Num.isDigit d then
         let ds := (d :: r).takeWhile Num.isDigit |>.take 3
         let v := ds.foldl (fun a c => 10 * a + (c.toNat - '0'.toNat)) 0
         if v > 255 then .error "escape too large" else quoted q ((d :: r).drop ds.length) (Char.ofNat v :: acc) nl
-      else quoted q r (d :: acc) nl
+      else if d == '\\' || d == '"' || d == '\'' then quoted q r (d :: acc) nl
+      else .error "invalid escape sequence"
     | [] => .error "unfinished string"
 
 def syms3 : List String := ["..."]
@@ -394,11 +409,16 @@ partial def blockIn : P Block := do
         | [.site s (.call f as)] => [.site { s with tail := true, line := l } (.call f as)]
         | [.site s (.method o m as)] => [.site { s with tail := true, line := l } (.method o m as)]
         | es => es
-      let _ ← acceptSym ";"
       ss := ss.push (.ret es)
+      while ← acceptSym ";" do pure ()
       break
     if ← acceptSym ";" then continue
-    ss := ss.push (← stat)
+    let st ← stat
+    ss := ss.push st
+    -- `break` ends its block, as `return` does (LuaJIT's parse_chunk): only `;`s may follow
+    if st matches .brk then
+      while ← acceptSym ";" do pure ()
+      break
   return ss.toList
 
 /-- an assignment target: a table write is reported on `line` -/
