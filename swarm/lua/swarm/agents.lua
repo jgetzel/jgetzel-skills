@@ -181,6 +181,23 @@ function M.cmd_limits(c, a)
   print(M.limits_line(c))
 end
 
+-- swarm away [note] | --back: the user's away flag (meta away = "<since> <note>").
+function M.cmd_away(c, a)
+  if a.back then
+    c:tx(function()
+      if c:exec("delete from meta where k='away'") > 0 then db.log(c, M.env("SWARM_NAME") or "human", "back") end
+    end)
+    print("back")
+  else
+    local note = table.concat(a.note, " ")
+    c:tx(function()
+      c:exec("insert or replace into meta(k,v) values('away',?)", util.strip(util.now() .. " " .. note))
+      db.log(c, M.env("SWARM_NAME") or "human", "away", nil, note)
+    end)
+    print("away" .. (note ~= "" and ": " .. note or ""))
+  end
+end
+
 function M.is_comms(c, name)
   if not name or name == "" then return false end
   local cm = c:one("select v from meta where k='comms'")

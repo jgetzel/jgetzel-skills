@@ -218,6 +218,20 @@ function M.cmd_state(a)
   for _, x in ipairs(ags) do
     if x.ended == null then out.active = true end
   end
+  local aw = meta("away")  -- "<since> <note>" while the user is away (`swarm away`)
+  out.away = aw and { since = tonumber(aw:match("^%d+")), note = N(aw:match("^%d+ (.+)$")) } or null
+  if a.task then  -- the task screen: what the board's rows leave out
+    local r = rows("select body from task where id=?", a.task)[1]
+    local evs, ms = {}, {}
+    for _, e in ipairs(tev) do
+      if tasks.event_task(e) == a.task then evs[#evs + 1] = e end
+    end
+    for _, m in ipairs(rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg where body like ? order by id desc limit 200",
+        "%#" .. a.task .. "%")) do
+      if #ms < 20 and (m.body .. " "):find("#" .. a.task .. "%D") then ms[#ms + 1] = m end
+    end
+    out.task = r and { id = a.task, body = N(r.body), events = array(evs), messages = array(ms) } or null
+  end
   local deep = a.view == "activity"  -- the Activity tab folds and filters, so it reads further back
   if want.messages then
     local r, n = rows("select id,ts,frm,dest,substr(body,1,500) as body,urgent,kind from msg order by id desc limit "

@@ -1,27 +1,28 @@
 #!/bin/sh
 # Screenshot this checkout's Swarm panel in a private, headless Herdr; never the person's window, mods or board.
-#   swarm/herdr/shot.sh [--tab overview|agents|board|activity|system] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] out.png
+#   swarm/herdr/shot.sh [--screen home|agents|board[:done|dropped]|task:ID|agent:NAME|more:activity|more:system][+ask] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] out.png
+# --screen: the screen the panel opens on (default home); +ask also opens its confirmation (End agent, Release task).
 # --db (default $SWARM_DB): the board to show, copied in; with neither, a backup of this repo's real board.
 # --theme: light/dark set settings.json's appearance; anything else is a theme name (themes/ or Herdr's own).
 # --fixture: a made-up swarm from `luajit swarm/herdr/demo.lua DIR`: its board, machine reading, processes and cost history.
 # Everything lives under one /tmp/hs.* dir (socket paths must be shorter than SUN_LEN): its own Xvfb display,
 # HERDR_APP_HOME, hc session and a demo repo holding the board; on exit it stops only what it started.
 set -eu
-tab=overview width=860 db=${SWARM_DB:-} theme= fx= out=
+screen=home width=860 db=${SWARM_DB:-} theme= fx= out=
 while [ $# -gt 0 ]; do
   case $1 in
-    --tab) tab=$2; shift 2 ;;
+    --screen) screen=$2; shift 2 ;;
     --width) width=$2; shift 2 ;;
     --db) db=$2; shift 2 ;;
     --theme) theme=$2; shift 2 ;;
     --fixture) fx=$(cd "$2" && pwd); shift 2 ;;
-    -h|--help) sed -n 2,7p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,8p "$0"; exit 0 ;;
     -*) echo "shot.sh: unknown option $1" >&2; exit 2 ;;
     *) out=$1; shift ;;
   esac
 done
 [ -n "$out" ] || { sed -n 3p "$0" >&2; exit 2; }
-case $tab in overview|agents|board|activity|system) ;; *) echo "shot.sh: no tab $tab" >&2; exit 2 ;; esac
+case ${screen%+ask} in home|agents|board|board:done|board:dropped|task:[0-9]*|agent:?*|more:activity|more:system) ;; *) echo "shot.sh: no screen $screen" >&2; exit 2 ;; esac
 case $width in ''|*[!0-9]*) echo "shot.sh: --width takes px" >&2; exit 2 ;; esac
 case $out in /*) ;; *) out=$PWD/$out ;; esac
 
@@ -96,13 +97,13 @@ wait_for 30 herdr-app status
 wait_for 30 test -f "$H/layouts/main.json" -a -d "$H/mods/tabs"
 
 # Install like a person would, then swap the mods/swarm symlink for a real copy: hot reload and icon
-# loading don't follow a symlinked mod dir. The copy opens on --tab (the anchor is init()'s default).
+# loading don't follow a symlinked mod dir. The copy opens on --screen (the anchor is main.js's SCREEN line).
 echo '{"url_command": "true"}' > "$H/calendar.json" # no calendar: never ask a keyring
 luajit "$here/../../herdr-mods/install.lua" >/dev/null
 rm "$H/mods/swarm"
 cp -r "$here/mods/swarm" "$H/mods/swarm"
-sed -i "s/this\.tab = \"overview\";/this.tab = \"$tab\";/" "$H/mods/swarm/main.js"
-grep -q "this.tab = \"$tab\";" "$H/mods/swarm/main.js" || { echo "shot.sh: main.js no longer sets this.tab = \"overview\" in init(); update shot.sh" >&2; exit 1; }
+sed -i "s|^const SCREEN = \"home\";|const SCREEN = \"$screen\";|" "$H/mods/swarm/main.js"
+grep -q "^const SCREEN = \"$screen\";" "$H/mods/swarm/main.js" || { echo "shot.sh: main.js no longer has the line const SCREEN = \"home\"; update shot.sh" >&2; exit 1; }
 
 if [ -n "$theme" ]; then
   key=theme; case $theme in light|dark) key=appearance ;; esac
@@ -127,6 +128,7 @@ sleep 8 # the panel's first `swarm state` and icon copy, then a frame
 for o in $(herdr-app status | luajit -e 'for _, o in ipairs(require("cjson").decode(io.read "*a").overlays or {}) do print(o) end'); do
   hd overlay.close --id "$o"
 done
+case $screen in *+ask) hd swarm.ask ;; esac
 sleep 1
 errs=$(herdr-app status | luajit -e 'local e = require("cjson").decode(io.read "*a").errors or {}
 for _, x in ipairs(e) do print(type(x) == "table" and require("cjson").encode(x) or x) end')

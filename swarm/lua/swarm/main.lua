@@ -34,7 +34,7 @@ local stdlib = require "posix.stdlib"
 
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
-  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", stay = "agents", lock = "locks", unlock = "locks",
+  ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", away = "agents", stay = "agents", lock = "locks", unlock = "locks",
   machine = "machine", cost = "cost", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", ["end"] = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
@@ -140,6 +140,9 @@ local function parser()
   p = ap:command("limits")  -- the user's staffing numbers (sw-roles §6)
   opt(p, "--min", nil, int):description("auto-spawn number: watchd staffs tasks until this many agents are live")
   opt(p, "--max", nil, int):description("agent max: `swarm spawn` refuses at this many live agents")
+  p = ap:command("away")  -- the user is away: questions wait, nobody is pinged for them
+  p:argument("note"):args("*")
+  p:flag("--back"):description("the user is back: print what waits for them")
   p = ap:command("lock")
   p:argument("path")
   opt(p, "--reason", "")
@@ -158,6 +161,7 @@ local function parser()
   p:flag("--json"):count(1)
   opt(p, "--view"):choices(VIEWS):description("only what that panel view shows (default: everything)")
   opt(p, "--agent"):description("also the detail pane's messages and events for this agent")
+  opt(p, "--task", nil, int):description("also that task's body, events and the messages that name it")
   p = ap:command("watch")
   opt(p, "--tail", 20, int)
   p:flag("--once")
