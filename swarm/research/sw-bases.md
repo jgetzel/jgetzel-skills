@@ -1,6 +1,7 @@
 # sw-bases: per-task base branches, agent GC vs workspace GC
 
-Status: proposed (2026-11-10), developed with the Lean TDD loop below.
+Status: implemented (boards #3 to #6, 2026-11-10), developed with the Lean TDD loop below. Theorems and findings are in
+`swarm/model/SwarmModel/Workspaces.lean` and `Findings.lean`; see "Result" at the end.
 
 ## Problem (seen in the notapki formalization swarm)
 
@@ -22,13 +23,14 @@ Status: proposed (2026-11-10), developed with the Lean TDD loop below.
 - **Workspace GC (refcounted).** Remove a worktree when no live agent is attached, no process cwd is inside, status is
   clean, and HEAD is reachable from a protected ref (any task base, `main`, `origin/*`). GC checks reachability
   itself: `git merge-base --is-ancestor <branch> <ref>` for each protected ref, plus the squash-merge content check.
-  Then it deletes the branch with `git branch -D`, and never a protected ref. Not `git branch -d`: that checks merged
-  into HEAD of the checkout it runs from (or the upstream), not our protected refs. In the notapki swarm, branches
-  contained in local `formal` were refused by `-d` run from a main checkout on `main`.
+  Then it deletes the branch, never a protected ref. As built (differs from the first draft, which said `branch -D`):
+  `git branch -d` first, and when git refuses (it checks HEAD of the checkout, not our protected refs; in the notapki
+  swarm `-d` from a checkout on `main` refused branches contained in `formal`) the sweep's own reachability check
+  stands in and the delete is `git update-ref -d refs/heads/<br> <tip>`, which fails if the branch moved. Never `-D`.
 - **Swarm-created worktrees.** `swarm spawn --task N` runs `git worktree add ../<repo>-<agent> -b <agent>/<task>
   <base>` and records `workspace(path, branch, base)`; agents link to it. Replaces `owned_wts` heuristics. Agents never
   check out a base; landing is a fast-forward of the base from a scratch branch (`git push . HEAD:<base>`, or a PR
-  for a remote base). Optional `swarm land` wraps it.
+  for a remote base). `swarm land` was not built: the communicator lands by PR or `git push . HEAD:<base>`.
 - **Sharing.** Many agents may target one base. Many agents in one worktree only read-only (`--attach`): the index
   and build dirs (`target/`, `.lake`) collide.
 
@@ -46,3 +48,19 @@ reachable from a protected ref (ancestor, or its content under a squash), and a 
 ref and its tip is reachable the same way; (W2) ending an agent removes no worktree or branch; (W3, fair runs) a landed, clean, unattached workspace is
 eventually removed, and an idle agent whose task is on its base is eventually ended; (W4) no agent worktree has a
 base branch checked out.
+
+## Result
+
+| Theorem | Statement | Refuted with the switch off | Proved with it on | Lua |
+|---|---|---|---|---|
+| B1 | lifecycle ends an agent only when its worktree is landed on a base of one of its tasks (main if none) | `not_B1` (finding #22) | `B1_of` (`perTaskBase`) | #3: `bases.lua`, `base_for`, `task add --base`, `.claude/swarm.json` |
+| W1 | a worktree is removed only if clean, unattached, no process inside, HEAD reachable from a protected ref; a deleted branch is no protected ref and reachable | `not_W1_branch`, `not_W1_proc` (findings #18, #18b) | `W1_of` (`splitGC`) | #4: sweep checks itself; `delete_branch` |
+| W2 | ending an agent removes no worktree and no branch | `not_W2` | `W2_of` (`splitGC`) | #4: `swarm end` and the lifecycle kill the terminal only |
+| W3 | on fair runs a landed, clean, unattached workspace is removed and an idle agent whose work is on its base is ended | `not_W3_formal_wt`, `not_W3_formal_agent` (finding #20) | `W3_of` (`perTaskBase`, `splitGC`, `watchd`) | #3, #4 |
+| W4 | no worktree has a base checked out | `not_W4` (finding #21) | `W4_of` (`recordedWorkspaces`) | #5: `swarm spawn --task` makes and records the worktree; a base checkout is refused |
+
+`replay_W`: all five hold of `replay`, the instance the Lua replay runs (tasks 2 and 4 on `formal`). `Real.lean` ties the
+Lua's decisions to the model's (`sweepGate_W1`, `landedRef_reach`, `endAgent_keepsGit`, `delRef_guarded`).
+
+Findings beyond the design: `-D` was dropped for the guarded `update-ref -d` (above); `landed_ref`'s `gh` merged-PR check
+ignores the base, so a PR merged into main makes a branch look landed on `formal` (board #43, open).

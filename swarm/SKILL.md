@@ -64,10 +64,10 @@ with subagents.
    `--model`, else `watchd --model`, else sonnet), reports live
    agents past their task lease without taking the claim, and tells you when an
    agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
-   poller: main's push runs once a minute into the board, which agents read with
+   poller: a base's push runs once a minute into the board (bases with a remote only), which agents read with
    `swarm ci <sha>` instead of `gh run watch` (several push workflows on main?
    `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it
-   is on main, not when CI passes, so a red run's authors have often ended:
+   is on its base, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
    first, told to any live author (else to you), done on the next green run. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
@@ -107,7 +107,7 @@ with subagents.
   stay and their work is on their task's base. `swarm end <agent> [--force]` does it by hand with the same checks.
   Worktrees are a separate sweep: watchd removes any worktree of this repo (yours included) that is clean, has no
   live agent attached and no process in it, was untouched for 30 minutes and is on a ref some task base, `main` or
-  `origin/*` already has, then deletes its branch with `git branch -d` (never a base): tell the user before the
+  `origin/*` already has, then deletes its branch (`git branch -d`, else `update-ref -d` guarded by the tip it checked; never a base, never `-D`): tell the user before the
   first watchd if they park worktrees here. When all tasks are done, tell
   the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
   waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `hc send`, or end it.
