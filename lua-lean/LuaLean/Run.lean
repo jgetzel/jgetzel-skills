@@ -2,7 +2,8 @@ import LuaLean.Interp
 import LuaLean.Parse
 
 /-! Running a chunk the way `test/luasem.lua` runs it under LuaJIT, and its results as text both sides write alike:
-`ok:` and each value, or `error:` and the error's value. A chunk is named `c`, as `loadstring(src, "=c")` names it. -/
+`ok:` and each value, or `error:` and the error's value, then ` stdout:` and what it wrote there if it wrote anything.
+A chunk is named `c`, as `loadstring(src, "=c")` names it. -/
 
 namespace Lua
 
@@ -38,11 +39,21 @@ def ser (h : Heap) (fuel : Nat) (path : List Nat) (v : Val) : List Char :=
   | .eff _ => "userdata".toList
   | .thr _ => "thread".toList
 
+/-- what print and io.write wrote, in order (`caseFx`'s default output is stdout) -/
+def stdoutOf (h : Heap) : List Char :=
+  (trace h).reverse.flatMap fun e => match e.name, e.args with
+    | "print", [.str s] | "io.write", [.str s] => s
+    | _, _ => []
+
+def withOut (h : Heap) (s : String) : String :=
+  let o := stdoutOf h
+  if o.isEmpty then s else s ++ " stdout:" ++ String.ofList (serStr o)
+
 def outcome (r : EStateM.Result Err Heap (List Val)) : String :=
   match r with
-  | .ok vs h => "ok:" ++ String.ofList (List.intercalate [','] (vs.map (ser h 100 [])))
-  | .error (.val v) h => "error:" ++ String.ofList (ser h 100 [] v)
-  | .error (.rt 0 m) h => "error:" ++ String.ofList (ser h 100 [] m.bare)
+  | .ok vs h => withOut h ("ok:" ++ String.ofList (List.intercalate [','] (vs.map (ser h 100 []))))
+  | .error (.val v) h => withOut h ("error:" ++ String.ofList (ser h 100 [] v))
+  | .error (.rt 0 m) h => withOut h ("error:" ++ String.ofList (ser h 100 [] m.bare))
   | .error (.rt k _) _ => s!"effect error level {k} past the chunk"
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
@@ -69,13 +80,29 @@ def libPath (p dir : String) : Option String :=
 def srcsOf (l : List (String × Block)) (m : String) : Option Block := l.lookup m
 
 /-- an effect while modules load: an opaque handle (configuring cjson, reading the environment) -/
-def opaqueFx (name : String) (_ : List Val) : Option (List Val) := some [.eff (name ++ "()")]
-def strictFx (_ : String) (_ : List Val) : Option (List Val) := none
+def opaqueFx (name : String) (_ : List Val) (_ : List Event) : Option (List Val) := some [.eff (name ++ "()")]
+
+/-- mktime with the zone UTC: the struct tm's fields normalized (glibc's; a DST flag set moves it an hour) -/
+def timegm (sec min hour mday mon year : Int) : Int :=
+  daysFromCivil (year + 1900 + mon / 12) (mon % 12 + 1) 1 * 86400 + (mday - 1) * 86400 + hour * 3600 + min * 60 + sec
+
+/-- the differential test's world (`test/luasem.lua` makes it LuaJIT's): stdout takes every write, the local zone
+is UTC, and there is no clock -/
+def caseFx (name : String) (args : List Val) (_ : List Event) : Option (List Val) :=
+  match name, args with
+  | "print", _ => some []
+  | "io.write", _ => some [.bool true]
+  | "os.localtime", [.num (.int t)] =>
+    let tm := gmtime t
+    some ([tm.sec, tm.min, tm.hour, tm.day, tm.month, tm.year, tm.wday, tm.yday].map (.num ∘ .int) ++ [.bool false])
+  | "os.mktime", [.num (.int s), .num (.int m), .num (.int h), .num (.int d), .num (.int mo), .num (.int y),
+      .num (.int dst)] => some [.num (.int (timegm s m h d mo y - if dst > 0 then 3600 else 0))]
+  | _, _ => none
 
 def FUEL : Nat := 100000
 
 /-- the chunk's results on target `tgt`, package.path `path`: the modules `mods` loaded first (effects opaque),
-then the chunk (no effects) -/
+then the chunk (in the test's world, `caseFx`) -/
 def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String) (src : List Char)
     (path : String := "./?.lua") : String :=
   match parseChunk src "c" with
@@ -89,6 +116,6 @@ def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String)
     match pre.run initHeap with
     | .error (.val e) _ => s!"load failed: {String.ofList e.text}"
     | .error e _ => s!"load failed: {outcome (.error e initHeap)}"
-    | .ok () h => outcome ((runChunk srcs strictFx tgt FUEL b).run h)
+    | .ok () h => outcome ((runChunk srcs caseFx tgt FUEL b).run h)
 
 end Lua
