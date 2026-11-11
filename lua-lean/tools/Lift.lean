@@ -176,7 +176,7 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T (String × String
   | .bin op a b => tBin2 cx s!"S.eBin I {Show.binop op}" "CE_bin" a b
   | .un op a => do
     let (s, p) ← tExp cx a
-    pure (s!"(S.eUn {Show.unop op} {s})", s!"(CE_un {p})")
+    pure (s!"(S.eUn I {Show.unop op} {s})", s!"(CE_un {p})")
   | .table fs => do
     let (s, p) ← tFields cx fs
     pure (s!"(S.eTable {s})", s!"(CE_table {p})")

@@ -272,6 +272,9 @@ partial def expr (limit : Nat := 0) : P Exp := do
             | none =>
               -- == and ~= raise no error
               if o == .eq || o == .ne then pure (.bin o e b)
+              -- one CAT for `a .. b .. c`: `b .. c`'s value, from a metamethod, sits in b's slot, named b's
+              else if let (.concat, .site _ (.bin .concat b1 _)) := (o, b) then do
+                pure (.site (← site (← lastLine) [← desc e, ← desc b1]) (.bin o e b))
               else do pure (.site (← site (← lastLine) [← desc e, ← desc b]) (.bin o e b))
           | .inr true => pure (.and e b)
           | .inr false => pure (.or e b)

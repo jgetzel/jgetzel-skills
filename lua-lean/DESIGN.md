@@ -130,7 +130,7 @@ the replay leaves. A cell at a fixed address holds the running coroutine
 (nil in the main thread), for `running`, `status` and `isyieldable`.
 
 `Err.yld` is not a Lua error: `pcall`, sites and frames let it pass, so a yield crosses `pcall`, metamethods
-(`__index`, `__newindex`, `__call`), `for` iterators and `table.foreach`/`foreachi` (Lua in LuaJIT 2.1), as LuaJIT's
+(`__index`, `__newindex`, `__call`, the operators'), `for` iterators and `table.foreach`/`foreachi` (Lua in LuaJIT 2.1), as LuaJIT's
 fully resumable VM lets it. A builtin that calls back into Lua from C (`table.sort`'s comparator, `gsub`'s function
 or table, `require`'s and `dofile`'s chunks, `load`'s reader) marks the coroutine (`bounded`), and a yield there is
 LuaJIT's error, `attempt to yield across C-call boundary`, as it is in the main thread. A resume returns LuaJIT's
@@ -144,7 +144,11 @@ replay, which a stateless oracle answers as before.
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
-instead) and `__call`, each read from the metatable when the operation runs, as LuaJIT does; closures; varargs;
+instead), `__call`, the arithmetic ones (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`), `__unm` (given its
+operand twice) and `__concat` (`a .. b .. c` right to left, as BC_CAT), each read from the metatable when the
+operation runs, the left operand's before the right's, as LuaJIT does; an operator's metamethod is called as a call
+is (a table through its `__call`), its first value the result (a builtin's bad argument names it by the event,
+`bad argument #1 to '__add'`), and one that cannot be called is LuaJIT's error with no place; `#t` the border whatever `__len` is (LuaJIT 2.1 without its 5.2 compatibility); closures; varargs;
 `pcall`/`error` (a failed call keeps what it wrote); error values as LuaJIT's: a runtime error, a builtin's
 (`bad argument #1 to 'rep' (...)`, named as the call names the callee) and `error`/`assert` with a string or number
 carry `chunk:line:` of the place LuaJIT reports (the operator or call raising it, or the call `error`'s level counts
@@ -169,7 +173,7 @@ arguments before it are written; `os.time` of a date table (each field through `
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
 but those below; `os.difftime` (each time truncated, as C's cast does); the rest of `io` and `os` as handles.
 
-Out: `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
+Out: `setfenv` and `load`'s environment argument, FFI, the other metamethods (G3c), `string.format("%a")`,
 `string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
@@ -178,10 +182,9 @@ How a script outside it is reported, from strongest to weakest:
    translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
    nothing that parses fails to translate.
 2. **Stops the run**: a feature the semantics refuses is an effect no oracle answers, so no `RunP` about a run that
-   reaches it can be proved: an operation that would call a metamethod the semantics does not model yet (`t + 1`
-   with `__add` in `t`'s metatable: `effect metamethod __add`; likewise `__sub`…`__pow`, `__unm`, `__concat`, `__eq`,
-   `__lt`, `__le`, `__tostring` in `tostring` and `%s`, `__metatable` in `getmetatable` and `setmetatable`; a table's
-   `__len` LuaJIT 2.1 never calls), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
+   reaches it can be proved: an operation that would call a metamethod the semantics does not model yet (`t == u`
+   with `__eq` in their metatables: `effect metamethod __eq`; likewise `__lt`, `__le`, `__tostring` in `tostring` and
+   `%s`, `__metatable` in `getmetatable` and `setmetatable`), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), `error` with a level that counts out past a
    builtin (`pcall(error, "x", 2)`: its place is a call the builtin's frame hides), `string.format`'s `%a`, `%o`, `%u`
@@ -270,7 +273,7 @@ proof; a statement is never weakened to make a proof go through.
   line, and runs the differential test on the script's own pure functions; coverage on a corpus of real third-party
   LuaJIT scripts.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
-  `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b); `__eq`/`__lt`/`__le`,
+  `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
 - **G4** the standard library. Done: the rest of string, table and math, `select`/`tostring`/`tonumber` corners
   (G4a); `pairs` order opaque, `#t` with holes a stop (G4b); `os` and `io` as effects with named axioms (G4c). A model

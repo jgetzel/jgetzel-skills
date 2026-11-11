@@ -138,11 +138,12 @@ def eAnd (a b : SE) : SE := fun n => tick n fun n => do
 def eOr (a b : SE) : SE := fun n => tick n fun n => do
   let x ← a n
   if x.truthy then pure x else b n
-def eUn (op : UnOp) (a : SE) : SE := fun n => tick n fun n => do unop op (← a n)
+def eUn (I : Sem) (op : UnOp) (a : SE) : SE := fun n => tick n fun n => do
+  unop I.srcs I.oracle I.tgt n op (← a n)
 def eBin (I : Sem) (op : BinOp) (a b : SE) : SE := fun n => tick n fun n => do
   let x ← a n
   let y ← b n
-  binop I.tgt op x y
+  binop I.srcs I.oracle I.tgt n op x y
 /-- a table constructor: `fs` the fields, given the new table's address -/
 def eTable (fs : Nat → SM) : SE := fun n => tick n fun n => tick n fun n => do
   let t ← alloc (.tbl {})
@@ -368,7 +369,7 @@ theorem CE_and {cx a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eA
   intro n; cases n <;> rw [eval] <;> simp [eAnd, tick, ha, hb]
 theorem CE_or {cx a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eOr sa sb) cx (.or a b) := by
   intro n; cases n <;> rw [eval] <;> simp [eOr, tick, ha, hb]
-theorem CE_un {cx op a sa} (ha : CE I sa cx a) : CE I (eUn op sa) cx (.un op a) := by
+theorem CE_un {cx op a sa} (ha : CE I sa cx a) : CE I (eUn I op sa) cx (.un op a) := by
   intro n; cases n <;> rw [eval] <;> simp [eUn, tick, ha]
 theorem CE_bin {cx op a b sa sb} (ha : CE I sa cx a) (hb : CE I sb cx b) : CE I (eBin I op sa sb) cx (.bin op a b) := by
   intro n; cases n <;> rw [eval] <;> simp [eBin, tick, ha, hb]

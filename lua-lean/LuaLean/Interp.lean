@@ -268,6 +268,12 @@ def frame {α} (m : M α) : M α := fun h =>
   | .error (.rt (k + 1) msg) h => .error (.rt k msg) h
   | r => r
 
+/-- an operator's metamethod `ev` called: a builtin's bad argument names it `ev` (lj_debug_funcname) -/
+def mmFrame {α} (ev : String) (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.rt 0 (.arg narg msg)) h => .error (.rt 0 (.val (lstr s!"bad argument #{narg} to '{ev}' ({msg})"))) h
+  | r => r
+
 -- ---------- the heap ----------
 
 def getObj (a : Nat) : M Obj := do
@@ -470,14 +476,21 @@ def strLt : List Char → List Char → Bool
   | _ :: _, [] => false
   | a :: s, b :: t => if a == b then strLt s t else a < b
 
-def arith (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
-  match x.toNum, y.toNum with
-  | some a, some b => pure (.num (match op with
-      | .add => a.add b | .sub => a.sub b | .mul => a.mul tgt b | .div => a.div b | .mod => a.mod b | _ => a.pow b))
-  | _, _ => do
-    noMeta [x, y] [match op with
-      | .add => "__add" | .sub => "__sub" | .mul => "__mul" | .div => "__div" | .mod => "__mod" | _ => "__pow"]
-    if x.toNum.isNone then opErr "perform arithmetic on" (some 0) x else opErr "perform arithmetic on" (some 1) y
+/-- the arithmetic operators' events -/
+def arithEv : BinOp → String
+  | .add => "__add" | .sub => "__sub" | .mul => "__mul" | .div => "__div" | .mod => "__mod" | _ => "__pow"
+
+/-- an operator's metamethod `ev` (lj_meta_arith, lj_meta_cat): x's, else y's; nil when neither has one. It is called
+as a call is, a table through its `__call`; one that cannot be is LuaJIT's error, with no place -/
+def metaOf2 (ev : String) (x y : Val) : M Val := do
+  let h ← metaOf x ev
+  let h ← if h.isNil then metaOf y ev else pure h
+  match h with
+  | .nil | .fn _ | .prim .. | .eff _ => pure h
+  | .tbl _ => match ← metaOf h "__call" with
+    | .fn _ | .prim .. => pure h
+    | _ => throw (.val (lstr s!"attempt to call a {h.typeName} value"))
+  | _ => throw (.val (lstr s!"attempt to call a {h.typeName} value"))
 
 def less (x y : Val) (orEq : Bool) : M Bool :=
   match x, y with
@@ -499,36 +512,6 @@ def concatText : Val → Option (List Char)
   | .str s => some s
   | .num n => some n.toText
   | _ => none
-
-def binop (tgt : Target) (op : BinOp) (x y : Val) : M Val :=
-  match op with
-  | .eq => do pure (.bool (← eqv x y))
-  | .ne => do pure (.bool !(← eqv x y))
-  | .lt => .bool <$> less x y false
-  | .le => .bool <$> less x y true
-  | .gt => .bool <$> less y x false
-  | .ge => .bool <$> less y x true
-  | .concat =>
-    match concatText x, concatText y with
-    | some a, some b => pure (.str (a ++ b))
-    | _, _ => do
-      noMeta [x, y] ["__concat"]
-      if (concatText x).isNone then opErr "concatenate" (some 0) x else opErr "concatenate" (some 1) y
-  | op => arith tgt op x y
-
-def unop (op : UnOp) (x : Val) : M Val :=
-  match op with
-  | .not => pure (.bool !x.truthy)
-  | .neg => match x.toNum with
-    | some a => pure (.num a.neg)
-    | none => do
-      noMeta [x] ["__unm"]
-      opErr "perform arithmetic on" (some 0) x
-  -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT
-  | .len => match x with
-    | .str s => pure (.num (.int s.length))
-    | .tbl a => do pure (.num (.int (← tlen a)))
-    | _ => opErr "get length of" (some 0) x
 
 -- ---------- arguments of builtins ----------
 
@@ -1294,6 +1277,7 @@ def tmField (k : String) (d : Option Int) (v : Val) : M Int :=
   | none, some d => pure d
   | none, none => callerErr s!"field '{k}' missing in date table"
 
+set_option maxHeartbeats 400000 in
 mutual
 def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   match n with
@@ -1321,11 +1305,11 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .or a b => do
     let x ← eval n cx a
     if x.truthy then pure x else eval n cx b
-  | .un op a => do unop op (← eval n cx a)
+  | .un op a => do unop n op (← eval n cx a)
   | .bin op a b => do
     let x ← eval n cx a
     let y ← eval n cx b
-    binop tgt op x y
+    binop n op x y
   | .table fs => tableCons n cx fs
 
 /-- an expression's values: all of a call's, all of `...`, else one -/
@@ -1559,6 +1543,54 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
     | h@(.fn _) | h@(.prim ..) => do let _ ← call n h [o, k, v]
     | h => setindex n h k v
   | _ => opErr "index" (some 0) o
+
+/-- a binary operator; fuel only for a metamethod -/
+def binop (n : Nat) (op : BinOp) (x y : Val) : M Val :=
+  match op with
+  | .eq => do pure (.bool (← eqv x y))
+  | .ne => do pure (.bool !(← eqv x y))
+  | .lt => .bool <$> less x y false
+  | .le => .bool <$> less x y true
+  | .gt => .bool <$> less y x false
+  | .ge => .bool <$> less y x true
+  | .concat =>
+    match concatText x, concatText y with
+    | some a, some b => pure (.str (a ++ b))
+    | _, _ => match n with
+      | 0 => throw .fuel
+      | n + 1 => do
+        match ← metaOf2 "__concat" x y with
+        | .nil => if (concatText x).isNone then opErr "concatenate" (some 0) x else opErr "concatenate" (some 1) y
+        | h => do pure ((← mmFrame "__concat" (call n h [x, y])).headD .nil)
+  | op =>
+    match x.toNum, y.toNum with
+    | some a, some b => pure (.num (match op with
+        | .add => a.add b | .sub => a.sub b | .mul => a.mul tgt b | .div => a.div b | .mod => a.mod b | _ => a.pow b))
+    | _, _ => match n with
+      | 0 => throw .fuel
+      | n + 1 => do
+        match ← metaOf2 (arithEv op) x y with
+        | .nil =>
+          if x.toNum.isNone then opErr "perform arithmetic on" (some 0) x else opErr "perform arithmetic on" (some 1) y
+        | h => do pure ((← mmFrame (arithEv op) (call n h [x, y])).headD .nil)
+
+/-- a unary operator; `__unm` is called with (x, x), as BC_UNM calls lj_meta_arith -/
+def unop (n : Nat) (op : UnOp) (x : Val) : M Val :=
+  match op with
+  | .not => pure (.bool !x.truthy)
+  | .neg => match x.toNum with
+    | some a => pure (.num a.neg)
+    | none => match n with
+      | 0 => throw .fuel
+      | n + 1 => do
+        match ← metaOf2 "__unm" x x with
+        | .nil => opErr "perform arithmetic on" (some 0) x
+        | h => do pure ((← mmFrame "__unm" (call n h [x, x])).headD .nil)
+  -- a table's `__len` is not looked at: LuaJIT 2.1 without LUAJIT_ENABLE_LUA52COMPAT; only tables have metatables
+  | .len => match x with
+    | .str s => pure (.num (.int s.length))
+    | .tbl a => do pure (.num (.int (← tlen a)))
+    | _ => opErr "get length of" (some 0) x
 
 def whileLoop (n : Nat) (cx : Ctx) (c : Exp) (b : Block) : M Flow :=
   match n with
