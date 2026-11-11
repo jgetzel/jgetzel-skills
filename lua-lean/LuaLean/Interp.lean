@@ -149,6 +149,12 @@ def typeName : Val → String
   | .nil => "nil" | .bool _ => "boolean" | .num _ => "number" | .str _ => "string" | .tbl _ => "table"
   | .fn _ | .prim .. => "function" | .eff _ => "userdata" | .thr _ => "thread"
 
+/-- an object the collector frees when nothing holds it, so a weak table may lose it; strings, numbers and booleans
+it keeps (lj_gc's gc_mayclear) -/
+def gcable : Val → Bool
+  | .tbl _ | .fn _ | .prim .. | .eff _ | .thr _ => true
+  | _ => false
+
 def toNum : Val → Option Num
   | .num n => some n
   | .str s => Num.parse s
@@ -308,6 +314,28 @@ def writeCell (a : Nat) (v : Val) : M Unit := modify fun h => h.set! a (.cell v)
 
 def rawget (a : Nat) (k : Val) : M Val := do pure ((← getTbl a).get k)
 
+/-- a weak table's weak parts, keys and values: its metatable's `__mode` now, a string LuaJIT reads for `k` and `v`
+(up to a NUL) at each collection (gc_traverse_tab). DESIGN.md, *Tables*: the semantics never collects, and a read
+that could see an entry the collector freed stops the run -/
+def weakOf (t : Tbl) : M (Bool × Bool) := do
+  match t.mt with
+  | none => pure (false, false)
+  | some m => match (← getTbl m).get (lstr "__mode") with
+    | .str s => let s := s.takeWhile (· != '\x00'); pure (s.contains 'k', s.contains 'v')
+    | _ => pure (false, false)
+
+/-- value v read from table t by its key: an object under weak values may be gone in LuaJIT. The reader holds the
+key, so a weak key keeps its entry -/
+def held (t : Tbl) (v : Val) : M Unit := do
+  if (← weakOf t).2 && v.gcable then throw (.eff "weak table: a value the collector may free" [])
+
+/-- `rawget` of a value a weak table may have lost (`held`) -/
+def wget (a : Nat) (k : Val) : M Val := do
+  let t ← getTbl a
+  let v := t.get k
+  held t v
+  pure v
+
 /-- #t when it has one border. With holes LuaJIT's binary search finds one of them by its array part's size, which
 the rehashes set and string hashing moves, so the run stops -/
 def tlen (a : Nat) : M Nat := do
@@ -315,6 +343,9 @@ def tlen (a : Nat) : M Nat := do
   let b := t.len
   if t.kv.any fun (k, v) => !v.isNil && match k with | .num (.int i) => i > b + 1 | _ => false then
     throw (.eff "#t of a table with holes" [])
+  -- a weak value the collector frees makes a hole
+  if (← weakOf t).2 && t.kv.any fun (k, v) => v.gcable && match k with | .num (.int _) => true | _ => false then
+    throw (.eff "#t of a weak table" [])
   pure b
 
 /-- `next` from key k. A key the table does not hold is LuaJIT's error, but where its array part may hold it (an
@@ -322,13 +353,22 @@ integer) or a node may still (a key the table had): there the run stops -/
 def tnext (a : Nat) (k : Val) : M (Option (Val × Val)) := do
   let t ← getTbl a
   match t.next a k with
-  | some r => pure r
+  | some r =>
+    -- from a key whose weak value may be gone (its node dead, then dropped by a rehash), or to an entry whose weak
+    -- part may be (LuaJIT's next skips it)
+    let (wk, wv) ← weakOf t
+    if wv && (t.get k).gcable || r.any fun (x, v) => wk && x.gcable || wv && v.gcable then
+      throw (.eff "next in a weak table" [])
+    pure r
   | none =>
     let held := match k with | .num (.int _) => true | _ => t.gone.any (Val.rawEq · k)
     if held then throw (.eff "next of a key not in the table" []) else rtErr "invalid key to 'next'"
 
-
 def rawset (a : Nat) (k v : Val) : M Unit := do
+  -- a weak table may have lost entries under the mode it had: a mode stays once set
+  if k.rawEq (lstr "__mode") then
+    let old := (← getTbl a).get k
+    if !old.isNil && !old.rawEq v then throw (.eff "__mode changed" [])
   match k with
   | .nil => rtErr "table index is nil"
   | .num (.flt f) =>
@@ -376,7 +416,7 @@ but strings, whose metatable has `__index` alone (`index`) -/
 def metaOf (v : Val) (ev : String) : M Val := do
   match v with
   | .tbl a => match (← getTbl a).mt with
-    | some m => rawget m (lstr ev)
+    | some m => wget m (lstr ev)
     | none => pure .nil
   | _ => pure .nil
 
@@ -834,7 +874,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
       let mut i : Int := n + 1
       for _ in [0:(n + 1)] do
         if i > pos then
-          rawset t (nums i) (← rawget t (nums (i - 1)))
+          rawset t (nums i) (← wget t (nums (i - 1)))
           i := i - 1
       rawset t (nums i) (args.getD 2 .nil)
       return []
@@ -845,15 +885,15 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     match args.getD 1 .nil with
     | .nil =>
       if n == 0 then return []
-      let old ← rawget t (nums n)
+      let old ← wget t (nums n)
       rawset t (nums n) .nil
       return [old]
     | _ => do
       let pos ← libInt tgt name 1 args
       if (Num.int 1).le pos && pos.le (.int n) then
-        let old ← rawget t (← libKey name pos)
+        let old ← wget t (← libKey name pos)
         for k in ← libRange (pos.add (.int 1)) (.int n) do
-          rawset t (← libKey name (k.sub (.int 1))) (← rawget t (← libKey name k))
+          rawset t (← libKey name (k.sub (.int 1))) (← wget t (← libKey name k))
         rawset t (nums n) .nil
         return [old]
       return []
@@ -865,9 +905,9 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     let mut r : List (List Char) := []
     let mut k := i
     for _ in [0:(j - i + 1).toNat] do
-      match concatText (← rawget t (nums k)) with
+      match concatText (← wget t (nums k)) with
       | some s => r := r ++ [s]
-      | none => callerErr s!"invalid value ({(← rawget t (nums k)).typeName}) at index {k} in table for 'concat'"
+      | none => callerErr s!"invalid value ({(← wget t (nums k)).typeName}) at index {k} in table for 'concat'"
       k := k + 1
     return [.str (List.intercalate sep r)]
   | "maxn" => do
@@ -888,7 +928,7 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     if f.le e then
       let d := t.sub f
       for i in ← (if e.lt t || t.le f || a2 != a1 then libRange f e else libRange e f true) do
-        rawset a2 (← libKey name (i.add d)) (← rawget a1 (← libKey name i))
+        rawset a2 (← libKey name (i.add d)) (← wget a1 (← libKey name i))
     return [.tbl a2]
   -- require "table.new" and "table.clear"
   | "new" => do
@@ -897,7 +937,10 @@ def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := d
     -- shortcut: a size above 65536 stops the run (LuaJIT's memory may refuse it), model "table overflow" if one is needed
     if a > 65536 || h > 65536 then throw (.eff "table.new of a large size" [])
     return [.tbl (← alloc (.tbl {}))]
-  | "clear" => do let t ← argTbl name 0 args; putTbl t { (← getTbl t) with kv := [] }; return []
+  | "clear" => do
+    let t ← argTbl name 0 args
+    if !((← getTbl t).get (lstr "__mode")).isNil then throw (.eff "__mode changed" [])
+    putTbl t { (← getTbl t) with kv := [] }; return []
   | _ => die s!"table.{name}: not in the subset"
 
 def unpackFn (args : List Val) : M (List Val) := do
@@ -906,7 +949,7 @@ def unpackFn (args : List Val) : M (List Val) := do
   let j ← match args.getD 2 .nil with | .nil => Int.ofNat <$> tlen t | _ => argInt "unpack" 2 args
   -- lua_checkstack: the results and the arguments within LUAI_MAXCSTACK
   if i ≤ j && j - i + 1 + args.length > 8000 then callerErr "too many results to unpack"
-  (List.range (j - i + 1).toNat).mapM fun (k : Nat) => rawget t (nums (i + k))
+  (List.range (j - i + 1).toNat).mapM fun (k : Nat) => wget t (nums (i + k))
 
 -- ---------- os: dates ----------
 
@@ -998,6 +1041,159 @@ def strftime (tm : Tm) : List Char → Option (List Char)
   | ['%'] => none
   | c :: rest => (c :: ·) <$> strftime tm rest
 
+/-- an optional string argument (lj_lib_optstr) -/
+def optStr (fname : String) (i : Nat) (args : List Val) : M (Option (List Char)) :=
+  match args.getD i .nil with
+  | .nil => pure none
+  | _ => some <$> argStr fname i args
+
+-- ---------- upvalues ----------
+
+mutual
+/-- the names `e` reads or writes that `bd` (the locals in scope) does not hold, in the order LuaJIT's parser meets
+them (lj_parse.c var_lookup), repeats and all -/
+def freeE (bd : List String) : Exp → List String
+  | .var x => if bd.contains x then [] else [x]
+  | .func ps _ b => (freeB (ps ++ bd) b).1
+  | .index t k | .bin _ t k | .and t k | .or t k => freeE bd t ++ freeE bd k
+  | .call f as => freeE bd f ++ freeEs bd as
+  | .method o _ as => freeE bd o ++ freeEs bd as
+  | .un _ a | .paren a | .site _ a => freeE bd a
+  | .table fs => freeFs bd fs
+  | _ => []
+def freeEs (bd : List String) : List Exp → List String
+  | [] => []
+  | e :: es => freeE bd e ++ freeEs bd es
+def freeFs (bd : List String) : List Field → List String
+  | [] => []
+  | .pos e :: fs | .named _ e :: fs => freeE bd e ++ freeFs bd fs
+  | .keyed k e :: fs => freeE bd k ++ freeE bd e ++ freeFs bd fs
+/-- a block's free names, and the locals in scope at its end (a `repeat`'s condition is read there) -/
+def freeB (bd : List String) : Block → List String × List String
+  | [] => ([], bd)
+  | .loc ns es :: rest => let r := freeB (ns ++ bd) rest; (freeEs bd es ++ r.1, r.2)
+  | .locfn x ps _ b :: rest => let r := freeB (x :: bd) rest; ((freeB (ps ++ x :: bd) b).1 ++ r.1, r.2)
+  | s :: rest => let r := freeB bd rest; (freeS bd s ++ r.1, r.2)
+def freeS (bd : List String) : Stat → List String
+  | .assign ts es => freeEs bd ts ++ freeEs bd es
+  | .call e => freeE bd e
+  | .block b => (freeB bd b).1
+  | .while c b => freeE bd c ++ (freeB bd b).1
+  | .rpt b c => let r := freeB bd b; r.1 ++ freeE r.2 c
+  | .ite c t e => freeE bd c ++ (freeB bd t).1 ++ (freeB bd e).1
+  | .fornum v a b st body => freeE bd a ++ freeE bd b ++ freeOpt bd st ++ (freeB (v :: bd) body).1
+  | .forin vs es body => freeEs bd es ++ (freeB (vs ++ bd) body).1
+  | .ret es => freeEs bd es
+  | .site _ s => freeS bd s
+  | .loc _ es => freeEs bd es
+  | .locfn x ps _ b => (freeB (ps ++ x :: bd) b).1
+  | .brk | .goto _ | .label _ => []
+def freeOpt (bd : List String) : Option Exp → List String
+  | none => []
+  | some e => freeE bd e
+end
+
+/-- a closure's upvalues as LuaJIT numbers them: the names its body takes from the enclosing functions' locals, in
+the order the parser meets them, each with its cell -/
+def Clo.upvals (c : Clo) : List (String × Nat) :=
+  (freeB c.params c.body).1.eraseDups.filterMap fun x => (c.env.lookup x).map (x, ·)
+
+-- ---------- debug ----------
+
+/-- setmetatable's write, `debug.setmetatable`'s too -/
+def setMeta (t : Nat) (m : Option Nat) : M Unit := do
+  -- a weak table may have lost entries under the mode it has: it keeps its metatable
+  let tt ← getTbl t
+  if (← weakOf tt) != (false, false) && m != tt.mt then throw (.eff "setmetatable of a weak table" [])
+  -- globals and package.loaded are read raw (`getVar`, `require`), so they take no metatable (one with `__mode`
+  -- could lose entries)
+  if t == G then throw (.eff "setmetatable(_G)" [])
+  if t == LOADED then throw (.eff "setmetatable(package.loaded)" [])
+  putTbl t { tt with mt := m }
+
+/-- the upvalues a builtin has in LuaJIT (lj_lib's LJLIB_PUSH), where it has any: their values are LuaJIT's own -/
+def primNups : String → Nat
+  | "type" => 14 | "pairs" | "ipairs" | "print" | "coroutine.wrap_aux" => 1 | "gmatch_it" => 3 | _ => 0
+
+/-- a function's upvalues as debug.getupvalue numbers them: a closure's, or none for a builtin that has none; an
+effect handle, or a builtin with upvalues, stops the run -/
+def upvalsOf (f : Val) : M (List (String × Nat)) := do
+  match f with
+  | .fn a => match ← getObj a with
+    | .clo c => pure c.upvals
+    | _ => die "not a function"
+  | .prim p _ => if primNups p == 0 then pure [] else throw (.eff s!"debug: the upvalues of {p}" [])
+  | _ => throw (.eff "debug: a handle's upvalues" [])
+
+/-- the debug library (lib_debug.c) without a call stack: what needs one (a level, a traceback's text, a Lua
+function's lines) stops the run; a thread as the first argument is skipped, as getthread does -/
+def debugFn (name : String) (args : List Val) : M (List Val) := do
+  let off := match args with | .thr _ :: _ => 1 | _ => 0
+  match name with
+  | "debug.getmetatable" => do
+    anyArg 0 args
+    match args.headD .nil with
+    | .tbl t => return [((← getTbl t).mt.map Val.tbl).getD .nil]
+    | .str _ => throw (.eff "debug.getmetatable of a string" [])
+    | .eff _ => throw (.eff "debug.getmetatable of a handle" [])
+    | _ => return [.nil]
+  | "debug.setmetatable" => do
+    let m ← match args.getD 1 .nil with
+      | .tbl m => pure (some m)
+      | .nil => if args.length < 2 then argErr 2 "nil or table expected" else pure none
+      | _ => argErr 2 "nil or table expected"
+    match args.headD .nil with
+    | .tbl t => setMeta t m; return [.bool true]
+    -- the metatable of every value of that type
+    | v => throw (.eff s!"debug.setmetatable of a {v.typeName}" [])
+  | "debug.getupvalue" | "debug.setupvalue" => do
+    let get := name == "debug.getupvalue"
+    if !get then anyArg 2 args
+    let i ← argInt name 1 args
+    let us ← match args.headD .nil with
+      | f@(.fn _) | f@(.prim ..) | f@(.eff _) => upvalsOf f
+      | _ => badType "function" 0 args
+    match if i < 1 then none else us[(i - 1).toNat]? with
+    | some (x, c) => if get then return [lstr x, ← readCell c] else do writeCell c (args.getD 2 .nil); return [lstr x]
+    | none => return []
+  | "debug.getinfo" => do
+    let opts := (← optStr name (off + 1) args).getD "flnSu".toList
+    let f ← match args.getD off .nil with
+      | v@(.fn _) | v@(.prim ..) => pure v
+      | .eff _ => throw (.eff "debug.getinfo of a handle" [])
+      | v => match v.toNum with
+        -- lua_tointeger's level: below 0 none, else a frame of the stack
+        | some l =>
+          let neg := match l with | .int i => decide (i < 0) | .flt x => decide (x ≤ -1.0)
+          if neg then pure .nil else throw (.eff "debug.getinfo of a stack level" [])
+        | none => argErr (off + 1) "function or level expected"
+    if f.isNil then return [.nil]
+    if !opts.all ("SlunfL".toList.contains ·) then argErr (off + 2) "invalid option"
+    let lua := match f with | .fn _ => true | _ => false
+    if lua && (opts.contains 'S' || opts.contains 'L') then throw (.eff "debug.getinfo: a Lua function's lines" [])
+    let (nups, np, va) ← match f with
+      | .fn a => do match ← getObj a with
+        | .clo c => pure (c.upvals.length, c.params.length, c.va)
+        | _ => die "not a function"
+      | .prim p _ => pure (primNups p, 0, true)
+      | _ => pure (0, 0, true)
+    let set (t : Tbl) (k : String) (v : Val) : Tbl := t.set (lstr k) v
+    let t := opts.foldl (fun t o => match o with
+      | 'S' => [("source", lstr "=[C]"), ("short_src", lstr "[C]"), ("linedefined", Tbl.int (-1)),
+          ("lastlinedefined", Tbl.int (-1)), ("what", lstr "C")].foldl (fun t (k, v) => set t k v) t
+      | 'l' => set t "currentline" (Tbl.int (-1))
+      | 'u' => set (set (set t "nups" (nums nups)) "nparams" (nums np)) "isvararg" (.bool va)
+      | 'n' => set t "namewhat" (lstr "")
+      | _ => t) {}
+    -- 'L' gives a builtin no activelines
+    let t := if opts.contains 'f' then set t "func" f else t
+    return [.tbl (← alloc (.tbl t))]
+  | "debug.traceback" => do
+    match args.drop off with
+    | .str _ :: _ | .num _ :: _ | [] => throw (.eff "debug.traceback: the stack" [])
+    | v :: _ => return [v]
+  | _ => die s!"{name}: not in the subset"
+
 def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
@@ -1024,7 +1220,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
   | "ipairs_it" => do
     let t ← argTbl name 0 args
     let i ← argInt name 1 args
-    let v ← rawget t (nums (i + 1))
+    let v ← wget t (nums (i + 1))
     return if v.isNil then [.nil] else [nums (i + 1), v]
   | "pairs" => do anyArg 0 args; let t ← argTbl name 0 args; return [.prim "next" [], .tbl t, .nil]
   | "next" => do
@@ -1043,7 +1239,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
       if n == 0 then argErr 1 "index out of range"
       return rest.drop (n.toNat - 1)
   | "unpack" => unpackFn args
-  | "rawget" => do let t ← argTbl name 0 args; anyArg 1 args; return [← rawget t (args.getD 1 .nil)]
+  | "rawget" => do let t ← argTbl name 0 args; anyArg 1 args; return [← wget t (args.getD 1 .nil)]
   | "rawset" => do
     let t ← argTbl name 0 args; anyArg 1 args; anyArg 2 args
     rawset t (args.getD 1 .nil) (args.getD 2 .nil); return [.tbl t]
@@ -1055,12 +1251,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
       | .tbl m => pure (some m)
       | _ => argErr 2 "nil or table expected"
     if !(← metaOf (.tbl t) "__metatable").isNil then callerErr "cannot change a protected metatable"
-    -- weak tables lose entries when the collector runs, which the semantics does not model
-    if let some m := m then
-      if !((← getTbl m).get (lstr "__mode")).isNil then throw (.eff "metamethod __mode" [])
-    -- globals are read and written raw (`getVar`), so _G takes no metatable
-    if t == G then throw (.eff "setmetatable(_G)" [])
-    putTbl t { (← getTbl t) with mt := m }
+    setMeta t m
     return [.tbl t]
   | "getmetatable" => do
     anyArg 0 args
@@ -1068,7 +1259,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     | .tbl t => match (← getTbl t).mt with
       | some m => do
         -- a protected metatable: its `__metatable` instead
-        let p ← rawget m (lstr "__metatable")
+        let p ← wget m (lstr "__metatable")
         return [if p.isNil then .tbl m else p]
       | none => return [.nil]
     | _ => return [.nil]
@@ -1109,6 +1300,8 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     match ← readCell CUR with
     | .thr a => return [.bool ((← getThr a).bound == 0)]
     | _ => return [.bool false]
+  | "debug.getmetatable" | "debug.setmetatable" | "debug.getupvalue" | "debug.setupvalue" | "debug.getinfo"
+  | "debug.traceback" => debugFn name args
   | "gmatch_it" => match bound with
     | [.str s, .str p, .num (.int c)] => gmatchStep s p c.toNat
     | _ => die "bad gmatch iterator"
@@ -1148,12 +1341,6 @@ def SENTINEL : Val := .eff "require sentinel"
 def isSentinel : Val → Bool
   | .eff "require sentinel" => true
   | _ => false
-
-/-- load's and loadstring's optional string arguments (lj_lib_optstr) -/
-def optStr (fname : String) (i : Nat) (args : List Val) : M (Option (List Char)) :=
-  match args.getD i .nil with
-  | .nil => pure none
-  | _ => some <$> argStr fname i args
 
 /-- a chunk's source as a function of no parameters and every argument, its free names globals; a source
 LuaJIT would load as bytecode, or the parser rejects, stops the run: its messages are LuaJIT's parser's -/
@@ -1387,15 +1574,15 @@ def index (n : Nat) (o k : Val) : M Val :=
   | .tbl a => do
     let t ← getTbl a
     let v := t.get k
-    if !v.isNil then pure v else
+    if !v.isNil then do held t v; pure v else
     match t.mt with
     | none => pure .nil
     | some m => do
-      match (← getTbl m).get (lstr "__index") with
+      match ← wget m (lstr "__index") with
       | .nil => pure .nil
       | h@(.fn _) | h@(.prim ..) => do pure ((← call n h [o, k]).headD .nil)
       | h => index n h k
-  | .str _ => rawget STRING k
+  | .str _ => wget STRING k
   | .eff name => match k with
     | .str s => pure (.eff (name ++ "." ++ String.ofList s))
     | _ => pure (.eff name)
@@ -1455,7 +1642,7 @@ def execSeq (n : Nat) (cx : Ctx) (full rest : Block) (fin : Option Exp) : M Flow
     | .norm => execSeq n cx full rest fin
     | .goto l =>
       if labelAtEnd full l then pure .norm
-      else if hasLabel full l then die "goto: only to a label that ends its block"
+      else if hasLabel full l then throw (.eff "goto: a label that does not end its block" [])
       else pure (.goto l)
     | fl => pure fl
 
@@ -1537,7 +1724,13 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
   | n + 1 =>
   match o with
   | .tbl a => do
-    if !((← getTbl a).get k).isNil then rawset a k v else
+    let t ← getTbl a
+    let old := t.get k
+    if !old.isNil then do
+      -- LuaJIT calls __newindex where the collector freed the value
+      if !(← metaOf o "__newindex").isNil then held t old
+      rawset a k v
+    else
     match ← metaOf o "__newindex" with
     | .nil => rawset a k v
     | h@(.fn _) | h@(.prim ..) => do let _ ← call n h [o, k, v]
@@ -1851,7 +2044,7 @@ def foreachi (n : Nat) (t : Nat) (f : Val) (i len : Int) : M (List Val) :=
   | 0 => throw .fuel
   | n + 1 => do
     if i > len then return []
-    let r := (← call n f [nums i, ← rawget t (nums i)]).headD .nil
+    let r := (← call n f [nums i, ← wget t (nums i)]).headD .nil
     if !r.isNil then return [r]
     foreachi n t f (i + 1) len
 
@@ -1881,7 +2074,7 @@ def sortAux (n : Nat) (t : Nat) (cmp : Val) (l u : Int) : M Unit :=
   | 0 => throw .fuel
   | n + 1 => do
     if !(l < u) then return
-    let get (i : Int) := rawget t (nums i)
+    let get (i : Int) := wget t (nums i)
     let put (i : Int) (v : Val) := rawset t (nums i) v
     let al ← get l
     let au ← get u
@@ -1917,8 +2110,8 @@ def sortPart (n : Nat) (t : Nat) (cmp p : Val) (l u i j : Int) : M Int :=
     let i ← sortUp n t cmp p u (i + 1)
     let j ← sortDown n t cmp p l (j - 1)
     if j < i then return i
-    let ai ← rawget t (nums i)
-    let aj ← rawget t (nums j)
+    let ai ← wget t (nums i)
+    let aj ← wget t (nums j)
     rawset t (nums i) aj; rawset t (nums j) ai
     sortPart n t cmp p l u i j
 
@@ -1927,7 +2120,7 @@ def sortUp (n : Nat) (t : Nat) (cmp p : Val) (u i : Int) : M Int :=
   match n with
   | 0 => throw .fuel
   | n + 1 => do
-    if ← lessThan n cmp (← rawget t (nums i)) p then
+    if ← lessThan n cmp (← wget t (nums i)) p then
       if i ≥ u then callerErr "invalid order function for sorting"
       sortUp n t cmp p u (i + 1)
     else return i
@@ -1937,7 +2130,7 @@ def sortDown (n : Nat) (t : Nat) (cmp p : Val) (l j : Int) : M Int :=
   match n with
   | 0 => throw .fuel
   | n + 1 => do
-    if ← lessThan n cmp p (← rawget t (nums j)) then
+    if ← lessThan n cmp p (← wget t (nums j)) then
       if j ≤ l then callerErr "invalid order function for sorting"
       sortDown n t cmp p l (j - 1)
     else return j
@@ -2029,18 +2222,23 @@ def basics : List String :=
   ["type", "tostring", "tonumber", "ipairs", "pairs", "next", "select", "unpack", "rawget", "rawset", "rawequal",
    "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile"]
 
+/-- LuaJIT 2.1's globals the semantics does not model: handles, so a run that uses one stops (`lua-lean check` names
+each use) -/
+def unmodelled : List String :=
+  ["bit", "jit", "collectgarbage", "gcinfo", "getfenv", "setfenv", "module", "newproxy", "loadfile", "arg"]
+
 def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
-(7: the main thread), the trace (8), io (9), os (10) -/
+(7: the main thread), the trace (8), io (9), os (10), debug (11) -/
 def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
      (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
-     (lstr "print", .prim "print" []),
-     (lstr "debug", .eff "debug")] }
+     (lstr "print", .prim "print" []), (lstr "_VERSION", lstr "Lua 5.1"),
+     (lstr "debug", .tbl 11)] ++ unmodelled.map fun f => (lstr f, .eff f) }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
-    "match", "gmatch", "gsub"]
+    "match", "gmatch", "gsub"] |>.set (lstr "dump") (.eff "string.dump")
   let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn", "getn", "move", "foreach", "foreachi"]
   let math := (libTable "math" ["floor", "ceil", "abs", "sqrt", "max", "min", "exp", "log", "log10", "sin", "cos", "tan",
     "asin", "acos", "atan", "sinh", "cosh", "tanh", "pow", "atan2", "fmod", "modf", "frexp", "ldexp", "deg", "rad"]).set
@@ -2048,10 +2246,12 @@ def initHeap : Heap :=
     -- LuaJIT's generator state is the oracle's
     |>.set (lstr "random") (.eff "math.random") |>.set (lstr "randomseed") (.eff "math.randomseed")
   -- package.path is LUA_PATH=./?.lua's: LuaJIT's default adds directories of the system's
-  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] }
+  let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] ++
+    ["cpath", "config", "preload", "loadlib", "searchpath", "seeall", "loaders"].map fun f =>
+      (lstr f, .eff ("package." ++ f)) }
   let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
     (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
-    (lstr "debug", .eff "debug")] }
+    (lstr "debug", .tbl 11), (lstr "bit", .eff "bit"), (lstr "jit", .eff "jit"), (lstr "jit.opt", .eff "jit.opt")] }
   -- the rest of io and os are the world's
   let fx (lib : String) (names : List String) : List (Val × Val) := names.map fun f => (lstr f, .eff (lib ++ "." ++ f))
   let io : Tbl := { kv := (lstr "write", .prim "io.write" []) :: fx "io" ["close", "flush", "input", "lines", "open",
@@ -2059,7 +2259,11 @@ def initHeap : Heap :=
   let os : Tbl := { kv := [(lstr "date", .prim "os.date" []), (lstr "difftime", .prim "os.difftime" []),
     (lstr "time", .prim "os.time" []), (lstr "exit", .prim "os.exit" [])] ++ (fx "os" ["clock", "execute", "getenv",
     "remove", "rename", "setlocale", "tmpname"]) }
+  -- debug's functions that need a call stack, hooks or environments are handles
+  let dbg : Tbl := { kv := (libTable "debug" ["getmetatable", "setmetatable", "getupvalue", "setupvalue", "getinfo",
+    "traceback"]).kv ++ fx "debug" ["getregistry", "getfenv", "setfenv", "getlocal", "setlocal", "upvalueid",
+    "upvaluejoin", "sethook", "gethook", "debug"] }
   #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil,
-    .log [], .tbl io, .tbl os]
+    .log [], .tbl io, .tbl os, .tbl dbg]
 
 end Lua

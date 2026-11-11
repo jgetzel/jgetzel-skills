@@ -649,7 +649,8 @@ names (#p < 32767 for i*65536+j in 32 bits; the memo key collides once #q >= 655
 **Lifted by a translator** (board #31, rung 4): AutoCorres's first stages for our Lua. `LuaLift.lean` (now `lua-lean lift`, `lua-lean/tools/Lift.lean`) writes each
 function of a file (the chunk itself is `chunk`) as three things: `f_body`, its parsed body; `f`, a shallow function in
 the interpreter's monad, built from `LuaLean/Shallow.lean`'s combinators; and `f_ok`, a proof term that `f` is the
-interpreter's call of the closure. `CFn I (f I env0 c_x …) ⟨ps, va, f_body, env0⟩` says: for all arguments and every
+interpreter's call of the closure (since lua-lean's board #38, `D.fn_ok` applied to it: one theorem for every
+program, `lua-lean/LuaLean/Denote.lean`). `CFn I (f I env0 c_x …) ⟨ps, va, f_body, env0⟩` says: for all arguments and every
 fuel, `f args n = callClo I n clo args`, the same result and the same heap (`call_fn`: that is `call (n + 1) (.fn a)`
 when the heap holds the closure at `a`). Its hypotheses are the closure's free names: `env0.lookup "x" = some c_x` for
 an upvalue, `= none` for a global. What the shallow form drops: the syntax tree (but the bodies of the closures it
@@ -657,8 +658,8 @@ creates, which are data in the heap) and every name lookup: a local is the Lean 
 `_G`'s field, a `goto` out of a statement is `gotos` of the block's labels. What it keeps: the fuel, threaded as each
 clause threads it (`tick`), so the two are equal rather than alike; the cells, so the heap is the same heap; and
 calls, which go through the interpreter's `call` (each function is lifted alone, so nothing links a call to the lifted
-callee). The translator is untrusted: Lean checks each proof, so what is trusted is the parser and `Interp.lean`. A
-wrong shallow function is refused: one `+` turned into `-` in a lifted function and its proof does not check. Each
+callee). The translator is untrusted: Lean checks each `f_ok`, so what is trusted is the parser and `Interp.lean`. A
+wrong shallow function is refused: one `+` turned into `-` in a lifted function and its `f_ok` does not check. Each
 proof is a term in which every lemma meets its goal by first-order unification; where a lemma's conclusion had to be
 computed (`trail full`) or a projection inverted (`cx.va`), the elaborator searched for minutes, so those are side
 conditions closed by `rfl`.

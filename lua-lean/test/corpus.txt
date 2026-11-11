@@ -1,0 +1,31 @@
+# lua-lean corpus: third-party LuaJIT scripts under permissive licences, fetched at these commits (never committed).
+# <github repo> <commit> <licence> <path>...
+rxi/json.lua dbf4b2dd2eb7c23be2773c89eb059dadd6436f94 MIT json.lua
+rxi/lume 98847e7812cf28d3d64b289b03fad71dc704547d MIT lume.lua
+rxi/classic e5610756c98ac2f8facd7ab90c94e1a097ecd2c6 MIT classic.lua
+rxi/log.lua 7396ae2ee6d68829aecbc96d0b2ee1e5620c1ed7 MIT log.lua
+rxi/flux bb330231b87eabf84fbd68322f13a6320db30a41 MIT flux.lua
+kikito/inspect.lua a8ca3120dfec48801036eaeff9335ab7a096dd24 MIT inspect.lua
+kikito/middleclass 359f0e2742f51ca77801b513ec91eb9029de8de4 MIT middleclass.lua
+kikito/semver.lua a4b708ba243208d46e575da870af969dca46a94d MIT semver.lua
+kikito/tween.lua 9cdcd39339ec9e8b9c1a08e65aa0a8f2aab62172 BSD tween.lua
+kikito/md5.lua 4b5ce0cc277a5972aa3f5161d950f809c2c62bab MIT md5.lua
+kikito/ansicolors.lua a788ef99bbb54b3f1e22aaa34e2c99a44cb0606a MIT ansicolors.lua
+Yonaba/Moses 6fe8d76d50a22d85fe064aaa80390b72381befed MIT moses.lua
+luafun/luafun 057ede73d78b0e6bdbb354b35492d28c7950f857 MIT fun.lua
+pkulchenko/serpent 139fc18263bc5ffecc1729147891f1eb383046bf MIT src/serpent.lua
+LuaDist/dkjson e72ba0c9f5d8b8746fc306f6189a819dbb5cd0be MIT dkjson.lua
+mpeterv/argparse 412e6aca393e365f92c0315dfe50181b193f1ace MIT src/argparse.lua
+LuaJIT/LuaJIT 63c8f1a9b479ba5518cf6a170ff7729178bc3cfd MIT src/jit/bc.lua src/jit/v.lua src/jit/dump.lua src/jit/p.lua src/jit/zone.lua src/jit/bcsave.lua src/jit/dis_x86.lua
+openresty/lua-resty-string be19d0f70548a2deb73f5b426af51541be0d7ef9 BSD-2-Clause lib/resty/string.lua lib/resty/sha1.lua lib/resty/random.lua
+openresty/lua-resty-lrucache ad373f457a091ffa85de984938f948bc1721d922 BSD-2-Clause lib/resty/lrucache.lua lib/resty/lrucache/pureffi.lua
+ledgetech/lua-resty-http b1b2bfbec17b5345263e9a0be0ecd1d8411dcbb6 BSD-2-Clause lib/resty/http.lua lib/resty/http_headers.lua
+bungle/lua-resty-template 2822213d4e0fc0b8b9ac00559a360d099947f002 BSD-3-Clause lib/resty/template.lua
+vrld/hump 08937cc0ecf72d1a964a8de6cd552c5e136bf0d4 MIT class.lua vector.lua timer.lua gamestate.lua signal.lua
+airstruck/knife 5ccd9b425f2c5363389534c7e12b9df05b18ad8e MIT knife/base.lua knife/memoize.lua knife/event.lua knife/serialize.lua knife/chain.lua
+leafo/etlua 8dda2e5aeb4413446172a562a9a374b700054836 MIT etlua.lua
+iskolbin/lbase64 c261320edbdf82c16409d893a96c28c704aa0ab8 public-domain base64.lua
+Olivine-Labs/lustache bbe1915d7354d55db4ed4abd3419d8709b8acf77 MIT src/lustache.lua src/lustache/renderer.lua src/lustache/scanner.lua src/lustache/context.lua
+lunarmodules/Penlight 99b7542a047123bb484510d34ee567bca40b119e MIT lua/pl/utils.lua lua/pl/compat.lua lua/pl/types.lua lua/pl/tablex.lua lua/pl/stringx.lua lua/pl/List.lua lua/pl/class.lua lua/pl/pretty.lua lua/pl/lexer.lua lua/pl/Date.lua
+bakpakin/binser 30e59591ce0e3c949312578ea67820bed10516c3 MIT binser.lua
+stevedonovan/Microlight e08ccaa32b79c651456927dbd6ea28e81f05d513 MIT ml.lua

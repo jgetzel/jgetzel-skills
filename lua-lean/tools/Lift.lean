@@ -4,7 +4,8 @@ import LuaLean.Shallow
 /-! `lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]` writes the Lua file as Lean: for each
 of its functions (the chunk itself is `chunk`), its parsed body `f_body`, the shallow function `f` (`LuaLean/Shallow.lean`'s
 combinators, every local the Lean variable naming its cell) and `f_ok`, the proof that `f` is the interpreter's
-call of the closure, for every fuel. The translator is not trusted: Lean checks each proof. -/
+call of the closure, for every fuel: `D.fn_ok` (`LuaLean/Denote.lean`) at the closure. This printer is not trusted:
+Lean checks by computation that the printed `f` is `D.fn`'s. -/
 
 open Lua Lua.Show
 
@@ -29,8 +30,6 @@ structure St where
   jobs : Array Job := #[]
   used : List String := []
   names : List String := []
-  /-- `lift1`: each `f_ok` from the one theorem (`D.fn_ok`), not a proof of its own -/
-  one : Bool := false
 
 abbrev T := StateM St
 
@@ -132,134 +131,90 @@ def bindCells (cx : Cx) (names : List String) : T (Cx × List String) := do
   pure (cx, cs)
 
 def lets (cs : List String) : String := String.join (cs.map fun c => s!"S.let1 fun {c} => ")
-def letsP (cs : List String) : String := String.join (cs.map fun c => s!"CBs_let fun {c} => ")
-
-/-- a name's lookup proof: in the prefix by computation, else the hypothesis about `env0` -/
-def lookupPf (e : Ent) : String := if e.up then s!"h_{leanName e.lua}" else "rfl"
-
-def hint (x : String) : Exp → Option String
-  | .func .. => some x
-  | _ => none
 
 mutual
-partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T (String × String) := do
+partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T String := do
   match e with
-  | .nil => pure ("S.eNil", "CE_nil")
-  | .tru => pure ("S.eTrue", "CE_true")
-  | .fls => pure ("S.eFalse", "CE_false")
-  | .num n => pure (s!"(S.eNum {num n})", "CE_num")
-  | .str s => pure (s!"(S.eStr {chars s})", "CE_str")
-  | .vararg => pure (s!"(S.eVa {cx.va})", "(CE_va (by rfl))")
+  | .nil => pure "S.eNil"
+  | .tru => pure "S.eTrue"
+  | .fls => pure "S.eFalse"
+  | .num n => pure s!"(S.eNum {num n})"
+  | .str s => pure s!"(S.eStr {chars s})"
+  | .vararg => pure s!"(S.eVa {cx.va})"
   | .func ps va b =>
     let f ← job (if name == "" then cx.fname ++ "_fn" else name) ps va b cx.scope
-    pure (s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body ({envOf cx}))", "(CE_func (by rfl))")
+    pure s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body ({envOf cx}))"
   | .var x =>
     match cx.scope.find? (·.lua == x) with
-    | some ent => pure (s!"(S.eCell {ent.lean})", s!"(CE_cell {lookupPf ent})")
-    | none => pure (s!"(S.eGlob {nm x})", s!"(CE_glob h_{leanName x})")
-  | .index t k => do
-    let (st, pt) ← tExp cx t
-    let (sk, pk) ← tExp cx k
-    pure (s!"(S.eIndex I {st} {sk})", s!"(CE_index {pt} {pk})")
-  | .call .. => do
-    let (m, pm) ← tMulti cx e
-    pure (s!"(S.eFirst {m})", s!"(CE_call {pm})")
-  | .method .. => do
-    let (m, pm) ← tMulti cx e
-    pure (s!"(S.eFirst {m})", s!"(CE_method {pm})")
-  | .paren a => do
-    let (s, p) ← tExp cx a
-    pure (s!"(S.eParen {s})", s!"(CE_paren {p})")
-  | .site st a => do
-    let (s, p) ← tExp cx a name
-    pure (s!"(S.eSite {site st} {s})", s!"(CE_site {p})")
-  | .and a b => tBin2 cx "S.eAnd" "CE_and" a b
-  | .or a b => tBin2 cx "S.eOr" "CE_or" a b
-  | .bin op a b => tBin2 cx s!"S.eBin I {Show.binop op}" "CE_bin" a b
-  | .un op a => do
-    let (s, p) ← tExp cx a
-    pure (s!"(S.eUn I {Show.unop op} {s})", s!"(CE_un {p})")
-  | .table fs => do
-    let (s, p) ← tFields cx fs
-    pure (s!"(S.eTable {s})", s!"(CE_table {p})")
+    | some ent => pure s!"(S.eCell {ent.lean})"
+    | none => pure s!"(S.eGlob {nm x})"
+  | .index t k => pure s!"(S.eIndex I {← tExp cx t} {← tExp cx k})"
+  | .call .. | .method .. => pure s!"(S.eFirst {← tMulti cx e})"
+  | .paren a => pure s!"(S.eParen {← tExp cx a})"
+  | .site st a => pure s!"(S.eSite {site st} {← tExp cx a name})"
+  | .and a b => pure s!"(S.eAnd {← tExp cx a} {← tExp cx b})"
+  | .or a b => pure s!"(S.eOr {← tExp cx a} {← tExp cx b})"
+  | .bin op a b => pure s!"(S.eBin I {Show.binop op} {← tExp cx a} {← tExp cx b})"
+  | .un op a => pure s!"(S.eUn I {Show.unop op} {← tExp cx a})"
+  | .table fs => pure s!"(S.eTable {← tFields cx fs})"
 
-partial def tBin2 (cx : Cx) (sh pf : String) (a b : Exp) : T (String × String) := do
-  let (sa, pa) ← tExp cx a
-  let (sb, pb) ← tExp cx b
-  pure (s!"({sh} {sa} {sb})", s!"({pf} {pa} {pb})")
-
-partial def tMulti (cx : Cx) (e : Exp) : T (String × String) := do
+partial def tMulti (cx : Cx) (e : Exp) : T String := do
   match e with
   | .call f as => do
     loadJob cx f as
-    let (sf, pf) ← tExp cx f
-    let (sl, pl) ← tList cx as
-    pure (s!"(S.mCall I {sf} {sl})", s!"(CM_call {pf} {pl})")
+    let sf ← tExp cx f
+    pure s!"(S.mCall I {sf} {← tList cx as})"
   | .method o m as => do
-    let (so, po) ← tExp cx o
-    let (sl, pl) ← tList cx as
-    pure (s!"(S.mMethod I {so} {nm m} {sl})", s!"(CM_method {po} {pl})")
-  | .vararg => pure (s!"(S.mVa {cx.va})", "(CM_va (by rfl))")
-  | .site st a => do
-    let (m, p) ← tMulti cx a
-    pure (s!"(S.mSite {site st} {m})", s!"(CM_site {p})")
-  | e => do
-    let (s, p) ← tExp cx e
-    pure (s!"(S.mOne {s})", s!"(CM_one rfl {p})")
+    let so ← tExp cx o
+    pure s!"(S.mMethod I {so} {nm m} {← tList cx as})"
+  | .vararg => pure s!"(S.mVa {cx.va})"
+  | .site st a => pure s!"(S.mSite {site st} {← tMulti cx a})"
+  | e => pure s!"(S.mOne {← tExp cx e})"
 
-partial def tList (cx : Cx) (es : List Exp) (names : List String := []) : T (String × String) := do
+partial def tList (cx : Cx) (es : List Exp) (names : List String := []) : T String := do
   match es with
-  | [] => pure ("S.lNil", "CL_nil")
+  | [] => pure "S.lNil"
   | [e] => do
-    let (m, pm) ← match e with
-      | .func .. => do let (s, p) ← tExp cx e (names.headD ""); pure (s!"(S.mOne {s})", s!"(CM_one rfl {p})")
+    let m ← match e with
+      | .func .. => pure s!"(S.mOne {← tExp cx e (names.headD "")})"
       | _ => tMulti cx e
-    pure (s!"(S.lLast {m})", s!"(CL_last {pm})")
+    pure s!"(S.lLast {m})"
   | e :: es => do
-    let (s, p) ← tExp cx e (names.headD "")
-    let (sl, pl) ← tList cx es names.tail
-    pure (s!"(S.lCons {s} {sl})", s!"(CL_cons {p} {pl})")
+    let s ← tExp cx e (names.headD "")
+    pure s!"(S.lCons {s} {← tList cx es names.tail})"
 
-partial def tFields (cx : Cx) (fs : List Field) : T (String × String) := do
+partial def tFields (cx : Cx) (fs : List Field) : T String := do
   match fs with
-  | [] => pure ("S.fNil", "CF_nil")
-  | [.pos e] => do
-    let (m, pm) ← tMulti cx e
-    pure (s!"(S.fLast {m})", s!"(CF_last {pm})")
+  | [] => pure "S.fNil"
+  | [.pos e] => pure s!"(S.fLast {← tMulti cx e})"
   | .pos e :: fs => do
-    let (s, p) ← tExp cx e
-    let (sr, pr) ← tFields cx fs
-    pure (s!"(S.fPos {s} {sr})", s!"(CF_pos {p} {pr})")
+    let s ← tExp cx e
+    pure s!"(S.fPos {s} {← tFields cx fs})"
   | .named k e :: fs => do
-    let (s, p) ← tExp cx e (cx.fname ++ "_" ++ k)
-    let (sr, pr) ← tFields cx fs
-    pure (s!"(S.fNamed {nm k} {s} {sr})", s!"(CF_named {p} {pr})")
+    let s ← tExp cx e (cx.fname ++ "_" ++ k)
+    pure s!"(S.fNamed {nm k} {s} {← tFields cx fs})"
   | .keyed k e :: fs => do
-    let (sk, pk) ← tExp cx k
-    let (s, p) ← tExp cx e
-    let (sr, pr) ← tFields cx fs
-    pure (s!"(S.fKeyed {sk} {s} {sr})", s!"(CF_keyed {pk} {p} {pr})")
+    let sk ← tExp cx k
+    let s ← tExp cx e
+    pure s!"(S.fKeyed {sk} {s} {← tFields cx fs})"
 
-partial def tPlaces (cx : Cx) (ts : List Exp) : T (String × String) := do
+partial def tPlaces (cx : Cx) (ts : List Exp) : T String := do
   match ts with
-  | [] => pure ("S.pNil", "CP_nil")
+  | [] => pure "S.pNil"
   | .var x :: ts => do
-    let (w, pw) := match cx.scope.find? (·.lua == x) with
-      | some ent => (s!"(S.wCell {ent.lean})", s!"(wCell_ok {lookupPf ent})")
-      | none => (s!"(S.wGlob {nm x})", s!"(wGlob_ok h_{leanName x})")
-    let (sp, pp) ← tPlaces cx ts
-    pure (s!"(S.pVar {w} {sp})", s!"(CP_var {pw} {pp})")
+    let w := match cx.scope.find? (·.lua == x) with
+      | some ent => s!"(S.wCell {ent.lean})"
+      | none => s!"(S.wGlob {nm x})"
+    pure s!"(S.pVar {w} {← tPlaces cx ts})"
   | .site s (.index t k) :: ts => do
-    let (st, pt) ← tExp cx t
-    let (sk, pk) ← tExp cx k
-    let (sp, pp) ← tPlaces cx ts
-    pure (s!"(S.pIndex I (some {site s}) {st} {sk} {sp})", s!"(CP_site {pt} {pk} {pp})")
+    let st ← tExp cx t
+    let sk ← tExp cx k
+    pure s!"(S.pIndex I (some {site s}) {st} {sk} {← tPlaces cx ts})"
   | .index t k :: ts => do
-    let (st, pt) ← tExp cx t
-    let (sk, pk) ← tExp cx k
-    let (sp, pp) ← tPlaces cx ts
-    pure (s!"(S.pIndex I none {st} {sk} {sp})", s!"(CP_index {pt} {pk} {pp})")
-  | _ => pure ("UNSUPPORTED", "UNSUPPORTED")
+    let st ← tExp cx t
+    let sk ← tExp cx k
+    pure s!"(S.pIndex I none {st} {sk} {← tPlaces cx ts})"
+  | _ => pure "UNSUPPORTED"
 
 /-- a name for the function an assignment or local makes -/
 partial def targetName : Exp → String
@@ -268,89 +223,64 @@ partial def targetName : Exp → String
   | .site _ e => targetName e
   | _ => ""
 
-partial def tStat (cx : Cx) (s : Stat) : T (String × String) := do
+partial def tStat (cx : Cx) (s : Stat) : T String := do
   match s with
   | .assign ts es => do
-    let (sp, pp) ← tPlaces cx ts
-    let (sl, pl) ← tList cx es (ts.map targetName)
-    pure (s!"(S.sAssign {sp} {sl})", s!"(CS_assign {pp} {pl})")
-  | .call e => do
-    let (m, pm) ← tMulti cx e
-    pure (s!"(S.sCall {m})", s!"(CS_call {pm})")
-  | .block b => do
-    let (k, pk) ← tBlock cx b
-    pure (s!"(S.sBlock {k})", s!"(CS_block {pk})")
+    let sp ← tPlaces cx ts
+    pure s!"(S.sAssign {sp} {← tList cx es (ts.map targetName)})"
+  | .call e => pure s!"(S.sCall {← tMulti cx e})"
+  | .block b => pure s!"(S.sBlock {← tBlock cx b})"
   | .while c b => do
-    let (sc, pc) ← tExp cx c
-    let (k, pk) ← tBlock cx b
-    pure (s!"(S.sWhile {sc} {k})", s!"(CS_while {pc} {pk})")
-  | .rpt b c => do
-    let (q, pq) ← tSeq { cx with ind := cx.ind ++ "  " } b b (some c)
-    pure (s!"(S.sRepeat {q})", s!"(CS_repeat {pq})")
+    let sc ← tExp cx c
+    pure s!"(S.sWhile {sc} {← tBlock cx b})"
+  | .rpt b c => pure s!"(S.sRepeat {← tSeq { cx with ind := cx.ind ++ "  " } b b (some c)})"
   | .ite c t e => do
-    let (sc, pc) ← tExp cx c
-    let (kt, pt) ← tBlock cx t
-    let (ke, pe) ← tBlock cx e
-    pure (s!"(S.sIf {sc} {kt} {ke})", s!"(CS_if {pc} {pt} {pe})")
+    let sc ← tExp cx c
+    let kt ← tBlock cx t
+    pure s!"(S.sIf {sc} {kt} {← tBlock cx e})"
   | .fornum v a b st body => do
-    let (sa, pa) ← tExp cx a
-    let (sb, pb) ← tExp cx b
-    let (sst, pst) ← match st with
-      | some e => do let (s, p) ← tExp cx e; pure (s!"(some {s})", p)
-      | none => pure ("none", "trivial")
+    let sa ← tExp cx a
+    let sb ← tExp cx b
+    let sst ← match st with
+      | some e => pure s!"(some {← tExp cx e})"
+      | none => pure "none"
     let (cx', cs) ← bindCells cx [v]
-    let (k, pk) ← tBlock cx' body
-    pure (s!"(S.sForNum {sa} {sb} {sst} fun {cs.headD ""} => {k})", s!"(CS_fornum {pa} {pb} {pst} fun {cs.headD ""} => {pk})")
+    pure s!"(S.sForNum {sa} {sb} {sst} fun {cs.headD ""} => {← tBlock cx' body})"
   | .forin vs es body => do
-    let (sl, pl) ← tList cx es
+    let sl ← tList cx es
     let (cx', cs) ← bindCells cx vs
-    let (k, pk) ← tBlock cx' body
-    pure (s!"(S.sForIn I {sl} fun n => {lets cs}S.letEnd ({k} n))",
-      s!"(CS_forin {pl} fun n => {letsP cs}CBs_end ({pk} n))")
-  | .ret es => do
-    let (sl, pl) ← tList cx es
-    pure (s!"(S.sReturn {sl})", s!"(CS_return {pl})")
-  | .brk => pure ("S.sBreak", "CS_break")
-  | .goto l => pure (s!"(S.sGoto {nm l})", "CS_goto")
-  | .label _ => pure ("S.sLabel", "CS_label")
-  | .site st s => do
-    let (ss, ps) ← tStat cx s
-    pure (s!"(S.sSite {site st} {ss})", s!"(CS_site {ps})")
-  | .loc .. | .locfn .. => pure ("UNSUPPORTED", "UNSUPPORTED")
+    pure s!"(S.sForIn I {sl} fun n => {lets cs}S.letEnd ({← tBlock cx' body} n))"
+  | .ret es => pure s!"(S.sReturn {← tList cx es})"
+  | .brk => pure "S.sBreak"
+  | .goto l => pure s!"(S.sGoto {nm l})"
+  | .label _ => pure "S.sLabel"
+  | .site st s => pure s!"(S.sSite {site st} {← tStat cx s})"
+  | .loc .. | .locfn .. => pure "UNSUPPORTED"
 
-partial def tBlock (cx : Cx) (b : Block) : T (String × String) := do
-  let (q, pq) ← tSeq { cx with ind := cx.ind ++ "  " } b b none
-  pure (s!"(S.block {q})", s!"(CK_block {pq})")
+partial def tBlock (cx : Cx) (b : Block) : T String := do
+  pure s!"(S.block {← tSeq { cx with ind := cx.ind ++ "  " } b b none})"
 
-partial def tSeq (cx : Cx) (full rest : Block) (fin : Option Exp) : T (String × String) := do
+partial def tSeq (cx : Cx) (full rest : Block) (fin : Option Exp) : T String := do
   let nl := "\n" ++ cx.ind
   match rest with
   | [] => match fin with
-    | none => pure ("S.qEnd", "CQ_end")
-    | some c => do
-      let (sc, pc) ← tExp cx c
-      pure (s!"(S.qEndRpt {sc})", s!"(CQ_endRpt {pc})")
+    | none => pure "S.qEnd"
+    | some c => pure s!"(S.qEndRpt {← tExp cx c})"
   | .loc ns es :: rest => do
-    let (sl, pl) ← tList cx es ns
+    let sl ← tList cx es ns
     let (cx', cs) ← bindCells cx ns
-    let (sr, pr) ← tSeq cx' full rest fin
-    pure (s!"(S.qLocal {sl} fun n => {lets cs}S.letEnd{nl}({sr} n))",
-      s!"(CQ_local {pl} fun n => {letsP cs}CBs_end{nl}({pr} n))")
+    pure s!"(S.qLocal {sl} fun n => {lets cs}S.letEnd{nl}({← tSeq cx' full rest fin} n))"
   | .locfn x ps va b :: rest => do
     let (cx', cs) ← bindCells cx [x]
-    let c := cs.headD ""
     let f ← job x ps va b cx'.scope
-    let (sr, pr) ← tSeq cx' full rest fin
-    pure (s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fun {c} =>{nl}{sr})",
-      s!"(CQ_localFn (by rfl) fun {c} =>{nl}{pr})")
+    pure s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fun {cs.headD ""} =>{nl}{← tSeq cx' full rest fin})"
   | s :: rest => do
-    let (ss, ps) ← tStat cx s
-    let (sr, pr) ← tSeq cx full rest fin
-    pure (s!"(S.qStat {ss} (S.gotos {lst ((trail full).map nm)} {lst ((labels full).map nm)}){nl}{sr})",
-      s!"(CQ_stat {ps}{nl}{pr} rfl rfl rfl)")
+    let ss ← tStat cx s
+    pure s!"(S.qStat {ss} (S.gotos {lst ((trail full).map nm)} {lst ((labels full).map nm)}){nl}{← tSeq cx full rest fin})"
 end
 
-/-- the function's def and theorem -/
+/-- the function's def, and its theorem: `D.fn_ok` at the function's closure, with `res` the free names' cells as
+`D.fn` takes them and `res1_ok` the hypotheses that they are `env0`'s -/
 def fnDef (j : Job) : T String := do
   modify fun s => { s with used := [] }
   let fv := (fvS j.ps.reverse j.body none).eraseDups
@@ -362,23 +292,21 @@ def fnDef (j : Job) : T String := do
   let va := if j.va then s!"(args.drop {j.ps.length})" else "[]"
   let cx0 : Cx := ⟨upEnts.reverse, va, j.name, "    "⟩
   let (cx, cs) ← bindCells cx0 j.ps
-  let (k, pk) ← tBlock cx j.body
+  let k ← tBlock cx j.body
   let cells := String.join (upEnts.map fun e => s!" {e.lean}")
   let cellsT := if upEnts.isEmpty then "" else s!" ({" ".intercalate (upEnts.map (·.lean))} : Nat)"
   let hyps := String.join (upEnts.map fun e => s!"\n    (h_{leanName e.lua} : env0.lookup {nm e.lua} = some {e.lean})") ++
     String.join (globs.map fun x => s!"\n    (h_{leanName x} : env0.lookup {nm x} = none)")
-  -- the free names' cells, as `D.fn` takes them, and that they are `env0`'s
   let frees := upEnts.map (fun e => (e.lua, s!"(some {e.lean})")) ++ globs.map (·, "none")
   let res := frees.foldr (fun (x, v) r => s!"(res1 {nm x} {v} {r})") "(fun x => env0.lookup x)"
   let resP := frees.foldr (fun (x, _) r => s!"(res1_ok h_{leanName x} {r})") "(fun _ => rfl)"
   let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0⟩"
-  let pf := if (← get).one then s!"D.fn_ok I {res} {clo} {resP}" else s!"CFn_fn fun args n => {letsP cs}CBs_end ({pk} n)"
   pure s!"def {j.name} (I : Sem) (env0 : Env){cellsT} : List Val → Nat → M (List Val) :=
   S.fn fun args n => {lets cs}S.letEnd ({k} n)
 
 theorem {j.name}_ok (I : Sem) (env0 : Env){cellsT}{hyps} :
     CFn I ({j.name} I env0{cells}) {clo} :=
-  {pf}
+  D.fn_ok I {res} {clo} {resP}
 "
 
 partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × String)) := do
@@ -390,8 +318,7 @@ partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × Str
   else pure acc
 
 def main (args : List String) : IO UInt32 := do
-  let one := args.head? == some "--one"
-  let (modName, file, src) ← match (if one then args.tail else args) with
+  let (modName, file, src) ← match args with
     | [m, f] => pure (m, f, none)
     | [m, f, s] => pure (m, f, some s)
     | _ => do IO.eprintln "usage: Lift.lean <Namespace> <file.lua> [<Import>:<Const>]"; return 1
@@ -399,7 +326,7 @@ def main (args : List String) : IO UInt32 := do
   match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln e; return 1
   | .ok b =>
-    let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"], one }
+    let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"] }
     let (out, _) := (drain 0 #[]).run st
     if out.any (fun (_, d) => (d.splitOn "UNSUPPORTED").length > 1) then
       IO.eprintln s!"{file}: a tree the parser does not make (an assignment target other than a name or an index)"; return 1
@@ -408,7 +335,7 @@ def main (args : List String) : IO UInt32 := do
         | [m, c] => (s!"\nimport {m}", some c)
         | _ => ("", none)
       | none => ("", none)
-    IO.println s!"import LuaLean.{if one then "Denote" else "Shallow"}{imp}
+    IO.println s!"import LuaLean.Denote{imp}
 
 /-! {(System.FilePath.mk file).fileName.getD file} lifted by `lua-lean lift`: each function's parsed body, its shallow form, and the proof
 that the two are the same. GENERATED: do not edit. -/

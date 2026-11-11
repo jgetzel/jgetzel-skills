@@ -359,13 +359,68 @@ return log, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14"
       "ok:\"locked\",false,false,\"bad argument #1 to '?' (value expected)\"")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
 
--- a table's `__len` is never called (LuaJIT 2.1 without its 5.2 compatibility); `__mode` and a metatable on _G stop
--- the run
+-- a table's `__len` is never called (LuaJIT 2.1 without its 5.2 compatibility); a metatable on _G stops the run
 #guard [("local t = setmetatable({}, {__tostring = 1, __eq = 1, __lt = 1, __le = 1, __concat = 1, __unm = 1, __add = 1}) return t == t, pcall(function() return t < 1 end)",
       "ok:true,false,\"c:1: attempt to compare table with number\""),
     ("return #setmetatable({}, {__len = function() return 5 end})", "ok:0"),
-    ("return setmetatable({}, {__mode = \"k\"})", "effect metamethod __mode"),
     ("return setmetatable(_G, {})", "effect setmetatable(_G)")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
+/-- weak tables (`__mode`), its objects held by locals, so LuaJIT's collector frees none of them: a mode of `k`, `v`,
+both, none, cut by a NUL or not a string, set before `setmetatable` or after; reads by key, raw and through
+`__index`, writes through `__newindex`, `#t`, `ipairs`, `pairs` (counted, by the order no proof knows) and the table
+library. A read that could see an entry the collector freed stops the run (the `#guard` below), so a chunk that
+makes one is left out -/
+def weaks : G String := do
+  let key : G String := pick ["o1", "o2", "f", "\"s\"", "1", "2", "3", "true", "2.5"]
+  let val : G String := pick ["o1", "o2", "f", "\"x\"", "7", "false", "nil", "\"y\"", "8"]
+  let mode ← pick ["\"k\"", "\"k\"", "\"v\"", "\"kv\"", "\"vk\"", "\"\"", "\"x\"", q "k\x00v", q "v\x00k", "1", "\"K\""]
+  let late ← chance 3
+  let step : G String := do
+    match ← rnd 12 with
+    | 0 | 1 | 2 => return s!"t[{← key}] = {← val}"
+    | 3 | 4 => return s!"R[#R + 1] = P(function() return V(t[{← key}]) end)"
+    | 5 => return s!"R[#R + 1] = P(function() return V(rawget(t, {← key})) end)"
+    | 6 => return "R[#R + 1] = P(function() return #t end)"
+    | 7 => return "R[#R + 1] = P(function() local n, ty = 0, {} for k, v in pairs(t) do n = n + 1; ty[#ty + 1] = type(k) .. type(v) end table.sort(ty) return n, table.concat(ty, \" \") end)"
+    | 8 => return "R[#R + 1] = P(function() local n = 0 for i, v in ipairs(t) do n = n + i end return n end)"
+    | 9 => return s!"m.{← pick ["__index", "__newindex"]} = {← pick ["function(_, k) R[#R + 1] = \"mm\" end", "nil", "{}"]}"
+    | 10 => return s!"R[#R + 1] = P(function() return {← pick ["table.concat(t, \",\", 1, 2)", "V(unpack(t, 1, 2))", "V(table.remove(t))", "table.insert(t, 1, \"z\")"]} end)"
+    | _ => return "R[#R + 1] = P(function() return rawequal(setmetatable(t, m), t), getmetatable(t) == m end)"
+  let pre ← (List.range ((← rnd 4) + 1)).mapM fun _ => step
+  let post ← (List.range ((← rnd 5) + 1)).mapM fun _ => step
+  return helper ++ s!"local o1, o2, f = \{}, \{n = 1}, function() return 1 end
+local function V(x) if x == o1 then return \"o1\" elseif x == o2 then return \"o2\" elseif x == f then return \"f\" end return x end
+local R = \{}
+local m = {if late then "{}" else s!"\{__mode = {mode}}"}
+local t = setmetatable(\{}, m)
+{"\n".intercalate pre}
+{if late then s!"m.__mode = {mode}" else ""}
+{"\n".intercalate post}
+return R, o1, o2, f()"
+
+-- weak tables: a key held by the reader keeps its entry, and a weak string or number is never freed; a read that
+-- could see an object the collector freed stops the run (a weak value read, `next` to a weak entry, `#t` over weak
+-- values), and so does a change that would hide one (a mode changed or cleared, a weak table's metatable changed,
+-- a metatable on package.loaded)
+#guard [("local o = {} local t = setmetatable({}, {__mode = \"k\"}) t[o] = o; t.s = \"x\"; t[1] = o return t[o] == o, t.s, rawget(t, o) == o, t[1] == o, #t, select(\"#\", ipairs(t))",
+      "ok:true,\"x\",true,true,1,3"),
+    ("local t = setmetatable({\"a\", \"b\", s = 2}, {__mode = \"kv\"}) local n = 0 for k, v in pairs(t) do n = n + 1 end return n, #t, t[1], table.concat(t)",
+      "ok:3,2,\"a\",\"ab\""),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"k\\0v\"}) return t[1] == o, #t", "ok:true,1"),
+    ("local o = {} local t = setmetatable({o}, {__mode = 1}) return t[1] == o, #t", "ok:true,1"),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"v\"}) return t[1]", "effect weak table: a value the collector may free"),
+    ("local o = {} local m = {} local t = setmetatable({o}, m) m.__mode = \"v\" return rawget(t, 1)", "effect weak table: a value the collector may free"),
+    ("local o = {} local t = setmetatable({}, {__mode = \"k\"}) t[o] = 1 return next(t)", "effect next in a weak table"),
+    ("local o = {} local t = setmetatable({o}, {__mode = \"v\"}) return pcall(next, t, 1)", "effect next in a weak table"),
+    ("local t = setmetatable({{}}, {__mode = \"v\"}) return #t", "effect #t of a weak table"),
+    ("local m = setmetatable({__index = function() return 1 end}, {__mode = \"v\"}) return setmetatable({}, m).x", "effect weak table: a value the collector may free"),
+    ("local o = {} local t = setmetatable({x = o}, {__mode = \"v\", __newindex = rawset}) t.x = 1 return t.x", "effect weak table: a value the collector may free"),
+    ("local m = {__mode = \"k\"} m.__mode = \"v\"", "effect __mode changed"),
+    ("local m = {__mode = \"k\"} m.__mode = \"k\" return getmetatable(setmetatable({}, m)) == m", "ok:true"),
+    ("local m = {__mode = \"k\"} require(\"table.clear\")(m)", "effect __mode changed"),
+    ("local t = setmetatable({}, {__mode = \"k\"}) return setmetatable(t, nil)", "effect setmetatable of a weak table"),
+    ("return pcall(setmetatable, package.loaded, {})", "effect setmetatable(package.loaded)")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
 
 /-- doubles outside the integer ranges, and calls that want an integer: LuaJIT leaves the C cast to the CPU, so the
@@ -423,8 +478,103 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   P(function() return math.fmod(x, y), math.modf(x), math.frexp(y) end), P(math.ldexp, x, {e}), P(math.deg, x),
   P(math.rad, y), math.pi, P(math.fmod, y, x), P(math.modf, y), {commas tn}, P(tonumber, {tn2}), r1, r2, acc, n0, m1, m2, r3, rm,
   table.new == new, table.clear == clear, z, w, getmetatable(w) ~= nil, P(tostring), P(tonumber), P(tostring, nil),
-  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
+  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end),
+  _VERSION"
 
+-- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
+-- the run
+#guard [("return bit.band(1, 2)", "effect bit.band"), ("return collectgarbage(\"count\")", "effect collectgarbage"),
+    ("return pcall(setfenv, 1, {})", "effect setfenv"), ("return string.dump(print)", "effect string.dump"),
+    ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
+    ("return require(\"bit\").bor(1, 2)", "effect bit.bor"), ("return jit.status()", "effect jit.status"),
+    -- a goto but the continue idiom stops the run too, pcall or not
+    ("return pcall(function() local i = 0 ::top:: i = i + 1 if i < 3 then goto top end return i end)",
+      "effect goto: a label that does not end its block")].all
+  fun (src, out) => runCase (fun _ => none) .dual [] src.toList == out
+
+
+-- ---------- debug ----------
+
+/-- every builtin of the initial heap's library tables, as a Lua expression -/
+def builtins : List String :=
+  [("", 0), ("string.", 2), ("table.", 3), ("math.", 4), ("coroutine.", 6), ("io.", 9), ("os.", 10), ("debug.", 11)].flatMap
+    fun (lib, a) => match (initHeap[a]? : Option Obj) with
+      | some (.tbl t) => t.kv.filterMap fun (k, v) => match k, v with
+        | .str k, .prim .. => some (lib ++ String.ofList k)
+        | _, _ => none
+      | _ => []
+
+/-- the debug library: a closure's upvalues in LuaJIT's order (the outer locals its body reads and writes, through
+each statement, shadowed, in nested functions), set and read back; getinfo of a closure or builtin with any options,
+a bad one, a negative level or no function; getmetatable and setmetatable raw (`__metatable` ignored), their bad
+arguments; traceback of a value it returns as it is; each builtin's count of upvalues -/
+def debugs : G String := do
+  let ref : G String := pick ["a", "b", "c", "d", "e"]
+  let stats ← (List.range ((← rnd 5) + 1)).mapM fun _ => do
+    match ← rnd 10 with
+    | 0 => pure s!"x = {← ref} + {← ref}"
+    | 1 => pure s!"{← ref} = {← ref}"
+    | 2 => pure s!"local {← ref} = 9; x = {← ref}"
+    | 3 => pure s!"do local {← ref} = 0; x = {← ref} end"
+    | 4 => pure s!"x = function(p, ...) return {← ref}, p end"
+    | 5 => pure s!"for {← ref} = {← ref}, {← ref} do x = {← ref} end"
+    | 6 => pure s!"repeat local {← ref} = 2 until {← ref}"
+    | 7 => pure s!"if {← ref} then x = \{[{← ref}] = {← ref}, {← ref}} elseif {← ref} then x = {← ref} end"
+    | 8 => pure s!"local function g() return g, {← ref} end; x = g"
+    | _ => pure s!"x = (function() local {← ref} = 1; return function() return {← ref}, {← ref} end end)()"
+  let ps ← pick ["", "p", "p, q", "...", "p, ..."]
+  let k ← pick ["1", "2", "3", "0", "-1", "6", "\"2\"", "1.5"]
+  let target ← pick ["f", "f", "g0", "print", "string.rep", "next", "(ipairs({}))", "(pairs({}))",
+    "coroutine.wrap(f)", "(\"x\"):gmatch(\".\")", "type", "-1", "\"-2\"", "{}", "nil", "-0.5"]
+  let opts ← pick ["\"u\"", "\"f\"", "\"l\"", "\"n\"", "\"nluf\"", "\"fu\"", "\"\"", "\"x\"", "\"uL\"", "\"Sl\"",
+    "\"flnSu\"", "nil", "{}", "5"]
+  let opts := if (target == "f" || target == "g0") && (opts.contains 'S' || opts.contains 'L' || opts == "nil") then
+    "\"un\"" else opts
+  let up ← pick ["f", "g0", "next", "string.rep", "debug.getinfo", "nil", "5"]
+  let prot ← pick ["nil", "false", "\"locked\""]
+  let m2 ← pick ["nil", "{}", "m"]
+  let bad ← pick ["", ", 1", ", \"x\"", ", nil", ", true"]
+  let gm ← pick ["1", "nil", "true", "f", "print", "coroutine.create(f)", "o"]
+  let tb ← pick ["{}", "nil", "false", "f", "co, {}", "co, nil", "o"]
+  let all := if ← chance 4 then
+    s!"local N = \{}\nfor i, h in ipairs(\{{commas builtins}}) do N[i] = debug.getinfo(h, \"u\").nups end\n" else
+    "local N = 0\n"
+  return all ++ s!"local a, b, c, d, e = 1, 2, 3, 4, 5
+local function f({ps})
+  local x
+  {"\n  ".intercalate stats}
+  return x
+end
+local g0 = function() return a, e end
+local U = \{}
+for i = 1, 7 do U[i] = \{pcall(debug.getupvalue, {up}, i)} end
+local S = \{pcall(debug.setupvalue, {up}, {k}, 50)}
+local after = \{a, b, c, d, e, pcall(f, 1, 2, 3)}
+local I = \{pcall(debug.getinfo, {target}, {opts})}
+local fi = I[2] and type(I[2]) == \"table\" and I[2].func
+if fi then I[2].func = fi == {target} end
+local m = \{__metatable = {prot}, __index = function(_, key) return key end}
+local o = setmetatable(\{}, m)
+local M = \{debug.getmetatable(o) == m, getmetatable(o), pcall(debug.setmetatable, o, {m2}), o.key,
+  rawequal(getmetatable(o), {m2}), pcall(debug.setmetatable, o{bad}), pcall(debug.getmetatable, {gm})}
+local co = coroutine.create(f)
+local tr = debug.traceback({tb})
+return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), require(\"debug\") == debug, N"
+
+-- what needs a call stack (a level, a traceback's text, a Lua function's lines) or sets the metatable of a type
+-- stops the run
+#guard [("return debug.traceback(\"x\")", "effect debug.traceback: the stack"),
+    ("return debug.traceback()", "effect debug.traceback: the stack"),
+    ("return debug.getinfo(1, \"l\")", "effect debug.getinfo of a stack level"),
+    ("return debug.getinfo(function() end)", "effect debug.getinfo: a Lua function's lines"),
+    ("return debug.setmetatable(1, {})", "effect debug.setmetatable of a number"),
+    ("return debug.getmetatable(\"\")", "effect debug.getmetatable of a string"),
+    ("return debug.getupvalue(print, 1)", "effect debug: the upvalues of print"),
+    ("return debug.getlocal(1, 1)", "effect debug.getlocal"),
+    ("return debug.setmetatable(package.loaded, {})", "effect setmetatable(package.loaded)"),
+    ("local a, b = 1, 2 local function f() b = a; return function() return b, f end end return debug.getupvalue(f, 1), debug.getupvalue(f, 2), debug.getupvalue(f, 3)",
+      "ok:\"b\",\"a\",\"f\",function")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
 
 -- ---------- the world: print, io.write, os ----------
 
@@ -708,8 +858,8 @@ def chunk : G String := do
   | 5 => tables
   | 6 => ctrl
   | 7 | 8 => diffs
-  | 9 => match ← rnd 2 with | 0 => metas | 1 => opMetas | _ => compares
-  | 10 => libs
+  | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
+  | 10 => if ← chance 2 then libs else debugs
   | 11 => traverse
   | 12 => loads
   | 13 => coros

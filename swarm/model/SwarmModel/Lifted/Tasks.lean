@@ -1,4 +1,4 @@
-import LuaLean.Shallow
+import LuaLean.Denote
 
 /-! tasks.lua lifted by `lua-lean lift`: each function's parsed body, its shallow form, and the proof
 that the two are the same. GENERATED: do not edit. -/
@@ -577,37 +577,7 @@ theorem chunk_ok (I : Sem) (env0 : Env)
     (h_tostring : env0.lookup "tostring" = none)
     (h_error : env0.lookup "error" = none) :
     CFn I (chunk I env0) ⟨[], true, chunk_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_local (CL_cons (CE_site (CE_call (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) (CL_last (CM_site (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str)))))) fun n => CBs_let fun c_util => CBs_let fun c_db => CBs_end
-      ((CQ_local (CL_cons (CE_site (CE_call (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) (CL_last (CM_site (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str)))))) fun n => CBs_let fun c_agents => CBs_let fun c_hook => CBs_end
-      ((CQ_local (CL_last (CM_site (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_unistd => CBs_end
-      ((CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_M => CBs_end
-      ((CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl CE_num)))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl CE_str)))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_table (CF_pos CE_str (CF_pos CE_str (CF_pos CE_str (CF_pos CE_str (CF_pos CE_str (CF_pos CE_str (CF_pos CE_str (CF_last (CM_one rfl CE_str)))))))))))))
-      (CQ_localFn (by rfl) fun c_py =>
-      (CQ_localFn (by rfl) fun c_d =>
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_localFn (by rfl) fun c_ids =>
-      (CQ_localFn (by rfl) fun c_no_task_to_wait_on =>
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_localFn (by rfl) fun c_ctx_of =>
-      (CQ_localFn (by rfl) fun c_reaped_from =>
-      (CQ_localFn (by rfl) fun c_owned =>
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_assign (CP_site (CE_cell rfl) CE_str CP_nil) (CL_last (CM_one rfl (CE_func (by rfl)))))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)))) rfl rfl rfl))) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl))) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) n)) n)) n))) n)
+  D.fn_ok I (res1 "require" none (res1 "tonumber" none (res1 "ipairs" none (res1 "math" none (res1 "table" none (res1 "unpack" none (res1 "print" none (res1 "tostring" none (res1 "error" none (fun x => env0.lookup x)))))))))) ⟨[], true, chunk_body, env0⟩ (res1_ok h_require (res1_ok h_tonumber (res1_ok h_ipairs (res1_ok h_math (res1_ok h_table (res1_ok h_unpack (res1_ok h_print (res1_ok h_tostring (res1_ok h_error (fun _ => rfl))))))))))
 
 def py (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eOr (S.eOr (S.eOr (S.eBin I .eq (S.eCell c_x) S.eNil) (S.eBin I .eq (S.eCell c_x) (S.eNum (.int 0)))) (S.eBin I .eq (S.eCell c_x) (S.eStr "".toList))) (S.eBin I .eq (S.eCell c_x) S.eFalse)) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
@@ -617,10 +587,7 @@ def py (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
 
 theorem py_ok (I : Sem) (env0 : Env) :
     CFn I (py I env0) ⟨["x"], false, py_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_if (CE_or (CE_or (CE_or (CE_bin (CE_cell rfl) CE_nil) (CE_bin (CE_cell rfl) CE_num)) (CE_bin (CE_cell rfl) CE_str)) (CE_bin (CE_cell rfl) CE_false)) (CK_block (CQ_stat (CS_return (CL_last (CM_one rfl CE_nil)))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (fun x => env0.lookup x) ⟨["x"], false, py_body, env0⟩ (fun _ => rfl)
 
 def d (I : Sem) (env0 : Env) (c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_n => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 16, [], ("field", "d"), true⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 16, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "d".toList))) (S.lLast (S.mOne (S.eCell c_n))))))) (S.gotos [] [])
@@ -629,8 +596,7 @@ def d (I : Sem) (env0 : Env) (c_util : Nat) : List Val → Nat → M (List Val) 
 theorem d_ok (I : Sem) (env0 : Env) (c_util : Nat)
     (h_util : env0.lookup "util" = some c_util) :
     CFn I (d I env0 c_util) ⟨["n"], false, d_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_n => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) ⟨["n"], false, d_body, env0⟩ (res1_ok h_util (fun _ => rfl))
 
 def M_event_task (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_e => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eOr (S.eSite ⟨"tasks.lua", 20, [("local", "e")], ("", ""), false⟩ (S.eIndex I (S.eCell c_e) (S.eStr "data".toList))) (S.eStr "".toList)))) fun n => S.let1 fun c_s => S.letEnd
@@ -645,14 +611,7 @@ def M_event_task (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
 theorem M_event_task_ok (I : Sem) (env0 : Env)
     (h_tonumber : env0.lookup "tonumber" = none) :
     CFn I (M_event_task I env0) ⟨["e"], false, M_event_task_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_e => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str))) fun n => CBs_let fun c_s => CBs_end
-      ((CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_id => CBs_let fun c_rest => CBs_end
-      ((CQ_stat (CS_if (CE_un (CE_cell rfl)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) (CP_var (wCell_ok rfl) CP_nil)) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_if (CE_and (CE_cell rfl) (CE_paren (CE_or (CE_bin (CE_cell rfl) CE_str) (CE_bin (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons CE_num (CL_last (CM_one rfl CE_num)))))) CE_str)))) (CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_call (CE_glob h_tonumber) (CL_last (CM_one rfl (CE_cell rfl)))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_return (CL_last (CM_one rfl CE_nil)))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) n))) n)
+  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) ⟨["e"], false, M_event_task_body, env0⟩ (res1_ok h_tonumber (fun _ => rfl))
 
 def M_task_timing (I : Sem) (env0 : Env) (c_py c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_r => S.let1 fun c_evs => S.letEnd ((S.block (S.qLocalFn "ts" ["k", "agg"] false ts_body (("evs", c_evs) :: ("r", c_r) :: env0) fun c_ts =>
@@ -688,32 +647,7 @@ theorem M_task_timing_ok (I : Sem) (env0 : Env) (c_py c_util : Nat)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_math : env0.lookup "math" = none) :
     CFn I (M_task_timing I env0 c_py c_util) ⟨["r", "evs"], false, M_task_timing_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_r => CBs_let fun c_evs => CBs_end ((CK_block (CQ_localFn (by rfl) fun c_ts =>
-      (CQ_local (CL_cons CE_num (CL_cons (CE_table CF_nil) (CL_cons (CE_table CF_nil) (CL_last (CM_one rfl CE_num))))) fun n => CBs_let fun c_claims => CBs_let fun c_holders => CBs_let fun c_seen => CBs_let fun c_releases => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c__ => CBs_let fun c_e => CBs_end ((CK_block (CQ_stat (CS_if (CE_or (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) CE_num)))))
-          (CQ_stat (CS_if (CE_un (CE_site (CE_index (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str))))) (CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)) CP_nil) (CL_last (CM_one rfl CE_true)))
-            (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))
-            CQ_end rfl rfl rfl) rfl rfl rfl)) (CK_block CQ_end))
-          CQ_end rfl rfl rfl) rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) CE_num)))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          CQ_end rfl rfl rfl)))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_glob h_math) CE_str))))))))))) fun n => CBs_let fun c_created => CBs_end
-      ((CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_glob h_math) CE_str))))))))))) fun n => CBs_let fun c_first => CBs_end
-      ((CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_glob h_math) CE_str))))))))) CE_nil))))) fun n => CBs_let fun c_done => CBs_end
-      ((CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_glob h_math) CE_str))))))))) CE_nil))))) fun n => CBs_let fun c_dropped => CBs_end
-      ((CQ_local (CL_last (CM_one rfl (CE_or (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_one rfl (CE_cell rfl)))))) (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_one rfl (CE_cell rfl))))))) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) CL_nil)))))) fun n => CBs_let fun c_stop => CBs_end
-      ((CQ_local (CL_cons CE_num (CL_last (CM_one rfl CE_nil))) fun n => CBs_let fun c_blocked => CBs_let fun c_start => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c__1 => CBs_let fun c_e1 => CBs_end ((CK_block (CQ_stat (CS_if (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_bin (CE_cell rfl) CE_nil)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))
-          CQ_end rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_bin (CE_cell rfl) CE_nil)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) (CP_var (wCell_ok rfl) CP_nil)) (CL_cons (CE_site (CE_bin (CE_site (CE_bin (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)))) (CE_cell rfl))) (CL_last (CM_one rfl CE_nil))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          CQ_end rfl rfl rfl)))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_if (CE_and (CE_bin (CE_cell rfl) CE_nil) (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_bin (CE_cell rfl) (CE_cell rfl))) (CE_cell rfl))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_localFn (by rfl) fun c_span =>
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_table (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) (CF_named (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) (CF_named (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_cell rfl) (CF_named (CE_site (CE_index (CE_cell rfl) CE_str)) (CF_named (CE_site (CE_index (CE_cell rfl) CE_str)) (CF_named (CE_site (CE_index (CE_cell rfl) CE_str)) (CF_named (CE_site (CE_index (CE_cell rfl) CE_str)) (CF_named (CE_site (CE_index (CE_cell rfl) CE_str)) (CF_named (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))) CF_nil)))))))))))))))))))))
-      CQ_end rfl rfl rfl)) rfl rfl rfl) rfl rfl rfl) n)) n)) n)) n)) n)) n)) rfl rfl rfl) n)))) n)
+  D.fn_ok I (res1 "py" (some c_py) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))) ⟨["r", "evs"], false, M_task_timing_body, env0⟩ (res1_ok h_py (res1_ok h_util (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))
 
 def M_task_events (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_tid => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r => S.letEnd
@@ -728,12 +662,7 @@ theorem M_task_events_ok (I : Sem) (env0 : Env) (c_M : Nat)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
     CFn I (M_task_events I env0 c_M) ⟨["c", "tid"], false, M_task_events_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_tid => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_r => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl CE_str)))))) CE_str)))))))))))) fun n => CBs_let fun c__ => CBs_let fun c_e => CBs_end ((CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))) (CE_cell rfl)) (CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_one rfl (CE_cell rfl))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) ⟨["c", "tid"], false, M_task_events_body, env0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
 
 def M_deps_of (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -745,11 +674,7 @@ def M_deps_of (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
 theorem M_deps_of_ok (I : Sem) (env0 : Env)
     (h_tonumber : env0.lookup "tonumber" = none) :
     CFn I (M_deps_of I env0) ⟨["r"], false, M_deps_of_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_r => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_r2 => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_method (CE_paren (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_site (CM_call (CE_glob h_tonumber) (CL_last (CM_one rfl (CE_cell rfl)))))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) ⟨["r"], false, M_deps_of_body, env0⟩ (res1_ok h_tonumber (fun _ => rfl))
 
 def M_undone (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lCons (S.eSite ⟨"tasks.lua", 84, [], ("field", "deps_of"), false⟩ (S.eFirst (S.mCall I (S.eSite ⟨"tasks.lua", 84, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "deps_of".toList))) (S.lLast (S.mOne (S.eCell c_r)))))) (S.lLast (S.mOne (S.eTable S.fNil)))) fun n => S.let1 fun c_deps => S.let1 fun c_out => S.letEnd
@@ -773,20 +698,7 @@ theorem M_undone_ok (I : Sem) (env0 : Env) (c_M : Nat)
     (h_table : env0.lookup "table" = none)
     (h_unpack : env0.lookup "unpack" = none) :
     CFn I (M_undone I env0 c_M) ⟨["c", "r"], false, M_undone_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_r => CBs_end ((CK_block (CQ_local (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))) (CL_last (CM_one rfl (CE_table CF_nil)))) fun n => CBs_let fun c_deps => CBs_let fun c_out => CBs_end
-      ((CQ_stat (CS_if (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num) (CK_block (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_q => CBs_end
-      ((CQ_stat (CS_site (CS_fornum CE_num (CE_site (CE_un (CE_cell rfl))) trivial fun c_i => (CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_one rfl CE_str)))
-        CQ_end rfl rfl rfl))))
-      (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_st => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons (CE_site (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))) CE_str)))) (CL_last (CM_site (CM_call (CE_glob h_unpack) (CL_last (CM_one rfl (CE_cell rfl))))))))))))) fun n => CBs_let fun c__ => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)) CP_nil) (CL_last (CM_one rfl (CE_cell rfl))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c__1 => CBs_let fun c_i1 => CBs_end ((CK_block (CQ_stat (CS_if (CE_site (CE_index (CE_cell rfl) (CE_cell rfl))) (CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) (CE_cell rfl))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x))))) ⟨["c", "r"], false, M_undone_body, env0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (res1_ok h_unpack (fun _ => rfl)))))
 
 def M_waiters (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_tid => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 100, [("local", "c")], ("method", "all"), true⟩ (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eStr "select * from task where state='open' and ','||deps||',' like ?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 100, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "%,".toList) (S.eSite ⟨"tasks.lua", 100, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eSite ⟨"tasks.lua", 100, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (S.eCell c_d) (S.lLast (S.mOne (S.eCell c_tid)))))) (S.eStr ",%".toList)))))))))))) (S.gotos [] [])
@@ -795,8 +707,7 @@ def M_waiters (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (List 
 theorem M_waiters_ok (I : Sem) (env0 : Env) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
     CFn I (M_waiters I env0 c_d) ⟨["c", "tid"], false, M_waiters_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_tid => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))) CE_str)))))))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) ⟨["c", "tid"], false, M_waiters_body, env0⟩ (res1_ok h_d (fun _ => rfl))
 
 def M_dep_path (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_start => S.let1 fun c_target => S.letEnd ((S.block (S.qLocal (S.lCons (S.eTable S.fNil) (S.lLast (S.mOne (S.eTable (S.fLast (S.mOne (S.eTable (S.fLast (S.mOne (S.eCell c_start)))))))))) fun n => S.let1 fun c_seen => S.let1 fun c_stack => S.letEnd
@@ -821,22 +732,7 @@ theorem M_dep_path_ok (I : Sem) (env0 : Env) (c_M : Nat)
     (h_table : env0.lookup "table" = none)
     (h_unpack : env0.lookup "unpack" = none) :
     CFn I (M_dep_path I env0 c_M) ⟨["c", "start", "target"], false, M_dep_path_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_start => CBs_let fun c_target => CBs_end ((CK_block (CQ_local (CL_cons (CE_table CF_nil) (CL_last (CM_one rfl (CE_table (CF_last (CM_one rfl (CE_table (CF_last (CM_one rfl (CE_cell rfl)))))))))) fun n => CBs_let fun c_seen => CBs_let fun c_stack => CBs_end
-      ((CQ_stat (CS_while (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) (CK_block (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_path => CBs_end
-        ((CQ_local (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) (CE_site (CE_un (CE_cell rfl))))))) fun n => CBs_let fun c_last => CBs_end
-        ((CQ_stat (CS_if (CE_bin (CE_cell rfl) (CE_cell rfl)) (CK_block (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        (CQ_stat (CS_if (CE_un (CE_site (CE_index (CE_cell rfl) (CE_cell rfl)))) (CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_one rfl CE_true)))
-          (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_one rfl (CE_cell rfl))))))) fun n => CBs_let fun c_r => CBs_end
-          ((CQ_local (CL_last (CM_one rfl (CE_or (CE_and (CE_cell rfl) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl (CE_cell rfl))))))) (CE_table CF_nil)))) fun n => CBs_let fun c_deps => CBs_end
-          ((CQ_stat (CS_site (CS_fornum (CE_site (CE_un (CE_cell rfl))) CE_num CE_num fun c_i => (CK_block (CQ_local (CL_last (CM_one rfl (CE_table (CF_last (CM_site (CM_call (CE_glob h_unpack) (CL_last (CM_one rfl (CE_cell rfl))))))))) fun n => CBs_let fun c_p => CBs_end
-            ((CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) (CE_cell rfl))))))
-            (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) CP_nil) (CL_last (CM_one rfl (CE_cell rfl))))
-            CQ_end rfl rfl rfl) rfl rfl rfl) n)))))
-          CQ_end rfl rfl rfl) n)) n)) rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl) rfl rfl rfl) n)) n))))
-      (CQ_stat (CS_return (CL_last (CM_one rfl CE_nil)))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x)))) ⟨["c", "start", "target"], false, M_dep_path_body, env0⟩ (res1_ok h_M (res1_ok h_table (res1_ok h_unpack (fun _ => rfl))))
 
 def M_pool (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 127, [("local", "c")], ("method", "all"), true⟩ (S.mMethod I (S.eCell c_c) "all" (S.lCons (S.eSite ⟨"tasks.lua", 127, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "select * from task t where state='open' and not exists (select 1 from task d where d.state!='done' ".toList) (S.eStr "and ','||t.deps||',' like '%,'||d.id||',%') order by title like ? desc, id".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 127, [("field", "RED_TASK"), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eSite ⟨"tasks.lua", 127, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "RED_TASK".toList))) (S.eStr "%".toList)))))))))) (S.gotos [] [])
@@ -845,8 +741,7 @@ def M_pool (I : Sem) (env0 : Env) (c_M : Nat) : List Val → Nat → M (List Val
 theorem M_pool_ok (I : Sem) (env0 : Env) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M) :
     CFn I (M_pool I env0 c_M) ⟨["c"], false, M_pool_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons (CE_site (CE_bin CE_str CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_index (CE_cell h_M) CE_str)) CE_str)))))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "M" (some c_M) (fun x => env0.lookup x)) ⟨["c"], false, M_pool_body, env0⟩ (res1_ok h_M (fun _ => rfl))
 
 def M_dep_lines (I : Sem) (env0 : Env) (c_M c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_st => S.letEnd
@@ -873,23 +768,7 @@ theorem M_dep_lines_ok (I : Sem) (env0 : Env) (c_M c_d : Nat)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
     CFn I (M_dep_lines I env0 c_M c_d) ⟨["c", "r"], false, M_dep_lines_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_r => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_st => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))) fun n => CBs_let fun c__ => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_local (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))) (CL_last (CM_one rfl CE_str))) fun n => CBs_let fun c_deps => CBs_let fun c_out => CBs_end
-      ((CQ_stat (CS_if (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) (CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_p => CBs_end
-        ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_i => CBs_let fun c_x1 => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))) (CE_site (CE_bin CE_str (CE_paren (CE_or (CE_site (CE_index (CE_cell rfl) (CE_cell rfl))) CE_str)))))))))))
-          CQ_end rfl rfl rfl)) n)))
-        (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))))))
-        CQ_end rfl rfl rfl) rfl rfl rfl) n))) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_one rfl (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))) (CE_table CF_nil)))) fun n => CBs_let fun c_w => CBs_end
-      ((CQ_stat (CS_if (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) (CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_p1 => CBs_end
-        ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_i1 => CBs_let fun c_x2 => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))
-          CQ_end rfl rfl rfl)) n)))
-        (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_bin CE_str (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))))))))
-        CQ_end rfl rfl rfl) rfl rfl rfl) n))) (CK_block CQ_end))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))) ⟨["c", "r"], false, M_dep_lines_body, env0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))
 
 def ids (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_rows => S.let1 fun c_f => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_p => S.letEnd
@@ -903,11 +782,7 @@ theorem ids_ok (I : Sem) (env0 : Env) (c_d : Nat)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
     CFn I (ids I env0 c_d) ⟨["rows", "f"], false, ids_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_rows => CBs_let fun c_f => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_p => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_i => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_one rfl (CE_or (CE_and (CE_cell rfl) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) (CE_site (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl))))))))))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_return (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) ⟨["rows", "f"], false, ids_body, env0⟩ (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
 
 def no_task_to_wait_on (I : Sem) (env0 : Env) (c_util c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_deps => S.letEnd ((S.block (S.qStat (S.sSite ⟨"tasks.lua", 156, [("", "")], ("local", "(for generator)"), false⟩ (S.sForIn I (S.lLast (S.mSite ⟨"tasks.lua", 156, [], ("global", "ipairs"), false⟩ (S.mCall I (S.eGlob "ipairs") (S.lLast (S.mOne (S.eCell c_deps)))))) fun n => S.let1 fun c__ => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eUn I .not (S.eSite ⟨"tasks.lua", 157, [("local", "c")], ("method", "one"), false⟩ (S.eFirst (S.mMethod I (S.eCell c_c) "one" (S.lCons (S.eStr "select 1 from task where id=?".toList) (S.lLast (S.mOne (S.eCell c_x)))))))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 157, [], ("field", "die"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 157, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 157, [("", "")], ("method", "format"), false⟩ (S.mMethod I (S.eParen (S.eStr "no task #%s to wait on".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 157, [], ("upvalue", "d"), false⟩ (S.mCall I (S.eCell c_d) (S.lLast (S.mOne (S.eCell c_x)))))))))))) (S.gotos [] [])
@@ -920,10 +795,7 @@ theorem no_task_to_wait_on_ok (I : Sem) (env0 : Env) (c_util c_d : Nat)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none) :
     CFn I (no_task_to_wait_on I env0 c_util c_d) ⟨["c", "deps"], false, no_task_to_wait_on_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_deps => CBs_end ((CK_block (CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c__ => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_if (CE_un (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_one rfl (CE_cell rfl)))))))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)) n)))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) ⟨["c", "deps"], false, no_task_to_wait_on_body, env0⟩ (res1_ok h_util (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
 
 def M_set_deps (I : Sem) (env0 : Env) (c_no_task_to_wait_on c_M c_d c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_id => S.let1 fun c_deps => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_ds => S.letEnd
@@ -949,20 +821,7 @@ theorem M_set_deps_ok (I : Sem) (env0 : Env) (c_no_task_to_wait_on c_M c_d c_uti
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
     CFn I (M_set_deps I env0 c_no_task_to_wait_on c_M c_d c_util) ⟨["c", "id", "deps"], false, M_set_deps_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_id => CBs_let fun c_deps => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_ds => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_i => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_cell h_no_task_to_wait_on) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_table (CF_last (CM_one rfl (CE_cell rfl))))))))))
-        (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))) fun n => CBs_let fun c_cyc => CBs_end
-        ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_cons CE_num (CL_last (CM_one rfl (CE_cell rfl))))))))
-          (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_p => CBs_end
-          ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c_j => CBs_let fun c_y => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))))))))
-            CQ_end rfl rfl rfl)) n)))
-          (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))))))))
-          CQ_end rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl)) (CK_block CQ_end))
-        (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))))
-        CQ_end rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl)) n)))
-      (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))) (CL_last (CM_one rfl (CE_cell rfl))))))))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))))) ⟨["c", "id", "deps"], false, M_set_deps_body, env0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_M (res1_ok h_d (res1_ok h_util (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))))
 
 def ctx_of (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 180, [("local", "c")], ("method", "one"), false⟩ (S.mMethod I (S.eCell c_c) "one" (S.lCons (S.eStr "select ctx_tokens from agent where name=?".toList) (S.lLast (S.mOne (S.eCell c_n))))))) fun n => S.let1 fun c_r => S.letEnd
@@ -971,9 +830,7 @@ def ctx_of (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
 
 theorem ctx_of_ok (I : Sem) (env0 : Env) :
     CFn I (ctx_of I env0) ⟨["c", "n"], false, ctx_of_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_n => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_one rfl (CE_cell rfl))))))) fun n => CBs_let fun c_r => CBs_end
-      ((CQ_stat (CS_return (CL_last (CM_one rfl (CE_or (CE_and (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str))) CE_num))))
-      CQ_end rfl rfl rfl) n))) n)
+  D.fn_ok I (fun x => env0.lookup x) ⟨["c", "n"], false, ctx_of_body, env0⟩ (fun _ => rfl)
 
 def reaped_from (I : Sem) (env0 : Env) (c_M c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_n => S.let1 fun c_id => S.letEnd ((S.block (S.qLocal S.lNil fun n => S.let1 fun c_last => S.letEnd
@@ -988,12 +845,7 @@ theorem reaped_from_ok (I : Sem) (env0 : Env) (c_M c_d : Nat)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none) :
     CFn I (reaped_from I env0 c_M c_d) ⟨["c", "n", "id"], false, reaped_from_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_n => CBs_let fun c_id => CBs_end ((CK_block (CQ_local CL_nil fun n => CBs_let fun c_last => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))))) fun n => CBs_let fun c__ => CBs_let fun c_e => CBs_end ((CK_block (CQ_stat (CS_if (CE_or (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_and (CE_bin (CE_cell rfl) (CE_cell rfl)) (CE_bin (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons CE_str (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))))))))))) CE_nil)))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) ⟨["c", "n", "id"], false, reaped_from_body, env0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
 
 def owned (I : Sem) (env0 : Env) (c_py : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eSite ⟨"tasks.lua", 195, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 195, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList)))))))) (S.eParen (S.eSite ⟨"tasks.lua", 195, [("", ""), ("field", "owner")], ("", ""), false⟩ (S.eBin I .concat (S.eStr ", owned by ".toList) (S.eSite ⟨"tasks.lua", 195, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList))))))) (S.eStr "".toList))))) (S.gotos [] [])
@@ -1002,8 +854,7 @@ def owned (I : Sem) (env0 : Env) (c_py : Nat) : List Val → Nat → M (List Val
 theorem owned_ok (I : Sem) (env0 : Env) (c_py : Nat)
     (h_py : env0.lookup "py" = some c_py) :
     CFn I (owned I env0 c_py) ⟨["r"], false, owned_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_r => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_index (CE_cell rfl) CE_str)))))) CE_str))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "py" (some c_py) (fun x => env0.lookup x)) ⟨["r"], false, owned_body, env0⟩ (res1_ok h_py (fun _ => rfl))
 
 def M_cmd_task (I : Sem) (env0 : Env) (c_agents c_util c_no_task_to_wait_on c_d c_py c_db c_M c_ctx_of c_hook c_reaped_from c_owned c_ids : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 199, [], ("field", "me"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 199, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "me".toList))) S.lNil))) fun n => S.let1 fun c_n => S.letEnd
@@ -1119,98 +970,7 @@ theorem M_cmd_task_ok (I : Sem) (env0 : Env) (c_agents c_util c_no_task_to_wait_
     (h_require : env0.lookup "require" = none)
     (h_tostring : env0.lookup "tostring" = none) :
     CFn I (M_cmd_task I env0 c_agents c_util c_no_task_to_wait_on c_d c_py c_db c_M c_ctx_of c_hook c_reaped_from c_owned c_ids) ⟨["c", "a"], false, M_cmd_task_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_a => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) CL_nil))) fun n => CBs_let fun c_n => CBs_end
-      ((CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) CL_nil))) fun n => CBs_let fun c_t => CBs_end
-      ((CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_one rfl (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_table CF_nil)))) fun n => CBs_let fun c_deps => CBs_end
-        ((CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl))))))) fun n => CBs_let fun c_id => CBs_end
-        ((CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))))))))))
-        (CQ_stat (CS_return CL_nil)
-        CQ_end rfl rfl rfl) rfl rfl rfl) n)) n))) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))) fun n => CBs_let fun c_r => CBs_end
-      ((CQ_stat (CS_if (CE_un (CE_cell rfl)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_one rfl CE_str)) fun n => CBs_let fun c_mine => CBs_end
-      ((CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_site (CM_one rfl (CE_index (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) CE_num)))) fun n => CBs_let fun c_dep => CBs_end
-        ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_index (CE_cell rfl) CE_str)))))) CE_str))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))
-        (CQ_local (CL_last (CM_site (CM_call (CE_cell h_ctx_of) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) fun n => CBs_let fun c_k => CBs_end
-        ((CQ_stat (CS_if (CE_and (CE_site (CE_bin (CE_cell rfl) (CE_site (CE_index (CE_cell h_hook) CE_str)))) (CE_un (CE_site (CE_call (CM_call (CE_cell h_reaped_from) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) CE_num))))))) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_hook) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        (CQ_local (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))) fun n => CBs_let fun c_until_ => CBs_end
-        ((CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons (CE_site (CE_bin CE_str (CE_site (CE_bin CE_str CE_str)))) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))) CE_num) (CK_block (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))) fun n => CBs_let fun c_r2 => CBs_end
-          ((CQ_local (CL_last (CM_one rfl (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_site (CE_index (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) CE_num))))) fun n => CBs_let fun c_dep2 => CBs_end
-          ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_site (CM_call (CE_cell h_owned) (CL_last (CM_one rfl (CE_cell rfl))))))))))))))
-          CQ_end rfl rfl rfl) rfl rfl rfl) n)) n))) (CK_block CQ_end))
-        (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))))
-        (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))))))))
-        (CQ_local (CL_last (CM_site (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_machine => CBs_end
-        ((CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) CL_nil))) fun n => CBs_let fun c_avail => CBs_let fun c_total => CBs_let fun c_psi => CBs_end
-        ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str))))))
-        CQ_end rfl rfl rfl) rfl rfl rfl) n)) n)) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) rfl rfl rfl) n))) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))) fun n => CBs_let fun c_tm => CBs_end
-          ((CQ_localFn (by rfl) fun c_f =>
-          (CQ_local (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_site (CE_call (CM_call (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl CE_str))))))))) CE_str)))))))))))))))) fun n => CBs_let fun c_s => CBs_end
-          ((CQ_stat (CS_if (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_bin CE_str (CE_site (CE_index (CE_cell rfl) CE_str)))))))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          (CQ_stat (CS_if (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_num)))))))))))))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          (CQ_stat (CS_if (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_num)))))))))))))))
-            CQ_end rfl rfl rfl)) (CK_block CQ_end))
-          (CQ_stat (CS_if (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_cons (CE_or (CE_and (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))) CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str)))))))))))))
-            (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_nil) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_num)))))))))))))))
-              CQ_end rfl rfl rfl)) (CK_block CQ_end))
-            CQ_end rfl rfl rfl) rfl rfl rfl)) (CK_block CQ_end))
-          (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) (CE_site (CE_bin CE_str (CE_site (CE_bin (CE_paren (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str)) (CE_paren (CE_or (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_site (CE_bin CE_str (CE_site (CE_index (CE_cell rfl) CE_str))))) CE_str)))))))))))))))
-          CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n))) n))) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-            (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_call (CE_cell h_ids) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))) CE_str))))))))))
-            CQ_end rfl rfl rfl) rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))) fun n => CBs_let fun c_until_1 => CBs_end
-              ((CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons (CE_site (CE_bin CE_str (CE_cell rfl))) (CL_cons (CE_cell rfl) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl (CE_cell rfl))))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))
-                CQ_end rfl rfl rfl)) (CK_block CQ_end))
-              (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))))))))
-              CQ_end rfl rfl rfl) rfl rfl rfl) n))) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_one rfl (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)))))) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_one rfl CE_str)))))
-                  CQ_end rfl rfl rfl)) (CK_block CQ_end))
-                (CQ_stat (CS_if (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_cons (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_M) CE_str)))))))) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell rfl) (CL_cons (CE_site (CE_bin CE_str (CE_cell rfl))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl (CE_cell rfl))))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))
-                    CQ_end rfl rfl rfl)) (CK_block CQ_end))
-                  (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))
-                  (CQ_stat (CS_return CL_nil)
-                  CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) (CK_block CQ_end))
-                (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-                (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))))
-                (CQ_local (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_call (CM_call (CE_cell h_ctx_of) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) CE_num))))))) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))) fun n => CBs_let fun c_k1 => CBs_let fun c_stay => CBs_end
-                ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))))))
-                  CQ_end rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_and (CE_site (CE_bin (CE_site (CE_bin (CE_cell rfl) CE_num)) (CE_site (CE_index (CE_cell h_agents) CE_str)))) (CE_site (CE_bin (CE_site (CE_un (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))) CE_num))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_one rfl (CE_cell rfl)))))))))
-                    CQ_end rfl rfl rfl)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_one rfl (CE_cell rfl)))))))))
-                    CQ_end rfl rfl rfl)))
-                  CQ_end rfl rfl rfl)))
-                CQ_end rfl rfl rfl) n)) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-                  (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))) CE_str) CE_str))))))))))
-                  CQ_end rfl rfl rfl) rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))
-                      CQ_end rfl rfl rfl)) (CK_block CQ_end))
-                    (CQ_stat (CS_if (CE_and (CE_bin (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str))) (CE_un (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_glob h_tostring) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))))
-                      CQ_end rfl rfl rfl)) (CK_block CQ_end))
-                    (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-                    (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))
-                    CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_one rfl (CE_and (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_cell rfl)) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))) (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))) fun n => CBs_let fun c_from => CBs_end
-                      ((CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-                      (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_or (CE_and (CE_cell rfl) (CE_paren (CE_site (CE_bin CE_str (CE_cell rfl))))) CE_str) (CL_last (CM_one rfl (CE_or (CE_and (CE_and (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_site (CE_bin (CE_site (CE_un (CE_site (CE_index (CE_cell rfl) CE_str)))) CE_num))) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_ids) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))) CE_str)))))))))))
-                      CQ_end rfl rfl rfl) rfl rfl rfl) n))) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-                        (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))))
-                        (CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))) fun n => CBs_let fun c__ => CBs_let fun c_w => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))))
-                          CQ_end rfl rfl rfl)) n)))
-                        CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) (CK_block CQ_end))
-                      CQ_end rfl rfl rfl)))
-                    CQ_end rfl rfl rfl)))
-                  CQ_end rfl rfl rfl)))
-                CQ_end rfl rfl rfl)))
-              CQ_end rfl rfl rfl)))
-            CQ_end rfl rfl rfl)))
-          CQ_end rfl rfl rfl)))
-        CQ_end rfl rfl rfl)))
-      CQ_end rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) n)) n))) n)
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "d" (some c_d) (res1 "py" (some c_py) (res1 "db" (some c_db) (res1 "M" (some c_M) (res1 "ctx_of" (some c_ctx_of) (res1 "hook" (some c_hook) (res1 "reaped_from" (some c_reaped_from) (res1 "owned" (some c_owned) (res1 "ids" (some c_ids) (res1 "ipairs" none (res1 "table" none (res1 "print" none (res1 "math" none (res1 "require" none (res1 "tostring" none (fun x => env0.lookup x))))))))))))))))))) ⟨["c", "a"], false, M_cmd_task_body, env0⟩ (res1_ok h_agents (res1_ok h_util (res1_ok h_no_task_to_wait_on (res1_ok h_d (res1_ok h_py (res1_ok h_db (res1_ok h_M (res1_ok h_ctx_of (res1_ok h_hook (res1_ok h_reaped_from (res1_ok h_owned (res1_ok h_ids (res1_ok h_ipairs (res1_ok h_table (res1_ok h_print (res1_ok h_math (res1_ok h_require (res1_ok h_tostring (fun _ => rfl)))))))))))))))))))
 
 def M_cmd_board (I : Sem) (env0 : Env) (c_M c_agents c_py c_d c_util c_ids : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 385, [], ("global", "require"), false⟩ (S.mCall I (S.eGlob "require") (S.lLast (S.mOne (S.eStr "swarm.machine".toList)))))) fun n => S.let1 fun c_machine => S.letEnd
@@ -1255,35 +1015,7 @@ theorem M_cmd_board_ok (I : Sem) (env0 : Env) (c_M c_agents c_py c_d c_util c_id
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_math : env0.lookup "math" = none) :
     CFn I (M_cmd_board I env0 c_M c_agents c_py c_d c_util c_ids) ⟨["c", "a"], false, M_cmd_board_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_a => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_machine => CBs_end
-      ((CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) CL_nil))) fun n => CBs_let fun c_avail => CBs_let fun c_total => CBs_let fun c_psi => CBs_end
-      ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl)))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_role => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))) fun n => CBs_let fun c__ => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)) CP_nil) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_paren (CE_or (CE_and (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) CE_str)) (CE_site (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_index (CE_cell h_M) CE_str)) CE_str))))))))))))) fun n => CBs_let fun c_rows => CBs_end
-      ((CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_last (CM_one rfl (CE_cell rfl)))))))))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_held => CBs_end
-      ((CQ_stat (CS_if (CE_cell rfl) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell rfl)))))) fun n => CBs_let fun c__1 => CBs_let fun c_r => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_one rfl (CE_bin (CE_paren (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str)) (CE_paren (CE_or (CE_and (CE_site (CE_index (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)))) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_index (CE_cell rfl) (CE_site (CE_index (CE_cell rfl) CE_str)))) CE_str)))))) CE_str)))))) fun n => CBs_let fun c_who => CBs_end
-        ((CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_cell rfl) (CL_cons (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block (CQ_local (CL_last (CM_one rfl CE_str)) fun n => CBs_let fun c_lease => CBs_end
-          ((CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_local (CL_last (CM_site (CM_one rfl (CE_bin (CE_paren (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_num)) (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) CL_nil))))))) fun n => CBs_let fun c_left => CBs_end
-            ((CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_bin (CE_cell rfl) CE_num)) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_cell rfl) CE_num))))))))))) CE_str))))
-            CQ_end rfl rfl rfl) n))) (CK_block CQ_end))
-          (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_cell rfl))))))) fun n => CBs_let fun c_u => CBs_end
-          ((CQ_local (CL_last (CM_one rfl (CE_or (CE_and (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_ids) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))))))) CE_str))) fun n => CBs_let fun c_wait => CBs_end
-          ((CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))) (CE_site (CE_bin (CE_paren (CE_or (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) CE_str) CE_str)) (CE_paren (CE_or (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str)))))) CE_str)))))))))))
-          CQ_end rfl rfl rfl) n)) n)) rfl rfl rfl) n))))
-        CQ_end rfl rfl rfl) n))) n)))
-      (CQ_stat (CS_if (CE_site (CE_index (CE_cell rfl) CE_str)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_one rfl (CE_un (CE_cell rfl)))))))))))
-        CQ_end rfl rfl rfl)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_un (CE_cell rfl))) (CL_last (CM_site (CM_one rfl (CE_index (CE_site (CE_method (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) CE_str)))))))))))
-        CQ_end rfl rfl rfl)))
-      (CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str)))))))) fun n => CBs_let fun c__2 => CBs_let fun c_x1 => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_cons (CE_or (CE_and (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_paren (CE_site (CE_bin CE_str (CE_site (CE_index (CE_cell rfl) CE_str)))))) CE_str) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))
-        CQ_end rfl rfl rfl)) n)))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl) n)) n))) n)
+  D.fn_ok I (res1 "M" (some c_M) (res1 "agents" (some c_agents) (res1 "py" (some c_py) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ids" (some c_ids) (res1 "require" none (res1 "print" none (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))))))))) ⟨["c", "a"], false, M_cmd_board_body, env0⟩ (res1_ok h_M (res1_ok h_agents (res1_ok h_py (res1_ok h_d (res1_ok h_util (res1_ok h_ids (res1_ok h_require (res1_ok h_print (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))))))))
 
 def M_cmd_rules (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 426, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "act".toList))) (S.eStr "set".toList)) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 427, [("local", "c")], ("method", "exec"), false⟩ (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "insert or replace into meta(k,v) values('rules',?)".toList) (S.lLast (S.mSite ⟨"tasks.lua", 427, [], ("field", "concat"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 427, [("global", "table")], ("", ""), false⟩ (S.eIndex I (S.eGlob "table") (S.eStr "concat".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 427, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "text".toList))) (S.lLast (S.mOne (S.eStr " ".toList))))))))))) (S.gotos [] [])
@@ -1296,11 +1028,7 @@ theorem M_cmd_rules_ok (I : Sem) (env0 : Env)
     (h_table : env0.lookup "table" = none)
     (h_print : env0.lookup "print" = none) :
     CFn I (M_cmd_rules I env0) ⟨["c", "a"], false, M_cmd_rules_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_a => CBs_end ((CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_cons CE_str (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_one rfl CE_str))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl CE_str))))) fun n => CBs_let fun c_r => CBs_end
-      ((CQ_stat (CS_call (CM_site (CM_call (CE_glob h_print) (CL_last (CM_one rfl (CE_or (CE_and (CE_cell rfl) (CE_paren (CE_or (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str))) CE_str))))))
-      CQ_end rfl rfl rfl) n)) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "table" none (res1 "print" none (fun x => env0.lookup x))) ⟨["c", "a"], false, M_cmd_rules_body, env0⟩ (res1_ok h_table (res1_ok h_print (fun _ => rfl)))
 
 def M_reserve (I : Sem) (env0 : Env) (c_util c_agents c_d c_M c_ids c_owned c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_name => S.let1 fun c_tid => S.let1 fun c_model => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 436, [], ("field", "now"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 436, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "now".toList))) S.lNil))) fun n => S.let1 fun c_t => S.letEnd
@@ -1317,9 +1045,7 @@ theorem M_reserve_ok (I : Sem) (env0 : Env) (c_util c_agents c_d c_M c_ids c_own
     (h_db : env0.lookup "db" = some c_db)
     (h_error : env0.lookup "error" = none) :
     CFn I (M_reserve I env0 c_util c_agents c_d c_M c_ids c_owned c_db) ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_name => CBs_let fun c_tid => CBs_let fun c_model => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) CL_nil))) fun n => CBs_let fun c_t => CBs_end
-      ((CQ_stat (CS_return (CL_last (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl))))))))
-      CQ_end rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "util" (some c_util) (res1 "agents" (some c_agents) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x))))))))) ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0⟩ (res1_ok h_util (res1_ok h_agents (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_db (res1_ok h_error (fun _ => rfl)))))))))
 
 def M_unreserve (I : Sem) (env0 : Env) (c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_c => S.let1 fun c_name => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 455, [("local", "c")], ("method", "tx"), false⟩ (S.mMethod I (S.eCell c_c) "tx" (S.lLast (S.mOne (S.eFunc [] false M_unreserve_fn_body (("r", c_r) :: ("name", c_name) :: ("c", c_c) :: env0))))))) (S.gotos [] [])
@@ -1328,8 +1054,7 @@ def M_unreserve (I : Sem) (env0 : Env) (c_util : Nat) : List Val → Nat → M (
 theorem M_unreserve_ok (I : Sem) (env0 : Env) (c_util : Nat)
     (h_util : env0.lookup "util" = some c_util) :
     CFn I (M_unreserve I env0 c_util) ⟨["c", "name", "r"], false, M_unreserve_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_c => CBs_let fun c_name => CBs_let fun c_r => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) ⟨["c", "name", "r"], false, M_unreserve_body, env0⟩ (res1_ok h_util (fun _ => rfl))
 
 def ts (I : Sem) (env0 : Env) (c_evs : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_k => S.let1 fun c_agg => S.letEnd ((S.block (S.qLocal S.lNil fun n => S.let1 fun c_v => S.letEnd
@@ -1344,13 +1069,7 @@ theorem ts_ok (I : Sem) (env0 : Env) (c_evs : Nat)
     (h_evs : env0.lookup "evs" = some c_evs)
     (h_ipairs : env0.lookup "ipairs" = none) :
     CFn I (ts I env0 c_evs) ⟨["k", "agg"], false, ts_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_k => CBs_let fun c_agg => CBs_end ((CK_block (CQ_local CL_nil fun n => CBs_let fun c_v => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell h_evs)))))) fun n => CBs_let fun c__ => CBs_let fun c_e => CBs_end ((CK_block (CQ_local (CL_last (CM_one rfl (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) CE_str) (CE_site (CE_index (CE_cell rfl) CE_str))))) fun n => CBs_let fun c_kind => CBs_end
-        ((CQ_stat (CS_if (CE_bin (CE_cell rfl) (CE_cell rfl)) (CK_block (CQ_stat (CS_assign (CP_var (wCell_ok rfl) CP_nil) (CL_last (CM_one rfl (CE_or (CE_and (CE_cell rfl) (CE_site (CE_call (CM_call (CE_cell rfl) (CL_cons (CE_cell rfl) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))) (CE_site (CE_index (CE_cell rfl) CE_str))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl) n))) n)))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "evs" (some c_evs) (res1 "ipairs" none (fun x => env0.lookup x))) ⟨["k", "agg"], false, ts_body, env0⟩ (res1_ok h_evs (res1_ok h_ipairs (fun _ => rfl)))
 
 def span (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eAnd (S.eBin I .ne (S.eCell c_a) S.eNil) (S.eBin I .ne (S.eCell c_b) S.eNil)) (S.eSite ⟨"tasks.lua", 58, [("local", "b"), ("local", "a")], ("", ""), false⟩ (S.eBin I .sub (S.eCell c_b) (S.eCell c_a)))) S.eNil)))) (S.gotos [] [])
@@ -1358,8 +1077,7 @@ def span (I : Sem) (env0 : Env) : List Val → Nat → M (List Val) :=
 
 theorem span_ok (I : Sem) (env0 : Env) :
     CFn I (span I env0) ⟨["a", "b"], false, span_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_a => CBs_let fun c_b => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_one rfl (CE_or (CE_and (CE_and (CE_bin (CE_cell rfl) CE_nil) (CE_bin (CE_cell rfl) CE_nil)) (CE_site (CE_bin (CE_cell rfl) (CE_cell rfl)))) CE_nil))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (fun x => env0.lookup x) ⟨["a", "b"], false, span_body, env0⟩ (fun _ => rfl)
 
 def M_cmd_task_fn (I : Sem) (env0 : Env) (c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 204, [], ("upvalue", "no_task_to_wait_on"), false⟩ (S.mCall I (S.eCell c_no_task_to_wait_on) (S.lCons (S.eCell c_c) (S.lLast (S.mOne (S.eCell c_deps))))))) (S.gotos [] [])
@@ -1385,15 +1103,7 @@ theorem M_cmd_task_fn_ok (I : Sem) (env0 : Env) (c_no_task_to_wait_on c_c c_deps
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
     CFn I (M_cmd_task_fn I env0 c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_db) ⟨[], false, M_cmd_task_fn_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_cell h_no_task_to_wait_on) (CL_cons (CE_cell h_c) (CL_last (CM_one rfl (CE_cell h_deps)))))))
-      (CQ_local (CL_last (CM_one rfl (CE_table CF_nil))) fun n => CBs_let fun c_ds => CBs_end
-      ((CQ_stat (CS_site (CS_forin (CL_last (CM_site (CM_call (CE_glob h_ipairs) (CL_last (CM_one rfl (CE_cell h_deps)))))) fun n => CBs_let fun c_i => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_assign (CP_site (CE_cell rfl) (CE_cell rfl) CP_nil) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))))
-        CQ_end rfl rfl rfl)) n)))
-      (CQ_stat (CS_call (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_cell h_n) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str))))))))) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_one rfl (CE_cell h_t))))))))))))))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell h_c) CL_nil))) fun n => CBs_let fun c_id => CBs_end
-      ((CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell rfl)))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "c" (some c_c) (res1 "deps" (some c_deps) (res1 "d" (some c_d) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))))))))))) ⟨[], false, M_cmd_task_fn_body, env0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_c (res1_ok h_deps (res1_ok h_d (res1_ok h_a (res1_ok h_n (res1_ok h_py (res1_ok h_t (res1_ok h_db (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))))))))))
 
 def f (I : Sem) (env0 : Env) (c_tm : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_k => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eBin I .ne (S.eSite ⟨"tasks.lua", 253, [("upvalue", "tm")], ("", ""), false⟩ (S.eIndex I (S.eCell c_tm) (S.eCell c_k))) S.eNil) (S.eSite ⟨"tasks.lua", 253, [("", "")], ("method", "format"), false⟩ (S.eFirst (S.mMethod I (S.eParen (S.eStr "%dm".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 253, [], ("field", "floor"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 253, [("global", "math")], ("", ""), false⟩ (S.eIndex I (S.eGlob "math") (S.eStr "floor".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 253, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .div (S.eSite ⟨"tasks.lua", 253, [("upvalue", "tm")], ("", ""), false⟩ (S.eIndex I (S.eCell c_tm) (S.eCell c_k))) (S.eNum (.int 60))))))))))))) (S.eStr "-".toList))))) (S.gotos [] [])
@@ -1403,8 +1113,7 @@ theorem f_ok (I : Sem) (env0 : Env) (c_tm : Nat)
     (h_tm : env0.lookup "tm" = some c_tm)
     (h_math : env0.lookup "math" = none) :
     CFn I (f I env0 c_tm) ⟨["k"], false, f_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_k => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_one rfl (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell h_tm) (CE_cell rfl))) CE_nil) (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_math) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin (CE_site (CE_index (CE_cell h_tm) (CE_cell rfl))) CE_num))))))))))) CE_str))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "tm" (some c_tm) (res1 "math" none (fun x => env0.lookup x))) ⟨["k"], false, f_body, env0⟩ (res1_ok h_tm (res1_ok h_math (fun _ => rfl)))
 
 def M_cmd_task_fn1 (I : Sem) (env0 : Env) (c_c c_a c_util c_d c_M c_db c_n c_py : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 272, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 272, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1425,12 +1134,7 @@ theorem M_cmd_task_fn1_ok (I : Sem) (env0 : Env) (c_c c_a c_util c_d c_M c_db c_
     (h_py : env0.lookup "py" = some c_py)
     (h_table : env0.lookup "table" = none) :
     CFn I (M_cmd_task_fn1 I env0 c_c c_a c_util c_d c_M c_db c_n c_py) ⟨[], false, M_cmd_task_fn1_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))) fun n => CBs_let fun c_r2 => CBs_end
-      ((CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))) fun n => CBs_let fun c_ds => CBs_end
-      ((CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_one rfl (CE_or (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_call (CE_site (CE_index (CE_glob h_table) CE_str)) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl CE_str))))))))) CE_str))))))))))))))
-      CQ_end rfl rfl rfl) n)) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "table" none (fun x => env0.lookup x)))))))))) ⟨[], false, M_cmd_task_fn1_body, env0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_db (res1_ok h_n (res1_ok h_py (res1_ok h_table (fun _ => rfl))))))))))
 
 def M_cmd_task_fn2 (I : Sem) (env0 : Env) (c_c c_mine c_a c_t c_n c_util c_d c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 300, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eSite ⟨"tasks.lua", 301, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "update task set state='done', evidence=?, lease_until=null, done_at=?, ".toList) (S.eSite ⟨"tasks.lua", 301, [("", ""), ("upvalue", "mine")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "done_ctx=(select ctx_tokens from agent where name=?)".toList) (S.eCell c_mine))))) (S.lCons (S.eSite ⟨"tasks.lua", 301, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "evidence".toList))) (S.lCons (S.eCell c_t) (S.lCons (S.eCell c_n) (S.lCons (S.eSite ⟨"tasks.lua", 301, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_n))))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 302, [], ("field", "die"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 302, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 302, [("", "")], ("method", "format"), false⟩ (S.mMethod I (S.eParen (S.eStr "task #%s is not claimed by you".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 302, [], ("upvalue", "d"), false⟩ (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 302, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))))))))) (S.gotos [] [])
@@ -1448,10 +1152,7 @@ theorem M_cmd_task_fn2_ok (I : Sem) (env0 : Env) (c_c c_mine c_a c_t c_n c_util 
     (h_d : env0.lookup "d" = some c_d)
     (h_db : env0.lookup "db" = some c_db) :
     CFn I (M_cmd_task_fn2 I env0 c_c c_mine c_a c_t c_n c_util c_d c_db) ⟨[], false, M_cmd_task_fn2_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell h_c) (CL_cons (CE_site (CE_bin CE_str (CE_site (CE_bin CE_str (CE_cell h_mine))))) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_cell h_t) (CL_cons (CE_cell h_n) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_one rfl (CE_cell h_n))))))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))))
-      CQ_end rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "mine" (some c_mine) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))))) ⟨[], false, M_cmd_task_fn2_body, env0⟩ (res1_ok h_c (res1_ok h_mine (res1_ok h_a (res1_ok h_t (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))))
 
 def M_cmd_task_fn3 (I : Sem) (env0 : Env) (c_c c_a c_n c_util c_d c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 318, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "update task set state='blocked', question=? where id=? and owner=? and state='claimed'".toList) (S.lCons (S.eSite ⟨"tasks.lua", 319, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "question".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 319, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_n))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 320, [], ("field", "die"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 320, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 320, [("", "")], ("method", "format"), false⟩ (S.mMethod I (S.eParen (S.eStr "task #%s is not claimed by you".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 320, [], ("upvalue", "d"), false⟩ (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 320, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))))))))) (S.gotos [] [])
@@ -1467,10 +1168,7 @@ theorem M_cmd_task_fn3_ok (I : Sem) (env0 : Env) (c_c c_a c_n c_util c_d c_db : 
     (h_d : env0.lookup "d" = some c_d)
     (h_db : env0.lookup "db" = some c_db) :
     CFn I (M_cmd_task_fn3 I env0 c_c c_a c_n c_util c_d c_db) ⟨[], false, M_cmd_task_fn3_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_one rfl (CE_cell h_n))))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))))
-      CQ_end rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))) ⟨[], false, M_cmd_task_fn3_body, env0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))
 
 def M_cmd_task_fn4 (I : Sem) (env0 : Env) (c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 333, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "update task set state='claimed', question=null, answer=coalesce(?, answer), lease_until=? where id=? and owner=? and state='blocked'".toList) (S.lCons (S.eSite ⟨"tasks.lua", 334, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 334, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "answer".toList)))))))) (S.lCons (S.eSite ⟨"tasks.lua", 334, [("upvalue", "t"), ("field", "LEASE")], ("", ""), false⟩ (S.eBin I .add (S.eCell c_t) (S.eSite ⟨"tasks.lua", 334, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "LEASE".toList))))) (S.lCons (S.eSite ⟨"tasks.lua", 334, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 334, [("upvalue", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList)))))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 335, [], ("field", "die"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 335, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 335, [("", "")], ("method", "format"), false⟩ (S.mMethod I (S.eParen (S.eStr "task #%s changed under you; `swarm task show %s`".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 335, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 335, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mSite ⟨"tasks.lua", 335, [], ("upvalue", "d"), false⟩ (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 335, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))))))))) (S.gotos [] [])
@@ -1493,12 +1191,7 @@ theorem M_cmd_task_fn4_ok (I : Sem) (env0 : Env) (c_c c_py c_a c_t c_M c_r c_uti
     (h_n : env0.lookup "n" = some c_n)
     (h_require : env0.lookup "require" = none) :
     CFn I (M_cmd_task_fn4 I env0 c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n) ⟨[], false, M_cmd_task_fn4_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_cons (CE_site (CE_bin (CE_cell h_t) (CE_site (CE_index (CE_cell h_M) CE_str)))) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_r) CE_str))))))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))))))))))))
-      (CQ_stat (CS_if (CE_and (CE_site (CE_call (CM_call (CE_cell h_py) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CE_bin (CE_cell h_n) (CE_site (CE_index (CE_cell h_r) CE_str)))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_site (CE_call (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons (CE_site (CE_index (CE_cell h_r) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "py" (some c_py) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "M" (some c_M) (res1 "r" (some c_r) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "require" none (fun x => env0.lookup x)))))))))))) ⟨[], false, M_cmd_task_fn4_body, env0⟩ (res1_ok h_c (res1_ok h_py (res1_ok h_a (res1_ok h_t (res1_ok h_M (res1_ok h_r (res1_ok h_util (res1_ok h_d (res1_ok h_db (res1_ok h_n (res1_ok h_require (fun _ => rfl))))))))))))
 
 def M_cmd_task_fn5 (I : Sem) (env0 : Env) (c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eCell c_from) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 349, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eSite ⟨"tasks.lua", 350, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "update task set state='open', owner=null, lease_until=null, question=null where id=? and owner=? ".toList) (S.eStr "and state in ('claimed','blocked')".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 350, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_from)))))))) (S.eNum (.int 0))) (S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 351, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 351, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1527,18 +1220,7 @@ theorem M_cmd_task_fn5_ok (I : Sem) (env0 : Env) (c_from c_c c_a c_util c_d c_ow
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_require : env0.lookup "require" = none) :
     CFn I (M_cmd_task_fn5 I env0 c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents) ⟨[], false, M_cmd_task_fn5_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_if (CE_cell h_from) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell h_c) (CL_cons (CE_site (CE_bin CE_str CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_one rfl (CE_cell h_from)))))))) CE_num) (CK_block (CQ_local (CL_last (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))) fun n => CBs_let fun c_r2 => CBs_end
-          ((CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_site (CM_call (CE_cell h_owned) (CL_last (CM_one rfl (CE_cell rfl))))))))))))))
-          CQ_end rfl rfl rfl) n))) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)) (CK_block (CQ_stat (CS_if (CE_bin (CE_site (CE_method (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_one rfl (CE_cell h_n)))))))) CE_num) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))))))
-          CQ_end rfl rfl rfl)) (CK_block CQ_end))
-        CQ_end rfl rfl rfl)))
-      (CQ_stat (CS_if (CE_site (CE_index (CE_cell h_a) CE_str)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_site (CE_index (CE_cell h_a) CE_str)) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CE_paren (CE_or (CE_and (CE_cell h_from) (CE_site (CE_bin CE_str (CE_cell h_from)))) CE_str)))))))))))))))
-      (CQ_stat (CS_if (CE_cell h_from) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_site (CE_call (CM_call (CE_glob h_require) (CL_last (CM_one rfl CE_str))))) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons (CE_cell h_from) (CL_cons (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_cons (CE_or (CE_and (CE_bin (CE_cell h_n) (CE_site (CE_index (CE_cell h_agents) CE_str))) CE_str) (CE_cell h_n)) (CL_last (CM_site (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))))) (CL_last (CM_one rfl CE_true)))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "from" (some c_from) (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "owned" (some c_owned) (res1 "n" (some c_n) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "agents" (some c_agents) (res1 "require" none (fun x => env0.lookup x)))))))))))) ⟨[], false, M_cmd_task_fn5_body, env0⟩ (res1_ok h_from (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_owned (res1_ok h_n (res1_ok h_M (res1_ok h_db (res1_ok h_agents (res1_ok h_require (fun _ => rfl))))))))))))
 
 def M_cmd_task_fn6 (I : Sem) (env0 : Env) (c_c c_a c_n c_agents c_util c_d c_t c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 370, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 370, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1559,12 +1241,7 @@ theorem M_cmd_task_fn6_ok (I : Sem) (env0 : Env) (c_c c_a c_n c_agents c_util c_
     (h_db : env0.lookup "db" = some c_db)
     (h_tostring : env0.lookup "tostring" = none) :
     CFn I (M_cmd_task_fn6 I env0 c_c c_a c_n c_agents c_util c_d c_t c_db) ⟨[], false, M_cmd_task_fn6_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_local (CL_last (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))) fun n => CBs_let fun c_r2 => CBs_end
-      ((CQ_stat (CS_if (CE_and (CE_and (CE_paren (CE_or (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str))) (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) (CE_cell h_n))) (CE_un (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell h_c) (CL_last (CM_one rfl (CE_cell h_n))))))))) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_site (CM_call (CE_glob h_tostring) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_cell h_t) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str)))))))))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_n) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell h_a) CE_str))))))))))))))))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n))) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "tostring" none (fun x => env0.lookup x)))))))))) ⟨[], false, M_cmd_task_fn6_body, env0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_agents (res1_ok h_util (res1_ok h_d (res1_ok h_t (res1_ok h_db (res1_ok h_tostring (fun _ => rfl))))))))))
 
 def M_cmd_board_fn (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 407, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "#".toList) (S.eSite ⟨"tasks.lua", 407, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eSite ⟨"tasks.lua", 407, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 407, [("local", "x")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_x) (S.eStr "id".toList)))))))) (S.eParen (S.eOr (S.eAnd (S.eBin I .eq (S.eSite ⟨"tasks.lua", 407, [("local", "x")], ("", ""), false⟩ (S.eIndex I (S.eCell c_x) (S.eStr "state".toList))) (S.eStr "dropped".toList)) (S.eStr " (dropped)".toList)) (S.eStr "".toList)))))))))) (S.gotos [] [])
@@ -1573,8 +1250,7 @@ def M_cmd_board_fn (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (
 theorem M_cmd_board_fn_ok (I : Sem) (env0 : Env) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
     CFn I (M_cmd_board_fn I env0 c_d) ⟨["x"], false, M_cmd_board_fn_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_bin (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))) (CE_paren (CE_or (CE_and (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) CE_str) CE_str)))))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) ⟨["x"], false, M_cmd_board_fn_body, env0⟩ (res1_ok h_d (fun _ => rfl))
 
 def M_reserve_fn (I : Sem) (env0 : Env) (c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 438, [], ("field", "reserve"), false⟩ (S.mCall I (S.eSite ⟨"tasks.lua", 438, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "reserve".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_name) (S.lLast (S.mOne (S.eCell c_model)))))))) (S.gotos [] [])
@@ -1606,19 +1282,7 @@ theorem M_reserve_fn_ok (I : Sem) (env0 : Env) (c_agents c_c c_name c_model c_ti
     (h_db : env0.lookup "db" = some c_db)
     (h_error : env0.lookup "error" = none) :
     CFn I (M_reserve_fn I env0 c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db) ⟨[], false, M_reserve_fn_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_agents) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_name) (CL_last (CM_one rfl (CE_cell h_model))))))))
-      (CQ_local (CL_last (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_last (CM_one rfl (CE_cell h_tid))))))) fun n => CBs_let fun c_r => CBs_end
-      ((CQ_stat (CS_if (CE_un (CE_cell rfl)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell h_tid)))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_local (CL_last (CM_site (CM_call (CE_site (CE_index (CE_cell h_M) CE_str)) (CL_cons (CE_cell h_c) (CL_last (CM_one rfl (CE_cell rfl))))))) fun n => CBs_let fun c_u => CBs_end
-      ((CQ_stat (CS_if (CE_site (CE_bin (CE_site (CE_un (CE_cell rfl))) CE_num)) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell h_tid)))))) (CL_last (CM_site (CM_call (CE_cell h_ids) (CL_cons (CE_cell rfl) (CL_last (CM_one rfl (CE_func (by rfl)))))))))))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_if (CE_bin (CE_site (CE_index (CE_cell rfl) CE_str)) CE_str) (CK_block (CQ_stat (CS_call (CM_site (CM_call (CE_glob h_error) (CL_cons (CE_table (CF_named CE_num (CF_named (CE_site (CE_method (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell h_tid)))))) (CL_cons (CE_site (CE_index (CE_cell rfl) CE_str)) (CL_last (CM_site (CM_call (CE_cell h_owned) (CL_last (CM_one rfl (CE_cell rfl))))))))))) CF_nil))) (CL_last (CM_one rfl CE_num))))))
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_cell h_name) (CL_cons (CE_site (CE_bin (CE_cell h_t) (CE_site (CE_index (CE_cell h_M) CE_str)))) (CL_cons (CE_cell h_t) (CL_last (CM_one rfl (CE_cell h_tid))))))))))
-      (CQ_stat (CS_call (CM_site (CM_call (CE_site (CE_index (CE_cell h_db) CE_str)) (CL_cons (CE_cell h_c) (CL_cons (CE_cell h_name) (CL_cons CE_str (CL_cons CE_nil (CL_last (CM_site (CM_method (CE_paren CE_str) (CL_cons (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_one rfl (CE_cell h_tid)))))) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str)))))))))))))))
-      (CQ_stat (CS_return (CL_last (CM_one rfl (CE_cell rfl))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) rfl rfl rfl) n)) rfl rfl rfl) n)) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "c" (some c_c) (res1 "name" (some c_name) (res1 "model" (some c_model) (res1 "tid" (some c_tid) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x)))))))))))))) ⟨[], false, M_reserve_fn_body, env0⟩ (res1_ok h_agents (res1_ok h_c (res1_ok h_name (res1_ok h_model (res1_ok h_tid (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_t (res1_ok h_db (res1_ok h_error (fun _ => rfl))))))))))))))
 
 def M_unreserve_fn (I : Sem) (env0 : Env) (c_c c_util c_name c_r : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 456, [("upvalue", "c")], ("method", "exec"), false⟩ (S.mMethod I (S.eCell c_c) "exec" (S.lCons (S.eStr "update agent set ended=? where name=? and hc is null".toList) (S.lCons (S.eSite ⟨"tasks.lua", 456, [], ("field", "now"), false⟩ (S.eFirst (S.mCall I (S.eSite ⟨"tasks.lua", 456, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "now".toList))) S.lNil))) (S.lLast (S.mOne (S.eCell c_name)))))))) (S.gotos [] [])
@@ -1633,11 +1297,7 @@ theorem M_unreserve_fn_ok (I : Sem) (env0 : Env) (c_c c_util c_name c_r : Nat)
     (h_name : env0.lookup "name" = some c_name)
     (h_r : env0.lookup "r" = some c_r) :
     CFn I (M_unreserve_fn I env0 c_c c_util c_name c_r) ⟨[], false, M_unreserve_fn_body, env0⟩ :=
-  CFn_fn fun args n => CBs_end ((CK_block (CQ_stat (CS_call (CM_site (CM_method (CE_cell h_c) (CL_cons CE_str (CL_cons (CE_site (CE_call (CM_call (CE_site (CE_index (CE_cell h_util) CE_str)) CL_nil))) (CL_last (CM_one rfl (CE_cell h_name))))))))
-      (CQ_stat (CS_if (CE_un (CE_cell h_r)) (CK_block (CQ_stat (CS_return CL_nil)
-        CQ_end rfl rfl rfl)) (CK_block CQ_end))
-      (CQ_stat (CS_call (CM_site (CM_method (CE_cell h_c) (CL_cons (CE_site (CE_bin CE_str CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_r) CE_str)) (CL_cons (CE_site (CE_index (CE_cell h_r) CE_str)) (CL_last (CM_one rfl (CE_cell h_name)))))))))
-      CQ_end rfl rfl rfl) rfl rfl rfl) rfl rfl rfl)) n)
+  D.fn_ok I (res1 "c" (some c_c) (res1 "util" (some c_util) (res1 "name" (some c_name) (res1 "r" (some c_r) (fun x => env0.lookup x))))) ⟨[], false, M_unreserve_fn_body, env0⟩ (res1_ok h_c (res1_ok h_util (res1_ok h_name (res1_ok h_r (fun _ => rfl)))))
 
 def M_reserve_fn_fn (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 442, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "#".toList) (S.eSite ⟨"tasks.lua", 442, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 442, [("local", "x")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_x) (S.eStr "id".toList))))))))))))) (S.gotos [] [])
@@ -1646,8 +1306,7 @@ def M_reserve_fn_fn (I : Sem) (env0 : Env) (c_d : Nat) : List Val → Nat → M 
 theorem M_reserve_fn_fn_ok (I : Sem) (env0 : Env) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
     CFn I (M_reserve_fn_fn I env0 c_d) ⟨["x"], false, M_reserve_fn_fn_body, env0⟩ :=
-  CFn_fn fun args n => CBs_let fun c_x => CBs_end ((CK_block (CQ_stat (CS_return (CL_last (CM_site (CM_one rfl (CE_bin CE_str (CE_site (CE_call (CM_call (CE_cell h_d) (CL_last (CM_site (CM_one rfl (CE_index (CE_cell rfl) CE_str))))))))))))
-      CQ_end rfl rfl rfl)) n)
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) ⟨["x"], false, M_reserve_fn_fn_body, env0⟩ (res1_ok h_d (fun _ => rfl))
 
 end Swarm.Lifted.Tasks
 -- checksum Swarm.Lifted.Tasks 2964138335
