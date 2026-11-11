@@ -77,9 +77,71 @@ theorem spawnFor_tk_ne {c : Cfg} {pl : List Nat} {x : State} {t u : Nat} (h : u 
     · unfold claimed; rw [tk_setTask_ne h]; rfl
     · rfl
   · rfl
+/-- board #53: a change that keeps every task's stop and puts no agent to work, nor moves an active one's cursor -/
+def SP (x x' : State) : Prop :=
+  (∀ u, (x'.tk u).stopTo = (x.tk u).stopTo ∧ (x'.tk u).stopMsg = (x.tk u).stopMsg) ∧
+  ∀ o, active (x'.agt o) = true → active (x.agt o) = true ∧ x'.cur o = x.cur o
+theorem sp_refl (x : State) : SP x x := ⟨fun _ => ⟨rfl, rfl⟩, fun _ h => ⟨h, rfl⟩⟩
+theorem sp_trans {x y z : State} (h1 : SP x y) (h2 : SP y z) : SP x z :=
+  ⟨fun u => ⟨(h2.1 u).1.trans (h1.1 u).1, (h2.1 u).2.trans (h1.1 u).2⟩, fun o h => by
+    obtain ⟨a2, c2⟩ := h2.2 o h; obtain ⟨a1, c1⟩ := h1.2 o a2; exact ⟨a1, c2.trans c1⟩⟩
+theorem sp_stopped {x x' : State} {u : Nat} (h : SP x x') (hs : stopped x u = false) : stopped x' u = false := by
+  unfold stopped at hs ⊢
+  rw [(h.1 u).1, (h.1 u).2]
+  cases e : (x.tk u).stopTo with
+  | none => rfl
+  | some o =>
+    rw [e] at hs; simp only [] at hs ⊢
+    cases ha : active (x'.agt o)
+    · rfl
+    · obtain ⟨h1, h2⟩ := h.2 o ha; rw [h2]; rw [h1] at hs; simpa using hs
+theorem sp_tasks {x x' : State} (ht : ∀ u, (x'.tk u).stopTo = (x.tk u).stopTo ∧ (x'.tk u).stopMsg = (x.tk u).stopMsg)
+    (hag : ∀ o, active (x'.agt o) = true → active (x.agt o) = true) (hc : x'.cursor = x.cursor) : SP x x' :=
+  ⟨ht, fun o h => ⟨hag o h, by simp [State.cur, hc]⟩⟩
+theorem sp_endAgent (x : State) (a : Nat) : SP x (endAgent x a) := by
+  refine sp_tasks (fun u => ?_) (fun o h => ?_) (by simp)
+  · rw [endAgent_tk]; split <;> exact ⟨rfl, rfl⟩
+  · have e : (endAgent x a).agt o = (setAg x a fun g => { g with st := .ended, boot := false, believes := [] }).agt o := by
+      simp [endAgent, releaseAll, State.agt]
+    rw [e, agt_setAg] at h; split at h
+    · simp [active] at h
+    · exact h
+theorem sp_digest (x : State) (a : Nat) (pl : List Nat) :
+    SP x (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩) := by
+  refine sp_tasks (fun u => ⟨rfl, rfl⟩) (fun o h => ?_) (by simp)
+  have e : (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩).agt o =
+    (setAg x a fun g => { g with told := pl ++ g.told }).agt o := by simp [State.agt]
+  rw [e, agt_setAg] at h; split at h
+  · simpa [active] using h
+  · exact h
+theorem claimed_stop (s : State) (a t u : Nat) :
+    ((claimed s a t).tk u).stopTo = (s.tk u).stopTo ∧ ((claimed s a t).tk u).stopMsg = (s.tk u).stopMsg := by
+  unfold claimed
+  rcases tk_setTask_or s t u (fun k => { k with st := .claimed, owner := some a, lease := true, reaped := if k.reaped == some a then k.reaped else none })
+    with e | ⟨_, e⟩ <;> rw [e] <;> exact ⟨rfl, rfl⟩
+theorem sp_spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : SP x (spawnFor c pl x t) := by
+  unfold spawnFor; split
+  · rename_i a _
+    split
+    · refine ⟨fun u => by rw [(claimed_stop ..).1, (claimed_stop ..).2]; exact ⟨rfl, rfl⟩, fun o h => ?_⟩
+      simp only [State.agt, State.cur, claimed_ag, claimed_cursor, setAg_ag, getD_modify, getD_set, setAg_log] at h ⊢
+      split at h
+      · simp [active] at h
+      · rename_i hh
+        refine ⟨h, ?_⟩
+        by_cases hao : a = o
+        · subst hao
+          have hl : x.ag.length ≤ a := Nat.le_of_not_lt fun hl => hh ⟨rfl, hl⟩
+          simp [List.getD_eq_getElem?_getD, List.getElem?_eq_none hl, active] at h
+          cases h <;> contradiction
+        · rw [if_neg fun hc => hao hc.1]; rfl
+    · exact sp_refl x
+  · exact sp_refl x
+
 theorem spawn_fold {c : Cfg} (P : State → Prop) (pl : List Nat)
-    (hspawn : ∀ x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t))
-    (l : List Nat) (hl : l.Nodup) (x : State) (hx : P x) (hopn : ∀ t ∈ l, pl.contains t = true → (x.tk t).st = .opn) :
+    (hspawn : ∀ x t, P x → (x.tk t).st = .opn → stopped x t = false → P (spawnFor c pl x t))
+    (l : List Nat) (hl : l.Nodup) (x : State) (hx : P x)
+    (hopn : ∀ t ∈ l, pl.contains t = true → (x.tk t).st = .opn ∧ stopped x t = false) :
     P (l.foldl (spawnFor c pl) x) := by
   induction l generalizing x with
   | nil => exact hx
@@ -89,17 +151,18 @@ theorem spawn_fold {c : Cfg} (P : State → Prop) (pl : List Nat)
     refine ih hl.2 _ ?_ ?_
     · cases hc : pl.contains t
       · rw [spawnFor_not hc]; exact hx
-      · exact hspawn x t hx (hopn t (List.mem_cons_self ..) hc)
+      · exact hspawn x t hx (hopn t (List.mem_cons_self ..) hc).1 (hopn t (List.mem_cons_self ..) hc).2
     · intro u hu hcu
       rw [spawnFor_tk_ne (by rintro rfl; exact hl.1 hu)]
-      exact hopn u (List.mem_cons_of_mem _ hu) hcu
+      exact ⟨(hopn u (List.mem_cons_of_mem _ hu) hcu).1, sp_stopped (sp_spawnFor c pl x t) (hopn u (List.mem_cons_of_mem _ hu) hcu).2⟩
 
-/-- A property every part of watchd's tick keeps is kept by the tick. A spawn claims a task that is still open:
-lifecycle picked it from the pool, and nothing in the tick before that spawn takes an open task. -/
-theorem tick_inv {c : Cfg} (P : State → Prop)
+/-- A property every part of watchd's tick keeps is kept by the tick. A spawn claims a task that is still open and not
+stopped: lifecycle picked it from the pool, and nothing in the tick before that spawn takes an open task or puts an agent
+to work. -/
+theorem tick_inv2 {c : Cfg} (P : State → Prop)
     (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x, P x → P (reapLocks x)) (hend : ∀ x a, P x → P (endAgent x a))
     (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
-    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s)
+    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → stopped x t = false → P (spawnFor c pl x t)) {s : State} (h : P s)
     (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h) : P (tickOf c s) := by
   have h1 : P (reapLocks (reapTasks c s)) := hlocks _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
   unfold tickOf
@@ -107,10 +170,11 @@ theorem tick_inv {c : Cfg} (P : State → Prop)
   unfold lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
   have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
-    (fun x : State => P x ∧ ∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) c.agents s1 ⟨h1, fun _ h => h⟩ (fun b a hb => by
+    (fun x : State => P x ∧ (∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) ∧ SP s1 x) c.agents s1
+    ⟨h1, fun _ h => h, sp_refl _⟩ (fun b a hb => by
       split
-      · refine ⟨hend _ _ hb.1, fun t ht => ?_⟩
-        have := hb.2 t ht
+      · refine ⟨hend _ _ hb.1, fun t ht => ?_, sp_trans hb.2.2 (sp_endAgent _ _)⟩
+        have := hb.2.1 t ht
         rw [endAgent_tk]; split
         · rfl
         · exact this
@@ -118,16 +182,42 @@ theorem tick_inv {c : Cfg} (P : State → Prop)
   have h3 := foldl_inv (fun x a =>
     if reusable c s1 a && !(pool c s1).all (x.agt a).told.contains then
       post (setAg x a fun g => { g with told := pool c s1 ++ g.told }) ⟨none, a, false, .digest, 0⟩
-    else x) (fun x : State => P x ∧ ∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) c.agents _ h2 (fun b a hb => by
+    else x) (fun x : State => P x ∧ (∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) ∧ SP s1 x) c.agents _ h2 (fun b a hb => by
       split
-      · exact ⟨hdig _ _ _ hb.1, fun t ht => hb.2 t ht⟩
+      · exact ⟨hdig _ _ _ hb.1, fun t ht => hb.2.1 t ht, sp_trans hb.2.2 (sp_digest _ _ _)⟩
       · exact hb)
   simp only []
   split
   · exact h3.1
-  · refine spawn_fold P _ (hspawn _) _ (List.nodup_range' (s := 1) (n := c.ntasks)) _ h3.1 (fun t _ hc => h3.2 t ?_)
+  · refine spawn_fold P _ (hspawn _) _ (List.nodup_range' (s := 1) (n := c.ntasks)) _ h3.1 (fun t _ hc => ?_)
     have := (List.mem_filter.mp (List.contains_iff_mem.mp hc)).2
-    simp [startable] at this; exact this.1
+    simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at this
+    exact ⟨h3.2.1 t this.1.1, sp_stopped h3.2.2 this.2⟩
+
+theorem sp_reapTask (c : Cfg) (x : State) (t : Nat) : SP x (reapTask c x t) := by
+  unfold reapTask; simp only []; split
+  · split
+    · rename_i o _ _
+      refine sp_tasks (fun u => ?_) (fun b h => by simpa [State.agt] using h) (by simp)
+      rcases tk_setTask_or x t u (fun r => { r with st := .opn, owner := none, lease := false, reaped := some o }) with e | ⟨_, e⟩ <;>
+        simp only [State.tk, post_task] at e ⊢ <;> rw [e] <;> exact ⟨rfl, rfl⟩
+    · exact sp_refl x
+  · exact sp_refl x
+/-- watchd's tick keeps every task's stop and puts no agent to work -/
+theorem sp_tick (c : Cfg) (s : State) : SP s (tickOf c s) :=
+  tick_inv2 (SP s) (fun x t h => sp_trans h (sp_reapTask c x t))
+    (fun x h => sp_trans h (sp_tasks (fun u => by simp [State.tk, reapLocks]) (fun b h => by simpa [State.agt, reapLocks] using h) rfl))
+    (fun x a h => sp_trans h (sp_endAgent x a)) (fun x a pl h => sp_trans h (sp_digest x a pl))
+    (fun pl x t h _ _ => sp_trans h (sp_spawnFor c pl x t)) (sp_refl s)
+    (fun x g h => sp_trans h (sp_tasks (fun u => ⟨rfl, rfl⟩) (fun b h => h) rfl))
+
+/-- `tick_inv2` for a property whose spawn step needs only that the task is open -/
+theorem tick_inv {c : Cfg} (P : State → Prop)
+    (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x, P x → P (reapLocks x)) (hend : ∀ x a, P x → P (endAgent x a))
+    (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
+    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s)
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h) : P (tickOf c s) :=
+  tick_inv2 P hreap hlocks hend hdig (fun pl x t hx ho _ => hspawn pl x t hx ho) h hgit
 
 -- ---------- messages ----------
 theorem msg_congr {s s' : State} (h : s'.log = s.log) (i : Nat) : s'.msg i = s.msg i := by simp [State.msg, h]

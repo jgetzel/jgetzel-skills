@@ -2,35 +2,13 @@ import SwarmModel.Answer
 
 /-! H2 (board #40, #45): `swarm task release N` by the user or the communicator of a task another agent holds. In the
 model the communicator's actions have no actor (as `unblock` and `drop`), so the user and the communicator are one
-action, `releaseOther`, in `step`: S2-S5, N1, W1-W4 and L1-L4 are proved with it in. S1 is not: the user's release of a
-working agent's task lets a peer claim it before the ex-owner reads the stop (`not_S1_humanRelease`), so S1 takes
-`humanRelease` off (board task #53 is the fix). -/
+action, `releaseOther`, in `step`: S2-S5, N1, W1-W4 and L1-L4 are proved with it in. S1 holds with the fix (board
+#53, `stopFirst`: no one takes the task while its ex-owner is at work and hasn't read the stop); without it the user's
+release of a working agent's task lets a peer claim it before the ex-owner reads the stop (`not_S1_humanRelease`). L1
+over fair runs (`startable_leads_to`) is here: the stop lifts for good (`stop_lifts`). -/
 
 namespace Swarm
 set_option linter.unusedSimpArgs false
-
-/-- the log only grows: every step appends to it -/
-theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = some s') : ∃ e, s'.log = s.log ++ e := by
-  open_step hs
-  case tick =>
-    obtain ⟨_, rfl⟩ := hs
-    exact tick_inv (fun x => ∃ e, x.log = s.log ++ e)
-      (fun x t ⟨e, he⟩ => let ⟨e2, h2⟩ := reapTask_ext c x t; ⟨e ++ e2, by rw [h2, he]; simp⟩)
-      (fun x h => by simpa using h) (fun x a h => by simpa using h)
-      (fun x a pl ⟨e, he⟩ => ⟨e ++ [⟨none, a, false, .digest, 0⟩], by simp [post, he]⟩) (fun pl x t h _ => by simpa using h)
-      ⟨[], by simp⟩
-  case unblock t =>
-    split at hs
-    · rename_i o _
-      rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, o, false, .answer, t⟩], by simp [post]⟩
-    · cases hs
-  case postTo a b u => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨some a, b, u, .dm, 0⟩], by simp [post]⟩
-  case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
-  case releaseOther t => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, (s.tk t).owner.getD 0, true, .released, t⟩], by simp [post]⟩
-  all_goals obtain ⟨_, rfl⟩ := hs
-  all_goals ((repeat' split) <;> first
-    | (refine ⟨[], ?_⟩; simp [unbelieve, awake]; done)
-    | (refine ⟨[_], ?_⟩; simp [post, unbelieve, awake]; done))
 
 /-- H2, the step: the user's release is enabled for any task an agent holds, claimed or blocked (by `task block` or an
 hc prompt) -/
@@ -182,15 +160,92 @@ theorem released_reads {c : Cfg} (r : Run c) (hf : r.Fair) {n t : Nat} (hR : Rea
   obtain ⟨o, ho, hu, hk, ht, _⟩ := releaseOther_unread hR hok
   exact ⟨o, _, ho, hk, ht, stop_read r hf (Reachable.step _ hR hok) hu⟩
 
+/-- with H2 off no task records a stop -/
+theorem stopTo_none {c : Cfg} (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) (t : Nat) : (s.tk t).stopTo = none := by
+  refine reachable_induct (P := fun s => (s.tk t).stopTo = none) ?_ ?_ h
+  · simp only [State.tk, init]; split
+    · rfl
+    · simp only [List.getD_eq_getElem?_getD, List.getElem?_replicate]; split <;> rfl
+  intro s s' act _ h0 hs
+  by_cases hr : act = .releaseOther t
+  · subst hr; simp [step, releaseOther, when, hhr] at hs
+  · rw [(stop_kept hr hs).1, h0]
+
+-- ---------- L1 with the fix (board #53) ----------
+
+/-- board #53: in a fair run, while no one releases t again and no terminal is dead, the user's stop on t lifts for good:
+its ex-owner reads it or stops being at work (`stop_read`), and it stays lifted (`stopped_step`) -/
+theorem stop_lifts {c : Cfg} (r : Run c) (hf : r.Fair) {n t : Nat} (hR : Reachable c (r.st n))
+    (hD : ∀ m, n ≤ m → ∀ b, ((r.st m).agt b).dead = false) (hno : ∀ k, n ≤ k → r.act k ≠ .releaseOther t) :
+    ∃ N, n ≤ N ∧ ∀ m, N ≤ m → stopped (r.st m) t = false := by
+  have hreach : ∀ m, n ≤ m → Reachable c (r.st m) :=
+    forever (fun m => Reachable c (r.st m)) n hR (fun k hk ih => Reachable.step (r.act k) ih (r.ok k))
+  have hl : ∀ m, n ≤ m → (r.st m).ag.length ≤ (r.st m).cursor.length := fun m hm => by
+    obtain ⟨h1, h2, _⟩ := i1_of_reachable (hreach m hm); omega
+  have stay : ∀ N, n ≤ N → stopped (r.st N) t = false → ∀ m, N ≤ m → stopped (r.st m) t = false := fun N hN h0 =>
+    forever _ N h0 (fun k hk ih => stopped_step (sk_of_reachable (hreach k (by omega))) (hl k (by omega)) (hno k (by omega)) (r.ok k) ih)
+  have keep : ∀ m, n ≤ m → ((r.st m).tk t).stopTo = ((r.st n).tk t).stopTo ∧ ((r.st m).tk t).stopMsg = ((r.st n).tk t).stopMsg :=
+    forever _ n ⟨rfl, rfl⟩ (fun k hk ih => by
+      obtain ⟨e1, e2⟩ := stop_kept (hno k hk) (r.ok k); exact ⟨e1.trans ih.1, e2.trans ih.2⟩)
+  cases h0 : stopped (r.st n) t
+  · exact ⟨n, Nat.le_refl _, stay n (Nat.le_refl _) h0⟩
+  unfold stopped at h0
+  cases ho : ((r.st n).tk t).stopTo with
+  | none => rw [ho] at h0; cases h0
+  | some o =>
+    rw [ho] at h0
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at h0
+    obtain ⟨k1, k2⟩ := sk_of_reachable hR t o ho
+    have hu : ((r.st n).tk t).stopMsg ∈ unread (r.st n) o := mem_unread.mpr ⟨h0.2, k1, k2⟩
+    obtain ⟨m, hm, hor⟩ := stop_read r hf hR hu
+    refine ⟨m, hm, stay m hm ?_⟩
+    unfold stopped; rw [(keep m hm).1, (keep m hm).2, ho]
+    simp only []
+    rcases hor with e | e | e
+    · simp [e]
+    · rw [hD m hm o] at e; cases e
+    · simp; omega
+
+/-- L1, for a run that starts in a reachable state with no dead terminal. A startable task doesn't stay startable forever
+while a slot is free: it is taken, or the slots fill. The agents must not leave, die, lose their waiter or be reaped as
+gone after the start. Fairness is `Run.Fair`: strong fairness of every action of `fair`, `claim` and `wake` included.
+With H2's fix (board #53) the user's stop on the task holds it back only until its ex-owner reads it or stops (`stop_lifts`). -/
+theorem startable_leads_to {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
+    (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
+    (hR : Reachable c (r.st n)) (hdd : ∀ b, ((r.st n).agt b).dead = false)
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b) :
+    ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
+  have hreach : ∀ m, n ≤ m → Reachable c (r.st m) :=
+    forever (fun m => Reachable c (r.st m)) n hR (fun k hk ih => Reachable.step (r.act k) ih (r.ok k))
+  have hD : ∀ m, n ≤ m → Dd (r.st m) :=
+    forever (fun m => Dd (r.st m)) n hdd (fun k hk ih => d_step (fun b => (hq k hk b).2.1) ih (r.ok k))
+  refine Classical.byContradiction fun hne => ?_
+  have hB : ∀ m, n ≤ m → startable (r.st m) t = true := fun m hm =>
+    Classical.byContradiction fun h => hne ⟨m, hm, fun ⟨h1, _⟩ => h h1⟩
+  have hno : ∀ k, n ≤ k → r.act k ≠ .releaseOther t := fun k hk e => by
+    have hok := r.ok k; rw [e] at hok
+    have := hB k hk
+    simp only [startable, Bool.and_eq_true, beq_iff_eq] at this
+    simp [step, releaseOther, when, this.1] at hok
+  refine hne (startable_taken hr hw hp hwa hroster ht r hf hq (fun m hm => ?_) (stop_lifts r hf hR hD hno))
+  have h1 := i1_of_reachable (hreach m hm)
+  exact ⟨h1.1, h1.2.1, fun b => ((inbInv_of_reachable (hreach m hm)).2.2 b).1, h1.2.2, hD m hm⟩
+
 -- ---------- the finding: H2 breaks S1 ----------
 
 /-- two agents at work, one task -/
 def cfgH2 : Cfg := { nagents := 2, roster := 2, ntasks := 1 }
 
 /-- Agent 0 claims #1 and works on it; the user releases #1 (agent 0 is sent the stop, unread: its next tool's hook would
-show it); agent 1 claims #1. Both are at work, both believe they hold #1. -/
-theorem not_S1_humanRelease : (run cfgH2 [.add [], .claim 0 1, .releaseOther 1, .claim 1 1]).map oneWorker = some false := by
+show it); agent 1 claims #1. Both are at work, both believe they hold #1. The fix's switch (`stopFirst`, board #53) off. -/
+theorem not_S1_humanRelease : (run { cfgH2 with stopFirst := false } [.add [], .claim 0 1, .releaseOther 1, .claim 1 1]).map oneWorker = some false := by
   decide
+
+/-- with the fix the claim is refused until agent 0 has read the stop, then allowed -/
+example : run cfgH2 [.add [], .claim 0 1, .releaseOther 1, .claim 1 1] = none := by decide
+example : ((run cfgH2 [.add [], .claim 0 1, .releaseOther 1, .readAll 0, .claim 1 1]).map oneWorker) = some true := by decide
+/-- or once agent 0 is idle (its next turn reads the stop first) -/
+example : ((run cfgH2 [.add [], .claim 0 1, .releaseOther 1, .stop 0 false, .claim 1 1]).map oneWorker) = some true := by decide
 
 /-- with H2 off the release isn't there, and S1 holds (`oneWorker_of_reachable`) -/
 example : run { cfgH2 with humanRelease := false } [.add [], .claim 0 1, .releaseOther 1] = none := by decide

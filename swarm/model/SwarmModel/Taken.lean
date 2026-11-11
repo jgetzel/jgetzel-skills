@@ -115,12 +115,12 @@ theorem spawn_pass {c : Cfg} {pl : List Nat} {t : Nat} (hroster : c.roster ≤ c
 
 /-- no reusable agent: the tick fills a free slot with the task, or the roster fills -/
 theorem lifecycle_fills {c : Cfg} {z : State} {t : Nat} (hroster : c.roster ≤ c.nagents) (hl : z.ag.length = c.nagents)
-    (ht : t ∈ c.tasks) (hst : startable z t = true) (hnr : ∀ a ∈ c.agents, reusable c z a = false) :
+    (ht : t ∈ c.tasks) (hst : claimable z t = true) (hnr : ∀ a ∈ c.agents, reusable c z a = false) :
     ¬ (startable (lifecycle c z) t = true ∧ members (lifecycle c z) < c.roster) := by
   have hany : c.agents.any (reusable c z) = false := by
     simp only [List.any_eq_false]; intro a ha; simp [hnr a ha]
   have hp : (pool c z).contains t = true := by
-    simp [pool, Cfg.tasks] at ht ⊢; simp [ht, hst]
+    simp only [pool, Cfg.tasks, List.contains_iff_mem, List.mem_filter] at ht ⊢; exact ⟨ht, hst⟩
   unfold lifecycle
   simp only [hany, Bool.false_eq_true, if_false]
   have h1 := foldl_inv (fun x a => if finished c z a && !reusable c z a then endAgent x a else x)
@@ -134,7 +134,7 @@ theorem lifecycle_fills {c : Cfg} {z : State} {t : Nat} (hroster : c.roster ≤ 
     simp [startable] at h3; simp_all
   · intro ⟨_, h3⟩; omega
 
--- ---------- reap keeps a startable task startable ----------
+-- ---------- reap keeps a startable task startable, and a claimable one claimable ----------
 
 theorem reapTask_tk_unclaimed {c : Cfg} {x : State} {v u : Nat} (h : (x.tk u).st ≠ .claimed) : (reapTask c x v).tk u = x.tk u := by
   by_cases hu : u = v
@@ -171,6 +171,16 @@ theorem startable_reap {c : Cfg} {s : State} {t : Nat} (h : startable s t = true
     rw [e d (Or.inr hd'), hd']
 
 -- ---------- a ready agent stays ready until it gets back to work ----------
+
+theorem startable_of_claimable {s : State} {t : Nat} (h : claimable s t = true) : startable s t = true := by
+  simp only [claimable, Bool.and_eq_true] at h; exact h.1
+theorem claimable_reap {c : Cfg} {s : State} {t : Nat} (h : claimable s t = true) :
+    claimable (reapLocks (reapTasks c s)) t = true := by
+  have hsp1 : SP s (reapTasks c s) := by
+    unfold reapTasks; exact foldl_inv (reapTask c) (SP s) c.tasks s (sp_refl s) (fun x v h => sp_trans h (sp_reapTask c x v))
+  have hsp : SP s (reapLocks (reapTasks c s)) := sp_trans hsp1 (sp_tasks (fun u => ⟨rfl, rfl⟩) (fun b h => h) rfl)
+  simp only [claimable, Bool.and_eq_true, Bool.not_eq_true'] at h ⊢
+  exact ⟨startable_reap h.1, sp_stopped hsp h.2⟩
 
 /-- idle, its waiter armed, a small context, and an unread message the waiter wakes it on -/
 def Ready (s : State) (a : Nat) : Prop :=
@@ -345,6 +355,29 @@ theorem reapTask_ext (c : Cfg) (x : State) (v : Nat) : ∃ e, (reapTask c x v).l
     · exact ⟨[], by simp⟩
   · exact ⟨[], by simp⟩
 
+/-- the log only grows: every step appends to it -/
+theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = some s') : ∃ e, s'.log = s.log ++ e := by
+  open_step hs
+  case tick =>
+    obtain ⟨_, rfl⟩ := hs
+    exact tick_inv (fun x => ∃ e, x.log = s.log ++ e)
+      (fun x t ⟨e, he⟩ => let ⟨e2, h2⟩ := reapTask_ext c x t; ⟨e ++ e2, by rw [h2, he]; simp⟩)
+      (fun x h => by simpa using h) (fun x a h => by simpa using h)
+      (fun x a pl ⟨e, he⟩ => ⟨e ++ [⟨none, a, false, .digest, 0⟩], by simp [post, he]⟩) (fun pl x t h _ => by simpa using h)
+      ⟨[], by simp⟩
+  case unblock t =>
+    split at hs
+    · rename_i o _
+      rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, o, false, .answer, t⟩], by simp [post]⟩
+    · cases hs
+  case postTo a b u => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨some a, b, u, .dm, 0⟩], by simp [post]⟩
+  case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
+  case releaseOther t => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, (s.tk t).owner.getD 0, true, .released, t⟩], by simp [post]⟩
+  all_goals obtain ⟨_, rfl⟩ := hs
+  all_goals ((repeat' split) <;> first
+    | (refine ⟨[], ?_⟩; simp [unbelieve, awake]; done)
+    | (refine ⟨[_], ?_⟩; simp [post, unbelieve, awake]; done))
+
 theorem reapTasks_ext (c : Cfg) (s : State) (a : Nat) : Ext s (reapLocks (reapTasks c s)) a := by
   have h : ∃ extra, (reapTasks c s).log = s.log ++ extra := by
     unfold reapTasks
@@ -380,10 +413,10 @@ theorem lifecycle_qa {c : Cfg} {z : State} {a : Nat} (hreus : finished c z a = t
   · exact foldl_inv _ (fun y : State => Qa z y a) _ _ hdig (fun y u hy => qa_spawn hy)
 
 theorem lifecycle_ready {c : Cfg} {z : State} {a t : Nat} (hp : c.passedOver = true) (hwa : c.waiterAlive = true)
-    (ht : t ∈ c.tasks) (hst : startable z t = true) (hR : Ready z a) : Ready (lifecycle c z) a := by
+    (ht : t ∈ c.tasks) (hst : claimable z t = true) (hR : Ready z a) : Ready (lifecycle c z) a := by
   obtain ⟨h1, h2, h3, h4, h5⟩ := hR
   have hpool : (pool c z).isEmpty = false := by
-    have : t ∈ pool c z := by simp [pool, Cfg.tasks] at ht ⊢; simp [ht, hst]
+    have : t ∈ pool c z := by simp only [pool, Cfg.tasks, List.mem_filter] at ht ⊢; exact ⟨ht, hst⟩
     cases hh : (pool c z).isEmpty
     · rfl
     · simp [List.isEmpty_iff] at hh; simp [hh] at this
@@ -499,16 +532,16 @@ theorem lifecycle_unread {c : Cfg} {z : State} {a : Nat} (hp : c.passedOver = tr
   · exact unread_ext qe hu
 
 theorem tick_ready {c : Cfg} {s : State} {a t : Nat} (hp : c.passedOver = true) (hwa : c.waiterAlive = true)
-    (ht : t ∈ c.tasks) (hs0 : startable s t = true) (hR : Ready s a) : Ready (tickOf c s) a := by
+    (ht : t ∈ c.tasks) (hs0 : claimable s t = true) (hR : Ready s a) : Ready (tickOf c s) a := by
   obtain ⟨h1, h2, h3, h4, h5⟩ := hR
   have hz : Ready (reapLocks (reapTasks c s)) a := by
     refine ⟨by simpa [State.agt] using h1, by simpa [State.agt] using h2, by simpa [State.agt] using h3,
       by simpa [State.agt] using h4, unread_ext (reapTasks_ext c s a) h5⟩
-  exact lifecycle_ready hp hwa ht (startable_reap hs0) hz
+  exact lifecycle_ready hp hwa ht (claimable_reap hs0) hz
 
 theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = false) (hp : c.passedOver = true) (hwa : c.waiterAlive = true) (hcl : a < s.cursor.length)
     (hq : ∀ b, act ≠ .leave b ∧ act ≠ .die b ∧ act ≠ .waiterGone b ∧ act ≠ .reapGone b) (ht : t ∈ c.tasks)
-    (hs0 : startable s t = true) (hR : Ready s a) (hs : step c s act = some s') : Ready s' a ∨ Exit s' a := by
+    (hs0 : claimable s t = true) (hR : Ready s a) (hs : step c s act = some s') : Ready s' a ∨ Exit s' a := by
   have hR' := hR
   obtain ⟨h1, h2, h3, h4, h5⟩ := hR
   have hlen : a < s.ag.length := by
@@ -624,9 +657,9 @@ theorem step_tick {c : Cfg} {s s' : State} (h : step c s .tick = some s') : c.wa
   exact ⟨h.1.1, h.1.2, h.2.symm⟩
 
 theorem nonreusable_fills {c : Cfg} {s : State} {t : Nat} (hroster : c.roster ≤ c.nagents) (hl : s.ag.length = c.nagents)
-    (ht : t ∈ c.tasks) (hs0 : startable s t = true) (hnr : ∀ a ∈ c.agents, reusable c (reapLocks (reapTasks c s)) a = false) :
+    (ht : t ∈ c.tasks) (hs0 : claimable s t = true) (hnr : ∀ a ∈ c.agents, reusable c (reapLocks (reapTasks c s)) a = false) :
     ¬ (startable (tickOf c s) t = true ∧ members (tickOf c s) < c.roster) :=
-  lifecycle_fills hroster (by simpa using hl) ht (startable_reap hs0) hnr
+  lifecycle_fills hroster (by simpa using hl) ht (claimable_reap hs0) hnr
 
 theorem wake_enabled {c : Cfg} {s : State} {a : Nat} (hr : c.racy = false) (h : Ready s a) : (step c s (.wake a)).isSome = true := by
   obtain ⟨h1, h2, h3, h4, h5⟩ := h
@@ -642,7 +675,7 @@ theorem wake_exit {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.wake a) = s
   obtain ⟨_, rfl⟩ := h
   exact exit_awake (fun g => ⟨rfl, rfl⟩) hcl hlen h3
 
-theorem claim_enabled {c : Cfg} {s : State} {a t : Nat} (hr : c.racy = false) (hE : Exit s a) (hs : startable s t = true) :
+theorem claim_enabled {c : Cfg} {s : State} {a t : Nat} (hr : c.racy = false) (hE : Exit s a) (hs : claimable s t = true) :
     (step c s (.claim a t)).isSome = true := by
   obtain ⟨h1, h2, h3⟩ := hE
   simp [step, claim, when, hr, working, busy, h1, h2, hs, fenced, h3]
@@ -665,16 +698,249 @@ theorem ready_lt {c : Cfg} {s : State} {a : Nat} (hI : RInv c s) (h : Ready s a)
   have h1 := h.1
   rw [agt_of_ge this] at h1; exact absurd h1 (by decide)
 
-/-- L1. In a fair run of an instance with PR #116 and PR #119, a startable task doesn't stay startable forever while
+-- ---------- board #53: once lifted, the stop stays lifted ----------
+
+theorem cur_showAll_le (s : State) (a o : Nat) (ids : List Nat) : s.cur o ≤ (showAll s a ids).cur o := by
+  rw [showAll_cur]; split
+  · rename_i h; obtain ⟨rfl, _⟩ := h; exact (foldl_max _ _).1
+  · exact Nat.le_refl _
+theorem cur_deliver_le (s : State) (a o : Nat) : s.cur o ≤ (deliver s a).cur o := cur_showAll_le ..
+
+/-- what a step does to agent o's being at work: o was at work already, its cursor not moved back; or o has just read
+every message, and the log only grew -/
+def Grow (s s' : State) (o : Nat) : Prop :=
+  active (s'.agt o) = true → (active (s.agt o) = true ∧ s.cur o ≤ s'.cur o) ∨ (unread s' o = [] ∧ ∃ e, s'.log = s.log ++ e)
+
+theorem grow_nw {s s' : State} {o : Nat} (h1 : active (s'.agt o) = true → active (s.agt o) = true) (h2 : s.cur o ≤ s'.cur o) :
+    Grow s s' o := fun h => Or.inl ⟨h1 h, h2⟩
+/-- a turn of agent a starts with a delivery to it: x is s or a delivery to it, s' x delivered to a, with a's status set -/
+theorem grow_turn {s x s' : State} {a o : Nat} (hx : x.log = s.log ∧ x.cursor.length = s.cursor.length ∧ ∀ b, s.cur b ≤ x.cur b)
+    (hl : s.ag.length ≤ s.cursor.length) (hlog : s'.log = s.log) (hcur : s'.cursor = (deliver x a).cursor)
+    (hag : ∀ b, b ≠ a → active (s'.agt b) = active (s.agt b)) (hout : s.ag.length ≤ a → active (s'.agt a) = false) : Grow s s' o := by
+  intro h
+  by_cases hoa : o = a
+  · subst hoa
+    by_cases hlt : o < s.ag.length
+    · right
+      refine ⟨?_, ⟨[], by simp [hlog]⟩⟩
+      rw [unread_congr (s := deliver x o) (by simp [hlog, hx.1]) hcur]
+      exact unread_deliver_self (by rw [hx.2.1]; omega)
+    · rw [hout (Nat.le_of_not_lt hlt)] at h; cases h
+  · left
+    refine ⟨(hag o hoa) ▸ h, ?_⟩
+    have e2 : s'.cur o = (deliver x a).cur o := by simp [State.cur, hcur]
+    rw [e2]; exact Nat.le_trans (hx.2.2 o) (cur_deliver_le ..)
+/-- agent b's status after a turn of a: as before -/
+theorem act_turn {s : State} {a b : Nat} (f : Agent → Agent) (hb : b ≠ a) :
+    active ((setAg (deliver s a) a f).agt b) = active (s.agt b) := by
+  rw [agt_setAg, if_neg (fun e => hb e.1.symm)]; obtain ⟨bl, e⟩ := deliver_agt s a b; rw [e]; rfl
+theorem act_out {s : State} {a : Nat} (f : Agent → Agent) (hle : s.ag.length ≤ a) :
+    active ((setAg (deliver s a) a f).agt a) = false := by
+  rw [agt_setAg, if_neg (fun e => by simp at e; omega)]; obtain ⟨bl, e⟩ := deliver_agt s a a; rw [e, agt_of_ge hle]; rfl
+
+theorem grow_step {c : Cfg} {s s' : State} {act : Action} (hl : s.ag.length ≤ s.cursor.length) (hs : step c s act = some s')
+    (o : Nat) : Grow s s' o := by
+  open_step hs
+  case tick => obtain ⟨_, rfl⟩ := hs; exact fun h => Or.inl (let ⟨h1, h2⟩ := (sp_tick c s).2 o h; ⟨h1, h2 ▸ Nat.le_refl _⟩)
+  case wake a =>
+    obtain ⟨_, rfl⟩ := hs
+    exact grow_turn (a := a) (x := s) ⟨rfl, rfl, fun _ => Nat.le_refl _⟩ hl (by simp) (by simp [awake])
+      (fun b hb => act_turn _ hb) (fun hle => act_out _ hle)
+  case prompt a =>
+    obtain ⟨_, rfl⟩ := hs
+    exact grow_turn (a := a) (x := s) ⟨rfl, rfl, fun _ => Nat.le_refl _⟩ hl (by simp) (by simp)
+      (fun b hb => act_turn _ hb) (fun hle => act_out _ hle)
+  case boot a =>
+    obtain ⟨_, rfl⟩ := hs
+    split
+    · refine grow_turn (a := a) (x := s) ⟨rfl, rfl, fun _ => Nat.le_refl _⟩ hl (by simp) (by simp) (fun b hb => ?_) (fun hle => ?_)
+      · rw [show ∀ x : State, active ((takes c x a (firstClaimed c s a)).agt b) = active (x.agt b) from fun x => by simp [active]]
+        exact act_turn _ hb
+      · rw [show ∀ x : State, active ((takes c x a (firstClaimed c s a)).agt a) = active (x.agt a) from fun x => by simp [active]]
+        exact act_out _ hle
+    · exact grow_turn (a := a) (x := s) ⟨rfl, rfl, fun _ => Nat.le_refl _⟩ hl (by simp) (by simp)
+        (fun b hb => act_turn _ hb) (fun hle => act_out _ hle)
+  case wakeWrite a =>
+    obtain ⟨_, rfl⟩ := hs
+    have hx : ∀ x : State, x.log = s.log → x.cursor.length = s.cursor.length → (∀ b, s.cur b ≤ x.cur b) →
+        (∀ b, active (x.agt b) = active (s.agt b)) → x.ag.length = s.ag.length →
+        Grow s (setAg (awake (deliver x a) a) a fun g => { g with snap := [] }) o := fun x h1 h2 h4 h5 h6 =>
+      grow_turn (a := a) (x := x) ⟨h1, h2, h4⟩ hl (by simp [h1]) (by simp [awake]) (fun b hb => by
+          simp only [awake]; rw [agt_setAg, if_neg (fun e => hb e.1.symm), ← h5 b, ← act_turn (s := x) (a := a) _ hb])
+        (fun hle => by
+          simp only [awake]; rw [agt_setAg, if_neg (fun e => by simp at e; omega)]
+          exact act_out (s := x) _ (by omega))
+    split
+    · exact hx s rfl rfl (fun _ => Nat.le_refl _) (fun _ => rfl) rfl
+    · exact hx _ (by simp) (showAll_lens ..).1 (fun b => cur_showAll_le ..)
+        (fun b => showAll_proj (active ·) (fun _ _ => rfl) ..) (showAll_ag_length ..)
+  case readAll a =>
+    obtain ⟨_, rfl⟩ := hs
+    exact grow_nw (fun h => by obtain ⟨bl, e⟩ := deliver_agt s a o; rw [e] at h; simpa [active] using h) (cur_deliver_le ..)
+  case hcClear a =>
+    obtain ⟨hg, rfl⟩ := hs
+    refine grow_nw (fun h => ?_) ?_
+    · by_cases hoa : o = a
+      · subst hoa; simp [active, hg]
+      · rw [act_turn _ hoa] at h; simpa [State.agt] using h
+    · exact Nat.le_trans (by simp [State.cur]) (cur_deliver_le ..)
+  case claimWrite a =>
+    obtain ⟨_, rfl⟩ := hs
+    split
+    · refine grow_nw (fun h => ?_) (by simp [State.cur])
+      rw [agt_setAg] at h
+      have e : ∀ g : Agent, active ((takes c (claimed s a (s.agt a).reading) a (s.agt a).reading).agt o) = active (s.agt o) :=
+        fun _ => by simp [active]
+      split at h
+      · rename_i hh; obtain ⟨rfl, _⟩ := hh; rw [← e default]; simpa [active, State.agt] using h
+      · rw [← e default]; simpa [active, State.agt] using h
+    · exact grow_nw (fun h => by rw [agt_setAg] at h; split at h <;> simp_all [active]) (by simp [State.cur])
+  case hcPrompt a =>
+    obtain ⟨hg, rfl⟩ := hs
+    refine grow_nw (fun h => ?_) (by simp [State.cur])
+    simp only [setTask_agt] at h; rw [agt_setAg] at h; split at h
+    · rename_i hh; obtain ⟨rfl, _⟩ := hh; simp [busy] at hg; simp [active, hg.1]
+    · exact h
+  case unblock t₀ =>
+    split at hs
+    · rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs
+      exact grow_nw (fun h => by simpa [State.agt] using h) (by simp [State.cur])
+    · cases hs
+  case releaseOther t₀ =>
+    obtain ⟨_, rfl⟩ := hs; exact grow_nw (fun h => by simpa [State.agt] using h) (by simp [State.cur])
+  case leave a =>
+    obtain ⟨_, rfl⟩ := hs
+    refine grow_nw (fun h => ?_) (by simp [State.cur])
+    rw [endAgent_agt, agt_setAg] at h; split at h
+    · simp [active] at h
+    · split at h <;> simp_all [active]
+  case reapGone a =>
+    obtain ⟨_, rfl⟩ := hs
+    refine grow_nw (fun h => ?_) (by simp [State.cur])
+    rw [endAgent_agt, agt_setAg] at h; split at h
+    · simp [active] at h
+    · split at h <;> simp_all [active]
+  all_goals (obtain ⟨hg, rfl⟩ := hs)
+  all_goals (try split)
+  all_goals refine grow_nw (fun h => ?_) ?_
+  all_goals first
+    | (simp [State.cur]; done)
+    | (simpa [State.agt] using h; done)
+    | (simpa [active] using h; done)
+    | ((try simp only [unbelieve, awake, post_agt, setTask_agt, claimed_agt] at h); rw [agt_setAg] at h; split at h <;> simp_all [active, State.agt]; done)
+    | ((try simp only [unbelieve, awake, post_agt, setTask_agt, claimed_agt] at h); rw [agt_setAg] at h; split at h <;> simp_all [active, State.agt, agt_setAg]; done)
+
+theorem setTask_stop (s : State) (t u : Nat) (f : Task → Task) (hf : ∀ k, (f k).stopTo = k.stopTo ∧ (f k).stopMsg = k.stopMsg) :
+    ((setTask s t f).tk u).stopTo = (s.tk u).stopTo ∧ ((setTask s t f).tk u).stopMsg = (s.tk u).stopMsg := by
+  rcases tk_setTask_or s t u f with e | ⟨_, e⟩ <;> rw [e]
+  · exact ⟨rfl, rfl⟩
+  · exact hf _
+
+/-- board #53: only the user's release of t changes its stop -/
+theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act ≠ .releaseOther t) (hs : step c s act = some s') :
+    (s'.tk t).stopTo = (s.tk t).stopTo ∧ (s'.tk t).stopMsg = (s.tk t).stopMsg := by
+  open_step hs
+  case tick => obtain ⟨_, rfl⟩ := hs; exact (sp_tick c s).1 t
+  case releaseOther t₀ =>
+    obtain ⟨_, rfl⟩ := hs
+    have hne : t ≠ t₀ := fun e => hn (by rw [e])
+    rw [post_tk, tk_setTask_ne hne]; exact ⟨rfl, rfl⟩
+  case unblock t₀ =>
+    split at hs
+    · rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs
+      simp only [State.tk] at ⊢; exact setTask_stop s t₀ t _ (fun _ => ⟨rfl, rfl⟩)
+    · cases hs
+  case hcClear a =>
+    obtain ⟨_, rfl⟩ := hs
+    simp only [setAg_tk, deliver_tk]
+    rw [tk_map (s := s) (g := fun k =>
+      if k.owner == some a && k.st == .blocked && k.hcq then { k with st := .claimed, hcq := false, lease := true } else k) (by simp) rfl]
+    split <;> exact ⟨rfl, rfl⟩
+  case claimWrite a =>
+    obtain ⟨_, rfl⟩ := hs
+    split
+    · rw [setAg_tk, show ∀ (x : State) e, ({ x with early := e } : State).tk t = x.tk t from fun _ _ => rfl, takes_tk]
+      exact claimed_stop ..
+    · rw [setAg_tk]; exact ⟨rfl, rfl⟩
+  case leave a =>
+    obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
+  case reapGone a =>
+    obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
+  all_goals (obtain ⟨hg, rfl⟩ := hs)
+  all_goals (try split)
+  all_goals (try simp only [unbelieve, awake, claimed, post_tk, setAg_tk, deliver_tk, takes_tk, unbelieve_tk, awake_tk])
+  all_goals first
+    | exact ⟨rfl, rfl⟩
+    | exact setTask_stop _ _ t _ (fun _ => ⟨rfl, rfl⟩)
+    | (simp only [State.tk] at ⊢; exact ⟨rfl, rfl⟩)
+    | (simp [State.tk]; done)
+    | exact (setTask_stop _ _ t _ (fun _ => ⟨rfl, rfl⟩))
+
+/-- board #53, of a reachable state: a task's stop is a message of the log, to the agent it names -/
+def SK (s : State) : Prop := ∀ t o, (s.tk t).stopTo = some o → (s.tk t).stopMsg ≤ s.log.length ∧ addressed s o (s.tk t).stopMsg = true
+
+theorem sk_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : SK s := by
+  refine reachable_induct (P := SK) ?_ ?_ h
+  · intro t o ho
+    have : ((init c).tk t).stopTo = none := by
+      simp only [State.tk, init]; split
+      · rfl
+      · simp only [List.getD_eq_getElem?_getD, List.getElem?_replicate]; split <;> rfl
+    rw [this] at ho; cases ho
+  intro s s' act _ hK hs t o ho
+  obtain ⟨e, he⟩ := step_log hs
+  by_cases hr : act = .releaseOther t
+  · subst hr
+    simp only [step, releaseOther, when_eq_some, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq] at hs
+    obtain ⟨⟨⟨_, hsome⟩, hst⟩, rfl⟩ := hs
+    have hna : (s.tk t).st ≠ .absent := by rcases hst with e | e <;> simp [e]
+    rw [post_tk, tk_setTask_self hna] at ho ⊢
+    simp only [] at ho ⊢
+    have hm : (post (setTask s t fun k => { k with st := .opn, owner := none, lease := false, hcq := false, stopTo := if c.stopFirst then k.owner else none, stopMsg := s.log.length + 1 }) ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩).msg (s.log.length + 1) = ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩ := by
+      simp [State.msg, post, List.getD_eq_getElem?_getD]
+    refine ⟨by simp [post], ?_⟩
+    simp only [addressed, hm]
+    split at ho
+    · simp [ho]
+    · cases ho
+  · obtain ⟨h1, h2⟩ := stop_kept hr hs
+    rw [h1] at ho
+    obtain ⟨k1, k2⟩ := hK t o ho
+    rw [h2]
+    refine ⟨by rw [he]; simp; omega, ?_⟩
+    simp only [addressed] at k2 ⊢; rw [msg_ext he k1]; exact k2
+
+/-- board #53: a stop that has lifted stays lifted, unless the user releases the task again -/
+theorem stopped_step {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hK : SK s) (hl : s.ag.length ≤ s.cursor.length)
+    (hn : act ≠ .releaseOther t) (hs : step c s act = some s') (h : stopped s t = false) : stopped s' t = false := by
+  obtain ⟨h1, h2⟩ := stop_kept hn hs
+  unfold stopped at h ⊢
+  rw [h1, h2]
+  cases ho : (s.tk t).stopTo with
+  | none => rfl
+  | some o =>
+    rw [ho] at h; simp only [] at h ⊢
+    cases ha : active (s'.agt o)
+    · rfl
+    · rcases grow_step hl hs o ha with ⟨a1, a2⟩ | ⟨u1, ⟨e, he⟩⟩
+      · rw [a1] at h; simp at h ⊢; omega
+      · obtain ⟨k1, k2⟩ := hK t o ho
+        simp only [Bool.true_and, decide_eq_false_iff_not, Nat.not_lt]
+        refine Nat.le_of_not_lt fun hlt => ?_
+        have : (s.tk t).stopMsg ∈ unread s' o := mem_unread.mpr ⟨hlt, by rw [he]; simp; omega, by
+          simp only [addressed] at k2 ⊢; rw [msg_ext he k1]; exact k2⟩
+        rw [u1] at this; cases this
+
+/-- L1's core. In a fair run of an instance with PR #116 and PR #119, a claimable task doesn't stay claimable forever while
 a slot is free: either it is taken, or the slot fills. Needs no agent to leave, die, lose its waiter or be reaped by
 `hc ls` after the start, and the invariants of a reachable state (`hI`). -/
-theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
+theorem claimable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
     (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
     (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b)
     (hI : ∀ m, n ≤ m → RInv c (r.st m)) :
-    ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
+    ∃ m, n ≤ m ∧ ¬ (claimable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
   refine Classical.byContradiction fun hne => ?_
-  have hB : ∀ m, n ≤ m → startable (r.st m) t = true ∧ members (r.st m) < c.roster := by
+  have hB : ∀ m, n ≤ m → claimable (r.st m) t = true ∧ members (r.st m) < c.roster := by
     intro m hm
     refine Classical.byContradiction fun h => ?_
     exact hne ⟨m, hm, fun ⟨h1, h2⟩ => h ⟨h1, by simpa [slotFree] using h2⟩⟩
@@ -703,7 +969,7 @@ theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
           · exact absurd ⟨a, ha, hh⟩ hz
         have hnf := nonreusable_fills hroster (hI m (by omega)).1 ht (hB m (by omega)).1 hnr
         have hne' : tickOf c (r.st m) ≠ r.st m := by
-          intro e; apply hnf; rw [e]; exact hB m (by omega)
+          intro e; apply hnf; rw [e]; exact ⟨startable_of_claimable (hB m (by omega)).1, (hB m (by omega)).2⟩
         simp [step, tick, when, hw, hne']
     obtain ⟨k, hk, hact⟩ := Run.fair_ev hf (f := .tick) (N0 := N) (fun _ _ => by simp [fair]) hen
     have hok := r.ok k
@@ -720,7 +986,7 @@ theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
         · exact absurd ⟨a, ha, hh⟩ hz
       have hnf := nonreusable_fills hroster (hI k (by omega)).1 ht (hB k (by omega)).1 hnr
       rw [← hst] at hnf
-      exact hnf (hB (k+1) (by omega))
+      exact hnf ⟨startable_of_claimable (hB (k+1) (by omega)).1, (hB (k+1) (by omega)).2⟩
   -- some agent is ready infinitely often
   have claim5 : ∃ a ∈ c.agents, ∀ N, ∃ m, N ≤ m ∧ Ready (r.st m) a := by
     refine Classical.byContradiction fun hno => ?_
@@ -760,9 +1026,21 @@ theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
   simp only [step, claim, when, Option.ite_none_right_eq_some, Option.some.injEq] at hok
   obtain ⟨_, hok⟩ := hok
   rw [← hok] at h1
-  simp [startable] at h1
-  exact claimed_not_opn _ _ _ (by simpa using h1.1)
+  simp [claimable, startable] at h1
+  exact claimed_not_opn _ _ _ (by simpa using h1.1.1)
 
+
+/-- L1, given that the user's stop on t (board #53) lifts for good: a startable task doesn't stay startable forever while
+a slot is free. `startable_leads_to` (Release.lean) proves the stop lifts. -/
+theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
+    (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b)
+    (hI : ∀ m, n ≤ m → RInv c (r.st m)) (hlift : ∃ N, n ≤ N ∧ ∀ m, N ≤ m → stopped (r.st m) t = false) :
+    ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
+  obtain ⟨N, hN, hs⟩ := hlift
+  obtain ⟨m, hm, hn⟩ := claimable_taken hr hw hp hwa hroster ht r hf (n := N) (fun k hk => hq k (by omega)) (fun m hm => hI m (by omega))
+  refine ⟨m, by omega, fun ⟨h1, h2⟩ => hn ⟨?_, h2⟩⟩
+  simp [claimable, h1, hs m hm]
 
 -- ---------- invariants of every reachable state ----------
 
@@ -961,21 +1239,5 @@ theorem d_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .die
   all_goals (try simp only [unbelieve, awake, claimed])
   all_goals d_tac
 
-
-/-- L1, for a run that starts in a reachable state with no dead terminal. A startable task doesn't stay startable forever
-while a slot is free: it is taken, or the slots fill. The agents must not leave, die, lose their waiter or be reaped as
-gone after the start. Fairness is `Run.Fair`: strong fairness of every action of `fair`, `claim` and `wake` included. -/
-theorem startable_leads_to {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
-    (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
-    (hR : Reachable c (r.st n)) (hdd : ∀ b, ((r.st n).agt b).dead = false)
-    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b) :
-    ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
-  have hreach : ∀ m, n ≤ m → Reachable c (r.st m) :=
-    forever (fun m => Reachable c (r.st m)) n hR (fun k hk ih => Reachable.step (r.act k) ih (r.ok k))
-  have hD : ∀ m, n ≤ m → Dd (r.st m) :=
-    forever (fun m => Dd (r.st m)) n hdd (fun k hk ih => d_step (fun b => (hq k hk b).2.1) ih (r.ok k))
-  refine startable_taken hr hw hp hwa hroster ht r hf hq (fun m hm => ?_)
-  have h1 := i1_of_reachable (hreach m hm)
-  exact ⟨h1.1, h1.2.1, fun b => ((inbInv_of_reachable (hreach m hm)).2.2 b).1, h1.2.2, hD m hm⟩
 
 end Swarm

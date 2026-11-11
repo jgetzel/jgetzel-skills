@@ -789,8 +789,8 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
     exact l3_hcClear hs hg
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
-    simp only [working, busy, startable, Bool.and_eq_true, beq_iff_eq] at hg
-    exact l3_claim hao hs hg.1.1.2.1 hg.1.2.1
+    simp only [working, busy, claimable, startable, Bool.and_eq_true, beq_iff_eq] at hg
+    exact l3_claim hao hs hg.1.1.2.1 hg.1.2.1.1
   case unblock t =>
     split at hstep
     · rename_i o ho
@@ -846,9 +846,9 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
     exact ow_of h1 h2 (ow_setTask (fun h _ => by simp [held] at h) h1 h2)
   case claim a u =>
     obtain ⟨hg, rfl⟩ := hstep
-    simp only [startable, Bool.and_eq_true, beq_iff_eq] at hg
+    simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq] at hg
     rw [takes_tk] at h2; unfold claimed at h2
-    exact ow_of h1 h2 (ow_setTask (fun _ h => by simp [held, hg.1.2.1] at h) h1 h2)
+    exact ow_of h1 h2 (ow_setTask (fun _ h => by simp [held, hg.1.2.1.1] at h) h1 h2)
   case hcPrompt a =>
     obtain ⟨_, rfl⟩ := hstep
     have h1' : held ((setAg s a ({ · with st := .blocked })).tk t) o = true := by simpa using h1

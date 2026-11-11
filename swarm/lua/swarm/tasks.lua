@@ -121,10 +121,24 @@ function M.dep_path(c, start, target)
   return nil
 end
 
--- Open tasks whose --after dependencies are all done: work that can start.
+-- The user released task row r from an agent still at work (working, or at an hc prompt) that hasn't read the stop:
+-- no one may take it yet (board #53; the model's `stopped`).
+function M.stop_pending(c, r)
+  if not py(r.stop_to) then return false end
+  local a = c:one("select * from agent where name=?", r.stop_to)
+  if not a or a.ended ~= nil or (a.status ~= "working" and a.status ~= "blocked") then return false end
+  local cur = c:one("select last_msg_id from cursor where agent=?", r.stop_to)
+  return (cur and cur.last_msg_id or 0) < r.stop_msg
+end
+
+-- Open tasks whose --after dependencies are all done and that no stop holds back: work that can start.
 function M.pool(c)
-  return c:all("select * from task t where state='open' and not exists (select 1 from task d where d.state!='done' "
-    .. "and ','||t.deps||',' like '%,'||d.id||',%') order by title like ? desc, id", M.RED_TASK .. "%")
+  local r = {}
+  for _, t in ipairs(c:all("select * from task t where state='open' and not exists (select 1 from task d where d.state!='done' "
+      .. "and ','||t.deps||',' like '%,'||d.id||',%') order by title like ? desc, id", M.RED_TASK .. "%")) do
+    if not M.stop_pending(c, t) then r[#r + 1] = t end
+  end
+  return r
 end
 
 -- task show's after: and blocks: lines.
@@ -229,16 +243,23 @@ function M.cmd_task(c, a)
       util.die(("context ~%dk, too high to take new work: %s"):format(math.floor(k / 1000), hook.ctx_advice(k)))
     end
     local until_ = t + util.dur(a.lease)
-    -- the deps are checked again in the write: a `task after` since the check above must hold it back
-    if c:exec("update task set state='claimed', owner=?, lease_until=?, claim_ctx=?, "
-        .. "first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open' and not exists "
-        .. "(select 1 from task d where d.state!='done' and ','||task.deps||',' like '%,'||d.id||',%')",
-        n, until_, k, t, a.id) == 0 then
-      local r2 = c:one("select * from task where id=?", a.id)
-      local dep2 = r2.state == "open" and M.undone(c, r2)[1]
-      if dep2 then util.die(("#%s waits on #%s (%s)"):format(d(a.id), d(dep2.id), dep2.state)) end
-      util.die(("task #%s is %s%s"):format(d(a.id), r2.state, owned(r2)))
-    end
+    c:tx(function()
+      -- the user released it from an agent that hasn't read the stop: checked with the write, in one transaction
+      local r1 = c:one("select * from task where id=?", a.id)
+      if M.stop_pending(c, r1) then
+        util.die(("task #%s was released from %s, which hasn't read the stop yet; try again once it has"):format(d(a.id), r1.stop_to))
+      end
+      -- the deps are checked again in the write: a `task after` since the check above must hold it back
+      if c:exec("update task set state='claimed', owner=?, lease_until=?, claim_ctx=?, "
+          .. "first_claimed_at=coalesce(first_claimed_at,?) where id=? and state='open' and not exists "
+          .. "(select 1 from task d where d.state!='done' and ','||task.deps||',' like '%,'||d.id||',%')",
+          n, until_, k, t, a.id) == 0 then
+        local r2 = c:one("select * from task where id=?", a.id)
+        local dep2 = r2.state == "open" and M.undone(c, r2)[1]
+        if dep2 then util.die(("#%s waits on #%s (%s)"):format(d(a.id), d(dep2.id), dep2.state)) end
+        util.die(("task #%s is %s%s"):format(d(a.id), r2.state, owned(r2)))
+      end
+    end)
     db.log(c, n, "claim", nil, ("#%s %s"):format(d(a.id), r.title))
     print(("claimed #%s until %s"):format(d(a.id), util.hhmm(until_)))
     local machine = require "swarm.machine"
@@ -358,8 +379,9 @@ function M.cmd_task(c, a)
       if a.after then M.set_deps(c, a.id, a.after) end
       db.log(c, n, "release", nil, "#" .. d(a.id) .. (from and " from " .. from or ""))
       if from then
-        require("swarm.msgs").post(c, n, from, ("%s released #%s: stop work on it"):format(
+        local mid = require("swarm.msgs").post(c, n, from, ("%s released #%s: stop work on it"):format(
           n == agents.HUMAN and "the user" or n, d(a.id)), true)
+        c:exec("update task set stop_to=?, stop_msg=? where id=?", from, mid, a.id)  -- no one takes it till from reads it
       end
     end)
     print(("released #%s%s; it is open again%s"):format(d(a.id), from and (" from " .. from) or "",
@@ -443,6 +465,7 @@ function M.reserve(c, name, tid, model)
     if r.state ~= "open" then
       error({ exit = 1, lost = ("task #%s is %s%s"):format(d(tid), r.state, owned(r)) }, 0)
     end
+    if M.stop_pending(c, r) then error({ exit = 1, lost = ("task #%s waits for %s to read its stop"):format(d(tid), r.stop_to) }, 0) end
     c:exec("update task set state='claimed', owner=?, lease_until=?, first_claimed_at=coalesce(first_claimed_at,?) where id=?",
       name, t + M.LEASE, t, tid)
     db.log(c, name, "claim", nil, ("#%s %s"):format(d(tid), r.title))
