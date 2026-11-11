@@ -257,3 +257,33 @@ New:
    (@all, spawn on a task, free a lock, renew/claim)?
 5. **Restart watchd** from the panel: wanted? It is the one row that restarts the swarm's own daemon.
 6. **Why it is still here**: always open on an idle agent's screen (as drawn), or folded behind a click?
+
+## 8. Approved (2026-11-11) and how the build is split
+
+The user approved revision 2 through the communicator. Their answers, which override the text above where they differ:
+
+1. Away: yes, the four rules as written.
+2. Answer field on a waiting task: **not in this build.** Keep the hint text on the question card.
+3. Act as `human` with the communicator's rights. If that turns out hard, say so before falling back to acting as the communicator.
+4. Build every "Add" row of §3b except the answer field: nudge, message an agent, add task, drop task, pause/resume
+   auto-spawn, open and re-run failed CI, watchd health, main's CI dot, communicator link, end another agent's stay.
+   The four "Leave out" rows stay out.
+5. Restart watchd: yes, with its confirmation and the recorded flags, and never leaving the repo without a watchd:
+   verify the new one is alive before reporting success; if it is not, say so in the bar.
+6. "Why it is still here" is always open on an idle agent's screen.
+7. When done, swap over: the redesigned mod replaces the installed one (install.sh path and the user's live Herdr).
+
+The build lands on the branch **`swarm-panel`** (it holds this doc, the shots and the prototype), then one PR
+takes `swarm-panel` to main. Nothing from it is on main before that, so the installed panel keeps working.
+
+State of the prototype on `swarm-panel`, for whoever builds:
+
+- `swarm/herdr/mods/swarm/main.js`: nav bar, Home, Agents, Agent, Board, Task, More and `act`/`ask`/`banner` are
+  real. Left over from the old tabs and unused: `statusText`, `cacheChip`, `lastEvent`, `ctxLabels`, the board
+  half of `filters()`. `agentScreen` draws `a.fate` ({verdict, says, short, checks: [{label, on, detail}]}) when
+  the CLI sends it. CI and PRs still come from the panel's own `gh` calls (`refreshPrs`).
+- `swarm/herdr/shot.sh --screen …[+ask]`: `+ask` sends the mod command `ask`, which opens the shown screen's
+  confirmation. The refusal and why-kept shots were made with a temporary line in main.js (an `act` call, sample
+  `fate`), removed after the shot; a scratch db that produces the state for real is the better way now.
+- CLI already on the branch, without tests: `state --json --task N`, `state`'s `away` field, `swarm away [note]`
+  and `--back` as a bare flag (meta `away` = "<since> <note>", events `away`/`back`).
