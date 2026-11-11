@@ -3,7 +3,7 @@ import LuaLean.Run
 /-! Random Lua chunks with the Lean interpreter's results, for `test/luasem.lua` to run under LuaJIT and compare (the
 "Decoding Lua" check: the semantics is tested against the implementation). A chunk is a random program over the
 subset's numbers, strings, patterns, string.format, tables and table.sort, and its control flow (closures, varargs,
-metatables, goto, pcall). `writeCases` writes them as a Lua chunk, `return {{src = .., out = ..}, ..}`, `out` the
+metatables, goto, pcall, coroutines). `writeCases` writes them as a Lua chunk, `return {{src = .., out = ..}, ..}`, `out` the
 dual-number target's results and `single = ..` the single-number target's where they differ; a chunk whose Lean run
 needs an effect or more fuel is left out. A user of the library adds chunks of its own (calls of its modules'
 functions: swarm/model/SwarmModel/LuaCases.lean). -/
@@ -490,10 +490,62 @@ def files : G String := do
     src := src ++ st ++ "\n"
   return src ++ "return R"
 
+/-- coroutines: a body of random steps, each yielding (across pcall, in an iterator, a metamethod, table.foreachi),
+changing a table the main thread changes too, nesting a coroutine, or failing; resumed a random number of times
+with values each way, as `create`/`resume` or `wrap`; yields across a builtin that calls back (sort, gsub) and from
+the main thread, the statuses, `running` and `isyieldable` -/
+def coros : G String := do
+  let v : G String := pick ["i", "x", "sh.n", "#log", "\"s\"", "nil", "{i}", "x, i", "1.5"]
+  let step : G String := do
+    match ← rnd 15 with
+    | 0 | 1 | 2 => return s!"x = coroutine.yield({← v})"
+    | 3 => return "sh.n = sh.n + 1; L(\"sh\", sh.n, x)"
+    | 4 => return s!"L(\"pc\", pcall(function() local y = coroutine.yield({← v}); {← pick ["error(\"e\" .. tostring(y))", "error({y})", "return y", "error(y, 0)"]} end))"
+    | 5 => return "for k in function(_, c) if c == nil then return coroutine.yield(\"it\") end end do L(\"for\", k) end"
+    | 6 => return "L(\"ix\", setmetatable({}, {__index = function(_, k) return coroutine.yield(k) end}).key)"
+    | 7 => return "setmetatable({}, {__newindex = function(_, k, w) L(\"ni\", coroutine.yield(k, w)) end}).f = i"
+    | 8 => return "L(\"cl\", setmetatable({}, {__call = function(_, a) return coroutine.yield(\"call\", a) end})(i))"
+    | 9 => return "table.foreachi({\"a\", \"b\"}, function(j, w) L(\"fe\", coroutine.yield(j, w)) end)"
+    | 10 => return s!"L(\"cb\", pcall({← pick ["table.sort, {3, 1, 2}, function(a, b) coroutine.yield() return a < b end",
+        "string.gsub, \"ab\", \".\", function(c) coroutine.yield(c) end", "string.gsub, \"ab\", \".\", setmetatable({}, {__index = function() coroutine.yield() end})"]}))"
+    | 11 => return "local inner = coroutine.create(function(a) L(\"st\", coroutine.status(me), coroutine.status(inner0), coroutine.resume(me)); local b = coroutine.yield(a + 1); return b, coroutine.isyieldable() end)\ninner0 = inner\nL(\"in\", coroutine.resume(inner, i), coroutine.status(inner), coroutine.resume(inner, x), coroutine.resume(inner))"
+    | 12 => return s!"if i > {← pick ["1", "2", "4"]} then {← pick ["error(\"stop\")", "error({i})", "return i, x", "error(x)", "local t = nil; t.f = 1"]} end"
+    | 13 => return "L(\"me\", coroutine.running() == me, coroutine.isyieldable(), coroutine.status(me), i)"
+    | _ => return s!"i = i + 1; L(\"i\", i, select(\"#\", coroutine.yield({← v})))"
+  let body ← (List.range ((← rnd 6) + 2)).mapM fun _ => step
+  let wrap ← chance 3
+  let k ← rnd 7
+  let arg ← pick ["k", "nil", "k, sh.n", "", "\"a\", \"b\", nil"]
+  let drive := if wrap then
+      s!"local w = coroutine.wrap(B)\nfor k = 1, {k + 1} do sh.n = sh.n * 2; L(\"w\", pcall(function() local r = \{w({arg})} return r end)) end"
+    else
+      s!"me = coroutine.create(B)\nL(\"s0\", coroutine.status(me))\nfor k = 1, {k + 1} do sh.n = sh.n * 2; L(\"r\", coroutine.resume(me{if arg == "" then "" else ", " ++ arg})); L(\"s\", coroutine.status(me)) end"
+  return s!"local log, sh, me, inner0 = \{}, \{n = 1}
+local function L(...) log[#log + 1] = \{...} end
+local function B(...)
+local x, i = ..., 0
+{"\n".intercalate body}
+return \"end\", x, i
+end
+{drive}
+L(\"m\", pcall(coroutine.yield, 1), pcall(function() coroutine.yield() end), coroutine.running(), coroutine.isyieldable())
+L(\"bad\", pcall(coroutine.resume, {← pick ["1", "nil", "{}", "B"]}), pcall(coroutine.{← pick ["create", "wrap", "status"]}, {← pick ["1", "nil", "{}"]}))
+return log, sh.n"
+
+-- a yield in an error handler stops the run (LuaJIT's xpcall then fails with "error in error handling"); a yield
+-- in a module's chunk or a load reader cannot cross the C call
+#guard [("return coroutine.resume(coroutine.create(function() return xpcall(error, function(m) return coroutine.yield(m) end) end))",
+      "effect coroutine.yield in an error handler"),
+    ("return coroutine.resume(coroutine.create(function() return pcall(load, function() coroutine.yield() end) end))",
+      "effect load: an error in the reader"),
+    ("local co = coroutine.create(function() coroutine.yield() end) coroutine.resume(co) return coroutine.status(co), coroutine.resume(co), coroutine.status(co)",
+      "ok:\"suspended\",true,\"dead\"")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
 /-- one of the chunks above -/
 def chunk : G String := do
   if ← chance 8 then return ← errors
-  match ← rnd 13 with
+  match ← rnd 14 with
   | 0 => arith
   | 1 => strings
   | 2 | 3 => patterns
@@ -505,6 +557,7 @@ def chunk : G String := do
   | 10 => libs
   | 11 => traverse
   | 12 => loads
+  | 13 => coros
   | _ => numbers
 
 /-- `n` chunks from `gen` (each with the modules to load first, from `srcs` through package.path `path`) and their

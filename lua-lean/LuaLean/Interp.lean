@@ -21,6 +21,8 @@ inductive Val where
   | fn (a : Nat)
   | prim (name : String) (bound : List Val)
   | eff (name : String)
+  /-- a coroutine -/
+  | thr (a : Nat)
   deriving Inhabited
 
 abbrev Env := List (String × Nat)
@@ -39,10 +41,28 @@ structure Tbl where
   /-- the dead keys dropped so far: a node of LuaJIT's may still hold one -/
   gone : List Val := []
 
+/-- a coroutine's status: `ready` to resume (not started, or suspended in a yield), `active` (running, or resuming
+another), `dead` (returned or failed) -/
+inductive CoSt where
+  | ready | active | dead
+  deriving DecidableEq
+
+/-- a coroutine (DESIGN.md, *Coroutines*): its function; each resume so far, its arguments and the heap the coroutine
+went on in, oldest first; during a replay, the resumes still to replay; its status; and what it is running inside
+that a yield cannot cross (0: nothing, 1: a builtin calling back into Lua, LuaJIT's C-call boundary; 2: an error
+handler) -/
+structure Thr (H : Type) where
+  fn : Val
+  hist : List (List Val × H) := []
+  script : List (List Val × H) := []
+  st : CoSt := .ready
+  bound : Nat := 0
+
 inductive Obj where
   | tbl (t : Tbl)
   | clo (c : Clo)
   | cell (v : Val)
+  | thr (t : Thr (Array Obj))
 
 instance : Inhabited Obj := ⟨.cell .nil⟩
 
@@ -65,6 +85,8 @@ inductive Err where
   /-- a runtime error to be reported in the frame `lvl` calls out from the one raising it (0: that frame, at its
   innermost site; `Site`): LuaJIT adds `chunk:line:` there, or nothing if that frame is a builtin's -/
   | rt (lvl : Nat) (m : Msg)
+  /-- the running coroutine yields these values: its resume replays it to here (DESIGN.md, *Coroutines*) -/
+  | yld (vs : List Val)
   deriving Inhabited
 
 abbrev M := EStateM Err Heap
@@ -102,6 +124,7 @@ def rawEq : Val → Val → Bool
   | .fn a, .fn b => a == b
   | .prim a xs, .prim b ys => a == b && rawEqs xs ys
   | .eff a, .eff b => a == b
+  | .thr a, .thr b => a == b
   | _, _ => false
 def rawEqs : List Val → List Val → Bool
   | [], [] => true
@@ -111,7 +134,7 @@ end
 
 def typeName : Val → String
   | .nil => "nil" | .bool _ => "boolean" | .num _ => "number" | .str _ => "string" | .tbl _ => "table"
-  | .fn _ | .prim .. => "function" | .eff _ => "userdata"
+  | .fn _ | .prim .. => "function" | .eff _ => "userdata" | .thr _ => "thread"
 
 def toNum : Val → Option Num
   | .num n => some n
@@ -128,6 +151,7 @@ def text : Val → List Char
   | .fn a => s!"function: {a}".toList
   | .prim n _ => s!"function: builtin {n}".toList
   | .eff n => s!"userdata: {n}".toList
+  | .thr a => s!"thread: {a}".toList
 end Val
 
 namespace Tbl
@@ -295,6 +319,9 @@ def LOADED : Nat := 1
 def STRING : Nat := 2
 def TABLE : Nat := 3
 def PACKAGE : Nat := 5
+def COROUTINE : Nat := 6
+/-- a cell holding the running coroutine, nil in the main thread -/
+def CUR : Nat := 7
 
 def getVar (cx : Ctx) (x : String) : M Val :=
   match cx.env.lookup x with
@@ -326,6 +353,94 @@ def noMeta (vs : List Val) (evs : List String) : M Unit := do
   for v in vs do
     for ev in evs do
       if !(← metaOf v ev).isNil then throw (.eff s!"metamethod {ev}" [])
+
+-- ---------- coroutines ----------
+
+def getThr (a : Nat) : M (Thr Heap) := do
+  match ← getObj a with
+  | .thr t => pure t
+  | _ => die "not a thread"
+
+def putThr (a : Nat) (t : Thr Heap) : M Unit := modify fun h => h.set! a (.thr t)
+
+/-- `m` where a yield cannot suspend the running coroutine: inside a builtin calling back into Lua (`b` = 1, LuaJIT's
+C-call boundary) or an error handler (`b` = 2); in the main thread nothing can yield -/
+def bounded {α} (b : Nat) (m : M α) : M α := do
+  match ← readCell CUR with
+  | .thr a =>
+    let old := (← getThr a).bound
+    putThr a { (← getThr a) with bound := b }
+    let restore : M Unit := do putThr a { (← getThr a) with bound := old }
+    tryCatch (do let x ← m; restore; pure x) fun e => do restore; throw e
+  | _ => m
+
+/-- the start of a resume of coroutine `a` on `args` (ffh_resume): the error's message if it cannot be resumed; else
+the coroutine that was running, the history with this resume, and the call to run: `a` is marked running and the
+heap is that of its first resume, the later ones to replay -/
+def resumeBegin (a : Nat) (args : List Val) :
+    M (Except String (Val × List (List Val × Heap) × Val × List Val)) := do
+  let t ← getThr a
+  match t.st with
+  | .dead => return .error "cannot resume dead coroutine"
+  | .active => return .error "cannot resume running coroutine"
+  | .ready =>
+    let prev ← readCell CUR
+    putThr a { t with st := .active }
+    writeCell CUR (.thr a)
+    let hcur ← get
+    let hist := t.hist ++ [(args, hcur)]
+    let (a1, h1, rest) := match t.hist with
+      | [] => (args, hcur, [])
+      | (a1, h1) :: _ => (a1, h1, hist.tail)
+    set h1
+    putThr a { (← getThr a) with script := rest }
+    return .ok (prev, hist, t.fn, a1)
+
+/-- a coroutine's run: `(true, vs)` it yielded `vs`, `(false, vs)` it returned them, or the value it failed with (a
+runtime error has no place: there is no frame beyond the coroutine's own) -/
+def coRun (x : M (List Val)) : M (Except Val (Bool × List Val)) := fun h =>
+  match x h with
+  | .ok vs h => .ok (.ok (false, vs)) h
+  | .error (.yld vs) h => .ok (.ok (true, vs)) h
+  | .error (.val v) h => .ok (.error v) h
+  | .error (.rt _ m) h => .ok (.error m.bare) h
+  | .error e h => .error e h
+
+/-- the end of a resume: `a` suspended with its history, or dead; the coroutine that resumed it running again -/
+def resumeEnd (a : Nat) (prev : Val) (hist : List (List Val × Heap)) (r : Except Val (Bool × List Val)) : M Unit := do
+  let t ← getThr a
+  writeCell CUR prev
+  match r with
+  | .ok (true, _) => putThr a { t with st := .ready, hist := hist, script := [] }
+  | _ => putThr a { t with st := .dead, hist := [], script := [] }
+
+/-- what coroutine.resume returns for a run's outcome -/
+def resumeVals : Except Val (Bool × List Val) → List Val
+  | .ok (_, vs) => .bool true :: vs
+  | .error v => [.bool false, v]
+
+/-- what a function of coroutine.wrap returns: the values, or the coroutine's error value raised again, a string with
+the caller's place (lj_ffh_coroutine_wrap_err) -/
+def wrapVals : Except Val (Bool × List Val) → M (List Val)
+  | .ok (_, vs) => pure vs
+  | .error v@(.str _) => throw (.rt 1 (.val v))
+  | .error v => throw (.val v)
+
+/-- coroutine.yield: in a replay, the next resume's arguments and heap; else the run stops here (`Err.yld`) -/
+def yieldFn (args : List Val) : M (List Val) := do
+  match ← readCell CUR with
+  | .thr a => do
+    let t ← getThr a
+    -- an error handler's yield: LuaJIT's xpcall then fails with "error in error handling"
+    if t.bound == 2 then throw (.eff "coroutine.yield in an error handler" [])
+    if t.bound != 0 then callerErr "attempt to yield across C-call boundary"
+    match t.script with
+    | [] => throw (.yld args)
+    | (vs, h) :: rest => do
+      set h
+      putThr a { (← getThr a) with script := rest }
+      return vs
+  | _ => callerErr "attempt to yield across C-call boundary"
 
 -- ---------- operators ----------
 
@@ -871,6 +986,30 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
       | [_] => callerErr "assertion failed!"
       | _ :: m@(.str _) :: _ | _ :: m@(.num _) :: _ => throw (.rt 1 (.val (.str m.text)))
       | _ => throw (.val (args.getLast?.getD .nil))
+  | "coroutine.create" | "coroutine.wrap" => do
+    let f ← match args.headD .nil with
+      | f@(.fn _) | f@(.prim ..) | f@(.eff _) => pure f
+      | _ => badType "function" 0 args
+    let a ← alloc (.thr { fn := f })
+    return [if name == "coroutine.wrap" then .prim "coroutine.wrap_aux" [.thr a] else .thr a]
+  | "coroutine.yield" => yieldFn args
+  | "coroutine.status" => match args.headD .nil with
+    | .thr a => do
+      let t ← getThr a
+      let cur ← readCell CUR
+      return [lstr (match t.st with
+        | .ready => "suspended"
+        | .dead => "dead"
+        | .active => if cur.rawEq (.thr a) then "running" else "normal")]
+    | _ => argErr 1 "coroutine expected"
+  | "coroutine.running" => do
+    match ← readCell CUR with
+    | v@(.thr _) => return [v]
+    | _ => return [.nil]
+  | "coroutine.isyieldable" => do
+    match ← readCell CUR with
+    | .thr a => return [.bool ((← getThr a).bound == 0)]
+    | _ => return [.bool false]
   | "gmatch_it" => match bound with
     | [.str s, .str p, .num (.int c)] => gmatchStep s p c.toNat
     | _ => die "bad gmatch iterator"
@@ -1298,7 +1437,19 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     | .fn _ | .prim .. => pure ()
     | _ => badType "function" 1 args
     catchVal (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
-      (fun e => do pure [.bool false, (← call n (args.getD 1 .nil) [e]).headD .nil])
+      (fun e => do pure [.bool false, (← bounded 2 (call n (args.getD 1 .nil) [e])).headD .nil])
+  | "coroutine.resume" | "coroutine.wrap_aux" => do
+    let wrap := name == "coroutine.wrap_aux"
+    let a ← match (if wrap then bound else args).headD .nil with
+      | .thr a => pure a
+      | _ => argErr 1 "coroutine expected"
+    match ← resumeBegin a (if wrap then args else args.tail) with
+    -- wrap's error is its caller's (lj_err_caller)
+    | .error m => if wrap then callerErr m else return [.bool false, lstr m]
+    | .ok (prev, hist, f, a1) =>
+      let r ← coRun (call n f a1)
+      resumeEnd a prev hist r
+      if wrap then wrapVals r else return resumeVals r
   | "load" | "loadstring" => do
     let cn ← optStr name 1 args
     let mode ← optStr name 2 args
@@ -1318,7 +1469,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       | some p => pure (String.ofList p)
       | none => throw (.eff "dofile: stdin" [])
     match srcs p with
-    | some b => call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) []
+    | some b => bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [])
     | none => throw (.eff s!"dofile {p}" [])
   | "require" => do
     let m ← argStr "require" 0 args
@@ -1339,7 +1490,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     match (pathFiles path (modPath m)).findSome? srcs with
     | some b => do
       rawset LOADED (.str m) SENTINEL
-      let r := (← call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [.str m]).headD .nil
+      let r := (← bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, []⟩))) [.str m])).headD .nil
       if !r.isNil then rawset LOADED (.str m) r
       let v ← rawget LOADED (.str m)
       if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
@@ -1363,7 +1514,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     | .nil | .fn _ | .prim .. => pure ()
     | _ => badType "function" 1 args
     let len := (← tlen t)
-    sortAux n t cmp 1 len
+    bounded 1 (sortAux n t cmp 1 len)
     pure []
   | _ => basicFn tgt name bound args
 
@@ -1374,7 +1525,7 @@ def readChunk (n : Nat) (f : Val) (acc : List Char) : M (List Char) :=
   match n with
   | 0 => throw .fuel
   | n + 1 => do
-    match ← catchVal (call n f []) (fun vs => pure (some (vs.headD .nil))) (fun _ => pure none) with
+    match ← catchVal (bounded 1 (call n f [])) (fun vs => pure (some (vs.headD .nil))) (fun _ => pure none) with
     | some .nil | some (.str []) => pure acc
     | some (.str s) => readChunk n f (acc ++ s)
     | none => throw (.eff "load: an error in the reader" [])
@@ -1491,7 +1642,7 @@ def gsub (n : Nat) (args : List Val) : M (List Val) :=
     let maxS ← optInt "gsub" 3 args (s.length + 1)
     let anchor := p.head? == some '^'
     let ms : Pat.MS := ⟨s.toArray, (if anchor then p.tail else p).toArray⟩
-    gsubGo n ms repl anchor maxS 0 0 []
+    bounded 1 (gsubGo n ms repl anchor maxS 0 0 [])
 
 def gsubGo (n : Nat) (ms : Pat.MS) (repl : Val) (anchor : Bool) (maxS : Int) (src cnt : Nat) (acc : List Char) :
     M (List Val) :=
@@ -1564,11 +1715,14 @@ def basics : List String :=
   ["type", "tostring", "tonumber", "ipairs", "pairs", "next", "select", "unpack", "rawget", "rawset", "rawequal",
    "setmetatable", "getmetatable", "error", "assert", "pcall", "xpcall", "require", "load", "loadstring", "dofile"]
 
-/-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5) -/
+def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
+
+/-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
+(7: the main thread) -/
 def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
-     (lstr "_G", .tbl 0), (lstr "io", .eff "io"), (lstr "os", .eff "os"), (lstr "print", .eff "print"),
+     (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .eff "io"), (lstr "os", .eff "os"), (lstr "print", .eff "print"),
      (lstr "debug", .eff "debug")] }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
     "match", "gmatch", "gsub"]
@@ -1581,8 +1735,8 @@ def initHeap : Heap :=
   -- package.path is LUA_PATH=./?.lua's: LuaJIT's default adds directories of the system's
   let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "./?.lua")] }
   let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
-    (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "io", .eff "io"), (lstr "os", .eff "os"),
+    (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .eff "io"), (lstr "os", .eff "os"),
     (lstr "debug", .eff "debug")] }
-  #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg]
+  #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil]
 
 end Lua

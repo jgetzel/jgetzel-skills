@@ -608,11 +608,11 @@ theorem alloc_call {β} (I : Sem) (n : Nat) (c : Clo) (args : List Val) (k : Lis
     EStateM.set, pure, EStateM.pure]
   rw [call_fn I n _ args _ c (by simp), hk]
 
-/-- `dofile(p)` of a file given as source: its chunk, `k`, on no arguments -/
+/-- `dofile(p)` of a file given as source: its chunk, `k`, on no arguments, where a yield cannot cross -/
 theorem call_dofile (I : Sem) (n : Nat) (p : List Char) (b : Block) (k : List Val → Nat → M (List Val)) (h : Heap)
     (hk : CFn I k ⟨[], true, b, []⟩) (hs : I.srcs (String.ofList p) = some b) :
     call I.srcs I.oracle I.tgt (n + 3) (.prim "dofile" []) [.str p] h =
-      frame (do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n) h := by
+      frame (bounded 1 (do let _ ← alloc (.clo ⟨[], true, b, []⟩); k [] n)) h := by
   have e : ∀ X Y : M (List Val), X h = Y h → frame X h = frame Y h := fun X Y e => by simp only [frame, e]
   rw [call, callPrim]; apply e
   have ho : optStr "dofile" 0 [.str p] = pure (some p) := rfl
@@ -624,8 +624,7 @@ theorem call_dofile (I : Sem) (n : Nat) (p : List Char) (b : Block) (k : List Va
 /-- `require m` of a module given as source and not yet loaded (lib_package.c): its chunk, `k`, on its name -/
 def S.requireK (m : List Char) (c : Clo) (k : List Val → Nat → M (List Val)) (n : Nat) : M (List Val) := do
   rawset LOADED (.str m) SENTINEL
-  let _ ← alloc (.clo c)
-  let r := (← k [.str m] n).headD .nil
+  let r := (← bounded 1 (do let _ ← alloc (.clo c); k [.str m] n)).headD .nil
   if !r.isNil then rawset LOADED (.str m) r
   let v ← rawget LOADED (.str m)
   if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
@@ -650,7 +649,53 @@ theorem call_require (I : Sem) (n : Nat) (m p : List Char) (b : Block) (k : List
   simp only [hv, Bool.false_eq_true, ↓reduceIte, h1]
   rw [bind_ok hp]
   simp only [hf, S.requireK]
-  rw [alloc_call I n _ _ k hk]
+  have := alloc_call I n ⟨[], true, b, []⟩ [.str m] k hk pure
+  simp only [bind_pure] at this
+  rw [this]
+
+-- ---------- coroutines ----------
+
+/-- `coroutine.resume(co, ...)`: `resumeBegin`, then the coroutine's run (the replay of its resumes so far, then
+this one) and `resumeEnd`; LuaJIT's message if it cannot be resumed -/
+theorem call_resume (I : Sem) (n a : Nat) (args : List Val) :
+    call I.srcs I.oracle I.tgt (n + 2) (.prim "coroutine.resume" []) (.thr a :: args) =
+      frame (do
+        match ← resumeBegin a args with
+        | .error m => pure [.bool false, lstr m]
+        | .ok (prev, hist, f, a1) =>
+          let r ← coRun (call I.srcs I.oracle I.tgt n f a1)
+          resumeEnd a prev hist r
+          pure (resumeVals r)) := by
+  funext h; rw [call, callPrim]; rfl
+
+/-- `coroutine.yield(...)` -/
+theorem call_yield (I : Sem) (n : Nat) (vs : List Val) :
+    call I.srcs I.oracle I.tgt (n + 2) (.prim "coroutine.yield" []) vs = frame (yieldFn vs) := by
+  funext h; rw [call, callPrim] <;> first | decide | (rw [basicFn] <;> first | decide | rfl)
+
+theorem readCell_ok {h : Heap} {c : Nat} {v : Val} (hc : h[c]? = some (.cell v)) : readCell c h = .ok v h := by
+  simp only [readCell, getObj, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, hc, pure, EStateM.pure]
+theorem getThr_ok {h : Heap} {a : Nat} {t : Thr Heap} (ht : h[a]? = some (.thr t)) : getThr a h = .ok t h := by
+  simp only [getThr, getObj, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, ht, pure, EStateM.pure]
+/-- a yield with no resume left to replay, outside a builtin calling back: the run stops, suspended -/
+theorem yield_susp {h : Heap} {a : Nat} {t : Thr Heap} {vs : List Val} (hc : h[CUR]? = some (.cell (.thr a)))
+    (ht : h[a]? = some (.thr t)) (hb : t.bound = 0) (hs : t.script = []) : yieldFn vs h = .error (.yld vs) h := by
+  have e1 := readCell_ok hc
+  have e2 := getThr_ok ht
+  simp only [yieldFn, bind, EStateM.bind, e1, e2, hb, hs]
+  rfl
+
+/-- a yield in a replay: the next resume's arguments, in the heap that resume went on in -/
+theorem yield_replay {h h1 : Heap} {a : Nat} {t t1 : Thr Heap} {vs ws : List Val} {rest : List (List Val × Heap)}
+    (hc : h[CUR]? = some (.cell (.thr a)))
+    (ht : h[a]? = some (.thr t)) (hb : t.bound = 0) (hs : t.script = (ws, h1) :: rest) (ht1 : h1[a]? = some (.thr t1)) :
+    yieldFn vs h = .ok ws (h1.set! a (.thr { t1 with script := rest })) := by
+  have e1 := readCell_ok hc
+  have e2 := getThr_ok ht
+  have e3 := getThr_ok ht1
+  simp only [yieldFn, bind, EStateM.bind, e1, e2, hb, hs]
+  simp [set, MonadStateOf.set, EStateM.set, EStateM.bind, e3, putThr, modify, modifyGet, MonadStateOf.modifyGet,
+    EStateM.modifyGet, pure, EStateM.pure]
 
 -- functions
 theorem CFn_fn {c : Clo} {k : List Val → Nat → List Val → M Flow} (hk : ∀ args n, CBs (k args n) ⟨c.env, []⟩ c.params (fun cx =>
