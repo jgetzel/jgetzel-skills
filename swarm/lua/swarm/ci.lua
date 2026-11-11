@@ -1,6 +1,7 @@
 -- main's CI: watchd's poll into the ci table, the red-run task, merge-to-green per task; cmd ci reads the table.
 local util, db, proc, json = require "swarm.util", require "swarm.db", require "swarm.proc", require "swarm.json"
 local msgs, agents = require "swarm.msgs", require "swarm.agents"
+local bases = require "swarm.bases"
 local lfs, ptime = require "lfs", require "posix.time"
 local d, now = util.d, util.now
 local M = {}
@@ -87,7 +88,10 @@ function M.ci_poll(c, repo, every)
   -- Push runs only: a scheduled workflow (an uptime check) on main's head isn't main's CI, and its green hid a red.
   -- shortcut: a check run started by hand (workflow_dispatch) isn't counted. .claude/swarm.json {"ci": {"workflow":
   -- "ci.yml"}} keeps only that workflow's runs (a substring of its path), when other push workflows run on main.
-  local out = proc.run({ "gh", "api", "repos/{owner}/{repo}/actions/runs?branch=main&event=push&per_page=20", "--jq",
+  -- the repo's base (.claude/swarm.json base, else main); a base other than main that origin lacks is local-only: no CI
+  local base = bases.default(repo)
+  if base ~= "main" and not bases.remote_ref(base, repo) then return end
+  local out = proc.run({ "gh", "api", "repos/{owner}/{repo}/actions/runs?branch=" .. base .. "&event=push&per_page=20", "--jq",
     "[.workflow_runs[] | {databaseId: .id, headSha: .head_sha, status, conclusion, url: .html_url,"
     .. " createdAt: .created_at, updatedAt: .updated_at, event, workflow: .name, path}]" }, repo)
   local runs = out and out ~= "" and json.decode(out) or nil

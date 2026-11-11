@@ -12,7 +12,7 @@ eq(cost.key("nix build .#x > /tmp/o"), "nix build .#x")
 eq(cost.shell_cmd("zsh -c source s.sh && eval 'cd /a && it'\\''s' \\< /dev/null && pwd -P >| /tmp/x"), "cd /a && it's")
 
 local src = require("swarm.util").slurp(package.searchpath("swarm.cost", package.path))  -- before the chdir
-local dir = stdlib.mkdtemp("/tmp/swarm-cost-XXXXXX")
+local dir = stdlib.realpath(stdlib.mkdtemp("/tmp/swarm-cost-XXXXXX"))  -- realpath: git reports /private/tmp
 stdlib.setenv("SWARM_DB", dir .. "/swarm.db")
 stdlib.setenv("XDG_STATE_HOME", dir .. "/state")
 assert(require("swarm.proc").run({ "git", "init", "-q", "-b", "main", dir .. "/repo" }))

@@ -1,6 +1,7 @@
 -- Worktrees and the conflict tick: edits, clash, real_hunk, snapshot, trial_merge, conflict_tick.
 local util, proc, db, json, re = require "swarm.util", require "swarm.proc", require "swarm.db", require "swarm.json",
   require "swarm.re"
+local bases = require "swarm.bases"
 local difflib, locks, msgs = require "swarm.difflib", require "swarm.locks", require "swarm.msgs"
 local stdlib, lfs = require "posix.stdlib", require "lfs"
 local utf8 = require "lua-utf8"
@@ -189,21 +190,31 @@ local function sorted_keys(t)
   return r
 end
 
-function M.conflict_tick(c, t)
-  local wts = M.wt_map(c)
-  -- origin/main, unless local main is ahead: a stale local main counts merged-in PRs as the agent's own edits
+-- the commit work for base `b` is measured against: origin/<b>, unless local <b> is ahead (a stale local base counts
+-- merged-in PRs as the agent's own edits); main also falls back to master
+function M.base_sha(b)
   local have = {}
-  for _, b in ipairs({ "origin/main", "main", "master" }) do
-    if proc.git({ "rev-parse", "--verify", "-q", b }) then have[#have + 1] = b end
+  for _, r in ipairs(b == "main" and { "origin/main", "main", "master" } or { "origin/" .. b, b }) do
+    if proc.git({ "rev-parse", "--verify", "-q", r }) then have[#have + 1] = r end
   end
-  if have[1] == "origin/main" and have[2] == "main" and proc.gx({ "merge-base", "--is-ancestor", "origin/main", "main" }) == 0 then
+  if #have > 1 and have[1] == "origin/" .. b and have[2] == b and proc.gx({ "merge-base", "--is-ancestor", have[1], b }) == 0 then
     table.remove(have, 1)
   end
-  local base = have[1] and proc.git({ "rev-parse", have[1] }) or nil
-  local snaps, bywt, ontos = {}, {}, {}
+  return have[1] and proc.git({ "rev-parse", have[1] }) or nil
+end
+
+function M.conflict_tick(c, t)
+  local wts = M.wt_map(c)
+  local snaps, bywt, ontos, bases_of, bnames, shas = {}, {}, {}, {}, {}, {}
   for _, n in ipairs(sorted_keys(wts)) do
     local w = wts[n]
-    if bywt[w] == nil then bywt[w] = M.snapshot(w, base) or false end
+    -- the base an agent's work lands on: the one of the task it holds, else the repo's (sw-bases)
+    local held = c:one("select base from task where owner=? and state in ('claimed','blocked') order by id", n)
+    local bn = bases.base_for(held)
+    local base = shas[bn]
+    if base == nil then base = M.base_sha(bn) or false; shas[bn] = base end
+    bases_of[n], bnames[n] = base or nil, bn
+    if bywt[w] == nil then bywt[w] = M.snapshot(w, base or nil) or false end
     if bywt[w] then
       snaps[n] = bywt[w]
       c:exec("update agent set snap=? where name=?", json.encode(bywt[w]), n)
@@ -215,7 +226,7 @@ function M.conflict_tick(c, t)
   for i, a in ipairs(names) do
     for k = i + 1, #names do
       local b = names[k]
-      if wts[a] ~= wts[b] then
+      if wts[a] ~= wts[b] and bnames[a] == bnames[b] then  -- work for different bases can't meet
         local fa = {}
         for _, f in ipairs(snaps[a].files) do fa[f] = true end
         for _, f in ipairs(snaps[b].files) do
@@ -231,6 +242,7 @@ function M.conflict_tick(c, t)
   end
   for _, ab in ipairs(candl) do  -- names are sorted, so this is sorted(cand)
     local a, b = ab[1], ab[2]
+    local base = bases_of[a] or ""
     local key = snaps[a].tree .. snaps[b].tree .. base
     local old = c:one("select key from pairkey where a=? and b=?", a, b)
     if not (old and old.key == key) then

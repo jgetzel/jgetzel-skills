@@ -38,7 +38,9 @@ your name is in `$SWARM_NAME`.
   see (a migration number: `migrations/0070*`, not `migrations/0070`);
   it frees itself when your work on it lands, or `swarm unlock`.
 - **Commits.** Every commit carries a `Swarm-Agent: <your name>` trailer.
-- **CI.** Work on main is done: once your commit (or its PR's merge) is on `origin/main`, `swarm task
+- **CI.** Work is done once it is on your task's base (`swarm task show` prints `base:` when the task has one, else
+  the repo's `.claude/swarm.json` base, else main): your commit (or its PR's merge) is on `origin/<base>`, or on the
+  local branch for a local-only base. Then `swarm task
   done <id> --evidence <sha>`; don't wait for CI, even where the repo says to watch it. watchd watches
   main's CI and makes a red run one `main red: …` task, done by watchd on the next green run.
   `swarm ci <sha> [--wait]` reads what watchd polled (exit 0 green, 1 red, 2 pending). Never `gh run
@@ -60,6 +62,6 @@ your name is in `$SWARM_NAME`.
 - **Ending.** After `task done`, do what it prints (take the next task, or go
   idle). Don't close your tab, end yourself or remove your worktree: watchd
   ends you once you are idle, own no claim or lock, stay for nothing and your
-  work is on main.
+  work is on your task's base.
   If review asks for changes you are still here to make them. Don't poll; your
   waiting hook wakes you. A task with `after #N` can't be claimed until #N is done.

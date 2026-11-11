@@ -99,6 +99,7 @@ local function parser()
   opt(q, "--after", nil, id_list):description("ids it waits on: 3 or 3,5")
   opt(q, "--model")
   opt(q, "--effort"):choices(EFFORTS)
+  opt(q, "--base"):description("branch its work lands on (default: .claude/swarm.json base, else main)")
   q = p:command("after")  -- change an open task's dependencies; an empty list clears them
   q:argument("id"):convert(int)
   q:argument("deps"):args("?"):convert(id_list)

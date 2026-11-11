@@ -42,8 +42,8 @@ assert(bad == nil and err)
 
 -- proc
 local o, er, code = proc.exec({ "sh", "-c", 'cat; echo err >&2; pwd; echo "$FOO"; exit 3' },
-  { input = "in\n", cwd = "/tmp", env = { FOO = "bar" } })
-assert(o == "in\n/tmp\nbar\n" and er == "err\n" and code == 3, o)
+  { input = "in\n", cwd = "/", env = { FOO = "bar" } })
+assert(o == "in\n/\nbar\n" and er == "err\n" and code == 3, o)
 local big = ("x"):rep(300000)
 o = proc.exec({ "sh", "-c", "cat; head -c 300000 /dev/zero >&2" }, { input = big })
 assert(o == big)  -- 300 KB in, out and on stderr at once: no deadlock

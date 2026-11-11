@@ -6,10 +6,11 @@
 local json, util = require "swarm.json", require "swarm.util"
 local lfs = require "lfs"
 local unistd = require "posix.unistd"
+local stdlib = require "posix.stdlib"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local DIR = os.getenv("SWARM_MODEL_TRACES") or (here .. "/../../model/traces")
 local COMMS, ROSTER, CAP = "m-comms", 2, "2"
-local SYS = { released = "system", digest = "system", dm = "dm", answer = "dm" }
+local SYS = { released = "system", digest = "system", nudge = "system", dm = "dm", answer = "dm" }
 
 -- the model's unread ids for a (Model.lean's unread)
 local function model_unread(st, a)
@@ -94,8 +95,133 @@ end
 
 local function setdb(t, sql, ...) t:q(sql, ...) end
 
+-- ---- git: the model's worktree slots, branches and commits in the fixture's repo ----
+-- G.P[w] the path of worktree slot w's current incarnation, G.BR[b] branch b's name, G.C[k] model commit k's sha.
+-- The main checkout (t.repo) is detached and outside the model; branches 0.. are bases (main, formal, ..).
+local function real(p) return p and (stdlib.realpath(p) or p) end
+local function out(t, cwd, ...) return util.strip(t:git(cwd, ...)) end
+
+local function git_setup(t, s0)
+  local G = { P = {}, BR = { [0] = "main" }, C = {}, k = 0, n = 0, pid = {} }
+  G.nbases = #s0.brs - #s0.wts
+  t:git(t.repo, "worktree", "remove", "--force", t.wt)
+  t:git(t.repo, "branch", "-D", "w2")
+  for b = 1, G.nbases - 1 do
+    G.BR[b] = b == 1 and "formal" or ("base" .. b)
+    t:git(t.repo, "branch", G.BR[b])
+  end
+  t:git(t.repo, "checkout", "-q", "--detach")
+  G.C[0] = out(t, t.repo, "rev-parse", "HEAD")
+  t:defer(function() for _, pid in pairs(G.pid) do os.execute("kill " .. pid .. " 2>/dev/null") end end)
+  return G
+end
+
+-- the git half of one model action; false if it isn't one
+local function gitact(t, name, p, G, hc)
+  local function path(w) return G.P[w] or error("worktree " .. w .. " was never added", 0) end
+  if name == "gitAdd" then
+    G.k = G.k + 1
+    G.P[p.w40] = ("%s/wt%d-%s"):format(t.d, G.k, p.a40)
+    G.BR[G.nbases + p.w40] = ("%s/w%d-%d"):format(p.a40, p.w40, G.k)
+    t:git(t.repo, "worktree", "add", "-q", "-b", G.BR[G.nbases + p.w40], G.P[p.w40], "main")
+  elseif name == "gitEdit" then
+    G.n = G.n + 1
+    local f = ("%s/f%d.txt"):format(path(p.w41), G.n)
+    local h = assert(io.open(f, "w")); h:write("f" .. G.n .. "\n"); h:close()
+    t:hook(p.a41, "pre-tool", { tool_name = "Edit", tool_input = { file_path = f } }, hc(p.a41))
+  elseif name == "gitCommit" then
+    t:git(path(p.w42), "add", "-A")
+    t:git(path(p.w42), "commit", "-qm", "c")
+  elseif name == "gitLand" then t:git(path(p.w43), "push", "-q", ".", "HEAD:" .. G.BR[p.r43])
+  elseif name == "gitSquash" then
+    local tmp, head = t.d .. "/squash", out(t, path(p.w44), "rev-parse", "HEAD")
+    t:git(t.repo, "worktree", "add", "-q", "--detach", tmp, G.BR[p.r44])
+    t:git(tmp, "merge", "-q", "--squash", head)
+    t:git(tmp, "commit", "-qm", "squash")
+    t:git(tmp, "push", "-q", ".", "HEAD:" .. G.BR[p.r44])
+    t:git(t.repo, "worktree", "remove", "--force", tmp)
+  elseif name == "gitCheckout" then t:git(path(p.w45), "checkout", "-q", G.BR[p.r45])
+  elseif name == "wtAge" then  -- what sweep reads: the directory's and the HEAD log's mtime
+    local old = util.now() - 3600
+    lfs.touch(path(p.w46), old, old)
+    lfs.touch(out(t, path(p.w46), "rev-parse", "--absolute-git-dir") .. "/logs/HEAD", old, old)
+  elseif name == "wtProc" then
+    if p.v47 then
+      G.pid[p.w47] = util.strip(t:exec({ "sh", "-c", "cd \"$1\" && { sleep 3600 >/dev/null 2>&1 & echo $!; }", "_", path(p.w47) }).stdout)
+    else
+      os.execute("kill " .. G.pid[p.w47])
+      G.pid[p.w47] = nil
+    end
+  else
+    return false
+  end
+  return true
+end
+
+-- model commit ids of the new state: a head or tip not seen before is the sha git has there now
+local function learn(t, st, G, where)
+  local function see(k, sha)
+    if G.C[k] then return end
+    for j, x in pairs(G.C) do
+      if x == sha then error(("%s: commit %d is %s, which is commit %d"):format(where, k, sha, j), 0) end
+    end
+    G.C[k] = sha
+  end
+  for i, x in ipairs(st.wts) do
+    if x.on and lfs.attributes(G.P[i - 1]) then see(x.head, out(t, G.P[i - 1], "rev-parse", "HEAD")) end  -- else gitcheck says
+  end
+  for i, k in ipairs(st.brs) do
+    local sha = k >= 0 and t:exec({ "git", "-C", t.repo, "rev-parse", "--verify", "-q", "refs/heads/" .. G.BR[i - 1] }).stdout
+    if sha and sha ~= "" then see(k, util.strip(sha)) end
+  end
+end
+
+local function gitcheck(t, st, where, G, N)
+  local function fail(what, got, want)
+    error(("%s: %s: git has %s, model has %s"):format(where, what, tostring(got), tostring(want)), 0)
+  end
+  local listed, cur = {}, nil
+  for _, l in ipairs(util.splitlines(t:git(t.repo, "worktree", "list", "--porcelain"))) do
+    if l:match("^worktree ") then cur = { }; listed[real(l:sub(10))] = cur
+    elseif l:match("^HEAD ") then cur.head = l:sub(6)
+    elseif l:match("^branch refs/heads/") then cur.br = l:sub(19) end
+  end
+  local now = util.now()
+  for i, x in ipairs(st.wts) do
+    local w, p = i - 1, G.P[i - 1]
+    local l = p and listed[real(p)]
+    if x.on then
+      if not l then fail("worktree " .. w, "none", "on") end
+      if l.br ~= G.BR[x.br] then fail("worktree " .. w .. " branch", l.br, G.BR[x.br]) end
+      if l.head ~= G.C[x.head] then fail("worktree " .. w .. " HEAD", l.head, G.C[x.head]) end
+      local st_ = util.strip(t:git(p, "status", "--porcelain"))
+      if (st_ ~= "") ~= x.dirty then fail("worktree " .. w .. " dirty", st_, x.dirty) end
+      local last = math.max(lfs.attributes(p, "modification") or 0,
+        lfs.attributes(out(t, p, "rev-parse", "--absolute-git-dir") .. "/logs/HEAD", "modification") or 0)
+      if (now - last < 1800) ~= x.recent then fail("worktree " .. w .. " recent", now - last, x.recent) end
+    elseif l or (p and lfs.attributes(p)) then
+      fail("worktree " .. w, p, "removed")
+    end
+  end
+  for i, k in ipairs(st.brs) do
+    local b = G.BR[i - 1]
+    if b then
+      local sha = util.strip(t:exec({ "git", "-C", t.repo, "rev-parse", "--verify", "-q", "refs/heads/" .. b }).stdout or "")
+      if k >= 0 and sha ~= G.C[k] then fail("branch " .. b, sha, G.C[k]) end
+      if k < 0 and sha ~= "" then fail("branch " .. b, sha, "none") end
+    end
+  end
+  for slot, g in pairs(st.ag) do
+    if g.st ~= "unborn" and g.st ~= "ended" then
+      local r = t:q1("select wt from agent where name=?", N[slot])
+      local want = g.wt >= 0 and real(G.P[g.wt]) or nil
+      if real(r and r.wt) ~= want then fail("agent " .. N[slot] .. " wt", r and r.wt, want) end
+    end
+  end
+end
+
 -- one model action, done to the db the way the code (or the world) does it
-local function act(t, name, p, N)
+local function act(t, name, p, N, G, prev)
   local now = util.now()
   local function hc(who)  -- a spawned agent is bound to the terminal the launch made: its commands come from there
     local r = t:q1("select hc from agent where name=?", who)
@@ -140,14 +266,22 @@ local function act(t, name, p, N)
   elseif name == "expireLock" then setdb(t, "update lock set lease_until=? where path=?", now - 10, p.p24)
   elseif name == "leave" then sw(p.a25, "leave")
   elseif name == "add" then
-    if #p.d28 > 0 then sw(COMMS, "task", "add", "a task", "--after", ids(p.d28)) else sw(COMMS, "task", "add", "a task") end
+    local args = { COMMS, "task", "add", "a task" }
+    if #p.d28 > 0 then table.insert(args, "--after"); table.insert(args, ids(p.d28)) end
+    for id, k in ipairs(prev.task) do  -- the new task is the first absent one; a task on a base other than main says so
+      if k.st == "absent" then
+        if k.base ~= 0 then table.insert(args, "--base"); table.insert(args, G.BR[k.base]) end
+        break
+      end
+    end
+    sw(unpack(args))
   elseif name == "after" then
     if #p.d29 > 0 then sw(COMMS, "task", "after", tostring(p.t29), ids(p.d29))
     else sw(COMMS, "task", "after", tostring(p.t29)) end
   elseif name == "unblock" then sw(COMMS, "task", "unblock", tostring(p.t30), "--answer", "go left")
   elseif name == "drop" then sw(COMMS, "task", "drop", tostring(p.t31))
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
-  else error("no replay for model action " .. name, 0) end
+  elseif not gitact(t, name, p, G, hc) then error("no replay for model action " .. name, 0) end
 end
 
 local function replay(t, file)
@@ -155,6 +289,7 @@ local function replay(t, file)
   local trace = json.decode(text)
   t:fakes()
   local s0 = trace.states[1].s
+  local G = git_setup(t, s0)
   local roster = {}
   for name, g in pairs(s0.ag) do if g.st == "working" then roster[#roster + 1] = name end end
   table.sort(roster)
@@ -167,11 +302,12 @@ local function replay(t, file)
   local N, seen, prev = {}, { n = 0 }, s0
   for _, name in ipairs(roster) do N[name] = name end
   check(t, s0, "init", N, seen)
+  gitcheck(t, s0, "init", G, N)
   for i = 2, #trace.states do
     local x = trace.states[i]
     local name, picks = x.action, x.picks
     local where = ("step %d %s %s"):format(i - 1, name, t.repr(picks))
-    local ok, err = pcall(act, t, name, picks, N)
+    local ok, err = pcall(act, t, name, picks, N, G, prev)
     if not ok then error(where .. ": " .. tostring(err), 0) end
     local st = x.s
     local M = {}
@@ -198,6 +334,10 @@ local function replay(t, file)
       end
     end
     check(t, st, where, N, seen, M)
+    if name == "tick" or name:match("^git") or name:match("^wt") then  -- nothing else changes git or agent.wt
+      learn(t, st, G, where)
+      gitcheck(t, st, where, G, N)
+    end
     prev = st
   end
 end

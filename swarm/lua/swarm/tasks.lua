@@ -204,8 +204,8 @@ function M.cmd_task(c, a)
       no_task_to_wait_on(c, deps)
       local ds = {}
       for i, x in ipairs(deps) do ds[i] = d(x) end
-      c:exec("insert into task(title,body,created_by,deps,model,effort,created_at) values(?,?,?,?,?,?,?)",
-        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, t)
+      c:exec("insert into task(title,body,created_by,deps,model,effort,base,created_at) values(?,?,?,?,?,?,?,?)",
+        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, a.base, t)
       local id = c:last_id()
       db.log(c, n, "task-add", nil, ("#%s %s"):format(d(id), a.title))
       return id
@@ -254,6 +254,7 @@ function M.cmd_task(c, a)
     local s = ("#%s %s %s  %s\ntiming: queue %s, work %s, total %s, blocked %s, claims %d, releases %d, held by %s"):format(
       d(r.id), r.state, py(r.owner) or "-", r.title, f("queue_wait_s"), f("work_s"), f("total_s"), f("blocked_s"),
       tm.claims, tm.releases, py(table.concat(tm.holders, ", ")) or "-")
+    if py(r.base) then s = s .. "\nbase: " .. r.base end
     if py(tm.claim_ctx) then s = s .. (", ctx %dk at claim"):format(math.floor(tm.claim_ctx / 1000)) end
     if py(tm.done_ctx) then s = s .. (" -> %dk at done"):format(math.floor(tm.done_ctx / 1000)) end
     if py(tm.merged_at) then

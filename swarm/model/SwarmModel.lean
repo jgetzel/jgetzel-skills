@@ -10,3 +10,6 @@ import SwarmModel.Fair
 import SwarmModel.Taken
 import SwarmModel.Boot
 import SwarmModel.Holder
+import SwarmModel.Workspaces
+import SwarmModel.Exists
+import SwarmModel.Comms

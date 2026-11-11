@@ -6,7 +6,7 @@ local unistd, lfs = require "posix.unistd", require "lfs"
 local M = {}
 
 M.PROC = os.getenv("SWARM_PROC") or "/proc"
-M.OS = require("posix.sys.utsname").uname().sysname  -- "Linux", "Darwin"
+M.OS = os.getenv("SWARM_OS") or require("posix.sys.utsname").uname().sysname  -- "Linux", "Darwin"; tests fake Linux
 
 -- `ps` time ([[dd-]hh:]mm:ss[.cc], both systems' etime and time) in seconds.
 function M.ps_secs(s)

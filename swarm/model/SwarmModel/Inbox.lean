@@ -99,9 +99,12 @@ lifecycle picked it from the pool, and nothing in the tick before that spawn tak
 theorem tick_inv {c : Cfg} (P : State → Prop)
     (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x, P x → P (reapLocks x)) (hend : ∀ x a, P x → P (endAgent x a))
     (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
-    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s) : P (tickOf c s) := by
+    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s)
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h) : P (tickOf c s) := by
   have h1 : P (reapLocks (reapTasks c s)) := hlocks _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
-  unfold tickOf lifecycle
+  unfold tickOf
+  refine hgit _ _ ?_
+  unfold lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
   have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
     (fun x : State => P x ∧ ∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) c.agents s1 ⟨h1, fun _ h => h⟩ (fun b a hb => by
@@ -502,6 +505,8 @@ theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c
         exact ⟨by omega, fun i hi hij had => by
           rw [← hsn]; exact (hI.2.1 j (by rw [hsn]; exact hj)).2 i hi (by omega) had⟩
   case lock a p => obtain ⟨_, rfl⟩ := hstep; exact ii_frame (s := s) rfl rfl rfl rfl rfl hs
+  case world w op => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case git a op => obtain ⟨_, rfl⟩ := hstep; exact ii_setAg (fun _ => Or.inl rfl) hs
   case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact ii_frame (s := s) rfl rfl rfl rfl rfl hs
   case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact ii_frame (s := s) rfl rfl rfl rfl rfl hs
   case claimWrite a =>

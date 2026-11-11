@@ -201,7 +201,7 @@ theorem spawnFor_own {c : Cfg} {pl : List Nat} {y : State} {u a t : Nat} (hlt : 
     · rename_i hc
       simp only [hna]
       rw [if_pos hc]
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _) a' u t with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _) a' u t with e | e
       · refine Or.inl ?_
         simp only [ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h ⊢
         rw [e] at h; simpa only [tk_mk, setAg_task, tk_def] using h
@@ -345,7 +345,8 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .postTo b u v, hs => exact step_gen (by simp) hl hs
   | .stop b u, hs => exact step_gen (by simp) hl hs
   | .wakeRead b, hs => exact step_gen (by simp) hl hs
-  | .dirty b u v, hs => exact step_gen (by simp) hl hs
+  | .git b op, hs => exact step_gen (by simp) hl hs
+  | .world w op, hs => exact step_gen (by simp) hl hs
   | .stale b, hs => exact step_gen (by simp) hl hs
   | .nudge b, hs => exact step_gen (by simp) hl hs
   | .waiterGone b, hs => exact step_gen (by simp) hl hs

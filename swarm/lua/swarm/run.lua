@@ -333,8 +333,16 @@ function M.cmd_run(c, a)
     if f ~= "" then files[#files + 1] = f end
   end
   local before = hashes(top, files)
+  -- The target dir first: rsync's --mkpath is GNU-only (macOS's openrsync refuses it).
+  local mk = M.ssh_cmd()
+  mk[#mk + 1], mk[#mk + 2] = tgt, "mkdir -p " .. util.shquote(src)
+  local _, merr, mrc = proc.exec(mk)
+  if mrc ~= 0 then
+    local last = util.splitlines(util.strip(merr))
+    util.die(("sync to %s failed (mkdir exit %d: %s); the job never ran."):format(a.on, mrc, last[#last] or "?"), 255)
+  end
   local _, rerr, rrc = proc.exec({ "rsync", "-rlpD", "--checksum", "--delete", "--exclude=.git", "--filter=:- .gitignore",
-    "--mkpath", "-e", ssh, top .. "/", tgt .. ":" .. src .. "/" })
+    "-e", ssh, top .. "/", tgt .. ":" .. src .. "/" })
   local sync = now() - t0
   if rrc ~= 0 then
     local last = util.splitlines(util.strip(rerr))

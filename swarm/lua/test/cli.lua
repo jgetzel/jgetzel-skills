@@ -27,6 +27,7 @@ local db = require "swarm.db"
 local stdlib = require "posix.stdlib"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local M = {}
+M.XDG = os.getenv("XDG_DATA_HOME") or ((os.getenv("HOME") or "") .. "/.local/share")
 M.SWARM = os.getenv("SWARM_CLI") or stdlib.realpath(here .. "/../../swarm")
 stdlib.setenv("XDG_STATE_HOME", stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-state-XXXXXX"))  -- the cmd-cost history is per user: never the real one
 M.PATH = os.getenv("PATH")  -- before any spec puts its own fakes on PATH
@@ -88,8 +89,11 @@ function T:sw(who, ...)
   local args, o = { M.SWARM, ... }, {}
   if type(args[#args]) == "table" then o = table.remove(args) end
   local env = { SWARM_DB = self.db, SWARM_NAME = who, HC_TERMINAL_ID = o.hc or false,
-                PATH = self.fakebin and (self.fakebin .. ":" .. M.PATH) or M.PATH, SWARM_LAUNCH = self.launch }
+                PATH = self.fakebin and (self.fakebin .. ":" .. M.PATH) or M.PATH, SWARM_LAUNCH = self.launch,
+                XDG_DATA_HOME = M.XDG }  -- the rocks tree is found through the real HOME, not a test's fake one
   for k, v in pairs(o.env or {}) do env[k] = v end
+  -- a faked /proc is Linux's layout; macOS reads sysctl, vm_stat and lsof instead
+  if env.SWARM_PROC then env.SWARM_OS = env.SWARM_OS or "Linux" end
   -- an agent's own terminal would make `hc ls` part of the test
   local r = self:exec(args, { env = env, input = o.stdin, cwd = o.cwd or self.cwd[who] or self.repo })
   if o.ok ~= false and r.code ~= 0 then
@@ -218,7 +222,7 @@ end
 
 function M.new()
   local t = setmetatable({ cleanups = {} }, T)
-  t.d = stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-cli-XXXXXX")
+  t.d = stdlib.realpath(stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-cli-XXXXXX"))  -- realpath: git and lsof report /private/var, not /var
   t.repo, t.wt, t.db = t.d .. "/repo", t.d .. "/wt", t.d .. "/swarm.db"
   os.execute("mkdir " .. util.shquote(t.repo))
   t:git(t.repo, "init", "-q", "-b", "main")

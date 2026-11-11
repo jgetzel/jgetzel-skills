@@ -3,6 +3,7 @@ local util, proc, json, re, db = require "swarm.util", require "swarm.proc", req
 local agents, msgs, tasks, conflict, machine = require "swarm.agents", require "swarm.msgs", require "swarm.tasks",
   require "swarm.conflict", require "swarm.machine"
 local run, ci, cost = require "swarm.run", require "swarm.ci", require "swarm.cost"
+local bases = require "swarm.bases"
 local lfs = require "lfs"
 local unistd, stdlib, signal = require "posix.unistd", require "posix.stdlib", require "posix.signal"
 local pstat = require "posix.sys.stat"
@@ -115,6 +116,12 @@ end
 -- Commits of ref (checked from cwd) are in B: ancestor, same content under other commits, or a PR merged at this
 -- commit. The branch name alone proves nothing: a branch reused after its PR merged holds unmerged commits.
 function M.landed_ref(cwd, ref, B)
+  if type(B) == "table" then  -- landed on any of these
+    for _, b in ipairs(B) do
+      if M.landed_ref(cwd, ref, b) then return true end
+    end
+    return false
+  end
   if proc.gx({ "-C", cwd, "merge-base", "--is-ancestor", ref, B }) == 0 then return true end
   local mb = nz(proc.git({ "-C", cwd, "merge-base", B, ref }))
   local files = {}
@@ -136,7 +143,7 @@ function M.landed_ref(cwd, ref, B)
   return false
 end
 
--- Nothing in worktree wt is unlanded relative to ref B (sw-lifecycle §4.2).
+-- Nothing in worktree wt is unlanded relative to ref B, or to any ref of the list B (sw-lifecycle §4.2).
 function M.landed(wt, B, main)
   if not exists(wt) then  -- nothing uncommitted can be lost; judge by its branch if git still knows it
     local m = re.search("^worktree " .. re.escape(wt) .. "\\n(?:.*\\n)*?branch refs/heads/(.*)$",
@@ -204,6 +211,12 @@ function M.end_agent(c, a, wt, main, comms)
   end
 end
 
+function M.shas(refs, main)
+  local r = {}
+  for i, b in ipairs(refs) do r[i] = proc.git({ "-C", main, "rev-parse", b }) or "" end
+  return r
+end
+
 function M.mem_available_gib()
   local kb = machine.mem()
   return kb and kb / 2 ^ 20 or math.huge
@@ -216,7 +229,7 @@ function M.sweep_worktrees(c, comms, dry)
   local lines = util.splitlines(proc.run({ "git", "worktree", "list", "--porcelain" }))
   if #lines == 0 then return {} end
   local main = realpath(lines[1]:sub(10))
-  local B = nz(proc.git({ "-C", main, "remote", "get-url", "origin" })) and "origin/main" or "main"
+  local B = bases.refs(bases.protected(c, main), main)  -- every base is protected, not only the repo's
   local wts, cur = {}, nil
   for i = 2, #lines do
     local l = lines[i]
@@ -254,7 +267,7 @@ function M.sweep_worktrees(c, comms, dry)
       end
       local st = proc.run({ "git", "-C", wt, "status", "--porcelain" })
       if not (t - last < M.SWEEP_IDLE or st == nil or util.strip(st) ~= "") then  -- dirty or unreadable: never landed
-        local key = table.concat({ wt, proc.git({ "-C", wt, "rev-parse", "HEAD" }) or "", proc.git({ "-C", main, "rev-parse", B }) or "" }, "\0")
+        local key = table.concat({ wt, proc.git({ "-C", wt, "rev-parse", "HEAD" }) or "", table.concat(M.shas(B, main), ",") }, "\0")
         if not M.NOT_LANDED[key] then
           if not M.landed(wt, B, main) then
             M.NOT_LANDED[key] = true
@@ -408,11 +421,8 @@ function M.lifecycle(c, t, comms, terms, opts)
   local wts, all_wts = conflict.wt_map(c), conflict.worktrees()
   local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
   main = main and realpath(main)
-  local B = "main"
-  if nz(proc.git({ "remote", "get-url", "origin" })) then
-    proc.run({ "git", "fetch", "-q", "origin", "main" })
-    B = "origin/main"
-  end
+  local pb = bases.protected(c, main)
+  for _, b in ipairs(pb) do bases.fetch(b, main) end
   M.sweep_worktrees(c, comms)
   local by = {}
   for _, x in ipairs(terms or {}) do
@@ -435,11 +445,12 @@ function M.lifecycle(c, t, comms, terms, opts)
     end
     return true
   end
-  local function unlanded(n)  -- a worktree n owns that holds work not on B, not just the one wt_map picked
+  local function unlanded(n)  -- a worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked
+    local B = bases.refs(bases.of_agent(c, n, main), main)
     local own = conflict.owned_wts(n, all_wts)
     if wts[n] then table.insert(own, 1, wts[n]) end
     for _, w in ipairs(own) do
-      if not M.landed(w, B, main) then return w end
+      if not M.landed(w, B, main) then return w, B end
     end
   end
   local function ours(cwd)  -- in this repo or one of its worktrees: else another swarm's terminal (#117)
@@ -457,9 +468,9 @@ function M.lifecycle(c, t, comms, terms, opts)
         or (nz(a.hc) and terms ~= nil and (not x or (x.status ~= "idle" and x.status ~= "done")))
         or c:one("select 1 from task where owner=? and state in ('claimed','blocked')", n)
         or c:one("select 1 from lock where agent=?", n)) then
-      local held = unlanded(n)
+      local held, B = unlanded(n)
       if held then
-        M.unclean(c, a, held, B, t, comms)
+        M.unclean(c, a, held, B[1], t, comms)
       -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
       -- not kept as a reason to spawn no one
       elseif (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n)
