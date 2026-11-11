@@ -204,9 +204,21 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
 underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); `setfenv` and `load`'s environment argument, FFI,
-`__gc`, `__mode`, `string.format("%a")`, `string.dump`, the rest of the standard library (`debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
+`__gc`, `__mode`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `bit`, `jit`, `debug`,
+`collectgarbage`, `gcinfo`, `getfenv`, `setfenv`, `module`, `newproxy`, `loadfile`, `arg`, `string.dump` and
+`package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
+run; `_VERSION` is LuaJIT's `"Lua 5.1"`.
 
-How a script outside it is reported, from strongest to weakest:
+How a script outside it is reported, from strongest to weakest. `lua-lean check f.lua` (`tools/Check.lean`) names,
+by line and before anything is lifted, what of it the source shows: a parse error; a global LuaJIT has and the
+semantics holds as a handle, or one neither defines (a host's: `ngx`, `love`); a library field that is a handle; a
+`require` of a module outside the subset or not found as a file under the script's directories; a metamethod the
+semantics stops at (a constant key `__mode`); `string.format`'s
+`%a %o %u %p` in a constant format; `load` with an environment; `setmetatable(_G, …)`; a `goto` but the continue
+idiom. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
+calls each function the chunk defines at its top level with random arguments under the semantics and under LuaJIT
+(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. What only
+a run meets (a `#t` with two borders, a double past a C cast's range) only that test, or a proof, finds.
 
 1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1). The
    translator handles every statement and assignment target the parser accepts (`test/stmts.lua` has each), so
@@ -231,7 +243,9 @@ How a script outside it is reported, from strongest to weakest:
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
-   `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`).
+   `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`); a call of one of LuaJIT's
+   functions outside the subset (`bit.band`, `collectgarbage`; above); a `goto` to a label of its block that does
+   not end it (`effect goto: …`, pcall or not).
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
@@ -252,9 +266,18 @@ How a script outside it is reported, from strongest to weakest:
      light userdata in LuaJIT (which LuaJIT 2.1 may show as a number);
    - a module not found on `package.path` is a handle, a C module the oracle answers, where LuaJIT may find no such
      module and raise an error;
-   - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT.
+   - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
+     handle read rather than called (`jit.os`, `bit` itself, `package.preload`) is a handle where LuaJIT has a
+     string or a table. `lua-lean check` names each use.
 
-G2 turns this list into a checker that names each construct with its line before anything is lifted.
+The corpus (`test/corpus.txt`: 59 files of 29 projects, MIT, BSD or public domain, fetched at a pinned commit by
+`lua-lean corpus`, never committed) measures the subset on scripts written for LuaJIT by others. `corpus` runs the
+checker under the semantics only (it runs no effect, so nothing fetched runs outside it); `lua-lean check` on one of
+them adds LuaJIT. On 2026-11-11: 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in
+the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`), 29 are in the subset (20 before
+G3c's metamethods), and their 1192 top-level functions give 4575 calls that reach no effect. Outside it, by the
+files that use each: `debug` 8, FFI 5, `__mode` 4, `string.dump` 3, `setfenv` 3, `getfenv` 2, `jit` 2, `bit` 2,
+`package.config` 2.
 
 ## Layout and use
 
@@ -266,6 +289,7 @@ G2 turns this list into a checker that names each construct with its line before
 | `LuaLean/Interp.lean` | the semantics |
 | `LuaLean/Run.lean` | running a chunk as `test/luasem.lua` does under LuaJIT, its results as text, modules from a directory |
 | `LuaLean/Show.lean` | a syntax tree as the Lean term that builds it |
+| `LuaLean/Print.lean` | a syntax tree printed back as Lua (`lua-lean print`, `parsecheck`, `check`'s chunks) |
 | `LuaLean/Shallow.lean` | the translator's target: one combinator and one lemma per interpreter clause |
 | `LuaLean/Denote.lean` | the translator as a Lean function, `D.fn`, and the one proof for every program, `D.fn_ok`, that each `f_ok` is (`research/translator-proof.md`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
@@ -275,6 +299,8 @@ G2 turns this list into a checker that names each construct with its line before
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
+| `test/check/` | `lua-lean check`'s test: a script with each kind of construct outside the subset, and what check says |
+| `test/corpus.txt` | the third-party scripts `lua-lean corpus` fetches and checks |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
 
@@ -285,6 +311,8 @@ lua-lean/lua-lean prove f.lua...               # lift each and check its proofs 
 lua-lean/lua-lean parsecheck f.lua...          # the parser against LuaJIT's bytecode
 lua-lean/lua-lean run [--lib p=dir] f.lua      # f.lua under the semantics; luajit lua-lean/test/luasem.lua f.lua under LuaJIT
 lua-lean/lua-lean difftest 3000                # fresh chunks under LuaJIT
+lua-lean/lua-lean check f.lua...               # what is outside the subset, by line; its functions under LuaJIT
+lua-lean/lua-lean corpus [dir]                 # the third-party corpus, fetched and checked (the semantics only)
 lua-lean/lua-lean dump Name f.lua              # the tree as `def NameSrc : Block`, for proofs about the source itself
 ```
 
@@ -301,9 +329,9 @@ proof; a statement is never weakened to make a proof go through.
 
 ## Roadmap
 
-- **G2** subset checker: `lua-lean check f.lua` lists every construct and library call outside the subset with its
-  line, and runs the differential test on the script's own pure functions; coverage on a corpus of real third-party
-  LuaJIT scripts.
+- **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
+  tasks of their own: `debug` (#31), weak tables (#32), function environments (#33),
+  `string.dump` (#34), `bit` (#35), an FFI subset (#36), check's own (#37: a script's sibling modules as source).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c, done). `LuaLean/Hoare.lean` has a rule for each operator's metamethod and for

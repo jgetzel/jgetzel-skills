@@ -423,7 +423,19 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
   P(function() return math.fmod(x, y), math.modf(x), math.frexp(y) end), P(math.ldexp, x, {e}), P(math.deg, x),
   P(math.rad, y), math.pi, P(math.fmod, y, x), P(math.modf, y), {commas tn}, P(tonumber, {tn2}), r1, r2, acc, n0, m1, m2, r3, rm,
   table.new == new, table.clear == clear, z, w, getmetatable(w) ~= nil, P(tostring), P(tonumber), P(tostring, nil),
-  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end)"
+  P(tonumber, nil), P(select, {sel}, \"a\", \"b\", \"c\"), P(function() return select(\"#\", unpack(\{}, {un})) end),
+  _VERSION"
+
+-- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
+-- the run
+#guard [("return bit.band(1, 2)", "effect bit.band"), ("return collectgarbage(\"count\")", "effect collectgarbage"),
+    ("return pcall(setfenv, 1, {})", "effect setfenv"), ("return string.dump(print)", "effect string.dump"),
+    ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
+    ("return require(\"bit\").bor(1, 2)", "effect bit.bor"), ("return jit.status()", "effect jit.status"),
+    -- a goto but the continue idiom stops the run too, pcall or not
+    ("return pcall(function() local i = 0 ::top:: i = i + 1 if i < 3 then goto top end return i end)",
+      "effect goto: a label that does not end its block")].all
+  fun (src, out) => runCase (fun _ => none) .dual [] src.toList == out
 
 
 -- ---------- the world: print, io.write, os ----------

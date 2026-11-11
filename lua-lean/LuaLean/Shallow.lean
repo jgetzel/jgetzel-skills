@@ -309,10 +309,10 @@ def qLocalFn (name : String) (ps : List String) (va : Bool) (b : Block) (env : E
     writeCell c (.fn f)
     k c n
 /-- a goto out of a statement: to a label ending the block (`ends`) it ends the block, to another of the block's
-labels (`all`) it is an error, else it leaves the block -/
+labels (`all`) the run stops (outside the subset), else it leaves the block -/
 def gotos (ends all : List String) (l : String) : M Flow :=
   if ends.contains l then pure .norm
-  else if all.contains l then die "goto: only to a label that ends its block"
+  else if all.contains l then throw (.eff "goto: a label that does not end its block" [])
   else pure (.goto l)
 /-- a statement, then the rest `q` -/
 def qStat (s : SB) (g : String → M Flow) (q : SB) : SB := fun n => tick n fun n => do
@@ -615,7 +615,7 @@ theorem CQ_stat {cx full s rest fin ss q ends all} (hs : CS I ss cx s) (hq : CQ 
         | .norm => execSeq I.srcs I.oracle I.tgt n cx full rest fin
         | .goto l =>
           if labelAtEnd full l then pure .norm
-          else if hasLabel full l then die "goto: only to a label that ends its block"
+          else if hasLabel full l then throw (.eff "goto: a label that does not end its block" [])
           else pure (.goto l)
         | fl => pure fl) := by
       rw [execSeq] <;> first | rfl | (intros; subst_vars; simp [Stat.isDecl] at hns)
