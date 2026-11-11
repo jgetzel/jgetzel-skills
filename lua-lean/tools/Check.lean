@@ -15,7 +15,7 @@ namespace Check
 
 /-- modules LuaJIT has that are outside the subset: `require` gives a handle -/
 def outsideModules : List String :=
-  ["ffi", "jit", "jit.util", "jit.opt", "jit.profile", "string.buffer"]
+  ["jit", "jit.util", "jit.opt", "jit.profile", "string.buffer"]
 
 /-- string.format's conversions the semantics stops at -/
 def badConvs : List Char := ['a', 'A', 'o', 'u', 'p']

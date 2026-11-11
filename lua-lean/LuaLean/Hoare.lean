@@ -497,6 +497,43 @@ theorem RunP.fenv {name : String} {caller : Option Nat} {args vs : List Val} {h 
     · show Lua.frame (setfenvFn caller args) h = _; simp only [Lua.frame, e]
   · rcases hn with rfl | rfl <;> rfl
 
+/-! ## The FFI
+
+A call of one of the FFI's modelled functions is its `ffiFn`; a cdata's element or field read and written is
+`cdIndex` and `cdSet` (`Shallow.index_cdata`, `Shallow.setindex_cdata`). -/
+
+theorem RunP.ffi {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name ∈ ffis.map ("ffi." ++ ·)) (e : ffiFn name args h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_ffi I n name args hn]; simp only [Lua.frame, e], p⟩
+
+theorem ctypeCall_ok {a : Nat} {ct : CType} {args vs : List Val} {h h' : Heap} (ha : h[a]? = some (.ctype ct))
+    (e : ffiNew (.cdata a :: args) h = .ok vs h') : ctypeCall a args h = .ok vs h' := by
+  unfold ctypeCall
+  simp only [bind, EStateM.bind, getObj, get, getThe, MonadStateOf.get, EStateM.get, ha, pure, EStateM.pure]
+  simp only [e]
+
+/-- a ctype's call is ffi.new of it -/
+theorem RunP.ctype {I : Sem} {a : Nat} {ct : CType} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (ha : h[a]? = some (.ctype ct)) (e : ffiNew (.cdata a :: args) h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.cdata a) args) h P :=
+  ⟨1, _, _, fun n hn1 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1) (.cdata a) args h = _
+    rw [call_cdata]; simp only [Lua.frame, ctypeCall_ok ha e], p⟩
+
+/-- a cdata's element read: the run goes on with `cdIndex`'s value -/
+theorem RunP.cdIndex {I : Sem} {a : Nat} {k v : Val} {h h' : Heap} {P : Val → Heap → Prop}
+    (e : cdIndex a k h = .ok v h') (p : P v h') :
+    RunP (fun n => index I.srcs I.oracle I.tgt n (.cdata a) k) h P :=
+  ⟨1, _, _, fun n hn1 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+    show index I.srcs I.oracle I.tgt (n + 1) (.cdata a) k h = _
+    rw [index_cdata, e], p⟩
+
 /-! ## Effects
 
 A call into the world adds its event to the trace (`trace`, the heap's cell `LOG`); a spec says what a function adds
