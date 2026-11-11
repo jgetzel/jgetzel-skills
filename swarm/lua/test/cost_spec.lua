@@ -118,5 +118,8 @@ r = rows()
 eq({ #r, r[1].exact, r[2].exact }, { 2, 0, 0 })
 machine.PROC, machine.CGROUP = pr, cg0
 
+-- cost --top runs (LuaJIT has no table.unpack)
+assert(pcall(cost.cmd_cost, nil, { top = true, words = {} }), "cost --top")
+
 -- nothing here signals a process or writes oom_score_adj outside an agent's tree (the tick only reads)
 assert(not src:find("oom_score_adj") and not src:find("SIGTERM") and not src:find("signal"), "cost.lua only measures")
