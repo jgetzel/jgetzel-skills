@@ -483,10 +483,10 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
 
 -- LuaJIT's globals and library fields the semantics does not model are handles (`unmodelled`): calling one stops
 -- the run
-#guard [("return bit.band(1, 2)", "effect bit.band"), ("return collectgarbage(\"count\")", "effect collectgarbage"),
+#guard [("return collectgarbage(\"count\")", "effect collectgarbage"),
     ("return pcall(setfenv, 1, {})", "effect setfenv"), ("return string.dump(print)", "effect string.dump"),
     ("return package.searchpath(\"x\", \"?\")", "effect package.searchpath"),
-    ("return require(\"bit\").bor(1, 2)", "effect bit.bor"), ("return jit.status()", "effect jit.status"),
+    ("return require(\"jit\").off()", "effect jit.off"), ("return jit.status()", "effect jit.status"),
     -- a goto but the continue idiom stops the run too, pcall or not
     ("return pcall(function() local i = 0 ::top:: i = i + 1 if i < 3 then goto top end return i end)",
       "effect goto: a label that does not end its block")].all
@@ -497,7 +497,8 @@ return P(function() return g(math.{f1}(x)), g(math.{f2}(x, y)), g(math.{f1}(y)),
 
 /-- every builtin of the initial heap's library tables, as a Lua expression -/
 def builtins : List String :=
-  [("", 0), ("string.", 2), ("table.", 3), ("math.", 4), ("coroutine.", 6), ("io.", 9), ("os.", 10), ("debug.", 11)].flatMap
+  [("", 0), ("string.", 2), ("table.", 3), ("math.", 4), ("coroutine.", 6), ("io.", 9), ("os.", 10), ("debug.", 11),
+    ("bit.", 12)].flatMap
     fun (lib, a) => match (initHeap[a]? : Option Obj) with
       | some (.tbl t) => t.kv.filterMap fun (k, v) => match k, v with
         | .str k, .prim .. => some (lib ++ String.ofList k)
@@ -575,6 +576,40 @@ return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), req
     ("local a, b = 1, 2 local function f() b = a; return function() return b, f end end return debug.getupvalue(f, 1), debug.getupvalue(f, 2), debug.getupvalue(f, 3)",
       "ok:\"b\",\"a\",\"f\",function")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
+
+-- ---------- bit ----------
+
+/-- the bit library: each function on integers, on doubles (lj_num2bit's rounding to even, past 2^31, 2^51 and 2^53,
+inf, NaN), on strings and on bad arguments or too few; shift counts past 31 and negative; tohex's widths; a result's
+zero times -1 (an integer on dual-number, a double on single-number) -/
+def bitOps : G String := do
+  let n : G String := pick ["0", "1", "-1", "5", "0x7fffffff", "0x80000000", "-0x80000000", "2^32", "2^32 + 3",
+    "0xffffffff", "1.5", "2.5", "-0.5", "-1.5", "0.49999999999999994", "2^51 + 3", "2^52 + 2^51 + 5", "2^53 + 3",
+    "2^60 - 2^9", "-2^63", "1e300", "1/0", "-1/0", "0/0", "-0.0", "\"0x10\"", "\" 7 \"", "\"1e3\"", "\"x\"",
+    "nil", "{}", "true", "12345678", "-87654321", "0x12345678", "31", "32", "33", "-33", "255", "-9", "16", "300"]
+  let call : G (String × List String) := do
+    let f ← pick ["tobit", "bnot", "bswap", "band", "bor", "bxor", "lshift", "rshift", "arshift", "rol", "ror", "tohex"]
+    let k ← match f with
+      | "tobit" | "bnot" | "bswap" => pick [1, 1, 1, 0, 2]
+      | "band" | "bor" | "bxor" => pick [1, 2, 2, 3, 4, 0]
+      | _ => pick [2, 2, 2, 1, 0, 3]
+    let as ← (List.range k).mapM fun _ => n
+    pure (f, as)
+  let calls ← (List.range 8).mapM fun _ => do
+    let (f, as) ← call
+    pure s!"\{pcall(bit.{f}{String.join (as.map (", " ++ ·))})}"
+  let (f, as) ← call
+  return s!"local x, y = {← n}, {← n}
+local named = \{pcall(function() local r = bit.{f}({commas as}) return r end)}
+local z = bit.band(x == x and 0 or 1, 0)
+return {commas calls}, named, 1 / (z * -1), type(bit), require(\"bit\") == bit, bit.tohex(bit.bxor(12, 10), -2)"
+
+#guard runCase (fun _ => none) .dual []
+    ("return bit.tohex(-1, 0), bit.tohex(255, -4), bit.tohex(-1, 10), #bit.tohex(1, 300), bit.tohex(1, 1.9), " ++
+      "bit.tobit(2^53 + 3), bit.tobit(-1.5), bit.rol(0x80000001, 1), bit.ror(1, -1), bit.bswap(0x12345678), " ++
+      "bit.arshift(-256, 4), bit.rshift(-1, 32), bit.lshift(1, 33), bit.bor(1, 2, 4, 8.7), bit.tobit(\" 7 \"), " ++
+      "bit.tobit(1/0), bit.bnot(0)").toList ==
+  "ok:\"\",\"00FF\",\"00ffffffff\",254,\"01\",2,-2,3,2,2018915346,-16,-1,2,15,7,0,-1"
 
 -- ---------- the world: print, io.write, os ----------
 
@@ -859,7 +894,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => if ← chance 2 then libs else debugs
+  | 10 => match ← rnd 2 with | 0 => libs | 1 => debugs | _ => bitOps
   | 11 => traverse
   | 12 => loads
   | 13 => coros

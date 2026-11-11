@@ -394,6 +394,37 @@ theorem debug_getmetatable {h : Heap} {a : Nat} {t : Tbl} {rest : List Val} (ha 
   simp [debugFn, anyArg, getTbl, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure,
     EStateM.pure]
 
+/-! ## The bit library
+
+Each argument is an int32 by `Num.toBit` (an integer mod 2^32; a double through lj_num2bit), each result one. -/
+
+/-- a call of one of the bit library's functions is its `bitFn` -/
+theorem RunP.bit {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name ∈ bits.map ("bit." ++ ·)) (e : bitFn name args h = .ok vs h') (p : P vs h') :
+    RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_bit I n name args hn]; simp only [Lua.frame, e], p⟩
+
+/-- an int32 is its own int32 -/
+theorem wrap32_of_inInt32 {i : Int} (hi : -2147483648 ≤ i ∧ i < 2147483648) : wrap32 i = i := by
+  unfold wrap32; rw [Int.bmod_eq_of_le] <;> omega
+
+theorem bit_tobit {h : Heap} {i : Int} {rest : List Val} :
+    bitFn "bit.tobit" (.num (.int i) :: rest) h = .ok [.num (.int (wrap32 i))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure]
+
+theorem bit_band {h : Heap} {a b : Int} :
+    bitFn "bit.band" [.num (.int a), .num (.int b)] h = .ok [.num (.int (wrap32 ↑(u32 (wrap32 a) &&& u32 (wrap32 b))))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure, List.range, List.range.loop,
+    List.mapM, List.mapM.loop]
+
+theorem bit_lshift {h : Heap} {a b : Int} :
+    bitFn "bit.lshift" [.num (.int a), .num (.int b)] h =
+      .ok [.num (.int (wrap32 ↑(u32 (wrap32 a) <<< (u32 (wrap32 b) % 32))))] h := by
+  simp [bitFn, argBit, argNum, Val.toNum, Num.toBit, bind, EStateM.bind, pure, EStateM.pure]
+
 /-! ## Effects
 
 A call into the world adds its event to the trace (`trace`, the heap's cell `LOG`); a spec says what a function adds

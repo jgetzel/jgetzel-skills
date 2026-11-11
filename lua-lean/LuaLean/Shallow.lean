@@ -85,6 +85,13 @@ theorem callPrim_debug (I : Sem) (n : Nat) (name : String) (args : List Val)
     callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = debugFn name args := by
   rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
 
+/-- the bit library's functions -/
+theorem callPrim_bit (I : Sem) (n : Nat) (name : String) (args : List Val) (hn : name ∈ bits.map ("bit." ++ ·)) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = bitFn name args := by
+  simp only [bits, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;>
+    simp
+
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/
 abbrev W := Nat → Val → M Unit
 

@@ -799,6 +799,62 @@ def mathFn (name : String) (args : List Val) : M (List Val) := do
   | "rad" => return [.num (.flt ((← argNum name 0 args).toFloat * Float.ofBits 0x3F91DF46A2529D39))]
   | _ => die s!"math.{name}: not in the subset"
 
+-- ---------- bit ----------
+
+/-- an integer's int32: its value mod 2^32 as a signed integer -/
+def wrap32 (i : Int) : Int := i.bmod (2 ^ 32)
+
+/-- lj_num2bit: an integer as it is, a double plus 2^52 + 2^51 and its low 32 bits (x mod 2^32 rounded to even for
+|x| < 2^51; inf and NaN 0) -/
+def Num.toBit : Num → Int
+  | .int i => wrap32 i
+  | .flt f => wrap32 ((f + 6755399441055744.0).toBits.toNat % 2 ^ 32)
+
+/-- lj_carith_check64 of a number or a string, as an int32 -/
+def argBit (fname : String) (i : Nat) (args : List Val) : M Int := do pure (← argNum fname i args).toBit
+
+/-- an int32's bits -/
+def u32 (i : Int) : Nat := (i % 2 ^ 32).toNat
+
+/-- LuaJIT's bit library (lib_bit.c, its asm fast functions): each argument an int32 by lj_num2bit, each result an
+int32; a shift's count mod 32 -/
+def bitFn (name : String) (args : List Val) : M (List Val) := do
+  let res (n : Nat) : M (List Val) := pure [.num (.int (wrap32 n))]
+  match name with
+  | "bit.tobit" => return [.num (.int (← argBit name 0 args))]
+  | "bit.bnot" => res (2 ^ 32 - 1 - u32 (← argBit name 0 args))
+  | "bit.bswap" => do
+    let x := u32 (← argBit name 0 args)
+    res ((x % 256) * 2 ^ 24 + (x / 2 ^ 8 % 256) * 2 ^ 16 + (x / 2 ^ 16 % 256) * 2 ^ 8 + x / 2 ^ 24)
+  | "bit.band" | "bit.bor" | "bit.bxor" => do
+    let op : Nat → Nat → Nat := if name == "bit.band" then (· &&& ·) else if name == "bit.bor" then (· ||| ·) else (· ^^^ ·)
+    -- every argument checked, the first even when there is none
+    let x ← argBit name 0 args
+    let ys ← (List.range (args.length - 1)).mapM fun i => argBit name (i + 1) args
+    res (ys.foldl (fun a y => op a (u32 y)) (u32 x))
+  | "bit.lshift" | "bit.rshift" | "bit.arshift" | "bit.rol" | "bit.ror" => do
+    let x ← argBit name 0 args
+    let s := u32 (← argBit name 1 args) % 32
+    let u := u32 x
+    match name with
+    | "bit.lshift" => res (u <<< s)
+    | "bit.rshift" => res (u >>> s)
+    | "bit.arshift" => return [.num (.int (x >>> s))]
+    | "bit.rol" => res (u <<< s ||| u >>> (32 - s))
+    | _ => res (u >>> s ||| u <<< (32 - s))
+  | "bit.tohex" => do
+    let b := u32 (← argBit name 0 args)
+    let n ← if args.length < 2 then pure 8 else argBit name 1 args
+    let w := (n.natAbs).min 254
+    let b := if w < 8 then b % 16 ^ w else b
+    let ds := if b == 0 then [] else Nat.toDigits 16 b
+    let ds := List.replicate (w - ds.length) '0' ++ ds
+    return [.str (if n < 0 then ds.map Char.toUpper else ds)]
+  | _ => die s!"{name}: not in the subset"
+
+#guard (Num.toBit (.flt 1.5), Num.toBit (.flt 2.5), Num.toBit (.flt (-0.5)), Num.toBit (.flt 2147483648),
+  Num.toBit (.flt 9007199254740995), Num.toBit (.flt (1/0)), Num.toBit (.int 4294967297)) == (2, 2, 0, -2147483648, 2, 0, 1)
+
 def strFn (name : String) (args : List Val) : M (List Val) := do
   match name with
   | "len" => return [nums (← argStr name 0 args).length]
@@ -1302,6 +1358,8 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     | _ => return [.bool false]
   | "debug.getmetatable" | "debug.setmetatable" | "debug.getupvalue" | "debug.setupvalue" | "debug.getinfo"
   | "debug.traceback" => debugFn name args
+  | "bit.tobit" | "bit.bnot" | "bit.band" | "bit.bor" | "bit.bxor" | "bit.lshift" | "bit.rshift" | "bit.arshift"
+  | "bit.rol" | "bit.ror" | "bit.bswap" | "bit.tohex" => bitFn name args
   | "gmatch_it" => match bound with
     | [.str s, .str p, .num (.int c)] => gmatchStep s p c.toNat
     | _ => die "bad gmatch iterator"
@@ -2225,18 +2283,21 @@ def basics : List String :=
 /-- LuaJIT 2.1's globals the semantics does not model: handles, so a run that uses one stops (`lua-lean check` names
 each use) -/
 def unmodelled : List String :=
-  ["bit", "jit", "collectgarbage", "gcinfo", "getfenv", "setfenv", "module", "newproxy", "loadfile", "arg"]
+  ["jit", "collectgarbage", "gcinfo", "getfenv", "setfenv", "module", "newproxy", "loadfile", "arg"]
+
+def bits : List String :=
+  ["tobit", "bnot", "band", "bor", "bxor", "lshift", "rshift", "arshift", "rol", "ror", "bswap", "tohex"]
 
 def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
-(7: the main thread), the trace (8), io (9), os (10), debug (11) -/
+(7: the main thread), the trace (8), io (9), os (10), debug (11), bit (12) -/
 def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
      (lstr "coroutine", .tbl 6), (lstr "_G", .tbl 0), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
      (lstr "print", .prim "print" []), (lstr "_VERSION", lstr "Lua 5.1"),
-     (lstr "debug", .tbl 11)] ++ unmodelled.map fun f => (lstr f, .eff f) }
+     (lstr "debug", .tbl 11), (lstr "bit", .tbl 12)] ++ unmodelled.map fun f => (lstr f, .eff f) }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
     "match", "gmatch", "gsub"] |>.set (lstr "dump") (.eff "string.dump")
   let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn", "getn", "move", "foreach", "foreachi"]
@@ -2251,7 +2312,7 @@ def initHeap : Heap :=
       (lstr f, .eff ("package." ++ f)) }
   let loaded : Tbl := { kv := [(lstr "_G", .tbl 0), (lstr "package", .tbl 5), (lstr "string", .tbl 2),
     (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "coroutine", .tbl 6), (lstr "io", .tbl 9), (lstr "os", .tbl 10),
-    (lstr "debug", .tbl 11), (lstr "bit", .eff "bit"), (lstr "jit", .eff "jit"), (lstr "jit.opt", .eff "jit.opt")] }
+    (lstr "debug", .tbl 11), (lstr "bit", .tbl 12), (lstr "jit", .eff "jit"), (lstr "jit.opt", .eff "jit.opt")] }
   -- the rest of io and os are the world's
   let fx (lib : String) (names : List String) : List (Val × Val) := names.map fun f => (lstr f, .eff (lib ++ "." ++ f))
   let io : Tbl := { kv := (lstr "write", .prim "io.write" []) :: fx "io" ["close", "flush", "input", "lines", "open",
@@ -2263,7 +2324,8 @@ def initHeap : Heap :=
   let dbg : Tbl := { kv := (libTable "debug" ["getmetatable", "setmetatable", "getupvalue", "setupvalue", "getinfo",
     "traceback"]).kv ++ fx "debug" ["getregistry", "getfenv", "setfenv", "getlocal", "setlocal", "upvalueid",
     "upvaluejoin", "sethook", "gethook", "debug"] }
+  let bit := libTable "bit" bits
   #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil,
-    .log [], .tbl io, .tbl os, .tbl dbg]
+    .log [], .tbl io, .tbl os, .tbl dbg, .tbl bit]
 
 end Lua
