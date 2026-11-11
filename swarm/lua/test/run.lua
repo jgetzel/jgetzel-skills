@@ -55,11 +55,12 @@ end
 local tmp = os.tmpname(); os.remove(tmp); os.execute("mkdir -p " .. q(tmp))
 local list = assert(io.open(tmp .. "/jobs", "w"))
 for i, j in ipairs(jobs) do
-  list:write(("timeout -s KILL %d luajit %s --one %s %s >%s/%d.out 2>&1; echo $? >%s/%d.rc\n"):format(
-    TIMEOUT, q(arg[0]), q(j.f), j.k and q(j.k) or "", tmp, i, tmp, i))
+  -- Portable timeout (no GNU timeout on macOS): a watchdog kills the job; the job's status is then 137.
+  list:write(("(luajit %s --one %s %s >%s/%d.out 2>&1 & p=$!; (sleep %d; kill -9 $p 2>/dev/null) & w=$!; wait $p; echo $? >%s/%d.rc; kill $w 2>/dev/null)\n"):format(
+    q(arg[0]), q(j.f), j.k and q(j.k) or "", tmp, i, TIMEOUT, tmp, i))
 end
 list:close()
-os.execute(("xargs -d '\\n' -P %d -n1 sh -c 'eval \"$0\"' <%s/jobs"):format(JOBS, tmp))
+os.execute(("tr '\\n' '\\0' <%s/jobs | xargs -0 -P %d -n1 sh -c 'eval \"$0\"'"):format(tmp, JOBS))
 for i, j in ipairs(jobs) do
   local rc = assert(io.open(("%s/%d.rc"):format(tmp, i)), "worker never ran: " .. j.name):read("*a"):match("%d+")
   local out = io.open(("%s/%d.out"):format(tmp, i)):read("*a")
