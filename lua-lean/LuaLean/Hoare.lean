@@ -51,4 +51,29 @@ theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P)
   subst this; exact r
 
 end rules
+
+/-- whatever the order (`Tbl.rank` is opaque), `next` gives an entry of the table, one with a value: what a spec
+about a traversal can rest on -/
+theorem Tbl.next_mem {a : Nat} {t : Tbl} {k k' v : Val} (e : t.next a k = some (some (k', v))) :
+    (k', v) ∈ t.kv ∧ v.isNil = false := by
+  simp only [Tbl.next] at e
+  generalize hl : t.kv.mergeSort _ = l at e
+  have hm : ∀ x, x ∈ l → x ∈ t.kv := fun x hx => by rw [← hl] at hx; exact (List.mem_mergeSort).1 hx
+  have hr : ∀ r, (if k.isNil then some l else match l.findIdx? (fun (x, _) => Val.rawEq x k) with
+      | some i => some (l.drop (i + 1)) | none => none) = some r → ∀ x, x ∈ r → x ∈ t.kv := by
+    intro r hr x hx
+    split at hr
+    · cases hr; exact hm x hx
+    · split at hr
+      · cases hr; exact hm x (List.mem_of_mem_drop hx)
+      · cases hr
+  revert e hr
+  generalize (if k.isNil then some l else _) = o
+  intro e hr
+  cases o with
+  | none => cases e
+  | some r =>
+    simp only [Option.map_some, Option.some.injEq] at e
+    have := List.find?_some e
+    exact ⟨hr r rfl _ (List.mem_of_find?_eq_some e), by simpa using this⟩
 end Lua

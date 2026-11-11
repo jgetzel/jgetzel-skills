@@ -75,6 +75,28 @@ The table library's functions written in Lua (`remove`, `move`) check an integer
 dual-number makes an integer (truncated) and single-number leaves the number it was; their raw accesses truncate a
 key. So `table.remove(t, 1.5)` shifts by halves on single-number (`libInt`, `libKey`).
 
+## Tables
+
+LuaJIT visits a table's keys in its layout's order: the array part, then the hash nodes, where a string sits by a hash
+seeded per process and a table or function by its address, so `pairs` over the same string keys comes out in another
+order on each run. No model predicts that. The semantics' order is `Tbl.rank` (`LuaLean/Interp.lean`), an opaque
+function of the table's address, its version and the key: the kernel never unfolds it, so a proof about a traversal
+holds for every rank, LuaJIT's in each process among them. The version moves on when a key gets a value it lacked,
+the one operation after which LuaJIT may move keys (a new node, a rehash); between, the order is fixed, as LuaJIT's
+is. A key cleared during a traversal stays, dead, until a key is added; then it goes, as LuaJIT's rehash drops it.
+`next` from a key the table does not hold is LuaJIT's error, `invalid key to 'next'`, but where LuaJIT may still hold
+it: an integer (its array part holds every index below its size) or a key the table had (a dead node); there the run
+stops. What a spec about a traversal rests on is `Tbl.next_mem` (`LuaLean/Hoare.lean`): `next` gives an entry of
+the table with a value, whatever the rank. Run (`lua-lean run`, the cases), the rank keeps the insertion order; the
+generator's traversals are ones whose result does not hang on the order, and they agree with LuaJIT under a
+scrambled rank too. Number keys have a fixed order in LuaJIT, but the semantics does not model
+the layout, so theirs is opaque as well.
+
+`#t` is a border (an n with t[n] not nil or n = 0, and t[n+1] nil): lj_tab_len's binary search finds one by the array
+part's size, which the rehashes set. A table with one border gives it; one with more stops the run, and so does each
+library function that takes the length (`table.insert`, `remove`, `concat` and `unpack` without an end, `sort`,
+`foreachi`, `getn`).
+
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
@@ -89,7 +111,8 @@ lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function
 (`sort` is ltablib.c's quicksort, so ties and bad comparators come out as LuaJIT's do; `move`, `remove`, `foreach`,
 `foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`), `math` but `random` and
 `randomseed` (effects: the generator's state is the oracle's), `select`, `unpack` (at most 8000 values with its
-arguments, lua_checkstack's bound), `pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber` (a base other than 10
+arguments, lua_checkstack's bound), `pairs`, `next` and `table.foreach` in an order no proof can know ("Tables"),
+`#t` with one border, `ipairs`, `type`, `tostring`, `tonumber` (a base other than 10
 as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
 `setmetatable`/`getmetatable`, `assert`, `require` of modules given as source.
 
@@ -111,13 +134,12 @@ How a script outside it is reported, from strongest to weakest:
    and `%p`, a double outside the integer range where a
    builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`, `math.ldexp(1, 2^31)`, a key of `table.move`
    past 32 bits; "Targets"), `tonumber(s, 2)` of `0b` and a binary digit (glibc 2.38's strtoul reads the prefix,
-   older C libraries do not), `table.new` of a size above 65536, a call into `io`, `os`, `math.random` or a module not
-   given as source when no oracle answers it.
+   older C libraries do not), `table.new` of a size above 65536, `#t` of a table with more than one border and `next`
+   from an integer or a dropped key the table does not hold ("Tables"), a call into `io`, `os`, `math.random` or a
+   module not given as source when no oracle answers it.
 4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
-   - `pairs`/`next` order: the semantics visits keys in insertion order; LuaJIT's order is its hash layout (G4);
-   - `#t` of a table with holes: the semantics takes the least border, LuaJIT may give another;
    - the place of an error where LuaJIT's line is not the parser's (`LuaLean/Parse.lean`'s sites follow where
      lj_parse.c emits each instruction): `o:m(...)` with `:m` and `(` on two lines reports a failed index of `o` on the
      line of `(`, LuaJIT on that of `m`; a constructor's `[k] = v` with `k` nil or NaN is reported at the enclosing
@@ -176,8 +198,9 @@ proof; a statement is never weakened to make a proof go through.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
-- **G4** the standard library: `pairs` order and `#t` with holes (G4b); `os` and `io` as effect interfaces with
-  named axioms (G4c). Done (G4a): the rest of string, table and math, `select`/`tostring`/`tonumber` corners.
+- **G4** the standard library: `os` and `io` as effect interfaces with named axioms (G4c). Done: the rest of
+  string, table and math, `select`/`tostring`/`tonumber` corners (G4a); `pairs` order opaque, `#t` with holes a stop
+  (G4b). A model of LuaJIT's layout for number keys would make their order and every `#t` known.
 - **G5** `load`, `dofile`, `require` of arbitrary modules: multi-module scripts lift end to end.
 - **G6** coroutines: thread state in the interpreter, a suspension effect in the shallow monad, rules for
   resume/yield.
