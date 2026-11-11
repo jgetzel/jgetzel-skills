@@ -162,8 +162,9 @@ function M.landed(wt, B, main)
 end
 
 -- Agent GC: release a finished agent and kill its terminal (and what it left in its cgroup scope). Touches no
--- worktree or branch: the sweep owns those (sw-bases). `force` skips the re-check lifecycle's judgment needs.
-function M.end_agent(c, a, force)
+-- worktree or branch: the sweep owns those (sw-bases). `force` skips the re-check lifecycle's judgment needs; `by`: who
+-- ended it by hand (`swarm end`), logged after the reason.
+function M.end_agent(c, a, force, by)
   local n = a.name
   local ok = c:tx(function()  -- re-check what lifecycle judged: still idle, same terminal, no claim, no lock
     if not (force and c:one("select 1 from agent where name=? and ended is null", n) or c:one([[select 1 from agent
@@ -174,7 +175,7 @@ function M.end_agent(c, a, force)
     end
     agents._release(c, n)
     c:exec("update agent set ended=?, status='ended' where name=?", util.now(), n)
-    db.log(c, n, "end", nil, force and "forced" or "landed")
+    db.log(c, n, "end", nil, (force and "forced" or "landed") .. (by and " by " .. by or ""))
     return true
   end)
   if not ok then return false end
@@ -659,6 +660,8 @@ function M.ensure_comms(c, comms, terms)
   db.log(c, comms, "comms-launch", nil, lines[#lines])
 end
 
+local AWAY = " The user is away: answer it if it is yours to decide; else it waits for them."
+
 function M.watchd_tick(c, comms, repo, opts)
   local terms = agents.hc_terminals()
   local live
@@ -671,7 +674,7 @@ function M.watchd_tick(c, comms, repo, opts)
   M.reap(c, live, nil, comms)
   opts = opts or {}
   if comms then opts.comms_hold = M.ensure_comms(c, comms, terms) end
-  local t = util.now()
+  local t, away = util.now(), agents.away(c)
   if terms and #terms > 0 then
     local by = {}
     for _, x in ipairs(terms) do
@@ -691,8 +694,9 @@ function M.watchd_tick(c, comms, repo, opts)
           c:exec("update task set state='blocked', question=? where id=?", M.HC_Q, t_.id)
           db.log(c, a.name, "task-blocked", d(t_.id), M.HC_Q)
         end
-        if comms then
-          msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human).", true, "system")
+        if comms then  -- while the user is away the question queues: not urgent (away rule 1)
+          msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human)." .. (away and AWAY or ""),
+            not away, "system")
         end
       end
     end
@@ -702,7 +706,7 @@ function M.watchd_tick(c, comms, repo, opts)
       if not c:one("select 1 from event where kind='task-blocked' and path=? and data=?", d(r.id), r.question) then
         db.log(c, r.owner, "task-blocked", d(r.id), r.question)
         msgs.post(c, "swarm", comms, ("%s is blocked on #%s (%s): %s Answer with `swarm task unblock %s --answer \"...\"`."):format(
-          r.owner or "None", d(r.id), r.title, r.question or "None", d(r.id)), true, "system")
+          r.owner or "None", d(r.id), r.title, r.question or "None", d(r.id)) .. (away and AWAY or ""), not away, "system")
       end
     end
   end
@@ -817,7 +821,7 @@ end
 -- stay, work landed on its bases); --force skips them. Kills the terminal only; the sweep removes worktrees.
 function M.cmd_end(c, a)
   local me = agents.me()
-  if not agents.is_comms(c, me) then util.die("only the communicator ends agents") end
+  if not agents.in_charge(c, me) then util.die("only the communicator or the user (`human`) ends agents") end
   local row = c:one("select * from agent where name=? and ended is null", a.agent)
   if not row then util.die(("%s is not a live agent"):format(a.agent)) end
   if not a.force then
@@ -835,7 +839,7 @@ function M.cmd_end(c, a)
     end
     if why then util.die(("%s %s; `swarm end %s --force` ends it anyway."):format(a.agent, why, a.agent)) end
   end
-  if not M.end_agent(c, row, a.force) then util.die(a.agent .. " changed state; try again") end
+  if not M.end_agent(c, row, a.force, me) then util.die(a.agent .. " changed state; try again") end
   print(a.agent .. " ended")
 end
 

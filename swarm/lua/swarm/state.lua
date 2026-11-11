@@ -220,6 +220,7 @@ function M.cmd_state(a)
   end
   local aw = meta("away")  -- "<since> <note>" while the user is away (`swarm away`)
   out.away = aw and { since = tonumber(aw:match("^%d+")), note = N(aw:match("^%d+ (.+)$")) } or null
+  out.back = json.decode(meta("away_digest") or "") or null  -- `swarm away --back`'s digest, until the next away
   if a.task then  -- the task screen: what the board's rows leave out
     local r = rows("select body from task where id=?", a.task)[1]
     local evs, ms = {}, {}
