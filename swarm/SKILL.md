@@ -53,7 +53,8 @@ with subagents.
    One watchd per repo: a second is refused while the first lives, naming it;
    `--takeover` replaces it (the old one exits on its next tick). A relaunched
    communicator starts its watchd with `--takeover`.
-   Auto-spawn goes through `swarm spawn --task N`, which claims the task for
+   Auto-spawn goes through `swarm spawn --task N`, which makes the agent's worktree (`../<repo>-<agent>`, branch
+   `<agent>/<task>`, from the task's base) and records it; `--attach <wt>` starts a read-only peer in one. It claims the task for
    the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (the terminal only; the sweep removes worktrees), spawns fresh agents for startable

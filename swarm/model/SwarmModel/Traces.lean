@@ -139,15 +139,13 @@ end S
 open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
 is landed by content, so lifecycle ends its agent (the terminal only), and the sweep removes the worktree and its branch; a dirty one keeps its
-agent. `sweep`: a fast-forwarded worktree its agent no longer edits in is swept with its branch, and so is one with the
-base `formal` checked out, and the branch `formal` stays (`splitGC`). `formal` (W3, board #2): work landed on `formal` only is
+agent. `sweep`: a fast-forwarded worktree its agent no longer edits in is swept with its branch, and a dirty one is kept (`splitGC`; an agent checking out a base is refused, `recordedWorkspaces`). `formal` (W3, board #2): work landed on `formal` only is
 not landed for the Lua: the tick sweeps a worktree on main, keeps one on `formal` its agent left (W3's orphan), and keeps
 the idle agent whose last worktree is on `formal`. `base` (board #3): task #2 is on `formal`; its agent lands on main
 only and goes idle (big context, so never reusable), and the tick, which reaps the idle agent 1's lapsed #1, keeps it; once the work is on `formal` too, the tick ends it. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
-  ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick,
-    gAdd 1 2, gCheckout 1 2 1, wAge 2, tick]),
+  ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
   ("base", [add, add, claim 1 1, claim 0 2, gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, done 0 2, stopBig 0, age 0, stop 1, expire 1, tick]),
   ("formal", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 2, gEdit 0 2, gCommit 0 2, gSquash 0 2 1,
     gAdd 0 1, gEdit 0 1, gCommit 0 1, gSquash 0 1 1, wAge 0, wAge 2, stop 0, age 0, tick])]

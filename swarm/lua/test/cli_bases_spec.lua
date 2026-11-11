@@ -140,4 +140,55 @@ function T.test_ci_polls_only_a_base_with_a_remote(t)
   assert(t:calls("gh")[1]:find("branch=formal", 1, true), "polls the repo's base")
 end
 
+
+-- ---- swarm-created worktrees and the workspace table (board #5) ----
+local function spawn_on(t, base)
+  t:fakes()
+  t:git(t.repo, "branch", "formal")
+  t:sw("a", "task", "add", "do it", "--base", base)
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1")
+  return t.d .. "/repo-t-9"
+end
+
+function T.test_spawn_task_makes_and_records_the_worktree(t)
+  local wt = spawn_on(t, "formal")
+  t:eq(util.strip(t:git(wt, "rev-parse", "--abbrev-ref", "HEAD")), "t-9/1")
+  t:eq(util.strip(t:git(wt, "rev-parse", "HEAD")), util.strip(t:git(t.repo, "rev-parse", "formal")))
+  local w = t:q1("select * from workspace")
+  t:eq({ w.path, w.branch, w.base, w.agent, w.ro }, { wt, "t-9/1", "formal", "t-9", 0 })
+  t:has(table.concat(t:launched()[1].argv, " "), "Your worktree: " .. wt)
+end
+
+function T.test_spawn_attach_links_read_only(t)
+  local wt = spawn_on(t, "main")
+  t:sw("a", "spawn", "t-8", "--model", "haiku", "--attach", wt, "--", "review")
+  local w = t:q1("select ro, branch from workspace where agent='t-8'")
+  t:eq({ w.ro, w.branch }, { 1, "t-9/1" })
+  t:has(t:sw("a", "spawn", "t-7", "--attach", t.d .. "/nope", "--", "x", { ok = false }).stderr, "not a swarm workspace")
+end
+
+function T.test_owned_wts_reads_the_table_not_names(t)
+  local conflict = require "swarm.conflict"
+  require "swarm.workspaces"
+  local wt = spawn_on(t, "main")
+  t:git(t.repo, "worktree", "add", "-q", "-b", "t-9/other", t.d .. "/elsewhere")
+  require("posix.unistd").chdir(t.repo)
+  require("posix.stdlib").setenv("SWARM_DB", t.db)
+  local c = require("swarm.db").connect()
+  t:eq(conflict.owned_wts("t-9", conflict.worktrees(), c), { wt })  -- the heuristic would also take t-9/other
+  t:eq(#conflict.owned_wts("t-9", conflict.worktrees()), 2)  -- an agent with no row falls back
+end
+
+function T.test_hook_denies_checking_out_a_base_and_watchd_flags_one(t)
+  local wt = spawn_on(t, "formal")
+  t.cwd["t-9"] = wt
+  local out = t:hook("t-9", "pre-tool", { tool_name = "Bash", tool_input = { command = "cd x && git checkout formal" } }, "hc1")
+  t:eq(out.permissionDecision, "deny")
+  t:eq(t:hook("t-9", "pre-tool", { tool_name = "Bash", tool_input = { command = "git checkout -b feature" } }, "hc1").permissionDecision, nil)
+  t:eq(t:hook("t-9", "pre-tool", { tool_name = "Bash", tool_input = { command = "git checkout t-9/1" } }, "hc1").permissionDecision, nil)
+  t:git(wt, "checkout", "-q", "formal")  -- it got past anyway
+  comms_tick(t)
+  t:has(t:q1("select count(*) n, group_concat(body) b from msg where dest='t-9'").b, "has formal checked out")
+end
+
 return T

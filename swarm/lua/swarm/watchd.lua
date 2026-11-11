@@ -3,7 +3,7 @@ local util, proc, json, re, db = require "swarm.util", require "swarm.proc", req
 local agents, msgs, tasks, conflict, machine = require "swarm.agents", require "swarm.msgs", require "swarm.tasks",
   require "swarm.conflict", require "swarm.machine"
 local run, ci, cost = require "swarm.run", require "swarm.ci", require "swarm.cost"
-local bases = require "swarm.bases"
+local bases, workspaces = require "swarm.bases", require "swarm.workspaces"
 local lfs = require "lfs"
 local unistd, stdlib, signal = require "posix.unistd", require "posix.stdlib", require "posix.signal"
 local pstat = require "posix.sys.stat"
@@ -288,7 +288,7 @@ end
 -- A worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked; and those bases.
 function M.unlanded(c, n, main, wts, all_wts)
   local B = bases.refs(bases.of_agent(c, n, main), main)
-  local own = conflict.owned_wts(n, all_wts)
+  local own = conflict.owned_wts(n, all_wts, c)
   if wts[n] then table.insert(own, 1, wts[n]) end
   for _, w in ipairs(own) do
     if not M.landed(w, B, main) then return w, B end
@@ -422,6 +422,14 @@ function M.lifecycle(c, t, comms, terms, opts)
   local pb = bases.protected(c, main)
   for _, b in ipairs(pb) do bases.fetch(b, main) end
   M.sweep_worktrees(c, comms)
+  for _, x in ipairs(workspaces.base_out(c, all_wts)) do  -- a base checked out in an agent's worktree: once per agent and base
+    if not c:one("select 1 from event where kind='base-out' and agent=? and path=?", x[1], x[3]) then
+      db.log(c, x[1], "base-out", x[3], x[2])
+      msgs.post(c, "swarm", x[1], ("Your worktree %s has %s checked out: that blocks `git push . HEAD:%s` for everyone. "
+        .. "Switch back to your own branch."):format(x[2], x[3], x[3]), false, "notice")
+      msgs.post(c, "swarm", comms, ("%s's worktree %s has base %s checked out."):format(x[1], x[2], x[3]), false, "notice")
+    end
+  end
   local by = {}
   for _, x in ipairs(terms or {}) do
     if x.address then by[x.address] = x end
@@ -810,7 +818,7 @@ function M.cmd_spawn(c, a)
   local name, tid = a.name, a.task_id
   local task = table.concat(a.task or {}, " ")
   if not tid and task == "" then
-    util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] -- <task>")
+    util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] [--attach WT] -- <task>")
   end
   local spawner = agents.env("SWARM_NAME") and agents.me() or "human"
   local ok, r = pcall(function() return tid and tasks.reserve(c, name, tid, a.model) or agents.reserve(c, name, a.model) end)
@@ -822,6 +830,19 @@ function M.cmd_spawn(c, a)
   if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
   if tid and task == "" then
     task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
+  end
+  local wt, wt_branch  -- swarm makes the agent's worktree (--task) or links it read-only to a peer's (--attach), and it starts there
+  if tid or a.attach then
+    local ok2, path, br, base = pcall(function()
+      if a.attach then return workspaces.attach(c, name, a.attach) end
+      return workspaces.create(c, name, c:one("select * from task where id=?", tid), nil)
+    end)
+    if not ok2 then tasks.unreserve(c, name, tid and r or nil); error(path, 0) end
+    wt, wt_branch = path, br
+    task = task .. (a.attach and ("\n\nYou are attached READ-ONLY to %s (branch %s): read and run, never edit or commit there. "
+      .. "Make your own worktree for changes."):format(path, br) or
+      ("\n\nYour worktree: %s (branch %s, base %s). Work only there. Never check out %s: land by a fast-forward of it from "
+      .. "this branch (`git push . HEAD:%s`, or a PR for a remote base)."):format(path, br, base, base, base))
   end
   local here = os.getenv("SWARM_HERE")
   local self_ = util.join(here, "swarm")
@@ -849,7 +870,7 @@ function M.cmd_spawn(c, a)
   local launch = agents.env("SWARM_LAUNCH") or util.join(here, "..", "relaunch", "launch.sh")  -- tests point this at a fake
   local argv = { launch, name, "tab", brief, "--permission-mode", "auto", "--model", a.model, "--settings", sf }
   if a.effort then argv[#argv + 1] = "--effort"; argv[#argv + 1] = a.effort end
-  local out, err, code = proc.exec(argv)
+  local out, err, code = proc.exec(argv, { cwd = wt })
   if code ~= 0 then out = nil end
   M.launch_err = (util.strip(err or ""):gsub("\n.*", ""))  -- launch.sh's reason, for the watchd notice
   if out == nil then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
@@ -858,6 +879,7 @@ function M.cmd_spawn(c, a)
     end
   end
   if out == nil then
+    if wt then workspaces.discard(c, name, wt, wt_branch, not a.attach) end
     tasks.unreserve(c, name, tid and r or nil)
     util.die("launch.sh failed")
   end
