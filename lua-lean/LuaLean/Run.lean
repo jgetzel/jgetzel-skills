@@ -96,7 +96,10 @@ def caseFx (name : String) (args : List Val) (_ : List Event) : Option (List Val
     let tm := gmtime t
     some ([tm.sec, tm.min, tm.hour, tm.day, tm.month, tm.year, tm.wday, tm.yday].map (.num ∘ .int) ++ [.bool false])
   | "os.mktime", [.num (.int s), .num (.int m), .num (.int h), .num (.int d), .num (.int mo), .num (.int y),
-      .num (.int dst)] => some [.num (.int (timegm s m h d mo y - if dst > 0 then 3600 else 0))]
+      .num (.int dst)] =>
+    -- before 1900 C libraries differ (glibc's counts back, macOS's answers -1): no answer
+    let t := timegm s m h d mo y - if dst > 0 then 3600 else 0
+    if t < -2208988800 then none else some [.num (.int t)]
   | _, _ => none
 
 def FUEL : Nat := 100000
