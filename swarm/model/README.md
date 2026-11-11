@@ -46,15 +46,16 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/LuaPrint.lean` | a parsed file printed back as Lua, fully parenthesised |
 | `lift.sh [--check \| --all]` | writes `Lifted/`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof |
 | `parsecheck.sh` | the parser against LuaJIT: each module, parsed and printed back, compiles to the source's bytecode |
-| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all |
-| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays` |
+| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`; a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
 | `sqlcases.json.gz` | 4600 of those cases (20 per statement, seed 29) the Lua suite runs |
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (264 sites, 230 statements) |
-| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` |
+| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 5 scripted runs the Lua suite replays |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
@@ -62,6 +63,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `luasem.json.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
 | `../lua/test/luasem_spec.lua`, `luasem.lua` | each chunk under LuaJIT must give the Lean interpreter's results |
 | `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`) |
+| `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
 | `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
 | `../lua/test/sql_model_spec.lua` | each case through db.lua on real sqlite, against Sql.lean's answer; and the cases' statements are exactly the inventory's |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
@@ -644,7 +646,7 @@ sqlite resolves names when it prepares a statement, so db.connect's old `update 
 null ..` fails on a table with no `after` column even when no row has a NULL `deps` (`Stmt.names`; found by a fresh
 `replay.sh` seed after the rest was green).
 
-**Not modelled**: concurrency (one connection; board #33); the rowid of a table without an integer key, so
+**Not modelled**: concurrency (one connection; *sqlite's isolation* below has it); the rowid of a table without an integer key, so
 `last_insert_rowid()` after an insert into `agent`, `cursor`, `lock`, `meta`, `conflict` or `pairkey` is unknown
 (the Lua reads it only after inserts into `task` and `msg`); an exponent in numeric text (`1e3`); a REAL's text beyond
 whole numbers and short decimals; a compound SELECT other than one `union all` at the top (ORDER BY or LIMIT on it); a subquery in an UPDATE's SET that reads the table being updated (it would see
@@ -658,6 +660,72 @@ not done, taken once it is, a few seconds) and `parse` (about two minutes for th
 the commands' statements as `Stmt`s and their effect by evaluation. Nothing is proved about the semantics itself
 yet (that a key stays unique, that `autoincrement` never reuses an id); the differential test is what ties it to
 sqlite.
+
+## sqlite's isolation (rung 4b, board #33)
+
+Rung 4 takes each transaction as one step. `Iso.lean` says why that holds, with what sqlite documents for a WAL db and
+not its internals: an engine of committed versions, one write lock, each connection's transaction and SQLITE_BUSY,
+generic in the db and its statements (`Lang`; `sqlLang` is `Sql.exec`'s), and the code's choices as a `Cfg`
+(`immediate`: `db:tx` begins with `begin immediate`; `migrateTx`, below). db.lua sets WAL and `busy_timeout(10000)` on
+every connection; `db:tx` is `begin immediate` .. `commit`, or `rollback` when its function errors; every other
+statement runs alone.
+
+- Outside a transaction a read runs on the latest committed version; a write takes the lock (it waits for it, and gets
+  SQLITE_BUSY once the busy timeout runs out, nothing changed), runs on the latest version and commits it as the next.
+- `begin immediate` takes the lock, and the transaction runs on the latest version. A deferred `begin` takes nothing
+  until its first statement, which reads a snapshot; a write after that gets SQLITE_BUSY at once if the lock is held, or
+  if a commit came after its snapshot (BUSY_SNAPSHOT): no busy handler, and the transaction stays open.
+- `commit` makes the transaction's db the next version (WAL: it never waits); `rollback` and the process ending discard
+  it; both free the lock.
+
+**Proved**, for any number of connections and any interleaving, whatever the `Cfg`: `serializable`, an invariant: each
+committed version is the statements of the transaction that made it, run on the version before (`Inv.chain`), and a
+transaction holding the lock began on the latest version and its db is its statements so far run on it (`Inv.writer`):
+no commit comes between, so no update is lost. `stmt_out`: a statement answers on its transaction's db. So the db is
+always the serial run of the committed transactions, and every answer is the one the statement gets there: a `db:tx`,
+or one statement outside one, is one step, the granularity 4a assumes (a read outside a transaction is a step of its
+own, which is 4a's to account for). `busyClean_of`, with `begin immediate`: SQLITE_BUSY comes only after waiting out
+the timeout on another connection's lock, to a connection with no transaction open, and changes nothing, so a command
+that dies of it did nothing and holds nothing. A deferred `begin` breaks it (`not_busyClean_deferred`: 0 begins and
+reads, 1 commits a write, 0's write gets SQLITE_BUSY at once with its transaction open), and with `begin immediate` the
+same connections wait (`immediate_waits`). The code uses `begin immediate`, so that switch is no Lua bug.
+
+**Assumed** (`Env.lean`, five axioms): real sqlite is this engine, one assumption per kind of op (`sqlite_begin`,
+`sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`): `Db.Does w c op r w'`, connection c asking op and
+getting r, is an engine step from `view w` to `view w'`, a run being a sequence of such ops (sqlite orders access to the
+file and the WAL index with locks, and a statement's rows come from the snapshot its first step took).
+`sqlite_consistent`: the engine has them all. `Real.lean`: `realDb_reach` (a run of the real db is a run of the
+engine), so `real_serializable`, `real_stmt_out` and `real_busyClean`. Each is stress-tested against real sqlite through
+db.lua by `sqlite_spec.lua`, in about 3 s: 6 processes each 150 times read a counter, write it + 1 and log the value
+read in `db:tx`, and add 1 to another outside a transaction; 3 move 1 between random accounts in `db:tx`; 3 read the
+total. No process fails (each waits within the busy timeout), no update to either counter is lost, each value is read
+once (every transaction read the latest), and no read sees half a transfer. Against a holder of the lock, a connection
+with a 0.2 s busy timeout: `begin immediate` and a write outside a transaction wait 0.2 s and fail, nothing changed and
+no transaction left open; its reads don't wait and don't see the holder's write; a commit doesn't wait for a reader
+that holds a snapshot. The deferred counterexample on real sqlite: SQLITE_BUSY at once, the transaction still open. A
+process SIGKILLed in a transaction, and a `db:tx` whose function errors: nothing of it left, the lock free,
+`integrity_check` ok. Checked to bite: without `db:tx` around the counters and transfers, readers see half a transfer
+and the counter loses updates.
+
+**Findings**, both in db.connect, both Lua bugs, both fixed:
+
+1. The column migration (`db.COLUMNS`) read the columns, then added each missing one, every statement on its own.
+   Two connects at once of a db missing a column both read it missing and both add it; the second dies of "duplicate
+   column name". Every fresh db goes through it (the schema script makes the tables without the later columns), so a
+   swarm's first commands at once crashed. Eight connects at once failed 29 times in 160 on an old db, and at least 73
+   in 240 on fresh ones. The model: `MReach` runs any number of connects on the engine; with `migrateTx` on they read
+   the columns and, when one is missing, take `begin immediate`, read them again and add those still missing:
+   `migrate_ok`, no connect fails but of SQLITE_BUSY. With it off (the Lua before), `not_migrate_ok`: two connects,
+   one column. The fix is the same in db.lua (a db with every column takes no lock). `db_spec.lua` runs 12 rounds of 8
+   connects at once on fresh and old dbs; it fails on the old db.lua.
+2. Found by that test once the first was fixed: on a fresh db, `pragma journal_mode=wal` (the switch to WAL) gets
+   SQLITE_BUSY at once while another first connect switches it; sqlite calls no busy handler for it. Not in the model,
+   whose db is WAL from the start. Fix: db.connect tries it again every 20 ms, up to 10 s, on "database is locked".
+
+**Not modelled**: the rollback journal: the cmd-cost history (`db.open_at`) isn't WAL, so there a reader holds up a
+commit and a commit can get SQLITE_BUSY with its transaction left open, which `db:tx` would not roll back (cost.lua runs
+no transaction on it); the busy timeout as time (a wait is a step not taken, and SQLITE_BUSY may end any wait); IO
+errors; `changes()` and `last_insert_rowid()`, which are the connection's; the switch to WAL.
 
 ## Running
 
@@ -675,6 +743,7 @@ swarm/model/lift.sh                       # after a change to locks.lua or tasks
 swarm/model/lift.sh --all                 # every module lifted and proved, in a scratch directory
 swarm/model/parsecheck.sh                 # the parser against LuaJIT's bytecode
 SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
+luajit swarm/lua/test/run.lua sqlite      # and its sqlite assumptions against sqlite, many processes at once
 cd swarm/model && lake env lean --run SwarmModel/LuaRun.lean f.lua   # f.lua under the Lean semantics, and
 luajit ../lua/test/luasem.lua f.lua                                 # under LuaJIT, written alike
 ```

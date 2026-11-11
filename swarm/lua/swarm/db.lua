@@ -3,6 +3,7 @@ local sqlite3 = require "lsqlite3"
 local lfs = require "lfs"
 local util = require "swarm.util"
 local proc = require "swarm.proc"
+local ptime = require "posix.time"
 local M = {}
 
 M.SCHEMA = [[
@@ -162,18 +163,37 @@ function M.connect()
   if not h then util.die(("can't open %s: %s"):format(p, err)) end
   local c = setmetatable({ h = h, depth = 0, path = p }, DB)
   h:busy_timeout(10000)
-  c:all("pragma journal_mode=wal")
-  c:script(M.SCHEMA)
-  local cols = {}
-  for _, tc in ipairs(M.COLUMNS) do
-    local tbl, col = tc[1], tc[2]
-    cols[tbl] = cols[tbl] or c:columns(tbl)
-    local name = col:match("^%S+")
-    if not cols[tbl][name] then
-      c:exec(("alter table %s add column %s"):format(tbl, col))
-      cols[tbl][name] = true
-    end
+  -- A fresh db turns WAL at its first connect. Of two first connects at once, the one that can't switch it gets
+  -- SQLITE_BUSY at once, no busy handler called (board #33): it tries again, for up to the busy timeout.
+  for i = 1, 500 do
+    local ok, e = pcall(function() c:all("pragma journal_mode=wal") end)
+    if ok then break end
+    if i == 500 or not tostring(e):find("database is locked", 1, true) then error(e, 0) end
+    ptime.nanosleep({ tv_sec = 0, tv_nsec = 20000000 })
   end
+  c:script(M.SCHEMA)
+  -- Adds the missing columns (add = false: only says if one is). Read outside a transaction first, so a db that has
+  -- them all takes no lock; else again inside one, since a connect running alongside may have added some since
+  -- (Iso.lean, migrate_ok: two alters of one column fail with "duplicate column name").
+  local cols
+  local function migrate(add)
+    cols = {}
+    local missing = false
+    for _, tc in ipairs(M.COLUMNS) do
+      local tbl, col = tc[1], tc[2]
+      cols[tbl] = cols[tbl] or c:columns(tbl)
+      local name = col:match("^%S+")
+      if not cols[tbl][name] then
+        missing = true
+        if add then
+          c:exec(("alter table %s add column %s"):format(tbl, col))
+          cols[tbl][name] = true
+        end
+      end
+    end
+    return missing
+  end
+  if migrate(false) then c:tx(function() migrate(true) end) end
   if cols.task.after then  -- one-time: task.after (one id) became task.deps
     c:tx(function()
       if c:columns("task").after then
