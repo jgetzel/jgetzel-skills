@@ -23,14 +23,14 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
-| `SwarmModel/Workspaces.lean` | W1-W4 (sw-bases) as statements, and their refutations on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
+| `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, and their refutations (`not_B1`; `B1_of`: B1 with `perTaskBase`) on the current `Cfg` (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`. The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Traces.lean` | writes random runs of the `replay` instance as JSON, and the scripted runs (`script`) |
 | `check.sh` | builds the model, which checks every theorem and run; fails on `sorry`, `native_decide` or an axiom |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 3 scripted runs the Lua suite replays |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 4 scripted runs the Lua suite replays |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
@@ -104,11 +104,11 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `retake` | the 350k fence on `task claim` refuses a task reap took from that very agent | PR #121 lets it retake (`reaped`, the Lua's `reaped_from`) |
 | `allWts` | lifecycle keeps an agent only for the one worktree `wt_map` picks | PR #123 keeps it while any worktree it owns is unlanded |
 | `uncleanNudge` | an idle agent kept only by an unclean worktree is kept silently, forever | PR #122 sends one urgent nudge per idle stretch |
-| `perTaskBase` | the landed checks (lifecycle, sweep) ask main only | sw-bases, board #3: they ask the bases (in the model, any base) |
+| `perTaskBase` | the landed checks (lifecycle, sweep) ask main only | sw-bases, board #3 (in the Lua, `bases.lua`): lifecycle asks the bases of the tasks an agent owns (`abases`; `Cfg.taskBase` gives each task's, main if none), the sweep every base a task names and main (`pbases`); `B1`, `B1_of`, finding #22 |
 | `splitGC` | end_agent removes the ended agent's worktree, looking at no process; sweep runs `branch -D` on whatever was checked out but main | sw-bases, board #4: ending kills the terminal only; the sweep checks reachability from a protected ref itself and deletes only a branch that is no base and is reachable |
 | `recordedWorkspaces` | an agent may check out a base in its worktree | sw-bases, board #5: swarm creates and records worktrees; a checkout of a base is refused |
 
-The last three are the fix sw-bases proposes, defined but not yet in the Lua or proved (board #6).
+`perTaskBase` is in the Lua (board #3) and `replay` has it on (tasks 2 and 4 on `formal`); the other two are the fix sw-bases proposes, defined but not yet in the Lua or proved (board #6).
 
 The communicator's world (`Comms.lean`) has its own switch, `CCfg.ensureComms`:
 

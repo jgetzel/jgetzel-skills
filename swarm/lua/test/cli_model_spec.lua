@@ -221,7 +221,7 @@ local function gitcheck(t, st, where, G, N)
 end
 
 -- one model action, done to the db the way the code (or the world) does it
-local function act(t, name, p, N, G)
+local function act(t, name, p, N, G, prev)
   local now = util.now()
   local function hc(who)  -- a spawned agent is bound to the terminal the launch made: its commands come from there
     local r = t:q1("select hc from agent where name=?", who)
@@ -266,7 +266,15 @@ local function act(t, name, p, N, G)
   elseif name == "expireLock" then setdb(t, "update lock set lease_until=? where path=?", now - 10, p.p24)
   elseif name == "leave" then sw(p.a25, "leave")
   elseif name == "add" then
-    if #p.d28 > 0 then sw(COMMS, "task", "add", "a task", "--after", ids(p.d28)) else sw(COMMS, "task", "add", "a task") end
+    local args = { COMMS, "task", "add", "a task" }
+    if #p.d28 > 0 then table.insert(args, "--after"); table.insert(args, ids(p.d28)) end
+    for id, k in ipairs(prev.task) do  -- the new task is the first absent one; a task on a base other than main says so
+      if k.st == "absent" then
+        if k.base ~= 0 then table.insert(args, "--base"); table.insert(args, G.BR[k.base]) end
+        break
+      end
+    end
+    sw(unpack(args))
   elseif name == "after" then
     if #p.d29 > 0 then sw(COMMS, "task", "after", tostring(p.t29), ids(p.d29))
     else sw(COMMS, "task", "after", tostring(p.t29)) end
@@ -299,7 +307,7 @@ local function replay(t, file)
     local x = trace.states[i]
     local name, picks = x.action, x.picks
     local where = ("step %d %s %s"):format(i - 1, name, t.repr(picks))
-    local ok, err = pcall(act, t, name, picks, N, G)
+    local ok, err = pcall(act, t, name, picks, N, G, prev)
     if not ok then error(where .. ": " .. tostring(err), 0) end
     local st = x.s
     local M = {}

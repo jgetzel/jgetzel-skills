@@ -20,8 +20,8 @@ def stateJson (c : Cfg) (s : State) : Json :=
     | .unborn => "unborn" | .working => "working" | .idle => "idle" | .blocked => "blocked" | .ended => "ended"
   let kind : Kind → String | .dm => "dm" | .answer => "answer" | .released => "released" | .digest => "digest" | .nudge => "nudge"
   Json.mkObj [
-    ("task", Json.arr <| s.task.toArray.map fun k => Json.mkObj
-      [("st", tst k.st), ("owner", who k.owner), ("lease", k.lease), ("ev", k.ev), ("answer", k.answer)]),
+    ("task", Json.arr <| (s.task.toArray.mapIdx fun i k => (i + 1, k)).map fun (t, k) => Json.mkObj
+      [("base", c.tbase t), ("st", tst k.st), ("owner", who k.owner), ("lease", k.lease), ("ev", k.ev), ("answer", k.answer)]),
     ("ag", Json.mkObj <| c.agents.map fun a => (slot a, Json.mkObj [("st", ast (s.agt a).st), ("boot", (s.agt a).boot),
       ("wt", ((s.agt a).wt.map toJson).getD (-1 : Int))])),
     ("lock", Json.mkObj <| (c.patterns.zip s.lock).map fun (p, l) => (p, Json.mkObj [("holder", who l.holder)])),
@@ -128,7 +128,12 @@ def gSquash (x w b : Nat) := ("gitSquash", [ag "a44" x, ("w44", toJson w), ("r44
 def gCheckout (x w b : Nat) := ("gitCheckout", [ag "a45" x, ("w45", toJson w), ("r45", toJson b)])
 def wAge (w : Nat) := ("wtAge", [("w46", toJson w)])
 def stop (x : Nat) := ("stop", [ag "a14" x, ("big14", toJson false)])
+def stopBig (x : Nat) := ("stop", [ag "a14" x, ("big14", toJson true)])
+def expire (t : Nat) := ("expire", [("t23", toJson t)])
 def age (x : Nat) := ("age", [ag "a21" x])
+def add : String × List (String × Json) := ("add", [("d28", toJson ([] : List Nat))])
+def claim (x t : Nat) := ("claim", [ag "a1" x, ("t1", toJson t)])
+def done (x t : Nat) := ("done", [ag "a7" x, ("t7", toJson t), ("ev7", toJson true)])
 def tick : String × List (String × Json) := ("tick", [])
 end S
 open S in
@@ -137,11 +142,13 @@ is landed by content, so lifecycle ends its agent and end_agent removes it and i
 agent. `sweep`: a fast-forwarded worktree its agent no longer edits in is swept with its branch, and so is one with the
 base `formal` checked out, and `branch -D formal` goes with it. `formal` (W3, board #2): work landed on `formal` only is
 not landed for the Lua: the tick sweeps a worktree on main, keeps one on `formal` its agent left (W3's orphan), and keeps
-the idle agent whose last worktree is on `formal`. -/
+the idle agent whose last worktree is on `formal`. `base` (board #3): task #2 is on `formal`; its agent lands on main
+only and goes idle (big context, so never reusable), and the tick, which reaps the idle agent 1's lapsed #1, keeps it; once the work is on `formal` too, the tick ends it. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick,
     gAdd 1 2, gCheckout 1 2 1, wAge 2, tick]),
+  ("base", [add, add, claim 1 1, claim 0 2, gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, done 0 2, stopBig 0, age 0, stop 1, expire 1, tick]),
   ("formal", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 2, gEdit 0 2, gCommit 0 2, gSquash 0 2 1,
     gAdd 0 1, gEdit 0 1, gCommit 0 1, gSquash 0 1 1, wAge 0, wAge 2, stop 0, age 0, tick])]
 

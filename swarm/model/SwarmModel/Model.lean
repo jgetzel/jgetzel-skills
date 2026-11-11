@@ -69,9 +69,11 @@ structure Cfg where
   /-- base branches: 0 is `main`, the one the Lua's landed checks use; the rest exist from the start (a swarm's own
   base, e.g. `formal`). Branch `nbases + w` is worktree w's own -/
   nbases : Nat := 1
-  /-- sw-bases, board #3: the landed checks use the bases, not only main. The model has no per-task base yet: work counts
-  as landed on any base -/
+  /-- sw-bases, board #3: the landed checks use per-task bases (`base_for`): lifecycle asks the bases of the tasks an agent
+  owns (main if none), the sweep every base a task names and main -/
   perTaskBase : Bool := false
+  /-- the base of task t (index t; main, 0, past the end): fixed when the task is added (`swarm task add --base`) -/
+  taskBase : List Nat := []
   /-- sw-bases, board #4: ending an agent only kills its terminal; workspace GC alone removes worktrees, by reachability
   from a protected ref, and `branch -D` only of a branch that is no base and is reachable. Before, end_agent removes the
   ended agent's worktree (with no look at processes) and sweep deletes whatever branch was checked out but main -/
@@ -246,9 +248,19 @@ or rebase merge). Every ordinary commit adds a fresh patch and none deletes one,
 def Git.reachFrom (g : Git) (k b : Nat) : Bool := (g.tip b).any fun t => (g.cmt k).cont.all (g.cmt t).cont.contains
 /-- reachable from a protected ref: what workspace GC checks itself (never `git branch -d`, which asks HEAD or upstream) -/
 def Git.safe (c : Cfg) (g : Git) (k : Nat) : Bool := c.bases.any (g.reachFrom k)
-/-- the landed checks: on main (`watchd.landed`), or with `perTaskBase` on a base -/
-def landedC (c : Cfg) (g : Git) (w : Nat) : Bool :=
-  if c.perTaskBase then let x := g.wt w; !x.on || (!x.dirty && g.safe c x.head) else g.landed w
+def Cfg.tbase (c : Cfg) (t : Nat) : Nat := c.taskBase.getD t 0
+/-- clean, and its HEAD reachable from one of the branches `refs` (a removed worktree has nothing to lose) -/
+def Git.landedIn (g : Git) (refs : List Nat) (w : Nat) : Bool := let x := g.wt w; !x.on || (!x.dirty && refs.any (g.reachFrom x.head))
+/-- `base_for` of an agent: the bases of the tasks it owns (any state; a done task keeps its owner), main if none -/
+def abases (c : Cfg) (s : State) (a : Nat) : List Nat :=
+  match (c.tasks.filter fun t => (s.tk t).owner == some a).map c.tbase with
+  | [] => [0]
+  | bs => bs
+/-- what the sweep protects: main, and the base of every task on the board -/
+def pbases (c : Cfg) (s : State) : List Nat := 0 :: (c.tasks.filter fun t => (s.tk t).st != .absent).map c.tbase
+/-- the landed checks: on main (`watchd.landed`), or with `perTaskBase` on one of `refs` -/
+def landedC (c : Cfg) (g : Git) (refs : List Nat) (w : Nat) : Bool :=
+  if c.perTaskBase then g.landedIn refs w else g.landed w
 /-- some worktree has branch b checked out: git refuses to move it from elsewhere, or check it out twice -/
 def Git.out (g : Git) (b : Nat) : Bool := g.wts.any fun x => x.on && x.br == some b
 /-- owned_wts: w is there and its directory is named after a -/
@@ -260,7 +272,7 @@ def wtmap (c : Cfg) (s : State) (a : Nat) : Option Nat :=
   | none => ((s.agt a).own.find? fun (w, _) => owns s a w && (s.git.wt w).br == some (c.wbr w)).map (·.1)
 /-- watchd.lifecycle's `unlanded`: work not on main in the worktree wt_map picks, or (PR #123) in any it owns -/
 def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (wtmap c s a).any (!landedC c s.git ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git w)
+  (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git (abases c s a) w)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
 def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
@@ -352,7 +364,7 @@ def used (c : Cfg) (s : State) (w : Nat) : Bool :=
 protected ref) -/
 def sweeps (c : Cfg) (s : State) (w : Nat) : Bool :=
   let x := s.git.wt w
-  x.on && !used c s w && !x.proc && !x.recent && (if c.splitGC then !x.dirty && s.git.safe c x.head else landedC c s.git w)
+  x.on && !used c s w && !x.proc && !x.recent && (if c.splitGC then !x.dirty && s.git.safe c x.head else landedC c s.git (pbases c s) w)
 /-- watchd.end_agent: the ended agent's wt_map worktree, unless a live peer's agent.wt is it; `git worktree remove`
 refuses a dirty one. It looks at no process. -/
 def endRemoves (c : Cfg) (s : State) (w : Nat) : Bool :=
@@ -706,6 +718,6 @@ def idleClaim (s : State) (a t : Nat) : Bool := ownsClaimed s a t && (s.agt a).s
 def answered (s : State) (t : Nat) : Bool := !s.pend.contains t || (s.tk t).st == .done || (s.tk t).st == .dropped
 
 /-- what cli_model_spec.lua drives the CLI with (atomic commands; Traces.lean leaves hc and leave out) -/
-def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2 }
+def replay : Cfg := { nagents := 4, ntasks := 4, patterns := ["m/*.lua", "m/a*", "m/", "m/a.lua"], nwts := 3, nbases := 2, perTaskBase := true, taskBase := [0, 0, 1, 0, 1] }
 
 end Swarm

@@ -260,8 +260,18 @@ def pre20b : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit
   .done 0 1 true, .stop 0 false, .age 0]
 example : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true := by decide
 -- with `perTaskBase` the tick removes the worktree, and ends the agent
-example : (run { cfg20 with perTaskBase := true } (pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide
-example : (run { cfg20b with perTaskBase := true } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+-- (the sweep protects a base some task names: #1 is on `formal`; the agent's task is #1)
+example : (run { cfg20 with perTaskBase := true, taskBase := [0, 1] } ([.add []] ++ pre20 ++ [.tick])).any (fun s => !(s.git.wt 0).on) = true := by decide
+example : (run { cfg20b with perTaskBase := true, taskBase := [0, 1] } (pre20b ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+
+-- #B1 (finding, board #3), B1 (sw-bases, board #3). Work is landed on the base of the task it was done for. Agent 0's task #1 is on `formal`;
+-- it lands on main, not on `formal`, marks #1 done and goes idle. Lifecycle's check asks main only, so it ends the agent:
+-- its work never reached `formal`. With `perTaskBase` it asks `formal`, and keeps the agent.
+def cfgB1 : Cfg := { nwts := 1, nbases := 2, taskBase := [0, 1] }
+def preB1 : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0),
+  .done 0 1 true, .stop 0 false, .age 0]
+example : (run cfgB1 (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide
+example : (run { cfgB1 with perTaskBase := true } (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = false := by decide
 
 -- #21, W4. Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal`
 -- is refused while a worktree has it checked out). With `recordedWorkspaces` the checkout is refused.

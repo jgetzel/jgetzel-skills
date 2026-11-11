@@ -20,6 +20,10 @@ def W3 (c : Cfg) : Prop := ∀ r : Run c, r.Fair → ∀ n,
 /-- W4: no worktree has a base checked out -/
 def W4 (c : Cfg) : Prop := ∀ s, Reachable c s → noBaseOut c s = true
 
+/-- B1: lifecycle ends an agent only if the worktree it works in is landed on a base of one of its tasks (main if none) -/
+def B1 (c : Cfg) : Prop := ∀ s, Reachable c s → ∀ a w, ends c s a = true → wtmap c s a = some w →
+  s.git.landedIn (abases c s a) w = true
+
 /-- a run that ends in a state breaking `p` refutes `p` of every reachable state -/
 theorem not_inv {c : Cfg} {acts : List Action} {p : State → Bool} (h : violates c acts p = true) :
     ¬ ∀ s, Reachable c s → p s = true := by
@@ -119,6 +123,26 @@ theorem not_W3_formal_wt : ¬ W3 cfg20 :=
 /-- #20: an agent whose task landed on `formal` is never ended -/
 theorem not_W3_formal_agent : ¬ W3 cfg20b :=
   not_W3_agent (by decide : loopOk cfg20b pre20b (.bgStart 1) (.bgEnd 1) (doneOnBase cfg20b · 0) = true)
+/-- #B1: an agent whose work is on main, not on its task's base `formal`, is ended -/
+theorem not_B1 : ¬ B1 cfgB1 := by
+  intro h
+  have key : (run cfgB1 preB1).any (fun s => ends cfgB1 s 0 && wtmap cfgB1 s 0 == some 0
+      && !s.git.landedIn (abases cfgB1 s 0) 0) = true := by decide +kernel
+  cases e : run cfgB1 preB1 with
+  | none => simp [e] at key
+  | some s =>
+    simp only [e, Option.any_some, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at key
+    obtain ⟨⟨h1, h2⟩, h3⟩ := key
+    simp [h s (reachable_of_run e) 0 0 h1 h2] at h3
+
+/-- with `perTaskBase` on, B1 holds: lifecycle's `unlanded` asks `abases` -/
+theorem B1_of (c : Cfg) (hc : c.perTaskBase = true) : B1 c := by
+  intro s _ a w hend hw
+  simp only [ends, finished, unlanded, Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_false_iff] at hend
+  obtain ⟨⟨_, h1, _⟩, _⟩ := hend
+  simp only [hw, Option.any_some, Bool.not_eq_false'] at h1
+  simpa [landedC, hc] using h1
+
 /-- #21: an agent checks out a base -/
 theorem not_W4 : ¬ W4 cfg21 := not_inv (by decide : violates cfg21 pre21 (noBaseOut cfg21) = true)
 

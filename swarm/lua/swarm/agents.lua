@@ -282,7 +282,7 @@ function M.cmd_stay(c, a)
     db.log(c, n, v and "stay" or "stay-end", nil, v)
   end)
   print(v and ("you stay for '%s'; watchd won't end you. `swarm stay --end` when it is over."):format(v)
-    or "stay ended: watchd ends you once you are idle, hold nothing and your work is on main.")
+    or "stay ended: watchd ends you once you are idle, hold nothing and your work is on your task's base.")
 end
 
 function M.cmd_leave(c, a)
