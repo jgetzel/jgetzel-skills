@@ -195,7 +195,8 @@ How a script outside it is reported, from strongest to weakest:
    `os.date`'s `%Z %z %s %G %g %V`, glibc's flags, widths and `%E`/`%O`, a conversion it does not have or a year
    outside 1000..9999 in a format (C libraries print them their own ways), a format after `os.setlocale` (its names
    are the C locale's), a time past 2^53 to `os.date` or a difference past 2^53 from `os.difftime`, a field of
-   `os.time`'s table past 2^30, `os.exit`; `load` or `loadstring` of a source the parser rejects (its
+   `os.time`'s table past 2^30 or a date in it before 1900 (C libraries differ: macOS's mktime answers -1; the test's
+   world, `Run.caseFx`, does not answer), `os.exit`; `load` or `loadstring` of a source the parser rejects (its
    message would be LuaJIT's parser's), of bytecode, with an environment table, or of a reader that raises an error,
    returns something neither nil nor a string, or comes with a mode without `t` (LuaJIT reads one piece first);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
