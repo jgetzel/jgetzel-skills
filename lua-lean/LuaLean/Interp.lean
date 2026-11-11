@@ -188,6 +188,7 @@ def rawset (a : Nat) (k v : Val) : M Unit := do
 def G : Nat := 0
 def LOADED : Nat := 1
 def STRING : Nat := 2
+def TABLE : Nat := 3
 
 def getVar (cx : Ctx) (x : String) : M Val :=
   match cx.env.lookup x with
@@ -317,6 +318,12 @@ def optInt (fname : String) (i : Nat) (args : List Val) (d : Int) : M Int :=
   match args.getD i .nil with
   | .nil => pure d
   | _ => argInt fname i args
+
+/-- a function (CHECK_func); an effect handle passes, the oracle answers its calls -/
+def argFn (fname : String) (i : Nat) (args : List Val) : M Val :=
+  match args.getD i .nil with
+  | f@(.fn _) | f@(.prim ..) | f@(.eff _) => pure f
+  | v => die s!"bad argument #{i + 1} to '{fname}' (function expected, got {v.typeName})"
 
 def argTbl (fname : String) (i : Nat) (args : List Val) : M Nat :=
   match args.getD i .nil with
@@ -497,6 +504,29 @@ def mathFn (name : String) (args : List Val) : M (List Val) := do
       if let .flt _ := y then allInt := false
       if !(if name == "max" then y.lt best else best.lt y) then best := y
     return [.num (if allInt then best else .flt best.toFloat)]
+  -- libm's, as LuaJIT calls them (the host's, like `^`: DESIGN.md, Trust); every result a double
+  | "exp" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" => do
+    let x := (← argNum name 0 args).toFloat
+    return [.num (.flt (match name with
+      | "exp" => x.exp | "log10" => x.log10 | "sin" => x.sin | "cos" => x.cos | "tan" => x.tan | "asin" => x.asin
+      | "acos" => x.acos | "atan" => x.atan | "sinh" => x.sinh | "cosh" => x.cosh | _ => x.tanh))]
+  | "log" => do
+    let x := (← argNum name 0 args).toFloat
+    -- a base: log2(x) * (1 / log2(base)), as lib_math.c writes it
+    if args.length ≥ 2 then return [.num (.flt (x.log2 * (1 / (← argNum name 1 args).toFloat.log2)))]
+    return [.num (.flt x.log)]
+  | "pow" | "atan2" | "fmod" => do
+    let x := (← argNum name 0 args).toFloat
+    let y := (← argNum name 1 args).toFloat
+    return [.num (.flt (match name with | "pow" => x.pow y | "atan2" => x.atan2 y | _ => Num.fmodC x y))]
+  | "modf" => do let (i, r) := Num.modfC (← argNum name 0 args).toFloat; return [.num (.flt i), .num (.flt r)]
+  | "frexp" => do let (m, e) := Num.frexpC (← argNum name 0 args).toFloat; return [.num (.flt m), nums e]
+  | "ldexp" => do
+    let x := (← argNum name 0 args).toFloat
+    return [.num (.flt (x.scaleB (← argInt name 1 args)))]
+  -- x * 57.29577951308232 and x * 0.017453292519943295 in lib_math.c's Lua
+  | "deg" => return [.num (.flt ((← argNum name 0 args).toFloat * Float.ofBits 0x404CA5DC1A63C1F8))]
+  | "rad" => return [.num (.flt ((← argNum name 0 args).toFloat * Float.ofBits 0x3F91DF46A2529D39))]
   | _ => die s!"math.{name}: not in the subset"
 
 def strFn (name : String) (args : List Val) : M (List Val) := do
@@ -545,7 +575,25 @@ def strFn (name : String) (args : List Val) : M (List Val) := do
     return [.prim "gmatch_it" [.str s, .str p, .num (.int c)]]
   | _ => die s!"string.{name}: not in the subset"
 
-def tableFn (name : String) (args : List Val) : M (List Val) := do
+/-- CHECK_int in lib_table.c's Lua: dual-number makes it an integer (lj_lib_checkint), single-number keeps the number -/
+def libInt (tgt : Target) (fname : String) (i : Nat) (args : List Val) : M Num :=
+  match tgt with
+  | .dual => do pure (.int (← argInt fname i args))
+  | .single => argNum fname i args
+
+/-- the key of a raw access in lib_table.c's Lua (TGETR, TSETR): the number truncated to 32 bits -/
+def libKey (fname : String) (k : Num) : M Val := do pure (nums (← argIntN 32 fname 0 [.num k]))
+
+/-- `for i=a,b` (`down`: `for i=a,b,-1`): a, a + 1, ... to b; past 2^32 numbers the run stops, its keys leave the
+32 bits -/
+def libRange (a b : Num) (down : Bool := false) : M (List Num) := do
+  let span := if down then a.sub b else b.sub a
+  if span.lt (.int 0) then return []
+  let c := span.floor.trunc
+  if !span.toFloat.isFinite || c ≥ 2 ^ 32 then throw (.eff "table: a loop past 2^32" [])
+  return (List.range (c.toNat + 1)).map fun (k : Nat) => if down then a.sub (.int k) else a.add (.int k)
+
+def tableFn (tgt : Target) (name : String) (args : List Val) : M (List Val) := do
   match name with
   | "insert" => do
     let t ← argTbl name 0 args
@@ -572,11 +620,11 @@ def tableFn (name : String) (args : List Val) : M (List Val) := do
       rawset t (nums n) .nil
       return [old]
     | _ => do
-      let pos ← argInt name 1 args
-      if pos ≥ 1 && pos ≤ n then
-        let old ← rawget t (nums pos)
-        for k in [pos.toNat + 1:n + 1] do
-          rawset t (nums (k - 1)) (← rawget t (nums k))
+      let pos ← libInt tgt name 1 args
+      if (Num.int 1).le pos && pos.le (.int n) then
+        let old ← rawget t (← libKey name pos)
+        for k in ← libRange (pos.add (.int 1)) (.int n) do
+          rawset t (← libKey name (k.sub (.int 1))) (← rawget t (← libKey name k))
         rawset t (nums n) .nil
         return [old]
       return []
@@ -600,35 +648,56 @@ def tableFn (name : String) (args : List Val) : M (List Val) := do
       | .num x, _ => if m.lt x then x else m
       | _, _ => m) (Num.int 0)
     return [.num m]
+  | "getn" => do return [nums (← getTbl (← argTbl name 0 args)).len]
+  | "move" => do
+    -- lib_table.c's Lua, its tables raw (CHECK_tab)
+    let a1 ← argTbl name 0 args
+    let f ← libInt tgt name 1 args
+    let e ← libInt tgt name 2 args
+    let t ← libInt tgt name 3 args
+    let a2 ← match args.getD 4 .nil with | .nil => pure a1 | _ => argTbl name 4 args
+    if f.le e then
+      let d := t.sub f
+      for i in ← (if e.lt t || t.le f || a2 != a1 then libRange f e else libRange e f true) do
+        rawset a2 (← libKey name (i.add d)) (← rawget a1 (← libKey name i))
+    return [.tbl a2]
+  -- require "table.new" and "table.clear"
+  | "new" => do
+    let a ← argInt name 0 args
+    let h ← argInt name 1 args
+    -- shortcut: a size above 65536 stops the run (LuaJIT's memory may refuse it), model "table overflow" if one is needed
+    if a > 65536 || h > 65536 then throw (.eff "table.new of a large size" [])
+    return [.tbl (← alloc (.tbl {}))]
+  | "clear" => do let t ← argTbl name 0 args; putTbl t { (← getTbl t) with kv := [] }; return []
   | _ => die s!"table.{name}: not in the subset"
 
 def unpackFn (args : List Val) : M (List Val) := do
   let t ← argTbl "unpack" 0 args
   let i ← optInt "unpack" 1 args 1
   let j ← optInt "unpack" 2 args (← getTbl t).len
-  let mut r := []
-  let mut k := i
-  for _ in [0:(j - i + 1).toNat] do
-    r := r ++ [← rawget t (nums k)]
-    k := k + 1
-  return r
+  -- lua_checkstack: the results and the arguments within LUAI_MAXCSTACK
+  if i ≤ j && j - i + 1 + args.length > 8000 then die "too many results to unpack"
+  (List.range (j - i + 1).toNat).mapM fun (k : Nat) => rawget t (nums (i + k))
 
-def basicFn (name : String) (bound args : List Val) : M (List Val) := do
+def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => if args.isEmpty then die "bad argument #1 to 'type' (value expected)" else
     return [lstr (args.headD .nil).typeName]
-  | "tostring" => do noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
+  | "tostring" => do
+    if args.isEmpty then die "bad argument #1 to 'tostring' (value expected)"
+    noMeta [args.headD .nil] ["__tostring"]; return [.str (args.headD .nil).text]
   | "tonumber" => do
-    match args.getD 1 .nil with
-    | .nil => match args.headD .nil with
+    if args.isEmpty then die "bad argument #1 to 'tonumber' (value expected)"
+    let b ← optInt "tonumber" 1 args 10
+    if b == 10 then
+      match args.headD .nil with
       | .num n => return [.num n]
       | .str s => return [(Num.parse s).elim .nil .num]
       | _ => return [.nil]
-    | _ => do
-      let b ← argInt "tonumber" 1 args
-      let s ← argStr "tonumber" 0 args
-      if b < 2 || b > 36 then die "bad argument #2 to 'tonumber' (base out of range)"
-      return [(Num.parseBase s b.toNat).elim .nil .num]
+    let s ← argStr "tonumber" 0 args
+    if b < 2 || b > 36 then die "bad argument #2 to 'tonumber' (base out of range)"
+    if Num.binPrefix s b.toNat then throw (.eff "tonumber: 0b in base 2" [])
+    return [(Num.parseBase tgt s b.toNat).elim .nil .num]
   | "ipairs" => do let t ← argTbl name 0 args; return [.prim "ipairs_it" [], .tbl t, .num (.int 0)]
   | "ipairs_it" => do
     let t ← argTbl name 0 args
@@ -644,7 +713,7 @@ def basicFn (name : String) (bound args : List Val) : M (List Val) := do
     | some (some (k, v)) => return [k, v]
   | "select" => do
     match args.headD .nil with
-    | .str ['#'] => return [nums (args.length - 1)]
+    | .str ('#' :: _) => return [nums (args.length - 1)]
     | _ => do
       let n ← argInt "select" 0 args
       let rest := args.tail
@@ -684,7 +753,7 @@ def basicFn (name : String) (bound args : List Val) : M (List Val) := do
   | _ =>
     match name.splitOn "." with
     | ["string", f] => strFn f args
-    | ["table", f] => tableFn f args
+    | ["table", f] => tableFn tgt f args
     | ["math", f] => mathFn f args
     | _ => die s!"{name}: not in the subset"
 
@@ -1038,6 +1107,12 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     let m ← argStr "require" 0 args
     let v ← rawget LOADED (.str m)
     if !v.isNil then return [v]
+    -- package.preload's two: each also becomes a field of `table`
+    if m == "table.new".toList || m == "table.clear".toList then
+      let f := Val.prim (String.ofList m) []
+      rawset TABLE (.str (m.drop 6)) f
+      rawset LOADED (.str m) f
+      return [f]
     let v ← match srcs (String.ofList m) with
       | some b => do
         let f ← alloc (.clo ⟨[], true, b, []⟩)
@@ -1047,13 +1122,43 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     rawset LOADED (.str m) v
     return [v]
   | "string.gsub" => gsub n args
+  | "table.foreachi" => do
+    let t ← argTbl "foreachi" 0 args
+    let f ← argFn "foreachi" 1 args
+    foreachi n t f 1 (← getTbl t).len
+  | "table.foreach" => do
+    let t ← argTbl "foreach" 0 args
+    foreachK n t (← argFn "foreach" 1 args) .nil
   | "table.sort" => do
     let t ← argTbl "sort" 0 args
     let cmp := args.getD 1 .nil
     let len := (← getTbl t).len
     sortAux n t cmp 1 len
     pure []
-  | _ => basicFn name bound args
+  | _ => basicFn tgt name bound args
+
+/-- table.foreachi from i: f(i, t[i]) until a result is not nil -/
+def foreachi (n : Nat) (t : Nat) (f : Val) (i len : Int) : M (List Val) :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 => do
+    if i > len then return []
+    let r := (← call n f [nums i, ← rawget t (nums i)]).headD .nil
+    if !r.isNil then return [r]
+    foreachi n t f (i + 1) len
+
+/-- table.foreach after key k: f(k, v), as `next` visits them, until a result is not nil -/
+def foreachK (n : Nat) (t : Nat) (f k : Val) : M (List Val) :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 => do
+    match (← getTbl t).next k with
+    | none => die "invalid key to 'next'"
+    | some none => return []
+    | some (some (k, v)) =>
+      let r := (← call n f [k, v]).headD .nil
+      if !r.isNil then return [r]
+      foreachK n t f k
 
 def lessThan (n : Nat) (cmp a b : Val) : M Bool :=
   match n with
@@ -1225,8 +1330,12 @@ def initHeap : Heap :=
      (lstr "debug", .eff "debug")] }
   let str := libTable "string" ["len", "sub", "upper", "lower", "reverse", "rep", "byte", "char", "format", "find",
     "match", "gmatch", "gsub"]
-  let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn"]
-  let math := (libTable "math" ["floor", "ceil", "abs", "sqrt", "max", "min"]).set (lstr "huge") (.num (.flt (1.0 / 0.0)))
+  let tab := libTable "table" ["insert", "remove", "concat", "sort", "maxn", "getn", "move", "foreach", "foreachi"]
+  let math := (libTable "math" ["floor", "ceil", "abs", "sqrt", "max", "min", "exp", "log", "log10", "sin", "cos", "tan",
+    "asin", "acos", "atan", "sinh", "cosh", "tanh", "pow", "atan2", "fmod", "modf", "frexp", "ldexp", "deg", "rad"]).set
+    (lstr "huge") (.num (.flt (1.0 / 0.0))) |>.set (lstr "pi") (.num (.flt (Float.ofBits 0x400921FB54442D18)))
+    -- LuaJIT's generator state is the oracle's
+    |>.set (lstr "random") (.eff "math.random") |>.set (lstr "randomseed") (.eff "math.randomseed")
   let pkg : Tbl := { kv := [(lstr "loaded", .tbl 1), (lstr "path", lstr "")] }
   #[.tbl g, .tbl {}, .tbl str, .tbl tab, .tbl math, .tbl pkg]
 

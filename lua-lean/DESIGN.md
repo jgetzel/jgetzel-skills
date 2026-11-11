@@ -45,7 +45,7 @@ What a proved spec rests on, and how each piece is checked:
 | Lean's kernel and its three axioms (`propext`, `Classical.choice`, `Quot.sound`) | `Audit.lean`: every theorem of LuaLean uses those and nothing else; `check.sh` refuses `sorry`, `admit`, `native_decide`, `axiom` |
 | The parser, and `LuaLean/Show.lean` (74 lines), which writes the parsed tree as the Lean term `f_body` the proof is about | `lua-lean parsecheck` (the parser; `Show.lean` by reading it): each file, parsed and printed back fully parenthesised, compiles under LuaJIT to the source's bytecode (number constants at `%.17g`). A tree of the wrong shape (a re-associated `a - b - c`) changes the bytecode |
 | The semantics against LuaJIT | differential testing: `LuaLean/Gen.lean` writes random chunks with the interpreter's results for each target and `test/luasem.lua` runs each under stock LuaJIT 2.1 (never a 5.2-compat build), JIT on and off, against its target's results; results must be the same text, numbers to the last bit. 3000 are committed (`test/cases.lua.gz`, seed 28), `lua-lean difftest` runs fresh ones |
-| The host's `pow` | `^` is libm's `pow` in LuaJIT and in Lean's `Float.pow`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel cannot evaluate a `Float`, so no proof rests on a `pow` value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz`. A `pow` case that fails on another machine is this before anything else |
+| The host's libm | `^`, `math.pow`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, their inverses and hyperbolics, `atan2` are libm's in LuaJIT and in Lean's `Float`, so the two agree on one machine, and macOS's and glibc's may differ. The kernel cannot evaluate a `Float`, so no proof rests on such a value, but two files carry the machine that wrote them: a lifted module (the parser folds a constant `a ^ b`, `Show.lean` writes it as `Float.ofBits`) and `test/cases.lua.gz` (its generator prints the `math` ones at `%.12g`, `^` exactly). A `pow` case that fails on another machine is this before anything else. `fmod`, `modf`, `frexp`, `ldexp` are exact and modelled exactly (`Num.fmodC`, …) |
 | The user's effect axioms | each its own test against the world, as above |
 
 Not trusted: the translator (Lean checks each `f_ok`: one `+` turned into `-` in a lifted function and the proof
@@ -67,19 +67,26 @@ A double outside the integer range a C cast wants (int32 for `lj_lib_checkint`, 
 too) is undefined behaviour in C that LuaJIT leaves to the CPU (x86-64 gives the least integer; arm64 is expected to
 saturate, unmeasured), so the semantics stops the run there (`argIntN`).
 
+The table library's functions written in Lua (`remove`, `move`) check an integer argument with `CHECK_int`, which
+dual-number makes an integer (truncated) and single-number leaves the number it was; their raw accesses truncate a
+key. So `table.remove(t, 1.5)` shifts by halves on single-number (`libInt`, `libKey`).
+
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it; metatables with `__index` and `__newindex` (a function, or a value to index
 instead) and `__call`, each read from the metatable when the operation runs, as LuaJIT does; closures; varargs;
 `pcall`/`error` (a failed call keeps what it wrote); `goto` as the continue idiom (a label ending its block); numbers as LuaJIT has
-them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` (patterns after lstrlib.c,
-`format` after lj_strfmt_num.c, `gsub` with string, table or function), `table` (`sort` is ltablib.c's quicksort,
-so ties and bad comparators come out as LuaJIT's do), `math`, `select`, `unpack`, `pairs`, `ipairs`, `next`,
-`type`, `tostring`, `tonumber`, `rawget`/`rawset`/`rawequal`, `setmetatable`/`getmetatable`, `assert`, `require` of
-modules given as source.
+them on either target, with `tonumber` and `%.14g` exact; strings as bytes. Library: `string` but `dump` (patterns after
+lstrlib.c, `format` after lj_strfmt_num.c, `gsub` with string, table or function), `table`, all of LuaJIT 2.1's
+(`sort` is ltablib.c's quicksort, so ties and bad comparators come out as LuaJIT's do; `move`, `remove`, `foreach`,
+`foreachi`, `getn` after lib_table.c's Lua; `table.new` and `table.clear` through `require`), `math` but `random` and
+`randomseed` (effects: the generator's state is the oracle's), `select`, `unpack` (at most 8000 values with its
+arguments, lua_checkstack's bound), `pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber` (a base other than 10
+as lib_base.c's strtoul reads it: a sign, `0x` in base 16, saturated at 2^64 - 1), `rawget`/`rawset`/`rawequal`,
+`setmetatable`/`getmetatable`, `assert`, `require` of modules given as source.
 
-Out: coroutines, `load`/`loadstring`/`dofile`, FFI, the other metamethods (G3b, G3c), `string.format("%a")`, the
-rest of the standard library.
+Out: coroutines, `load`/`loadstring`/`dofile`, FFI, the other metamethods (G3b, G3c), `string.format("%a")`,
+`string.dump`, the rest of the standard library (`os`, `io`, `debug`, `collectgarbage`, `getfenv`/`setfenv`, …).
 
 How a script outside it is reported, from strongest to weakest:
 
@@ -92,15 +99,18 @@ How a script outside it is reported, from strongest to weakest:
    `__len` LuaJIT 2.1 never calls), a metatable with `__mode` or one on `_G`, a chain of `__index` or `__newindex`
    tables that loops (LuaJIT stops it after 100 with an error; the semantics runs out of fuel),
    `%f` of a number below 1e-150 (where LuaJIT itself prints garbage), a double outside the integer range where a
-   builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`; "Targets"), a call into `io`, `os` or a module not given
-   as source when no oracle answers it.
+   builtin wants an integer (`("x"):rep(2^32)`, `("%d"):format(1/0)`, `math.ldexp(1, 2^31)`, a key of `table.move`
+   past 32 bits; "Targets"), `tonumber(s, 2)` of `0b` and a binary digit (glibc 2.38's strtoul reads the prefix,
+   older C libraries do not), `table.new` of a size above 65536, a call into `io`, `os`, `math.random` or a module not
+   given as source when no oracle answers it.
 4. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
    behaviour. Each is a task on the roadmap; until then a spec must not depend on them:
    - `__mode` added to a metatable after `setmetatable`;
    - `pairs`/`next` order: the semantics visits keys in insertion order; LuaJIT's order is its hash layout (G4);
    - `#t` of a table with holes: the semantics takes the least border, LuaJIT may give another;
    - error values of runtime errors: the semantics' messages have no `file:line:` prefix;
-   - `tostring` of a table or function (an address in LuaJIT).
+   - `tostring` of a table or function (an address in LuaJIT);
+   - `type` of an effect handle (`print`, `io.write`, `math.random`): `userdata`, a function in LuaJIT.
 
 G2 turns this list into a checker that names each construct with its line before anything is lifted.
 
@@ -150,8 +160,8 @@ proof; a statement is never weakened to make a proof go through.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c). Each replaces a `noMeta` stop in `LuaLean/Interp.lean`.
-- **G4** the standard library: the rest of string, table, math, `select`/`tostring`/`tonumber` corners, `pairs`
-  order; `os` and `io` as effect interfaces with named axioms.
+- **G4** the standard library: `pairs` order and `#t` with holes (G4b); `os` and `io` as effect interfaces with
+  named axioms (G4c). Done (G4a): the rest of string, table and math, `select`/`tostring`/`tonumber` corners.
 - **G5** `load`, `dofile`, `require` of arbitrary modules: multi-module scripts lift end to end.
 - **G6** coroutines: thread state in the interpreter, a suspension effect in the shallow monad, rules for
   resume/yield.
