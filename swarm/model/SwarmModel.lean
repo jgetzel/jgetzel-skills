@@ -25,3 +25,4 @@ import SwarmModel.Lifted.Tasks
 import SwarmModel.Decide
 import SwarmModel.Spawn
 import SwarmModel.PrWatch
+import SwarmModel.Contract

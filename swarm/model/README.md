@@ -41,7 +41,9 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
-| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, given `Env`: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real` (ci.pr_act on gh's answers); a run of the real db is a run of `Iso.lean`'s engine: `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
+| `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
 | `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap` |
 | `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
@@ -855,6 +857,38 @@ and the counter loses updates.
 commit and a commit can get SQLITE_BUSY with its transaction left open, which `db:tx` would not roll back (cost.lua runs
 no transaction on it); the busy timeout as time (a wait is a step not taken, and SQLITE_BUSY may end any wait); IO
 errors; `changes()` and `last_insert_rowid()`, which are the connection's; the switch to WAL.
+
+## Using these proofs downstream
+
+A proof about a program that uses the swarm (a client of its CLI, a tool that reads its db) can import
+`SwarmModel.Contract` and build on what is proved instead of guessing. Add this package to your lakefile (`[[require]]`
+`name = "swarm-model"`, `path = ".../swarm/model"`, or a git source with `subDir = "swarm/model"`), then `import
+SwarmModel.Contract`. `example/Client.lean` is a worked consumer: a toy client that works only on a task it believes it
+claimed, proved never to work on a task another agent holds (`never_works_on_others`, from `s1_believes_held`), and
+`env_landedRef` used on `Env.ideal` with its two assumptions proved in place.
+
+What is proved. `Contract.lean` lists the theorems, each with what it guarantees and what it rests on: S1-S5 of every
+reachable state (`s1_oneWorker`, `s1_believes_held`, `s2_noEarlyStart`, `s3_noSharedFile`, `s4_inboxExact`,
+`s5_doneHasEvidence`), W1 and N1 of every step and tick (`w1_gcOk`, `n1_noWorkLost`), L2 and L4 over fair runs
+(`l2_idleClaim`, `l4_deadLive`), and at the tools: `env_landedRef`, `env_sweepGate`, `env_reapGone`, `db_serializable`.
+The model theorems hold for every `Cfg` whose switches they take as hypotheses (the fixes; main runs with them on) and
+rest on Lean's axioms alone. They are about the model: that the Lua does what the model does is replayed (random and
+scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what is lifted (`Lifted/`, `Decide.lean`,
+`Real.lean`); *What is proved, what is replayed, what isn't modelled* says which.
+
+What is assumed. The tool theorems take `Env.lean`'s assumptions as hypotheses on any `Tools` or `Db`, so a
+downstream proof chooses: supply them for a machine of its own (`Env.consistent` proves them all for `Env.ideal`,
+`Env.sqlite_consistent` for `Env.idealDb`), or use the `real` versions in `Real.lean` (`Env.landedRef_reach`,
+`Env.realDb_sound`, …), which rest on the 19 axioms of `Env.lean` about the machine the swarm runs on, each a claim
+about git, hc, gh, the kernel, the clock or sqlite that a test checks, not a proof.
+
+How to recheck. `swarm/model/check.sh` builds every theorem (`lake build`), runs `Audit.lean`, which prints each
+theorem resting on an environment assumption with the ones it uses and fails on any other axiom (no `sorry`, no
+`native_decide`), and checks `example/Client.lean`. Each assumption's test is the case named after it:
+`luajit swarm/lua/test/run.lua env` runs `env_spec.lua` (git, the kernel, files, the clock; `SWARM_TEST_HC=1` adds
+`hc_ls_live` and `hc_kill_ends`, which start a terminal in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
+which ask GitHub about this repo's PRs), and `luajit swarm/lua/test/run.lua sqlite` runs `sqlite_spec.lua` (the five
+sqlite ones, many processes at once).
 
 ## Running
 
