@@ -393,6 +393,20 @@ function T.test_agent_with_a_second_unlanded_worktree_not_ended(t)
   assert(ended(t, "e"), "every worktree landed")
 end
 
+-- board #15: a spawned agent's worktrees are its record, and also any it added itself
+function T.test_recorded_agent_with_a_worktree_it_added_not_ended(t)
+  idle(t, "e", { wt = t.wt })
+  t:q("insert into workspace(path, branch, base, agent) values(?, 'w2', 'main', 'e')", t.wt)
+  local added = t.d .. "/repo-e-2"
+  t:git(t.repo, "worktree", "add", "-q", "-b", "e/2", added)
+  put(added .. "/new.txt", "wip")
+  comms_tick(t)
+  assert(not ended(t, "e"), "its own worktree holds an uncommitted file")
+  os.remove(added .. "/new.txt")
+  comms_tick(t)
+  assert(ended(t, "e"), "every worktree landed")
+end
+
 function T.test_missing_worktree(t)
   idle(t, "e", { wt = t.wt })
   rmtree(t.wt)  -- branch w2 still registered; its commits are on main
@@ -466,6 +480,22 @@ function T.test_idle_owner_with_background_job_keeps_claim(t)
   rmtree(pr .. "/402")  -- the job ended
   tick()
   t:eq(t:q1("select state from task").state, "open")
+end
+
+-- board #15: an idle agent with no claim whose background job runs is kept; ending it would kill the job
+function T.test_idle_agent_with_background_job_not_ended(t)
+  local pr = fake_proc(t)
+  local function tick() t:sw("a", "watchd", "--once", "--comms", "comms", "--max-agents", "0", { env = { SWARM_PROC = pr } }) end
+  idle(t, "e", { wt = t.wt, claude_pid = 400 })
+  add_proc(pr, 402, 400, "zsh", { "zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'make'" })
+  tick()
+  assert(not ended(t, "e"), "its job runs")
+  t:agent("comms", { status = "idle" })
+  t:q("insert or replace into meta(k,v) values('comms','comms')")
+  t:has(t:sw("comms", "end", "e", { ok = false, env = { SWARM_PROC = pr } }).stderr, "background job running")
+  rmtree(pr .. "/402")  -- the job ended
+  tick()
+  assert(ended(t, "e"))
 end
 
 function T.test_high_context_agent_retakes_only_its_reaped_task(t)

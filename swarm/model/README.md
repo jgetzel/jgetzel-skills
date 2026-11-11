@@ -25,6 +25,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, refuted with the fix's switch off (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`, `not_B1`) and proved with it on (`W1_of`, `W2_of`, `W3_of` over fair runs, `W4_of`, `B1_of`; `replay_W`: all five of `replay`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
+| `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
@@ -56,7 +57,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (264 sites, 230 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 5 scripted runs the Lua suite replays |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 6 scripted runs the Lua suite replays |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.json.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -140,8 +141,11 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `perTaskBase` | the landed checks (lifecycle, sweep) ask main only | sw-bases, board #3 (in the Lua, `bases.lua`): lifecycle asks the bases of the tasks an agent owns (`abases`; `Cfg.taskBase` gives each task's, main if none), the sweep every base a task names and main (`pbases`); `B1`, `B1_of`, finding #22 |
 | `splitGC` | end_agent removes the ended agent's worktree, looking at no process; sweep runs `branch -D` on whatever was checked out but main | sw-bases, board #4: ending kills the terminal only; the sweep checks reachability from a protected ref itself and deletes only a branch that is no base and is reachable |
 | `recordedWorkspaces` | an agent may check out a base in its worktree | sw-bases, board #5: swarm creates and records worktrees; a checkout of a base is refused; a spawned agent's `wt_map` and `owned_wts` read its record alone (`Agent.recorded`), not the worktrees it adds |
+| `bgLives` | lifecycle ends an idle agent with no claim while its background job runs (reap looks at the job since PR #121, lifecycle never did), and the job dies with the terminal | board #15: lifecycle keeps it while the job runs (`machine.bg_agents`); `swarm end` refuses it without `--force` |
+| `ownAdded` | lifecycle reads a spawned agent's worktrees from its record alone, so one it added itself and left unlanded doesn't keep it | board #15: lifecycle's `unlanded` reads the record and the worktrees named after the agent |
 
 All three are in the Lua (boards #3 to #5) and on in `replay` (tasks 2 and 4 on `formal`); W1 to W4 hold with them (board #6).
+`bgLives` and `ownAdded` are in the Lua and on in `replay` too; N1 holds with them (board #15).
 
 The communicator's world (`Comms.lean`) has its own switch, `CCfg.ensureComms`:
 
@@ -199,8 +203,8 @@ and a swarm's own such as `formal`); `Git.safe` is reachability from one, checke
   `endKeepsGit`
 - **W3** On a fair run from a reachable state no worktree stays an orphan forever (there, clean, on a protected ref,
   unattached, no process, untouched 30 min: `orphan`), and no agent stays idle and free with its task's work on that
-  task's base forever (`doneOnBase`: the worktree `wt_map` picks and every one it owns clean, its HEAD on a base of a task
-  it owns, main if none)
+  task's base forever (`doneOnBase`: no background job running, and the worktree `wt_map` picks and every one it owns
+  clean, its HEAD on a base of a task it owns, main if none)
 - **W4** No worktree has a base checked out, so landing on a base is never refused for it. `noBaseOut`
 
 Each fails with its fix's switch off (findings #18 to #21) and holds with it on, for every instance: `W1_of`, `W2_of`
@@ -215,6 +219,28 @@ tick is enabled wherever the agent's `wake` (`wakeRead` with `racy`) is not. Str
 `reapGone` for a dead row, and either ends the idle stretch. W3 also takes PR #116 and #119 (`passedOver`, `waiterAlive`),
 watchd, and `hc ls` seeing every row (`hcSees`, `unbound = []`): a reusable row whose terminal is gone is woken by
 nothing else.
+
+No work lost (board #15, `NoWorkLost.lean`):
+
+- **N1** watchd never discards work that isn't landed. Four parts (`N1`): (1) the tick leaves every agent that holds work
+  as it was, but for the pool ids a digest told it of (`keptBy`): not ended, its slot not given to a spawn, its job,
+  agent.wt and worktrees its own still. An agent holds work (`holdsWork`) when it is live and its background job runs, or
+  a worktree it works in (`wt_map`) or owns is dirty or has its HEAD on no base of a task it owns (main if none). (2) Reap
+  never reopens a claim whose live owner's job runs: after the tick the task has that owner still. (3) An agent reap took a
+  task from may claim it back until another agent does: the 350k fence doesn't refuse it. (4) W1: GC removes a worktree or
+  branch only if clean and reachable from a protected ref.
+
+N1 fails with any of five switches off, each a finding (#10 `bgKeeps`, #11 `retake`, #12 `allWts`, #26 `bgLives`, #27
+`ownAdded`; `not_N1_bgKeeps` and the rest) and holds with all of them on, for every instance (`N1_of`, which also takes
+`release = .idle`, `perTaskBase` and `splitGC`). No invariant is needed: with the fixes lifecycle calls no agent that holds
+work finished (`finished_of_holds`), so it neither ends nor reuses it, and a spawn fills only a slot that isn't live
+(`lifecycle_keeps`); a claim reap keeps is still held, so lifecycle leaves the task alone (`lifecycle_tk`).
+
+What N1 does not say. Its tasks' bases are those of the tasks the agent owns once reap has run: an idle owner with no job
+loses a lapsed claim to reap (it is told, and may retake it), and if its worktree is clean with its HEAD on main but not
+on that task's base, the same tick ends it. The commits are on main, a protected ref, and the task is open again.
+An agent's own `leave` and the reap of a dead terminal (`reapGone`, whose job died with it) end agents too; N1 is about
+lifecycle and GC. A job that never ends keeps its idle agent forever (W3 takes `bgEnd` as fair).
 
 The communicator (`Comms.lean`). The model above is one swarm with an anonymous communicator; C1 needs several swarms
 (one per repo db) sharing hc terminals, so `World` holds a `State` per swarm, the terminals (live or dead, a Herdr space,
@@ -374,12 +400,12 @@ Lua.
 | 7 | S4 | `deliverCas := false`, `racy` / S4 | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
 | 8 | L1, L3 | `passedOver := false` / the run | A small-context idle agent was told of a task and went idle again without it; the task is open again with a free slot, and lifecycle keeps the agent reusable instead of spawning, so nobody takes the task or reads its answer. | 1ac83b1, PR #116 |
 | 9 | L1, L3 | `waiterAlive := false` / the run | The same with a waiter that exited: the agent never reads the digest, so it stays reusable and holds spawn back. | aeaf44f, PR #119 (board #113) |
-| 10 | work lost | `bgKeeps := false` / the run | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). | PR #121 (board #115) |
-| 11 | work lost | `retake := false` / the run | The task is reopened; its owner, whose context is past 350k, comes back and `task claim` refuses it, so only a fresh agent can take it. | PR #121 (board #115) |
-| 12 | work loss | `allWts := false` / the run | An agent owns two worktrees; `wt_map` picks the landed one, the other holds work not on main, and lifecycle ends the agent mid-task. | PR #123 (board #116) |
+| 10 | N1 | `bgKeeps := false` / N1 (`not_N1_bgKeeps`) | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). | PR #121 (board #115) |
+| 11 | N1 | `retake := false` / N1 (`not_N1_retake`) | The task is reopened; its owner, whose context is past 350k, comes back and `task claim` refuses it, so only a fresh agent can take it. | PR #121 (board #115) |
+| 12 | N1 | `allWts := false` / N1 (`not_N1_allWts`) | An agent owns two worktrees; `wt_map` picks the landed one, the other holds work not on main, and lifecycle ends the agent mid-task. | PR #123 (board #116) |
 | 13 | stuck, silent | `uncleanNudge := false` / the run | An agent idle 30 min with an unclean worktree and nothing else holding it: no action is enabled, forever, and nobody is told. With the fix `nudge` is enabled and its urgent message wakes the waiter; a second nudge is refused until the agent has woken and stopped again. | PR #122 (board #114) |
 
-Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent with unlanded work, or that the nudge makes the agent clean (it can ignore it). 
+Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run only: no theorem says the nudge makes the agent clean (it can ignore it).
 | 14 | L4 | `watchd := false` / `deadLive_not_stuck` | An agent holding #1 loses its terminal. With no watchd nothing ends the row: `swarm who` and `swarm post` show it gone, but it stays live, keeps its claim, and a message to it is stored unread. | open: run watchd, or end the row by hand (`swarm leave` is the agent's own) |
 | 15 | L4 | `hcSees := false`, or `unbound := [0]` / `deadLive_not_stuck` | watchd runs but can't tell. The dead agent was working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and #1 stays claimed forever. An unbound row is a communicator that joined from outside hc; `hc ls` failing makes `live_addrs` nil for every row. | open |
 | 16 | L1 (the pool) | `idleSlot` / `lassoOk`, `periodic` | Two tasks, a free slot, one agent. It takes #1, stops holding it, the lease lapses, the tick reaps it: the agent is idle with an unread `released`, so `reusable`, and lifecycle does not spawn into the free slot. It wakes, takes #2, and the same again. Every fair action enabled anywhere in the loop happens in it, and a startable task and a free slot are there at every state. L1 holds of each task (it is taken over and over), not of the pool. Evaluated for 4 periods; one more period changes only the log, the cursor and what was shown (`periodic`). **Not the real watchd**: the loop needs every tick to come after the lease lapsed (a tick while the agent holds a live lease would spawn onto the other task), and watchd ticks every 30 s against a 2 h lease; the model lets fairness delay a tick that long. | not a bug |
@@ -398,6 +424,12 @@ Findings 10 to 13 are runs only: no theorem says lifecycle never ends an agent w
 | 23 | C1 | `ensureComms := false` / C1 (`C1_of`) | The communicator's terminal dies and the swarm runs on. Watchd runs from another terminal of the swarm's space; agent 0 blocks #1 and the communicator's terminal dies. The tick reaps its row, and no tick ever binds a new one (`tick_binds_none`), so the notice that #1 is blocked goes to a name no one reads (`not_C1_dead`). With `ensureComms` the tick launches a communicator in the swarm's space. | fixed: board #9 (`ensure_comms`, `join` checks, `SWARM_SPACE`), #10 (`C1_of`) |
 | 24 | C1 | `ensureComms := false` / C1 (`C1_of`) | Watchd started from a terminal in another space spawns there: launch.sh opens the tab in the space of `HC_TERMINAL_ID`, which for auto-spawn is watchd's terminal (`not_C1_space`). With `ensureComms` the spawn lands in the swarm's space. | fixed: board #9 (`ensure_comms`, `join` checks, `SWARM_SPACE`), #10 (`C1_of`) |
 | 25 | S3 | `lockForms := false` / the runs | covers takes `m/?` as a glob and also as a directory, so it covers `m/?/x`; overlaps leaves a glob's directory form out, so agent 1's `swarm lock m/?/x` is granted and the edit hook gives both agents `m/?/x`. With S3's exact `overlap`: overlaps also left out the pattern as a literal path and read `[!]a]` as the class `[!]`, so `[!]a]` and `b` (which share `b`) are both granted. The other way, it refused locks that share no file: a `?` met any class, even an empty `[z-a]`; two classes always met; a `*` met an empty class. With `lockForms` a glob is only a glob and overlaps is exact (`Glob.overlaps_iff`). | board #26 |
+
+| # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
+|---|---|---|---|---|
+| 26 | N1 | `bgLives := false` / N1 (`not_N1_bgLives`, `N1_of`) | Agent 0 starts a long background job (a build, a CI wait), stops holding no claim and goes idle. Lifecycle never looks at the job (only reap does, PR #121), so the next tick ends agent 0 and its terminal, and the job with it. With `bgLives` the tick keeps it until the job ends. | board #15 (`cli_lifecycle_spec`: `test_idle_agent_with_background_job_not_ended`) |
+| 27 | N1 | `ownAdded := false` / N1 (`not_N1_ownAdded`, `N1_of`) | A spawned agent, whose worktree swarm recorded, adds a second worktree, edits in it, edits back in the first, lands that and marks its task done. The second holds an uncommitted file, but lifecycle reads a recorded agent's worktrees from its record and agent.wt alone, so the tick ends the agent. With `ownAdded` the worktrees named after it count too. The replay's `script-added` is the Lua keeping it. | board #15 (`test_recorded_agent_with_a_worktree_it_added_not_ended`) |
+
 
 Nothing else is open: every other counterexample above has a fix on main. #14 and #15 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -422,12 +454,12 @@ an agent, in order; and each agent's unread list. The git steps run git in the f
 detached, a `formal` branch), and after them and every tick git must match too: every worktree there or not, its branch,
 HEAD, `git status` clean or not and its mtimes (what sweep reads); every branch's tip; each live agent's agent.wt. A
 process inside is a `sleep` started there; 30 min is an mtime set back. The 12 committed runs (seed 107, 50 steps) and
-five scripted ones (`script-end`: a squash-merged worktree is landed by content, its agent ended and the worktree and
+six scripted ones (`script-end`: a squash-merged worktree is landed by content, its agent ended and the worktree and
 branch removed; `script-sweep`: a fast-forwarded one its agent no longer edits in swept with its branch, a dirty one kept;
 `script-formal`: worktrees on main and on `formal` swept, the idle agent whose last worktree is on `formal` only, and who
 owns no task, kept; `script-base`: an agent whose task's base is `formal` kept until its work is there; `script-spawned`:
-a worktree a spawned agent adds and leaves swept while it works, since `wt_map` picks its recorded one) are in the Lua
-suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
+a worktree a spawned agent adds and leaves swept while it works, since `wt_map` picks its recorded one; `script-added`: a
+spawned agent kept by an unlanded worktree it added itself, by the tick that ends idle agent 1) are in the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes.
 
 Replayed with `racy` off and no hc: a race can't be forced through the CLI, and `hc` isn't faked in the replay.
 Those parts (S1's hc prompt, S2's and S4's races) are proved of the model and not replayed.
@@ -582,7 +614,8 @@ live waiter (the no-waiter notice to the communicator is a notice), and none of 
 generate `stale` or `nudge`, nor `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
 the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
 (no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; auto-spawn's
-launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`); `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
+launch failures, backoff and halt; the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
+generates none (`bgLives` is checked by `cli_lifecycle_spec`); `swarm end`'s refusals; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).

@@ -286,12 +286,18 @@ function M.sweep_worktrees(c, comms, dry)
 end
 
 -- A worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked; and those bases.
+-- n owns the worktree swarm recorded for it and (board #15) any it added itself, named after it.
 function M.unlanded(c, n, main, wts, all_wts)
   local B = bases.refs(bases.of_agent(c, n, main), main)
-  local own = conflict.owned_wts(n, all_wts, c)
-  if wts[n] then table.insert(own, 1, wts[n]) end
+  local own, seen = { wts[n] }, {}
+  for _, l in ipairs({ conflict.owned_wts(n, all_wts, c), conflict.owned_wts(n, all_wts) }) do
+    for _, w in ipairs(l) do own[#own + 1] = w end
+  end
   for _, w in ipairs(own) do
-    if not M.landed(w, B, main) then return w, B end
+    if not seen[w] then
+      seen[w] = true
+      if not M.landed(w, B, main) then return w, B end
+    end
   end
 end
 
@@ -458,6 +464,11 @@ function M.lifecycle(c, t, comms, terms, opts)
     end
     return main ~= nil and (cwd == main or util.startswith(cwd, main .. "/"))
   end
+  local bg
+  local function job(n)  -- n's background job runs (machine.bg_agents, read once per tick)
+    bg = bg or machine.bg_agents(c, machine.procs())
+    return bg[n]
+  end
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local n = a.name
@@ -469,6 +480,7 @@ function M.lifecycle(c, t, comms, terms, opts)
       local held, B = M.unlanded(c, n, main, wts, all_wts)
       if held then
         M.unclean(c, a, held, B[1], t, comms)
+      elseif job(n) then  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
       -- one that passed the work over, or whose waiter is gone (never wakes on a digest), is ended,
       -- not kept as a reason to spawn no one
       elseif (a.ctx_tokens or 0) < agents.SMALL_CTX and #pool > 0 and not passed_over(n)
@@ -791,6 +803,7 @@ function M.cmd_end(c, a)
     elseif nz(row.stay) then why = "stays for: " .. row.stay
     elseif c:one("select 1 from task where owner=? and state in ('claimed','blocked')", a.agent) then why = "owns a claimed task"
     elseif c:one("select 1 from lock where agent=?", a.agent) then why = "holds a lock"
+    elseif machine.bg_agents(c, machine.procs())[a.agent] then why = "has a background job running"
     else
       local main = (proc.run({ "git", "worktree", "list", "--porcelain" }) or ""):match("^worktree ([^\n]*)")
       main = main and realpath(main)
