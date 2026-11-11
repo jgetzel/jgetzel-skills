@@ -137,7 +137,7 @@ export default class Swarm extends View {
   init(_props, cx) {
     this.s = null; this.prs = null; this.runs = null; this.error = null;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 520;
-    this.stack = SCREEN === "home" ? [route(SCREEN)] : [{ s: "home" }, route(SCREEN)]; this.flash = null; this.pending = null; this.actFilter = "all";
+    const r0 = route(SCREEN); this.stack = r0.s === "task" ? [{ s: "board", f: "active" }, r0] : r0.s === "agent" ? [{ s: "agents" }, r0] : [r0]; this.flash = null; this.pending = null; this.actFilter = "all";
     this.refresh(cx); this.copyIcons(cx);
     // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
     cx.timer.every(POLL, cx => { if (this.visible() && this.due()) this.refresh(cx); });
@@ -266,9 +266,11 @@ export default class Swarm extends View {
   }
 
   // ---- screens and actions -------------------------------------------------------------------
-  // A screen opens on top of the last one and slides in; ‹ goes back. Rows re-run their staggered entrance.
+  // The nav bar's four sections are roots. A task or an agent opens on top of the screen it was picked on and
+  // slides in; ‹ goes back. Rows re-run their staggered entrance.
   push(r, cx) {
-    if (JSON.stringify(r) !== this.view()) this.stack.push(r);
+    if (r.s !== "task" && r.s !== "agent") this.stack = [r];
+    else if (JSON.stringify(r) !== this.view()) this.stack.push(r);
     this.landed(cx);
   }
   back(cx) { if (this.stack.length > 1) this.stack.pop(); this.landed(cx); }
@@ -444,7 +446,7 @@ export default class Swarm extends View {
   agentRow(t, a, i, d) {
     const ended = a.status === "ended", sign = !ended && SIGN[a.stay_sign];
     const what = a.task ? `#${a.task.id} ${a.task.title}` : ended ? [a.model, a.ended ? `ended ${hhmm(a.ended)}` : null].filter(Boolean).join(" · ") : a.stay ? `waits for ${a.stay}` : "no task";
-    const right = ended ? "" : a.status === "working" ? "working" : a.status === "blocked" ? "needs you" : `idle ${ago(a.idle_s)}`;
+    const right = ended ? "" : a.status === "working" ? "working" : a.status === "blocked" ? "needs you" : `idle ${ago(a.idle_s)}${a.fate?.short ? `: ${a.fate.short}` : ""}`;
     return this.row(t, `agent-${a.name}`, i, cx => this.push({ s: "agent", name: a.name }, cx))
       .child(this.dot(this.statusColor(t, a.status)).when(a.status === "working", el => el.loop("opacity", { from: 0.35, to: 1, period: 1400 })))
       .child(div().flex_none().font_semibold().text_color(ended ? t.muted : t.foreground).child(a.name))
@@ -528,20 +530,11 @@ export default class Swarm extends View {
           .child(this.more(t, "done-link", `${nd} done ›`, cx => this.push({ s: "board", f: "done" }, cx)))
           .when(ndrop > 0, el => el.child(this.more(t, "drop-link", `${ndrop} dropped ›`, cx => this.push({ s: "board", f: "dropped" }, cx))))));
     const staff = v_flex().min_w(0).child(this.title(t, "Staffing")).child(this.group(t, "g-staff").px(12).py(10).child(this.staffing(t)));
-    const alert = d.reds > 0 || s.conflicts.length > 0 || s.pressure.some(p => !p.end) || s.machine?.high;
-    const last = this.actRows(t, d, "all")[0];
-    const more = v_flex().min_w(0).child(this.title(t, "More")).child(this.group(t, "g-more")
-      .child(this.row(t, "m-act", 0, cx => this.push({ s: "more", tab: "activity" }, cx)).child(div().flex_none().child("Activity"))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(last ? `${hhmm(last.ts)} ${last.who} ${last.text}` : "what happened, and the full log"))
-        .child(this.chev(t, "right")))
-      .child(this.row(t, "m-sys", 1, cx => this.push({ s: "more", tab: "system" }, cx)).child(div().flex_none().child("System"))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child("CI, pull requests, machine, locks, command cost"))
-        .when(Boolean(alert), el => el.child(this.dot(t.blocked, 6))).child(this.chev(t, "right"))));
     const att = this.attention(t, d);
     if (two) return h_flex().gap(16).items_start()
-      .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(att).child(agents).child(staff))
-      .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(tasks).child(more));
-    return v_flex().gap(10).child(att).child(agents).child(tasks).child(staff).child(more);
+      .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(att).child(agents))
+      .child(v_flex().gap(10).min_w(0).flex_grow(1).flex_basis(0).child(tasks).child(staff));
+    return v_flex().gap(10).child(att).child(agents).child(tasks).child(staff);
   }
 
   // ---- Agents: running, the communicator, ended -------------------------------------------------
@@ -689,6 +682,14 @@ export default class Swarm extends View {
         .child(task ? this.group(t, "a-task", task.state === "blocked").child(this.taskRow(t, task, 0))
             .when(task.state === "blocked", el => el.child(div().px(12).pb(10).line_height("17px").whitespace_normal().child(one(task.question))))
           : this.empty(t, isComms ? "No task: the communicator is your channel to the swarm" : a.stay ? `No task: it waits for ${a.stay}` : "No task")))
+      // state --json's fate: watchd's verdict on an idle agent and each check behind it; the panel never re-derives it.
+      .when(Boolean(a.fate), el => el.child(v_flex().child(this.title(t, a.fate.verdict === "end" ? "Why it is about to end" : "Why it is still here", "watchd's own checks"))
+        .child(this.group(t, "a-fate")
+          .child(div().px(12).py(9).line_height("17px").whitespace_normal().child(a.fate.says))
+          .children(a.fate.checks.map((c, i) => this.row(t, `a-fate-${i}`, 1).h(30).text_size(12)
+            .child(this.dot(c.on ? t.ansi3 : t.selected, 7))
+            .child(div().flex_none().text_color(c.on ? t.foreground : t.dim).child(c.label))
+            .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.dim).child(c.detail ?? "")))))))
       .child(this.facts(t, "a-facts", [
         a.stay ? ["Waits for", a.stay] : null,
         ["Model", [a.model ?? "?", a.started ? `started ${hhmm(a.started)}` : null, a.hc ? `terminal ${a.hc}` : null].filter(Boolean).join(" · ")],
@@ -1060,6 +1061,26 @@ export default class Swarm extends View {
       .child(this.link(t, "flash-x", "Dismiss", cx => { this.flash = null; cx.notify(); }).pt(5));
   }
 
+  // Home, Agents, Board, More on every screen, the shown screen's section marked: a task counts as Board, an
+  // agent as Agents. Four equal segments of the panel's width; the mark slides. Home's badge counts what needs
+  // you, More's dot is a System problem. At 340px and below the counts go and the labels stay.
+  navBar(t, d) {
+    const s = this.s, r = this.r, cur = r.s === "task" ? "board" : r.s === "agent" ? "agents" : r.s;
+    const need = this.needs(t, d).length, left = d.count("blocked") + d.count("claimed") + d.count("open"), tiny = this.width <= 340;
+    const alert = d.reds > 0 || s.conflicts.length > 0 || s.pressure.some(p => !p.end) || s.machine?.high;
+    const items = [["home", "Home", need || null, true], ["agents", "Agents", d.live.length], ["board", "Board", left], ["more", "More", alert ? "" : null, true]];
+    const w = (this.width - 2 - 32 - 6) / 4, at = Math.max(0, items.findIndex(i => i[0] === cur));
+    return div().flex_none().mx(16).mb(2).relative().h(34).rounded(9).bg(t.surface).border_1().border_color(t.border)
+      .child(div().id("nav-on").absolute().top(2).left(2 + at * w).w(w).h(28).rounded(7).bg(t.selected).transition("left", { duration: 180, easing: "ease-out" }))
+      .children(items.map(([id, label, n, red], i) => h_flex().id(`nav-${id}`).absolute().top(2).left(2 + i * w).w(w).h(28).gap(6).justify_center().items_center().rounded(7)
+        .text_size(12).cursor_pointer().text_color(id === cur ? t.foreground : t.muted).when(id === cur, el => el.font_semibold())
+        .hover(st => st.text_color(t.foreground)).on_click((_e, cx) => this.push(id === "board" ? { s: id, f: "active" } : id === "more" ? { s: id, tab: "activity" } : { s: id }, cx))
+        .child(label)
+        .when(n === "", el => el.child(this.dot(t.blocked, 6)))
+        .when(Boolean(n) && !tiny, el => el.child(red ? div().px(5).h(15).flex().items_center().rounded(8).bg(t.blocked).text_color(t.background).text_size(10).font_semibold().child(String(n))
+          : div().text_size(11).font_normal().text_color(t.dim).child(String(n))))));
+  }
+
   // Home is two columns from 760px; every other screen is one column, at most 720px wide. The Activity and
   // System code keeps its own breakpoints (760, 640, 520, 340).
   draw(t) {
@@ -1072,27 +1093,29 @@ export default class Swarm extends View {
         .child(note(this.error ?? (this.loading || !s ? "loading…" : "No live swarm in this repo")));
     }
     const d = this.derive(), away = s.away;
-    const name = { agents: "Agents", board: "Board", task: `Task #${r.id}`, agent: r.name, more: "More" }[r.s] ?? "Swarm";
     const toggle = h_flex().id("away").flex_none().h(28).pl(10).pr(5).gap(8).items_center().rounded(14).border_1().border_color(away ? t.accent : t.border).bg(away ? t.accent + "1c" : t.surface).cursor_pointer()
       .tooltip(away ? "You are away. Click when you are back." : "Going away? Questions will wait here instead of pinging you.")
       .on_click((_e, cx) => this.act(cx, away ? ["away", "--back"] : ["away"]))
       .child(div().text_size(11.5).text_color(away ? t.foreground : t.muted).child("Away"))
       .child(div().relative().w(30).h(18).rounded(9).bg(away ? t.accent : t.selected)
         .child(div().id("away-knob").absolute().top(2).left(away ? 14 : 2).size(14).rounded(7).bg(away ? t.accent_foreground : t.muted).transition("left", { duration: 160, easing: "ease-out" })));
-    const head = h_flex().h(48).flex_none().px(16).gap(8).items_center().min_w(0).border_b(1).border_color(t.border)
-      .when(deep, el => el.child(div().id("back").size(28).ml(-6).flex().flex_none().items_center().justify_center().rounded(7).text_size(18).text_color(t.muted).cursor_pointer()
-        .hover(st => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.back(cx)).child("‹")))
-      .child(div().flex_none().font_semibold().text_size(14).child(name))
-      .when(!deep, el => el.child(div().truncate().min_w(0).text_size(12).text_color(t.dim).child(base(this.cwd))))
+    const head = h_flex().h(48).flex_none().px(16).gap(8).items_center().min_w(0)
+      .child(div().flex_none().font_semibold().text_size(14).child("Swarm"))
+      .child(div().truncate().min_w(0).text_size(12).text_color(t.dim).child(base(this.cwd)))
       .child(div().flex_1()).child(toggle);
+    const prev = deep ? this.stack.at(-2) : null;
+    const backRow = deep ? h_flex().flex_none().h(32).px(10).items_center().child(h_flex().id("back").h(24).px(6).gap(6).items_center().rounded(6).text_size(12).text_color(t.muted).cursor_pointer()
+      .hover(st => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.back(cx))
+      .child(div().text_size(15).child("‹")).child({ home: "Home", agents: "Agents", board: "Board", more: "More", task: `Task #${prev.id}`, agent: prev.name }[prev.s])) : null;
     const body = r.s === "agents" ? this.agentsScreen(t, d) : r.s === "board" ? this.board(t, d) : r.s === "task" ? this.task(t, d)
       : r.s === "agent" ? this.agentScreen(t, d) : r.s === "more" ? this.moreScreen(t, d) : this.home(t, d);
     const k = `scr:${this.stack.length}:${r.s}:${r.id ?? r.name ?? ""}`, { first } = deep ? this.enter(k, false) : { first: false };
     const wide = r.s === "more" || (r.s === "home" && this.width >= 760), waiting = this.needs(t, d).length;
-    const page = v_flex().id(k).relative().w_full().max_w(wide ? 1400 : 720).px(r.s === "more" ? 0 : 16).pt(10).pb(16)
+    const page = v_flex().id(k).relative().w_full().max_w(wide ? 1400 : 720).px(r.s === "more" ? 0 : 16).pt(deep ? 2 : 10).pb(16)
       .left(first ? 20 : 0).opacity(first ? 0 : 1).transition("left", { duration: 200, easing: "ease-out" }).transition("opacity", { duration: 200, easing: "ease-out" })
       .child(body);
-    return root.child(head)
+    return root.child(head).child(this.navBar(t, d))
+      .when(deep, el => el.child(backRow))
       .when(Boolean(away), el => el.child(h_flex().flex_none().px(16).py(7).gap(8).items_center().min_w(0).bg(t.accent + "14").border_b(1).border_color(t.border).text_size(11.5)
         .child(div().flex_1().min_w(0).whitespace_normal().line_height("16px").text_color(t.muted)
           .child(`Away since ${hhmm(away.since)}${away.note ? ` (${away.note})` : ""}. Questions wait here and nobody pings you${waiting ? `; ${waiting} waiting now` : ""}.`))))

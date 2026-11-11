@@ -1,6 +1,6 @@
 # Swarm panel redesign (board #39)
 
-Status: **design, waiting for approval.** The shots below are a working prototype in this branch
+Status: **design, revision 2, waiting for approval.** Revision 2 adds the nav bar (§2), the "why it is still here" section (§2), and the wider list of actions (§3b); nothing in the CLI is built beyond what §6 names. The shots below are a working prototype in this branch
 (`ll-ui/39`), drawn by a private Herdr from a made-up swarm (`demo.lua`). The installed panel is untouched.
 
 Before, for comparison: [the current first screen](shots/redesign/before-home-520.png).
@@ -15,8 +15,8 @@ The panel is glanced at, not read. A glance should answer three questions, in th
 | 2 | Who is running, and on what? | **Agents**: one row each: status dot, name, its task (or what it waits for), state. | It tells you the swarm is alive and what to expect next. |
 | 3 | How much is left? | **Tasks**: a done bar, then the tasks still open, most urgent first; links to done and dropped. | It is the progress answer; details are one click away. |
 
-Below those, two things you act on rather than read: **Staffing** (the two numbers, with − and +) and
-**More** (Activity, System). The **Away** switch is in the header of every screen.
+Below those, the one thing you act on rather than read: **Staffing** (the two numbers, with − and +).
+The **Away** switch and the nav bar are on every screen.
 
 Moved off the first screen, to the screen where it is useful:
 
@@ -25,9 +25,10 @@ Moved off the first screen, to the screen where it is useful:
 | Model, cache state, context bar, last event, role chip per agent | The agent's screen. Home keeps only a warning chip (hung, no waiter, context full). |
 | Header chips (live, working, claimed, blocked, done counts) | Gone: the Agents and Tasks section titles carry the two counts that matter. |
 | Board card with five state counts and "latest done" | Tasks list on Home; the Board screen for everything. |
-| Activity feed | More › Activity (Home shows its latest line). |
+| Activity feed | More › Activity. |
 | Machine footer, CI runs, PRs, locks, command cost, memory per agent | More › System. A problem there surfaces in Needs you. |
-| Five tabs | No tabs. Home, and screens that open from it with a back arrow. |
+| Five tabs (Overview, Agents, Board, Activity, System) | A nav bar of four: Home, Agents, Board, More. |
+| "idle 31m" on an agent, with no reason | "idle 31m: uncommitted work": the first reason watchd keeps it (§2). |
 
 ![Home, 520px](shots/redesign/home-520.png)
 
@@ -35,21 +36,33 @@ From 760px Home is two columns; in light themes it uses the same theme colors:
 
 ![Home, 860px](shots/redesign/home-860.png)
 ![Home, 420px, light](shots/redesign/home-420-light.png)
+![Home, 420px](shots/redesign/home-420.png)
 
 ## 2. Screens
 
+### The nav bar
+
+**Home · Agents · Board · More**, under the header of every screen.
+
+- The section of the shown screen is marked, and the mark slides to the one you pick. A task counts
+  as Board, an agent as Agents, wherever you opened it from.
+- Badges: Home carries a red count of what needs you (so it is visible from any screen), Agents the
+  number running, Board the tasks left, More a red dot when System has a problem.
+- A task or an agent opens on top of the screen you picked it on. Those screens get a back row under
+  the bar, named after where back goes ("‹ Board", "‹ Home", "‹ Task #5"). Picking a section in the
+  bar always goes to that section's own screen and forgets the trail.
+- Width: four equal segments of the panel's width. At 420px each is 95px, enough for the label and
+  its count (shot above). At 340px and below the counts are dropped and the labels stay; the red Home
+  badge and the More dot stay at every width.
+
 ```
-Home ─┬─ a Needs-you item ──► the task, the agent, or More › System
-      ├─ an agent row ──────► Agent
-      ├─ "All, N ended ›" ──► Agents (running, communicator, ended) ──► Agent
-      ├─ a task row ────────► Task
-      ├─ "Board ›" / "N done ›" / "N dropped ›" ──► Board (Active | Done | Dropped) ──► Task
-      └─ More ──────────────► Activity (Summary | Full log, filters) | System
+Home    ── Needs you, Agents, Tasks, Staffing
+Agents  ── running, the communicator, ended ──► Agent
+Board   ── Active | Done | Dropped ───────────► Task
+More    ── Activity (Summary | Full log, filters) | System
 Task  ──► its owner (Agent), tasks it waits on or holds back (Task), its PR (browser)
 Agent ──► its task and finished tasks (Task), its terminal (Herdr focus), its PR (browser)
 ```
-
-Every screen below Home has `‹` in the header; screens stack, so back returns where you came from.
 
 **Task.** State, title, actions; the question when it waits on you; owner and lease, who added it,
 what it waits on and holds back, time queued/worked/blocked, claims and releases, model and base,
@@ -65,6 +78,33 @@ tasks it finished; latest events. Ended agents open the same screen, without act
 
 ![Agent](shots/redesign/agent-520.png)
 ![Hung agent, light](shots/redesign/agent-hung-420-light.png)
+
+**Why an idle agent is still here.** On the Agent screen of an idle agent: the conclusion in words,
+then one line per check, lit when that check is what keeps it. The shot uses sample data; the real
+lines come from the CLI.
+
+![Why it is still here](shots/redesign/agent-why-kept-520.png)
+
+The panel does not work this out. `swarm state --json` gains a `fate` object per live idle agent, filled
+by the function watchd itself decides with (`watchd.fate`, and the checks of `swarm end`):
+
+| Line | From | Detail shown |
+|---|---|---|
+| Stays | the agent's `stay` | its text, how long |
+| Holds a task | claimed or blocked tasks | which, lease left |
+| Holds a lock | its locks | the paths |
+| Work not on its base | `watchd.unlanded` | uncommitted files (count), commits not on the base (count, PR if any) |
+| Background process | `machine.bg_agents` | the command, how long |
+| Unread messages | its inbox | how many, urgent or not |
+| Terminal | hc | busy, idle, gone, or in another repo |
+| Waiter | its waiter pid | present, or gone (no message can wake it) |
+| Idle | last activity | how long, against watchd's 2 minutes |
+| Context | context size, the task pool | small enough to be given another task, or not |
+
+`fate.verdict` is watchd's own word (kept, unclean, reuse, end) and `fate.says` the sentence: "watchd
+ends it at its next tick", "Kept: 2 uncommitted files and a running shell", "Kept for reuse: #7 is
+ready". `fate.short` is the Home chip ("uncommitted work"). The agent's screen asks for every check;
+Home asks only for the first one that holds, which is what watchd already computes each tick.
 
 **Agents** and **Board** are the past-items screens: ended agents, done and dropped tasks.
 
@@ -101,6 +141,38 @@ own confirmation. Confirmations use Herdr's own confirm dialog (Enter confirms, 
 ![End confirmation](shots/redesign/agent-end-confirm-520.png)
 ![Release confirmation](shots/redesign/task-release-confirm-520.png)
 ![A refusal](shots/redesign/agent-end-refused-520.png)
+
+## 3b. More actions: what I would add, and what I would leave out
+
+Text fields (answer, message, new task) are a single input with a Send button; Enter sends, Esc clears.
+
+| Action | Verdict | Where | Command | Confirmation |
+|---|---|---|---|---|
+| Answer a waiting task | **Add.** It is the one thing Needs you asks of you. | the question card on Task | `swarm task unblock N --answer "…"` | none; Send is deliberate |
+| Nudge an agent | **Add.** Shown on an agent that is hung, or idle while holding a task. | Agent; the hung item in Needs you | new `swarm nudge NAME`: sends its terminal one fixed line ("read your messages and continue, or say what you wait for") through hc and logs it | none; the button rests for a minute after use |
+| Message an agent | **Add.** | Agent | `swarm post NAME "…"`, with an Urgent tick that adds `--urgent` | none |
+| Message @all | **Leave out.** It wakes every agent, each paying to reload its context, and one click should not cost that. Tell the communicator, which knows who needs to hear it. | | | |
+| Add a task | **Add,** title and description first; "after" and model behind "More options". | Board, "+ New task" | `swarm task add "title" --body … [--after 3,5] [--model m]` | none |
+| Drop a task | **Add.** | Task, beside Release | `swarm task drop N` | "Drop #N? It leaves the board for good; tasks that wait on it stay held." |
+| Spawn an agent on a ready task | **Leave out.** Auto-spawn already does it with watchd's own naming, model and memory rules; "Auto-spawn to +" is the same wish in one click. A second way to start agents would bypass those rules. | | | |
+| Pause / resume auto-spawn | **Add.** One button beside the steppers: "Pause" sets the number to 0 and remembers it, "Resume (5)" puts it back. | Home › Staffing | `swarm limits --min 0` / `--min 5` | none |
+| Open main's failing CI run | **Keep** (it exists on System); also on the red-main item in Needs you. | Needs you, System | browser | none |
+| Re-run the failed jobs | **Add.** | the same two places | `gh run rerun ID --failed` | "Re-run the failed jobs of run ID?" It spends CI minutes, and an agent may be mid-fix. |
+| watchd health | **Add the display.** watchd dead goes to Needs you ("nothing is reaped, spawned or told"); watchd older than the swarm code is a warning on System. | Needs you, System | `swarm state` gains watchd's pid, start time and whether it is alive | |
+| Restart watchd | **Add, if you want it:** it needs watchd to record the flags it was started with, so the restart is the same watchd. | System, and the dead-watchd item | new `swarm watchd --restart` (takeover with the recorded flags, in a hidden hc terminal) | "Restart watchd?" |
+| main green / red / pending on Home | **Add.** A quiet dot and word in the header beside the repo name; red also stays in Needs you. Read from the CI table watchd already fills, which lets the panel stop running its own `gh run list` every minute. | header | `swarm state` gains `ci` (latest run on the base) | |
+
+Mine:
+
+| Action | Verdict | Where | Command | Confirmation |
+|---|---|---|---|---|
+| Talk to the communicator | **Add.** Many things are still "tell the communicator". | header, a small "Communicator ↗" | Herdr `agent.focus` on its terminal | none |
+| End an agent's stay | **Add.** When the checks say only its stay keeps an agent, this lets watchd end it the normal way, with every other check still applied. Gentler than End anyway. | the Stays line of "Why it is still here" | `swarm stay --end` for another agent (new: `human` or the communicator may) | "End ox-4's stay? watchd then ends it once its work is on main." |
+| Free someone's lock | **Leave out.** Rare, and a wrong click lets two agents write one migration number. Ending the agent frees its locks. | | | |
+| Renew a lease, claim a task for an agent | **Leave out.** watchd already keeps a working owner's claim; the rest is the agents' own business. | | | |
+
+New CLI this list needs, beyond §3 and §4: `swarm nudge`, `stay --end` for another agent,
+`watchd --restart` with recorded flags, and `state --json` fields `fate`, `ci`, `watchd`.
 
 ### Who the panel acts as
 
@@ -156,22 +228,32 @@ model and its replay traces are updated with it. `away`, `--back` and the new ri
 
 ## 6. What the prototype already does, and what the build adds
 
-Real now: every screen and its navigation, the limit steppers, the confirm dialogs, the refusal bar,
+Real now: the nav bar, every screen and its navigation, the limit steppers, the confirm dialogs, the
+refusal bar, the "why it is still here" section (drawn from `fate`, which no CLI sends yet),
 `swarm state --json --task N` (body, events, messages of one task), a bare `swarm away` flag that the
-switch toggles.
+switch toggles. Nothing else in the CLI is touched until you approve.
 
-Build, after approval:
+Build, after approval, as board tasks:
 
-1. **CLI** (one board task): `human` rights for `end` and `task release`, the message to the ex-owner,
-   away's four rules, `--back`'s digest, tests, `swarm/model` for rule 1.
-2. **Panel** (one board task): the "while you were away" card, Activity and System in the new scale,
-   delete the old tabs' leftover code, shots of every screen at 420/520/860 in dark and light, actions
-   exercised against a scratch db, `SKILL.md`, `install.sh` check, then merge.
+1. **CLI: rights and away.** `human` rights for `end` and `task release`, the message to the ex-owner,
+   away's four rules, `--back`'s digest, tests, `swarm/model` for away's rule 1.
+2. **CLI: state and the new commands.** `fate`, `ci`, `watchd` in `state --json`; `nudge`; `stay --end`
+   for another agent; `watchd --restart`; tests.
+3. **Panel.** The actions of §3b you keep, the text input, the "while you were away" card, Activity and
+   System in the new scale, delete the old tabs' leftover code, shots of every screen at 420/520/860 in
+   dark and light, actions exercised against a scratch db, `SKILL.md`, `install.sh` check, then merge.
 
 ## 7. Questions for you
 
+Still open from revision 1 (the communicator recommends yes to all three; you have not said):
+
 1. **Away**: are the four rules right? In particular rule 3 (work continues at your numbers).
-2. **Answer from the panel** (not asked for): a text field on a waiting task that runs
-   `swarm task unblock N --answer "…"`. It would make Needs you fully actionable here. Add it?
+2. **Answer from the panel**: a text field on a waiting task that runs `swarm task unblock N --answer "…"`. Add it?
 3. **Acting as `human`** with the communicator's rights: fine, or should the panel act as the communicator?
-4. Anything on Home you want back, or gone?
+
+New:
+
+4. **§3b**: which of the "Add" rows do you want, and do you agree with the four I would leave out
+   (@all, spawn on a task, free a lock, renew/claim)?
+5. **Restart watchd** from the panel: wanted? It is the one row that restarts the swarm's own daemon.
+6. **Why it is still here**: always open on an idle agent's screen (as drawn), or folded behind a click?
