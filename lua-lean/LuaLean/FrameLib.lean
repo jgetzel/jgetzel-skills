@@ -1001,6 +1001,7 @@ theorem substRepl_keeps {whole : List Char} {cap : Nat → M Val} (hcap : ∀ i,
   | x :: y :: rest => by
     have := substRepl_keeps (whole := whole) hcap rest; have := substRepl_keeps (whole := whole) hcap (y :: rest)
     unfold substRepl; split <;> keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine substRepl_keeps (fun _ => ?_) _))
 
 theorem timeFx_keeps {oracle : Oracle} {name : String} {args : List Val} :
     Keeps c P (timeFx oracle name args) fun _ => True := by
@@ -1036,12 +1037,12 @@ theorem format_go_keeps {args : List Val} {ts : Val → M Val} (hts : ∀ v, Kee
   induction fuel with
   | zero => intro f i; unfold format.go; keeps
   | succ n ih => intro f i; unfold format.go; keeps
-macro_rules | `(tactic| keeps_leaf) => `(tactic| (refine format_go_keeps ?_ _ _ _; assumption))
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine format_go_keeps (fun _ => ?_) _ _ _))
 
 theorem format_keeps {fmt : List Char} {args : List Val} {ts : Val → M Val}
     (hts : ∀ v, Keeps c P (ts v) fun _ => True) : Keeps c P (format fmt args ts) fun _ => True := by
   unfold format; keeps
-macro_rules | `(tactic| keeps_leaf) => `(tactic| (refine format_keeps ?_; assumption))
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine format_keeps fun _ => ?_))
 
 end
 end Lua

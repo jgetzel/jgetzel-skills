@@ -186,6 +186,14 @@ theorem Keeps.mapM {γ : Type} {l : List γ} {f : γ → M β} (hf : ∀ x, Keep
     simp only [List.mapM_cons]
     exact Keeps.bindT (hf x) fun _ => Keeps.bindT ih fun _ => Keeps.pure trivial
 
+theorem Keeps.anyM {γ : Type} {l : List γ} {f : γ → M Bool} (hf : ∀ x, Keeps c P (f x) fun _ => True) :
+    Keeps c P (l.anyM f) fun _ => True := by
+  induction l with
+  | nil => exact Keeps.pure trivial
+  | cons x l ih =>
+    simp only [List.anyM]
+    exact Keeps.bindT (hf x) fun b => by cases b <;> first | exact Keeps.pure trivial | exact ih
+
 theorem Keeps.forIn_list {γ : Type} {l : List γ} {b : β} {f : γ → β → M (ForInStep β)}
     (hf : ∀ x b, Keeps c P (f x b) fun _ => True) : Keeps c P (forIn l b f) fun _ => True := by
   induction l generalizing b with
@@ -228,13 +236,14 @@ elab "keeps_let" : tactic => withMainContext do
   if isJp && ty.isForall then
     let bfun := Expr.lam n ty b .default
     let e ← mkAppOptM ``Keeps.jp #[args[2]!, args[0]!, args[1]!, args[4]!, ty.bindingDomain!, v, bfun]
-    match ← g.apply e with
-    | [hv, hb] =>
+    -- not a join point when its result is not `m`'s (a function `have`): substituted instead
+    if let some [hv, hb] ← observing? (g.apply e) then
       let (_, hv) ← hv.intro1P
       let (_, hb) ← hb.intro1P
       let (_, hb) ← hb.intro1P
       replaceMainGoal [hb, hv]
-    | _ => throwError "keeps_let: Keeps.jp"
+    else
+      replaceMainGoal [← g.replaceTargetDefEq (mkAppN t.getAppFn #[args[0]!, args[1]!, args[2]!, b.instantiate1 v, args[4]!])]
   else
     let newT := mkAppN t.getAppFn #[args[0]!, args[1]!, args[2]!, b.instantiate1 v, args[4]!]
     replaceMainGoal [← g.replaceTargetDefEq newT]
@@ -294,6 +303,7 @@ macro_rules | `(tactic| keeps_step) => `(tactic| first
   | (with_reducible refine Keeps.pure ?_; keeps_side)
   | (with_reducible refine Keeps.forIn_list fun _ _ => ?_)
   | (with_reducible refine Keeps.mapM fun _ => ?_)
+  | (with_reducible refine Keeps.anyM fun _ => ?_)
   | (with_reducible refine Keeps.forIn_range fun _ _ => ?_)
   | (with_reducible refine Keeps.tryCatch ?_ fun _ => ?_)
   | split
