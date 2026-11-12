@@ -1007,65 +1007,6 @@ def mathFn (name : String) (args : List Val) : M (List Val) := do
   | "rad" => return [.num (.flt ((← argNum name 0 args).toFloat * Float.ofBits 0x3F91DF46A2529D39))]
   | _ => die s!"math.{name}: not in the subset"
 
--- ---------- bit ----------
-
-/-- an integer's int32: its value mod 2^32 as a signed integer -/
-def wrap32 (i : Int) : Int := i.bmod (2 ^ 32)
-
-/-- lj_num2bit: an integer as it is, a double plus 2^52 + 2^51 and its low 32 bits (x mod 2^32 rounded to even for
-|x| < 2^51; inf and NaN 0) -/
-def Num.toBit : Num → Int
-  | .int i => wrap32 i
-  | .flt f => wrap32 ((f + 6755399441055744.0).toBits.toNat % 2 ^ 32)
-
-/-- lj_carith_check64 of a number or a string, as an int32 -/
-def argBit (fname : String) (i : Nat) (args : List Val) : M Int := do
-  -- lj_carith_check64: a cdata argument makes a 64-bit operation
-  if let .cdata _ := args.getD i .nil then ffiStop "the bit library on a cdata (its 64-bit forms)"
-  pure (← argNum fname i args).toBit
-
-/-- an int32's bits -/
-def u32 (i : Int) : Nat := (i % 2 ^ 32).toNat
-
-/-- LuaJIT's bit library (lib_bit.c, its asm fast functions): each argument an int32 by lj_num2bit, each result an
-int32; a shift's count mod 32 -/
-def bitFn (name : String) (args : List Val) : M (List Val) := do
-  let res (n : Nat) : M (List Val) := pure [.num (.int (wrap32 n))]
-  match name with
-  | "bit.tobit" => return [.num (.int (← argBit name 0 args))]
-  | "bit.bnot" => res (2 ^ 32 - 1 - u32 (← argBit name 0 args))
-  | "bit.bswap" => do
-    let x := u32 (← argBit name 0 args)
-    res ((x % 256) * 2 ^ 24 + (x / 2 ^ 8 % 256) * 2 ^ 16 + (x / 2 ^ 16 % 256) * 2 ^ 8 + x / 2 ^ 24)
-  | "bit.band" | "bit.bor" | "bit.bxor" => do
-    let op : Nat → Nat → Nat := if name == "bit.band" then (· &&& ·) else if name == "bit.bor" then (· ||| ·) else (· ^^^ ·)
-    -- every argument checked, the first even when there is none
-    let x ← argBit name 0 args
-    let ys ← (List.range (args.length - 1)).mapM fun i => argBit name (i + 1) args
-    res (ys.foldl (fun a y => op a (u32 y)) (u32 x))
-  | "bit.lshift" | "bit.rshift" | "bit.arshift" | "bit.rol" | "bit.ror" => do
-    let x ← argBit name 0 args
-    let s := u32 (← argBit name 1 args) % 32
-    let u := u32 x
-    match name with
-    | "bit.lshift" => res (u <<< s)
-    | "bit.rshift" => res (u >>> s)
-    | "bit.arshift" => return [.num (.int (x >>> s))]
-    | "bit.rol" => res (u <<< s ||| u >>> (32 - s))
-    | _ => res (u >>> s ||| u <<< (32 - s))
-  | "bit.tohex" => do
-    let b := u32 (← argBit name 0 args)
-    let n ← if args.length < 2 then pure 8 else argBit name 1 args
-    let w := (n.natAbs).min 254
-    let b := if w < 8 then b % 16 ^ w else b
-    let ds := if b == 0 then [] else Nat.toDigits 16 b
-    let ds := List.replicate (w - ds.length) '0' ++ ds
-    return [.str (if n < 0 then ds.map Char.toUpper else ds)]
-  | _ => die s!"{name}: not in the subset"
-
-#guard (Num.toBit (.flt 1.5), Num.toBit (.flt 2.5), Num.toBit (.flt (-0.5)), Num.toBit (.flt 2147483648),
-  Num.toBit (.flt 9007199254740995), Num.toBit (.flt (1/0)), Num.toBit (.int 4294967297)) == (2, 2, 0, -2147483648, 2, 0, 1)
-
 -- ---------- the FFI ----------
 
 /-! A pure subset of LuaJIT's FFI (DESIGN.md, *The subset*): cdata of scalar, array, struct and union types over
@@ -1656,6 +1597,130 @@ def i64Pair (x : CNum) (xu : Bool) (y : CNum) (yu : Bool) : M (Bool × Nat × Na
 def i64Less (u orEq : Bool) (a b : Nat) : Bool :=
   let (x, y) : Int × Int := if u then (a, b) else (i64Val a, i64Val b)
   if orEq then x ≤ y else x < y
+
+-- ---------- bit ----------
+
+/-- an integer's int32: its value mod 2^32 as a signed integer -/
+def wrap32 (i : Int) : Int := i.bmod (2 ^ 32)
+
+/-- lj_num2bit: an integer as it is, a double plus 2^52 + 2^51 and its low 32 bits (x mod 2^32 rounded to even for
+|x| < 2^51; inf and NaN 0) -/
+def Num.toBit : Num → Int
+  | .int i => wrap32 i
+  | .flt f => wrap32 ((f + 6755399441055744.0).toBits.toNat % 2 ^ 32)
+
+/-- an int32's bits -/
+def u32 (i : Int) : Nat := (i % 2 ^ 32).toNat
+
+/-- argument i as a 64-bit integer's bits, `uint64_t`'s if `u` (lj_cconv_ct_tv, lj_cconv_ct_ct to it): a number or
+a string's, a scalar cdata's; another cdata (a pointer, an array, a struct) LuaJIT's `cannot convert` -/
+def argI64 (u : Bool) (i : Nat) (args : List Val) : M Nat := do
+  let v := args.getD i .nil
+  match v with
+  | .cdata _ => match ← cOp v with
+    | .num x _ => i64Bits u x
+    | _ => convErr (.arg (i + 1)) (← srcName v) (.int 8 !u)
+  | _ => match ← argNum "" i args with
+    | .int n => i64Bits u (.i n)
+    | .flt f => i64Bits u (.f f)
+
+/-- lj_carith_check64 of argument i: a number's (or a string's) int32 by lj_num2bit, as its bits; a cdata's 64-bit
+integer, which sets the op's type `id` (`some true` uint64_t): uint64_t if the cdata is an 8-byte unsigned integer,
+else int64_t unless already set -/
+def check64 (i : Nat) (args : List Val) (id : Option Bool) : M (Nat × Option Bool) := do
+  match args.getD i .nil with
+  | v@(.cdata _) => do
+    let u := (← cOp v) matches .num _ true || id == some true
+    pure (← argI64 u i args, some u)
+  | _ => pure (u32 (← argNum "" i args).toBit, id)
+
+/-- lj_carith_check64 as an int32 (`(int32_t)`): a number or a string by lj_num2bit, a cdata its 64-bit integer's
+low 32 bits -/
+def argBit (fname : String) (i : Nat) (args : List Val) : M Int := do
+  if let .cdata _ := args.getD i .nil then return wrap32 (← check64 i args none).1
+  pure (← argNum fname i args).toBit
+
+/-- bit.tohex's digits of b, n of them (16 at most of b's), upper case if n is negative, at most 254 -/
+def hexOf (b : Nat) (n : Int) : List Char :=
+  let w := (n.natAbs).min 254
+  let b := b % 16 ^ w.min 16
+  let ds := if b == 0 then [] else Nat.toDigits 16 b
+  let ds := List.replicate (w - ds.length) '0' ++ ds
+  if n < 0 then ds.map Char.toUpper else ds
+
+/-- the bit library's 64-bit forms (lib_bit.c with the FFI, a cdata argument: `band`, `bor`, `bxor`'s any, the
+others' first): each argument by lj_carith_check64, the result a new `int64_t`, `uint64_t` if a `uint64_t` argument
+set it; `band`'s kind converts every argument to that type (lj_cconv_ct_tv), a shift takes its count's int32 mod 64,
+`tohex` 16 digits unless given -/
+def bitFn64 (name : String) (args : List Val) : M (List Val) := do
+  let m := 2 ^ 64
+  let res (u : Bool) (n : Nat) : M (List Val) := do pure [← box (.int 8 !u) (leBytes n 8)]
+  match name with
+  | "bit.band" | "bit.bor" | "bit.bxor" => do
+    let mut id : Option Bool := none
+    for i in [0:args.length] do id := (← check64 i args id).2
+    let u := id == some true
+    let xs ← (List.range args.length).mapM fun i => argI64 u i args
+    res u (match name with
+      | "bit.band" => xs.foldl (· &&& ·) (m - 1)
+      | "bit.bor" => xs.foldl (· ||| ·) 0
+      | _ => xs.foldl (· ^^^ ·) 0)
+  | _ => do
+    let (x, id) ← check64 0 args none
+    let u := id == some true
+    match name with
+    | "bit.bnot" => res u (m - 1 - x)
+    | "bit.bswap" => res u (leNat (leBytes x 8).reverse)
+    | "bit.tohex" => do
+      let n ← if args.length < 2 then pure 16 else argBit name 1 args
+      return [.str (hexOf x n)]
+    | _ => do
+      let s := u32 (← argBit name 1 args) % 64
+      res u (match name with
+        | "bit.lshift" => (x <<< s) % m
+        | "bit.rshift" => x >>> s
+        | "bit.arshift" => ((i64Val x >>> s) % m).toNat
+        | "bit.rol" => (x <<< s ||| x >>> (64 - s)) % m
+        | _ => (x >>> s ||| x <<< (64 - s)) % m)
+
+/-- LuaJIT's bit library (lib_bit.c, its asm fast functions): each argument an int32 by lj_num2bit, each result an
+int32; a shift's count mod 32. A cdata argument makes the op 64-bit (`bitFn64`), but `tobit`'s, an int32 of it -/
+def bitFn (name : String) (args : List Val) : M (List Val) := do
+  let res (n : Nat) : M (List Val) := pure [.num (.int (wrap32 n))]
+  let cd (v : Val) : Bool := v matches .cdata _
+  if name != "bit.tobit" &&
+      (if name == "bit.band" || name == "bit.bor" || name == "bit.bxor" then args.any cd else cd (args.headD .nil)) then
+    return ← bitFn64 name args
+  match name with
+  | "bit.tobit" => return [.num (.int (← argBit name 0 args))]
+  | "bit.bnot" => res (2 ^ 32 - 1 - u32 (← argBit name 0 args))
+  | "bit.bswap" => do
+    let x := u32 (← argBit name 0 args)
+    res ((x % 256) * 2 ^ 24 + (x / 2 ^ 8 % 256) * 2 ^ 16 + (x / 2 ^ 16 % 256) * 2 ^ 8 + x / 2 ^ 24)
+  | "bit.band" | "bit.bor" | "bit.bxor" => do
+    let op : Nat → Nat → Nat := if name == "bit.band" then (· &&& ·) else if name == "bit.bor" then (· ||| ·) else (· ^^^ ·)
+    -- every argument checked, the first even when there is none
+    let x ← argBit name 0 args
+    let ys ← (List.range (args.length - 1)).mapM fun i => argBit name (i + 1) args
+    res (ys.foldl (fun a y => op a (u32 y)) (u32 x))
+  | "bit.lshift" | "bit.rshift" | "bit.arshift" | "bit.rol" | "bit.ror" => do
+    let x ← argBit name 0 args
+    let s := u32 (← argBit name 1 args) % 32
+    let u := u32 x
+    match name with
+    | "bit.lshift" => res (u <<< s)
+    | "bit.rshift" => res (u >>> s)
+    | "bit.arshift" => return [.num (.int (x >>> s))]
+    | "bit.rol" => res (u <<< s ||| u >>> (32 - s))
+    | _ => res (u >>> s ||| u <<< (32 - s))
+  | "bit.tohex" => do
+    let b := u32 (← argBit name 0 args)
+    let n ← if args.length < 2 then pure 8 else argBit name 1 args
+    return [.str (hexOf b n)]
+  | _ => die s!"{name}: not in the subset"
+
+#guard (Num.toBit (.flt 1.5), Num.toBit (.flt 2.5), Num.toBit (.flt (-0.5)), Num.toBit (.flt 2147483648),
+  Num.toBit (.flt 9007199254740995), Num.toBit (.flt (1/0)), Num.toBit (.int 4294967297)) == (2, 2, 0, -2147483648, 2, 0, 1)
 
 /-- whether the address p is y's (carith_checkarg, then MM_eq): a cdata's; nil's NULL; a string's its bytes; a
 number's, a boolean's, … (a stack slot's, or 1) no pointer's -/
