@@ -84,7 +84,8 @@ check)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1
   trap 'rm -rf "$tmp"' EXIT
-  tool Check "$PWD" "$tmp/cases.lua" "$per" $(files "$@"); r=$?
+  # compiled: under lean --run a corpus file's calls took minutes each (#70)
+  lake_do build -q check >&2 && "$here/.lake/build/bin/check" "$PWD" "$tmp/cases.lua" "$per" $(files "$@"); r=$?
   [ $r -le 1 ] && [ -z "$lean" ] || exit $r
   luajit_ref
   cd "$here" && "$LUAJIT" test/luasem.lua --cases "$tmp/cases.lua" --any &&
@@ -101,7 +102,8 @@ corpus)
       { echo "$f: not fetched" >&2; exit 1; }
   done || exit 1
   # the semantics runs no effect: nothing fetched runs outside it
-  # a file at a time, so one that runs long is cut off at $secs, not the run
+  # a file at a time, so one that runs long is cut off at $secs, not the run; the build first, outside the limit
+  lake_do build -q check >&2 || exit 1
   start=$(date +%s)
   out=$(cd "$dir" && for f in $(list | cut -d' ' -f3); do
     timeout "$secs" "$here/lua-lean" check -n 5 --lean "$f" || [ $? -ne 124 ] || echo "$f: timed out after ${secs}s"

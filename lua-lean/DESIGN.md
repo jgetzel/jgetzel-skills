@@ -414,14 +414,14 @@ The corpus (`test/corpus.txt`: 59 files of 29 projects, MIT, BSD or public domai
 `lua-lean corpus`, never committed) measures the subset on scripts written for LuaJIT by others. `corpus` runs the
 checker under the semantics only (it runs no effect, so nothing fetched runs outside it); `lua-lean check` on one of
 them adds LuaJIT. `corpus` checks a file at a time and reports one still checking after 120 s (`-t <secs>`, 0 for no
-limit) as timed out, its findings lost. On 2026-11-11, after #51 (an `alloc` that copied the heap made every loop
-iteration cost the heap's size; the run took 22 minutes): 53 of 59 parse (the 6 that do not are LuaJIT's own
-`jit/*.lua` at its master, in the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`); 6 of the 53
-time out (lume, tween, Moses, luafun, argparse, resty.http: each call reruns the whole chunk, seconds a call, #70); of
-the other 47, 39 are in the subset (29 of 53, before the metamethods of G3c, `string.dump`, `bit`, fenvs and the FFI's
-pure part), and their 632 top-level functions give 1451 calls that reach no effect. Outside it, by the files that use
-each: `debug.upvaluejoin` 2, `package.config` 2, `jit` 2, a module not given as source 2 (`resty.sha`,
-`pl.operator`). Of the calls left out, most stop at an effect: Penlight's chunks at `package.config` (before
+limit) as timed out, its findings lost. On 2026-11-11, after #70 (`tools/Check.lean` compiled: under `lean --run`
+each call's rerun of its chunk took seconds, and 6 files timed out; the run took 102 s, 22 minutes before #51's
+`alloc` fix): 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in the 3.0-backport
+syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`); none times out; 44 of the 53 are in the subset (29 of
+53, before the metamethods of G3c, `string.dump`, `bit`, fenvs and the FFI's pure part), and their 1192 top-level
+functions give 4221 calls that reach no effect. Outside it, by the files that use each: `debug.upvaluejoin` 2,
+`package.config` 2, `jit` 2, a module not given as source 3 (`resty.sha`, `resty.http_connect`, `pl.operator`). Of
+the calls left out, most stop at an effect: Penlight's chunks at `package.config` (before
 #62 made `goto` a name, at compat.lua's `loadstring("local goto = 1")`), FFI pointers (#57, since in the subset:
 md5.lua's `str2lei`) and C declarations (#59).
 
@@ -441,7 +441,7 @@ md5.lua's `str2lei`) and C declarations (#59).
 | `LuaLean/Denote.lean` | the translator as a Lean function, `D.fn`, and the one proof for every program, `D.fn_ok`, that each `f_ok` is (`research/translator-proof.md`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
 | `LuaLean/Gen.lean` | random chunks for the differential test; a user adds its own (`swarm/model/SwarmModel/LuaCases.lean`) |
-| `tools/*.lean` | the CLI's programs, run with `lake env lean --run` |
+| `tools/*.lean` | the CLI's programs, run with `lake env lean --run`; `tools/Check.lean` compiled (`lake build check`) |
 | `test/luasem.lua` | the LuaJIT side of the differential test |
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
