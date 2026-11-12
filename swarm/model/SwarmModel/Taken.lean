@@ -537,6 +537,7 @@ theorem tick_ready {c : Cfg} {s : State} {a t : Nat} (hp : c.passedOver = true) 
   have hz : Ready (reapLocks (reapTasks c s)) a := by
     refine ⟨by simpa [State.agt] using h1, by simpa [State.agt] using h2, by simpa [State.agt] using h3,
       by simpa [State.agt] using h4, unread_ext (reapTasks_ext c s a) h5⟩
+  obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
   exact lifecycle_ready hp hwa ht (claimable_reap hs0) hz
 
 theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = false) (hp : c.passedOver = true) (hwa : c.waiterAlive = true) (hcl : a < s.cursor.length)
@@ -651,6 +652,7 @@ theorem reusable_ready {c : Cfg} {s : State} {a : Nat} (hp : c.passedOver = true
     rw [q, pe, List.length_append]; have := hcur a; omega
   have hreus : finished c (reapLocks (reapTasks c s)) a = true → reusable c (reapLocks (reapTasks c s)) a = true := fun _ => hr0
   obtain ⟨q1, q2, q3, q4, _⟩ := lifecycle_qa hreus (hz (·.st = .idle) h1) (hz (·.waiter = true) h2) (hz (·.big = false) h3) (hz (·.cold = false) h4)
+  obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
   exact ⟨q1, q2, q3, q4, lifecycle_unread hp ha hr0 hcz (hz (·.st = .idle) h1) (hz (·.waiter = true) h2) (hz (·.big = false) h3) (hz (·.cold = false) h4)⟩
 
 
@@ -660,8 +662,9 @@ theorem step_tick {c : Cfg} {s s' : State} (h : step c s .tick = some s') : c.wa
 
 theorem nonreusable_fills {c : Cfg} {s : State} {t : Nat} (hroster : c.roster ≤ c.nagents) (hl : s.ag.length = c.nagents)
     (ht : t ∈ c.tasks) (hs0 : claimable s t = true) (hnr : ∀ a ∈ c.agents, reusable c (reapLocks (reapTasks c s)) a = false) :
-    ¬ (startable (tickOf c s) t = true ∧ members (tickOf c s) < c.roster) :=
-  lifecycle_fills hroster (by simpa using hl) ht (claimable_reap hs0) hnr
+    ¬ (startable (tickOf c s) t = true ∧ members (tickOf c s) < c.roster) := by
+  obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
+  exact lifecycle_fills hroster (by simpa using hl) ht (claimable_reap hs0) hnr
 
 theorem wake_enabled {c : Cfg} {s : State} {a : Nat} (hr : c.racy = false) (h : Ready s a) : (step c s (.wake a)).isSome = true := by
   obtain ⟨h1, h2, h3, h4, h5⟩ := h
@@ -1145,7 +1148,8 @@ macro "i1_tac" : tactic => `(tactic|
     | (with_reducible apply i1_post)
     | (refine i1_setAg ?_ ?_ <;> first | (intro hh hh2; simp_all [busy]; done) | skip)
     | (refine i1_frame ?_ ?_ ‹I1 _ _› <;> rfl)
-    | (with_reducible apply i1_showAll)))
+    | (with_reducible apply i1_showAll)
+    | assumption))
 
 theorem i1_step {c : Cfg} {s s' : State} {act : Action} (hI : I1 c s) (hs : step c s act = some s') : I1 c s' := by
   open_step hs
@@ -1228,7 +1232,8 @@ macro "d_tac" : tactic => `(tactic|
     | (with_reducible apply d_post)
     | (with_reducible apply d_showAll)
     | (refine d_setAg ?_ ?_ <;> first | (intro hh; simp_all; done) | skip)
-    | (refine d_frame ?_ ‹Dd _› <;> rfl)))
+    | (refine d_frame ?_ ‹Dd _› <;> rfl)
+    | assumption))
 
 theorem d_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .die b) (hI : Dd s) (hs : step c s act = some s') : Dd s' := by
   open_step hs

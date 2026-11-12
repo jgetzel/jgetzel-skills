@@ -12,7 +12,7 @@ macro "open_step" h:ident : tactic => `(tactic|
   (cases ‹Action› <;>
    simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
      stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf, hcPrompt,
-     hcClear, die, reapGone, gitCmd, world, stale, nudge, add, after, unblock, drop, releaseOther, endOther, tick, when_eq_some] at $h:ident))
+     hcClear, die, reapGone, gitCmd, world, stale, nudge, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, tick, when_eq_some] at $h:ident))
 
 /-- An invariant of reachable states: true at the start, kept by every step. -/
 theorem reachable_induct {c : Cfg} {P : State → Prop} (h0 : P (init c))
@@ -73,7 +73,7 @@ theorem evL_tickOf {c : Cfg} {s : State} (h : EvL s.task) : EvL (tickOf c s).tas
     · exact hx
   have h1 : EvL (reapLocks (reapTasks c s)).task := by
     simp only [reapLocks_task]; exact foldl_inv _ (fun x : State => EvL x.task) _ _ h (fun b t hb => evL_reapTask t hb)
-  unfold tickOf lifecycle
+  rw [tickOf_task]; unfold tickS lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
   have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
     (fun x : State => EvL x.task) c.agents s1 h1 (fun b a hb => by split; exact hend _ _ hb; exact hb)

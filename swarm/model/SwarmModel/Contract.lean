@@ -9,6 +9,7 @@ import SwarmModel.Gone
 import SwarmModel.Real
 import SwarmModel.Release
 import SwarmModel.End
+import SwarmModel.Away
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -133,6 +134,16 @@ theorem h1_end_spec {c : Cfg} {s s' : State} {a : Nat} (hs : step c s (.endOther
     endable c s a = true ∧ s'.task = s.task ∧ s'.lock = s.lock ∧ s'.log = s.log ∧ s'.cursor = s.cursor ∧ s'.git = s.git ∧
       (a < s.ag.length → (s'.agt a).st = .ended) ∧ ∀ b, b ≠ a → s'.agt b = s.agt b :=
   endOther_spec hs
+
+/-- Q1 (board #47): after a tick every blocked task's latest question was told. Switches: `renotify`. Env: none. -/
+theorem q1_told {c : Cfg} (hr : c.renotify = true) : Q1 c := Q1_of hr
+/-- A2 (board #47): a block notice is urgent exactly when the user is not away. Switches: `awayQuiet`. Env: none. -/
+theorem a2_quiet {c : Cfg} (h : c.awayQuiet = true) : A2quiet c := A2quiet_of h
+/-- A2 (board #47): on a run fair to the communicator's waiter, all it was sent before `--back` is read. Switches:
+`backTells`. Env: none. -/
+theorem a2_reaches {c : Cfg} (h : c.backTells = true) : A2live c := A2live_of h
+/-- A3 (board #47): the away flag changes nothing the tick does but the notices' urgency. Switches: none. Env: none. -/
+theorem a3_blind (c : Cfg) (s : State) (v : Option Nat) : blind (tickOf c (withAway s v)) = blind (tickOf c s) := A3 c s v
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 

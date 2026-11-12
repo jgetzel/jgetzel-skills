@@ -78,7 +78,8 @@ theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .en
   have h2 := lifecycle_log_le c (reapLocks (reapTasks c s))
   rw [reapLocks_log] at h2
   intro e
-  have h3 : (lifecycle c (reapLocks (reapTasks c s))).log.length = s.log.length := congrArg (·.log.length) e
+  have h3 : (lifecycle c (reapLocks (reapTasks c s))).log.length = s.log.length := by
+    have := congrArg (·.log.length) e; simpa [tickS] using this
   omega
 
 /-- L2, the part that is proved. With PR #110 or #111, a state where an idle agent holds a claim is not stuck: the

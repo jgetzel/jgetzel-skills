@@ -45,6 +45,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `restart_alive`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
+| `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -58,7 +59,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 15 scripted runs the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 17 scripted runs the Lua suite replays (`script-away`: board #47's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -118,6 +119,12 @@ One value holds the whole state; every watchd tick is a pure function of it, com
   landed; `end_agent` removes the ended agent's `wt_map` worktree unless a live peer's agent.wt is it, if it is clean
   (git refuses a dirty one), whatever process is inside. Both then `branch -D` the branch it had checked out, unless it
   is `main`: a base like `formal` goes too. The base is `main` everywhere: `nbases > 1` is the swarm that lands elsewhere.
+- **The communicator's inbox and the user's away flag** (board #47): what watchd and the CLI send the communicator
+  (`cbox`: a block's notice, `swarm away`'s line, `--back`'s message; its other messages are outside the model) and how
+  far it has read (`ccur`, moved by `commsRead`: a hook or `swarm read`); `away` (meta away, since a point of `evs`), and
+  `digest` (meta away_digest). `evs` is the event log the digest reads (`task block`, task-blocked, done, an agent's
+  end). The tick's last part is the notice loop (`notices`): a blocked task whose latest question wasn't told is told
+  (urgent unless away) and marked told; `hcPrompt` sends its own "is blocked" notice and marks the task told.
 - `believes` (the tasks an agent thinks it holds), `seen` (what each agent was shown), `pend` (answers not yet
   read by the task's holder) and `early` are ghosts: they exist for the properties.
 
@@ -148,6 +155,9 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `bgLives` | lifecycle ends an idle agent with no claim while its background job runs (reap looks at the job since PR #121, lifecycle never did), and the job dies with the terminal | board #15: lifecycle keeps it while the job runs (`machine.bg_agents`); `swarm end` refuses it without `--force` |
 | `ownAdded` | lifecycle reads a spawned agent's worktrees from its record alone, so one it added itself and left unlanded doesn't keep it | board #15: lifecycle's `unlanded` reads the record and the worktrees named after the agent |
 | `stopFirst` | the user's release of a working agent's task lets a peer claim it before the ex-owner reads the stop (finding #32) | board #53: the task records the stop; claim, the pool and auto-spawn refuse it while the ex-owner is at work and hasn't read it |
+| `renotify` | watchd marks a block's notice sent by any task-blocked event with the same question, so the same question asked again (by the same agent after an answer, or by another after a release) is never told (finding #35) | board #47: sent only by a task-blocked event after the task's latest `task block` (`toldAfter`) |
+| `awayQuiet` | (the feature off) a block's notice is urgent while the user is away | `swarm away`: not urgent while away |
+| `backTells` | (the feature off) `--back` sends the communicator nothing | `--back`: one urgent message naming the questions that wait |
 
 All three are in the Lua (boards #3 to #5) and on in `replay` (tasks 2 and 4 on `formal`); W1 to W4 hold with them (board #6).
 `bgLives` and `ownAdded` are in the Lua and on in `replay` too; N1 holds with them (board #15).
@@ -283,6 +293,28 @@ an end of the holder frees the task, as a `leave` does.
 - **`--force`** is the user's explicit choice to lose work: `N1end c true` is refuted (finding #33: `not_N1end_force`, an
   agent mid-job, whose job end_agent's cgroup.kill kills; `not_N1end_force_wt`, one with an uncommitted file, which stays
   in its worktree). The same runs without `--force` are refused.
+
+Away and back (board #40's item (d), board #47; `Away.lean`). `swarm away`, `swarm away --back` and the communicator's
+read are actions of `step` (`awayOn`, `back`, `commsRead`), and the block notices are part of the tick and of `hcPrompt`,
+so S1-S5, N1, W1-W4 and L1-L4 above are proved with them in.
+
+- **Q1** Every block reaches the communicator: after a tick, the latest question of every blocked task was told (a
+  task-blocked event after its latest `task block`, logged with its notice). `Q1_of` with `renotify`; refuted without it
+  (finding #35, `not_Q1`): the same question asked again is never told. The replay of `script-away` fails on the old Lua.
+- **A1** Away loses no question: away, back and the communicator's read change no task, agent, lock, message, cursor,
+  git ref or event (`away_keeps`); the tick, away or not, leaves a blocked task blocked with its owner and question
+  (`tick_keeps_blocked`); `--back`'s digest lists exactly the blocked tasks (`back_questions`). No switch refutes it.
+- **A2** While away no block notice to the communicator is urgent, and otherwise each is (`A2quiet_of`; refuted with
+  `awayQuiet` off, `not_A2quiet`). Liveness: on a run where the communicator's waiter wakes it on an urgent message it
+  hasn't read (`Run.CommsFair`), everything sent to it before `--back`, the questions asked while away among it, is read
+  (`A2live_of`, with `backTells`); without the back message a fair run leaves the question unread forever (`not_A2live`).
+- **A3** Non-interference: the away flag changes no staffing decision: the tick with the flag set to anything ends where
+  the tick with it as it is ends (reap, spawns, ends, digests, git, events), but for the notices' urgency (`A3`, a frame
+  theorem: `blind (tickOf c (withAway s v)) = blind (tickOf c s)`). No switch refutes it (no code reads the flag there).
+- **A4** Away and back are idempotent: a second away is refused and keeps the first since (`away_twice`, `since_kept`),
+  `--back` when not away is refused (`back_twice`); back's digest is the events since away (`back_digest`): the questions
+  oldest first by their latest question event, then id (`questions_sorted`), the tasks done since and still done
+  (`digest_done`), the agents ended since (`digest_ended`). The replay runs each away and back twice.
 
 No work lost (board #15, `NoWorkLost.lean`):
 
@@ -564,6 +596,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 |---|---|---|---|---|
 | 32 | S1 | `humanRelease := true` (main, board #40) with `stopFirst := false` / S1 with `stopFirst` on, or `humanRelease` off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | `stopFirst` (board #53): claim, auto-spawn and the pool refuse the task to others while the ex-owner is at work and hasn't read the stop; `script-release` now has agent 1 claim #1 after agent 0 reads it |
 | 33 | N1 of `swarm end` | `--force` / `N1end` without it (`N1end_of`) | Agent 0 starts a long job (a build, a CI wait); the user runs `swarm end m-1 --force`: the row is ended mid-job and end_agent's cgroup.kill kills the job (`not_N1end_force`); or agent 0 has an uncommitted file and is ended (`not_N1end_force_wt`; the file stays in its worktree, `endOther_git`). Without `--force` both are refused. | not a bug: `--force` is the user's choice to lose work; `swarm end` without it refuses (board #40) |
+| 35 | Q1 | `renotify := false` / Q1 (`not_Q1`, `Q1_of`) | Agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it and blocks #1 again with the same question. watchd marked the notice sent by any task-blocked event of the task with that question text, so the second question was never told (nor another agent's same question after a release). Found by the model of board #47 and replayed (`script-away` fails on the old Lua) | board #47: a notice is sent once the task's latest question event is a `task block` (watchd.watchd_tick) |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -824,7 +857,7 @@ an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and la
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
 generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; a spawned agent's recorded worktree is on the base of the task it was spawned for, which the model doesn't keep, so once reap or a release takes that task the Lua's `unlanded` checks main and finds it unlanded (lifecycle: `unclean`; `swarm end`: refused) where the model has it landed: the Lua is the stricter side, so N1 and `N1end` hold of it, and random traces leave out `swarm end` without `--force` of a spawned agent (board #63); of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
-(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
+(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs, main's CI and hung stays (no PR, CI or stay in `State`), the notes' text and the away line the hooks print to the communicator; the digest's since is a second in the Lua, so what happens in away's own second, before it, counts as since (the replay lets a second pass before each away); a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a worker agent's own terminal is the model's

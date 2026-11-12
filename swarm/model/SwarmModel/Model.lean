@@ -20,6 +20,27 @@ inductive ASt where | unborn | working | idle | blocked | ended
   deriving DecidableEq, Repr, Inhabited
 inductive Kind where | dm | answer | released | digest | nudge
   deriving DecidableEq, Repr, Inhabited
+/-- the events agents.digest reads (the Lua's event rows, and task.done_at, agent.ended): `task block` of t
+(`block`), t's question told to the communicator, or an hc prompt's (`task-blocked`, hc's or not), t done, slot a ended -/
+inductive Ev where | block (t : Nat) | tblocked (t : Nat) (hc : Bool) | done (t : Nat) | ended (a : Nat)
+  deriving DecidableEq, Repr, Inhabited
+/-- what the communicator is told: a block (of task t; 0: an hc prompt with no claimed task), the user away, the user
+back (the questions that wait) -/
+inductive NKind where | blocked | away | back
+  deriving DecidableEq, Repr, Inhabited
+structure Note where
+  kind : NKind
+  task : Nat
+  urgent : Bool
+  qs : List Nat := []
+  deriving DecidableEq, Repr, Inhabited
+/-- `swarm away --back`'s digest (agents.digest; meta away_digest): the questions that wait, oldest first; the tasks
+done, in order; the slots whose agent ended, in order -/
+structure Digest where
+  qs : List Nat
+  done : List Nat
+  ended : List Nat
+  deriving DecidableEq, Repr, Inhabited
 
 /-- The instance: sizes, and one switch per fix, so the model is the code before and after it. The defaults
 are main now. -/
@@ -98,6 +119,14 @@ structure Cfg where
   (`claim`, claim's write, the pool) while its ex-owner is at work and hasn't read it (`stopped`). Before, a peer could
   claim it at once (finding #32) -/
   stopFirst : Bool := true
+  /-- board #47: watchd tells the communicator of a block again once the task is blocked again (a `task block` since the
+  last notice). Before, the notice was marked sent by any task-blocked event with the same question, so the same
+  question asked again (the same text, or by another agent) was never told (finding #35) -/
+  renotify : Bool := true
+  /-- `swarm away` (A2): while the user is away a block's notice to the communicator is not urgent -/
+  awayQuiet : Bool := true
+  /-- `swarm away --back` (A2): the communicator is sent one urgent message naming the questions that wait -/
+  backTells : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -208,6 +237,15 @@ structure State where
   /-- ghost: some claim happened while a task it is after wasn't done -/
   early : Bool
   git : Git := default
+  /-- the events the digest reads, in order -/
+  evs : List Ev := []
+  /-- the user is away (meta away): since `evs.length` then -/
+  away : Option Nat := none
+  /-- the communicator's inbox (what is sent to it; its own messages to agents are actorless), and its cursor -/
+  cbox : List Note := []
+  ccur : Nat := 0
+  /-- meta away_digest: the last `--back`'s digest, until the next away -/
+  digest : Option Digest := none
   deriving DecidableEq, Repr, Inhabited
 
 def Cfg.tasks (c : Cfg) : List Nat := List.range' 1 c.ntasks
@@ -314,6 +352,10 @@ def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
   if t = 0 then s else { s with task := s.task.modify (t - 1) f }
 def setAg (s : State) (a : Nat) (f : Agent → Agent) : State := { s with ag := s.ag.modify a f }
 def post (s : State) (m : Msg) : State := { s with log := s.log ++ [m] }
+/-- an event, for the digest -/
+def logEv (s : State) (e : Ev) : State := { s with evs := s.evs ++ [e] }
+/-- a message to the communicator -/
+def tellC (s : State) (n : Note) : State := { s with cbox := s.cbox ++ [n] }
 
 /-- one message shown to a: its effect on what a knows -/
 def showMsg (s : State) (a id : Nat) : State :=
@@ -369,7 +411,7 @@ def reusable (c : Cfg) (s : State) (a : Nat) : Bool :=
     && !(c.passedOver && pl.all (s.agt a).told.contains && (unread s a).isEmpty)
     && ((s.agt a).waiter || !c.waiterAlive)
 def endAgent (s : State) (a : Nat) : State :=
-  releaseAll (setAg s a fun g => { g with st := .ended, boot := false, believes := [] }) a
+  releaseAll (setAg (logEv s (.ended a)) a fun g => { g with st := .ended, boot := false, believes := [] }) a
 /-- a spawn for task t into the first slot not live, while the roster has room -/
 def spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : State :=
   match nextAgent c x with
@@ -418,9 +460,31 @@ def Git.rm (c : Cfg) (g : Git) (w : Nat) : Git :=
 /-- what the tick does to git: sweep (before lifecycle's decisions, which it doesn't change) and end_agent's removals -/
 def gitTick (c : Cfg) (s : State) : Git :=
   c.wtIds.foldl (fun g w => if sweeps c s w || endRemoves c s w then g.rm c w else g) s.git
-def tickOf (c : Cfg) (s : State) : State :=
+/-- a notice to the communicator is urgent unless the user is away (`awayQuiet`) -/
+def urgentNow (c : Cfg) (s : State) : Bool := !(c.awayQuiet && s.away.isSome)
+/-- the events of t's questions: `task block`, and task-blocked (told, or an hc prompt's) -/
+def isQ (t : Nat) (e : Ev) : Bool := e == .block t || e == .tblocked t true || e == .tblocked t false
+/-- t's latest question was told: of its question events the last is a task-blocked -/
+def toldAfter (evs : List Ev) (t : Nat) : Bool := match (evs.filter (isQ t)).getLast? with
+  | some (.tblocked _ _) => true
+  | _ => false
+/-- t's current block was told: with `renotify` a task-blocked event of t since its latest `task block`; before, any
+task-blocked event of t with this question (the model's two: an hc prompt's, or `task block`'s one text) -/
+def sent (c : Cfg) (s : State) (t : Nat) : Bool :=
+  if c.renotify then toldAfter s.evs t else s.evs.contains (.tblocked t (s.tk t).hcq)
+/-- watchd_tick's notice loop for one task: a blocked task whose block wasn't told is told, and marked told -/
+def notify (c : Cfg) (s : State) (t : Nat) : State :=
+  if (s.tk t).st == .blocked && !sent c s t then
+    tellC (logEv s (.tblocked t (s.tk t).hcq)) ⟨.blocked, t, urgentNow c s, []⟩
+  else s
+def notices (c : Cfg) (s : State) : State := c.tasks.foldl (notify c) s
+/-- watchd's staffing: reap, lifecycle and git -/
+def tickS (c : Cfg) (s : State) : State :=
   let r := reapLocks (reapTasks c s)
   { lifecycle c r with git := gitTick c r }
+/-- watchd's tick: the staffing, then the block notices (the Lua sends them before lifecycle, which changes no blocked
+task and reads no notice) -/
+def tickOf (c : Cfg) (s : State) : State := notices c (tickS c s)
 
 -- ---------- actions: `none` is "not enabled" ----------
 def init (c : Cfg) : State where
@@ -468,11 +532,11 @@ def release (s : State) (a t : Nat) : Option State :=
   when (working s a && ownsClaimed s a t)
     (unbelieve (setTask s t ({ · with st := .opn, owner := none, lease := false })) a t)
 def block (s : State) (a t : Nat) : Option State :=
-  when (working s a && ownsClaimed s a t) (setTask s t ({ · with st := .blocked }))
+  when (working s a && ownsClaimed s a t) (setTask (logEv s (.block t)) t ({ · with st := .blocked }))
 /-- swarm task done --evidence E: the CLI requires the flag; ev is whether E is non-empty -/
 def done (c : Cfg) (s : State) (a t : Nat) (ev : Bool) : Option State :=
   when (working s a && ownsClaimed s a t && (ev || !c.evidenceRequired))
-    (unbelieve (setTask s t ({ · with st := .done, lease := false, ev := ev })) a t)
+    (unbelieve (setTask (logEv s (.done t)) t ({ · with st := .done, lease := false, ev := ev })) a t)
 /-- the owner drops its own claimed or blocked task -/
 def dropOwn (s : State) (a t : Nat) : Option State :=
   when (working s a && held (s.tk t) a)
@@ -620,10 +684,14 @@ def die (s : State) (a : Nat) : Option State :=
 /-- watchd's reap ends a row whose bound terminal `hc ls` no longer lists (the `live_addrs` branch of `reap`) -/
 def reapGone (c : Cfg) (s : State) (a : Nat) : Option State :=
   leaveIf (c.watchd && c.hcSees && !c.unbound.contains a && (s.agt a).dead) s a
-/-- watchd sees an hc permission prompt: the agent and its first claimed task go blocked -/
+/-- the hc prompt's task-blocked event, when the agent has a claimed task -/
+def hcLog (s : State) (t : Nat) : State := { s with evs := s.evs ++ if t = 0 then [] else [.tblocked t true] }
+/-- watchd sees an hc permission prompt: the agent and its first claimed task go blocked; the communicator is told "a is
+blocked" (urgent unless the user is away), the single notice: the task's is marked told -/
 def hcPrompt (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let t := firstClaimed c s a
   when (busy s a && (s.agt a).reading == 0)
-    (setTask (setAg s a ({ · with st := .blocked })) (firstClaimed c s a) ({ · with st := .blocked, hcq := true }))
+    (setTask (setAg (tellC (hcLog s t) ⟨.blocked, t, urgentNow c s, []⟩) a ({ · with st := .blocked })) t ({ · with st := .blocked, hcq := true }))
 /-- the prompt is answered: its tasks are claimed again with a fresh lease; the next tool's hook delivers -/
 def hcClear (s : State) (a : Nat) : Option State :=
   when ((s.agt a).st == .blocked) <|
@@ -664,6 +732,32 @@ def endable (c : Cfg) (s : State) (a : Nat) : Bool :=
 refused unless `endable`; `force` (`--force`, the user's choice to lose work) skips the checks. It ends the row as `leave`
 does (its claims and locks released; the terminal killed, the waiter with it); `swarm end --force` is `leave` -/
 def endOther (c : Cfg) (s : State) (a : Nat) (force : Bool) : Option State := leaveIf (force || endable c s a) s a
+/-- the questions that wait, oldest first: the blocked tasks, by their latest `task block` or task-blocked event (none:
+`since`), then id -/
+def qtime (s : State) (since t : Nat) : Nat :=
+  (List.range s.evs.length).foldl (fun n i => match s.evs[i]? with
+    | some (Ev.block u) | some (Ev.tblocked u _) => if u == t then i + 1 else n
+    | _ => n) since
+def questions (c : Cfg) (s : State) (since : Nat) : List Nat :=
+  ((c.tasks.filter fun t => (s.tk t).st == .blocked).map fun t => (qtime s since t, t)).mergeSort
+    (fun x y => x.1 < y.1 || (x.1 == y.1 && x.2 ≤ y.2)) |>.map (·.2)
+/-- agents.digest of the events since `since`: questions, done (still done, in order), ended (in order) -/
+def digestOf (c : Cfg) (s : State) (since : Nat) : Digest where
+  qs := questions c s since
+  done := (s.evs.drop since).filterMap fun | .done t => if (s.tk t).st == .done then some t else none | _ => none
+  ended := (s.evs.drop since).filterMap fun | .ended a => some a | _ => none
+/-- `swarm away`: away since now, the last digest dropped, the communicator told (not urgent). Already away, the Lua
+changes nothing ("already away since"): here the step is not enabled, so a second away keeps the first since (A4) -/
+def awayOn (s : State) : Option State :=
+  when s.away.isNone { s with away := some s.evs.length, digest := none, cbox := s.cbox ++ [⟨.away, 0, false, []⟩] }
+/-- `swarm away --back`: the digest of the events since away kept, the flag cleared, the communicator sent one urgent
+message naming the questions (`backTells`). Not away, the Lua changes nothing ("you were not away"): not enabled -/
+def back (c : Cfg) (s : State) : Option State :=
+  let g := digestOf c s (s.away.getD 0)
+  when s.away.isSome
+    { s with away := none, digest := some g, cbox := if c.backTells then s.cbox ++ [⟨.back, 0, true, g.qs⟩] else s.cbox }
+/-- the communicator reads its inbox (a hook, `swarm read`, or its waiter woken) -/
+def commsRead (s : State) : Option State := when (s.ccur < s.cbox.length) { s with ccur := s.cbox.length }
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
 
@@ -678,7 +772,7 @@ inductive Action where
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
-  | endOther (a : Nat) (force : Bool) | tick
+  | endOther (a : Nat) (force : Bool) | awayOn | back | commsRead | tick
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
@@ -694,7 +788,8 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
   | .unblock t => unblock c s t | .drop t => drop s t | .releaseOther t => releaseOther c s t
-  | .endOther a f => endOther c s a f | .tick => tick c s
+  | .endOther a f => endOther c s a f | .awayOn => awayOn s | .back => back c s | .commsRead => commsRead s
+  | .tick => tick c s
 
 /-- The states the system can be in. -/
 inductive Reachable (c : Cfg) : State → Prop

@@ -121,7 +121,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     simpa [Booting, idleClaim, ownsClaimed, setTask_agt, tk_setTask_ne hne] using h0
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
+    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -224,6 +224,7 @@ theorem tick_keep {c : Cfg} {s s' : State} {a t : Nat} (hs : tick c s = some s')
     ⟨rfl, by rw [hza]; exact hidle, by rw [hza]; exact hb, by rw [hza]; exact hw, by rw [hza]; exact hd⟩
   obtain ⟨q1, q2, q3, q4, q5⟩ := hQ
   rw [hz] at q1
+  obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
   show Booting (lifecycle c (reapLocks (reapTasks c s))) a t
   simp only [Booting, idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq, tickOf, q1]
   exact ⟨⟨⟨hst, hown⟩, q2⟩, q3, hl, hans, q4, q5⟩

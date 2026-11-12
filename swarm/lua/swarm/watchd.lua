@@ -727,9 +727,12 @@ function M.watchd_tick(c, comms, repo, opts)
       end
     end
   end
-  if comms then  -- once per block: the event records that the question went out
+  if comms then  -- once per block: a task-blocked event after the task's latest `task block` records it went out
     for _, r in ipairs(c:all("select * from task where state='blocked'")) do
-      if not c:one("select 1 from event where kind='task-blocked' and path=? and data=?", d(r.id), r.question) then
+      -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is a new one
+      local e = c:one("select kind from event where (kind='block' and (data=? or data like ?)) or (kind='task-blocked' and path=?) "
+        .. "order by id desc limit 1", "#" .. d(r.id), "#" .. d(r.id) .. " %", d(r.id))
+      if not (e and e.kind == "task-blocked") then
         db.log(c, r.owner, "task-blocked", d(r.id), r.question)
         msgs.post(c, "swarm", comms, ("%s is blocked on #%s (%s): %s Answer with `swarm task unblock %s --answer \"...\"`."):format(
           r.owner or "None", d(r.id), r.title, r.question or "None", d(r.id)) .. (away and AWAY or ""), not away, "system")

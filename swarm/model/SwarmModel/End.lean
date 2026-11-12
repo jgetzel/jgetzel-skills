@@ -51,13 +51,14 @@ theorem endOther_spec {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.endOthe
   have he' := he
   simp only [endable, Bool.and_eq_true, Bool.not_eq_true'] at he'
   obtain ⟨⟨⟨⟨_, hh⟩, hl⟩, _⟩, _⟩ := he'
-  have hz := releaseAll_free (s := setAg (setAg s a fun g => { g with waiter := false }) a
+  have hz := releaseAll_free (s := setAg (logEv (setAg s a fun g => { g with waiter := false }) (.ended a)) a
     fun g => { g with st := .ended, boot := false, believes := [] }) (a := a)
     (by simpa [holds] using hh) (by simpa [lockHeld] using hl)
   refine ⟨he, ?_, ?_, ?_, ?_, ?_, fun ha => ?_, fun b hb => ?_⟩
-  all_goals simp only [endAgent, hz, setAg_task, setAg_lock, setAg_log, setAg_cursor, setAg_git]
+  all_goals simp only [endAgent, hz, setAg_task, setAg_lock, setAg_log, setAg_cursor, setAg_git, logEv_task, logEv_lock,
+    logEv_log, logEv_cursor, logEv_git]
   · rw [agt_setAg]; simp [ha]
-  · rw [agt_setAg, agt_setAg]; simp [Ne.symm hb]
+  · rw [agt_setAg, logEv_agt, agt_setAg]; simp [Ne.symm hb]
 
 /-- `swarm end`, forced or not, removes no worktree and deletes no branch: what it leaves in a worktree only workspace GC
 may remove, and W1 says GC removes nothing unlanded -/
