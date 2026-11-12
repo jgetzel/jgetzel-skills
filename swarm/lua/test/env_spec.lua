@@ -1,6 +1,6 @@
 -- Differential tests of swarm/model/SwarmModel/Env.lean: each environment assumption against the real tool, in a
 -- scratch repo, through the Lua the swarm runs where there is one. A case carries its assumption's name; check.sh
--- refuses an assumption with no case here. hc_ls_live, hc_run_starts and hc_kill_ends start a terminal in your hc: they run only
+-- refuses an assumption with no case here. hc_ls_live, hc_run_starts, hc_send_targets and hc_kill_ends start terminals in your hc: they run only
 -- with SWARM_TEST_HC=1. gh_checks and gh_state ask GitHub about this repo's latest PRs: they run only with
 -- SWARM_TEST_GH=1.
 local proc, util, watchd, machine, agents = require "swarm.proc", require "swarm.util", require "swarm.watchd",
@@ -207,7 +207,7 @@ for _ = 1, 100000 do local t = util.now(); assert(t >= prev, "now_mono: os.time(
 unistd.sleep(1)
 assert(util.now() > t0, "now_mono: it moves on")
 
--- ---------- hc_ls_live, hc_run_starts, hc_kill_ends ----------
+-- ---------- hc_ls_live, hc_run_starts, hc_send_targets, hc_kill_ends ----------
 if os.getenv("SWARM_TEST_HC") == "1" then
   local json = require "swarm.json"
   stdlib.setenv("XDG_STATE_HOME", nil)  -- run.lua points it at a scratch dir; hc keeps its socket under the real one
@@ -233,13 +233,33 @@ if os.getenv("SWARM_TEST_HC") == "1" then
   assert(pid and signal.kill(pid, 0) == 0, "hc_run_starts: the program it was given runs")
   assert(live(addr), "hc_run_starts: in the live terminal it printed")
   local g = durable(repo)
+  -- two terminals that write what is typed into them to a file; swarm nudge's `hc send` (agents.cmd_nudge's argv) to one
+  local function catterm(f)
+    local o, e, rc = proc.exec({ "hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--name",
+      "swarm-env-" .. unistd.getpid() .. f:match("[^/]*$"), "--cwd", d, "--", "sh", "-c", 'exec cat > "$0"', f })
+    assert(rc == 0, "hc run: " .. e)
+    return json.decode(o).address
+  end
+  local fa, fb = d .. "/typed-a", d .. "/typed-b"
+  local ta, tb = catterm(fa), catterm(fb)
+  local _, serr, scode = proc.exec({ "hc", "send", ta, agents.NUDGE })
+  assert(scode == 0, "hc send: " .. serr)
+  for _ = 1, 50 do
+    if (util.slurp(fa) or ""):find("\n") then break end
+    require("posix.time").nanosleep({ tv_sec = 0, tv_nsec = 100000000 })
+  end
+  assert(util.slurp(fa) == agents.NUDGE .. "\n", "hc_send_targets: the line is typed into that terminal")
+  assert((util.slurp(fb) or "") == "", "hc_send_targets: and into no other")
+  assert(live(ta) and live(tb) and live(addr) and (not here or live(here)), "hc_send_targets: no terminal ends")
+  assert(durable(repo) == g, "hc_send_targets: the repo's durable state stays")
+  for _, x in ipairs({ ta, tb }) do proc.run({ "hc", "kill", x }); proc.run({ "hc", "rm", x }) end
   proc.run({ "hc", "kill", addr })
   assert(not live(addr), "hc_kill_ends: a killed terminal is not listed live")
   assert(not here or live(here), "hc_kill_ends: no other terminal ends")
   assert(durable(repo) == g, "hc_kill_ends: the repo's durable state stays")
   proc.run({ "hc", "rm", addr })
 else
-  io.stderr:write("env_spec: hc_ls_live, hc_run_starts, hc_kill_ends skipped (SWARM_TEST_HC=1 runs them)\n")
+  io.stderr:write("env_spec: hc_ls_live, hc_run_starts, hc_send_targets, hc_kill_ends skipped (SWARM_TEST_HC=1 runs them)\n")
 end
 
 -- ---------- gh_checks, gh_state ----------

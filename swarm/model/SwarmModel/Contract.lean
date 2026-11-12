@@ -10,6 +10,7 @@ import SwarmModel.Real
 import SwarmModel.Release
 import SwarmModel.End
 import SwarmModel.Away
+import SwarmModel.Nudge
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -144,6 +145,17 @@ theorem a2_quiet {c : Cfg} (h : c.awayQuiet = true) : A2quiet c := A2quiet_of h
 theorem a2_reaches {c : Cfg} (h : c.backTells = true) : A2live c := A2live_of h
 /-- A3 (board #47): the away flag changes nothing the tick does but the notices' urgency. Switches: none. Env: none. -/
 theorem a3_blind (c : Cfg) (s : State) (v : Option Nat) : blind (tickOf c (withAway s v)) = blind (tickOf c s) := A3 c s v
+
+/-- N1' (board #50): `swarm nudge` changes no task, claim, lock, lease, message or cursor; it types its line into the
+nudged agent's terminal only, starts or ends no terminal, and leaves the repo's durable state. Switches: none.
+Env: `HcSendTargets`. -/
+theorem n1'_nudge {t : Tools} (hs : HcSendTargets t) {c : Cfg} {s s' : State} {a : Nat}
+    (h : step c s (.hnudge a) = some s') {w : t.World} {hT : Nat} (hl : t.termLive w hT = true) (l : String) :
+    s' = s ∧ t.typed (t.hcSend w hT l) hT = t.typed w hT ++ [l] ∧
+      (∀ h', h' ≠ hT → t.typed (t.hcSend w hT l) h' = t.typed w h') ∧
+      (∀ h', t.termLive (t.hcSend w hT l) h' = t.termLive w h') ∧
+      Git.durable (t.git (t.hcSend w hT l)) = Git.durable (t.git w) :=
+  Tools.N1' hs h hl l
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 

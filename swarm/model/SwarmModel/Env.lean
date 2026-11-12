@@ -40,6 +40,10 @@ structure Tools where
   hcLs : World → Nat → Bool
   /-- `hc kill h` -/
   hcKill : World → Nat → World
+  /-- `hc send h <line>`: the line pasted into terminal h and submitted with Enter (`swarm nudge`) -/
+  hcSend : World → Nat → String → World
+  /-- the lines typed into terminal h so far, in order -/
+  typed : World → Nat → List String
   /-- `hc run --json --bg --no-parent --no-notify -- <cmd>` (watchd's `--restart`) -/
   hcRun : World → World
   /-- the address `hc run` prints -/
@@ -101,6 +105,11 @@ def HcLsLive : Prop := ∀ w h, t.hcLs w h = t.termLive w h
 leave worktrees, so `proc` may change) -/
 def HcKillEnds : Prop := ∀ w h, t.termLive (t.hcKill w h) h = false ∧
   (∀ h', h' ≠ h → t.termLive (t.hcKill w h) h' = t.termLive w h') ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w)
+/-- hc: `hc send h l` to a live terminal types l into h and into no other terminal, starts or ends no terminal, and
+leaves the repo's durable state alone (what the program in h then does with the line is its own turn) -/
+def HcSendTargets : Prop := ∀ w h l, t.termLive w h = true →
+  t.typed (t.hcSend w h l) h = t.typed w h ++ [l] ∧ (∀ h', h' ≠ h → t.typed (t.hcSend w h l) h' = t.typed w h') ∧
+  (∀ h', t.termLive (t.hcSend w h l) h' = t.termLive w h') ∧ Git.durable (t.git (t.hcSend w h l)) = Git.durable (t.git w)
 /-- hc: `hc run --bg` starts the program: the terminal whose address it prints is live, and the program runs in it, a
 process (the model's `restart`: the new watchd runs, in its hidden terminal) -/
 def HcRunStarts : Prop := ∀ w, t.termLive (t.hcRun w) (t.hcRunAddr w) = true ∧ t.alive (t.hcRun w) (t.hcRunPid w) = true
@@ -132,6 +141,7 @@ structure Sound : Prop where
   delRef : DelRef t
   hcLsLive : HcLsLive t
   hcKillEnds : HcKillEnds t
+  hcSendTargets : HcSendTargets t
   hcRunStarts : HcRunStarts t
   kill0Alive : Kill0Alive t
   cwdsProc : CwdsProc t
@@ -145,6 +155,7 @@ structure Sound : Prop where
 structure IdealWorld where
   git : Git
   terms : Nat → Bool
+  inputs : Nat → List String
   procs : Nat → Bool
   clock : Nat
   checks : Nat → PrW.Checks
@@ -162,6 +173,8 @@ def ideal : Tools where
   termLive w h := w.terms h
   hcLs w h := w.terms h
   hcKill w h := { w with terms := fun h' => h' != h && w.terms h' }
+  hcSend w h l := { w with inputs := fun h' => if h' = h then w.inputs h' ++ [l] else w.inputs h' }
+  typed w h := w.inputs h
   hcRun w := { w with terms := fun h => h == 0 || w.terms h, procs := fun p => p == 0 || w.procs p }
   hcRunAddr _ := 0
   hcRunPid _ := 0
@@ -187,6 +200,7 @@ theorem consistent : Sound ideal where
   hcLsLive _ _ := rfl
   hcKillEnds w h := ⟨by simp [ideal], fun h' hh => by simp [ideal, hh], rfl⟩
   hcRunStarts _ := ⟨by simp [ideal], by simp [ideal]⟩
+  hcSendTargets _ _ _ _ := ⟨by simp [ideal], fun _ hh => by simp [ideal, hh], fun _ => rfl, rfl⟩
   kill0Alive _ _ := rfl
   cwdsProc _ _ := rfl
   touchedRecent w x := by simp only [ideal]; split <;> simp_all [sweepIdle]
@@ -215,6 +229,8 @@ axiom del_ref : DelRef real
 axiom hc_ls_live : HcLsLive real
 /-- `hc kill` (env_spec: hc_kill_ends) -/
 axiom hc_kill_ends : HcKillEnds real
+/-- `hc send` (env_spec: hc_send_targets) -/
+axiom hc_send_targets : HcSendTargets real
 /-- `hc run --bg` (env_spec: hc_run_starts) -/
 axiom hc_run_starts : HcRunStarts real
 /-- `kill(p, 0)` (env_spec: kill0_alive) -/

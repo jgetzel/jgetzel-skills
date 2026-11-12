@@ -161,6 +161,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
   case awayOn => simp only [step, awayOn, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
   case back => simp only [step, back, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
   case commsRead => simp only [step, commsRead, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
+  case hnudge => simp only [step, hnudge, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
   case hcClear a₀ =>
     simp only [step, hcClear, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
     obtain ⟨hc, hs⟩ := hs
@@ -185,7 +186,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     · simp at hs
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
+    hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge, hnudge] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)

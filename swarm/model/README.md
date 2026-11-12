@@ -47,6 +47,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
+| `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` and `Env.N1'_real` with `hc send` as `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -60,7 +61,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 17 scripted runs the Lua suite replays (`script-away`: board #47's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 18 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -316,6 +317,19 @@ so S1-S5, N1, W1-W4 and L1-L4 above are proved with them in.
   `--back` when not away is refused (`back_twice`); back's digest is the events since away (`back_digest`): the questions
   oldest first by their latest question event, then id (`questions_sorted`), the tasks done since and still done
   (`digest_done`), the agents ended since (`digest_ended`). The replay runs each away and back twice.
+
+Nudge (board #50; `Nudge.lean`). `swarm nudge a` is the action `hnudge a` of `step` (not watchd's unclean `nudge`):
+enabled for a live agent with a terminal (the CLI refuses an unknown, ended or unbound one: `hnudge_enabled`), and the
+state unchanged, since the CLI writes only a nudge event and types a line, neither of which the model keeps. The line's
+effect on the agent is its own `prompt`, already a step. It is not in `fair`, so S1-S5, N1, W1-W4 and L1-L4 above are
+proved with it in `step`.
+
+- **N1'** A nudge changes no task, claim, lock, lease, message or cursor (`N1'_frame`: `step c s (.hnudge a) = some s'
+  → s' = s`), and its `hc send` types the line into that agent's terminal and no other, starts or ends no terminal and
+  leaves every worktree, branch and commit (`Env.Tools.N1'`, from `HcSendTargets`; `Env.N1'_real`). The replay
+  (`script-nudge`, and random steps) checks the db unchanged but for the one nudge event, and that hc's last call was
+  `send <that agent's terminal> <the line>`. A roster agent joined outside hc has no terminal in the replay, which the
+  model's `replay` instance (no `unbound`) doesn't have: the replay binds it for that command only.
 
 No work lost (board #15, `NoWorkLost.lean`):
 
@@ -847,6 +861,7 @@ through the Lua's own `landed_ref`, `delete_branch`, `machine.cwds`, `agents.hc_
 | `del_ref` | `git update-ref -d refs/heads/b k` | deletes b only if its tip is k |
 | `hc_ls_live` | `hc ls --json` | lists a terminal live exactly when it is |
 | `hc_kill_ends` | `hc kill` | ends that terminal, no other, and leaves worktrees, branches and commits alone |
+| `hc_send_targets` | `hc send` | types the line into that live terminal and no other, ends or starts no terminal, leaves worktrees, branches and commits alone |
 | `kill0_alive` | `kill(p, 0)` | 0 exactly when p is in the process table |
 | `cwds_proc` | `machine.cwds()` | sees a process inside a worktree exactly when the model's `proc` is set |
 | `touched_recent` | mtimes, SWEEP_IDLE | the model's `recent` is the sweep's reading: touched within 1800 s |
@@ -1047,7 +1062,7 @@ claimed, proved never to work on a task another agent holds (`never_works_on_oth
 What is proved. `Contract.lean` lists the theorems, each with what it guarantees and what it rests on: S1-S5 of every
 reachable state (`s1_oneWorker`, `s1_believes_held`, `s2_noEarlyStart`, `s3_noSharedFile`, `s4_inboxExact`,
 `s5_doneHasEvidence`), W1 and N1 of every step and tick (`w1_gcOk`, `n1_noWorkLost`), L2 and L4 over fair runs
-(`l2_idleClaim`, `l4_deadLive`), and at the tools: `env_landedRef`, `env_sweepGate`, `env_reapGone`, `db_serializable`.
+(`l2_idleClaim`, `l4_deadLive`), N1' of a nudge (`n1'_nudge`), and at the tools: `env_landedRef`, `env_sweepGate`, `env_reapGone`, `db_serializable`.
 The model theorems hold for every `Cfg` whose switches they take as hypotheses (the fixes; main runs with them on) and
 rest on Lean's axioms alone. They are about the model: that the Lua does what the model does is replayed (random and
 scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what is lifted (`Lifted/`, `Decide.lean`,
@@ -1056,14 +1071,14 @@ scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what i
 What is assumed. The tool theorems take `Env.lean`'s assumptions as hypotheses on any `Tools` or `Db`, so a
 downstream proof chooses: supply them for a machine of its own (`Env.consistent` proves them all for `Env.ideal`,
 `Env.sqlite_consistent` for `Env.idealDb`), or use the `real` versions in `Real.lean` (`Env.landedRef_reach`,
-`Env.realDb_sound`, …), which rest on the 19 axioms of `Env.lean` about the machine the swarm runs on, each a claim
+`Env.realDb_sound`, …), which rest on the 21 axioms of `Env.lean` about the machine the swarm runs on, each a claim
 about git, hc, gh, the kernel, the clock or sqlite that a test checks, not a proof.
 
 How to recheck. `swarm/model/check.sh` builds every theorem (`lake build`), runs `Audit.lean`, which prints each
 theorem resting on an environment assumption with the ones it uses and fails on any other axiom (no `sorry`, no
 `native_decide`), and checks `example/Client.lean`. Each assumption's test is the case named after it:
 `luajit swarm/lua/test/run.lua env` runs `env_spec.lua` (git, the kernel, files, the clock; `SWARM_TEST_HC=1` adds
-`hc_ls_live` and `hc_kill_ends`, which start a terminal in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
+`hc_ls_live`, `hc_run_starts`, `hc_send_targets` and `hc_kill_ends`, which start terminals in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
 which ask GitHub about this repo's PRs), and `luajit swarm/lua/test/run.lua sqlite` runs `sqlite_spec.lua` (the five
 sqlite ones, many processes at once).
 
