@@ -279,7 +279,20 @@ lj_cconv_compatptr does (no qualifier discarded, `void *` either way, an integer
 `<=` in one allocation, NULL below every other; `ffi.string` of a pointer, `ffi.copy` (a string with its NUL) and
 `ffi.fill`; LuaJIT's errors for the rest (`attempt to perform arithmetic on 'int *' and 'boolean'`, `attempt to
 compare`, `attempt to concatenate`, `size of C type is unknown or too large`, `cannot convert 'const int [2]' to
-'int *'`), arithmetic and `..` of any cdata reaching them through every cdata's metamethods (`ffi.__add`, …). The
+'int *'`), arithmetic and `..` of any cdata reaching them through every cdata's metamethods (`ffi.__add`, …).
+64-bit integers (#58: `i64Arith`, `i64Bits`, `cnumNew`, `cdToString`, `RunP.cdArith`, `cnumNew_ok`): the numerals
+`1LL`, `1ULL` (`LLU`, either case; decimal or hex, below 2^64; `Exp.cnum`), each evaluation a new `int64_t` or
+`uint64_t`; an 8-byte integer element or field read a new cdata of its type, its qualifier kept (LuaJIT's boxed
+value); arithmetic (`+ - * / % ^`, unary `-`) of two numbers, one a cdata (a scalar of any number type, a bool or
+float among them), as lj_carith.c's carith_int64 does it: both as `uint64_t` if either is one, else as `int64_t`, a
+double truncated into it (lj_num2i64, lj_num2u64), mod 2^64, `/` and `%` C's (the remainder's sign the dividend's) and
+by 0 2^63, `^` by repeated squaring and an `int64_t`'s negative exponent lj_carith_powi64's; `==`, `<`, `<=` of the
+same pairs as 64-bit integers, a scalar and any other value unequal; `tostring` (and so `print`, `%s`) of a 64-bit
+integer `5LL`, `5ULL`, of a ctype `ctype<int>` (the FFI's `__tostring`); `string.format`'s `%d` and `%x` of an
+unqualified `int64_t` or `uint64_t` (its bits, as lj_strfmt_putarg takes them); `tonumber` rounded to nearest; a
+64-bit integer stored to a narrower integer mod 2^bits, to a double or float rounded; `#` of any cdata LuaJIT's error
+(`attempt to get length of 'int64_t'`). A conversion's error names its destination with its qualifier (`cannot
+convert 'table' to 'const int'`). The
 world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
 arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
@@ -291,7 +304,7 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `~`, `<<`, `>>`, `~>>`), `!`, `&&`, `||`, `!=`, the conditional `a ? b : c`, safe navigation (`t?.k`, `t?.[k]`,
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
-underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); 64-bit integer cdata (#58),
+underscores in numerals (`1_000`), FFI complex numerals (`2i`);
 `ffi.metatype`, enums and C calls with cdata (#59): `ffi`'s other fields are handles; `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
 `getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
 `collectgarbage`, `gcinfo`, `module`, `newproxy`, `loadfile`, `arg` and
@@ -358,10 +371,12 @@ the name by scanning the bytecode back);
    leaves a new array partly uninitialized; of a pointer: NULL dereferenced, an element or a result of `p ± n`
    outside its allocation, a write into a Lua string, overlapping bytes to `ffi.copy`, a negative length to
    `ffi.copy` or `ffi.fill`), what is LuaJIT's heap's (an address from a number but 0, or into an integer but NULL's;
-   `<` or `-` of pointers into two allocations; a pointer stored in a cdata's bytes, or read from them), another
-   task's (an 8-byte integer read: LuaJIT's boxed one, arithmetic, `<`, `#`, `tostring` and `==` of a scalar cdata, a
-   ctype indexed or used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a
-   message, a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
+   `<` or `-` of pointers into two allocations; a pointer stored in a cdata's bytes, or read from them; `tostring`
+   of a cdata but a 64-bit integer or a ctype: its address), of a 64-bit integer: a double past its range or NaN
+   into its arithmetic (x64 and arm64 convert them differently), its identity (a table key or `rawequal` of one:
+   LuaJIT's numeral is one object, its prototype's constant, the semantics' a new one at each evaluation), the bit
+   library on a cdata (lj_carith_check64's 64-bit forms, a task of the roadmap), another task's (a ctype indexed or
+   used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a message, a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
    a reference's type given to `ffi.typeof`, `new` or `cast`, a ctype call's bad argument (LuaJIT names no function),
    an allocation past 64 KiB.
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
@@ -462,7 +477,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, done: "The subset", but the bit library on them; metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) and #33's levels past 1 are #44 (done: "The call
   stack"; a coroutine's stack, `L` and a file's chunk's last line still stop).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,

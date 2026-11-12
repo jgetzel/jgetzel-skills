@@ -518,6 +518,24 @@ theorem RunP.ffi {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P
     show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
     rw [call_prim, callPrim_ffi I n name args hn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
 
+/-- a cdata's arithmetic (`ffi.__add`, …, its operators' metamethod: `RunP.arith_meta`): `cdArith`'s values, a
+new `int64_t` or `uint64_t` for two numbers -/
+theorem RunP.cdArith {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
+    (hn : name ∈ ["ffi.__add", "ffi.__sub", "ffi.__mul", "ffi.__div", "ffi.__mod", "ffi.__pow", "ffi.__unm",
+      "ffi.__concat"]) (e : cdArith name args h = .ok vs h')
+    (p : P vs h') : RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
+  ⟨2, _, _, fun n hn2 => by
+    obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
+    show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
+    rw [call_prim, callPrim_cdArith I n name args hn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
+
+/-- an FFI numeral (`1LL`): a new bytes object and the cdata over it -/
+theorem cnumNew_ok (v : Nat) (u : Bool) (h : Heap) :
+    cnumNew v u h = .ok (.cdata (h.size + 1))
+      ((h.push (.bytes ⟨(leBytes v 8).toArray⟩)).push (.cdata (.int 8 !u) h.size 0 false)) := by
+  simp [cnumNew, box, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet, bind, EStateM.bind, pure,
+    EStateM.pure]
+
 theorem ctypeCall_ok {a : Nat} {ct : CType} {args vs : List Val} {h h' : Heap} (ha : h[a]? = some (.ctype ct))
     (e : ffiNew (.cdata a :: args) h = .ok vs h') : ctypeCall a args h = .ok vs h' := by
   unfold ctypeCall

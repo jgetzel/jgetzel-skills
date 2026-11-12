@@ -807,6 +807,54 @@ return {commas ops}"
     "\"c:1: 'struct b' has no member named 'z'\"," ++
     "\"c:1: attempt to perform arithmetic on 'void *' and 'void *'\""
 
+/-- the FFI's 64-bit integers (#58): numerals, boxed reads of `int64_t` and `uint64_t` elements, arithmetic and
+comparisons of numbers and scalar cdata (signed or unsigned, by 0, past 2^63), tostring, tonumber, string.format's
+`%d` and `%x`, conversions into narrower and wider types, and the errors -/
+def i64Ops : G String := do
+  let v : G String := pick ["1LL", "-1LL", "0LL", "1ULL", "0ULL", "18446744073709551615ULL", "9223372036854775807LL",
+    "(-9223372036854775807LL - 1)", "0x7fffffffLL", "4294967296LL", "12345678901234LL", "3ULL", "0x8000000000000000ULL",
+    "0", "1", "-1", "2", "7", "-7", "1.5", "-2.5", "2^53 + 1", "2^62", "-2^62", "4294967295", "63", "64", "-3",
+    "ffi.new(\"int\", -3)", "ffi.new(\"uint32_t\", 4294967295)", "ffi.new(\"double\", 2.75)",
+    "ffi.new(\"float\", -1.5)", "ffi.new(\"bool\", true)", "ffi.new(\"uint8_t\", 200)", "a[0]", "a[1]", "u[0]",
+    "u[1]", "ffi.new(\"size_t\", 10)", "ffi.cast(\"int64_t\", -5)", "nil", "\"1\"", "{}", "true", "p", "a"]
+  -- no table: `%s` would write its address
+  let nt : G String := do let x ← v; pure (if x == "{}" then "-2" else x)
+  let it : G String := pick ["int64_t", "uint64_t", "int8_t", "uint16_t", "int32_t", "uint32_t", "double", "float",
+    "bool", "intptr_t", "size_t", "const int64_t"]
+  let ar : G String := pick ["+", "-", "*", "/", "%", "^", "+", "-", "*"]
+  let cmp : G String := pick ["==", "~=", "<", "<=", ">", ">="]
+  let op : G String := do
+    match ← rnd 9 with
+    | 0 | 1 => pure s!"return tostring({← v} {← ar} {← v})"
+    | 2 => pure s!"return {← v} {← cmp} {← v}, {← v} {← cmp} {← v}"
+    | 3 => pure s!"return tostring(- {← v}), tonumber({← v}), type({← v})"
+    | 4 => pure s!"return string.format(\"{← pick ["%d", "%x", "%5d", "%-22d|", "%X", "%s", "%.3d", "%+d", "%016x", "%i", "%#x", "% d", "%c", "%g"]}\", {← nt})"
+    | 5 => pure s!"local b = ffi.new(\"{← it}[1]\") b[0] = {← v} return tostring(b[0]), ffi.sizeof(b)"
+    | 6 => pure s!"return tostring(ffi.cast(\"{← pick ["int64_t", "uint64_t", "size_t"]}\", {← v})), tostring(ffi.new(\"{← pick ["int64_t", "uint64_t", "const int64_t"]}\", {← v}))"
+    | 7 => pure s!"return {← pick ["#1LL", "#a", "1LL .. \"\"", "\"\" .. 1ULL", "a[0] .. a[1]", "ffi.typeof(a[0]) == ffi.typeof(\"int64_t\")", "ffi.typeof(u[0]) == ffi.typeof(\"size_t\")", "tostring(ffi.typeof(1ULL))", "tostring(ffi.typeof(\"const int64_t[2]\"))", "tostring(ffi.typeof(a))", "math.floor(1LL)", "(\"x\"):rep(2LL)", "1LL + \"1\"", "1LL < \"2\"", "1LL + p", "p + 1LL - p", "-a", "1ULL - 2"]}"
+    | _ => pure s!"local x = {← v} x = x {← ar} {← v} return tostring(x), x == {← v}, tostring(a[0] {← ar} u[0]), tostring(a[1] {← ar} 1)"
+  let ops ← (List.range 6).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
+  return s!"local ffi = require(\"ffi\")
+local a = ffi.new(\"int64_t[2]\", {← pick ["5", "-7", "2^40", "-2^62"]}, {← pick ["3", "-1", "0", "2^33 + 1"]})
+local u = ffi.new(\"uint64_t[2]\", {← pick ["5", "2^63", "0", "2^40"]}, {← pick ["1", "7", "2^64 - 2^12"]})
+local p = ffi.cast(\"int32_t*\", ffi.new(\"int32_t[4]\")) + 1
+return {commas ops}"
+
+-- the values of LuaJIT 2.1 on x64: C's division and remainder, by 0, unsigned when either side is, a wrap past
+-- 2^63, powers, tostring, tonumber, %d and %x, a double cdata's arithmetic, and the errors
+#guard runCase (fun _ => none) .single []
+    ("local ffi = require('ffi') local a = ffi.new('int64_t[2]', -7, 2^40) local u = ffi.new('uint64_t[1]', 2^63) " ++
+      "return tostring(a[0] / 2), tostring(a[0] % 2), tostring(5LL / 0), tostring(u[0] + 1), tostring(-1 + 0ULL), " ++
+      "tostring(2LL ^ 63), tostring(3ULL ^ -1), a[0] < 1ULL, a[0] < 1, a[1] == 2^40, tonumber(a[1] * a[1]), " ++
+      "tostring(18446744073709551615LL), string.format('%d %x', 18446744073709551615ULL, -1LL), " ++
+      "tostring(ffi.new('double', 2.75) * 2), select(2, pcall(function() return #a end)), select(2, " ++
+      "pcall(function() return 1LL .. '' end)), ffi.typeof(a[0]) == ffi.typeof('int64_t'), select(2, " ++
+      "pcall(ffi.new, 'const int64_t', {}))").toList ==
+  "ok:\"-3LL\",\"-1LL\",\"-9223372036854775808LL\",\"9223372036854775809ULL\",\"18446744073709551615ULL\"," ++
+    "\"-9223372036854775808LL\",\"12297829382473034411ULL\",false,true,true,0,\"-1LL\",\"-1 ffffffffffffffff\"," ++
+    "\"4LL\",\"c:1: attempt to get length of 'int64_t [2]'\",\"c:1: attempt to concatenate 'int64_t' and 'string'\"," ++
+    "true,\"cannot convert 'table' to 'const int64_t'\""
+
 -- ---------- the world: print, io.write, os ----------
 
 /-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
@@ -1218,7 +1266,8 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => match ← rnd 5 with | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | 4 => ffiOps | _ => ptrOps
+  | 10 => match ← rnd 6 with
+    | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | 4 => ffiOps | 5 => i64Ops | _ => ptrOps
   | 11 => traverse
   | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros

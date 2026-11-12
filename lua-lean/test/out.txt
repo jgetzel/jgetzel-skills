@@ -27,7 +27,6 @@ local x = 1_000
 local x = 0x_ff
 local x = 1_
 local x = 0_1
-local x = 1LL
 local x = 2i
 local x = 1; x *= 2; x /= 2; x %= 2; x &= 1; x |= 1; x >>= 1; x ~>>= 1
 local t = {f = function() end}; t?.f()

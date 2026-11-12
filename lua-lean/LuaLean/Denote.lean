@@ -57,6 +57,7 @@ def exp (I : Sem) (s : Sc) : Exp → SE × SM
   | .fls => one eFalse
   | .num x => one (eNum x)
   | .str x => one (eStr x)
+  | .cnum v u => one (eCnum v u)
   | .vararg => (eVa s.cx.va, mVa s.cx.va)
   | .func ps va b ln => one (eFunc ps va b ln s.cx.env s.cx.self)
   | .var x => one (match s.res x with
@@ -160,6 +161,7 @@ theorem exp_ok : (e : Exp) → (s : Sc) → s.ok → CE I (exp I s e).1 s.cx e �
   | .fls, _, _ => one_ok rfl CE_false
   | .num _, _, _ => one_ok rfl CE_num
   | .str _, _, _ => one_ok rfl CE_str
+  | .cnum .., _, _ => one_ok rfl CE_cnum
   | .vararg, _, _ => ⟨CE_va rfl, CM_va rfl⟩
   | .func .., _, _ => one_ok rfl (CE_func rfl rfl)
   | .var x, _, hs => one_ok rfl (var_ok hs x)

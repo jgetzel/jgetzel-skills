@@ -98,6 +98,18 @@ theorem callPrim_ffi (I : Sem) (n : Nat) (name : String) (args : List Val) (hn :
   simp only [ffis, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
   rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
 
+/-- a cdata's arithmetic metamethods (`cdArith`) and its `__tostring` (`cdToString`) -/
+theorem callPrim_cdArith (I : Sem) (n : Nat) (name : String) (args : List Val)
+    (hn : name ∈ ["ffi.__add", "ffi.__sub", "ffi.__mul", "ffi.__div", "ffi.__mod", "ffi.__pow", "ffi.__unm",
+      "ffi.__concat"]) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = cdArith name args := by
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at hn
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+
+theorem callPrim_cdToString (I : Sem) (n : Nat) (args : List Val) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "ffi.__tostring" [] args = cdToString args := by
+  rw [callPrim, basicFn] <;> simp <;> decide
+
 /-- a cdata's call: a ctype's, its ffi.new -/
 theorem call_cdata (I : Sem) (n a : Nat) (args : List Val) :
     call I.srcs I.oracle I.tgt (n + 1) (.cdata a) args = frame (ctypeCall a args) := by
@@ -166,6 +178,8 @@ def eTrue : SE := fun n => tick n fun _ => pure (.bool true)
 def eFalse : SE := fun n => tick n fun _ => pure (.bool false)
 def eNum (x : Num) : SE := fun n => tick n fun _ => pure (.num x)
 def eStr (s : List Char) : SE := fun n => tick n fun _ => pure (.str s)
+/-- an FFI numeral: a new cdata (`cnumNew`) -/
+def eCnum (v : Nat) (u : Bool) : SE := fun n => tick n fun _ => cnumNew v u
 def eVa (va : List Val) : SE := fun n => tick n fun _ => pure (va.headD .nil)
 /-- a closure: its body is data, `env` the scope it closes over, and its environment that of `self`, the running
 function -/
@@ -406,6 +420,7 @@ theorem CE_true {cx} : CE I eTrue cx .tru := by intro n; cases n <;> rw [eval] <
 theorem CE_false {cx} : CE I eFalse cx .fls := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_num {cx x} : CE I (eNum x) cx (.num x) := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_str {cx s} : CE I (eStr s) cx (.str s) := by intro n; cases n <;> rw [eval] <;> rfl
+theorem CE_cnum {cx v u} : CE I (eCnum v u) cx (.cnum v u) := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_va {cx va} (h : va = cx.va) : CE I (eVa va) cx .vararg := by subst h; intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_func {cx ps va b ln env self} (h : env = cx.env) (hs : self = cx.self) :
     CE I (eFunc ps va b ln env self) cx (.func ps va b ln) := by
