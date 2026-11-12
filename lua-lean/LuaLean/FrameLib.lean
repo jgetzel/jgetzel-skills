@@ -456,5 +456,195 @@ theorem sameMem_keeps {m m' : Nat} :
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact sameMem_keeps)
 
 
+
+theorem addrEq_keeps {p q : Option (Nat × Nat)} : Keeps c P (addrEq p q) fun _ => True := by
+  unfold addrEq; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact addrEq_keeps)
+
+theorem cIdx_keeps {x : CNum} : Keeps c P (cIdx x) fun _ => True := by
+  unfold cIdx; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cIdx_keeps)
+
+theorem toPtr_keeps {e : CErr} {d : CType} {v : Val} {cast : Bool} {dn : Option String} :
+    Keeps c P (toPtr e d v cast dn) fun _ => True := by
+  unfold toPtr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact toPtr_keeps)
+
+theorem fill_rep_keeps {esz sz m off : Nat} {el : List UInt8} {k o : Nat} :
+    Keeps c P (fill.rep esz sz m off el k o) fun _ => True := by
+  induction k generalizing o with
+  | zero => unfold fill.rep; keeps
+  | succ k ih => unfold fill.rep; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact fill_rep_keeps)
+
+theorem fill_keeps {k : Nat} {d : CType} {m off sz ofs esz : Nat} :
+    Keeps c P (fill k d m off sz ofs esz) fun _ => True := by
+  unfold fill; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact fill_keeps)
+
+/-- the FFI's stores, on their fuel -/
+theorem store_keeps_all (k : Nat) :
+    (∀ e d0 m off v, Keeps c P (store k e d0 m off v) fun _ => True) ∧
+    (∀ e d et sz m off t, Keeps c P (arrTab k e d et sz m off t) fun _ => True) ∧
+    (∀ e d et sz m off t esz i ofs, Keeps c P (arrTab.go e d et sz m off t esz k i ofs) fun _ => True) ∧
+    (∀ e u fs m off t i first, Keeps c P (aggTab k e u fs m off t i first) fun _ => True) := by
+  induction k with
+  | zero =>
+    refine ⟨fun _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ _ => ?_⟩ <;>
+      first | (unfold store; keeps) | (unfold arrTab; keeps) | (unfold arrTab.go; keeps) | (unfold aggTab; keeps)
+  | succ k ih =>
+    obtain ⟨hs, ha, hg, hagg⟩ := ih
+    have hs' : ∀ e d0 m off v, Keeps c P (store k e d0 m off v) fun _ => True := hs
+    refine ⟨fun _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ _ _ _ => ?_, fun _ _ _ _ _ _ _ _ => ?_⟩
+    · unfold store; keeps <;> first | exact ha _ _ _ _ _ _ _ | exact hagg _ _ _ _ _ _ _ _
+    · unfold arrTab; keeps <;> exact hg _ _ _ _ _ _ _ _ _ _
+    · unfold arrTab.go; keeps <;> first | exact hs _ _ _ _ _ | exact hg _ _ _ _ _ _ _ _ _ _
+    · unfold aggTab; keeps <;> first | exact hs _ _ _ _ _ | exact hagg _ _ _ _ _ _ _ _
+
+theorem store_keeps {k : Nat} {e : CErr} {d0 : CType} {m off : Nat} {v : Val} :
+    Keeps c P (store k e d0 m off v) fun _ => True := (store_keeps_all k).1 _ _ _ _ _
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact store_keeps)
+
+
+theorem cdInitArr_keeps {e : CErr} {d et : CType} {m sz : Nat} {vs : List Val} :
+    Keeps c P (cdInitArr e d et m sz vs) fun _ => True := by
+  unfold cdInitArr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdInitArr_keeps)
+
+theorem cdInitAgg_keeps {e : CErr} {d : CType} {m sz : Nat} {vs : List Val} :
+    Keeps c P (cdInitAgg e d m sz vs) fun _ => True := by
+  unfold cdInitAgg; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdInitAgg_keeps)
+
+theorem asItself_keeps {d : CType} {v : Val} :
+    Keeps c P (asItself d v) fun _ => True := by
+  unfold asItself; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact asItself_keeps)
+
+theorem cdInit_keeps {e : CErr} {d0 : CType} {m sz : Nat} {vs : List Val} :
+    Keeps c P (cdInit e d0 m sz vs) fun _ => True := by
+  unfold cdInit; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdInit_keeps)
+
+theorem box_keeps {t : CType} {bs : List UInt8} :
+    Keeps c P (box t bs) fun _ => True := by
+  unfold box; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact box_keeps)
+
+theorem cdNew_keeps {ct : CType} {sz : Nat} :
+    Keeps c P (cdNew ct sz) fun _ => True := by
+  unfold cdNew; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdNew_keeps)
+
+theorem toLua_keeps {t : CType} {bs : List UInt8} :
+    Keeps c P (toLua t bs) fun _ => True := by
+  unfold toLua; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact toLua_keeps)
+
+theorem idxErr_keeps {α : Type} {t : CType} {k : Val} :
+    Keeps c P (idxErr (α := α) t k) fun _ => True := by
+  unfold idxErr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact idxErr_keeps)
+
+theorem cdLookup_keeps {t : CType} {q : Bool} {m off : Nat} {k : Val} :
+    Keeps c P (cdLookup t q m off k) fun _ => True := by
+  unfold cdLookup; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdLookup_keeps)
+
+theorem ptrLookup_keeps {ct : CType} {p : Option (Nat × Nat)} {k : Val} :
+    Keeps c P (ptrLookup ct p k) fun _ => True := by
+  unfold ptrLookup; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ptrLookup_keeps)
+
+theorem cdPlace_keeps {a : Nat} {k : Val} :
+    Keeps c P (cdPlace a k) fun _ => True := by
+  unfold cdPlace; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdPlace_keeps)
+
+theorem cdIndex_keeps {a : Nat} {k : Val} :
+    Keeps c P (cdIndex a k) fun _ => True := by
+  unfold cdIndex; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdIndex_keeps)
+
+theorem cdSet_keeps {a : Nat} {k v : Val} :
+    Keeps c P (cdSet a k v) fun _ => True := by
+  unfold cdSet; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdSet_keeps)
+
+theorem cOp_keeps {v : Val} :
+    Keeps c P (cOp v) fun _ => True := by
+  unfold cOp; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cOp_keeps)
+
+theorem cOpName_keeps {v : Val} :
+    Keeps c P (cOpName v) fun _ => True := by
+  unfold cOpName; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cOpName_keeps)
+
+theorem i64Pair_keeps {x : CNum} {xu : Bool} {y : CNum} {yu : Bool} :
+    Keeps c P (i64Pair x xu y yu) fun _ => True := by
+  unfold i64Pair; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact i64Pair_keeps)
+
+theorem eqAddr_keeps {p : Option (Nat × Nat)} {y : Val} :
+    Keeps c P (eqAddr p y) fun _ => True := by
+  unfold eqAddr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact eqAddr_keeps)
+
+theorem ptrish_keeps {v : Val} :
+    Keeps c P (ptrish v) fun _ => True := by
+  unfold ptrish; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ptrish_keeps)
+
+theorem cdEq_keeps {a : Nat} {y : Val} :
+    Keeps c P (cdEq a y) fun _ => True := by
+  unfold cdEq; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdEq_keeps)
+
+theorem cdAddrEq_keeps {x y : Val} :
+    Keeps c P (cdAddrEq x y) fun _ => True := by
+  unfold cdAddrEq; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdAddrEq_keeps)
+
+theorem opMeta_keeps {v : Val} {ev : String} :
+    Keeps c P (opMeta v ev) fun _ => True := by
+  unfold opMeta; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact opMeta_keeps)
+
+theorem opMeta2_keeps {ev : String} {x y : Val} :
+    Keeps c P (opMeta2 ev x y) fun _ => True := by
+  unfold opMeta2; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact opMeta2_keeps)
+
+theorem cdArith_keeps {name : String} {args : List Val} :
+    Keeps c P (cdArith name args) fun _ => True := by
+  unfold cdArith; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdArith_keeps)
+
+theorem cdArithErr_keeps {α : Type} {name : String} {x y : Val} :
+    Keeps c P (cdArithErr (α := α) name x y) fun _ => True := by
+  unfold cdArithErr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdArithErr_keeps)
+
+theorem cdLess_keeps {x y : Val} {orEq : Bool} :
+    Keeps c P (cdLess x y orEq) fun _ => True := by
+  unfold cdLess; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdLess_keeps)
+
+theorem ctArg_keeps {args : List Val} :
+    Keeps c P (ctArg args) fun _ => True := by
+  unfold ctArg; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ctArg_keeps)
+
+theorem intArg_keeps {args : List Val} {k : Nat} :
+    Keeps c P (intArg args k) fun _ => True := by
+  unfold intArg; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact intArg_keeps)
+
+theorem ffiNew_keeps {args : List Val} :
+    Keeps c P (ffiNew args) fun _ => True := by
+  unfold ffiNew; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ffiNew_keeps)
+
 end
 end Lua

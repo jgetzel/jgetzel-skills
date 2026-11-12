@@ -356,6 +356,8 @@ theorem modify_sys_keeps {a : Nat} {o : Obj} (ha : a ≤ 16) (ok : ObjOk c P o) 
 theorem writeCell_sys {a : Nat} {v : Val} (ha : a ≤ 16) : Keeps c P (writeCell a v) fun _ => True :=
   modify_sys_keeps ha trivial
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine writeCell_sys ?_; simp [CUR]))
+macro "keeps_sys" : tactic => `(tactic| simp [ObjOk, CUR, LOG, STK, ERRF, CDECLS])
+macro_rules | `(tactic| keeps_leaf) => `(tactic| (with_reducible refine modify_sys_keeps ?_ ?_) <;> keeps_sys)
 
 theorem alloc_keeps {o : Obj} (ok : ObjOk c P o) : Keeps c P (alloc o) fun a => a ≠ c := by
   intro h ow
