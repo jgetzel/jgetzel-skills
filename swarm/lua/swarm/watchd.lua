@@ -971,9 +971,11 @@ function M.cmd_watchd(c, a)
       if by and by.v == cur.v and run.pid_alive(cur.v:match("^%S+")) then
         util.die(("watchd (pid %s) was replaced by %s; exiting"):format(d(unistd.getpid()), cur.v))
       elseif not run.pid_alive(cur.v:match("^%S+")) then
-        if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
-          db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
-        end
+        c:tx(function()  -- the record and its event together: a reader that sees one sees both
+          if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
+            db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
+          end
+        end)
       end
     else
       M.watchd_tick(c, comms, repo, opts)
