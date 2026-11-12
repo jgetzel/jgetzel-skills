@@ -579,8 +579,9 @@ end
 -- Each model watchd is a real `swarm watchd --interval 1` in terminal m<x>; the replay holds every one at the start of
 -- its tick: a fake `hc ls` (a tick's first call) waits for go.<terminal> and marks at.<terminal> while it waits, so a
 -- watchd's tick is a step the replay takes. The new watchd `--restart` starts waits stopped (SIGSTOP) until its takeover,
--- and the restart itself is stopped but at its own steps. A watchd held at its tick read the record before a takeover;
--- its loop step lets that tick finish (the check-then-tick gap of Restart.lean's (a)), and its next loop decides.
+-- and the restart itself is stopped but at its own steps. A watchd held at its tick claimed it (meta.watchd_tick) before a
+-- takeover: the new watchd must not reach its tick (board #71, Restart.lean's R1a'), until `tend` lets the old one's tick
+-- end; the old one is then stopped (SIGSTOP) until its loop step or its next tick.
 -- Checked after each step: meta.watchd and meta.watchd_up name the model's watchds, and each runs as the model says.
 local function replay_rs(t, trace)
   local signal, wait, fcntl = require "posix.signal", require "posix.sys.wait", require "posix.fcntl"
@@ -645,6 +646,7 @@ local function replay_rs(t, trace)
   end
   local function held(w) until_("watchd " .. w.pid .. " at its tick", function() return exists("at." .. w.term) end) end
   local function go(w) os.execute("touch " .. D .. "/go." .. w.term) end
+  local function cont(w) if w.stopped then signal.kill(w.pid, signal.SIGCONT); w.stopped = false end end
   check(trace.states[1].s, "init")
   for i = 2, #trace.states do
     local x = trace.states[i]
@@ -660,7 +662,7 @@ local function replay_rs(t, trace)
         held(w)
       elseif name == "tick" then  -- the record's watchd, held at its tick
         local w = wds[st.rec + 1]
-        held(w); go(w)
+        cont(w); held(w); go(w)
         until_("its tick", function() return not exists("go." .. w.term) end)
         held(w)
       elseif name == "restart" then
@@ -678,7 +680,10 @@ local function replay_rs(t, trace)
         local w = wds[p.p + 1]
         signal.kill(w.pid, signal.SIGCONT)
         until_("its record", function() return meta("watchd") == rec(p.p) end)
-        held(w)
+        if st.tk == p.p then held(w) else  -- another watchd is mid-tick: this one waits (its loop looks every second)
+          sleep(1.5)
+          if exists("at." .. w.term) then error("it ticks beside watchd " .. tostring(st.tk) .. ", mid-tick", 0) end
+        end
       elseif name == "rpoll" then signal.kill(restart, signal.SIGCONT); sleep(0.6); signal.kill(restart, signal.SIGSTOP)
       elseif name == "rok" or name == "rfail" then
         signal.kill(restart, signal.SIGCONT)
@@ -699,12 +704,17 @@ local function replay_rs(t, trace)
         local w = wds[p.p + 1]
         signal.kill(w.pid, signal.SIGKILL)
         until_("it to die", function() return not alive(w.pid) end)
-      elseif name == "loop" then  -- held at a tick it read the record for: that tick ends, then its loop decides
+      elseif name == "tend" then  -- its tick, claimed before a takeover, ends; it gives the claim back
         local w = wds[p.p + 1]
         held(w); go(w)
+        until_("its claim given back", function() return meta("watchd_tick") ~= rec(p.p) end)
+        signal.kill(w.pid, signal.SIGSTOP); w.stopped = true
+      elseif name == "loop" then
+        local w = wds[p.p + 1]
+        cont(w)
         if st.wds[p.p + 1].alive then
           until_("the record", function() return meta("watchd") == rec(st.rec) end)
-          held(w)
+          if st.tk == p.p then held(w) end
         else
           until_("it to exit", function() return not alive(w.pid) end)
         end

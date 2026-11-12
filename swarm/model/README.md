@@ -56,7 +56,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5280 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `sqlcases.json.gz` | 5340 of those cases (20 per statement, seed 29) the Lua suite runs |
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
@@ -368,31 +368,41 @@ any step, however often it dies (`comms_replaced`). Who restarts a dead watchd i
 `swarm watchd --restart` (`Restart.lean`, board #49). In Comms.lean's world each swarm's watchd is a record (meta.watchd: a
 pid, an index into the watchd processes, each with its swarm, its terminal, running or not, has it ticked, has it written
 the record) and meta.watchd_up. `watchd i x` starts one by hand from terminal x (refused while the record's watchd runs);
-`tick i` is the record's watchd's tick, and its first writes watchd_up. Board #41's restart is five actions:
+`tick i` is the record's watchd's tick, and its first writes watchd_up. A tick claims meta.watchd_tick (board #71), in
+one transaction with the read of the record, and gives it back at its end: `tick i` waits while another running watchd
+holds it, and claims it again for the watchd's next tick; `tend p` ends the tick p claimed before another took the record
+(p's tick runs, then the claim is given back); a start, takeover or take-back claims it when it is free. Board #41's
+restart is five actions:
 `restart i x` (`hc run --bg` starts `swarm watchd --takeover <recorded flags>` in the hidden terminal x: Env.lean's
 `HcRunStarts`; refused with no record; one restart of a swarm at a time), `takeover p` (the new watchd's start writes the
 record, whoever it names), `rpoll i` (the restart reads a record other than the one it started with), `rok i` (success:
 that one holds the record, runs, and watchd_up names it) and `rfail i` (it died, or 90 s passed: kill it, give the record
 back where it still holds it). `crash p` is a watchd's death; `die x` ends the processes in terminal x and leaves the
-record naming a dead pid, as meta does. `loop p` is the loop of a watchd whose record another holds. The recorded flags
+record naming a dead pid, as meta does. `loop p` is the loop of a watchd, not mid-tick, whose record another holds. The
+recorded flags
 change nothing a takeover does here: the new watchd's tick is the old one's `tickW` (`--comms` is resolved into them, and
 `--max-agents`, left out, would only rewrite the auto-spawn number, which `Cfg.roster` fixes).
 
 - **R1** (a) At most one watchd ticks a swarm: the record's, running, and it is that swarm's (`R1a_of`, of every reachable
-  world). (b) Never zero once there was one: the loop ends a watchd only when the record names another that runs, that
+  world). (a') No two ticks of a swarm overlap: a step that runs a watchd's tick (`tick i`, `tend p`) finds no other
+  watchd mid-tick (holding meta.watchd_tick and running), and one mid-tick keeps its claim until a step runs its tick
+  (`R1a'_of`, of every step). (b) Never zero once there was one: the loop ends a watchd only when the record names another that runs, that
   watchd_up names and that has ticked; `--restart` reports success only then (`R1b_of`, with `waitUp`). (c) On a run fair to
-  the ticks (`CRun.Fair`) and to the watchds' own steps (`CRun.FairWd`: a takeover or loop step enabled at infinitely many
-  steps is taken at infinitely many), a watchd that keeps running gets its swarm ticked at infinitely many steps
+  the ticks (`CRun.Fair`) and to the watchds' own steps (`CRun.FairWd`: a takeover, loop or tend step enabled at
+  infinitely many steps is taken at infinitely many), a watchd that keeps running gets its swarm ticked at infinitely many steps
   (`R1c_of`); so does the one a restart starts (`restart_ticks`).
 
-(a) is structural, as a tick is one step: the record is one slot. In the Lua the loop reads the record and then ticks, so
-a takeover between the two lets the old watchd finish one tick beside the new one's first; the model does not split
-the tick (the replay of `script-restart-*` lets that stale tick run, with nothing for it to do). (b) needs `WdInv`: the
+(a) is structural: the record is one slot. Before board #71 the Lua's loop read the record and then ticked, so a takeover
+between the two let the old watchd finish one tick beside the new one's first; now the read and the claim of the lease
+are one transaction, and the new watchd's loop looks again every second until the old one's tick ends. (a') needs no
+invariant: every claim is of a free lease. The replay of `script-restart-ok` holds the old watchd mid-tick across the
+takeover and fails if the new one reaches its tick before `tend` (it does with the loop before board #71). (b) needs `WdInv`: the
 record and watchd_up name processes of their swarm, watchd_up one that has ticked, a swarm with a process has a record,
 and a restart's old record is a process of its swarm. Without `waitUp` (b) fails, finding #34 (`not_R1b`): the restart's new
 watchd takes the record, the old one exits, the new one dies before its first tick, and no watchd runs. (c) holds either way:
 if the record's watchd stops running, the one that runs is enabled to take the record over (its start) or back (its loop),
-and fairness takes it. What R1 leaves out: a hand `--takeover` and `--once`; two restarts of one swarm at a time; pid reuse;
+once the tick it claimed before, if any, ends (`tend`), and fairness takes each. `CRun.Fair` asks for ticks of a swarm
+whose watchd runs at infinitely many steps; with the lease such a tick can wait for a `tend`, which `FairWd` takes. What R1 leaves out: a hand `--takeover` and `--once`; two restarts of one swarm at a time; pid reuse;
 `--restart`'s 90 s as time (its failure may come at any step).
 
 - **R2** No Lua error escapes an iteration of watchd's loop, on the real Lua (board #67). The loop's body is

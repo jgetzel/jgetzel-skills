@@ -960,9 +960,29 @@ function M.watchd_pass(c, mine, comms, repo, opts, up)
     end
     return up
   end
-  M.watchd_tick(c, comms, repo, opts)
+  -- the tick lease, meta.watchd_tick (board #71; Restart.lean's R1a'): the record still ours and no other live watchd
+  -- mid-tick, in one transaction, so a watchd that takes the record over during our tick waits for its end. true: ours;
+  -- false: the record isn't; nil: another's tick
+  local function claim()
+    return c:tx(function()
+      local r = c:one("select v from meta where k='watchd'")
+      local t = c:one("select v from meta where k='watchd_tick'")
+      if not r or r.v ~= mine then return false end
+      if t and t.v ~= mine and run.pid_alive(t.v:match("^%S+")) then return nil end
+      c:exec("insert or replace into meta(k,v) values('watchd_tick',?)", mine)
+      return true
+    end)
+  end
+  local mid = claim()
+  while mid == nil do unistd.sleep(1); mid = claim() end  -- not a whole interval: --restart waits for our first tick
+  if not mid then return up end
+  local ok, err = pcall(M.watchd_tick, c, comms, repo, opts)
+  c:tx(function()
+    if ok and not up then c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine) end
+    c:exec("delete from meta where k='watchd_tick' and v=?", mine)
+  end)
+  if not ok then error(err, 0) end
   M.LAST_TICK_ERR = nil
-  if not up then c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine) end
   return true
 end
 

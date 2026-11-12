@@ -364,11 +364,13 @@ example : C1 { cfg22 with ensureComms := true } ∧ C1 { cfg23 with ensureComms 
 
 -- #34, R1 (b) (board #49). `swarm watchd --restart` with the loop as it was before board #41: a watchd exits as soon as
 -- the record is not its own. Watchd 0 runs from terminal 0 and has ticked; the restart starts watchd 1 in terminal 1,
--- which takes the record; watchd 0's loop sees a record not its own and exits; watchd 1 dies before its first tick
--- (a crash, a kill, its hidden terminal gone). No watchd runs, and none will: the restart's report says so, but nothing
--- restarts it.
+-- which takes the record; the tick watchd 0 had claimed ends (board #71); watchd 0's loop sees a record not its own and
+-- exits; watchd 1 dies before its first tick (a crash, a kill, its hidden terminal gone). No watchd runs, and none will:
+-- the restart's report says so, but nothing restarts it.
 def cfg34 : CCfg := { sw := { nagents := 0, roster := 0, ntasks := 0 }, nswarms := 1, home := [0] }
-def pre34 : List CAction := [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1]
+def pre34 : List CAction := [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .tend 0]
+-- board #71: before that tick ends, watchd 1's tick waits for it
+example : crun cfg34 (pre34.dropLast ++ [.tick 0]) = none := by decide +kernel
 /-- swarm i has no running watchd process -/
 def noWatchd (w : World) (i : Nat) : Bool := !(List.range w.wds.length).any fun p => (w.proc p).sw == i && w.alive p
 example : (crun cfg34 (pre34 ++ [.loop 0, .crash 1])).any (noWatchd · 0) = true := by decide +kernel

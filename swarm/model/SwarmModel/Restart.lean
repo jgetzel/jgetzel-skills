@@ -1,13 +1,14 @@
 import SwarmModel.Comms
 
 /-! R1 (board #49): `swarm watchd --restart` keeps exactly one watchd. The world is Comms.lean's, with each swarm's
-watchd record (meta.watchd, a pid), meta.watchd_up, the watchd processes, and the restart waiting for the one it started
-(`restart`, `takeover`, `crash`, `loop`, `rpoll`, `rok`, `rfail`). `waitUp` is board #41's handover; finding #34
-(Findings.lean) is the run that breaks (b) without it.
+watchd record (meta.watchd, a pid), meta.watchd_up, meta.watchd_tick (the tick lease), the watchd processes, and the
+restart waiting for the one it started (`restart`, `takeover`, `crash`, `loop`, `rpoll`, `rok`, `rfail`, `tend`).
+`waitUp` is board #41's handover; finding #34 (Findings.lean) is the run that breaks (b) without it.
 
-- (a) at most one watchd ticks a swarm: the record's, running (`R1a_of`). Structural, as a tick is one step here: in
-  the Lua the loop reads the record and then ticks, so a takeover between the two lets the old one finish one tick
-  beside the new one's first (not modelled).
+- (a) at most one watchd ticks a swarm: the record's, running (`R1a_of`). (a') the tick split (board #71): a tick runs
+  from its claim of the lease, made in one transaction with the read of the record, to its release, and a takeover can
+  land in between; then the old watchd's tick ends (`tend`) before the new one's first can start. A step that runs a
+  watchd's tick finds no other mid-tick, and a watchd mid-tick keeps its claim until its tick runs (`R1a'_of`).
 - (b) the loop ends a watchd only when the record names another that runs and has ticked, and the restart reports
   success only then (`R1b_of`, with `waitUp`; `not_R1b`, finding #34, without).
 - (c) on a fair run a watchd that keeps running gets its swarm ticked at infinitely many steps (`R1c_of`); so does the
@@ -35,10 +36,29 @@ def R1b (c : CCfg) : Prop :=
   (∀ w w' i, CReachable c w → cstep c w (.rok i) = some w' →
     ∃ q, w'.wdOf i = some q ∧ w'.alive q = true ∧ w'.upOf i = some q ∧ (w'.proc q).ticked = true)
 
-/-- the watchd processes' own steps are fair: a takeover or loop step enabled at infinitely many steps is taken at
-infinitely many (hc's `run --bg` starts the program, `HcRunStarts`; a running loop goes round every interval) -/
+/-- the watchd processes' own steps are fair: a takeover, loop or tend step enabled at infinitely many steps is taken at
+infinitely many (hc's `run --bg` starts the program, `HcRunStarts`; a running loop goes round every interval; a tick
+ends) -/
 def CRun.FairWd {c : CCfg} (r : CRun c) : Prop :=
-  ∀ a, (∃ p, a = CAction.takeover p ∨ a = .loop p) → (∀ N, ∃ n ≥ N, (cstep c (r.st n) a).isSome) → ∀ N, ∃ n ≥ N, r.act n = a
+  ∀ a, (∃ p, a = CAction.takeover p ∨ a = .loop p ∨ a = .tend p) → (∀ N, ∃ n ≥ N, (cstep c (r.st n) a).isSome) →
+    ∀ N, ∃ n ≥ N, r.act n = a
+
+/-- p is mid-tick of swarm i: it holds meta.watchd_tick, its claim of the tick, and runs -/
+def midTick (w : World) (i p : Nat) : Bool := w.tkOf i == some p && w.alive p
+
+/-- the swarm and the watchd whose tick a step runs: the record's at `tick i`, p's at `tend p` -/
+def tickOfStep (w : World) : CAction → Option (Nat × Nat)
+  | .tick i => (w.wdOf i).map ((i, ·))
+  | .tend p => some ((w.proc p).sw, p)
+  | _ => none
+
+/-- R1 (a'), the tick split (board #71): in the Lua a tick runs from its claim of meta.watchd_tick, made in one
+transaction with the read of the record, to its release. A step that runs watchd p's tick of swarm i finds no other
+watchd mid-tick of i, and a watchd mid-tick keeps its claim until a step runs its tick: no two ticks of a swarm overlap,
+a takeover's included -/
+def R1a' (c : CCfg) : Prop := ∀ w w' a, cstep c w a = some w' →
+  (∀ i p q, tickOfStep w a = some (i, p) → midTick w i q = true → q = p) ∧
+  (∀ i r, midTick w i r = true → tickOfStep w a ≠ some (i, r) → w'.tkOf i = some r)
 
 -- ---------- lists ----------
 
@@ -84,16 +104,20 @@ theorem proc_modify (w : World) (f : Wd → Wd) (q p : Nat) :
     ({ w with wds := w.wds.modify q f } : World).proc p = if p = q ∧ q < w.wds.length then f (w.proc p) else w.proc p := by
   simp only [World.proc]; rw [R.getD_modify]
 
+theorem firstTick_wds (w : World) (i p : Nat) :
+    (firstTick w i p).wds = w.wds ∨ (firstTick w i p).wds = w.wds.modify p ({ · with ticked := true }) := by
+  unfold firstTick; split
+  · exact .inl rfl
+  · exact .inr rfl
+
 theorem wdTicked_wds (w : World) (i : Nat) :
     (wdTicked w i).wds = w.wds ∨ ∃ p, (wdTicked w i).wds = w.wds.modify p ({ · with ticked := true }) := by
   unfold wdTicked; split
-  · split
-    · exact .inl rfl
-    · exact .inr ⟨_, rfl⟩
+  · exact (firstTick_wds w i _).imp id fun e => ⟨_, e⟩
   · exact .inl rfl
 
-theorem tickW_wds (c : CCfg) (w : World) (i : Nat) : (tickW c w i).wds = w.wds ∧ (tickW c w i).wd = w.wd ∧
-    (tickW c w i).up = w.up ∧ (tickW c w i).rs = w.rs := by
+theorem tickW_wds (c : CCfg) (w : World) (i : Nat) (p : Nat := (w.wdOf i).getD 0) : (tickW c w i p).wds = w.wds ∧
+    (tickW c w i p).wd = w.wd ∧ (tickW c w i p).up = w.up ∧ (tickW c w i p).rs = w.rs := by
   simp only [tickW]; repeat' split
   all_goals exact ⟨rfl, rfl, rfl, rfl⟩
 
@@ -151,6 +175,11 @@ theorem wds_step {c : CCfg} {w w' : World} {a : CAction} (h : cstep c w a = some
     all_goals simp only [reduceCtorEq, Option.some.injEq] at h
     all_goals subst h
     all_goals first | exact hsame _ rfl | exact hmod (fun x => { x with on := false }) (fun _ => ⟨rfl, rfl⟩) _ _ rfl
+  | tend p =>
+    simp only [cstep, tend, cwhen] at h; split at h <;> simp at h; subst h
+    rcases firstTick_wds (tickW c w (w.proc p).sw p) (w.proc p).sw p with e | e <;> rw [(tickW_wds c w _ p).1] at e
+    · exact hsame _ e
+    · exact hmod (fun x => { x with ticked := true }) (fun _ => ⟨rfl, rfl⟩) _ _ e
 
 theorem isOf_step {c : CCfg} {w w' : World} {a : CAction} (h : cstep c w a = some w') {i p : Nat} (hp : w.isOf i p) :
     w'.isOf i p :=
@@ -291,28 +320,35 @@ theorem wdinv_mod {c : CCfg} {w : World} (h : WdInv c w) (q : Nat) (f : Wd → W
     · exact hf _
     · exact ⟨rfl, id⟩
 
+/-- a stored lease changes nothing WdInv says -/
+theorem wdinv_tk {c : CCfg} {w : World} (h : WdInv c w) (t : List (Option Nat)) : WdInv c { w with tk := t } :=
+  ⟨h.wdLen, h.swLt, h.rcd, h.upr, h.hasRec, h.old⟩
+
+/-- the first-tick write of p, a process of swarm i -/
+theorem wdinv_first {c : CCfg} {w : World} (h : WdInv c w) {i p : Nat} (hof : w.isOf i p) : WdInv c (firstTick w i p) := by
+  unfold firstTick; split
+  · exact h
+  · have hm := wdinv_mod h p (fun x => { x with ticked := true }) fun _ => ⟨rfl, fun _ => rfl⟩
+    refine ⟨hm.wdLen, hm.swLt, hm.rcd, fun j q e => ?_, hm.hasRec, hm.old⟩
+    have e' : ({ w with wds := w.wds.modify p fun x => { x with ticked := true } } : World).upOf j = some q ∨
+        (j = i ∧ q = p) := by
+      rw [show ({ w with wds := w.wds.modify p (fun x => { x with ticked := true }), up := w.up.set i (some p) } : World)
+        = { ({ w with wds := w.wds.modify p fun x => { x with ticked := true } } : World) with up := w.up.set i (some p) }
+        from rfl, upOf_set] at e
+      split at e
+      · rename_i ej; cases e; exact .inr ⟨ej.1, rfl⟩
+      · exact .inl e
+    rcases e' with e' | ⟨rfl, rfl⟩
+    · exact hm.upr j q e'
+    · refine ⟨⟨by simp [hof.1], ?_⟩, ?_⟩
+      · show ((({ w with wds := w.wds.modify q fun x => { x with ticked := true } } : World)).proc q).sw = j
+        rw [proc_modify]; simp [hof.1, hof.2]
+      · show ((({ w with wds := w.wds.modify q fun x => { x with ticked := true } } : World)).proc q).ticked = true
+        rw [proc_modify]; simp [hof.1]
+
 theorem wdinv_ticked {c : CCfg} {w : World} (h : WdInv c w) (i : Nat) : WdInv c (wdTicked w i) := by
   unfold wdTicked; split
-  · rename_i p hr; split
-    · exact h
-    · have hm := wdinv_mod h p (fun x => { x with ticked := true }) fun _ => ⟨rfl, fun _ => rfl⟩
-      have hof := h.rcd i p hr
-      refine ⟨hm.wdLen, hm.swLt, hm.rcd, fun j q e => ?_, hm.hasRec, hm.old⟩
-      have e' : ({ w with wds := w.wds.modify p fun x => { x with ticked := true } } : World).upOf j = some q ∨
-          (j = i ∧ q = p) := by
-        rw [show ({ w with wds := w.wds.modify p (fun x => { x with ticked := true }), up := w.up.set i (some p) } : World)
-          = { ({ w with wds := w.wds.modify p fun x => { x with ticked := true } } : World) with up := w.up.set i (some p) }
-          from rfl, upOf_set] at e
-        split at e
-        · rename_i ej; cases e; exact .inr ⟨ej.1, rfl⟩
-        · exact .inl e
-      rcases e' with e' | ⟨rfl, rfl⟩
-      · exact hm.upr j q e'
-      · refine ⟨⟨by simp [hof.1], ?_⟩, ?_⟩
-        · show ((({ w with wds := w.wds.modify q fun x => { x with ticked := true } } : World)).proc q).sw = j
-          rw [proc_modify]; simp [hof.1, hof.2]
-        · show ((({ w with wds := w.wds.modify q fun x => { x with ticked := true } } : World)).proc q).ticked = true
-          rw [proc_modify]; simp [hof.1]
+  · rename_i p hr; exact wdinv_first h (h.rcd i p hr)
   · exact h
 
 theorem wdinv_step {c : CCfg} {w w' : World} {a : CAction} (h : WdInv c w) (hs : cstep c w a = some w') : WdInv c w' := by
@@ -329,11 +365,11 @@ theorem wdinv_step {c : CCfg} {w w' : World} {a : CAction} (h : WdInv c w) (hs :
   | watchd i x =>
     simp only [cstep, startWd, cwhen] at hs; split at hs <;> simp at hs; subst hs
     rename_i hg; simp only [Bool.and_eq_true, decide_eq_true_eq] at hg
-    exact wdinv_start h _ rfl hg.1.1
+    exact wdinv_tk (wdinv_start h ⟨i, x, true, false, true⟩ rfl hg.1.1) _
   | tick i =>
     simp only [cstep, cwhen] at hs; split at hs <;> simp at hs; subst hs
     obtain ⟨e1, e2, e3, e4⟩ := tickW_wds c w i
-    exact wdinv_ticked (wdinv_frame h e2 e3 e4 (by rw [e1]) fun p => by simp [World.proc, e1]) i
+    exact wdinv_tk (wdinv_ticked (wdinv_frame h e2 e3 e4 (by rw [e1]) fun p => by simp [World.proc, e1]) i) _
   | restart i x =>
     simp only [cstep, restart, cwhen] at hs; split at hs <;> simp at hs; subst hs
     rename_i hg; simp only [Bool.and_eq_true, decide_eq_true_eq] at hg
@@ -350,7 +386,7 @@ theorem wdinv_step {c : CCfg} {w w' : World} {a : CAction} (h : WdInv c w) (hs :
     have hl := lt_of_alive hg.1
     have hs : (({ w with wds := w.wds.modify p fun x => { x with took := true } } : World).proc p).sw = (w.proc p).sw := by
       rw [proc_modify]; simp [hl]
-    exact wdinv_setRec hm ⟨by simpa using hl, hs⟩
+    exact wdinv_tk (wdinv_setRec hm ⟨by simpa using hl, hs⟩) _
   | crash p =>
     simp only [cstep, crash, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact wdinv_stop h p
   | loop p =>
@@ -363,7 +399,7 @@ theorem wdinv_step {c : CCfg} {w w' : World} {a : CAction} (h : WdInv c w) (hs :
       split at hs
       · simp only [Option.some.injEq] at hs; subst hs; exact wdinv_stop h p
       · split at hs
-        · simp only [Option.some.injEq] at hs; subst hs; exact wdinv_setRec h ⟨lt_of_alive hg.1, rfl⟩
+        · simp only [Option.some.injEq] at hs; subst hs; exact wdinv_tk (wdinv_setRec h ⟨lt_of_alive hg.1.1, rfl⟩) _
         · simp at hs
   | rpoll i =>
     simp only [cstep, rpoll] at hs
@@ -398,6 +434,15 @@ theorem wdinv_step {c : CCfg} {w w' : World} {a : CAction} (h : WdInv c w) (hs :
         exact wdinv_setRs hx fun _ _ e => by simp at e
       · exact wdinv_setRs h fun _ _ e => by simp at e
     · simp at hs
+  | tend p =>
+    simp only [cstep, tend, cwhen] at hs; split at hs <;> simp at hs; subst hs
+    rename_i hg; simp only [Bool.and_eq_true] at hg
+    obtain ⟨e1, e2, e3, e4⟩ := tickW_wds c w (w.proc p).sw p
+    have hpq : ∀ q, (tickW c w (w.proc p).sw p).proc q = w.proc q := fun q => by
+      simp only [World.proc] at e1 ⊢; rw [e1]
+    have ht := wdinv_frame h e2 e3 e4 (by rw [e1]) fun q => by rw [hpq]; exact ⟨rfl, id⟩
+    have hof : (tickW c w (w.proc p).sw p).isOf (w.proc p).sw p := ⟨by rw [e1]; exact lt_of_alive hg.1.1, by rw [hpq]⟩
+    exact wdinv_tk (wdinv_first ht hof) _
 
 theorem wdinv_of_reachable {c : CCfg} {w : World} (h : CReachable c w) : WdInv c w := by
   induction h with
@@ -427,6 +472,79 @@ theorem R1a_of (c : CCfg) : R1a c := by
   · simp only [ticker, Bool.and_eq_true, beq_iff_eq] at hp
     exact (wdinv_of_reachable hr).rcd i p hp.1
 
+/-- a claim keeps the lease a running watchd holds -/
+theorem claimTk_keeps {w : World} {i j p r : Nat} (ht : w.tkOf i = some r) (ha : w.alive r = true) :
+    (claimTk w j p).getD i none = some r := by
+  unfold claimTk; split
+  · rename_i hf
+    rw [R.getD_set]; split
+    · rename_i e; obtain ⟨rfl, -⟩ := e
+      simp only [leaseFree, ht, Option.all_some, ha, Bool.not_true, Bool.or_false, beq_iff_eq] at hf
+      rw [hf]
+    · exact ht
+  · exact ht
+
+/-- R1 (a'): of every step, reachable or not -/
+theorem R1a'_of (c : CCfg) : R1a' c := by
+  intro w w' a hs
+  refine ⟨fun i p q ht hm => ?_, fun i r hm hn => ?_⟩
+  · simp only [midTick, Bool.and_eq_true, beq_iff_eq] at hm
+    cases a <;> simp only [tickOfStep, reduceCtorEq] at ht
+    · rename_i j
+      obtain ⟨p', hp', e⟩ := Option.map_eq_some_iff.mp ht
+      simp only [Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e
+      simp only [cstep, cwhen] at hs; split at hs
+      · rename_i hg; simp only [Bool.and_eq_true] at hg
+        simpa [leaseFree, hp', hm.1, hm.2] using hg.2
+      · simp at hs
+    · simp only [Option.some.injEq, Prod.mk.injEq] at ht; obtain ⟨rfl, rfl⟩ := ht
+      simp only [cstep, tend, cwhen] at hs; split at hs
+      · rename_i hg; simp only [Bool.and_eq_true, beq_iff_eq] at hg
+        rw [hm.1] at hg; exact Option.some.inj hg.1.2
+      · simp at hs
+  · simp only [midTick, Bool.and_eq_true, beq_iff_eq] at hm
+    obtain ⟨ht, ha⟩ := hm
+    have keep : w'.tk = w.tk → w'.tkOf i = some r := fun e => by simp only [World.tkOf, e]; exact ht
+    have claim : ∀ j p, w'.tk = claimTk w j p → w'.tkOf i = some r := fun j p e => by
+      simp only [World.tkOf, e]; exact claimTk_keeps ht ha
+    cases a with
+    | sw j act =>
+      simp only [cstep] at hs; split at hs; · simp at hs
+      obtain ⟨s, -, rfl⟩ := Option.map_eq_some_iff.mp hs; exact keep rfl
+    | «open» => simp only [cstep, Option.some.injEq] at hs; subst hs; exact keep rfl
+    | join => simp only [cstep, cjoin, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact keep rfl
+    | die => simp only [cstep, cdie, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact keep rfl
+    | watchd => simp only [cstep, startWd, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact claim _ _ rfl
+    | takeover => simp only [cstep, takeover, cwhen] at hs; split at hs <;> simp at hs; subst hs; exact claim _ _ rfl
+    | tick j =>
+      simp only [cstep, cwhen] at hs; split at hs
+      · rename_i hg; simp only [Option.some.injEq] at hs; subst hs
+        simp only [Bool.and_eq_true] at hg
+        show (w.tk.set j (w.wdOf j)).getD i none = some r
+        rw [R.getD_set]; split
+        · rename_i e; obtain ⟨rfl, -⟩ := e
+          cases hq : w.wdOf i with
+          | none => simp [watchdUp, hq] at hg
+          | some q => have := hg.2; simp [leaseFree, hq, ht, ha] at this; rw [this]
+        · exact ht
+      · simp at hs
+    | tend p =>
+      simp only [cstep, tend, cwhen] at hs; split at hs
+      · rename_i hg; simp only [Option.some.injEq] at hs; subst hs
+        simp only [Bool.and_eq_true, beq_iff_eq] at hg
+        show (w.tk.set (w.proc p).sw none).getD i none = some r
+        rw [R.getD_set]; split
+        · rename_i e; obtain ⟨rfl, -⟩ := e
+          rw [ht] at hg; cases Option.some.inj hg.1.2; exact absurd rfl hn
+        · exact ht
+      · simp at hs
+    | _ =>
+      simp only [cstep, restart, crash, loop, rpoll, rok, rfail, cwhen, stopWd] at hs
+      repeat' split at hs
+      all_goals simp only [reduceCtorEq, Option.some.injEq] at hs
+      all_goals subst hs
+      all_goals first | exact keep rfl | exact claim _ _ rfl
+
 /-- R1 (b), with board #41's handover -/
 theorem R1b_of (c : CCfg) (hc : c.waitUp = true) : R1b c := by
   refine ⟨fun w w' p hr hs hdead => ?_, fun w w' i hr hs => ?_⟩
@@ -435,7 +553,7 @@ theorem R1b_of (c : CCfg) (hc : c.waitUp = true) : R1b c := by
     split at hs; · simp at hs
     rename_i hg; simp only [Bool.not_eq_true', Bool.not_eq_false, Bool.and_eq_true] at hg
     split at hs
-    · rename_i hn; have := h.hasRec p (lt_of_alive hg.1); rw [hn] at this; simp at this
+    · rename_i hn; have := h.hasRec p (lt_of_alive hg.1.1); rw [hn] at this; simp at this
     · rename_i q hq
       split at hs; · simp at hs
       rename_i hqp
@@ -448,7 +566,7 @@ theorem R1b_of (c : CCfg) (hc : c.waitUp = true) : R1b c := by
         rw [proc_stop hq']; exact (h.upr _ q hw.1).2
       · split at hs
         · simp only [Option.some.injEq] at hs; subst hs
-          change w.alive p = false at hdead; rw [hg.1] at hdead; cases hdead
+          change w.alive p = false at hdead; rw [hg.1.1] at hdead; cases hdead
         · simp at hs
   · have h := wdinv_of_reachable hr
     simp only [cstep, rok] at hs
@@ -459,13 +577,15 @@ theorem R1b_of (c : CCfg) (hc : c.waitUp = true) : R1b c := by
       exact ⟨s, hg.1.1, hg.2, hg.1.2, (h.upr i s hg.1.2).2⟩
     · simp at hs
 
-/-- p of swarm i runs and the record isn't a running watchd's: p's takeover or its loop is enabled -/
+/-- p of swarm i runs, isn't mid-tick, and the record isn't a running watchd's: p's takeover or its loop is enabled -/
 theorem own_enabled {c : CCfg} {w : World} {i p : Nat} (hp : w.isOf i p) (ha : w.alive p = true)
-    (hd : watchdUp w i = false) : (cstep c w (.takeover p)).isSome = true ∨ (cstep c w (.loop p)).isSome = true := by
+    (hd : watchdUp w i = false) (hm : w.tkOf i ≠ some p) :
+    (cstep c w (.takeover p)).isSome = true ∨ (cstep c w (.loop p)).isSome = true := by
   cases ht : (w.proc p).took
   · left; simp [cstep, takeover, cwhen, ha, ht]
   · right
-    simp only [cstep, loop, ha, ht, Bool.and_self, Bool.not_true, Bool.false_eq_true, ite_false, hp.2]
+    have hm' : (w.tkOf i != some p) = true := by simpa using hm
+    simp only [cstep, loop, ha, ht, hp.2, hm', Bool.and_self, Bool.not_true, Bool.false_eq_true, ite_false]
     cases e : w.wdOf i with
     | none => rfl
     | some q =>
@@ -473,6 +593,22 @@ theorem own_enabled {c : CCfg} {w : World} {i p : Nat} (hp : w.isOf i p) (ha : w
       have hqp : q ≠ p := fun x => by subst x; rw [ha] at hq; cases hq
       simp only [hqp, hq, beq_iff_eq, ite_false, Bool.and_false, Bool.or_false, Bool.not_false, ite_true]
       split <;> rfl
+
+/-- p of swarm i runs, is mid-tick, and the record isn't a running watchd's: p's `tend` is enabled -/
+theorem own_tend {c : CCfg} {w : World} {i p : Nat} (hp : w.isOf i p) (ha : w.alive p = true)
+    (hd : watchdUp w i = false) (hm : w.tkOf i = some p) : (cstep c w (.tend p)).isSome = true := by
+  have hr : w.wdOf i ≠ some p := fun e => by simp [watchdUp, e, ha] at hd
+  simp [cstep, tend, cwhen, ha, hp.2, hm, hr]
+
+/-- `tend p` gives p's lease back -/
+theorem tend_releases {c : CCfg} {w w' : World} {p : Nat} (hs : cstep c w (.tend p) = some w') :
+    w'.tkOf (w.proc p).sw ≠ some p := by
+  simp only [cstep, tend, cwhen] at hs; split at hs <;> simp at hs; subst hs
+  show (w.tk.set (w.proc p).sw none).getD (w.proc p).sw none ≠ some p
+  rw [R.getD_set]; split
+  · simp
+  · rename_i hn
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_none (by omega)]; simp
 
 /-- after p's takeover or loop step, p holds swarm i's record or has stopped -/
 theorem own_after {c : CCfg} {w w' : World} {i p : Nat} (h : WdInv c w) (hp : w.isOf i p) {a : CAction}
@@ -490,7 +626,8 @@ theorem own_after {c : CCfg} {w w' : World} {i p : Nat} (h : WdInv c w) (hp : w.
       · simp only [Option.some.injEq] at hs; subst hs; exact .inl (alive_stop_self w p)
       · split at hs
         · simp only [Option.some.injEq] at hs; subst hs
-          right; rw [wdOf_set]; simp [hp.2, hi]
+          right; show (w.wd.set (w.proc p).sw (some p)).getD i none = some p
+          rw [R.getD_set]; simp [hp.2, hi]
         · simp at hs
 
 /-- R1 (c): on a run fair to the ticks and to the watchd processes, a watchd that keeps running gets its swarm ticked at
@@ -511,20 +648,36 @@ theorem R1c_of {c : CCfg} (r : CRun c) (hf : r.Fair) (hw : r.FairWd) (h0 : CReac
     obtain ⟨m, hm, ha⟩ := hf i hup N
     exact hno' m hm ha
   obtain ⟨N1, hN1⟩ := hdown
-  have hen : ∀ m ≥ max n N1,
-      (cstep c (r.st m) (.takeover p)).isSome = true ∨ (cstep c (r.st m) (.loop p)).isSome = true := fun m hm =>
-    own_enabled (r.isOf hi m (by omega)) (hp m (by omega)) (hN1 m (by omega))
   have hio : ∀ a, (a = CAction.takeover p ∨ a = .loop p) → (∀ K, ∃ m ≥ K, (cstep c (r.st m) a).isSome = true) → False := by
     intro a ha hinf
-    obtain ⟨m, hm, e⟩ := hw a ⟨p, ha⟩ hinf (max n N1)
+    obtain ⟨m, hm, e⟩ := hw a ⟨p, ha.elim .inl (.inr ∘ .inl)⟩ hinf (max n N1)
     have hs := r.ok m; rw [e] at hs
     rcases own_after (wdinv_of_reachable (r.reachable h0 m)) (r.isOf hi m (by omega)) ha hs with hd | hr
     · rw [hp (m + 1) (by omega)] at hd; cases hd
     · have := hN1 (m + 1) (by omega); simp [watchdUp, hr, hp (m + 1) (by omega)] at this
-  refine hio (.takeover p) (.inl rfl) fun K => Classical.byContradiction fun hk => hio (.loop p) (.inr rfl) fun K' => ?_
-  rcases hen (max (max n N1) (max K K')) (by omega) with e | e
-  · exact absurd ⟨_, by omega, e⟩ hk
-  · exact ⟨_, by omega, e⟩
+  -- so from some step on neither is enabled; then p is mid-tick (`own_enabled`), its `tend` is enabled, fairness takes it,
+  -- and after it p isn't mid-tick
+  have hev : ∀ a, (a = CAction.takeover p ∨ a = .loop p) → ∃ K, ∀ m ≥ K, (cstep c (r.st m) a).isSome = false :=
+    fun a ha => Classical.byContradiction fun hk => hio a ha fun K => Classical.byContradiction fun hx =>
+      hk ⟨K, fun m hm => by
+        cases e : (cstep c (r.st m) a).isSome
+        · rfl
+        · exact absurd ⟨m, hm, e⟩ hx⟩
+  obtain ⟨K1, hK1⟩ := hev _ (.inl rfl)
+  obtain ⟨K2, hK2⟩ := hev _ (.inr rfl)
+  have hmid : ∀ m ≥ max (max n N1) (max K1 K2), (r.st m).tkOf i = some p := fun m hm =>
+    Classical.byContradiction fun hne => by
+      rcases own_enabled (c := c) (r.isOf hi m (by omega)) (hp m (by omega)) (hN1 m (by omega)) hne with e | e
+      · rw [hK1 m (by omega)] at e; cases e
+      · rw [hK2 m (by omega)] at e; cases e
+  obtain ⟨m, hm, e⟩ := hw (.tend p) ⟨p, .inr (.inr rfl)⟩
+    (fun K => ⟨max K (max (max n N1) (max K1 K2)), by omega,
+      own_tend (r.isOf hi _ (by omega)) (hp _ (by omega)) (hN1 _ (by omega)) (hmid _ (by omega))⟩)
+    (max (max n N1) (max K1 K2))
+  have hs := r.ok m; rw [e] at hs
+  have := tend_releases hs
+  rw [(r.isOf hi m (by omega)).2, hmid (m + 1) (by omega)] at this
+  exact this rfl
 
 /-- R1 (c) for a restart: the watchd `--restart` starts at step n, if it keeps running, gets its swarm ticked at
 infinitely many steps -/
