@@ -54,6 +54,12 @@ local function id_list(s)
   return r
 end
 
+local function prio(s)  -- a task priority: 0 (urgent) to 3 (someday)
+  local n = int(s)
+  if n and n >= 0 and n <= 3 then return n end
+  return nil, ("not a priority (0-3): '%s'"):format(s)
+end
+
 local function parser()
   local ap = argparse("swarm"):command_target("cmd")
   local function opt(p, name, default, conv)
@@ -103,7 +109,11 @@ local function parser()
   opt(q, "--after", nil, id_list):description("ids it waits on: 3 or 3,5")
   opt(q, "--model")
   opt(q, "--effort"):choices(EFFORTS)
+  opt(q, "-p --priority", nil, prio):description("priority 0-3, lower first (default 2)")
   opt(q, "--base"):description("branch its work lands on (default: .claude/swarm.json base, else main)")
+  q = p:command("priority")  -- reorder an open or claimed task; never takes it from its owner
+  q:argument("id"):convert(int)
+  q:argument("priority"):convert(prio)
   q = p:command("after")  -- change an open task's dependencies; an empty list clears them
   q:argument("id"):convert(int)
   q:argument("deps"):args("?"):convert(id_list)

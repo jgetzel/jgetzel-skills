@@ -727,6 +727,41 @@ function T.test_deps_migration(t)
   t:has(t:sw("a", "board").stdout, "after #1  two")
 end
 
+function T.test_priority_orders_pool_and_board(t)
+  t:fakes()
+  t:agent("a")
+  t:sw("a", "task", "add", "plain")                  -- #1 default P2
+  t:sw("a", "task", "add", "someday", "-p", "3")     -- #2
+  t:sw("a", "task", "add", "urgent", "--priority", "0")  -- #3
+  t:sw("a", "task", "add", "soon", "-p", "1")        -- #4
+  t:sw("a", "task", "add", "plain2  [P2]")                 -- #5
+  t:eq(t:q1("select priority from task where id=1").priority, 2)
+  local b = t:sw("a", "board").stdout
+  local pos = {}
+  for _, x in ipairs({ "urgent", "soon", "plain  [P2]", "plain2  [P2]", "someday" }) do pos[#pos + 1] = assert(b:find(x, 1, true), x) end
+  assert(pos[1] < pos[2] and pos[2] < pos[3] and pos[3] < pos[4] and pos[4] < pos[5], b)
+  t:has(b, "P0"); t:has(b, "P3")
+  t:has(t:sw("a", "task", "show", "3").stdout, "priority: P0")
+  -- the pool: priority, then id; the red task still first
+  stdlib.setenv("SWARM_DB", t.db)
+  local c = require("swarm.db").connect()
+  local ids = {}
+  for _, r in ipairs(require("swarm.tasks").pool(c)) do ids[#ids + 1] = r.id end
+  t:eq(ids, { 3, 4, 1, 5, 2 })
+  t:sw("a", "task", "priority", "2", "0")
+  t:sw("a", "task", "priority", "5", "1")
+  ids = {}
+  for _, r in ipairs(require("swarm.tasks").pool(c)) do ids[#ids + 1] = r.id end
+  t:eq(ids, { 2, 3, 4, 5, 1 })
+  -- never preempts: a claimed task keeps its owner; a done or bad priority is refused
+  t:sw("a", "task", "claim", "1")
+  t:sw("a", "task", "priority", "1", "0")
+  t:eq(t:q1("select owner, priority from task where id=1"), { owner = "a", priority = 0 })
+  assert(t:sw("a", "task", "priority", "1", "4", { ok = false }).code ~= 0)
+  t:sw("a", "task", "done", "1", "--evidence", "x")
+  assert(t:sw("a", "task", "priority", "1", "1", { ok = false }).code ~= 0)
+end
+
 function T.test_deps_list_holds_until_last_done(t)
   t:fakes()
   t:agent("a")

@@ -53,8 +53,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5240 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (307 sites, 262 statements) |
+| `sqlcases.json.gz` | 5280 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 9 scripted runs the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`) |
@@ -794,6 +794,12 @@ Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a wo
 session's ListAgents name is its `SWARM_NAME`, set by its last join; `swarm watchd --takeover` and a second watchd (board
 #18); the human's `swarm spawn` (only watchd's spawns are placed: the starting roster is in the swarm's space). None of
 it is replayed: the replay has no hc.
+
+**Task priority (board #69)** is not modelled. The model's `pool` is an unordered filter and no theorem or replay assumes
+which startable task is claimed or spawned first, so the Lua's order (the red main, then priority 0 to 3, then id) only
+picks among tasks the model already allows; no statement changed. Known limit: the order is strict, there is no aging,
+so P0-P2 tasks arriving one after another can starve a P3 task. L1 (`startable_taken`) holds as before because it is
+about fair runs of the model, not this order; a liveness theorem about *one named* low-priority task would not hold.
 
 ## The SQL (rung 4, board #29)
 
