@@ -124,6 +124,11 @@ with subagents.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
+- **Stop hook.** When you stop and something keeps watchd from ending you (`swarm endable --why` lists it: claim,
+  lock, dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue:
+  (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
+  counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
+  A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
 - **Ending.** `watchd` ends agents (kills the terminal, nothing else) once they are idle with no claim, lock or
   stay and their work is on their task's base. `swarm end <agent> [--force]` does it by hand with the same checks.
   Worktrees are a separate sweep: watchd removes any worktree of this repo (yours included) that is clean, has no
