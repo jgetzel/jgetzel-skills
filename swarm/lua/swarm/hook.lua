@@ -218,8 +218,9 @@ function M.stop_block(c, name, p, k)
   for _, t in ipairs(type(p.background_tasks) == "table" and p.background_tasks or {}) do  -- its own waiter doesn't count
     if t.status == "running" and not tostring(t.command or ""):find("swarm%s+wait") then bg[#bg + 1] = t end
   end
-  if #bg > 0 then return nil end
   local lines, keys = {}, {}
+  for _, r in ipairs(rs) do if r.key == "idle-job" then bg = {} end end  -- a sleep-only loop is no wait
+  if #bg > 0 then return nil end
   for _, r in ipairs(rs) do
     if r.declared then return nil end
     lines[#lines + 1] = r.text

@@ -977,7 +977,18 @@ function M.endable_reasons(c, a, f)
     add("claim", ("claim held (#%d%s)"):format(r.id, r.state == "blocked" and ", blocked on a question" or ""), r.state == "blocked")
   end
   for _, r in ipairs(c:all("select path from lock where agent=?", n)) do add("lock", "lock held: " .. tostring(r.path)) end
-  if f.job() then add("job", "background job: " .. util.cut(f.proc and f.proc.args or "?", 120), true) end
+  if f.job() then
+    local p = f.proc or {}
+    local cmd = machine.job_cmd(p)
+    local head = ("background job (pid %s, age %s): %s"):format(tostring(p.pid), util.ago(util.now() - (p.age or 0)), util.cut(cmd, 200))
+    if p.pid and M.sleep_loop(p, machine.procs()) then
+      add("idle-job", head .. "\n  this poll loop is idle (only sleep runs, no CPU): it is not a wait" .. (cmd:find("pgrep -f", 1, true)
+        and "; `pgrep -f` watches a name, not a pid, and matches peers' runs of the same script: wait on your job's "
+          .. "completion notification or its PID" or ""))
+    else
+      add("job", head .. "\n  a child of your own session (pid " .. tostring(p.pid) .. "): stop it (TaskStop/KillShell) or wait for it", true)
+    end
+  end
   if f.unlanded() then
     local dirty, commits = {}, {}
     for _, l in ipairs(util.splitlines(M.unclean_list(f.held, f.B[1] or "main"))) do
