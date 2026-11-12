@@ -162,7 +162,8 @@ theorem released_reads {c : Cfg} (r : Run c) (hf : r.Fair) {n t : Nat} (hR : Rea
 
 /-- with H2 off no task records a stop -/
 theorem stopTo_none {c : Cfg} (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) (t : Nat) : (s.tk t).stopTo = none := by
-  refine reachable_induct (P := fun s => (s.tk t).stopTo = none) ?_ ?_ h
+  refine reachable_induct (P := fun s => (s.tk t).stopTo = none) ?_ ?_
+    (fun s k _ h0 => by rw [((sp_tickCut c s k).1 t).1, h0]) h
   · simp only [State.tk, init]; split
     · rfl
     · simp only [List.getD_eq_getElem?_getD, List.getElem?_replicate]; split <;> rfl

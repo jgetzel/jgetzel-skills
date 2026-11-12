@@ -242,6 +242,13 @@ theorem reapTasks_git (c : Cfg) (s : State) : (reapTasks c s).git = s.git :=
   foldl_inv (reapTask c) (fun x : State => x.git = s.git) _ _ rfl (fun b a h => by
     simp only [reapTask]; (repeat' split) <;> simp_all)
 
+theorem reapCut_git (c : Cfg) (o : Option Nat) (s : State) : (reapCut c o s).git = s.git := by
+  cases o with
+  | none => exact reapTasks_git c s
+  | some n =>
+    exact foldl_inv (reapTask c) (fun x : State => x.git = s.git) _ _ rfl (fun b a h => by
+      simp only [reapTask]; (repeat' split) <;> simp_all)
+
 theorem rm_wt (c : Cfg) (g : Git) (w v : Nat) : ((g.rm c w).wt v).on = true → (g.rm c w).wt v = g.wt v := by
   intro h
   have e : (g.rm c w).wts = g.wts.set w { g.wt w with on := false } := by simp only [Git.rm]
@@ -259,6 +266,10 @@ theorem tick_git {c : Cfg} {s : State} (h : NoBase c s.git) : NoBase c (tickOf c
   rw [tickOf_git]
   simp only [gitTick]
   rw [show (reapLocks (reapTasks c s)).git = s.git from reapTasks_git c s]
+  exact foldl_inv _ (NoBase c) _ _ h (fun g w hg => by split; exact noBase_rm w hg; exact hg)
+
+theorem tickCut_noBase {c : Cfg} {s : State} (h : NoBase c s.git) (k : Cut) : NoBase c (tickCut c k s).git := by
+  simp only [tickCut, notesL_git, reapCut_git]
   exact foldl_inv _ (NoBase c) _ _ h (fun g w hg => by split; exact noBase_rm w hg; exact hg)
 
 theorem noBase_step {c : Cfg} (hc : c.recordedWorkspaces = true) {s s' : State} {act : Action}
@@ -289,6 +300,7 @@ theorem W4_of (c : Cfg) (hc : c.recordedWorkspaces = true) : W4 c := by
         simp only [init, Git.wt, List.getD_eq_getElem?_getD, List.getElem?_replicate]; split <;> rfl
       simp [this] at hw
     | step act _ hs ih => exact noBase_step hc ih hs
+    | cut k _ _ _ ih => exact tickCut_noBase ih k
   intro s hr; exact noBase_of (this s hr)
 
 
@@ -401,13 +413,11 @@ def TickInv (c : Cfg) (r : State) (g0 g : Git) : Prop :=
 
 /-- the tick's git, with `splitGC`: each worktree it removes was swept, each branch it deletes is no base and was
 reachable from one -/
-theorem gitTick_gcOk {c : Cfg} (hc : c.splitGC = true) (s : State) :
-    gcOk c s (gitTick c (reapLocks (reapTasks c s))) = true := by
-  have hrg : (reapLocks (reapTasks c s)).git = s.git := by rw [reapLocks_git, reapTasks_git]
-  have hused : ∀ w, used c (reapLocks (reapTasks c s)) w = used c s w :=
-    used_congr (by simp) hrg
-  have key : TickInv c (reapLocks (reapTasks c s)) s.git (gitTick c (reapLocks (reapTasks c s))) :=
-    foldl_inv _ (TickInv c (reapLocks (reapTasks c s)) s.git) c.wtIds (reapLocks (reapTasks c s)).git
+theorem gitFold_gcOk {c : Cfg} (hc : c.splitGC = true) (s r : State) (hrg : r.git = s.git) (hag : r.ag = s.ag)
+    (l : List Nat) : gcOk c s (l.foldl (fun g w => if sweeps c r w || endRemoves c r w then g.rm c w else g) r.git) = true := by
+  have hused : ∀ w, used c r w = used c s w := used_congr hag hrg
+  have key : TickInv c r s.git (l.foldl (fun g w => if sweeps c r w || endRemoves c r w then g.rm c w else g) r.git) :=
+    foldl_inv _ (TickInv c r s.git) l r.git
     (by
       rw [hrg]
       refine ⟨rfl, fun _ _ => rfl, fun _ => Or.inl rfl, fun b h1 h2 => ?_, fun w h1 h2 => ?_⟩
@@ -437,7 +447,7 @@ theorem gitTick_gcOk {c : Cfg} (hc : c.splitGC = true) (s : State) :
           · rename_i hh; obtain ⟨rfl, _⟩ := hh; exact hsw
           · exact h5 v hv hoff
       · exact ⟨h1, h2, h3, h4, h5⟩)
-  generalize gitTick c (reapLocks (reapTasks c s)) = G at key ⊢
+  generalize l.foldl (fun g w => if sweeps c r w || endRemoves c r w then g.rm c w else g) r.git = G at key ⊢
   obtain ⟨_, _, _, h4, h5⟩ := key
   simp only [gcOk, Bool.and_eq_true, List.all_eq_true]
   refine ⟨fun w _ => ?_, fun b _ => ?_⟩
@@ -455,6 +465,10 @@ theorem gitTick_gcOk {c : Cfg} (hc : c.splitGC = true) (s : State) :
         simp [hle, hsafe]
       | some _ => simp
     · simp [ht]
+
+theorem gitTick_gcOk {c : Cfg} (hc : c.splitGC = true) (s : State) :
+    gcOk c s (gitTick c (reapLocks (reapTasks c s))) = true :=
+  gitFold_gcOk hc s _ (by rw [reapLocks_git, reapTasks_git]) (by simp) c.wtIds
 
 /-- W1 with `splitGC` on: GC removes only a clean, unattached worktree with no process inside and its HEAD on a protected
 ref, and deletes only a branch that is no base and is reachable from one -/

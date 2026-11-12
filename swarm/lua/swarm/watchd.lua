@@ -631,8 +631,10 @@ function M.lifecycle(c, t, comms, terms, opts)
     if new then
       local s = {}
       for k, i in ipairs(ids) do s[k] = d(i) end
-      db.log(c, a.name, "digest", nil, table.concat(s, ","))
-      msgs.post(c, "swarm", a.name, ("%d open task(s) and you are idle: `swarm board`."):format(#pool), false, "system")
+      c:tx(function()  -- the event marks it told: never without its message
+        db.log(c, a.name, "digest", nil, table.concat(s, ","))
+        msgs.post(c, "swarm", a.name, ("%d open task(s) and you are idle: `swarm board`."):format(#pool), false, "system")
+      end)
     end
   end
   local held = #reusable == 0 and #pool > 0 and M.auto_spawn(c, comms, opts, pool) or nil
@@ -768,7 +770,15 @@ end
 local AWAY = " The user is away: answer it if it is yours to decide; else it waits for them."
 
 function M.watchd_tick(c, comms, repo, opts)
-  local terms = agents.hc_terminals()
+  -- each pass under its own pcall (board #84, model Cut.lean's passGuard): an error ends its pass alone, the passes after
+  -- it still run, and the tick raises the errors at its end for tick_failed. Before, one that recurred stopped them all
+  local errs = {}
+  local function pass(name, f, ...)
+    local r = { pcall(f, ...) }
+    if r[1] then return unpack(r, 2, table.maxn(r)) end
+    errs[#errs + 1] = name .. ": " .. (type(r[2]) == "table" and ("exit " .. tostring(r[2].exit)) or tostring(r[2]))
+  end
+  local terms = pass("hc ls", agents.hc_terminals)
   local live
   if terms ~= nil then
     live = {}
@@ -776,64 +786,71 @@ function M.watchd_tick(c, comms, repo, opts)
       if x.state == "live" and x.address then live[x.address] = true end
     end
   end
-  M.reap(c, live, nil, comms)
+  pass("reap", M.reap, c, live, nil, comms)
   opts = opts or {}
-  if comms then opts.comms_hold = M.ensure_comms(c, comms, terms) end
-  local t, away = util.now(), agents.away(c)
+  if comms then opts.comms_hold = pass("comms", M.ensure_comms, c, comms, terms) end
+  local t, away = util.now(), pass("away", agents.away, c)
   if terms and #terms > 0 then
-    local by = {}
-    for _, x in ipairs(terms) do
-      if x.address then by[x.address] = x end
-    end
-    for _, a in ipairs(agents.live_agents(c)) do
-      local x = a.hc and by[a.hc]
-      if x and x.status ~= "blocked" then  -- the prompt is gone: give back the claim hc blocked
-        c:exec("update task set state='claimed', question=null, lease_until=? where owner=? and state='blocked' and question=?",
-          t + M.LEASE, a.name, M.HC_Q)
+    pass("hc blocked", function()
+      local by = {}
+      for _, x in ipairs(terms) do
+        if x.address then by[x.address] = x end
       end
-      if x and x.status == "blocked" and a.status ~= "blocked" then
-        c:exec("update agent set status='blocked' where name=?", a.name)
-        db.log(c, a.name, "blocked")
-        local t_ = c:one("select id from task where owner=? and state='claimed' order by id limit 1", a.name)
-        if t_ then  -- the agent notice below is the single notice; the task notice is marked sent
-          c:exec("update task set state='blocked', question=? where id=?", M.HC_Q, t_.id)
-          db.log(c, a.name, "task-blocked", d(t_.id), M.HC_Q)
+      for _, a in ipairs(agents.live_agents(c)) do
+        local x = a.hc and by[a.hc]
+        if x and x.status ~= "blocked" then  -- the prompt is gone: give back the claim hc blocked
+          c:exec("update task set state='claimed', question=null, lease_until=? where owner=? and state='blocked' and question=?",
+            t + M.LEASE, a.name, M.HC_Q)
         end
-        if comms then  -- while the user is away the question queues: not urgent (away rule 1)
-          msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human)." .. (away and AWAY or ""),
-            not away, "system")
+        if x and x.status == "blocked" and a.status ~= "blocked" then
+          c:exec("update agent set status='blocked' where name=?", a.name)
+          db.log(c, a.name, "blocked")
+          local t_ = c:one("select id from task where owner=? and state='claimed' order by id limit 1", a.name)
+          if t_ then  -- the agent notice below is the single notice; the task notice is marked sent
+            c:exec("update task set state='blocked', question=? where id=?", M.HC_Q, t_.id)
+            db.log(c, a.name, "task-blocked", d(t_.id), M.HC_Q)
+          end
+          if comms then  -- while the user is away the question queues: not urgent (away rule 1)
+            msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human)." .. (away and AWAY or ""),
+              not away, "system")
+          end
         end
       end
-    end
+    end)
   end
   if comms then  -- once per block: a task-blocked event after the task's latest `task block` records it went out
-    for _, r in ipairs(c:all("select * from task where state='blocked'")) do
-      -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is a new one
-      local e = c:one("select kind from event where (kind='block' and (data=? or data like ?)) or (kind='task-blocked' and path=?) "
-        .. "order by id desc limit 1", "#" .. d(r.id), "#" .. d(r.id) .. " %", d(r.id))
-      if not (e and e.kind == "task-blocked") then
-        db.log(c, r.owner, "task-blocked", d(r.id), r.question)
-        msgs.post(c, "swarm", comms, ("%s is blocked on #%s (%s): %s Answer with `swarm task unblock %s --answer \"...\"`."):format(
-          r.owner or "None", d(r.id), r.title, r.question or "None", d(r.id)) .. (away and AWAY or ""), not away, "system")
+    pass("notices", function()
+      for _, r in ipairs(c:all("select * from task where state='blocked'")) do
+        -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is a new one
+        local e = c:one("select kind from event where (kind='block' and (data=? or data like ?)) or (kind='task-blocked' and path=?) "
+          .. "order by id desc limit 1", "#" .. d(r.id), "#" .. d(r.id) .. " %", d(r.id))
+        if not (e and e.kind == "task-blocked") then
+          c:tx(function()  -- the event marks it told: never without its message
+            db.log(c, r.owner, "task-blocked", d(r.id), r.question)
+            msgs.post(c, "swarm", comms, ("%s is blocked on #%s (%s): %s Answer with `swarm task unblock %s --answer \"...\"`."):format(
+              r.owner or "None", d(r.id), r.title, r.question or "None", d(r.id)) .. (away and AWAY or ""), not away, "system")
+          end)
+        end
       end
-    end
+    end)
   end
   local okc, errc = pcall(conflict.conflict_tick, c, t)  -- a bad conflict pass never stops the tick
   if not okc then io.stderr:write("conflict: ", tostring(errc), "\n") end
   if comms then  -- ending reports to the communicator; without one, nobody hears what it did
-    M.lifecycle(c, t, comms, terms, opts or {})
-    M.quiet(c, t, comms)
-    M.hung(c, t, comms, terms, opts)
-    M.blockers(c, t, comms, opts)
+    pass("lifecycle", M.lifecycle, c, t, comms, terms, opts)
+    pass("quiet", M.quiet, c, t, comms)
+    pass("hung", M.hung, c, t, comms, terms, opts)
+    pass("blockers", M.blockers, c, t, comms, opts)
   end
-  M.machine_tick(c)
-  run.remote_tick(c, t)
+  pass("machine", M.machine_tick, c)
+  pass("remote", run.remote_tick, c, t)
   if repo then
-    ci.ci_poll(c, repo)
-    ci.ci_check(c, repo, comms)
-    ci.pr_ci(c, repo)
-    ci.pr_watch(c, repo)
+    pass("ci_poll", ci.ci_poll, c, repo)
+    pass("ci_check", ci.ci_check, c, repo, comms)
+    pass("pr_ci", ci.pr_ci, c, repo)
+    pass("pr_watch", ci.pr_watch, c, repo)
   end
+  if #errs > 0 then error(table.concat(errs, "; "), 0) end
 end
 
 function M.last_event(c, ...)

@@ -141,6 +141,33 @@ theorem lk_tickOf {c : Cfg} {s : State} (h : LkInv c s.lock s.ag) : LkInv c (tic
   · exact h3
   · exact foldl_inv _ (fun x : State => LkInv c x.lock x.ag) _ _ h3 (fun b t hb => hspawn _ _ _ hb)
 
+theorem shrinks_mapIdx (lk : List Lock) (f : Nat → Lock → Lock)
+    (hf : ∀ p l, (f p l).holder = none ∨ ((f p l).holder = l.holder ∧ ((f p l).exp = false → l.exp = false))) :
+    Shrinks lk (lk.mapIdx f) := by
+  intro p l' hp
+  rw [List.getElem?_mapIdx] at hp
+  cases hl : lk[p]? with
+  | none => simp [hl] at hp
+  | some l => simp [hl] at hp; subst hp; exact ⟨l, rfl, hf p l⟩
+theorem lk_tickCut {c : Cfg} {s : State} (h : LkInv c s.lock s.ag) (k : Cut) :
+    LkInv c (tickCut c k s).lock (tickCut c k s).ag :=
+  tickCut_inv0 (fun x : State => LkInv c x.lock x.ag) (fun x t hx => by simpa using hx)
+    (fun x n hx => by
+      simp only [reapLocksN_ag]; refine lk_shrink hx ?_
+      exact shrinks_mapIdx _ _ (by intro p l; split <;> simp))
+    (fun x a hx => lk_endAgent _ hx)
+    (fun x a pl hx => by
+      simp only [post_lock, post_ag, setAg_lock, setAg_ag]
+      exact lk_live hx (liveL_modify _ (liveL_refl _) (by intro g hg; simpa [Agent.live] using hg)))
+    (fun pl x t hx => by
+      rw [spawnFor_lock]
+      refine lk_live hx ?_
+      unfold spawnFor; split
+      · split
+        · simp only [claimed_ag]; exact liveL_modify _ (liveL_refl _) (by intro g _; rfl)
+        · exact liveL_refl _
+      · exact liveL_refl _) h k
+
 /-- a tactic for "every agent live before is live after" over the agent changes of one action -/
 macro "live_tac" : tactic => `(tactic|
   repeat (first
@@ -154,7 +181,7 @@ macro "live_tac" : tactic => `(tactic|
 
 theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State} (h : Reachable c s) :
     LkInv c s.lock s.ag := by
-  refine reachable_induct (P := fun s => LkInv c s.lock s.ag) ?_ ?_ h
+  refine reachable_induct (P := fun s => LkInv c s.lock s.ag) ?_ ?_ (fun s k _ hs => lk_tickCut hs k) h
   · refine ⟨fun p l a hp ha => ?_, fun p q l m a b hp hq _ ha => ?_⟩ <;>
       (simp [init, List.getElem?_map] at hp; obtain ⟨_, _, rfl⟩ := hp; cases ha)
   intro s s' act _ hs hstep

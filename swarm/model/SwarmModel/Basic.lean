@@ -16,16 +16,21 @@ macro "open_step" h:ident : tactic => `(tactic|
 
 /-- An invariant of reachable states: true at the start, kept by every step. -/
 theorem reachable_induct {c : Cfg} {P : State → Prop} (h0 : P (init c))
-    (hstep : ∀ s s' act, Reachable c s → P s → step c s act = some s' → P s') {s : State} (h : Reachable c s) : P s := by
+    (hstep : ∀ s s' act, Reachable c s → P s → step c s act = some s' → P s')
+    (hcut : ∀ s k, Reachable c s → P s → P (tickCut c k s)) {s : State} (h : Reachable c s) : P s := by
   induction h with
   | init => exact h0
   | step act hr hs ih => exact hstep _ _ act hr ih hs
+  | cut k hr _ _ ih => exact hcut _ k hr ih
 
 /-- S2. With PR #112 (claim's write rechecks the dependencies), no task starts before the tasks it is after are done. -/
 theorem noEarlyStart_of_reachable {c : Cfg} (hfix : c.claimChecksDeps = true) {s : State} (h : Reachable c s) :
     noEarlyStart s = true := by
   suffices s.early = false by simp [noEarlyStart, this]
-  refine reachable_induct (P := fun s => s.early = false) rfl ?_ h
+  refine reachable_induct (P := fun s => s.early = false) rfl ?_
+    (fun s k _ hs => tickCut_inv0 (fun x : State => x.early = false) (fun x t hx => by simpa using hx)
+      (fun x n hx => by simpa using hx) (fun x a hx => by simpa using hx) (fun x a pl hx => by simpa using hx)
+      (fun pl x t hx => by simpa using hx) hs k) h
   intro s s' act _ hs hstep
   open_step hstep
   case unblock t => split at hstep <;> simp_all [when_eq_some] <;> (obtain ⟨_, rfl⟩ := hstep; simp [hs])
@@ -86,6 +91,16 @@ theorem evL_tickOf {c : Cfg} {s : State} (h : EvL s.task) : EvL (tickOf c s).tas
   · exact h3
   · exact foldl_inv _ (fun x : State => EvL x.task) _ _ h3 (fun b t hb => hspawn _ _ _ hb)
 
+theorem evL_tickCut {c : Cfg} {s : State} (h : EvL s.task) (k : Cut) : EvL (tickCut c k s).task :=
+  tickCut_inv0 (fun x : State => EvL x.task) (fun x t hx => evL_reapTask t hx) (fun x n hx => by simpa using hx)
+    (fun x a hx => evL_endAgent a hx) (fun x a pl hx => by simpa using hx)
+    (fun pl x t hx => by
+      unfold spawnFor; split
+      · split
+        · exact evL_setTask _ (by simpa using hx) (by intro k hk; simp)
+        · exact hx
+      · exact hx) h k
+
 /-- S5. With PR #113 (task done refuses empty evidence), every done task has evidence. -/
 theorem doneHasEvidence_of_reachable {c : Cfg} (hfix : c.evidenceRequired = true) {s : State} (h : Reachable c s) :
     doneHasEvidence s = true := by
@@ -93,7 +108,7 @@ theorem doneHasEvidence_of_reachable {c : Cfg} (hfix : c.evidenceRequired = true
     simp only [doneHasEvidence, List.all_eq_true]
     intro k hk
     by_cases hd : k.st = .done <;> simp [hd, this k hk]
-  refine reachable_induct (P := fun s => EvL s.task) ?_ ?_ h
+  refine reachable_induct (P := fun s => EvL s.task) ?_ ?_ (fun s k _ hs => evL_tickCut hs k) h
   · intro k hk; rw [List.eq_of_mem_replicate hk]; intro hd; cases hd
   intro s s' act _ hs hstep
   open_step hstep

@@ -50,6 +50,10 @@ theorem rz_tickOf {c : Cfg} {s : State} (h : Rz s) : Rz (tickOf c s) :=
   tick_inv Rz (fun x t hx => rz_frame (by simp) hx) (fun x hx => rz_frame (by simp) hx)
     (fun _ _ => rz_endAgent) (fun x a pl hx => rz_post (rz_setAg (fun hh => by simpa using hh) hx))
     (fun _ _ _ hx _ => rz_spawnFor hx) h
+theorem rz_tickCut {c : Cfg} {s : State} (h : Rz s) (k : Cut) : Rz (tickCut c k s) :=
+  tickCut_inv Rz (fun x t hx => rz_frame (by simp) hx) (fun x n hx => rz_frame (by simp) hx)
+    (fun _ _ => rz_endAgent) (fun x a pl hx => rz_post (rz_setAg (fun hh => by simpa using hh) hx))
+    (fun _ _ _ hx _ => rz_spawnFor hx) h k
 
 macro "rz_tac" : tactic => `(tactic|
   repeat (first
@@ -84,7 +88,7 @@ theorem rz_step {c : Cfg} {s s' : State} {act : Action} (hr : c.racy = false) (h
   all_goals rz_tac
 
 theorem rz_of_reachable {c : Cfg} (hr : c.racy = false) {s : State} (h : Reachable c s) : Rz s :=
-  reachable_induct (fun b => by simp only [init, State.agt, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[b]? <;> exact ⟨rfl, rfl⟩) (fun _ _ _ _ hI hs => rz_step hr hI hs) h
+  reachable_induct (fun b => by simp only [init, State.agt, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[b]? <;> exact ⟨rfl, rfl⟩) (fun _ _ _ _ hI hs => rz_step hr hI hs) (fun _ k _ hI => rz_tickCut hI k) h
 
 /-- L4. In a fair run of an instance with watchd running (`watchd`), `hc ls` answering (`hcSees`) and `racy = false`,
 from a reachable state, a row that is live with its terminal gone and an hc address (not `unbound`) doesn't stay so:

@@ -237,6 +237,73 @@ theorem notices_ex (c : Cfg) (s : State) : ∃ e n, notices c s = { s with evs :
     obtain ⟨e, n, rfl⟩ := h
     obtain ⟨e', n', h'⟩ := notify_ex c { s with evs := e, cbox := n } t
     exact ⟨e', n', h'⟩)
+theorem notesL_ex (c : Cfg) (l : List Nat) (s : State) : ∃ e n, l.foldl (notify c) s = { s with evs := e, cbox := n } :=
+  foldl_inv _ (fun x : State => ∃ e n, x = { s with evs := e, cbox := n }) _ _ ⟨s.evs, s.cbox, rfl⟩ (fun b t h => by
+    obtain ⟨e, n, rfl⟩ := h
+    obtain ⟨e', n', h'⟩ := notify_ex c { s with evs := e, cbox := n } t
+    exact ⟨e', n', h'⟩)
+theorem notesL_inv {c : Cfg} (P : State → Prop) (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n }) (l : List Nat)
+    {x : State} (hx : P x) : P (l.foldl (notify c) x) := by
+  obtain ⟨e, n, he⟩ := notesL_ex c l x; rw [he]; exact hnote _ _ _ hx
+@[simp] theorem reapLocksN_task (n : Nat) (s : State) : (reapLocksN n s).task = s.task := rfl
+@[simp] theorem reapLocksN_ag (n : Nat) (s : State) : (reapLocksN n s).ag = s.ag := rfl
+@[simp] theorem reapLocksN_log (n : Nat) (s : State) : (reapLocksN n s).log = s.log := rfl
+@[simp] theorem reapLocksN_cursor (n : Nat) (s : State) : (reapLocksN n s).cursor = s.cursor := rfl
+@[simp] theorem reapLocksN_start (n : Nat) (s : State) : (reapLocksN n s).start = s.start := rfl
+@[simp] theorem reapLocksN_seen (n : Nat) (s : State) : (reapLocksN n s).seen = s.seen := rfl
+@[simp] theorem reapLocksN_pend (n : Nat) (s : State) : (reapLocksN n s).pend = s.pend := rfl
+@[simp] theorem reapLocksN_early (n : Nat) (s : State) : (reapLocksN n s).early = s.early := rfl
+@[simp] theorem reapLocksN_git (n : Nat) (s : State) : (reapLocksN n s).git = s.git := rfl
+@[simp] theorem reapLocksN_evs (n : Nat) (s : State) : (reapLocksN n s).evs = s.evs := rfl
+@[simp] theorem reapLocksN_away (n : Nat) (s : State) : (reapLocksN n s).away = s.away := rfl
+@[simp] theorem reapLocksN_cbox (n : Nat) (s : State) : (reapLocksN n s).cbox = s.cbox := rfl
+@[simp] theorem reapLocksN_ccur (n : Nat) (s : State) : (reapLocksN n s).ccur = s.ccur := rfl
+@[simp] theorem reapLocksN_digest (n : Nat) (s : State) : (reapLocksN n s).digest = s.digest := rfl
+@[simp] theorem reapLocksN_run (n : Nat) (s : State) : (reapLocksN n s).run = s.run := rfl
+@[simp] theorem reapLocksN_ci (n : Nat) (s : State) : (reapLocksN n s).ci = s.ci := rfl
+theorem reapLocks_eq (s : State) : reapLocks s = reapLocksN s.lock.length s := by
+  simp only [reapLocks, reapLocksN, State.mk.injEq, and_true, true_and]
+  apply List.ext_getElem?; intro i
+  rw [List.getElem?_map, List.getElem?_mapIdx]
+  cases h : s.lock[i]? with
+  | none => rfl
+  | some l => simp [(List.getElem?_eq_some_iff.mp h).1]
+theorem cutL_sub {α : Type} (o : Option Nat) (l : List α) : (cutL o l).Sublist l := by
+  cases o <;> simp [cutL, List.take_sublist]
+/-- a property every unit of the tick keeps, whatever state it is applied to, is kept by every cut of the tick -/
+theorem tickCut_inv0 {c : Cfg} (P : State → Prop)
+    (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x n, P x → P (reapLocksN n x)) (hend : ∀ x a, P x → P (endAgent x a))
+    (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
+    (hspawn : ∀ pl x t, P x → P (spawnFor c pl x t)) {s : State} (h : P s) (k : Cut)
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h)
+    (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickCut c k s) := by
+  have h1 : P (reapCut c k.reap s) := by
+    cases k.reap with
+    | none => simp only [reapCut]; rw [reapLocks_eq]; exact hlocks _ _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
+    | some n => exact hlocks _ _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
+  unfold tickCut
+  refine notesL_inv P hnote _ (hgit _ _ ?_)
+  unfold lifecycleCut
+  generalize reapCut c k.reap s = s1 at h1 ⊢
+  simp only []
+  split
+  · exact foldl_inv _ P _ _ (foldl_inv _ P _ _ h1 (fun b a hb => by split; exact hend _ _ hb; exact hb))
+      (fun b a hb => by split; exact hdig _ _ _ hb; exact hb)
+  · exact foldl_inv _ P _ _ (foldl_inv _ P _ _ (foldl_inv _ P _ _ h1 (fun b a hb => by split; exact hend _ _ hb; exact hb))
+      (fun b a hb => by split; exact hdig _ _ _ hb; exact hb)) (fun b t hb => hspawn _ _ _ hb)
+@[simp] theorem notesL_task (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).task = s.task := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_ag (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).ag = s.ag := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_lock (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).lock = s.lock := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_log (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).log = s.log := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_cursor (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).cursor = s.cursor := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_start (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).start = s.start := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_seen (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).seen = s.seen := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_pend (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).pend = s.pend := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_early (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).early = s.early := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_git (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).git = s.git := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_away (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).away = s.away := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_ccur (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).ccur = s.ccur := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
+@[simp] theorem notesL_digest (c : Cfg) (l : List Nat) (s : State) : (l.foldl (notify c) s).digest = s.digest := by obtain ⟨e, n, h⟩ := notesL_ex c l s; rw [h]
 theorem tickOf_ex (c : Cfg) (s : State) : ∃ e n, tickOf c s = { tickS c s with evs := e, cbox := n } := notices_ex c _
 @[simp] theorem notices_task (c : Cfg) (s : State) : (notices c s).task = s.task := by obtain ⟨e, n, h⟩ := notices_ex c s; rw [h]
 @[simp] theorem notices_ag (c : Cfg) (s : State) : (notices c s).ag = s.ag := by obtain ⟨e, n, h⟩ := notices_ex c s; rw [h]

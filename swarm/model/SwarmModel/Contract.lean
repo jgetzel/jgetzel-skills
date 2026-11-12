@@ -12,6 +12,7 @@ import SwarmModel.End
 import SwarmModel.Away
 import SwarmModel.Nudge
 import SwarmModel.Stay
+import SwarmModel.Cut
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -100,6 +101,15 @@ theorem n1_noWorkLost (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = tr
     (haw : c.allWts = true) (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true)
     (hs : c.splitGC = true) : N1 c :=
   N1_of c hrel hbk hret haw hbl hoa hp hs
+
+/-- N1, W1 and W2 of a tick an error ends partway (`tickCut`, board #84; `Reachable.cut` makes every theorem above hold of
+what it leaves). Switches: `N1`'s but `retake`. Env: none. -/
+theorem n1_cut (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (haw : c.allWts = true)
+    (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true) (hs : c.splitGC = true) : N1cut c :=
+  N1cut_of c hrel hbk haw hbl hoa hp hs
+
+/-- a failed pass stops no other pass of the tick (board #84). Switches: `passGuard`. Env: none. -/
+theorem passes_indep (c : Cfg) (hg : c.passGuard = true) : PassesIndep c := passesIndep_of hg
 
 /-! ## Liveness: over fair runs (`Run.Fair`: every action enabled infinitely often in `fair` is taken) -/
 
