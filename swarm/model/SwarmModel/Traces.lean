@@ -248,7 +248,9 @@ of an idle one: each changes nothing in the db but its event, and types the line
 `stay` (board #79): the user goes away; agent 0 stays, ends its stay and stays again, agent 1 stays; both stop and idle
 50 min, watchd sends each the liveness check and neither answers, so the communicator is told each hung (urgent); the
 communicator ends agent 0's stay, and the tick ends it while it keeps the stayer agent 1; `--back`'s digest has agent 0
-ended and agent 1 hung.
+ended and agent 1 hung. `stay-work` (St4, board #48): agent 0 stays with an uncommitted file in its worktree, it and agent 1
+stop and idle; the tick ends agent 1 and keeps agent 0 (its stay); the communicator ends agent 0's stay and adds #1, and
+the tick spawns for #1 into agent 1's slot and keeps agent 0 still (its worktree), neither ended nor reused.
 `pr-digest` (board #80): agent 0 opens #1's PR, CI goes green on it and it merges it before the user goes away; main's
 run is pending; once away, watchd's poll marks #1 done (its done event since away) and records the merge, which is not
 since: GitHub's merge time is before away. Agent 1 opens and merges #2's PR, main's run goes green, and the poll marks #2
@@ -273,6 +275,7 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("nudge", [stop 0, age 0, tick, hnudge 1, add, tick, hnudge 0, boot 0, block 0 1, hnudge 0, stop 1, hnudge 1]),
   ("stay", [awayOn, stay 0 true, stay 0 false, stay 0 true, stay 1 true, stop 0, stop 1, age 0, age 1, stale 0, stale 1,
     stayCheck 0, stayCheck 1, stayHung 0, stayHung 1, endStay 0, tick, back, commsRead]),
+  ("stay-work", [stay 0 true, gAdd 0 0, gEdit 0 0, stop 0, stop 1, age 0, age 1, tick, endStay 0, add, tick]),
   ("pr-digest", [add, add, claim 0 1, openPr 0 1, finish 1, merge 0 1, ciRun "pending", awayOn, poll, readAll 0,
     claim 1 2, openPr 1 2, finish 2, merge 1 2, ciRun "green", poll, readAll 1, back, commsRead])]
 
