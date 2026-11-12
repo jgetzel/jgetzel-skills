@@ -46,6 +46,16 @@ int mkstemp(char *); int unlink(const char *); int dup(int); int dup2(int, int);
 int64_t lseek(int, int64_t, int); int ftruncate(int, int64_t); int64_t read(int, void *, size_t);
 ]]
 ffi.C.setenv("TZ", "UTC", 1)
+-- a chunk's ffi.cdef of a string an earlier chunk declared is not run again: LuaJIT's declarations outlive a chunk
+-- (every chunk runs in this one state), the semantics' start from none
+do
+  local cdef, seen = ffi.cdef, {}
+  ffi.cdef = function(s, ...)
+    if seen[s] then return end
+    cdef(s, ...)
+    if type(s) == "string" then seen[s] = true end
+  end
+end
 ffi.C.tzset()
 local outFd
 local function captured(f)
