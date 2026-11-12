@@ -79,10 +79,6 @@ theorem tnext_keeps {a : Nat} {k : Val} :
   unfold tnext; keeps
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact tnext_keeps)
 
-theorem noI64Id_keeps {v : Val} :
-    Keeps c P (noI64Id v) fun _ => True := by
-  unfold noI64Id; keeps
-macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact noI64Id_keeps)
 
 theorem rawset_keeps {a : Nat} {k v : Val} :
     Keeps c P (rawset a k v) fun _ => True := by
@@ -327,15 +323,7 @@ theorem mathFn_keeps {name : String} {args : List Val} :
   unfold mathFn; keeps
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact mathFn_keeps)
 
-theorem argBit_keeps {fname : String} {i : Nat} {args : List Val} :
-    Keeps c P (argBit fname i args) fun _ => True := by
-  unfold argBit; keeps
-macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact argBit_keeps)
 
-theorem bitFn_keeps {name : String} {args : List Val} :
-    Keeps c P (bitFn name args) fun _ => True := by
-  unfold bitFn; keeps
-macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact bitFn_keeps)
 
 theorem i64Bits_keeps {u : Bool} {x : CNum} : Keeps c P (i64Bits u x) fun _ => True := by
   unfold i64Bits; keeps
@@ -586,6 +574,31 @@ theorem i64Pair_keeps {x : CNum} {xu : Bool} {y : CNum} {yu : Bool} :
   unfold i64Pair; keeps
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact i64Pair_keeps)
 
+theorem argI64_keeps {u : Bool} {i : Nat} {args : List Val} :
+    Keeps c P (argI64 u i args) fun _ => True := by
+  unfold argI64; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact argI64_keeps)
+
+theorem check64_keeps {i : Nat} {args : List Val} {id : Option Bool} :
+    Keeps c P (check64 i args id) fun _ => True := by
+  unfold check64; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact check64_keeps)
+
+theorem argBit_keeps {fname : String} {i : Nat} {args : List Val} :
+    Keeps c P (argBit fname i args) fun _ => True := by
+  unfold argBit; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact argBit_keeps)
+
+theorem bitFn64_keeps {name : String} {args : List Val} :
+    Keeps c P (bitFn64 name args) fun _ => True := by
+  unfold bitFn64; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact bitFn64_keeps)
+
+theorem bitFn_keeps {name : String} {args : List Val} :
+    Keeps c P (bitFn name args) fun _ => True := by
+  unfold bitFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact bitFn_keeps)
+
 theorem eqAddr_keeps {p : Option (Nat × Nat)} {y : Val} :
     Keeps c P (eqAddr p y) fun _ => True := by
   unfold eqAddr; keeps
@@ -672,6 +685,12 @@ theorem cnumNew_keeps {v : Nat} {u : Bool} :
     Keeps c P (cnumNew v u) fun _ => True := by
   unfold cnumNew; keeps
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cnumNew_keeps)
+
+/-- the numeral's cdata kept on its chunk's closure: a closure, so not `c`, its environment unchanged -/
+theorem cnumK_keeps {self v : Nat} {u : Bool} {k : Nat} :
+    Keeps c P (cnumK self v u k) fun _ => True := by
+  unfold cnumK; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cnumK_keeps)
 
 theorem cdToString_keeps {args : List Val} :
     Keeps c P (cdToString args) fun _ => True := by
