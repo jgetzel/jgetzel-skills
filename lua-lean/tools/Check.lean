@@ -5,7 +5,8 @@ import LuaLean.Print
 parses; every construct and library call outside the subset (DESIGN.md, *The subset*) the source shows, with its
 line; and `per` calls with random arguments of each function the chunk defines at its top level, under the
 semantics, written to `cases.lua` for `test/luasem.lua` to run under LuaJIT (a call that reaches an effect, or a
-chunk that does, is left out: those are not pure). What only a run finds (a `#t` with two borders, a double past a
+chunk that does, is left out: those are not pure). A module the chunk requires, and what that requires, is source
+when its file is under one of the script's directories, as `lua-lean run --lib` loads one. What only a run finds (a `#t` with two borders, a double past a
 C cast's range) is the differential test's to find. -/
 
 open Lua
@@ -287,9 +288,10 @@ def dropRet (b : Block) : Block :=
   | some s => if let .ret _ := stripS s then b.dropLast else b
   | none => b
 
-/-- `per` calls of each top-level function as chunks: the chunk's text and the function's name -/
-def calls (b : Block) (per seed : Nat) : List (String × String) := Id.run do
-  let pre := Print.block (dropRet b)
+/-- `per` calls of each top-level function as chunks, after `pre`: the chunk's text and the function's name. A call
+is an argument, not a tail call, so an error of level 2 in the function (`error(msg, 2)`) has the chunk's place -/
+def calls (pre : String) (b : Block) (per seed : Nat) : List (String × String) := Id.run do
+  let pre := pre ++ Print.block (dropRet b)
   let mut g := mkStdGen seed
   let mut r := []
   for (f, self, ps, va) in topFns b do
@@ -302,7 +304,7 @@ def calls (b : Block) (per seed : Nat) : List (String × String) := Id.run do
         let (i, g') := randNat g 0 (pool.size - 1)
         g := g'
         as := as ++ [pool[i]!]
-      r := (pre ++ s!"return {f}({", ".intercalate as})\n", f) :: r
+      r := (pre ++ s!"return (function(...) return ... end)({f}({", ".intercalate as}))\n", f) :: r
   return r.reverse
 
 /-- a module is given as source when a file for it is under one of the script's directories -/
@@ -314,6 +316,23 @@ def givenIn (dirs : List System.FilePath) (m : String) : IO Bool :=
 def ancestors (p : System.FilePath) : Nat → List System.FilePath
   | 0 => [p]
   | n + 1 => p :: (p.parent.map (ancestors · n)).getD []
+
+/-- the files a `require` of each of `ms` loads through package.path `path`, and of what they require, as source:
+the modules by name, and each file by its path (as `require` names it) -/
+partial def modSources (path : String) (ms : List String) (seen : List String := [])
+    (srcs : List (String × Block) := []) : IO (List String × List (String × Block)) := do
+  match ms with
+  | [] => return (seen, srcs)
+  | m :: ms =>
+    if seen.contains m || loadedModule m || outsideModules.contains m then return ← modSources path ms seen srcs
+    match ← (pathFiles path.toList (modPath m.toList)).findM? (fun (f : String) => do pure ((← System.FilePath.pathExists f) && !(← System.FilePath.isDir f))) with
+    | none => modSources path ms seen srcs
+    | some f =>
+      match parseChunk (bytesOf (← IO.FS.readBinFile f)) (shortSrc ("@" ++ f).toList) with
+      | .error _ => modSources path ms (m :: seen) srcs
+      | .ok b =>
+        let (_, st) := (block [] [] b).run { toks := #[] }
+        modSources path (ms ++ st.requires.toList.map (·.2)) (m :: seen) ((f, b) :: srcs)
 
 end Check
 
@@ -337,14 +356,19 @@ def main (args : List String) : IO UInt32 := do
       let outside := (fs.filter (·.2.2)).length
       if outside > 0 then bad := true
       -- the chunk alone, then each call
-      let top := runCase (fun _ => none) .dual [] (Print.block (dropRet b)).toList
+      -- the modules found beside it as source; under LuaJIT each chunk sets the path and forgets what one before loaded
+      let path := ";".intercalate (dirs.flatMap fun d => [(d / "?.lua").toString, (d / "?" / "init.lua").toString])
+      let (mods, srcs) ← modSources path (st.requires.toList.map (·.2))
+      let pre := s!"package.path = {String.ofList (serStr path.toList)}\nfor _, m in ipairs(\{" ++
+        ", ".intercalate (mods.map fun m => String.ofList (serStr m.toList)) ++ "}) do package.loaded[m] = nil end\n"
+      let top := runCase (srcsOf srcs) .dual [] (pre ++ Print.block (dropRet b)).toList
       let fns := topFns b
       let mut n := 0
       let mut left : List String := []
       if top.startsWith "ok:" || top.startsWith "error:" then
-        for (src, _) in calls b per.toNat! (hash file).toNat do
-          let out := runCase (fun _ => none) .dual [] src.toList
-          let out1 := runCase (fun _ => none) .single [] src.toList
+        for (src, _) in calls pre b per.toNat! (hash file).toNat do
+          let out := runCase (srcsOf srcs) .dual [] src.toList
+          let out1 := runCase (srcsOf srcs) .single [] src.toList
           if out.startsWith "ok:" || out.startsWith "error:" then
             let single := if out1 == out then "" else s!", single = {String.ofList (serStr out1.toList)}"
             cases := cases.push

@@ -278,7 +278,10 @@ tail call, `setfenv` of level 0; `setmetatable(_G, …)`; a `goto` but the conti
 idiom; `debug.getinfo` of a constant level or with `S` or `L` (or its default options), `debug.traceback` of a
 constant message or none, `xpcall(f, debug.traceback)`, `debug.setmetatable` of a constant not a table. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
 calls each function the chunk defines at its top level with random arguments under the semantics and under LuaJIT
-(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. What only
+(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. The
+modules it requires that are files under its directories, and theirs, load as source (package.path has those
+directories), and each call is an argument, not a tail call, so an `error(msg, 2)` in the function has the chunk's
+place (`test/check/beside.lua`). What only
 a run meets (a `#t` with two borders, a double past a C cast's range) only that test, or a proof, finds.
 
 1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1). The
@@ -391,7 +394,7 @@ rest are pointers, #57, and C calls, #59), `__mode` 4, `string.dump` 3 (in the s
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
-| `test/check/` | `lua-lean check`'s test: a script with each kind of construct outside the subset, and what check says |
+| `test/check/` | `lua-lean check`'s tests: a script with each kind of construct outside the subset, and what check says; a script with a module beside it (`beside.lua`, `util.lua`) |
 | `test/corpus.txt` | the third-party scripts `lua-lean corpus` fetches and checks |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
@@ -423,7 +426,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) is #44, and with it #33's levels past 1.
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,

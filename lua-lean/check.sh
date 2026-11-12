@@ -28,5 +28,8 @@ lean_do build Examples && "$LUAJIT" Examples/world_axioms.lua || exit 1
 ./lua-lean check -n 4 test/check/outside.lua | grep -v ': parses, \|^cases: \|cases agree' > "${TMPDIR:-/tmp}/outside.got"
 diff test/check/outside.out "${TMPDIR:-/tmp}/outside.got" ||
   { echo "lua-lean check test/check/outside.lua is not test/check/outside.out (< expected, > got; if the > lines are right: ./lua-lean check -n 4 test/check/outside.lua | grep -v ': parses, \\|cases agree' > test/check/outside.out)" >&2; exit 1; }
+# and a script's module beside it as source, with errors of level 2: every call a case, the same under LuaJIT
+b=$(./lua-lean check -n 4 test/check/beside.lua) && ! printf '%s\n' "$b" | grep -q 'left out' ||
+  { printf '%s\n' "$b"; echo "lua-lean check test/check/beside.lua: a call left out, or one LuaJIT does not agree on" >&2; exit 1; }
 p=$(./lua-lean parsecheck test/*.lua test/mods/*.lua) || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
 ./lua-lean prove test/*.lua test/mods/*.lua
