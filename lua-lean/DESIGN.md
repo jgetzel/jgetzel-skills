@@ -291,7 +291,8 @@ same pairs as 64-bit integers, a scalar and any other value unequal; `tostring` 
 integer `5LL`, `5ULL`, of a ctype `ctype<int>` (the FFI's `__tostring`); `string.format`'s `%d` and `%x` of an
 unqualified `int64_t` or `uint64_t` (its bits, as lj_strfmt_putarg takes them); `tonumber` rounded to nearest; a
 64-bit integer stored to a narrower integer mod 2^bits, to a double or float rounded; `#` of any cdata LuaJIT's error
-(`attempt to get length of 'int64_t'`). A conversion's error names its destination with its qualifier (`cannot
+(`attempt to get length of 'int64_t'`); `long long`, a ctype of LuaJIT's apart from `int64_t` with its name, is
+outside `CDecl.lean`'s subset. A conversion's error names its destination with its qualifier (`cannot
 convert 'table' to 'const int'`). The
 world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
