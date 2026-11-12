@@ -42,12 +42,13 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Lifted/Locks.lean`, `Tasks.lean`, `Watchd.lean` | locks.lua and tasks.lua lifted, and watchd.lua's `M.iterate` (`--only`), built by `check.sh` |
 | `SwarmModel/LoopSafe.lean` | R2 (board #67): no Lua error escapes an iteration of watchd's loop (`iterate_safe`), with `Ok`, a run that ends in no Lua error, and its rules for the shallow combinators |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
-| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc (`hc_run_starts`: `hc run --bg` starts the program, board #49), gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
-| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `restart_alive`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Env.lean` | the environment (board #34, #68): what the model may trust about git, hc (`HcRunStarts`: `hc run --bg` starts the program, board #49), gh (`GhChecks`, `GhState`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named hypothesis each, a `Prop` on any `Tools`; and sqlite's (board #33): `Db`, one hypothesis per kind of op (`SqliteBegin`, `SqliteRead`, `SqliteWrite`, `SqliteCommit`, `SqliteRollback`). No axiom: *What the model trusts*. `consistent`, `sqlite_consistent`: an ideal machine has them all |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the hypotheses each takes (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's hypotheses is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`) |
+| `SwarmModel/Trust.lean` | each hypothesis a theorem takes is needed (board #68): per theorem and hypothesis, a machine with the theorem's other hypotheses where its guarantee fails (`need_*`); the dbs are the engine with one kind of op broken (`broken`) |
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
-| `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` and `Env.N1'_real` with `hc send` as `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
+| `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` with `hc send` as the hypothesis `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
 | `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
@@ -55,13 +56,13 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
 | `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
 | `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
-| `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
+| `Audit.lean` | `check.sh`'s gate: fails on any axiom but Lean's three, or an environment hypothesis with no test tag; prints the environment hypotheses each theorem's statement names |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
 | `sqlcases.json.gz` | 5340 of those cases (20 per statement, seed 29) the Lua suite runs |
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
-| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
+| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an `axiom` or `opaque`, or a hypothesis whose tag names no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 21 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-stay-work`: board #48's; `script-pr-digest`: board #80's, the main model's PRs, CI and poll through a fake `gh`; `script-pr-green`, `-red`, `-merged`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
@@ -355,7 +356,7 @@ proved with it in `step`.
 
 - **N1'** A nudge changes no task, claim, lock, lease, message or cursor (`N1'_frame`: `step c s (.hnudge a) = some s'
   → s' = s`), and its `hc send` types the line into that agent's terminal and no other, starts or ends no terminal and
-  leaves every worktree, branch and commit (`Env.Tools.N1'`, from `HcSendTargets`; `Env.N1'_real`). The replay
+  leaves every worktree, branch and commit (`Env.Tools.N1'`, given `HcSendTargets`). The replay
   (`script-nudge`, and random steps) checks the db unchanged but for the one nudge event, and that hc's last call was
   `send <that agent's terminal> <the line>`. A roster agent joined outside hc has no terminal in the replay, which the
   model's `replay` instance (no `unbound`) doesn't have: the replay binds it for that command only.
@@ -531,8 +532,8 @@ action); #29 is the run where it doesn't, with the switch off.
 
 `check.sh` (`lake build`) checks everything below in about 12 seconds from nothing (16 s of CPU). No `sorry`,
 no `native_decide`, no axiom beyond the three every Lean proof may use (`propext`, `Classical.choice`,
-`Quot.sound`) and the environment's (`Env.lean`, only under `Real.lean`'s eight): `Audit.lean` collects each
-theorem's axioms and prints the eight.
+`Quot.sound`): what is trusted of the world is a hypothesis (*What the model trusts*), and `Audit.lean` prints each
+theorem that takes one.
 
 | Property | Theorem | Holds for every reachable state of every instance with | Quint + TLC, 2 agents |
 |---|---|---|---|
@@ -913,10 +914,10 @@ only at its `local` is a Lean `let`; this needs a frame theorem over the interpr
 linked to lifted callees (#50: `call_fn` and the loaded heap's closure facts, #40); and a pure function lifted to a
 pure Lean function without fuel or heap (#44, #42 for locks.lua).
 
-**Environment** (board #34, rung 4c): `Env.lean` holds every assumption about the world outside the db, and `check.sh`
-fails on a theorem resting on any other axiom. The model's view of the repo is `Tools.git`, under the replay's name map;
-only the direction the code needs is assumed (a tool saying "landed" means landed). The twelve, each tested by the case
-of its name in `env_spec.lua` (a random 24-step history of commits, squash merges and fast-forwards for the first two, run
+**Environment** (board #34, rung 4c; #68): `Env.lean` holds every assumption about the world outside the db, each a
+hypothesis a theorem takes (*What the model trusts*). The model's view of the repo is `Tools.git`, under the replay's
+name map; only the direction the code needs is assumed (a tool saying "landed" means landed). Each is tested by the
+case its tag names in `env_spec.lua` (a random 24-step history of commits, squash merges and fast-forwards for the first two, run
 through the Lua's own `landed_ref`, `delete_branch`, `machine.cwds`, `agents.hc_terminals`):
 
 | Assumption | Tool | Says |
@@ -940,7 +941,9 @@ tools, with no `gh` answer, is W1's premise: there, unused, no process inside, n
 protected ref), `landedRef_reach`, `wtRemove_only`, `delRef_guarded` (a deleted branch's tip was the HEAD the sweep
 checked), `endAgent_keepsGit` (W2 at the tools: `hc kill` changes no worktree, branch or commit), `reap_gone`,
 `waiter_alive` and `lapsed_stays` (a lapsed lease never reads live again, so `expire` needs no inverse). `consistent`
-gives a machine with all twelve, and `real` is defined as it, so they can't prove `False`.
+gives a machine with them all, so together they are satisfiable. The tests check each in both directions where the
+table says "exactly"; the hypotheses are the one direction the proofs use (`StatusClean`, `ListedOn`, `CwdsProc`,
+`TouchedRecent`, `HcLsShows`, `Kill0Finds`).
 
 What the tests taught, and what the assumptions leave out: a zombie (dead, not yet reaped) answers `kill 0`, so
 `kill0_alive`'s "alive" is "in the process table"; pid reuse makes a dead waiter's pid answer for another process
@@ -1090,12 +1093,12 @@ that dies of it did nothing and holds nothing. A deferred `begin` breaks it (`no
 reads, 1 commits a write, 0's write gets SQLITE_BUSY at once with its transaction open), and with `begin immediate` the
 same connections wait (`immediate_waits`). The code uses `begin immediate`, so that switch is no Lua bug.
 
-**Assumed** (`Env.lean`, five axioms): real sqlite is this engine, one assumption per kind of op (`sqlite_begin`,
-`sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`): `Db.Does w c op r w'`, connection c asking op and
+**Assumed** (`Env.lean`, five hypotheses): sqlite is this engine, one assumption per kind of op (`SqliteBegin`,
+`SqliteRead`, `SqliteWrite`, `SqliteCommit`, `SqliteRollback`, each tested by the `sqlite_spec.lua` case its tag names): `Db.Does w c op r w'`, connection c asking op and
 getting r, is an engine step from `view w` to `view w'`, a run being a sequence of such ops (sqlite orders access to the
 file and the WAL index with locks, and a statement's rows come from the snapshot its first step took).
-`sqlite_consistent`: the engine has them all. `Real.lean`: `realDb_reach` (a run of the real db is a run of the
-engine), so `real_serializable`, `real_stmt_out` and `real_busyClean`. Each is stress-tested against real sqlite through
+`sqlite_consistent`: the engine has them all. `Real.lean`: `Db.engine_reach` (a run of a db with the five is a run
+of the engine), so `Db.serializable` and `Db.busyClean`; `Db.stmt_out` takes the two of statements. Each is stress-tested against real sqlite through
 db.lua by `sqlite_spec.lua`, in about 3 s: 6 processes each 150 times read a counter, write it + 1 and log the value
 read in `db:tx`, and add 1 to another outside a transaction; 3 move 1 between random accounts in `db:tx`; 3 read the
 total. No process fails (each waits within the busy timeout), no update to either counter is lost, each value is read
@@ -1127,6 +1130,50 @@ commit and a commit can get SQLITE_BUSY with its transaction left open, which `d
 no transaction on it); the busy timeout as time (a wait is a step not taken, and SQLITE_BUSY may end any wait); IO
 errors; `changes()` and `last_insert_rowid()`, which are the connection's; the switch to WAL.
 
+## What the model trusts (board #68)
+
+The rule: unproved code (hc, git, gh, sqlite, the OS, any C library) is untrusted, and a theorem is "assumptions about
+the outside world → guarantee". There is one model: a `Tools` or `Db` is any machine, each tool call may return any
+value of its type (a failed call is one of them: `hc ls` with no answer is the model's `hcSees` off), and trust enters
+only as `Env.lean`'s named hypotheses, small independent `Prop`s each theorem takes in the direction its proof uses.
+No axiom (`check.sh` refuses `axiom` and `opaque`; `Audit.lean` any axiom but Lean's three), no bundle (`Sound` and
+`SqliteSound` are gone). Before #68, 17 theorems rested on 21 axioms about an opaque `real` machine (the `*_real`
+copies in `Real.lean` and `Nudge.lean`), and 6 took the bundle `SqliteSound`; those copies are gone, as their
+statements are the `Tools.`/`Db.` theorems' with the hypotheses supplied. The hypotheses form a partial order:
+`HcLsLive` gives `HcLsShows` (`Tools.HcLsLive.shows`) and `Kill0Alive` gives `Kill0Finds` (`Tools.Kill0Alive.finds`);
+`StatusClean`, `ListedOn`, `CwdsProc` and `TouchedRecent` are the one direction of what their tests check, and
+`HcKillEnds` no longer says that `hc kill` ends no other terminal, which nothing needs.
+
+Every model property takes no hypothesis: S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A1-A4, C1, R1, Sp1-Sp3, P1-P2, B1 and the
+stays are about the model's `step`, in which the world's moves (a worktree edited, a terminal gone, a lease lapsed) are
+actions any run may take. Each property at the tools, with the hypotheses it takes; each is needed, by the
+`Trust.lean` counterexample named (a machine with the property's other hypotheses on which it fails); every other
+(property, hypothesis) pair is "not needed": the theorem doesn't take it.
+
+| Property | Theorem (`Contract.lean`) | Needs | Shown needed by |
+|---|---|---|---|
+| S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `s1_oneWorker` … `digest_hung'` | none | |
+| landed_ref says landed → reachable | `Tools.landedRef_reach` (`env_landedRef`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
+| the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`env_sweepGate`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
+| `worktree remove` takes only that worktree | `Tools.wtRemove_only` | `WtRemove` | `need_wtRemove` |
+| a deleted branch's tip was the checked HEAD | `Tools.delRef_guarded` | `DelRef` | `need_delRef` |
+| `--restart`'s watchd is alive (R1 at the tools) | `Tools.restart_alive` | `HcRunStarts`, `HcLsShows`, `Kill0Finds` | `need_restart_hcRun`, `_hcLs`, `_kill0` |
+| `hc kill` ends the terminal, keeps git (W2 at the tools) | `Tools.endAgent_keepsGit` | `HcKillEnds` | `need_hcKill` |
+| reap reads gone exactly when gone | `Tools.reap_gone` (`env_reapGone`) | `HcLsLive` | `need_hcLsLive` |
+| the waiter check is the waiter alive | `Tools.waiter_alive` | `Kill0Alive` | `need_kill0Alive` |
+| a lapsed lease stays lapsed | `Tools.lapsed_stays` | `NowMono` | `need_nowMono` |
+| ci.pr_act on gh's answers is the model's poll | `Tools.prAct` | `GhChecks`, `GhState` | `need_prAct_checks`, `need_prAct_state` |
+| N1' at the tools | `Tools.N1'` (`n1'_nudge`) | `HcSendTargets` | `need_hcSend` (with `nudge_enabled`: the step exists) |
+| the db is serializable | `Db.serializable` (`db_serializable`) | all five sqlite | `need_db_begin`, `_read`, `_write`, `_commit`, `_rollback` |
+| SQLITE_BUSY is clean | `Db.busyClean` | all five sqlite | the same five |
+| a statement answers on its transaction's db | `Db.stmt_out` | `SqliteRead`, `SqliteWrite` | `need_db_read`, `need_db_write` |
+
+Open: whether a weaker predicate than a needed one would do (`WtRemove` and `DelRef` say what the tool does; the
+theorems use only what it leaves alone). Not yet a property: "a failed pass leaves the invariants and does not stop
+the other passes or the next tick". The model's tick never fails partway; in the Lua, `watchd_tick` wraps only the
+conflict and cost passes in `pcall`, so an error in reap, lifecycle or the ci passes ends that tick's later passes
+(the next tick runs: `iteration`'s pcall). Board #84 models a failing pass and proves or refutes it.
+
 ## Using these proofs downstream
 
 A proof about a program that uses the swarm (a client of its CLI, a tool that reads its db) can import
@@ -1145,15 +1192,14 @@ rest on Lean's axioms alone. They are about the model: that the Lua does what th
 scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what is lifted (`Lifted/`, `Decide.lean`,
 `Real.lean`); *What is proved, what is replayed, what isn't modelled* says which.
 
-What is assumed. The tool theorems take `Env.lean`'s assumptions as hypotheses on any `Tools` or `Db`, so a
-downstream proof chooses: supply them for a machine of its own (`Env.consistent` proves them all for `Env.ideal`,
-`Env.sqlite_consistent` for `Env.idealDb`), or use the `real` versions in `Real.lean` (`Env.landedRef_reach`,
-`Env.realDb_sound`, …), which rest on the 21 axioms of `Env.lean` about the machine the swarm runs on, each a claim
-about git, hc, gh, the kernel, the clock or sqlite that a test checks, not a proof.
+What is assumed. The tool theorems take `Env.lean`'s assumptions as hypotheses on any `Tools` or `Db`, and nothing is
+assumed by axiom: a downstream proof supplies them for its machine (`Env.consistent` proves them all for `Env.ideal`,
+`Env.sqlite_consistent` for `Env.idealDb`), or takes them as its own hypotheses. For the machine the swarm runs on each
+is a claim about git, hc, gh, the kernel, the clock or sqlite that a test checks, not a proof.
 
 How to recheck. `swarm/model/check.sh` builds every theorem (`lake build`), runs `Audit.lean`, which prints each
-theorem resting on an environment assumption with the ones it uses and fails on any other axiom (no `sorry`, no
-`native_decide`), and checks `example/Client.lean`. Each assumption's test is the case named after it:
+theorem whose statement takes an environment hypothesis with the ones it takes and fails on any axiom but Lean's three
+(no `sorry`, no `native_decide`), and checks `example/Client.lean`. Each assumption's test is the case named after it:
 `luajit swarm/lua/test/run.lua env` runs `env_spec.lua` (git, the kernel, files, the clock; `SWARM_TEST_HC=1` adds
 `hc_ls_live`, `hc_run_starts`, `hc_send_targets` and `hc_kill_ends`, which start terminals in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
 which ask GitHub about this repo's PRs), and `luajit swarm/lua/test/run.lua sqlite` runs `sqlite_spec.lua` (the five

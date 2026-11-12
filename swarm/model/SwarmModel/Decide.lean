@@ -117,7 +117,7 @@ theorem keeps_gap : ∃ (c : Cfg) (s : State),
   ⟨{}, { (default : State) with ag := [{ (default : Agent) with st := .working, dead := true }] }, by decide, by decide⟩
 
 /-- slot a's row as lifecycle reads it at time t, with no hc terminals (as the replay): `aged` is idle 2 min, `big` a
-context of SMALL_CTX or more, `waiter` a waiter pid that is alive (`Env.waiter_alive`) -/
+context of SMALL_CTX or more, `waiter` a waiter pid that is alive (`Env.Tools.waiter_alive`) -/
 def fateRow (g : Agent) (t : Int) : ARow :=
   { status := statusOf g.st, lastActive := some (if g.aged then t - 120 else t),
     ctx := some (if g.big then smallCtx else 0), waiter := if g.waiter then some 1 else none,

@@ -1,5 +1,5 @@
 -- Differential tests of swarm/model/SwarmModel/Env.lean: each environment assumption against the real tool, in a
--- scratch repo, through the Lua the swarm runs where there is one. A case carries its assumption's name; check.sh
+-- scratch repo, through the Lua the swarm runs where there is one. A case carries the name its hypothesis's tag gives; check.sh
 -- refuses an assumption with no case here. hc_ls_live, hc_run_starts, hc_send_targets and hc_kill_ends start terminals in your hc: they run only
 -- with SWARM_TEST_HC=1. gh_checks and gh_state ask GitHub about this repo's latest PRs: they run only with
 -- SWARM_TEST_GH=1.

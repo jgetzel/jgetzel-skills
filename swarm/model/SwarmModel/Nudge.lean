@@ -6,7 +6,7 @@ unknown, ended or unbound agent; else it runs `hc send <a's terminal> <line>` an
 nothing else. The model keeps neither the event log's nudge rows nor terminal text, so the step is the state unchanged:
 no task, claim, lock, lease, message or cursor moves (`N1'_frame`). The line's effect on a, a turn, is a's own `prompt`,
 already a step. What `hc send` does to the world is Env.lean's `HcSendTargets`: the line goes into that terminal only,
-no terminal starts or ends, and the repo's durable state stays (`Tools.N1'`; on the real machine `N1'_real`). The step
+no terminal starts or ends, and the repo's durable state stays (`Tools.N1'`, which takes it as a hypothesis). The step
 is not in `Run.Fair`: a run may nudge or not, so S1-S5, N1, W1-W4 and L1-L4 hold with it in `step` and need nothing of it. -/
 
 namespace Swarm
@@ -35,15 +35,6 @@ theorem Tools.N1' {t : Tools} (hs : HcSendTargets t) {c : Cfg} {s s' : State} {a
       (∀ h', t.termLive (t.hcSend w hT l) h' = t.termLive w h') ∧
       Git.durable (t.git (t.hcSend w hT l)) = Git.durable (t.git w) :=
   ⟨N1'_frame h, hs w hT l hl⟩
-
-/-- N1' on the machine the swarm runs on -/
-theorem N1'_real {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.hnudge a) = some s') {w : real.World} {hT : Nat}
-    (hl : real.termLive w hT = true) (l : String) :
-    s' = s ∧ real.typed (real.hcSend w hT l) hT = real.typed w hT ++ [l] ∧
-      (∀ h', h' ≠ hT → real.typed (real.hcSend w hT l) h' = real.typed w h') ∧
-      (∀ h', real.termLive (real.hcSend w hT l) h' = real.termLive w h') ∧
-      Git.durable (real.git (real.hcSend w hT l)) = Git.durable (real.git w) :=
-  Tools.N1' hc_send_targets h hl l
 
 end Env
 end Swarm

@@ -2,10 +2,10 @@ import SwarmModel.Env
 import SwarmModel.Decide
 
 /-! What the Lua decides from the tools' answers is what the model decides on its view of the world, given `Env`'s
-assumptions. Each theorem is stated of any `Tools` (or `Db`) and takes the assumptions it uses as hypotheses (board #25:
-a downstream proof can supply them for another machine, `ideal` say); the one of the same name without the `Tools.` or
-`Db.` prefix is it for `real`, from Env.lean's axioms. Each decision is written as the Lua line it stands for;
-`check.sh` prints the assumptions each theorem here rests on. -/
+assumptions. Each theorem is stated of any `Tools` (or `Db`) and takes the assumptions it uses as hypotheses, and no
+more (board #25, #68: Trust.lean shows each is needed); a downstream proof supplies them for its machine (`ideal`, say,
+from `consistent`). Each decision is written as the Lua line it stands for; Audit.lean prints the hypotheses each
+theorem takes. -/
 
 namespace Swarm.Env
 
@@ -22,6 +22,11 @@ def sweepGate (t : Tools) (w : t.World) (c : Cfg) (used : Bool) (x : Nat) (gh : 
 
 namespace Tools
 variable {t : Tools} {w : t.World}
+
+/-- the assumptions' order: `HcLsLive` gives `HcLsShows` -/
+theorem HcLsLive.shows (h : HcLsLive t) : HcLsShows t := fun w x hx => (h w x).trans hx
+/-- the assumptions' order: `Kill0Alive` gives `Kill0Finds` -/
+theorem Kill0Alive.finds (h : Kill0Alive t) : Kill0Finds t := fun w p hp => (h w p).trans hp
 
 /-- landed_ref saying "landed" means reachable, or `gh` said so -/
 theorem landedRef_reach (ha : AncestorReach t) (hsc : SameContentReach t) {k b : Nat} {gh : Bool}
@@ -42,10 +47,14 @@ theorem sweepGate_W1 (ha : AncestorReach t) (hsc : SameContentReach t) (hsl : St
     y.on = true ∧ used = false ∧ y.proc = false ∧ y.recent = false ∧ y.dirty = false ∧ (t.git w).safe c y.head = true := by
   simp only [sweepGate, Bool.and_eq_true, Bool.not_eq_true', decide_eq_false_iff_not, List.any_eq_true] at h
   obtain ⟨⟨⟨⟨⟨hl, hu⟩, hp⟩, hr⟩, hs⟩, b, hb, hland⟩ := h
-  have hon : ((t.git w).wt x).on = true := by rw [← hlo w x]; exact hl
-  refine ⟨hon, by simpa using hu, by rw [← hcp w x]; simpa using hp, ?_, ?_, ?_⟩
-  · rw [htr w x]; simpa using hr
-  · have := hsl w x hon; rw [hs] at this; simpa using this.symm
+  have hon : ((t.git w).wt x).on = true := hlo w x hl
+  refine ⟨hon, by simpa using hu, ?_, ?_, hsl w x hon hs, ?_⟩
+  · cases e : ((t.git w).wt x).proc
+    · rfl
+    · rw [hcp w x e] at hp; cases hp
+  · cases e : ((t.git w).wt x).recent
+    · rfl
+    · exact absurd (htr w x e) hr
   · simp only [Git.safe, List.any_eq_true]
     exact ⟨b, hb, (landedRef_reach ha hsc hland).resolve_right (by simp)⟩
 
@@ -76,13 +85,13 @@ theorem delRef_guarded (hdr : DelRef t) {c : Cfg} {b k : Nat} (hk : (t.git w).sa
 /-- R1 at the tools: `--restart`'s new watchd is as the model's `restart` makes it: right after `hc run --bg` its terminal
 is listed live and `kill(pid, 0)` (run.pid_alive, what the restart and the old watchd's loop ask) finds the program,
 the model's `World.alive` -/
-theorem restart_alive (hr : HcRunStarts t) (hl : HcLsLive t) (hk : Kill0Alive t) (w : t.World) :
+theorem restart_alive (hr : HcRunStarts t) (hl : HcLsShows t) (hk : Kill0Finds t) (w : t.World) :
     t.hcLs (t.hcRun w) (t.hcRunAddr w) = true ∧ t.kill0 (t.hcRun w) (t.hcRunPid w) = true :=
-  ⟨(hl _ _).trans (hr w).1, (hk _ _).trans (hr w).2⟩
+  ⟨hl _ _ (hr w).1, hk _ _ (hr w).2⟩
 /-- W2 at the tools: end_agent's `hc kill` ends that terminal and leaves every worktree, branch and commit as it was -/
 theorem endAgent_keepsGit (hk : HcKillEnds t) {h : Nat} :
     t.termLive (t.hcKill w h) h = false ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w) :=
-  ⟨(hk w h).1, (hk w h).2.2⟩
+  hk w h
 
 /-- reap (and `who`, `post`) read a bound row as gone exactly when its terminal is: `hc ls` lists it as live or not -/
 theorem reap_gone (hl : HcLsLive t) {h : Nat} : t.hcLs w h = false ↔ t.termLive w h = false := by rw [hl]
@@ -107,100 +116,58 @@ theorem prAct (hgc : GhChecks t) (hgs : GhState t) {p : Nat} {k : PrW.PTask} (hc
 end Tools
 
 /-! ## Any db with sqlite's assumptions (board #33): every run of it is a run of the engine, so `Iso.lean`'s theorems
-hold of it -/
+hold of it. A run may take any op, so the theorems over runs take all five; `stmt_out` takes the two of statements. -/
 
 namespace Db
 variable {db : Db}
 
 /-- every op of the db is an engine step -/
-theorem engine_step (hdb : SqliteSound db) {w w' : db.World} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)}
+theorem engine_step (hb : SqliteBegin db) (hr : SqliteRead db) (hw : SqliteWrite db) (hc : SqliteCommit db)
+    (hrb : SqliteRollback db) {w w' : db.World} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)}
     {r : Iso.Res Sql.Out} (h : db.Does w c op r w') :
     ∃ t, Iso.step {} Iso.sqlLang (db.view w) c op t = some (r, db.view w') := by
   cases op with
-  | begin => exact hdb.begin _ _ _ _ _ rfl h
+  | begin => exact hb _ _ _ _ _ rfl h
   | stmt s =>
-    cases hw : Iso.sqlLang.writes s
-    · exact hdb.read _ _ _ _ _ ⟨s, rfl, hw⟩ h
-    · exact hdb.write _ _ _ _ _ ⟨s, rfl, hw⟩ h
-  | commit => exact hdb.commit _ _ _ _ _ rfl h
-  | rollback => exact hdb.rollback _ _ _ _ _ (.inl rfl) h
-  | close => exact hdb.rollback _ _ _ _ _ (.inr rfl) h
+    cases e : Iso.sqlLang.writes s
+    · exact hr _ _ _ _ _ ⟨s, rfl, e⟩ h
+    · exact hw _ _ _ _ _ ⟨s, rfl, e⟩ h
+  | commit => exact hc _ _ _ _ _ rfl h
+  | rollback => exact hrb _ _ _ _ _ (.inl rfl) h
+  | close => exact hrb _ _ _ _ _ (.inr rfl) h
 
 /-- a run of the db from a fresh one is a run of the engine -/
-theorem engine_reach (hdb : SqliteSound db) {w0 w : db.World} {d0 : Sql.DB} (h0 : db.view w0 = Iso.Eng.init d0)
+theorem engine_reach (hb : SqliteBegin db) (hr : SqliteRead db) (hw : SqliteWrite db) (hc : SqliteCommit db)
+    (hrb : SqliteRollback db) {w0 w : db.World} {d0 : Sql.DB} (h0 : db.view w0 = Iso.Eng.init d0)
     (h : db.Run w0 w) : Iso.Reach {} Iso.sqlLang d0 (db.view w) := by
   induction h with
   | refl => exact h0 ▸ .init
-  | step _ hd ih => obtain ⟨t, hs⟩ := engine_step hdb hd; exact .step ih hs
+  | step _ hd ih => obtain ⟨t, hs⟩ := engine_step hb hr hw hc hrb hd; exact .step ih hs
 
 /-- the db is serializable: every committed version is its transaction's statements run on the version before, and a
 transaction holding the lock runs on the latest version -/
-theorem serializable (hdb : SqliteSound db) {w0 w : db.World} {d0 : Sql.DB} (h0 : db.view w0 = Iso.Eng.init d0)
+theorem serializable (hb : SqliteBegin db) (hr : SqliteRead db) (hw : SqliteWrite db) (hc : SqliteCommit db)
+    (hrb : SqliteRollback db) {w0 w : db.World} {d0 : Sql.DB} (h0 : db.view w0 = Iso.Eng.init d0)
     (h : db.Run w0 w) : Iso.Inv Iso.sqlLang (db.view w) :=
-  Iso.serializable (engine_reach hdb h0 h)
+  Iso.serializable (engine_reach hb hr hw hc hrb h0 h)
 
 /-- every statement answers on its transaction's db -/
-theorem stmt_out (hdb : SqliteSound db) {w w' : db.World} {c : Nat} {s : Sql.Stmt × List Sql.Val}
+theorem stmt_out (hr : SqliteRead db) (hw : SqliteWrite db) {w w' : db.World} {c : Nat} {s : Sql.Stmt × List Sql.Val}
     {r : Except String Sql.Out} (h : db.Does w c (.stmt s) (.out r) w') : r = Iso.sqlLang.out s ((db.view w).view c) := by
-  obtain ⟨t, hs⟩ := engine_step hdb h; exact Iso.stmt_out hs
+  have : ∃ t, Iso.step {} Iso.sqlLang (db.view w) c (.stmt s) t = some (.out r, db.view w') := by
+    cases e : Iso.sqlLang.writes s
+    · exact hr _ _ _ _ _ ⟨s, rfl, e⟩ h
+    · exact hw _ _ _ _ _ ⟨s, rfl, e⟩ h
+  obtain ⟨t, hs⟩ := this; exact Iso.stmt_out hs
 
 /-- SQLITE_BUSY only after waiting out busy_timeout, with no transaction open, and nothing changed -/
-theorem busyClean (hdb : SqliteSound db) {w0 w w' : db.World} {d0 : Sql.DB} {c : Nat}
+theorem busyClean (hb : SqliteBegin db) (hr : SqliteRead db) (hw : SqliteWrite db) (hc : SqliteCommit db)
+    (hrb : SqliteRollback db) {w0 w w' : db.World} {d0 : Sql.DB} {c : Nat}
     {op : Iso.Op (Sql.Stmt × List Sql.Val)} {b : Bool} (h0 : db.view w0 = Iso.Eng.init d0) (h : db.Run w0 w)
     (hd : db.Does w c op (.busy b) w') : b = true ∧ (db.view w).mode c = .auto ∧ db.view w' = db.view w := by
-  obtain ⟨t, hs⟩ := engine_step hdb hd
-  exact Iso.busyClean_of rfl _ c op t b _ (engine_reach hdb h0 h) hs
+  obtain ⟨t, hs⟩ := engine_step hb hr hw hc hrb hd
+  exact Iso.busyClean_of rfl _ c op t b _ (engine_reach hb hr hw hc hrb h0 h) hs
 
 end Db
-
-/-! ## The same, for `real` and `realDb`, from Env.lean's axioms -/
-
-/-- sqlite's assumptions, of the real db -/
-theorem realDb_sound : SqliteSound realDb := ⟨sqlite_begin, sqlite_read, sqlite_write, sqlite_commit, sqlite_rollback⟩
-
-variable {w : real.World}
-
-theorem landedRef_reach {k b : Nat} {gh : Bool} (h : landedRef real w k b gh = true) :
-    (real.git w).reachFrom k b = true ∨ gh = true := Tools.landedRef_reach ancestor_reach same_content_reach h
-theorem sweepGate_W1 {c : Cfg} {used : Bool} {x : Nat} (h : sweepGate real w c used x (fun _ => false) = true) :
-    let y := (real.git w).wt x
-    y.on = true ∧ used = false ∧ y.proc = false ∧ y.recent = false ∧ y.dirty = false ∧ (real.git w).safe c y.head = true :=
-  Tools.sweepGate_W1 ancestor_reach same_content_reach status_clean listed_on cwds_proc touched_recent h
-theorem wtRemove_only {x : Nat} :
-    let g := real.git w; let g' := real.git (real.wtRemove w x)
-    g'.brs = g.brs ∧ g'.cm = g.cm ∧ (∀ y, y ≠ x → g'.wt y = g.wt y) ∧ ((g.wt x).dirty = true → g' = g) :=
-  Tools.wtRemove_only wt_remove
-theorem delRef_guarded {c : Cfg} {b k : Nat} (hk : (real.git w).safe c k = true)
-    (hgone : real.git (real.delRef w b k) ≠ real.git w) :
-    (real.git w).tip b = some k ∧ (real.git w).safe c ((real.git w).tipOf b) = true ∧
-      ∀ b', b' ≠ b → (real.git (real.delRef w b k)).tip b' = (real.git w).tip b' :=
-  Tools.delRef_guarded del_ref hk hgone
-theorem restart_alive : real.hcLs (real.hcRun w) (real.hcRunAddr w) = true ∧ real.kill0 (real.hcRun w) (real.hcRunPid w) = true :=
-  Tools.restart_alive hc_run_starts hc_ls_live kill0_alive w
-theorem endAgent_keepsGit {h : Nat} :
-    real.termLive (real.hcKill w h) h = false ∧ Git.durable (real.git (real.hcKill w h)) = Git.durable (real.git w) :=
-  Tools.endAgent_keepsGit hc_kill_ends
-theorem reap_gone {h : Nat} : real.hcLs w h = false ↔ real.termLive w h = false := Tools.reap_gone hc_ls_live
-theorem waiter_alive {p : Nat} : real.kill0 w p = real.alive w p := Tools.waiter_alive kill0_alive
-theorem lapsed_stays {w' : real.World} {lease : Nat} (hl : lease < real.now w) (h : real.Later w w') :
-    lease < real.now w' := Tools.lapsed_stays now_mono hl h
-theorem prAct_real {p : Nat} {k : PrW.PTask} (hc : k.pr.checks = real.prChecks w p)
-    (hm : k.pr.merged = real.prMerged w p) (gated told : Bool) :
-    Decide.prActL { state := real.ghState w p, verdict := real.ghVerdict w p } gated told
-      = Decide.prActL (Decide.prRow k) gated told := Tools.prAct gh_checks gh_state hc hm gated told
-
-theorem realDb_step {w w' : realDb.World} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)} {r : Iso.Res Sql.Out}
-    (h : realDb.Does w c op r w') : ∃ t, Iso.step {} Iso.sqlLang (realDb.view w) c op t = some (r, realDb.view w') :=
-  Db.engine_step realDb_sound h
-theorem realDb_reach {w0 w : realDb.World} {d0 : Sql.DB} (h0 : realDb.view w0 = Iso.Eng.init d0)
-    (h : realDb.Run w0 w) : Iso.Reach {} Iso.sqlLang d0 (realDb.view w) := Db.engine_reach realDb_sound h0 h
-theorem real_serializable {w0 w : realDb.World} {d0 : Sql.DB} (h0 : realDb.view w0 = Iso.Eng.init d0)
-    (h : realDb.Run w0 w) : Iso.Inv Iso.sqlLang (realDb.view w) := Db.serializable realDb_sound h0 h
-theorem real_stmt_out {w w' : realDb.World} {c : Nat} {s : Sql.Stmt × List Sql.Val} {r : Except String Sql.Out}
-    (h : realDb.Does w c (.stmt s) (.out r) w') : r = Iso.sqlLang.out s ((realDb.view w).view c) :=
-  Db.stmt_out realDb_sound h
-theorem real_busyClean {w0 w w' : realDb.World} {d0 : Sql.DB} {c : Nat} {op : Iso.Op (Sql.Stmt × List Sql.Val)}
-    {b : Bool} (h0 : realDb.view w0 = Iso.Eng.init d0) (h : realDb.Run w0 w) (hd : realDb.Does w c op (.busy b) w') :
-    b = true ∧ (realDb.view w).mode c = .auto ∧ realDb.view w' = realDb.view w := Db.busyClean realDb_sound h0 h hd
 
 end Swarm.Env
