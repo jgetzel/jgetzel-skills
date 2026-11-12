@@ -56,6 +56,10 @@ structure Clo where
   /-- the lines of its `function` and `end`, getinfo's linedefined and lastlinedefined; a chunk's are 0 and its last
   line -/
   lines : Nat × Nat
+  /-- the closure its chunk loaded as, whose prototypes' constants are its own (`ks`); none: it is that closure -/
+  root : Option Nat
+  /-- a chunk's closure: its FFI numerals' cdata so far, by the numeral's `k` (`cnumK`) -/
+  ks : List (Nat × Nat)
 
 structure Tbl where
   kv : List (Val × Val) := []
@@ -534,13 +538,6 @@ def tnext (a : Nat) (k : Val) : M (Option (Val × Val)) := do
     let held := match k with | .num (.int _) => true | _ => t.gone.any (Val.rawEq · k)
     if held then throw (.eff "next of a key not in the table" []) else rtErr "invalid key to 'next'"
 
-/-- a 64-bit integer cdata's identity: LuaJIT's numeral (`1LL`) is one object, its prototype's constant, where the
-semantics makes a new one at each evaluation, so a table key or `rawequal` of one stops the run -/
-def noI64Id (v : Val) : M Unit := do
-  if let .cdata a := v then
-    if let .cdata ct .. ← getObj a then
-      if ct.strip.1 matches .int 8 _ then ffiStop "a 64-bit integer's identity (a numeral is one object in LuaJIT)"
-
 def rawset (a : Nat) (k v : Val) : M Unit := do
   -- a weak table may have lost entries under the mode it had: a mode stays once set
   if k.rawEq (lstr "__mode") then
@@ -554,7 +551,6 @@ def rawset (a : Nat) (k v : Val) : M Unit := do
     -- an integral key is stored as an integer, -0 as 0
     let k := if f.floor == f && f.abs < 2147483648.0 then Val.num (.int (Num.floatToInt f)) else k
     putTbl a ((← getTbl a).set k v)
-  | .cdata _ => do noI64Id k; putTbl a ((← getTbl a).set k v)
   | _ => putTbl a ((← getTbl a).set k v)
 
 /-- fixed addresses of the initial heap -/
@@ -592,7 +588,7 @@ def fenvOf (a : Nat) : M Nat := do
 /-- a closure made by the function `self` runs: its environment and its chunk are `self`'s -/
 def newClo (self : Nat) (ps : List String) (va : Bool) (b : Block) (env : Env) (ln : Nat × Nat) : M Nat := do
   match ← getObj self with
-  | .clo c => alloc (.clo ⟨ps, va, b, env, c.fenv, c.src, ln⟩)
+  | .clo c => alloc (.clo ⟨ps, va, b, env, c.fenv, c.src, ln, some (c.root.getD self), []⟩)
   | _ => die "not a function"
 
 def bindLocals (cx : Ctx) : List String → List Val → M Ctx
@@ -2053,9 +2049,22 @@ def cdToNumber (a : Nat) : M Val := do
   | .i v => if s.size == some 8 then return .num (.flt (← intToFloat v)) else return .num (Num.ofInt v)
   | .f x => return .num (.flt x)
 
-/-- an FFI numeral's value: a new `int64_t` (`uint64_t` if `u`) of bits v. LuaJIT's is one object, the
-prototype's constant: its identity stops the run (`noI64Id`) -/
+/-- a new `int64_t` (`uint64_t` if `u`) of bits v -/
 def cnumNew (v : Nat) (u : Bool) : M Val := box (.int 8 !u) (leBytes v 8)
+
+/-- FFI numeral `k` of the running closure `self`'s chunk: its prototype's constant (lj_parse's KCDATA), one object
+for the chunk as loaded (a `load` or `require` of it again, or of a dump, has its own), made at its first evaluation
+and kept on the chunk's closure (`Clo.ks`) -/
+def cnumK (self v : Nat) (u : Bool) (k : Nat) : M Val := do
+  let .clo c ← getObj self | die "not a function"
+  let r := c.root.getD self
+  let .clo rc ← getObj r | die "not a function"
+  match rc.ks.lookup k with
+  | some a => pure (.cdata a)
+  | none =>
+    let x ← cnumNew v u
+    if let .cdata a := x then modify fun h => h.set! r (.clo { rc with ks := (k, a) :: rc.ks })
+    pure x
 
 /-- tostring of a cdata (ffi_meta___tostring): a 64-bit integer's digits and `LL` or `ULL` (lj_ctype_repr_int64), a
 ctype's `ctype<T>`, an enum's `cdata<T>: v`; any other's text is its address, which stops the run (a struct's
@@ -2616,7 +2625,8 @@ def loadDump (a : Nat) (strip : Bool) (src : String) (mode : Option (List Char))
   | .clo c =>
     let env ← c.upvals.mapM fun (x, _) => do pure (x, ← alloc (.cell .nil))
     let (body, cs, ln) := if strip then (stripBody src c.body, src.toList, (0, 0)) else (c.body, c.src, c.lines)
-    return [.fn (← alloc (.clo ⟨c.params, c.va, body, env, fenv, cs, ln⟩))]
+    -- a new prototype: new constants
+    return [.fn (← alloc (.clo ⟨c.params, c.va, body, env, fenv, cs, ln, none, []⟩))]
   | _ => die "not a function"
 
 -- ---------- debug ----------
@@ -2922,7 +2932,6 @@ def basicFn (oracle : Oracle) (tgt : Target) (name : String) (bound args : List 
   | "rawequal" => do
     anyArg 0 args; anyArg 1 args
     noDump2 (args.getD 0 .nil) (args.getD 1 .nil)
-    noI64Id (args.getD 0 .nil); noI64Id (args.getD 1 .nil)
     return [.bool ((args.getD 0 .nil).rawEq (args.getD 1 .nil))]
   | "setmetatable" => do
     let t ← argTbl name 0 args
@@ -3023,7 +3032,7 @@ def isSentinel : Val → Bool
   | _ => false
 
 /-- the closure of file `p`'s chunk, given as source: its last line is not known (0) -/
-def fileClo (p : String) (b : Block) : Clo := ⟨[], true, b, [], G, '@' :: p.toList, (0, 0)⟩
+def fileClo (p : String) (b : Block) : Clo := ⟨[], true, b, [], G, '@' :: p.toList, (0, 0), none, []⟩
 
 /-- a chunk's source as a function of no parameters and every argument, its free names globals; a source
 LuaJIT would load as bytecode, or the parser rejects, stops the run: its messages are LuaJIT's parser's -/
@@ -3032,7 +3041,7 @@ def loadSrc (src name : List Char) (mode : Option (List Char)) (env : Nat := G) 
   if let some m := mode then
     if !m.contains 't' then return [.nil, lstr "attempt to load chunk with wrong mode"]
   match parseChunk src (shortSrc name) with
-  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, [], env, name, (0, chunkLines src)⟩))]
+  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, [], env, name, (0, chunkLines src), none, []⟩))]
   | .error _ => throw (.eff "load: a syntax error" [])
 
 -- ---------- evaluation ----------
@@ -3170,7 +3179,7 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .fls => pure (.bool false)
   | .num x => pure (.num x)
   | .str s => pure (.str s)
-  | .cnum v u => cnumNew v u
+  | .cnum v u k => cnumK cx.self v u k
   | .vararg => pure (cx.va.headD .nil)
   | .site s e => atSite s (eval n cx e)
   | .func ps va b ln => do pure (.fn (← newClo cx.self ps va b cx.env ln))
@@ -4025,7 +4034,7 @@ end
 /-- a chunk named `src` (its last line `last`) run as a function of no arguments, from the bottom of the stack -/
 def runChunk (n : Nat) (b : Block) (src : List Char) (last : Nat) (args : List Val := []) : M (List Val) :=
   stackRun 1000 do
-    let f ← alloc (.clo ⟨[], true, b, [], G, src, (0, last)⟩)
+    let f ← alloc (.clo ⟨[], true, b, [], G, src, (0, last), none, []⟩)
     call srcs oracle tgt n (.fn f) args
 end
 

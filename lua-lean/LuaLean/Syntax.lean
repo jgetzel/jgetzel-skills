@@ -28,8 +28,9 @@ inductive Exp where
   | nil | tru | fls | vararg
   | num (n : Num)
   | str (s : List Char)
-  /-- an FFI numeral (`1LL`, `1ULL`): its bits, an `int64_t`, or a `uint64_t` if `u` -/
-  | cnum (v : Nat) (u : Bool)
+  /-- an FFI numeral (`1LL`, `1ULL`): its bits, an `int64_t`, or a `uint64_t` if `u`; `k`, its token's place in the
+  chunk, which of its prototype's constants it is (each numeral one object, lj_parse's KCDATA) -/
+  | cnum (v : Nat) (u : Bool) (k : Nat)
   /-- `lines`: the lines of its `function` and its `end`, getinfo's linedefined and lastlinedefined -/
   | func (params : List String) (va : Bool) (body : List Stat) (lines : Nat × Nat)
   | var (name : String)

@@ -807,7 +807,8 @@ return {commas ops}"
     "\"c:1: 'struct b' has no member named 'z'\"," ++
     "\"c:1: attempt to perform arithmetic on 'void *' and 'void *'\""
 
-/-- the FFI's 64-bit integers (#58): numerals, boxed reads of `int64_t` and `uint64_t` elements, arithmetic and
+/-- the FFI's 64-bit integers (#58): numerals (each one object: #77), boxed reads of `int64_t` and `uint64_t`
+elements, arithmetic and
 comparisons of numbers and scalar cdata (signed or unsigned, by 0, past 2^63), tostring, tonumber, string.format's
 `%d` and `%x`, conversions into narrower and wider types, and the errors -/
 def i64Ops : G String := do
@@ -824,7 +825,7 @@ def i64Ops : G String := do
   let ar : G String := pick ["+", "-", "*", "/", "%", "^", "+", "-", "*"]
   let cmp : G String := pick ["==", "~=", "<", "<=", ">", ">="]
   let op : G String := do
-    match ← rnd 9 with
+    match ← rnd 10 with
     | 0 | 1 => pure s!"return tostring({← v} {← ar} {← v})"
     | 2 => pure s!"return {← v} {← cmp} {← v}, {← v} {← cmp} {← v}"
     | 3 => pure s!"return tostring(- {← v}), tonumber({← v}), type({← v})"
@@ -832,6 +833,7 @@ def i64Ops : G String := do
     | 5 => pure s!"local b = ffi.new(\"{← it}[1]\") b[0] = {← v} return tostring(b[0]), ffi.sizeof(b)"
     | 6 => pure s!"return tostring(ffi.cast(\"{← pick ["int64_t", "uint64_t", "size_t"]}\", {← v})), tostring(ffi.new(\"{← pick ["int64_t", "uint64_t", "const int64_t"]}\", {← v}))"
     | 7 => pure s!"return {← pick ["#1LL", "#a", "1LL .. \"\"", "\"\" .. 1ULL", "a[0] .. a[1]", "ffi.typeof(a[0]) == ffi.typeof(\"int64_t\")", "ffi.typeof(u[0]) == ffi.typeof(\"size_t\")", "tostring(ffi.typeof(1ULL))", "tostring(ffi.typeof(\"const int64_t[2]\"))", "tostring(ffi.typeof(a))", "math.floor(1LL)", "(\"x\"):rep(2LL)", "1LL + \"1\"", "1LL < \"2\"", "1LL + p", "p + 1LL - p", "-a", "1ULL - 2"]}"
+    | 8 => pure s!"local function f() return {← v} end local function mk() return function() return {← v} end end local t = \{[f()] = 1} return rawequal(f(), f()), rawequal(mk()(), mk()()), rawequal({← v}, {← v}), t[f()], t[{← v}]"
     | _ => pure s!"local x = {← v} x = x {← ar} {← v} return tostring(x), x == {← v}, tostring(a[0] {← ar} u[0]), tostring(a[1] {← ar} 1)"
   let ops ← (List.range 6).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
   return s!"local ffi = require(\"ffi\")
@@ -854,6 +856,18 @@ return {commas ops}"
     "\"-9223372036854775808LL\",\"12297829382473034411ULL\",false,true,true,0,\"-1LL\",\"-1 ffffffffffffffff\"," ++
     "\"4LL\",\"c:1: attempt to get length of 'int64_t [2]'\",\"c:1: attempt to concatenate 'int64_t' and 'string'\"," ++
     "true,\"cannot convert 'table' to 'const int64_t'\""
+
+-- a numeral is one object for its chunk as loaded (-1LL and -(1LL) folded into it), a load of the chunk again or of
+-- its dump a new one; two numerals two objects
+#guard runCase (fun _ => none) .single []
+    ("local function f() return 1LL end local function g() return -(1LL) end " ++
+      "local function mk() return function() return 7ULL end end local t = {} " ++
+      "for i = 1, 3 do t[1LL] = (t[1LL] or 0) + i end local k = {} for i = 1, 3 do k[f()] = i end " ++
+      "local s = 'return 5LL' local l = loadstring(s) local d = loadstring(string.dump(l)) " ++
+      "return rawequal(f(), f()), rawequal(g(), g()), rawequal(1LL, 1LL), rawequal(mk()(), mk()()), t[1LL], " ++
+      "k[f()], rawequal(l(), l()), rawequal(l(), loadstring(s)()), rawequal(d(), l()), rawequal(d(), d()), " ++
+      "tostring(g()), tostring(- -1LL)").toList ==
+  "ok:true,true,false,true,nil,3,true,false,false,true,\"-1LL\",\"1LL\""
 
 /-- the FFI's metatypes, enums, its other functions and C calls (#59): a struct's metatype with some of `__index`
 (a table, a function), `__newindex`, the arithmetic metamethods, `__eq`, `__lt`, `__le`, `__len`, `__concat`,

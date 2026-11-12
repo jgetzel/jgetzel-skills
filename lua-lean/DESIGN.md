@@ -281,8 +281,10 @@ lj_cconv_compatptr does (no qualifier discarded, `void *` either way, an integer
 compare`, `attempt to concatenate`, `size of C type is unknown or too large`, `cannot convert 'const int [2]' to
 'int *'`), arithmetic and `..` of any cdata reaching them through every cdata's metamethods (`ffi.__add`, …).
 64-bit integers (#58: `i64Arith`, `i64Bits`, `cnumNew`, `cdToString`, `RunP.cdArith`, `cnumNew_ok`): the numerals
-`1LL`, `1ULL` (`LLU`, either case; decimal or hex, below 2^64; `Exp.cnum`), each evaluation a new `int64_t` or
-`uint64_t`; an 8-byte integer element or field read a new cdata of its type, its qualifier kept (LuaJIT's boxed
+`1LL`, `1ULL` (`LLU`, either case; decimal or hex, below 2^64; `Exp.cnum`), each an `int64_t` or `uint64_t` that is
+one object, its prototype's constant (#77, `cnumK`: by its token's place, made at its first evaluation and kept on
+the closure its chunk loaded as, `Clo.ks`; `-1LL` and `-(1LL)` folded into it, as bcemit_unop does; a `load` of the
+chunk again, or of its dump, has its own), so a table key or `rawequal` of one is LuaJIT's; an 8-byte integer element or field read a new cdata of its type, its qualifier kept (LuaJIT's boxed
 value); arithmetic (`+ - * / % ^`, unary `-`) of two numbers, one a cdata (a scalar of any number type, a bool or
 float among them), as lj_carith.c's carith_int64 does it: both as `uint64_t` if either is one, else as `int64_t`, a
 double truncated into it (lj_num2i64, lj_num2u64), mod 2^64, `/` and `%` C's (the remainder's sign the dividend's) and
@@ -395,8 +397,7 @@ the name by scanning the bytecode back);
    `ffi.copy` or `ffi.fill`), what is LuaJIT's heap's (an address from a number but 0, or into an integer but NULL's;
    `<` or `-` of pointers into two allocations; a pointer stored in a cdata's bytes, or read from them; `tostring`
    of a cdata but a 64-bit integer or a ctype: its address), of a 64-bit integer: a double past its range or NaN
-   into its arithmetic (x64 and arm64 convert them differently), its identity (a table key or `rawequal` of one:
-   LuaJIT's numeral is one object, its prototype's constant, the semantics' a new one at each evaluation), the bit
+   into its arithmetic (x64 and arm64 convert them differently), the bit
    library on a cdata (lj_carith_check64's 64-bit forms, a task of the roadmap), another task's (a ctype indexed or
    used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a message; of C
    calls: an aggregate passed or returned by value, an integer argument past 2^53, a vararg neither a number, a

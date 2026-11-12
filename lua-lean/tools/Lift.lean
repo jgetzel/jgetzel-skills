@@ -144,7 +144,7 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T String := do
   | .tru => pure "S.eTrue"
   | .fls => pure "S.eFalse"
   | .num n => pure s!"(S.eNum {num n})"
-  | .cnum v u => pure s!"(S.eCnum {v} {u})"
+  | .cnum v u k => pure s!"(S.eCnum {v} {u} {k} fn0)"
   | .str s => pure s!"(S.eStr {chars s})"
   | .vararg => pure s!"(S.eVa {cx.va})"
   | .func ps va b ln =>
@@ -306,11 +306,12 @@ def fnDef (j : Job) : T String := do
   let frees := upEnts.map (fun e => (e.lua, s!"(some {e.lean})")) ++ globs.map (·, "none")
   let res := frees.foldr (fun (x, v) r => s!"(res1 {nm x} {v} {r})") "(fun x => env0.lookup x)"
   let resP := frees.foldr (fun (x, _) r => s!"(res1_ok h_{leanName x} {r})") "(fun _ => rfl)"
-  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0, fenv0, src0, ln0⟩"
+  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0, fenv0, src0, ln0, root0, ks0⟩"
   pure s!"def {j.name} (I : Sem) (env0 : Env) (fn0 : Nat){cellsT} : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => {lets cs}S.letEnd ({k} n)
 
-theorem {j.name}_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat){cellsT}{hyps} :
+theorem {j.name}_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)){cellsT}{hyps} :
     CFn I ({j.name} I env0 fn0{cells}) fn0 {clo} :=
   D.fn_ok I {res} fn0 {clo} {resP}
 "

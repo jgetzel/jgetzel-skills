@@ -32,7 +32,7 @@ mutual
 partial def exp : Exp → String
   | .nil => "nil" | .tru => "true" | .fls => "false" | .vararg => "..."
   | .num n => num n
-  | .cnum v u => s!"{v}{if u then "ULL" else "LL"}"
+  | .cnum v u _ => s!"{v}{if u then "ULL" else "LL"}"
   | .str s => str s
   | .func ps va b _ => s!"function({params ps va})\n{block b}end"
   | .var x => x

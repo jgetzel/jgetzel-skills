@@ -289,6 +289,8 @@ partial def expr (limit : Nat := 0) : P Exp := do
       | .num k => match Num.foldNeg k with
         | some k => pure (Exp.num k)
         | none => pure (.site (← site (← lastLine)) (Exp.un .neg (.num k)))
+      -- folded into the constant (bcemit_unop): still one object
+      | .cnum v u k => pure (Exp.cnum ((2 ^ 64 - v) % 2 ^ 64) u k)
       | e => pure (.site (← site (← lastLine) [← desc e]) (Exp.un .neg e))
     else if isSym t "#" then do advance; let e ← expr 8; pure (.site (← site (← lastLine) [← desc e]) (Exp.un .len e))
     else simpleExp
@@ -319,7 +321,7 @@ partial def expr (limit : Nat := 0) : P Exp := do
 partial def simpleExp : P Exp := do
   match ← peek with
   | .num n => advance; return .num n
-  | .cnum v u => advance; return .cnum v u
+  | .cnum v u => let k := (← get).pos; advance; return .cnum v u k
   | .str s => advance; return .str s
   | .kw "nil" => advance; return .nil
   | .kw "true" => advance; return .tru
@@ -334,7 +336,7 @@ partial def primaryExp : P Exp := do
   | .name n => advance; return .var n
   | .sym "(" =>
     advance; let e ← expr; expectSym ")"
-    return (match readAt (← lastLine) e with | .num k => .num k | e => .paren e)
+    return (match readAt (← lastLine) e with | .num k => .num k | .cnum v u k => .cnum v u k | e => .paren e)
   | _ => throw s!"unexpected symbol at {← where_}"
 
 partial def suffixedExp : P Exp := do
