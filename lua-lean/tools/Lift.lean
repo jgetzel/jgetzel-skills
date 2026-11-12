@@ -55,7 +55,7 @@ partial def fvE (b : List String) : Exp → List String
   | .un _ x | .paren x | .site _ x => fvE b x
   | .table fs => fs.flatMap fun
     | .pos e | .named _ e => fvE b e
-    | .keyed k e => fvE b k ++ fvE b e
+    | .keyed k e _ => fvE b k ++ fvE b e
   | _ => []
 partial def fvS (b : List String) : Block → Option Exp → List String
   | [], fin => match fin with | some c => fvE b c | none => []
@@ -199,10 +199,10 @@ partial def tFields (cx : Cx) (fs : List Field) : T String := do
   | .named k e :: fs => do
     let s ← tExp cx e (cx.fname ++ "_" ++ k)
     pure s!"(S.fNamed {nm k} {s} {← tFields cx fs})"
-  | .keyed k e :: fs => do
+  | .keyed k e st :: fs => do
     let sk ← tExp cx k
     let s ← tExp cx e
-    pure s!"(S.fKeyed {sk} {s} {← tFields cx fs})"
+    pure s!"(S.fKeyed {site st} {sk} {s} {← tFields cx fs})"
 
 partial def tPlaces (cx : Cx) (ts : List Exp) : T String := do
   match ts with

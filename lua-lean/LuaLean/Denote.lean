@@ -84,7 +84,7 @@ def fields (I : Sem) (s : Sc) : List Field → Nat → SM
   | [.pos e] => fLast (exp I s e).2
   | .pos e :: f :: fs => fPos (exp I s e).1 (fields I s (f :: fs))
   | .named k e :: fs => fNamed k (exp I s e).1 (fields I s fs)
-  | .keyed k e :: fs => fKeyed (exp I s k).1 (exp I s e).1 (fields I s fs)
+  | .keyed k e st :: fs => fKeyed st (exp I s k).1 (exp I s e).1 (fields I s fs)
 
 def places (I : Sem) (s : Sc) : List Exp → SP
   | [] => pNil
@@ -186,7 +186,7 @@ theorem fields_ok : (fs : List Field) → (s : Sc) → s.ok → CF I (fields I s
   | [.pos e], s, hs => CF_last (exp_ok e s hs).2
   | .pos e :: f :: fs, s, hs => CF_pos (exp_ok e s hs).1 (fields_ok (f :: fs) s hs)
   | .named _ e :: fs, s, hs => CF_named (exp_ok e s hs).1 (fields_ok fs s hs)
-  | .keyed k e :: fs, s, hs => CF_keyed (exp_ok k s hs).1 (exp_ok e s hs).1 (fields_ok fs s hs)
+  | .keyed k e _ :: fs, s, hs => CF_keyed (exp_ok k s hs).1 (exp_ok e s hs).1 (fields_ok fs s hs)
 
 theorem places_ok : (ts : List Exp) → (s : Sc) → s.ok → CP I (places I s ts) s.cx ts
   | [], _, _ => CP_nil

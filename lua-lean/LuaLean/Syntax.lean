@@ -50,7 +50,7 @@ inductive Exp where
 inductive Field where
   | pos (e : Exp)
   | named (k : String) (e : Exp)
-  | keyed (k e : Exp)
+  | keyed (k e : Exp) (s : Site)
 
 inductive Stat where
   | loc (names : List String) (es : List Exp)

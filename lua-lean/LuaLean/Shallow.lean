@@ -300,10 +300,10 @@ def fNamed (k : String) (e : SE) (fs : Nat → SM) : Nat → SM := fun t n => ti
   let v ← e n
   rawset t (lstr k) v
   fs t n
-def fKeyed (k e : SE) (fs : Nat → SM) : Nat → SM := fun t n => tick n fun n => do
+def fKeyed (st : Site) (k e : SE) (fs : Nat → SM) : Nat → SM := fun t n => tick n fun n => do
   let kv ← k n
   let v ← e n
-  rawset t kv v
+  atSite st (rawset t kv v)
   fs t n
 
 -- ---------- assignment targets, as writers ----------
@@ -532,8 +532,8 @@ theorem CF_pos {cx e f fs s r} (he : CE I s cx e) (hr : CF I r cx (f :: fs)) : C
   intro t n; cases n <;> rw [fields] <;> simp [fPos, tick, he, hr]
 theorem CF_named {cx k e fs s r} (he : CE I s cx e) (hr : CF I r cx fs) : CF I (fNamed k s r) cx (.named k e :: fs) := by
   intro t n; cases n <;> rw [fields] <;> simp [fNamed, tick, he, hr]
-theorem CF_keyed {cx k e fs sk s r} (hk : CE I sk cx k) (he : CE I s cx e) (hr : CF I r cx fs) :
-    CF I (fKeyed sk s r) cx (.keyed k e :: fs) := by
+theorem CF_keyed {cx k e st fs sk s r} (hk : CE I sk cx k) (he : CE I s cx e) (hr : CF I r cx fs) :
+    CF I (fKeyed st sk s r) cx (.keyed k e st :: fs) := by
   intro t n; cases n <;> rw [fields] <;> simp [fKeyed, tick, hk, he, hr]
 
 -- assignment targets
