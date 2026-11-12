@@ -9,3 +9,8 @@ name = "LuaLean"
 [[lean_lib]]
 name = "Examples"
 globs = ["Examples.+"]
+
+# lua-lean check's Lean side compiled: under `lean --run` a corpus file's calls took minutes (board #70)
+[[lean_exe]]
+name = "check"
+root = "tools.Check"
