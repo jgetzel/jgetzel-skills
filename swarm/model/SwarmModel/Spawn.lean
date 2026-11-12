@@ -86,7 +86,7 @@ def leak (c : Cfg) (x : State) (a t : Nat) : State :=
   let x1 := setAg x a fun _ =>
     { (default : Agent) with
       st := .idle, dead := true, recorded := c.recordedWorkspaces,
-      rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none }
+      rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none, rbase := c.tbase t }
   claimed { x1 with
     cursor := x1.cursor.set a x1.log.length
     start := x1.start.set a x1.log.length

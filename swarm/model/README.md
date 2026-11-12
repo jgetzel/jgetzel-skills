@@ -893,7 +893,7 @@ moved after the sweep's check.
 it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check in landed_ref (ci.pr_watch's is `gh_state`), rebases, the worktree a spawn makes
 (a spawned agent's `recorded` flag and `rhead`, the base tip it was made at, stand for it: no action edits it, so it stays
-clean at that HEAD, which `unlanded` checks against the agent's bases as the Lua does (board #63); the sweep of it once its
+clean at that HEAD, which `unlanded` checks against the agent's bases and the worktree's own (`rbase`) as the Lua does (boards #63, #78); the sweep of it once its
 agent ends is not compared), an agent removing its own worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
 `nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
 live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` doesn't

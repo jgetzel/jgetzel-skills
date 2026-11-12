@@ -174,8 +174,10 @@ structure Agent where
   action edits it, so it stays clean on its task's base -/
   recorded : Bool := false
   /-- the HEAD of that recorded worktree: its spawn task's base tip at the spawn (board #63). Lifecycle checks it against
-  the bases of the tasks the agent owns now, main once reap or a release has taken that task -/
+  the bases of the tasks the agent owns now (main once reap or a release has taken that task) and `rbase` -/
   rhead : Option Nat := none
+  /-- the base of that recorded worktree, workspace.base: its spawn task's (board #78) -/
+  rbase : Nat := 0
   /-- idle 30+ min (UNCLEAN_IDLE) -/
   stale : Bool
   /-- already nudged in this idle stretch -/
@@ -352,7 +354,7 @@ for a spawned agent with a recorded worktree, that one alone (`rhead`); with `ow
 def unlanded (c : Cfg) (s : State) (a : Nat) : Bool :=
   (wtmap c s a).any (!landedC c s.git (abases c s a) ·) || (c.allWts && (!(s.agt a).recorded || c.ownAdded)
     && (s.agt a).own.any fun (w, _) => owns s a w && !landedC c s.git (abases c s a) w)
-    || (s.agt a).rhead.any (!landedK c s.git (abases c s a) ·)
+    || (s.agt a).rhead.any (!landedK c s.git ((s.agt a).rbase :: abases c s a) ·)
 
 -- ---------- state changes (pure, so watchd's tick composes them) ----------
 def setTask (s : State) (t : Nat) (f : Task → Task) : State :=
@@ -427,7 +429,7 @@ def spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : State :=
       let x1 := setAg x a fun _ =>
         { (default : Agent) with
           st := .idle, boot := true, recorded := c.recordedWorkspaces,
-          rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none }
+          rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none, rbase := c.tbase t }
       claimed { x1 with
         cursor := x1.cursor.set a x1.log.length
         start := x1.start.set a x1.log.length
@@ -875,7 +877,7 @@ task's work is on that task's base -/
 def doneOnBase (c : Cfg) (s : State) (a : Nat) : Bool :=
   idleFree s a && !(wtmap c s a).any (!s.git.landedIn (abases c s a) ·)
     && !(s.agt a).own.any (fun (w, _) => owns s a w && !s.git.landedIn (abases c s a) w) && !(s.agt a).bg
-    && !(s.agt a).rhead.any fun k => !(abases c s a).any (s.git.reachFrom k)
+    && !(s.agt a).rhead.any fun k => !((s.agt a).rbase :: abases c s a).any (s.git.reachFrom k)
 /-- W4: no worktree has a base checked out (so no base is ever refused to `git push . HEAD:<base>`) -/
 def noBaseOut (c : Cfg) (s : State) : Bool :=
   c.wtIds.all fun w => let x := s.git.wt w; !(x.on && x.br.any (· < c.nbases))
