@@ -267,7 +267,10 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
   stayer (watchd's start gives it one) and does not end agents.
 - **`watchd` spawns** a fresh agent per startable task when none is reusable,
   up to the auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
-  and says on the board when either holds it (`spawn-held`). **`swarm spawn`
+  and says on the board when either holds it (`spawn-held`). Each launch is
+  for the first task of the pool as it is then (red main, priority, id): the
+  pool is read again before each, and the claim checks it in its transaction
+  (model F1, Staff.lean). **`swarm spawn`
   refuses** at the user's agent max (`meta.agent_max`, `swarm limits`),
   checked with the new row in one transaction (sw-roles §6).
 - **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are done (`task after`

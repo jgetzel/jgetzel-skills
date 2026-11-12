@@ -29,6 +29,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row, its watchd record (meta.watchd, a pid), meta.watchd_up and the watchd processes, and a `--restart` waiting for the one it started (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Restart.lean` | `swarm watchd --restart` (board #49): R1 (a), (b), (c) as statements (`R1a`, `R1b`, `CRun.FairWd`), the invariant `WdInv` (`wdinv_of_reachable`), `R1a_of`, `R1b_of` (with `waitUp`), `R1c_of` and `restart_ticks` over fair runs; the refutation without board #41's handover, `not_R1b` (finding #34), is in `Findings.lean` |
 | `SwarmModel/Spawn.lean` | spawn reservation and launch failure (board #16): `SWorld` (the `State` and auto-spawn's backoff, failures and halt), the tick whose launch fails, `rollbackAll`; Sp1-Sp3 (`Sp1_of`, `Sp2_of`, `Sp3_of`) |
+| `SwarmModel/Staff.lean` | staffing order (board #91): `FWorld` (the `State`, each task's `Rank`, auto-spawn's loop as steps of its own: `read`, a `launch` per spawn, `rest`), the pool's order (`before`, `ranked`), `freshPool`; F1 (`launch_top`, `launch_or_before`, `done_frees`, `release_waits`), and finding #37 (`not_F1`), the launch from a stale read |
 | `SwarmModel/PrWatch.lean` | PRs and the wait on their checks (board #28): `PWorld` (tasks, each with its PR: opened, checks pending, green or red, merged, `told`; agents working or idle, staying, an urgent message unread), `pstep`, watchd's poll (`pollTask`), the switches `gated` (`ci.flow` is pr-gated), `wakeFix`, `closeFix`; fair runs (`PRun`, `PRun.Fair`); P1 and P2, refuted with a switch off by `stall` (`fair_of_stall`) and proved with it on (`P1_of`, `P2_of`; `main_P1`, `main_P2`) |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
@@ -170,6 +171,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `stopFirst` | the user's release of a working agent's task lets a peer claim it before the ex-owner reads the stop (finding #32) | board #53: the task records the stop; claim, the pool and auto-spawn refuse it while the ex-owner is at work and hasn't read it |
 | `renotify` | watchd marks a block's notice sent by any task-blocked event with the same question, so the same question asked again (by the same agent after an answer, or by another after a release) is never told (finding #35) | board #47: sent only by a task-blocked event after the task's latest `task block` (`toldAfter`) |
 | `passGuard` | watchd_tick ran only the conflict and cost passes under pcall: an error in reap, the notices, the sweep or lifecycle ended the rest of the tick, and one that recurred ended it every tick (finding #36) | board #84: each pass under its own pcall; the tick reports the errors at its end |
+| `freshPool` (`FCfg`, Staff.lean) | every launch of a tick walked the pool lifecycle read at its top: a task freed during a launch waited behind lower-priority ones of that read (finding #37) | board #91: auto_spawn reads the pool again before each launch, and the launch's claim checks in its transaction that its task still heads it |
 | `awayQuiet` | (the feature off) a block's notice is urgent while the user is away | `swarm away`: not urgent while away |
 | `backTells` | (the feature off) `--back` sends the communicator nothing | `--back`: one urgent message naming the questions that wait |
 
@@ -544,6 +546,26 @@ either way: the backoff is time. What the leak breaks after it is the next launc
 lands on a task whose own launches failed (it needs "a slot whose launch failed stays not live until a spawn", over every
 action); #29 is the run where it doesn't, with the switch off.
 
+Staffing order (`Staff.lean`, board #91). tasks.pool orders the startable tasks: a red-main task first, then the lower
+priority number, then the lower id. The main model has no order and an atomic tick, so `FWorld` is its `State` with each
+task's `Rank` (red, priority), auto-spawn's loop and the `backoff` and `halt` rows, and the tick's auto-spawn is steps of
+its own: `read` (reap, lifecycle's read of the pool, its ends and digests; the loop starts if no agent is reusable, the
+pool is not empty and no backoff holds), a `launch t` per spawn, `fail`, `rest`. The instance's other actions (`sw`) and
+a change of rank (`rank`) run between them. The fix is `freshPool`: the launch is for the first task, not given up on,
+of the pool as it is at the launch; before, of lifecycle's read.
+
+- **F1** A launch is for a task of the pool that auto-spawn has not given up on, and for `h` or a task before `h`
+  whenever `h` is such a task: nothing staffable is passed over for a task after it (`launch_top`, `launch_or_before`).
+  A task whose last dependency goes done is in the pool at that step (`done_frees`); a release of the dependency frees
+  nothing (`release_waits`); in a backoff there is no launch (`launch_eq`). `Contract.freed_task_is_staffed_first`
+
+F1 fails with `freshPool` off (finding #37, `not_F1`) and holds with it on, of every step from any world. Not said: that
+a launch happens. The auto-spawn number, free memory, a backoff and a reusable idle agent each hold it back, and with a
+reusable agent alive watchd spawns no one: that agent picks its own task, and nothing makes it take the first. In the
+Lua the launch's check and its claim are one sqlite transaction (`cmd_spawn`'s `top`), which is the model's atomic
+`launch`; `watchd_spec.lua` runs both interleavings (a `task done` during a launch, and between auto_spawn's read and
+the claim). The layer is not in the replay.
+
 ## Results
 
 `check.sh` (`lake build`) checks everything below in about 12 seconds from nothing (16 s of CPU). No `sorry`,
@@ -560,6 +582,7 @@ theorem that takes one.
 | S5 | `doneHasEvidence_of_reachable` | `evidenceRequired` (PR #113) | 13.9M states, 625 s |
 
 | Sp1, Sp2 | `Sp1_of`, `Sp2_of` (of each failing tick) | `rollbackAll` (board #16) | not checked |
+| F1 | `launch_top`, `done_frees`, `release_waits` (of each step) | `freshPool` (board #91) | not checked |
 | R1 (a), (b) | `R1a_of`, `R1b_of` | `waitUp` (board #41) for (b) | not checked |
 
 Each theorem is for any sizes and any setting of the other switches, `racy` included. Sp3 (`Sp3_of`) is over fair runs
@@ -727,6 +750,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 | 33 | N1 of `swarm end` | `--force` / `N1end` without it (`N1end_of`) | Agent 0 starts a long job (a build, a CI wait); the user runs `swarm end m-1 --force`: the row is ended mid-job and end_agent's cgroup.kill kills the job (`not_N1end_force`); or agent 0 has an uncommitted file and is ended (`not_N1end_force_wt`; the file stays in its worktree, `endOther_git`). Without `--force` both are refused. | not a bug: `--force` is the user's choice to lose work; `swarm end` without it refuses (board #40) |
 | 35 | Q1 | `renotify := false` / Q1 (`not_Q1`, `Q1_of`) | Agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it and blocks #1 again with the same question. watchd marked the notice sent by any task-blocked event of the task with that question text, so the second question was never told (nor another agent's same question after a release). Found by the model of board #47 and replayed (`script-away` fails on the old Lua) | board #47: a notice is sent once the task's latest question event is a `task block` (watchd.watchd_tick) |
 | 36 | a failed pass stops no other | `passGuard := false` / `PassesIndep` (`not_passesIndep`, `passesIndep_of`) | watchd_tick ran reap, the hc-blocked loop, the notices, lifecycle, quiet, hung, blockers, machine_tick, run.remote_tick and the ci passes bare: an error in one (a db call past busy_timeout, gh, git) ended the tick there. Agent 0 claims #1 and blocks on it; a tick whose reap fails at its first unit does nothing at all (`stuck36`): the block is not told (`pre36`), and if the error recurs (a row reap chokes on) watchd never tells, ends, spawns or sweeps again while it looks alive. With `passGuard` the notices run whatever reap did, and tell it (`Q1cut`). Two smaller ones the cut model shows: a notice's event and its message, and a digest's, were two commits, so an error between them marked a block told (or an agent told of the pool) that never got its message | board #84: a pcall per pass in watchd.watchd_tick, the errors raised at its end for tick_failed; each notice and each digest one transaction |
+| 37 | F1 | `freshPool := false` / F1 (`not_F1`, `launch_top`) | Auto-spawn walked the pool lifecycle read once at the tick's top, and each launch takes seconds (a worktree, a terminal). #3 waits on #1 at P0, #2 is open at P2; the tick reads the pool, [#2]; agent 0 finishes #1, so #3 is in the pool and before #2; the launch is for #2, and with the auto-spawn number reached #3 waits for an agent to end. Found by reading watchd.lua for board #91, then as a run of the model and a test (`watchd_spec.lua`, which fails on the old Lua) | board #91: auto_spawn reads the pool before each launch; `cmd_spawn` claims the task only while it still heads the pool, checked in the claim's transaction |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -1161,7 +1185,7 @@ statements are the `Tools.`/`Db.` theorems' with the hypotheses supplied. The hy
 `StatusClean`, `ListedOn`, `CwdsProc` and `TouchedRecent` are the one direction of what their tests check, and
 `HcKillEnds` no longer says that `hc kill` ends no other terminal, which nothing needs.
 
-Every model property takes no hypothesis: S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A1-A4, C1, R1, Sp1-Sp3, P1-P2, B1 and the
+Every model property takes no hypothesis: S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A1-A4, C1, R1, Sp1-Sp3, F1, P1-P2, B1 and the
 stays are about the model's `step`, in which the world's moves (a worktree edited, a terminal gone, a lease lapsed) are
 actions any run may take. Each property at the tools, with the hypotheses it takes; each is needed, by the
 `Trust.lean` counterexample named (a machine with the property's other hypotheses on which it fails); every other
@@ -1171,6 +1195,7 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 |---|---|---|---|
 | S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `one_worker_per_task` … `digest_lists_slot_iff_hung_since_away` | none | |
 | N1, W1, W2 of a tick an error cut partway; a failed pass stops no other | `no_work_lost_when_tick_cut`, `failed_pass_stops_no_other_pass` (`N1cut_of`, `passesIndep_of`) | none | |
+| F1: a launch is for the top of the pool as it is at the launch | `freed_task_is_staffed_first` (`launch_top`, `launch_or_before`, `done_frees`, `release_waits`) | none | |
 | landed_ref says landed → reachable | `Tools.landedRef_reach` (`landed_ref_means_reachable_or_gh_said_so`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
 | the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`sweep_gate_implies_w1_premise`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
 | `worktree remove` takes only that worktree | `Tools.wtRemove_only` | `WtRemove` | `need_wtRemove` |

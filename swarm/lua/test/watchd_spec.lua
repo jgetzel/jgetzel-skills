@@ -132,10 +132,14 @@ proc.run = function(argv, ...)
   return run(argv, ...)
 end
 agents.hc_terminals = function() return nil end
+local reads = 0
 tasks.pool = function(cc)
   local r = pool(cc)
-  peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)", repo)
-  peer:exec("update task set state='claimed', owner='t-1' where id=1")
+  reads = reads + 1
+  if reads == 2 then  -- after auto_spawn's own read (the reserve's check runs in its write transaction: no peer gets in)
+    peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)", repo)
+    peer:exec("update task set state='claimed', owner='t-1' where id=1")
+  end
   return r
 end
 -- cap 2: with t-1 live there is room for t-2, so the spawn is tried and its reserve loses (cap 1 would stop before it)
@@ -146,6 +150,50 @@ assert(#launched == 0)
 assert(task1().owner == "t-1")
 assert(not peer:one("select 1 from agent where name='t-2'"))
 assert(not peer:one("select 1 from msg where dest='t-comms'"))  -- a lost race is no launch failure
+
+-- board #91: a task freed while auto-spawn launches (its last dependency done) is staffed before lower-priority ones
+-- of the pool lifecycle read. X (#1) is claimed, L1 (#2) and L2 (#3) are open at P2, H (#4, P0) waits on X; X goes
+-- done during L1's launch. Room for two: they go to L1 and H, not L1 and L2.
+do
+  c = fresh()
+  peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)", repo)
+  peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)", repo)
+  peer:exec("insert into task(title,state,owner,lease_until) values('X','claimed','t-1',?)", os.time() + 7200)
+  peer:exec("insert into task(title) values('L1')")
+  peer:exec("insert into task(title) values('L2')")
+  peer:exec("insert into task(title,deps,priority) values('H','1',0)")
+  peer:exec("insert or replace into meta(k,v) values('agent_min','3')")
+  local hc, launch, n = agents.hc_terminals, watchd.launch_agent, 0
+  agents.hc_terminals = function() return nil end
+  watchd.launch_agent = function()
+    n = n + 1
+    if n == 1 then peer:exec("update task set state='done' where id=1") end
+    return "hc" .. n
+  end
+  watchd.watchd_tick(c, "t-comms", nil, { min_free_gib = 0 })
+  local st = {}
+  for _, r in ipairs(peer:all("select id, state from task order by id")) do st[r.id] = r.state end
+  assert(n == 2 and st[2] == "claimed" and st[4] == "claimed" and st[3] == "open", require("swarm.json").encode(st))
+  -- and in the claim's own transaction: X done after auto_spawn's read of the pool, before the reserve
+  c = fresh()
+  peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)", repo)
+  peer:exec("insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)", repo)
+  peer:exec("insert into task(title,state,owner,lease_until) values('X','claimed','t-1',?)", os.time() + 7200)
+  peer:exec("insert into task(title) values('L')")
+  peer:exec("insert into task(title,deps,priority) values('H','1',0)")
+  peer:exec("insert or replace into meta(k,v) values('agent_min','2')")
+  local pool, k = tasks.pool, 0
+  watchd.launch_agent = function() return "hc" end
+  tasks.pool = function(cc)
+    k = k + 1
+    local r = pool(cc)
+    if k == 2 then peer:exec("update task set state='done' where id=1") end  -- right after auto_spawn's read
+    return r
+  end
+  watchd.watchd_tick(c, "t-comms", nil, { min_free_gib = 0 })
+  watchd.launch_agent, agents.hc_terminals, tasks.pool = launch, hc, pool
+  assert(peer:one("select state from task where id=3").state == "claimed" and peer:one("select state from task where id=2").state == "open")
+end
 
 -- board #84: each pass under its own pcall: reap failing ends reap alone; the notices still run, and the tick raises it
 do

@@ -13,6 +13,7 @@ import SwarmModel.Away
 import SwarmModel.Nudge
 import SwarmModel.Stay
 import SwarmModel.Cut
+import SwarmModel.Staff
 import SwarmModel.Checkers
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
@@ -548,6 +549,75 @@ theorem ticksNeverOverlap_iff (c : CCfg) : R1a' c ↔ TicksNeverOverlap c :=
 /-- R1 (a'): no two ticks of a swarm overlap, of every step from any world (reachable or not). Switches: none.
 Env: none. -/
 theorem ticks_never_overlap (c : CCfg) : TicksNeverOverlap c := (ticksNeverOverlap_iff c).mp (R1a'_of c)
+
+/-! ## Staffing order (board #91): which task an auto-spawn launch is for
+
+`FWorld` is the instance's `State` with each task's rank (`rk`: red-main or not, its priority), auto-spawn's loop and
+its meta rows (`backoff`, `halt`); `fstep` runs the instance's actions between the launches of one tick. -/
+
+/-- Task `h` is before task `l` in the pool's order: a red-main task first, then the lower priority number, then the
+lower id. -/
+def Outranks (w : FWorld) (h l : Nat) : Prop :=
+  ((w.rk h).red = true ∧ (w.rk l).red = false) ∨
+    ((w.rk h).red = (w.rk l).red ∧
+      ((w.rk h).priority < (w.rk l).priority ∨ ((w.rk h).priority = (w.rk l).priority ∧ h < l)))
+
+theorem outranks_iff (w : FWorld) (h l : Nat) : before w h l = true ↔ Outranks w h l := before_spec w h l
+
+/-- Auto-spawn may staff task `t`: it is in the pool (open, every dependency done, no stop pending) and auto-spawn has
+not given up on it (`spawn_halt`, after five failed launches in a row). -/
+def Staffable (c : FCfg) (w : FWorld) (t : Nat) : Prop := t ∈ pool c.sw w.s ∧ w.halt ≠ some t
+
+/-- The step from `w` to `w'` is an auto-spawn launch for task `l`. -/
+def Launches (c : FCfg) (w w' : FWorld) (l : Nat) : Prop := fstep c w (.launch l) = some w'
+
+/-- The step from `w` to `w'` is agent `a`'s `task done` of task `x`. -/
+def Finishes (c : FCfg) (w w' : FWorld) (a x : Nat) : Prop := ∃ evidence, fstep c w (.sw (.done a x evidence)) = some w'
+
+/-- The step from `w` to `w'` is agent `a`'s `task release` of task `x`. -/
+def Releases (c : FCfg) (w w' : FWorld) (a x : Nat) : Prop := fstep c w (.sw (.release a x)) = some w'
+
+/-- Open task `h` waits on `x` and nothing else: no stop is pending on it and each of its other dependencies is
+done. -/
+def WaitsOnlyOn (c : FCfg) (s : State) (h x : Nat) : Prop :=
+  h ∈ c.sw.tasks ∧ (s.tk h).st = .opn ∧ ¬ Stopped s h ∧ x ∈ (s.tk h).deps ∧
+    ∀ d, d ∈ (s.tk h).deps → d = x ∨ (s.tk d).st = .done
+
+/-- F1's fix, a switch of our code. -/
+structure StaffingFixes (c : FCfg) : Prop where
+  /-- auto_spawn reads the pool again before each launch, and the launch's claim checks in its own transaction that
+  its task still heads it (board #91); before, every launch of a tick walked the pool lifecycle read at its top -/
+  each_launch_reads_the_pool : c.freshPool = true
+
+/-- F1 (board #91), part by part. -/
+structure StaffsFreedTaskFirst (c : FCfg) : Prop where
+  /-- a task's last dependency going done puts it in the pool at that step -/
+  done_frees_the_dependent : ∀ w w' a x h, Finishes c w w' a x → WaitsOnlyOn c w.s h x → h ∈ pool c.sw w'.s
+  /-- a release of the dependency does not: the dependent stays out of the pool -/
+  release_frees_nothing : ∀ w w' a x h, Releases c w w' a x → x ∈ (w.s.tk h).deps → h ∉ pool c.sw w'.s
+  /-- a launch is for a staffable task -/
+  launch_is_for_a_staffable_task : ∀ w w' l, Launches c w w' l → Staffable c w l
+  /-- a launch is for `h`, or for a task before it, whenever `h` is in the pool and not given up on: nothing staffable
+  is passed over for a task after it -/
+  launch_passes_over_no_staffable_task : ∀ w w' l h, Launches c w w' l → h ∈ pool c.sw w.s →
+    (not_given_up_on : w.halt ≠ some h) → l = h ∨ Outranks w l h
+  /-- while a backoff holds (a launch failed) there is no launch at all -/
+  no_launch_in_a_backoff : ∀ w w' l, Launches c w w' l → w.backoff = false
+
+/-- F1. Once a task's last dependency is done it is in the pool, and from then on every auto-spawn launch is for it or
+for a task before it in the pool's order (red main, priority, id), as long as it is still in the pool and auto-spawn has
+not given up on it: of every step from any world, so whatever ran between lifecycle's read of the pool and the launch.
+A release frees nothing, and a backoff launches nothing. Not said: that a launch happens (the auto-spawn number, free
+memory, a backoff and a reusable idle agent each hold it back; with a reusable agent alive watchd spawns no one and that
+agent picks a task itself). Without the fix it fails (finding #37, `not_F1`). Env: none. -/
+theorem freed_task_is_staffed_first {c : FCfg} (fixes : StaffingFixes c) : StaffsFreedTaskFirst c :=
+  ⟨fun _ _ _ _ _ finishes waits => finishes.elim fun _ done =>
+      done_frees done waits.1 waits.2.1 (fun e => waits.2.2.1 ((stopped_iff ..).mp e)) waits.2.2.2.2,
+   fun _ _ _ _ _ releases waits => release_waits releases waits,
+   fun _ _ _ launches => (launch_top fixes.each_launch_reads_the_pool launches).1,
+   fun _ _ _ _ launches in_pool not_given_up_on =>
+      (launch_or_before fixes.each_launch_reads_the_pool launches in_pool not_given_up_on).imp id (outranks_iff ..).mp,
+   fun _ _ _ launches => (launch_eq launches).1⟩
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 
