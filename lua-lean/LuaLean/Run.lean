@@ -109,6 +109,16 @@ def caseFx (name : String) (args : List Val) (_ : List Event) : Option (List Val
     -- before 1900 C libraries differ (glibc's counts back, macOS's answers -1): no answer
     let t := timegm s m h d mo y - if dst > 0 then 3600 else 0
     if t < -2208988800 then none else some [.num (.int t)]
+  -- the C library's functions the cases call through ffi.C, as the C locale's glibc computes them: a pointer
+  -- argument is its bytes to its allocation's end, a pointer result C's address (memset's its first argument's,
+  -- which a case does not compare)
+  | "ffi.C.strlen", [.str s] => if s.contains '\x00' then some [.num (.int (s.takeWhile (· != '\x00')).length)] else none
+  | "ffi.C.abs", [.num (.int i)] => if i == -2 ^ 31 then none else some [.num (.int i.natAbs)]
+  | "ffi.C.toupper", [.num (.int c)] =>
+    if c < 0 || c > 255 then none else some [.num (.int (if 97 ≤ c && c ≤ 122 then c - 32 else c))]
+  | "ffi.C.memset", [.str s, .num (.int c), .num (.int n)] =>
+    if n < 0 || n > s.length then none
+    else some [.num (.int 1), .str (List.replicate n.toNat (Char.ofNat (c % 256).toNat) ++ s.drop n.toNat)]
   | _, _ => none
 
 def FUEL : Nat := 100000

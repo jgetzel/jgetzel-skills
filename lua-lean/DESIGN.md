@@ -257,8 +257,8 @@ int32 (an integer on dual-number, a double on single-number), `tohex`'s width ne
 `cdIndex`, `cdSet`, `cdEq`, `RunP.ffi`, `RunP.ctype`, `RunP.cdIndex`): C types of `bool`, the 1- to 8-byte integers
 (LuaJIT's built-in `int8_t` … `uint64_t`, `size_t`, `intptr_t`, …), `float`, `double`, `const`, fixed and
 variable-length (`[?]`) arrays, structs and unions, as LP64 (x64's and arm64's alike) lays them out
-(`LuaLean/CDecl.lean`, which parses `ffi.cdef`'s typedefs, struct and union definitions, and skips a C function's
-declaration: `ffi.C`'s symbols are the world's handles); `ffi.new` and a ctype's call (zeroed; one value of the
+(`LuaLean/CDecl.lean`, which parses `ffi.cdef`'s typedefs, struct, union and enum definitions and C function
+declarations: `ffi.C`'s functions are the world's, below); `ffi.new` and a ctype's call (zeroed; one value of the
 type, a table from `[0]` or `[1]` to the first nil or by field name, a string into a byte array, or values in order,
 one element filling an array, a union's first field), `ffi.typeof`, `ffi.cast` to a number type, `ffi.sizeof`,
 `ffi.string` with and without a length; a cdata is a typed view of bytes (`Obj.cdata` over `Obj.bytes`), an element
@@ -290,10 +290,31 @@ by 0 2^63, `^` by repeated squaring and an `int64_t`'s negative exponent lj_cari
 same pairs as 64-bit integers, a scalar and any other value unequal; `tostring` (and so `print`, `%s`) of a 64-bit
 integer `5LL`, `5ULL`, of a ctype `ctype<int>` (the FFI's `__tostring`); `string.format`'s `%d` and `%x` of an
 unqualified `int64_t` or `uint64_t` (its bits, as lj_strfmt_putarg takes them); `tonumber` rounded to nearest; a
-64-bit integer stored to a narrower integer mod 2^bits, to a double or float rounded; `#` of any cdata LuaJIT's error
-(`attempt to get length of 'int64_t'`); `long long`, a ctype of LuaJIT's apart from `int64_t` with its name, is
+64-bit integer stored to a narrower integer mod 2^bits, to a double or float rounded; `#` of a cdata its metatype's
+`__len`, else LuaJIT's error (`attempt to get length of 'int64_t'`); `long long`, a ctype of LuaJIT's apart from `int64_t` with its name, is
 outside `CDecl.lean`'s subset. A conversion's error names its destination with its qualifier (`cannot
-convert 'table' to 'const int'`). The
+convert 'table' to 'const int'`). Metatypes, enums and C calls (#59: `ctMeta`, `cdMetaIndex`, `cCall`,
+`clibIndex`, `CType.enum`, `CType.func`): `ffi.metatype` of a struct or union, once (`cannot change a protected
+metatable`), its metatable read at each use; a key a cdata (or a pointer to one, or its ctype) has not goes to its
+`__index` (a function called, a table read through its chain, nil there LuaJIT's `has no member named`) or
+`__newindex` (a `const` one's `attempt to write to constant location` first); where no builtin applies (carith_meta:
+a struct's arithmetic, `..`, `#`, `==` with anything, `<`), the first operand's metatype's metamethod, else the
+second's, else LuaJIT's error, or for `==` the addresses compared; a ctype's call its `__new`, a cdata's its `__call`
+(`'T' is not callable` without); `tostring` of a struct its `__tostring`. Enums (`cp_decl_enum`): each constant the
+one before plus one or a constant expression over int32 (`CPar.cexpr`: numerals, constants, `( )`, `- + ~`, `* / %
++ - << >> & ^ |`), the type `uint32_t` unless one is negative; `ffi.C.NAME` a constant's number, a string into an
+enum by its constant's name, an enum read a new cdata of its type (`cdata<enum e>: 4`), a non-string's conversion
+error naming its integer type. `ffi.istype`, `ffi.offsetof` (nothing for a field it has not), `ffi.alignof`,
+`ffi.gc` (its finalizer never run: "Known gaps"). C calls: `ffi.cdef`'s function declarations keep their types
+(`()` and `(void)` none, an array parameter a pointer, `...`; a redeclaration ignored, as LuaJIT's), `ffi.C.f` a
+cdata of the function (`missing declaration for symbol 'f'` without one), and its call the world's `ffi.C.f`: each
+argument converted to its parameter's type (`wrong number of arguments for function call`, a bad argument as a
+builtin's), the oracle seeing a number (an integer `.int` on both targets), a boolean, a pointer's bytes to its
+allocation's end (a string; nil NULL; C's address a number), a vararg's number a double and string a `const char *`;
+its answer the result (nil for `void`; a number in its type's range, an 8-byte integer's or an enum's boxed; a
+boolean; a pointer nil or C's address, a number, whose memory the semantics does not see) and then, for each
+argument pointing at bytes it may write (not a `const` pointee's, not a Lua string's), their new bytes, as many,
+written back. `ffi.errno` asks the world (`ffi.errno` with its argument as an integer, if any). The
 world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
 arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
@@ -306,7 +327,7 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
 underscores in numerals (`1_000`), FFI complex numerals (`2i`);
-`ffi.metatype`, enums and C calls with cdata (#59): `ffi`'s other fields are handles; `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
+`ffi`'s other fields (`load`, `abi`, `os`, `arch`, `typeinfo`) are handles; `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
 `getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
 `collectgarbage`, `gcinfo`, `module`, `newproxy`, `loadfile`, `arg` and
 `package` but `path` and `loaded` are handles (`unmodelled` in `LuaLean/Interp.lean`), so a call of one stops the
@@ -377,7 +398,13 @@ the name by scanning the bytecode back);
    into its arithmetic (x64 and arm64 convert them differently), its identity (a table key or `rawequal` of one:
    LuaJIT's numeral is one object, its prototype's constant, the semantics' a new one at each evaluation), the bit
    library on a cdata (lj_carith_check64's 64-bit forms, a task of the roadmap), another task's (a ctype indexed or
-   used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a message, a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
+   used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a message; of C
+   calls: an aggregate passed or returned by value, an integer argument past 2^53, a vararg neither a number, a
+   string nor nil, a C function's or variable's address or type (`ffi.typeof(C.f)`, a C variable read or written),
+   C's memory read or compared with the semantics' (a pointer a C function returned), an answer out of its form
+   (`ffi.C.f: an answer out of its form`), a reference's alignment, an enum constant outside int32 (LuaJIT's
+   wrap-around and its `uint32_t` constants), a constant expression's division by 0, shift of a negative number or
+   bitwise operator on one, and a conversion's error naming a type LuaJIT names by the ABI (`char *`), a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
    a reference's type given to `ffi.typeof`, `new` or `cast`, a ctype call's bad argument (LuaJIT names no function),
    an allocation past 64 KiB.
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
@@ -406,6 +433,13 @@ the name by scanning the bytecode back);
    - what a pointer points at stays: LuaJIT frees a cdata or string no value holds though a pointer still points into
      it (the pointer does not hold it), and reading it then is undefined. A spec about a pointer must keep its
      allocation held (md5.lua's `str2lei` reads its argument's bytes while the argument is live);
+   - `ffi.gc`'s finalizer and a metatype's `__gc` never run: LuaJIT runs them when it collects the cdata, at a time no
+     model predicts, or at exit;
+   - a symbol the C library does not have: LuaJIT's `ffi.C.f` raises `undefined symbol` when indexed, the semantics
+     gives the function and its call asks the oracle (whose answer is then an assumption no test of the world
+     passes);
+   - a metatype's metatable (or its `__index` table) changed after `ffi.metatype`, which LuaJIT leaves undefined (a
+     trace may have kept the old one): the semantics reads it at each use;
    - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
      handle read rather than called (`jit.os`, `package.preload`, `ffi.os`) is a handle where LuaJIT has a
      string or a table. `lua-lean check` names each use.
@@ -423,7 +457,8 @@ functions give 4221 calls that reach no effect. Outside it, by the files that us
 `package.config` 2, `jit` 2, a module not given as source 3 (`resty.sha`, `resty.http_connect`, `pl.operator`). Of
 the calls left out, most stop at an effect: Penlight's chunks at `package.config` (before
 #62 made `goto` a name, at compat.lua's `loadstring("local goto = 1")`), FFI pointers (#57, since in the subset:
-md5.lua's `str2lei`) and C declarations (#59).
+md5.lua's `str2lei`) and C declarations (#59, since in the subset: `lua-lean check` finds nothing outside it in
+resty.string and resty.random, whose calls into C are the world's; resty.sha1 needs resty.sha, not in the corpus).
 
 ## Layout and use
 
@@ -478,7 +513,8 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, done: "The subset", but the bit library on them; metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, done: "The subset", but the bit library on them; metatypes, enums and C calls #59, done: "The
+subset"), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) and #33's levels past 1 are #44 (done: "The call
   stack"; a coroutine's stack, `L` and a file's chunk's last line still stop).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
