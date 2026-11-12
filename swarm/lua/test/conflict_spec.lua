@@ -30,3 +30,10 @@ assert(locks.overlaps("m/*.lua", "m/a*") and locks.overlaps("m/a*", "m/*.lua") a
 assert(locks.overlaps("docs/", "docs/x.md") and locks.overlaps("docs", "*.md") and not locks.overlaps("docs/", "src/"))
 assert(locks.overlaps("a?c", "ab*") and not locks.overlaps("a?c", "abd") and locks.overlaps("[ab]x", "bx") and locks.overlaps("*", "x"))
 assert(locks.overlaps("migrations/0070*", "migrations/0070_a.sql") and not locks.overlaps("migrations/0070*", "migrations/0071*"))
+
+-- hunks: marker scan, same results as the old regex; large inputs must not hit a match limit
+local h = conflict.hunks("a\n<<<<<<< x\no1\no2\n||||||| y\nb\n=======\nt\n>>>>>>> z\nmid\n<<<<<<< x\n||||||| y\n=======\nt2\n>>>>>>> z\nend\n")
+assert(#h == 2 and h[1][1] == "o1\no2\n" and h[1][2] == "b\n" and h[1][3] == "t\n" and h[2][1] == "" and h[2][3] == "t2\n")
+assert(#conflict.hunks("no markers\n") == 0 and #conflict.hunks("<<<<<<< x\no\n||||||| y\nb\n") == 0)
+local big = ("<<<<<<< x\n" .. ("o\n"):rep(50) .. "||||||| y\n" .. ("b\n"):rep(50) .. "=======\n" .. ("t\n"):rep(50) .. ">>>>>>> z\n"):rep(3000)
+assert(#big > 1000000 and #conflict.hunks(big) == 3000)
