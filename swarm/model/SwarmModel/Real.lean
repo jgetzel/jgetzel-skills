@@ -73,6 +73,12 @@ theorem delRef_guarded (hdr : DelRef t) {c : Cfg} {b k : Nat} (hk : (t.git w).sa
     simp [Git.tip, Ne.symm hb']
   · simp [ht] at hgone
 
+/-- R1 at the tools: `--restart`'s new watchd is as the model's `restart` makes it: right after `hc run --bg` its terminal
+is listed live and `kill(pid, 0)` (run.pid_alive, what the restart and the old watchd's loop ask) finds the program,
+the model's `World.alive` -/
+theorem restart_alive (hr : HcRunStarts t) (hl : HcLsLive t) (hk : Kill0Alive t) (w : t.World) :
+    t.hcLs (t.hcRun w) (t.hcRunAddr w) = true ∧ t.kill0 (t.hcRun w) (t.hcRunPid w) = true :=
+  ⟨(hl _ _).trans (hr w).1, (hk _ _).trans (hr w).2⟩
 /-- W2 at the tools: end_agent's `hc kill` ends that terminal and leaves every worktree, branch and commit as it was -/
 theorem endAgent_keepsGit (hk : HcKillEnds t) {h : Nat} :
     t.termLive (t.hcKill w h) h = false ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w) :=
@@ -169,6 +175,8 @@ theorem delRef_guarded {c : Cfg} {b k : Nat} (hk : (real.git w).safe c k = true)
     (real.git w).tip b = some k ∧ (real.git w).safe c ((real.git w).tipOf b) = true ∧
       ∀ b', b' ≠ b → (real.git (real.delRef w b k)).tip b' = (real.git w).tip b' :=
   Tools.delRef_guarded del_ref hk hgone
+theorem restart_alive : real.hcLs (real.hcRun w) (real.hcRunAddr w) = true ∧ real.kill0 (real.hcRun w) (real.hcRunPid w) = true :=
+  Tools.restart_alive hc_run_starts hc_ls_live kill0_alive w
 theorem endAgent_keepsGit {h : Nat} :
     real.termLive (real.hcKill w h) h = false ∧ Git.durable (real.git (real.hcKill w h)) = Git.durable (real.git w) :=
   Tools.endAgent_keepsGit hc_kill_ends
