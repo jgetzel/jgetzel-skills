@@ -315,9 +315,20 @@ theorem tl_tickOf {c : Cfg} {s : State} (h : s.task.length = c.ntasks) : (tickOf
     · exact hx
   · exact hx
 
+theorem tl_tickCut {c : Cfg} {s : State} (h : s.task.length = c.ntasks) (k : Cut) : (tickCut c k s).task.length = c.ntasks := by
+  refine tickCut_inv (fun x => x.task.length = c.ntasks) (fun x t hx => ?_) (fun x n hx => by simpa using hx)
+    (fun x a hx => by simpa [endAgent, releaseAll] using hx) (fun x a pl hx => by simpa using hx)
+    (fun pl x t hx _ => by rw [spawnFor_tlen]; exact hx) h k
+  unfold reapTask; simp only []
+  split
+  · split
+    · simp [setTask_len, hx]
+    · exact hx
+  · exact hx
+
 /-- every reachable state has `ntasks` task records -/
 theorem tl_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : s.task.length = c.ntasks := by
-  refine reachable_induct (P := fun s => s.task.length = c.ntasks) (by simp [init]) ?_ h
+  refine reachable_induct (P := fun s => s.task.length = c.ntasks) (by simp [init]) ?_ (fun s k _ hs => tl_tickCut hs k) h
   intro s s' act _ hs hstep
   open_step hstep
   case tick => obtain ⟨_, rfl⟩ := hstep; exact tl_tickOf hs
@@ -638,6 +649,13 @@ theorem l3_tickOf {c : Cfg} {s : State} (h : L3I s) (hl : s.ag.length = c.nagent
     (fun x a hx => ⟨l3_endAgent hx.1, by simpa [endAgent] using hx.2⟩)
     (fun x a pl hx => ⟨l3_post (l3_setAg hx.1 rfl (fun _ => ⟨rfl, rfl⟩) id (fun hh => Or.inl hh)), by simpa using hx.2⟩)
     (fun pl x t hx ho => ⟨l3_spawnFor hx.1 hx.2 ho, by rw [spawnFor_len]; exact hx.2⟩) ⟨h, hl⟩).1
+theorem l3_tickCut {c : Cfg} {s : State} (h : L3I s) (hl : s.ag.length = c.nagents) (k : Cut) : L3I (tickCut c k s) :=
+  (tickCut_inv (fun y => L3I y ∧ y.ag.length = c.nagents)
+    (fun x t hx => ⟨l3_reapTask hx.1, by simpa using hx.2⟩)
+    (fun x n hx => ⟨hx.1, by simpa using hx.2⟩)
+    (fun x a hx => ⟨l3_endAgent hx.1, by simpa [endAgent] using hx.2⟩)
+    (fun x a pl hx => ⟨l3_post (l3_setAg hx.1 rfl (fun _ => ⟨rfl, rfl⟩) id (fun hh => Or.inl hh)), by simpa using hx.2⟩)
+    (fun pl x t hx ho => ⟨l3_spawnFor hx.1 hx.2 ho, by rw [spawnFor_len]; exact hx.2⟩) ⟨h, hl⟩ k).1
 
 theorem l3_pend_cons {y : State} {u : Nat} (h : L3I y) (hans : (y.tk u).answer = true)
     (hu : ∀ o, held (y.tk u) o = true → (y.agt o).boot = true ∨
@@ -854,7 +872,8 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
 /-- The invariant behind L3, of every reachable state. -/
 theorem l3_of_reachable {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao : c.answerOnTask = true)
     {s : State} (h : Reachable c s) : L3I s :=
-  reachable_induct (P := L3I) (l3_init c) (fun _ _ _ hR hs hstep => l3_step hr hbf hao hR hs hstep) h
+  reachable_induct (P := L3I) (l3_init c) (fun _ _ _ hR hs hstep => l3_step hr hbf hao hR hs hstep)
+    (fun _ k hR hs => l3_tickCut hs (i1_of_reachable hR).1 k) h
 
 -- ---------- a held task changes hands only to an agent spawned for it ----------
 

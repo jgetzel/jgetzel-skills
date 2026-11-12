@@ -101,7 +101,8 @@ macro "pf_tac" : tactic => `(tactic|
     | assumption))
 
 theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
-  refine reachable_induct ?_ ?_ h
+  refine reachable_induct (P := Pfx) ?_ ?_ (fun s k _ hs => tickCut_inv Pfx (fun _ _ => pfx_reapTask) (fun _ _ => pfx_task rfl)
+    (fun _ _ => pfx_endAgent) (fun _ _ _ hx => pfx_task rfl hx) (fun _ _ _ hx hopn => pfx_spawnFor hopn hx) hs k) h
   · refine ⟨0, Nat.zero_le _, fun u => ?_⟩
     have : ((init c).tk u).st = .absent := by
       simp only [State.tk, init]; split
@@ -588,6 +589,14 @@ theorem J_tickOf {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c
     (fun x a hx => ⟨ii_endAgent hx.1, J_endAgent hx.2⟩)
     (fun x a pl hx => ⟨ii_post (ii_setAg (fun _ => Or.inl rfl) hx.1), J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hx.2)⟩)
     (fun pl x t hx hopn hst => ⟨ii_spawnFor hx.1, J_spawnFor hopn hst hx.2⟩) ⟨hi, h⟩
+theorem J_tickCut {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c s) (h : J s) (k : Cut) :
+    InbInv c (tickCut c k s) ∧ J (tickCut c k s) :=
+  tickCut_inv2 (fun x => InbInv c x ∧ J x)
+    (fun x t hx => ⟨ii_reapTask hx.1, J_reapTask hfix (fun a => (hx.1.2.2 a).1) hx.2⟩)
+    (fun x n hx => ⟨ii_frame rfl rfl rfl rfl rfl hx.1, J_frame rfl rfl rfl rfl hx.2⟩)
+    (fun x a hx => ⟨ii_endAgent hx.1, J_endAgent hx.2⟩)
+    (fun x a pl hx => ⟨ii_post (ii_setAg (fun _ => Or.inl rfl) hx.1), J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hx.2)⟩)
+    (fun pl x t hx hopn hst => ⟨ii_spawnFor hx.1, J_spawnFor hopn hst hx.2⟩) ⟨hi, h⟩ k
 
 theorem fc_owns {c : Cfg} {s : State} {a : Nat} (h : firstClaimed c s a ≠ 0) :
     (s.tk (firstClaimed c s a)).st = .claimed ∧ (s.tk (firstClaimed c s a)).owner = some a := by
@@ -681,7 +690,7 @@ theorem J_pollOf {c : Cfg} {s : State} (h : J s) : J (pollOf c s) := by
 theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
     (h : Reachable c s) :
     J s := by
-  refine reachable_induct ?_ ?_ h
+  refine reachable_induct (P := J) ?_ ?_ (fun s k hr hs => (J_tickCut hfix (inbInv_of_reachable hr) hs k).2) h
   · have hb : ∀ a, ((init c).agt a).believes = [] := fun a => by
       simp only [State.agt, init, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[a]? <;> rfl
     exact ⟨fun a t ht => (by rw [hb] at ht; cases ht), fun a b t ht => (by rw [hb] at ht; cases ht)⟩

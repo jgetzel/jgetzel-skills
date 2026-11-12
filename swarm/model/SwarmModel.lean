@@ -36,3 +36,4 @@ import SwarmModel.Nudge
 import SwarmModel.Stay
 import SwarmModel.Contract
 import SwarmModel.Trust
+import SwarmModel.Cut

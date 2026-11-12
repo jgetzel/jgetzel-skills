@@ -223,6 +223,66 @@ theorem tick_inv {c : Cfg} (P : State → Prop)
     (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickOf c s) :=
   tick_inv2 P hreap hlocks hend hdig (fun pl x t hx ho _ => hspawn pl x t hx ho) h hgit hnote
 
+/-- `tick_inv2` for a tick an error ends partway (board #84): a property every unit of the tick keeps (reap's lock pass
+cut after any lock) is kept by every cut of it -/
+theorem tickCut_inv2 {c : Cfg} (P : State → Prop)
+    (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x n, P x → P (reapLocksN n x)) (hend : ∀ x a, P x → P (endAgent x a))
+    (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
+    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → stopped x t = false → P (spawnFor c pl x t)) {s : State} (h : P s)
+    (k : Cut)
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h)
+    (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickCut c k s) := by
+  have h1 : P (reapCut c k.reap s) := by
+    cases k.reap with
+    | none => simp only [reapCut]; rw [reapLocks_eq]; exact hlocks _ _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
+    | some n => exact hlocks _ _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
+  unfold tickCut
+  refine notesL_inv P hnote _ (hgit _ _ ?_)
+  unfold lifecycleCut
+  generalize reapCut c k.reap s = s1 at h1 ⊢
+  have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
+    (fun x : State => P x ∧ (∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) ∧ SP s1 x) (cutL k.life c.agents) s1
+    ⟨h1, fun _ h => h, sp_refl _⟩ (fun b a hb => by
+      split
+      · refine ⟨hend _ _ hb.1, fun t ht => ?_, sp_trans hb.2.2 (sp_endAgent _ _)⟩
+        have := hb.2.1 t ht
+        rw [endAgent_tk]; split
+        · rfl
+        · exact this
+      · exact hb)
+  have h3 := foldl_inv (fun x a =>
+    if reusable c s1 a && !(pool c s1).all (x.agt a).told.contains then
+      post (setAg x a fun g => { g with told := pool c s1 ++ g.told }) ⟨none, a, false, .digest, 0⟩
+    else x) (fun x : State => P x ∧ (∀ t, (s1.tk t).st = .opn → (x.tk t).st = .opn) ∧ SP s1 x)
+    (cutL (k.life.map (· - c.nagents)) c.agents) _ h2 (fun b a hb => by
+      split
+      · exact ⟨hdig _ _ _ hb.1, fun t ht => hb.2.1 t ht, sp_trans hb.2.2 (sp_digest _ _ _)⟩
+      · exact hb)
+  simp only []
+  split
+  · exact h3.1
+  · refine spawn_fold P _ (hspawn _) _ ((List.nodup_range' (s := 1) (n := c.ntasks)).sublist (cutL_sub _ _)) _ h3.1
+      (fun t _ hc => ?_)
+    have := (List.mem_filter.mp (List.contains_iff_mem.mp hc)).2
+    simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at this
+    exact ⟨h3.2.1 t this.1.1, sp_stopped h3.2.2 this.2⟩
+
+/-- `tickCut_inv2` for a property whose spawn step needs only that the task is open -/
+theorem tickCut_inv {c : Cfg} (P : State → Prop)
+    (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x n, P x → P (reapLocksN n x)) (hend : ∀ x a, P x → P (endAgent x a))
+    (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
+    (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s) (k : Cut)
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h)
+    (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickCut c k s) :=
+  tickCut_inv2 P hreap hlocks hend hdig (fun pl x t hx ho _ => hspawn pl x t hx ho) h k hgit hnote
+
+theorem sp_tickCut (c : Cfg) (s : State) (k : Cut) : SP s (tickCut c k s) :=
+  tickCut_inv2 (SP s) (fun x t h => sp_trans h (sp_reapTask c x t))
+    (fun x n h => sp_trans h (sp_tasks (fun u => by simp [State.tk, reapLocksN]) (fun b h => by simpa [State.agt, reapLocksN] using h) rfl))
+    (fun x a h => sp_trans h (sp_endAgent x a)) (fun x a pl h => sp_trans h (sp_digest x a pl))
+    (fun pl x t h _ _ => sp_trans h (sp_spawnFor c pl x t)) (sp_refl s) k
+    (fun x g h => sp_trans h (sp_tasks (fun u => ⟨rfl, rfl⟩) (fun b h => h) rfl))
+
 -- ---------- messages ----------
 theorem msg_congr {s s' : State} (h : s'.log = s.log) (i : Nat) : s'.msg i = s.msg i := by simp [State.msg, h]
 theorem addressed_congr {s s' : State} (h : s'.log = s.log) (a i : Nat) : addressed s' a i = addressed s a i := by
@@ -556,6 +616,9 @@ theorem ii_pollOf {c : Cfg} {s : State} (h : InbInv c s) : InbInv c (pollOf c s)
 theorem ii_tickOf {c : Cfg} {s : State} (h : InbInv c s) : InbInv c (tickOf c s) :=
   tick_inv (InbInv c) (fun _ _ => ii_reapTask) (fun _ => ii_frame rfl rfl rfl rfl rfl) (fun _ _ => ii_endAgent)
     (fun _ _ _ hx => ii_post (ii_setAg (fun _ => Or.inl rfl) hx)) (fun _ _ _ hx _ => ii_spawnFor hx) h
+theorem ii_tickCut {c : Cfg} {s : State} (h : InbInv c s) (k : Cut) : InbInv c (tickCut c k s) :=
+  tickCut_inv (InbInv c) (fun _ _ => ii_reapTask) (fun _ _ => ii_frame rfl rfl rfl rfl rfl) (fun _ _ => ii_endAgent)
+    (fun _ _ _ hx => ii_post (ii_setAg (fun _ => Or.inl rfl) hx)) (fun _ _ _ hx _ => ii_spawnFor hx) h k
 
 /-- one step of "the inbox invariant is kept" over the changes an action is made of -/
 macro "ii_tac" : tactic => `(tactic|
@@ -570,7 +633,7 @@ macro "ii_tac" : tactic => `(tactic|
     | assumption))
 
 theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c s := by
-  refine reachable_induct ?_ ?_ h
+  refine reachable_induct (P := InbInv c) ?_ ?_ (fun s k _ hs => ii_tickCut hs k) h
   · refine ⟨by simp [init], by simp [init], fun a => ?_⟩
     have hcur : (init c).cur a = 0 := by
       simp only [State.cur, init, List.getD_eq_getElem?_getD, List.getElem?_map]; cases c.agents[a]? <;> rfl

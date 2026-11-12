@@ -153,6 +153,10 @@ structure Cfg where
   /-- `.claude/swarm.json` `ci.flow` is "pr-gated": a PR merges once its checks are green, and watchd's poll tells the
   owner when they finish (board #28) -/
   gated : Bool := false
+  /-- board #84: watchd_tick runs each pass under its own pcall, so an error in one ends that pass alone. Before, only
+  the conflict and cost passes were: an error in reap, the notices, the sweep or lifecycle ended the rest of the tick
+  (`Cut.seq`), and one that recurs (a row a pass chokes on) stops every pass after it on every tick (finding #36) -/
+  passGuard : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -537,6 +541,55 @@ def tickS (c : Cfg) (s : State) : State :=
 /-- watchd's tick: the staffing, then the block notices (the Lua sends them before lifecycle, which changes no blocked
 task and reads no notice) -/
 def tickOf (c : Cfg) (s : State) : State := notices c (tickS c s)
+
+-- ---------- a tick an error ends partway (board #84) ----------
+/-- the first n of l, or all of it -/
+def cutL {α : Type} : Option Nat → List α → List α
+  | none, l => l
+  | some n, l => l.take n
+/-- reap's lock pass, its first n locks: each a transaction of its own -/
+def reapLocksN (n : Nat) (s : State) : State :=
+  { s with lock := s.lock.mapIdx fun p l => if p < n && l.exp then ⟨none, false⟩ else l }
+/-- watchd.reap cut after o of its units, each a transaction: each task in id order, then each lock -/
+def reapCut (c : Cfg) : Option Nat → State → State
+  | none, s => reapLocks (reapTasks c s)
+  | some n, s => reapLocksN (n - c.ntasks) ((c.tasks.take n).foldl (reapTask c) s)
+/-- lifecycle cut after o of its units: each agent's end, then each agent's digest, then each spawn -/
+def lifecycleCut (c : Cfg) (o : Option Nat) (s : State) : State :=
+  let pl := pool c s
+  let k := c.nagents
+  let ended := (cutL o c.agents).foldl (fun x a => if finished c s a && !reusable c s a then endAgent x a else x) s
+  let told := (cutL (o.map (· - k)) c.agents).foldl (fun x a =>
+    if reusable c s a && !pl.all (x.agt a).told.contains then
+      post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩
+    else x) ended
+  if c.agents.any (reusable c s) then told else (cutL (o.map (· - 2 * k)) c.tasks).foldl (spawnFor c pl) told
+/-- how far each pass of a tick got before an error ended it, in units that each commit on their own: reap's, the block
+notices' (each task: its event and its message, one transaction), the sweep's (each worktree) and lifecycle's; `none`
+is the whole pass -/
+structure Cut where
+  reap : Option Nat
+  note : Option Nat
+  git : Option Nat
+  life : Option Nat
+  deriving DecidableEq, Repr
+/-- the tick with each pass cut where the cut says: lifecycle and the sweep decide on what reap left -/
+def tickCut (c : Cfg) (k : Cut) (s : State) : State :=
+  let r := reapCut c k.reap s
+  (cutL k.note c.tasks).foldl (notify c)
+    { lifecycleCut c k.life r with git := (cutL k.git c.wtIds).foldl (fun g w => if sweeps c r w || endRemoves c r w then g.rm c w else g) r.git }
+/-- the tick without `passGuard`: an error at its n-th unit, in the Lua's order (reap, the notices, the sweep,
+lifecycle), ends it there -/
+def Cut.seq (c : Cfg) (n : Nat) : Cut :=
+  let r := c.ntasks + c.patterns.length
+  let o := r + c.ntasks
+  let g := o + c.nwts
+  if n < r then ⟨some n, some 0, some 0, some 0⟩
+  else if n < o then ⟨none, some (n - r), some 0, some 0⟩
+  else if n < g then ⟨none, none, some (n - o), some 0⟩
+  else ⟨none, none, none, some (n - g)⟩
+/-- the cuts a failing tick may make: any, each pass under its own pcall (`passGuard`); else an error ends the tick -/
+def Cut.ok (c : Cfg) (k : Cut) : Prop := c.passGuard = true ∨ ∃ n, k = Cut.seq c n
 
 -- ---------- actions: `none` is "not enabled" ----------
 def init (c : Cfg) : State where
@@ -935,6 +988,8 @@ def step (c : Cfg) (s : State) : Action → Option State
 inductive Reachable (c : Cfg) : State → Prop
   | init : Reachable c (init c)
   | step {s s' : State} (act : Action) : Reachable c s → step c s act = some s' → Reachable c s'
+  /-- a tick an error ends partway (board #84): what each pass committed before it stays -/
+  | cut {s : State} (k : Cut) : Reachable c s → c.watchd = true → k.ok c → Reachable c (tickCut c k s)
 
 /-- A run from the start: the state after the actions, if each was enabled. -/
 def run (c : Cfg) (acts : List Action) : Option State := acts.foldlM (step c) (init c)

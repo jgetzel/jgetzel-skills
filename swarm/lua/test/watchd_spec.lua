@@ -147,6 +147,19 @@ assert(task1().owner == "t-1")
 assert(not peer:one("select 1 from agent where name='t-2'"))
 assert(not peer:one("select 1 from msg where dest='t-comms'"))  -- a lost race is no launch failure
 
+-- board #84: each pass under its own pcall: reap failing ends reap alone; the notices still run, and the tick raises it
+do
+  c = fresh()
+  peer:exec("insert into task(title,state,owner,question) values('q','blocked','x','which way?')")
+  local reap, hc = watchd.reap, agents.hc_terminals
+  watchd.reap, agents.hc_terminals = function() error("boom", 0) end, function() return nil end
+  local ok, err = pcall(watchd.watchd_tick, c, "t-comms", nil, { min_free_gib = 0 })
+  watchd.reap, agents.hc_terminals = reap, hc
+  assert(not ok and tostring(err):find("reap: boom", 1, true), tostring(err))
+  assert(peer:one("select 1 from msg where dest='t-comms' and body like '%is blocked on #1%'"))
+  assert(peer:one("select 1 from event where kind='task-blocked' and path='1'"))
+end
+
 unistd.chdir(home)
 proc.run({ "rm", "-rf", dir })
 

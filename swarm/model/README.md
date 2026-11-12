@@ -51,6 +51,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` with `hc send` as the hypothesis `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
 | `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
+| `SwarmModel/Cut.lean` | a tick an error ends partway (board #84): `Cut`, `tickCut` (Model.lean) and `Reachable.cut`, so every invariant of reachable states holds of what a failed tick leaves; N1, W1 and W2 of a cut tick (`N1cut_of`), Q1 of one whose notice pass ran (`Q1cut`), a failed pass stops no other with `passGuard` (`passesIndep_of`) and stops them all without it (finding #36: `not_passesIndep`, `stuck36`, the run `pre36`) |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -80,7 +81,10 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 ## The model
 
 One value holds the whole state; every watchd tick is a pure function of it, composed as the Lua composes it
-(`reapTasks`, `reapLocks`, `lifecycle`).
+(`reapTasks`, `reapLocks`, `lifecycle`). A tick an error ends partway is `tickCut` (board #84): each pass (reap, the notices, the sweep,
+lifecycle) stopped after any prefix of its units, each a commit of its own, and lifecycle and the sweep deciding on what
+reap left; `Reachable` takes it as a third way to move (`Reachable.cut`), so each invariant of reachable states holds of
+what it leaves. It is not a `step`: runs, and the liveness proved of them, are of ticks that complete.
 
 - **Tasks** are absent, open, claimed, blocked, done or dropped, with an owner, `--after` dependencies, a lease
   (live or lapsed), evidence (empty or not), and the unblock answer if any. Agents claim, renew, release, block,
@@ -163,6 +167,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `ownAdded` | lifecycle reads a spawned agent's worktrees from its record alone, so one it added itself and left unlanded doesn't keep it | board #15: lifecycle's `unlanded` reads the record and the worktrees named after the agent |
 | `stopFirst` | the user's release of a working agent's task lets a peer claim it before the ex-owner reads the stop (finding #32) | board #53: the task records the stop; claim, the pool and auto-spawn refuse it while the ex-owner is at work and hasn't read it |
 | `renotify` | watchd marks a block's notice sent by any task-blocked event with the same question, so the same question asked again (by the same agent after an answer, or by another after a release) is never told (finding #35) | board #47: sent only by a task-blocked event after the task's latest `task block` (`toldAfter`) |
+| `passGuard` | watchd_tick ran only the conflict and cost passes under pcall: an error in reap, the notices, the sweep or lifecycle ended the rest of the tick, and one that recurred ended it every tick (finding #36) | board #84: each pass under its own pcall; the tick reports the errors at its end |
 | `awayQuiet` | (the feature off) a block's notice is urgent while the user is away | `swarm away`: not urgent while away |
 | `backTells` | (the feature off) `--back` sends the communicator nothing | `--back`: one urgent message naming the questions that wait |
 
@@ -710,6 +715,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 | 32 | S1 | `humanRelease := true` (main, board #40) with `stopFirst := false` / S1 with `stopFirst` on, or `humanRelease` off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | `stopFirst` (board #53): claim, auto-spawn and the pool refuse the task to others while the ex-owner is at work and hasn't read the stop; `script-release` now has agent 1 claim #1 after agent 0 reads it |
 | 33 | N1 of `swarm end` | `--force` / `N1end` without it (`N1end_of`) | Agent 0 starts a long job (a build, a CI wait); the user runs `swarm end m-1 --force`: the row is ended mid-job and end_agent's cgroup.kill kills the job (`not_N1end_force`); or agent 0 has an uncommitted file and is ended (`not_N1end_force_wt`; the file stays in its worktree, `endOther_git`). Without `--force` both are refused. | not a bug: `--force` is the user's choice to lose work; `swarm end` without it refuses (board #40) |
 | 35 | Q1 | `renotify := false` / Q1 (`not_Q1`, `Q1_of`) | Agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it and blocks #1 again with the same question. watchd marked the notice sent by any task-blocked event of the task with that question text, so the second question was never told (nor another agent's same question after a release). Found by the model of board #47 and replayed (`script-away` fails on the old Lua) | board #47: a notice is sent once the task's latest question event is a `task block` (watchd.watchd_tick) |
+| 36 | a failed pass stops no other | `passGuard := false` / `PassesIndep` (`not_passesIndep`, `passesIndep_of`) | watchd_tick ran reap, the hc-blocked loop, the notices, lifecycle, quiet, hung, blockers, machine_tick, run.remote_tick and the ci passes bare: an error in one (a db call past busy_timeout, gh, git) ended the tick there. Agent 0 claims #1 and blocks on it; a tick whose reap fails at its first unit does nothing at all (`stuck36`): the block is not told (`pre36`), and if the error recurs (a row reap chokes on) watchd never tells, ends, spawns or sweeps again while it looks alive. With `passGuard` the notices run whatever reap did, and tell it (`Q1cut`). Two smaller ones the cut model shows: a notice's event and its message, and a digest's, were two commits, so an error between them marked a block told (or an agent told of the pool) that never got its message | board #84: a pcall per pass in watchd.watchd_tick, the errors raised at its end for tick_failed; each notice and each digest one transaction |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -1153,6 +1159,7 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 | Property | Theorem (`Contract.lean`) | Needs | Shown needed by |
 |---|---|---|---|
 | S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `s1_oneWorker` … `digest_hung'` | none | |
+| N1, W1, W2 of a tick an error cut partway; a failed pass stops no other | `n1_cut`, `passes_indep` (`N1cut_of`, `passesIndep_of`) | none | |
 | landed_ref says landed → reachable | `Tools.landedRef_reach` (`env_landedRef`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
 | the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`env_sweepGate`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
 | `worktree remove` takes only that worktree | `Tools.wtRemove_only` | `WtRemove` | `need_wtRemove` |
@@ -1168,11 +1175,18 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 | SQLITE_BUSY is clean | `Db.busyClean` | all five sqlite | the same five |
 | a statement answers on its transaction's db | `Db.stmt_out` | `SqliteRead`, `SqliteWrite` | `need_db_read`, `need_db_write` |
 
+A failed tool call partway through a tick takes no hypothesis either (board #84): it is an error that ends its pass
+there, `tickCut` (`Cut.lean`), whatever the call. S1-S5, W4 and every invariant of reachable states hold of what it leaves
+(`Reachable.cut`), N1, W1 and W2 of the cut tick (`N1cut_of`), Q1 of one whose notice pass ran (`Q1cut`); with
+`passGuard` (a pcall per pass in watchd_tick) a failed pass stops no other (`passesIndep_of`), and without it the first
+unit of reap failing stops the whole tick (finding #36); the next tick runs either way (`iteration`'s pcall,
+`LoopSafe.lean`). Not modelled: the conflict, cost, base-out, quiet, hung, blockers, machine, remote and ci passes, which
+are not in the model's tick (the ci poll is the `poll` step, which a failure only leaves untaken); a sweep's `worktree
+remove` without its `branch -D` (it deletes less); with `splitGC` off (the old end_agent's removal), a cut tick may remove
+an ending agent's worktree though its end was cut.
+
 Open: whether a weaker predicate than a needed one would do (`WtRemove` and `DelRef` say what the tool does; the
-theorems use only what it leaves alone). Not yet a property: "a failed pass leaves the invariants and does not stop
-the other passes or the next tick". The model's tick never fails partway; in the Lua, `watchd_tick` wraps only the
-conflict and cost passes in `pcall`, so an error in reap, lifecycle or the ci passes ends that tick's later passes
-(the next tick runs: `iteration`'s pcall). Board #84 models a failing pass and proves or refutes it.
+theorems use only what it leaves alone).
 
 ## Using these proofs downstream
 

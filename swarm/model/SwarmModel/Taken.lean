@@ -906,8 +906,24 @@ theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act �
 /-- board #53, of a reachable state: a task's stop is a message of the log, to the agent it names -/
 def SK (s : State) : Prop := ∀ t o, (s.tk t).stopTo = some o → (s.tk t).stopMsg ≤ s.log.length ∧ addressed s o (s.tk t).stopMsg = true
 
+theorem cut_log (c : Cfg) (s : State) (k : Cut) : ∃ e, (tickCut c k s).log = s.log ++ e :=
+  tickCut_inv (fun x => ∃ e, x.log = s.log ++ e)
+    (fun x t ⟨e, he⟩ => let ⟨e2, h2⟩ := reapTask_ext c x t; ⟨e ++ e2, by rw [h2, he]; simp⟩)
+    (fun x n h => by simpa using h) (fun x a h => by simpa using h)
+    (fun x a pl ⟨e, he⟩ => ⟨e ++ [⟨none, a, false, .digest, 0⟩], by simp [post, he]⟩) (fun pl x t h _ => by simpa using h)
+    ⟨[], by simp⟩ k
+theorem sk_tickCut {c : Cfg} {s : State} (hK : SK s) (k : Cut) : SK (tickCut c k s) := by
+  intro t o ho
+  obtain ⟨e, he⟩ := cut_log c s k
+  obtain ⟨h1, h2⟩ := (sp_tickCut c s k).1 t
+  rw [h1] at ho
+  obtain ⟨k1, k2⟩ := hK t o ho
+  rw [h2]
+  refine ⟨by rw [he]; simp; omega, ?_⟩
+  simp only [addressed] at k2 ⊢; rw [msg_ext he k1]; exact k2
+
 theorem sk_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : SK s := by
-  refine reachable_induct (P := SK) ?_ ?_ h
+  refine reachable_induct (P := SK) ?_ ?_ (fun s k _ hs => sk_tickCut hs k) h
   · intro t o ho
     have : ((init c).tk t).stopTo = none := by
       simp only [State.tk, init]; split
@@ -1148,6 +1164,11 @@ theorem i1_tickOf {c : Cfg} {s : State} (h : I1 c s) : I1 c (tickOf c s) :=
     (fun _ _ => i1_endAgent) (fun x a pl hx => i1_frame (s := setAg x a fun g => { g with told := pl ++ g.told }) (by simp) (by simp)
       (i1_setAg' (fun hh => hx.2.2 a (by simpa using hh)) hx))
     (fun _ _ _ hx _ => i1_spawnFor hx) h
+theorem i1_tickCut {c : Cfg} {s : State} (h : I1 c s) (k : Cut) : I1 c (tickCut c k s) :=
+  tickCut_inv (I1 c) (fun x t hx => i1_frame (by simp) (by simp) hx) (fun x n hx => i1_frame (by simp) (by simp) hx)
+    (fun _ _ => i1_endAgent) (fun x a pl hx => i1_frame (s := setAg x a fun g => { g with told := pl ++ g.told }) (by simp) (by simp)
+      (i1_setAg' (fun hh => hx.2.2 a (by simpa using hh)) hx))
+    (fun _ _ _ hx _ => i1_spawnFor hx) h k
 
 theorem i1_setTask {c : Cfg} {s : State} {t : Nat} {f : Task → Task} (h : I1 c s) : I1 c (setTask s t f) :=
   i1_frame (by simp) (by simp) h
@@ -1190,7 +1211,7 @@ theorem i1_step {c : Cfg} {s s' : State} {act : Action} (hI : I1 c s) (hs : step
 
 
 theorem i1_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : I1 c s :=
-  reachable_induct (P := I1 c) (i1_init c) (fun s s' act _ hs hstep => i1_step hs hstep) h
+  reachable_induct (P := I1 c) (i1_init c) (fun s s' act _ hs hstep => i1_step hs hstep) (fun s k _ hs => i1_tickCut hs k) h
 
 -- ---------- no terminal dies ----------
 
