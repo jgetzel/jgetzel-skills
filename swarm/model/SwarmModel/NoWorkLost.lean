@@ -146,7 +146,7 @@ theorem reapTask_keeps {c : Cfg} {x : State} {t o u : Nat} (ho : (x.tk t).owner 
 theorem lifecycle_tk {c : Cfg} {z : State} {t o : Nat} (hst : (z.tk t).st = .claimed) (ho : (z.tk t).owner = some o) :
     (lifecycle c z).tk t = z.tk t := by
   have hfin : finished c z o = false := by simp [finished, idleFree, holds_of hst ho]
-  have hpl : (pool c z).contains t = false := by simp [pool, startable, hst]
+  have hpl : (pool c z).contains t = false := by simp [pool, claimable, startable, hst]
   have h2 : (endFold c z).tk t = z.tk t := by
     unfold endFold
     exact foldl_inv _ (fun y : State => y.tk t = z.tk t) c.agents z rfl (fun y b hy => by

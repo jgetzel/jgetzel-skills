@@ -27,7 +27,7 @@ end
 
 function T.test_release_of_anothers_task(t)
   comms(t)
-  t:agent("e"); t:agent("f")
+  t:agent("e", { status = "working" }); t:agent("f", { status = "working" })
   t:sw("e", "task", "add", "x"); t:sw("e", "task", "claim", "1")
   t:has(t:sw("f", "task", "release", "1", { ok = false }).stderr, "not claimed by you")  -- a peer can't
   t:has(t:sw("human", "task", "release", "1").stdout, "released #1 from e")
@@ -35,12 +35,20 @@ function T.test_release_of_anothers_task(t)
   t:eq(msgs_to(t, "e"), { { frm = "human", body = "the user released #1: stop work on it", urgent = 1 } })
   local ev = t:q1("select agent, data from event where kind='release'")
   t:eq(ev, { agent = "human", data = "#1 from e" })
+  -- no one takes it while e is at work and hasn't read the stop (board #53), auto-spawn neither
+  t:has(t:sw("f", "task", "claim", "1", { ok = false }).stderr, "released from e, which hasn't read the stop")
+  t:q("select 1")  -- points SWARM_DB at the test's db
+  t:eq(#require("swarm.tasks").pool(require("swarm.db").connect()), 0)
+  t:sw("e", "read")
   -- the communicator may too, a blocked task as well; its question goes with it
   t:sw("f", "task", "claim", "1"); t:sw("f", "task", "block", "1", "which db?")
   t:sw("c", "task", "release", "1")
   t:eq(t:q1("select state, question from task"), { state = "open" })
   t:eq(msgs_to(t, "f")[1].body, "c released #1: stop work on it")
   t:has(t:sw("human", "task", "release", "1", { ok = false }).stderr, "task #1 is not claimed")
+  -- an ex-owner that isn't at work holds nothing back: its next turn reads the stop first
+  t:q("update agent set status='idle' where name='f'")
+  t:sw("e", "task", "claim", "1")
 end
 
 function T.test_human_drops_and_unblocks(t)

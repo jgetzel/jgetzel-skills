@@ -1,5 +1,6 @@
 import SwarmModel.Workspaces
 import SwarmModel.Taken
+import SwarmModel.Release
 
 /-! Non-vacuity (board #12): a fair run exists, so the theorems over `Run.Fair` (L1, L2, L3's halves, W3) are not true
 of nothing. `lasso_run`: a run that ends in a cycle, every fair action enabled at a state of the cycle being in the

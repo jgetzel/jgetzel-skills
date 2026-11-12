@@ -94,6 +94,10 @@ structure Cfg where
   /-- H2, board #40: the user or the communicator may `swarm task release` a task another agent holds (claimed or
   blocked); the ex-owner is sent an urgent stop. Main has it -/
   humanRelease : Bool := true
+  /-- board #53: the user's release records its stop on the task (`stopTo`, `stopMsg`), and no one may take the task
+  (`claim`, claim's write, the pool) while its ex-owner is at work and hasn't read it (`stopped`). Before, a peer could
+  claim it at once (finding #32) -/
+  stopFirst : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -107,6 +111,10 @@ structure Task where
   hcq : Bool
   /-- the agent reap took this task from, until another agent claims it (the Lua's `reaped_from`) -/
   reaped : Option Nat := none
+  /-- the agent the user's release (H2) took this task from, and the id of the stop it was sent (the Lua's `stop_to`,
+  `stop_msg`); kept until the next such release -/
+  stopTo : Option Nat := none
+  stopMsg : Nat := 0
   deriving DecidableEq, Repr, Inhabited
 
 structure Agent where
@@ -222,9 +230,18 @@ def State.owned (s : State) (o : Option Nat) : Agent := match o with | some a =>
 def State.cur (s : State) (a : Nat) : Nat := s.cursor.getD a 0
 def State.msg (s : State) (i : Nat) : Msg := if i = 0 then default else s.log.getD (i - 1) default
 def Agent.live (g : Agent) : Bool := g.st != .unborn && g.st != .ended
+/-- at work: working, or at an hc prompt -/
+def active (g : Agent) : Bool := g.st == .working || g.st == .blocked
 def depsDone (s : State) (t : Nat) : Bool := (s.tk t).deps.all fun d => (s.tk d).st == .done
 def startable (s : State) (t : Nat) : Bool := (s.tk t).st == .opn && depsDone s t
-def pool (c : Cfg) (s : State) : List Nat := c.tasks.filter (startable s)
+/-- board #53: the user released t from an agent that is still at work and hasn't read the stop -/
+def stopped (s : State) (t : Nat) : Bool :=
+  match (s.tk t).stopTo with
+  | some o => active (s.agt o) && s.cur o < (s.tk t).stopMsg
+  | none => false
+/-- startable, and not stopped: what `task claim` and auto-spawn may take -/
+def claimable (s : State) (t : Nat) : Bool := startable s t && !stopped s t
+def pool (c : Cfg) (s : State) : List Nat := c.tasks.filter (claimable s)
 def held (k : Task) (a : Nat) : Bool := k.owner == some a && (k.st == .claimed || k.st == .blocked)
 def holds (s : State) (a : Nat) : Bool := s.task.any (held · a)
 def lockHeld (s : State) (a : Nat) : Bool := s.lock.any (·.holder == some a)
@@ -429,16 +446,17 @@ def unbelieve (s : State) (a t : Nat) : State := setAg s a fun g => { g with bel
 def awake (s : State) (a : Nat) : State :=
   setAg s a fun g => { g with st := .working, waiter := false, aged := false, cold := false, stale := false, nudged := false }
 
-/-- swarm task claim: refuses while a dependency isn't done, then writes `where state='open'` -/
+/-- swarm task claim: refuses while a dependency isn't done, then writes `where state='open'`; and (board #53) refuses a
+stopped task, in the write's transaction -/
 def claim (c : Cfg) (s : State) (a t : Nat) : Option State :=
-  when (!c.racy && working s a && startable s t && !fenced c s a t) (takes c (claimed s a t) a t)
+  when (!c.racy && working s a && claimable s t && !fenced c s a t) (takes c (claimed s a t) a t)
 /-- the same, as two steps: the dependency read, then the write -/
 def claimRead (c : Cfg) (s : State) (a t : Nat) : Option State :=
   when (c.racy && working s a && (s.agt a).reading == 0 && startable s t && !fenced c s a t) (setAg s a ({ · with reading := t }))
 def claimWrite (c : Cfg) (s : State) (a : Nat) : Option State :=
   let t := (s.agt a).reading
   when (c.racy && t > 0) <|
-    if (s.tk t).st == .opn && (depsDone s t || !c.claimChecksDeps) then
+    if (s.tk t).st == .opn && (depsDone s t || !c.claimChecksDeps) && !stopped s t then
       setAg { takes c (claimed s a t) a t with early := s.early || !depsDone s t } a ({ · with reading := 0 })
     else setAg s a ({ · with reading := 0 })
 /-- the agent starts a background job, or it ends -/
@@ -632,10 +650,10 @@ def drop (s : State) (t : Nat) : Option State :=
     (setTask s t ({ · with st := .dropped, owner := none, lease := false, hcq := false }))
 /-- H2: `swarm task release N` by the user or the communicator of a task another holds, claimed or blocked (by `task
 block` or an hc prompt): open again, its question cleared, and the ex-owner sent an urgent stop (`.released`, so reading
-it drops the belief, as for reap) -/
+it drops the belief, as for reap); with `stopFirst` the task records the stop -/
 def releaseOther (c : Cfg) (s : State) (t : Nat) : Option State :=
   when (c.humanRelease && (s.tk t).owner.isSome && ((s.tk t).st == .claimed || (s.tk t).st == .blocked))
-    (post (setTask s t ({ · with st := .opn, owner := none, lease := false, hcq := false }))
+    (post (setTask s t fun k => { k with st := .opn, owner := none, lease := false, hcq := false, stopTo := if c.stopFirst then k.owner else none, stopMsg := s.log.length + 1 })
       ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩)
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
@@ -689,7 +707,6 @@ theorem reachable_of_run {c : Cfg} {acts : List Action} {s : State} (h : run c a
     | some s1 => rw [h1] at h; exact ih s1 s (.step a h0 h1) h
 
 -- ---------- safety, as checks of one state ----------
-def active (g : Agent) : Bool := g.st == .working || g.st == .blocked
 /-- S1. No task has two agents at work on it: no two agents, each working or at an hc prompt, both believe they hold it. -/
 def oneWorker (s : State) : Bool :=
   let n := List.range s.ag.length

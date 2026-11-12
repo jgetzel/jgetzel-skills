@@ -22,7 +22,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2; #30, #31, P1-P2, stalls), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck`, `deadLive_not_stuck` |
 | `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
-| `SwarmModel/Taken.lean` | L1 over fair runs: `startable_leads_to` (and `startable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from) |
+| `SwarmModel/Taken.lean` | L1 over fair runs: `startable_taken` (and `claimable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from); board #53's stop stays lifted once lifted (`stopped_step`, with `stop_kept`, `grow_step` and the invariant `SK`) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, refuted with the fix's switch off (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`, `not_B1`) and proved with it on (`W1_of`, `W2_of`, `W3_of` over fair runs, `W4_of`, `B1_of`; `replay_W`: all five of `replay`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
@@ -42,7 +42,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
-| `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 |
+| `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -52,8 +52,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5180 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (301 sites, 259 statements) |
+| `sqlcases.json.gz` | 5240 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (307 sites, 262 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
 | `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 9 scripted runs the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`) |
@@ -145,6 +145,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `recordedWorkspaces` | an agent may check out a base in its worktree | sw-bases, board #5: swarm creates and records worktrees; a checkout of a base is refused; a spawned agent's `wt_map` and `owned_wts` read its record alone (`Agent.recorded`), not the worktrees it adds |
 | `bgLives` | lifecycle ends an idle agent with no claim while its background job runs (reap looks at the job since PR #121, lifecycle never did), and the job dies with the terminal | board #15: lifecycle keeps it while the job runs (`machine.bg_agents`); `swarm end` refuses it without `--force` |
 | `ownAdded` | lifecycle reads a spawned agent's worktrees from its record alone, so one it added itself and left unlanded doesn't keep it | board #15: lifecycle's `unlanded` reads the record and the worktrees named after the agent |
+| `stopFirst` | the user's release of a working agent's task lets a peer claim it before the ex-owner reads the stop (finding #32) | board #53: the task records the stop; claim, the pool and auto-spawn refuse it while the ex-owner is at work and hasn't read it |
 
 All three are in the Lua (boards #3 to #5) and on in `replay` (tasks 2 and 4 on `formal`); W1 to W4 hold with them (board #6).
 `bgLives` and `ownAdded` are in the Lua and on in `replay` too; N1 holds with them (board #15).
@@ -172,8 +173,8 @@ Each is a sentence, then the function in `Model.lean` that says it of one state.
 Safety:
 
 - **S1** No task has two agents at work on it: no two agents, each working or at an hc prompt, both believe they
-  hold the same task. `oneWorker`. Proved with `humanRelease` off only: the user's release of a working agent's task
-  breaks it (finding #32, board #53)
+  hold the same task. `oneWorker`. Proved with `humanRelease` off or `stopFirst` on: without board #53's fix the user's
+  release of a working agent's task breaks it (finding #32)
 - **S2** No task is claimed while a task it is after isn't done. `noEarlyStart`
 - **S3** No two live locks of different agents cover a common file. `locksDisjoint` (with `overlap`, which is
   exactly "a common file": `Glob.overlaps_iff`; `noSharedFile_of_reachable` says it of every path)
@@ -235,7 +236,8 @@ nothing else.
 The user's release (board #40, #45; `Release.lean`). `swarm task release N` by the user (the panel's `human`) or the
 communicator of a task another agent holds is the action `releaseOther` of `step` (the communicator's actions have no
 actor, as `unblock` and `drop`, so the user and the communicator are one action; `humanRelease`, on as in main, switches
-it). So S2-S5, N1, W1-W4 and L1-L4 above are proved with it in `step`; S1 is not (finding #32).
+it). So S2-S5, N1, W1-W4 and L1-L4 above are proved with it in `step`; S1 is with board #53's fix (`stopFirst`), and
+without it is refuted (finding #32).
 
 - **H2** The user's release of a task another holds, claimed or blocked (by `task block` or an hc prompt), is always
   enabled (`releaseOther_enabled`); afterwards the task is open with no owner and no hc prompt, the ex-owner is sent an
@@ -244,7 +246,15 @@ it). So S2-S5, N1, W1-W4 and L1-L4 above are proved with it in `step`; S1 is not
   an answered hc prompt does not take the task back. Liveness: on a fair run from a reachable state the ex-owner does
   not keep at work unaware of the stop forever: it reads it (its cursor passes it), or stops being at work, or its
   terminal is gone, which L4 then ends (`stop_read`, `released_reads`). No switch refutes H2 (the stop is there or the
-  feature is not); what it refutes is S1.
+  feature is not); what it refuted is S1.
+- **Stop first** (board #53, `stopFirst`): the release records its stop on the task (`stopTo`, `stopMsg`; the Lua's
+  `stop_to`, `stop_msg`), and while the ex-owner is at work (working, or at an hc prompt) and hasn't read it the task is
+  `stopped`: `task claim` refuses it (in the write's transaction), and it is out of the pool, so auto-spawn and digests
+  skip it. An ex-owner not at work holds nothing back: every way back to work delivers the inbox first. S1 holds with it
+  (`oneWorker_of_reachable`); a belief may now rest on the unread stop of an open task (`HS` in `J`;
+  `Contract.s1_believes_held_stop`). L1 holds with it: on a fair run the stop lifts (`stop_read`: the ex-owner reads it
+  or stops being at work; a dead terminal is excluded, as for L1) and, while no one releases the task again, stays
+  lifted (`stopped_step`): `stop_lifts`, `startable_leads_to`.
 
 No work lost (board #15, `NoWorkLost.lean`):
 
@@ -344,7 +354,9 @@ What carries each proof:
   stale kind (`J`). Reap under PR #111 reopens a claim only when its owner isn't at work, and tells it; every
   way back to work delivers the inbox first. It needs S4's "no cursor passes a message it didn't show", which
   holds with or without PR #115, and that `task add` never reuses an id (`Pfx`). The user's release (H2) is not of that
-  kind: it tells an owner that may be at work, so `J` takes `humanRelease` off (finding #32).
+  kind: it tells an owner that may be at work; with board #53's fix (`stopFirst`) that owner's belief rests on the stop
+  the task records, and no one takes the task until it is read or the owner stops (`HS`, `J_released`); without the fix
+  S1 breaks (finding #32).
 - **S3**: a lock's holder is live, and unexpired locks of different agents share no file (`LkInv`). As files:
   `overlaps_complete` (a path both cover makes `overlaps` true).
 - **S4**: per agent, what was shown is in order and behind the cursor, everything behind the cursor since the
@@ -491,7 +503,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 
 | # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
 |---|---|---|---|---|
-| 32 | S1 | `humanRelease := true` (main, board #40) / S1 with it off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | open: board #53 (claim refuses the task to others until the ex-owner has read the stop) |
+| 32 | S1 | `humanRelease := true` (main, board #40) with `stopFirst := false` / S1 with `stopFirst` on, or `humanRelease` off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | `stopFirst` (board #53): claim, auto-spawn and the pool refuse the task to others while the ex-owner is at work and hasn't read the stop; `script-release` now has agent 1 claim #1 after agent 0 reads it |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -504,7 +516,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 
 ## What is proved, what is replayed, what isn't modelled
 
-**Proved**: S1 to S5, as *Results* says, of the model (S1 with `humanRelease` off, finding #32), and H2 (`Release.lean`). A proof is about `Model.lean`; that the model is the code
+**Proved**: S1 to S5, as *Results* says, of the model (S1 with `humanRelease` off or board #53's `stopFirst` on, finding #32), and H2 (`Release.lean`). A proof is about `Model.lean`; that the model is the code
 is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist. P1 and P2 (board #28) are proved over `PrWatch.lean`'s fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
@@ -766,7 +778,7 @@ it is replayed: the replay has no hc.
 statements does to the db. It is the subset the Lua uses, no more: `sql_inventory.lua` reads every db call
 (`:exec`, `:one`, `:all`, `:all_cols`, `:script`) in `swarm/lua/swarm`; a call whose text is literals is its statement,
 and one built from code (a column name in `agents.touch`, a `?` list, a `:format`) is a template whose statements
-are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 301 sites, 259 statements: SELECT
+are listed by hand (`DYNAMIC`; the spec fails on a template without an entry). 307 sites, 262 statements: SELECT
 (DISTINCT, an inner JOIN, WHERE, GROUP BY with `count(*)` and `max`, ORDER BY expressions, LIMIT, correlated `exists`
 and scalar subqueries, `in` lists and subqueries; `union all` of two), INSERT (`or ignore`, `or replace`, from a SELECT, `on conflict ..
 do update` with `excluded`, `returning`), UPDATE, DELETE, `create table|index if not exists`, `alter table add|drop
@@ -799,7 +811,7 @@ script on no tables or all; `begin`, `commit`, `rollback` in sequences around a 
 `sql_model_spec.lua` builds the same tables in a scratch file and runs each step through db.lua (`prepare`, which
 inlines integers, `all_cols`, `exec`, `script`), on a fresh connection: every step's error or success, rows, column
 names, `changes()`, `last_insert_rowid()`, and after the case every table's `table_info`, rows with their storage
-classes, and `sqlite_sequence` must be Lean's. 5180 committed cases and 5180 fresh per `replay.sh`, green, and about 35,000
+classes, and `sqlite_sequence` must be Lean's. 5240 committed cases and 5240 fresh per `replay.sh`, green, and about 35,000
 more at other seeds while it was built. Of the committed cases' 4807 steps, 2449 return rows or change one, 46 are
 errors (on both sides), and the rest are misses (a WHERE no row meets) or DDL and transaction steps. Checked to bite: with NULL sorted last, with an int written to a
 `text` column as an int, or with `like` case-sensitive (this one needs about 25 cases per statement), the spec fails.

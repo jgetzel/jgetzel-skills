@@ -26,9 +26,9 @@ open Env
 /-! ## Safety: every reachable state, any number of agents, tasks, locks and messages -/
 
 /-- S1: no two agents, each working or at an hc prompt, both believe they hold one task.
-Switches: `release = .idle`, and `humanRelease` off: the user's release of a working agent's task breaks it
-(`not_S1_humanRelease`, board task #53). Env: none. -/
-theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) :
+Switches: `release = .idle`, and `humanRelease` off or `stopFirst` on: without board #53's fix the user's release of a
+working agent's task breaks it (`not_S1_humanRelease`). Env: none. -/
+theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State} (h : Reachable c s) :
     oneWorker s = true :=
   oneWorker_of_reachable hfix hhr h
 
@@ -36,9 +36,24 @@ theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease 
 owner), or was dropped. Switches: `release = .idle`, `humanRelease` off. Env: none. -/
 theorem s1_believes_held {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) {a t : Nat}
     (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) : held (s.tk t) a = true ∨ (s.tk t).st = .dropped := by
-  rcases (J_of_reachable hfix hhr h).1 a t ht with hi | hd
+  rcases (J_of_reachable hfix (Or.inl hhr) h).1 a t ht with hi | hd | hs
   · exact absurd hi.1 (by simp [ha])
   · exact hd
+  · have := hs.1.1; rw [stopTo_none hhr h] at this; cases this
+
+/-- S1 at the board, with H2 and its fix (board #53): a task an agent at work believes it holds is held by it, or was
+dropped, or the user released it from that agent, which hasn't read the stop yet: the task is open, its stop names the
+agent, and no one may take it (`stopped`). Switches: `release = .idle`, `stopFirst`. Env: none. -/
+theorem s1_believes_held_stop {c : Cfg} (hfix : c.release = .idle) (hsf : c.stopFirst = true) {s : State} (h : Reachable c s)
+    {a t : Nat} (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) :
+    held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .opn ∧ stopped s t = true) := by
+  rcases (J_of_reachable hfix (Or.inr hsf) h).1 a t ht with hi | hd | hs
+  · exact absurd hi.1 (by simp [ha])
+  · rcases hd with e | e
+    · exact Or.inl e
+    · exact Or.inr (Or.inl e)
+  · refine Or.inr (Or.inr ⟨hs.2, ?_⟩)
+    unfold stopped; rw [hs.1.1]; simp [ha, hs.1.2.1]
 
 /-- S2: no task was ever claimed while a task it is after wasn't done. Switches: `claimChecksDeps`. Env: none. -/
 theorem s2_noEarlyStart {c : Cfg} (hfix : c.claimChecksDeps = true) {s : State} (h : Reachable c s) :

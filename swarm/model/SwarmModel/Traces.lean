@@ -174,8 +174,9 @@ adds two worktrees, lands the one it last edited in and marks its task done; the
 tick that ends idle agent 1 keeps it (`ownAdded`). `retry` (board #16): the tick's launch fails, auto-spawn backs off,
 and once the time is past it spawns with the failed name. `raise`: the launch raises before launch.sh runs. `halt`: five
 failed launches of #1 in a row halt it; once #1 is claimed the next tick lifts the halt and spawns for #2. `release`
-(H2, board #45): the communicator releases #1 from agent 0 at work, who is sent an urgent stop; agent 1 claims #1 before
-agent 0 reads it (finding `not_S1_humanRelease`); agent 0 reads it, claims #2, blocks on it, and the communicator releases
+(H2, board #45): the communicator releases #1 from agent 0 at work, who is sent an urgent stop; no one may claim #1 until
+agent 0 reads it (board #53: before, agent 1 claimed it at once, finding `not_S1_humanRelease`); agent 0 reads it, agent 1
+claims #1, agent 0 claims #2, blocks on it, and the communicator releases
 the blocked #2. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
@@ -190,7 +191,7 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("raise", [stop 0, age 0, tick, add, failRaise, lapse]),
   ("halt", [stop 0, age 0, tick, add, failExit, lapse, failExit, lapse, failExit, lapse, failExit, lapse, failExit,
     add, claim 1 1, tick]),
-  ("release", [add, add, claim 0 1, releaseOther 1, claim 1 1, readAll 0, claim 0 2, block 0 2, releaseOther 2, readAll 0])]
+  ("release", [add, add, claim 0 1, releaseOther 1, readAll 0, claim 1 1, claim 0 2, block 0 2, releaseOther 2, readAll 0])]
 
 -- ---------- PrWatch.lean's layer (board #28) ----------
 namespace P
