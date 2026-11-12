@@ -157,7 +157,7 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
 partial def field (sc : List String) (bs : List Block) : Field → W Unit
   | .pos e => exp sc bs e
   | .named k e => do see k; exp sc bs e
-  | .keyed k e => do exp sc bs k; exp sc bs e
+  | .keyed k e _ => do exp sc bs k; exp sc bs e
 
 partial def func (sc : List String) (ps : List String) (b : Block) : W Unit := do
   ps.forM seeDecl

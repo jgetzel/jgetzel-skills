@@ -59,7 +59,7 @@ partial def exp : Exp → String
 partial def field : Field → String
   | .pos e => s!"(.pos {exp e})"
   | .named k e => s!"(.named {nm k} {exp e})"
-  | .keyed k e => s!"(.keyed {exp k} {exp e})"
+  | .keyed k e s => s!"(.keyed {exp k} {exp e} {site s})"
 
 partial def stat : Stat → String
   | .loc ns es => s!"(.loc {lst (ns.map nm)} {lst (es.map exp)})"

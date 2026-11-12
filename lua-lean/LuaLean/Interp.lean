@@ -2566,7 +2566,7 @@ def freeEs (bd : List String) : List Exp → List String
 def freeFs (bd : List String) : List Field → List String
   | [] => []
   | .pos e :: fs | .named _ e :: fs => freeE bd e ++ freeFs bd fs
-  | .keyed k e :: fs => freeE bd k ++ freeE bd e ++ freeFs bd fs
+  | .keyed k e _ :: fs => freeE bd k ++ freeE bd e ++ freeFs bd fs
 /-- a block's free names, and the locals in scope at its end (a `repeat`'s condition is read there) -/
 def freeB (bd : List String) : Block → List String × List String
   | [] => ([], bd)
@@ -2635,7 +2635,7 @@ def stripFs (src : String) : List Field → List Field
   | [] => []
   | .pos e :: fs => .pos (stripE src e) :: stripFs src fs
   | .named k e :: fs => .named k (stripE src e) :: stripFs src fs
-  | .keyed k e :: fs => .keyed (stripE src k) (stripE src e) :: stripFs src fs
+  | .keyed k e s :: fs => .keyed (stripE src k) (stripE src e) (s.strip src) :: stripFs src fs
 def stripS (src : String) : Stat → Stat
   | .loc ns es => .loc ns (stripEs src es)
   | .assign ts es => .assign (stripEs src ts) (stripEs src es)
@@ -3330,10 +3330,10 @@ def fields (n : Nat) (cx : Ctx) (t : Nat) (fs : List Field) : M (List Val) :=
     let v ← eval n cx e
     rawset t (lstr k) v
     fields n cx t fs
-  | .keyed k e :: fs => do
+  | .keyed k e s :: fs => do
     let kv ← eval n cx k
     let v ← eval n cx e
-    rawset t kv v
+    atSite s (rawset t kv v)
     fields n cx t fs
 
 /-- o[k], with __index -/

@@ -59,7 +59,7 @@ partial def args (as : List Exp) : String := ", ".intercalate (as.map exp)
 partial def field : Field → String
   | .pos e => exp e
   | .named k e => s!"{k} = {exp e}"
-  | .keyed k e => s!"[{exp k}] = {exp e}"
+  | .keyed k e _ => s!"[{exp k}] = {exp e}"
 
 partial def stat : Stat → String
   | .loc ns [] => s!"local {", ".intercalate ns}"

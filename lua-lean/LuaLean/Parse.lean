@@ -387,7 +387,7 @@ partial def tableCons : P Exp := do
   while !(isSym (← peek) "}") do
     let t ← peek
     if isSym t "[" then
-      advance; let k ← expr; expectSym "]"; expectSym "="; fs := fs.push (.keyed k (← expr))
+      advance; let k ← expr; expectSym "]"; expectSym "="; let v ← expr; fs := fs.push (.keyed k v (← site (← lastLine)))
     else if (match t with | .name _ => true | _ => false) && isSym (← peek2) "=" then
       let n ← name; advance; fs := fs.push (.named n (← expr))
     else fs := fs.push (.pos (← expr))
