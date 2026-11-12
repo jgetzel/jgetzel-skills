@@ -139,7 +139,7 @@ theorem not_B1 : ¬ B1 cfgB1 := by
 theorem B1_of (c : Cfg) (hc : c.perTaskBase = true) : B1 c := by
   intro s _ a w hend hw
   simp only [ends, finished, unlanded, Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_false_iff] at hend
-  obtain ⟨⟨⟨_, h1, _⟩, _⟩, _⟩ := hend
+  obtain ⟨⟨⟨_, ⟨h1, _⟩, _⟩, _⟩, _⟩ := hend
   simp only [hw, Option.any_some, Bool.not_eq_false'] at h1
   simpa [landedC, hc] using h1
 
@@ -645,15 +645,16 @@ theorem finished_reap {c : Cfg} {s : State} {a : Nat} (h : finished c s a = true
   exact h
 
 theorem done_idle {c : Cfg} {s : State} {a : Nat} (h : doneOnBase c s a = true) : idleFree s a = true := by
-  simp only [doneOnBase, Bool.and_eq_true] at h; exact h.1.1.1
+  simp only [doneOnBase, Bool.and_eq_true] at h; exact h.1.1.1.1
 
 /-- with `perTaskBase`, an agent idle with its work on its bases is what lifecycle calls finished -/
 theorem done_finished {c : Cfg} (hp : c.perTaskBase = true) {s : State} {a : Nat} (h : doneOnBase c s a = true) :
     finished c s a = true := by
   simp only [doneOnBase, Bool.and_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := h
+  obtain ⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩ := h
   have e : ∀ refs w, landedC c s.git refs w = s.git.landedIn refs w := fun _ _ => by simp [landedC, hp]
-  simp only [finished, unlanded, e, h1, h2, h3, h4, Bool.true_and, Bool.false_or, Bool.and_false, Bool.not_false]
+  have ek : ∀ refs k, landedK c s.git refs k = refs.any (s.git.reachFrom k) := fun _ _ => by simp [landedK, hp]
+  simp only [finished, unlanded, e, ek, h1, h2, h3, h4, h5, Bool.true_and, Bool.false_or, Bool.and_false, Bool.not_false]
 
 theorem idle_of {s : State} {a : Nat} (h : idleFree s a = true) :
     (s.agt a).st = .idle ∧ (s.agt a).reading = 0 ∧ (s.agt a).snap = [] := by

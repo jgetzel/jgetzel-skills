@@ -112,7 +112,7 @@ theorem finished_of_holds {c : Cfg} (hbl : c.bgLives = true) (haw : c.allWts = t
   · simp [finished, hbl, hbg]
   · have : unlanded c z a = true := by simp only [unlanded, e, hw, Bool.true_or]
     simp [finished, this]
-  · have : unlanded c z a = true := by simp only [unlanded, e, ho, haw, hoa, Bool.or_true, Bool.and_true, Bool.true_and]
+  · have : unlanded c z a = true := by simp only [unlanded, e, ho, haw, hoa, Bool.or_true, Bool.and_true, Bool.true_and, Bool.true_or]
     simp [finished, this]
 
 /-- lifecycle leaves a live agent it doesn't call finished as it was, but for what a digest told it -/

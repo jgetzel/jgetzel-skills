@@ -495,21 +495,33 @@ theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk
   unfold spawnFor; split
   · rename_i a _
     split
-    · have hf : ∀ g : Agent, ((fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces }) g : Agent).believes = [] :=
+    · have hf : ∀ g : Agent, ((fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none }) g : Agent).believes = [] :=
         fun _ => rfl
       have h1 := J_clear (s := x) (a := a) hf h
       have hbel := bel_clear (s := x) (a := a) hf
-      have h2 : J { setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces }) with
+      have h2 : J { setAg x a (fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none }) with
           cursor := x.cursor.set a x.log.length, start := x.start.set a x.log.length, seen := x.seen.set a [] } := by
         refine J_of h1 (fun _ _ ht => ht) (fun b u hu hi => ?_) (fun _ _ _ _ hd => Or.inr (Or.inl hd)) (fun b u hu _ hs => ?_)
-        · have hu' : u ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces })).agt b).believes := hu
+        · have hu' : u ∈ ((setAg x a (fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none })).agt b).believes := hu
           have hba : ¬ a = b := by rintro rfl; rw [hbel] at hu'; cases hu'
           refine ⟨hi.1, ?_⟩
           obtain ⟨i, i1, r⟩ := hi.2
           refine ⟨i, ?_, r⟩
           show (x.cursor.set a x.log.length).getD b 0 < i
           rw [getD_set, ite_eq_right (fun e => hba e.1)]; exact i1
-        · have hu' : u ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces })).agt b).believes := hu
+        · have hu' : u ∈ ((setAg x a (fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none })).agt b).believes := hu
           have hba : ¬ a = b := by rintro rfl; rw [hbel] at hu'; cases hu'
           refine Or.inr (Or.inr (HS_of hs.1 rfl rfl hs.2 ⟨[], by simp⟩ ?_))
           show (x.cursor.set a x.log.length).getD b 0 = _
@@ -517,9 +529,15 @@ theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk
       refine J_setTask (fun b hd => ?_) (fun b hb hs hi => ?_) h2
       rotate_left
       · exfalso
-        have hb' : t ∈ ((setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces })).agt b).believes := hb
+        have hb' : t ∈ ((setAg x a (fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none })).agt b).believes := hb
         have hba : ¬ (a = b ∧ b < x.ag.length) := by rintro ⟨rfl, _⟩; rw [hbel] at hb'; cases hb'
-        have hag : (setAg x a (fun _ => { (default : Agent) with st := .idle, boot := true, recorded := c.recordedWorkspaces })).agt b = x.agt b := by
+        have hag : (setAg x a (fun _ =>
+          { (default : Agent) with
+            st := .idle, boot := true, recorded := c.recordedWorkspaces,
+            rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none })).agt b = x.agt b := by
           rw [agt_setAg, if_neg hba]
         have hcur : (x.cursor.set a x.log.length).getD b 0 = x.cur b := by
           rw [getD_set]; split

@@ -209,7 +209,7 @@ local function gitact(t, name, p, G, hc)
     local tmp, head = t.d .. "/squash", out(t, path(p.w44), "rev-parse", "HEAD")
     t:git(t.repo, "worktree", "add", "-q", "--detach", tmp, G.BR[p.r44])
     t:git(tmp, "merge", "-q", "--squash", head)
-    t:git(tmp, "commit", "-qm", "squash")
+    t:git(tmp, "commit", "-qm", "squash into " .. G.BR[p.r44])  -- one head squashed onto two bases at one tip, in one second: two shas
     t:git(tmp, "push", "-q", ".", "HEAD:" .. G.BR[p.r44])
     t:git(t.repo, "worktree", "remove", "--force", tmp)
   elseif name == "gitCheckout" then t:git(path(p.w45), "checkout", "-q", G.BR[p.r45])

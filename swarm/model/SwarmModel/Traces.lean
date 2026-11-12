@@ -94,10 +94,7 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
       ++ (ts.flatMap fun t => [("unblock", [n "t30" t], unblock c s t), ("drop", [n "t31" t], drop s t),
         ("releaseOther", [n "t32" t], releaseOther c s t)])
       ++ [("awayOn", [], awayOn s), ("back", [], back c s), ("commsRead", [], commsRead s)]
-      -- not `swarm end` without --force of a spawned agent: its recorded worktree is on the base of the task it was spawned
-      -- for, which the model doesn't keep, so once reap or a release takes that task the Lua finds it unlanded (README)
-      ++ ags.flatMap fun x => bs.map fun f =>
-        ("endOther", [a "a33" x, ("f33", toJson f)], if !f && (s.agt x).recorded then none else endOther c s x f),
+      ++ ags.flatMap fun x => bs.map fun f => ("endOther", [a "a33" x, ("f33", toJson f)], endOther c s x f),
     [("tick", [], tick c s)],
     -- the agents' git commands, and the world in a worktree
     (ags.flatMap fun x => c.wtIds.flatMap fun w =>
