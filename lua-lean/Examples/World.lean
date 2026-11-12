@@ -29,19 +29,21 @@ def chunk (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val)
       S.qEnd)))) n)
 
 theorem chunk_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_io : env0.lookup "io" = none)
     (h_os : env0.lookup "os" = none) :
-    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "io" none (res1 "os" none (fun x => env0.lookup x))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ (res1_ok h_io (res1_ok h_os (fun _ => rfl)))
+    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "io" none (res1 "os" none (fun x => env0.lookup x))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_io (res1_ok h_os (fun _ => rfl)))
 
 def greet (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_name => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"world.lua", 5, [], ("field", "write"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"world.lua", 5, [("global", "io")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "io") (S.eStr "write".toList))) (S.lCons (S.eStr "hello, ".toList) (S.lCons (S.eCell c_name) (S.lLast (S.mOne (S.eStr "\n".toList)))))))) (S.gotos [] [])
       S.qEnd)) n)
 
 theorem greet_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_io : env0.lookup "io" = none) :
-    CFn I (greet I env0 fn0) fn0 ⟨["name"], false, greet_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "io" none (fun x => env0.lookup x)) fn0 ⟨["name"], false, greet_body, env0, fenv0, src0, ln0⟩ (res1_ok h_io (fun _ => rfl))
+    CFn I (greet I env0 fn0) fn0 ⟨["name"], false, greet_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "io" none (fun x => env0.lookup x)) fn0 ⟨["name"], false, greet_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_io (fun _ => rfl))
 
 def readings (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"world.lua", 9, [], ("field", "time"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"world.lua", 9, [("global", "os")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "os") (S.eStr "time".toList))) S.lNil))) fun n => S.let1 fun c_t0 => S.letEnd
@@ -50,9 +52,10 @@ def readings (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List V
       S.qEnd) n)) n))) n)
 
 theorem readings_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_os : env0.lookup "os" = none) :
-    CFn I (readings I env0 fn0) fn0 ⟨[], false, readings_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "os" none (fun x => env0.lookup x)) fn0 ⟨[], false, readings_body, env0, fenv0, src0, ln0⟩ (res1_ok h_os (fun _ => rfl))
+    CFn I (readings I env0 fn0) fn0 ⟨[], false, readings_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "os" none (fun x => env0.lookup x)) fn0 ⟨[], false, readings_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_os (fun _ => rfl))
 
 end World
 -- checksum World 458090887

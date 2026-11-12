@@ -224,8 +224,8 @@ def eTrue : SE := fun n => tick n fun _ => pure (.bool true)
 def eFalse : SE := fun n => tick n fun _ => pure (.bool false)
 def eNum (x : Num) : SE := fun n => tick n fun _ => pure (.num x)
 def eStr (s : List Char) : SE := fun n => tick n fun _ => pure (.str s)
-/-- an FFI numeral: a new cdata (`cnumNew`) -/
-def eCnum (v : Nat) (u : Bool) : SE := fun n => tick n fun _ => cnumNew v u
+/-- an FFI numeral: its constant in the chunk of `self`, the running function (`cnumK`) -/
+def eCnum (v : Nat) (u : Bool) (k self : Nat) : SE := fun n => tick n fun _ => cnumK self v u k
 def eVa (va : List Val) : SE := fun n => tick n fun _ => pure (va.headD .nil)
 /-- a closure: its body is data, `env` the scope it closes over, and its environment that of `self`, the running
 function -/
@@ -466,7 +466,8 @@ theorem CE_true {cx} : CE I eTrue cx .tru := by intro n; cases n <;> rw [eval] <
 theorem CE_false {cx} : CE I eFalse cx .fls := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_num {cx x} : CE I (eNum x) cx (.num x) := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_str {cx s} : CE I (eStr s) cx (.str s) := by intro n; cases n <;> rw [eval] <;> rfl
-theorem CE_cnum {cx v u} : CE I (eCnum v u) cx (.cnum v u) := by intro n; cases n <;> rw [eval] <;> rfl
+theorem CE_cnum {cx v u k self} (hs : self = cx.self) : CE I (eCnum v u k self) cx (.cnum v u k) := by
+  subst hs; intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_va {cx va} (h : va = cx.va) : CE I (eVa va) cx .vararg := by subst h; intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_func {cx ps va b ln env self} (h : env = cx.env) (hs : self = cx.self) :
     CE I (eFunc ps va b ln env self) cx (.func ps va b ln) := by
@@ -757,7 +758,7 @@ theorem call_load (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ 
     (s : List Char) (cn : Option (List Char)) (b : Block) (h : Heap)
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b) :
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.str s :: cn.toList.map .str) h =
-      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s)⟩)) := by
+      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s), none, []⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
     simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet, bind, EStateM.bind, pure,
       EStateM.pure, Functor.map, EStateM.map]
@@ -785,7 +786,7 @@ theorem call_load_env (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" 
     (s : List Char) (cn : Option (List Char)) (t : Nat) (b : Block) (h : Heap)
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b) :
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t] h =
-      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s)⟩)) := by
+      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s), none, []⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
     simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet, bind, EStateM.bind, pure,
       EStateM.pure, Functor.map, EStateM.map]

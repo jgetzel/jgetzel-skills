@@ -59,7 +59,7 @@ theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P)
 theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
     {cn : Option (List Char)} {b : Block} {P : List Val → Heap → Prop}
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
-    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s)⟩))) :
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s), none, []⟩))) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.str s :: cn.toList.map .str)) h P :=
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load I n fname hf s cn b h hb hp, p⟩
@@ -86,7 +86,7 @@ theorem RunP.load_dump {I : Sem} {fname : String} (hf : fname = "load" ∨ fname
 theorem RunP.loadEnv {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
     {cn : Option (List Char)} {t : Nat} {b : Block} {P : List Val → Heap → Prop}
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
-    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s)⟩))) :
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s), none, []⟩))) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t]) h P :=
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load_env I n fname hf s cn t b h hb hp, p⟩

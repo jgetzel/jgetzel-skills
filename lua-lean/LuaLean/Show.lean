@@ -41,7 +41,7 @@ mutual
 partial def exp : Exp → String
   | .nil => ".nil" | .tru => ".tru" | .fls => ".fls" | .vararg => ".vararg"
   | .num n => s!"(.num {num n})"
-  | .cnum v u => s!"(.cnum {v} {u})"
+  | .cnum v u k => s!"(.cnum {v} {u} {k})"
   | .str s => s!"(.str {chars s})"
   | .func ps va b ln => s!"(.func {lst (ps.map nm)} {va} {block b} {ln})"
   | .var x => s!"(.var {nm x})"
