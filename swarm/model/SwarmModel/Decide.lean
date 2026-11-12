@@ -4,7 +4,7 @@ import SwarmModel.PrWatch
 /-! Lifted (rung 3, board #27): the Lua's pure decisions with a counterpart in the model, line for line on the rows
 they read, and each proved to be the model's decision on its view of the state. `watchd.keeps` (reap: does a lapsed
 claim's owner keep it), `watchd.fate` (lifecycle: keep, unclean, reuse or end an agent), `msgs.wakes` (the
-waiter) and `ci.pr_act` (watchd's poll of a PR, board #28, PrWatch.lean). A Lua nil, or a NULL column, is `none`; a read the Lua makes through a callback (`f.claims()`, `cold()`) is
+waiter), `ci.pr_act` (watchd's poll of a PR, board #28, PrWatch.lean) and `watchd.end_why` (`swarm end`, board #46). A Lua nil, or a NULL column, is `none`; a read the Lua makes through a callback (`f.claims()`, `cold()`) is
 its answer, a `Bool`: what the read returns is the SQL's, rung 4. `DecideCases.lean` writes random inputs with these
 functions' answers, which `../lua/test/decide_model_spec.lua` checks the Lua against. -/
 
@@ -170,6 +170,40 @@ theorem fate_reuse {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver 
     simp only [reusable, Bool.and_eq_true] at h; exact h.1.1.1.1
   cases hi : idleFree s a <;> cases hu : unlanded c s a <;> cases hre : reusable c s a <;> cases hg : (s.agt a).bg <;>
     simp_all [finished]
+
+/-! H1 (board #46): `swarm end A` without --force, watchd.end_why: why it refuses, on fate's reads. -/
+
+/-- watchd.end_why's answers: "is <status>", "stays for", "owns a claimed task", "holds a lock", "has a background job
+running", "has work not on its base"; `none` is the Lua's nil (it ends the agent) -/
+inductive Why where | status | stay | claims | locks | job | unlanded
+  deriving DecidableEq, Repr, Inhabited
+
+/-- watchd.end_why(a, f) -/
+def endWhyL (a : ARow) (f : Facts) : Option Why :=
+  if a.status != "idle" then some .status
+  else if nz a.stay then some .stay
+  else if f.claims then some .claims
+  else if f.locks then some .locks
+  else if f.job then some .job
+  else if f.unlanded then some .unlanded
+  else none
+
+/-- `swarm end`'s check is the model's `endable` on the model's view of the agent (as lifecycle reads it) -/
+theorem endWhy_lifted (c : Cfg) (s : State) (a : Nat) (t : Int) :
+    (endWhyL (fateRow (s.agt a) t) (factsOf c s a)).isNone = endable c s a := by
+  have hi : (statusOf (s.agt a).st != "idle") = !((s.agt a).st == .idle) := by cases (s.agt a).st <;> rfl
+  simp only [endWhyL, fateRow, factsOf, endable, nz, hi]
+  by_cases h0 : (s.agt a).st == .idle <;> by_cases h1 : holds s a <;> by_cases h2 : lockHeld s a <;>
+    by_cases h3 : (s.agt a).bg <;> by_cases h4 : unlanded c s a <;> simp [h0, h1, h2, h3, h4]
+
+/-- whatever lifecycle would end or reuse, `swarm end` ends: its checks are among fate's, for any row, terminal and reads -/
+theorem endWhy_of_fate {a : ARow} {t : Int} {x : Option Term} {h : Bool} {f : Facts}
+    (hv : fateL a t x h f = .end_ ∨ fateL a t x h f = .reuse) : endWhyL a f = none := by
+  simp only [fateL] at hv
+  simp only [endWhyL]
+  repeat' split at hv
+  all_goals first | (rcases hv with hv | hv <;> cases hv) | skip
+  all_goals simp_all
 
 /-! F1 (board #41): what `swarm state --json` reports of an idle agent (its `fate`) is watchd's decision. The Lua runs
 `watchd.fate` itself with `f.rec`, a recorder each check calls with its value; `f.all` makes no check hold, so every

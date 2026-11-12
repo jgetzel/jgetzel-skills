@@ -317,6 +317,8 @@ local function act(t, name, p, N, G, prev)
   elseif name == "unblock" then sw(COMMS, "task", "unblock", tostring(p.t30), "--answer", "go left")
   elseif name == "drop" then sw(COMMS, "task", "drop", tostring(p.t31))
   elseif name == "releaseOther" then sw(COMMS, "task", "release", tostring(p.t32))
+  elseif name == "endOther" then  -- H1: the user's or the communicator's `swarm end`, --force or not
+    if p.f33 then sw(COMMS, "end", p.a33, "--force") else sw(COMMS, "end", p.a33) end
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
   elseif name == "failExit" then  -- the tick's launch fails: launch.sh exits non-zero
     local f = t.d .. "/launch.fail"
