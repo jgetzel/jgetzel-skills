@@ -49,7 +49,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` and `Env.N1'_real` with `hc send` as `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
-| `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung` |
+| `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -63,7 +63,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 20 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-pr-digest`: board #80's, the main model's PRs, CI and poll through a fake `gh`; `script-pr-green`, `-red`, `-merged`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 21 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-stay-work`: board #48's; `script-pr-digest`: board #80's, the main model's PRs, CI and poll through a fake `gh`; `script-pr-green`, `-red`, `-merged`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -381,8 +381,19 @@ W1-W4, L1-L4, H1, H2 and A1-A4 above are proved with them in `step`. `idleFree` 
 - **St3** `--back`'s digest lists as hung exactly the slots whose agent hung since away and has not ended since
   (`digest_hung`: of the slot's hung and ended events since away, the last is a hung; agents.digest's `stay-hung`
   events after the away event's, of an agent row not ended, a slot's next agent being another row).
+- **St4** (board #48) `swarm stay --end A` by the user or the communicator changes A's stay alone: every field of the
+  state but the agents' as it was (tasks with their claims and leases, locks, the log and cursors, git, events, away,
+  the communicator's inbox, the digest, CI), every other agent's row as it was, and A's but for the stay
+  (`endStay_frame`). Afterwards A is ended only by lifecycle's own rules, so ending a stay loses no work: N1 holds with
+  `endStay` in `step` (`endStay_N1`, `Contract.st4_endStay`), and W3 with free meaning also staying for nothing
+  (`doneOnBase` reads `idleFree`). No meaningful refutation with lifecycle ignoring the stay: the stay is no part of the
+  work an agent holds (`holdsWork_stay`), so a lifecycle that read any stay as off still calls no agent that holds work
+  finished (`finished_stayOff`); claims and locks are `idleFree`'s own checks and the stay changes neither. What a stay
+  keeps is what the agent waits for (a review, CI on a PR, the user), which the model has no field for, so with the
+  stay ignored the only property that fails is St1 itself (`stayer_kept`), and that by definition.
 
-The replay (`script-stay`, and random steps) runs the commands and, for `stale`, `stayCheck` and `stayHung`, moves
+The replay (`script-stay`; `script-stay-work`: agent 0 stays with an uncommitted file, the tick keeps it, the communicator
+ends its stay and adds #1, and the tick spawns for #1 and keeps agent 0 for its worktree; and random steps) runs the commands and, for `stale`, `stayCheck` and `stayHung`, moves
 last_active (30 min; 51 min, past LIVENESS_IDLE and short of COLD_IDLE) or the check event (400 s) back and runs a tick:
 `Traces.lean` offers the check and the hang only where the model's tick changes nothing, `stale` only for a stayer, and
 neither `cool` of a stayer nor `endStay` of an idle agent 30 min idle with unlanded work (watchd's tick would check the
@@ -957,7 +968,8 @@ agent ends is not compared), an agent removing its own worktree, editing in a wo
 live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` generates
 `stale` only for a stayer, no `nudge`, and no `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
 the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles, the stay's text, `swarm spawn --stay`
-and the communicator's own stay (it is no slot); of watchd.hung (board #79): the no-waiter and unwoken notices to the
+and the communicator's own stay (it is no slot); the `stay-end` event `swarm stay --end A` logs (nothing reads it, and A is
+not told); of watchd.hung (board #79): the no-waiter and unwoken notices to the
 communicator, and the 50 and 5 min as times (`stale` stands for both idles); watchd's quiet notice (the board empty, only
 stayers live); staffing limits beyond the roster; of auto-spawn
 (`Spawn.lean`): a launch failing after another spawned in the same tick (the model's `fail` is the tick's first launch),

@@ -1,4 +1,5 @@
 import SwarmModel.Away
+import SwarmModel.NoWorkLost
 
 /-! Stays (board #79). `swarm stay "<what>"` and `swarm stay --end` (the agent's own, `stay a on`), `swarm stay --end A`
 (the user or the communicator, `endStay a`) and watchd's liveness check of an idle stayer (`stayCheck`, then `stayHung`
@@ -110,5 +111,45 @@ theorem digest_hung (c : Cfg) (s : State) (since a : Nat) :
       a < c.nagents ∧ ∃ l1 l2, s.evs.drop since = l1 ++ .hung a :: l2 ∧ Ev.ended a ∉ l2 := by
   simp only [digestOf, List.mem_filter, Cfg.agents, List.mem_range, hungSince]
   exact and_congr_right fun _ => lastHung_iff a _
+
+-- ---------- St4: `swarm stay --end A` (board #48) ----------
+
+/-- St4. `swarm stay --end A` changes A's stay alone: every field but the agents' as it was (the tasks with their claims
+and leases, the locks, the log and the cursors, git, the events, away, the communicator's inbox, the digest, CI), every
+other agent's row as it was, and A's but for the stay -/
+theorem endStay_frame {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.endStay a) = some s') :
+    s' = { s with ag := s'.ag } ∧ s'.ag.length = s.ag.length ∧
+      ∀ b, s'.agt b = if b = a then { s.agt a with stay := false } else s.agt b := by
+  obtain ⟨hl, _, rfl⟩ := endStay_spec h
+  refine ⟨rfl, setAg_ag_length .., fun b => ?_⟩
+  rw [agt_setAg]
+  by_cases e : b = a
+  · subst e
+    have : b < s.ag.length := Nat.lt_of_not_le fun hn => by rw [agt_of_ge hn] at hl; cases hl
+    simp [this]
+  · simp [e, Ne.symm e]
+
+/-- the stay is no part of the work an agent holds: setting any agent's stay changes no agent's `holdsWork` -/
+theorem holdsWork_stay (c : Cfg) (s : State) (a b : Nat) (v : Bool) :
+    holdsWork c (setAg s a ({ · with stay := v })) b = holdsWork c s b := by
+  have h : (setAg s a ({ · with stay := v })).agt b =
+      { s.agt b with stay := if a = b ∧ b < s.ag.length then v else (s.agt b).stay } := by
+    rw [agt_setAg]; split <;> simp
+  simp only [holdsWork, wtmap, abases, owns, h]; rfl
+
+/-- St4: once its stay is ended an agent is ended only by lifecycle's own rules, which (the fixes N1 names on) never
+end one that holds work: N1 of the state `stay --end` leaves, a reachable one -/
+theorem endStay_N1 {c : Cfg} (hN : N1 c) {s s' : State} {a : Nat} (hr : Reachable c s)
+    (h : step c s (.endStay a) = some s') (hw : holdsWork c (reapLocks (reapTasks c s')) a = true) :
+    keptBy s' (tickOf c s') a = true :=
+  hN.1 s' a (.step _ hr h) hw
+
+/-- St4, why no refutation of N1 with the stay ignored: a lifecycle that read any agent's stay as off still calls no
+agent that holds work finished. The stay keeps only what the model has no field for (what the agent waits for); the
+work it has (a claim, a lock, a job, a worktree off its task's base) lifecycle's other checks keep -/
+theorem finished_stayOff {c : Cfg} (hbl : c.bgLives = true) (haw : c.allWts = true) (hoa : c.ownAdded = true)
+    (hp : c.perTaskBase = true) {s : State} {a b : Nat} (h : holdsWork c s b = true) :
+    finished c (setAg s a ({ · with stay := false })) b = false :=
+  finished_of_holds hbl haw hoa hp (by rw [holdsWork_stay]; exact h)
 
 end Swarm

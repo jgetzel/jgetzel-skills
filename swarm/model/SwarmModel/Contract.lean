@@ -168,6 +168,16 @@ without --force refuses it. Switches: none. Env: none. -/
 theorem stay_kept {c : Cfg} {s : State} {a : Nat} (hs : (s.agt a).stay = true) (hl : (s.agt a).live = true) :
     { (tickOf c s).agt a with told := [] } = { s.agt a with told := [] } ∧ step c s (.endOther a false) = none :=
   ⟨tick_keeps_stayer hs hl, endOther_stay hs⟩
+/-- Stays (board #48): `swarm stay --end A` by the user or the communicator changes A's stay alone (no task, claim,
+lease, lock, message, cursor, git ref, event or other agent), and the tick after it keeps A while A holds work.
+Switches: N1's. Env: none. -/
+theorem st4_endStay {c : Cfg} (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hret : c.retake = true)
+    (haw : c.allWts = true) (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true)
+    (hsg : c.splitGC = true) {s s' : State} {a : Nat} (hr : Reachable c s) (h : step c s (.endStay a) = some s') :
+    (s' = { s with ag := s'.ag } ∧ s'.ag.length = s.ag.length ∧
+      ∀ b, s'.agt b = if b = a then { s.agt a with stay := false } else s.agt b) ∧
+    (holdsWork c (reapLocks (reapTasks c s')) a = true → keptBy s' (tickOf c s') a = true) :=
+  ⟨endStay_frame h, endStay_N1 (N1_of c hrel hbk hret haw hbl hoa hp hsg) hr h⟩
 /-- Stays (board #79): `--back`'s digest lists a slot as hung exactly when its agent hung since away and did not end
 since. Switches: none. Env: none. -/
 theorem digest_hung' (c : Cfg) (s : State) (since a : Nat) :
