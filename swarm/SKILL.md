@@ -132,6 +132,9 @@ with subagents.
   waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `swarm nudge <agent>`
   (one fixed line typed into its terminal), or end it. `swarm stay --end <agent>` (you or `human`) ends another
   agent's stay; watchd then judges it as any agent.
+  An agent that is done but kept open only by an idle background job (a `sleep` wait loop) is nudged once after 10 min
+  idle, ended 10 min later (you get a notice with the job's command line). A real run (a non-sleep child, CPU time) is
+  never ended, nor is any agent holding a claim, lock or stay.
   `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.

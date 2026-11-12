@@ -498,6 +498,45 @@ function T.test_idle_agent_with_background_job_not_ended(t)
   assert(ended(t, "e"))
 end
 
+-- board #73: a finished agent held only by a sleep loop is nudged once, then ended after JOB_GRACE
+local LOOP = { "zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'while true; do sleep 5; done'" }
+local function job_tick(t, pr) t:sw("a", "watchd", "--once", "--comms", "comms", "--max-agents", "0", { env = { SWARM_PROC = pr } }) end
+local function nudges(t) return t:q1("select count(*) n from event where kind='job-nudge' and agent='e'").n end
+
+function T.test_sleep_loop_job_nudged_once_then_ended(t)
+  local pr = fake_proc(t)
+  idle(t, "e", { wt = t.wt, claude_pid = 400 })
+  add_proc(pr, 402, 400, "zsh", LOOP)
+  add_proc(pr, 403, 402, "sleep", { "sleep", "5" })
+  job_tick(t, pr); job_tick(t, pr)
+  t:eq(nudges(t), 1)
+  assert(not ended(t, "e"), "grace not over")
+  t:q("update event set ts=ts-1200 where kind='job-nudge'")
+  job_tick(t, pr)
+  assert(ended(t, "e"))
+  t:has(t:sw("comms", "read").stdout, "while true; do sleep 5")
+end
+
+function T.test_real_run_job_not_nudged(t)
+  local pr = fake_proc(t)
+  idle(t, "e", { wt = t.wt, claude_pid = 400 })
+  add_proc(pr, 402, 400, "zsh", LOOP)
+  add_proc(pr, 403, 402, "fuzz", { "fuzz", "--run" })
+  job_tick(t, pr)
+  t:eq(nudges(t), 0)
+  assert(not ended(t, "e"))
+end
+
+function T.test_claim_holder_with_sleep_loop_spared(t)
+  local pr = fake_proc(t)
+  idle(t, "e", { wt = t.wt, claude_pid = 400 })
+  t:sw("e", "task", "add", "t"); t:sw("e", "task", "claim", "1")
+  add_proc(pr, 402, 400, "zsh", LOOP)
+  job_tick(t, pr)
+  t:eq(nudges(t), 0)
+  assert(not ended(t, "e"))
+end
+
 function T.test_high_context_agent_retakes_only_its_reaped_task(t)
   idle(t, "e", { wt = t.wt })
   t:sw("e", "task", "add", "t"); t:sw("e", "task", "add", "u"); t:sw("e", "task", "claim", "1")
