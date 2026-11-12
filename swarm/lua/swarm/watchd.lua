@@ -683,8 +683,16 @@ function M.auto_spawn(c, comms, opts, pool)
     for j = k, #pool do if not (halt and tostring(pool[j].id) == halt.v) then n = n + 1 end end
     return n
   end
-  for k, task in ipairs(pool) do
-    if halt and tostring(task.id) == halt.v then goto next_task end
+  local function head(p)  -- the task auto-spawn staffs next: the pool's first it has not given up on
+    for j, t in ipairs(p) do if not (halt and tostring(t.id) == halt.v) then return j, t end end
+  end
+  local lost = 0
+  while true do
+    -- Read again before each launch (model Staff.lean, `freshPool`): a launch takes seconds, and a task freed
+    -- meanwhile (its last dependency done) must not wait behind lower-priority ones of lifecycle's read (board #91).
+    pool = tasks.pool(c)
+    local k, task = head(pool)
+    if not task then break end
     if #members >= mn then
       return ("auto-spawn holding: %d live, the auto-spawn number is %d; %d task(s) startable%s"):format(
         #members, mn, startable(k), mx and "; max " .. mx or "")
@@ -696,14 +704,17 @@ function M.auto_spawn(c, comms, opts, pool)
     local name = nz(bo_name)
     if not name then top = top + 1; name = prefix .. d(top) end
     local model = nz(task.model) or nz(opts.model) or "sonnet"
-    local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, effort = nz(task.effort) or nz(opts.effort), task_id = task.id, task = {} })
+    local ok, e = pcall(M.cmd_spawn, c, { name = name, model = model, effort = nz(task.effort) or nz(opts.effort), task_id = task.id, task = {},
+      top = function() local _, t = head(tasks.pool(c)); return t and t.id end })
     if ok then
       c:exec("delete from meta where k='spawn_backoff'")
       c:exec("delete from meta where k='spawn_fails'")
       db.log(c, name, "spawn", nil, "auto #" .. d(task.id))
       members[#members + 1] = { name = name }
       bo_name, bo_delay = nil, 0  -- the retry took the name: later tasks this tick get fresh ones
-    elseif type(e) == "table" and e.lost then  -- a peer claimed it between pool() and now
+    elseif type(e) == "table" and e.lost then  -- a peer claimed it, or a task freed outranks it, between pool() and now
+      lost = lost + 1
+      if lost > #pool then break end  -- a pool that keeps changing: the next tick goes on
     elseif type(e) == "table" and e.refused then  -- an agent spawned between limits() and now: the max holds
       return ("auto-spawn holding: %s; %d task(s) startable"):format(e.refused:match("^[^.]*"), startable(k))
     elseif type(e) == "table" and e.exit then  -- launch failed; cmd_spawn already reopened the task
@@ -727,7 +738,6 @@ function M.auto_spawn(c, comms, opts, pool)
     else
       error(e, 0)
     end
-    ::next_task::
   end
 end
 
@@ -1232,7 +1242,13 @@ function M.cmd_spawn(c, a)
     util.die("usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] [--attach WT] -- <task>")
   end
   local spawner = agents.env("SWARM_NAME") and agents.me() or "human"
-  local ok, r = pcall(function() return tid and tasks.reserve(c, name, tid, a.model) or agents.reserve(c, name, a.model) end)
+  local ok, r = pcall(function()
+    if not tid then return agents.reserve(c, name, a.model) end
+    return c:tx(function()  -- a.top (auto-spawn): tid is claimed only while it still heads the pool, checked in the claim's transaction
+      if a.top and a.top() ~= tid then error({ exit = 1, lost = ("task #%s no longer heads the pool"):format(d(tid)) }, 0) end
+      return tasks.reserve(c, name, tid, a.model)
+    end)
+  end)
   if not ok then
     if type(r) == "table" and r.refused then db.log(c, spawner, "spawn-refused", nil, name) end
     error(r, 0)

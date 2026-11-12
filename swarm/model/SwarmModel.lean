@@ -27,6 +27,7 @@ import SwarmModel.Lifted.Watchd
 import SwarmModel.LoopSafe
 import SwarmModel.Decide
 import SwarmModel.Spawn
+import SwarmModel.Staff
 import SwarmModel.PrWatch
 import SwarmModel.Release
 import SwarmModel.End
