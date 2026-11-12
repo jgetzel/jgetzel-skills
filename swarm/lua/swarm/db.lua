@@ -34,7 +34,7 @@ M.COLUMNS = { { "agent", "wt text" }, { "lock", "seen int default 0" }, { "task"
   { "task", "ci_green_at int" }, { "task", "claim_ctx int" }, { "task", "done_ctx int" }, { "task", "deps text" },
   { "ci", "workflow text" }, { "task", "answer text" }, { "task", "effort text" },
   { "agent", "role text" }, { "agent", "stay text" }, { "task", "base text" }, { "task", "stop_to text" },
-  { "task", "stop_msg int" } }
+  { "task", "stop_msg int" }, { "task", "priority int default 2" } }
 
 local DB = {}
 DB.__index = DB
