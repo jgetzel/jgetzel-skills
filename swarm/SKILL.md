@@ -61,7 +61,9 @@ with subagents.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (the terminal only; the sweep removes worktrees), spawns fresh agents for startable
    tasks when none is free (up to the auto-spawn number, default the live count
-   when the first watchd starts; `--min-free-mem` GiB, default 4; while either
+   when the first watchd starts; `--min-free-mem` GiB, default 4; `--blocker-idle` min, default 25: an agent idle that long
+   holding a claim that open tasks wait on (`--after`, transitively) is asked once per idle stretch what it waits on, and
+   comms is told; while either
    holds it, the board says so: `auto-spawn holding: …`; the model is the task's
    `--model`, else `watchd --model`, else sonnet), reports live
    agents past their task lease without taking the claim, and tells you when an
