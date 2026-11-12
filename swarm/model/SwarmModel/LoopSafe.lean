@@ -171,8 +171,8 @@ theorem Ok.eGlob_pcall {I : Sem} {fn0 n : Nat} {c : Clo} {g : Tbl} {Q : Val → 
 end rules
 
 /-- the closure `M.iterate` is: watchd.lua's, its upvalue `iteration` at cell `c_it` -/
-def iterClo (env0 : Env) (fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) : Clo :=
-  ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0⟩
+def iterClo (env0 : Env) (fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (root0 : Option Nat) (ks0 : List (Nat × Nat)) : Clo :=
+  ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0, root0, ks0⟩
 
 /-- what W1 rests on holds as the semantics starts: `_G` has no metatable and its `pcall` is the builtin -/
 theorem pcall_init : ∃ g, initHeap[G]? = some (.tbl g) ∧ g.mt = none ∧ g.get (lstr "pcall") = .prim "pcall" [] :=
@@ -181,9 +181,10 @@ theorem pcall_init : ∃ g, initHeap[G]? = some (.tbl g) ∧ g.mt = none ∧ g.g
 /-- W1: a call of `M.iterate` ends in no Lua error, for every oracle, every fuel, every argument, and every value
 `iteration` holds, whatever it does when called. What it rests on: `pcall` is the builtin, a field of the function's
 environment (`_G`, which has no metatable). -/
-theorem iterate_safe (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_it : Nat)
+theorem iterate_safe (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_it : Nat)
     (h_it : env0.lookup "iteration" = some c_it) (h_pcall : env0.lookup "pcall" = none)
-    (h : Heap) (hfn : h[fn0]? = some (.clo (iterClo env0 fenv0 src0 ln0)))
+    (h : Heap) (hfn : h[fn0]? = some (.clo (iterClo env0 fenv0 src0 ln0 root0 ks0)))
     (v : Val) (hv : h[c_it]? = some (.cell v))
     (g : Tbl) (hg : h[fenv0]? = some (.tbl g)) (hgm : g.mt = none) (hp : g.get (lstr "pcall") = .prim "pcall" [])
     (args : List Val) (n : Nat) :
@@ -192,7 +193,7 @@ theorem iterate_safe (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char)
   | zero => unfold Ok; rw [call]; rfl
   | succ n =>
   refine Ok.congr (call_fn I n fn0 args h _ hfn) ?_
-  rw [iterClo, ← M_iterate_ok I env0 fn0 fenv0 src0 ln0 c_it h_it h_pcall args n]
+  rw [iterClo, ← M_iterate_ok I env0 fn0 fenv0 src0 ln0 root0 ks0 c_it h_it h_pcall args n]
   unfold M_iterate S.fn
   refine Ok.frame (Ok.onFrames (Ok.bind (Ok.mono (P := fun fl _ => ∃ vs, fl = .ret vs) ?_ ?_)))
   rotate_left
@@ -208,7 +209,7 @@ theorem iterate_safe (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char)
   refine Ok.qLocal fun n _ => Ok.mono (P := fun _ _ => True) ?_ fun vs h1 _ => ?_
   · -- the pcall of iteration
     refine Ok.lLast fun n _ => Ok.mSite fun n _ => Ok.mCall fun n _ => ?_
-    refine Ok.eGlob_pcall (c := iterClo env0 fenv0 src0 ln0) ?_ ?_ hgm hp ?_
+    refine Ok.eGlob_pcall (c := iterClo env0 fenv0 src0 ln0 root0 ks0) ?_ ?_ hgm hp ?_
     · cell
     · simp only [iterClo]; cell
     refine Ok.lCons fun n _ => Ok.eCell (by cell) ?_
