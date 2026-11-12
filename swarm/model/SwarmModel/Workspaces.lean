@@ -169,7 +169,7 @@ theorem git_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = som
     | (right; left; exact ⟨_, _, rfl⟩) | (right; right; left; exact ⟨_, _, rfl⟩) | (right; right; right; rfl)
     | (left; simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
         readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf,
-        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, stale, nudge, hnudge, when] at h
+        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, when] at h
        (repeat' split at h) <;> first | (simp only [Option.some.injEq] at h; subst h; simp; done) | simp at h)
 
 /-- no worktree that is there has a base checked out, per worktree -/
@@ -659,7 +659,7 @@ theorem done_finished {c : Cfg} (hp : c.perTaskBase = true) {s : State} {a : Nat
 theorem idle_of {s : State} {a : Nat} (h : idleFree s a = true) :
     (s.agt a).st = .idle ∧ (s.agt a).reading = 0 ∧ (s.agt a).snap = [] := by
   simp only [idleFree, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true', List.isEmpty_iff] at h
-  exact ⟨h.1.1.1.1.1, h.1.2, h.2⟩
+  exact ⟨h.1.1.1.1.1.1, h.1.2, h.2⟩
 
 theorem lt_of_idle {s : State} {a : Nat} (h : (s.agt a).st = .idle) : a < s.ag.length := by
   refine Classical.byContradiction fun hl => ?_

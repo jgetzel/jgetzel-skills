@@ -22,12 +22,13 @@ def stateJson (c : Cfg) (s : State) : Json :=
     | .absent => "absent" | .opn => "open" | .claimed => "claimed" | .blocked => "blocked" | .done => "done" | .dropped => "dropped"
   let ast : ASt → String
     | .unborn => "unborn" | .working => "working" | .idle => "idle" | .blocked => "blocked" | .ended => "ended"
-  let kind : Kind → String | .dm => "dm" | .answer => "answer" | .released => "released" | .digest => "digest" | .nudge => "nudge"
+  let kind : Kind → String
+    | .dm => "dm" | .answer => "answer" | .released => "released" | .digest => "digest" | .nudge => "nudge" | .check => "check"
   Json.mkObj [
     ("task", Json.arr <| (s.task.toArray.mapIdx fun i k => (i + 1, k)).map fun (t, k) => Json.mkObj
       [("base", c.tbase t), ("st", tst k.st), ("owner", who k.owner), ("lease", k.lease), ("ev", k.ev), ("answer", k.answer)]),
     ("ag", Json.mkObj <| c.agents.map fun a => (slot a, Json.mkObj [("st", ast (s.agt a).st), ("boot", (s.agt a).boot),
-      ("wt", ((s.agt a).wt.map toJson).getD (-1 : Int))])),
+      ("wt", ((s.agt a).wt.map toJson).getD (-1 : Int)), ("stay", (s.agt a).stay)])),
     ("lock", Json.mkObj <| (c.patterns.zip s.lock).map fun (p, l) => (p, Json.mkObj [("holder", who l.holder)])),
     ("log", Json.arr <| s.log.toArray.map fun m => Json.mkObj
       [("frm", who m.frm), ("to", slot m.to), ("urgent", m.urgent), ("kind", kind m.kind)]),
@@ -37,10 +38,11 @@ def stateJson (c : Cfg) (s : State) : Json :=
     ("brs", Json.arr <| (List.range (c.nbases + c.nwts)).toArray.map fun b => ((s.git.tip b).map toJson).getD (-1 : Int)),
     -- board #47: what the communicator is sent and has read, the away flag, and `--back`'s digest
     ("comms", Json.arr <| s.cbox.toArray.map fun n => Json.mkObj [("kind", match n.kind with
-      | .blocked => "blocked" | .away => "away" | .back => "back"), ("task", n.task), ("urgent", n.urgent), ("qs", toJson n.qs)]),
+      | .blocked => "blocked" | .away => "away" | .back => "back" | .hung => "hung"), ("task", n.task), ("urgent", n.urgent), ("qs", toJson n.qs)]),
     ("ccur", s.ccur), ("away", s.away.isSome),
     ("digest", match s.digest with
-      | some g => Json.mkObj [("qs", toJson g.qs), ("done", toJson g.done), ("ended", toJson (g.ended.map slot))]
+      | some g => Json.mkObj [("qs", toJson g.qs), ("done", toJson g.done), ("ended", toJson (g.ended.map slot)),
+        ("hung", toJson (g.hung.map slot))]
       | none => Json.null)]
 
 def worldJson (c : SCfg) (w : SWorld) : Json :=
@@ -77,6 +79,7 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
         ("unlock", [a "a10" x, p "p10" q], unlock s x q)])
       ++ (ags.flatMap fun y => bs.map fun u => ("postTo", [a "a11" x, a "b11" y, ("u11", toJson u)], postTo s x y u))
       ++ [("readAll", [a "a12" x], readAll s x)]
+      ++ (bs.map fun on => ("stay", [a "a50" x, ("on50", toJson on)], stay s x on))
       ++ bs.map fun big => ("stop", [a "a14" x, ("big14", toJson big)], stop c s x big),
     (ags.flatMap fun x => [
         ("wake", [a "a15" x], wake c s x),
@@ -86,7 +89,13 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
         ("waiterGone", [a "a20" x], waiterGone s x),
         ("age", [a "a21" x], age s x),
         -- 4000 s idle is also 30 min: watchd's tick would nudge an agent its unclean worktree keeps (the model's `nudge`)
-        ("cool", [a "a22" x], if unlanded c s x then none else cool s x)])
+        ("cool", [a "a22" x], if unlanded c s x || (s.agt x).stay then none else cool s x),
+        -- watchd's liveness check (board #79). The replay moves last_active back and runs a tick, so these come only
+        -- where the model's tick changes nothing; 30 min idle only for a stayer (watchd's tick would nudge another one
+        -- its unclean worktree keeps), and 50 min would also check a cold one (`cool` is not for stayers)
+        ("stale", [a "a52" x], if (s.agt x).stay then stale s x else none),
+        ("stayCheck", [a "a53" x], if tickOf c s == s then stayCheck c s x else none),
+        ("stayHung", [a "a54" x], if tickOf c s == s then stayHung c s x else none)])
       ++ (ts.map fun t => ("expire", [n "t23" t], expire c s t))
       ++ ps.map fun q => ("expireLock", [p "p24" q], expireLock s q),
     (masks.map fun m => ("add", [d "d28" m], add s (depSet c m)))
@@ -94,6 +103,8 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
       ++ (ts.flatMap fun t => [("unblock", [n "t30" t], unblock c s t), ("drop", [n "t31" t], drop s t),
         ("releaseOther", [n "t32" t], releaseOther c s t)])
       ++ [("awayOn", [], awayOn s), ("back", [], back c s), ("commsRead", [], commsRead s)]
+      -- an idle stayer 30 min idle and unclean, its stay ended, is one watchd's tick would nudge
+      ++ (ags.map fun x => ("endStay", [a "a51" x], if (s.agt x).stale && unlanded c s x then none else endStay s x))
       ++ ags.flatMap fun x => bs.map fun f => ("endOther", [a "a33" x, ("f33", toJson f)], endOther c s x f),
     [("tick", [], tick c s)],
     -- the agents' git commands, and the world in a worktree
@@ -177,6 +188,11 @@ def awayOn : String × List (String × Json) := ("awayOn", [])
 def back : String × List (String × Json) := ("back", [])
 def commsRead : String × List (String × Json) := ("commsRead", [])
 def hnudge (x : Nat) := ("hnudge", [ag "a48" x])
+def stay (x : Nat) (on : Bool) := ("stay", [ag "a50" x, ("on50", toJson on)])
+def endStay (x : Nat) := ("endStay", [ag "a51" x])
+def stale (x : Nat) := ("stale", [ag "a52" x])
+def stayCheck (x : Nat) := ("stayCheck", [ag "a53" x])
+def stayHung (x : Nat) := ("stayHung", [ag "a54" x])
 end S
 open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
@@ -201,7 +217,11 @@ ends agent 0 (`swarm end`, its checks pass), then agent 1 with `--force` (#1 is 
 answered and agent 0 finishes it, the tick tells #2 not urgent; agent 0 goes idle (big) and the tick ends it and spawns
 for #3; `--back`: the digest has #2, #1 done and agent 0 ended, and the communicator is sent one urgent message naming #2.
 `nudge` (N1', board #50): `swarm nudge` of a working agent, of the agent spawned into an ended slot, of it blocked, and
-of an idle one: each changes nothing in the db but its event, and types the line into that agent's terminal only. -/
+of an idle one: each changes nothing in the db but its event, and types the line into that agent's terminal only.
+`stay` (board #79): the user goes away; agent 0 stays, ends its stay and stays again, agent 1 stays; both stop and idle
+50 min, watchd sends each the liveness check and neither answers, so the communicator is told each hung (urgent); the
+communicator ends agent 0's stay, and the tick ends it while it keeps the stayer agent 1; `--back`'s digest has agent 0
+ended and agent 1 hung. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
@@ -219,7 +239,9 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("end-user", [add, claim 1 1, stop 0, endOther 0 false, endOther 1 true, tick, boot 0]),
   ("away", [add, add, add, claim 0 1, block 0 1, tick, commsRead, unblock 1, readAll 0, block 0 1, tick, awayOn, claim 1 2,
     block 1 2, unblock 1, readAll 0, done 0 1, tick, stopBig 0, age 0, tick, back, commsRead]),
-  ("nudge", [stop 0, age 0, tick, hnudge 1, add, tick, hnudge 0, boot 0, block 0 1, hnudge 0, stop 1, hnudge 1])]
+  ("nudge", [stop 0, age 0, tick, hnudge 1, add, tick, hnudge 0, boot 0, block 0 1, hnudge 0, stop 1, hnudge 1]),
+  ("stay", [awayOn, stay 0 true, stay 0 false, stay 0 true, stay 1 true, stop 0, stop 1, age 0, age 1, stale 0, stale 1,
+    stayCheck 0, stayCheck 1, stayHung 0, stayHung 1, endStay 0, tick, back, commsRead])]
 
 -- ---------- PrWatch.lean's layer (board #28) ----------
 namespace P

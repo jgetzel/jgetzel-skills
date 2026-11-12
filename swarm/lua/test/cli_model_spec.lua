@@ -11,7 +11,7 @@ local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local DIR = os.getenv("SWARM_MODEL_TRACES") or (here .. "/../../model/traces")
 local COMMS, ROSTER, CAP = "m-comms", 2, "2"
 local agents_HUMAN = require("swarm.agents").HUMAN
-local SYS = { released = "system", digest = "system", nudge = "system", dm = "dm", answer = "dm" }
+local SYS = { released = "system", digest = "system", nudge = "system", check = "system", dm = "dm", answer = "dm" }
 
 -- the model's unread ids for a (Model.lean's unread)
 local function model_unread(st, a)
@@ -56,6 +56,8 @@ local function check(t, st, where, N, seen, M)
       if not r or not r.ended then fail("agent " .. name .. " ended", r and r.ended, "ended") end
     elseif not r or r.ended or r.status ~= g.st then
       fail("agent " .. name .. " status", r and (r.ended and "ended" or r.status), g.st)
+    elseif g.stay ~= nil and (r.stay ~= nil) ~= g.stay then  -- board #79; nil: a trace from before it
+      fail("agent " .. name .. " stay", r.stay, g.stay)
     end
   end
   local held = 0
@@ -107,7 +109,8 @@ local function commscheck(t, st, where, R)
   local rows = {}
   for _, r in ipairs(t:q("select id, body, urgent from msg where dest=? order by id", COMMS)) do
     local kind = (r.body:match("^the user is away since") and "away") or (r.body:match("^the user is back") and "back")
-      or (r.body:match("^[%w%-]+ is blocked") and "blocked") or nil
+      or (r.body:match("^[%w%-]+ is blocked") and "blocked")
+      or (r.body:match("^[%w%-]+ stays for .* did not answer the liveness check") and "hung") or nil
     if kind then rows[#rows + 1] = { id = r.id, kind = kind, urgent = r.urgent ~= 0, body = r.body } end
   end
   if #rows ~= #st.comms then fail("messages to the communicator", #rows, #st.comms) end
@@ -119,6 +122,8 @@ local function commscheck(t, st, where, R)
     end
     local on = tonumber(r.body:match("^[%w%-]+ is blocked on #(%d+)") or "")
     if m.kind == "blocked" and on and on ~= m.task then fail("communicator message " .. i .. " task", on, m.task) end
+    local who = r.body:match("^([%w%-]+) stays for")
+    if m.kind == "hung" and R[who] ~= "m-" .. (m.task + 1) then fail("communicator message " .. i .. " agent", who, m.task) end
     if m.kind == "back" then
       local got = {}
       for id in (r.body:match("%((.*)%)") or ""):gmatch("#(%d+)") do got[#got + 1] = tonumber(id) end
@@ -152,6 +157,10 @@ local function commscheck(t, st, where, R)
     local ge = sorted(g.ended, function(r) return R[r.name] or r.name end)
     local me = sorted(md.ended, function(x) return x end)
     if ge ~= me then fail("digest ended", ge, me) end
+    if md.hung then  -- board #79
+      local gh, mh = sorted(g.hung, function(n) return R[n] or n end), sorted(md.hung, function(x) return x end)
+      if gh ~= mh then fail("digest hung", gh, mh) end
+    end
   end
 end
 
@@ -335,6 +344,11 @@ local function act(t, name, p, N, G, prev)
   end
   local function hook(who, ev) return t:hook(who, ev, {}, hc(who)) end
   local function ids(set) local s = {} for i, x in ipairs(set) do s[i] = tostring(x) end return table.concat(s, ",") end
+  -- watchd --once. Its quiet notice (the board empty, only stayers live) is outside the model: marked sent before each tick
+  local function wd(...)
+    setdb(t, "insert into event(ts,kind) values(?,'quiet')", now)
+    return sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0", ...)
+  end
   if name == "claim" then sw(p.a1, "task", "claim", tostring(p.t1))
   elseif name == "renew" then sw(p.a4, "task", "renew", tostring(p.t4))
   elseif name == "release" then sw(p.a5, "task", "release", tostring(p.t5))
@@ -399,20 +413,32 @@ local function act(t, name, p, N, G, prev)
     if t:q1("select count(*) n from event").n ~= ev + 1 or new.kind ~= "nudge" or new.agent ~= COMMS or new.path ~= p.a48 then
       error("nudge's event: " .. t.repr(new), 0)
     end
+  -- board #79: stays, and watchd's liveness check of an idle stayer (Traces.lean offers the check and the hang only where
+  -- the model's tick changes nothing, so the tick here is that check alone)
+  elseif name == "stay" then
+    if p.on50 then sw(p.a50, "stay", "waiting for a review") else sw(p.a50, "stay", "--end") end
+  elseif name == "endStay" then sw(COMMS, "stay", "--end", p.a51)
+  elseif name == "stale" then setdb(t, "update agent set last_active=? where name=?", now - 1900, p.a52)
+  elseif name == "stayCheck" then  -- idle 51 min: past LIVENESS_IDLE, short of COLD_IDLE
+    setdb(t, "update agent set last_active=? where name=?", now - 51 * 60, p.a53)
+    wd()
+  elseif name == "stayHung" then  -- LIVENESS_WAIT since its check
+    setdb(t, "update event set ts=ts-400 where kind='stay-check' and agent=?", p.a54)
+    wd()
   elseif name == "endOther" then  -- H1: the user's or the communicator's `swarm end`, --force or not
     if p.f33 then sw(COMMS, "end", p.a33, "--force") else sw(COMMS, "end", p.a33) end
-  elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+  elseif name == "tick" then wd()
   elseif name == "failExit" then  -- the tick's launch fails: launch.sh exits non-zero
     local f = t.d .. "/launch.fail"
     io.open(f, "w"):close()
-    local ok, e = pcall(sw, COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+    local ok, e = pcall(wd)
     os.remove(f)
     if not ok then error(e, 0) end
   elseif name == "failRaise" then  -- launch_agent raises before launch.sh: the new agent's settings file can't be written
     local d = t.d .. "/agents/" .. next_name(t) .. ".settings.json"
     os.remove(d)  -- a launch of that name wrote it before; each launch writes it anew
     os.execute("mkdir -p " .. util.shquote(d))
-    local ok, e = pcall(sw, COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
+    local ok, e = pcall(wd)
     os.execute("rmdir " .. util.shquote(d))
     if not ok then error(e, 0) end
   elseif name == "lapse" then  -- the backoff's time passes

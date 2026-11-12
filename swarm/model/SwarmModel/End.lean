@@ -15,14 +15,14 @@ theorem endOther_force (c : Cfg) (s : State) (a : Nat) : step c s (.endOther a t
 theorem finished_eq {c : Cfg} (hb : c.bgLives = true) (s : State) (a : Nat) :
     finished c s a = (endable c s a && (s.agt a).aged && (s.agt a).reading == 0 && (s.agt a).snap.isEmpty) := by
   simp only [finished, idleFree, endable, hb, Bool.true_and]
-  cases ((s.agt a).st == .idle) <;> cases (s.agt a).aged <;> cases holds s a <;> cases lockHeld s a <;>
+  cases ((s.agt a).st == .idle) <;> cases (s.agt a).aged <;> cases (s.agt a).stay <;> cases holds s a <;> cases lockHeld s a <;>
     cases ((s.agt a).reading == 0) <;> cases (s.agt a).snap.isEmpty <;> cases unlanded c s a <;> cases (s.agt a).bg <;> rfl
 
 /-- H1: `swarm end A` without --force is enabled exactly when its check passes (between the model's ghost reads) -/
 theorem endOther_enabled {c : Cfg} {s : State} {a : Nat} :
     (step c s (.endOther a false)).isSome = (endable c s a && (s.agt a).reading == 0 && (s.agt a).snap.isEmpty) := by
   have hl : endable c s a = true → (s.agt a).live = true := fun h => by
-    simp only [endable, Bool.and_eq_true, beq_iff_eq] at h; simp [Agent.live, h.1.1.1.1]
+    simp only [endable, Bool.and_eq_true, beq_iff_eq] at h; simp [Agent.live, h.1.1.1.1.1]
   simp only [step, endOther, leaveIf, when, Bool.false_or]
   by_cases he : endable c s a = true
   · simp only [he, hl he, Bool.true_and]; split <;> simp_all

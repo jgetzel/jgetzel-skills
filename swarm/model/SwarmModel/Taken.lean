@@ -372,6 +372,7 @@ theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = so
     · cases hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨some a, b, u, .dm, 0⟩], by simp [post]⟩
   case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
+  case stayCheck a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, false, .check, 0⟩], by simp [post]⟩
   case releaseOther t => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, (s.tk t).owner.getD 0, true, .released, t⟩], by simp [post]⟩
   all_goals obtain ⟨_, rfl⟩ := hs
   all_goals ((repeat' split) <;> first
@@ -575,6 +576,13 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
       | (simp [agt_setAg]; split <;> simp_all; done)
       | skip
     exact unread_ext (ext_trans (s := s) (x := setAg s b _) (ext_frame (by simp) (by simp) _) (ext_post _ _ _)) h5
+  case stayCheck b =>
+    obtain ⟨hg, rfl⟩ := hs
+    left; refine ready_of_fields hR' ?_ ?_ ?_ ?_ ?_
+    all_goals first
+      | (simp [agt_setAg]; split <;> simp_all; done)
+      | skip
+    exact unread_ext (ext_trans (s := s) (x := setAg s b _) (ext_frame (by simp) (by simp) _) (ext_post _ _ _)) h5
   case readAll b =>
     obtain ⟨hg, rfl⟩ := hs
     have hb : b ≠ a := by rintro rfl; simp_all [busy]
@@ -640,7 +648,7 @@ theorem reusable_ready {c : Cfg} {s : State} {a : Nat} (hp : c.passedOver = true
   have hext := reapTasks_ext c s a
   have hr0 := hr
   simp only [reusable, finished, idleFree, Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq, hag, and_assoc] at hr
-  obtain ⟨h1, _, _, _, _, _, _, _, h3, _, _, hw⟩ := hr
+  obtain ⟨h1, _, _, _, _, _, _, _, _, h3, _, _, hw⟩ := hr
   have h2 : (s.agt a).waiter = true := by simpa [hwa] using hw
   have h4 : (s.agt a).cold = false := by
     cases hc : (s.agt a).cold

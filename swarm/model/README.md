@@ -48,6 +48,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` and `Env.N1'_real` with `hc send` as `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
+| `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung` |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -61,7 +62,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 18 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 19 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -92,7 +93,8 @@ One value holds the whole state; every watchd tick is a pure function of it, com
 - **Locks** are patterns; `swarm lock` refuses a pattern that has a file in common with a live lock of another
   agent (`locks.covers`, tabulated for the model's patterns). Locks lapse and are reaped.
 - **Agents** are working, idle, blocked (an hc permission prompt) or ended, with or without a live waiter (the
-  Stop hook's `swarm wait`), small or big context, cold or not (idle past the prompt cache with a big context).
+  Stop hook's `swarm wait`), small or big context, cold or not (idle past the prompt cache with a big context), staying
+  or not (`swarm stay`: lifecycle keeps it, `swarm end` refuses it; the text is outside the model).
   An agent's slot is reused by the next spawn after it ends (the Lua gives that agent the next name; the replay
   maps slots to names).
 - **Dead terminals**: `die` ends an agent's terminal with no `swarm leave`: its row stays as it was (it reads as
@@ -237,7 +239,8 @@ and a swarm's own such as `formal`); `Git.safe` is reachability from one, checke
   `endKeepsGit`
 - **W3** On a fair run from a reachable state no worktree stays an orphan forever (there, clean, on a protected ref,
   unattached, no process, untouched 30 min: `orphan`), and no agent stays idle and free with its task's work on that
-  task's base forever (`doneOnBase`: no background job running, and the worktree `wt_map` picks and every one it owns
+  task's base forever (`doneOnBase`: staying for nothing (board #79: `idleFree`; a stayer is kept until its stay ends),
+  no background job running, and the worktree `wt_map` picks and every one it owns
   clean, its HEAD on a base of a task it owns, main if none)
 - **W4** No worktree has a base checked out, so landing on a base is never refused for it. `noBaseOut`
 
@@ -317,7 +320,8 @@ so S1-S5, N1, W1-W4 and L1-L4 above are proved with them in.
 - **A4** Away and back are idempotent: a second away is refused and keeps the first since (`away_twice`, `since_kept`),
   `--back` when not away is refused (`back_twice`); back's digest is the events since away (`back_digest`): the questions
   oldest first by their latest question event, then id (`questions_sorted`), the tasks done since and still done
-  (`digest_done`), the agents ended since (`digest_ended`). The Lua reads these by event id after the away event's
+  (`digest_done`), the agents ended since (`digest_ended`), and the agents hung since and not ended since (`digest_hung`,
+board #79). The Lua reads these by event id after the away event's
   (board #74), as the model by index in `evs`, so what happened in away's own second before it is not since. The replay
   runs each away and back twice.
 
@@ -333,6 +337,34 @@ proved with it in `step`.
   (`script-nudge`, and random steps) checks the db unchanged but for the one nudge event, and that hc's last call was
   `send <that agent's terminal> <the line>`. A roster agent joined outside hc has no terminal in the replay, which the
   model's `replay` instance (no `unbound`) doesn't have: the replay binds it for that command only.
+
+Stays (board #79; `Stay.lean`). `swarm stay "<what>"` and `swarm stay --end`, the agent's own (`stay a on`, while working),
+`swarm stay --end A` by the user or the communicator (`endStay a`, actorless as `releaseOther`; refused unless A is live and
+stays), and watchd's liveness check of an idle stayer are actions of `step`: `Agent.stay`, and per idle stretch `checked`
+(a `stay-check` sent) and `hung` (a `stay-hung` logged), both cleared by `stop` as the Lua's events older than last_active
+stop counting. `stayCheck a` is watchd.hung's periodic check: an idle stayer, 50 min idle (the model's `stale`), not cold,
+its waiter alive, not checked yet, is sent the check (`.check`, not urgent, a message that wakes); `stayHung a`, the check
+unanswered LIVENESS_WAIT later (the agent still idle, its waiter alive), logs `Ev.hung a` and tells the communicator,
+urgent, once. Both are the environment's (time passing, an agent that does not answer), not in `fair`, so S1-S5, N1,
+W1-W4, L1-L4, H1, H2 and A1-A4 above are proved with them in `step`. `idleFree` reads the stay (fate's first check), so
+`finished`, `reusable`, `ends`, watchd's unclean `nudge`, `doneOnBase` (W3) and `swarm end`'s `endable` do.
+
+- **St1** Lifecycle keeps a stayer: it is not finished, so neither ended nor reused (`stayer_kept`), and the tick leaves
+  a live stayer's row as it was but for the pool ids a digest told it of (`tick_keeps_stayer`); `swarm end` without
+  `--force` refuses it (`endOther_stay`; `Decide.endWhy_lifted` and `fate_lifted` read the row's stay). The stay
+  commands change the flag alone (`stay_spec`, `endStay_spec`, `endStay_enabled`).
+- **St2** The liveness check goes to an idle stayer once per idle stretch, and only one with a live waiter that is not
+  cold (`stayCheck_spec`); unanswered, its hang is logged and the communicator told, urgent, and not again in that
+  stretch (`stayHung_spec`).
+- **St3** `--back`'s digest lists as hung exactly the slots whose agent hung since away and has not ended since
+  (`digest_hung`: of the slot's hung and ended events since away, the last is a hung; agents.digest's `stay-hung`
+  events after the away event's, of an agent row not ended, a slot's next agent being another row).
+
+The replay (`script-stay`, and random steps) runs the commands and, for `stale`, `stayCheck` and `stayHung`, moves
+last_active (30 min; 51 min, past LIVENESS_IDLE and short of COLD_IDLE) or the check event (400 s) back and runs a tick:
+`Traces.lean` offers the check and the hang only where the model's tick changes nothing, `stale` only for a stayer, and
+neither `cool` of a stayer nor `endStay` of an idle agent 30 min idle with unlanded work (watchd's tick would check the
+first and nudge the second). Watchd's quiet notice is outside the model: the replay marks it sent before each tick.
 
 No work lost (board #15, `NoWorkLost.lean`):
 
@@ -896,17 +928,19 @@ of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR 
 clean at that HEAD, which `unlanded` checks against the agent's bases and the worktree's own (`rbase`) as the Lua does (boards #63, #78); the sweep of it once its
 agent ends is not compared), an agent removing its own worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
 `nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
-live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` doesn't
-generate `stale` or `nudge`, nor `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
-the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles and `swarm stay`
-(no model agent stays, so lifecycle may end any of them); staffing limits beyond the roster; of auto-spawn
+live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` generates
+`stale` only for a stayer, no `nudge`, and no `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
+the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_spec.lua`); another swarm's communicator on the board (PR #124); roles, the stay's text, `swarm spawn --stay`
+and the communicator's own stay (it is no slot); of watchd.hung (board #79): the no-waiter and unwoken notices to the
+communicator, and the 50 and 5 min as times (`stale` stands for both idles); watchd's quiet notice (the board empty, only
+stayers live); staffing limits beyond the roster; of auto-spawn
 (`Spawn.lean`): a launch failing after another spawned in the same tick (the model's `fail` is the tick's first launch),
 its memory gate and the `lost` and `refused` branches (a peer's claim or spawn between the pool and the reservation),
 an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and launch.sh failing after hc started the
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
-generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
+generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: the user as an actor apart from the communicator; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
-(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs, main's CI and hung stays (no PR, CI or stay in `State`; boards #79 and #80), the notes' text and the away line the hooks print to the communicator; a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
+(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs and main's CI (no PR or CI in `State`; board #80), the notes' text and the away line the hooks print to the communicator; a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a worker agent's own terminal is the model's

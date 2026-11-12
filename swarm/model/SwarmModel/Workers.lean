@@ -641,6 +641,10 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   case back => obtain ⟨_, rfl⟩ := hstep; exact hs
   case commsRead => obtain ⟨_, rfl⟩ := hstep; exact hs
   case hnudge => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case stay a on => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case endStay a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case stayCheck a => obtain ⟨_, rfl⟩ := hstep; exact J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
+  case stayHung a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (s := tellC (logEv s _) _) (fun _ => rfl) (fun _ => rfl) hs
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hg

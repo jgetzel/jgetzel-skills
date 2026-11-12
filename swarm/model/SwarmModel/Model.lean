@@ -18,15 +18,17 @@ inductive TSt where | absent | opn | claimed | blocked | done | dropped
   deriving DecidableEq, Repr, Inhabited
 inductive ASt where | unborn | working | idle | blocked | ended
   deriving DecidableEq, Repr, Inhabited
-inductive Kind where | dm | answer | released | digest | nudge
+/-- `check`: watchd's liveness check of a stayer -/
+inductive Kind where | dm | answer | released | digest | nudge | check
   deriving DecidableEq, Repr, Inhabited
 /-- the events agents.digest reads (the Lua's event rows, and task.done_at, agent.ended): `task block` of t
-(`block`), t's question told to the communicator, or an hc prompt's (`task-blocked`, hc's or not), t done, slot a ended -/
-inductive Ev where | block (t : Nat) | tblocked (t : Nat) (hc : Bool) | done (t : Nat) | ended (a : Nat)
+(`block`), t's question told to the communicator, or an hc prompt's (`task-blocked`, hc's or not), t done, slot a ended,
+slot a's stay hung (`stay-hung`: it did not answer the liveness check) -/
+inductive Ev where | block (t : Nat) | tblocked (t : Nat) (hc : Bool) | done (t : Nat) | ended (a : Nat) | hung (a : Nat)
   deriving DecidableEq, Repr, Inhabited
 /-- what the communicator is told: a block (of task t; 0: an hc prompt with no claimed task), the user away, the user
-back (the questions that wait) -/
-inductive NKind where | blocked | away | back
+back (the questions that wait), a stayer hung (`task` is its slot) -/
+inductive NKind where | blocked | away | back | hung
   deriving DecidableEq, Repr, Inhabited
 structure Note where
   kind : NKind
@@ -35,11 +37,12 @@ structure Note where
   qs : List Nat := []
   deriving DecidableEq, Repr, Inhabited
 /-- `swarm away --back`'s digest (agents.digest; meta away_digest): the questions that wait, oldest first; the tasks
-done, in order; the slots whose agent ended, in order -/
+done, in order; the slots whose agent ended, in order; the slots whose agent's stay hung, still live, by slot -/
 structure Digest where
   qs : List Nat
   done : List Nat
   ended : List Nat
+  hung : List Nat := []
   deriving DecidableEq, Repr, Inhabited
 
 /-- The instance: sizes, and one switch per fix, so the model is the code before and after it. The defaults
@@ -184,6 +187,13 @@ structure Agent where
   nudged : Bool
   /-- the terminal is gone but the row isn't ended: it does nothing more, and the row still reads as live -/
   dead : Bool
+  /-- `swarm stay "<what>"`: lifecycle keeps it (fate's `stay`), and `swarm end` refuses it (agent.stay; the text is
+  outside the model) -/
+  stay : Bool := false
+  /-- watchd's liveness check was sent in this idle stretch (a `stay-check` event since its last_active) -/
+  checked : Bool := false
+  /-- and it did not answer: `stay-hung` logged in this idle stretch -/
+  hung : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Lock where
@@ -406,10 +416,10 @@ def reapTask (c : Cfg) (x : State) (t : Nat) : State :=
   | none => x
 def reapTasks (c : Cfg) (s : State) : State := c.tasks.foldl (reapTask c) s
 def reapLocks (s : State) : State := { s with lock := s.lock.map fun l => if l.exp then ⟨none, false⟩ else l }
-/-- idle and free of claims and locks: what lifecycle looks at before the worktrees -/
+/-- idle, staying for nothing, free of claims and locks: what lifecycle looks at before the worktrees -/
 def idleFree (s : State) (a : Nat) : Bool :=
   let g := s.agt a
-  g.st == .idle && g.aged && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
+  g.st == .idle && g.aged && !g.stay && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
 /-- lifecycle may end or reuse a: idle and free, no unlanded worktree, and (`bgLives`) no background job running -/
 def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c s a && !(c.bgLives && (s.agt a).bg)
 /-- lifecycle's reusable agents: since PR #116 one told of the whole pool, its inbox read, has passed it over:
@@ -570,7 +580,9 @@ def readAll (s : State) (a : Nat) : Option State :=
 and no claim takes it first (brief: take the next task), so only a big or busy one stops beside the pool. -/
 def stop (c : Cfg) (s : State) (a : Nat) (big : Bool) : Option State :=
   when (busy s a && (s.agt a).reading == 0 && (big || holds s a || (pool c s).isEmpty))
-    (setAg s a ({ · with st := .idle, waiter := true, big := big, aged := false, cold := false, stale := false, nudged := false }))
+    (setAg s a fun g =>
+      { g with st := .idle, waiter := true, big := big, aged := false, cold := false, stale := false, nudged := false,
+               checked := false, hung := false })
 
 -- the environment: time, the waiter, the human, hc
 def wake (c : Cfg) (s : State) (a : Nat) : Option State :=
@@ -680,6 +692,24 @@ def nudge (c : Cfg) (s : State) (a : Nat) : Option State :=
 into a's terminal (Env.lean's `hcSendTargets`) and logs a nudge event, neither of which the model keeps. The line's
 effect on a is a's own `prompt`. Not watchd's `nudge` -/
 def hnudge (c : Cfg) (s : State) (a : Nat) : Option State := when ((s.agt a).live && !c.unbound.contains a) s
+/-- `swarm stay "<what>"` (on) or `swarm stay --end` (off), the agent's own -/
+def stay (s : State) (a : Nat) (on : Bool) : Option State := when (working s a) (setAg s a ({ · with stay := on }))
+/-- `swarm stay --end A` by the user or the communicator (`agents.in_charge`, so actorless as `releaseOther`): refused
+for an agent not live or staying for nothing -/
+def endStay (s : State) (a : Nat) : Option State :=
+  when ((s.agt a).live && (s.agt a).stay) (setAg s a ({ · with stay := false }))
+/-- watchd.hung's periodic check: a stayer idle 50 min (`stale`, the model's one long idle), not cold, its waiter alive,
+not yet checked in this stretch, is sent the liveness check (not urgent) -/
+def stayCheck (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (c.watchd && g.stay && g.st == .idle && g.stale && !g.cold && g.waiter && !g.checked)
+    (post (setAg s a ({ · with checked := true })) ⟨none, a, false, .check, 0⟩)
+/-- LIVENESS_WAIT later, still idle (it did not answer): `stay-hung` logged, and the communicator told, urgent, once per
+stretch -/
+def stayHung (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (c.watchd && g.stay && g.st == .idle && g.waiter && g.checked && !g.hung)
+    (setAg (tellC (logEv s (.hung a)) ⟨.hung, a, true, []⟩) a ({ · with hung := true }))
 /-- the owner of `t` has not had its first turn -/
 def bootingOwner (s : State) (t : Nat) : Bool := match (s.tk t).owner with | some o => (s.agt o).boot | none => false
 def expire (c : Cfg) (s : State) (t : Nat) : Option State :=
@@ -740,10 +770,9 @@ def releaseOther (c : Cfg) (s : State) (t : Nat) : Option State :=
     (post (setTask s t fun k => { k with st := .opn, owner := none, lease := false, hcq := false, stopTo := if c.stopFirst then k.owner else none, stopMsg := s.log.length + 1 })
       ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩)
 /-- what watchd.cmd_end checks before `swarm end A` without `--force`: lifecycle's checks but the 2 min (`finished`, with
-`bgLives`): idle, no claim, no lock, no background job, no work off its tasks' bases (`unlanded`). The Lua's `stay` is
-outside the model (no model agent stays) -/
+`bgLives`): idle, no stay, no claim, no lock, no background job, no work off its tasks' bases (`unlanded`) -/
 def endable (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (s.agt a).st == .idle && !holds s a && !lockHeld s a && !(s.agt a).bg && !unlanded c s a
+  (s.agt a).st == .idle && !(s.agt a).stay && !holds s a && !lockHeld s a && !(s.agt a).bg && !unlanded c s a
 /-- H1: `swarm end A` by the user or the communicator (`agents.in_charge` gates who, so it is actorless as `releaseOther`):
 refused unless `endable`; `force` (`--force`, the user's choice to lose work) skips the checks. It ends the row as `leave`
 does (its claims and locks released; the terminal killed, the waiter with it); `swarm end --force` is `leave` -/
@@ -757,11 +786,18 @@ def qtime (s : State) (since t : Nat) : Nat :=
 def questions (c : Cfg) (s : State) (since : Nat) : List Nat :=
   ((c.tasks.filter fun t => (s.tk t).st == .blocked).map fun t => (qtime s since t, t)).mergeSort
     (fun x y => x.1 < y.1 || (x.1 == y.1 && x.2 ≤ y.2)) |>.map (·.2)
-/-- agents.digest of the events since `since`: questions, done (still done, in order), ended (in order) -/
+/-- slot a's agent hung since `since` and is the same agent still: of a's hung and ended events since, the last is a
+hung (the Lua's stay-hung event of an agent row not ended; a slot's next agent is another row) -/
+def hungSince (s : State) (since a : Nat) : Bool :=
+  match ((s.evs.drop since).filter fun e => e == .hung a || e == .ended a).getLast? with
+  | some (.hung _) => true
+  | _ => false
+/-- agents.digest of the events since `since`: questions, done (still done, in order), ended (in order), hung (by slot) -/
 def digestOf (c : Cfg) (s : State) (since : Nat) : Digest where
   qs := questions c s since
   done := (s.evs.drop since).filterMap fun | .done t => if (s.tk t).st == .done then some t else none | _ => none
   ended := (s.evs.drop since).filterMap fun | .ended a => some a | _ => none
+  hung := c.agents.filter (hungSince s since)
 /-- `swarm away`: away since now, the last digest dropped, the communicator told (not urgent). Already away, the Lua
 changes nothing ("already away since"): here the step is not enabled, so a second away keeps the first since (A4) -/
 def awayOn (s : State) : Option State :=
@@ -785,6 +821,7 @@ inductive Action where
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
   | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat) | hnudge (a : Nat)
+  | stay (a : Nat) (on : Bool) | endStay (a : Nat) | stayCheck (a : Nat) | stayHung (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
@@ -801,6 +838,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
   | .git a op => gitCmd c s a op | .world w op => world s w op | .stale a => stale s a | .nudge a => nudge c s a
   | .hnudge a => hnudge c s a
+  | .stay a on => stay s a on | .endStay a => endStay s a | .stayCheck a => stayCheck c s a | .stayHung a => stayHung c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps

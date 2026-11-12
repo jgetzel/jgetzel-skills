@@ -121,7 +121,7 @@ context of SMALL_CTX or more, `waiter` a waiter pid that is alive (`Env.waiter_a
 def fateRow (g : Agent) (t : Int) : ARow :=
   { status := statusOf g.st, lastActive := some (if g.aged then t - 120 else t),
     ctx := some (if g.big then smallCtx else 0), waiter := if g.waiter then some 1 else none,
-    ended := if g.st == .ended then some 0 else none }
+    ended := if g.st == .ended then some 0 else none, stay := if g.stay then some "s" else none }
 
 /-- fate's reads on the model: its claims and locks, its unlanded work, its background job, the pool, and passed over
 (told of the whole pool, nothing unread: the model has no notices) -/
@@ -137,13 +137,13 @@ def modelFate (c : Cfg) (s : State) (a : Nat) : Verdict :=
 
 theorem fate_core (g : Agent) (t : Int) (h1 h2 h3 : Bool) (pl u : List Nat) :
     fateL (fateRow g t) t none false ⟨true, h1, h2, h3, g.bg, pl.length, pl.all g.told.contains && u.isEmpty, true⟩ =
-      if !(g.st == .idle && g.aged && !h1 && !h2) then .keep else if h3 then .unclean else if g.bg then .keep
+      if !(g.st == .idle && g.aged && !g.stay && !h1 && !h2) then .keep else if h3 then .unclean else if g.bg then .keep
       else if !g.big && !pl.isEmpty && !(pl.all g.told.contains && u.isEmpty) && g.waiter then .reuse else .end_ := by
   have h120 : t - (t - 120) = 120 := by omega
   have hpl : (0 < pl.length) = (pl.isEmpty = false) := by cases pl <;> simp
-  rcases g with ⟨st, _, big, aged, _, _, _, _, _, _, bg⟩
+  rcases g with ⟨st, _, big, aged, _, _, _, _, _, _, bg, _, _, _, _, _, _, _, _, stay, _, _⟩
   simp only [fateL, fateRow, nz, smallCtx, hpl]
-  cases st <;> cases aged <;> cases big <;> cases h1 <;> cases h2 <;> cases h3 <;> cases bg <;>
+  cases stay <;> cases st <;> cases aged <;> cases big <;> cases h1 <;> cases h2 <;> cases h3 <;> cases bg <;>
     simp_all [statusOf, Int.sub_self]
 
 /-- lifecycle's verdict is the model's, on the current Cfg (`bgLives`, board #15, as the replay), for an agent between no read and its write -/
@@ -154,7 +154,7 @@ theorem fate_lifted {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver
   simp only [hp, hw, hb, hr, hs, beq_self_eq_true, List.isEmpty_nil, Bool.and_true, Bool.not_true, Bool.or_false,
     Bool.true_and]
   cases h1 : holds s a <;> cases h2 : lockHeld s a <;> cases h3 : unlanded c s a <;>
-    cases ((s.agt a).st == .idle && (s.agt a).aged) <;> cases (s.agt a).bg <;> simp
+    cases ((s.agt a).st == .idle && (s.agt a).aged) <;> cases (s.agt a).stay <;> cases (s.agt a).bg <;> simp
 
 theorem fate_end {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver = true) (hw : c.waiterAlive = true)
     (hb : c.bgLives = true) (hr : (s.agt a).reading = 0) (hs : (s.agt a).snap = []) :
@@ -193,8 +193,9 @@ theorem endWhy_lifted (c : Cfg) (s : State) (a : Nat) (t : Int) :
     (endWhyL (fateRow (s.agt a) t) (factsOf c s a)).isNone = endable c s a := by
   have hi : (statusOf (s.agt a).st != "idle") = !((s.agt a).st == .idle) := by cases (s.agt a).st <;> rfl
   simp only [endWhyL, fateRow, factsOf, endable, nz, hi]
-  by_cases h0 : (s.agt a).st == .idle <;> by_cases h1 : holds s a <;> by_cases h2 : lockHeld s a <;>
-    by_cases h3 : (s.agt a).bg <;> by_cases h4 : unlanded c s a <;> simp [h0, h1, h2, h3, h4]
+  by_cases h0 : (s.agt a).st == .idle <;> by_cases h5 : (s.agt a).stay <;> by_cases h1 : holds s a <;>
+    by_cases h2 : lockHeld s a <;> by_cases h3 : (s.agt a).bg <;> by_cases h4 : unlanded c s a <;>
+    simp [h0, h1, h2, h3, h4, h5]
 
 /-- whatever lifecycle would end or reuse, `swarm end` ends: its checks are among fate's, for any row, terminal and reads -/
 theorem endWhy_of_fate {a : ARow} {t : Int} {x : Option Term} {h : Bool} {f : Facts}

@@ -121,7 +121,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     simpa [Booting, idleClaim, ownsClaimed, setTask_agt, tk_setTask_ne hne] using h0
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge, hnudge] at hs)
+    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung] at hs)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
