@@ -39,8 +39,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
 | `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
-| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean`, `Watchd.lean` | locks.lua and tasks.lua lifted, and watchd.lua's `M.iterate` (`--only`), built by `check.sh` |
-| `SwarmModel/LoopSafe.lean` | R2 (board #67): no Lua error escapes an iteration of watchd's loop (`iterate_safe`), with `Ok`, a run that ends in no Lua error, and its rules for the shallow combinators |
+| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean`, `Watchd.lean` | locks.lua and tasks.lua lifted, and watchd.lua's `M.loop` and `iteration` (`--only`), built by `check.sh` |
+| `SwarmModel/LoopSafe.lean` | R2 (board #67): no Lua error escapes watchd's loop (`loop_safe`) or an iteration (`iteration_safe`), with `Ok`, a run that ends in no Lua error, its rules for the shallow combinators, and `Owns`, locals the frame rule keeps across a call |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34, #68): what the model may trust about git, hc (`HcRunStarts`: `hc run --bg` starts the program, board #49), gh (`GhChecks`, `GhState`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named hypothesis each, a `Prop` on any `Tools`; and sqlite's (board #33): `Db`, one hypothesis per kind of op (`SqliteBegin`, `SqliteRead`, `SqliteWrite`, `SqliteCommit`, `SqliteRollback`). No axiom: *What the model trusts*. `consistent`, `sqlite_consistent`: an ideal machine has them all |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the hypotheses each takes (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's hypotheses is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`) |
@@ -493,24 +493,33 @@ once the tick it claimed before, if any, ends (`tend`), and fairness takes each.
 whose watchd runs at infinitely many steps; with the lease such a tick can wait for a `tend`, which `FairWd` takes. What R1 leaves out: a hand `--takeover` and `--once`; two restarts of one swarm at a time; pid reuse;
 `--restart`'s 90 s as time (its failure may come at any step).
 
-- **R2** No Lua error escapes an iteration of watchd's loop, on the real Lua (board #67). The loop's body is
-  `M.iterate` (`swarm/lua/swarm/watchd.lua`). It calls `iteration` under `pcall` and returns the fresh results.
-  `iteration` runs the pass (the record, then the tick), an error's report and the pause, each under its own `pcall`, so
-  an error in one still leaves the others to run. `LoopSafe.iterate_safe`: a call of `M.iterate`, lifted by `lua-lean
-  lift --only M_iterate` (`Lifted/Watchd.lean`), ends in no Lua error (`Err.val` or `Err.rt`). That holds for every
-  oracle, every fuel and every argument, and for every value `iteration` holds, whatever it does when called: it may
-  return any values, raise any value, change the heap in any way and call any effect. So it covers every behaviour of
-  every call into hc, git, sqlite, re and io. It rests on one thing: the global `pcall` is the builtin, read from a `_G`
-  with no metatable. That is how the semantics starts (`pcall_init`). If `M.iterate` is called with the pcall
-  removed, the proof fails.
+- **R2** No Lua error escapes watchd's loop, on the real Lua (boards #67, #75). The loop is `M.loop`
+  (`swarm/lua/swarm/watchd.lua`): `repeat ok, r, why = pcall(iteration, …, up); up = ok and r until why or once`, then
+  `return why, up`; cmd_watchd's `util.die(why)` after it is the one deliberate escape. `iteration` runs the pass (the
+  record, then the tick), an error's report and the pause, each under its own `pcall`, so an error in one still leaves
+  the others to run. `LoopSafe.loop_safe`: a call of `M.loop`, lifted by `lua-lean lift --only M_loop,iteration`
+  (`Lifted/Watchd.lean`), ends in no Lua error (`Err.val` or `Err.rt`). `LoopSafe.iteration_safe`: so does a call of
+  `iteration`, its three pcalls and the lines between them. Both hold for every oracle, every fuel and every argument,
+  and for every value the pass, the report and the pause (or, for the loop, `iteration`) hold, whatever they do when
+  called: return any values, raise any value, change the heap in any way and call any effect. So they cover every
+  behaviour of every call into hc, git, sqlite, re and io.
+
+  What is read after such a call is a local: the frame rule (lua-lean's `call_keeps`, `LuaLean/FrameCall.lean`) keeps a
+  cell no closure has captured, with its value, across any call. Hence both functions read into locals, before their
+  first call, everything they read after it: `pcall`, `M.watchd_pass`, `M.tick_failed`, `opts.once`, `opts.interval`,
+  and a module-level `pause` (a closure of iteration's would hold its locals). A call may change any table it can reach
+  (`M`, `opts`, `_G`). What the proofs rest on: the global `pcall` is the builtin, read from a `_G` with no metatable,
+  as the semantics starts (`pcall_init`); `opts` (cmd_watchd's literal) and, for `iteration`, `M` are tables with no
+  metatable; and the heap at entry is `Fresh`: no coroutine holds a heap to replay, and no closure an address past
+  the heap's end. A replay of a suspended coroutine could allocate at a local's address, so a local is own only if
+  allocated when the heap is `Fresh`. An iteration may leave suspended coroutines, so `Fresh` need not hold after one:
+  that is why the loop keeps its own `pcall` around each iteration, and `iteration_safe` does not replace it. The
+  loop's locals are allocated once, at entry, so they stay own for good.
 
 R2 does not cover a segfault, a hang (an effect that never returns), running out of memory, or a kill: the process
 ends, or never comes back, without a Lua error. Restarting watchd is R1. A run that stops in the semantics (out of
 fuel, an effect no oracle answers, a feature outside the subset) is not a Lua error either, so R2 says nothing about
-it. Not proved: the lines of `iteration` between its pcalls, and the loop around `M.iterate` (`repeat … until why`,
-then `util.die(why)` on purpose). Proving those needs a frame rule in lua-lean: a call leaves the cells it cannot reach
-unchanged. Without one, a proof cannot trust a local read back after an arbitrary call, so `M.iterate` reads nothing
-it held before the call. The frame rule is board #75.
+it.
 
 Spawn reservation and launch failure (`Spawn.lean`, board #16). `swarm spawn --task N` reserves the name and the task in
 one transaction (a row with no terminal, the task claimed for it), makes the worktree, then launches. `SWorld` is the
