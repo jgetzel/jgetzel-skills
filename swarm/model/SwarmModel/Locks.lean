@@ -170,6 +170,9 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.l
   case reapGone a =>
     obtain ⟨_, rfl⟩ := hstep
     exact lk_endAgent _ (by simp only [setAg_lock, setAg_ag]; exact lk_live hs (by live_tac))
+  case endOther a f =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact lk_endAgent _ (by simp only [setAg_lock, setAg_ag]; exact lk_live hs (by live_tac))
   case lock a p =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq, List.mem_range] at hg

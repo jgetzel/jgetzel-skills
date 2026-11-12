@@ -93,7 +93,7 @@ macro "gk_tac" : tactic => `(tactic|
 
 theorem step_gen {c : Cfg} {s s' : State} {a : Nat} {act : Action}
     (hq : act ≠ .tick ∧ ∀ b, act ≠ .leave b ∧ act ≠ .reapGone b ∧ act ≠ .readAll b ∧ act ≠ .wake b ∧ act ≠ .prompt b ∧
-      act ≠ .boot b ∧ act ≠ .hcClear b ∧ act ≠ .wakeWrite b)
+      act ≠ .boot b ∧ act ≠ .hcClear b ∧ act ≠ .wakeWrite b ∧ ∀ f, act ≠ .endOther b f)
     (hl : (s.agt a).live = true) (hs : step c s act = some s') : Gk s s' a := by
   have h0 : Gk s s a := ⟨ext_refl s a, hl⟩
   open_step hs
@@ -105,7 +105,8 @@ theorem step_gen {c : Cfg} {s s' : State} {a : Nat} {act : Action}
   case prompt b => exact absurd rfl (hq.2 b).2.2.2.2.1
   case boot b => exact absurd rfl (hq.2 b).2.2.2.2.2.1
   case hcClear b => exact absurd rfl (hq.2 b).2.2.2.2.2.2.1
-  case wakeWrite b => exact absurd rfl (hq.2 b).2.2.2.2.2.2.2
+  case wakeWrite b => exact absurd rfl (hq.2 b).2.2.2.2.2.2.2.1
+  case endOther b f => exact absurd rfl ((hq.2 b).2.2.2.2.2.2.2.2 f)
   case unblock t₀ =>
     split at hs
     · rw [when_eq_some] at hs; obtain ⟨hg, rfl⟩ := hs
@@ -291,6 +292,10 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
     simp only [step, reapGone, leaveIf, when_eq_some] at hs
     obtain ⟨_, rfl⟩ := hs
     exact gk_leave (fun g hg => by simpa [Agent.live] using hg) h0 hy1
+  | .endOther b f, hs =>
+    simp only [step, endOther, leaveIf, when_eq_some] at hs
+    obtain ⟨_, rfl⟩ := hs
+    exact gk_leave (fun g hg => by simpa [Agent.live] using hg) h0 hy1
   | .readAll b, hs =>
     simp only [step, readAll, when_eq_some] at hs
     obtain ⟨_, rfl⟩ := hs
@@ -429,6 +434,7 @@ theorem bf_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .bg
     · cases hs
   case leave a => obtain ⟨_, rfl⟩ := hs; exact bf_endAgent (bf_setAg (fun hh => by simpa using hh) hI)
   case reapGone a => obtain ⟨_, rfl⟩ := hs; exact bf_endAgent (bf_setAg (fun hh => by simpa using hh) hI)
+  case endOther a f => obtain ⟨_, rfl⟩ := hs; exact bf_endAgent (bf_setAg (fun hh => by simpa using hh) hI)
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split

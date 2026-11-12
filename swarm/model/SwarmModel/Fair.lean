@@ -126,6 +126,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
   cases act
   case leave a₀ => exact leaveIf_persist hs hst hown hidle hst' hown' hidle'
   case reapGone a₀ => exact leaveIf_persist hs hst hown hidle hst' hown' hidle'
+  case endOther a₀ f => exact leaveIf_persist hs hst hown hidle hst' hown' hidle'
   case bgStart => exact absurd rfl (hq _).1
   case die => exact absurd rfl (hq _).2
   case hcClear a₀ =>
@@ -152,7 +153,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     · simp at hs
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, add, after, drop, releaseOther, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
+    hcPrompt, add, after, drop, releaseOther, endOther, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)

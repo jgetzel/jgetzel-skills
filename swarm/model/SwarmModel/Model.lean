@@ -655,6 +655,15 @@ def releaseOther (c : Cfg) (s : State) (t : Nat) : Option State :=
   when (c.humanRelease && (s.tk t).owner.isSome && ((s.tk t).st == .claimed || (s.tk t).st == .blocked))
     (post (setTask s t fun k => { k with st := .opn, owner := none, lease := false, hcq := false, stopTo := if c.stopFirst then k.owner else none, stopMsg := s.log.length + 1 })
       ⟨none, (s.tk t).owner.getD 0, true, .released, t⟩)
+/-- what watchd.cmd_end checks before `swarm end A` without `--force`: lifecycle's checks but the 2 min (`finished`, with
+`bgLives`): idle, no claim, no lock, no background job, no work off its tasks' bases (`unlanded`). The Lua's `stay` is
+outside the model (no model agent stays) -/
+def endable (c : Cfg) (s : State) (a : Nat) : Bool :=
+  (s.agt a).st == .idle && !holds s a && !lockHeld s a && !(s.agt a).bg && !unlanded c s a
+/-- H1: `swarm end A` by the user or the communicator (`agents.in_charge` gates who, so it is actorless as `releaseOther`):
+refused unless `endable`; `force` (`--force`, the user's choice to lose work) skips the checks. It ends the row as `leave`
+does (its claims and locks released; the terminal killed, the waiter with it); `swarm end --force` is `leave` -/
+def endOther (c : Cfg) (s : State) (a : Nat) (force : Bool) : Option State := leaveIf (force || endable c s a) s a
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
 
@@ -668,7 +677,8 @@ inductive Action where
   | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
-  | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat) | tick
+  | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
+  | endOther (a : Nat) (force : Bool) | tick
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
@@ -683,7 +693,8 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps
-  | .unblock t => unblock c s t | .drop t => drop s t | .releaseOther t => releaseOther c s t | .tick => tick c s
+  | .unblock t => unblock c s t | .drop t => drop s t | .releaseOther t => releaseOther c s t
+  | .endOther a f => endOther c s a f | .tick => tick c s
 
 /-- The states the system can be in. -/
 inductive Reachable (c : Cfg) : State → Prop

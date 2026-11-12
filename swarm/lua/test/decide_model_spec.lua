@@ -1,6 +1,6 @@
 -- The Lua's pure decisions against their lifts in the Lean model (swarm/model/SwarmModel/Decide.lean): random inputs
--- from SwarmModel/DecideCases.lean, each with Lean's answer, which watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act
--- must give.
+-- from SwarmModel/DecideCases.lean, each with Lean's answer, which watchd.keeps, watchd.fate, msgs.wakes, ci.pr_act and
+-- watchd.end_why must give.
 -- Cases: $SWARM_MODEL_DECIDE, else the committed swarm/model/decide.json.gz (swarm/model/replay.sh makes fresh ones).
 local json, watchd, msgs, ci = require "swarm.json", require "swarm.watchd", require "swarm.msgs", require "swarm.ci"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
@@ -60,8 +60,22 @@ for i, k in ipairs(cases.pr) do
   check("pr_act", i, k, r, k.r)
   seen["pr " .. tostring(k.r)] = true
 end
+-- H1 (Decide.lean endWhyL): why `swarm end` without --force refuses, by the start of its message
+local WHY = { { "^is ", "status" }, { "^stays for", "stay" }, { "^owns a claimed task", "claims" }, { "^holds a lock", "locks" },
+  { "^has a background job", "job" }, { "^has work not on its base", "unlanded" } }
+for i, k in ipairs(cases["end"] or {}) do
+  local f = k.f
+  local why = watchd.end_why(k.a, { claims = const(f.claims), locks = const(f.locks), job = const(f.job),
+    unlanded = function() if f.unlanded then return true end end, held = "/w" })
+  local got
+  for _, p in ipairs(WHY) do if why and why:match(p[1]) then got = p[2] end end
+  if why and not got then got = "?" .. why end
+  check("end_why", i, k, got, k.r)
+  seen["end " .. tostring(k.r)] = true
+end
 -- every answer turns up
 for _, s in ipairs({ "keeps true", "keeps false", "fate nil", "fate unclean", "fate reuse", "fate end", "wakes true", "wakes false",
-    "pr nil", "pr done", "pr wake" }) do
+    "pr nil", "pr done", "pr wake", "end nil", "end status", "end stay", "end claims", "end locks", "end job",
+    "end unlanded" }) do
   assert(seen[s], "no case answers " .. s)
 end
