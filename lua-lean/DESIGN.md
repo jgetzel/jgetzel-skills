@@ -378,14 +378,16 @@ the name by scanning the bytecode back);
 The corpus (`test/corpus.txt`: 59 files of 29 projects, MIT, BSD or public domain, fetched at a pinned commit by
 `lua-lean corpus`, never committed) measures the subset on scripts written for LuaJIT by others. `corpus` runs the
 checker under the semantics only (it runs no effect, so nothing fetched runs outside it); `lua-lean check` on one of
-them adds LuaJIT. On 2026-11-11: 53 of 59 parse (the 6 that do not are LuaJIT's own `jit/*.lua` at its master, in
-the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`), 29 are in the subset (20 before
-G3c's metamethods), and their 1192 top-level functions give 4575 calls that reach no effect. Outside it, by the
-files that use each: `debug` 8, FFI 5 (its pure part in the subset since #36: md5.lua's `ffi.string(int1(i), 4)`; the
-rest are pointers, #57, and C calls, #59), `__mode` 4, `string.dump` 3 (in the subset since #34), `setfenv` 3, `getfenv` 2 (both in the subset since #33 but Microlight's
-`getfenv(2)`), `jit` 2,
-`bit` 2 (in the subset since #35),
-`package.config` 2.
+them adds LuaJIT. `corpus` checks a file at a time and reports one still checking after 120 s (`-t <secs>`, 0 for no
+limit) as timed out, its findings lost. On 2026-11-11, after #51 (an `alloc` that copied the heap made every loop
+iteration cost the heap's size; the run took 22 minutes): 53 of 59 parse (the 6 that do not are LuaJIT's own
+`jit/*.lua` at its master, in the 3.0-backport syntax the subset leaves out: `&`, `>>`, `!=`, `a ? b : c`); 6 of the 53
+time out (lume, tween, Moses, luafun, argparse, resty.http: each call reruns the whole chunk, seconds a call, #70); of
+the other 47, 39 are in the subset (29 of 53, before the metamethods of G3c, `string.dump`, `bit`, fenvs and the FFI's
+pure part), and their 632 top-level functions give 1451 calls that reach no effect. Outside it, by the files that use
+each: `debug.upvaluejoin` 2, `package.config` 2, `jit` 2, a module not given as source 2 (`resty.sha`,
+`pl.operator`). Of the calls left out, most stop at an effect: Penlight's chunks at a `load` of a syntax error (#62),
+FFI pointers (#57) and C declarations (#59).
 
 ## Layout and use
 
@@ -408,7 +410,7 @@ rest are pointers, #57, and C calls, #59), `__mode` 4, `string.dump` 3 (in the s
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
-| `test/check/` | `lua-lean check`'s tests: a script with each kind of construct outside the subset, and what check says; a script with a module beside it (`beside.lua`, `util.lua`) |
+| `test/check/` | `lua-lean check`'s tests: a script with each kind of construct outside the subset, and what check says; a script with a module beside it (`beside.lua`, `util.lua`); a loop out of fuel, which must end in seconds (`fuel.lua`) |
 | `test/corpus.txt` | the third-party scripts `lua-lean corpus` fetches and checks |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
@@ -421,7 +423,7 @@ lua-lean/lua-lean parsecheck f.lua...          # the parser against LuaJIT's byt
 lua-lean/lua-lean run [--lib p=dir] f.lua      # f.lua under the semantics; luajit lua-lean/test/luasem.lua f.lua under LuaJIT
 lua-lean/lua-lean difftest 3000                # fresh chunks under LuaJIT
 lua-lean/lua-lean check f.lua...               # what is outside the subset, by line; its functions under LuaJIT
-lua-lean/lua-lean corpus [dir]                 # the third-party corpus, fetched and checked (the semantics only)
+lua-lean/lua-lean corpus [-t secs] [dir]       # the third-party corpus, fetched and checked (the semantics only)
 lua-lean/lua-lean dump Name f.lua              # the tree as `def NameSrc : Block`, for proofs about the source itself
 ```
 

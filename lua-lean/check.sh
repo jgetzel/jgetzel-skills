@@ -31,5 +31,9 @@ diff test/check/outside.out "${TMPDIR:-/tmp}/outside.got" ||
 # and a script's module beside it as source, with errors of level 2: every call a case, the same under LuaJIT
 b=$(./lua-lean check -n 4 test/check/beside.lua) && ! printf '%s\n' "$b" | grep -q 'left out' ||
   { printf '%s\n' "$b"; echo "lua-lean check test/check/beside.lua: a call left out, or one LuaJIT does not agree on" >&2; exit 1; }
+# a loop out of fuel ends in seconds (rxi/json.lua's decode_error(s, 2^53)): an alloc that copied the heap made each
+# iteration cost the heap's size, a corpus file's check half an hour (board #51)
+t=$(date +%s); f=$(./lua-lean run test/check/fuel.lua) && [ "${f##*: }" = fuel ] && [ $(($(date +%s) - t)) -lt 30 ] ||
+  { printf '%s\n' "$f"; echo "lua-lean run test/check/fuel.lua: not out of fuel, or $(($(date +%s) - t))s, not under 30" >&2; exit 1; }
 p=$(./lua-lean parsecheck test/*.lua test/mods/*.lua) || { printf '%s\n' "$p" | grep -v 'same bytecode'; exit 1; }
 ./lua-lean prove test/*.lua test/mods/*.lua
