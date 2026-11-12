@@ -530,6 +530,44 @@ function T.test_sleep_loop_job_nudged_once_then_ended(t)
   t:has(t:sw("comms", "read").stdout, "while true; do sleep 5")
 end
 
+-- board #93: the report's exact Monitor command line, under a snapshot preamble
+local MON = { "/run/current-system/sw/bin/zsh", "-c", "source /home/jgetzel/.claude/shell-snapshots/snapshot-zsh-1778-abc.sh 2>/dev/null || true && setopt aliases 2>/dev/null || true && eval 'while pgrep -f \"tests/smoke.sh\" >/dev/null; do sleep 10; done; tail -2 out' < /dev/null && pwd -P >| /tmp/claude-cwd" }
+local function stop_hook(t, env, bg, again)
+  local r = t:sw("e", "hook", "stop", { stdin = json.encode({ cwd = t.cwd.e or t.repo, background_tasks = bg, stop_hook_active = again }), env = { SWARM_PROC = env } })
+  return util.strip(r.stdout) ~= "" and json.decode(r.stdout).reason or nil
+end
+
+function T.test_idle_pgrep_loop_blocks_stop_and_names_the_job(t)
+  local pr = fake_proc(t)
+  idle(t, "e", { claude_pid = 400 })
+  add_proc(pr, 402, 400, "zsh", MON)
+  add_proc(pr, 403, 402, "sleep", { "sleep", "10" })
+  local r = stop_hook(t, pr, { { status = "running", command = "while pgrep -f tests/smoke.sh" } })
+  t:has(r, "background job (pid 402")
+  t:has(r, "while pgrep -f")
+  t:hasnt(r, "snapshot")
+  t:has(r, "is idle"); t:has(r, "watches a name, not a pid")
+  t:has(stop_hook(t, pr, nil, true), "is idle")
+  t:eq(stop_hook(t, pr, nil, true), nil)  -- the 2-block cap still lets go
+end
+
+function T.test_real_job_named_and_allows_stop(t)
+  local pr = fake_proc(t)
+  idle(t, "e", { claude_pid = 400 })
+  add_proc(pr, 402, 400, "zsh", MON)
+  add_proc(pr, 403, 402, "fuzz", { "fuzz", "--run" })
+  t:eq(stop_hook(t, pr, nil), nil)
+  local w = t:sw("e", "endable", "--why", { ok = false, env = { SWARM_PROC = pr } }).stdout
+  t:has(w, "a child of your own session (pid 402): stop it (TaskStop/KillShell) or wait for it")
+  t:hasnt(w, "snapshot")
+end
+
+function T.test_job_cmd_without_eval_is_last_200_chars(t)
+  local machine = require "swarm.machine"
+  t:eq(machine.job_cmd({ args = ("x"):rep(300) .. "END" }), ("x"):rep(197) .. "END")
+  t:eq(machine.job_cmd({ args = "zsh -c eval 'a '\\''b'\\'''" }), "a 'b'")
+end
+
 function T.test_real_run_job_not_nudged(t)
   local pr = fake_proc(t)
   idle(t, "e", { wt = t.wt, claude_pid = 400 })

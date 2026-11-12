@@ -62,7 +62,7 @@ your name is in `$SWARM_NAME`.
   lock, dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue:
   (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
   counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
-  A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
+  Wait on your own job by its completion notification or its PID, never `pgrep -f <script name>`: peers run the same scripts. A sleep-only poll loop is not a wait. A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
 - **Context.** From 350k tokens a hook note says finish and go idle; `task claim`
   refuses. From 550k hand off now with the `relaunch` skill, same model, and post
   the successor's name (or `task release` if barely started). A successor

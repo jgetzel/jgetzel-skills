@@ -189,6 +189,15 @@ function M.bg_agents(c, procs)  -- also each agent's job process (state --json's
   return out, ps
 end
 
+-- The user's command of a Bash-tool job process p: the text inside eval '...' (no snapshot preamble), else the last
+-- 200 characters of its command line.
+function M.job_cmd(p)
+  local a = p.args or ""
+  local inner = a:match("eval '(.*)' < /dev/null") or a:match("eval '(.*)'")
+  if inner then return (inner:gsub("'\\''", "'")) end
+  return #a > 200 and a:sub(-200) or a
+end
+
 -- job-start events with no job-end yet, newest first, data unpacked.
 function M.live_jobs(c, t)
   local ended, out = {}, {}
