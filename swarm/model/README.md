@@ -116,7 +116,8 @@ One value holds the whole state; every watchd tick is a pure function of it, com
   squash-merge into a base, check out a base or the worktree's own branch. A second worktree only after an edit, so
   `wt_map`'s branch fallback has one candidate. The world (`world w op`): 30 min pass, a process moves in or out.
 - **watchd and git** (`gitTick`, in `tickOf`): `unlanded` (lifecycle keeps an idle agent) is work not on `main` in the
-  worktree `wt_map` picks (agent.wt, else the one with its branch), or since PR #123 in any it owns. `sweep_worktrees`
+  worktree `wt_map` picks (agent.wt, else the one with its branch), or since PR #123 in any it owns, its recorded one
+(`rhead`) too. `sweep_worktrees`
   removes a worktree no live agent's agent.wt or `wt_map` names, with no process inside, untouched 30 min, clean and
   landed; `end_agent` removes the ended agent's `wt_map` worktree unless a live peer's agent.wt is it, if it is clean
   (git refuses a dirty one), whatever process is inside. Both then `branch -D` the branch it had checked out, unless it
@@ -889,8 +890,9 @@ moved after the sweep's check.
 **Not modelled**: the red-main task and CI on the base (a PR's checks are, in `PrWatch.lean`, a layer with no leases and no time: in the main model an idle owner's lapsed claim is reaped, L2, which is how finding #30's stall ended without the fix, two hours on, the task reopened with its PR green); conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check in landed_ref (ci.pr_watch's is `gh_state`), rebases, the worktree a spawn makes
-(a spawned agent's `recorded` flag stands for it: no action edits it, so it stays clean on its task's base; the sweep of
-it once its agent ends is not compared), an agent removing its own worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
+(a spawned agent's `recorded` flag and `rhead`, the base tip it was made at, stand for it: no action edits it, so it stays
+clean at that HEAD, which `unlanded` checks against the agent's bases as the Lua does (board #63); the sweep of it once its
+agent ends is not compared), an agent removing its own worktree, editing in a worktree it doesn't own or in the main checkout, merge conflicts; the unclean nudge is the action
 `nudge`, not part of the tick as in the Lua: `stale` (idle 30 min) is an action that is not in `fair`, a nudge needs a
 live waiter (the no-waiter notice to the communicator is a notice), and none of it is replayed (`Traces.lean` doesn't
 generate `stale` or `nudge`, nor `cool` for an agent its unclean worktree keeps, since 4000 s idle is past 30 min and
@@ -900,7 +902,7 @@ the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_
 its memory gate and the `lost` and `refused` branches (a peer's claim or spawn between the pool and the reservation),
 an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and launch.sh failing after hc started the
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
-generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; a spawned agent's recorded worktree is on the base of the task it was spawned for, which the model doesn't keep, so once reap or a release takes that task the Lua's `unlanded` checks main and finds it unlanded (lifecycle: `unclean`; `swarm end`: refused) where the model has it landed: the Lua is the stricter side, so N1 and `N1end` hold of it, and random traces leave out `swarm end` without `--force` of a spawned agent (board #63); of H2: `release --after` (the agent's own release has no `--after` either), the user as an
+generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs, main's CI and hung stays (no PR, CI or stay in `State`), the notes' text and the away line the hooks print to the communicator; the digest's since is a second in the Lua, so what happens in away's own second, before it, counts as since (the replay lets a second pass before each away); a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the

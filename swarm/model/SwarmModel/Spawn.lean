@@ -83,7 +83,10 @@ def clash (c : SCfg) (w : SWorld) : Bool := w.bo.any fun b => ((noSpawn c.sw w.s
 /-- what a raise before launch.sh left: the row live with no terminal (status idle, hc null, no waiter), its inbox new,
 holding t -/
 def leak (c : Cfg) (x : State) (a t : Nat) : State :=
-  let x1 := setAg x a fun _ => { (default : Agent) with st := .idle, dead := true, recorded := c.recordedWorkspaces }
+  let x1 := setAg x a fun _ =>
+    { (default : Agent) with
+      st := .idle, dead := true, recorded := c.recordedWorkspaces,
+      rhead := if c.recordedWorkspaces then some (x.git.tipOf (c.tbase t)) else none }
   claimed { x1 with
     cursor := x1.cursor.set a x1.log.length
     start := x1.start.set a x1.log.length

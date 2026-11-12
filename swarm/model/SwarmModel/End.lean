@@ -88,7 +88,7 @@ theorem N1end_of {c : Cfg} (haw : c.allWts = true) (hoa : c.ownAdded = true) (hp
   · rw [hb] at hbg; cases hbg
   · have : unlanded c s a = true := by simp only [unlanded, e, hw', Bool.true_or]
     rw [this] at hu; cases hu
-  · have : unlanded c s a = true := by simp only [unlanded, e, ho, haw, hoa, Bool.or_true, Bool.and_true]
+  · have : unlanded c s a = true := by simp only [unlanded, e, ho, haw, hoa, Bool.or_true, Bool.and_true, Bool.true_or]
     rw [this] at hu; cases hu
 
 /-- where the run ends, agent a holds work and `swarm end a` (forced or not) is enabled -/
@@ -117,6 +117,16 @@ theorem not_N1end_force_wt : ¬ N1end { nwts := 1, perTaskBase := true, ownAdded
 -- without --force `swarm end` refuses both ("has a background job running", "has work not on its base")
 example : endBreaks {} pre33 0 false = false := by decide
 example : endBreaks { nwts := 1, perTaskBase := true, ownAdded := true } pre33w 0 false = false := by decide
+
+/-- board #63 (#46's replay): agent 1 lands a commit on `formal`; agent 0 is spawned for task 1, on `formal`, and the user
+releases it. Agent 0's recorded worktree is at formal's tip, not on main, so `swarm end` refuses it, as the Lua does ("work
+not on its base"); spawned for a task on main, it is ended -/
+def cfg63 : Cfg := { nwts := 1, nbases := 2, perTaskBase := true, recordedWorkspaces := true, taskBase := [0, 1] }
+def pre63 : List Action := [.git 1 (.add 0), .git 1 (.edit 0), .git 1 (.commit 0), .git 1 (.land 0 1),
+  .stop 0 false, .age 0, .tick, .add [], .tick, .releaseOther 1]
+example : (run cfg63 pre63).any (fun s => (step cfg63 s (.endOther 0 false)).isSome) = false := by decide +kernel
+example : (run { cfg63 with taskBase := [0, 0] } pre63).any
+    (fun s => (step { cfg63 with taskBase := [0, 0] } s (.endOther 0 false)).isSome) = true := by decide +kernel
 
 /-- N1end holds of the instance the replay runs -/
 theorem replay_N1end : N1end replay false := N1end_of rfl rfl rfl
