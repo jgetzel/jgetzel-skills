@@ -733,7 +733,8 @@ function M.watchd_tick(c, comms, repo, opts)
       end
     end
   end
-  conflict.conflict_tick(c, t)
+  local okc, errc = pcall(conflict.conflict_tick, c, t)  -- a bad conflict pass never stops the tick
+  if not okc then io.stderr:write("conflict: ", tostring(errc), "\n") end
   if comms then  -- ending reports to the communicator; without one, nobody hears what it did
     M.lifecycle(c, t, comms, terms, opts or {})
     M.quiet(c, t, comms)
