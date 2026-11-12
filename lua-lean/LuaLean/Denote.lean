@@ -58,7 +58,7 @@ def exp (I : Sem) (s : Sc) : Exp → SE × SM
   | .num x => one (eNum x)
   | .str x => one (eStr x)
   | .vararg => (eVa s.cx.va, mVa s.cx.va)
-  | .func ps va b => one (eFunc ps va b s.cx.env s.cx.self)
+  | .func ps va b ln => one (eFunc ps va b ln s.cx.env s.cx.self)
   | .var x => one (match s.res x with
     | some c => eCell c
     | none => eGlob I s.cx.self x)
@@ -118,13 +118,13 @@ def stat (I : Sem) (s : Sc) : Stat → SB
 def seq (I : Sem) (s : Sc) (full : Block) : Block → (Sc → SB) → SB
   | [], fin => fin s
   | .loc ns es :: rest, fin => qLocal (list I s es) fun n => lets ns s fun s' => seq I s' full rest fin n
-  | .locfn x ps va b :: rest, fin => qLocalFn x ps va b s.cx.env s.cx.self fun c => seq I (s.bind x c) full rest fin
+  | .locfn x ps va b ln :: rest, fin => qLocalFn x ps va b ln s.cx.env s.cx.self fun c => seq I (s.bind x c) full rest fin
   | st :: rest, fin => qStat (stat I s st) (gotos (trail full) (labels full)) (seq I s full rest fin)
 end
 
 /-- a closure as a function: `res` its free names' cells, `a` its address -/
 def fn (I : Sem) (res : String → Option Nat) (a : Nat) (c : Clo) : List Val → Nat → M (List Val) :=
-  S.fn fun args n => lets c.params ⟨⟨c.env, [], a, true⟩, res⟩ fun s =>
+  S.fn a fun args n => lets c.params ⟨⟨c.env, [], a, true⟩, res⟩ fun s =>
     block (seq I { s with cx := { s.cx with va := if c.va then args.drop c.params.length else [] } }
       c.body c.body fun _ => qEnd) n
 
@@ -229,7 +229,7 @@ theorem seq_ok : (rest : Block) → (s : Sc) → s.ok → (full : Block) → (fi
     cases st with
     | loc ns es =>
       exact CQ_local (list_ok es s hs) fun n => lets_ok ns s _ hs fun s' hs' => seq_ok rest s' hs' full fin k hk n
-    | locfn x ps va b => exact CQ_localFn rfl rfl fun c => seq_ok rest (s.bind x c) (Sc.bind_ok hs x c) full fin k hk
+    | locfn x ps va b ln => exact CQ_localFn rfl rfl fun c => seq_ok rest (s.bind x c) (Sc.bind_ok hs x c) full fin k hk
     | _ => exact CQ_stat hst hq rfl rfl rfl
 end
 

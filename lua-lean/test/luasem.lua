@@ -81,11 +81,27 @@ local function captured(f)
   return r, ffi.string(buf, n)
 end
 
--- src's results under LuaJIT, as text, and what it wrote to stdout
+-- s with each b in it a plain text
+local function replace(s, a, b)
+  local i, out = 1, {}
+  while true do
+    local j = s:find(a, i, true)
+    if not j then out[#out + 1] = s:sub(i) break end
+    out[#out + 1] = s:sub(i, j - 1) .. b
+    i = j + #a
+  end
+  return table.concat(out)
+end
+
+-- src's results under LuaJIT, as text, and what it wrote to stdout. A traceback's frames below the chunk (this
+-- file's, and an address) are LuaLean/Run.lean caseFx's `(host)`: they are taken on the line that calls the chunk
 function M.run(src)
   local f, err = loadstring(src, "=c")
   if not f then return "parse error: " .. err end
-  local r, out = captured(function() return M.outcome(pcall(f)) end)
+  local host
+  local r, out = captured(function() host = select(2, pcall(debug.traceback, "", 1)); return M.outcome(pcall(f)) end)
+  host = host:sub(#"\nstack traceback:" + 1)
+  r, out = replace(r, str(host):sub(2, -2), "\\010\\009(host)"), replace(out, host, "\n\t(host)")
   return #out > 0 and r .. " stdout:" .. str(out) or r
 end
 

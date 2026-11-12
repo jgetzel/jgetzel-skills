@@ -93,17 +93,14 @@ def gotoNote (l : String) (bs : List Block) : W Unit :=
     note s!"goto {l}: to a label that does not end its block (the subset has the continue idiom only)"
   | none => note s!"goto {l}: no visible label (LuaJIT rejects the file, the parser does not)"
 
-/-- the debug library's calls that need what the semantics lacks: a call stack, a Lua function's lines, a type's
-metatable (`debugFn` in LuaLean/Interp.lean) -/
+/-- the debug library's calls that need what the semantics lacks: a Lua function's active lines, a type's metatable
+(`debugFn` in LuaLean/Interp.lean) -/
 def debugNote (f : String) (as : List Exp) : W Unit :=
-  let lines := "a Lua function's lines are not modelled: the run stops at one"
   match f, as with
-  | "getinfo", .num _ :: _ => note "debug.getinfo of a stack level: the semantics has no call stack, the run stops"
-  | "getinfo", [_] => note s!"debug.getinfo with its default options, 'S' among them: {lines}"
   | "getinfo", _ :: .str o :: _ =>
-    if o.contains 'S' || o.contains 'L' then note s!"debug.getinfo with 'S' or 'L': {lines}" else pure ()
-  | "traceback", [] | "traceback", .str _ :: _ | "traceback", .num _ :: _ =>
-    note "debug.traceback of a message: its text is the call stack's, the run stops"
+    if o.contains 'L' then
+      note "debug.getinfo with 'L': a Lua function's active lines are not modelled, the run stops at one"
+    else pure ()
   | "setmetatable", .str _ :: _ | "setmetatable", .num _ :: _ | "setmetatable", .nil :: _ =>
     note "debug.setmetatable of a value not a table: the metatable of its type, the run stops"
   | _, _ => pure ()
@@ -117,9 +114,7 @@ def fenvNote (f : String) (as : List Exp) (tail : Bool) : W Unit :=
     | _, _ => none
   match lvl with
   | some k => do
-    if tail && k == 1 then note s!"{f} of level 1 in a tail call: the semantics keeps no call stack, the run stops"
-    else if !tail && k ≥ 2 then note s!"{f} of level {k}: the semantics keeps no call stack, the run stops"
-    else if !tail && k == 0 && f == "setfenv" then
+    if !tail && k == 0 && f == "setfenv" then
       note "setfenv of level 0: the thread's environment is not modelled, the run stops"
   | none => pure ()
 
@@ -130,7 +125,7 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
     see x
     if !sc.contains x then modify fun s => { s with reads := s.reads.push (s.line, x) }
   | .str c => let k := String.ofList c; see k
-  | .func ps _ b => func sc ps b
+  | .func ps _ b _ => func sc ps b
   | .index t k =>
     exp sc bs t; exp sc bs k
     if let (.var lib, .str f) := (strip t, strip k) then
@@ -145,9 +140,6 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
         note "setmetatable(_G, ...): a metatable on _G stops the run"
     | .index (.var "string") (.str f), .str fmt :: _ => if f == "format".toList then fmtNote fmt
     | .index (.var "debug") (.str f), as => if !sc.contains "debug" then debugNote (String.ofList f) as
-    | .var "xpcall", [_, .index (.var "debug") (.str f)] =>
-      if !sc.contains "debug" && f == "traceback".toList then
-        note "xpcall with debug.traceback: a string error's traceback is the call stack's, the run stops"
     | .var g, as => if (g == "getfenv" || g == "setfenv") && !sc.contains g then fenvNote g as false
     | _, _ => pure ()
   | .method o m as =>
@@ -203,7 +195,7 @@ partial def stat (sc : List String) (bs : List Block) (st : Stat) : W (List Stri
     let _ ← block (v :: sc) bs body; return sc
   | .forin vs es body =>
     vs.forM seeDecl; es.forM (exp sc bs); let _ ← block (vs.reverse ++ sc) bs body; return sc
-  | .locfn n ps _ b => seeDecl n; func (n :: sc) ps b; return n :: sc
+  | .locfn n ps _ b _ => seeDecl n; func (n :: sc) ps b; return n :: sc
   | .ret es => es.forM (exp sc bs); return sc
   | .brk => return sc
   | .goto l => see l; gotoNote l bs; return sc
@@ -257,13 +249,13 @@ def findings (st : St) (isGiven : String → Bool) : List (Nat × String × Bool
 
 def fnOf : Exp → Option (List String × Bool)
   | .site _ e => fnOf e
-  | .func ps va _ => some (ps, va)
+  | .func ps va _ _ => some (ps, va)
   | _ => none
 
 /-- the functions the chunk defines at its top level: how to call one, its object if a method, its parameters -/
 def topFns (b : Block) : List (String × Option String × List String × Bool) :=
   b.flatMap fun st => match stripS st with
-    | .locfn n ps va _ => [(n, none, ps, va)]
+    | .locfn n ps va _ _ => [(n, none, ps, va)]
     | .loc [n] [e] => match fnOf e, strip e with
       | some (ps, va), _ => [(n, none, ps, va)]
       | none, .table fs => fs.filterMap fun f => match f with
