@@ -227,7 +227,7 @@ elab "keeps_let" : tactic => withMainContext do
   let isJp ← forallTelescope ty fun _ r => do pure ((← whnfR r).isAppOf ``EStateM)
   if isJp && ty.isForall then
     let bfun := Expr.lam n ty b .default
-    let e ← mkAppOptM ``Keeps.jp #[args[0]!, args[1]!, args[2]!, args[4]!, ty.bindingDomain!, v, bfun]
+    let e ← mkAppOptM ``Keeps.jp #[args[2]!, args[0]!, args[1]!, args[4]!, ty.bindingDomain!, v, bfun]
     match ← g.apply e with
     | [hv, hb] =>
       let (_, hv) ← hv.intro1P

@@ -646,5 +646,402 @@ theorem ffiNew_keeps {args : List Val} :
   unfold ffiNew; keeps
 macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ffiNew_keeps)
 
+theorem ffiString_keeps {args : List Val} :
+    Keeps c P (ffiString args) fun _ => True := by
+  unfold ffiString; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ffiString_keeps)
+
+theorem isType_keeps {a b : CType} :
+    Keeps c P (isType a b) fun _ => True := by
+  unfold isType; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact isType_keeps)
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 20000 in
+theorem ffiFn_keeps {name : String} {args : List Val} :
+    Keeps c P (ffiFn name args) fun _ => True := by
+  unfold ffiFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ffiFn_keeps)
+
+theorem cdToNumber_keeps {a : Nat} :
+    Keeps c P (cdToNumber a) fun _ => True := by
+  unfold cdToNumber; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdToNumber_keeps)
+
+theorem cnumNew_keeps {v : Nat} {u : Bool} :
+    Keeps c P (cnumNew v u) fun _ => True := by
+  unfold cnumNew; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cnumNew_keeps)
+
+theorem cdToString_keeps {args : List Val} :
+    Keeps c P (cdToString args) fun _ => True := by
+  unfold cdToString; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdToString_keeps)
+
+theorem cArg_keeps {k : Nat} {d : CType} {v : Val} :
+    Keeps c P (cArg k d v) fun _ => True := by
+  unfold cArg; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cArg_keeps)
+
+theorem cVararg_keeps {v : Val} :
+    Keeps c P (cVararg v) fun _ => True := by
+  unfold cVararg; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cVararg_keeps)
+
+theorem cResult_keeps {name : String} {ret : CType} {r : Val} :
+    Keeps c P (cResult name ret r) fun _ => True := by
+  unfold cResult; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cResult_keeps)
+
+theorem cCall_keeps {oracle : Oracle} {name : String} {ct : CType} {args : List Val} :
+    Keeps c P (cCall oracle name ct args) fun _ => True := by
+  unfold cCall; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cCall_keeps)
+
+theorem cdCallee_keeps {a : Nat} :
+    Keeps c P (cdCallee a) fun _ => True := by
+  unfold cdCallee; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cdCallee_keeps)
+
+theorem tsMeta_keeps {v : Val} :
+    Keeps c P (tsMeta v) fun _ => True := by
+  unfold tsMeta; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact tsMeta_keeps)
+
+theorem clibIndex_keeps {k : Val} :
+    Keeps c P (clibIndex k) fun _ => True := by
+  unfold clibIndex; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact clibIndex_keeps)
+
+theorem clibSet_keeps {k : Val} :
+    Keeps c P (clibSet k) fun _ => True := by
+  unfold clibSet; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact clibSet_keeps)
+
+theorem strFn_keeps {name : String} {args : List Val} :
+    Keeps c P (strFn name args) fun _ => True := by
+  unfold strFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact strFn_keeps)
+
+theorem libInt_keeps {tgt : Target} {fname : String} {i : Nat} {args : List Val} :
+    Keeps c P (libInt tgt fname i args) fun _ => True := by
+  unfold libInt; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact libInt_keeps)
+
+theorem libKey_keeps {fname : String} {k : Num} :
+    Keeps c P (libKey fname k) fun _ => True := by
+  unfold libKey; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact libKey_keeps)
+
+theorem unpackFn_keeps {args : List Val} :
+    Keeps c P (unpackFn args) fun _ => True := by
+  unfold unpackFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact unpackFn_keeps)
+
+theorem optStr_keeps {fname : String} {i : Nat} {args : List Val} :
+    Keeps c P (optStr fname i args) fun _ => True := by
+  unfold optStr; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact optStr_keeps)
+theorem ctypeCall_keeps {oracle : Oracle} {a : Nat} {args : List Val} :
+    Keeps c P (ctypeCall oracle a args) fun _ => True := by
+  unfold ctypeCall
+  refine Keeps.bind getObj_keeps fun o _ => ?_
+  cases o
+  case ctype =>
+    intro h ow
+    have k := ffiNew_keeps (c := c) (P := P) (args := .cdata a :: args) h ow
+    revert k; dsimp only
+    cases ffiNew (.cdata a :: args) h with
+    | ok => exact id
+    | error e => cases e <;> try (rename_i m; cases m) <;> exact id
+  case cfun => exact cCall_keeps
+  all_goals keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ctypeCall_keeps)
+
+theorem libRange_keeps {a b : Num} {down : Bool} :
+    Keeps c P (libRange a b down) fun _ => True := by
+  unfold libRange; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact libRange_keeps)
+
+-- `nums (↑n + 1)` (a `Nat` cast) sends `apply Keeps.bind`'s unification past maxRecDepth: the cast is generalized
+theorem tableFn_keeps {tgt : Target} {name : String} {args : List Val} :
+    Keeps c P (tableFn tgt name args) fun _ => True := by
+  unfold tableFn; split
+  case h_1 | h_2 =>
+    refine Keeps.bind argTbl_keeps fun t _ => Keeps.bind tlen_keeps fun n _ => ?_
+    keeps_let; generalize (n : Int) = m; keeps
+  all_goals keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact tableFn_keeps)
+theorem Keeps.mapM_all {γ β : Type} {l : List γ} {f : γ → M β} {R : β → Prop} (hf : ∀ x, Keeps c P (f x) R) :
+    Keeps c P (l.mapM f) fun r => ∀ y ∈ r, R y := by
+  induction l with
+  | nil => exact Keeps.pure (by simp)
+  | cons x l ih =>
+    simp only [List.mapM_cons]
+    exact Keeps.bind (hf x) fun a ha => Keeps.bind ih fun r hr => Keeps.pure (by simp_all)
+
+theorem wrapVals_keeps {r : Except Val (Bool × List Val)} :
+    Keeps c P (wrapVals r) fun _ => True := by
+  unfold wrapVals; split <;> keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact wrapVals_keeps)
+
+theorem dumpFn_keeps {args : List Val} :
+    Keeps c P (dumpFn args) fun _ => True := by
+  unfold dumpFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact dumpFn_keeps)
+
+theorem setMeta_keeps {t : Nat} {m : Option Nat} :
+    Keeps c P (setMeta t m) fun _ => True := by
+  unfold setMeta; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact setMeta_keeps)
+
+theorem loadDump_keeps {a : Nat} {strip : Bool} {src : String} {mode : Option (List Char)} {fenv : Nat} :
+    Keeps c P (loadDump a strip src mode fenv) fun _ => True := by
+  unfold loadDump
+  keeps_let
+  · keeps
+  · refine Keeps.bind getObj_keeps fun o _ => ?_
+    split
+    · refine Keeps.bind (Keeps.mapM_all (R := fun y => y.2 ≠ c) fun x => by keeps) fun env henv => ?_
+      keeps
+    · keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact loadDump_keeps)
+
+theorem lookup_mem {l : List (String × Nat)} {k : String} {v : Nat} (e : l.lookup k = some v) : (k, v) ∈ l := by
+  induction l with
+  | nil => simp at e
+  | cons p l ih =>
+    obtain ⟨a, b⟩ := p
+    simp only [List.lookup] at e
+    split at e
+    · cases e; rename_i hk; simp only [beq_iff_eq] at hk; subst hk; exact List.mem_cons_self
+    · exact List.mem_cons_of_mem _ (ih e)
+
+theorem Clo.dbgUpvals_ne {cl : Clo} (ok : ∀ x ∈ cl.env, x.2 ≠ c) : ∀ x ∈ cl.dbgUpvals, x.2 ≠ c := by
+  have up : ∀ x ∈ cl.upvals, x.2 ≠ c := by
+    intro x hx
+    simp only [Clo.upvals, List.mem_filterMap, Option.map_eq_some_iff] at hx
+    obtain ⟨y, _, u, hu, rfl⟩ := hx
+    exact ok _ (lookup_mem hu)
+  unfold Clo.dbgUpvals; split
+  · simp only [List.mem_map]; rintro _ ⟨x, hx, rfl⟩; exact up x hx
+  · exact up
+
+/-- its cells are no own cell: debug.setupvalue writes them -/
+theorem badType_keepsQ {α : Type} {what : String} {i : Nat} {args : List Val} {Q : α → Prop} :
+    Keeps c P (badType (α := α) what i args) Q := by
+  unfold badType argErr; keeps
+
+/-- its cells are no own cell: debug.setupvalue writes them -/
+theorem upvalsOf_keeps {f : Val} :
+    Keeps c P (upvalsOf f) fun l => ∀ x ∈ l, x.2 ≠ c := by
+  unfold upvalsOf; split
+  · refine Keeps.bind getObj_keeps fun o ho => ?_
+    split
+    · exact Keeps.pure (Clo.dbgUpvals_ne ho.1)
+    · keeps
+  · split
+    · exact Keeps.pure (by simp)
+    · keeps
+  · keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact upvalsOf_keeps.mono fun _ _ => trivial)
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact upvalsOf_keeps)
+
+theorem stackNow_keeps  :
+    Keeps c P (stackNow ) fun _ => True := by
+  unfold stackNow; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact stackNow_keeps)
+
+theorem stackRun_keeps {α : Type} {k : Nat} {m : M α} {Q : α → Prop} (hm : Keeps c P m Q) :
+    Keeps c P (stackRun k m) Q := by
+  induction k with
+  | zero => unfold stackRun; exact Keeps.throw
+  | succ k ih =>
+    intro h ow
+    have r := hm h ow
+    cases hmh : m h with
+    | ok a h' => rw [hmh] at r; simp only [stackRun, hmh]; exact r
+    | error e h' =>
+      rw [hmh] at r
+      cases e
+      case stk fs =>
+        simp only [stackRun, hmh]
+        generalize h[STK]? = s
+        cases s with
+        | none => exact ow
+        | some o => cases o <;> first | exact ow | exact ih _ (ow.setSys (o := .stacks _ _) (show STK ≤ 16 by decide) trivial)
+      all_goals (simp only [stackRun, hmh]; exact r)
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine stackRun_keeps ?_))
+
+theorem cloS_keeps {c_ : Clo} :
+    Keeps c P (cloS c_) fun _ => True := by
+  unfold cloS; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact cloS_keeps)
+
+theorem frameText_keeps {fr : Frame} :
+    Keeps c P (frameText fr) fun _ => True := by
+  unfold frameText; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact frameText_keeps)
+
+section tac
+open Lean Meta Elab Tactic in
+/-- the `let`/`have` at the head of `m` in `Keeps c P m Q` substituted, a join point too (`keeps_let` makes one a
+hypothesis, which forgets what its argument is) -/
+elab "keeps_zeta" : tactic => withMainContext do
+  let g ← getMainGoal
+  let t ← instantiateMVars (← g.getType)
+  let args := t.getAppArgs
+  let .letE _ _ v b _ := args[3]! | throwError "keeps_zeta: no let"
+  replaceMainGoal [← g.replaceTargetDefEq (mkAppN t.getAppFn #[args[0]!, args[1]!, args[2]!, b.instantiate1 v, args[4]!])]
+end tac
+
+theorem getIdx_ne {us : List (String × Nat)} (hus : ∀ x ∈ us, x.2 ≠ c) {i : Int} {x : String} {u : Nat}
+    (e : (if i < 1 then none else us[(i - 1).toNat]?) = some (x, u)) : u ≠ c := by
+  split at e
+  · simp at e
+  · exact hus _ (List.mem_of_getElem? e)
+
+/-- debug.getupvalue's and debug.setupvalue's: the cell is one of `upvalsOf`'s -/
+macro "keeps_upv" : tactic => `(tactic| (
+  keeps_let; keeps_let
+  · keeps
+  · refine Keeps.bind argInt_keeps fun i _ => ?_
+    keeps_zeta
+    split <;> refine Keeps.bind (Q1 := fun l => ∀ x ∈ l, x.2 ≠ c) ?_ fun us hus => ?_
+    all_goals first | exact upvalsOf_keeps | exact badType_keepsQ | skip
+    all_goals (keeps_let; split
+               · rename_i heq; have := getIdx_ne hus heq; keeps
+               · keeps)))
+
+set_option maxHeartbeats 4000000 in
+theorem debugFn_keeps {oracle : Oracle} {name : String} {args : List Val} :
+    Keeps c P (debugFn oracle name args) fun _ => True := by
+  unfold debugFn; keeps_let; split
+  case h_3 => keeps_upv
+  case h_4 => keeps_upv
+  all_goals keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact debugFn_keeps)
+
+theorem fenvLevel_keeps {fname : String} {caller : Option Nat} {lvl : Int} :
+    Keeps c P (fenvLevel fname caller lvl) fun _ => True := by
+  unfold fenvLevel; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact fenvLevel_keeps)
+
+theorem getfenvFn_keeps {caller : Option Nat} {args : List Val} :
+    Keeps c P (getfenvFn caller args) fun _ => True := by
+  unfold getfenvFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact getfenvFn_keeps)
+
+theorem setFenv_keeps {a t : Nat} :
+    Keeps c P (setFenv a t) fun _ => True := by
+  unfold setFenv; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact setFenv_keeps)
+
+theorem setfenvFn_keeps {caller : Option Nat} {args : List Val} :
+    Keeps c P (setfenvFn caller args) fun _ => True := by
+  unfold setfenvFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact setfenvFn_keeps)
+
+theorem fenvCall_keeps {caller : Option Nat} {f : Val} {args : List Val} {k : M (List Val)}
+    (hk : Keeps c P k fun _ => True) : Keeps c P (fenvCall caller f args k) fun _ => True := by
+  unfold fenvCall; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine fenvCall_keeps ?_))
+
+set_option maxHeartbeats 4000000 in
+theorem basicFn_keeps {oracle : Oracle} {tgt : Target} {name : String} {bound args : List Val} :
+    Keeps c P (basicFn oracle tgt name bound args) fun _ => True := by
+  unfold basicFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact basicFn_keeps)
+
+theorem loadSrc_keeps {src name : List Char} {mode : Option (List Char)} {env : Nat} :
+    Keeps c P (loadSrc src name mode env) fun _ => True := by
+  unfold loadSrc; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact loadSrc_keeps)
+
+theorem takeErrFrames_own {h : Heap} (o : Own c P h) : Own c P (takeErrFrames h).2 := by
+  unfold takeErrFrames; split
+  · exact o.setSys (by simp [ERRF]) trivial
+  · exact o
+
+theorem catchValF_keeps {α β : Type} {x : M α} {ok : α → M β} {bad : List Frame → Val → M β} {Q1 : α → Prop}
+    {R : β → Prop} (hx : Keeps c P x Q1) (hok : ∀ a, Q1 a → Keeps c P (ok a) R)
+    (hbad : ∀ fs v, Keeps c P (bad fs v) R) : Keeps c P (catchValF x ok bad) R := by
+  intro h ow
+  have r := hx h ow
+  simp only [catchValF]
+  cases hxh : x h with
+  | ok a h' => rw [hxh] at r; exact hok a r.2 h' r.1
+  | error e h' =>
+    rw [hxh] at r
+    cases e
+    case val v => exact hbad _ v _ (takeErrFrames_own r)
+    case rt k m =>
+      cases k
+      · exact hbad _ _ _ (takeErrFrames_own r)
+      · exact r
+    all_goals exact r
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine catchValF_keeps (Q1 := fun _ => True) ?_ (fun _ _ => ?_) fun _ _ => ?_))
+
+theorem catchVal_keeps {α β : Type} {x : M α} {ok : α → M β} {bad : Val → M β} {Q1 : α → Prop}
+    {R : β → Prop} (hx : Keeps c P x Q1) (hok : ∀ a, Q1 a → Keeps c P (ok a) R)
+    (hbad : ∀ v, Keeps c P (bad v) R) : Keeps c P (catchVal x ok bad) R :=
+  catchValF_keeps hx hok fun _ => hbad
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine catchVal_keeps (Q1 := fun _ => True) ?_ (fun _ _ => ?_) fun _ => ?_))
+
+theorem onErrFrames_keeps {α : Type} {fs : List Frame} {m : M α} {Q : α → Prop} (hm : Keeps c P m Q) :
+    Keeps c P (onErrFrames fs m) Q := by
+  refine Keeps.wrap hm fun h _ => ⟨fun a h' e => by simp [onErrFrames, e], fun er h' e o' => ?_⟩
+  simp only [onErrFrames, e]; cases er <;> wrap_fin
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible (refine onErrFrames_keeps ?_))
+
+theorem substRepl_keeps {whole : List Char} {cap : Nat → M Val} (hcap : ∀ i, Keeps c P (cap i) fun _ => True) :
+    ∀ r, Keeps c P (substRepl r whole cap) fun _ => True
+  | [] => by unfold substRepl; keeps
+  | [x] => by have := substRepl_keeps (whole := whole) hcap []; unfold substRepl; split <;> keeps
+  | x :: y :: rest => by
+    have := substRepl_keeps (whole := whole) hcap rest; have := substRepl_keeps (whole := whole) hcap (y :: rest)
+    unfold substRepl; split <;> keeps
+
+theorem timeFx_keeps {oracle : Oracle} {name : String} {args : List Val} :
+    Keeps c P (timeFx oracle name args) fun _ => True := by
+  unfold timeFx; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact timeFx_keeps)
+
+theorem printFn_keeps {oracle : Oracle} {args : List Val} :
+    Keeps c P (printFn oracle args) fun _ => True := by
+  unfold printFn; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact printFn_keeps)
+
+theorem ioWrite_keeps {oracle : Oracle} {args : List Val} :
+    Keeps c P (ioWrite oracle args) fun _ => True := by
+  unfold ioWrite; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact ioWrite_keeps)
+
+theorem osDate_keeps {oracle : Oracle} {args : List Val} :
+    Keeps c P (osDate oracle args) fun _ => True := by
+  unfold osDate; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact osDate_keeps)
+
+theorem tmField_keeps {k : String} {d : Option Int} {v : Val} :
+    Keeps c P (tmField k d v) fun _ => True := by
+  unfold tmField; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible exact tmField_keeps)
+
+macro_rules | `(tactic| keeps_leaf) => `(tactic| with_reducible apply ‹∀ _ _, Keeps _ _ _ _›)
+
+set_option maxHeartbeats 4000000 in
+theorem format_go_keeps {args : List Val} {ts : Val → M Val} (hts : ∀ v, Keeps c P (ts v) fun _ => True) :
+    ∀ fuel f i, Keeps c P (format.go args ts f i fuel) fun _ => True := by
+  intro fuel
+  induction fuel with
+  | zero => intro f i; unfold format.go; keeps
+  | succ n ih => intro f i; unfold format.go; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| (refine format_go_keeps ?_ _ _ _; assumption))
+
+theorem format_keeps {fmt : List Char} {args : List Val} {ts : Val → M Val}
+    (hts : ∀ v, Keeps c P (ts v) fun _ => True) : Keeps c P (format fmt args ts) fun _ => True := by
+  unfold format; keeps
+macro_rules | `(tactic| keeps_leaf) => `(tactic| (refine format_keeps ?_; assumption))
+
 end
 end Lua
