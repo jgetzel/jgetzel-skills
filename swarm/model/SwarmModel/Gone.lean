@@ -72,6 +72,7 @@ theorem rz_step {c : Cfg} {s s' : State} {act : Action} (hr : c.racy = false) (h
     · cases hs
   case leave a => obtain ⟨_, rfl⟩ := hs; exact rz_endAgent (rz_setAg (fun hh => by simpa using hh) hI)
   case reapGone a => obtain ⟨_, rfl⟩ := hs; exact rz_endAgent (rz_setAg (fun hh => by simpa using hh) hI)
+  case endOther a f => obtain ⟨_, rfl⟩ := hs; exact rz_endAgent (rz_setAg (fun hh => by simpa using hh) hI)
   case claimRead => simp [hr] at hs
   case claimWrite => simp [hr] at hs
   case wakeRead => simp [hr] at hs

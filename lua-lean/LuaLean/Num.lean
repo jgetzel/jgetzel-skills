@@ -230,6 +230,67 @@ def ofRatio (num den : Nat) : Float :=
     let v := q k
     (Float.ofNat v).scaleB (-k)
 
+/-- lj_strfmt_num.c's rescale_e: by a double's biased exponent / 64, the power of ten %e and %g (precision < 14)
+divide it by before taking its digits -/
+def rescaleE : List Int := [-308, -289, -270, -250, -231, -212, -193, -173, -154, -135, -115, -96, -77, -58, -38, 0,
+  0, 0, 39, 58, 77, 96, 116, 135, 154, 174, 193, 212, 231, 251, 270, 289]
+
+/-- lj_strfmt_num.c's four_ulp_m_e: (m, e) for p = -70 … 57, m * 10^e meant to be at least 4 * 2^p (often 10 or 100
+times it) -/
+def fourUlp : List (Nat × Int) := [
+  (34, -21), (68, -21), (14, -20), (28, -20), (55, -20), (2, -19), (3, -19), (5, -19), (9, -19), (174, -18),
+  (35, -18), (7, -17), (139, -17), (28, -17), (56, -17), (112, -16), (223, -16), (45, -16), (89, -16), (178, -15),
+  (36, -15), (72, -15), (143, -14), (29, -14), (57, -14), (114, -13), (228, -13), (46, -13), (91, -12), (182, -12),
+  (37, -12), (73, -12), (15, -11), (3, -11), (59, -11), (2, -10), (3, -10), (5, -10), (1, -9), (187, -9), (38, -9),
+  (75, -9), (15, -7), (3, -7), (6, -7), (12, -6), (239, -7), (48, -7), (96, -7), (191, -6), (39, -6), (77, -6),
+  (153, -5), (31, -5), (62, -5), (123, -4), (245, -4), (49, -4), (98, -4), (196, -3), (4, -2), (79, -3), (16, -2),
+  (32, -2), (63, -2), (2, -1), (25, 0), (5, 1), (1, 2), (2, 2), (4, 2), (8, 2), (16, 2), (32, 2), (64, 2), (128, 2),
+  (26, 2), (52, 2), (103, 3), (205, 3), (41, 4), (82, 4), (164, 4), (33, 4), (66, 4), (132, 5), (27, 5), (53, 5),
+  (105, 6), (21, 6), (42, 6), (84, 6), (17, 7), (34, 7), (68, 7), (2, 8), (3, 8), (6, 8), (108, 9), (215, 9),
+  (43, 10), (86, 9), (172, 10), (35, 10), (69, 10), (138, 11), (28, 11), (55, 12), (11, 13), (22, 13), (44, 13),
+  (88, 13), (176, 13), (36, 13), (71, 13), (141, 14), (29, 14), (57, 14), (113, 15), (226, 15), (46, 15), (91, 15),
+  (19, 16), (37, 16), (73, 16), (2, 17), (3, 17), (6, 17)]
+
+/-- the digits LuaJIT's %e or %g with p digits after the first rounds (lj_strfmt_wfnum): the magnitude's own, or, for
+p < 14 and an exponent far from 0, the magnitude rescaled toward 1 and 2 ulp below, if that and it plus
+four_ulp_m_e agree on the p + 1 digits and the way they round -/
+def ndDigits (f : Float) (p : Nat) : Nat × Nat :=
+  let f := f.abs
+  let be := (f.toBits >>> 52).toNat
+  let k := rescaleE.getD (be / 64) 0
+  if p ≥ 14 || f == 0 || k == 0 then ratio f else
+  let s := f * (if k > 0 then ofRatio 1 (10 ^ k.toNat) else ofRatio (10 ^ k.natAbs) 1)
+  let s := if be == 0 then s * 1e10 else s
+  let b := s.toBits - 2
+  let lo := ratio (Float.ofBits b)
+  let wrap : Int := if b &&& 0xFFFFFFFF ≥ 0xFFFFFFFE && (b >>> 32) &&& 0xFFFFF == 0xFFFFF then 1 else 0
+  let (m, e) := fourUlp.getD (((b >>> 52).toNat : Int) - 1075 + 70 + wrap).toNat (0, 0)
+  let (c, d) := if e ≥ 0 then (m * 10 ^ e.toNat, 1) else (m, 10 ^ e.natAbs)
+  let hi := (lo.1 * d + c * lo.2, lo.2 * d)
+  let x := exp10 lo.1 lo.2
+  let cut (v : Nat × Nat) := let (a, b) := scale v.1 v.2 ((p : Int) - x); 2 * a / b
+  if cut lo == cut hi then lo else ratio f
+
+/-- the characters LuaJIT's %.<p>g (not %#g) in %e style counts beyond its text: 9 when rounding carried the digits
+it rounds into a new 9-digit limb (the first was full: exponent 8 mod 9) and p ≥ 9, as the trailing-zero strip still
+takes the first limb for 9 digits long (lj_strfmt_wfnum's hilen), so a width pads 9 less; else 0 -/
+def gOverlen (f : Float) (p : Nat) (alt : Bool) : Nat :=
+  if alt || p < 9 || !f.isFinite || f == 0 then 0 else
+  let (num, den) := ndDigits f (p - 1)
+  let x := exp10 num den
+  let (a, b) := ratio f
+  let e := (sciOf a b (p - 1)).2
+  if (sciOf num den (p - 1)).2 != x && x % 9 == 8 && !(e < p && e ≥ -4) then 9 else 0
+
+-- LuaJIT: ('%20.14g'):format(1e15^3) is '      1e+45', 1e54's pads fully (rescaled), 999999999.6's at %.9g pads 9 less
+-- and at %.8g fully, 9.99999999999994741676e-39's at %.13g pads 9 less (rescaled digits 0.99…)
+#guard gOverlen (Float.ofBits 5280026050892618910) 14 false == 9
+#guard gOverlen (Float.ofBits 5414700624226077134) 14 false == 0
+#guard gOverlen (Float.ofBits 4741671816363035853) 9 false == 9
+#guard gOverlen (Float.ofBits 4741671816363035853) 8 false == 0
+#guard gOverlen (Float.ofBits 4038384144200923324) 13 false == 9
+#guard gOverlen (Float.ofBits 4038384144200923324) 14 false == 0
+
 /-- C's fmod: x minus y times the truncated quotient, exact, with x's sign -/
 def fmodC (x y : Float) : Float :=
   if x.isNaN || y.isNaN || !x.isFinite || y == 0 then 0.0 / 0.0

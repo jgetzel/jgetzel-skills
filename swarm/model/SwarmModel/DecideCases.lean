@@ -2,10 +2,10 @@ import Lean.Data.Json
 import SwarmModel.Decide
 
 /-! Random inputs to Decide.lean's lifted functions, with their answers, for ../lua/test/decide_model_spec.lua to
-check watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against. A `none` is a missing field (the Lua's nil).
+check watchd.keeps, watchd.fate, msgs.wakes, ci.pr_act and watchd.end_why against. A `none` is a missing field (the Lua's nil).
 `lake env lean --run SwarmModel/DecideCases.lean <n> <seed> <file>` (replay.sh) writes
 `{"keeps": [{"o", "bg", "live", "r"}, ..], "fate": [{"a", "t", "x", "terms", "f", "r", "rec", "all"}, ..], "wakes": [{"rows", "cold", "r"}, ..],
-"pr": [{"pr", "gated", "told", "r"}, ..]}`. -/
+"pr": [{"pr", "gated", "told", "r"}, ..], "end": [{"a", "f", "r"}, ..]}`. -/
 
 open Lean Swarm.Decide
 
@@ -83,6 +83,20 @@ def prCase : G Json := do
   return obj [("pr", some (Json.mkObj [("state", pr.state), ("verdict", pr.verdict)])), ("gated", some (toJson gated)),
               ("told", some (toJson told)), ("r", r.map fun | .done => "done" | .wake => "wake")]
 
+def whyName : Why → String
+  | .status => "status" | .stay => "stay" | .claims => "claims" | .locks => "locks" | .job => "job" | .unlanded => "unlanded"
+
+def endCase : G Json := do
+  -- mostly idle and staying for nothing: else nearly every case is a refusal for its status
+  let r ← row
+  let r := if (← rnd 3) == 0 then r else { r with status := "idle", stay := none }
+  let f : Facts := { ours := true, claims := (← rnd 4) == 0, locks := (← rnd 4) == 0, unlanded := (← rnd 4) == 0,
+                     job := (← rnd 4) == 0, pool := 0, passedOver := false, alive := true }
+  return obj [("a", some (rowJson r)),
+              ("f", some (obj [("claims", some (toJson f.claims)), ("locks", some (toJson f.locks)),
+                ("unlanded", some (toJson f.unlanded)), ("job", some (toJson f.job))])),
+              ("r", (endWhyL r f).map (toJson ∘ whyName))]
+
 def main (args : List String) : IO UInt32 := do
   let [n, seed, file] := args | do IO.eprintln "usage: DecideCases.lean <n> <seed> <file>"; return 1
   let k := n.toNat!
@@ -91,8 +105,9 @@ def main (args : List String) : IO UInt32 := do
     let fs ← (List.range k).mapM fun _ => fateCase
     let ws ← (List.range k).mapM fun _ => wakesCase
     let ps ← (List.range k).mapM fun _ => prCase
+    let es ← (List.range k).mapM fun _ => endCase
     return Json.mkObj [("keeps", Json.arr ks.toArray), ("fate", Json.arr fs.toArray), ("wakes", Json.arr ws.toArray),
-      ("pr", Json.arr ps.toArray)])
+      ("pr", Json.arr ps.toArray), ("end", Json.arr es.toArray)])
     |>.run' (mkStdGen seed.toNat!)
   IO.FS.writeFile file j.compress
   return 0

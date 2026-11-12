@@ -306,7 +306,7 @@ partial def simpleExp : P Exp := do
   | .kw "false" => advance; return .fls
   | .sym "..." => advance; return .vararg
   | .sym "{" => tableCons
-  | .kw "function" => advance; let (ps, va, b) ← funcBody false; return .func ps va b
+  | .kw "function" => let l ← curLine; advance; let (ps, va, b, e) ← funcBody false; return .func ps va b (l, e)
   | _ => suffixedExp
 
 partial def primaryExp : P Exp := do
@@ -373,8 +373,8 @@ partial def tableCons : P Exp := do
   expectSym "}"
   return .table fs.toList
 
-/-- a function's parameters and body, in a scope of its own (`self` first for a method) -/
-partial def funcBody (self : Bool) : P (List String × Bool × Block) := do
+/-- a function's parameters and body, in a scope of its own (`self` first for a method), and the line of its `end` -/
+partial def funcBody (self : Bool) : P (List String × Bool × Block × Nat) := do
   expectSym "("
   let mut ps : Array String := #[]
   let mut va := false
@@ -389,8 +389,9 @@ partial def funcBody (self : Bool) : P (List String × Bool × Block) := do
   modify fun s => { s with fns := params.reverse :: s.fns }
   let b ← blockIn
   modify fun s => { s with fns := saved }
+  let e ← curLine
   expectKw "end"
-  return (params, va, b)
+  return (params, va, b, e)
 
 partial def block : P Block := inScope blockIn
 
@@ -491,16 +492,17 @@ partial def stat : P Stat := do
         let k := (← name).toList
         target := .site (← site (← lastLine) [← desc target]) (.index target (.str k)); isMethod := true; break
       else break
-    let (ps, va, b) ← funcBody isMethod
+    let (ps, va, b, e) ← funcBody isMethod
     -- the store is on the line of `function` (parse_func)
-    return .assign [Parser.target fnLine target] [.func ps va b]
+    return .assign [Parser.target fnLine target] [.func ps va b (fnLine, e)]
   | .kw "local" =>
     advance
+    let l ← curLine
     if ← acceptKw "function" then
       let n ← name
       bindLocal n
-      let (ps, va, b) ← funcBody false
-      return .locfn n ps va b
+      let (ps, va, b, e) ← funcBody false
+      return .locfn n ps va b (l, e)
     let mut ns := #[← name]
     while ← acceptSym "," do ns := ns.push (← name)
     let es ← if ← acceptSym "=" then exprList else pure []
@@ -535,6 +537,13 @@ def parseChunk (src : List Char) (chunk : String) : Except String Block := do
   match s.toks.getD s.pos .eof with
   | .eof => return b
   | _ => throw s!"'<eof>' expected at token {s.pos}"
+
+open Parser in
+/-- the line a chunk's source ends on: its function's lastlinedefined, LuaJIT's line number when the parse ends -/
+def chunkLines (src : List Char) : Nat :=
+  match lex src #[] with
+  | .ok toks => (toks.back?.map (·.2)).getD 1
+  | .error _ => 1
 
 /-- a file's bytes, one `Char` each -/
 def bytesOf (b : ByteArray) : List Char := b.toList.map fun x => Char.ofNat x.toNat

@@ -213,7 +213,8 @@ With H2's fix (board #53) the user's stop on the task holds it back only until i
 theorem startable_leads_to {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
     (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
     (hR : Reachable c (r.st n)) (hdd : ∀ b, ((r.st n).agt b).dead = false)
-    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b) :
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b
+      ∧ ∀ f, r.act k ≠ .endOther b f) :
     ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
   have hreach : ∀ m, n ≤ m → Reachable c (r.st m) :=
     forever (fun m => Reachable c (r.st m)) n hR (fun k hk ih => Reachable.step (r.act k) ih (r.ok k))

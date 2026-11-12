@@ -43,10 +43,11 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
+| `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
-| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
+| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
 | `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
 | `Audit.lean` | `check.sh`'s gate: the axioms each theorem rests on; fails on any but Lean's three and Env.lean's |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
@@ -256,6 +257,26 @@ without it is refuted (finding #32).
   or stops being at work; a dead terminal is excluded, as for L1) and, while no one releases the task again, stays
   lifted (`stopped_step`): `stop_lifts`, `startable_leads_to`.
 
+The user's end (board #40, #46; `End.lean`). `swarm end A` by the user or the communicator (watchd.cmd_end;
+`agents.in_charge` gates who, so, as `releaseOther`, it is one actorless action) is `endOther a force` of `step`, so S1-S5,
+N1, W1-W4 and L1-L4 above are proved with it in. It ends the row as `leave` does (its claims and locks released, the
+terminal killed and the waiter with it); with `--force` it is `leave` (`endOther_force`). The liveness statements that
+take a run with no `leave` take one with no `swarm end` too (`startable_leads_to`, `claimable_taken`; a forced end of a
+booting holder for `booting_reads`): an agent the user ends can't be waited for. L3 (`answer_reaches`) needs nothing:
+an end of the holder frees the task, as a `leave` does.
+
+- **H1** Without `--force`, `swarm end A` makes lifecycle's checks but the 2 min idle, whoever runs it: idle, no stay, no
+  claim, no lock, no background job, no work off its tasks' bases (`endable`; lifecycle's `finished` is `endable` and the
+  2 min, `finished_eq`; the Lua's check is `watchd.end_why`, over fate's own reads, lifted as `Decide.endWhyL` and proved
+  the model's: `endWhy_lifted`, and whatever fate would end or reuse it ends, `endWhy_of_fate`). It is enabled exactly
+  then (`endOther_enabled`), and it changes nothing but A's row: no task, lock, message, cursor, git ref or other agent
+  (`endOther_spec`). So it ends no agent that holds work (`N1end`, the N1 of `swarm end`: `N1end_of`, on PR #123's
+  `allWts`, board #15's `ownAdded` and per-task bases), and, forced or not, it removes no worktree and deletes no branch
+  (`endOther_git`): what an ended agent leaves in a worktree only GC may remove, and W1 says GC removes nothing unlanded.
+- **`--force`** is the user's explicit choice to lose work: `N1end c true` is refuted (finding #33: `not_N1end_force`, an
+  agent mid-job, whose job end_agent's cgroup.kill kills; `not_N1end_force_wt`, one with an uncommitted file, which stays
+  in its worktree). The same runs without `--force` are refused.
+
 No work lost (board #15, `NoWorkLost.lean`):
 
 - **N1** watchd never discards work that isn't landed. Four parts (`N1`): (1) the tick leaves every agent that holds work
@@ -376,7 +397,7 @@ idle agent holds the claim, a lapsed lease stays lapsed and a booting agent keep
 L1 is proved over fair runs too, **for each task** (`startable_leads_to`; the core is `startable_taken`). Take an
 instance with `racy = false`, `watchd`, `passedOver` (PR #116), `waiterAlive` (PR #119) and `roster ≤ nagents`, a task
 `t`, and a fair run that starts in a reachable state with no dead terminal and from there has no `leave`, `die`,
-`waiterGone` or `reapGone` (an agent that leaves, dies or loses its waiter can't be waited for). Then some state of the
+`waiterGone`, `reapGone` or `swarm end` (`endOther`) (an agent that leaves, dies or loses its waiter can't be waited for). Then some state of the
 run has `t` not startable or no free slot: the task is taken (or finished, dropped), or a spawn fills the roster.
 The proof, by contradiction from "`t` startable and a slot free forever":
 
@@ -504,6 +525,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 | # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
 |---|---|---|---|---|
 | 32 | S1 | `humanRelease := true` (main, board #40) with `stopFirst := false` / S1 with `stopFirst` on, or `humanRelease` off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | `stopFirst` (board #53): claim, auto-spawn and the pool refuse the task to others while the ex-owner is at work and hasn't read the stop; `script-release` now has agent 1 claim #1 after agent 0 reads it |
+| 33 | N1 of `swarm end` | `--force` / `N1end` without it (`N1end_of`) | Agent 0 starts a long job (a build, a CI wait); the user runs `swarm end m-1 --force`: the row is ended mid-job and end_agent's cgroup.kill kills the job (`not_N1end_force`); or agent 0 has an uncommitted file and is ended (`not_N1end_force_wt`; the file stays in its worktree, `endOther_git`). Without `--force` both are refused. | not a bug: `--force` is the user's choice to lose work; `swarm end` without it refuses (board #40) |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -516,7 +538,7 @@ the same two causes as #14 and #15, and the sender of a notice is watchd.
 
 ## What is proved, what is replayed, what isn't modelled
 
-**Proved**: S1 to S5, as *Results* says, of the model (S1 with `humanRelease` off or board #53's `stopFirst` on, finding #32), and H2 (`Release.lean`). A proof is about `Model.lean`; that the model is the code
+**Proved**: S1 to S5, as *Results* says, of the model (S1 with `humanRelease` off or board #53's `stopFirst` on, finding #32), H2 (`Release.lean`) and H1 (`End.lean`). A proof is about `Model.lean`; that the model is the code
 is what the replay tests. **Evaluated**: the counterexamples and their fixed runs. L1, per task, L2, L3, per task, and L4 are proved as statements about fair runs, for `racy = false`, and `fair_run_exists` shows fair runs meeting their side conditions exist. P1 and P2 (board #28) are proved over `PrWatch.lean`'s fair runs.
 
 **Replayed** (random, not exhaustive): that the model is the code. Each step of a run does the command it stands
@@ -535,7 +557,8 @@ owns no task, kept; `script-base`: an agent whose task's base is `formal` kept u
 a worktree a spawned agent adds and leaves swept while it works, since `wt_map` picks its recorded one; `script-added`: a
 spawned agent kept by an unlanded worktree it added itself, by the tick that ends idle agent 1; `script-retry`,
 `script-raise`, `script-halt`: a failed launch and its backoff, a raise undone, five failures halting a task and the halt
-lifted once it is claimed) are in the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes. The runs are of
+lifted once it is claimed; `script-release`: H2; `script-end-user`: H1, the communicator's `swarm end` of an idle agent
+holding nothing, then `--force` of a working one, whose task the tick gives a new agent) are in the Lua suite; `replay.sh 60 40` does 60 fresh ones in about 2 minutes. The runs are of
 `sreplay` (Spawn.lean): `failExit` is a tick with the fake launch.sh failing, `failRaise` one whose next agent's settings
 file is a directory (so launch_agent's `io.open` fails and it dies), `lapse` sets spawn_backoff's time back, and after
 every step auto-spawn's meta rows must match `backoff`, `bo`, `fails` and `halt`.
@@ -761,7 +784,7 @@ the Lua's tick would nudge it: PR #122's behaviour is covered by `cli_lifecycle_
 its memory gate and the `lost` and `refused` branches (a peer's claim or spawn between the pool and the reservation),
 an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and launch.sh failing after hc started the
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
-generates none (`bgLives` is checked by `cli_lifecycle_spec`); `swarm end`'s refusals; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
+generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; a spawned agent's recorded worktree is on the base of the task it was spawned for, which the model doesn't keep, so once reap or a release takes that task the Lua's `unlanded` checks main and finds it unlanded (lifecycle: `unclean`; `swarm end`: refused) where the model has it landed: the Lua is the stricter side, so N1 and `N1end` hold of it, and random traces leave out `swarm end` without `--force` of a spawned agent (board #63); of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
 (`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator; the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the

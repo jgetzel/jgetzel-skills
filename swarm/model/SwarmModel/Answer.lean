@@ -775,6 +775,9 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case reapGone a =>
     obtain ⟨_, rfl⟩ := hstep
     exact l3_endAgent (ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun hb => (wf a hb).symm))
+  case endOther a f =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact l3_endAgent (ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun hb => (wf a hb).symm))
   case block a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [working, busy, ownsClaimed, Bool.and_eq_true, beq_iff_eq, List.isEmpty_iff] at hg
@@ -865,6 +868,9 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
     obtain ⟨_, rfl⟩ := hstep
     exact ow_of h1 h2 (by rw [(endAgent_held h2).2.2]; simp)
   case reapGone a =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact ow_of h1 h2 (by rw [(endAgent_held h2).2.2]; simp)
+  case endOther a f =>
     obtain ⟨_, rfl⟩ := hstep
     exact ow_of h1 h2 (by rw [(endAgent_held h2).2.2]; simp)
   case unblock u =>
@@ -1071,7 +1077,11 @@ theorem answer_reaches {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true
         · rw [e6] at hok
           obtain ⟨o', ho'⟩ := (hJ (k'+1) (by omega)).2
           rw [releaseOther_frees hok o'] at ho'; cases ho'
-        exact keep hr hbf ⟨e1, e2, e3, e4, e5, e6⟩ (hq k' (by omega)) (pfx_of_reachable (hRk k' (by omega))) hok ih
+        by_cases e7 : r.act k' = .endOther o true
+        · rw [e7] at hok
+          obtain ⟨o', ho'⟩ := (hJ (k'+1) (by omega)).2
+          rw [leaveIf_frees hok hheld o'] at ho'; cases ho'
+        exact keep hr hbf ⟨e1, e2, e3, e4, e5, e6, e7⟩ (hq k' (by omega)) (pfx_of_reachable (hRk k' (by omega))) hok ih
       obtain ⟨k', hk', hact⟩ := Run.fair_ev hf (f := .boot o) (N0 := k) (fun k' hk' => by
           have := (hall k' hk').2.2.2.2.2
           simp [fair, ha, this]) (fun k' hk' => by

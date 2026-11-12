@@ -8,7 +8,31 @@ local utf8 = require "lua-utf8"
 local M = {}
 
 local TOK = [[\w+|[^\w\s]|\n]]
-local HUNK = [[^<<<<<<< .*?\n(.*?)^\|\|\|\|\|\|\| .*?\n(.*?)^=======\n(.*?)^>>>>>>> ]]
+
+-- diff3 conflict hunks as {ours, base, theirs} (each keeps its trailing newline), by scanning lines for the markers:
+-- a backtracking regex over a multi-MB file hits PCRE2's match limit.
+function M.hunks(text)
+  local res, pos, n = {}, 1, #text
+  local function nextline(from, mark)  -- start of the next line at or after `from` that begins with mark; and its end
+    local i = from
+    while i <= n do
+      local e = text:find("\n", i, true) or n + 1
+      if text:sub(i, i + #mark - 1) == mark then return i, e + 1 end
+      i = e + 1
+    end
+  end
+  while true do
+    local _, a = nextline(pos, "<<<<<<< ")
+    if not a then break end
+    local b1, b2 = nextline(a, "||||||| ")
+    local c1, c2 = nextline(b2 or n + 1, "=======\n")
+    local d1, d2 = nextline(c2 or n + 1, ">>>>>>> ")
+    if not d2 then break end
+    res[#res + 1] = { text:sub(a, b1 - 1), text:sub(b2, c1 - 1), text:sub(c2, d1 - 1) }
+    pos = d2
+  end
+  return res
+end
 
 -- Base-token spans one side changed, half-open; i1 == i2 is an insertion at i1.
 function M.edits(base, side)
@@ -162,7 +186,7 @@ function M.trial_merge(cwd, base, ca, cb)
     local text = proc.git({ "show", tree .. ":" .. f }, cwd) or ""
     if not utf8.len(text) then text = "" end  -- not UTF-8 (binary): no hunks, so it counts as real
     local hunks, bad = 0, {}
-    for m in re.finditer(HUNK, text, re.S + re.M) do
+    for _, m in ipairs(M.hunks(text)) do
       hunks = hunks + 1
       if M.real_hunk(m[2], m[1], m[3]) then bad[#bad + 1] = { m[1], m[3] } end
     end

@@ -175,6 +175,22 @@ yield with and without a resume to replay, and resume in terms of its coroutine'
 stretch, so k resumes cost k^2 / 2 stretches; and an effect a coroutine called is asked of the oracle again in each
 replay, which a stateless oracle answers as before.
 
+## The call stack
+
+`debug.getinfo` of a level, `debug.traceback`, and `getfenv`/`setfenv` of a level past 1 read the stack. The
+semantics keeps none as it runs (a call's heap is the same with or without one, so no proof about a run changes):
+the builtin asks `stackNow`, which throws a stack query (`Err.stk`). The query passes out of the frames to the
+bottom, and each wrapper it passes adds what it knows (`Frame`): a call's frame starts the next frame out
+(`frame`), the function called names it (`cFrame`), the first site out of a call is where the frame calling is and
+names the frame called by its `fn`, LuaJIT's lj_debug_funcname (`atSite`; a metamethod's call names it after its
+event, `mmName`; at a tail call's site the frame calling is gone, as LuaJIT's CALLT replaced it). At the bottom
+(`runChunk`), `stackRun` runs the chunk again from its start heap with the stack found (cell `STK`), and the
+query, met again at the same point (the run is deterministic), reads it. An error passing out records its frames
+the same way in the heap (cell `ERRF`), so xpcall's handler, which LuaJIT calls where the error was raised, finds
+them below it (`onErrFrames`). The host's frames below the chunk are the world's: a traceback asks the effect
+`debug.traceback` for their text (the test's world answers `(host)`, and `test/luasem.lua` writes LuaJIT's that way:
+its own frames and an address), and a level among them stops the run.
+
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it, with its lexer's `\u{...}` escapes, empty statements (`;;`) anywhere, and
@@ -225,13 +241,14 @@ calls it, a stripped one is the chunk load names (`=?` if none) at line 0, its u
 `package.loaded` (a module that sets its own entry, one returning nothing, a loop, a failed load) and the modules
 LuaJIT has loaded at the start (`_G`, `package`, `string`, `table`, `math`), each chunk named in its errors as
 lj_debug_shortname names it (`[string "..."]`, `=name`, `@file`); `coroutine`, all of LuaJIT 2.1's (`create`,
-`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines"); `debug` without a call stack
+`resume`, `yield`, `status`, `wrap`, `running`, `isyieldable`; "Coroutines"); `debug`
 (`debugFn`): `getmetatable` and `setmetatable` of a table raw (`__metatable` neither hides nor protects it;
 setmetatable returns true), `getupvalue` and `setupvalue` of a closure (its upvalues are the outer locals its body
 names, numbered in the order LuaJIT's parser meets them: `Clo.upvals`) or of a builtin that has none, `getinfo` of
-a function (`u`, `f`, `l`, `n`, a builtin's `S` and `L` too: `[C]`, its count of upvalues LuaJIT's), of a negative
-level (nil) and its bad arguments, `traceback` of a value neither a string nor a number (returned as it is), a
-thread as the first argument of either; `bit`, all of LuaJIT 2.1's (`tobit`, `tohex`, `bnot`, `band`, `bor`, `bxor`,
+a function (`u`, `f`, `l`, `n`, `S`: a closure's chunk, `Clo.src`, and the lines of its `function` and `end`,
+`Clo.lines`; a builtin's `[C]` and `L`, its count of upvalues LuaJIT's) or of a level of the stack (its line and
+its name too: "The call stack"), of a negative level (nil) and its bad arguments, `traceback`'s text ("The call
+stack") and of a value neither a string nor a number (returned as it is), a thread as the first argument of either; `bit`, all of LuaJIT 2.1's (`tobit`, `tohex`, `bnot`, `band`, `bor`, `bxor`,
 `lshift`, `rshift`, `arshift`, `rol`, `ror`, `bswap`; the global and `require "bit"`), on int32: each argument a
 number or a string read as one, an integer mod 2^32 and a double through lj_num2bit (plus 2^52 + 2^51, the low 32
 bits: rounded to even, inf and NaN 0; `Num.toBit`, which the kernel computes), a shift's count mod 32, each result an
@@ -273,12 +290,13 @@ How a script outside it is reported, from strongest to weakest. `lua-lean check 
 by line and before anything is lifted, what of it the source shows: a parse error; a global LuaJIT has and the
 semantics holds as a handle, or one neither defines (a host's: `ngx`, `love`); a library field that is a handle; a
 `require` of a module outside the subset or not found as a file under the script's directories; `string.format`'s
-`%a %o %u %p` in a constant format; `getfenv` or `setfenv` of a constant level past 1 or of level 1 (or none) in a
-tail call, `setfenv` of level 0; `setmetatable(_G, …)`; a `goto` but the continue
-idiom; `debug.getinfo` of a constant level or with `S` or `L` (or its default options), `debug.traceback` of a
-constant message or none, `xpcall(f, debug.traceback)`, `debug.setmetatable` of a constant not a table. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
+`%a %o %u %p` in a constant format; `setfenv` of level 0; `setmetatable(_G, …)`; a `goto` but the continue
+idiom; `debug.getinfo` with `L`, `debug.setmetatable` of a constant not a table. It lists the world's effects too (`io.open`), which are in the subset but make a function impure. Then it
 calls each function the chunk defines at its top level with random arguments under the semantics and under LuaJIT
-(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. What only
+(`test/luasem.lua`, JIT on and off), the calls that reach no effect, and the results must be the same text. The
+modules it requires that are files under its directories, and theirs, load as source (package.path has those
+directories), and each call is an argument, not a tail call, so an `error(msg, 2)` in the function has the chunk's
+place (`test/check/beside.lua`). What only
 a run meets (a `#t` with two borders, a double past a C cast's range) only that test, or a proof, finds.
 
 1. **Fails to parse**: syntax outside the grammar (`lua-lean lift` prints the parser's error and exits 1). The
@@ -312,14 +330,13 @@ the name by scanning the bytecode back);
    `dofile` of a file not given as source, or of stdin; `require` when `package.path` is not a string; a yield in
    `xpcall`'s error handler (LuaJIT's xpcall then fails with `error in error handling`); a call of one of LuaJIT's
    functions outside the subset (`jit.flush`, `collectgarbage`, `debug.getlocal`; above); `getfenv` or `setfenv` of
-   a level the semantics keeps no frame for (`fenvLevel`): past 1, level 1 of a builtin's call (`pcall(getfenv, 1)`)
-   or of a tail call (`return getfenv(1)`: its level 1 is below the frame the call replaced; inside a tail call's
-   arguments too), and `setfenv(0, …)`, the thread's environment (`load` and `print` read it); either of an effect
+   a builtin's frame or the host's (`fenvLevel`: `pcall(getfenv, 1)`), and `setfenv(0, …)`, the thread's environment (`load` and `print` read it); either of an effect
    handle; a `goto` to a label of its
-   block that does not end it (`effect goto: …`, pcall or not); what of `debug` needs a call stack the semantics does
-   not keep or lines a closure does not carry: `debug.getinfo` of a level 0 or above or with `S` or `L` for a Lua
-   function (its default options have `S`), `debug.traceback` of a string, a number or nothing (its text is the
-   stack's, the host's frames below the script's among them); `debug.setmetatable` of a value not a table (the
+   block that does not end it (`effect goto: …`, pcall or not); what of `debug` the call stack does not
+   give ("The call stack"): a level of the host's frames, a builtin's frame no Lua call named in a traceback (its
+   address), a traceback past 12 levels (what LuaJIT cuts depends on the host's depth), the stack of a coroutine,
+   a stripped function's lines and a file's chunk's last line (`S`), a Lua function's active lines (`L`);
+   `debug.setmetatable` of a value not a table (the
    metatable of its type), `debug.getmetatable` of a string, and the upvalues of a builtin that has some (`print`,
    `pairs`, `ipairs`, `type`, a `gmatch` iterator, a `coroutine.wrap` function: LuaJIT's own values); of the FFI
    (`ffiStop`, `effect ffi: …`): what is the ABI's (plain `char`'s sign: a `char` past 127 read, two types equal on
@@ -391,7 +408,7 @@ rest are pointers, #57, and C calls, #59), `__mode` 4, `string.dump` 3 (in the s
 | `test/cases.lua.gz` | the committed chunks |
 | `test/*.lua` | scripts `check.sh` parses against LuaJIT and lifts with proofs |
 | `test/out.txt`, `Refused.lean` | LuaJIT's syntax the subset leaves out, a chunk a line, and the check that the parser refuses each |
-| `test/check/` | `lua-lean check`'s test: a script with each kind of construct outside the subset, and what check says |
+| `test/check/` | `lua-lean check`'s tests: a script with each kind of construct outside the subset, and what check says; a script with a module beside it (`beside.lua`, `util.lua`) |
 | `test/corpus.txt` | the third-party scripts `lua-lean corpus` fetches and checks |
 | `test/mods/*.lua` | modules the generator's chunks `require` and `dofile` (so LuaJIT runs a cases file from lua-lean/), lifted too |
 | `Examples/` | `test/world.lua` lifted (`World.lean`, `check.sh` keeps it current) and its specs under named axioms about the world (`WorldSpec.lean`, the axioms each spec rests on pinned by `#guard_msgs`), each axiom tested against LuaJIT (`world_axioms.lua`) |
@@ -423,8 +440,9 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37: a script's sibling modules as source). What #31 left for a model of the call stack (a level
-  to `getinfo`, `traceback`'s text, a closure's source and lines) is #44, and with it #33's levels past 1.
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
+  to `getinfo`, `traceback`'s text, a closure's source and lines) and #33's levels past 1 are #44 (done: "The call
+  stack"; a coroutine's stack, `L` and a file's chunk's last line still stop).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,
   `__call`, read when used (G3a, done); arithmetic, `__unm`, `__concat`, `__len` (G3b, done); `__eq`/`__lt`/`__le`,
   `__tostring`, `__metatable` (G3c, done). `LuaLean/Hoare.lean` has a rule for each operator's metamethod and for

@@ -5,7 +5,8 @@ import LuaLean.Print
 parses; every construct and library call outside the subset (DESIGN.md, *The subset*) the source shows, with its
 line; and `per` calls with random arguments of each function the chunk defines at its top level, under the
 semantics, written to `cases.lua` for `test/luasem.lua` to run under LuaJIT (a call that reaches an effect, or a
-chunk that does, is left out: those are not pure). What only a run finds (a `#t` with two borders, a double past a
+chunk that does, is left out: those are not pure). A module the chunk requires, and what that requires, is source
+when its file is under one of the script's directories, as `lua-lean run --lib` loads one. What only a run finds (a `#t` with two borders, a double past a
 C cast's range) is the differential test's to find. -/
 
 open Lua
@@ -92,17 +93,14 @@ def gotoNote (l : String) (bs : List Block) : W Unit :=
     note s!"goto {l}: to a label that does not end its block (the subset has the continue idiom only)"
   | none => note s!"goto {l}: no visible label (LuaJIT rejects the file, the parser does not)"
 
-/-- the debug library's calls that need what the semantics lacks: a call stack, a Lua function's lines, a type's
-metatable (`debugFn` in LuaLean/Interp.lean) -/
+/-- the debug library's calls that need what the semantics lacks: a Lua function's active lines, a type's metatable
+(`debugFn` in LuaLean/Interp.lean) -/
 def debugNote (f : String) (as : List Exp) : W Unit :=
-  let lines := "a Lua function's lines are not modelled: the run stops at one"
   match f, as with
-  | "getinfo", .num _ :: _ => note "debug.getinfo of a stack level: the semantics has no call stack, the run stops"
-  | "getinfo", [_] => note s!"debug.getinfo with its default options, 'S' among them: {lines}"
   | "getinfo", _ :: .str o :: _ =>
-    if o.contains 'S' || o.contains 'L' then note s!"debug.getinfo with 'S' or 'L': {lines}" else pure ()
-  | "traceback", [] | "traceback", .str _ :: _ | "traceback", .num _ :: _ =>
-    note "debug.traceback of a message: its text is the call stack's, the run stops"
+    if o.contains 'L' then
+      note "debug.getinfo with 'L': a Lua function's active lines are not modelled, the run stops at one"
+    else pure ()
   | "setmetatable", .str _ :: _ | "setmetatable", .num _ :: _ | "setmetatable", .nil :: _ =>
     note "debug.setmetatable of a value not a table: the metatable of its type, the run stops"
   | _, _ => pure ()
@@ -116,9 +114,7 @@ def fenvNote (f : String) (as : List Exp) (tail : Bool) : W Unit :=
     | _, _ => none
   match lvl with
   | some k => do
-    if tail && k == 1 then note s!"{f} of level 1 in a tail call: the semantics keeps no call stack, the run stops"
-    else if !tail && k ≥ 2 then note s!"{f} of level {k}: the semantics keeps no call stack, the run stops"
-    else if !tail && k == 0 && f == "setfenv" then
+    if !tail && k == 0 && f == "setfenv" then
       note "setfenv of level 0: the thread's environment is not modelled, the run stops"
   | none => pure ()
 
@@ -129,7 +125,7 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
     see x
     if !sc.contains x then modify fun s => { s with reads := s.reads.push (s.line, x) }
   | .str c => let k := String.ofList c; see k
-  | .func ps _ b => func sc ps b
+  | .func ps _ b _ => func sc ps b
   | .index t k =>
     exp sc bs t; exp sc bs k
     if let (.var lib, .str f) := (strip t, strip k) then
@@ -144,9 +140,6 @@ partial def exp (sc : List String) (bs : List Block) (e : Exp) : W Unit := do
         note "setmetatable(_G, ...): a metatable on _G stops the run"
     | .index (.var "string") (.str f), .str fmt :: _ => if f == "format".toList then fmtNote fmt
     | .index (.var "debug") (.str f), as => if !sc.contains "debug" then debugNote (String.ofList f) as
-    | .var "xpcall", [_, .index (.var "debug") (.str f)] =>
-      if !sc.contains "debug" && f == "traceback".toList then
-        note "xpcall with debug.traceback: a string error's traceback is the call stack's, the run stops"
     | .var g, as => if (g == "getfenv" || g == "setfenv") && !sc.contains g then fenvNote g as false
     | _, _ => pure ()
   | .method o m as =>
@@ -202,7 +195,7 @@ partial def stat (sc : List String) (bs : List Block) (st : Stat) : W (List Stri
     let _ ← block (v :: sc) bs body; return sc
   | .forin vs es body =>
     vs.forM seeDecl; es.forM (exp sc bs); let _ ← block (vs.reverse ++ sc) bs body; return sc
-  | .locfn n ps _ b => seeDecl n; func (n :: sc) ps b; return n :: sc
+  | .locfn n ps _ b _ => seeDecl n; func (n :: sc) ps b; return n :: sc
   | .ret es => es.forM (exp sc bs); return sc
   | .brk => return sc
   | .goto l => see l; gotoNote l bs; return sc
@@ -256,13 +249,13 @@ def findings (st : St) (isGiven : String → Bool) : List (Nat × String × Bool
 
 def fnOf : Exp → Option (List String × Bool)
   | .site _ e => fnOf e
-  | .func ps va _ => some (ps, va)
+  | .func ps va _ _ => some (ps, va)
   | _ => none
 
 /-- the functions the chunk defines at its top level: how to call one, its object if a method, its parameters -/
 def topFns (b : Block) : List (String × Option String × List String × Bool) :=
   b.flatMap fun st => match stripS st with
-    | .locfn n ps va _ => [(n, none, ps, va)]
+    | .locfn n ps va _ _ => [(n, none, ps, va)]
     | .loc [n] [e] => match fnOf e, strip e with
       | some (ps, va), _ => [(n, none, ps, va)]
       | none, .table fs => fs.filterMap fun f => match f with
@@ -287,9 +280,10 @@ def dropRet (b : Block) : Block :=
   | some s => if let .ret _ := stripS s then b.dropLast else b
   | none => b
 
-/-- `per` calls of each top-level function as chunks: the chunk's text and the function's name -/
-def calls (b : Block) (per seed : Nat) : List (String × String) := Id.run do
-  let pre := Print.block (dropRet b)
+/-- `per` calls of each top-level function as chunks, after `pre`: the chunk's text and the function's name. A call
+is an argument, not a tail call, so an error of level 2 in the function (`error(msg, 2)`) has the chunk's place -/
+def calls (pre : String) (b : Block) (per seed : Nat) : List (String × String) := Id.run do
+  let pre := pre ++ Print.block (dropRet b)
   let mut g := mkStdGen seed
   let mut r := []
   for (f, self, ps, va) in topFns b do
@@ -302,7 +296,7 @@ def calls (b : Block) (per seed : Nat) : List (String × String) := Id.run do
         let (i, g') := randNat g 0 (pool.size - 1)
         g := g'
         as := as ++ [pool[i]!]
-      r := (pre ++ s!"return {f}({", ".intercalate as})\n", f) :: r
+      r := (pre ++ s!"return (function(...) return ... end)({f}({", ".intercalate as}))\n", f) :: r
   return r.reverse
 
 /-- a module is given as source when a file for it is under one of the script's directories -/
@@ -314,6 +308,23 @@ def givenIn (dirs : List System.FilePath) (m : String) : IO Bool :=
 def ancestors (p : System.FilePath) : Nat → List System.FilePath
   | 0 => [p]
   | n + 1 => p :: (p.parent.map (ancestors · n)).getD []
+
+/-- the files a `require` of each of `ms` loads through package.path `path`, and of what they require, as source:
+the modules by name, and each file by its path (as `require` names it) -/
+partial def modSources (path : String) (ms : List String) (seen : List String := [])
+    (srcs : List (String × Block) := []) : IO (List String × List (String × Block)) := do
+  match ms with
+  | [] => return (seen, srcs)
+  | m :: ms =>
+    if seen.contains m || loadedModule m || outsideModules.contains m then return ← modSources path ms seen srcs
+    match ← (pathFiles path.toList (modPath m.toList)).findM? (fun (f : String) => do pure ((← System.FilePath.pathExists f) && !(← System.FilePath.isDir f))) with
+    | none => modSources path ms seen srcs
+    | some f =>
+      match parseChunk (bytesOf (← IO.FS.readBinFile f)) (shortSrc ("@" ++ f).toList) with
+      | .error _ => modSources path ms (m :: seen) srcs
+      | .ok b =>
+        let (_, st) := (block [] [] b).run { toks := #[] }
+        modSources path (ms ++ st.requires.toList.map (·.2)) (m :: seen) ((f, b) :: srcs)
 
 end Check
 
@@ -337,14 +348,19 @@ def main (args : List String) : IO UInt32 := do
       let outside := (fs.filter (·.2.2)).length
       if outside > 0 then bad := true
       -- the chunk alone, then each call
-      let top := runCase (fun _ => none) .dual [] (Print.block (dropRet b)).toList
+      -- the modules found beside it as source; under LuaJIT each chunk sets the path and forgets what one before loaded
+      let path := ";".intercalate (dirs.flatMap fun d => [(d / "?.lua").toString, (d / "?" / "init.lua").toString])
+      let (mods, srcs) ← modSources path (st.requires.toList.map (·.2))
+      let pre := s!"package.path = {String.ofList (serStr path.toList)}\nfor _, m in ipairs(\{" ++
+        ", ".intercalate (mods.map fun m => String.ofList (serStr m.toList)) ++ "}) do package.loaded[m] = nil end\n"
+      let top := runCase (srcsOf srcs) .dual [] (pre ++ Print.block (dropRet b)).toList
       let fns := topFns b
       let mut n := 0
       let mut left : List String := []
       if top.startsWith "ok:" || top.startsWith "error:" then
-        for (src, _) in calls b per.toNat! (hash file).toNat do
-          let out := runCase (fun _ => none) .dual [] src.toList
-          let out1 := runCase (fun _ => none) .single [] src.toList
+        for (src, _) in calls pre b per.toNat! (hash file).toNat do
+          let out := runCase (srcsOf srcs) .dual [] src.toList
+          let out1 := runCase (srcsOf srcs) .single [] src.toList
           if out.startsWith "ok:" || out.startsWith "error:" then
             let single := if out1 == out then "" else s!", single = {String.ofList (serStr out1.toList)}"
             cases := cases.push

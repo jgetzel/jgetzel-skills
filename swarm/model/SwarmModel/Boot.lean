@@ -27,16 +27,26 @@ theorem leaveIf_keep {ok : Bool} {s s' : State} {a b t : Nat} (hs : leaveIf ok s
   simp only [idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h
   simp [Booting, idleClaim, ownsClaimed, endAgent_agt, endAgent_tk, agt_setAg, setAg_tk, setAg_ag_length, held, hb, hb', h, hb2, hl, hans, hw, hd]
 
+theorem holds_of {s : State} {a t : Nat} (hst : (s.tk t).st = .claimed) (ho : (s.tk t).owner = some a) : holds s a = true := by
+  have h := tk_in_range (s := s) (t := t) (by rw [hst]; simp)
+  simp only [holds, List.any_eq_true]
+  refine ⟨s.task[t - 1], List.getElem_mem h.2, ?_⟩
+  have e : s.tk t = s.task[t - 1] := by
+    simp [State.tk, h.1, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem h.2]
+  rw [e] at hst ho
+  simp [held, hst, ho]
+
 /-- Any action but the tick, the boot, and the ones that end the agent's claim: a booting holder stays one. -/
 theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = false) (hbf : c.bootFirst = true)
-    (hn : act ≠ .tick ∧ act ≠ .boot a ∧ act ≠ .leave a ∧ act ≠ .reapGone a ∧ act ≠ .drop t ∧ act ≠ .releaseOther t)
+    (hn : act ≠ .tick ∧ act ≠ .boot a ∧ act ≠ .leave a ∧ act ≠ .reapGone a ∧ act ≠ .drop t ∧ act ≠ .releaseOther t ∧
+      act ≠ .endOther a true)
     (hq : ∀ b, act ≠ .bgStart b ∧ act ≠ .die b)
     (hp : Pfx s) (hs : step c s act = some s') (h : Booting s a t) : Booting s' a t := by
   have h0 := h
   obtain ⟨h, hb, hl, hans, hw, hd⟩ := h
   simp only [idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h
   obtain ⟨⟨hst, hown⟩, hidle⟩ := h
-  obtain ⟨n1, n2, n3, n4, n5, n6⟩ := hn
+  obtain ⟨n1, n2, n3, n4, n5, n6, n7⟩ := hn
   cases act
   all_goals first | exact absurd rfl n1 | exact absurd rfl n2 | exact absurd rfl n3 | exact absurd rfl n4 | exact absurd rfl n5 | exact absurd rfl n6 | skip
   case bgStart => exact absurd rfl (hq _).1
@@ -47,6 +57,14 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
   case reapGone b =>
     simp only [step, reapGone] at hs
     exact leaveIf_keep hs (fun e => n4 (by rw [e])) h0
+  case endOther b f =>
+    simp only [step, endOther] at hs
+    by_cases e : b = a
+    · subst e
+      cases f
+      · simp [leaveIf, when, endable, holds_of hst hown] at hs
+      · exact absurd rfl n7
+    exact leaveIf_keep hs e h0
   case hcPrompt b =>
     simp only [step, hcPrompt, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
     obtain ⟨hc, rfl⟩ := hs
@@ -103,7 +121,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     simpa [Booting, idleClaim, ownsClaimed, setTask_agt, tk_setTask_ne hne] using h0
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
+    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge] at hs)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -132,15 +150,6 @@ theorem releaseOther_fc {c : Cfg} {s s' : State} {a t : Nat} (hs : step c s (.re
   · rw [getD_modify] at this; split at this <;> simp_all
 
 -- ---------- the tick ----------
-
-theorem holds_of {s : State} {a t : Nat} (hst : (s.tk t).st = .claimed) (ho : (s.tk t).owner = some a) : holds s a = true := by
-  have h := tk_in_range (s := s) (t := t) (by rw [hst]; simp)
-  simp only [holds, List.any_eq_true]
-  refine ⟨s.task[t - 1], List.getElem_mem h.2, ?_⟩
-  have e : s.tk t = s.task[t - 1] := by
-    simp [State.tk, h.1, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem h.2]
-  rw [e] at hst ho
-  simp [held, hst, ho]
 
 theorem reapTask_keep {c : Cfg} {x : State} {t u : Nat} (h : (x.tk t).lease = true) : (reapTask c x u).tk t = x.tk t := by
   by_cases hu : t = u
@@ -237,11 +246,13 @@ theorem boot_reads {c : Cfg} {s s' : State} {a t : Nat} (hao : c.answerOnTask = 
   simp [hans]
 
 /-- L3, the reopened half. With `bootFirst` (a boot beats a lease), a spawned agent that holds a task with an answer
-on it reads the answer at its first turn, unless it leaves, its terminal dies, or the task is dropped: the tick can't
+on it reads the answer at its first turn, unless it leaves (or `swarm end --force` ends it), its terminal dies, or
+the task is dropped: the tick can't
 reap it first (finding #17), and it boots because `boot` is fair. `firstClaimed` is the task its first turn reads. -/
 theorem booting_reads {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao : c.answerOnTask = true)
     {a t : Nat} (ha : a ∈ c.agents) (r : Run c) (hf : r.Fair) {n : Nat} (hR : Reachable c (r.st n))
-    (hq : ∀ k, n ≤ k → (∀ b, r.act k ≠ .bgStart b ∧ r.act k ≠ .die b) ∧ r.act k ≠ .leave a ∧ r.act k ≠ .reapGone a ∧ r.act k ≠ .drop t)
+    (hq : ∀ k, n ≤ k → (∀ b, r.act k ≠ .bgStart b ∧ r.act k ≠ .die b) ∧ r.act k ≠ .leave a ∧ r.act k ≠ .reapGone a ∧ r.act k ≠ .drop t
+      ∧ r.act k ≠ .endOther a true)
     (hfc : ∀ k, n ≤ k → firstClaimed c (r.st k) a = t) (h : Booting (r.st n) a t) :
     ∃ m, answered (r.st m) t = true := by
   have hRk : ∀ k, n ≤ k → Reachable c (r.st k) := by
@@ -259,9 +270,9 @@ theorem booting_reads {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true)
       by_cases ht : r.act k = .tick
       · rw [ht] at hok; exact tick_keep hok ih
       · have hb : r.act k ≠ .boot a := fun e => hex ⟨k, hk, e, ih⟩
-        obtain ⟨q1, q2, q3, q4⟩ := hq k hk
+        obtain ⟨q1, q2, q3, q4, q6⟩ := hq k hk
         have q5 : r.act k ≠ .releaseOther t := fun e => releaseOther_fc (e ▸ hok) ih (hfc (k + 1) (by omega))
-        exact keep hr hbf ⟨ht, hb, q2, q3, q4, q5⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih
+        exact keep hr hbf ⟨ht, hb, q2, q3, q4, q5, q6⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih
     obtain ⟨k, hk, hact⟩ := Run.fair_ev hf (f := .boot a) (N0 := n) (fun k hk => by
         have := (hall k hk).2.2.2.2.2
         simp [fair, ha, this]) (fun k hk => by

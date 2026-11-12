@@ -733,7 +733,8 @@ function M.watchd_tick(c, comms, repo, opts)
       end
     end
   end
-  conflict.conflict_tick(c, t)
+  local okc, errc = pcall(conflict.conflict_tick, c, t)  -- a bad conflict pass never stops the tick
+  if not okc then io.stderr:write("conflict: ", tostring(errc), "\n") end
   if comms then  -- ending reports to the communicator; without one, nobody hears what it did
     M.lifecycle(c, t, comms, terms, opts or {})
     M.quiet(c, t, comms)
@@ -840,6 +841,17 @@ function M.machine_tick(c)
   end
 end
 
+-- Why `swarm end` without --force refuses live agent row a, or nil (model Decide.lean, endWhyL): lifecycle's checks
+-- (fate) but the 2 min idle and the terminal, whoever runs it. f: fate's reads (M.reads), each made only when needed.
+function M.end_why(a, f)
+  if a.status ~= "idle" then return "is " .. tostring(a.status) end
+  if nz(a.stay) then return "stays for: " .. a.stay end
+  if f.claims() then return "owns a claimed task" end
+  if f.locks() then return "holds a lock" end
+  if f.job() then return "has a background job running" end
+  if f.unlanded() then return "has work not on its base in " .. f.held end
+end
+
 -- `swarm end <agent> [--force]`: the communicator's manual agent GC. Same checks as lifecycle (idle, no claim, lock or
 -- stay, work landed on its bases); --force skips them. Kills the terminal only; the sweep removes worktrees.
 function M.cmd_end(c, a)
@@ -848,16 +860,7 @@ function M.cmd_end(c, a)
   local row = c:one("select * from agent where name=? and ended is null", a.agent)
   if not row then util.die(("%s is not a live agent"):format(a.agent)) end
   if not a.force then
-    local why
-    if row.status ~= "idle" then why = "is " .. tostring(row.status)
-    elseif nz(row.stay) then why = "stays for: " .. row.stay
-    elseif c:one("select 1 from task where owner=? and state in ('claimed','blocked')", a.agent) then why = "owns a claimed task"
-    elseif c:one("select 1 from lock where agent=?", a.agent) then why = "holds a lock"
-    elseif machine.bg_agents(c, machine.procs())[a.agent] then why = "has a background job running"
-    else
-      local held = M.unlanded(c, a.agent, M.main_wt(), conflict.wt_map(c), conflict.worktrees())
-      if held then why = "has work not on its base in " .. held end
-    end
+    local why = M.end_why(row, M.reads(c, M.main_wt(), conflict.wt_map(c), conflict.worktrees(), {}).f(a.agent))
     if why then util.die(("%s %s; `swarm end %s --force` ends it anyway."):format(a.agent, why, a.agent)) end
   end
   if not M.end_agent(c, row, a.force, me) then util.die(a.agent .. " changed state; try again") end
@@ -968,9 +971,11 @@ function M.cmd_watchd(c, a)
       if by and by.v == cur.v and run.pid_alive(cur.v:match("^%S+")) then
         util.die(("watchd (pid %s) was replaced by %s; exiting"):format(d(unistd.getpid()), cur.v))
       elseif not run.pid_alive(cur.v:match("^%S+")) then
-        if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
-          db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
-        end
+        c:tx(function()  -- the record and its event together: a reader that sees one sees both
+          if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
+            db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
+          end
+        end)
       end
     else
       M.watchd_tick(c, comms, repo, opts)

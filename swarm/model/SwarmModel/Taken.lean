@@ -540,7 +540,8 @@ theorem tick_ready {c : Cfg} {s : State} {a t : Nat} (hp : c.passedOver = true) 
   exact lifecycle_ready hp hwa ht (claimable_reap hs0) hz
 
 theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = false) (hp : c.passedOver = true) (hwa : c.waiterAlive = true) (hcl : a < s.cursor.length)
-    (hq : ∀ b, act ≠ .leave b ∧ act ≠ .die b ∧ act ≠ .waiterGone b ∧ act ≠ .reapGone b) (ht : t ∈ c.tasks)
+    (hq : ∀ b, act ≠ .leave b ∧ act ≠ .die b ∧ act ≠ .waiterGone b ∧ act ≠ .reapGone b
+      ∧ ∀ f, act ≠ .endOther b f) (ht : t ∈ c.tasks)
     (hs0 : claimable s t = true) (hR : Ready s a) (hs : step c s act = some s') : Ready s' a ∨ Exit s' a := by
   have hR' := hR
   obtain ⟨h1, h2, h3, h4, h5⟩ := hR
@@ -551,7 +552,8 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   case leave b => exact absurd rfl (hq b).1
   case die b => exact absurd rfl (hq b).2.1
   case waiterGone b => exact absurd rfl (hq b).2.2.1
-  case reapGone b => exact absurd rfl (hq b).2.2.2
+  case reapGone b => exact absurd rfl (hq b).2.2.2.1
+  case endOther b f => exact absurd rfl ((hq b).2.2.2.2 f)
   case tick => obtain ⟨hg, rfl⟩ := hs; exact Or.inl (tick_ready hp hwa ht hs0 hR')
   case unblock t₀ =>
     split at hs
@@ -820,6 +822,12 @@ theorem grow_step {c : Cfg} {s s' : State} {act : Action} (hl : s.ag.length ≤ 
     rw [endAgent_agt, agt_setAg] at h; split at h
     · simp [active] at h
     · split at h <;> simp_all [active]
+  case endOther a f =>
+    obtain ⟨_, rfl⟩ := hs
+    refine grow_nw (fun h => ?_) (by simp [State.cur])
+    rw [endAgent_agt, agt_setAg] at h; split at h
+    · simp [active] at h
+    · split at h <;> simp_all [active]
   all_goals (obtain ⟨hg, rfl⟩ := hs)
   all_goals (try split)
   all_goals refine grow_nw (fun h => ?_) ?_
@@ -865,6 +873,8 @@ theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act �
   case leave a =>
     obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
   case reapGone a =>
+    obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
+  case endOther a f =>
     obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
   all_goals (obtain ⟨hg, rfl⟩ := hs)
   all_goals (try split)
@@ -936,7 +946,8 @@ a slot is free: either it is taken, or the slot fills. Needs no agent to leave, 
 `hc ls` after the start, and the invariants of a reachable state (`hI`). -/
 theorem claimable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
     (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
-    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b)
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b
+      ∧ ∀ f, r.act k ≠ .endOther b f)
     (hI : ∀ m, n ≤ m → RInv c (r.st m)) :
     ∃ m, n ≤ m ∧ ¬ (claimable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
   refine Classical.byContradiction fun hne => ?_
@@ -1034,7 +1045,8 @@ theorem claimable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (
 a slot is free. `startable_leads_to` (Release.lean) proves the stop lifts. -/
 theorem startable_taken {c : Cfg} (hr : c.racy = false) (hw : c.watchd = true) (hp : c.passedOver = true)
     (hwa : c.waiterAlive = true) (hroster : c.roster ≤ c.nagents) {t : Nat} (ht : t ∈ c.tasks) (r : Run c) (hf : r.Fair) {n : Nat}
-    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b)
+    (hq : ∀ k, n ≤ k → ∀ b, r.act k ≠ .leave b ∧ r.act k ≠ .die b ∧ r.act k ≠ .waiterGone b ∧ r.act k ≠ .reapGone b
+      ∧ ∀ f, r.act k ≠ .endOther b f)
     (hI : ∀ m, n ≤ m → RInv c (r.st m)) (hlift : ∃ N, n ≤ N ∧ ∀ m, N ≤ m → stopped (r.st m) t = false) :
     ∃ m, n ≤ m ∧ ¬ (startable (r.st m) t = true ∧ slotFree c (r.st m) = true) := by
   obtain ⟨N, hN, hs⟩ := hlift
@@ -1144,6 +1156,7 @@ theorem i1_step {c : Cfg} {s s' : State} {act : Action} (hI : I1 c s) (hs : step
     · cases hs
   case leave a => obtain ⟨_, rfl⟩ := hs; exact i1_endAgent (i1_setAg' (fun hh => hI.2.2 a (by simpa using hh)) hI)
   case reapGone a => obtain ⟨_, rfl⟩ := hs; exact i1_endAgent (i1_setAg' (fun hh => hI.2.2 a (by simpa using hh)) hI)
+  case endOther a f => obtain ⟨_, rfl⟩ := hs; exact i1_endAgent (i1_setAg' (fun hh => hI.2.2 a (by simpa using hh)) hI)
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split
@@ -1227,6 +1240,7 @@ theorem d_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .die
     · cases hs
   case leave a => obtain ⟨_, rfl⟩ := hs; exact d_endAgent (d_setAg (fun hh => by simpa using hh) hI)
   case reapGone a => obtain ⟨_, rfl⟩ := hs; exact d_endAgent (d_setAg (fun hh => by simpa using hh) hI)
+  case endOther a f => obtain ⟨_, rfl⟩ := hs; exact d_endAgent (d_setAg (fun hh => by simpa using hh) hI)
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split

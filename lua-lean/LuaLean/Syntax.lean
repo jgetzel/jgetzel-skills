@@ -28,7 +28,8 @@ inductive Exp where
   | nil | tru | fls | vararg
   | num (n : Num)
   | str (s : List Char)
-  | func (params : List String) (va : Bool) (body : List Stat)
+  /-- `lines`: the lines of its `function` and its `end`, getinfo's linedefined and lastlinedefined -/
+  | func (params : List String) (va : Bool) (body : List Stat) (lines : Nat × Nat)
   | var (name : String)
   | index (t k : Exp)
   | call (f : Exp) (args : List Exp)
@@ -59,7 +60,7 @@ inductive Stat where
   | ite (c : Exp) (t e : List Stat)
   | fornum (v : String) (a b : Exp) (step : Option Exp) (body : List Stat)
   | forin (vs : List String) (es : List Exp) (body : List Stat)
-  | locfn (name : String) (params : List String) (va : Bool) (body : List Stat)
+  | locfn (name : String) (params : List String) (va : Bool) (body : List Stat) (lines : Nat × Nat)
   | ret (es : List Exp)
   | brk
   | goto (l : String)

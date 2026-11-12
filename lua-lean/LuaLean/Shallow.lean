@@ -25,7 +25,7 @@ structure Sem where
   tgt : Target
 
 /-- what calling a closure does, once its address has been read (`call`'s `.fn` clause) -/
-def callClo (I : Sem) (n : Nat) (a : Nat) (c : Clo) (args : List Val) : M (List Val) := frame do
+def callClo (I : Sem) (n : Nat) (a : Nat) (c : Clo) (args : List Val) : M (List Val) := frame <| cFrame (.fn a) do
   let cx ← bindLocals ⟨c.env, [], a, true⟩ c.params args
   let cx := { cx with va := if c.va then args.drop c.params.length else [] }
   match ← execBlock I.srcs I.oracle I.tgt n cx c.body with
@@ -42,7 +42,7 @@ theorem call_fn (I : Sem) (n a : Nat) (args : List Val) (h : Heap) (c : Clo) (ha
 
 theorem call_prim (I : Sem) (n : Nat) (name : String) (bound args : List Val) :
     call I.srcs I.oracle I.tgt (n + 1) (.prim name bound) args =
-      frame (callPrim I.srcs I.oracle I.tgt n name bound args) := by
+      frame (cFrame (.prim name bound) (callPrim I.srcs I.oracle I.tgt n name bound args)) := by
   rw [call]
 
 theorem call_eff (I : Sem) (n : Nat) (name : String) (args : List Val) :
@@ -82,7 +82,7 @@ theorem callPrim_time (I : Sem) (n : Nat) :
 theorem callPrim_debug (I : Sem) (n : Nat) (name : String) (args : List Val)
     (hn : name = "debug.getmetatable" ∨ name = "debug.setmetatable" ∨ name = "debug.getupvalue" ∨
       name = "debug.setupvalue" ∨ name = "debug.getinfo" ∨ name = "debug.traceback") :
-    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = debugFn name args := by
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = debugFn I.oracle name args := by
   rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
 
 /-- the bit library's functions -/
@@ -169,8 +169,8 @@ def eStr (s : List Char) : SE := fun n => tick n fun _ => pure (.str s)
 def eVa (va : List Val) : SE := fun n => tick n fun _ => pure (va.headD .nil)
 /-- a closure: its body is data, `env` the scope it closes over, and its environment that of `self`, the running
 function -/
-def eFunc (ps : List String) (va : Bool) (b : Block) (env : Env) (self : Nat) : SE :=
-  fun n => tick n fun _ => do pure (.fn (← alloc (.clo ⟨ps, va, b, env, ← fenvOf self⟩)))
+def eFunc (ps : List String) (va : Bool) (b : Block) (ln : Nat × Nat) (env : Env) (self : Nat) : SE :=
+  fun n => tick n fun _ => do pure (.fn (← newClo self ps va b env ln))
 /-- a local, by its cell -/
 def eCell (c : Nat) : SE := fun n => tick n fun _ => readCell c
 /-- a global: a field of the environment of `self`, the running function -/
@@ -345,11 +345,11 @@ def let1 {α} (k : Nat → List Val → M α) : List Val → M α := fun vs => d
   k c vs.tail
 def letEnd {α} (x : M α) : List Val → M α := fun _ => x
 /-- `local function name`: its cell is in scope in its body and in `k`, the rest -/
-def qLocalFn (name : String) (ps : List String) (va : Bool) (b : Block) (env : Env) (self : Nat) (k : Nat → SB) :
-    SB :=
+def qLocalFn (name : String) (ps : List String) (va : Bool) (b : Block) (ln : Nat × Nat) (env : Env) (self : Nat)
+    (k : Nat → SB) : SB :=
   fun n => tick n fun n => do
     let c ← alloc (.cell .nil)
-    let f ← alloc (.clo ⟨ps, va, b, (name, c) :: env, ← fenvOf self⟩)
+    let f ← newClo self ps va b ((name, c) :: env) ln
     writeCell c (.fn f)
     k c n
 /-- a goto out of a statement: to a label ending the block (`ends`) it ends the block, to another of the block's
@@ -365,8 +365,9 @@ def qStat (s : SB) (g : String → M Flow) (q : SB) : SB := fun n => tick n fun 
   | .goto l => g l
   | fl => pure fl
 
-/-- a function: `k args n` binds the parameters to `args` and runs the body at fuel `n` -/
-def fn (k : List Val → Nat → List Val → M Flow) : List Val → Nat → M (List Val) := fun args n => frame do
+/-- the function at `a`: `k args n` binds the parameters to `args` and runs the body at fuel `n` -/
+def fn (a : Nat) (k : List Val → Nat → List Val → M Flow) : List Val → Nat → M (List Val) := fun args n =>
+  frame <| cFrame (.fn a) do
   match ← k args n args with
   | .ret vs => pure vs
   | .norm => pure []
@@ -406,8 +407,8 @@ theorem CE_false {cx} : CE I eFalse cx .fls := by intro n; cases n <;> rw [eval]
 theorem CE_num {cx x} : CE I (eNum x) cx (.num x) := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_str {cx s} : CE I (eStr s) cx (.str s) := by intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_va {cx va} (h : va = cx.va) : CE I (eVa va) cx .vararg := by subst h; intro n; cases n <;> rw [eval] <;> rfl
-theorem CE_func {cx ps va b env self} (h : env = cx.env) (hs : self = cx.self) :
-    CE I (eFunc ps va b env self) cx (.func ps va b) := by
+theorem CE_func {cx ps va b ln env self} (h : env = cx.env) (hs : self = cx.self) :
+    CE I (eFunc ps va b ln env self) cx (.func ps va b ln) := by
   subst h hs; intro n; cases n <;> rw [eval] <;> rfl
 theorem CE_cell {cx x c} (h : cx.env.lookup x = some c) : CE I (eCell c) cx (.var x) := by
   intro n; cases n <;> rw [eval] <;> simp [eCell, tick, h]
@@ -574,9 +575,9 @@ theorem CBs_end {α cx K} {x : M α} (h : x = K cx) : CBs (letEnd x) cx [] K := 
 theorem CBs_let {α cx x xs K} {k : Nat → List Val → M α}
     (h : ∀ c, CBs (k c) { cx with env := (x, c) :: cx.env } xs K) : CBs (let1 k) cx (x :: xs) K := by
   intro vs; simp only [let1, bindLocals, bind_assoc, h]
-theorem CQ_localFn {cx full name ps va b rest fin k env self} (h : env = cx.env) (hs : self = cx.self)
+theorem CQ_localFn {cx full name ps va b ln rest fin k env self} (h : env = cx.env) (hs : self = cx.self)
     (hk : ∀ c, CQ I (k c) { cx with env := (name, c) :: cx.env } full rest fin) :
-    CQ I (qLocalFn name ps va b env self k) cx full (.locfn name ps va b :: rest) fin := by
+    CQ I (qLocalFn name ps va b ln env self k) cx full (.locfn name ps va b ln :: rest) fin := by
   subst h hs; intro n; cases n <;> rw [execSeq] <;> simp [qLocalFn, tick, hk]
 
 def isLabel (s : Stat) : Bool := match s with | .label _ => true | _ => false
@@ -695,9 +696,9 @@ theorem call_load (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ 
     (s : List Char) (cn : Option (List Char)) (b : Block) (h : Heap)
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b) :
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.str s :: cn.toList.map .str) h =
-      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], G⟩)) := by
+      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s)⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
-    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
+    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
       MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
 
 /-- `string.dump(f)`, or with a flag not a dump: f's dump, stripped as `dumpStrip` reads the flag -/
@@ -706,15 +707,16 @@ theorem call_dump (I : Sem) (n a : Nat) (rest : List Val) (hr : (rest.headD .nil
       pure [.dump a (dumpStrip (rest.headD .nil))] := by
   funext h; rw [call, callPrim] <;> try decide
   rw [basicFn] <;> try decide
-  cases rest <;> simp_all [dumpFn, noDump, frame, bind, EStateM.bind, pure, EStateM.pure]
+  cases rest <;> simp_all [dumpFn, noDump, frame, cFrame, onFrames, bind, EStateM.bind, pure, EStateM.pure]
 
 /-- `load(d)` or `loadstring(d)` of a dump, with a chunk name or none: `loadDump`, the dumped closure's function -/
 theorem call_load_dump (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ fname = "loadstring")
     (a : Nat) (s : Bool) (cn : Option (List Char)) :
-    call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.dump a s :: cn.toList.map .str) = frame (loadDump a s (shortSrc (cn.getD "=?".toList)) none) := by
+    call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.dump a s :: cn.toList.map .str) = frame (cFrame (.prim fname []) (loadDump a s (shortSrc (cn.getD "=?".toList)) none)) := by
   funext h
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
-    simp [call, callPrim, optStr, argStr, frame, bind, EStateM.bind, pure, EStateM.pure, Functor.map, EStateM.map]
+    simp [call, callPrim, optStr, argStr, frame, cFrame, onFrames, bind, EStateM.bind, pure, EStateM.pure, Functor.map,
+      EStateM.map]
 
 /-- `load(s, name, nil, t)` or `loadstring`'s, `name` a string or nil: the closure of `s`'s parse, its environment
 the table `t` -/
@@ -722,9 +724,9 @@ theorem call_load_env (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" 
     (s : List Char) (cn : Option (List Char)) (t : Nat) (b : Block) (h : Heap)
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b) :
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t] h =
-      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], t⟩)) := by
+      .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s)⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
-    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
+    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
       MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
 
 /-- a chunk's closure, made and called at once: `k a`, the function it is at its address `a` (a lifted `chunk`),
@@ -740,14 +742,15 @@ theorem alloc_call {β} (I : Sem) (n : Nat) (c : Clo) (args : List Val) (k : Nat
 
 /-- `dofile(p)` of a file given as source: its chunk, `k`, on no arguments, where a yield cannot cross -/
 theorem call_dofile (I : Sem) (n : Nat) (p : List Char) (b : Block) (k : Nat → List Val → Nat → M (List Val))
-    (h : Heap) (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩) (hs : I.srcs (String.ofList p) = some b) :
+    (h : Heap) (hk : ∀ a, CFn I (k a) a (fileClo (String.ofList p) b)) (hs : I.srcs (String.ofList p) = some b) :
     call I.srcs I.oracle I.tgt (n + 3) (.prim "dofile" []) [.str p] h =
-      frame (bounded 1 (do let a ← alloc (.clo ⟨[], true, b, [], G⟩); k a [] n)) h := by
-  have e : ∀ X Y : M (List Val), X h = Y h → frame X h = frame Y h := fun X Y e => by simp only [frame, e]
+      frame (cFrame (.prim "dofile" []) (bounded 1 (do let a ← alloc (.clo (fileClo (String.ofList p) b)); k a [] n))) h := by
+  have e : ∀ X Y : M (List Val), X h = Y h → frame (cFrame (.prim "dofile" []) X) h = frame (cFrame (.prim "dofile" []) Y) h :=
+    fun X Y e => by simp only [frame, cFrame, onFrames, e]
   rw [call, callPrim]; apply e
   have ho : optStr "dofile" 0 [.str p] = pure (some p) := rfl
   simp only [ho, pure_bind, hs]
-  have := alloc_call I n ⟨[], true, b, [], G⟩ [] k hk pure
+  have := alloc_call I n (fileClo (String.ofList p) b) [] k hk pure
   simp only [bind_pure] at this
   rw [this]
 
@@ -763,14 +766,15 @@ def S.requireK (m : List Char) (c : Clo) (k : Nat → List Val → Nat → M (Li
 /-- `require m`: not in package.loaded, not `table.new` or `table.clear`, the first file of package.path given as
 source is `b`, its chunk `k` -/
 theorem call_require (I : Sem) (n : Nat) (m p : List Char) (b : Block) (k : Nat → List Val → Nat → M (List Val))
-    (h : Heap) (v : Val) (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩)
+    (h : Heap) (v : Val) (f : String) (hk : ∀ a, CFn I (k a) a (fileClo f b))
     (hl : rawget LOADED (.str m) h = .ok v h) (hv : v.truthy = false)
     (hn : m ≠ "table.new".toList ∧ m ≠ "table.clear".toList)
     (hp : rawget PACKAGE (lstr "path") h = .ok (.str p) h)
-    (hf : (pathFiles p (modPath m)).findSome? I.srcs = some b) :
+    (hf : (pathFiles p (modPath m)).findSome? (fun f => (I.srcs f).map (f, ·)) = some (f, b)) :
     call I.srcs I.oracle I.tgt (n + 3) (.prim "require" []) [.str m] h =
-      frame (S.requireK m ⟨[], true, b, [], G⟩ k n) h := by
-  have e : ∀ X Y : M (List Val), X h = Y h → frame X h = frame Y h := fun X Y e => by simp only [frame, e]
+      frame (cFrame (.prim "require" []) (S.requireK m (fileClo f b) k n)) h := by
+  have e : ∀ X Y : M (List Val), X h = Y h → frame (cFrame (.prim "require" []) X) h = frame (cFrame (.prim "require" []) Y) h :=
+    fun X Y e => by simp only [frame, cFrame, onFrames, e]
   rw [call, callPrim]; apply e
   simp only [List.getD_cons_zero, argStr, pure_bind]
   rw [bind_ok hl]
@@ -779,7 +783,7 @@ theorem call_require (I : Sem) (n : Nat) (m p : List Char) (b : Block) (k : Nat 
   simp only [hv, Bool.false_eq_true, ↓reduceIte, h1]
   rw [bind_ok hp]
   simp only [hf, S.requireK]
-  have := alloc_call I n ⟨[], true, b, [], G⟩ [.str m] k hk pure
+  have := alloc_call I n (fileClo f b) [.str m] k hk pure
   simp only [bind_pure] at this
   rw [this]
 
@@ -789,7 +793,7 @@ theorem call_require (I : Sem) (n : Nat) (m p : List Char) (b : Block) (k : Nat 
 this one) and `resumeEnd`; LuaJIT's message if it cannot be resumed -/
 theorem call_resume (I : Sem) (n a : Nat) (args : List Val) :
     call I.srcs I.oracle I.tgt (n + 2) (.prim "coroutine.resume" []) (.thr a :: args) =
-      frame (do
+      frame (cFrame (.prim "coroutine.resume" []) do
         match ← resumeBegin a args with
         | .error m => pure [.bool false, lstr m]
         | .ok (prev, hist, f, a1) =>
@@ -800,7 +804,7 @@ theorem call_resume (I : Sem) (n a : Nat) (args : List Val) :
 
 /-- `coroutine.yield(...)` -/
 theorem call_yield (I : Sem) (n : Nat) (vs : List Val) :
-    call I.srcs I.oracle I.tgt (n + 2) (.prim "coroutine.yield" []) vs = frame (yieldFn vs) := by
+    call I.srcs I.oracle I.tgt (n + 2) (.prim "coroutine.yield" []) vs = frame (cFrame (.prim "coroutine.yield" []) (yieldFn vs)) := by
   funext h; rw [call, callPrim] <;> first | decide | (rw [basicFn] <;> first | decide | rfl)
 
 theorem readCell_ok {h : Heap} {c : Nat} {v : Val} (hc : h[c]? = some (.cell v)) : readCell c h = .ok v h := by
@@ -831,7 +835,7 @@ theorem yield_replay {h h1 : Heap} {a : Nat} {t t1 : Thr Heap} {vs ws : List Val
 theorem CFn_fn {a : Nat} {c : Clo} {k : List Val → Nat → List Val → M Flow}
     (hk : ∀ args n, CBs (k args n) ⟨c.env, [], a, true⟩ c.params (fun cx =>
       execBlock I.srcs I.oracle I.tgt n { cx with va := if c.va then args.drop c.params.length else [] } c.body)) :
-    CFn I (fn k) a c := by
+    CFn I (fn a k) a c := by
   intro args n; simp only [fn, callClo, hk, bind_assoc]
 
 end

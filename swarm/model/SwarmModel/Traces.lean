@@ -82,8 +82,12 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
       ++ ps.map fun q => ("expireLock", [p "p24" q], expireLock s q),
     (masks.map fun m => ("add", [d "d28" m], add s (depSet c m)))
       ++ (ts.flatMap fun t => masks.map fun m => ("after", [n "t29" t, d "d29" m], after c s t (depSet c m)))
-      ++ ts.flatMap fun t => [("unblock", [n "t30" t], unblock c s t), ("drop", [n "t31" t], drop s t),
-        ("releaseOther", [n "t32" t], releaseOther c s t)],
+      ++ (ts.flatMap fun t => [("unblock", [n "t30" t], unblock c s t), ("drop", [n "t31" t], drop s t),
+        ("releaseOther", [n "t32" t], releaseOther c s t)])
+      -- not `swarm end` without --force of a spawned agent: its recorded worktree is on the base of the task it was spawned
+      -- for, which the model doesn't keep, so once reap or a release takes that task the Lua finds it unlanded (README)
+      ++ ags.flatMap fun x => bs.map fun f =>
+        ("endOther", [a "a33" x, ("f33", toJson f)], if !f && (s.agt x).recorded then none else endOther c s x f),
     [("tick", [], tick c s)],
     -- the agents' git commands, and the world in a worktree
     (ags.flatMap fun x => c.wtIds.flatMap fun w =>
@@ -157,6 +161,7 @@ def boot (x : Nat) := ("boot", [ag "a19" x])
 def block (x t : Nat) := ("block", [ag "a6" x, ("t6", toJson t)])
 def readAll (x : Nat) := ("readAll", [ag "a12" x])
 def releaseOther (t : Nat) := ("releaseOther", [("t32", toJson t)])
+def endOther (x : Nat) (f : Bool) := ("endOther", [ag "a33" x, ("f33", toJson f)])
 def failExit : String × List (String × Json) := ("failExit", [])
 def failRaise : String × List (String × Json) := ("failRaise", [])
 def lapse : String × List (String × Json) := ("lapse", [])
@@ -177,7 +182,8 @@ failed launches of #1 in a row halt it; once #1 is claimed the next tick lifts t
 (H2, board #45): the communicator releases #1 from agent 0 at work, who is sent an urgent stop; no one may claim #1 until
 agent 0 reads it (board #53: before, agent 1 claimed it at once, finding `not_S1_humanRelease`); agent 0 reads it, agent 1
 claims #1, agent 0 claims #2, blocks on it, and the communicator releases
-the blocked #2. -/
+the blocked #2. `end-user` (H1, board #46): agent 1 claims #1 and works, agent 0 stops holding nothing; the communicator
+ends agent 0 (`swarm end`, its checks pass), then agent 1 with `--force` (#1 is open again), and the tick spawns for #1. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
@@ -191,7 +197,8 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("raise", [stop 0, age 0, tick, add, failRaise, lapse]),
   ("halt", [stop 0, age 0, tick, add, failExit, lapse, failExit, lapse, failExit, lapse, failExit, lapse, failExit,
     add, claim 1 1, tick]),
-  ("release", [add, add, claim 0 1, releaseOther 1, readAll 0, claim 1 1, claim 0 2, block 0 2, releaseOther 2, readAll 0])]
+  ("release", [add, add, claim 0 1, releaseOther 1, readAll 0, claim 1 1, claim 0 2, block 0 2, releaseOther 2, readAll 0]),
+  ("end-user", [add, claim 1 1, stop 0, endOther 0 false, endOther 1 true, tick, boot 0])]
 
 -- ---------- PrWatch.lean's layer (board #28) ----------
 namespace P

@@ -115,7 +115,7 @@ theorem lasso_run {c : Cfg} {p : State → Bool} {q : Action → Bool} {pre cyc 
 def calm (s : State) : Bool := s.ag.all fun g => !g.dead && !g.bg
 /-- none of the actions L1-L3 rule out after their start -/
 def quiet : Action → Bool
-  | .leave _ | .die _ | .waiterGone _ | .reapGone _ | .bgStart _ => false
+  | .leave _ | .die _ | .waiterGone _ | .reapGone _ | .endOther _ _ | .bgStart _ => false
   | _ => true
 
 /-- Task #1 is added; then agents 0 and 1 take turns: each claims it, its lease lapses, it releases it. Every fair action
@@ -130,7 +130,8 @@ example : lassoRun replay calm quiet preNV [.claim 0 1, .expire 1, .release 0 1]
 `idleClaim_leads_to`, `holder_leads_to`) at every step. -/
 theorem fair_run_exists : ∃ r : Run replay, r.Fair ∧ r.st 0 = init replay ∧ (∀ n, Reachable replay (r.st n)) ∧
     (∀ n b, ((r.st n).agt b).dead = false ∧ ((r.st n).agt b).bg = false) ∧
-    ∀ n b, r.act n ≠ .leave b ∧ r.act n ≠ .die b ∧ r.act n ≠ .waiterGone b ∧ r.act n ≠ .reapGone b ∧ r.act n ≠ .bgStart b := by
+    ∀ n b, r.act n ≠ .leave b ∧ r.act n ≠ .die b ∧ r.act n ≠ .waiterGone b ∧ r.act n ≠ .reapGone b ∧ r.act n ≠ .bgStart b ∧
+      ∀ f, r.act n ≠ .endOther b f := by
   obtain ⟨r, hf, h0, hp, hq⟩ := lasso_run replay_lasso
   refine ⟨r, hf, h0, fun n => forever (fun m => Reachable replay (r.st m)) 0 (h0 ▸ .init) (fun k _ ih => .step _ ih (r.ok k)) n
     (Nat.zero_le n), ?_, ?_⟩
@@ -142,13 +143,13 @@ theorem fair_run_exists : ∃ r : Run replay, r.Fair ∧ r.st 0 = init replay �
     · rw [agt_of_ge (by omega)]; exact ⟨rfl, rfl⟩
   · intro n b
     have := hq n
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> (intro e; rw [e] at this; simp [quiet] at this)
+    refine ⟨?_, ?_, ?_, ?_, ?_, fun f => ?_⟩ <;> (intro e; rw [e] at this; simp [quiet] at this)
 
 /-- L1 applies to it: the theorem's hypotheses are met, not assumed. -/
 example (t : Nat) (ht : t ∈ replay.tasks) : ∃ r : Run replay, r.Fair ∧
     ∃ m, ¬ (startable (r.st m) t = true ∧ slotFree replay (r.st m) = true) := by
   obtain ⟨r, hf, -, hR, hc, hq⟩ := fair_run_exists
   exact ⟨r, hf, (startable_leads_to (by decide) (by decide) (by decide) (by decide) (by decide) ht r hf (n := 0) (hR 0)
-    (fun b => (hc 0 b).1) (fun k _ b => ⟨(hq k b).1, (hq k b).2.1, (hq k b).2.2.1, (hq k b).2.2.2.1⟩)).imp fun m h => h.2⟩
+    (fun b => (hc 0 b).1) (fun k _ b => ⟨(hq k b).1, (hq k b).2.1, (hq k b).2.2.1, (hq k b).2.2.2.1, (hq k b).2.2.2.2.2⟩)).imp fun m h => h.2⟩
 
 end Swarm

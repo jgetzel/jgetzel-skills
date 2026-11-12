@@ -696,6 +696,9 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   case reapGone a =>
     obtain ⟨_, rfl⟩ := hstep
     exact J_endAgent (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
+  case endOther a f =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact J_endAgent (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
   case hcPrompt a =>
     obtain ⟨hg, rfl⟩ := hstep; simp [busy] at hg
     have hfc : (s.tk (firstClaimed c s a)).st ≠ .opn := by

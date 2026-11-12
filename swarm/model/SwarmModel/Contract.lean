@@ -8,6 +8,7 @@ import SwarmModel.Fair
 import SwarmModel.Gone
 import SwarmModel.Real
 import SwarmModel.Release
+import SwarmModel.End
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -118,6 +119,20 @@ theorem h2_released_reads {c : Cfg} (r : Run c) (hf : r.Fair) {n t : Nat} (hR : 
     ∃ o i, held ((r.st n).tk t) o = true ∧ ((r.st (n + 1)).msg i).kind = .released ∧ ((r.st (n + 1)).msg i).task = t ∧
       ∃ m, n + 1 ≤ m ∧ (active ((r.st m).agt o) = false ∨ ((r.st m).agt o).dead = true ∨ i ≤ (r.st m).cur o) :=
   released_reads r hf hR hact
+
+/-- H1: `swarm end A` by the user or the communicator without --force never ends an agent that holds work (a background
+job running, or work off its tasks' bases in a worktree it works in or owns): its check is lifecycle's but the 2 min.
+`--force` does (`not_N1end_force`). Switches: `allWts`, `ownAdded`, `perTaskBase`. Env: none. -/
+theorem h1_end_keeps_work {c : Cfg} (haw : c.allWts = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true)
+    {s s' : State} {a : Nat} (h : Reachable c s) (hs : step c s (.endOther a false) = some s') : holdsWork c s a = false :=
+  N1end_of haw hoa hp s s' a h hs
+
+/-- H1: `swarm end A` without --force changes nothing but A's row: A ended, no task, lock, message, cursor, git ref or
+other agent changed. Switches: none. Env: none. -/
+theorem h1_end_spec {c : Cfg} {s s' : State} {a : Nat} (hs : step c s (.endOther a false) = some s') :
+    endable c s a = true ∧ s'.task = s.task ∧ s'.lock = s.lock ∧ s'.log = s.log ∧ s'.cursor = s.cursor ∧ s'.git = s.git ∧
+      (a < s.ag.length → (s'.agt a).st = .ended) ∧ ∀ b, b ≠ a → s'.agt b = s.agt b :=
+  endOther_spec hs
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 
