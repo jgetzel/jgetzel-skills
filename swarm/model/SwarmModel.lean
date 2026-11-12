@@ -32,4 +32,5 @@ import SwarmModel.Release
 import SwarmModel.End
 import SwarmModel.Away
 import SwarmModel.Nudge
+import SwarmModel.Stay
 import SwarmModel.Contract

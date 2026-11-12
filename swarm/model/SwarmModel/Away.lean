@@ -171,6 +171,9 @@ theorem side_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = so
   case hcPrompt a =>
     obtain ⟨_, rfl⟩ := h
     exact ⟨Or.inl (by simp), Or.inl (by simp), [⟨.blocked, firstClaimed c s a, urgentNow c s, []⟩], by simp [tellC], by simp⟩
+  case stayHung a =>
+    obtain ⟨_, rfl⟩ := h
+    exact ⟨Or.inl (by simp), Or.inl (by simp), [⟨.hung, a, true, []⟩], by simp [tellC], by simp⟩
   case awayOn => obtain ⟨_, rfl⟩ := h; exact ⟨Or.inl rfl, Or.inr (Or.inl rfl), [_], rfl, by simp⟩
   case back =>
     obtain ⟨_, rfl⟩ := h

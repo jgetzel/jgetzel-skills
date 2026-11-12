@@ -11,6 +11,7 @@ import SwarmModel.Release
 import SwarmModel.End
 import SwarmModel.Away
 import SwarmModel.Nudge
+import SwarmModel.Stay
 
 /-! The contract (board #25): the theorems a proof about a program that uses the swarm should build on, each restated
 here over the model's types (`Cfg`, `State`, `Reachable`, `Run`; `Env.Tools`, `Env.Db`), so a change to one that
@@ -156,6 +157,18 @@ theorem n1'_nudge {t : Tools} (hs : HcSendTargets t) {c : Cfg} {s s' : State} {a
       (∀ h', t.termLive (t.hcSend w hT l) h' = t.termLive w h') ∧
       Git.durable (t.git (t.hcSend w hT l)) = Git.durable (t.git w) :=
   Tools.N1' hs h hl l
+
+/-- Stays (board #79): the tick keeps a live stayer's row (but for the pool ids a digest told it of), and `swarm end`
+without --force refuses it. Switches: none. Env: none. -/
+theorem stay_kept {c : Cfg} {s : State} {a : Nat} (hs : (s.agt a).stay = true) (hl : (s.agt a).live = true) :
+    { (tickOf c s).agt a with told := [] } = { s.agt a with told := [] } ∧ step c s (.endOther a false) = none :=
+  ⟨tick_keeps_stayer hs hl, endOther_stay hs⟩
+/-- Stays (board #79): `--back`'s digest lists a slot as hung exactly when its agent hung since away and did not end
+since. Switches: none. Env: none. -/
+theorem digest_hung' (c : Cfg) (s : State) (since a : Nat) :
+    a ∈ (digestOf c s since).hung ↔
+      a < c.nagents ∧ ∃ l1 l2, s.evs.drop since = l1 ++ .hung a :: l2 ∧ Ev.ended a ∉ l2 :=
+  digest_hung c s since a
 
 /-! ## The tools: what the Lua decides on their answers is what the model decides on its view -/
 

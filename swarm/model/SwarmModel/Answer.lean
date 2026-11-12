@@ -724,6 +724,11 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hstep; exact l3_post hs
   case nudge a => obtain ⟨_, rfl⟩ := hstep; exact l3_post (ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl))
+  case stay a on => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+  case endStay a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+  case stayCheck a => obtain ⟨_, rfl⟩ := hstep; exact l3_post (ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl))
+  case stayHung a =>
+    obtain ⟨_, rfl⟩ := hstep; exact ag_trivial (s := tellC (logEv s _) _) hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case readAll a => obtain ⟨_, rfl⟩ := hstep; exact l3_deliver hs
   case claimRead a t => simp [hr] at hstep
   case claimWrite a => simp [hr] at hstep

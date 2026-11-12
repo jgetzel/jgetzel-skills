@@ -186,7 +186,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     · simp at hs
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge, hnudge] at hs hn)
+    hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
