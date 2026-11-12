@@ -96,32 +96,78 @@ theorem callPrim_bit (I : Sem) (n : Nat) (name : String) (args : List Val) (hn :
 theorem callPrim_ffi (I : Sem) (n : Nat) (name : String) (args : List Val) (hn : name ∈ ffis.map ("ffi." ++ ·)) :
     callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = ffiFn name args := by
   simp only [ffis, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
-  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    rw [callPrim, basicFn] <;> simp
 
-/-- a cdata's arithmetic metamethods (`cdArith`) and its `__tostring` (`cdToString`) -/
+/-- a cdata's arithmetic metamethods and `__len` (`cdArith`), else its metatype's (carith_meta), else LuaJIT's
+error -/
 theorem callPrim_cdArith (I : Sem) (n : Nat) (name : String) (args : List Val)
     (hn : name ∈ ["ffi.__add", "ffi.__sub", "ffi.__mul", "ffi.__div", "ffi.__mod", "ffi.__pow", "ffi.__unm",
-      "ffi.__concat"]) :
-    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = cdArith name args := by
+      "ffi.__concat", "ffi.__len"]) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = (do
+      match ← cdArith name args with
+      | some vs => pure vs
+      | none => do
+        match ← opMeta2 (name.drop 4).toString (args.headD .nil) (args.getD 1 .nil) with
+        | .nil => cdArithErr name (args.headD .nil) (args.getD 1 .nil)
+        | h => unframe (call I.srcs I.oracle I.tgt n h args)) := by
   simp only [List.mem_cons, List.not_mem_nil, or_false] at hn
-  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim] <;> rfl
 
+/-- a cdata's `__tostring`: its metatype's, else `cdToString` -/
 theorem callPrim_cdToString (I : Sem) (n : Nat) (args : List Val) :
-    callPrim I.srcs I.oracle I.tgt (n + 1) "ffi.__tostring" [] args = cdToString args := by
-  rw [callPrim, basicFn] <;> simp <;> decide
+    callPrim I.srcs I.oracle I.tgt (n + 1) "ffi.__tostring" [] args = (do
+      let h ← tsMeta (args.headD .nil)
+      if h.isNil then cdToString args else unframe (call I.srcs I.oracle I.tgt n h [args.headD .nil])) := by
+  rw [callPrim]
 
-/-- a cdata's call: a ctype's, its ffi.new -/
+/-- `ffi.errno`: the world's errno, set to the argument if any -/
+theorem callPrim_errno (I : Sem) (n : Nat) (args : List Val) :
+    callPrim I.srcs I.oracle I.tgt (n + 1) "ffi.errno" [] args = (do
+      let a ← if args.isEmpty then pure [] else do pure [.num (.int (← intArg args 1))]
+      match ← effect I.oracle "ffi.errno" a with
+      | [.num (.int e)] =>
+        if -2 ^ 31 ≤ e && e < 2 ^ 31 then return [nums e] else throw (.eff "ffi.errno: an answer out of its form" [])
+      | _ => throw (.eff "ffi.errno: an answer out of its form" [])) := by
+  rw [callPrim, basicFn] <;> first | rfl | simp
+
+/-- a cdata's call: its metatype's `__new` or `__call`, else a ctype's ffi.new, a C function's call -/
 theorem call_cdata (I : Sem) (n a : Nat) (args : List Val) :
-    call I.srcs I.oracle I.tgt (n + 1) (.cdata a) args = frame (ctypeCall a args) := by
-  rw [call]
+    call I.srcs I.oracle I.tgt (n + 1) (.cdata a) args = (do
+      match ← cdCallee a with
+      | .nil => frame (ctypeCall I.oracle a args)
+      | h => call I.srcs I.oracle I.tgt n h (.cdata a :: args)) := by
+  rw [call]; rfl
 
-/-- a cdata's element or field, and a write of one (lj_cdata_index, lj_cdata_set) -/
+/-- a cdata's element or field, and a write of one (lj_cdata_index, lj_cdata_set); a key it has not, its
+metatype's `__index` or `__newindex` -/
 theorem index_cdata (I : Sem) (n a : Nat) (k : Val) :
-    index I.srcs I.oracle I.tgt (n + 1) (.cdata a) k = cdIndex a k := by
-  rw [index]
+    index I.srcs I.oracle I.tgt (n + 1) (.cdata a) k = (do
+      match ← cdIndex a k with
+      | .inl v => pure v
+      | .inr (t, _) => cdMetaIndex I.srcs I.oracle I.tgt n t (.cdata a) k) := by
+  rw [index]; rfl
 
 theorem setindex_cdata (I : Sem) (n a : Nat) (k v : Val) :
-    setindex I.srcs I.oracle I.tgt (n + 1) (.cdata a) k v = cdSet a k v := by
+    setindex I.srcs I.oracle I.tgt (n + 1) (.cdata a) k v = (do
+      match ← cdSet a k v with
+      | none => pure ()
+      | some (t, q) =>
+        if q then rtErr "attempt to write to constant location"
+        match ← ctMeta t "__newindex" with
+        | .nil => idxErr t k
+        | h@(.fn _) | h@(.prim ..) => do
+          let _ ← mmName "__newindex" (call I.srcs I.oracle I.tgt n h [.cdata a, k, v])
+        | h => setindex I.srcs I.oracle I.tgt n h k v) := by
+  rw [setindex]; rfl
+
+/-- `ffi.C.k`: a constant or a C function, and a write of one -/
+theorem index_clib (I : Sem) (n : Nat) (k : Val) :
+    index I.srcs I.oracle I.tgt (n + 1) (.eff "ffi.C") k = clibIndex k := by
+  rw [index]
+
+theorem setindex_clib (I : Sem) (n : Nat) (k v : Val) :
+    setindex I.srcs I.oracle I.tgt (n + 1) (.eff "ffi.C") k v = clibSet k := by
   rw [setindex]
 
 /-- an assignment target as the shallow code writes it: given the fuel of the assignment, a value to write -/

@@ -855,6 +855,88 @@ return {commas ops}"
     "\"4LL\",\"c:1: attempt to get length of 'int64_t [2]'\",\"c:1: attempt to concatenate 'int64_t' and 'string'\"," ++
     "true,\"cannot convert 'table' to 'const int64_t'\""
 
+/-- the FFI's metatypes, enums, its other functions and C calls (#59): a struct's metatype with some of `__index`
+(a table, a function), `__newindex`, the arithmetic metamethods, `__eq`, `__lt`, `__le`, `__len`, `__concat`,
+`__call`, `__tostring` and a constructor's `__new`, each used on a cdata of the type, a pointer to one and the
+ctype; an enum's constants (`ffi.C`'s, by name into the type) and fields; ffi.istype, offsetof, alignof, gc; and
+the C library's `abs`, `strlen`, `toupper` and `memset` (the test's world, `Run.caseFx`, answers them as glibc
+does), with their errors. Tags and constants are fresh per chunk, as in `ffiOps` -/
+def mtOps : G String := do
+  let id ← rnd 999999999
+  let sm := s!"m{id}"
+  let sn := s!"n{id}"
+  let en := s!"e{id}"
+  let k ← pick ["1", "5", "-2", "0x10", "1 << 3", "3 * 2 + 1", "-(4)", "~1"]
+  let has (_ : String) : G Bool := chance 2
+  let mms ← [("__index", ← pick ["{k = 7, len = function(s) return s.x + s.y end}", "function(c, k) return k end",
+      "setmetatable({}, {__index = function(t, k) return k .. '?' end})", "{len = function(s) return s.x end}"]),
+    ("__newindex", ← pick ["function(c, k, v) log[k] = v end", "log"]),
+    ("__add", "function(a, b) return 'add' end"), ("__sub", "function(a, b) return type(a) .. type(b) end"),
+    ("__mul", "function(a, b) return 2 end"), ("__eq", ← pick ["function(a, b) return true end", "function(a, b) return false end", "function(a, b) return 1 end"]),
+    ("__lt", "function(a, b) return true end"), ("__le", "function(a, b) return nil end"),
+    ("__len", "function(a, b) return 42 end"), ("__concat", "function(a, b) return 'cc' end"),
+    ("__unm", "function(a) return 'neg' end"), ("__call", "function(self, z) return z end"),
+    ("__tostring", "function(s) return 'P' .. s.x end"),
+    ("__new", "function(ct, x) return ffi.new(ct, x or 9, 0.5) end")].filterM fun (n, _) => has n
+  let mt := "{" ++ commas (mms.map fun (n, v) => s!"{n} = {v}") ++ "}"
+  let hasM (n : String) : Bool := mms.any (·.1 == n)
+  let v : G String := pick ["0", "1", "-7", "2.9", "-2.5", "true", "nil", "\"x\"", "{}", "p", "q", "300", "65"]
+  let key : G String := pick ["x", "y", "k", "len", "nope", "c"]
+  let tsp : List String := if hasM "__tostring" then ["tostring(p)", "tostring(pp)"] else []
+  let op : G String := do
+    match ← rnd 12 with
+    | 0 => pure s!"return p.x, p.y, p.{← key}, pp.{← key}, P.{← key}, p:len()"
+    | 1 => pure s!"p.{← key} = {← v} pp.{← key} = {← v} return p.x, p.y, log.{← key}, rawget(log, \"nope\")"
+    | 2 => pure s!"return {← pick ["p + 1", "1 + p", "p - q", "q - p", "p * 2", "q + 1", "pp + 0", "p + pp", "-p", "-q", "#p", "#q", "#pp"]}"
+    | 3 => pure s!"return p == p, p == P(3, 1.5), p == {← v}, {← v} == p, pp == p, p ~= q, q == q, q == nil, pp == nil"
+    | 4 => pure s!"return {← pick ["p < p", "p <= pp", "q < q", "p < 1", "1 <= p", "pp < pp", "p > q"]}"
+    | 5 => pure s!"return {← pick (["p .. \"s\"", "\"s\" .. p", "q .. 1", "tostring(P)", "tostring(ffi.typeof(\"struct " ++ sn ++ " *\"))"] ++ tsp)}"
+    | 6 => pure s!"return {← pick ["p(1)", "pp(2)", "P(4).x", "P().x", "P(2, 3).y", "q()", "Q(5).v"]}"
+    | 7 => pure s!"return ffi.istype({← pick ["P", "Q", "\"struct " ++ sm ++ "\"", "\"struct " ++ sm ++ " *\"", "\"int\"", "\"int[2]\"", "\"const int *\""]}, {← pick ["p", "pp", "q", "1", "nil", "ffi.new(\"int\")", "ffi.new(\"int[2]\")", "ffi.new(\"int *\")", "ffi.new(\"uint32_t[2]\")", "P", "\"x\""]}), ffi.offsetof({← pick ["P", "Q", "p", "\"int\"", "\"struct " ++ sn ++ "\""]}, {← pick ["\"x\"", "\"y\"", "\"v\"", "\"c\"", "\"z\"", "1"]}), ffi.alignof({← pick ["P", "q", "\"char\"", "\"double[3]\"", "\"enum " ++ en ++ "\"", "\"int16_t[?]\"", "\"void\""]})"
+    | 8 => pure s!"return ffi.gc(p, nil) == p, ffi.gc(q, function() end) == q, {← pick ["ffi.gc(1, nil)", "ffi.gc(p)", "ffi.gc()", "ffi.gc(ffi.new(\"int\"), nil)", "ffi.gc(pp, nil) == pp", "ffi.metatype(P, {})", "ffi.metatype(\"int\", {})", "ffi.metatype(Q, 1)", "ffi.metatype(\"struct " ++ sn ++ " *\", {})", "ffi.istype(P)", "ffi.offsetof(P)"]}"
+    | 9 => pure s!"local w = ffi.new(\"struct w{id}\", {← pick ["{\"C" ++ toString id ++ "\", 2}", "{1}", "{}", "{k = \"B" ++ toString id ++ "\"}", "{\"Z\"}", "{2.5}"]}) return C.A{id}, C.B{id}, C.C{id}, tonumber(w.k), w.z, tonumber(ffi.new(\"enum {en}\", {← pick ["\"A" ++ toString id ++ "\"", "\"C" ++ toString id ++ "\"", "\"nope\"", "3", "-1", "nil"]})), ffi.sizeof(\"enum {en}\"), tostring(w.k), type(w.k)"
+    | 10 => pure s!"local b = ffi.new(\"uint8_t[8]\", 97, 98) C.memset(b + {← pick ["0", "1", "4"]}, {← pick ["65", "0", "300", "-1", "66.5"]}, {← pick ["0", "1", "3", "4"]}) return ffi.string(b, 8), C.abs({← v}), tonumber(C.strlen({← pick ["\"hello\"", "\"\"", "b", "b + 1", "\"a\\0b\""]})), C.toupper({← pick ["97", "65", "122", "48", "200", "\"x\""]})"
+    | _ => do
+      let w ← pick ["", "C.abs = 1 ", "C.A" ++ toString id ++ " = 2 "]
+      pure (w ++ s!"return {← pick ["C.nosuch" ++ toString id, "C[1]", "C.abs", "C.abs == C.abs", "C.abs == C.toupper", "C.abs == nil", "type(C.abs)", "C.abs()", "C.abs(1, 2)", "C.abs({})", "C.memset(nil, 0, 0)", "C.toupper(true)", "type(C)", "rawequal(C, ffi.C)"]}")
+  let ops ← (List.range 4).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
+  return s!"local ffi = require(\"ffi\")
+ffi.cdef[[struct {sm} \{ int32_t x; double y; }; struct {sn} \{ int32_t v; uint8_t c[2]; };
+enum {en} \{ A{id}, B{id} = {k}, C{id} }; struct w{id} \{ enum {en} k; int16_t z; };
+int abs(int); size_t strlen(const char *); void *memset(void *s, int c, size_t n); int toupper(int);]]
+local C = ffi.C
+log = \{}
+local P = ffi.metatype(\"struct {sm}\", {mt})
+local Q = ffi.typeof(\"struct {sn}\")
+local p = P(3, 1.5)
+local q = Q(\{2, \{1, 2}})
+local pp = ffi.new(\"struct {sm} *\", p)
+return {commas ops}"
+
+-- the values of LuaJIT 2.1 on x64: a metatype's __index (a table, a method, a miss), __newindex, __add from either
+-- side, __eq on a struct and nil, __len, tostring, __call and __new, the address `==` and LuaJIT's errors without
+-- one; an enum's constants and its boxed field; istype, offsetof, alignof, gc; a C call's arguments and errors
+#guard runCase (fun _ => none) .single []
+    ("local ffi = require('ffi') ffi.cdef[[struct pt { int x; double y; }; struct pq { int v; }; " ++
+      "enum c { R, G = 4, B }; struct w { enum c k; }; int abs(int); size_t strlen(const char *); " ++
+      "void *memset(void *s, int c, size_t n);]] local C = ffi.C local P = ffi.metatype('struct pt', " ++
+      "{__index = {k = 7, len = function(s) return s.x + s.y end}, __add = function(a, b) return 'add' end, " ++
+      "__eq = function() return true end, __len = function() return 42 end, __tostring = function(s) return " ++
+      "'P' .. s.x end, __call = function(s, z) return z end, __new = function(ct, x) return ffi.new(ct, x, 0.5) " ++
+      "end}) local p = P(3) local pp = ffi.new('struct pt *', p) local q = ffi.new('struct pq') local w = " ++
+      "ffi.new('struct w', {'B'}) local b = ffi.new('uint8_t[4]') C.memset(b + 1, 65, 2) return p:len(), " ++
+      "pp.k, 1 + p, p == nil, #p, tostring(pp), p(8), P.k, q == q, select(2, pcall(function() return p.z end)), " ++
+      "select(2, pcall(function() return q < q end)), select(2, pcall(function() return #q end)), C.G, " ++
+      "tonumber(w.k), tostring(w.k), ffi.istype(P, pp), ffi.istype('int', 1), ffi.offsetof(P, 'y'), " ++
+      "ffi.alignof('enum c'), ffi.gc(q, nil) == q, select(2, pcall(ffi.metatype, P, {})), ffi.string(b, 4), " ++
+      "C.abs(-5), tonumber(C.strlen('abc')), select(2, pcall(C.abs)), select(2, pcall(C.abs, 'x')), " ++
+      "select(2, pcall(function() return C.nope end)), select(2, pcall(function() return q() end))").toList ==
+  "ok:3.5,7,\"add\",true,42,\"P3\",8,7,true,\"c:1: 'struct pt' has no member named 'z'\"," ++
+    "\"c:1: attempt to compare 'struct pq' with 'struct pq'\",\"c:1: attempt to get length of 'struct pq'\",4,5," ++
+    "\"cdata<enum c>: 5\",true,false,8,4,true,\"cannot change a protected metatable\",\"\\000AA\\000\",5,3," ++
+    "\"wrong number of arguments for function call\",\"bad argument #1 to '?' (cannot convert 'string' to " ++
+    "'int')\",\"c:1: missing declaration for symbol 'nope'\",\"'struct pq' is not callable\""
+
 -- ---------- the world: print, io.write, os ----------
 
 /-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
@@ -1266,8 +1348,8 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => match ← rnd 6 with
-    | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | 4 => ffiOps | 5 => i64Ops | _ => ptrOps
+  | 10 => match ← rnd 7 with
+    | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | 4 => ffiOps | 5 => i64Ops | 6 => ptrOps | _ => mtOps
   | 11 => traverse
   | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros

@@ -112,6 +112,10 @@ inductive Obj where
   | cstr (s : List Char)
   /-- a ctype object (`ffi.typeof`'s) -/
   | ctype (ct : CType)
+  /-- a C function of type `ct` (`ffi.C`'s symbol `name`): a call of it is the world's -/
+  | cfun (name : String) (ct : CType)
+  /-- C's memory at an address a C function returned, which the semantics does not see -/
+  | cmem (addr : Nat)
   /-- what `ffi.cdef` declared: the cell `CDECLS` -/
   | cdecls (d : CDecls)
   /-- the cell `STK`: the call stack at each stack query of the run so far, oldest first, and how many of them this
@@ -573,6 +577,12 @@ def trace (h : Heap) : List Event :=
   | some (.log l) => l
   | _ => []
 
+/-- a call into the world: the oracle answers it after the trace so far, and it joins the trace -/
+def effect (oracle : Oracle) (name : String) (args : List Val) : M (List Val) := fun h =>
+  match oracle name args (trace h) with
+  | some vs => .ok vs (h.set! LOG (.log (⟨name, args, vs⟩ :: trace h)))
+  | none => .error (.eff name args) h
+
 /-- the environment of closure `a` -/
 def fenvOf (a : Nat) : M Nat := do
   match ← getObj a with
@@ -591,13 +601,14 @@ def bindLocals (cx : Ctx) : List String → List Val → M Ctx
     let c ← alloc (.cell (vs.headD .nil))
     bindLocals { cx with env := (x, c) :: cx.env } xs vs.tail
 
-/-- the FFI's arithmetic metamethods and `__tostring`, every cdata's: builtins `ffi.__add`, … (`cdArith`),
-`ffi.__tostring` (`cdToString`) -/
-def cdAriths : List String := ["__add", "__sub", "__mul", "__div", "__mod", "__pow", "__unm", "__concat", "__tostring"]
+/-- the FFI's arithmetic metamethods, `__len` and `__tostring`, every cdata's: builtins `ffi.__add`, … (`cdArith`,
+`cdToString`) -/
+def cdAriths : List String :=
+  ["__add", "__sub", "__mul", "__div", "__mod", "__pow", "__unm", "__concat", "__len", "__tostring"]
 
 /-- v's metamethod `ev`, read from its metatable when the operation runs (lj_meta_lookup); only tables have one here,
 but strings, whose metatable has `__index` alone (`index`), and cdata, whose are the FFI's (`cdIndex`, `cdSet`,
-`cdEq`, `cdLess`, a ctype's call, `cdAriths`): any other of theirs stops the run -/
+`cdEq`, `cdLess`, a ctype's call, `cdAriths`), each falling back to a metatype's (`ffi.metatype`) -/
 def metaOf (v : Val) (ev : String) : M Val := do
   match v with
   | .tbl a => match (← getTbl a).mt with
@@ -1068,6 +1079,23 @@ int64's range into an integer, a pointer out of its allocation) or another task'
 allocation (a cdata's bytes, or a Lua string's) and an offset in it, or NULL (#57); a 64-bit integer, LuaJIT's boxed
 one, a cdata of its own (#58). -/
 
+def cdeclsOf : M CDecls := do
+  match ← getObj CDECLS with
+  | .cdecls d => pure d
+  | _ => die "no C declarations"
+
+/-- what a pointer type points to, any other type itself (lj_ctype_meta's lookup of a pointer's metatype) -/
+def pointee (t : CType) : CType := match t.strip.1 with
+  | .ptr e => e
+  | t => t
+
+/-- the metamethod `ev` of type t's metatype (lj_ctype_meta: its metatable, `ffi.metatype`'s, read raw); nil when t
+has none -/
+def ctMeta (t : CType) (ev : String) : M Val := do
+  match (← cdeclsOf).metas.lookup t.strip.1 with
+  | some mt => wget mt (lstr ev)
+  | none => pure .nil
+
 /-- LuaJIT's name for a type, where it is the same on every ABI (`CType.repr`) -/
 def ctName (t : CType) : M String := match t.repr with
   | some s => pure s
@@ -1080,6 +1108,7 @@ def getBytes (m : Nat) : M ByteArray := do
   match ← getObj m with
   | .bytes b => pure b
   | .cstr s => pure ⟨(s ++ ['\x00']).toArray.map (·.toNat.toUInt8)⟩
+  | .cmem _ => ffiStop "C's memory (a pointer a C function returned)"
   | _ => die "not a cdata's bytes"
 
 def readMem (m off len : Nat) : M (List UInt8) := do
@@ -1130,7 +1159,7 @@ def i64Bits (u : Bool) : CNum → M Nat
 /-- x's bytes as the scalar type t holds it (lj_cconv_ct_ct to t); a NaN stored stops the run: its bits are the
 CPU's, which the semantics's numbers do not keep -/
 def encode (t : CType) (x : CNum) : M (List UInt8) := do
-  match t, x with
+  match t.intOf, x with
   | .bool, .i v => pure [if v != 0 then 1 else 0]
   | .bool, .f d => pure [if d != 0 then 1 else 0]
   | .ch, .i v => pure (leBytes v 1)
@@ -1152,7 +1181,7 @@ def encode (t : CType) (x : CNum) : M (List UInt8) := do
 not canonicalize -/
 def decode (t : CType) (bs : List UInt8) : M CNum := do
   let n := leNat bs
-  match t with
+  match t.intOf with
   | .bool => pure (.i (if n != 0 then 1 else 0))
   | .ch => if n < 128 then pure (.i n) else ffiStop "a char past 127 (its sign is the ABI's)"
   | .int s sg => pure (.i (if sg && n ≥ 2 ^ (8 * s - 1) then n - 2 ^ (8 * s) else n))
@@ -1169,6 +1198,7 @@ def getCd (a : Nat) : M (CType × Nat × Nat × Bool) := do
   match ← getObj a with
   | .cdata ct m off r => pure (ct, m, off, r)
   | .ctype _ => ffiStop "a ctype as a value (its id)"
+  | .cfun .. => ffiStop "a C function as a value (its address)"
   | _ => die "not a cdata"
 
 /-- where a conversion's error goes: the index's site (a cdata's __newindex), the caller of an ffi function, or its
@@ -1199,6 +1229,7 @@ def srcName (v : Val) : M String := do
   | .cdata a => match ← getObj a with
     | .cdata ct .. | .cptr ct _ => cdName ct
     | .ctype _ => ffiStop "a ctype as a value (its id)"
+    | .cfun .. => ffiStop "a C function's type's name"
     | _ => die "not a cdata"
   | .eff _ => ffiStop "a handle into C"
   | v => pure v.typeName
@@ -1211,22 +1242,29 @@ def srcNum (e : CErr) (d : CType) (v : Val) (cast : Bool) : M CNum := do
   | .num (.int i) => pure (.i i)
   | .num (.flt x) => pure (.f x)
   | .bool b => pure (.i (if b then 1 else 0))
-  | .nil => if cast then pure (.i 0) else convErr e "nil" d
-  | .str _ | .dump .. => if cast then ffiStop "an address (a string's)" else convErr e "string" d
+  | .nil => if cast then pure (.i 0) else convErr e "nil" d.intOf
+  -- an enum names its integer in an error, but where a string is not one of its constants (lj_cconv_ct_tv)
+  | .str s => if cast then ffiStop "an address (a string's)" else match d with
+    -- an enum's constant by its name (lj_cconv_ct_tv)
+    | .enum _ cs _ => match cs.lookup (String.ofList s) with
+      | some v => pure (.i v)
+      | none => convErr e "string" d
+    | _ => convErr e "string" d
+  | .dump .. => if cast then ffiStop "an address (a string's)" else convErr e "string" d
   | .cdata a => do
     if let .cptr ct p ← getObj a then
       -- CCX(I, P): a cast to an integer takes the address
       if cast then if p.isNone then return .i 0 else ffiStop "an address (a pointer's)"
-      convErr e (← cdName ct) d
+      convErr e (← cdName ct) d.intOf
     let (ct, m, off, _) ← getCd a
     let s := ct.strip.1
     if s.isScalar then decode s (← readMem m off (s.size.getD 0))
     else match s with
-      | .arr .. => if cast then ffiStop "an address (an array's)" else convErr e (← ctName s) d
-      | .agg .. => convErr e (← ctName s) d
+      | .arr .. => if cast then ffiStop "an address (an array's)" else convErr e (← ctName s) d.intOf
+      | .agg .. => convErr e (← ctName s) d.intOf
       | _ => ffiStop "a pointer"
   | .eff _ => ffiStop "a handle into C"
-  | v => convErr e v.typeName d
+  | v => convErr e v.typeName d.intOf
 
 /-- an initializer's overflow -/
 def initOv {α} (e : CErr) (d : CType) : M α := do e.raise s!"too many initializers for '{← ctName d}'"
@@ -1258,6 +1296,8 @@ def sameMem (m m' : Nat) : M Bool := do
   if m == m' then return true
   match ← getObj m, ← getObj m' with
   | .cstr s, .cstr s' => pure (s == s')
+  | .cmem a, .cmem b => pure (a == b)
+  | .cmem _, _ | _, .cmem _ => ffiStop "C's address and the semantics' compared"
   | _, _ => pure false
 
 def addrEq : Option (Nat × Nat) → Option (Nat × Nat) → M Bool
@@ -1295,6 +1335,7 @@ def toPtr (e : CErr) (d : CType) (v : Val) (cast : Bool) (dn : Option String := 
           | _ => ffiStop "an address from a number"
         bad (← cdName ct)
     | .ctype _ => ffiStop "a ctype as a value (its id)"
+    | .cfun .. => ffiStop "a C function's address"
     | _ => die "not a cdata"
   | .eff _ => ffiStop "a handle into C"
   | .fn _ | .prim .. => ffiStop "a function as a C pointer (a callback)"
@@ -1427,19 +1468,35 @@ def box (t : CType) (bs : List UInt8) : M Val := do
   let m ← alloc (.bytes ⟨bs.toArray⟩)
   pure (.cdata (← alloc (.cdata t m 0 false)))
 
+/-- a new cdata of type ct, zeroed, of `sz` bytes -/
+def cdNew (ct : CType) (sz : Nat) : M (Nat × Nat) := do
+  if sz > CDMAX then ffiStop "an allocation past the semantics' bound"
+  let m ← alloc (.bytes (ByteArray.mk (Array.replicate sz 0)))
+  pure (← alloc (.cdata ct m 0 false), m)
+
 /-- a scalar's Lua value (lj_cconv_tv_ct): an integer of up to 4 bytes or a float a number, a bool a boolean; an
-8-byte integer a new cdata of its type (its qualifier kept), LuaJIT's boxed one -/
+8-byte integer's or an enum's a new cdata of its type (its qualifier kept), LuaJIT's boxed one (copyval) -/
 def toLua (t : CType) (bs : List UInt8) : M Val := do
   match t.strip.1 with
   | .int 8 _ => box t bs
+  | .enum .. => box t bs
   | .bool => match ← decode .bool bs with | .i v => pure (.bool (v != 0)) | _ => die "bool"
   | t => match ← decode t bs with
     | .i v => pure (.num (Num.ofInt v))
     | .f x => pure (.num (.flt x))
 
+/-- a key a cdata of type t has not, with no metatype's `__index` or `__newindex` to take it (ffi_index_meta):
+LuaJIT's error at the index's site -/
+def idxErr {α} (t : CType) (k : Val) : M α := do
+  match k with
+  | .str s => rtErr s!"'{← cdName t}' has no member named '{String.ofList s}'"
+  | .cdata _ => ffiStop "a cdata key"
+  | .dump .. => dumpBytes
+  | k => rtErr s!"'{← cdName t}' cannot be indexed with '{k.typeName}'"
+
 /-- the element or field `k` of a cdata of type t at off of m: its type (`const` when t is) and offset
-(lj_cdata_index); a key it has not is LuaJIT's error at the index's site -/
-def cdLookup (t : CType) (q : Bool) (m off : Nat) (k : Val) : M (CType × Nat) := do
+(lj_cdata_index); a key it has not, `.inr` its type and whether it is `const` (for its metatype, or LuaJIT's error) -/
+def cdLookup (t : CType) (q : Bool) (m off : Nat) (k : Val) : M ((CType × Nat) ⊕ (CType × Bool)) := do
   match t, k with
   | .arr et n, .num x =>
     let i ← match x with | .int i => pure i | .flt d => numToInt d
@@ -1448,20 +1505,20 @@ def cdLookup (t : CType) (q : Bool) (m off : Nat) (k : Val) : M (CType × Nat) :
       | some n => pure n
       | none => do let b ← getBytes m; pure (if esz == 0 then 0 else b.size / esz)
     if i < 0 || i ≥ n then ffiStop "an index out of bounds"
-    pure (et.qual q, off + i.toNat * esz)
+    pure (.inl (et.qual q, off + i.toNat * esz))
   | .agg u _ fs, .str s => match (CType.offsets u fs).find? (·.1 == String.ofList s) with
-    | some (_, o, ft) => pure (ft.qual q, off + o)
-    | none => rtErr s!"'{← ctName t}' has no member named '{String.ofList s}'"
+    | some (_, o, ft) => pure (.inl (ft.qual q, off + o))
+    | none => pure (.inr (t, q))
   | .ptr _, _ => ffiStop "a pointer"
-  | _, .str s => rtErr s!"'{← ctName t}' has no member named '{String.ofList s}'"
   | _, .cdata _ => ffiStop "a cdata key"
   | _, .dump .. => dumpBytes
-  | _, k => rtErr s!"'{← ctName t}' cannot be indexed with '{k.typeName}'"
+  | _, _ => pure (.inr (t, q))
 
 /-- the element or field `k` through a pointer of type ct to p (lj_cdata_index): `p[i]` the element i places on, its
 type the pointer's element type; a pointer to a struct takes any other key as `->`. Its bytes must be in the
-allocation: a read or write past them, or one through NULL, stops the run -/
-def ptrLookup (ct : CType) (p : Option (Nat × Nat)) (k : Val) : M (CType × Nat × Nat) := do
+allocation: a read or write past them, or one through NULL, stops the run. A key it has not is `.inr`, as
+`cdLookup`'s -/
+def ptrLookup (ct : CType) (p : Option (Nat × Nat)) (k : Val) : M ((CType × Nat × Nat) ⊕ (CType × Bool)) := do
   let et := ct.elem.getD .void
   let place (o : Int) : M (Nat × Nat) := match p with
     | none => ffiStop "NULL dereferenced"
@@ -1471,40 +1528,52 @@ def ptrLookup (ct : CType) (p : Option (Nat × Nat)) (k : Val) : M (CType × Nat
     let i ← match x with | .int i => pure i | .flt d => numToInt d
     let some esz := et.size | rtErr "size of C type is unknown or too large"
     let (m, o) ← place (i * esz)
-    pure (et, m, o)
+    pure (.inl (et, m, o))
   | .cdata _, _ => ffiStop "a cdata key"
   | .dump .., _ => dumpBytes
   | k, (s@(.agg ..), q) => do
-    let (ft, o) ← cdLookup s q 0 0 k
-    let (m, o) ← place o
-    pure (ft, m, o)
-  | .str s, _ => rtErr s!"'{← cdName ct}' has no member named '{String.ofList s}'"
-  | k, _ => rtErr s!"'{← cdName ct}' cannot be indexed with '{k.typeName}'"
+    match ← cdLookup s q 0 0 k with
+    | .inl (ft, o) => let (m, o) ← place o; pure (.inl (ft, m, o))
+    | .inr miss => pure (.inr miss)
+  | _, _ => pure (.inr (ct.strip.1, ct.strip.2))
 
-/-- a cdata's element or field `k`: its type, bytes object and offset -/
-def cdPlace (a : Nat) (k : Val) : M (CType × Nat × Nat) := do
+/-- a cdata's element or field `k`: its type, bytes object and offset; `.inr` a key it has not. A ctype of a struct
+(or a pointer to one) has none (no constants in the subset): its metatype's, for a constructor's methods -/
+def cdPlace (a : Nat) (k : Val) : M ((CType × Nat × Nat) ⊕ (CType × Bool)) := do
   match ← getObj a with
   | .cdata ct m off _ =>
     let (t, q) := ct.strip
-    let (et, eo) ← cdLookup t q m off k
-    pure (et, m, eo)
+    match ← cdLookup t q m off k with
+    | .inl (et, eo) => pure (.inl (et, m, eo))
+    | .inr miss => pure (.inr miss)
   | .cptr ct p => ptrLookup ct p k
-  | _ => ffiStop "a ctype indexed (its constants)"
+  | .ctype t => match (pointee t).strip.1, k with
+    | s@(.agg ..), .str _ => pure (.inr (s, false))
+    | _, _ => ffiStop "a ctype indexed (its constants)"
+  | _ => ffiStop "a C function indexed"
 
-/-- c[k] for a cdata c: a scalar element's or field's value, an aggregate's a new reference to its bytes -/
-def cdIndex (a : Nat) (k : Val) : M Val := do
-    let (et, m, eo) ← cdPlace a k
+/-- c[k] for a cdata c: a scalar element's or field's value, an aggregate's a new reference to its bytes; `.inr` a
+key it has not (its type's metatype's `__index`, `index`) -/
+def cdIndex (a : Nat) (k : Val) : M (Val ⊕ (CType × Bool)) := do
+  match ← cdPlace a k with
+  | .inr miss => pure (.inr miss)
+  | .inl (et, m, eo) =>
     let s := et.strip.1
-    if s.isScalar then toLua et (← readMem m eo (s.size.getD 0))
+    if s.isScalar then return .inl (← toLua et (← readMem m eo (s.size.getD 0)))
     else match s with
-      | .arr .. | .agg .. => do pure (.cdata (← alloc (.cdata et m eo true)))
+      | .arr .. | .agg .. => do pure (.inl (.cdata (← alloc (.cdata et m eo true))))
       | _ => ffiStop "a pointer stored in a cdata's bytes"
 
-/-- c[k] = v for a cdata c (lj_cdata_set): a const element is LuaJIT's error -/
-def cdSet (a : Nat) (k v : Val) : M Unit := do
-    let (et, m, eo) ← cdPlace a k
+/-- c[k] = v for a cdata c (lj_cdata_set): a const element is LuaJIT's error; `some` a key it has not (its type's
+metatype's `__newindex`, `setindex`) -/
+def cdSet (a : Nat) (k v : Val) : M (Option (CType × Bool)) := do
+  match ← cdPlace a k with
+  | .inr miss => pure (some miss)
+  | .inl (et, m, eo) =>
     if et.strip.2 then rtErr "attempt to write to constant location"
     store .site et m eo v
+    pure none
+
 
 /-- an operand of the FFI's arithmetic and comparisons (carith_checkarg): a pointer or an array (its element type
 and address; nil a NULL `void *`), a struct (its address), a number (a Lua number or a scalar cdata; `u`, a
@@ -1527,6 +1596,7 @@ def cOp (v : Val) : M COp := do
       | .agg .. => pure .agg
       | s => do pure (.num (← decode s (← readMem m off (s.size.getD 0))) (s == .int 8 false))
     | .ctype _ => ffiStop "a ctype's arithmetic (its id)"
+    | .cfun .. => ffiStop "a C function's address"
     | _ => die "not a cdata"
   | .eff _ => ffiStop "a handle into C"
   | _ => pure .other
@@ -1538,6 +1608,7 @@ def cOpName (v : Val) : M String := do
   | .cdata a => match ← getObj a with
     | .cdata ct .. | .cptr ct _ => cdName ct
     | .ctype _ => ffiStop "a ctype's name (its id)"
+    | .cfun .. => ffiStop "a C function's type's name"
     | _ => die "not a cdata"
   | v => pure v.typeName
 
@@ -1607,29 +1678,72 @@ def eqAddr (p : Option (Nat × Nat)) (y : Val) : M Bool := do
     | _ => pure false
   | _ => pure false
 
-/-- `==` with a cdata c on one side (lj_carith_op's MM_eq): pointers, arrays and structs are equal where their
-addresses are (`eqAddr`), any of them and another value never; two ctypes as one type; a scalar and a number (or
-another scalar) as 64-bit integers, a scalar and any other value never -/
-def cdEq (a : Nat) (y : Val) : M Bool := do
+/-- whether v is a pointer to carith_ptr's `==`: nil, a pointer, an array -/
+def ptrish (v : Val) : M Bool := do
+  match v with
+  | .nil => pure true
+  | .cdata b => match ← getObj b with
+    | .cptr .. => pure true
+    | .cdata ct .. => pure (ct.strip.1 matches .arr ..)
+    | _ => pure false
+  | _ => pure false
+
+/-- `==` with a cdata c on one side (lj_carith_op's MM_eq): two pointers or arrays are equal where their addresses
+are (`eqAddr`); two ctypes as one type; two C functions as one symbol; a scalar and a number (or another scalar) as
+64-bit integers. Any other pair (a struct, a pointer and a string) is `none`: a metatype's `__eq`, else their
+addresses (`cdAddrEq`) -/
+def cdEq (a : Nat) (y : Val) : M (Option Bool) := do
   match ← getObj a, y with
   | .ctype t, .cdata b => match ← getObj b with
     | .ctype t' => match CType.same t t' with
-      | some r => pure r
+      | some r => pure (some r)
       | none => ffiStop "a plain char's type (the ABI's)"
     | _ => ffiStop "a ctype compared with a cdata"
   | .ctype _, .num _ => ffiStop "a ctype compared with a number (its id)"
-  | .ctype _, _ => pure false
+  | .ctype _, _ => pure (some false)
+  | .cfun f _, y => match y with
+    | .cdata b => match ← getObj b with
+      | .cfun g _ => pure (some (f == g))
+      | _ => pure (some false)
+    | _ => pure (some false)
   | .cdata ct m off _, y =>
     match ct.strip.1 with
-    | .arr .. | .agg .. => eqAddr (some (m, off)) y
+    | .arr .. => if ← ptrish y then some <$> eqAddr (some (m, off)) y else pure none
+    | .agg .. => pure none
     | _ => do
-      -- a scalar and a number: 64-bit integers (carith_int64); with any other value, never
+      -- a scalar and a number: 64-bit integers (carith_int64)
       let .num x xu ← cOp (.cdata a) | die "not a scalar"
       match ← cOp y with
-      | .num y yu => do let (_, p, q) ← i64Pair x xu y yu; pure (p == q)
-      | _ => pure false
-  | .cptr _ p, y => eqAddr p y
+      | .num y yu => do let (_, p, q) ← i64Pair x xu y yu; pure (some (p == q))
+      | _ => pure none
+  | .cptr _ p, y => if ← ptrish y then some <$> eqAddr p y else pure none
   | _, _ => die "not a cdata"
+
+/-- `==` of a cdata and a value no builtin and no metatype compares (carith_meta's MM_eq): by address -/
+def cdAddrEq (x y : Val) : M Bool := do
+  let (c, o) := if x matches .cdata _ then (x, y) else (y, x)
+  match c with
+  | .cdata a => match ← getObj a with
+    | .cdata ct m off _ => match ct.strip.1 with
+      | .arr .. | .agg .. => eqAddr (some (m, off)) o
+      -- a scalar's address is its own allocation's
+      | _ => pure false
+    | .cptr _ p => eqAddr p o
+    | _ => pure false
+  | _ => die "not a cdata"
+
+/-- the metamethod `ev` of an operand's metatype (lj_carith_meta): a cdata's type's, a pointer's pointee's -/
+def opMeta (v : Val) (ev : String) : M Val := do
+  match v with
+  | .cdata a => match ← getObj a with
+    | .cdata ct .. | .cptr ct _ => ctMeta (pointee ct) ev
+    | _ => pure .nil
+  | _ => pure .nil
+
+/-- the first operand's metatype's `ev`, else the second's -/
+def opMeta2 (ev : String) (x y : Val) : M Val := do
+  let h ← opMeta x ev
+  if h.isNil then opMeta y ev else pure h
 
 /-- a number as a pointer's index (lj_cconv_ct_ct to intptr_t) -/
 def cIdx : CNum → M Int
@@ -1639,16 +1753,17 @@ def cIdx : CNum → M Int
 /-- pointer arithmetic on cdata (carith_ptr; an arithmetic metamethod of every cdata): a pointer or array plus or
 minus an integer, a new `et *` that many elements on, which must stay in its allocation (to its end); the difference
 of two pointers of compatible types, in elements (truncated); two numbers, one a cdata, 64-bit integer arithmetic,
-a new `int64_t` or `uint64_t` (`i64Arith`); anything else is LuaJIT's error -/
-def cdArith (name : String) (args : List Val) : M (List Val) := do
+a new `int64_t` or `uint64_t` (`i64Arith`); anything else is `none`: a metatype's metamethod, else LuaJIT's error
+(`cdArithErr`) -/
+def cdArith (name : String) (args : List Val) : M (Option (List Val)) := do
   let x := args.headD .nil
   let y := args.getD 1 .nil
-  -- `..` of a cdata is LuaJIT's error, whatever the operands
-  if name == "ffi.__concat" then callerErr s!"attempt to concatenate '{← cOpName x}' and '{← cOpName y}'"
+  -- `..` and `#` of a cdata have no builtin
+  if name == "ffi.__concat" || name == "ffi.__len" then return none
   let a ← cOp x
   let b ← cOp y
-  let err : M (List Val) := do callerErr s!"attempt to perform arithmetic on '{← cOpName x}' and '{← cOpName y}'"
-  let add (et : CType) (p : Option (Nat × Nat)) (i : Int) : M (List Val) := do
+  let err : M (Option (List Val)) := pure none
+  let add (et : CType) (p : Option (Nat × Nat)) (i : Int) : M (Option (List Val)) := do
     let some sz := et.size | err
     let p ← match p with
       | none => if i * sz == 0 then pure none else ffiStop "an address from NULL"
@@ -1656,11 +1771,11 @@ def cdArith (name : String) (args : List Val) : M (List Val) := do
         let o := off + i * sz
         if o < 0 || o > ↑(← memSize m) then ffiStop "a pointer out of its allocation"
         pure (some (m, o.toNat))
-    return [.cdata (← alloc (.cptr (.ptr et) p))]
+    return some [.cdata (← alloc (.cptr (.ptr et) p))]
   match a, b with
   | .num x xu, .num y yu => do
     let (u, p, q) ← i64Pair x xu y yu
-    return [← box (.int 8 !u) (leBytes (i64Arith name u p q) 8)]
+    return some [← box (.int 8 !u) (leBytes (i64Arith name u p q) 8)]
   | .ptr et p, .num i _ => match name with
     | "ffi.__add" => do add et p (← cIdx i)
     | "ffi.__sub" => do add et p (-(← cIdx i))
@@ -1671,35 +1786,37 @@ def cdArith (name : String) (args : List Val) : M (List Val) := do
     let some sz := et.size | err
     if sz == 0 then return ← err
     match p, q with
-    | none, none => return [nums 0]
+    | none, none => return some [nums 0]
     | some (m, o), some (m', o') =>
-      if ← sameMem m m' then return [.num (Num.ofInt ((Int.ofNat o - o').tdiv sz))]
+      if ← sameMem m m' then return some [.num (Num.ofInt ((Int.ofNat o - o').tdiv sz))]
       ffiStop "a difference of pointers into two allocations"
     | _, _ => ffiStop "a difference of NULL and an address"
   | _, _ => err
 
+/-- LuaJIT's error for an arithmetic operator, `..` or `#` of cdata no builtin and no metatype takes (carith_meta) -/
+def cdArithErr {α} (name : String) (x y : Val) : M α := do
+  match name with
+  | "ffi.__concat" => callerErr s!"attempt to concatenate '{← cOpName x}' and '{← cOpName y}'"
+  | "ffi.__len" => callerErr s!"attempt to get length of '{← cOpName x}'"
+  | _ => callerErr s!"attempt to perform arithmetic on '{← cOpName x}' and '{← cOpName y}'"
+
 /-- `<` and `<=` with a cdata on one side (carith_ptr): two pointers or arrays of compatible types by address, NULL
 below any other; addresses in two allocations are LuaJIT's heap's order, which stops the run; two numbers, one a
-cdata, as 64-bit integers (carith_int64); anything else is LuaJIT's error -/
-def cdLess (x y : Val) (orEq : Bool) : M Bool := do
+cdata, as 64-bit integers (carith_int64); anything else is `none`: a metatype's `__lt` or `__le`, else LuaJIT's
+error -/
+def cdLess (x y : Val) (orEq : Bool) : M (Option Bool) := do
   match ← cOp x, ← cOp y with
-  | .num x xu, .num y yu => do let (u, p, q) ← i64Pair x xu y yu; pure (i64Less u orEq p q)
+  | .num x xu, .num y yu => do let (u, p, q) ← i64Pair x xu y yu; pure (some (i64Less u orEq p q))
   | .ptr et p, .ptr et' q =>
-    if !(CType.ptr et).compat 1 (.ptr et') then
-      rtErr s!"attempt to compare '{← cOpName x}' with '{← cOpName y}'"
+    if !(CType.ptr et).compat 1 (.ptr et') then return none
     match p, q with
-    | none, none => pure orEq
-    | none, some _ => pure true
-    | some _, none => pure false
+    | none, none => pure (some orEq)
+    | none, some _ => pure (some true)
+    | some _, none => pure (some false)
     | some (m, o), some (m', o') =>
-      if ← sameMem m m' then pure (if orEq then o ≤ o' else o < o')
+      if ← sameMem m m' then pure (some (if orEq then o ≤ o' else o < o'))
       else ffiStop "pointers into two allocations compared"
-  | _, _ => rtErr s!"attempt to compare '{← cOpName x}' with '{← cOpName y}'"
-
-def cdeclsOf : M CDecls := do
-  match ← getObj CDECLS with
-  | .cdecls d => pure d
-  | _ => die "no C declarations"
+  | _, _ => pure none
 
 /-- an ffi function's C type argument (ffi_checkctype): a declaration (`"int[4]"`), a ctype, or a cdata's type; and
 whether that cdata is a reference (its type a C++ reference type, which the semantics does not keep) -/
@@ -1714,6 +1831,7 @@ def ctArg (args : List Val) : M (CType × Bool) := do
     | .ctype t => pure (t, false)
     | .cdata ct _ _ r => pure (ct, r)
     | .cptr ct _ => pure (ct, false)
+    | .cfun .. => ffiStop "a C function's type"
     | _ => die "not a cdata"
   | .dump .. :: _ => dumpBytes
   | v :: _ => argErr 1 s!"C type expected, got {v.typeName}"
@@ -1724,12 +1842,6 @@ def intArg (args : List Val) (k : Nat) : M Int := do
   match ← srcNum (.arg k) (.int 4 true) (args.getD (k - 1) .nil) false with
   | .i v => pure (wrap32 v)
   | .f x => do pure (wrap32 (← numToInt x))
-
-/-- a new cdata of type ct, zeroed, of `sz` bytes -/
-def cdNew (ct : CType) (sz : Nat) : M (Nat × Nat) := do
-  if sz > CDMAX then ffiStop "an allocation past the semantics' bound"
-  let m ← alloc (.bytes (ByteArray.mk (Array.replicate sz 0)))
-  pure (← alloc (.cdata ct m 0 false), m)
 
 /-- a variable-length array's size for `n` elements (lj_ctype_vlsize): none when negative or 2^31 bytes or more -/
 def vlSize (et : CType) (n : Int) : Option Nat :=
@@ -1797,6 +1909,17 @@ def ffiString (args : List Val) : M (List Val) := do
       | .eff _ => ffiStop "a handle into C"
       | _ => bad "const void *"
     return chars bs
+
+/-- ffi.istype's test (lib_ffi.c), of two types without their `const`: one type; two pointers or arrays of one
+size and compatible types, qualifiers ignored; a struct and a pointer to it -/
+def isType (a b : CType) : M Bool := do
+  match CType.same a b with
+  | some true => return true
+  | none => ffiStop "a plain char's type (the ABI's)"
+  | some false => match a, b with
+    | .ptr _, .ptr _ | .arr .., .arr .. => pure (a.size == b.size && CType.compat 1 a b)
+    | .agg .., .ptr e => pure (a == e.strip.1)
+    | _, _ => pure false
 
 /-- the FFI's functions of the subset (lib_ffi.c) -/
 def ffiFn (name : String) (args : List Val) : M (List Val) := do
@@ -1867,11 +1990,62 @@ def ffiFn (name : String) (args : List Val) : M (List Val) := do
     let some (m, off) := dp | ffiStop "NULL dereferenced"
     writeMem m off (List.replicate len.toNat (leBytes c 1).head!)
     return []
+  | "ffi.metatype" => do
+    -- a struct's or union's metatable, once; read at each use (LuaJIT: its contents must not change after)
+    let (ct, r) ← ctArg args
+    if r then ffiStop "a reference's type"
+    let mt ← match args.getD 1 .nil with
+      | .tbl t => pure t
+      | _ => badType "table" 1 args
+    let t := ct.strip.1
+    if !(t matches .agg ..) then argErr 1 "invalid C type"
+    let d ← cdeclsOf
+    if (d.metas.lookup t).isSome then callerErr "cannot change a protected metatable"
+    modify (·.set! CDECLS (.cdecls { d with metas := (t, mt) :: d.metas }))
+    return [.cdata (← alloc (.ctype ct))]
+  | "ffi.istype" => do
+    let (c1, _) ← ctArg args
+    anyArg 1 args
+    match args.getD 1 .nil with
+    | .cdata a => do
+      let c2 ← match ← getObj a with
+        | .ctype t => pure t
+        | .cdata ct .. | .cptr ct _ => pure ct
+        | .cfun .. => ffiStop "a C function's type"
+        | _ => die "not a cdata"
+      return [.bool (← isType c1.strip.1 c2.strip.1)]
+    | _ => return [.bool false]
+  | "ffi.offsetof" => do
+    let (ct, _) ← ctArg args
+    let f ← argStr name 1 args
+    match ct.strip.1 with
+    | .agg u _ fs => match (CType.offsets u fs).find? (·.1 == String.ofList f) with
+      | some (_, o, _) => return [nums o]
+      | none => return []
+    | _ => return []
+  | "ffi.alignof" => do
+    let (ct, r) ← ctArg args
+    -- a reference's is a pointer's (lj_ctype_info_raw does not follow it)
+    if r then ffiStop "a reference's alignment"
+    return [nums ct.align]
+  | "ffi.gc" => do
+    -- its finalizer is never run: LuaJIT runs it when it collects the cdata (DESIGN.md, known gaps)
+    let v := args.headD .nil
+    let ok ← match v with
+      | .cdata a => match ← getObj a with
+        | .cptr .. => pure true
+        | .cdata ct .. => pure (ct.strip.1 matches .agg .. | .arr ..)
+        | _ => pure false
+      | _ => badType "cdata" 0 args
+    anyArg 1 args
+    if !ok then argErr 1 "invalid C type"
+    return [v]
   | _ => die s!"{name}: not in the subset"
 
 /-- tonumber of a cdata: a scalar's number (an 8-byte integer's as a double), any other's nil -/
 def cdToNumber (a : Nat) : M Val := do
   if let .cptr .. ← getObj a then return .nil
+  if let .cfun .. ← getObj a then return .nil
   let (ct, m, off, _) ← getCd a
   let s := ct.strip.1
   if !s.isScalar then return .nil
@@ -1884,28 +2058,169 @@ prototype's constant: its identity stops the run (`noI64Id`) -/
 def cnumNew (v : Nat) (u : Bool) : M Val := box (.int 8 !u) (leBytes v 8)
 
 /-- tostring of a cdata (ffi_meta___tostring): a 64-bit integer's digits and `LL` or `ULL` (lj_ctype_repr_int64), a
-ctype's `ctype<T>`; any other's text is its address, which stops the run -/
+ctype's `ctype<T>`, an enum's `cdata<T>: v`; any other's text is its address, which stops the run (a struct's
+metatype's `__tostring` comes first: `ffi.__tostring` in `callPrim`) -/
 def cdToString (args : List Val) : M (List Val) := do
   let .cdata a := args.headD .nil | die "not a cdata"
   match ← getObj a with
   | .ctype t => return [lstr s!"ctype<{← ctName t}>"]
   | .cdata ct m off _ =>
-    let .int 8 sg := ct.strip.1 | ffiStop "tostring of a cdata (its address)"
-    let b := leNat (← readMem m off 8)
-    return [lstr (if sg then s!"{i64Val b}LL" else s!"{b}ULL")]
+    match ct.strip.1 with
+    | .int 8 sg =>
+      let b := leNat (← readMem m off 8)
+      return [lstr (if sg then s!"{i64Val b}LL" else s!"{b}ULL")]
+    | s@(.enum ..) => match ← decode s (← readMem m off 4) with
+      | .i v => return [lstr s!"cdata<{← cdName ct}>: {wrap32 v}"]
+      | .f _ => die "an enum's value"
+    | _ => ffiStop "tostring of a cdata (its address)"
   | _ => ffiStop "tostring of a cdata (its address)"
 
-/-- a ctype's call, ffi.new of it (ffi_meta___call); its bad argument's message names no function LuaJIT's way
-the semantics has, so it stops the run -/
-def ctypeCall (a : Nat) (args : List Val) : M (List Val) := do
+/-- a C function's argument k (from 1) as the parameter type d takes it (lj_cconv_ct_tv), and as the oracle sees
+it: a number (an integer's `.int` on both targets) or a boolean; a pointer nil (NULL), C's address (a number), or the bytes from it to its allocation's
+end (a string), with the place of those it may write (not a `const` pointee's, not a Lua string's) -/
+def cArg (k : Nat) (d : CType) (v : Val) : M (Val × Option (Nat × Nat × Nat)) := do
+  match d.strip.1 with
+  | d@(.ptr et) =>
+    match ← toPtr (.arg k) d v false with
+    | none => pure (.nil, none)
+    | some (m, off) => match ← getObj m with
+      | .cmem addr => pure (.num (.int addr), none)
+      | o => do
+        let b ← getBytes m
+        let bs := (List.range (b.size - off)).map fun i => Char.ofNat (b.get! (off + i)).toNat
+        let w := !et.strip.2 && !(o matches .cstr _)
+        pure (.str bs, if w then some (m, off, bs.length) else none)
+  | d =>
+    if !d.isScalar then ffiStop "an aggregate passed by value"
+    match ← decode d (← encode d (← srcNum (.arg k) d v false)) with
+    | .i i =>
+      if d == .bool then pure (.bool (i != 0), none)
+      else if i.natAbs < 2 ^ 53 then pure (.num (.int i), none) else ffiStop "an integer argument past 2^53"
+    | .f x => pure (.num (.flt x), none)
+
+/-- a vararg (lj_ccall's ccall_ctid_vararg): a number a double, a string a `const char *`, nil NULL -/
+def cVararg (v : Val) : M Val := do
+  match v with
+  | .num x => pure (.num (.flt x.toFloat))
+  | .str s => pure (.str (s ++ ['\x00']))
+  | .nil => pure .nil
+  | .dump .. => dumpBytes
+  | _ => ffiStop "a vararg of that type"
+
+/-- the Lua value of a C function's result as the oracle answers it (lj_ccall's ccall_get_results): nothing for
+`void` (nil); a number in its type's range, an 8-byte integer's boxed; a boolean; a pointer nil for NULL or C's
+address, a number. Any other answer stops the run -/
+def cResult (name : String) (ret : CType) (r : Val) : M (List Val) := do
+  let bad {α} : M α := throw (.eff s!"ffi.C.{name}: an answer out of its form" [])
+  match ret.strip.1, r with
+  | .void, .nil => pure []
+  | .bool, .bool b => pure [.bool b]
+  | .ptr _, .nil => pure [.cdata (← alloc (.cptr ret none))]
+  | .ptr _, .num (.int a) => do
+    if a ≤ 0 then bad
+    pure [.cdata (← alloc (.cptr ret (some (← alloc (.cmem a.toNat), 0))))]
+  | .float, .num x => do
+    -- a float's answer must be one: its double read back
+    match ← decode .float (← encode .float (.f x.toFloat)) with
+    | .f y => if y == x.toFloat then pure [.num (.flt y)] else bad
+    | _ => bad
+  | .double, .num x => pure [.num (.flt x.toFloat)]
+  | .agg .., _ => ffiStop "a struct returned by value"
+  | t, .num (.int v) => do
+    if !t.isScalar || t == .bool then bad
+    let bs ← encode t (.i v)
+    let v' ← match ← decode t bs with
+      | .i v' => pure v'
+      | .f _ => bad
+    if v' != v then bad
+    -- copyval: an 8-byte integer's or an enum's result is a new cdata of its type
+    if t.intOf.size == some 8 || t matches .enum .. then
+      let (a, m) ← cdNew t 8
+      writeMem m 0 bs
+      return [.cdata a]
+    return [nums v]
+  | _, _ => bad
+
+/-- a C function's call (lj_ccall_func): its arguments converted to its parameters' types (`cArg`, `cVararg`; a
+conversion's error is a bad argument, as a builtin's), then the world's call `ffi.C.f` of what the oracle sees of
+them. Its answer is the result (`cResult`) and, for each argument whose bytes it may write, their new bytes, as many:
+the call writes them -/
+def cCall (oracle : Oracle) (name : String) (ct : CType) (args : List Val) : M (List Val) := do
+  let .func ret ps va := ct | ffiStop "a C variable called"
+  if args.length < ps.length || (!va && args.length > ps.length) then
+    callerErr "wrong number of arguments for function call"
+  let fixed ← (ps.zip (List.range ps.length)).mapM fun (d, i) => cArg (i + 1) d (args.getD i .nil)
+  let extra ← (args.drop ps.length).mapM cVararg
+  let res ← effect oracle ("ffi.C." ++ name) (fixed.map (·.1) ++ extra)
+  let ws := fixed.filterMap (·.2)
+  let bad : M Unit := throw (.eff s!"ffi.C.{name}: an answer out of its form" [])
+  let r := res.headD .nil
+  let outs := res.drop 1
+  if res.isEmpty || outs.length != ws.length then bad
+  for ((m, off, len), o) in ws.zip outs do
+    let .str s := o | bad
+    if s.length != len then bad
+    writeMem m off (s.map (·.toNat.toUInt8))
+  cResult name ret r
+
+/-- a cdata's call when its metatype has no `__new` or `__call` (ffi_meta___call): a ctype's, ffi.new of it (its bad
+argument's message names no function LuaJIT's way the semantics has, so it stops the run); a C function's, the
+world's (`cCall`); any other's LuaJIT's error -/
+def ctypeCall (oracle : Oracle) (a : Nat) (args : List Val) : M (List Val) := do
   match ← getObj a with
   | .ctype _ => fun h => match ffiNew (.cdata a :: args) h with
     | .error (.rt _ (.arg ..)) h => .error (.eff "ffi: a ctype call's bad argument" []) h
     | r => r
-  | _ => ffiStop "a cdata called"
+  | .cfun name ct => cCall oracle name ct args
+  | .cdata ct .. | .cptr ct _ => rtErr s!"'{← ctName (pointee ct)}' is not callable"
+  | _ => die "not a cdata"
+
+/-- the metamethod a cdata's call goes to (ffi_meta___call): a ctype's metatype's `__new`, a struct's (or a
+pointer's pointee's) `__call`; none for a C function -/
+def cdCallee (a : Nat) : M Val := do
+  match ← getObj a with
+  | .ctype t => ctMeta (pointee t) "__new"
+  | .cdata ct .. | .cptr ct _ => ctMeta (pointee ct) "__call"
+  | _ => pure .nil
+
+/-- a struct's (a pointer's pointee's) metatype's `__tostring` (ffi_meta___tostring) -/
+def tsMeta (v : Val) : M Val := do
+  match v with
+  | .cdata a => match ← getObj a with
+    | .cdata ct .. | .cptr ct _ =>
+      if (pointee ct).strip.1 matches .agg .. then ctMeta (pointee ct) "__tostring" else pure .nil
+    | _ => pure .nil
+  | _ => pure .nil
+
+/-- `ffi.C.k` (clib_index): an enum's constant, a C function declared (`cCall` calls it), else LuaJIT's error -/
+def clibIndex (k : Val) : M Val := do
+  match k with
+  | .str s => do
+    let d ← cdeclsOf
+    let n := String.ofList s
+    match d.consts.lookup n with
+    | some v => pure (nums v)
+    | none => match d.syms.lookup n with
+      | some ct@(.func ..) => pure (.cdata (← alloc (.cfun n ct)))
+      | some _ => ffiStop "a C variable (its storage is the world's)"
+      | none => rtErr s!"missing declaration for symbol '{n}'"
+  | .dump .. => dumpBytes
+  | k => rtErr s!"bad argument #2 to '__index' (string expected, got {k.typeName})"
+
+/-- `ffi.C.k = v` (clib_newindex): a constant or a function is LuaJIT's error; a variable's storage is the world's -/
+def clibSet (k : Val) : M Unit := do
+  match k with
+  | .str s => do
+    let d ← cdeclsOf
+    let n := String.ofList s
+    if (d.consts.lookup n).isSome || (match d.syms.lookup n with | some (.func ..) => true | _ => false) then
+      rtErr "attempt to write to constant location"
+    ffiStop "a C variable written"
+  | _ => ffiStop "ffi.C indexed with a value not a string"
 
 /-- the ffi functions the subset models; the rest of the module are handles -/
-def ffis : List String := ["cdef", "new", "cast", "typeof", "sizeof", "string", "copy", "fill"]
+def ffis : List String :=
+  ["cdef", "new", "cast", "typeof", "sizeof", "string", "copy", "fill", "metatype", "istype", "offsetof", "alignof", "gc"]
 
 
 def strFn (name : String) (args : List Val) : M (List Val) := do
@@ -2345,12 +2660,6 @@ def shortSrc (s : List Char) : String :=
     if len < s.length then "[string \"".toList ++ s.take (len.min 45) ++ "...\"]".toList
     else "[string \"".toList ++ s ++ "\"]".toList
 
-/-- a call into the world: the oracle answers it after the trace so far, and it joins the trace -/
-def effect (oracle : Oracle) (name : String) (args : List Val) : M (List Val) := fun h =>
-  match oracle name args (trace h) with
-  | some vs => .ok vs (h.set! LOG (.log (⟨name, args, vs⟩ :: trace h)))
-  | none => .error (.eff name args) h
-
 /-- the stack at this stack query, from level 0 (the builtin asking) down to the bottom's frame: what `stackRun`
 found for it, else the query goes out to find it -/
 def stackNow : M (List Frame) := do
@@ -2679,11 +2988,14 @@ def basicFn (oracle : Oracle) (tgt : Target) (name : String) (bound args : List 
   | "debug.traceback" => debugFn oracle name args
   | "bit.tobit" | "bit.bnot" | "bit.band" | "bit.bor" | "bit.bxor" | "bit.lshift" | "bit.rshift" | "bit.arshift"
   | "bit.rol" | "bit.ror" | "bit.bswap" | "bit.tohex" => bitFn name args
-  | "ffi.cdef" | "ffi.new" | "ffi.cast" | "ffi.typeof" | "ffi.sizeof" | "ffi.string" | "ffi.copy" | "ffi.fill" =>
-    ffiFn name args
-  | "ffi.__add" | "ffi.__sub" | "ffi.__mul" | "ffi.__div" | "ffi.__mod" | "ffi.__pow" | "ffi.__unm" | "ffi.__concat" =>
-    cdArith name args
-  | "ffi.__tostring" => cdToString args
+  | "ffi.cdef" | "ffi.new" | "ffi.cast" | "ffi.typeof" | "ffi.sizeof" | "ffi.string" | "ffi.copy" | "ffi.fill"
+  | "ffi.metatype" | "ffi.istype" | "ffi.offsetof" | "ffi.alignof" | "ffi.gc" => ffiFn name args
+  | "ffi.errno" => do
+    -- errno is the world's: the oracle answers its value before the call, which sets it to the argument if any
+    let a ← if args.isEmpty then pure [] else do pure [.num (.int (← intArg args 1))]
+    match ← effect oracle "ffi.errno" a with
+    | [.num (.int e)] => if -2 ^ 31 ≤ e && e < 2 ^ 31 then return [nums e] else throw (.eff "ffi.errno: an answer out of its form" [])
+    | _ => throw (.eff "ffi.errno: an answer out of its form" [])
   | "gmatch_it" => match bound with
     | [.str s, .str p, .num (.int c)] => gmatchStep s p c.toNat
     | _ => die "bad gmatch iterator"
@@ -2971,11 +3283,48 @@ def index (n : Nat) (o k : Val) : M Val :=
   | .str _ => wget STRING k
   -- a method of the string library: its bytes next
   | .dump .. => dumpBytes
+  | .eff "ffi.C" => clibIndex k
   | .eff name => match k with
     | .str s => pure (.eff (name ++ "." ++ String.ofList s))
     | _ => pure (.eff name)
-  | .cdata a => cdIndex a k
+  | .cdata a => do
+    match ← cdIndex a k with
+    | .inl v => pure v
+    | .inr (t, _) => cdMetaIndex n t o k
   | _ => opErr "index" (some 0) o
+
+/-- a key a cdata of type t has not (ffi_index_meta): its metatype's `__index`, a function called with (o, k), or a
+value read (lj_meta_tget: a table's raw field, through its `__index` chain), nil there LuaJIT's error as without one -/
+def cdMetaIndex (n : Nat) (t : CType) (o k : Val) : M Val :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 => do
+    match ← ctMeta t "__index" with
+    | .nil => idxErr t k
+    | h@(.fn _) | h@(.prim ..) => do pure ((← mmName "__index" (call n h [o, k])).headD .nil)
+    | h => cdMetaGet n t h k
+
+/-- lj_meta_tget from h for a metatype's `__index`: a table's raw field, else its `__index`, a function's result
+taken as it is; a nil found LuaJIT's error -/
+def cdMetaGet (n : Nat) (t : CType) (h k : Val) : M Val :=
+  match n with
+  | 0 => throw .fuel
+  | n + 1 => do
+    match h with
+    | .tbl a => do
+      noDump k
+      let tb ← getTbl a
+      let v := tb.get k
+      if !v.isNil then do held tb v; return v
+      match tb.mt with
+      | none => idxErr t k
+      | some m => match ← wget m (lstr "__index") with
+        | .nil => idxErr t k
+        | f@(.fn _) | f@(.prim ..) => do pure ((← mmName "__index" (call n f [h, k])).headD .nil)
+        | h' => cdMetaGet n t h' k
+    | h => do
+      let v ← index n h k
+      if v.isNil then idxErr t k else pure v
 
 def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   match n with
@@ -3000,7 +3349,10 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
     match ← metaOf f "__call" with
     | h@(.fn _) | h@(.prim ..) => call n h (f :: args)
     | _ => opErr "call" none f
-  | .cdata a => frame (ctypeCall a args)
+  | .cdata a => do
+    match ← cdCallee a with
+    | .nil => frame (ctypeCall oracle a args)
+    | h => call n h (f :: args)
   | v => opErr "call" none v
 
 def execBlock (n : Nat) (cx : Ctx) (b : Block) : M Flow :=
@@ -3128,7 +3480,17 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
     | .nil => rawset a k v
     | h@(.fn _) | h@(.prim ..) => do let _ ← mmName "__newindex" (call n h [o, k, v])
     | h => setindex n h k v
-  | .cdata a => cdSet a k v
+  | .eff "ffi.C" => clibSet k
+  | .cdata a => do
+    match ← cdSet a k v with
+    | none => pure ()
+    | some (t, q) =>
+      -- a key a cdata has not (ffi_meta___newindex): a `const` one's LuaJIT's error, else its metatype's
+      if q then rtErr "attempt to write to constant location"
+      match ← ctMeta t "__newindex" with
+      | .nil => idxErr t k
+      | h@(.fn _) | h@(.prim ..) => do let _ ← mmName "__newindex" (call n h [o, k, v])
+      | h => setindex n h k v
   | _ => opErr "index" (some 0) o
 
 /-- a binary operator; fuel only for a metamethod -/
@@ -3173,7 +3535,16 @@ def less (n : Nat) (x y : Val) (orEq : Bool) (nm : Option String) : M Bool :=
   | .num a, .num b => pure (if orEq then a.le b else a.lt b)
   | .str a, .str b => pure (if orEq then a == b || strLt a b else strLt a b)
   | .dump .., .str _ | .str _, .dump .. | .dump .., .dump .. => dumpBytes
-  | .cdata _, _ | _, .cdata _ => cdLess x y orEq
+  | .cdata _, _ | _, .cdata _ => match n with
+    | 0 => throw .fuel
+    | n + 1 => do
+      match ← cdLess x y orEq with
+      | some b => pure b
+      | none => do
+        -- a metatype's `__lt` or `__le` (carith_meta), else LuaJIT's error
+        match ← opMeta2 (if orEq then "__le" else "__lt") x y with
+        | .nil => rtErr s!"attempt to compare '{← cOpName x}' with '{← cOpName y}'"
+        | h => return ((← call n h [x, y]).headD .nil).truthy
   | _, _ => match n with
     | 0 => throw .fuel
     | n + 1 => do
@@ -3199,8 +3570,20 @@ def eqv (n : Nat) (x y : Val) : M Bool :=
       if h.isNil then return false
       if (← getTbl a).mt != (← getTbl b).mt && !h.rawEq (← metaOf y "__eq") then return false
       return ((← mmFrame "__eq" (call n (← metaFn h) [x, y])).headD .nil).truthy
-  | .cdata a, y => cdEq a y
-  | x, .cdata b => cdEq b x
+  | .cdata _, _ | _, .cdata _ => match n with
+    | 0 => throw .fuel
+    | n + 1 => do
+      let r ← match x, y with
+        | .cdata a, y => cdEq a y
+        | x, .cdata b => cdEq b x
+        | _, _ => die "not a cdata"
+      match r with
+      | some b => pure b
+      | none => do
+        -- a metatype's `__eq` (carith_meta), else by address
+        match ← opMeta2 "__eq" x y with
+        | .nil => cdAddrEq x y
+        | h => return ((← mmFrame "__eq" (call n h [x, y])).headD .nil).truthy
   | _, _ => do noDump2 x y; pure (x.rawEq y)
 
 /-- print (lj_cf_print) with a `__tostring` among its arguments, from `vs` on, `acc` what is not written yet: a string
@@ -3242,8 +3625,11 @@ def unop (n : Nat) (op : UnOp) (x : Val) : M Val :=
     | .str s => pure (.num (.int s.length))
     | .dump .. => dumpBytes
     | .tbl a => do pure (.num (.int (← tlen a)))
-    -- the FFI's __len (lj_carith_op's MM_len), any cdata's
-    | .cdata _ => do rtErr s!"attempt to get length of '{← cOpName x}'"
+    | .cdata _ => match n with
+      | 0 => throw .fuel
+      | n + 1 => do
+        -- lj_meta_len: the cdata's `__len` with (x, nil), the FFI's (`ffi.__len`)
+        pure ((← mmFrame "__len" (call n (.prim "ffi.__len" []) [x, .nil])).headD .nil)
     | _ => opErr "get length of" (some 0) x
 
 def whileLoop (n : Nat) (cx : Ctx) (c : Exp) (b : Block) : M Flow :=
@@ -3303,6 +3689,21 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
   | 0 => throw .fuel
   | n + 1 =>
   match name with
+  | "ffi.__add" | "ffi.__sub" | "ffi.__mul" | "ffi.__div" | "ffi.__mod" | "ffi.__pow" | "ffi.__unm" | "ffi.__concat"
+  | "ffi.__len" => do
+    match ← cdArith name args with
+    | some vs => pure vs
+    | none => do
+      -- carith_meta: the first operand's metatype's metamethod, else the second's; it takes the builtin's place
+      let x := args.headD .nil
+      let y := args.getD 1 .nil
+      match ← opMeta2 (name.drop 4).toString x y with
+      | .nil => cdArithErr name x y
+      | h => unframe (call n h args)
+  | "ffi.__tostring" => do
+    -- a struct's metatype's `__tostring` takes the builtin's place
+    let h ← tsMeta (args.headD .nil)
+    if h.isNil then cdToString args else unframe (call n h [args.headD .nil])
   | "pcall" => do
     anyArg 0 args
     catchVal (call n (args.headD .nil) args.tail) (fun vs => pure (.bool true :: vs)) (fun e => pure [.bool false, e])
@@ -3683,9 +4084,9 @@ def initHeap : Heap :=
     "traceback"]).kv ++ fx "debug" ["getregistry", "getfenv", "setfenv", "getlocal", "setlocal", "upvalueid",
     "upvaluejoin", "sethook", "gethook", "debug"] }
   let bit := libTable "bit" bits
-  -- the rest of ffi: handles (ffi.C's functions are the world's)
-  let ffi : Tbl := { kv := (libTable "ffi" ffis).kv ++ fx "ffi" ["C", "metatype", "gc", "offsetof",
-    "alignof", "istype", "errno", "load", "abi", "os", "arch", "typeinfo"] }
+  -- the rest of ffi: handles (ffi.C indexed gives its constants and functions, whose calls are the world's)
+  let ffi : Tbl := { kv := (libTable "ffi" (ffis ++ ["errno"])).kv ++ fx "ffi" ["C", "load", "abi", "os", "arch",
+    "typeinfo"] }
   #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil,
     .log [], .tbl io, .tbl os, .tbl dbg, .tbl bit, .tbl ffi, .cdecls {}, .stacks [] 0, .frames []]
 
