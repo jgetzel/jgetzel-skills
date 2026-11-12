@@ -180,7 +180,7 @@ function T.test_watchd_restart_same_flags_old_exits(t)
   t:sw("comms", "join")
   local old = first_watchd(t, "--interval", "1", "--comms", "comms", "--model", "haiku", "--max-agents", "2")
   until_("the first watchd's tick", 10, function() return meta(t, "watchd_up") == old .. " -" end)
-  t:eq(json.decode(meta(t, "watchd_run")).flags, { "--interval", "1", "--min-free-mem", "4", "--comms", "comms", "--model", "haiku" })
+  t:eq(json.decode(meta(t, "watchd_run")).flags, { "--interval", "1", "--min-free-mem", "4", "--comms", "comms", "--blocker-idle", "25", "--model", "haiku" })
   t:sw("a", "limits", "--min", "5")
   local r = t:sw("x", "watchd", "--restart", { env = { SWARM_NAME = false } })
   t:has(r.stdout, "watchd restarted: pid ")
@@ -192,7 +192,7 @@ function T.test_watchd_restart_same_flags_old_exits(t)
   local call
   for _, l in ipairs(t:calls("hc")) do if l:find("^run ") then call = l end end
   t:has(call, "run --json --bg --no-parent --no-notify --cwd " .. t.repo .. " -- ")
-  t:has(call, "watchd --takeover --interval 1 --min-free-mem 4 --comms comms --model haiku")
+  t:has(call, "watchd --takeover --interval 1 --min-free-mem 4 --comms comms --blocker-idle 25 --model haiku")
   t:eq(meta(t, "agent_min"), "5")  -- --max-agents is not replayed over the user's number
   t:eq(st(t).watchd.pid, new)
 end

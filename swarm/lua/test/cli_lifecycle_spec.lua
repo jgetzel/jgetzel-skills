@@ -880,4 +880,40 @@ function T.test_task_after_cycle_and_lines(t)
   t:has(t:sw("a", "task", "after", "3", "2", { ok = false }).stderr, "is claimed")
 end
 
+-- An idle agent whose claim open tasks wait on (transitively) is asked once per idle stretch; comms is told once.
+local function blocker_setup(t, chain)
+  idle(t, "e", { wt = t.wt })
+  t:sw("e", "task", "add", "gate"); t:sw("e", "task", "claim", "1")
+  t:sw("e", "task", "add", "d1", "--after", "1")
+  if chain then t:sw("e", "task", "add", "d2", "--after", "2") end
+end
+local function asked(t) return t:q("select body from msg where dest='e' and body like 'What are you waiting on?%'") end
+
+function T.test_blocker_nudged_once_per_idle_stretch_and_rearms(t)
+  blocker_setup(t, false)
+  comms_tick(t); comms_tick(t)
+  t:eq(#asked(t), 1)
+  t:eq(#t:q("select body from msg where dest='comms' and body like '%holding #1, which 1 open%'"), 1)
+  t:q("update event set ts=ts-5000"); t:q("update agent set last_active=? where name='e'", os.time() - 1500)  -- woke, idle again
+  comms_tick(t)
+  t:eq(#asked(t), 2)
+end
+
+function T.test_blocker_counts_transitive_dependants(t)
+  blocker_setup(t, true)
+  comms_tick(t)
+  t:eq(#t:q("select body from msg where dest='comms' and body like '%which 2 open%'"), 1)
+end
+
+function T.test_blocker_spared_without_dependants_or_under_threshold(t)
+  idle(t, "e", { wt = t.wt })
+  t:sw("e", "task", "add", "alone"); t:sw("e", "task", "claim", "1")
+  comms_tick(t)
+  t:eq(#asked(t), 0)
+  t:sw("e", "task", "add", "d1", "--after", "1")
+  t:q("update agent set last_active=? where name='e'", os.time() - 600)
+  comms_tick(t)
+  t:eq(#asked(t), 0)
+end
+
 return T

@@ -387,6 +387,45 @@ function M.quiet(c, t, comms)
     .. (#l > 0 and "Stayers:\n" .. table.concat(l, "\n") or "No stayers.") .. "\nIf the work is done, tell the user.", false, "system")
 end
 
+M.BLOCKER_IDLE = 25  -- min an agent may sit idle holding a claim that open tasks wait on (--after, transitively) before it is asked
+
+-- Number of open tasks waiting, directly or through other open tasks, on any task id in ids.
+function M.dependants(c, ids)
+  local seen, n, q = {}, 0, ids
+  while #q > 0 do
+    local nq = {}
+    for _, id in ipairs(q) do
+      for _, r in ipairs(tasks.waiters(c, id)) do
+        if not seen[r.id] then seen[r.id] = true; n = n + 1; nq[#nq + 1] = r.id end
+      end
+    end
+    q = nq
+  end
+  return n
+end
+
+-- An agent idle BLOCKER_IDLE min while its claim blocks open tasks: asked once per idle stretch what it waits on, and
+-- comms told once. An idle agent whose claim blocks nothing is left to the lease.
+function M.blockers(c, t, comms, opts)
+  local lim = ((opts and opts.blocker_idle) or M.BLOCKER_IDLE) * 60
+  for _, a in ipairs(agents.live_agents(c)) do
+    local n, last = a.name, a.last_active or 0
+    if n ~= comms and a.status == "idle" and t - last >= lim
+        and not c:one("select 1 from event where agent=? and kind='blocker-nudge' and ts>=?", n, last) then
+      local ids = {}
+      for _, r in ipairs(c:all("select id from task where state='claimed' and owner=?", n)) do ids[#ids + 1] = r.id end
+      local w = M.dependants(c, ids)
+      if w > 0 then
+        db.log(c, n, "blocker-nudge", nil, d(w))
+        local mins = math.floor((t - last) / 60)
+        msgs.post(c, "swarm", n, "What are you waiting on? Can you continue without it/land without it?", true, "system")
+        msgs.post(c, "swarm", comms, ("%s is idle %d min holding #%s, which %d open task(s) wait on (nudged)."):format(
+          n, mins, table.concat(ids, ",#"), w), false, "system")
+      end
+    end
+  end
+end
+
 M.LIVENESS_IDLE = 50 * 60  -- a stayer idle this long (inside the 1 h cache) is asked if it still stays
 M.LIVENESS_WAIT = 5 * 60   -- and is hung if its last_active has not moved this long after
 
@@ -785,6 +824,7 @@ function M.watchd_tick(c, comms, repo, opts)
     M.lifecycle(c, t, comms, terms, opts or {})
     M.quiet(c, t, comms)
     M.hung(c, t, comms, terms, opts)
+    M.blockers(c, t, comms, opts)
   end
   M.machine_tick(c)
   run.remote_tick(c, t)
@@ -920,6 +960,7 @@ end
 function M.flags(a, comms)
   local f = { "--interval", d(a.interval), "--min-free-mem", tostring(a.min_free_mem) }
   if comms then f[#f + 1] = "--comms"; f[#f + 1] = comms end
+  f[#f + 1] = "--blocker-idle"; f[#f + 1] = tostring(a.blocker_idle)
   if a.ci then f[#f + 1] = "--ci" end
   if a.model then f[#f + 1] = "--model"; f[#f + 1] = a.model end
   if a.effort then f[#f + 1] = "--effort"; f[#f + 1] = a.effort end
@@ -1080,7 +1121,7 @@ function M.cmd_watchd(c, a)
   if a.max_agents or not mn then
     c:exec("insert or replace into meta(k,v) values('agent_min',?)", d(a.max_agents or live))
   end
-  local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval, once = a.once }
+  local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval, once = a.once, blocker_idle = a.blocker_idle }
   local up, why = false, nil
   repeat up, why = M.iterate(c, mine, comms, repo, opts, up) until why or a.once
   if why then util.die(("watchd (pid %s)%s; exiting"):format(d(unistd.getpid()), why)) end
