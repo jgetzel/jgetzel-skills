@@ -35,3 +35,4 @@ import SwarmModel.Merged
 import SwarmModel.Nudge
 import SwarmModel.Stay
 import SwarmModel.Contract
+import SwarmModel.Trust

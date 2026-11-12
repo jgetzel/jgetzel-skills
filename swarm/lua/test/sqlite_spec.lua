@@ -1,6 +1,6 @@
 -- Differential tests of swarm/model/SwarmModel/Env.lean's sqlite assumptions (board #33): Iso.lean's engine against
 -- real sqlite, through db.lua (WAL, busy_timeout 10 s, db:tx is begin immediate), many processes at once. Each case
--- carries its assumption's name (sqlite_begin, sqlite_read, sqlite_write, sqlite_commit, sqlite_rollback); check.sh
+-- carries the name its hypothesis's tag gives (sqlite_begin, sqlite_read, sqlite_write, sqlite_commit, sqlite_rollback); check.sh
 -- refuses an assumption with no case here or in env_spec.lua. No connection is open across a fork: each child opens
 -- its own.
 local db, ptime = require "swarm.db", require "posix.time"

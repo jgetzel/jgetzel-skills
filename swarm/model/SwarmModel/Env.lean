@@ -2,16 +2,20 @@ import SwarmModel.Model
 import SwarmModel.Iso
 import SwarmModel.PrWatch
 
-/-! The environment (board #34): every assumption the model makes about the world outside the swarm's db, and about
+/-! The environment (board #34, #68): what the model may assume about the world outside the swarm's db, and about
 sqlite itself (board #33, at the end), in one file. `Tools` is what the swarm runs (git, hc, gh, the kernel's process table, the filesystem, the clock) and `Tools.git`
 is the model's view of the repo: commits as patch sets, branches, worktree slots, under the replay's name map (a slot
-is a worktree path, a branch id a branch name, a commit id a sha). Each assumption is a `Prop` on `Tools` and an
-axiom about `real`, the machine the swarm runs on; `check.sh` refuses a theorem resting on any axiom but these and
-Lean's three. Each is tested against the real tool by the case of its own name in `../lua/test/env_spec.lua`.
+is a worktree path, a branch id a branch name, a commit id a sha).
 
-Only the direction the code needs is assumed: a tool saying "landed" means landed, not the converse (W1, safety, needs
-the first; nothing proved here needs the second). `consistent` shows the assumptions hold together of an ideal machine,
-and `real` is defined as that machine, so they can't prove `False`. -/
+The rule (board #68): unproved code (hc, git, gh, sqlite, the OS) is untrusted. A `Tools` or a `Db` is any machine: each
+tool call may return any value of its type (a failed call is one of them: `hc ls` that does not answer is the model's
+`hcSees` off). Trust enters only as the named hypotheses below, small independent `Prop`s on a `Tools` or `Db`, each
+taken by a theorem as a hypothesis, in the direction its proof uses; there is no axiom and no bundle of them. A
+theorem is "these assumptions about the outside world → this guarantee". `Trust.lean` shows each hypothesis a theorem
+takes is needed: a machine with every other one where the guarantee fails. Each is tested against the real tool by the
+case named in its `(env_spec: …)` or `(sqlite_spec: …)` tag, in `../lua/test/`; check.sh fails on a tag with no case,
+Audit.lean on a hypothesis with no tag. `consistent` and `sqlite_consistent`: an ideal machine has them all, so
+together they are satisfiable. -/
 
 namespace Swarm.Env
 
@@ -82,73 +86,60 @@ def Git.durable (g : Git) : List (Bool × Option Nat × Nat × Bool) × List (Op
 variable (t : Tools)
 
 /-- git: k an ancestor of b's tip means b holds k's patches (a commit is its parent's tree plus its own change; the
-model's commits only add files) -/
+model's commits only add files) (env_spec: ancestor_reach) -/
 def AncestorReach : Prop := ∀ w k b, t.isAncestor w k b = true → (t.git w).reachFrom k b = true
 /-- git: b's tip has, byte for byte, every file k changed since their merge base, so b holds k's patches (a squash or
-rebase merge) -/
+rebase merge) (env_spec: same_content_reach) -/
 def SameContentReach : Prop := ∀ w k b, t.sameContent w k b = true → (t.git w).reachFrom k b = true
-/-- git: a worktree that is there has an empty `status --porcelain` exactly when nothing in it is uncommitted
-(untracked files included) -/
-def StatusClean : Prop := ∀ w x, ((t.git w).wt x).on = true → (t.statusClean w x = !((t.git w).wt x).dirty)
-/-- git: `worktree list` lists exactly the worktrees that are there -/
-def ListedOn : Prop := ∀ w x, t.listed w x = ((t.git w).wt x).on
+/-- git: a worktree that is there and has an empty `status --porcelain` has nothing uncommitted (untracked files
+included); the sweep needs no more (the case tests both directions) (env_spec: status_clean) -/
+def StatusClean : Prop := ∀ w x, ((t.git w).wt x).on = true → t.statusClean w x = true → ((t.git w).wt x).dirty = false
+/-- git: a worktree `worktree list` lists is there (env_spec: listed_on) -/
+def ListedOn : Prop := ∀ w x, t.listed w x = true → ((t.git w).wt x).on = true
 /-- git: `worktree remove` takes a clean worktree away and nothing else (its branch, every other worktree and every
-commit stay), and refuses a dirty one, changing nothing -/
+commit stay), and refuses a dirty one, changing nothing (env_spec: wt_remove) -/
 def WtRemove : Prop := ∀ w x, t.git (t.wtRemove w x) =
   if ((t.git w).wt x).on && !((t.git w).wt x).dirty then (t.git w).setWt x ({ · with on := false }) else t.git w
-/-- git: `update-ref -d refs/heads/b k` deletes branch b if its tip is k, and else changes nothing -/
+/-- git: `update-ref -d refs/heads/b k` deletes branch b if its tip is k, and else changes nothing (env_spec: del_ref) -/
 def DelRef : Prop := ∀ w b k, t.git (t.delRef w b k) =
   if (t.git w).tip b = some k then { t.git w with brs := (t.git w).brs.set b none } else t.git w
-/-- hc: `hc ls` lists a terminal as live exactly when it is (when it answers at all: else the model's `hcSees` is off) -/
+/-- hc: `hc ls` lists a terminal as live exactly when it is (when it answers at all: else the model's `hcSees` is off)
+(env_spec: hc_ls_live) -/
 def HcLsLive : Prop := ∀ w h, t.hcLs w h = t.termLive w h
-/-- hc: `hc kill h` ends terminal h, no other, and leaves the repo's durable state alone (the processes it ends may
-leave worktrees, so `proc` may change) -/
-def HcKillEnds : Prop := ∀ w h, t.termLive (t.hcKill w h) h = false ∧
-  (∀ h', h' ≠ h → t.termLive (t.hcKill w h) h' = t.termLive w h') ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w)
+/-- hc: `hc ls` lists a live terminal as live: `HcLsLive`'s one direction (env_spec: hc_ls_live) -/
+def HcLsShows : Prop := ∀ w h, t.termLive w h = true → t.hcLs w h = true
+/-- hc: `hc kill h` ends terminal h and leaves the repo's durable state alone (the processes it ends may leave
+worktrees, so `proc` may change). That it ends no other terminal no theorem needs (the case tests it too)
+(env_spec: hc_kill_ends) -/
+def HcKillEnds : Prop := ∀ w h, t.termLive (t.hcKill w h) h = false ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w)
 /-- hc: `hc send h l` to a live terminal types l into h and into no other terminal, starts or ends no terminal, and
-leaves the repo's durable state alone (what the program in h then does with the line is its own turn) -/
+leaves the repo's durable state alone (what the program in h then does with the line is its own turn) (env_spec: hc_send_targets) -/
 def HcSendTargets : Prop := ∀ w h l, t.termLive w h = true →
   t.typed (t.hcSend w h l) h = t.typed w h ++ [l] ∧ (∀ h', h' ≠ h → t.typed (t.hcSend w h l) h' = t.typed w h') ∧
   (∀ h', t.termLive (t.hcSend w h l) h' = t.termLive w h') ∧ Git.durable (t.git (t.hcSend w h l)) = Git.durable (t.git w)
 /-- hc: `hc run --bg` starts the program: the terminal whose address it prints is live, and the program runs in it, a
-process (the model's `restart`: the new watchd runs, in its hidden terminal) -/
+process (the model's `restart`: the new watchd runs, in its hidden terminal) (env_spec: hc_run_starts) -/
 def HcRunStarts : Prop := ∀ w, t.termLive (t.hcRun w) (t.hcRunAddr w) = true ∧ t.alive (t.hcRun w) (t.hcRunPid w) = true
 /-- processes: `kill(p, 0)` is 0 exactly when process p is in the process table, a zombie included (that p is still
-*our* process, no pid reuse, is the model's reading, not this) -/
+*our* process, no pid reuse, is the model's reading, not this) (env_spec: kill0_alive) -/
 def Kill0Alive : Prop := ∀ w p, t.kill0 w p = t.alive w p
-/-- processes: `machine.cwds()` sees a cwd inside worktree x exactly when the model's `proc` flag is set (Linux: every
-/proc/<pid>/cwd; macOS: lsof, own processes) -/
-def CwdsProc : Prop := ∀ w x, t.cwdIn w x = ((t.git w).wt x).proc
+/-- processes: `kill(p, 0)` finds a process in the table: `Kill0Alive`'s one direction (env_spec: kill0_alive) -/
+def Kill0Finds : Prop := ∀ w p, t.alive w p = true → t.kill0 w p = true
+/-- processes: `machine.cwds()` sees a cwd inside worktree x whenever the model's `proc` flag is set (Linux: every
+/proc/<pid>/cwd; macOS: lsof, own processes); the case tests both directions (env_spec: cwds_proc) -/
+def CwdsProc : Prop := ∀ w x, ((t.git w).wt x).proc = true → t.cwdIn w x = true
 /-- filesystem: the model's `recent` is the sweep's reading of mtimes: touched within `sweepIdle`. A commit or checkout
 touches `logs/HEAD`; an edit of a file below the top directory touches neither, though the model's `edit` sets
-`recent`: that edit leaves the worktree dirty, and the sweep never takes a dirty one, so nothing it decides differs -/
-def TouchedRecent : Prop := ∀ w x, ((t.git w).wt x).recent = decide (t.now w < t.touched w x + sweepIdle)
-/-- clock: `os.time()` never goes back (NTP stepping the clock back breaks it: a lapsed lease would read live again) -/
+`recent`: that edit leaves the worktree dirty, and the sweep never takes a dirty one, so nothing it decides differs.
+Only that a `recent` worktree reads as touched is needed (the case tests both directions) (env_spec: touched_recent) -/
+def TouchedRecent : Prop := ∀ w x, ((t.git w).wt x).recent = true → t.now w < t.touched w x + sweepIdle
+/-- clock: `os.time()` never goes back (NTP stepping the clock back breaks it: a lapsed lease would read live again) (env_spec: now_mono) -/
 def NowMono : Prop := ∀ w w', t.Later w w' → t.now w ≤ t.now w'
 /-- `gh pr list`'s statusCheckRollup, read by ci.verdict, is the state of the head's checks: pending until every check
-has finished, then green or red -/
+has finished, then green or red (env_spec: gh_checks) -/
 def GhChecks : Prop := ∀ w p, t.ghVerdict w p = (t.prChecks w p).name
-/-- `gh pr list`'s state of a PR the poll keeps is MERGED when it is merged, else OPEN -/
+/-- `gh pr list`'s state of a PR the poll keeps is MERGED when it is merged, else OPEN (env_spec: gh_state) -/
 def GhState : Prop := ∀ w p, t.ghState w p = if t.prMerged w p then "MERGED" else "OPEN"
-
-/-- all of them -/
-structure Sound : Prop where
-  ancestorReach : AncestorReach t
-  sameContentReach : SameContentReach t
-  statusClean : StatusClean t
-  listedOn : ListedOn t
-  wtRemove : WtRemove t
-  delRef : DelRef t
-  hcLsLive : HcLsLive t
-  hcKillEnds : HcKillEnds t
-  hcSendTargets : HcSendTargets t
-  hcRunStarts : HcRunStarts t
-  kill0Alive : Kill0Alive t
-  cwdsProc : CwdsProc t
-  touchedRecent : TouchedRecent t
-  nowMono : NowMono t
-  ghChecks : GhChecks t
-  ghState : GhState t
 
 /-- a machine where every tool tells the truth: the repo, the live terminals, the live processes, and the clock
 (offset by `sweepIdle`, so an untouched worktree has a last touch) -/
@@ -190,61 +181,16 @@ def ideal : Tools where
   ghState w p := if w.merged p then "MERGED" else "OPEN"
 
 /-- the assumptions hold together: the ideal machine has them all -/
-theorem consistent : Sound ideal where
-  ancestorReach _ _ _ h := h
-  sameContentReach _ _ _ h := h
-  statusClean _ _ _ := rfl
-  listedOn _ _ := rfl
-  wtRemove w x := apply_ite IdealWorld.git _ _ _
-  delRef w b k := apply_ite IdealWorld.git _ _ _
-  hcLsLive _ _ := rfl
-  hcKillEnds w h := ⟨by simp [ideal], fun h' hh => by simp [ideal, hh], rfl⟩
-  hcRunStarts _ := ⟨by simp [ideal], by simp [ideal]⟩
-  hcSendTargets _ _ _ _ := ⟨by simp [ideal], fun _ hh => by simp [ideal, hh], fun _ => rfl, rfl⟩
-  kill0Alive _ _ := rfl
-  cwdsProc _ _ := rfl
-  touchedRecent w x := by simp only [ideal]; split <;> simp_all [sweepIdle]
-  nowMono _ _ h := Nat.add_le_add_right h _
-  ghChecks _ _ := rfl
-  ghState _ _ := rfl
-
-instance : Inhabited Tools := ⟨ideal⟩
-
-/-- the machine the swarm runs on -/
-opaque real : Tools
-
-/-- `merge-base --is-ancestor` (env_spec: ancestor_reach) -/
-axiom ancestor_reach : AncestorReach real
-/-- landed_ref's squash check (env_spec: same_content_reach) -/
-axiom same_content_reach : SameContentReach real
-/-- `status --porcelain` (env_spec: status_clean) -/
-axiom status_clean : StatusClean real
-/-- `worktree list` (env_spec: listed_on) -/
-axiom listed_on : ListedOn real
-/-- `worktree remove` (env_spec: wt_remove) -/
-axiom wt_remove : WtRemove real
-/-- `update-ref -d` (env_spec: del_ref) -/
-axiom del_ref : DelRef real
-/-- `hc ls` (env_spec: hc_ls_live) -/
-axiom hc_ls_live : HcLsLive real
-/-- `hc kill` (env_spec: hc_kill_ends) -/
-axiom hc_kill_ends : HcKillEnds real
-/-- `hc send` (env_spec: hc_send_targets) -/
-axiom hc_send_targets : HcSendTargets real
-/-- `hc run --bg` (env_spec: hc_run_starts) -/
-axiom hc_run_starts : HcRunStarts real
-/-- `kill(p, 0)` (env_spec: kill0_alive) -/
-axiom kill0_alive : Kill0Alive real
-/-- `machine.cwds()` (env_spec: cwds_proc) -/
-axiom cwds_proc : CwdsProc real
-/-- mtimes and SWEEP_IDLE (env_spec: touched_recent) -/
-axiom touched_recent : TouchedRecent real
-/-- `os.time()` (env_spec: now_mono) -/
-axiom now_mono : NowMono real
-/-- `gh pr list`'s check rollup (env_spec: gh_checks) -/
-axiom gh_checks : GhChecks real
-/-- `gh pr list`'s state (env_spec: gh_state) -/
-axiom gh_state : GhState real
+theorem consistent : AncestorReach ideal ∧ SameContentReach ideal ∧ StatusClean ideal ∧ ListedOn ideal ∧ WtRemove ideal ∧
+    DelRef ideal ∧ HcLsLive ideal ∧ HcLsShows ideal ∧ HcKillEnds ideal ∧ HcSendTargets ideal ∧ HcRunStarts ideal ∧
+    Kill0Alive ideal ∧ Kill0Finds ideal ∧ CwdsProc ideal ∧ TouchedRecent ideal ∧ NowMono ideal ∧ GhChecks ideal ∧
+    GhState ideal :=
+  ⟨fun _ _ _ h => h, fun _ _ _ h => h, fun _ _ _ h => by simpa [ideal] using h, fun _ _ h => h,
+   fun _ _ => apply_ite IdealWorld.git _ _ _, fun _ _ _ => apply_ite IdealWorld.git _ _ _, fun _ _ => rfl,
+   fun _ _ h => h, fun _ _ => ⟨by simp [ideal], rfl⟩,
+   fun _ _ _ _ => ⟨by simp [ideal], fun _ hh => by simp [ideal, hh], fun _ => rfl, rfl⟩,
+   fun _ => ⟨by simp [ideal], by simp [ideal]⟩, fun _ _ => rfl, fun _ _ h => h, fun _ _ h => h,
+   fun w x h => by simp_all [ideal, sweepIdle], fun _ _ h => Nat.add_le_add_right h _, fun _ _ => rfl, fun _ _ => rfl⟩
 
 /-! ## sqlite (board #33)
 
@@ -253,7 +199,7 @@ transaction, SQLITE_BUSY), on `Sql.lean`'s statements (`Iso.sqlLang`), with the 
 `begin immediate`; WAL and `busy_timeout(10000)` on every connection, as db.lua sets them). One assumption per kind of
 operation: it does what the engine says. They are sqlite's documented guarantees for a WAL db (isolation.html,
 wal.html, lang_transaction.html), not a model of its internals; each is stress-tested against real sqlite through
-db.lua, many processes at once, by the case of its name in `../lua/test/sqlite_spec.lua`. -/
+db.lua, many processes at once, by the case its tag names in `../lua/test/sqlite_spec.lua`. -/
 
 /-- sqlite as the swarm's processes see it -/
 structure Db where
@@ -279,29 +225,21 @@ variable (db : Db)
 
 /-- `begin immediate`: takes the write lock if no connection holds it, and the transaction runs on the latest
 committed version; else waits, and gets SQLITE_BUSY once busy_timeout runs out, nothing changed; inside a transaction
-it is an error -/
+it is an error (sqlite_spec: sqlite_begin) -/
 def SqliteBegin : Prop := db.ByEngine (· = .begin)
 /-- a statement that only reads: runs on the latest committed version outside a transaction, on the transaction's own
-db inside one; it never waits (WAL: readers don't block on the writer) -/
+db inside one; it never waits (WAL: readers don't block on the writer) (sqlite_spec: sqlite_read) -/
 def SqliteRead : Prop := db.ByEngine fun op => ∃ s, op = .stmt s ∧ Iso.sqlLang.writes s = false
 /-- a statement that writes: outside a transaction it waits for the write lock (SQLITE_BUSY once busy_timeout runs out,
 nothing changed), runs on the latest committed version and commits at once, all or nothing; inside one it runs on the
-transaction's db; an error changes nothing -/
+transaction's db; an error changes nothing (sqlite_spec: sqlite_write) -/
 def SqliteWrite : Prop := db.ByEngine fun op => ∃ s, op = .stmt s ∧ Iso.sqlLang.writes s = true
 /-- `commit`: the transaction's db becomes the next committed version, all at once, and the lock is freed; WAL: it
-never waits -/
+never waits (sqlite_spec: sqlite_commit) -/
 def SqliteCommit : Prop := db.ByEngine (· = .commit)
 /-- `rollback`, and the process ending (exit or kill -9) in a transaction: the transaction's writes are discarded and
-the lock is freed -/
+the lock is freed (sqlite_spec: sqlite_rollback) -/
 def SqliteRollback : Prop := db.ByEngine fun op => op = .rollback ∨ op = .close
-
-/-- all of them -/
-structure SqliteSound : Prop where
-  begin : SqliteBegin db
-  read : SqliteRead db
-  write : SqliteWrite db
-  commit : SqliteCommit db
-  rollback : SqliteRollback db
 
 /-- a db that is the engine -/
 def idealDb : Db where
@@ -310,27 +248,9 @@ def idealDb : Db where
   Does w c op r w' := ∃ t, Iso.step {} Iso.sqlLang w c op t = some (r, w')
 
 /-- the assumptions hold together: the engine has them all -/
-theorem sqlite_consistent : SqliteSound idealDb where
-  begin _ _ _ _ _ _ h := h
-  read _ _ _ _ _ _ h := h
-  write _ _ _ _ _ _ h := h
-  commit _ _ _ _ _ _ h := h
-  rollback _ _ _ _ _ _ h := h
-
-instance : Inhabited Db := ⟨idealDb⟩
-
-/-- the swarm's db, as real sqlite runs it -/
-opaque realDb : Db
-
-/-- `begin immediate` (sqlite_spec: sqlite_begin) -/
-axiom sqlite_begin : SqliteBegin realDb
-/-- reads (sqlite_spec: sqlite_read) -/
-axiom sqlite_read : SqliteRead realDb
-/-- writes (sqlite_spec: sqlite_write) -/
-axiom sqlite_write : SqliteWrite realDb
-/-- `commit` (sqlite_spec: sqlite_commit) -/
-axiom sqlite_commit : SqliteCommit realDb
-/-- `rollback` and death (sqlite_spec: sqlite_rollback) -/
-axiom sqlite_rollback : SqliteRollback realDb
+theorem sqlite_consistent : SqliteBegin idealDb ∧ SqliteRead idealDb ∧ SqliteWrite idealDb ∧ SqliteCommit idealDb ∧
+    SqliteRollback idealDb :=
+  ⟨fun _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ h => h,
+   fun _ _ _ _ _ _ h => h⟩
 
 end Swarm.Env

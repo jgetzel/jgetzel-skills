@@ -21,8 +21,8 @@ Each says what it guarantees and what it rests on. "Switches" are the `Cfg` fiel
 all on in `Cfg`'s defaults but `splitGC`, `perTaskBase`, `recordedWorkspaces`, `bgLives` and `ownAdded` (main has
 them; `replay` sets them).
 "Env" is which of `Env.lean`'s assumptions it takes, as hypotheses on any `Tools` or `Db`: the model theorems take
-none. For the machine the swarm runs on, `Env.real` and `Env.realDb`, `Real.lean` supplies them from the axioms
-(`Env.landedRef_reach`, `Env.realDb_sound`, …); for another, supply proofs (`Env.consistent` for `Env.ideal`). -/
+none. Nothing is assumed of a machine by axiom (board #68): a client supplies each hypothesis for its machine, by proof
+(`Env.consistent` for `Env.ideal`) or as its own hypothesis, and `Trust.lean` shows each one taken here is needed. -/
 
 namespace Swarm.Contract
 open Env
@@ -208,9 +208,10 @@ theorem env_reapGone {t : Tools} (hl : HcLsLive t) {w : t.World} {h : Nat} :
   Tools.reap_gone hl
 
 /-- The db is serializable: every committed version is its transaction's statements run on the one before, and a
-transaction holding the write lock runs on the latest. Env: `SqliteSound` (all five sqlite assumptions). -/
-theorem db_serializable {db : Db} (hdb : SqliteSound db) {w0 w : db.World} {d0 : Sql.DB}
+transaction holding the write lock runs on the latest. Env: all five sqlite assumptions. -/
+theorem db_serializable {db : Db} (hb : SqliteBegin db) (hr : SqliteRead db) (hw : SqliteWrite db)
+    (hc : SqliteCommit db) (hrb : SqliteRollback db) {w0 w : db.World} {d0 : Sql.DB}
     (h0 : db.view w0 = Iso.Eng.init d0) (h : db.Run w0 w) : Iso.Inv Iso.sqlLang (db.view w) :=
-  Db.serializable hdb h0 h
+  Db.serializable hb hr hw hc hrb h0 h
 
 end Swarm.Contract
