@@ -706,6 +706,9 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   have wf : ∀ a, (s.agt a).boot = true → (s.agt a).waiter = false := fun a hb => (hs.1 a hb).2.1
   open_step hstep
   case tick => obtain ⟨_, _, rfl⟩ := hstep; exact l3_tickOf hs hi1.1
+  case awayOn => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case back => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case commsRead => obtain ⟨_, rfl⟩ := hstep; exact hs
   case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case age a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
@@ -854,7 +857,8 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
     exact ow_of h1 h2 (ow_setTask (fun _ h => by simp [held, hg.1.2.1.1] at h) h1 h2)
   case hcPrompt a =>
     obtain ⟨_, rfl⟩ := hstep
-    have h1' : held ((setAg s a ({ · with st := .blocked })).tk t) o = true := by simpa using h1
+    have h1' : held ((setAg (tellC (hcLog s (firstClaimed c s a)) ⟨.blocked, firstClaimed c s a, urgentNow c s, []⟩) a
+      ({ · with st := .blocked })).tk t) o = true := by simpa using h1
     have := ow_setTask (fun _ _ => rfl) h1' h2
     exact ow_of h1 h2 (by rw [this]; simp)
   case hcClear a =>

@@ -60,7 +60,8 @@ macro "rz_tac" : tactic => `(tactic|
     | (with_reducible apply rz_post)
     | (with_reducible apply rz_showAll)
     | (refine rz_setAg ?_ ?_ <;> first | (intro hh; simp_all; done) | skip)
-    | (refine rz_frame ?_ ‹Rz _› <;> rfl)))
+    | (refine rz_frame ?_ ‹Rz _› <;> rfl)
+    | assumption))
 
 theorem rz_step {c : Cfg} {s s' : State} {act : Action} (hr : c.racy = false) (hI : Rz s) (hs : step c s act = some s') :
     Rz s' := by

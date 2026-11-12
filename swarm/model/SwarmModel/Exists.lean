@@ -46,7 +46,8 @@ def lassoRun (c : Cfg) (p : State → Bool) (q : Action → Bool) (pre cyc : Lis
 /-- a lasso `lassoRun` accepts is a fair run from the start, `p` at every state and `q` of every action -/
 theorem lasso_run {c : Cfg} {p : State → Bool} {q : Action → Bool} {pre cyc : List Action}
     (h : lassoRun c p q pre cyc = true) :
-    ∃ r : Run c, r.Fair ∧ r.st 0 = init c ∧ (∀ n, p (r.st n) = true) ∧ ∀ n, q (r.act n) = true := by
+    ∃ r : Run c, r.Fair ∧ r.st 0 = init c ∧ (∀ n, p (r.st n) = true) ∧ (∀ n, q (r.act n) = true) ∧
+      ∀ n, n < pre.length → r.act n = pre.getD n .tick := by
   unfold lassoRun at h
   split at h
   · simp at h
@@ -77,7 +78,7 @@ theorem lasso_run {c : Cfg} {p : State → Bool} {q : Action → Bool} {pre cyc 
       rw [e, e2, hlast, c0]
   refine ⟨⟨fun n => if n < pre.length then ps.getD n default else cs.getD ((n - pre.length) % cyc.length) default,
     fun n => if n < pre.length then pre.getD n .tick else cyc.getD ((n - pre.length) % cyc.length) .tick, fun n => ?_⟩,
-    ?_, ?_, fun n => ?_, fun n => ?_⟩
+    ?_, ?_, fun n => ?_, fun n => ?_, fun n hn => by dsimp only; rw [if_pos hn]⟩
   · by_cases hn : n < pre.length
     · simp only [if_pos hn]; rw [pstep n hn]
       by_cases hn1 : n + 1 < pre.length
@@ -132,7 +133,7 @@ theorem fair_run_exists : ∃ r : Run replay, r.Fair ∧ r.st 0 = init replay �
     (∀ n b, ((r.st n).agt b).dead = false ∧ ((r.st n).agt b).bg = false) ∧
     ∀ n b, r.act n ≠ .leave b ∧ r.act n ≠ .die b ∧ r.act n ≠ .waiterGone b ∧ r.act n ≠ .reapGone b ∧ r.act n ≠ .bgStart b ∧
       ∀ f, r.act n ≠ .endOther b f := by
-  obtain ⟨r, hf, h0, hp, hq⟩ := lasso_run replay_lasso
+  obtain ⟨r, hf, h0, hp, hq, -⟩ := lasso_run replay_lasso
   refine ⟨r, hf, h0, fun n => forever (fun m => Reachable replay (r.st m)) 0 (h0 ▸ .init) (fun k _ ih => .step _ ih (r.ok k)) n
     (Nat.zero_le n), ?_, ?_⟩
   · intro n b

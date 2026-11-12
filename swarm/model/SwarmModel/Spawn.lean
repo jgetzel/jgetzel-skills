@@ -53,7 +53,7 @@ def lifecycleG (c : Cfg) (gate : List Nat → List Nat) (s : State) : State :=
   if c.agents.any (reusable c s) then told else c.tasks.foldl (spawnFor c (gate pl)) told
 def tickG (c : Cfg) (gate : List Nat → List Nat) (s : State) : State :=
   let r := reapLocks (reapTasks c s)
-  { lifecycleG c gate r with git := gitTick c r }
+  notices c { lifecycleG c gate r with git := gitTick c r }
 theorem tickG_id (c : Cfg) (s : State) : tickG c id s = tickOf c s := rfl
 
 /-- the tick with no spawn: reap, sweep, lifecycle's ends and digests -/
@@ -211,7 +211,7 @@ theorem noSpawn_startable {c : Cfg} {s : State} {t : Nat} (h : startable (reapLo
   generalize hz : reapLocks (reapTasks c s) = z at h
   have e : ∀ u, (z.tk u).st = .opn ∨ (z.tk u).st = .done → (noSpawn c s).tk u = z.tk u := by
     intro u hu
-    have ht : (noSpawn c s).task = (lifecycleG c (fun _ => []) z).task := by rw [← hz]; rfl
+    have ht : (noSpawn c s).task = (lifecycleG c (fun _ => []) z).task := by rw [← hz]; simp [noSpawn, tickG]
     have e2 : (noSpawn c s).tk u = (lifecycleG c (fun _ => []) z).tk u := by simp only [State.tk, ht]
     rw [e2]
     exact lifecycleG_nil_keep c z hu

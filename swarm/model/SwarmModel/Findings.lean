@@ -184,11 +184,12 @@ def lassoP (c : Cfg) (p : State → Bool) (pre cyc : List Action) (k : Nat) : Bo
   ((run c pre).bind fun s0 => walk c s0 (List.replicate k cyc).flatten).any fun ss =>
     ss.all fun s => p s && (fair c s).all fun f => (step c s f).isNone || cyc.contains f
 def lassoOk (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool := lassoP c (idleSlot c) pre cyc k
-/-- one more period changes only the log, the cursor, what was shown and where each inbox starts: the state at the end of
-period `k + 1` is the state at the end of period `k` with those four replaced, and the log is longer by `d` messages -/
+/-- one more period changes only the log, the cursor, what was shown, where each inbox starts and the event log: the state
+at the end of period `k + 1` is the state at the end of period `k` with those five replaced, and the log is longer by `d`
+messages -/
 def periodicD (c : Cfg) (d : Nat) (pre cyc : List Action) (k : Nat) : Bool :=
   match run c (pre ++ (List.replicate k cyc).flatten), run c (pre ++ (List.replicate (k + 1) cyc).flatten) with
-  | some a, some b => decide ({ b with log := a.log, cursor := a.cursor, seen := a.seen, start := a.start } = a) && decide (b.log.length = a.log.length + d)
+  | some a, some b => decide ({ b with log := a.log, cursor := a.cursor, seen := a.seen, start := a.start, evs := a.evs } = a) && decide (b.log.length = a.log.length + d)
   | _, _ => false
 def periodic (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool := periodicD c 2 pre cyc k
 

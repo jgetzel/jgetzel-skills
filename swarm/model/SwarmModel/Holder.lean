@@ -89,7 +89,8 @@ macro "gk_tac" : tactic => `(tactic|
     | (with_reducible apply gk_setTask)
     | (with_reducible apply gk_post)
     | (refine gk_setAg ?_ ?_ <;> first | (intro g hg; simp_all [Agent.live]; done) | skip)
-    | (refine gk_frame ?_ ?_ ?_ ‹Gk _ _ _› <;> rfl)))
+    | (refine gk_frame ?_ ?_ ?_ ‹Gk _ _ _› <;> rfl)
+    | assumption))
 
 theorem step_gen {c : Cfg} {s s' : State} {a : Nat} {act : Action}
     (hq : act ≠ .tick ∧ ∀ b, act ≠ .leave b ∧ act ≠ .reapGone b ∧ act ≠ .readAll b ∧ act ≠ .wake b ∧ act ≠ .prompt b ∧
@@ -202,7 +203,7 @@ theorem spawnFor_own {c : Cfg} {pl : List Nat} {y : State} {u a t : Nat} (hlt : 
     · rename_i hc
       simp only [hna]
       rw [if_pos hc]
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _) a' u t with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' u t with e | e
       · refine Or.inl ?_
         simp only [ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h ⊢
         rw [e] at h; simpa only [tk_mk, setAg_task, tk_def] using h
@@ -366,6 +367,9 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .unblock b, hs => exact step_gen (by simp) hl hs
   | .drop b, hs => exact step_gen (by simp) hl hs
   | .releaseOther b, hs => exact step_gen (by simp) hl hs
+  | .awayOn, hs => exact step_gen (by simp) hl hs
+  | .back, hs => exact step_gen (by simp) hl hs
+  | .commsRead, hs => exact step_gen (by simp) hl hs
 
 
 -- ---------- no agent starts a background job ----------
@@ -422,7 +426,8 @@ macro "bf_tac" : tactic => `(tactic|
     | (with_reducible apply bf_post)
     | (with_reducible apply bf_showAll)
     | (refine bf_setAg ?_ ?_ <;> first | (intro hh; simp_all; done) | skip)
-    | (refine bf_frame ?_ ‹Bf _› <;> rfl)))
+    | (refine bf_frame ?_ ‹Bf _› <;> rfl)
+    | assumption))
 
 theorem bf_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .bgStart b) (hI : Bf s) (hs : step c s act = some s') : Bf s' := by
   open_step hs

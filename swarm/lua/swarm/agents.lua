@@ -217,7 +217,8 @@ function M.digest(c, since, note)
   for _, r in ipairs(c:all("select name, ended from agent where ended>=? order by ended", since)) do
     local why = c:one("select data from event where agent=? and kind in ('reap','leave','end') and ts>=? order by id desc limit 1",
       r.name, since)
-    ended[#ended + 1] = { name = r.name, at = r.ended, why = why and why.data or json.null }
+    -- an end logs reap, leave or end; a launch that failed (tasks.unreserve) is no agent that ended (model Spawn.lean, Sp1)
+    if why then ended[#ended + 1] = { name = r.name, at = r.ended, why = why.data or json.null } end
   end
   local hung = A()
   for _, r in ipairs(c:all("select distinct e.agent as name from event e join agent g on g.name=e.agent "

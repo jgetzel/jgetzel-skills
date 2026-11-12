@@ -33,7 +33,14 @@ def stateJson (c : Cfg) (s : State) : Json :=
     ("cursor", Json.mkObj <| c.agents.map fun a => (slot a, s.cur a)),
     ("wts", Json.arr <| c.wtIds.toArray.map fun w => let x := s.git.wt w; Json.mkObj
       [("on", x.on), ("br", (x.br.map toJson).getD (-1 : Int)), ("head", x.head), ("dirty", x.dirty), ("recent", x.recent)]),
-    ("brs", Json.arr <| (List.range (c.nbases + c.nwts)).toArray.map fun b => ((s.git.tip b).map toJson).getD (-1 : Int))]
+    ("brs", Json.arr <| (List.range (c.nbases + c.nwts)).toArray.map fun b => ((s.git.tip b).map toJson).getD (-1 : Int)),
+    -- board #47: what the communicator is sent and has read, the away flag, and `--back`'s digest
+    ("comms", Json.arr <| s.cbox.toArray.map fun n => Json.mkObj [("kind", match n.kind with
+      | .blocked => "blocked" | .away => "away" | .back => "back"), ("task", n.task), ("urgent", n.urgent), ("qs", toJson n.qs)]),
+    ("ccur", s.ccur), ("away", s.away.isSome),
+    ("digest", match s.digest with
+      | some g => Json.mkObj [("qs", toJson g.qs), ("done", toJson g.done), ("ended", toJson (g.ended.map slot))]
+      | none => Json.null)]
 
 def worldJson (c : SCfg) (w : SWorld) : Json :=
   match stateJson c.sw w.s with
@@ -84,6 +91,7 @@ def steps (c : Cfg) (s : State) : List (List Step) :=
       ++ (ts.flatMap fun t => masks.map fun m => ("after", [n "t29" t, d "d29" m], after c s t (depSet c m)))
       ++ (ts.flatMap fun t => [("unblock", [n "t30" t], unblock c s t), ("drop", [n "t31" t], drop s t),
         ("releaseOther", [n "t32" t], releaseOther c s t)])
+      ++ [("awayOn", [], awayOn s), ("back", [], back c s), ("commsRead", [], commsRead s)]
       -- not `swarm end` without --force of a spawned agent: its recorded worktree is on the base of the task it was spawned
       -- for, which the model doesn't keep, so once reap or a release takes that task the Lua finds it unlanded (README)
       ++ ags.flatMap fun x => bs.map fun f =>
@@ -165,6 +173,10 @@ def endOther (x : Nat) (f : Bool) := ("endOther", [ag "a33" x, ("f33", toJson f)
 def failExit : String × List (String × Json) := ("failExit", [])
 def failRaise : String × List (String × Json) := ("failRaise", [])
 def lapse : String × List (String × Json) := ("lapse", [])
+def unblock (t : Nat) := ("unblock", [("t30", toJson t)])
+def awayOn : String × List (String × Json) := ("awayOn", [])
+def back : String × List (String × Json) := ("back", [])
+def commsRead : String × List (String × Json) := ("commsRead", [])
 end S
 open S in
 /-- what random runs rarely reach: worktrees removed with work on them that landed. `end`: a squash-merged worktree
@@ -183,7 +195,11 @@ failed launches of #1 in a row halt it; once #1 is claimed the next tick lifts t
 agent 0 reads it (board #53: before, agent 1 claimed it at once, finding `not_S1_humanRelease`); agent 0 reads it, agent 1
 claims #1, agent 0 claims #2, blocks on it, and the communicator releases
 the blocked #2. `end-user` (H1, board #46): agent 1 claims #1 and works, agent 0 stops holding nothing; the communicator
-ends agent 0 (`swarm end`, its checks pass), then agent 1 with `--force` (#1 is open again), and the tick spawns for #1. -/
+ends agent 0 (`swarm end`, its checks pass), then agent 1 with `--force` (#1 is open again), and the tick spawns for #1.
+`away` (board #47): agent 0 blocks #1 and the tick tells the communicator (urgent), who reads it; the answer comes and agent
+0 asks the same question again, which the tick tells again (finding #34); the user goes away; agent 1 blocks #2, #1 is
+answered and agent 0 finishes it, the tick tells #2 not urgent; agent 0 goes idle (big) and the tick ends it and spawns
+for #3; `--back`: the digest has #2, #1 done and agent 0 ended, and the communicator is sent one urgent message naming #2. -/
 def scripts : List (String × List (String × List (String × Json))) := [
   ("end", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gSquash 0 0 0, gAdd 1 1, gEdit 1 1, stop 0, stop 1, age 0, age 1, tick]),
   ("sweep", [gAdd 0 0, gEdit 0 0, gCommit 0 0, gLand 0 0 0, gAdd 0 1, gEdit 0 1, wAge 0, tick]),
@@ -198,7 +214,9 @@ def scripts : List (String × List (String × List (String × Json))) := [
   ("halt", [stop 0, age 0, tick, add, failExit, lapse, failExit, lapse, failExit, lapse, failExit, lapse, failExit,
     add, claim 1 1, tick]),
   ("release", [add, add, claim 0 1, releaseOther 1, readAll 0, claim 1 1, claim 0 2, block 0 2, releaseOther 2, readAll 0]),
-  ("end-user", [add, claim 1 1, stop 0, endOther 0 false, endOther 1 true, tick, boot 0])]
+  ("end-user", [add, claim 1 1, stop 0, endOther 0 false, endOther 1 true, tick, boot 0]),
+  ("away", [add, add, add, claim 0 1, block 0 1, tick, commsRead, unblock 1, readAll 0, block 0 1, tick, awayOn, claim 1 2,
+    block 1 2, unblock 1, readAll 0, done 0 1, tick, stopBig 0, age 0, tick, back, commsRead])]
 
 -- ---------- PrWatch.lean's layer (board #28) ----------
 namespace P

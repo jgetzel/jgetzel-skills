@@ -124,7 +124,7 @@ theorem lk_tickOf {c : Cfg} {s : State} (h : LkInv c s.lock s.ag) : LkInv c (tic
     refine lk_shrink h ?_
     simp only [reapLocks, reapTasks_lock]
     exact shrinks_map _ _ (by intro l; split <;> simp)
-  unfold tickOf lifecycle
+  rw [tickOf_lock, tickOf_ag]; unfold tickS lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
   have h2 := foldl_inv (fun x a => if finished c s1 a && !reusable c s1 a then endAgent x a else x)
     (fun x : State => LkInv c x.lock x.ag) c.agents s1 h1 (fun b a hb => by split; exact lk_endAgent _ hb; exact hb)
@@ -222,8 +222,8 @@ theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.l
     simp [List.getD_eq_getElem?_getD, hl]
   all_goals
     obtain ⟨hg, rfl⟩ := hstep
-    (try split) <;> (try simp only [unbelieve, awake, claimed]) <;> simp <;>
-      ((with_reducible refine lk_live hs ?_); live_tac)
+    (try split) <;> (try simp only [unbelieve, awake, claimed]) <;> (try simp) <;>
+      (first | exact hs | ((with_reducible refine lk_live hs ?_); live_tac))
 
 /-- S3. With PR #114 (swarm lock refuses any common file) and board #26 (exactly the patterns that share a file),
 no two live locks of different agents cover a common file. -/

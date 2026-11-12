@@ -176,6 +176,7 @@ theorem N1_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hre
     have hl : ((reapLocks (reapTasks c s)).agt a).live = true := by
       simp only [holdsWork, Bool.and_eq_true] at h; exact h.1
     have := lifecycle_keeps (finished_of_holds hbl haw hoa hp h) hl
+    obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
     simp only [keptBy, beq_iff_eq]
     show { (lifecycle c (reapLocks (reapTasks c s))).agt a with told := [] } = _
     rw [this, hz]
@@ -186,6 +187,7 @@ theorem N1_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hre
         (fun y u hy => ⟨by rw [reapTask_keeps (by rw [hy.1]; exact ho) (by rw [agt_of_ag hy.2]; exact hk), hy.1],
           by rw [reapTask_ag]; exact hy.2⟩)).1
     have hz : (reapLocks (reapTasks c s)).tk t = s.tk t := by rw [tk_of_task (reapLocks_task _), hr]
+    obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
     show ((lifecycle c (reapLocks (reapTasks c s))).tk t).owner = some o
     rw [lifecycle_tk (by rw [hz]; exact hst) (by rw [hz]; exact ho), hz, ho]
   · simp [fenced, hret, h]

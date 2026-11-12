@@ -10,6 +10,7 @@ local stdlib = require "posix.stdlib"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local DIR = os.getenv("SWARM_MODEL_TRACES") or (here .. "/../../model/traces")
 local COMMS, ROSTER, CAP = "m-comms", 2, "2"
+local agents_HUMAN = require("swarm.agents").HUMAN
 local SYS = { released = "system", digest = "system", nudge = "system", dm = "dm", answer = "dm" }
 
 -- the model's unread ids for a (Model.lean's unread)
@@ -92,6 +93,72 @@ local function check(t, st, where, N, seen, M)
         fail("unread of " .. slot, table.concat(got, ","), table.concat(want, ","))
       end
     end
+  end
+end
+
+-- board #47: what the communicator is sent that the model has (a block's notice, `swarm away`'s line, `--back`'s message;
+-- its other messages are outside the model), in order, with urgency and the task; how many of them it has read; the away
+-- flag; and `--back`'s digest (meta away_digest). R maps every real name the replay has seen to its slot.
+local function commscheck(t, st, where, R)
+  if st.comms == nil then return end  -- a trace from before board #47
+  local function fail(what, got, want)
+    error(("%s: %s: db has %s, model has %s"):format(where, what, tostring(got), tostring(want)), 0)
+  end
+  local rows = {}
+  for _, r in ipairs(t:q("select id, body, urgent from msg where dest=? order by id", COMMS)) do
+    local kind = (r.body:match("^the user is away since") and "away") or (r.body:match("^the user is back") and "back")
+      or (r.body:match("^[%w%-]+ is blocked") and "blocked") or nil
+    if kind then rows[#rows + 1] = { id = r.id, kind = kind, urgent = r.urgent ~= 0, body = r.body } end
+  end
+  if #rows ~= #st.comms then fail("messages to the communicator", #rows, #st.comms) end
+  local function ids(l) local o = {} for i, x in ipairs(l) do o[i] = tostring(x) end return table.concat(o, ",") end
+  for i, m in ipairs(st.comms) do
+    local r = rows[i]
+    if r.kind ~= m.kind or r.urgent ~= m.urgent then
+      fail("communicator message " .. i, r.kind .. (r.urgent and " urgent" or ""), m.kind .. (m.urgent and " urgent" or ""))
+    end
+    local on = tonumber(r.body:match("^[%w%-]+ is blocked on #(%d+)") or "")
+    if m.kind == "blocked" and on and on ~= m.task then fail("communicator message " .. i .. " task", on, m.task) end
+    if m.kind == "back" then
+      local got = {}
+      for id in (r.body:match("%((.*)%)") or ""):gmatch("#(%d+)") do got[#got + 1] = tonumber(id) end
+      if ids(got) ~= ids(m.qs) then fail("--back's questions", ids(got), ids(m.qs)) end
+    end
+  end
+  local cur = t:q1("select last_msg_id from cursor where agent=?", COMMS)
+  local n = 0
+  for _, r in ipairs(rows) do if cur and r.id <= cur.last_msg_id then n = n + 1 end end
+  if n ~= st.ccur then fail("what the communicator read", n, st.ccur) end
+  local aw = t:q1("select v from meta where k='away'")
+  if (aw ~= nil) ~= st.away then fail("away", aw and aw.v, st.away) end
+  local dg = t:q1("select v from meta where k='away_digest'")
+  local md = st.digest ~= json.null and st.digest or nil
+  if (dg ~= nil) ~= (md ~= nil) then fail("away_digest", dg and dg.v, md and "a digest") end
+  if dg then
+    local g = json.decode(dg.v)
+    -- the questions in the model's order (by event); the Lua's times are seconds, so a tie may be ordered by id there
+    local since, got = {}, {}
+    for i, q in ipairs(g.questions) do since[q.id] = q.since; got[i] = q.id end
+    local want = {}
+    for i, id in ipairs(md.qs) do want[i] = id end
+    local sg, sw = { unpack(got) }, { unpack(want) }
+    table.sort(sg); table.sort(sw)
+    if ids(sg) ~= ids(sw) then fail("digest questions", ids(got), ids(want)) end
+    for i = 2, #want do
+      if since[want[i - 1]] > since[want[i]] then fail("digest question order", ids(got), ids(want)) end
+    end
+    local function sorted(rows_, f)
+      local o = {}
+      for i, r in ipairs(rows_) do o[i] = f(r) end
+      table.sort(o)
+      return ids(o)
+    end
+    if sorted(g.done, function(r) return r.id end) ~= sorted(md.done, function(x) return x end) then
+      fail("digest done", sorted(g.done, function(r) return r.id end), sorted(md.done, function(x) return x end))
+    end
+    local ge = sorted(g.ended, function(r) return R[r.name] or r.name end)
+    local me = sorted(md.ended, function(x) return x end)
+    if ge ~= me then fail("digest ended", ge, me) end
   end
 end
 
@@ -317,6 +384,15 @@ local function act(t, name, p, N, G, prev)
   elseif name == "unblock" then sw(COMMS, "task", "unblock", tostring(p.t30), "--answer", "go left")
   elseif name == "drop" then sw(COMMS, "task", "drop", tostring(p.t31))
   elseif name == "releaseOther" then sw(COMMS, "task", "release", tostring(p.t32))
+  -- board #47: the user's away and back, each run twice (the second changes nothing: A4); the communicator's read
+  elseif name == "awayOn" then
+    -- a second passes first: the digest's since is a second, so what happened in away's own second counts as since
+    setdb(t, "update event set ts=ts-1")
+    setdb(t, "update task set done_at=done_at-1 where done_at is not null")
+    setdb(t, "update agent set ended=ended-1 where ended is not null")
+    sw(agents_HUMAN, "away", "lunch"); sw(agents_HUMAN, "away")
+  elseif name == "back" then sw(agents_HUMAN, "away", "--back"); sw(agents_HUMAN, "away", "--back")
+  elseif name == "commsRead" then sw(COMMS, "read")
   elseif name == "endOther" then  -- H1: the user's or the communicator's `swarm end`, --force or not
     if p.f33 then sw(COMMS, "end", p.a33, "--force") else sw(COMMS, "end", p.a33) end
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")
@@ -354,8 +430,8 @@ local function replay(t, file)
     t:hook(name, "prompt", {})
   end
   t:q("insert or replace into meta(k,v) values('comms',?)", COMMS)  -- as `swarm start` records it
-  local N, seen, prev = {}, { n = 0 }, s0
-  for _, name in ipairs(roster) do N[name] = name end
+  local N, seen, prev, R = {}, { n = 0 }, s0, {}
+  for _, name in ipairs(roster) do N[name] = name; R[name] = name end
   check(t, s0, "init", N, seen)
   gitcheck(t, s0, "init", G, N)
   for i = 2, #trace.states do
@@ -390,6 +466,8 @@ local function replay(t, file)
       end
     end
     check(t, st, where, N, seen, M)
+    for slot, n in pairs(N) do R[n] = slot end
+    commscheck(t, st, where, R)
     spawncheck(t, st.spawn, where)
     if name == "tick" or name:match("^fail") or name:match("^git") or name:match("^wt") then  -- nothing else changes git or agent.wt
       learn(t, st, G, where)
