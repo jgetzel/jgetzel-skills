@@ -118,9 +118,8 @@ function T.test_back_digest(t)
   for _, x in ipairs({ "x", "y", "z" }) do t:sw("e", "task", "add", x) end
   t:has(t:sw("human", "away", "--back").stdout, "you were not away")
   t:sw("human", "away")
+  t:sw("g", "task", "claim", "3"); t:sw("g", "task", "block", "3", "which port?")  -- #3 asked first
   t:sw("e", "task", "claim", "1"); t:sw("e", "task", "block", "1", "which db?")
-  t:sw("g", "task", "claim", "3"); t:sw("g", "task", "block", "3", "which port?")
-  t:q("update event set ts=ts-60 where kind='block' and data like '#3 %'")  -- #3 asked first
   t:sw("e", "task", "claim", "2"); t:sw("e", "task", "done", "2", "--evidence", "abc123")
   t:q("update task set pr=12, merged_at=? where id=2", os.time())
   t:q("insert into ci(id,sha,status,conclusion,url,created,updated,workflow) values(1,'deadbeef00','completed','success','u','2026-11-11T10:00:00Z','x','ci')")
@@ -140,6 +139,22 @@ function T.test_back_digest(t)
   t:eq(s.back.ended[1].name, "h"); t:eq(s.back.ci.conclusion, "success")
   t:sw("human", "away")
   t:eq(state(t).back, nil)
+end
+
+-- what happened in away's own second, before it, is not since (board #74): the digest reads event ids
+function T.test_back_digest_exact_since(t)
+  t:fakes()
+  comms(t)
+  t:agent("e"); t:agent("h")
+  t:sw("e", "task", "add", "x"); t:sw("e", "task", "claim", "1"); t:sw("e", "task", "done", "1", "--evidence", "abc")
+  t:sw("h", "leave")
+  t:sw("human", "away")
+  t:q("update event set ts=(select max(ts) from event)")  -- all in one second
+  t:q("update task set done_at=(select max(ts) from event)"); t:q("update agent set ended=(select max(ts) from event) where ended is not null")
+  t:q("update meta set v=(select max(ts) from event)||' ' where k='away'")
+  t:sw("human", "away", "--back")
+  local g = json.decode(t:q1("select v from meta where k='away_digest'").v)
+  t:eq(#g.done, 0); t:eq(#g.ended, 0)
 end
 
 function T.test_state_task(t)

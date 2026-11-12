@@ -202,32 +202,36 @@ function M.comms_name(c)
   return cm and cm.v ~= "" and cm.v or M.env("SWARM_COMMS")
 end
 
--- What happened since `since`, for `swarm away --back` (and state --json's `back`, until the next away).
-function M.digest(c, since, note)
+-- What happened since away (`since` its second, `from` its event's id), for `swarm away --back` (and state --json's
+-- `back`, until the next away). Questions, done, ended and hung are read by event id, so what happened in away's own
+-- second before it is not since; merged is by GitHub's merge time.
+function M.digest(c, since, note, from)
   local A, t = json.array, util.now()
   local qs = A()
   for _, r in ipairs(c:all("select id,title,owner,question from task where state='blocked'")) do
-    local e = c:one("select max(ts) as ts from event where (kind='block' and (data=? or data like ?)) "
+    local e = c:one("select max(id) as id, max(ts) as ts from event where (kind='block' and (data=? or data like ?)) "
       .. "or (kind='task-blocked' and path=?)", "#" .. util.d(r.id), "#" .. util.d(r.id) .. " %", util.d(r.id))
-    r.since = e and e.ts or since
+    r.since, r.ev = e and e.ts or since, e and e.id or from
     qs[#qs + 1] = r
   end
-  table.sort(qs, function(x, y) return x.since < y.since or (x.since == y.since and x.id < y.id) end)
+  table.sort(qs, function(x, y) return x.ev < y.ev or (x.ev == y.ev and x.id < y.id) end)
+  for _, r in ipairs(qs) do r.ev = nil end
   local ended = A()
-  for _, r in ipairs(c:all("select name, ended from agent where ended>=? order by ended", since)) do
-    local why = c:one("select data from event where agent=? and kind in ('reap','leave','end') and ts>=? order by id desc limit 1",
-      r.name, since)
+  for _, r in ipairs(c:all("select name, ended from agent where ended is not null order by ended")) do
+    local why = c:one("select data from event where agent=? and kind in ('reap','leave','end') and id>? order by id desc limit 1",
+      r.name, from)
     -- an end logs reap, leave or end; a launch that failed (tasks.unreserve) is no agent that ended (model Spawn.lean, Sp1)
     if why then ended[#ended + 1] = { name = r.name, at = r.ended, why = why.data or json.null } end
   end
   local hung = A()
   for _, r in ipairs(c:all("select distinct e.agent as name from event e join agent g on g.name=e.agent "
-      .. "where e.kind='stay-hung' and e.ts>=? and g.ended is null order by e.agent", since)) do
+      .. "where e.kind='stay-hung' and e.id>? and g.ended is null order by e.agent", from)) do
     hung[#hung + 1] = r.name
   end
   local ci = c:one("select sha,status,conclusion,url from ci order by created desc limit 1")
   return { since = since, back = t, note = note or json.null, questions = qs,
-    done = A(c:all("select id,title,owner,evidence,done_at from task where state='done' and done_at>=? order by done_at", since)),
+    done = A(c:all("select id,title,owner,evidence,done_at from task t where state='done' and exists(select 1 from event "
+      .. "where kind='done' and id>? and (data='#'||t.id or data like '#'||t.id||' %')) order by done_at", from)),
     merged = A(c:all("select id,title,pr,merged_at from task where merged_at>=? order by merged_at", since)),
     ci = ci or json.null, ended = ended, hung = hung }
 end
@@ -264,7 +268,8 @@ function M.cmd_away(c, a)
     local g = c:tx(function()
       local aw = M.away(c)
       if not aw then return nil end
-      local g = M.digest(c, aw.since, aw.note)
+      local ev = c:one("select max(id) as id from event where kind='away'")  -- logged with the flag, in its tx
+      local g = M.digest(c, aw.since, aw.note, ev and ev.id or 0)
       c:exec("delete from meta where k='away'")
       c:exec("insert or replace into meta(k,v) values('away_digest',?)", json.encode(g))
       db.log(c, me, "back")
