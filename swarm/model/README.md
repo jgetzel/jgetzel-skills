@@ -52,8 +52,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
 | `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
 | `SwarmModel/Cut.lean` | a tick an error ends partway (board #84): `Cut`, `tickCut` (Model.lean) and `Reachable.cut`, so every invariant of reachable states holds of what a failed tick leaves; N1, W1 and W2 of a cut tick (`N1cut_of`), Q1 of one whose notice pass ran (`Q1cut`), a failed pass stops no other with `passGuard` (`passesIndep_of`) and stops them all without it (finding #36: `not_passesIndep`, `stuck36`, the run `pre36`) |
-| `SwarmModel/Contract.lean` | the spec: the theorems to build on downstream (board #25), restated over the model's types, each after the readable definitions it needs (board #86, `STYLE.md`; S1, N1, L4, R1 (a') and reap-reads-gone so far): *Using these proofs downstream*, *What a reviewer reads and trusts* |
-| `SwarmModel/Checkers.lean` | each Bool checker the replay and the counterexamples run (`oneWorker`, `holdsWork`, `keptBy`, `deadLive`, `midTick`) is the readable Prop of `Contract.lean`: `oneWorker_spec`, … |
+| `SwarmModel/Contract.lean` | the spec: the theorems to build on downstream (board #25), restated over the model's types, each after the readable definitions it needs (board #86, `STYLE.md`): *Using these proofs downstream*, *What a reviewer reads and trusts* |
+| `SwarmModel/Checkers.lean` | each Bool checker the replay and the counterexamples run (`oneWorker`, `holdsWork`, `keptBy`, `deadLive`, `midTick`) is the readable Prop of `Contract.lean`: `oneWorker_spec`, …, with the Bool checkers `held`, `stopped`, `noEarlyStart`, `inboxExact`, `doneHasEvidence`, `gcOk`, `unlanded`, `endable`, `idleClaim` and `toldAfter` as well |
 | `STYLE.md` | how a statement of `Contract.lean` is written so a reviewer can read it |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -246,7 +246,7 @@ evidence (a done event), and the owner told (`.merged`, which drops its belief, 
 owner is told once per head that its checks finished (`.checks`). The Lua runs the poll at the end of the tick; here it is
 a step of its own, which only adds interleavings. A merge's place in `evs` (`Ev.merge`) is GitHub's merge time. S1-S5, N1,
 W1-W4, L1-L4, H1, H2 and A1-A4 are proved with all of it in `step`; S1's invariant counts a belief in a task the poll
-marked done as backed until the owner reads that (`HD`, and `s1_believes_held`: held, dropped, or done with its merge
+marked done as backed until the owner reads that (`HD`, and `believed_task_is_held_dropped_or_merged`: held, dropped, or done with its merge
 recorded). The poll is in `fair`. Over fair runs, with main's fixes:
 
 - **P2** (`P2_of`) a task claimed with its PR merged does not stay so: the poll marks it done.
@@ -306,7 +306,7 @@ without it is refuted (finding #32).
   `stopped`: `task claim` refuses it (in the write's transaction), and it is out of the pool, so auto-spawn and digests
   skip it. An ex-owner not at work holds nothing back: every way back to work delivers the inbox first. S1 holds with it
   (`oneWorker_of_reachable`); a belief may now rest on the unread stop of an open task (`HS` in `J`;
-  `Contract.s1_believes_held_stop`). L1 holds with it: on a fair run the stop lifts (`stop_read`: the ex-owner reads it
+  `Contract.believed_task_is_held_dropped_merged_or_stopped`). L1 holds with it: on a fair run the stop lifts (`stop_read`: the ex-owner reads it
   or stops being at work; a dead terminal is excluded, as for L1) and, while no one releases the task again, stays
   lifted (`stopped_step`): `stop_lifts`, `startable_leads_to`.
 
@@ -393,7 +393,7 @@ W1-W4, L1-L4, H1, H2 and A1-A4 above are proved with them in `step`. `idleFree` 
   state but the agents' as it was (tasks with their claims and leases, locks, the log and cursors, git, events, away,
   the communicator's inbox, the digest, CI), every other agent's row as it was, and A's but for the stay
   (`endStay_frame`). Afterwards A is ended only by lifecycle's own rules, so ending a stay loses no work: N1 holds with
-  `endStay` in `step` (`endStay_N1`, `Contract.st4_endStay`), and W3 with free meaning also staying for nothing
+  `endStay` in `step` (`endStay_N1`, `Contract.end_stay_changes_only_the_stay`), and W3 with free meaning also staying for nothing
   (`doneOnBase` reads `idleFree`). No meaningful refutation with lifecycle ignoring the stay: the stay is no part of the
   work an agent holds (`holdsWork_stay`), so a lifecycle that read any stay as off still calls no agent that holds work
   finished (`finished_stayOff`); claims and locks are `idleFree`'s own checks and the stay changes neither. What a stay
@@ -1169,10 +1169,10 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 
 | Property | Theorem (`Contract.lean`) | Needs | Shown needed by |
 |---|---|---|---|
-| S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `one_worker_per_task` … `digest_hung'` | none | |
-| N1, W1, W2 of a tick an error cut partway; a failed pass stops no other | `n1_cut`, `passes_indep` (`N1cut_of`, `passesIndep_of`) | none | |
-| landed_ref says landed → reachable | `Tools.landedRef_reach` (`env_landedRef`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
-| the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`env_sweepGate`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
+| S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `one_worker_per_task` … `digest_lists_slot_iff_hung_since_away` | none | |
+| N1, W1, W2 of a tick an error cut partway; a failed pass stops no other | `no_work_lost_when_tick_cut`, `failed_pass_stops_no_other_pass` (`N1cut_of`, `passesIndep_of`) | none | |
+| landed_ref says landed → reachable | `Tools.landedRef_reach` (`landed_ref_means_reachable_or_gh_said_so`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
+| the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`sweep_gate_implies_w1_premise`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
 | `worktree remove` takes only that worktree | `Tools.wtRemove_only` | `WtRemove` | `need_wtRemove` |
 | a deleted branch's tip was the checked HEAD | `Tools.delRef_guarded` | `DelRef` | `need_delRef` |
 | `--restart`'s watchd is alive (R1 at the tools) | `Tools.restart_alive` | `HcRunStarts`, `HcLsShows`, `Kill0Finds` | `need_restart_hcRun`, `_hcLs`, `_kill0` |
@@ -1181,7 +1181,7 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 | the waiter check is the waiter alive | `Tools.waiter_alive` | `Kill0Alive` | `need_kill0Alive` |
 | a lapsed lease stays lapsed | `Tools.lapsed_stays` | `NowMono` | `need_nowMono` |
 | ci.pr_act on gh's answers is the model's poll | `Tools.prAct` | `GhChecks`, `GhState` | `need_prAct_checks`, `need_prAct_state` |
-| N1' at the tools | `Tools.N1'` (`n1'_nudge`) | `HcSendTargets` | `need_hcSend` (with `nudge_enabled`: the step exists) |
+| N1' at the tools | `Tools.N1'` (`nudge_types_into_one_terminal`) | `HcSendTargets` | `need_hcSend` (with `nudge_enabled`: the step exists) |
 | the db is serializable | `Db.serializable` (`db_serializable`) | all five sqlite | `need_db_begin`, `_read`, `_write`, `_commit`, `_rollback` |
 | SQLITE_BUSY is clean | `Db.busyClean` | all five sqlite | the same five |
 | a statement answers on its transaction's db | `Db.stmt_out` | `SqliteRead`, `SqliteWrite` | `need_db_read`, `need_db_write` |
@@ -1205,13 +1205,13 @@ A proof about a program that uses the swarm (a client of its CLI, a tool that re
 `SwarmModel.Contract` and build on what is proved instead of guessing. Add this package to your lakefile (`[[require]]`
 `name = "swarm-model"`, `path = ".../swarm/model"`, or a git source with `subDir = "swarm/model"`), then `import
 SwarmModel.Contract`. `example/Client.lean` is a worked consumer: a toy client that works only on a task it believes it
-claimed, proved never to work on a task another agent holds (`never_works_on_others`, from `s1_believes_held`), and
-`env_landedRef` used on `Env.ideal` with its two assumptions proved in place.
+claimed, proved never to work on a task another agent holds (`never_works_on_others`, from `believed_task_is_held_dropped_or_merged`), and
+`landed_ref_means_reachable_or_gh_said_so` used on `Env.ideal` with its two assumptions proved in place.
 
 What is proved. `Contract.lean` lists the theorems, each with what it guarantees and what it rests on: S1-S5 of every
-reachable state (`one_worker_per_task`, `s1_believes_held`, `s2_noEarlyStart`, `s3_noSharedFile`, `s4_inboxExact`,
-`s5_doneHasEvidence`), W1 and N1 of every step and tick (`w1_gcOk`, `no_work_lost`), L2 and L4 over fair runs
-(`l2_idleClaim`, `gone_terminal_row_is_ended`), R1 (a') of every step of several swarms (`ticks_never_overlap`), N1' of a nudge (`n1'_nudge`), and at the tools: `env_landedRef`, `env_sweepGate`, `reap_reads_gone_iff_terminal_gone`, `db_serializable`.
+reachable state (`one_worker_per_task`, `believed_task_is_held_dropped_or_merged`, `no_claim_before_dependencies_done`,
+`no_path_covered_by_two_agents_locks`, `inbox_shows_each_message_once`, `done_task_has_evidence`), W1 and N1 of every step and tick (`workspace_gc_removes_only_landed`, `no_work_lost`), L2 and L4 over fair runs
+(`idle_claim_ends`, `gone_terminal_row_is_ended`), R1 (a') of every step of several swarms (`ticks_never_overlap`), N1' of a nudge (`nudge_types_into_one_terminal`), and at the tools: `landed_ref_means_reachable_or_gh_said_so`, `sweep_gate_implies_w1_premise`, `reap_reads_gone_iff_terminal_gone`, `db_serializable`.
 The model theorems hold for every `Cfg` whose switches they take as hypotheses (the fixes; main runs with them on) and
 rest on Lean's axioms alone. They are about the model: that the Lua does what the model does is replayed (random and
 scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what is lifted (`Lifted/`, `Decide.lean`,
