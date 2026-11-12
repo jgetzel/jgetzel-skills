@@ -46,6 +46,11 @@ theorem RunP.frame (r : RunP m h P) : RunP (fun n => frame (m n)) h P := by
   obtain ⟨N, a, h', e, p⟩ := r
   exact ⟨N, a, h', fun n hn => by simp only [Lua.frame, e n hn], p⟩
 
+/-- and so does the function a frame runs -/
+theorem RunP.cFrame {v : Val} (r : RunP m h P) : RunP (fun n => cFrame v (m n)) h P := by
+  obtain ⟨N, a, h', e, p⟩ := r
+  exact ⟨N, a, h', fun n hn => by simp only [Lua.cFrame, onFrames, e n hn], p⟩
+
 theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P) : RunP m' h P := by
   have : m = m' := funext e
   subst this; exact r
@@ -54,7 +59,7 @@ theorem RunP.cong {m m' : Nat → M α} (e : ∀ n, m n = m' n) (r : RunP m h P)
 theorem RunP.load {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
     {cn : Option (List Char)} {b : Block} {P : List Val → Heap → Prop}
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
-    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], G⟩))) :
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s)⟩))) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) (.str s :: cn.toList.map .str)) h P :=
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load I n fname hf s cn b h hb hp, p⟩
@@ -75,40 +80,41 @@ theorem RunP.load_dump {I : Sem} {fname : String} (hf : fname = "load" ∨ fname
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
     show call I.srcs I.oracle I.tgt (n + 2) _ _ h = _
-    rw [call_load_dump I n fname hf a s cn]; simp only [Lua.frame, e], p⟩
+    rw [call_load_dump I n fname hf a s cn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
 
 /-- `load(s, name, nil, t)`, `loadstring`'s: the closure of `s`'s parse, its environment `t` -/
 theorem RunP.loadEnv {I : Sem} {fname : String} (hf : fname = "load" ∨ fname = "loadstring") {s : List Char}
     {cn : Option (List Char)} {t : Nat} {b : Block} {P : List Val → Heap → Prop}
     (hb : s.head? ≠ some '\x1b') (hp : parseChunk s (shortSrc (cn.getD s)) = .ok b)
-    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], t⟩))) :
+    (p : P [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s)⟩))) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t]) h P :=
   ⟨2, _, _, fun n hn => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩; exact call_load_env I n fname hf s cn t b h hb hp, p⟩
 
 /-- `dofile(p)` of a file given as source, its chunk `k`: what `k` does on no arguments -/
 theorem RunP.dofile {I : Sem} {p : List Char} {b : Block} {k : Nat → List Val → Nat → M (List Val)}
-    {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩) (hs : I.srcs (String.ofList p) = some b)
-    (r : RunP (fun n => bounded 1 (do let a ← alloc (.clo ⟨[], true, b, [], G⟩); k a [] n)) h P) :
+    {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a (fileClo (String.ofList p) b))
+    (hs : I.srcs (String.ofList p) = some b)
+    (r : RunP (fun n => bounded 1 (do let a ← alloc (.clo (fileClo (String.ofList p) b)); k a [] n)) h P) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "dofile" []) [.str p]) h P := by
-  obtain ⟨N, a, h', e, q⟩ := RunP.frame r
+  obtain ⟨N, a, h', e, q⟩ := RunP.frame (RunP.cFrame (v := .prim "dofile" []) r)
   refine ⟨N + 3, a, h', fun n hn => ?_, q⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 3 := ⟨n - 3, by omega⟩
   show call _ _ _ _ _ _ h = _; rw [call_dofile I n p b k h hk hs]; exact e n (by omega)
 
 /-- `require m` of a module given as source and not yet loaded, its chunk `k`: `S.requireK` -/
 theorem RunP.require {I : Sem} {m p : List Char} {b : Block} {k : Nat → List Val → Nat → M (List Val)} {v : Val}
-    {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a ⟨[], true, b, [], G⟩)
+    {f : String} {P : List Val → Heap → Prop} (hk : ∀ a, CFn I (k a) a (fileClo f b))
     (hl : rawget LOADED (.str m) h = .ok v h) (hv : v.truthy = false)
     (hn : m ≠ "table.new".toList ∧ m ≠ "table.clear".toList)
     (hp : rawget PACKAGE (lstr "path") h = .ok (.str p) h)
-    (hf : (pathFiles p (modPath m)).findSome? I.srcs = some b)
-    (r : RunP (S.requireK m ⟨[], true, b, [], G⟩ k) h P) :
+    (hf : (pathFiles p (modPath m)).findSome? (fun f => (I.srcs f).map (f, ·)) = some (f, b))
+    (r : RunP (S.requireK m (fileClo f b) k) h P) :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "require" []) [.str m]) h P := by
-  obtain ⟨N, a, h', e, q⟩ := RunP.frame r
+  obtain ⟨N, a, h', e, q⟩ := RunP.frame (RunP.cFrame (v := .prim "require" []) r)
   refine ⟨N + 3, a, h', fun n hN => ?_, q⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 3 := ⟨n - 3, by omega⟩
-  show call _ _ _ _ _ _ h = _; rw [call_require I n m p b k h v hk hl hv hn hp hf]; exact e n (by omega)
+  show call _ _ _ _ _ _ h = _; rw [call_require I n m p b k h v f hk hl hv hn hp hf]; exact e n (by omega)
 
 -- ---------- coroutines ----------
 
@@ -153,7 +159,7 @@ theorem SuspP.frame {Q : List Val → Heap → Prop} (r : SuspP m h Q) : SuspP (
 theorem SuspP.catchVal {ok : α → M β} {bad : Val → M β} {Q : List Val → Heap → Prop} (r : SuspP m h Q) :
     SuspP (fun n => catchVal (m n) ok bad) h Q := by
   obtain ⟨N, vs, h', e, p⟩ := r
-  exact ⟨N, vs, h', fun n hn => by simp only [Lua.catchVal, e n hn], p⟩
+  exact ⟨N, vs, h', fun n hn => by simp only [Lua.catchVal, catchValF, e n hn], p⟩
 
 /-- `coroutine.yield(vs)` in coroutine `a` with no resume left to replay, and not inside a builtin calling back: the
 coroutine suspends with `vs` -/
@@ -162,7 +168,7 @@ theorem SuspP.yield {I : Sem} {a : Nat} {t : Thr Heap} {vs : List Val} (hc : h[C
     SuspP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.yield" []) vs) h (fun ws h' => ws = vs ∧ h' = h) := by
   refine ⟨2, vs, h, fun n hn => ?_, rfl, rfl⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
-  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, yield_susp hc ht hb hs]
+  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, Lua.cFrame, onFrames, yield_susp hc ht hb hs, Err.isLua, Bool.false_eq_true, ↓reduceIte]
 
 /-- `coroutine.yield` in a replay: the next resume's arguments `ws`, in the heap it went on in, `h1` -/
 theorem RunP.yield {I : Sem} {a : Nat} {t t1 : Thr Heap} {vs ws : List Val} {h1 : Heap} {rest : List (List Val × Heap)}
@@ -172,7 +178,7 @@ theorem RunP.yield {I : Sem} {a : Nat} {t t1 : Thr Heap} {vs ws : List Val} {h1 
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim "coroutine.yield" []) vs) h P := by
   refine ⟨2, ws, _, fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
-  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, yield_replay hc ht hb hs ht1]
+  show call _ _ _ _ _ _ h = _; rw [call_yield]; simp only [Lua.frame, Lua.cFrame, onFrames, yield_replay hc ht hb hs ht1]
 
 /-- a coroutine's run that returns -/
 theorem RunP.coRun_ret {m : Nat → M (List Val)} {Q : List Val → Heap → Prop} (r : RunP m h Q) :
@@ -198,8 +204,9 @@ theorem RunP.resume {I : Sem} {a : Nat} {args a1 : List Val} {prev f : Val} {his
   refine ⟨N + 2, _, h2, fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
   show call _ _ _ _ _ _ h = _; rw [call_resume]
-  have ef : ∀ X : M (List Val), X h = .ok (resumeVals o) h2 → Lua.frame X h = .ok (resumeVals o) h2 :=
-    fun X ex => by simp only [Lua.frame, ex]
+  have ef : ∀ X : M (List Val), X h = .ok (resumeVals o) h2 →
+      Lua.frame (Lua.cFrame (.prim "coroutine.resume" []) X) h = .ok (resumeVals o) h2 :=
+    fun X ex => by simp only [Lua.frame, Lua.cFrame, onFrames, ex]
   apply ef
   rw [bind_ok hb]; dsimp only
   rw [bind_ok (e n (by omega)), bind_ok (e2 N2 (Nat.le_refl _))]; rfl
@@ -211,8 +218,9 @@ theorem RunP.resume_fail {I : Sem} {a : Nat} {args : List Val} {m : String} {h0 
   refine ⟨2, _, h0, fun n hn => ?_, p⟩
   obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
   show call _ _ _ _ _ _ h = _; rw [call_resume]
-  have ef : ∀ X : M (List Val), X h = .ok [.bool false, lstr m] h0 → Lua.frame X h = .ok [.bool false, lstr m] h0 :=
-    fun X ex => by simp only [Lua.frame, ex]
+  have ef : ∀ X : M (List Val), X h = .ok [.bool false, lstr m] h0 →
+      Lua.frame (Lua.cFrame (.prim "coroutine.resume" []) X) h = .ok [.bool false, lstr m] h0 :=
+    fun X ex => by simp only [Lua.frame, Lua.cFrame, onFrames, ex]
   apply ef
   rw [bind_ok hb]; rfl
 
@@ -236,7 +244,7 @@ private theorem RunP.metaStep {I : Sem} {ev : String} {x y a b f : Val} {err : M
   rw [hk]
   show EStateM.bind _ _ h = _
   rw [EStateM.bind, hm]
-  cases f <;> first | exact (hf rfl).elim | (show EStateM.bind _ _ h = _; rw [EStateM.bind, mmFrame, e n (by omega)]; rfl)
+  cases f <;> first | exact (hf rfl).elim | (show EStateM.bind _ _ h = _; rw [EStateM.bind]; simp only [mmFrame, mmName, onFrames, e n (by omega)]; rfl)
 
 theorem RunP.arith_meta {I : Sem} {op : BinOp} {x y f : Val} {P : Val → Heap → Prop}
     (hop : op = .add ∨ op = .sub ∨ op = .mul ∨ op = .div ∨ op = .mod ∨ op = .pow)
@@ -294,7 +302,7 @@ theorem RunP.eq_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {P : Bool → 
   have b5 : ∀ {β} (k : Val → M β), (metaFn (tm.get (lstr "__eq")) >>= k) h = k (tm.get (lstr "__eq")) h :=
     fun k => bind_ok (by rw [hc]; rfl)
   have b6 : ∀ {β} (k : List Val → M β), (mmFrame "__eq" (call I.srcs I.oracle I.tgt n (tm.get (lstr "__eq"))
-      [.tbl a, .tbl b]) >>= k) h = k vs h' := fun k => bind_ok (by simp only [mmFrame]; rw [e])
+      [.tbl a, .tbl b]) >>= k) h = k vs h' := fun k => bind_ok (by simp only [mmFrame, mmName, onFrames]; rw [e])
   rw [eqv.eq_def]; dsimp only
   split
   · next hh => exact absurd (by simpa using hh) hab
@@ -324,7 +332,7 @@ theorem RunP.lt_meta {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {orEq : Bool} 
   simp only [hc, Val.isNil, Val.rawEq, Bool.not_false, Bool.true_and, beq_self_eq_true, ↓reduceIte]; rw [← hc]
   cases nm <;> dsimp only <;> rw [b5]
   · rw [bind_ok e]; rfl
-  · rw [bind_ok (by simp only [mmFrame]; rw [e])]; rfl
+  · rw [bind_ok (by simp only [mmFrame, mmName, onFrames]; rw [e])]; rfl
 
 /-- `x <= y` without `__le`: `not (y < x)` -/
 theorem RunP.le_lt {h : Heap} {I : Sem} {a b m : Nat} {f : Val} {nm : Option String} {P : Bool → Heap → Prop}
@@ -392,25 +400,25 @@ assignment inside the closure would. -/
 theorem RunP.debug {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P : List Val → Heap → Prop}
     (hn : name = "debug.getmetatable" ∨ name = "debug.setmetatable" ∨ name = "debug.getupvalue" ∨
       name = "debug.setupvalue" ∨ name = "debug.getinfo" ∨ name = "debug.traceback")
-    (e : debugFn name args h = .ok vs h') (p : P vs h') :
+    (e : debugFn I.oracle name args h = .ok vs h') (p : P vs h') :
     RunP (fun n => call I.srcs I.oracle I.tgt n (.prim name []) args) h P :=
   ⟨2, _, _, fun n hn2 => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
     show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
-    rw [call_prim, callPrim_debug I n name args hn]; simp only [Lua.frame, e], p⟩
+    rw [call_prim, callPrim_debug I n name args hn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
 
-theorem debug_getupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+theorem debug_getupvalue {o : Oracle} {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
     (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell))
     (hv : h[cell]? = some (.cell v)) :
-    debugFn "debug.getupvalue" (.fn a :: .num (.int i) :: rest) h = .ok [lstr x, v] h := by
+    debugFn o "debug.getupvalue" (.fn a :: .num (.int i) :: rest) h = .ok [lstr x, v] h := by
   have hn : ¬ i < 1 := by omega
   rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
   simp [debugFn, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, readCell, ha, hv, hu, hn,
     bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure, EStateM.pure]
 
-theorem debug_setupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
+theorem debug_setupvalue {o : Oracle} {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : String} {v : Val} {rest : List Val}
     (ha : h[a]? = some (.clo c)) (hi : 1 ≤ i) (hu : c.dbgUpvals[(i - 1).toNat]? = some (x, cell)) :
-    debugFn "debug.setupvalue" (.fn a :: .num (.int i) :: v :: rest) h = .ok [lstr x] (h.set! cell (.cell v)) := by
+    debugFn o "debug.setupvalue" (.fn a :: .num (.int i) :: v :: rest) h = .ok [lstr x] (h.set! cell (.cell v)) := by
   have hn : ¬ i < 1 := by omega
   rw [show (i - 1).toNat = i.toNat - 1 by omega] at hu
   simp [debugFn, anyArg, argInt, argIntN, argNum, Val.toNum, Num.trunc, upvalsOf, getObj, writeCell, ha, hu, hn,
@@ -418,8 +426,8 @@ theorem debug_setupvalue {h : Heap} {a cell : Nat} {c : Clo} {i : Int} {x : Stri
     MonadStateOf.modifyGet, EStateM.modifyGet]
 
 /-- `debug.getmetatable` of a table: its metatable, `__metatable` or not -/
-theorem debug_getmetatable {h : Heap} {a : Nat} {t : Tbl} {rest : List Val} (ha : h[a]? = some (.tbl t)) :
-    debugFn "debug.getmetatable" (.tbl a :: rest) h = .ok [(t.mt.map Val.tbl).getD .nil] h := by
+theorem debug_getmetatable {o : Oracle} {h : Heap} {a : Nat} {t : Tbl} {rest : List Val} (ha : h[a]? = some (.tbl t)) :
+    debugFn o "debug.getmetatable" (.tbl a :: rest) h = .ok [(t.mt.map Val.tbl).getD .nil] h := by
   simp [debugFn, anyArg, getTbl, getObj, ha, bind, EStateM.bind, get, getThe, MonadStateOf.get, EStateM.get, pure,
     EStateM.pure]
 
@@ -434,7 +442,7 @@ theorem RunP.bit {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P
   ⟨2, _, _, fun n hn2 => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
     show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
-    rw [call_prim, callPrim_bit I n name args hn]; simp only [Lua.frame, e], p⟩
+    rw [call_prim, callPrim_bit I n name args hn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
 
 /-- an int32 is its own int32 -/
 theorem wrap32_of_inInt32 {i : Int} (hi : -2147483648 ≤ i ∧ i < 2147483648) : wrap32 i = i := by
@@ -508,7 +516,7 @@ theorem RunP.ffi {I : Sem} {name : String} {args vs : List Val} {h h' : Heap} {P
   ⟨2, _, _, fun n hn2 => by
     obtain ⟨n, rfl⟩ : ∃ k, n = k + 2 := ⟨n - 2, by omega⟩
     show call I.srcs I.oracle I.tgt (n + 1 + 1) (.prim name []) args h = _
-    rw [call_prim, callPrim_ffi I n name args hn]; simp only [Lua.frame, e], p⟩
+    rw [call_prim, callPrim_ffi I n name args hn]; simp only [Lua.frame, Lua.cFrame, onFrames, e], p⟩
 
 theorem ctypeCall_ok {a : Nat} {ct : CType} {args vs : List Val} {h h' : Heap} (ha : h[a]? = some (.ctype ct))
     (e : ffiNew (.cdata a :: args) h = .ok vs h') : ctypeCall a args h = .ok vs h' := by

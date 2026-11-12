@@ -33,7 +33,7 @@ partial def exp : Exp → String
   | .nil => "nil" | .tru => "true" | .fls => "false" | .vararg => "..."
   | .num n => num n
   | .str s => str s
-  | .func ps va b => s!"function({params ps va})\n{block b}end"
+  | .func ps va b _ => s!"function({params ps va})\n{block b}end"
   | .var x => x
   | .index t k => s!"{pre t}[{exp k}]"
   | .call f as => s!"{pre f}({args as})"
@@ -72,7 +72,7 @@ partial def stat : Stat → String
   | .fornum v a b st body =>
     s!"for {v} = {exp a}, {exp b}{match st with | some s => ", " ++ exp s | none => ""} do\n{block body}end"
   | .forin vs es body => s!"for {", ".intercalate vs} in {args es} do\n{block body}end"
-  | .locfn n ps va b => s!"local function {n}({params ps va})\n{block b}end"
+  | .locfn n ps va b _ => s!"local function {n}({params ps va})\n{block b}end"
   | .ret es => s!"return {args es}"
   | .brk => "break"
   | .goto l => s!"goto {l}"

@@ -51,6 +51,11 @@ structure Clo where
   env : Env
   /-- its environment, the table its globals are (lj_func's `env`): its creator's when made, `setfenv`'s after -/
   fenv : Nat
+  /-- its chunk's name, getinfo's `source` (`@file`, `=name`, or the source): its creator's when made -/
+  src : List Char
+  /-- the lines of its `function` and `end`, getinfo's linedefined and lastlinedefined; a chunk's are 0 and its last
+  line -/
+  lines : Nat × Nat
 
 structure Tbl where
   kv : List (Val × Val) := []
@@ -77,6 +82,17 @@ structure Thr (H : Type) where
   st : CoSt := .ready
   bound : Nat := 0
 
+/-- a frame of the call stack as a stack query or an error passing out of it found it (DESIGN.md, *The call stack*):
+the function running in it (nil: not yet known), the line it is at (its innermost site; `none` for a builtin's), and
+the name the call that made it gives the function (lj_debug_funcname: the site's `fn`, or a metamethod's event; none
+until a site or a metamethod's call names it) -/
+structure Frame where
+  fn : Val := .nil
+  line : Option Nat := none
+  name : Option (String × String) := none
+  /-- its line is known: a site further out in its function is not where it is -/
+  sited : Bool := false
+
 inductive Obj where
   | tbl (t : Tbl)
   | clo (c : Clo)
@@ -93,6 +109,12 @@ inductive Obj where
   | ctype (ct : CType)
   /-- what `ffi.cdef` declared: the cell `CDECLS` -/
   | cdecls (d : CDecls)
+  /-- the cell `STK`: the call stack at each stack query of the run so far, oldest first, and how many of them this
+  run has read (`stackRun` replays the run with one more) -/
+  | stacks (ss : List (List Frame)) (used : Nat)
+  /-- the cell `ERRF`: the frames the error being raised has passed out of, outermost first (an error handler's
+  traceback is these) -/
+  | frames (fs : List Frame)
 
 instance : Inhabited Obj := ⟨.cell .nil⟩
 
@@ -117,6 +139,9 @@ inductive Err where
   | rt (lvl : Nat) (m : Msg)
   /-- the running coroutine yields these values: its resume replays it to here (DESIGN.md, *Coroutines*) -/
   | yld (vs : List Val)
+  /-- a stack query (`debug.getinfo` of a level, `debug.traceback`) passing out to the bottom of the stack, with the
+  frames it has passed so far, outermost first: `stackRun` replays the run, the query answered -/
+  | stk (fs : List Frame)
   deriving Inhabited
 
 abbrev M := EStateM Err Heap
@@ -310,16 +335,81 @@ def Msg.strippedName (s : Site) : Msg → Bool
   | .arg .. => s.fn.1 == "stripped"
   | .val _ => false
 
+-- ---------- the call stack (DESIGN.md, *The call stack*) ----------
+
+/-- the cell of the stacks found at the run's stack queries (`Obj.stacks`) -/
+def STK : Nat := 15
+/-- the cell of the frames the error being raised has passed (`Obj.frames`) -/
+def ERRF : Nat := 16
+
+namespace Frame
+/-- the frames as a site sees them: the first site out of a call is where the frame calling is, and its `fn` names
+the frame called; at a tail call's site the frame calling is not on the stack (LuaJIT's CALLT replaced it) -/
+def site (s : Site) : List Frame → List Frame
+  | f :: fs =>
+    if f.sited then f :: fs
+    else if s.tail then fs
+    else { f with line := some s.line, sited := true } :: match fs with
+      | g :: gs => (if g.name.isNone then { g with name := some s.fn } else g) :: gs
+      | [] => []
+  | [] => [{ line := some s.line, sited := true }]
+
+/-- out of the function `v`'s frame -/
+def enter (v : Val) : List Frame → List Frame
+  | f :: fs => (if f.fn.isNil then { f with fn := v } else f) :: fs
+  | [] => [{ fn := v }]
+
+/-- out of a call: into the frame that made it -/
+def out (fs : List Frame) : List Frame := {} :: if fs.isEmpty then [{}] else fs
+
+/-- out of a metamethod's call: the frame called is named after the event (`__index`) -/
+def mm (ev : String) : List Frame → List Frame
+  | f :: g :: gs => f :: (if g.name.isNone then { g with name := some ("metamethod", ev) } else g) :: gs
+  | fs => fs
+
+/-- the name a frame's function has: `("", "")` for none -/
+def nameOf (f : Frame) : String × String := f.name.getD ("", "")
+
+/-- out of a builtin's tail call: the frame it replaced is not on the stack -/
+def untail : List Frame → List Frame
+  | f :: fs => if f.sited then f :: fs else fs
+  | [] => []
+end Frame
+
+/-- a Lua error (not fuel, an effect, a yield or a stack query) -/
+def Err.isLua : Err → Bool
+  | .val _ | .rt .. => true
+  | _ => false
+
+/-- the frames of the error being raised, stepped by `f` -/
+def errStep (f : List Frame → List Frame) (h : Heap) : Heap :=
+  match h[ERRF]? with
+  | some (.frames fs) => h.set! ERRF (.frames (f fs))
+  | _ => h
+
+/-- `m`, a stack query or a Lua error out of it stepped by `f` -/
+def onFrames {α} (f : List Frame → List Frame) (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.stk fs) h => .error (.stk (f fs)) h
+  | .error e h => .error e (if e.isLua then errStep f h else h)
+  | r => r
+
+/-- the frame of a call of `v` -/
+def cFrame {α} (v : Val) (m : M α) : M α := onFrames (Frame.enter v) m
+
 /-- the node at site `s`: an error of its own frame gets the place; a tail call's callee reports out of the frame
 the call replaces -/
 def atSite {α} (s : Site) (m : M α) : M α := fun h =>
   match m h with
   | .error (.rt k msg) h =>
+    let h := errStep (Frame.site s) h
     let k := if s.tail && (match msg with | .op .. => false | _ => true) then k + 1 else k
     match k with
     | 0 => if msg.strippedName s then .error (.eff "a stripped function's local named in an error" []) h
       else .error (.val (msg.render s)) h
     | k => .error (.rt k msg) h
+  | .error (.val v) h => .error (.val v) (errStep (Frame.site s) h)
+  | .error (.stk fs) h => .error (.stk (Frame.site s fs)) h
   | r => r
 
 /-- `m`, its errors reported at `s` if there is one -/
@@ -330,19 +420,26 @@ def atSite? {α} : Option Site → M α → M α
 /-- `m` in the frame of the call it replaces, as a builtin's tail call is (tostring's of `__tostring`) -/
 def unframe {α} (m : M α) : M α := fun h =>
   match m h with
-  | .error (.rt k msg) h => .error (.rt (k + 1) msg) h
+  | .error (.rt k msg) h => .error (.rt (k + 1) msg) (errStep Frame.untail h)
+  | .error (.val v) h => .error (.val v) (errStep Frame.untail h)
+  | .error (.stk fs) h => .error (.stk (Frame.untail fs)) h
   | r => r
 
 /-- a call's frame: an error reported in it that no site took is in a builtin, so it has no place; the rest are
 one frame further out -/
 def frame {α} (m : M α) : M α := fun h =>
   match m h with
-  | .error (.rt 0 msg) h => .error (.val msg.bare) h
-  | .error (.rt (k + 1) msg) h => .error (.rt k msg) h
+  | .error (.rt 0 msg) h => .error (.val msg.bare) (errStep Frame.out h)
+  | .error (.rt (k + 1) msg) h => .error (.rt k msg) (errStep Frame.out h)
+  | .error (.val v) h => .error (.val v) (errStep Frame.out h)
+  | .error (.stk fs) h => .error (.stk (Frame.out fs)) h
   | r => r
 
+/-- a metamethod `ev` called: its frame is named `ev` -/
+def mmName {α} (ev : String) (m : M α) : M α := onFrames (Frame.mm ev) m
+
 /-- an operator's metamethod `ev` called: a builtin's bad argument names it `ev` (lj_debug_funcname) -/
-def mmFrame {α} (ev : String) (m : M α) : M α := fun h =>
+def mmFrame {α} (ev : String) (m : M α) : M α := mmName ev fun h =>
   match m h with
   | .error (.rt 0 (.arg narg msg)) h => .error (.rt 0 (.val (lstr s!"bad argument #{narg} to '{ev}' ({msg})"))) h
   | r => r
@@ -468,6 +565,12 @@ def fenvOf (a : Nat) : M Nat := do
   | .clo c => pure c.fenv
   | _ => die "not a function"
 
+/-- a closure made by the function `self` runs: its environment and its chunk are `self`'s -/
+def newClo (self : Nat) (ps : List String) (va : Bool) (b : Block) (env : Env) (ln : Nat × Nat) : M Nat := do
+  match ← getObj self with
+  | .clo c => alloc (.clo ⟨ps, va, b, env, c.fenv, c.src, ln⟩)
+  | _ => die "not a function"
+
 def bindLocals (cx : Ctx) : List String → List Val → M Ctx
   | [], _ => pure cx
   | x :: xs, vs => do
@@ -533,8 +636,9 @@ def coRun (x : M (List Val)) : M (Except Val (Bool × List Val)) := fun h =>
   match x h with
   | .ok vs h => .ok (.ok (false, vs)) h
   | .error (.yld vs) h => .ok (.ok (true, vs)) h
-  | .error (.val v) h => .ok (.error v) h
-  | .error (.rt _ m) h => .ok (.error m.bare) h
+  | .error (.val v) h => .ok (.error v) (errStep (fun _ => []) h)
+  | .error (.rt _ m) h => .ok (.error m.bare) (errStep (fun _ => []) h)
+  | .error (.stk _) h => .error (.eff "debug: a coroutine's stack" []) h
   | .error e h => .error e h
 
 /-- the end of a resume: `a` suspended with its history, or dead; the coroutine that resumed it running again -/
@@ -1705,7 +1809,7 @@ mutual
 them (lj_parse.c var_lookup), repeats and all -/
 def freeE (bd : List String) : Exp → List String
   | .var x => if bd.contains x then [] else [x]
-  | .func ps _ b => (freeB (ps ++ bd) b).1
+  | .func ps _ b _ => (freeB (ps ++ bd) b).1
   | .index t k | .bin _ t k | .and t k | .or t k => freeE bd t ++ freeE bd k
   | .call f as => freeE bd f ++ freeEs bd as
   | .method o _ as => freeE bd o ++ freeEs bd as
@@ -1723,7 +1827,7 @@ def freeFs (bd : List String) : List Field → List String
 def freeB (bd : List String) : Block → List String × List String
   | [] => ([], bd)
   | .loc ns es :: rest => let r := freeB (ns ++ bd) rest; (freeEs bd es ++ r.1, r.2)
-  | .locfn x ps _ b :: rest => let r := freeB (x :: bd) rest; ((freeB (ps ++ x :: bd) b).1 ++ r.1, r.2)
+  | .locfn x ps _ b _ :: rest => let r := freeB (x :: bd) rest; ((freeB (ps ++ x :: bd) b).1 ++ r.1, r.2)
   | s :: rest => let r := freeB bd rest; (freeS bd s ++ r.1, r.2)
 def freeS (bd : List String) : Stat → List String
   | .assign ts es => freeEs bd ts ++ freeEs bd es
@@ -1737,7 +1841,7 @@ def freeS (bd : List String) : Stat → List String
   | .ret es => freeEs bd es
   | .site _ s => freeS bd s
   | .loc _ es => freeEs bd es
-  | .locfn x ps _ b => (freeB (ps ++ x :: bd) b).1
+  | .locfn x ps _ b _ => (freeB (ps ++ x :: bd) b).1
   | .brk | .goto _ | .label _ => []
 def freeOpt (bd : List String) : Option Exp → List String
   | none => []
@@ -1768,7 +1872,7 @@ def Block.stripped : Block → Bool
 
 mutual
 def stripE (src : String) : Exp → Exp
-  | .func ps va b => .func ps va (STRIPPED :: stripSs src b)
+  | .func ps va b ln => .func ps va (STRIPPED :: stripSs src b) ln
   | .index t k => .index (stripE src t) (stripE src k)
   | .call f as => .call (stripE src f) (stripEs src as)
   | .method o m as => .method (stripE src o) m (stripEs src as)
@@ -1798,7 +1902,7 @@ def stripS (src : String) : Stat → Stat
   | .ite c t e => .ite (stripE src c) (stripSs src t) (stripSs src e)
   | .fornum v a b st body => .fornum v (stripE src a) (stripE src b) (stripO src st) (stripSs src body)
   | .forin vs es body => .forin vs (stripEs src es) (stripSs src body)
-  | .locfn x ps va b => .locfn x ps va (STRIPPED :: stripSs src b)
+  | .locfn x ps va b ln => .locfn x ps va (STRIPPED :: stripSs src b) ln
   | .ret es => .ret (stripEs src es)
   | .site s st => .site (s.strip src) (stripS src st)
   | st => st
@@ -1841,7 +1945,8 @@ def loadDump (a : Nat) (strip : Bool) (src : String) (mode : Option (List Char))
   match ← getObj a with
   | .clo c =>
     let env ← c.upvals.mapM fun (x, _) => do pure (x, ← alloc (.cell .nil))
-    return [.fn (← alloc (.clo ⟨c.params, c.va, if strip then stripBody src c.body else c.body, env, fenv⟩))]
+    let (body, cs, ln) := if strip then (stripBody src c.body, src.toList, (0, 0)) else (c.body, c.src, c.lines)
+    return [.fn (← alloc (.clo ⟨c.params, c.va, body, env, fenv, cs, ln⟩))]
   | _ => die "not a function"
 
 -- ---------- debug ----------
@@ -1871,9 +1976,80 @@ def upvalsOf (f : Val) : M (List (String × Nat)) := do
   | .prim p _ => if primNups p == 0 then pure [] else throw (.eff s!"debug: the upvalues of {p}" [])
   | _ => throw (.eff "debug: a handle's upvalues" [])
 
-/-- the debug library (lib_debug.c) without a call stack: what needs one (a level, a traceback's text, a Lua
-function's lines) stops the run; a thread as the first argument is skipped, as getthread does -/
-def debugFn (name : String) (args : List Val) : M (List Val) := do
+/-- a chunk's name as its error messages give it (lj_debug_shortname, LUA_IDSIZE 60): `=name` as its first 59 bytes,
+`@file` as the file, its last 56 bytes after `...` when it has 60 or more, a source as `[string "..."]` of its first
+line, cut to 45 bytes and `...` when that line is cut or longer than 48. The name is a C string: it ends at a NUL -/
+def shortSrc (s : List Char) : String :=
+  let c (l : List Char) := l.takeWhile (· != '\x00')
+  String.ofList <| match s with
+  | '=' :: r => (c r).take 59
+  | '@' :: r => if r.length ≥ 60 then "...".toList ++ c (r.drop (r.length - 56)) else c r
+  | _ =>
+    let s := c s
+    let len := (s.takeWhile (·.toNat ≥ 32)).length.min 48
+    if len < s.length then "[string \"".toList ++ s.take (len.min 45) ++ "...\"]".toList
+    else "[string \"".toList ++ s ++ "\"]".toList
+
+/-- a call into the world: the oracle answers it after the trace so far, and it joins the trace -/
+def effect (oracle : Oracle) (name : String) (args : List Val) : M (List Val) := fun h =>
+  match oracle name args (trace h) with
+  | some vs => .ok vs (h.set! LOG (.log (⟨name, args, vs⟩ :: trace h)))
+  | none => .error (.eff name args) h
+
+/-- the stack at this stack query, from level 0 (the builtin asking) down to the bottom's frame: what `stackRun`
+found for it, else the query goes out to find it -/
+def stackNow : M (List Frame) := do
+  match ← getObj STK with
+  | .stacks ss used => match ss[used]? with
+    | some fs => modify (·.set! STK (.stacks ss (used + 1))); pure fs
+    | none => throw (.stk [{}])
+  | _ => die "no stack cell"
+
+/-- `m` run at the bottom of the stack: a stack query out of it is answered by running it again from the start, the
+query's frames but the open one below the bottom (the host's) found for it; `k` bounds the runs -/
+def stackRun {α} : Nat → M α → M α
+  | 0, _ => throw .fuel
+  | k + 1, m => fun h =>
+    match m h with
+    | .error (.stk fs) _ => match h[STK]? with
+      | some (.stacks ss u) => stackRun k m (h.set! STK (.stacks (ss ++ [(fs.drop 1).reverse]) u))
+      | _ => .error (.val (lstr "no stack cell")) h
+    | r => r
+
+/-- a closure's function as getinfo's `S` gives it; a stripped one (no lines, LuaJIT names it by load's name) and
+a file's chunk (its last line not known) stop the run -/
+def cloS (c : Clo) : M (List (String × Val)) := do
+  if c.body.stripped then throw (.eff "debug.getinfo: a stripped function's lines" [])
+  if c.lines == (0, 0) then throw (.eff "debug.getinfo: a file's last line" [])
+  let short := shortSrc c.src
+  return [("source", .str c.src), ("short_src", lstr short), ("linedefined", nums c.lines.1),
+    ("lastlinedefined", nums c.lines.2), ("what", lstr (if c.lines.1 == 0 then "main" else "Lua"))]
+
+/-- a frame's line of a traceback (luaL_traceback) -/
+def frameText (fr : Frame) : M String := do
+  let (what, x) := fr.nameOf
+  match fr.fn with
+  | .fn a => match ← getObj a with
+    | .clo c =>
+      if c.body.stripped then throw (.eff "debug.traceback: a stripped function" [])
+      let short := shortSrc c.src
+      let line ← match fr.line with
+        | some l => pure (if l > 0 then s!"{l}:" else "")
+        | none => throw (.eff "debug.traceback: a frame's line not known" [])
+      let in_ := if what != "" then s!" in function '{x}'" else if c.lines.1 == 0 then " in main chunk"
+        else s!" in function <{short}:{c.lines.1}>"
+      return s!"
+	{short}:{line}{in_}"
+    | _ => die "not a function"
+  -- a builtin no Lua call named: `[builtin#n]: at 0x…`, its address
+  | .prim .. => if what == "" then throw (.eff "debug.traceback: a builtin's address" []) else
+    return s!"
+	[C]: in function '{x}'"
+  | _ => throw (.eff "debug.traceback: a frame not known" [])
+
+/-- the debug library (lib_debug.c): a level and a traceback read the stack (`stackNow`), the host's frames are the
+world's (the effect `debug.traceback`); a thread as the first argument is skipped, as getthread does -/
+def debugFn (oracle : Oracle) (name : String) (args : List Val) : M (List Val) := do
   let off := match args with | .thr _ :: _ => 1 | _ => 0
   match name with
   | "debug.getmetatable" => do
@@ -1904,50 +2080,85 @@ def debugFn (name : String) (args : List Val) : M (List Val) := do
     | none => return []
   | "debug.getinfo" => do
     let opts := (← optStr name (off + 1) args).getD "flnSu".toList
-    let f ← match args.getD off .nil with
-      | v@(.fn _) | v@(.prim ..) => pure v
+    -- a function, or the frame at a level of the stack: lua_tointeger's level, none below 0
+    let (f, fr) ← match args.getD off .nil with
+      | v@(.fn _) | v@(.prim ..) => pure (v, none)
       | .eff _ => throw (.eff "debug.getinfo of a handle" [])
       | v => match v.toNum with
-        -- lua_tointeger's level: below 0 none, else a frame of the stack
         | some l =>
           let neg := match l with | .int i => decide (i < 0) | .flt x => decide (x ≤ -1.0)
-          if neg then pure .nil else throw (.eff "debug.getinfo of a stack level" [])
+          if neg then pure (.nil, none) else
+          if off == 1 then throw (.eff "debug.getinfo of a coroutine's level" []) else
+          match (← stackNow)[l.trunc.toNat]? with
+          | some fr => pure (fr.fn, some fr)
+          | none => throw (.eff "debug.getinfo of a level of the host's" [])
         | none => argErr (off + 1) "function or level expected"
     if f.isNil then return [.nil]
     if !opts.all ("SlunfL".toList.contains ·) then argErr (off + 2) "invalid option"
-    let lua := match f with | .fn _ => true | _ => false
-    if lua && (opts.contains 'S' || opts.contains 'L') then throw (.eff "debug.getinfo: a Lua function's lines" [])
-    let (nups, np, va) ← match f with
+    let clo ← match f with
       | .fn a => do match ← getObj a with
-        | .clo c => pure (c.upvals.length, c.params.length, c.va)
+        | .clo c => pure (some c)
         | _ => die "not a function"
-      | .prim p _ => pure (primNups p, 0, true)
-      | _ => pure (0, 0, true)
+      | _ => pure none
+    -- a Lua function's active lines are its bytecode's lines, which the semantics does not have; a builtin has none
+    if clo.isSome && opts.contains 'L' then throw (.eff "debug.getinfo: a Lua function's active lines" [])
+    let (nups, np, va) := match f, clo with
+      | _, some c => (c.upvals.length, c.params.length, c.va)
+      | .prim p _, _ => (primNups p, 0, true)
+      | _, _ => (0, 0, true)
+    let srcS ← match clo with
+      | some c => if opts.contains 'S' then cloS c else pure []
+      | none => pure [("source", lstr "=[C]"), ("short_src", lstr "[C]"), ("linedefined", Tbl.int (-1)),
+          ("lastlinedefined", Tbl.int (-1)), ("what", lstr "C")]
+    let line : Int ← match fr, clo with
+      | some fr, some _ => match fr.line with
+        | some l => pure l
+        | none => throw (.eff "debug.getinfo: a frame's line not known" [])
+      | _, _ => pure (-1)
     let set (t : Tbl) (k : String) (v : Val) : Tbl := t.set (lstr k) v
     let t := opts.foldl (fun t o => match o with
-      | 'S' => [("source", lstr "=[C]"), ("short_src", lstr "[C]"), ("linedefined", Tbl.int (-1)),
-          ("lastlinedefined", Tbl.int (-1)), ("what", lstr "C")].foldl (fun t (k, v) => set t k v) t
-      | 'l' => set t "currentline" (Tbl.int (-1))
-      | 'u' => set (set (set t "nups" (nums nups)) "nparams" (nums np)) "isvararg" (.bool va)
-      | 'n' => set t "namewhat" (lstr "")
+      | 'S' => srcS.foldl (fun t (k, v) => set t k v) t
+      | 'l' => set t "currentline" (Tbl.int line)
+      | 'u' => set (set (set t "nups" (nums nups)) "isvararg" (.bool va)) "nparams" (nums np)
+      | 'n' =>
+        let (w, x) := (fr.map Frame.nameOf).getD ("", "")
+        if w == "" then set t "namewhat" (lstr "") else set (set t "namewhat" (lstr w)) "name" (lstr x)
       | _ => t) {}
-    -- 'L' gives a builtin no activelines
     let t := if opts.contains 'f' then set t "func" f else t
     return [.tbl (← alloc (.tbl t))]
   | "debug.traceback" => do
-    match args.drop off with
-    | .str _ :: _ | .dump .. :: _ | .num _ :: _ | [] => throw (.eff "debug.traceback: the stack" [])
-    | v :: _ => return [v]
+    -- a message neither a string nor a number is returned as it is (lua_tostring's)
+    let msg ← match args.drop off with
+      | .str s :: _ => pure (some s)
+      | .num x :: _ => pure (some x.toText)
+      | .dump .. :: _ => dumpBytes
+      | [] => pure none
+      | v :: _ => return [v]
+    if off == 1 then throw (.eff "debug.traceback of a coroutine" [])
+    let lvl ← optInt "traceback" (off + 1) args 1
+    let head := (msg.map (· ++ ['\n'])).getD [] ++ "stack traceback:".toList
+    if lvl < 0 then return [.str head]
+    let fs ← stackNow
+    -- the host's frames are the world's: how many there are, and so what luaL_traceback cuts past level 12
+    if lvl.toNat > fs.length then throw (.eff "debug.traceback from a level of the host's" [])
+    if lvl.toNat < fs.length && fs.length > 12 then throw (.eff "debug.traceback of a stack past 12 levels" [])
+    let body ← (fs.drop lvl.toNat).mapM frameText
+    match ← effect oracle "debug.traceback" [nums (max lvl fs.length)] with
+    | [.str host] => return [.str (head ++ (String.join body).toList ++ host)]
+    | _ => throw (.eff "debug.traceback: the host's frames not a string" [])
   | _ => die s!"{name}: not in the subset"
 
 /-- the closure at a level of the stack, for getfenv and setfenv (lj_debug_frame): `caller`, the Lua function
-calling, is level 1 when it is known (a call from Lua, not a tail call: `Ctx.top`). Another level stops the run: the
-semantics keeps no stack -/
+calling, is level 1 when it is known (a call from Lua, not a tail call: `Ctx.top`); another level is the stack's
+(`stackNow`). A builtin's frame there, or the host's, stops the run -/
 def fenvLevel (fname : String) (caller : Option Nat) (lvl : Int) : M Nat := do
   if lvl < 0 then argErr 1 "invalid level"
   match lvl, caller with
   | 1, some a => pure a
-  | _, _ => throw (.eff s!"{fname} of level {lvl}" [])
+  | _, _ => match (← stackNow)[lvl.toNat]? with
+    | some { fn := .fn a, .. } => pure a
+    | some _ => throw (.eff s!"{fname} of a builtin's level" [])
+    | none => throw (.eff s!"{fname} of a level of the host's" [])
 
 /-- getfenv (lib_base.c): a builtin's environment is the thread's, `_G` (`setfenv(0, …)` stops) -/
 def getfenvFn (caller : Option Nat) (args : List Val) : M (List Val) := do
@@ -1990,7 +2201,7 @@ def fenvCall (caller : Option Nat) (f : Val) (args : List Val) (k : M (List Val)
   | .prim "setfenv" [] => frame (setfenvFn caller args)
   | _ => k
 
-def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
+def basicFn (oracle : Oracle) (tgt : Target) (name : String) (bound args : List Val) : M (List Val) := do
   match name with
   | "type" => do anyArg 0 args; return [lstr (args.headD .nil).typeName]
   | "string.dump" => dumpFn args
@@ -2109,7 +2320,7 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
     | .thr a => return [.bool ((← getThr a).bound == 0)]
     | _ => return [.bool false]
   | "debug.getmetatable" | "debug.setmetatable" | "debug.getupvalue" | "debug.setupvalue" | "debug.getinfo"
-  | "debug.traceback" => debugFn name args
+  | "debug.traceback" => debugFn oracle name args
   | "bit.tobit" | "bit.bnot" | "bit.band" | "bit.bor" | "bit.bxor" | "bit.lshift" | "bit.rshift" | "bit.arshift"
   | "bit.rol" | "bit.ror" | "bit.bswap" | "bit.tohex" => bitFn name args
   | "ffi.cdef" | "ffi.new" | "ffi.cast" | "ffi.typeof" | "ffi.sizeof" | "ffi.string" => ffiFn name args
@@ -2125,20 +2336,6 @@ def basicFn (tgt : Target) (name : String) (bound args : List Val) : M (List Val
 
 -- ---------- chunks: load, dofile, require ----------
 
-/-- a chunk's name as its error messages give it (lj_debug_shortname, LUA_IDSIZE 60): `=name` as its first 59 bytes,
-`@file` as the file, its last 56 bytes after `...` when it has 60 or more, a source as `[string "..."]` of its first
-line, cut to 45 bytes and `...` when that line is cut or longer than 48. The name is a C string: it ends at a NUL -/
-def shortSrc (s : List Char) : String :=
-  let c (l : List Char) := l.takeWhile (· != '\x00')
-  String.ofList <| match s with
-  | '=' :: r => (c r).take 59
-  | '@' :: r => if r.length ≥ 60 then "...".toList ++ c (r.drop (r.length - 56)) else c r
-  | _ =>
-    let s := c s
-    let len := (s.takeWhile (·.toNat ≥ 32)).length.min 48
-    if len < s.length then "[string \"".toList ++ s.take (len.min 45) ++ "...\"]".toList
-    else "[string \"".toList ++ s ++ "\"]".toList
-
 /-- package.path's templates (`;` between them, empty ones skipped), each with `?` the name -/
 def pathFiles (path name : List Char) : List String :=
   ((String.ofList path).splitOn ";").filter (· != "") |>.map fun t => t.replace "?" (String.ofList name)
@@ -2153,6 +2350,9 @@ def isSentinel : Val → Bool
   | .eff "require sentinel" => true
   | _ => false
 
+/-- the closure of file `p`'s chunk, given as source: its last line is not known (0) -/
+def fileClo (p : String) (b : Block) : Clo := ⟨[], true, b, [], G, '@' :: p.toList, (0, 0)⟩
+
 /-- a chunk's source as a function of no parameters and every argument, its free names globals; a source
 LuaJIT would load as bytecode, or the parser rejects, stops the run: its messages are LuaJIT's parser's -/
 def loadSrc (src name : List Char) (mode : Option (List Char)) (env : Nat := G) : M (List Val) := do
@@ -2160,7 +2360,7 @@ def loadSrc (src name : List Char) (mode : Option (List Char)) (env : Nat := G) 
   if let some m := mode then
     if !m.contains 't' then return [.nil, lstr "attempt to load chunk with wrong mode"]
   match parseChunk src (shortSrc name) with
-  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, [], env⟩))]
+  | .ok b => return [.fn (← alloc (.clo ⟨[], true, b, [], env, name, (0, chunkLines src)⟩))]
   | .error _ => throw (.eff "load: a syntax error" [])
 
 -- ---------- evaluation ----------
@@ -2174,15 +2374,30 @@ def labelAtEnd (b : Block) (l : String) : Bool :=
 
 def hasLabel (b : Block) (l : String) : Bool := b.any fun s => match s with | .label x => x == l | _ => false
 
+/-- the frames the error caught passed, and none after it -/
+def takeErrFrames (h : Heap) : List Frame × Heap :=
+  match h[ERRF]? with
+  | some (.frames fs) => (fs, h.set! ERRF (.frames []))
+  | _ => ([], h)
+
 /-- pcall's catch: a runtime error reported in the builtin catching it has no place; one reported further out has
-the place of a call this one cannot see, so the run stops -/
-def catchVal {α} (x : M α) (ok : α → M β) (bad : Val → M β) : M β := fun h =>
+the place of a call this one cannot see, so the run stops. `bad` has the frames the error passed (`ERRF`) -/
+def catchValF {α} (x : M α) (ok : α → M β) (bad : List Frame → Val → M β) : M β := fun h =>
   match x h with
   | .ok a h => ok a h
-  | .error (.val v) h => bad v h
-  | .error (.rt 0 m) h => bad m.bare h
+  | .error (.val v) h => let (fs, h) := takeErrFrames h; bad fs v h
+  | .error (.rt 0 m) h => let (fs, h) := takeErrFrames h; bad fs m.bare h
   | .error (.rt (k + 1) _) h => .error (.eff s!"error level {k + 1} past a builtin" []) h
   | .error e h => .error e h
+
+def catchVal {α} (x : M α) (ok : α → M β) (bad : Val → M β) : M β := catchValF x ok fun _ => bad
+
+/-- an error handler's call: a stack query out of it finds the frames of the error it handles (`fs`) below it, as
+LuaJIT calls it where the error is raised -/
+def onErrFrames {α} (fs : List Frame) (m : M α) : M α := fun h =>
+  match m h with
+  | .error (.stk q) h => .error (.stk (if fs.isEmpty then q else fs ++ q.drop 1)) h
+  | r => r
 
 /-- a replacement string: %0 the match, %1-%9 a capture, %x the character x -/
 def substRepl (r whole : List Char) (cap : Nat → M Val) : M (List Char) :=
@@ -2199,12 +2414,6 @@ set_option maxRecDepth 100000
 
 section
 variable (srcs : String → Option Block) (oracle : Oracle) (tgt : Target)
-
-/-- a call into the world: the oracle answers it after the trace so far, and it joins the trace -/
-def effect (name : String) (args : List Val) : M (List Val) := fun h =>
-  match oracle name args (trace h) with
-  | some vs => .ok vs (h.set! LOG (.log (⟨name, args, vs⟩ :: trace h)))
-  | none => .error (.eff name args) h
 
 /-- an effect answering a time_t, `[.num (.int t)]` -/
 def timeFx (name : String) (args : List Val) : M Int := do
@@ -2291,7 +2500,7 @@ def eval (n : Nat) (cx : Ctx) (e : Exp) : M Val :=
   | .str s => pure (.str s)
   | .vararg => pure (cx.va.headD .nil)
   | .site s e => atSite s (eval n cx e)
-  | .func ps va b => do pure (.fn (← alloc (.clo ⟨ps, va, b, cx.env, ← fenvOf cx.self⟩)))
+  | .func ps va b ln => do pure (.fn (← newClo cx.self ps va b cx.env ln))
   | .var x => match cx.env.lookup x with
     | some c => readCell c
     | none => do index n (.tbl (← fenvOf cx.self)) (lstr x)
@@ -2396,7 +2605,7 @@ def index (n : Nat) (o k : Val) : M Val :=
     | some m => do
       match ← wget m (lstr "__index") with
       | .nil => pure .nil
-      | h@(.fn _) | h@(.prim ..) => do pure ((← call n h [o, k]).headD .nil)
+      | h@(.fn _) | h@(.prim ..) => do pure ((← mmName "__index" (call n h [o, k])).headD .nil)
       | h => index n h k
   | .str _ => wget STRING k
   -- a method of the string library: its bytes next
@@ -2414,7 +2623,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
   match f with
   | .fn a => do
     match ← getObj a with
-    | .clo c => frame do
+    | .clo c => frame <| cFrame (.fn a) do
       let cx ← bindLocals ⟨c.env, [], a, true⟩ c.params args
       let cx := { cx with va := if c.va then args.drop c.params.length else [] }
       match ← execBlock n cx c.body with
@@ -2423,7 +2632,7 @@ def call (n : Nat) (f : Val) (args : List Val) : M (List Val) :=
       | .brk => die "break outside a loop"
       | .goto l => die s!"no visible label '{l}' for goto"
     | _ => die "not a function"
-  | .prim name bound => frame (callPrim n name bound args)
+  | .prim name bound => frame (cFrame (.prim name bound) (callPrim n name bound args))
   | .eff name => effect oracle name args
   | .tbl _ => do
     -- `__call`, which must be a function: LuaJIT follows no chain of them (lj_meta_call)
@@ -2451,10 +2660,10 @@ def execSeq (n : Nat) (cx : Ctx) (full rest : Block) (fin : Option Exp) : M Flow
     let vs ← evalList n cx es
     let cx ← bindLocals cx names vs
     execSeq n cx full rest fin
-  | .locfn name ps va b :: rest => do
+  | .locfn name ps va b ln :: rest => do
     let c ← alloc (.cell .nil)
     let cx := { cx with env := (name, c) :: cx.env }
-    let f ← alloc (.clo ⟨ps, va, b, cx.env, ← fenvOf cx.self⟩)
+    let f ← newClo cx.self ps va b cx.env ln
     writeCell c (.fn f)
     execSeq n cx full rest fin
   | s :: rest => do
@@ -2556,7 +2765,7 @@ def setindex (n : Nat) (o k v : Val) : M Unit :=
     else
     match ← metaOf o "__newindex" with
     | .nil => rawset a k v
-    | h@(.fn _) | h@(.prim ..) => do let _ ← call n h [o, k, v]
+    | h@(.fn _) | h@(.prim ..) => do let _ ← mmName "__newindex" (call n h [o, k, v])
     | h => setindex n h k v
   | .cdata a => cdSet a k v
   | _ => opErr "index" (some 0) o
@@ -2740,8 +2949,8 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     match args.getD 1 .nil with
     | .fn _ | .prim .. => pure ()
     | _ => badType "function" 1 args
-    catchVal (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
-      (fun e => do pure [.bool false, (← bounded 2 (call n (args.getD 1 .nil) [e])).headD .nil])
+    catchValF (call n (args.headD .nil) (args.drop 2)) (fun vs => pure (.bool true :: vs))
+      (fun fs e => do pure [.bool false, (← onErrFrames fs (bounded 2 (call n (args.getD 1 .nil) [e]))).headD .nil])
   | "coroutine.resume" | "coroutine.wrap_aux" => do
     let wrap := name == "coroutine.wrap_aux"
     let a ← match (if wrap then bound else args).headD .nil with
@@ -2777,7 +2986,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       | some p => pure (String.ofList p)
       | none => throw (.eff "dofile: stdin" [])
     match srcs p with
-    | some b => bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, [], G⟩))) [])
+    | some b => bounded 1 (do call n (.fn (← alloc (.clo (fileClo p b)))) [])
     | none => throw (.eff s!"dofile {p}" [])
   | "require" => do
     let m ← argStr "require" 0 args
@@ -2795,10 +3004,10 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
       | .str p => pure p
       | _ => throw (.eff "require: package.path not a string" [])
     -- the first file of the path given as source (lib_package.c's loader_Lua), else a C module: a handle
-    match (pathFiles path (modPath m)).findSome? srcs with
-    | some b => do
+    match (pathFiles path (modPath m)).findSome? (fun f => (srcs f).map (f, ·)) with
+    | some (f, b) => do
       rawset LOADED (.str m) SENTINEL
-      let r := (← bounded 1 (do call n (.fn (← alloc (.clo ⟨[], true, b, [], G⟩))) [.str m])).headD .nil
+      let r := (← bounded 1 (do call n (.fn (← alloc (.clo (fileClo f b)))) [.str m])).headD .nil
       if !r.isNil then rawset LOADED (.str m) r
       let v ← rawget LOADED (.str m)
       if isSentinel v then rawset LOADED (.str m) (.bool true); return [.bool true]
@@ -2863,7 +3072,7 @@ def callPrim (n : Nat) (name : String) (bound args : List Val) : M (List Val) :=
     let len := (← tlen t)
     bounded 1 (sortAux n t cmp 1 len)
     pure []
-  | _ => basicFn tgt name bound args
+  | _ => basicFn oracle tgt name bound args
 
 /-- load's reader: f's results concatenated until nil or the empty string. LuaJIT's parser calls the reader as it
 reads, so an error in it, which load returns, may come at another call, and a result neither nil nor a string is
@@ -3050,10 +3259,11 @@ def addValue (n : Nat) (ms : Pat.MS) (repl : Val) (caps : Array Pat.Cap) (s e : 
       | v => callerErr s!"invalid replacement value (a {v.typeName})"
 end
 
-/-- a chunk run as a function of no arguments -/
-def runChunk (n : Nat) (b : Block) (args : List Val := []) : M (List Val) := do
-  let f ← alloc (.clo ⟨[], true, b, [], G⟩)
-  call srcs oracle tgt n (.fn f) args
+/-- a chunk named `src` (its last line `last`) run as a function of no arguments, from the bottom of the stack -/
+def runChunk (n : Nat) (b : Block) (src : List Char) (last : Nat) (args : List Val := []) : M (List Val) :=
+  stackRun 1000 do
+    let f ← alloc (.clo ⟨[], true, b, [], G, src, (0, last)⟩)
+    call srcs oracle tgt n (.fn f) args
 end
 
 -- ---------- the initial heap ----------
@@ -3076,7 +3286,8 @@ def bits : List String :=
 def coroutines : List String := ["create", "resume", "yield", "status", "wrap", "running", "isyieldable"]
 
 /-- _G (0), package.loaded (1), string (2), table (3), math (4), package (5), coroutine (6), the running coroutine
-(7: the main thread), the trace (8), io (9), os (10), debug (11), bit (12), ffi (13), ffi.cdef's declarations (14) -/
+(7: the main thread), the trace (8), io (9), os (10), debug (11), bit (12), ffi (13), ffi.cdef's declarations (14), the
+stacks of the stack queries (15) and the frames of the error being raised (16) -/
 def initHeap : Heap :=
   let g : Tbl := { kv := basics.map (fun f => (lstr f, Val.prim f [])) ++
     [(lstr "string", .tbl 2), (lstr "table", .tbl 3), (lstr "math", .tbl 4), (lstr "package", .tbl 5),
@@ -3114,6 +3325,6 @@ def initHeap : Heap :=
   let ffi : Tbl := { kv := (libTable "ffi" ffis).kv ++ fx "ffi" ["C", "metatype", "gc", "copy", "fill", "offsetof",
     "alignof", "istype", "errno", "load", "abi", "os", "arch", "typeinfo"] }
   #[.tbl g, .tbl loaded, .tbl str, .tbl tab, .tbl math, .tbl pkg, .tbl (libTable "coroutine" coroutines), .cell .nil,
-    .log [], .tbl io, .tbl os, .tbl dbg, .tbl bit, .tbl ffi, .cdecls {}]
+    .log [], .tbl io, .tbl os, .tbl dbg, .tbl bit, .tbl ffi, .cdecls {}, .stacks [] 0, .frames []]
 
 end Lua

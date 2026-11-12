@@ -64,6 +64,7 @@ where outcome' (r : EStateM.Result Err Heap (List Val)) : String :=
   | .error .fuel _ => "fuel"
   | .error (.eff n _) _ => s!"effect {n}"
   | .error (.yld _) _ => "effect a yield past the chunk"
+  | .error (.stk _) _ => "effect a stack query past the chunk"
 
 /-- every module under dir as source, by its path, dir/x.lua (`require` finds it through package.path), named by
 that path in its error messages as LuaJIT names a file it loads -/
@@ -93,11 +94,13 @@ def timegm (sec min hour mday mon year : Int) : Int :=
   daysFromCivil (year + 1900 + mon / 12) (mon % 12 + 1) 1 * 86400 + (mday - 1) * 86400 + hour * 3600 + min * 60 + sec
 
 /-- the differential test's world (`test/luasem.lua` makes it LuaJIT's): stdout takes every write, the local zone
-is UTC, and there is no clock -/
+is UTC, there is no clock, and a traceback's frames below the chunk are `(host)` -/
 def caseFx (name : String) (args : List Val) (_ : List Event) : Option (List Val) :=
   match name, args with
   | "print", _ => some []
   | "io.write", _ => some [.bool true]
+  -- the host's frames below the chunk, as `test/luasem.lua` writes them in what it compares
+  | "debug.traceback", _ => some [lstr "\n\t(host)"]
   | "os.localtime", [.num (.int t)] =>
     let tm := gmtime t
     some ([tm.sec, tm.min, tm.hour, tm.day, tm.month, tm.year, tm.wday, tm.yday].map (.num ∘ .int) ++ [.bool false])
@@ -125,6 +128,6 @@ def runCase (srcs : String → Option Block) (tgt : Target) (mods : List String)
     match pre.run initHeap with
     | .error (.val e) _ => s!"load failed: {String.ofList e.text}"
     | .error e _ => s!"load failed: {outcome (.error e initHeap)}"
-    | .ok () h => outcome ((runChunk srcs caseFx tgt FUEL b).run h)
+    | .ok () h => outcome ((runChunk srcs caseFx tgt FUEL b "=c".toList (chunkLines src)).run h)
 
 end Lua
