@@ -450,4 +450,49 @@ theorem call_keeps {n : Nat} {f : Val} {args : List Val} :
     Keeps c P (call srcs oracle tgt n f args) fun _ => True := (allK n).call f args
 
 end
+/-! Where the frame rule starts: a fresh cell is own -/
+section fresh
+variable {P : Val → Prop}
+
+/-- a heap whose fresh cell is own: its coroutines hold no heaps, its closures capture only cells it has -/
+def Fresh (h : Heap) : Prop :=
+  (∀ (a : Nat) (t : Thr Heap), h[a]? = some (Obj.thr t) → t.hist = [] ∧ t.script = []) ∧
+  (∀ (a : Nat) (cl : Clo), h[a]? = some (Obj.clo cl) → ∀ x ∈ cl.env, x.2 < h.size)
+
+theorem Fresh.push {h : Heap} {v : Val} (f : Fresh h) : Fresh (h.push (.cell v)) := by
+  refine ⟨fun a t e => ?_, fun a cl e x hx => ?_⟩
+  · rw [Array.getElem?_push] at e; split at e
+    · cases e
+    · exact f.1 a t e
+  · rw [Array.getElem?_push] at e; split at e
+    · cases e
+    · have := f.2 a cl e x hx; simp only [Array.size_push]; omega
+
+theorem Own.fresh {h : Heap} {v : Val} (f : Fresh h) (hs : 16 < h.size) (p : P v) :
+    Own h.size P (h.push (.cell v)) := by
+  refine .intro ⟨v, by simp, p⟩ hs (fun a cl e x hx => ?_) (fun a t e x hx => ?_)
+  · rw [Array.getElem?_push] at e; split at e
+    · cases e
+    · exact Nat.ne_of_lt (f.2 a cl e x hx)
+  · rw [Array.getElem?_push] at e; split at e
+    · cases e
+    · obtain ⟨h1, h2⟩ := f.1 a t e; simp [h1, h2] at hx
+
+/-- a write of its own cell, of a value with `P` -/
+theorem Own.setSelf {c : Nat} {h : Heap} {v : Val} (o : Own c P h) (p : P v) : Own c P (h.set! c (.cell v)) := by
+  have lt := o.lt
+  cases o with
+  | intro cell sys hc ht =>
+  have get : ∀ b, (h.set! c (.cell v))[b]? = if c = b ∧ c < h.size then some (.cell v) else h[b]? := by
+    intro b; simp only [Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds]; split <;> simp_all
+  refine .intro ⟨v, by rw [get]; simp [lt], p⟩ sys (fun b cl e => ?_) (fun b t e => ?_)
+  · rw [get] at e; split at e
+    · cases e
+    · exact hc _ _ e
+  · rw [get] at e; split at e
+    · cases e
+    · exact ht _ _ e
+
+end fresh
+
 end Lua

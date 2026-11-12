@@ -1,5 +1,5 @@
 -- swarm/model/SwarmModel/LockSrc.lean (locks.lua and util.lua as syntax trees) and SwarmModel/Lifted/*.lean (locks.lua
--- and tasks.lua lifted, board #31; watchd.lua's M.iterate, board #67) must be from the sources as they are: their checksums are lua-lean's
+-- and tasks.lua lifted, board #31; watchd.lua's M.loop and iteration, boards #67 and #75) must be from the sources as they are: their checksums are lua-lean's
 -- LuaLean/Show.lean's, over the bytes. Regenerate: swarm/model/gen-lock-src.sh, swarm/model/lift.sh
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local function slurp(p) local f = assert(io.open(p, "rb")); local s = f:read("*a"); f:close(); return s end
