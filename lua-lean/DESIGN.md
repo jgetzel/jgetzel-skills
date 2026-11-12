@@ -80,6 +80,13 @@ Not trusted: the translator. `D.fn_ok` is proved once, in the library, so `Audit
 only prints `f`, and a printed `f` that is not `D.fn`'s fails `f_ok` (one `+` turned into `-` in a lifted function
 and its `f_ok` does not check: a type mismatch, or the kernel gives up computing). Nor are the case generator and any proof search.
 
+What a reviewer reads (board #88): `LuaLean/Contract.lean`, the statements a proof about a lifted script builds on
+(what the lifting guarantees, the program logic, the frame rule), each after the definitions it shows or names,
+written to `swarm/model/STYLE.md`. Lean checks the proofs, that `f` is `D.fn`'s, and that every theorem rests on
+Lean's three (`Audit.lean`). The reviewer still trusts the table above: that the semantics is LuaJIT's is tested
+by `test/luasem.lua`, not proved, and so is the parser (`lua-lean parsecheck`, no round trip is proved); and that
+the sentence in a docstring is what the Lean under it says, which Lean does not read.
+
 ## The reference LuaJIT
 
 LuaJIT 2.1 is a rolling release whose parser and library move between versions, so lua-lean is checked against one:
@@ -480,6 +487,7 @@ resty.string and resty.random, whose calls into C are the world's; resty.sha1 ne
 | `LuaLean/Shallow.lean` | the translator's target: one combinator and one lemma per interpreter clause |
 | `LuaLean/Denote.lean` | the translator as a Lean function, `D.fn`, and the one proof for every program, `D.fn_ok`, that each `f_ok` is (`research/translator-proof.md`) |
 | `LuaLean/Hoare.lean` | `RunP` and its rules |
+| `LuaLean/Contract.lean` | the spec a reviewer reads (board #88): the lifting guarantee, `RunP`, the frame rule, restated to `swarm/model/STYLE.md`, each proof a reference |
 | `LuaLean/Gen.lean` | random chunks for the differential test; a user adds its own (`swarm/model/SwarmModel/LuaCases.lean`) |
 | `tools/*.lean` | the CLI's programs, run with `lake env lean --run`; `tools/Check.lean` compiled (`lake build check`) |
 | `test/luasem.lua` | the LuaJIT side of the differential test |
