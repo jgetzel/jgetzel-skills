@@ -955,6 +955,46 @@ function M.end_why(a, f)
   if f.unlanded() then return "has work not on its base in " .. f.held end
 end
 
+-- Everything that keeps live agent row a from being ended, as {key, text, declared} (the one predicate behind
+-- `swarm endable` and the Stop hook; watchd and `swarm end` run the same checks through fate/end_why). declared: the
+-- agent has said why it waits (a stay, a task blocked on a question) or the thing is deferred (a job of its own, a
+-- pushed branch).
+function M.endable_reasons(c, a, f)
+  local out, n = {}, a.name
+  local function add(key, text, declared) out[#out + 1] = { key = key, text = text, declared = declared or false } end
+  if nz(a.stay) then add("stay", "stay: " .. a.stay, true) end
+  for _, r in ipairs(c:all("select id,state from task where owner=? and state in ('claimed','blocked')", n)) do
+    add("claim", ("claim held (#%d%s)"):format(r.id, r.state == "blocked" and ", blocked on a question" or ""), r.state == "blocked")
+  end
+  for _, r in ipairs(c:all("select path from lock where agent=?", n)) do add("lock", "lock held: " .. tostring(r.path)) end
+  if f.job() then add("job", "background job: " .. util.cut(f.proc and f.proc.args or "?", 120), true) end
+  if f.unlanded() then
+    local dirty, commits = {}, {}
+    for _, l in ipairs(util.splitlines(M.unclean_list(f.held, f.B[1] or "main"))) do
+      if l ~= "" then table.insert(util.startswith(l, "commit ") and commits or dirty, l) end
+    end
+    if #dirty > 0 then add("dirty", "dirty worktree " .. f.held .. ":\n  " .. table.concat(dirty, "\n  ", 1, math.min(20, #dirty))) end
+    if #commits > 0 then
+      -- shortcut: "pushed" = HEAD is on some origin branch, no task note required; upgrade if WIP gets lost
+      local pushed = nz(proc.run({ "git", "-C", f.held, "branch", "-r", "--contains", "HEAD" }) or "")
+      add("unlanded", "commits not on " .. tostring(f.B[1]) .. (pushed and " (branch pushed)" or "") .. ":\n  " .. table.concat(commits, "\n  ", 1, math.min(10, #commits)), pushed)
+    end
+  end
+  return out
+end
+
+-- `swarm endable [agent] [--why]`: exit 0 when nothing keeps the agent from being ended, else 1 (--why: the reasons).
+function M.cmd_endable(c, a)
+  local n = a.agent or agents.me()
+  local row = c:one("select * from agent where name=? and ended is null", n)
+  if not row then util.die(n .. " is not a live agent") end
+  local rs = M.endable_reasons(c, row, M.reads(c, M.main_wt(), conflict.wt_map(c), conflict.worktrees(), {}).f(n))
+  if a.why then
+    for _, r in ipairs(rs) do print(r.text) end
+  end
+  os.exit(#rs == 0 and 0 or 1)
+end
+
 -- `swarm end <agent> [--force]`: the communicator's manual agent GC. Same checks as lifecycle (idle, no claim, lock or
 -- stay, work landed on its bases); --force skips them. Kills the terminal only; the sweep removes worktrees.
 function M.cmd_end(c, a)

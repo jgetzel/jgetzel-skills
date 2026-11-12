@@ -35,7 +35,7 @@ local stdlib = require "posix.stdlib"
 -- Which module ports each command. A command whose module (or cmd_<name>) isn't there yet dies "not ported".
 local MODULE = { spawn = "watchd", join = "agents", leave = "agents", post = "msgs", read = "msgs", wait = "msgs",
   ci = "ci", task = "tasks", rules = "tasks", board = "tasks", who = "agents", limits = "agents", away = "agents", stay = "agents", nudge = "agents", lock = "locks", unlock = "locks",
-  machine = "machine", cost = "cost", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", ["end"] = "watchd", hook = "hook" }
+  machine = "machine", cost = "cost", role = "agents", run = "run", state = "state", watch = "state", watchd = "watchd", ["end"] = "watchd", endable = "watchd", hook = "hook" }
 local EFFORTS = { "low", "medium", "high", "xhigh", "max" }  -- claude --effort
 local VIEWS = { "activity", "agents", "board", "overview", "system" }  -- sorted(VIEWS) of the Python CLI; state.lua owns it once ported
 
@@ -85,6 +85,9 @@ local function parser()
   p = ap:command("end"):description("communicator: end an agent's terminal (not its worktree); checks it is idle with work landed")
   p:argument("agent")
   p:flag("--force"):description("skip the checks")
+  p = ap:command("endable"):description("exit 0 if nothing keeps the agent from being ended by watchd, else 1")
+  p:argument("agent"):args("?")
+  p:flag("--why"):description("print every reason")
   p = ap:command("leave")
   p:argument("name"):args("?")
   p = ap:command("post")

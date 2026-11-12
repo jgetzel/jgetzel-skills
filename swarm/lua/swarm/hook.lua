@@ -193,6 +193,60 @@ local function log_push(c, name, cwd, cmd)
     util.cut(cmd, 120))
 end
 
+M.STOP_CAP = 2  -- blocks per reason in one chain of continuations: a safety net, then allow and tell comms
+
+local function error_turn(path)  -- the turn ended on an API error (rate limit, auth, context overflow): nothing to ask
+  local lines = tail_lines(path)
+  for i = #(lines or {}), 1, -1 do
+    local j = json.decode(lines[i])
+    if type(j) == "table" and j.type == "assistant" then return j.isApiErrorMessage == true end
+  end
+  return false
+end
+
+-- The Stop hook's verdict (no model call): nil lets the stop through; else the reason to continue. Not endable (the
+-- predicate watchd ends by) and no declared wait -> block with the ways out. Declared: a stay, a task blocked on a
+-- question, a job of its own, a pushed branch. A stretch of the same reason blocks at most STOP_CAP times.
+function M.stop_block(c, name, p, k)
+  if agents.is_comms(c, name) or error_turn(p.transcript_path) then return nil end
+  local watchd = require "swarm.watchd"
+  local row = c:one("select * from agent where name=? and ended is null", name)
+  if not row then return nil end
+  local R = watchd.reads(c, watchd.main_wt(), require("swarm.conflict").wt_map(c), require("swarm.conflict").worktrees(), {})
+  local rs = watchd.endable_reasons(c, row, R.f(name))
+  local bg = {}
+  for _, t in ipairs(type(p.background_tasks) == "table" and p.background_tasks or {}) do  -- its own waiter doesn't count
+    if t.status == "running" and not tostring(t.command or ""):find("swarm%s+wait") then bg[#bg + 1] = t end
+  end
+  if #bg > 0 then return nil end
+  local lines, keys = {}, {}
+  for _, r in ipairs(rs) do
+    if r.declared then return nil end
+    lines[#lines + 1] = r.text
+    keys[#keys + 1] = r.key
+  end
+  if #rs == 0 then return nil end
+  local key = table.concat(keys, ",")
+  if not p.stop_hook_active then db.log(c, name, "stop-chain") end
+  local since = (c:one("select max(id) m from event where agent=? and kind='stop-chain'", name) or {}).m or 0
+  local n = c:one("select count(*) n from event where agent=? and kind='stop-block' and data=? and id>?", name, key, since).n
+  if n >= M.STOP_CAP then
+    db.log(c, name, "stop-cap", nil, key)
+    msgs.post(c, "swarm", agents.comms_name(c),
+      ("%s stopped though not endable (%s); the stop hook let it go after %d blocks."):format(name, key, M.STOP_CAP), false, "notice")
+    return nil
+  end
+  db.log(c, name, "stop-block", nil, key)
+  local head = ("You are not endable: %s"):format(table.concat(lines, "\n"))
+  if (k or 0) >= 550000 and row and c:one("select 1 from task where owner=? and state='claimed'", name) then
+    return head .. "\n\nYour context is too large to continue: hand off. Commit WIP, `swarm task release <id>` (or the "
+      .. "relaunch skill, same model), and leave a note for the successor."
+  end
+  return head .. "\n\nEnd this by changing state, not by arguing: (a) finish and land (`swarm task done`); (b) drop: "
+    .. "`swarm task release <id>` and commit, ignore or delete what is listed (pushing the branch counts as handing "
+    .. "off commits); (c) declare the wait: `swarm task block <id> \"<question>\"` or `swarm stay \"<what>\"`."
+end
+
 function M.hook(ev)
   local name = agents.env("SWARM_NAME")
   local p = json.decode(io.read("*a") or "")
@@ -229,6 +283,8 @@ function M.hook(ev)
     local k = M.ctx_from(p.transcript_path)
     agents.set_status(c, name, "idle", { ctx_tokens = k })
     if not k then set_null(c, name, "ctx_tokens") end
+    local why = M.stop_block(c, name, p, k)
+    if why then print('{"decision": "block", "reason": ' .. json.encode(why) .. "}") end
   elseif ev == "session" then
     agents.touch(c, name, nil, false, { claude_pid = machine.claude_pid() })
     if p.source == "compact" then

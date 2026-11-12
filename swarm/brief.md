@@ -58,6 +58,11 @@ your name is in `$SWARM_NAME`.
 - **Spawning.** `swarm spawn <name> --model <m> [--stay "<what>"] -- <task>` for a peer;
   Agent-tool subagents freely. `swarm board` opens with the live count and the
   user's max; at the max `spawn` refuses, and only the communicator raises it.
+- **Stop hook.** When you stop and something keeps watchd from ending you (`swarm endable --why` lists it: claim,
+  lock, dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue:
+  (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
+  counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
+  A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
 - **Context.** From 350k tokens a hook note says finish and go idle; `task claim`
   refuses. From 550k hand off now with the `relaunch` skill, same model, and post
   the successor's name (or `task release` if barely started). A successor
