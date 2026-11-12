@@ -407,6 +407,19 @@ function T.test_recorded_agent_with_a_worktree_it_added_not_ended(t)
   assert(ended(t, "e"), "every worktree landed")
 end
 
+-- board #78: a recorded worktree is landed on the base swarm made it from, though e owns no task on that base now
+function T.test_recorded_worktree_on_its_base_ended(t)
+  idle(t, "e", { wt = t.wt })
+  commit_wip(t, "new.txt")
+  t:git(t.wt, "branch", "formal")
+  t:q("insert into workspace(path, branch, base, agent) values(?, 'w2', 'main', 'e')", t.wt)
+  comms_tick(t)
+  assert(not ended(t, "e"), "its commit is on no base it was made from")
+  t:q("update workspace set base='formal'")
+  comms_tick(t)
+  assert(ended(t, "e"), "its HEAD is on formal")
+end
+
 function T.test_missing_worktree(t)
   idle(t, "e", { wt = t.wt })
   rmtree(t.wt)  -- branch w2 still registered; its commits are on main

@@ -296,9 +296,10 @@ function M.sweep_worktrees(c, comms, dry)
 end
 
 -- A worktree n owns that holds work not on its tasks' bases, not just the one wt_map picked; and those bases.
--- n owns the worktree swarm recorded for it and (board #15) any it added itself, named after it.
+-- n owns the worktree swarm recorded for it and (board #15) any it added itself, named after it. A recorded worktree is
+-- also landed on the base swarm made it from (board #78): its task reaped or released, n's bases fall back to main.
 function M.unlanded(c, n, main, wts, all_wts)
-  local B = bases.refs(bases.of_agent(c, n, main), main)
+  local names = bases.of_agent(c, n, main)
   local own, seen = { wts[n] }, {}
   for _, l in ipairs({ conflict.owned_wts(n, all_wts, c), conflict.owned_wts(n, all_wts) }) do
     for _, w in ipairs(l) do own[#own + 1] = w end
@@ -306,6 +307,9 @@ function M.unlanded(c, n, main, wts, all_wts)
   for _, w in ipairs(own) do
     if not seen[w] then
       seen[w] = true
+      local ok, r = pcall(c.one, c, "select base from workspace where path=? and agent=? and ro=0", w, n)  -- state reads dbs older than the table
+      local B = bases.refs(names, main)
+      if ok and r and r.base then B[#B + 1] = bases.ref(r.base, main) end
       if not M.landed(w, B, main) then return w, B end
     end
   end

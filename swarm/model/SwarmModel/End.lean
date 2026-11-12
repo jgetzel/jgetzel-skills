@@ -119,12 +119,12 @@ example : endBreaks {} pre33 0 false = false := by decide
 example : endBreaks { nwts := 1, perTaskBase := true, ownAdded := true } pre33w 0 false = false := by decide
 
 /-- board #63 (#46's replay): agent 1 lands a commit on `formal`; agent 0 is spawned for task 1, on `formal`, and the user
-releases it. Agent 0's recorded worktree is at formal's tip, not on main, so `swarm end` refuses it, as the Lua does ("work
-not on its base"); spawned for a task on main, it is ended -/
+releases it. Agent 0's recorded worktree is at formal's tip, not on main, the base it falls back to; since board #78 it is
+checked against its workspace's base too (`rbase`), so `swarm end` ends it, as it does one spawned for a task on main -/
 def cfg63 : Cfg := { nwts := 1, nbases := 2, perTaskBase := true, recordedWorkspaces := true, taskBase := [0, 1] }
 def pre63 : List Action := [.git 1 (.add 0), .git 1 (.edit 0), .git 1 (.commit 0), .git 1 (.land 0 1),
   .stop 0 false, .age 0, .tick, .add [], .tick, .releaseOther 1]
-example : (run cfg63 pre63).any (fun s => (step cfg63 s (.endOther 0 false)).isSome) = false := by decide +kernel
+example : (run cfg63 pre63).any (fun s => (step cfg63 s (.endOther 0 false)).isSome) = true := by decide +kernel
 example : (run { cfg63 with taskBase := [0, 0] } pre63).any
     (fun s => (step { cfg63 with taskBase := [0, 0] } s (.endOther 0 false)).isSome) = true := by decide +kernel
 
