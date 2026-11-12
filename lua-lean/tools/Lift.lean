@@ -47,7 +47,7 @@ def Cx.caller (cx : Cx) : String := if cx.top then "(some fn0)" else "none"
 mutual
 partial def fvE (b : List String) : Exp → List String
   | .var x => if b.contains x then [] else [x]
-  | .func ps _ body => fvS (ps.reverse ++ b) body none
+  | .func ps _ body _ => fvS (ps.reverse ++ b) body none
   | .index t k => fvE b t ++ fvE b k
   | .call f as => fvE b f ++ as.flatMap (fvE b)
   | .method o _ as => fvE b o ++ as.flatMap (fvE b)
@@ -60,7 +60,7 @@ partial def fvE (b : List String) : Exp → List String
 partial def fvS (b : List String) : Block → Option Exp → List String
   | [], fin => match fin with | some c => fvE b c | none => []
   | .loc ns es :: rest, fin => es.flatMap (fvE b) ++ fvS (ns.reverse ++ b) rest fin
-  | .locfn x ps _ body :: rest, fin => fvS (ps.reverse ++ x :: b) body none ++ fvS (x :: b) rest fin
+  | .locfn x ps _ body _ :: rest, fin => fvS (ps.reverse ++ x :: b) body none ++ fvS (x :: b) rest fin
   | s :: rest, fin => fvT b s ++ fvS b rest fin
 partial def fvT (b : List String) : Stat → List String
   | .assign ts es => ts.flatMap (fvE b) ++ es.flatMap (fvE b)
@@ -146,9 +146,9 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T String := do
   | .num n => pure s!"(S.eNum {num n})"
   | .str s => pure s!"(S.eStr {chars s})"
   | .vararg => pure s!"(S.eVa {cx.va})"
-  | .func ps va b =>
+  | .func ps va b ln =>
     let f ← job (if name == "" then cx.fname ++ "_fn" else name) ps va b cx.scope
-    pure s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fn0)"
+    pure s!"(S.eFunc {lst (ps.map nm)} {va} {f}_body {ln} ({envOf cx}) fn0)"
   | .var x =>
     match cx.scope.find? (·.lua == x) with
     | some ent => pure s!"(S.eCell {ent.lean})"
@@ -275,10 +275,10 @@ partial def tSeq (cx : Cx) (full rest : Block) (fin : Option Exp) : T String := 
     let sl ← tList cx es ns
     let (cx', cs) ← bindCells cx ns
     pure s!"(S.qLocal {sl} fun n => {lets cs}S.letEnd{nl}({← tSeq cx' full rest fin} n))"
-  | .locfn x ps va b :: rest => do
+  | .locfn x ps va b ln :: rest => do
     let (cx', cs) ← bindCells cx [x]
     let f ← job x ps va b cx'.scope
-    pure s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body ({envOf cx}) fn0 fun {cs.headD ""} =>{nl}{← tSeq cx' full rest fin})"
+    pure s!"(S.qLocalFn {nm x} {lst (ps.map nm)} {va} {f}_body {ln} ({envOf cx}) fn0 fun {cs.headD ""} =>{nl}{← tSeq cx' full rest fin})"
   | s :: rest => do
     let ss ← tStat cx s
     pure s!"(S.qStat {ss} (S.gotos {lst ((trail full).map nm)} {lst ((labels full).map nm)}){nl}{← tSeq cx full rest fin})"
@@ -305,11 +305,11 @@ def fnDef (j : Job) : T String := do
   let frees := upEnts.map (fun e => (e.lua, s!"(some {e.lean})")) ++ globs.map (·, "none")
   let res := frees.foldr (fun (x, v) r => s!"(res1 {nm x} {v} {r})") "(fun x => env0.lookup x)"
   let resP := frees.foldr (fun (x, _) r => s!"(res1_ok h_{leanName x} {r})") "(fun _ => rfl)"
-  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0, fenv0⟩"
+  let clo := s!"⟨{lst (j.ps.map nm)}, {j.va}, {j.name}_body, env0, fenv0, src0, ln0⟩"
   pure s!"def {j.name} (I : Sem) (env0 : Env) (fn0 : Nat){cellsT} : List Val → Nat → M (List Val) :=
-  S.fn fun args n => {lets cs}S.letEnd ({k} n)
+  S.fn fn0 fun args n => {lets cs}S.letEnd ({k} n)
 
-theorem {j.name}_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat){cellsT}{hyps} :
+theorem {j.name}_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat){cellsT}{hyps} :
     CFn I ({j.name} I env0 fn0{cells}) fn0 {clo} :=
   D.fn_ok I {res} fn0 {clo} {resP}
 "

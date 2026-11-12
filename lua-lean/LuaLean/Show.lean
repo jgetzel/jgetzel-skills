@@ -42,7 +42,7 @@ partial def exp : Exp → String
   | .nil => ".nil" | .tru => ".tru" | .fls => ".fls" | .vararg => ".vararg"
   | .num n => s!"(.num {num n})"
   | .str s => s!"(.str {chars s})"
-  | .func ps va b => s!"(.func {lst (ps.map nm)} {va} {block b})"
+  | .func ps va b ln => s!"(.func {lst (ps.map nm)} {va} {block b} {ln})"
   | .var x => s!"(.var {nm x})"
   | .index t k => s!"(.index {exp t} {exp k})"
   | .call f as => s!"(.call {exp f} {lst (as.map exp)})"
@@ -71,7 +71,7 @@ partial def stat : Stat → String
   | .fornum v a b st body =>
     s!"(.fornum {nm v} {exp a} {exp b} {match st with | some s => s!"(some {exp s})" | none => "none"} {block body})"
   | .forin vs es body => s!"(.forin {lst (vs.map nm)} {lst (es.map exp)} {block body})"
-  | .locfn n ps va b => s!"(.locfn {nm n} {lst (ps.map nm)} {va} {block b})"
+  | .locfn n ps va b ln => s!"(.locfn {nm n} {lst (ps.map nm)} {va} {block b} {ln})"
   | .ret es => s!"(.ret {lst (es.map exp)})"
   | .brk => ".brk"
   | .goto l => s!"(.goto {nm l})"

@@ -529,8 +529,7 @@ def debugs : G String := do
     "coroutine.wrap(f)", "(\"x\"):gmatch(\".\")", "type", "-1", "\"-2\"", "{}", "nil", "-0.5"]
   let opts ← pick ["\"u\"", "\"f\"", "\"l\"", "\"n\"", "\"nluf\"", "\"fu\"", "\"\"", "\"x\"", "\"uL\"", "\"Sl\"",
     "\"flnSu\"", "nil", "{}", "5"]
-  let opts := if (target == "f" || target == "g0") && (opts.contains 'S' || opts.contains 'L' || opts == "nil") then
-    "\"un\"" else opts
+  let opts := if (target == "f" || target == "g0") && opts.contains 'L' then "\"un\"" else opts
   let up ← pick ["f", "g0", "next", "string.rep", "debug.getinfo", "nil", "5"]
   let prot ← pick ["nil", "false", "\"locked\""]
   let m2 ← pick ["nil", "{}", "m"]
@@ -562,12 +561,10 @@ local co = coroutine.create(f)
 local tr = debug.traceback({tb})
 return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), require(\"debug\") == debug, N"
 
--- what needs a call stack (a level, a traceback's text, a Lua function's lines) or sets the metatable of a type
--- stops the run
-#guard [("return debug.traceback(\"x\")", "effect debug.traceback: the stack"),
-    ("return debug.traceback()", "effect debug.traceback: the stack"),
-    ("return debug.getinfo(1, \"l\")", "effect debug.getinfo of a stack level"),
-    ("return debug.getinfo(function() end)", "effect debug.getinfo: a Lua function's lines"),
+-- what needs the host's frames or a Lua function's active lines, or sets the metatable of a type, stops the run
+#guard [("return debug.traceback(\"x\", 2)", "effect debug.traceback from a level of the host's"),
+    ("return (debug.getinfo(2, \"l\"))", "effect debug.getinfo of a level of the host's"),
+    ("return (debug.getinfo(1, \"L\"))", "effect debug.getinfo: a Lua function's active lines"),
     ("return debug.setmetatable(1, {})", "effect debug.setmetatable of a number"),
     ("return debug.getmetatable(\"\")", "effect debug.getmetatable of a string"),
     ("return debug.getupvalue(print, 1)", "effect debug: the upvalues of print"),
@@ -575,6 +572,62 @@ return U, S, after, I, M, tr == o or tr == f or tr == co or tr, type(debug), req
     ("return debug.setmetatable(package.loaded, {})", "effect setmetatable(package.loaded)"),
     ("local a, b = 1, 2 local function f() b = a; return function() return b, f end end return debug.getupvalue(f, 1), debug.getupvalue(f, 2), debug.getupvalue(f, 3)",
       "ok:\"b\",\"a\",\"f\",function")].all fun (src, out) =>
+  runCase (fun _ => none) .dual [] src.toList == out
+
+/-- the call stack: getinfo of a level (its line, its name as the call made it: a local, global, field, method,
+upvalue, metamethod, for iterator, none from a builtin or after a tail call) and of a closure or chunk ('S');
+tracebacks from frames made by Lua, builtins calling back, tail calls, and an error handler's of the error's frames -/
+def stacks : G String := do
+  let lvl ← pick ["0", "1", "2", "3", "4"]
+  let opts ← pick ["\"l\"", "\"n\"", "\"nl\"", "\"S\"", "\"Sln\"", "\"f\"", "\"u\"", "nil", "\"flnSu\""]
+  let msg ← pick ["\"t\"", "nil", "7", "\"t\", 0", "\"t\", 2", "\"t\", 1.5", "\"t\", -1"]
+  let probe ← pick [s!"R[#R + 1] = show(debug.getinfo({lvl}, {opts}))", s!"R[#R + 1] = debug.traceback({msg})",
+    "R[#R + 1] = debug.traceback()", s!"R[#R + 1] = show(debug.getinfo(l or 2, {opts}))"]
+  let vias ← (List.range ((← rnd 4) + 1)).mapM fun _ => pick ["probe()", "local x = o.key", "local x = o + 1",
+    "local x = o .. \"s\"", "o()", "t:m()", "t.m(t)", "tail()", "pcall(probe)", "deep(2)", "deep(0)",
+    "for _ in function(_, c) if not c then probe() return 1 end end do end",
+    "R[#R + 1] = select(2, xpcall(function() local y = nil + 1 end, debug.traceback))",
+    "R[#R + 1] = select(2, xpcall(function() error(\"e\") end, debug.traceback))",
+    "R[#R + 1] = select(2, xpcall(function() deep(1) error({}) end, debug.traceback))",
+    "R[#R + 1] = select(2, xpcall(function() return (\"x\"):rep({}) end, debug.traceback))",
+    "xpcall(function() error(\"e\") end, function(m) probe(3) return m end)",
+    "local s = tostring(setmetatable({}, {__tostring = function() probe() return \"s\" end}))",
+    "string.gsub(\"a\", \".\", function(c) probe() end)", "R[#R + 1] = show(debug.getinfo(deep, \"S\"))",
+    "R[#R + 1] = show(debug.getinfo(loadstring(\"return 1\\n\\n\"), \"S\"))",
+    "R[#R + 1] = show(loadstring(\"return debug.getinfo(1, 'Sl')\", \"=l\")())",
+    "R[#R + 1] = (function() return debug.traceback(\"tail\") end)()",
+    "R[#R + 1] = show(debug.getinfo(print, \"Sln\"))"]
+  return s!"local R = \{}
+local function show(i)
+  if type(i) ~= \"table\" then return tostring(i) end
+  local t = \{}
+  for _, k in ipairs(\{\"currentline\", \"name\", \"namewhat\", \"source\", \"short_src\", \"linedefined\",
+      \"lastlinedefined\", \"what\", \"nups\", \"nparams\", \"isvararg\"}) do
+    t[#t + 1] = tostring(i[k])
+  end
+  return table.concat(t, \" \") .. \" \" .. type(i.func)
+end
+local function probe(l)
+  {probe}
+end
+local o = setmetatable(\{}, \{__index = function(t, k) probe() return 1 end, __add = function(a, b) probe() return 2 end,
+  __concat = function() probe() return \"c\" end, __call = function() probe() end})
+local t = \{m = function(self) probe() end}
+local function tail() return probe() end
+local function deep(k) if k == 0 then probe() else deep(k - 1) end end
+{"\n".intercalate vias}
+return R"
+
+-- a level or a traceback with the host's frames in it stops; the rest are LuaJIT's
+#guard [("local function f() return debug.traceback(\"m\") end return f()", "ok:\"m\\010stack traceback:\\010\\009(host)\""),
+    ("local function f() local s = debug.traceback(\"m\") return s end return (f())",
+      "ok:\"m\\010stack traceback:\\010\\009c:1: in function 'f'\\010\\009c:1: in main chunk\\010\\009(host)\""),
+    ("local function f(k) if k == 0 then return (debug.traceback()) end return (f(k - 1)) end return f(12)",
+      "effect debug.traceback of a stack past 12 levels"),
+    ("return (debug.getinfo(1, \"n\")).namewhat, debug.getinfo(0, \"n\").name", "ok:\"\",\"getinfo\""),
+    ("return coroutine.wrap(function() return debug.traceback() end)()", "effect debug: a coroutine's stack"),
+    ("return debug.getinfo(string.dump(function() end) and load(string.dump(function() end, true)), \"S\")",
+      "effect debug.getinfo: a stripped function's lines")].all fun (src, out) =>
   runCase (fun _ => none) .dual [] src.toList == out
 
 -- ---------- bit ----------
@@ -999,12 +1052,14 @@ local R = \{}
 {"\n".intercalate steps}
 return R, x, y, E1.x, E2.x, E3.x, gf ~= nil"
 
--- what needs a level the semantics keeps no frame for stops the run: a level past 1, level 1 of a builtin's call
--- or of a tail call, and the thread's environment (setfenv 0)
-#guard [("return pcall(getfenv, 1)", "effect getfenv of level 1"),
-    ("return getfenv(2)", "effect getfenv of level 2"),
-    ("local function f() return getfenv(1) end return f()", "effect getfenv of level 1"),
-    ("local function f() return setfenv(1, {}) end return pcall(f)", "effect setfenv of level 1"),
+-- a level is the stack's (a builtin's frame there, or the host's, stops the run), and the thread's environment
+-- (setfenv 0) stops it
+#guard [("return pcall(getfenv, 1)", "effect getfenv of a builtin's level"),
+    ("return getfenv(2)", "effect getfenv of a level of the host's"),
+    ("local function f() return getfenv(1) end return f()", "effect getfenv of a level of the host's"),
+    ("local function f() return setfenv(1, {}) end return pcall(f)", "effect setfenv of a builtin's level"),
+    ("local function f() return getfenv(2) == _G end return (f())", "ok:true"),
+    ("local function f() setfenv(2, {x = 1}) end local function g() f() return x end x = 2 return (g()), x", "ok:1,2"),
     ("setfenv(0, _G)", "effect setfenv of level 0: the thread's environment"),
     ("return pcall(debug.getfenv, print)", "effect debug.getfenv"),
     ("local e = setmetatable({}, {__index = _G}) local function f() y = 1 return x end x = 3 setfenv(f, e) return f(), e.y, y, getfenv(f) == e, setfenv(f, _G) == f, getfenv(1) == _G",
@@ -1102,7 +1157,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => match ← rnd 3 with | 0 => libs | 1 => debugs | 2 => bitOps | _ => ffiOps
+  | 10 => match ← rnd 4 with | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | _ => ffiOps
   | 11 => traverse
   | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros
