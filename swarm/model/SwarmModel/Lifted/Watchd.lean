@@ -19,11 +19,12 @@ def M_iterate (I : Sem) (env0 : Env) (fn0 : Nat) (c_iteration : Nat) : List Val 
       ((S.qStat (S.sReturn (S.lCons (S.eAnd (S.eCell c_ok) (S.eCell c_r)) (S.lLast (S.mOne (S.eCell c_why))))) (S.gotos [] [])
       S.qEnd) n))) n)
 
-theorem M_iterate_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_iteration : Nat)
+theorem M_iterate_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_iteration : Nat)
     (h_iteration : env0.lookup "iteration" = some c_iteration)
     (h_pcall : env0.lookup "pcall" = none) :
-    CFn I (M_iterate I env0 fn0 c_iteration) fn0 ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "iteration" (some c_iteration) (res1 "pcall" none (fun x => env0.lookup x))) fn0 ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0⟩ (res1_ok h_iteration (res1_ok h_pcall (fun _ => rfl)))
+    CFn I (M_iterate I env0 fn0 c_iteration) fn0 ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "iteration" (some c_iteration) (res1 "pcall" none (fun x => env0.lookup x))) fn0 ⟨["c", "mine", "comms", "repo", "opts", "up"], false, M_iterate_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_iteration (res1_ok h_pcall (fun _ => rfl)))
 
 end Swarm.Lifted.Watchd
 -- checksum Swarm.Lifted.Watchd 1678225617

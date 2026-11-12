@@ -621,6 +621,7 @@ def chunk (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val)
       S.qEnd)))))))))))))))))))))))))))) n)) n)) n)) n))) n)
 
 theorem chunk_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_require : env0.lookup "require" = none)
     (h_tonumber : env0.lookup "tonumber" = none)
     (h_ipairs : env0.lookup "ipairs" = none)
@@ -630,8 +631,8 @@ theorem chunk_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln
     (h_print : env0.lookup "print" = none)
     (h_tostring : env0.lookup "tostring" = none)
     (h_error : env0.lookup "error" = none) :
-    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "require" none (res1 "tonumber" none (res1 "ipairs" none (res1 "math" none (res1 "table" none (res1 "unpack" none (res1 "print" none (res1 "tostring" none (res1 "error" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ (res1_ok h_require (res1_ok h_tonumber (res1_ok h_ipairs (res1_ok h_math (res1_ok h_table (res1_ok h_unpack (res1_ok h_print (res1_ok h_tostring (res1_ok h_error (fun _ => rfl))))))))))
+    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "require" none (res1 "tonumber" none (res1 "ipairs" none (res1 "math" none (res1 "table" none (res1 "unpack" none (res1 "print" none (res1 "tostring" none (res1 "error" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_require (res1_ok h_tonumber (res1_ok h_ipairs (res1_ok h_math (res1_ok h_table (res1_ok h_unpack (res1_ok h_print (res1_ok h_tostring (res1_ok h_error (fun _ => rfl))))))))))
 
 def py (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eOr (S.eOr (S.eOr (S.eBin I .eq (S.eCell c_x) S.eNil) (S.eBin I .eq (S.eCell c_x) (S.eNum (.int 0)))) (S.eBin I .eq (S.eCell c_x) (S.eStr "".toList))) (S.eBin I .eq (S.eCell c_x) S.eFalse)) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
@@ -639,18 +640,20 @@ def py (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_x)))) (S.gotos [] [])
       S.qEnd))) n)
 
-theorem py_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (py I env0 fn0) fn0 ⟨["x"], false, py_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["x"], false, py_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem py_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (py I env0 fn0) fn0 ⟨["x"], false, py_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["x"], false, py_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def d (I : Sem) (env0 : Env) (fn0 : Nat) (c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_n => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 17, [], ("field", "d"), true⟩ (S.mCall I none (S.eSite ⟨"tasks.lua", 17, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "d".toList))) (S.lLast (S.mOne (S.eCell c_n))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem d_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_util : Nat)
+theorem d_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_util : Nat)
     (h_util : env0.lookup "util" = some c_util) :
-    CFn I (d I env0 fn0 c_util) fn0 ⟨["n"], false, d_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) fn0 ⟨["n"], false, d_body, env0, fenv0, src0, ln0⟩ (res1_ok h_util (fun _ => rfl))
+    CFn I (d I env0 fn0 c_util) fn0 ⟨["n"], false, d_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) fn0 ⟨["n"], false, d_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_util (fun _ => rfl))
 
 def M_event_task (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_e => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eOr (S.eSite ⟨"tasks.lua", 21, [("local", "e")], ("", ""), false⟩ (S.eIndex I (S.eCell c_e) (S.eStr "data".toList))) (S.eStr "".toList)))) fun n => S.let1 fun c_s => S.letEnd
@@ -663,9 +666,10 @@ def M_event_task (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (Li
       S.qEnd))) n)) n))) n)
 
 theorem M_event_task_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_tonumber : env0.lookup "tonumber" = none) :
-    CFn I (M_event_task I env0 fn0) fn0 ⟨["e"], false, M_event_task_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) fn0 ⟨["e"], false, M_event_task_body, env0, fenv0, src0, ln0⟩ (res1_ok h_tonumber (fun _ => rfl))
+    CFn I (M_event_task I env0 fn0) fn0 ⟨["e"], false, M_event_task_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) fn0 ⟨["e"], false, M_event_task_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_tonumber (fun _ => rfl))
 
 def M_task_timing (I : Sem) (env0 : Env) (fn0 : Nat) (c_py c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_r => S.let1 fun c_evs => S.letEnd ((S.block (S.qLocalFn "ts" ["k", "agg"] false ts_body (31, 38) (("evs", c_evs) :: ("r", c_r) :: env0) fn0 fun c_ts =>
@@ -695,13 +699,14 @@ def M_task_timing (I : Sem) (env0 : Env) (fn0 : Nat) (c_py c_util : Nat) : List 
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eTable (S.fNamed "created_at" (S.eCell c_created) (S.fNamed "first_claimed_at" (S.eCell c_first) (S.fNamed "done_at" (S.eCell c_done) (S.fNamed "dropped_at" (S.eCell c_dropped) (S.fNamed "queue_wait_s" (S.eSite ⟨"tasks.lua", 61, [], ("local", "span"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_span) (S.lCons (S.eCell c_created) (S.lLast (S.mOne (S.eCell c_first))))))) (S.fNamed "work_s" (S.eSite ⟨"tasks.lua", 61, [], ("local", "span"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_span) (S.lCons (S.eCell c_first) (S.lLast (S.mOne (S.eCell c_done))))))) (S.fNamed "total_s" (S.eSite ⟨"tasks.lua", 61, [], ("local", "span"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_span) (S.lCons (S.eCell c_created) (S.lLast (S.mOne (S.eCell c_done))))))) (S.fNamed "blocked_s" (S.eCell c_blocked) (S.fNamed "claims" (S.eCell c_claims) (S.fNamed "releases" (S.eCell c_releases) (S.fNamed "holders" (S.eCell c_holders) (S.fNamed "claim_ctx" (S.eSite ⟨"tasks.lua", 62, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "claim_ctx".toList))) (S.fNamed "done_ctx" (S.eSite ⟨"tasks.lua", 62, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "done_ctx".toList))) (S.fNamed "pr" (S.eSite ⟨"tasks.lua", 63, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "pr".toList))) (S.fNamed "merged_at" (S.eSite ⟨"tasks.lua", 63, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "merged_at".toList))) (S.fNamed "ci_conclusion" (S.eSite ⟨"tasks.lua", 63, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "ci_conclusion".toList))) (S.fNamed "merge_to_green_s" (S.eSite ⟨"tasks.lua", 64, [], ("local", "span"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_span) (S.lCons (S.eSite ⟨"tasks.lua", 64, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "merged_at".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 64, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "ci_green_at".toList))))))))) S.fNil))))))))))))))))))))) (S.gotos [] [])
       S.qEnd)))) n)) n)) n)) n)) n)) n))) n)))) n)
 
-theorem M_task_timing_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_py c_util : Nat)
+theorem M_task_timing_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_py c_util : Nat)
     (h_py : env0.lookup "py" = some c_py)
     (h_util : env0.lookup "util" = some c_util)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_math : env0.lookup "math" = none) :
-    CFn I (M_task_timing I env0 fn0 c_py c_util) fn0 ⟨["r", "evs"], false, M_task_timing_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "py" (some c_py) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))) fn0 ⟨["r", "evs"], false, M_task_timing_body, env0, fenv0, src0, ln0⟩ (res1_ok h_py (res1_ok h_util (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))
+    CFn I (M_task_timing I env0 fn0 c_py c_util) fn0 ⟨["r", "evs"], false, M_task_timing_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "py" (some c_py) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))) fn0 ⟨["r", "evs"], false, M_task_timing_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_py (res1_ok h_util (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))
 
 def M_task_events (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_tid => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r => S.letEnd
@@ -711,12 +716,13 @@ def M_task_events (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → 
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem M_task_events_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem M_task_events_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
-    CFn I (M_task_events I env0 fn0 c_M) fn0 ⟨["c", "tid"], false, M_task_events_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["c", "tid"], false, M_task_events_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
+    CFn I (M_task_events I env0 fn0 c_M) fn0 ⟨["c", "tid"], false, M_task_events_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["c", "tid"], false, M_task_events_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
 
 def M_deps_of (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -726,9 +732,10 @@ def M_deps_of (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List 
       S.qEnd)) n))) n)
 
 theorem M_deps_of_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_tonumber : env0.lookup "tonumber" = none) :
-    CFn I (M_deps_of I env0 fn0) fn0 ⟨["r"], false, M_deps_of_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) fn0 ⟨["r"], false, M_deps_of_body, env0, fenv0, src0, ln0⟩ (res1_ok h_tonumber (fun _ => rfl))
+    CFn I (M_deps_of I env0 fn0) fn0 ⟨["r"], false, M_deps_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "tonumber" none (fun x => env0.lookup x)) fn0 ⟨["r"], false, M_deps_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_tonumber (fun _ => rfl))
 
 def M_undone (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lCons (S.eSite ⟨"tasks.lua", 85, [], ("field", "deps_of"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 85, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "deps_of".toList))) (S.lLast (S.mOne (S.eCell c_r)))))) (S.lLast (S.mOne (S.eTable S.fNil)))) fun n => S.let1 fun c_deps => S.let1 fun c_out => S.letEnd
@@ -746,22 +753,24 @@ def M_undone (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat �
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_out)))) (S.gotos [] [])
       S.qEnd))) n))) n))) n))) n)
 
-theorem M_undone_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem M_undone_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none)
     (h_unpack : env0.lookup "unpack" = none) :
-    CFn I (M_undone I env0 fn0 c_M) fn0 ⟨["c", "r"], false, M_undone_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x))))) fn0 ⟨["c", "r"], false, M_undone_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (res1_ok h_unpack (fun _ => rfl)))))
+    CFn I (M_undone I env0 fn0 c_M) fn0 ⟨["c", "r"], false, M_undone_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x))))) fn0 ⟨["c", "r"], false, M_undone_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_ipairs (res1_ok h_table (res1_ok h_unpack (fun _ => rfl)))))
 
 def M_waiters (I : Sem) (env0 : Env) (fn0 : Nat) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_tid => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 101, [("local", "c")], ("method", "all"), true⟩ (S.mMethod I none (S.eCell c_c) "all" (S.lCons (S.eStr "select * from task where state='open' and ','||deps||',' like ?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 101, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "%,".toList) (S.eSite ⟨"tasks.lua", 101, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eSite ⟨"tasks.lua", 101, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I none (S.eCell c_d) (S.lLast (S.mOne (S.eCell c_tid)))))) (S.eStr ",%".toList)))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem M_waiters_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_d : Nat)
+theorem M_waiters_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
-    CFn I (M_waiters I env0 fn0 c_d) fn0 ⟨["c", "tid"], false, M_waiters_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["c", "tid"], false, M_waiters_body, env0, fenv0, src0, ln0⟩ (res1_ok h_d (fun _ => rfl))
+    CFn I (M_waiters I env0 fn0 c_d) fn0 ⟨["c", "tid"], false, M_waiters_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["c", "tid"], false, M_waiters_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_d (fun _ => rfl))
 
 def M_dep_path (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_start => S.let1 fun c_target => S.letEnd ((S.block (S.qLocal (S.lCons (S.eTable S.fNil) (S.lLast (S.mOne (S.eTable (S.fLast (S.mOne (S.eTable (S.fLast (S.mOne (S.eCell c_start)))))))))) fun n => S.let1 fun c_seen => S.let1 fun c_stack => S.letEnd
@@ -781,12 +790,13 @@ def M_dep_path (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem M_dep_path_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem M_dep_path_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_table : env0.lookup "table" = none)
     (h_unpack : env0.lookup "unpack" = none) :
-    CFn I (M_dep_path I env0 fn0 c_M) fn0 ⟨["c", "start", "target"], false, M_dep_path_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x)))) fn0 ⟨["c", "start", "target"], false, M_dep_path_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_table (res1_ok h_unpack (fun _ => rfl))))
+    CFn I (M_dep_path I env0 fn0 c_M) fn0 ⟨["c", "start", "target"], false, M_dep_path_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "table" none (res1 "unpack" none (fun x => env0.lookup x)))) fn0 ⟨["c", "start", "target"], false, M_dep_path_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_table (res1_ok h_unpack (fun _ => rfl))))
 
 def M_stop_pending (I : Sem) (env0 : Env) (fn0 : Nat) (c_py : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sIf (S.eUn I .not (S.eSite ⟨"tasks.lua", 128, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 128, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "stop_to".toList))))))))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne S.eFalse))) (S.gotos [] [])
@@ -798,10 +808,11 @@ def M_stop_pending (I : Sem) (env0 : Env) (fn0 : Nat) (c_py : Nat) : List Val �
       ((S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 132, [("", ""), ("field", "stop_msg")], ("", ""), false⟩ (S.mOne (S.eBin I .lt (S.eParen (S.eOr (S.eAnd (S.eCell c_cur) (S.eSite ⟨"tasks.lua", 132, [("local", "cur")], ("", ""), false⟩ (S.eIndex I (S.eCell c_cur) (S.eStr "last_msg_id".toList)))) (S.eNum (.int 0)))) (S.eSite ⟨"tasks.lua", 132, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "stop_msg".toList)))))))) (S.gotos [] [])
       S.qEnd) n))) n)))) n)
 
-theorem M_stop_pending_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_py : Nat)
+theorem M_stop_pending_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_py : Nat)
     (h_py : env0.lookup "py" = some c_py) :
-    CFn I (M_stop_pending I env0 fn0 c_py) fn0 ⟨["c", "r"], false, M_stop_pending_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "py" (some c_py) (fun x => env0.lookup x)) fn0 ⟨["c", "r"], false, M_stop_pending_body, env0, fenv0, src0, ln0⟩ (res1_ok h_py (fun _ => rfl))
+    CFn I (M_stop_pending I env0 fn0 c_py) fn0 ⟨["c", "r"], false, M_stop_pending_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "py" (some c_py) (fun x => env0.lookup x)) fn0 ⟨["c", "r"], false, M_stop_pending_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_py (fun _ => rfl))
 
 def M_pool (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r => S.letEnd
@@ -811,11 +822,12 @@ def M_pool (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat →
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem M_pool_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem M_pool_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (M_pool I env0 fn0 c_M) fn0 ⟨["c"], false, M_pool_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["c"], false, M_pool_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_ipairs (fun _ => rfl)))
+    CFn I (M_pool I env0 fn0 c_M) fn0 ⟨["c"], false, M_pool_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["c"], false, M_pool_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_ipairs (fun _ => rfl)))
 
 def M_dep_lines (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_r => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_st => S.letEnd
@@ -836,13 +848,14 @@ def M_dep_lines (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_d : Nat) : List Val �
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_out)))) (S.gotos [] [])
       S.qEnd)) n))) n))) n))) n)
 
-theorem M_dep_lines_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M c_d : Nat)
+theorem M_dep_lines_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M c_d : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
-    CFn I (M_dep_lines I env0 fn0 c_M c_d) fn0 ⟨["c", "r"], false, M_dep_lines_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))) fn0 ⟨["c", "r"], false, M_dep_lines_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))
+    CFn I (M_dep_lines I env0 fn0 c_M c_d) fn0 ⟨["c", "r"], false, M_dep_lines_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))) fn0 ⟨["c", "r"], false, M_dep_lines_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))
 
 def ids (I : Sem) (env0 : Env) (fn0 : Nat) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_rows => S.let1 fun c_f => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_p => S.letEnd
@@ -851,12 +864,13 @@ def ids (I : Sem) (env0 : Env) (fn0 : Nat) (c_d : Nat) : List Val → Nat → M 
       (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 167, [], ("field", "concat"), true⟩ (S.mCall I none (S.eSite ⟨"tasks.lua", 167, [("global", "table")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "table") (S.eStr "concat".toList))) (S.lCons (S.eCell c_p) (S.lLast (S.mOne (S.eStr ", ".toList)))))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem ids_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_d : Nat)
+theorem ids_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
-    CFn I (ids I env0 fn0 c_d) fn0 ⟨["rows", "f"], false, ids_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["rows", "f"], false, ids_body, env0, fenv0, src0, ln0⟩ (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
+    CFn I (ids I env0 fn0 c_d) fn0 ⟨["rows", "f"], false, ids_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "d" (some c_d) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["rows", "f"], false, ids_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_d (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl))))
 
 def no_task_to_wait_on (I : Sem) (env0 : Env) (fn0 : Nat) (c_util c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_deps => S.letEnd ((S.block (S.qStat (S.sSite ⟨"tasks.lua", 171, [("", "")], ("local", "(for generator)"), false⟩ (S.sForIn I (S.lLast (S.mSite ⟨"tasks.lua", 171, [], ("global", "ipairs"), false⟩ (S.mCall I (some fn0) (S.eGlob I fn0 "ipairs") (S.lLast (S.mOne (S.eCell c_deps)))))) fun n => S.let1 fun c__ => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sIf (S.eUn I .not (S.eSite ⟨"tasks.lua", 172, [("local", "c")], ("method", "one"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select 1 from task where id=?".toList) (S.lLast (S.mOne (S.eCell c_x)))))))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 172, [], ("field", "die"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 172, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 172, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "no task #%s to wait on".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 172, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mOne (S.eCell c_x)))))))))))) (S.gotos [] [])
@@ -864,12 +878,13 @@ def no_task_to_wait_on (I : Sem) (env0 : Env) (fn0 : Nat) (c_util c_d : Nat) : L
         S.qEnd)) n))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem no_task_to_wait_on_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_util c_d : Nat)
+theorem no_task_to_wait_on_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_util c_d : Nat)
     (h_util : env0.lookup "util" = some c_util)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (no_task_to_wait_on I env0 fn0 c_util c_d) fn0 ⟨["c", "deps"], false, no_task_to_wait_on_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) fn0 ⟨["c", "deps"], false, no_task_to_wait_on_body, env0, fenv0, src0, ln0⟩ (res1_ok h_util (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
+    CFn I (no_task_to_wait_on I env0 fn0 c_util c_d) fn0 ⟨["c", "deps"], false, no_task_to_wait_on_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) fn0 ⟨["c", "deps"], false, no_task_to_wait_on_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_util (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
 
 def M_set_deps (I : Sem) (env0 : Env) (fn0 : Nat) (c_no_task_to_wait_on c_M c_d c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_id => S.let1 fun c_deps => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_ds => S.letEnd
@@ -887,24 +902,26 @@ def M_set_deps (I : Sem) (env0 : Env) (fn0 : Nat) (c_no_task_to_wait_on c_M c_d 
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_ds)))) (S.gotos [] [])
       S.qEnd))) n))) n)
 
-theorem M_set_deps_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_no_task_to_wait_on c_M c_d c_util : Nat)
+theorem M_set_deps_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_no_task_to_wait_on c_M c_d c_util : Nat)
     (h_no_task_to_wait_on : env0.lookup "no_task_to_wait_on" = some c_no_task_to_wait_on)
     (h_M : env0.lookup "M" = some c_M)
     (h_d : env0.lookup "d" = some c_d)
     (h_util : env0.lookup "util" = some c_util)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
-    CFn I (M_set_deps I env0 fn0 c_no_task_to_wait_on c_M c_d c_util) fn0 ⟨["c", "id", "deps"], false, M_set_deps_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))))) fn0 ⟨["c", "id", "deps"], false, M_set_deps_body, env0, fenv0, src0, ln0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_M (res1_ok h_d (res1_ok h_util (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))))
+    CFn I (M_set_deps I env0 fn0 c_no_task_to_wait_on c_M c_d c_util) fn0 ⟨["c", "id", "deps"], false, M_set_deps_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))))) fn0 ⟨["c", "id", "deps"], false, M_set_deps_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_M (res1_ok h_d (res1_ok h_util (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))))
 
 def ctx_of (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 195, [("local", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select ctx_tokens from agent where name=?".toList) (S.lLast (S.mOne (S.eCell c_n))))))) fun n => S.let1 fun c_r => S.letEnd
       ((S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eCell c_r) (S.eSite ⟨"tasks.lua", 196, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "ctx_tokens".toList)))) (S.eNum (.int 0)))))) (S.gotos [] [])
       S.qEnd) n))) n)
 
-theorem ctx_of_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (ctx_of I env0 fn0) fn0 ⟨["c", "n"], false, ctx_of_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["c", "n"], false, ctx_of_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem ctx_of_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (ctx_of I env0 fn0) fn0 ⟨["c", "n"], false, ctx_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["c", "n"], false, ctx_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def reaped_from (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_n => S.let1 fun c_id => S.letEnd ((S.block (S.qLocal S.lNil fun n => S.let1 fun c_last => S.letEnd
@@ -914,21 +931,23 @@ def reaped_from (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_d : Nat) : List Val �
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eAnd (S.eBin I .eq (S.eCell c_last) (S.eCell c_n)) (S.eBin I .ne (S.eSite ⟨"tasks.lua", 206, [("local", "c")], ("method", "one"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select 1 from event where kind='reap' and agent=? and data=?".toList) (S.lCons (S.eCell c_n) (S.lLast (S.mSite ⟨"tasks.lua", 206, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "task #%s lease expired".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 206, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mOne (S.eCell c_id)))))))))))))) S.eNil))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem reaped_from_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M c_d : Nat)
+theorem reaped_from_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M c_d : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_d : env0.lookup "d" = some c_d)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (reaped_from I env0 fn0 c_M c_d) fn0 ⟨["c", "n", "id"], false, reaped_from_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) fn0 ⟨["c", "n", "id"], false, reaped_from_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
+    CFn I (reaped_from I env0 fn0 c_M c_d) fn0 ⟨["c", "n", "id"], false, reaped_from_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "d" (some c_d) (res1 "ipairs" none (fun x => env0.lookup x)))) fn0 ⟨["c", "n", "id"], false, reaped_from_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_d (res1_ok h_ipairs (fun _ => rfl))))
 
 def owned (I : Sem) (env0 : Env) (fn0 : Nat) (c_py : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eSite ⟨"tasks.lua", 210, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 210, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList)))))))) (S.eParen (S.eSite ⟨"tasks.lua", 210, [("", ""), ("field", "owner")], ("", ""), false⟩ (S.eBin I .concat (S.eStr ", owned by ".toList) (S.eSite ⟨"tasks.lua", 210, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList))))))) (S.eStr "".toList))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem owned_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_py : Nat)
+theorem owned_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_py : Nat)
     (h_py : env0.lookup "py" = some c_py) :
-    CFn I (owned I env0 fn0 c_py) fn0 ⟨["r"], false, owned_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "py" (some c_py) (fun x => env0.lookup x)) fn0 ⟨["r"], false, owned_body, env0, fenv0, src0, ln0⟩ (res1_ok h_py (fun _ => rfl))
+    CFn I (owned I env0 fn0 c_py) fn0 ⟨["r"], false, owned_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "py" (some c_py) (fun x => env0.lookup x)) fn0 ⟨["r"], false, owned_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_py (fun _ => rfl))
 
 def M_cmd_task (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_util c_no_task_to_wait_on c_d c_py c_M c_db c_ctx_of c_hook c_reaped_from c_owned c_ids : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 214, [], ("field", "me"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 214, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "me".toList))) S.lNil))) fun n => S.let1 fun c_n => S.letEnd
@@ -1025,7 +1044,8 @@ def M_cmd_task (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_util c_no_task_to_
         S.qEnd))) (S.gotos [] [])
       S.qEnd) n))) n))) n)) n))) n)
 
-theorem M_cmd_task_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_agents c_util c_no_task_to_wait_on c_d c_py c_M c_db c_ctx_of c_hook c_reaped_from c_owned c_ids : Nat)
+theorem M_cmd_task_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_agents c_util c_no_task_to_wait_on c_d c_py c_M c_db c_ctx_of c_hook c_reaped_from c_owned c_ids : Nat)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_util : env0.lookup "util" = some c_util)
     (h_no_task_to_wait_on : env0.lookup "no_task_to_wait_on" = some c_no_task_to_wait_on)
@@ -1044,8 +1064,8 @@ theorem M_cmd_task_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char
     (h_math : env0.lookup "math" = none)
     (h_require : env0.lookup "require" = none)
     (h_tostring : env0.lookup "tostring" = none) :
-    CFn I (M_cmd_task I env0 fn0 c_agents c_util c_no_task_to_wait_on c_d c_py c_M c_db c_ctx_of c_hook c_reaped_from c_owned c_ids) fn0 ⟨["c", "a"], false, M_cmd_task_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "d" (some c_d) (res1 "py" (some c_py) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ctx_of" (some c_ctx_of) (res1 "hook" (some c_hook) (res1 "reaped_from" (some c_reaped_from) (res1 "owned" (some c_owned) (res1 "ids" (some c_ids) (res1 "ipairs" none (res1 "table" none (res1 "print" none (res1 "math" none (res1 "require" none (res1 "tostring" none (fun x => env0.lookup x))))))))))))))))))) fn0 ⟨["c", "a"], false, M_cmd_task_body, env0, fenv0, src0, ln0⟩ (res1_ok h_agents (res1_ok h_util (res1_ok h_no_task_to_wait_on (res1_ok h_d (res1_ok h_py (res1_ok h_M (res1_ok h_db (res1_ok h_ctx_of (res1_ok h_hook (res1_ok h_reaped_from (res1_ok h_owned (res1_ok h_ids (res1_ok h_ipairs (res1_ok h_table (res1_ok h_print (res1_ok h_math (res1_ok h_require (res1_ok h_tostring (fun _ => rfl)))))))))))))))))))
+    CFn I (M_cmd_task I env0 fn0 c_agents c_util c_no_task_to_wait_on c_d c_py c_M c_db c_ctx_of c_hook c_reaped_from c_owned c_ids) fn0 ⟨["c", "a"], false, M_cmd_task_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "d" (some c_d) (res1 "py" (some c_py) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ctx_of" (some c_ctx_of) (res1 "hook" (some c_hook) (res1 "reaped_from" (some c_reaped_from) (res1 "owned" (some c_owned) (res1 "ids" (some c_ids) (res1 "ipairs" none (res1 "table" none (res1 "print" none (res1 "math" none (res1 "require" none (res1 "tostring" none (fun x => env0.lookup x))))))))))))))))))) fn0 ⟨["c", "a"], false, M_cmd_task_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_agents (res1_ok h_util (res1_ok h_no_task_to_wait_on (res1_ok h_d (res1_ok h_py (res1_ok h_M (res1_ok h_db (res1_ok h_ctx_of (res1_ok h_hook (res1_ok h_reaped_from (res1_ok h_owned (res1_ok h_ids (res1_ok h_ipairs (res1_ok h_table (res1_ok h_print (res1_ok h_math (res1_ok h_require (res1_ok h_tostring (fun _ => rfl)))))))))))))))))))
 
 def M_cmd_board (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_agents c_py c_d c_util c_ids : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 419, [], ("global", "require"), false⟩ (S.mCall I (some fn0) (S.eGlob I fn0 "require") (S.lLast (S.mOne (S.eStr "swarm.machine".toList)))))) fun n => S.let1 fun c_machine => S.letEnd
@@ -1078,7 +1098,8 @@ def M_cmd_board (I : Sem) (env0 : Env) (fn0 : Nat) (c_M c_agents c_py c_d c_util
         S.qEnd)) n))) (S.gotos [] [])
       S.qEnd)))) n))) n))) n))) n)) n))) n)
 
-theorem M_cmd_board_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M c_agents c_py c_d c_util c_ids : Nat)
+theorem M_cmd_board_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M c_agents c_py c_d c_util c_ids : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_py : env0.lookup "py" = some c_py)
@@ -1089,8 +1110,8 @@ theorem M_cmd_board_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Cha
     (h_print : env0.lookup "print" = none)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_math : env0.lookup "math" = none) :
-    CFn I (M_cmd_board I env0 fn0 c_M c_agents c_py c_d c_util c_ids) fn0 ⟨["c", "a"], false, M_cmd_board_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "agents" (some c_agents) (res1 "py" (some c_py) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ids" (some c_ids) (res1 "require" none (res1 "print" none (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))))))))) fn0 ⟨["c", "a"], false, M_cmd_board_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_agents (res1_ok h_py (res1_ok h_d (res1_ok h_util (res1_ok h_ids (res1_ok h_require (res1_ok h_print (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))))))))
+    CFn I (M_cmd_board I env0 fn0 c_M c_agents c_py c_d c_util c_ids) fn0 ⟨["c", "a"], false, M_cmd_board_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "agents" (some c_agents) (res1 "py" (some c_py) (res1 "d" (some c_d) (res1 "util" (some c_util) (res1 "ids" (some c_ids) (res1 "require" none (res1 "print" none (res1 "ipairs" none (res1 "math" none (fun x => env0.lookup x))))))))))) fn0 ⟨["c", "a"], false, M_cmd_board_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_agents (res1_ok h_py (res1_ok h_d (res1_ok h_util (res1_ok h_ids (res1_ok h_require (res1_ok h_print (res1_ok h_ipairs (res1_ok h_math (fun _ => rfl)))))))))))
 
 def M_cmd_rules (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 461, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "act".toList))) (S.eStr "set".toList)) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 462, [("local", "c")], ("method", "exec"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eStr "insert or replace into meta(k,v) values('rules',?)".toList) (S.lLast (S.mSite ⟨"tasks.lua", 462, [], ("field", "concat"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 462, [("global", "table")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "table") (S.eStr "concat".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 462, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "text".toList))) (S.lLast (S.mOne (S.eStr " ".toList))))))))))) (S.gotos [] [])
@@ -1100,17 +1121,19 @@ def M_cmd_rules (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (Lis
       S.qEnd) n)))) n)
 
 theorem M_cmd_rules_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_table : env0.lookup "table" = none)
     (h_print : env0.lookup "print" = none) :
-    CFn I (M_cmd_rules I env0 fn0) fn0 ⟨["c", "a"], false, M_cmd_rules_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "table" none (res1 "print" none (fun x => env0.lookup x))) fn0 ⟨["c", "a"], false, M_cmd_rules_body, env0, fenv0, src0, ln0⟩ (res1_ok h_table (res1_ok h_print (fun _ => rfl)))
+    CFn I (M_cmd_rules I env0 fn0) fn0 ⟨["c", "a"], false, M_cmd_rules_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "table" none (res1 "print" none (fun x => env0.lookup x))) fn0 ⟨["c", "a"], false, M_cmd_rules_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_table (res1_ok h_print (fun _ => rfl)))
 
 def M_reserve (I : Sem) (env0 : Env) (fn0 : Nat) (c_util c_agents c_d c_M c_ids c_owned c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_name => S.let1 fun c_tid => S.let1 fun c_model => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 471, [], ("field", "now"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 471, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "now".toList))) S.lNil))) fun n => S.let1 fun c_t => S.letEnd
       ((S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 486, [("local", "c")], ("method", "tx"), true⟩ (S.mMethod I none (S.eCell c_c) "tx" (S.lLast (S.mOne (S.eFunc [] false M_reserve_fn_body (472, 486) (("t", c_t) :: ("model", c_model) :: ("tid", c_tid) :: ("name", c_name) :: ("c", c_c) :: env0) fn0))))))) (S.gotos [] [])
       S.qEnd) n))) n)
 
-theorem M_reserve_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_util c_agents c_d c_M c_ids c_owned c_db : Nat)
+theorem M_reserve_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_util c_agents c_d c_M c_ids c_owned c_db : Nat)
     (h_util : env0.lookup "util" = some c_util)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_d : env0.lookup "d" = some c_d)
@@ -1119,17 +1142,18 @@ theorem M_reserve_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char)
     (h_owned : env0.lookup "owned" = some c_owned)
     (h_db : env0.lookup "db" = some c_db)
     (h_error : env0.lookup "error" = none) :
-    CFn I (M_reserve I env0 fn0 c_util c_agents c_d c_M c_ids c_owned c_db) fn0 ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "util" (some c_util) (res1 "agents" (some c_agents) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x))))))))) fn0 ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0, fenv0, src0, ln0⟩ (res1_ok h_util (res1_ok h_agents (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_db (res1_ok h_error (fun _ => rfl)))))))))
+    CFn I (M_reserve I env0 fn0 c_util c_agents c_d c_M c_ids c_owned c_db) fn0 ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "util" (some c_util) (res1 "agents" (some c_agents) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x))))))))) fn0 ⟨["c", "name", "tid", "model"], false, M_reserve_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_util (res1_ok h_agents (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_db (res1_ok h_error (fun _ => rfl)))))))))
 
 def M_unreserve (I : Sem) (env0 : Env) (fn0 : Nat) (c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_name => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 491, [("local", "c")], ("method", "tx"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "tx" (S.lLast (S.mOne (S.eFunc [] false M_unreserve_fn_body (491, 496) (("r", c_r) :: ("name", c_name) :: ("c", c_c) :: env0) fn0)))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem M_unreserve_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_util : Nat)
+theorem M_unreserve_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_util : Nat)
     (h_util : env0.lookup "util" = some c_util) :
-    CFn I (M_unreserve I env0 fn0 c_util) fn0 ⟨["c", "name", "r"], false, M_unreserve_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) fn0 ⟨["c", "name", "r"], false, M_unreserve_body, env0, fenv0, src0, ln0⟩ (res1_ok h_util (fun _ => rfl))
+    CFn I (M_unreserve I env0 fn0 c_util) fn0 ⟨["c", "name", "r"], false, M_unreserve_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "util" (some c_util) (fun x => env0.lookup x)) fn0 ⟨["c", "name", "r"], false, M_unreserve_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_util (fun _ => rfl))
 
 def ts (I : Sem) (env0 : Env) (fn0 : Nat) (c_evs : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_k => S.let1 fun c_agg => S.letEnd ((S.block (S.qLocal S.lNil fun n => S.let1 fun c_v => S.letEnd
@@ -1140,19 +1164,21 @@ def ts (I : Sem) (env0 : Env) (fn0 : Nat) (c_evs : Nat) : List Val → Nat → M
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_v)))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem ts_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_evs : Nat)
+theorem ts_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_evs : Nat)
     (h_evs : env0.lookup "evs" = some c_evs)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (ts I env0 fn0 c_evs) fn0 ⟨["k", "agg"], false, ts_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "evs" (some c_evs) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["k", "agg"], false, ts_body, env0, fenv0, src0, ln0⟩ (res1_ok h_evs (res1_ok h_ipairs (fun _ => rfl)))
+    CFn I (ts I env0 fn0 c_evs) fn0 ⟨["k", "agg"], false, ts_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "evs" (some c_evs) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["k", "agg"], false, ts_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_evs (res1_ok h_ipairs (fun _ => rfl)))
 
 def span (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eAnd (S.eBin I .ne (S.eCell c_a) S.eNil) (S.eBin I .ne (S.eCell c_b) S.eNil)) (S.eSite ⟨"tasks.lua", 59, [("local", "b"), ("local", "a")], ("", ""), false⟩ (S.eBin I .sub (S.eCell c_b) (S.eCell c_a)))) S.eNil)))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem span_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (span I env0 fn0) fn0 ⟨["a", "b"], false, span_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["a", "b"], false, span_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem span_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (span I env0 fn0) fn0 ⟨["a", "b"], false, span_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["a", "b"], false, span_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def M_cmd_task_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_M c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 219, [], ("upvalue", "no_task_to_wait_on"), false⟩ (S.mCall I (some fn0) (S.eCell c_no_task_to_wait_on) (S.lCons (S.eCell c_c) (S.lLast (S.mOne (S.eCell c_deps))))))) (S.gotos [] [])
@@ -1165,7 +1191,8 @@ def M_cmd_task_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_no_task_to_wait_on c_c c
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_id)))) (S.gotos [] [])
       S.qEnd)) n)))) n)))) n)
 
-theorem M_cmd_task_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_M c_db : Nat)
+theorem M_cmd_task_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_M c_db : Nat)
     (h_no_task_to_wait_on : env0.lookup "no_task_to_wait_on" = some c_no_task_to_wait_on)
     (h_c : env0.lookup "c" = some c_c)
     (h_deps : env0.lookup "deps" = some c_deps)
@@ -1178,8 +1205,8 @@ theorem M_cmd_task_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List C
     (h_db : env0.lookup "db" = some c_db)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_table : env0.lookup "table" = none) :
-    CFn I (M_cmd_task_fn I env0 fn0 c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_M c_db) fn0 ⟨[], false, M_cmd_task_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "c" (some c_c) (res1 "deps" (some c_deps) (res1 "d" (some c_d) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "t" (some c_t) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))))))))))) fn0 ⟨[], false, M_cmd_task_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_c (res1_ok h_deps (res1_ok h_d (res1_ok h_a (res1_ok h_n (res1_ok h_py (res1_ok h_t (res1_ok h_M (res1_ok h_db (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))))))))))
+    CFn I (M_cmd_task_fn I env0 fn0 c_no_task_to_wait_on c_c c_deps c_d c_a c_n c_py c_t c_M c_db) fn0 ⟨[], false, M_cmd_task_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "no_task_to_wait_on" (some c_no_task_to_wait_on) (res1 "c" (some c_c) (res1 "deps" (some c_deps) (res1 "d" (some c_d) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "t" (some c_t) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ipairs" none (res1 "table" none (fun x => env0.lookup x))))))))))))) fn0 ⟨[], false, M_cmd_task_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_no_task_to_wait_on (res1_ok h_c (res1_ok h_deps (res1_ok h_d (res1_ok h_a (res1_ok h_n (res1_ok h_py (res1_ok h_t (res1_ok h_M (res1_ok h_db (res1_ok h_ipairs (res1_ok h_table (fun _ => rfl)))))))))))))
 
 def M_cmd_task_fn1 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_M c_util c_d c_n c_until_ c_k c_t c_owned : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 249, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 249, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r1 => S.letEnd
@@ -1193,7 +1220,8 @@ def M_cmd_task_fn1 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_M c_util c_d c_
         S.qEnd)) n)) n))) (S.block S.qEnd)) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem M_cmd_task_fn1_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_a c_M c_util c_d c_n c_until_ c_k c_t c_owned : Nat)
+theorem M_cmd_task_fn1_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_a c_M c_util c_d c_n c_until_ c_k c_t c_owned : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
     (h_M : env0.lookup "M" = some c_M)
@@ -1204,18 +1232,19 @@ theorem M_cmd_task_fn1_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_k : env0.lookup "k" = some c_k)
     (h_t : env0.lookup "t" = some c_t)
     (h_owned : env0.lookup "owned" = some c_owned) :
-    CFn I (M_cmd_task_fn1 I env0 fn0 c_c c_a c_M c_util c_d c_n c_until_ c_k c_t c_owned) fn0 ⟨[], false, M_cmd_task_fn1_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "M" (some c_M) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "n" (some c_n) (res1 "until_" (some c_until_) (res1 "k" (some c_k) (res1 "t" (some c_t) (res1 "owned" (some c_owned) (fun x => env0.lookup x))))))))))) fn0 ⟨[], false, M_cmd_task_fn1_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_M (res1_ok h_util (res1_ok h_d (res1_ok h_n (res1_ok h_until_ (res1_ok h_k (res1_ok h_t (res1_ok h_owned (fun _ => rfl)))))))))))
+    CFn I (M_cmd_task_fn1 I env0 fn0 c_c c_a c_M c_util c_d c_n c_until_ c_k c_t c_owned) fn0 ⟨[], false, M_cmd_task_fn1_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "M" (some c_M) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "n" (some c_n) (res1 "until_" (some c_until_) (res1 "k" (some c_k) (res1 "t" (some c_t) (res1 "owned" (some c_owned) (fun x => env0.lookup x))))))))))) fn0 ⟨[], false, M_cmd_task_fn1_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_M (res1_ok h_util (res1_ok h_d (res1_ok h_n (res1_ok h_until_ (res1_ok h_k (res1_ok h_t (res1_ok h_owned (fun _ => rfl)))))))))))
 
 def f (I : Sem) (env0 : Env) (fn0 : Nat) (c_tm : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_k => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eBin I .ne (S.eSite ⟨"tasks.lua", 275, [("upvalue", "tm")], ("", ""), false⟩ (S.eIndex I (S.eCell c_tm) (S.eCell c_k))) S.eNil) (S.eSite ⟨"tasks.lua", 275, [("", "")], ("method", "format"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eParen (S.eStr "%dm".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 275, [], ("field", "floor"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 275, [("global", "math")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "math") (S.eStr "floor".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 275, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .div (S.eSite ⟨"tasks.lua", 275, [("upvalue", "tm")], ("", ""), false⟩ (S.eIndex I (S.eCell c_tm) (S.eCell c_k))) (S.eNum (.int 60))))))))))))) (S.eStr "-".toList))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem f_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_tm : Nat)
+theorem f_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_tm : Nat)
     (h_tm : env0.lookup "tm" = some c_tm)
     (h_math : env0.lookup "math" = none) :
-    CFn I (f I env0 fn0 c_tm) fn0 ⟨["k"], false, f_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "tm" (some c_tm) (res1 "math" none (fun x => env0.lookup x))) fn0 ⟨["k"], false, f_body, env0, fenv0, src0, ln0⟩ (res1_ok h_tm (res1_ok h_math (fun _ => rfl)))
+    CFn I (f I env0 fn0 c_tm) fn0 ⟨["k"], false, f_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "tm" (some c_tm) (res1 "math" none (fun x => env0.lookup x))) fn0 ⟨["k"], false, f_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_tm (res1_ok h_math (fun _ => rfl)))
 
 def M_cmd_task_fn2 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_util c_d c_M c_db c_n c_py : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 295, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 295, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1225,7 +1254,8 @@ def M_cmd_task_fn2 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_util c_d c_M c_
       ((S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 300, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 300, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "task-after".toList) (S.lCons S.eNil (S.lLast (S.mSite ⟨"tasks.lua", 300, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "#%s after %s".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 300, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 300, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mOne (S.eOr (S.eSite ⟨"tasks.lua", 300, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 300, [], ("field", "concat"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 300, [("global", "table")], ("", ""), false⟩ (S.eIndex I (S.eGlob I fn0 "table") (S.eStr "concat".toList))) (S.lCons (S.eCell c_ds) (S.lLast (S.mOne (S.eStr ",".toList)))))))))) (S.eStr "-".toList))))))))))))))) (S.gotos [] [])
       S.qEnd) n))) n))) n)
 
-theorem M_cmd_task_fn2_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_a c_util c_d c_M c_db c_n c_py : Nat)
+theorem M_cmd_task_fn2_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_a c_util c_d c_M c_db c_n c_py : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
     (h_util : env0.lookup "util" = some c_util)
@@ -1235,22 +1265,23 @@ theorem M_cmd_task_fn2_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_n : env0.lookup "n" = some c_n)
     (h_py : env0.lookup "py" = some c_py)
     (h_table : env0.lookup "table" = none) :
-    CFn I (M_cmd_task_fn2 I env0 fn0 c_c c_a c_util c_d c_M c_db c_n c_py) fn0 ⟨[], false, M_cmd_task_fn2_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "table" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], false, M_cmd_task_fn2_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_db (res1_ok h_n (res1_ok h_py (res1_ok h_table (fun _ => rfl))))))))))
+    CFn I (M_cmd_task_fn2 I env0 fn0 c_c c_a c_util c_d c_M c_db c_n c_py) fn0 ⟨[], false, M_cmd_task_fn2_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "py" (some c_py) (res1 "table" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], false, M_cmd_task_fn2_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_db (res1_ok h_n (res1_ok h_py (res1_ok h_table (fun _ => rfl))))))))))
 
 def M_cmd_task_fn3 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_db c_n c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 309, [("upvalue", "c")], ("method", "exec"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eStr "update task set priority=? where id=?".toList) (S.lCons (S.eSite ⟨"tasks.lua", 309, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "priority".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 309, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))))) (S.gotos [] [])
       (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 310, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 310, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "task-priority".toList) (S.lCons S.eNil (S.lLast (S.mSite ⟨"tasks.lua", 310, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "#%s P%s".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 310, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 310, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mSite ⟨"tasks.lua", 310, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 310, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "priority".toList))))))))))))))))))) (S.gotos [] [])
       S.qEnd))) n)
 
-theorem M_cmd_task_fn3_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_a c_db c_n c_d : Nat)
+theorem M_cmd_task_fn3_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_a c_db c_n c_d : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
     (h_db : env0.lookup "db" = some c_db)
     (h_n : env0.lookup "n" = some c_n)
     (h_d : env0.lookup "d" = some c_d) :
-    CFn I (M_cmd_task_fn3 I env0 fn0 c_c c_a c_db c_n c_d) fn0 ⟨[], false, M_cmd_task_fn3_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "d" (some c_d) (fun x => env0.lookup x)))))) fn0 ⟨[], false, M_cmd_task_fn3_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_db (res1_ok h_n (res1_ok h_d (fun _ => rfl))))))
+    CFn I (M_cmd_task_fn3 I env0 fn0 c_c c_a c_db c_n c_d) fn0 ⟨[], false, M_cmd_task_fn3_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "d" (some c_d) (fun x => env0.lookup x)))))) fn0 ⟨[], false, M_cmd_task_fn3_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_db (res1_ok h_n (res1_ok h_d (fun _ => rfl))))))
 
 def M_cmd_task_fn4 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_mine c_a c_t c_n c_util c_d c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 333, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eSite ⟨"tasks.lua", 334, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "update task set state='done', evidence=?, lease_until=null, done_at=?, ".toList) (S.eSite ⟨"tasks.lua", 334, [("", ""), ("upvalue", "mine")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "done_ctx=(select ctx_tokens from agent where name=?)".toList) (S.eCell c_mine))))) (S.lCons (S.eSite ⟨"tasks.lua", 334, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "evidence".toList))) (S.lCons (S.eCell c_t) (S.lCons (S.eCell c_n) (S.lCons (S.eSite ⟨"tasks.lua", 334, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_n))))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 335, [], ("field", "die"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 335, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 335, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "task #%s is not claimed by you".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 335, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 335, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))))))))) (S.gotos [] [])
@@ -1258,7 +1289,8 @@ def M_cmd_task_fn4 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_mine c_a c_t c_n c_
       (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 337, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 337, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "done".toList) (S.lCons S.eNil (S.lLast (S.mSite ⟨"tasks.lua", 337, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "#%s %s".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 337, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 337, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mSite ⟨"tasks.lua", 337, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "evidence".toList)))))))))))))))) (S.gotos [] [])
       S.qEnd))) n)
 
-theorem M_cmd_task_fn4_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_mine c_a c_t c_n c_util c_d c_db : Nat)
+theorem M_cmd_task_fn4_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_mine c_a c_t c_n c_util c_d c_db : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_mine : env0.lookup "mine" = some c_mine)
     (h_a : env0.lookup "a" = some c_a)
@@ -1267,8 +1299,8 @@ theorem M_cmd_task_fn4_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_util : env0.lookup "util" = some c_util)
     (h_d : env0.lookup "d" = some c_d)
     (h_db : env0.lookup "db" = some c_db) :
-    CFn I (M_cmd_task_fn4 I env0 fn0 c_c c_mine c_a c_t c_n c_util c_d c_db) fn0 ⟨[], false, M_cmd_task_fn4_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "mine" (some c_mine) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))))) fn0 ⟨[], false, M_cmd_task_fn4_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_mine (res1_ok h_a (res1_ok h_t (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))))
+    CFn I (M_cmd_task_fn4 I env0 fn0 c_c c_mine c_a c_t c_n c_util c_d c_db) fn0 ⟨[], false, M_cmd_task_fn4_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "mine" (some c_mine) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))))) fn0 ⟨[], false, M_cmd_task_fn4_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_mine (res1_ok h_a (res1_ok h_t (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))))
 
 def M_cmd_task_fn5 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_n c_util c_d c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 351, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eStr "update task set state='blocked', question=? where id=? and owner=? and state='claimed'".toList) (S.lCons (S.eSite ⟨"tasks.lua", 352, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "question".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 352, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_n))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 353, [], ("field", "die"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 353, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 353, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "task #%s is not claimed by you".toList)) "format" (S.lLast (S.mSite ⟨"tasks.lua", 353, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 353, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))))))))) (S.gotos [] [])
@@ -1276,15 +1308,16 @@ def M_cmd_task_fn5 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_n c_util c_d c_
       (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 355, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 355, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "block".toList) (S.lCons S.eNil (S.lLast (S.mSite ⟨"tasks.lua", 355, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "#%s %s".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 355, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 355, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mSite ⟨"tasks.lua", 355, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "question".toList)))))))))))))))) (S.gotos [] [])
       S.qEnd))) n)
 
-theorem M_cmd_task_fn5_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_a c_n c_util c_d c_db : Nat)
+theorem M_cmd_task_fn5_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_a c_n c_util c_d c_db : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
     (h_n : env0.lookup "n" = some c_n)
     (h_util : env0.lookup "util" = some c_util)
     (h_d : env0.lookup "d" = some c_d)
     (h_db : env0.lookup "db" = some c_db) :
-    CFn I (M_cmd_task_fn5 I env0 fn0 c_c c_a c_n c_util c_d c_db) fn0 ⟨[], false, M_cmd_task_fn5_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))) fn0 ⟨[], false, M_cmd_task_fn5_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))
+    CFn I (M_cmd_task_fn5 I env0 fn0 c_c c_a c_n c_util c_d c_db) fn0 ⟨[], false, M_cmd_task_fn5_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (fun x => env0.lookup x))))))) fn0 ⟨[], false, M_cmd_task_fn5_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_util (res1_ok h_d (res1_ok h_db (fun _ => rfl)))))))
 
 def M_cmd_task_fn6 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 366, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eStr "update task set state='claimed', question=null, answer=coalesce(?, answer), lease_until=? where id=? and owner=? and state='blocked'".toList) (S.lCons (S.eSite ⟨"tasks.lua", 367, [], ("upvalue", "py"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_py) (S.lLast (S.mSite ⟨"tasks.lua", 367, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "answer".toList)))))))) (S.lCons (S.eSite ⟨"tasks.lua", 367, [("upvalue", "t"), ("field", "LEASE")], ("", ""), false⟩ (S.eBin I .add (S.eCell c_t) (S.eSite ⟨"tasks.lua", 367, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "LEASE".toList))))) (S.lCons (S.eSite ⟨"tasks.lua", 367, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 367, [("upvalue", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "owner".toList)))))))))))) (S.eNum (.int 0))) (S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 368, [], ("field", "die"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 368, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "die".toList))) (S.lLast (S.mSite ⟨"tasks.lua", 368, [("", "")], ("method", "format"), false⟩ (S.mMethod I (some fn0) (S.eParen (S.eStr "task #%s changed under you; `swarm task show %s`".toList)) "format" (S.lCons (S.eSite ⟨"tasks.lua", 368, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 368, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList)))))))) (S.lLast (S.mSite ⟨"tasks.lua", 368, [], ("upvalue", "d"), false⟩ (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 368, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))))))))) (S.gotos [] [])
@@ -1294,7 +1327,8 @@ def M_cmd_task_fn6 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_py c_a c_t c_M c_r 
         S.qEnd)) (S.block S.qEnd)) (S.gotos [] [])
       S.qEnd)))) n)
 
-theorem M_cmd_task_fn6_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n : Nat)
+theorem M_cmd_task_fn6_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_py : env0.lookup "py" = some c_py)
     (h_a : env0.lookup "a" = some c_a)
@@ -1306,8 +1340,8 @@ theorem M_cmd_task_fn6_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_db : env0.lookup "db" = some c_db)
     (h_n : env0.lookup "n" = some c_n)
     (h_require : env0.lookup "require" = none) :
-    CFn I (M_cmd_task_fn6 I env0 fn0 c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n) fn0 ⟨[], false, M_cmd_task_fn6_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "py" (some c_py) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "M" (some c_M) (res1 "r" (some c_r) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "require" none (fun x => env0.lookup x)))))))))))) fn0 ⟨[], false, M_cmd_task_fn6_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_py (res1_ok h_a (res1_ok h_t (res1_ok h_M (res1_ok h_r (res1_ok h_util (res1_ok h_d (res1_ok h_db (res1_ok h_n (res1_ok h_require (fun _ => rfl))))))))))))
+    CFn I (M_cmd_task_fn6 I env0 fn0 c_c c_py c_a c_t c_M c_r c_util c_d c_db c_n) fn0 ⟨[], false, M_cmd_task_fn6_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "py" (some c_py) (res1 "a" (some c_a) (res1 "t" (some c_t) (res1 "M" (some c_M) (res1 "r" (some c_r) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "db" (some c_db) (res1 "n" (some c_n) (res1 "require" none (fun x => env0.lookup x)))))))))))) fn0 ⟨[], false, M_cmd_task_fn6_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_py (res1_ok h_a (res1_ok h_t (res1_ok h_M (res1_ok h_r (res1_ok h_util (res1_ok h_d (res1_ok h_db (res1_ok h_n (res1_ok h_require (fun _ => rfl))))))))))))
 
 def M_cmd_task_fn7 (I : Sem) (env0 : Env) (fn0 : Nat) (c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sIf (S.eCell c_from) (S.block (S.qStat (S.sIf (S.eBin I .eq (S.eSite ⟨"tasks.lua", 382, [("upvalue", "c")], ("method", "exec"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eSite ⟨"tasks.lua", 383, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "update task set state='open', owner=null, lease_until=null, question=null where id=? and owner=? ".toList) (S.eStr "and state in ('claimed','blocked')".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 383, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_from)))))))) (S.eNum (.int 0))) (S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 384, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 384, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1324,7 +1358,8 @@ def M_cmd_task_fn7 (I : Sem) (env0 : Env) (fn0 : Nat) (c_from c_c c_a c_util c_d
         S.qEnd) n))) (S.block S.qEnd)) (S.gotos [] [])
       S.qEnd))))) n)
 
-theorem M_cmd_task_fn7_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents : Nat)
+theorem M_cmd_task_fn7_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents : Nat)
     (h_from : env0.lookup "from" = some c_from)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
@@ -1336,8 +1371,8 @@ theorem M_cmd_task_fn7_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_db : env0.lookup "db" = some c_db)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_require : env0.lookup "require" = none) :
-    CFn I (M_cmd_task_fn7 I env0 fn0 c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents) fn0 ⟨[], false, M_cmd_task_fn7_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "from" (some c_from) (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "owned" (some c_owned) (res1 "n" (some c_n) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "agents" (some c_agents) (res1 "require" none (fun x => env0.lookup x)))))))))))) fn0 ⟨[], false, M_cmd_task_fn7_body, env0, fenv0, src0, ln0⟩ (res1_ok h_from (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_owned (res1_ok h_n (res1_ok h_M (res1_ok h_db (res1_ok h_agents (res1_ok h_require (fun _ => rfl))))))))))))
+    CFn I (M_cmd_task_fn7 I env0 fn0 c_from c_c c_a c_util c_d c_owned c_n c_M c_db c_agents) fn0 ⟨[], false, M_cmd_task_fn7_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "from" (some c_from) (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "owned" (some c_owned) (res1 "n" (some c_n) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "agents" (some c_agents) (res1 "require" none (fun x => env0.lookup x)))))))))))) fn0 ⟨[], false, M_cmd_task_fn7_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_from (res1_ok h_c (res1_ok h_a (res1_ok h_util (res1_ok h_d (res1_ok h_owned (res1_ok h_n (res1_ok h_M (res1_ok h_db (res1_ok h_agents (res1_ok h_require (fun _ => rfl))))))))))))
 
 def M_cmd_task_fn8 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_n c_agents c_util c_d c_t c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"tasks.lua", 404, [("upvalue", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select * from task where id=?".toList) (S.lLast (S.mSite ⟨"tasks.lua", 404, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))) fun n => S.let1 fun c_r2 => S.letEnd
@@ -1347,7 +1382,8 @@ def M_cmd_task_fn8 (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_a c_n c_agents c_ut
       (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 409, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 409, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "drop".toList) (S.lCons S.eNil (S.lLast (S.mSite ⟨"tasks.lua", 409, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "#".toList) (S.eSite ⟨"tasks.lua", 409, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 409, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "id".toList))))))))))))))))))) (S.gotos [] [])
       S.qEnd))) n))) n)
 
-theorem M_cmd_task_fn8_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_a c_n c_agents c_util c_d c_t c_db : Nat)
+theorem M_cmd_task_fn8_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_a c_n c_agents c_util c_d c_t c_db : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_a : env0.lookup "a" = some c_a)
     (h_n : env0.lookup "n" = some c_n)
@@ -1357,17 +1393,18 @@ theorem M_cmd_task_fn8_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List 
     (h_t : env0.lookup "t" = some c_t)
     (h_db : env0.lookup "db" = some c_db)
     (h_tostring : env0.lookup "tostring" = none) :
-    CFn I (M_cmd_task_fn8 I env0 fn0 c_c c_a c_n c_agents c_util c_d c_t c_db) fn0 ⟨[], false, M_cmd_task_fn8_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "tostring" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], false, M_cmd_task_fn8_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_agents (res1_ok h_util (res1_ok h_d (res1_ok h_t (res1_ok h_db (res1_ok h_tostring (fun _ => rfl))))))))))
+    CFn I (M_cmd_task_fn8 I env0 fn0 c_c c_a c_n c_agents c_util c_d c_t c_db) fn0 ⟨[], false, M_cmd_task_fn8_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "a" (some c_a) (res1 "n" (some c_n) (res1 "agents" (some c_agents) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "tostring" none (fun x => env0.lookup x)))))))))) fn0 ⟨[], false, M_cmd_task_fn8_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_a (res1_ok h_n (res1_ok h_agents (res1_ok h_util (res1_ok h_d (res1_ok h_t (res1_ok h_db (res1_ok h_tostring (fun _ => rfl))))))))))
 
 def M_cmd_board_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 441, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "#".toList) (S.eSite ⟨"tasks.lua", 441, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eSite ⟨"tasks.lua", 441, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 441, [("local", "x")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_x) (S.eStr "id".toList)))))))) (S.eParen (S.eOr (S.eAnd (S.eBin I .eq (S.eSite ⟨"tasks.lua", 441, [("local", "x")], ("", ""), false⟩ (S.eIndex I (S.eCell c_x) (S.eStr "state".toList))) (S.eStr "dropped".toList)) (S.eStr " (dropped)".toList)) (S.eStr "".toList)))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem M_cmd_board_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_d : Nat)
+theorem M_cmd_board_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
-    CFn I (M_cmd_board_fn I env0 fn0 c_d) fn0 ⟨["x"], false, M_cmd_board_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["x"], false, M_cmd_board_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_d (fun _ => rfl))
+    CFn I (M_cmd_board_fn I env0 fn0 c_d) fn0 ⟨["x"], false, M_cmd_board_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["x"], false, M_cmd_board_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_d (fun _ => rfl))
 
 def M_reserve_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 473, [], ("field", "reserve"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 473, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "reserve".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_name) (S.lLast (S.mOne (S.eCell c_model)))))))) (S.gotos [] [])
@@ -1386,7 +1423,8 @@ def M_reserve_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_c c_name c_model
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
       S.qEnd)))))) n))) n)))) n)
 
-theorem M_reserve_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db : Nat)
+theorem M_reserve_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db : Nat)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_c : env0.lookup "c" = some c_c)
     (h_name : env0.lookup "name" = some c_name)
@@ -1400,8 +1438,8 @@ theorem M_reserve_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Ch
     (h_t : env0.lookup "t" = some c_t)
     (h_db : env0.lookup "db" = some c_db)
     (h_error : env0.lookup "error" = none) :
-    CFn I (M_reserve_fn I env0 fn0 c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db) fn0 ⟨[], false, M_reserve_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "agents" (some c_agents) (res1 "c" (some c_c) (res1 "name" (some c_name) (res1 "model" (some c_model) (res1 "tid" (some c_tid) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x)))))))))))))) fn0 ⟨[], false, M_reserve_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_agents (res1_ok h_c (res1_ok h_name (res1_ok h_model (res1_ok h_tid (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_t (res1_ok h_db (res1_ok h_error (fun _ => rfl))))))))))))))
+    CFn I (M_reserve_fn I env0 fn0 c_agents c_c c_name c_model c_tid c_util c_d c_M c_ids c_owned c_t c_db) fn0 ⟨[], false, M_reserve_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "c" (some c_c) (res1 "name" (some c_name) (res1 "model" (some c_model) (res1 "tid" (some c_tid) (res1 "util" (some c_util) (res1 "d" (some c_d) (res1 "M" (some c_M) (res1 "ids" (some c_ids) (res1 "owned" (some c_owned) (res1 "t" (some c_t) (res1 "db" (some c_db) (res1 "error" none (fun x => env0.lookup x)))))))))))))) fn0 ⟨[], false, M_reserve_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_agents (res1_ok h_c (res1_ok h_name (res1_ok h_model (res1_ok h_tid (res1_ok h_util (res1_ok h_d (res1_ok h_M (res1_ok h_ids (res1_ok h_owned (res1_ok h_t (res1_ok h_db (res1_ok h_error (fun _ => rfl))))))))))))))
 
 def M_unreserve_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_util c_name c_r : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 492, [("upvalue", "c")], ("method", "exec"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eStr "update agent set ended=? where name=? and hc is null".toList) (S.lCons (S.eSite ⟨"tasks.lua", 492, [], ("field", "now"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eSite ⟨"tasks.lua", 492, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "now".toList))) S.lNil))) (S.lLast (S.mOne (S.eCell c_name)))))))) (S.gotos [] [])
@@ -1410,22 +1448,24 @@ def M_unreserve_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_c c_util c_name c_r : N
       (S.qStat (S.sCall (S.mSite ⟨"tasks.lua", 494, [("upvalue", "c")], ("method", "exec"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "exec" (S.lCons (S.eSite ⟨"tasks.lua", 495, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "update task set state='open', owner=null, lease_until=null, first_claimed_at=? where id=? and owner=? ".toList) (S.eStr "and state='claimed'".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 495, [("upvalue", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "first_claimed_at".toList))) (S.lCons (S.eSite ⟨"tasks.lua", 495, [("upvalue", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "id".toList))) (S.lLast (S.mOne (S.eCell c_name))))))))) (S.gotos [] [])
       S.qEnd)))) n)
 
-theorem M_unreserve_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_c c_util c_name c_r : Nat)
+theorem M_unreserve_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_c c_util c_name c_r : Nat)
     (h_c : env0.lookup "c" = some c_c)
     (h_util : env0.lookup "util" = some c_util)
     (h_name : env0.lookup "name" = some c_name)
     (h_r : env0.lookup "r" = some c_r) :
-    CFn I (M_unreserve_fn I env0 fn0 c_c c_util c_name c_r) fn0 ⟨[], false, M_unreserve_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "c" (some c_c) (res1 "util" (some c_util) (res1 "name" (some c_name) (res1 "r" (some c_r) (fun x => env0.lookup x))))) fn0 ⟨[], false, M_unreserve_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_c (res1_ok h_util (res1_ok h_name (res1_ok h_r (fun _ => rfl)))))
+    CFn I (M_unreserve_fn I env0 fn0 c_c c_util c_name c_r) fn0 ⟨[], false, M_unreserve_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "c" (some c_c) (res1 "util" (some c_util) (res1 "name" (some c_name) (res1 "r" (some c_r) (fun x => env0.lookup x))))) fn0 ⟨[], false, M_unreserve_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_c (res1_ok h_util (res1_ok h_name (res1_ok h_r (fun _ => rfl)))))
 
 def M_reserve_fn_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_d : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"tasks.lua", 477, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "#".toList) (S.eSite ⟨"tasks.lua", 477, [], ("upvalue", "d"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_d) (S.lLast (S.mSite ⟨"tasks.lua", 477, [("local", "x")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_x) (S.eStr "id".toList))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem M_reserve_fn_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_d : Nat)
+theorem M_reserve_fn_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_d : Nat)
     (h_d : env0.lookup "d" = some c_d) :
-    CFn I (M_reserve_fn_fn I env0 fn0 c_d) fn0 ⟨["x"], false, M_reserve_fn_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["x"], false, M_reserve_fn_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_d (fun _ => rfl))
+    CFn I (M_reserve_fn_fn I env0 fn0 c_d) fn0 ⟨["x"], false, M_reserve_fn_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "d" (some c_d) (fun x => env0.lookup x)) fn0 ⟨["x"], false, M_reserve_fn_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_d (fun _ => rfl))
 
 end Swarm.Lifted.Tasks
 -- checksum Swarm.Lifted.Tasks 3307310746

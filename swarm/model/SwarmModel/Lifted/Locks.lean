@@ -262,14 +262,15 @@ def chunk (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val)
       S.qEnd)))))))))))))))))) n)) n)) n)) n))) n)
 
 theorem chunk_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat))
     (h_require : env0.lookup "require" = none)
     (h_table : env0.lookup "table" = none)
     (h_type : env0.lookup "type" = none)
     (h_string : env0.lookup "string" = none)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_print : env0.lookup "print" = none) :
-    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "require" none (res1 "table" none (res1 "type" none (res1 "string" none (res1 "ipairs" none (res1 "print" none (fun x => env0.lookup x))))))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0⟩ (res1_ok h_require (res1_ok h_table (res1_ok h_type (res1_ok h_string (res1_ok h_ipairs (res1_ok h_print (fun _ => rfl)))))))
+    CFn I (chunk I env0 fn0) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "require" none (res1 "table" none (res1 "type" none (res1 "string" none (res1 "ipairs" none (res1 "print" none (fun x => env0.lookup x))))))) fn0 ⟨[], true, chunk_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_require (res1_ok h_table (res1_ok h_type (res1_ok h_string (res1_ok h_ipairs (res1_ok h_print (fun _ => rfl)))))))
 
 def realpath (I : Sem) (env0 : Env) (fn0 : Nat) (c_stdlib c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_p => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_parts => S.letEnd
@@ -289,12 +290,13 @@ def realpath (I : Sem) (env0 : Env) (fn0 : Nat) (c_stdlib c_util : Nat) : List V
         S.qEnd)) n)) n)))) (S.gotos [] [])
       S.qEnd) n))) n))) n)
 
-theorem realpath_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_stdlib c_util : Nat)
+theorem realpath_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_stdlib c_util : Nat)
     (h_stdlib : env0.lookup "stdlib" = some c_stdlib)
     (h_util : env0.lookup "util" = some c_util)
     (h_table : env0.lookup "table" = none) :
-    CFn I (realpath I env0 fn0 c_stdlib c_util) fn0 ⟨["p"], false, realpath_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "stdlib" (some c_stdlib) (res1 "util" (some c_util) (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["p"], false, realpath_body, env0, fenv0, src0, ln0⟩ (res1_ok h_stdlib (res1_ok h_util (res1_ok h_table (fun _ => rfl))))
+    CFn I (realpath I env0 fn0 c_stdlib c_util) fn0 ⟨["p"], false, realpath_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "stdlib" (some c_stdlib) (res1 "util" (some c_util) (res1 "table" none (fun x => env0.lookup x)))) fn0 ⟨["p"], false, realpath_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_stdlib (res1_ok h_util (res1_ok h_table (fun _ => rfl))))
 
 def M_repo_rel (I : Sem) (env0 : Env) (fn0 : Nat) (c_realpath c_util c_stdlib c_lfs c_proc : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_path => S.let1 fun c_cwd => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 28, [], ("upvalue", "realpath"), false⟩ (S.mCall I (some fn0) (S.eCell c_realpath) (S.lLast (S.mSite ⟨"locks.lua", 28, [], ("field", "join"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 28, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "join".toList))) (S.lCons (S.eOr (S.eSite ⟨"locks.lua", 28, [], ("field", "realpath"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 28, [("upvalue", "stdlib")], ("", ""), false⟩ (S.eIndex I (S.eCell c_stdlib) (S.eStr "realpath".toList))) (S.lLast (S.mOne (S.eStr ".".toList)))))) (S.eStr "/".toList)) (S.lCons (S.eOr (S.eCell c_cwd) (S.eStr ".".toList)) (S.lLast (S.mOne (S.eCell c_path))))))))))) fun n => S.let1 fun c_p => S.letEnd
@@ -312,14 +314,15 @@ def M_repo_rel (I : Sem) (env0 : Env) (fn0 : Nat) (c_realpath c_util c_stdlib c_
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
       S.qEnd))))) n))) n)) n))) n)
 
-theorem M_repo_rel_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_realpath c_util c_stdlib c_lfs c_proc : Nat)
+theorem M_repo_rel_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_realpath c_util c_stdlib c_lfs c_proc : Nat)
     (h_realpath : env0.lookup "realpath" = some c_realpath)
     (h_util : env0.lookup "util" = some c_util)
     (h_stdlib : env0.lookup "stdlib" = some c_stdlib)
     (h_lfs : env0.lookup "lfs" = some c_lfs)
     (h_proc : env0.lookup "proc" = some c_proc) :
-    CFn I (M_repo_rel I env0 fn0 c_realpath c_util c_stdlib c_lfs c_proc) fn0 ⟨["path", "cwd"], false, M_repo_rel_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "realpath" (some c_realpath) (res1 "util" (some c_util) (res1 "stdlib" (some c_stdlib) (res1 "lfs" (some c_lfs) (res1 "proc" (some c_proc) (fun x => env0.lookup x)))))) fn0 ⟨["path", "cwd"], false, M_repo_rel_body, env0, fenv0, src0, ln0⟩ (res1_ok h_realpath (res1_ok h_util (res1_ok h_stdlib (res1_ok h_lfs (res1_ok h_proc (fun _ => rfl))))))
+    CFn I (M_repo_rel I env0 fn0 c_realpath c_util c_stdlib c_lfs c_proc) fn0 ⟨["path", "cwd"], false, M_repo_rel_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "realpath" (some c_realpath) (res1 "util" (some c_util) (res1 "stdlib" (some c_stdlib) (res1 "lfs" (some c_lfs) (res1 "proc" (some c_proc) (fun x => env0.lookup x)))))) fn0 ⟨["path", "cwd"], false, M_repo_rel_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_realpath (res1_ok h_util (res1_ok h_stdlib (res1_ok h_lfs (res1_ok h_proc (fun _ => rfl))))))
 
 def lit (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_s => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_r => S.letEnd
@@ -328,9 +331,10 @@ def lit (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem lit_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (lit I env0 fn0) fn0 ⟨["s"], false, lit_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["s"], false, lit_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem lit_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (lit I env0 fn0) fn0 ⟨["s"], false, lit_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["s"], false, lit_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def tokens (I : Sem) (env0 : Env) (fn0 : Nat) (c_lit : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_pat => S.let1 fun c_dir => S.letEnd ((S.block (S.qStat (S.sIf (S.eCell c_dir) (S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 51, [], ("upvalue", "lit"), false⟩ (S.mCall I (some fn0) (S.eCell c_lit) (S.lLast (S.mSite ⟨"locks.lua", 51, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eParen (S.eSite ⟨"locks.lua", 51, [("local", "pat")], ("method", "gsub"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList)))))))) (S.eStr "/".toList)))))))) fun n => S.let1 fun c_r => S.letEnd
@@ -357,10 +361,11 @@ def tokens (I : Sem) (env0 : Env) (fn0 : Nat) (c_lit : Nat) : List Val → Nat �
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r1)))) (S.gotos [] [])
       S.qEnd)) n)))) n)
 
-theorem tokens_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_lit : Nat)
+theorem tokens_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_lit : Nat)
     (h_lit : env0.lookup "lit" = some c_lit) :
-    CFn I (tokens I env0 fn0 c_lit) fn0 ⟨["pat", "dir"], false, tokens_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "lit" (some c_lit) (fun x => env0.lookup x)) fn0 ⟨["pat", "dir"], false, tokens_body, env0, fenv0, src0, ln0⟩ (res1_ok h_lit (fun _ => rfl))
+    CFn I (tokens I env0 fn0 c_lit) fn0 ⟨["pat", "dir"], false, tokens_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "lit" (some c_lit) (fun x => env0.lookup x)) fn0 ⟨["pat", "dir"], false, tokens_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_lit (fun _ => rfl))
 
 def in_set (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_s => S.let1 fun c_ch => S.letEnd ((S.block (S.qLocal (S.lCons (S.eBin I .ne (S.eSite ⟨"locks.lua", 74, [("local", "s")], ("method", "find"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_s) "find" (S.lLast (S.mOne (S.eStr "^[!^]".toList)))))) S.eNil) (S.lLast (S.mSite ⟨"locks.lua", 74, [("local", "ch")], ("method", "byte"), false⟩ (S.mMethod I (some fn0) (S.eCell c_ch) "byte" S.lNil)))) fun n => S.let1 fun c_neg => S.let1 fun c_c => S.letEnd
@@ -374,19 +379,21 @@ def in_set (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val
       (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin I .ne (S.eCell c_hit) (S.eCell c_neg))))) (S.gotos [] [])
       S.qEnd)) n)) n))) n)
 
-theorem in_set_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (in_set I env0 fn0) fn0 ⟨["s", "ch"], false, in_set_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["s", "ch"], false, in_set_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem in_set_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (in_set I env0 fn0) fn0 ⟨["s", "ch"], false, in_set_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["s", "ch"], false, in_set_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def single (I : Sem) (env0 : Env) (fn0 : Nat) (c_in_set : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_t => S.let1 fun c_ch => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eBin I .eq (S.eCell c_t) (S.eStr "?".toList)) (S.eParen (S.eAnd (S.eBin I .eq (S.eSite ⟨"locks.lua", 87, [], ("global", "type"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eGlob I fn0 "type") (S.lLast (S.mOne (S.eCell c_t)))))) (S.eStr "table".toList)) (S.eParen (S.eOr (S.eBin I .eq (S.eSite ⟨"locks.lua", 87, [("local", "t")], ("", ""), false⟩ (S.eIndex I (S.eCell c_t) (S.eStr "c".toList))) (S.eCell c_ch)) (S.eParen (S.eAnd (S.eBin I .ne (S.eSite ⟨"locks.lua", 87, [("local", "t")], ("", ""), false⟩ (S.eIndex I (S.eCell c_t) (S.eStr "set".toList))) S.eNil) (S.eSite ⟨"locks.lua", 87, [], ("upvalue", "in_set"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_in_set) (S.lCons (S.eSite ⟨"locks.lua", 87, [("local", "t")], ("", ""), false⟩ (S.eIndex I (S.eCell c_t) (S.eStr "set".toList))) (S.lLast (S.mOne (S.eCell c_ch))))))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem single_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_in_set : Nat)
+theorem single_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_in_set : Nat)
     (h_in_set : env0.lookup "in_set" = some c_in_set)
     (h_type : env0.lookup "type" = none) :
-    CFn I (single I env0 fn0 c_in_set) fn0 ⟨["t", "ch"], false, single_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "in_set" (some c_in_set) (res1 "type" none (fun x => env0.lookup x))) fn0 ⟨["t", "ch"], false, single_body, env0, fenv0, src0, ln0⟩ (res1_ok h_in_set (res1_ok h_type (fun _ => rfl)))
+    CFn I (single I env0 fn0 c_in_set) fn0 ⟨["t", "ch"], false, single_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "in_set" (some c_in_set) (res1 "type" none (fun x => env0.lookup x))) fn0 ⟨["t", "ch"], false, single_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_in_set (res1_ok h_type (fun _ => rfl)))
 
 def one (I : Sem) (env0 : Env) (fn0 : Nat) (c_single : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_a => S.let1 fun c_b => S.letEnd ((S.block (S.qStat (S.sIf (S.eAnd (S.eBin I .eq (S.eSite ⟨"locks.lua", 91, [], ("global", "type"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eGlob I fn0 "type") (S.lLast (S.mOne (S.eCell c_a)))))) (S.eStr "table".toList)) (S.eSite ⟨"locks.lua", 91, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "c".toList)))) (S.block (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"locks.lua", 91, [], ("upvalue", "single"), true⟩ (S.mCall I none (S.eCell c_single) (S.lCons (S.eCell c_b) (S.lLast (S.mSite ⟨"locks.lua", 91, [("local", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "c".toList)))))))))) (S.gotos [] [])
@@ -399,12 +406,13 @@ def one (I : Sem) (env0 : Env) (fn0 : Nat) (c_single : Nat) : List Val → Nat �
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eFalse))) (S.gotos [] [])
       S.qEnd))))) n)
 
-theorem one_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_single : Nat)
+theorem one_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_single : Nat)
     (h_single : env0.lookup "single" = some c_single)
     (h_type : env0.lookup "type" = none)
     (h_string : env0.lookup "string" = none) :
-    CFn I (one I env0 fn0 c_single) fn0 ⟨["a", "b"], false, one_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "single" (some c_single) (res1 "type" none (res1 "string" none (fun x => env0.lookup x)))) fn0 ⟨["a", "b"], false, one_body, env0, fenv0, src0, ln0⟩ (res1_ok h_single (res1_ok h_type (res1_ok h_string (fun _ => rfl))))
+    CFn I (one I env0 fn0 c_single) fn0 ⟨["a", "b"], false, one_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "single" (some c_single) (res1 "type" none (res1 "string" none (fun x => env0.lookup x)))) fn0 ⟨["a", "b"], false, one_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_single (res1_ok h_type (res1_ok h_string (fun _ => rfl))))
 
 def meet (I : Sem) (env0 : Env) (fn0 : Nat) (c_one : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_p => S.let1 fun c_q => S.letEnd ((S.block (S.qLocal (S.lLast (S.mOne (S.eTable S.fNil))) fun n => S.let1 fun c_memo => S.letEnd
@@ -412,31 +420,34 @@ def meet (I : Sem) (env0 : Env) (fn0 : Nat) (c_one : Nat) : List Val → Nat →
       (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"locks.lua", 113, [], ("local", "f"), true⟩ (S.mCall I none (S.eCell c_f) (S.lCons (S.eNum (.int 1)) (S.lLast (S.mOne (S.eNum (.int 1))))))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem meet_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_one : Nat)
+theorem meet_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_one : Nat)
     (h_one : env0.lookup "one" = some c_one) :
-    CFn I (meet I env0 fn0 c_one) fn0 ⟨["p", "q"], false, meet_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "one" (some c_one) (fun x => env0.lookup x)) fn0 ⟨["p", "q"], false, meet_body, env0, fenv0, src0, ln0⟩ (res1_ok h_one (fun _ => rfl))
+    CFn I (meet I env0 fn0 c_one) fn0 ⟨["p", "q"], false, meet_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "one" (some c_one) (fun x => env0.lookup x)) fn0 ⟨["p", "q"], false, meet_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_one (fun _ => rfl))
 
 def glob (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eBin I .ne (S.eSite ⟨"locks.lua", 116, [("local", "x")], ("method", "find"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_x) "find" (S.lLast (S.mOne (S.eStr "[*?[]".toList)))))) S.eNil)))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem glob_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (glob I env0 fn0) fn0 ⟨["x"], false, glob_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["x"], false, glob_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem glob_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (glob I env0 fn0) fn0 ⟨["x"], false, glob_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["x"], false, glob_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def M_covers (I : Sem) (env0 : Env) (fn0 : Nat) (c_meet c_tokens c_lit c_glob c_util : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_path => S.let1 fun c_pat => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eOr (S.eBin I .eq (S.eCell c_path) (S.eCell c_pat)) (S.eSite ⟨"locks.lua", 121, [], ("upvalue", "meet"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_meet) (S.lCons (S.eSite ⟨"locks.lua", 121, [], ("upvalue", "tokens"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_tokens) (S.lLast (S.mOne (S.eCell c_pat)))))) (S.lLast (S.mSite ⟨"locks.lua", 121, [], ("upvalue", "lit"), false⟩ (S.mCall I (some fn0) (S.eCell c_lit) (S.lLast (S.mOne (S.eCell c_path))))))))))) (S.eParen (S.eAnd (S.eUn I .not (S.eSite ⟨"locks.lua", 122, [], ("upvalue", "glob"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_glob) (S.lLast (S.mOne (S.eCell c_pat))))))) (S.eSite ⟨"locks.lua", 122, [], ("field", "startswith"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 122, [("upvalue", "util")], ("", ""), false⟩ (S.eIndex I (S.eCell c_util) (S.eStr "startswith".toList))) (S.lCons (S.eCell c_path) (S.lLast (S.mSite ⟨"locks.lua", 122, [("", ""), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eParen (S.eSite ⟨"locks.lua", 122, [("local", "pat")], ("method", "gsub"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_pat) "gsub" (S.lCons (S.eStr "/+$".toList) (S.lLast (S.mOne (S.eStr "".toList)))))))) (S.eStr "/".toList))))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem M_covers_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_meet c_tokens c_lit c_glob c_util : Nat)
+theorem M_covers_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_meet c_tokens c_lit c_glob c_util : Nat)
     (h_meet : env0.lookup "meet" = some c_meet)
     (h_tokens : env0.lookup "tokens" = some c_tokens)
     (h_lit : env0.lookup "lit" = some c_lit)
     (h_glob : env0.lookup "glob" = some c_glob)
     (h_util : env0.lookup "util" = some c_util) :
-    CFn I (M_covers I env0 fn0 c_meet c_tokens c_lit c_glob c_util) fn0 ⟨["path", "pat"], false, M_covers_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "meet" (some c_meet) (res1 "tokens" (some c_tokens) (res1 "lit" (some c_lit) (res1 "glob" (some c_glob) (res1 "util" (some c_util) (fun x => env0.lookup x)))))) fn0 ⟨["path", "pat"], false, M_covers_body, env0, fenv0, src0, ln0⟩ (res1_ok h_meet (res1_ok h_tokens (res1_ok h_lit (res1_ok h_glob (res1_ok h_util (fun _ => rfl))))))
+    CFn I (M_covers I env0 fn0 c_meet c_tokens c_lit c_glob c_util) fn0 ⟨["path", "pat"], false, M_covers_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "meet" (some c_meet) (res1 "tokens" (some c_tokens) (res1 "lit" (some c_lit) (res1 "glob" (some c_glob) (res1 "util" (some c_util) (fun x => env0.lookup x)))))) fn0 ⟨["path", "pat"], false, M_covers_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_meet (res1_ok h_tokens (res1_ok h_lit (res1_ok h_glob (res1_ok h_util (fun _ => rfl))))))
 
 def M_overlaps (I : Sem) (env0 : Env) (fn0 : Nat) (c_glob c_lit c_tokens c_meet : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_p => S.let1 fun c_q => S.letEnd ((S.block (S.qLocalFn "forms" ["x"] false forms_body (127, 127) (("q", c_q) :: ("p", c_p) :: env0) fn0 fun c_forms =>
@@ -447,14 +458,15 @@ def M_overlaps (I : Sem) (env0 : Env) (fn0 : Nat) (c_glob c_lit c_tokens c_meet 
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eFalse))) (S.gotos [] [])
       S.qEnd)))) n)
 
-theorem M_overlaps_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_glob c_lit c_tokens c_meet : Nat)
+theorem M_overlaps_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_glob c_lit c_tokens c_meet : Nat)
     (h_glob : env0.lookup "glob" = some c_glob)
     (h_lit : env0.lookup "lit" = some c_lit)
     (h_tokens : env0.lookup "tokens" = some c_tokens)
     (h_meet : env0.lookup "meet" = some c_meet)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (M_overlaps I env0 fn0 c_glob c_lit c_tokens c_meet) fn0 ⟨["p", "q"], false, M_overlaps_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "glob" (some c_glob) (res1 "lit" (some c_lit) (res1 "tokens" (some c_tokens) (res1 "meet" (some c_meet) (res1 "ipairs" none (fun x => env0.lookup x)))))) fn0 ⟨["p", "q"], false, M_overlaps_body, env0, fenv0, src0, ln0⟩ (res1_ok h_glob (res1_ok h_lit (res1_ok h_tokens (res1_ok h_meet (res1_ok h_ipairs (fun _ => rfl))))))
+    CFn I (M_overlaps I env0 fn0 c_glob c_lit c_tokens c_meet) fn0 ⟨["p", "q"], false, M_overlaps_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "glob" (some c_glob) (res1 "lit" (some c_lit) (res1 "tokens" (some c_tokens) (res1 "meet" (some c_meet) (res1 "ipairs" none (fun x => env0.lookup x)))))) fn0 ⟨["p", "q"], false, M_overlaps_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_glob (res1_ok h_lit (res1_ok h_tokens (res1_ok h_meet (res1_ok h_ipairs (fun _ => rfl))))))
 
 def norm (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_path => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 139, [], ("field", "repo_rel"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 139, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "repo_rel".toList))) (S.lLast (S.mOne (S.eCell c_path)))))) fun n => S.let1 fun c__ => S.let1 fun c_rel => S.letEnd
@@ -463,10 +475,11 @@ def norm (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M
       (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"locks.lua", 141, [("local", "rel"), ("", "")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eCell c_rel) (S.eParen (S.eOr (S.eAnd (S.eParen (S.eAnd (S.eBin I .eq (S.eSite ⟨"locks.lua", 141, [("local", "path")], ("method", "sub"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eCell c_path) "sub" (S.lLast (S.mOne (S.eNum (.int (-1)))))))) (S.eStr "/".toList)) (S.eBin I .ne (S.eCell c_rel) (S.eStr ".".toList)))) (S.eStr "/".toList)) (S.eStr "".toList)))))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem norm_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem norm_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M) :
-    CFn I (norm I env0 fn0 c_M) fn0 ⟨["path"], false, norm_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (fun x => env0.lookup x)) fn0 ⟨["path"], false, norm_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (fun _ => rfl))
+    CFn I (norm I env0 fn0 c_M) fn0 ⟨["path"], false, norm_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (fun x => env0.lookup x)) fn0 ⟨["path"], false, norm_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (fun _ => rfl))
 
 def M_lock_holder (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_me_ => S.let1 fun c_path => S.let1 fun c_t => S.letEnd ((S.block (S.qStat (S.sSite ⟨"locks.lua", 145, [("", "")], ("local", "(for generator)"), false⟩ (S.sForIn I (S.lLast (S.mSite ⟨"locks.lua", 145, [], ("global", "ipairs"), false⟩ (S.mCall I (some fn0) (S.eGlob I fn0 "ipairs") (S.lLast (S.mSite ⟨"locks.lua", 145, [("local", "c")], ("method", "all"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "all" (S.lCons (S.eSite ⟨"locks.lua", 146, [("", ""), ("", "")], ("", ""), false⟩ (S.eBin I .concat (S.eStr "select l.* from lock l join agent a on a.name=l.agent ".toList) (S.eStr "where l.agent!=? and l.lease_until>? and a.ended is null".toList))) (S.lCons (S.eCell c_me_) (S.lLast (S.mOne (S.eCell c_t))))))))))) fun n => S.let1 fun c__ => S.let1 fun c_r => S.letEnd ((S.block (S.qStat (S.sIf (S.eSite ⟨"locks.lua", 147, [], ("field", "covers"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 147, [("upvalue", "M")], ("", ""), false⟩ (S.eIndex I (S.eCell c_M) (S.eStr "covers".toList))) (S.lCons (S.eCell c_path) (S.lLast (S.mSite ⟨"locks.lua", 147, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "path".toList))))))))) (S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eCell c_r)))) (S.gotos [] [])
@@ -475,20 +488,22 @@ def M_lock_holder (I : Sem) (env0 : Env) (fn0 : Nat) (c_M : Nat) : List Val → 
       (S.qStat (S.sReturn (S.lLast (S.mOne S.eNil))) (S.gotos [] [])
       S.qEnd))) n)
 
-theorem M_lock_holder_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_M : Nat)
+theorem M_lock_holder_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_M : Nat)
     (h_M : env0.lookup "M" = some c_M)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (M_lock_holder I env0 fn0 c_M) fn0 ⟨["c", "me_", "path", "t"], false, M_lock_holder_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["c", "me_", "path", "t"], false, M_lock_holder_body, env0, fenv0, src0, ln0⟩ (res1_ok h_M (res1_ok h_ipairs (fun _ => rfl)))
+    CFn I (M_lock_holder I env0 fn0 c_M) fn0 ⟨["c", "me_", "path", "t"], false, M_lock_holder_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "M" (some c_M) (res1 "ipairs" none (fun x => env0.lookup x))) fn0 ⟨["c", "me_", "path", "t"], false, M_lock_holder_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_M (res1_ok h_ipairs (fun _ => rfl)))
 
 def M_task_of (I : Sem) (env0 : Env) (fn0 : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_name => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 153, [("local", "c")], ("method", "one"), false⟩ (S.mMethod I (some fn0) (S.eCell c_c) "one" (S.lCons (S.eStr "select id,title from task where owner=? and state in ('claimed','blocked') order by id limit 1".toList) (S.lLast (S.mOne (S.eCell c_name))))))) fun n => S.let1 fun c_r => S.letEnd
       ((S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eCell c_r) (S.eSite ⟨"locks.lua", 154, [("", "")], ("method", "format"), false⟩ (S.eFirst (S.mMethod I (some fn0) (S.eParen (S.eStr "task #%d: %s".toList)) "format" (S.lCons (S.eSite ⟨"locks.lua", 154, [("local", "r")], ("", ""), false⟩ (S.eIndex I (S.eCell c_r) (S.eStr "id".toList))) (S.lLast (S.mSite ⟨"locks.lua", 154, [("local", "r")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_r) (S.eStr "title".toList)))))))))) (S.eStr "no claimed task".toList))))) (S.gotos [] [])
       S.qEnd) n))) n)
 
-theorem M_task_of_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) :
-    CFn I (M_task_of I env0 fn0) fn0 ⟨["c", "name"], false, M_task_of_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["c", "name"], false, M_task_of_body, env0, fenv0, src0, ln0⟩ (fun _ => rfl)
+theorem M_task_of_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) :
+    CFn I (M_task_of I env0 fn0) fn0 ⟨["c", "name"], false, M_task_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (fun x => env0.lookup x) fn0 ⟨["c", "name"], false, M_task_of_body, env0, fenv0, src0, ln0, root0, ks0⟩ (fun _ => rfl)
 
 def M_cmd_lock (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_norm c_util c_M c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 158, [], ("field", "me"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 158, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "me".toList))) S.lNil))) fun n => S.let1 fun c_n => S.letEnd
@@ -497,7 +512,8 @@ def M_cmd_lock (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_norm c_util c_M c_
       (S.qStat (S.sCall (S.mSite ⟨"locks.lua", 173, [], ("global", "print"), false⟩ (S.mCall I (some fn0) (S.eGlob I fn0 "print") (S.lLast (S.mSite ⟨"locks.lua", 173, [("", ""), ("field", "path")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "locked ".toList) (S.eSite ⟨"locks.lua", 173, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)))))))))) (S.gotos [] [])
       S.qEnd))) n))) n)
 
-theorem M_cmd_lock_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_agents c_norm c_util c_M c_db : Nat)
+theorem M_cmd_lock_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_agents c_norm c_util c_M c_db : Nat)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_norm : env0.lookup "norm" = some c_norm)
     (h_util : env0.lookup "util" = some c_util)
@@ -505,8 +521,8 @@ theorem M_cmd_lock_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char
     (h_db : env0.lookup "db" = some c_db)
     (h_ipairs : env0.lookup "ipairs" = none)
     (h_print : env0.lookup "print" = none) :
-    CFn I (M_cmd_lock I env0 fn0 c_agents c_norm c_util c_M c_db) fn0 ⟨["c", "a"], false, M_cmd_lock_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "agents" (some c_agents) (res1 "norm" (some c_norm) (res1 "util" (some c_util) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ipairs" none (res1 "print" none (fun x => env0.lookup x)))))))) fn0 ⟨["c", "a"], false, M_cmd_lock_body, env0, fenv0, src0, ln0⟩ (res1_ok h_agents (res1_ok h_norm (res1_ok h_util (res1_ok h_M (res1_ok h_db (res1_ok h_ipairs (res1_ok h_print (fun _ => rfl))))))))
+    CFn I (M_cmd_lock I env0 fn0 c_agents c_norm c_util c_M c_db) fn0 ⟨["c", "a"], false, M_cmd_lock_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "norm" (some c_norm) (res1 "util" (some c_util) (res1 "M" (some c_M) (res1 "db" (some c_db) (res1 "ipairs" none (res1 "print" none (fun x => env0.lookup x)))))))) fn0 ⟨["c", "a"], false, M_cmd_lock_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_agents (res1_ok h_norm (res1_ok h_util (res1_ok h_M (res1_ok h_db (res1_ok h_ipairs (res1_ok h_print (fun _ => rfl))))))))
 
 def M_cmd_unlock (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_norm c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_c => S.let1 fun c_a => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 177, [], ("field", "me"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 177, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "me".toList))) S.lNil))) fun n => S.let1 fun c_n => S.letEnd
@@ -516,13 +532,14 @@ def M_cmd_unlock (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_norm c_db : Nat)
       (S.qStat (S.sCall (S.mSite ⟨"locks.lua", 181, [], ("global", "print"), false⟩ (S.mCall I (some fn0) (S.eGlob I fn0 "print") (S.lLast (S.mSite ⟨"locks.lua", 181, [("", ""), ("field", "path")], ("", ""), false⟩ (S.mOne (S.eBin I .concat (S.eStr "unlocked ".toList) (S.eSite ⟨"locks.lua", 181, [("local", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "path".toList)))))))))) (S.gotos [] [])
       S.qEnd)))) n))) n)
 
-theorem M_cmd_unlock_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_agents c_norm c_db : Nat)
+theorem M_cmd_unlock_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_agents c_norm c_db : Nat)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_norm : env0.lookup "norm" = some c_norm)
     (h_db : env0.lookup "db" = some c_db)
     (h_print : env0.lookup "print" = none) :
-    CFn I (M_cmd_unlock I env0 fn0 c_agents c_norm c_db) fn0 ⟨["c", "a"], false, M_cmd_unlock_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "agents" (some c_agents) (res1 "norm" (some c_norm) (res1 "db" (some c_db) (res1 "print" none (fun x => env0.lookup x))))) fn0 ⟨["c", "a"], false, M_cmd_unlock_body, env0, fenv0, src0, ln0⟩ (res1_ok h_agents (res1_ok h_norm (res1_ok h_db (res1_ok h_print (fun _ => rfl)))))
+    CFn I (M_cmd_unlock I env0 fn0 c_agents c_norm c_db) fn0 ⟨["c", "a"], false, M_cmd_unlock_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "norm" (some c_norm) (res1 "db" (some c_db) (res1 "print" none (fun x => env0.lookup x))))) fn0 ⟨["c", "a"], false, M_cmd_unlock_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_agents (res1_ok h_norm (res1_ok h_db (res1_ok h_print (fun _ => rfl)))))
 
 def f (I : Sem) (env0 : Env) (fn0 : Nat) (c_memo c_p c_q c_f c_one : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_i => S.let1 fun c_j => S.letEnd ((S.block (S.qLocal (S.lLast (S.mSite ⟨"locks.lua", 102, [("", ""), ("local", "j")], ("", ""), false⟩ (S.mOne (S.eBin I .add (S.eSite ⟨"locks.lua", 102, [("local", "i"), ("", "")], ("", ""), false⟩ (S.eBin I .mul (S.eCell c_i) (S.eNum (.int 65536)))) (S.eCell c_j))))) fun n => S.let1 fun c_k => S.letEnd
@@ -540,25 +557,27 @@ def f (I : Sem) (env0 : Env) (fn0 : Nat) (c_memo c_p c_q c_f c_one : Nat) : List
       (S.qStat (S.sReturn (S.lLast (S.mSite ⟨"locks.lua", 111, [("upvalue", "memo")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_memo) (S.eCell c_k)))))) (S.gotos [] [])
       S.qEnd)) n))) n)
 
-theorem f_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_memo c_p c_q c_f c_one : Nat)
+theorem f_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_memo c_p c_q c_f c_one : Nat)
     (h_memo : env0.lookup "memo" = some c_memo)
     (h_p : env0.lookup "p" = some c_p)
     (h_q : env0.lookup "q" = some c_q)
     (h_f : env0.lookup "f" = some c_f)
     (h_one : env0.lookup "one" = some c_one) :
-    CFn I (f I env0 fn0 c_memo c_p c_q c_f c_one) fn0 ⟨["i", "j"], false, f_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "memo" (some c_memo) (res1 "p" (some c_p) (res1 "q" (some c_q) (res1 "f" (some c_f) (res1 "one" (some c_one) (fun x => env0.lookup x)))))) fn0 ⟨["i", "j"], false, f_body, env0, fenv0, src0, ln0⟩ (res1_ok h_memo (res1_ok h_p (res1_ok h_q (res1_ok h_f (res1_ok h_one (fun _ => rfl))))))
+    CFn I (f I env0 fn0 c_memo c_p c_q c_f c_one) fn0 ⟨["i", "j"], false, f_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "memo" (some c_memo) (res1 "p" (some c_p) (res1 "q" (some c_q) (res1 "f" (some c_f) (res1 "one" (some c_one) (fun x => env0.lookup x)))))) fn0 ⟨["i", "j"], false, f_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_memo (res1_ok h_p (res1_ok h_q (res1_ok h_f (res1_ok h_one (fun _ => rfl))))))
 
 def forms (I : Sem) (env0 : Env) (fn0 : Nat) (c_glob c_lit c_tokens : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.let1 fun c_x => S.letEnd ((S.block (S.qStat (S.sReturn (S.lLast (S.mOne (S.eOr (S.eAnd (S.eSite ⟨"locks.lua", 127, [], ("upvalue", "glob"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_glob) (S.lLast (S.mOne (S.eCell c_x)))))) (S.eTable (S.fPos (S.eSite ⟨"locks.lua", 127, [], ("upvalue", "lit"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_lit) (S.lLast (S.mOne (S.eCell c_x)))))) (S.fLast (S.mSite ⟨"locks.lua", 127, [], ("upvalue", "tokens"), false⟩ (S.mCall I (some fn0) (S.eCell c_tokens) (S.lLast (S.mOne (S.eCell c_x))))))))) (S.eTable (S.fPos (S.eSite ⟨"locks.lua", 127, [], ("upvalue", "lit"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_lit) (S.lLast (S.mOne (S.eCell c_x)))))) (S.fPos (S.eSite ⟨"locks.lua", 127, [], ("upvalue", "tokens"), false⟩ (S.eFirst (S.mCall I (some fn0) (S.eCell c_tokens) (S.lLast (S.mOne (S.eCell c_x)))))) (S.fLast (S.mSite ⟨"locks.lua", 127, [], ("upvalue", "tokens"), false⟩ (S.mCall I (some fn0) (S.eCell c_tokens) (S.lCons (S.eCell c_x) (S.lLast (S.mOne S.eTrue))))))))))))) (S.gotos [] [])
       S.qEnd)) n)
 
-theorem forms_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_glob c_lit c_tokens : Nat)
+theorem forms_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_glob c_lit c_tokens : Nat)
     (h_glob : env0.lookup "glob" = some c_glob)
     (h_lit : env0.lookup "lit" = some c_lit)
     (h_tokens : env0.lookup "tokens" = some c_tokens) :
-    CFn I (forms I env0 fn0 c_glob c_lit c_tokens) fn0 ⟨["x"], false, forms_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "glob" (some c_glob) (res1 "lit" (some c_lit) (res1 "tokens" (some c_tokens) (fun x => env0.lookup x)))) fn0 ⟨["x"], false, forms_body, env0, fenv0, src0, ln0⟩ (res1_ok h_glob (res1_ok h_lit (res1_ok h_tokens (fun _ => rfl))))
+    CFn I (forms I env0 fn0 c_glob c_lit c_tokens) fn0 ⟨["x"], false, forms_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "glob" (some c_glob) (res1 "lit" (some c_lit) (res1 "tokens" (some c_tokens) (fun x => env0.lookup x)))) fn0 ⟨["x"], false, forms_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_glob (res1_ok h_lit (res1_ok h_tokens (fun _ => rfl))))
 
 def M_cmd_lock_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_c c_n c_util c_M c_a c_db : Nat) : List Val → Nat → M (List Val) :=
   S.fn fn0 fun args n => S.letEnd ((S.block (S.qStat (S.sCall (S.mSite ⟨"locks.lua", 161, [], ("field", "touch"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 161, [("upvalue", "agents")], ("", ""), false⟩ (S.eIndex I (S.eCell c_agents) (S.eStr "touch".toList))) (S.lCons (S.eCell c_c) (S.lLast (S.mOne (S.eCell c_n))))))) (S.gotos [] [])
@@ -569,7 +588,8 @@ def M_cmd_lock_fn (I : Sem) (env0 : Env) (fn0 : Nat) (c_agents c_c c_n c_util c_
       (S.qStat (S.sCall (S.mSite ⟨"locks.lua", 171, [], ("field", "log"), false⟩ (S.mCall I (some fn0) (S.eSite ⟨"locks.lua", 171, [("upvalue", "db")], ("", ""), false⟩ (S.eIndex I (S.eCell c_db) (S.eStr "log".toList))) (S.lCons (S.eCell c_c) (S.lCons (S.eCell c_n) (S.lCons (S.eStr "lock".toList) (S.lCons (S.eSite ⟨"locks.lua", 171, [("upvalue", "a")], ("", ""), false⟩ (S.eIndex I (S.eCell c_a) (S.eStr "path".toList))) (S.lLast (S.mSite ⟨"locks.lua", 171, [("upvalue", "a")], ("", ""), false⟩ (S.mOne (S.eIndex I (S.eCell c_a) (S.eStr "reason".toList)))))))))))) (S.gotos [] [])
       S.qEnd))))) n)
 
-theorem M_cmd_lock_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat) (c_agents c_c c_n c_util c_M c_a c_db : Nat)
+theorem M_cmd_lock_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (ln0 : Nat × Nat)
+    (root0 : Option Nat) (ks0 : List (Nat × Nat)) (c_agents c_c c_n c_util c_M c_a c_db : Nat)
     (h_agents : env0.lookup "agents" = some c_agents)
     (h_c : env0.lookup "c" = some c_c)
     (h_n : env0.lookup "n" = some c_n)
@@ -578,8 +598,8 @@ theorem M_cmd_lock_fn_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List C
     (h_a : env0.lookup "a" = some c_a)
     (h_db : env0.lookup "db" = some c_db)
     (h_ipairs : env0.lookup "ipairs" = none) :
-    CFn I (M_cmd_lock_fn I env0 fn0 c_agents c_c c_n c_util c_M c_a c_db) fn0 ⟨[], false, M_cmd_lock_fn_body, env0, fenv0, src0, ln0⟩ :=
-  D.fn_ok I (res1 "agents" (some c_agents) (res1 "c" (some c_c) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "M" (some c_M) (res1 "a" (some c_a) (res1 "db" (some c_db) (res1 "ipairs" none (fun x => env0.lookup x))))))))) fn0 ⟨[], false, M_cmd_lock_fn_body, env0, fenv0, src0, ln0⟩ (res1_ok h_agents (res1_ok h_c (res1_ok h_n (res1_ok h_util (res1_ok h_M (res1_ok h_a (res1_ok h_db (res1_ok h_ipairs (fun _ => rfl)))))))))
+    CFn I (M_cmd_lock_fn I env0 fn0 c_agents c_c c_n c_util c_M c_a c_db) fn0 ⟨[], false, M_cmd_lock_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ :=
+  D.fn_ok I (res1 "agents" (some c_agents) (res1 "c" (some c_c) (res1 "n" (some c_n) (res1 "util" (some c_util) (res1 "M" (some c_M) (res1 "a" (some c_a) (res1 "db" (some c_db) (res1 "ipairs" none (fun x => env0.lookup x))))))))) fn0 ⟨[], false, M_cmd_lock_fn_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_agents (res1_ok h_c (res1_ok h_n (res1_ok h_util (res1_ok h_M (res1_ok h_a (res1_ok h_db (res1_ok h_ipairs (fun _ => rfl)))))))))
 
 end Swarm.Lifted.Locks
 -- checksum Swarm.Lifted.Locks 2843101959
