@@ -163,9 +163,12 @@ theorem tick_inv2 {c : Cfg} (P : State → Prop)
     (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x, P x → P (reapLocks x)) (hend : ∀ x a, P x → P (endAgent x a))
     (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
     (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → stopped x t = false → P (spawnFor c pl x t)) {s : State} (h : P s)
-    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h) : P (tickOf c s) := by
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h)
+    (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickOf c s) := by
   have h1 : P (reapLocks (reapTasks c s)) := hlocks _ (foldl_inv _ P _ _ h (fun b t hb => hreap b t hb))
-  unfold tickOf
+  obtain ⟨e, n, he⟩ := tickOf_ex c s
+  rw [he]; refine hnote _ _ _ ?_
+  unfold tickS
   refine hgit _ _ ?_
   unfold lifecycle
   generalize reapLocks (reapTasks c s) = s1 at h1 ⊢
@@ -216,8 +219,9 @@ theorem tick_inv {c : Cfg} (P : State → Prop)
     (hreap : ∀ x t, P x → P (reapTask c x t)) (hlocks : ∀ x, P x → P (reapLocks x)) (hend : ∀ x a, P x → P (endAgent x a))
     (hdig : ∀ x a pl, P x → P (post (setAg x a fun g => { g with told := pl ++ g.told }) ⟨none, a, false, .digest, 0⟩))
     (hspawn : ∀ pl x t, P x → (x.tk t).st = .opn → P (spawnFor c pl x t)) {s : State} (h : P s)
-    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h) : P (tickOf c s) :=
-  tick_inv2 P hreap hlocks hend hdig (fun pl x t hx ho _ => hspawn pl x t hx ho) h hgit
+    (hgit : ∀ x g, P x → P { x with git := g } := by intro _ _ h; exact h)
+    (hnote : ∀ x e n, P x → P { x with evs := e, cbox := n } := by intro _ _ _ h; exact h) : P (tickOf c s) :=
+  tick_inv2 P hreap hlocks hend hdig (fun pl x t hx ho _ => hspawn pl x t hx ho) h hgit hnote
 
 -- ---------- messages ----------
 theorem msg_congr {s s' : State} (h : s'.log = s.log) (i : Nat) : s'.msg i = s.msg i := by simp [State.msg, h]
@@ -550,7 +554,8 @@ macro "ii_tac" : tactic => `(tactic|
     | with_reducible apply ii_post
     | with_reducible apply ii_deliver
     | with_reducible apply ii_takes
-    | with_reducible apply ii_endAgent))
+    | with_reducible apply ii_endAgent
+    | assumption))
 
 theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c s := by
   refine reachable_induct ?_ ?_ h

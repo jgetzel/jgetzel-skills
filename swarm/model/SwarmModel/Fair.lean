@@ -75,10 +75,11 @@ theorem takes_agt (c : Cfg) (s : State) (a t b : Nat) : ∃ bl, (takes c s a t).
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
 @[simp] theorem takes_dead (c : Cfg) (s : State) (a t b : Nat) : ((takes c s a t).agt b).dead = (s.agt b).dead := by
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
-@[simp] theorem agt_mk (task ag lock log cursor start seen pend early git b) :
-    (State.mk task ag lock log cursor start seen pend early git).agt b = ag.getD b default := rfl
-@[simp] theorem tk_mk (task ag lock log cursor start seen pend early git t) :
-    (State.mk task ag lock log cursor start seen pend early git).tk t = if t = 0 then default else task.getD (t - 1) default := rfl
+@[simp] theorem agt_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest b) :
+    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest).agt b = ag.getD b default := rfl
+@[simp] theorem tk_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest t) :
+    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest).tk t =
+      if t = 0 then default else task.getD (t - 1) default := rfl
 @[simp] theorem agt_def (s : State) (b : Nat) : s.ag.getD b default = s.agt b := rfl
 @[simp] theorem tk_def (s : State) (t : Nat) : (if t = 0 then default else s.task.getD (t - 1) default) = s.tk t := rfl
 
@@ -94,7 +95,7 @@ theorem showAll_ag_length (a : Nat) (ids : List Nat) : ∀ s : State, (showAll s
 
 theorem endAgent_agt (s : State) (b a : Nat) : (endAgent s b).agt a =
     if b = a ∧ a < s.ag.length then { s.agt a with st := .ended, boot := false, believes := [] } else s.agt a := by
-  unfold endAgent; rw [agt_of_ag (releaseAll_ag ..), agt_setAg]
+  unfold endAgent; rw [agt_of_ag (releaseAll_ag ..), agt_setAg]; rfl
 
 theorem leaveIf_persist {s s' : State} {a t a₀ : Nat} {ok : Bool} (hs : leaveIf ok s a₀ = some s')
     (hst : (s.tk t).st = .claimed) (hown : (s.tk t).owner = some a) (hidle : (s.agt a).st = .idle)
@@ -129,6 +130,37 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
   case endOther a₀ f => exact leaveIf_persist hs hst hown hidle hst' hown' hidle'
   case bgStart => exact absurd rfl (hq _).1
   case die => exact absurd rfl (hq _).2
+  case block b u =>
+    simp only [step, block, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨hc, rfl⟩ := hs
+    simp only [logEv_tk, logEv_agt, setTask_agt] at hst' hown' hidle' ⊢
+    by_cases e : u = t
+    · subst e; rw [tk_setTask_self (by simp [hst])] at hst'; simp at hst'
+    · rw [tk_setTask_ne (Ne.symm e)]; exact ⟨id, id, id, id⟩
+  case done b u ev =>
+    simp only [step, done, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨hc, rfl⟩ := hs
+    simp only [unbelieve_tk] at hst' hown' hidle' ⊢
+    by_cases e : u = t
+    · subst e; rw [tk_setTask_self (by simp [hst])] at hst'; simp at hst'
+    · rw [tk_setTask_ne (Ne.symm e)]
+      obtain ⟨bl, hb⟩ : ∃ bl, (unbelieve (setTask (logEv s (.done u)) u fun x => { x with st := .done, lease := false, ev := ev }) b u).agt a =
+          { s.agt a with believes := bl } := by
+        unfold unbelieve; rw [agt_setAg, setTask_agt, logEv_agt]; split <;> exact ⟨_, rfl⟩
+      rw [hb]; simp only [logEv_tk]; exact ⟨id, id, id, id⟩
+  case hcPrompt b =>
+    simp only [step, hcPrompt, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨hc, rfl⟩ := hs
+    simp only [setTask_agt, agt_setAg, setAg_tk, tellC_agt, hcLog_agt, setAg_ag_length, tellC_ag, hcLog_ag] at hst' hown' hidle' ⊢
+    by_cases e : b = a
+    · subst e; simp [busy, hidle] at hc
+    · simp only [e, false_and, if_false] at hidle' ⊢
+      by_cases e2 : firstClaimed c s b = t
+      · rw [e2, tk_setTask_self (by simp [hst])] at hst'; simp at hst'
+      · rw [tk_setTask_ne (Ne.symm e2)]; exact ⟨id, id, id, id⟩
+  case awayOn => simp only [step, awayOn, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
+  case back => simp only [step, back, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
+  case commsRead => simp only [step, commsRead, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
   case hcClear a₀ =>
     simp only [step, hcClear, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
     obtain ⟨hc, hs⟩ := hs
@@ -153,7 +185,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     · simp at hs
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, add, after, drop, releaseOther, endOther, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
+    hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -202,7 +234,7 @@ theorem spawnFor_tk (c : Cfg) (pl : List Nat) (y : State) (t' u : Nat) :
   · rename_i a' hna
     split
     · simp only []
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _) a' t' u with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' t' u with e | e
       · exact Or.inl (by rw [e]; simp only [tk_mk, setAg_task, tk_def])
       · exact Or.inr (by rw [e, hna])
     · exact Or.inl rfl
@@ -296,7 +328,9 @@ theorem tick_persist {c : Cfg} {s s' : State} {a t : Nat} (hfix : c.release ≠ 
       ((s.agt a).bg = false → (s'.agt a).bg = false) ∧ ((s.agt a).dead = false → (s'.agt a).dead = false) := by
   have e : s' = tickOf c s := by simp [tick, when] at hs; exact hs.2.symm
   subst e
-  have hd : Th a t (reapLocks (reapTasks c s)) (tickOf c s) := lifecycle_Th
+  have hd : Th a t (reapLocks (reapTasks c s)) (tickOf c s) := by
+    have h0 : Th a t (reapLocks (reapTasks c s)) (tickS c s) := lifecycle_Th
+    unfold Th ownsClaimed at h0 ⊢; simpa using h0
   have hz : (reapLocks (reapTasks c s)).agt a = s.agt a := by simp [State.agt]
   have hD := hd (by simpa [idleClaim] using h')
   rw [hz] at hD

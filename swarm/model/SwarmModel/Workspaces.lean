@@ -169,7 +169,7 @@ theorem git_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = som
     | (right; left; exact ⟨_, _, rfl⟩) | (right; right; left; exact ⟨_, _, rfl⟩) | (right; right; right; rfl)
     | (left; simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
         readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf,
-        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, stale, nudge, when] at h
+        hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, stale, nudge, when] at h
        (repeat' split at h) <;> first | (simp only [Option.some.injEq] at h; subst h; simp; done) | simp at h)
 
 /-- no worktree that is there has a base checked out, per worktree -/
@@ -508,10 +508,9 @@ theorem fold_rm_off (c : Cfg) (cond : Nat → Bool) (w : Nat) : ∀ (l : List Na
 
 /-- with `splitGC`, the tick removes an orphan -/
 theorem orphan_tick {c : Cfg} (hc : c.splitGC = true) {s : State} {w : Nat} (h : orphan c s w = true) :
-    ((tickOf c s).git.wt w).on = false := by
+    ((tickS c s).git.wt w).on = false := by
   have hrg : (reapLocks (reapTasks c s)).git = s.git := by rw [reapLocks_git, reapTasks_git]
   have hused : ∀ w, used c (reapLocks (reapTasks c s)) w = used c s w := used_congr (by simp) hrg
-  rw [tickOf_git]
   show ((gitTick c (reapLocks (reapTasks c s))).wt w).on = false
   simp only [orphan, Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true'] at h
   obtain ⟨⟨⟨⟨⟨⟨hw, hon⟩, hd⟩, hsafe⟩, hu⟩, hp⟩, hrec⟩ := h

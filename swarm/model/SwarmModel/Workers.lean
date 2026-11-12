@@ -89,7 +89,8 @@ macro "pf_tac" : tactic => `(tactic|
     | ((with_reducible refine pfx_task (post_task ..) ?_))
     | ((with_reducible refine pfx_task (deliver_task ..) ?_))
     | ((with_reducible refine pfx_task (takes_task ..) ?_))
-    | with_reducible apply pfx_endAgent))
+    | with_reducible apply pfx_endAgent
+    | assumption))
 
 theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
   refine reachable_induct ?_ ?_ h
@@ -618,6 +619,9 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   have hI := inbInv_of_reachable hr
   have hP := pfx_of_reachable hr
   open_step hstep
+  case awayOn => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case back => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case commsRead => obtain ⟨_, rfl⟩ := hstep; exact hs
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hg
@@ -636,16 +640,16 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   case block a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp [ownsClaimed] at hg
-    exact J_setTask_no (by rw [hg.2.1]; simp) (fun b hd => by
+    exact J_setTask_no (s := logEv s (.block t)) (by simp [hg.2.1]) (fun b hd => by
       rcases hd with e | e
       · left; simp [held] at e ⊢; exact e.1
-      · rw [hg.2.1] at e; cases e) hs
+      · simp [hg.2.1] at e) hs
   case release a t =>
     obtain ⟨hg, rfl⟩ := hstep; simp [ownsClaimed] at hg
     exact J_giveup (own_unique hg.2.2) (by rw [hg.2.1]; simp) (by rw [hg.2.1]; simp) hs
   case done a t ev =>
     obtain ⟨hg, rfl⟩ := hstep; simp [ownsClaimed] at hg
-    exact J_giveup (own_unique hg.1.2.2) (by rw [hg.1.2.1]; simp) (by rw [hg.1.2.1]; simp) hs
+    exact J_giveup (s := logEv s (.done t)) (own_unique hg.1.2.2) (by simp [hg.1.2.1]) (by simp [hg.1.2.1]) hs
   case dropOwn a t =>
     obtain ⟨hg, rfl⟩ := hstep; simp at hg
     exact J_giveup (fun b hb => held_unique hb hg.2) (held_not_dropped hg.2)
