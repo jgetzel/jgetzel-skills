@@ -40,6 +40,12 @@ structure Tools where
   hcLs : World → Nat → Bool
   /-- `hc kill h` -/
   hcKill : World → Nat → World
+  /-- `hc run --json --bg --no-parent --no-notify -- <cmd>` (watchd's `--restart`) -/
+  hcRun : World → World
+  /-- the address `hc run` prints -/
+  hcRunAddr : World → Nat
+  /-- the pid of the program it started -/
+  hcRunPid : World → Nat
   /-- process p is in the process table: running, or dead and not yet reaped by its parent (a zombie) -/
   alive : World → Nat → Bool
   /-- `kill(p, 0)` returns 0 (posix.signal) -/
@@ -95,6 +101,9 @@ def HcLsLive : Prop := ∀ w h, t.hcLs w h = t.termLive w h
 leave worktrees, so `proc` may change) -/
 def HcKillEnds : Prop := ∀ w h, t.termLive (t.hcKill w h) h = false ∧
   (∀ h', h' ≠ h → t.termLive (t.hcKill w h) h' = t.termLive w h') ∧ Git.durable (t.git (t.hcKill w h)) = Git.durable (t.git w)
+/-- hc: `hc run --bg` starts the program: the terminal whose address it prints is live, and the program runs in it, a
+process (the model's `restart`: the new watchd runs, in its hidden terminal) -/
+def HcRunStarts : Prop := ∀ w, t.termLive (t.hcRun w) (t.hcRunAddr w) = true ∧ t.alive (t.hcRun w) (t.hcRunPid w) = true
 /-- processes: `kill(p, 0)` is 0 exactly when process p is in the process table, a zombie included (that p is still
 *our* process, no pid reuse, is the model's reading, not this) -/
 def Kill0Alive : Prop := ∀ w p, t.kill0 w p = t.alive w p
@@ -123,6 +132,7 @@ structure Sound : Prop where
   delRef : DelRef t
   hcLsLive : HcLsLive t
   hcKillEnds : HcKillEnds t
+  hcRunStarts : HcRunStarts t
   kill0Alive : Kill0Alive t
   cwdsProc : CwdsProc t
   touchedRecent : TouchedRecent t
@@ -152,6 +162,9 @@ def ideal : Tools where
   termLive w h := w.terms h
   hcLs w h := w.terms h
   hcKill w h := { w with terms := fun h' => h' != h && w.terms h' }
+  hcRun w := { w with terms := fun h => h == 0 || w.terms h, procs := fun p => p == 0 || w.procs p }
+  hcRunAddr _ := 0
+  hcRunPid _ := 0
   alive w p := w.procs p
   kill0 w p := w.procs p
   cwdIn w x := (w.git.wt x).proc
@@ -173,6 +186,7 @@ theorem consistent : Sound ideal where
   delRef w b k := apply_ite IdealWorld.git _ _ _
   hcLsLive _ _ := rfl
   hcKillEnds w h := ⟨by simp [ideal], fun h' hh => by simp [ideal, hh], rfl⟩
+  hcRunStarts _ := ⟨by simp [ideal], by simp [ideal]⟩
   kill0Alive _ _ := rfl
   cwdsProc _ _ := rfl
   touchedRecent w x := by simp only [ideal]; split <;> simp_all [sweepIdle]
@@ -201,6 +215,8 @@ axiom del_ref : DelRef real
 axiom hc_ls_live : HcLsLive real
 /-- `hc kill` (env_spec: hc_kill_ends) -/
 axiom hc_kill_ends : HcKillEnds real
+/-- `hc run --bg` (env_spec: hc_run_starts) -/
+axiom hc_run_starts : HcRunStarts real
 /-- `kill(p, 0)` (env_spec: kill0_alive) -/
 axiom kill0_alive : Kill0Alive real
 /-- `machine.cwds()` (env_spec: cwds_proc) -/

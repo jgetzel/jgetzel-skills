@@ -33,9 +33,9 @@ M.DYNAMIC = {
   ["update task set state='done', evidence=?, lease_until=null, done_at=?, done_ctx=(select ctx_tokens from agent where name=?)«mine»"] =
     { "update task set state='done', evidence=?, lease_until=null, done_at=?, done_ctx=(select ctx_tokens from agent where name=?)"
       .. " where id=? and owner=? and state='claimed'" },
-  ["select * from task «(a.all and \"\" or \"where state in ('open','claimed','blocked') \")»order by title like '«M.RED_TASK»%' and state!='done' desc, id"] =
-    { "select * from task order by title like 'main red: %' and state!='done' desc, id",
-      "select * from task where state in ('open','claimed','blocked') order by title like 'main red: %' and state!='done' desc, id" },
+  ["select * from task «(a.all and \"\" or \"where state in ('open','claimed','blocked') \")»order by title like '«M.RED_TASK»%' and state!='done' desc, priority, id"] =
+    { "select * from task order by title like 'main red: %' and state!='done' desc, priority, id",
+      "select * from task where state in ('open','claimed','blocked') order by title like 'main red: %' and state!='done' desc, priority, id" },
   ["select kind from event where kind in (%s) order by id desc limit 1"] =  -- watchd.last_event: two kinds
     { "select kind from event where kind in (?,?) order by id desc limit 1" },
   ["select repo,key,count(*) n,max(peak_kb) peak,max(cpu_s) cpu,max(wall_s) wall from cmd %s group by repo,key order by max(%s) desc limit 5"] =

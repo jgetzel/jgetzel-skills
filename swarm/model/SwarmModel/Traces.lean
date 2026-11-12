@@ -1,6 +1,7 @@
 import Lean.Data.Json
 import SwarmModel.Spawn
 import SwarmModel.PrWatch
+import SwarmModel.Restart
 
 /-! Random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures, Spawn.lean) as JSON, for
 ../lua/test/cli_model_spec.lua to replay through the CLI.
@@ -197,7 +198,7 @@ claims #1, agent 0 claims #2, blocks on it, and the communicator releases
 the blocked #2. `end-user` (H1, board #46): agent 1 claims #1 and works, agent 0 stops holding nothing; the communicator
 ends agent 0 (`swarm end`, its checks pass), then agent 1 with `--force` (#1 is open again), and the tick spawns for #1.
 `away` (board #47): agent 0 blocks #1 and the tick tells the communicator (urgent), who reads it; the answer comes and agent
-0 asks the same question again, which the tick tells again (finding #34); the user goes away; agent 1 blocks #2, #1 is
+0 asks the same question again, which the tick tells again (finding #35); the user goes away; agent 1 blocks #2, #1 is
 answered and agent 0 finishes it, the tick tells #2 not urgent; agent 0 goes idle (big) and the tick ends it and spawns
 for #3; `--back`: the digest has #2, #1 done and agent 0 ended, and the communicator is sent one urgent message naming #2. -/
 def scripts : List (String × List (String × List (String × Json))) := [
@@ -270,6 +271,56 @@ def scripts : List (String × PCfg × List PAction) := [
   ("pr-merged", {}, [.claim 0 0, .openPr 0 0, .finish 0 true, .merge 0 0, .stay 0 true, .stop 0, .poll, .wake 0, .poll])]
 end P
 
+-- ---------- Restart.lean's layer (board #49): one swarm's watchd record, watchd_up and processes ----------
+namespace R
+
+def pid (o : Option Nat) : Json := (o.map toJson).getD Json.null
+
+def worldJson (w : World) : Json :=
+  Json.mkObj [("rec", pid (w.wdOf 0)), ("up", pid (w.upOf 0)), ("restart", (w.rsOf 0).isSome),
+    ("wds", Json.arr ((List.range w.wds.length).toArray.map fun p =>
+      Json.mkObj [("term", (w.proc p).term), ("alive", w.alive p)]))]
+
+/-- an action as its name and picks: terminals and watchds by the model's numbers -/
+def actJson : CAction → String × Json
+  | .open sp => ("open", Json.mkObj [("sp", sp)])
+  | .watchd i x => ("watchd", Json.mkObj [("i", i), ("x", x)])
+  | .tick i => ("tick", Json.mkObj [("i", i)])
+  | .restart i x => ("restart", Json.mkObj [("i", i), ("x", x)])
+  | .takeover p => ("takeover", Json.mkObj [("p", p)])
+  | .crash p => ("crash", Json.mkObj [("p", p)])
+  | .loop p => ("loop", Json.mkObj [("p", p)])
+  | .rpoll i => ("rpoll", Json.mkObj [("i", i)])
+  | .rok i => ("rok", Json.mkObj [("i", i)])
+  | .rfail i => ("rfail", Json.mkObj [("i", i)])
+  | a => (s!"{repr a}", Json.mkObj [])
+
+/-- a run of one swarm, each step enabled: `{"restart": {}, "states": [{"s"}, {"action", "picks", "s"}, ..]}` -/
+def script (c : CCfg) (acts : List CAction) : Except String Json := do
+  let mut w := cinit c
+  let mut out := #[Json.mkObj [("s", worldJson w)]]
+  for x in acts do
+    match cstep c w x with
+    | some w' =>
+      w := w'
+      let (n, p) := actJson x
+      out := out.push (Json.mkObj [("action", n), ("picks", p), ("s", worldJson w)])
+    | none => throw s!"step {out.size}: {(actJson x).1} is not enabled"
+  return Json.mkObj [("restart", Json.mkObj []), ("states", Json.arr out)]
+
+/-- one swarm with nothing to tick but the watchds, and board #41's handover (the Lua's) -/
+def cfg : CCfg := { sw := { nagents := 0, roster := 0, ntasks := 0 }, nswarms := 1, home := [0], waitUp := true }
+
+/-- `restart-ok`: watchd 0, started by hand, ticks; `--restart` starts watchd 1, which takes the record; the restart's
+poll sees it; watchd 1 ticks; the restart reports success and watchd 0's loop exits. `restart-dies`: watchd 1 takes the
+record and dies before its first tick; watchd 0's loop takes the record back; the restart reports the failure. -/
+def scripts : List (String × CCfg × List CAction) := [
+  ("restart-ok", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .tick 0, .rok 0,
+    .loop 0]),
+  ("restart-dies", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .crash 1, .loop 0,
+    .rfail 0])]
+end R
+
 def main (args : List String) : IO UInt32 := do
   if let ["script", dir] := args then
     for (name, acts) in scripts do
@@ -278,6 +329,10 @@ def main (args : List String) : IO UInt32 := do
       | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
     for (name, c, acts) in P.scripts do
       match P.script c acts with
+      | .ok j => IO.FS.writeFile (System.FilePath.mk dir / s!"script-{name}.json") j.compress
+      | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
+    for (name, c, acts) in R.scripts do
+      match R.script c acts with
       | .ok j => IO.FS.writeFile (System.FilePath.mk dir / s!"script-{name}.json") j.compress
       | .error e => do IO.eprintln s!"script {name}: {e}"; return 1
     return 0

@@ -7,7 +7,7 @@ the communicator for a block (watchd.watchd_tick; the event task-blocked marks i
 W1-W4 and L1-L4 are proved with them in. Here:
 
 - Q1 (`told_of`): every block reaches the communicator's inbox: a tick leaves no blocked task untold; refuted with
-  `renotify` off (finding #34, `not_Q1`): the same question asked again is never told.
+  `renotify` off (finding #35, `not_Q1`): the same question asked again is never told.
 - A1 (`back_questions`, `away_keeps_tasks`, `tick_keeps_blocked`): away loses no question: away and back change no
   task, the tick leaves a blocked task blocked with its question, and back's digest lists exactly the blocked tasks.
 - A2 (`quiet_of`, `A2live_of`): while away no block notice to the communicator is urgent (and each is otherwise), refuted
@@ -243,14 +243,14 @@ theorem not_Q1_of {c : Cfg} {acts : List Action} {t : Nat} (ht : t ∈ c.tasks) 
   | some s =>
     simp only [e, Option.any_some, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at h
     rw [hq s t ht h.1] at h; cases h.2
-/-- #34: agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it, and blocks #1 again
+/-- #35: agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it, and blocks #1 again
 with the same question (`task block 1 "which way?"` twice, as the replay does). The notice was marked sent by the first
 task-blocked event with that text, so the second question is never told -/
-def cfg34 : Cfg := { nagents := 1, roster := 1, renotify := false }
-def pre34 : List Action := [.add [], .claim 0 1, .block 0 1, .tick, .unblock 1, .readAll 0, .block 0 1]
-theorem not_Q1 : ¬ Q1 cfg34 := not_Q1_of (by decide) (by decide +kernel : q1Breaks cfg34 pre34 1 = true)
+def cfg35 : Cfg := { nagents := 1, roster := 1, renotify := false }
+def pre35 : List Action := [.add [], .claim 0 1, .block 0 1, .tick, .unblock 1, .readAll 0, .block 0 1]
+theorem not_Q1 : ¬ Q1 cfg35 := not_Q1_of (by decide) (by decide +kernel : q1Breaks cfg35 pre35 1 = true)
 -- with `renotify` the same run tells it
-example : q1Breaks { cfg34 with renotify := true } pre34 1 = false := by decide +kernel
+example : q1Breaks { cfg35 with renotify := true } pre35 1 = false := by decide +kernel
 
 -- ---------- A1: away loses no question ----------
 /-- `swarm away`, `--back` and the communicator's read change no task, agent, lock, message, cursor, git ref or event -/

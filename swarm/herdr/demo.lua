@@ -56,6 +56,10 @@ for _, k in ipairs({
     k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8] and now + k[8] * 60, "sonnet")
 end
 
+c:exec("update task set priority=0 where title like 'Planner: cost model for hash%'")  -- the shots show the priority chips
+c:exec("update task set priority=3 where title like 'Bench:%'")
+c:exec("update task set priority=1 where title like 'Docs:%'")
+
 -- events, oldest first: minutes ago, agent, kind, path, data
 for _, e in ipairs({
   { 170, "ox-comms", "spawn", nil, "ox-1" }, { 165, "ox-comms", "spawn", nil, "ox-2" },

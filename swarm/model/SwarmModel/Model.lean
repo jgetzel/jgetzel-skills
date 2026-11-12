@@ -121,7 +121,7 @@ structure Cfg where
   stopFirst : Bool := true
   /-- board #47: watchd tells the communicator of a block again once the task is blocked again (a `task block` since the
   last notice). Before, the notice was marked sent by any task-blocked event with the same question, so the same
-  question asked again (the same text, or by another agent) was never told (finding #34) -/
+  question asked again (the same text, or by another agent) was never told (finding #35) -/
   renotify : Bool := true
   /-- `swarm away` (A2): while the user is away a block's notice to the communicator is not urgent -/
   awayQuiet : Bool := true

@@ -96,7 +96,7 @@ theorem callPrim_bit (I : Sem) (n : Nat) (name : String) (args : List Val) (hn :
 theorem callPrim_ffi (I : Sem) (n : Nat) (name : String) (args : List Val) (hn : name ∈ ffis.map ("ffi." ++ ·)) :
     callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = ffiFn name args := by
   simp only [ffis, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
-  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
 
 /-- a cdata's call: a ctype's, its ffi.new -/
 theorem call_cdata (I : Sem) (n a : Nat) (args : List Val) :
@@ -698,8 +698,8 @@ theorem call_load (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" ∨ 
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) (.str s :: cn.toList.map .str) h =
       .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], G, cn.getD s, (0, chunkLines s)⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
-    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
-      MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
+    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet, bind, EStateM.bind, pure,
+      EStateM.pure, Functor.map, EStateM.map]
 
 /-- `string.dump(f)`, or with a flag not a dump: f's dump, stripped as `dumpStrip` reads the flag -/
 theorem call_dump (I : Sem) (n a : Nat) (rest : List Val) (hr : (rest.headD .nil).isDump = false) :
@@ -726,8 +726,8 @@ theorem call_load_env (I : Sem) (n : Nat) (fname : String) (hf : fname = "load" 
     call I.srcs I.oracle I.tgt (n + 2) (.prim fname []) [.str s, (cn.map .str).getD .nil, .nil, .tbl t] h =
       .ok [.fn h.size] (h.push (.clo ⟨[], true, b, [], t, cn.getD s, (0, chunkLines s)⟩)) := by
   rcases hf with rfl | rfl <;> rcases cn with _ | c <;>
-    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, bind, EStateM.bind, pure, EStateM.pure, get, getThe,
-      MonadStateOf.get, EStateM.get, set, MonadStateOf.set, EStateM.set, Functor.map, EStateM.map]
+    simp_all [call, callPrim, optStr, argStr, loadSrc, frame, cFrame, onFrames, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet, bind, EStateM.bind, pure,
+      EStateM.pure, Functor.map, EStateM.map]
 
 /-- a chunk's closure, made and called at once: `k a`, the function it is at its address `a` (a lifted `chunk`),
 on the arguments -/
@@ -736,8 +736,7 @@ theorem alloc_call {β} (I : Sem) (n : Nat) (c : Clo) (args : List Val) (k : Nat
     (alloc (.clo c) >>= fun f => call I.srcs I.oracle I.tgt (n + 1) (.fn f) args >>= r) =
       (alloc (.clo c) >>= fun a => k a args n >>= r) := by
   funext h
-  simp only [bind, EStateM.bind, alloc, get, getThe, MonadStateOf.get, EStateM.get, set, MonadStateOf.set,
-    EStateM.set, pure, EStateM.pure]
+  simp only [bind, EStateM.bind, alloc, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet]
   rw [call_fn I n _ args _ c (by simp), hk]
 
 /-- `dofile(p)` of a file given as source: its chunk, `k`, on no arguments, where a yield cannot cross -/

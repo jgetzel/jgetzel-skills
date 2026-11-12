@@ -14,6 +14,7 @@ import SwarmModel.Workspaces
 import SwarmModel.NoWorkLost
 import SwarmModel.Exists
 import SwarmModel.Comms
+import SwarmModel.Restart
 import SwarmModel.Gone
 import SwarmModel.Answer
 import LuaLean

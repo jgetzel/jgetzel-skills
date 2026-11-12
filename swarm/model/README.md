@@ -26,7 +26,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, refuted with the fix's switch off (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`, `not_B1`) and proved with it on (`W1_of`, `W2_of`, `W3_of` over fair runs, `W4_of`, `B1_of`; `replay_W`: all five of `replay`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
 | `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
-| `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row and watchd (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
+| `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row, its watchd record (meta.watchd, a pid), meta.watchd_up and the watchd processes, and a `--restart` waiting for the one it started (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
+| `SwarmModel/Restart.lean` | `swarm watchd --restart` (board #49): R1 (a), (b), (c) as statements (`R1a`, `R1b`, `CRun.FairWd`), the invariant `WdInv` (`wdinv_of_reachable`), `R1a_of`, `R1b_of` (with `waitUp`), `R1c_of` and `restart_ticks` over fair runs; the refutation without board #41's handover, `not_R1b` (finding #34), is in `Findings.lean` |
 | `SwarmModel/Spawn.lean` | spawn reservation and launch failure (board #16): `SWorld` (the `State` and auto-spawn's backoff, failures and halt), the tick whose launch fails, `rollbackAll`; Sp1-Sp3 (`Sp1_of`, `Sp2_of`, `Sp3_of`) |
 | `SwarmModel/PrWatch.lean` | PRs and the wait on their checks (board #28): `PWorld` (tasks, each with its PR: opened, checks pending, green or red, merged, `told`; agents working or idle, staying, an urgent message unread), `pstep`, watchd's poll (`pollTask`), the switches `gated` (`ci.flow` is pr-gated), `wakeFix`, `closeFix`; fair runs (`PRun`, `PRun.Fair`); P1 and P2, refuted with a switch off by `stall` (`fair_of_stall`) and proved with it on (`P1_of`, `P2_of`; `main_P1`, `main_P2`) |
 | `SwarmModel/Holder.lean` | L3, the holder half over fair runs: `holder_leads_to` (and `pa_step`, the per-action step lemma, and `unblock_pa`) |
@@ -40,11 +41,11 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
 | `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
-| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc, gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
-| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
+| `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc (`hc_run_starts`: `hc run --bg` starts the program, board #49), gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
+| `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `restart_alive`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
-| `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #34, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
+| `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
@@ -54,16 +55,16 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5240 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (307 sites, 262 statements) |
+| `sqlcases.json.gz` | 5280 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 15 scripted runs (`script-away`: board #47's) the Lua suite replays (`script-pr-*`: PrWatch.lean's, through a fake `gh`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 17 scripted runs the Lua suite replays (`script-away`: board #47's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
 | `../lua/test/luasem_spec.lua` | each chunk under LuaJIT must give the Lean interpreter's results (`lua-lean/test/luasem.lua`) |
-| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's two with `SWARM_TEST_HC=1`, gh's two with `SWARM_TEST_GH=1`: this repo's latest PRs, `gh pr list` against GitHub's REST API and git) |
+| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's three with `SWARM_TEST_HC=1`, gh's two with `SWARM_TEST_GH=1`: this repo's latest PRs, `gh pr list` against GitHub's REST API and git) |
 | `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
 | `decide.json.gz` | 3000 cases each of keeps, fate, wakes and pr_act (seed 28) the Lua suite checks |
 | `../lua/test/decide_model_spec.lua` | watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against Decide.lean's on each case |
@@ -154,7 +155,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 | `bgLives` | lifecycle ends an idle agent with no claim while its background job runs (reap looks at the job since PR #121, lifecycle never did), and the job dies with the terminal | board #15: lifecycle keeps it while the job runs (`machine.bg_agents`); `swarm end` refuses it without `--force` |
 | `ownAdded` | lifecycle reads a spawned agent's worktrees from its record alone, so one it added itself and left unlanded doesn't keep it | board #15: lifecycle's `unlanded` reads the record and the worktrees named after the agent |
 | `stopFirst` | the user's release of a working agent's task lets a peer claim it before the ex-owner reads the stop (finding #32) | board #53: the task records the stop; claim, the pool and auto-spawn refuse it while the ex-owner is at work and hasn't read it |
-| `renotify` | watchd marks a block's notice sent by any task-blocked event with the same question, so the same question asked again (by the same agent after an answer, or by another after a release) is never told (finding #34) | board #47: sent only by a task-blocked event after the task's latest `task block` (`toldAfter`) |
+| `renotify` | watchd marks a block's notice sent by any task-blocked event with the same question, so the same question asked again (by the same agent after an answer, or by another after a release) is never told (finding #35) | board #47: sent only by a task-blocked event after the task's latest `task block` (`toldAfter`) |
 | `awayQuiet` | (the feature off) a block's notice is urgent while the user is away | `swarm away`: not urgent while away |
 | `backTells` | (the feature off) `--back` sends the communicator nothing | `--back`: one urgent message naming the questions that wait |
 
@@ -168,6 +169,12 @@ The communicator's world (`Comms.lean`) has its own switch, `CCfg.ensureComms`:
 | `ensureComms` | `swarm join` refuses only a live binding of the same row elsewhere; reap ends a communicator row whose terminal is gone and nothing binds a new one; auto-spawn opens tabs in the space of watchd's own terminal | board #9: watchd's tick launches a communicator in the swarm's space when the swarm has work and none is bound to a live terminal there whose session is it; auto-spawn launches into the swarm's space; `join` refuses a terminal outside the swarm's space, and one that is another swarm's communicator unless `--takeover` |
 
 In the Lua (board #9); C1 holds with it (`C1_of`, board #10).
+
+| Switch | Before | After |
+|---|---|---|
+| `waitUp` | a watchd whose record another holds exits at once | board #41: it exits only once that one runs and meta.watchd_up names it, takes the record back from a dead one, and else waits; `--restart` reports success only then |
+
+In the Lua (board #41); R1 (b) holds with it (`R1b_of`, board #49), and fails without it (finding #34).
 
 `racy` splits two commands into the read and the write the Lua does separately: `task claim` (the dependency
 check, then the update) and the waiter's delivery (unread, then the cursor). The waiter's write ends with the
@@ -293,7 +300,7 @@ so S1-S5, N1, W1-W4 and L1-L4 above are proved with them in.
 
 - **Q1** Every block reaches the communicator: after a tick, the latest question of every blocked task was told (a
   task-blocked event after its latest `task block`, logged with its notice). `Q1_of` with `renotify`; refuted without it
-  (finding #34, `not_Q1`): the same question asked again is never told. The replay of `script-away` fails on the old Lua.
+  (finding #35, `not_Q1`): the same question asked again is never told. The replay of `script-away` fails on the old Lua.
 - **A1** Away loses no question: away, back and the communicator's read change no task, agent, lock, message, cursor,
   git ref or event (`away_keeps`); the tick, away or not, leaves a blocked task blocked with its owner and question
   (`tick_keeps_blocked`); `--back`'s digest lists exactly the blocked tasks (`back_questions`). No switch refutes it.
@@ -357,6 +364,36 @@ liveness half: on a run fair to watchd (a swarm whose watchd runs at infinitely 
 `CRun.Fair`), from a reachable world, a swarm whose watchd keeps running has its communicator again at some step after
 any step, however often it dies (`comms_replaced`). Who restarts a dead watchd is still board #18.
 
+`swarm watchd --restart` (`Restart.lean`, board #49). In Comms.lean's world each swarm's watchd is a record (meta.watchd: a
+pid, an index into the watchd processes, each with its swarm, its terminal, running or not, has it ticked, has it written
+the record) and meta.watchd_up. `watchd i x` starts one by hand from terminal x (refused while the record's watchd runs);
+`tick i` is the record's watchd's tick, and its first writes watchd_up. Board #41's restart is five actions:
+`restart i x` (`hc run --bg` starts `swarm watchd --takeover <recorded flags>` in the hidden terminal x: Env.lean's
+`HcRunStarts`; refused with no record; one restart of a swarm at a time), `takeover p` (the new watchd's start writes the
+record, whoever it names), `rpoll i` (the restart reads a record other than the one it started with), `rok i` (success:
+that one holds the record, runs, and watchd_up names it) and `rfail i` (it died, or 90 s passed: kill it, give the record
+back where it still holds it). `crash p` is a watchd's death; `die x` ends the processes in terminal x and leaves the
+record naming a dead pid, as meta does. `loop p` is the loop of a watchd whose record another holds. The recorded flags
+change nothing a takeover does here: the new watchd's tick is the old one's `tickW` (`--comms` is resolved into them, and
+`--max-agents`, left out, would only rewrite the auto-spawn number, which `Cfg.roster` fixes).
+
+- **R1** (a) At most one watchd ticks a swarm: the record's, running, and it is that swarm's (`R1a_of`, of every reachable
+  world). (b) Never zero once there was one: the loop ends a watchd only when the record names another that runs, that
+  watchd_up names and that has ticked; `--restart` reports success only then (`R1b_of`, with `waitUp`). (c) On a run fair to
+  the ticks (`CRun.Fair`) and to the watchds' own steps (`CRun.FairWd`: a takeover or loop step enabled at infinitely many
+  steps is taken at infinitely many), a watchd that keeps running gets its swarm ticked at infinitely many steps
+  (`R1c_of`); so does the one a restart starts (`restart_ticks`).
+
+(a) is structural, as a tick is one step: the record is one slot. In the Lua the loop reads the record and then ticks, so
+a takeover between the two lets the old watchd finish one tick beside the new one's first; the model does not split
+the tick (the replay of `script-restart-*` lets that stale tick run, with nothing for it to do). (b) needs `WdInv`: the
+record and watchd_up name processes of their swarm, watchd_up one that has ticked, a swarm with a process has a record,
+and a restart's old record is a process of its swarm. Without `waitUp` (b) fails, finding #34 (`not_R1b`): the restart's new
+watchd takes the record, the old one exits, the new one dies before its first tick, and no watchd runs. (c) holds either way:
+if the record's watchd stops running, the one that runs is enabled to take the record over (its start) or back (its loop),
+and fairness takes it. What R1 leaves out: a hand `--takeover` and `--once`; two restarts of one swarm at a time; pid reuse;
+`--restart`'s 90 s as time (its failure may come at any step).
+
 Spawn reservation and launch failure (`Spawn.lean`, board #16). `swarm spawn --task N` reserves the name and the task in
 one transaction (a row with no terminal, the task claimed for it), makes the worktree, then launches. `SWorld` is the
 model's `State` with auto-spawn's meta rows: `backoff` (spawn_backoff's time is ahead), `bo` (the failed name the next
@@ -394,6 +431,7 @@ theorem's axioms and prints the eight.
 | S5 | `doneHasEvidence_of_reachable` | `evidenceRequired` (PR #113) | 13.9M states, 625 s |
 
 | Sp1, Sp2 | `Sp1_of`, `Sp2_of` (of each failing tick) | `rollbackAll` (board #16) | not checked |
+| R1 (a), (b) | `R1a_of`, `R1b_of` | `waitUp` (board #41) for (b) | not checked |
 
 Each theorem is for any sizes and any setting of the other switches, `racy` included. Sp3 (`Sp3_of`) is over fair runs
 of the spawn layer, for every instance. A TLC run that finished
@@ -558,7 +596,7 @@ Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run
 |---|---|---|---|---|
 | 32 | S1 | `humanRelease := true` (main, board #40) with `stopFirst := false` / S1 with `stopFirst` on, or `humanRelease` off (`oneWorker_of_reachable`) | Agent 0 claims #1 and works on it; the user (or the communicator) runs `swarm task release 1`: #1 is open and agent 0 is sent an urgent stop, which it reads only at its next tool's hook. Agent 1 claims #1 at once; both are at work and both believe they hold #1 (`not_S1_humanRelease`; the replay's `script-release` is the Lua doing it). | `stopFirst` (board #53): claim, auto-spawn and the pool refuse the task to others while the ex-owner is at work and hasn't read the stop; `script-release` now has agent 1 claim #1 after agent 0 reads it |
 | 33 | N1 of `swarm end` | `--force` / `N1end` without it (`N1end_of`) | Agent 0 starts a long job (a build, a CI wait); the user runs `swarm end m-1 --force`: the row is ended mid-job and end_agent's cgroup.kill kills the job (`not_N1end_force`); or agent 0 has an uncommitted file and is ended (`not_N1end_force_wt`; the file stays in its worktree, `endOther_git`). Without `--force` both are refused. | not a bug: `--force` is the user's choice to lose work; `swarm end` without it refuses (board #40) |
-| 34 | Q1 | `renotify := false` / Q1 (`not_Q1`, `Q1_of`) | Agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it and blocks #1 again with the same question. watchd marked the notice sent by any task-blocked event of the task with that question text, so the second question was never told (nor another agent's same question after a release). Found by the model of board #47 and replayed (`script-away` fails on the old Lua) | board #47: a notice is sent once the task's latest question event is a `task block` (watchd.watchd_tick) |
+| 35 | Q1 | `renotify := false` / Q1 (`not_Q1`, `Q1_of`) | Agent 0 blocks #1 and the tick tells the communicator; the answer comes, agent 0 reads it and blocks #1 again with the same question. watchd marked the notice sent by any task-blocked event of the task with that question text, so the second question was never told (nor another agent's same question after a release). Found by the model of board #47 and replayed (`script-away` fails on the old Lua) | board #47: a notice is sent once the task's latest question event is a `task block` (watchd.watchd_tick) |
 
 Nothing else is open: every other counterexample above has a fix on main. #14, #15 and #32 are not fixed; #16 is a statement that is too strong, not a bug; #17 is the same for L3, and the model now says a boot beats a lease (`bootFirst`).
 
@@ -827,6 +865,12 @@ Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a wo
 session's ListAgents name is its `SWARM_NAME`, set by its last join; `swarm watchd --takeover` and a second watchd (board
 #18); the human's `swarm spawn` (only watchd's spawns are placed: the starting roster is in the swarm's space). None of
 it is replayed: the replay has no hc.
+
+**Task priority (board #69)** is not modelled. The model's `pool` is an unordered filter and no theorem or replay assumes
+which startable task is claimed or spawned first, so the Lua's order (the red main, then priority 0 to 3, then id) only
+picks among tasks the model already allows; no statement changed. Known limit: the order is strict, there is no aging,
+so P0-P2 tasks arriving one after another can starve a P3 task. L1 (`startable_taken`) holds as before because it is
+about fair runs of the model, not this order; a liveness theorem about *one named* low-priority task would not hold.
 
 ## The SQL (rung 4, board #29)
 
