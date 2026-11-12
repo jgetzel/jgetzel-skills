@@ -916,4 +916,43 @@ function T.test_blocker_spared_without_dependants_or_under_threshold(t)
   t:eq(#asked(t), 0)
 end
 
+-- board #92
+function T.test_task_edit(t)
+  t:fakes()
+  t:agent("a"); t:agent("b")
+  t:sw("a", "task", "add", "one", "--body", "old", "--model", "m1", "--priority", "1")
+  t:sw("a", "task", "claim", "1")
+  -- open/claimed edit: row, history in show, one plain notice to the owner (not to the editor)
+  t:sw("b", "read")
+  local r = t:sw("b", "task", "edit", "1", "--title", "uno", "--append", "more", "--model", "m2", "--effort", "high")
+  t:has(r.stdout, "apply at the next spawn/claim")
+  local row = t:q1("select title,body,model,effort,priority,owner,state from task where id=1")
+  t:eq(row, { title = "uno", body = "old\nmore", model = "m2", effort = "high", priority = 1, owner = "a", state = "claimed" })
+  local msg = t:sw("a", "read").stdout
+  t:has(msg, "title: one -> uno"); t:has(msg, "model: m1 -> m2"); t:has(msg, "body appended: more")
+  t:eq(t:q1("select urgent from msg where dest='a' order by id desc limit 1").urgent, 0)
+  local s = t:sw("a", "task", "show", "1").stdout
+  t:has(s, "by b: title, body, model, effort")
+  -- body replace, --urgent, body file
+  t:sw("b", "task", "edit", "1", "--body", "new", "--urgent")
+  t:eq(t:q1("select urgent from msg where dest='a' order by id desc limit 1").urgent, 1)
+  t:has(t:sw("a", "read").stdout, "body replaced: task show 1")
+  t:write("b", "body.txt", "from file")
+  t:sw("b", "task", "edit", "1", "--body-file", "body.txt")
+  t:eq(t:q1("select body from task where id=1").body, "from file")
+  -- no flag, no change, bad input: error, nothing written
+  local n = #t:q("select * from event where kind='task-edit'")
+  for _, args in ipairs({ { "edit", "1" }, { "edit", "1", "--title", "uno" }, { "edit", "1", "--title", "" },
+      { "edit", "1", "--body", "x", "--append", "y" }, { "edit", "1", "--effort", "bogus" }, { "edit", "1", "--body-file", "/nonexistent" } }) do
+    table.insert(args, 1, "task"); table.insert(args, 1, "b"); args[#args + 1] = { ok = false }
+    t:sw(unpack(args))
+  end
+  t:eq(#t:q("select * from event where kind='task-edit'"), n)
+  -- done and dropped refuse
+  t:sw("a", "task", "done", "1", "--evidence", "x")
+  t:has(t:sw("b", "task", "edit", "1", "--title", "z", { ok = false }).stderr, "done")
+  t:sw("a", "task", "add", "two"); t:sw("a", "task", "drop", "2")
+  t:has(t:sw("b", "task", "edit", "2", "--title", "z", { ok = false }).stderr, "dropped")
+end
+
 return T

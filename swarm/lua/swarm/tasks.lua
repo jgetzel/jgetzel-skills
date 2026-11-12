@@ -7,7 +7,7 @@ local M = {}
 M.LEASE = 7200
 M.RED_TASK = "main red: "  -- a red main is one board task, so one agent fixes it; watchd closes it on the next green
 M.DEFAULT_PRIORITY = 2  -- P0 urgent .. P3 someday; lower is picked first
-M.TASK_KINDS = { "task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop" }
+M.TASK_KINDS = { "task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit" }
 
 local function py(x)  -- Python truthiness for a db value: NULL, 0 and '' are false
   if x == nil or x == 0 or x == "" or x == false then return nil end
@@ -276,6 +276,9 @@ function M.cmd_task(c, a)
     local s = ("#%s %s %s  %s\ntiming: queue %s, work %s, total %s, blocked %s, claims %d, releases %d, held by %s"):format(
       d(r.id), r.state, py(r.owner) or "-", r.title, f("queue_wait_s"), f("work_s"), f("total_s"), f("blocked_s"),
       tm.claims, tm.releases, py(table.concat(tm.holders, ", ")) or "-")
+    for _, e in ipairs(M.task_events(c, r.id)) do
+      if e.kind == "task-edit" then s = s .. ("\nedited %s by %s: %s"):format(util.hhmm(e.ts), e.agent, e.data:gsub("^#%d+ ", "")) end
+    end
     s = s .. "\npriority: P" .. d(r.priority or M.DEFAULT_PRIORITY)
     if py(r.base) then s = s .. "\nbase: " .. r.base end
     if py(tm.claim_ctx) then s = s .. (", ctx %dk at claim"):format(math.floor(tm.claim_ctx / 1000)) end
@@ -398,6 +401,45 @@ function M.cmd_task(c, a)
     end)
     print(("released #%s%s; it is open again%s"):format(d(a.id), from and (" from " .. from) or "",
       a.after and #a.after > 0 and (" after " .. ids(a.after)) or ""))
+
+  elseif a.act == "edit" then
+    local fields, notes, out = {}, {}, nil
+    c:tx(function()
+      local r2 = c:one("select * from task where id=?", a.id)
+      if r2.state == "done" or r2.state == "dropped" then util.die(("task #%s is %s; it can't be edited"):format(d(a.id), r2.state)) end
+      local cur = { title = r2.title, body = r2.body, model = r2.model, effort = r2.effort }
+      local function change(col, new, note)
+        if new == py(cur[col]) then return end
+        cur[col] = new
+        fields[#fields + 1] = col; notes[#notes + 1] = note
+      end
+      if a.title then
+        if a.title == "" then util.die("the title can't be empty") end
+        change("title", a.title, ("title: %s -> %s"):format(r2.title, a.title))
+      end
+      local body = a.body
+      if a.body_file then body = util.slurp(a.body_file) or util.die("can't read " .. a.body_file) end
+      if body then change("body", body, "body replaced: task show " .. d(a.id)) end
+      if a.append then
+        change("body", (py(r2.body) and r2.body .. "\n" or "") .. a.append, "body appended: " .. a.append)
+      end
+      for _, col in ipairs({ "model", "effort" }) do
+        if a[col] then change(col, py(a[col]), ("%s: %s -> %s"):format(col, py(r2[col]) or "-", py(a[col]) or "-")) end
+      end
+      if #fields == 0 then util.die("nothing to change") end
+      c:exec("update task set title=?, body=?, model=?, effort=? where id=?", cur.title, cur.body, cur.model, cur.effort, a.id)
+      db.log(c, n, "task-edit", nil, ("#%s %s"):format(d(a.id), table.concat(fields, ", ")))
+      local owner = py(r2.owner)
+      if (r2.state == "claimed" or r2.state == "blocked") and owner and owner ~= n
+          and c:one("select 1 from agent where name=? and ended is null", owner) then
+        require("swarm.msgs").post(c, n, owner, ("%s edited #%s: %s"):format(n, d(a.id), table.concat(notes, "; ")), a.urgent)
+      end
+      out = r2.state
+    end)
+    print(("edited #%s: %s"):format(d(a.id), table.concat(fields, ", ")))
+    if out == "claimed" and (table.concat(fields, " "):find("model") or table.concat(fields, " "):find("effort")) then
+      print("model/effort change the row only: they apply at the next spawn/claim")
+    end
 
   elseif a.act == "drop" then
     c:tx(function()
