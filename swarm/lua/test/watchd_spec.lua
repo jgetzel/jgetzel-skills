@@ -172,13 +172,13 @@ do
   local c2 = db.connect()
   c2:exec("insert or replace into meta(k,v) values('watchd','me')")
   local opts = { min_free_gib = 0, once = true }
-  assert(watchd.iterate(c2, "me", "t-comms", "/nonexistent", opts, false) == false)
-  assert(watchd.iterate(c2, "me", "t-comms", "/nonexistent", opts, false) == false)
+  assert(select(2, watchd.loop(c2, "me", "t-comms", "/nonexistent", opts)) == false)
+  assert(select(2, watchd.loop(c2, "me", "t-comms", "/nonexistent", opts)) == false)
   assert(#c2:all("select 1 from event where kind='watchd-tick-error'") == 1)  -- once per distinct message
   ci.ci_poll = real
-  assert(watchd.iterate(c2, "me", "t-comms", nil, opts, false) == true)
+  assert(select(2, watchd.loop(c2, "me", "t-comms", nil, opts)) == true)
   assert(c2:one("select v from meta where k='watchd_up'").v == "me")
   local gone = setmetatable({}, { __index = function() error("database is locked") end })
-  local up, why = watchd.iterate(gone, "me", "t-comms", nil, opts, true)
-  assert(up == true and why == nil)
+  local why, up = watchd.loop(gone, "me", "t-comms", nil, opts)
+  assert(why == nil and up == false)
 end

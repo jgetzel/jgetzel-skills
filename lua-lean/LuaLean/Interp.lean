@@ -941,9 +941,9 @@ def strFind (find : Bool) (args : List Val) : M (List Val) := do
     | .error e => callerErr e
     | .ok cs => return (if find then [nums (st + 1), nums e] else []) ++ capVals cs
 
-/-- one step of a gmatch iterator: the bound subject, pattern and a cell with the position -/
+/-- one step of a gmatch iterator: the bound subject, pattern and a table with the position at 1 -/
 def gmatchStep (s p : List Char) (cell : Nat) : M (List Val) := do
-  let pos ← match ← readCell cell with
+  let pos ← match (← getTbl cell).get (nums 1) with
     | .num (.int i) => pure i.toNat
     | _ => pure 0
   let ms : Pat.MS := ⟨s.toArray, p.toArray⟩
@@ -956,7 +956,7 @@ def gmatchStep (s p : List Char) (cell : Nat) : M (List Val) := do
       match Pat.doMatch ms fuel src 0 #[] with
       | .error e => callerErr e
       | .ok (some (e, caps)) =>
-        writeCell cell (.num (.int (if e == src then e + 1 else e)))
+        putTbl cell ((← getTbl cell).set (nums 1) (.num (.int (if e == src then e + 1 else e))))
         match Pat.captures ms caps src e true with
         | .error e => callerErr e
         | .ok cs => pure (capVals cs)
@@ -1278,16 +1278,34 @@ def toPtr (e : CErr) (d : CType) (v : Val) (cast : Bool) (dn : Option String := 
   | .fn _ | .prim .. => ffiStop "a function as a C pointer (a callback)"
   | v => bad (← srcName v)
 
+/-- fuel for `store`, which no run spends (each of its calls is one element or field written): its recursion is then
+structural, so a proof can see into it -/
+def SFUEL : Nat := 2 ^ 64
+
+/-- the rest of an array after `ofs` bytes: the one element again, or zero -/
+def fill (k : Nat) (_d : CType) (m off sz ofs esz : Nat) : M Unit := do
+  if ofs == esz && esz > 0 then
+    let el ← readMem m off esz
+    let rec rep (k : Nat) (o : Nat) : M Unit := do
+      match k with
+      | 0 => throw .fuel
+      | k + 1 => if o + esz ≤ sz then writeMem m (off + o) el; rep k (o + esz)
+    rep k ofs
+  else zeroMem m (off + ofs) (sz - ofs)
+
 mutual
 /-- v stored to type d0 at off of m (lj_cconv_ct_tv), its own `const` not looked at (the caller has) but named in
 an error, as LuaJIT's are -/
-partial def store (e : CErr) (d0 : CType) (m off : Nat) (v : Val) : M Unit := do
+def store (k : Nat) (e : CErr) (d0 : CType) (m off : Nat) (v : Val) : M Unit := do
+  match k with
+  | 0 => throw .fuel
+  | k + 1 =>
   let d := d0.strip.1
   match d with
   | .arr et (some n) =>
     let esz := et.size.getD 0
     match v with
-    | .tbl t => arrTab e d et (esz * n) m off t
+    | .tbl t => arrTab k e d et (esz * n) m off t
     | .str s =>
       if !et.strip.1.isByte then convErr e "string" d0
       -- the string and its NUL, cut to the array (a `char[0]` takes it all)
@@ -1303,64 +1321,68 @@ partial def store (e : CErr) (d0 : CType) (m off : Nat) (v : Val) : M Unit := do
     | v => convErr e (← srcName v) d0
   | .agg u _ fs =>
     match v with
-    | .tbl t => do zeroMem m off (d.size.getD 0); aggTab e u (CType.offsets u fs) m off t 0 true
+    | .tbl t => do zeroMem m off (d.size.getD 0); aggTab k e u (CType.offsets u fs) m off t 0 true
     | .cdata _ => if ← sameAgg d v then writeMem m off (← cdBytes v (d.size.getD 0)) else convErr e (← srcName v) d0
     | v => convErr e (← srcName v) d0
   | .arr _ none => ffiStop "a variable-length array stored to"
   | .ptr _ => ffiStop "a pointer"
   | .void => die "void stored to"
   | d => writeMem m off (← encode d (← srcNum e d0 v false))
+termination_by structural k
 
 /-- an array from a table (cconv_array_tab): from t[0] if it is not nil, else t[1], to the first nil; one element
 fills the array, more leave the rest zero -/
-partial def arrTab (e : CErr) (d et : CType) (sz m off : Nat) (t : Nat) : M Unit := do
+def arrTab (k : Nat) (e : CErr) (d et : CType) (sz m off : Nat) (t : Nat) : M Unit := do
+  match k with
+  | 0 => throw .fuel
+  | k + 1 =>
   let esz := et.size.getD 0
   let k0 : Int := if (← wget t (nums 0)).isNil then 1 else 0
-  let rec go (k : Int) (ofs : Nat) : M Nat := do
-    let v ← wget t (nums k)
+  let rec go (k : Nat) (i : Int) (ofs : Nat) : M Nat := do
+    match k with
+    | 0 => throw .fuel
+    | k + 1 =>
+    let v ← wget t (nums i)
     if v.isNil then return ofs
     if ofs ≥ sz then initOv e d
-    store e et m (off + ofs) v
-    go (k + 1) (ofs + esz)
-  let ofs ← go k0 0
-  fill d m off sz ofs esz
-
-/-- the rest of an array after `ofs` bytes: the one element again, or zero -/
-partial def fill (_d : CType) (m off sz ofs esz : Nat) : M Unit := do
-  if ofs == esz && esz > 0 then
-    let el ← readMem m off esz
-    let rec rep (o : Nat) : M Unit := do
-      if o + esz ≤ sz then writeMem m (off + o) el; rep (o + esz)
-    rep ofs
-  else zeroMem m (off + ofs) (sz - ofs)
+    store k e et m (off + ofs) v
+    go k (i + 1) (ofs + esz)
+  termination_by structural k
+  let ofs ← go k k0 0
+  fill k d m off sz ofs esz
+termination_by structural k
 
 /-- a struct's or union's fields from a table (cconv_struct_tab, after clearing it): by position from t[0] or t[1]
 to the first nil, or, when the first field has neither, by name; a union's first one alone -/
-partial def aggTab (e : CErr) (u : Bool) (fs : List (String × Nat × CType)) (m off t : Nat) (i : Int) (first : Bool) :
-    M Unit := do
+def aggTab (k : Nat) (e : CErr) (u : Bool) (fs : List (String × Nat × CType)) (m off t : Nat) (i : Int)
+    (first : Bool) : M Unit := do
+  match k with
+  | 0 => throw .fuel
+  | k + 1 =>
   match fs with
   | [] => pure ()
   | (n, o, ft) :: rest =>
     let named (i : Int) : M Unit := do
       let v ← wget t (lstr n)
-      if v.isNil then aggTab e u rest m off t i false else do
-        store e ft m (off + o) v
-        if !u then aggTab e u rest m off t i false
+      if v.isNil then aggTab k e u rest m off t i false else do
+        store k e ft m (off + o) v
+        if !u then aggTab k e u rest m off t i false
     if i < 0 then named i else
     let v ← wget t (nums i)
     let (v, i) ← if v.isNil && i == 0 then do pure ((← wget t (nums 1)), (1 : Int)) else pure (v, i)
     if v.isNil then
       if first then named (-1) else pure ()
     else do
-      store e ft m (off + o) v
-      if !u then aggTab e u rest m off t (i + 1) false
+      store k e ft m (off + o) v
+      if !u then aggTab k e u rest m off t (i + 1) false
+termination_by structural k
 end
 
 def cdInitArr (e : CErr) (d et : CType) (m sz : Nat) (vs : List Val) : M Unit := do
   let esz := et.size.getD 0
   if vs.length * esz > sz then initOv e d
-  for (v, i) in vs.zip (List.range vs.length) do store e et m (i * esz) v
-  fill d m 0 sz (vs.length * esz) esz
+  for (v, i) in vs.zip (List.range vs.length) do store SFUEL e et m (i * esz) v
+  fill SFUEL d m 0 sz (vs.length * esz) esz
 
 def cdInitAgg (e : CErr) (d : CType) (m sz : Nat) (vs : List Val) : M Unit := do
   match d with
@@ -1368,7 +1390,7 @@ def cdInitAgg (e : CErr) (d : CType) (m sz : Nat) (vs : List Val) : M Unit := do
   | .agg u _ fs => do
     zeroMem m 0 sz
     let fs := (CType.offsets u fs).take (if u then 1 else fs.length)
-    for ((_, o, ft), v) in fs.zip vs do store e ft m o v
+    for ((_, o, ft), v) in fs.zip vs do store SFUEL e ft m o v
     if vs.length > fs.length then initOv e d
   | _ => initOv e d
 
@@ -1396,8 +1418,8 @@ def cdInit (e : CErr) (d0 : CType) (m sz : Nat) (vs : List Val) : M Unit := do
       | .arr _ none, _ => ffiStop "a variable-length array a table leaves partly uninitialized"
       -- LuaJIT copies the string and its NUL, and leaves the rest of the new array as it was
       | .arr _ _, .str s =>
-        if s.length + 1 < sz then ffiStop "an array a string leaves partly uninitialized" else store e d m 0 v
-      | _, v => store e d0 m 0 v
+        if s.length + 1 < sz then ffiStop "an array a string leaves partly uninitialized" else store SFUEL e d m 0 v
+      | _, v => store SFUEL e d0 m 0 v
   | _ => cdInitAgg e d m sz vs
 
 /-- a new cdata of the scalar type t holding bytes bs -/
@@ -1508,7 +1530,7 @@ def cdSet (a : Nat) (k v : Val) : M (Option (CType × Bool)) := do
   | .inr miss => pure (some miss)
   | .inl (et, m, eo) =>
     if et.strip.2 then rtErr "attempt to write to constant location"
-    store .site et m eo v
+    store SFUEL .site et m eo v
     pure none
 
 
@@ -2338,8 +2360,9 @@ def strFn (name : String) (args : List Val) : M (List Val) := do
   | "gmatch" => do
     let s ← argStr name 0 args
     let p ← argStr name 1 args
-    let c ← alloc (.cell (.num (.int 0)))
-    return [.prim "gmatch_it" [.str s, .str p, .num (.int c)]]
+    -- its position in a table, not a cell: a value naming a cell by its number writes no cell
+    let t ← alloc (.tbl { kv := [(nums 1, nums 0)] })
+    return [.prim "gmatch_it" [.str s, .str p, .num (.int t)]]
   | _ => die s!"string.{name}: not in the subset"
 
 /-- CHECK_int in lib_table.c's Lua: dual-number makes it an integer (lj_lib_checkint), single-number keeps the number -/

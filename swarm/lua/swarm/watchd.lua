@@ -1084,22 +1084,33 @@ function M.watchd_pass(c, mine, comms, repo, opts, up)
   return true
 end
 
--- The pass, an error's report and the pause, each under pcall: an error in one leaves the others to run.
+-- The pause between iterations: not a closure of iteration's, which would hold its locals.
+local function pause(interval)
+  io.stdout:flush(); unistd.sleep(interval)
+end
+
+-- The pass, an error's report and the pause, each under pcall: an error in one leaves the others to run. A call may
+-- change any table it can reach (M, opts, _G), so what iteration reads after its first call it reads first, into
+-- locals declared before it (swarm/model/SwarmModel/LoopSafe.lean).
 local function iteration(c, mine, comms, repo, opts, up)
-  local ok, r, why = pcall(M.watchd_pass, c, mine, comms, repo, opts, up)
-  if ok then up = r else pcall(M.tick_failed, c, comms, r) end
-  if not why and not opts.once then
-    pcall(function() io.stdout:flush(); unistd.sleep(opts.interval) end)
-  end
+  local pcall, pass, failed, pause, once, interval = pcall, M.watchd_pass, M.tick_failed, pause, opts.once, opts.interval
+  local ok, r, why
+  ok, r, why = pcall(pass, c, mine, comms, repo, opts, up)
+  if ok then up = r else pcall(failed, c, comms, r) end
+  if not why and not once then pcall(pause, interval) end
   return up, why
 end
 
--- One iteration of watchd's loop. No error escapes it, whatever its calls do (swarm/model/SwarmModel/LoopSafe.lean):
--- iteration's lines between its pcalls cannot fail in practice, and this pcall makes that a theorem, not a reading.
--- Returns up, and why watchd exits if it should.
-function M.iterate(c, mine, comms, repo, opts, up)
-  local ok, r, why = pcall(iteration, c, mine, comms, repo, opts, up)
-  return ok and r, why
+-- watchd's loop: iterations, each under pcall, until one says why watchd exits (or once). No error escapes it, whatever
+-- its calls do (LoopSafe.lean). Returns why, and up: whether the last iteration's tick ran.
+function M.loop(c, mine, comms, repo, opts)
+  local pcall, iteration, once = pcall, iteration, opts.once
+  local up, ok, r, why = false
+  repeat
+    ok, r, why = pcall(iteration, c, mine, comms, repo, opts, up)
+    up = ok and r
+  until why or once
+  return why, up
 end
 
 function M.cmd_watchd(c, a)
@@ -1139,8 +1150,7 @@ function M.cmd_watchd(c, a)
     c:exec("insert or replace into meta(k,v) values('agent_min',?)", d(a.max_agents or live))
   end
   local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval, once = a.once, blocker_idle = a.blocker_idle }
-  local up, why = false, nil
-  repeat up, why = M.iterate(c, mine, comms, repo, opts, up) until why or a.once
+  local why = M.loop(c, mine, comms, repo, opts)
   if why then util.die(("watchd (pid %s)%s; exiting"):format(d(unistd.getpid()), why)) end
 end
 
