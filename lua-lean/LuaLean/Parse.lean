@@ -1,6 +1,6 @@
 import LuaLean.Syntax
 
-/-! A parser for the subset: Lua 5.1's grammar and precedence, LuaJIT's lexer (`\x`, `\z`, `\u{...}`, `goto`). It is
+/-! A parser for the subset: Lua 5.1's grammar and precedence, LuaJIT's lexer (`\x`, `\z`, `\u{...}`), `goto`. It is
 not part of what is proved: proofs are about the syntax tree it gives, written out as Lean (`LuaSrc.lean`). -/
 
 namespace Lua
@@ -10,7 +10,7 @@ inductive Token where
   deriving Inhabited
 
 def keywords : List String :=
-  ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local", "nil",
+  ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil",
    "not", "or", "repeat", "return", "then", "true", "until", "while"]
 
 def isAlpha (c : Char) : Bool := ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || c == '_'
@@ -450,7 +450,8 @@ partial def stat : P Stat := do
       let b ← blockIn; expectKw "until"
       return .rpt b (← expr)
   | .kw "break" => advance; return .brk
-  | .kw "goto" => advance; return .goto (← name)
+  -- `goto` is a soft keyword (LuaJIT without 5.2 compatibility): a statement only when a name follows it
+  | .name "goto" => if let .name l := ← peek2 then advance; advance; return .goto l else assignOrCall
   | .sym "::" => advance; let n ← name; expectSym "::"; return .label n
   | .kw "for" =>
     advance
@@ -508,21 +509,23 @@ partial def stat : P Stat := do
     let es ← if ← acceptSym "=" then exprList else pure []
     ns.forM bindLocal
     return .loc ns.toList es
-  | _ =>
-    let e ← suffixedExp
-    if isSym (← peek) "=" || isSym (← peek) "," then
-      let mut ts := #[e]
-      while ← acceptSym "," do ts := ts.push (← suffixedExp)
-      -- a name or an index, as lj_parse.c's parse_assignment checks: not `(x)`, `f()`, `o:m()`
-      unless ts.all (fun | .var _ | .site _ (.index ..) => true | _ => false) do throw s!"syntax error at {← where_}"
-      expectSym "="
-      let es ← exprList
-      -- the stores come after the values: on the line the list ends
-      let l ← lastLine
-      return .assign (ts.toList.map (target l)) es
-    else match e with
-      | .site _ (.call ..) | .site _ (.method ..) => return .call e
-      | _ => throw s!"syntax error at {← where_}"
+  | _ => assignOrCall
+
+partial def assignOrCall : P Stat := do
+  let e ← suffixedExp
+  if isSym (← peek) "=" || isSym (← peek) "," then
+    let mut ts := #[e]
+    while ← acceptSym "," do ts := ts.push (← suffixedExp)
+    -- a name or an index, as lj_parse.c's parse_assignment checks: not `(x)`, `f()`, `o:m()`
+    unless ts.all (fun | .var _ | .site _ (.index ..) => true | _ => false) do throw s!"syntax error at {← where_}"
+    expectSym "="
+    let es ← exprList
+    -- the stores come after the values: on the line the list ends
+    let l ← lastLine
+    return .assign (ts.toList.map (target l)) es
+  else match e with
+    | .site _ (.call ..) | .site _ (.method ..) => return .call e
+    | _ => throw s!"syntax error at {← where_}"
 end
 
 end Parser

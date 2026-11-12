@@ -194,9 +194,9 @@ its own frames and an address), and a level among them stops the run.
 ## The subset
 
 In: Lua 5.1 syntax as LuaJIT parses it, with its lexer's `\u{...}` escapes, empty statements (`;;`) anywhere, and
-`continue` and `const` as names (soft keywords in LuaJIT; `test/lex.lua`); metatables with `__index` and
-`__newindex` (a function, or a value to index
-instead), `__call`, the arithmetic ones (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`), `__unm` (given its
+`continue`, `const` and `goto` as names (soft keywords in LuaJIT; `goto` before a name is the statement;
+`test/lex.lua`); metatables with `__index` and `__newindex` (a function, or a value to index instead), `__call`, the
+arithmetic ones (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`), `__unm` (given its
 operand twice) and `__concat` (`a .. b .. c` right to left, as BC_CAT), each read from the metatable when the
 operation runs, the left operand's before the right's, as LuaJIT does; an operator's metamethod is called as a call
 is (a table through its `__call`), its first value the result (a builtin's bad argument names it by the event,
@@ -405,8 +405,9 @@ time out (lume, tween, Moses, luafun, argparse, resty.http: each call reruns the
 the other 47, 39 are in the subset (29 of 53, before the metamethods of G3c, `string.dump`, `bit`, fenvs and the FFI's
 pure part), and their 632 top-level functions give 1451 calls that reach no effect. Outside it, by the files that use
 each: `debug.upvaluejoin` 2, `package.config` 2, `jit` 2, a module not given as source 2 (`resty.sha`,
-`pl.operator`). Of the calls left out, most stop at an effect: Penlight's chunks at a `load` of a syntax error (#62),
-FFI pointers (#57, since in the subset: md5.lua's `str2lei`) and C declarations (#59).
+`pl.operator`). Of the calls left out, most stop at an effect: Penlight's chunks at `package.config` (before
+#62 made `goto` a name, at compat.lua's `loadstring("local goto = 1")`), FFI pointers (#57, since in the subset:
+md5.lua's `str2lei`) and C declarations (#59).
 
 ## Layout and use
 
