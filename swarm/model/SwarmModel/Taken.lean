@@ -371,6 +371,7 @@ theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = so
       rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, o, false, .answer, t⟩], by simp [post]⟩
     · cases hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨some a, b, u, .dm, 0⟩], by simp [post]⟩
+  case poll => obtain ⟨_, rfl⟩ := hs; exact ⟨_, pollOf_log c s⟩
   case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
   case stayCheck a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, false, .check, 0⟩], by simp [post]⟩
   case releaseOther t => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, (s.tk t).owner.getD 0, true, .released, t⟩], by simp [post]⟩
@@ -557,6 +558,10 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   case reapGone b => exact absurd rfl (hq b).2.2.2.1
   case endOther b f => exact absurd rfl ((hq b).2.2.2.2 f)
   case tick => obtain ⟨hg, rfl⟩ := hs; exact Or.inl (tick_ready hp hwa ht hs0 hR')
+  case poll =>
+    obtain ⟨hg, rfl⟩ := hs
+    exact Or.inl ⟨by simpa using h1, by simpa using h2, by simpa using h3, by simpa using h4,
+      unread_ext ⟨⟨_, pollOf_log c s⟩, rfl⟩ h5⟩
   case unblock t₀ =>
     split at hs
     · rw [when_eq_some] at hs; obtain ⟨hg, rfl⟩ := hs
@@ -875,6 +880,7 @@ theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act �
     rw [tk_map (s := s) (g := fun k =>
       if k.owner == some a && k.st == .blocked && k.hcq then { k with st := .claimed, hcq := false, lease := true } else k) (by simp) rfl]
     split <;> exact ⟨rfl, rfl⟩
+  case poll => obtain ⟨_, rfl⟩ := hs; rw [pollOf_tk]; exact ⟨(prK_owner ..).2.2.1, (prK_owner ..).2.2.2.1⟩
   case claimWrite a =>
     obtain ⟨_, rfl⟩ := hs
     split

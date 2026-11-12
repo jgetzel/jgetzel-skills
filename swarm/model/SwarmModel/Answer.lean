@@ -696,6 +696,36 @@ theorem ag_trivial {s : State} {a : Nat} {f : Agent → Agent} (h : L3I s) (h1 :
     (h2 : ∀ g, (f g).st = g.st) (h3 : (s.agt a).boot = true → (f (s.agt a)).waiter = (s.agt a).waiter) : L3I (setAg s a f) :=
   l3_setAg h (h1 _) (fun hb => ⟨h2 _, h3 hb⟩) (fun hl => by simpa [Agent.live, h2] using hl) (fun hh => Or.inl (by rw [h2]; exact hh))
 
+theorem prK_held {c : Cfg} {s : State} {k : Task} {o : Nat} (h : held (prK c s k) o = true) :
+    held k o = true ∧ (prK c s k).st = k.st ∧ (prK c s k).hcq = k.hcq ∧ (prK c s k).lease = k.lease := by
+  rcases prK_cases c s k with e | ⟨h1, e⟩ | ⟨_, h1, e⟩ | ⟨_, h1, e⟩ <;> rw [e] at h ⊢
+  · exact ⟨h, rfl, rfl, rfl⟩
+  · simp [held, h1] at h
+  · simp [held] at h
+  · exact ⟨h, rfl, rfl, rfl⟩
+
+/-- the poll keeps `L3I`: a task it changes stays as held, or is done and held by none -/
+theorem l3_pollOf {c : Cfg} {s : State} (h : L3I s) : L3I (pollOf c s) := by
+  obtain ⟨hB, hH, hP⟩ := h
+  refine ⟨fun a ha => ?_, fun v a hv => ?_, fun t htp => ?_⟩
+  · simp only [pollOf_agt] at ha ⊢
+    obtain ⟨h1, h2, h3⟩ := hB a ha
+    refine ⟨h1, h2, fun v hv => ?_⟩
+    rw [pollOf_tk] at hv ⊢
+    obtain ⟨k1, k2, -, k4⟩ := prK_held hv
+    obtain ⟨g1, g2, g3⟩ := h3 v k1
+    exact ⟨by rw [k2]; exact g1, by rw [k4]; exact g2, fun w hw => g3 w (by rw [pollOf_tk] at hw; exact (prK_held hw).1)⟩
+  · rw [pollOf_tk] at hv; simp only [pollOf_agt]; exact hH v a (prK_held hv).1
+  · rw [pollOf_pend] at htp
+    have hpt := hP t htp
+    refine ⟨by rw [pollOf_tk, (prK_owner c s (s.tk t)).2.2.2.2.2.1]; exact hpt.1, fun o ho => ?_⟩
+    rw [pollOf_tk] at ho ⊢
+    obtain ⟨k1, k2, k3, -⟩ := prK_held ho
+    simp only [pollOf_agt]
+    rcases hpt.2 o k1 with e | ⟨e1, e2⟩
+    · exact Or.inl e
+    · exact Or.inr ⟨ansIn_ext ⟨⟨_, pollOf_log c s⟩, rfl⟩ e1, by rw [k2, k3]; exact e2⟩
+
 /-- `L3I` is kept by every step of an instance with the fixes on (`racy` off; PR #110's answer on the task; a boot beats
 a lease) -/
 theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao : c.answerOnTask = true)
@@ -757,6 +787,16 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case renew a t =>
     obtain ⟨_, rfl⟩ := hstep
     exact l3_setTask hs (fun o ho => ⟨by simpa [held] using ho, rfl, rfl, fun _ => rfl⟩) id
+  case openPr a t | push a t | finish t a =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact l3_setTask hs (fun o ho => ⟨by simpa [held] using ho, rfl, rfl,
+      fun hb => ((hs.1 o hb).2.2 t (by simpa [held] using ho)).2.1⟩) id
+  case merge a t =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact l3_setTask (s := logEv s (.merge t)) hs (fun o ho => ⟨by simpa [held] using ho, rfl, rfl,
+      fun hb => ((hs.1 o hb).2.2 t (by simpa [held] using ho)).2.1⟩) id
+  case ciRun v => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case poll => obtain ⟨_, rfl⟩ := hstep; exact l3_pollOf hs
   case expire t =>
     obtain ⟨hg, rfl⟩ := hstep
     refine l3_setTask hs (fun o ho => ⟨by simpa [held] using ho, rfl, rfl, fun hb => ?_⟩) id
@@ -894,6 +934,10 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
     obtain ⟨_, rfl⟩ := hstep
     refine ow_of h1 h2 ?_
     split <;> simp
+  case poll => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (by simp [(prK_owner ..).1])
+  case openPr a u | push a u | finish u a =>
+    obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (ow_setTask (fun _ _ => rfl) h1 h2)
+  case merge a u => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (ow_setTask (s := logEv s (.merge u)) (fun _ _ => rfl) h1 h2)
   all_goals (obtain ⟨_, rfl⟩ := hstep)
   all_goals (exact ow_of h1 h2 (by first | rfl | simp))
 
@@ -1092,6 +1136,7 @@ theorem answer_reaches {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true
           obtain ⟨o', ho'⟩ := (hJ (k'+1) (by omega)).2
           rw [leaveIf_frees hok hheld o'] at ho'; cases ho'
         exact keep hr hbf ⟨e1, e2, e3, e4, e5, e6, e7⟩ (hq k' (by omega)) (pfx_of_reachable (hRk k' (by omega))) hok ih
+          (fun e => by have := notans (k' + 1) (by omega); simp [answered, e] at this)
       obtain ⟨k', hk', hact⟩ := Run.fair_ev hf (f := .boot o) (N0 := k) (fun k' hk' => by
           have := (hall k' hk').2.2.2.2.2
           simp [fair, ha, this]) (fun k' hk' => by

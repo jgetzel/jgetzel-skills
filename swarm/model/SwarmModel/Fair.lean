@@ -75,10 +75,10 @@ theorem takes_agt (c : Cfg) (s : State) (a t b : Nat) : ∃ bl, (takes c s a t).
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
 @[simp] theorem takes_dead (c : Cfg) (s : State) (a t b : Nat) : ((takes c s a t).agt b).dead = (s.agt b).dead := by
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
-@[simp] theorem agt_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest b) :
-    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest).agt b = ag.getD b default := rfl
-@[simp] theorem tk_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest t) :
-    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest).tk t =
+@[simp] theorem agt_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci b) :
+    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci).agt b = ag.getD b default := rfl
+@[simp] theorem tk_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci t) :
+    (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci).tk t =
       if t = 0 then default else task.getD (t - 1) default := rfl
 @[simp] theorem agt_def (s : State) (b : Nat) : s.ag.getD b default = s.agt b := rfl
 @[simp] theorem tk_def (s : State) (t : Nat) : (if t = 0 then default else s.task.getD (t - 1) default) = s.tk t := rfl
@@ -184,6 +184,21 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
       have e2 : s'.agt a = s.agt a := by rw [← hs]; simp only [agt_mk, agt_def, post_ag, setTask_ag]
       rw [e1, e2]; exact ⟨id, id, id, id⟩
     · simp at hs
+  case openPr b u | push b u | finish u b | merge b u =>
+    simp only [step, openPr, push, finish, merge, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨_, rfl⟩ := hs
+    refine ⟨fun h => by simpa using h, fun h => ?_, fun h => by simpa using h, fun h => by simpa using h⟩
+    first
+      | (rcases tk_setTask_or s u t _ with e | ⟨rfl, e⟩ <;> rw [e] <;> exact h)
+      | (rcases tk_setTask_or (logEv s (.merge u)) u t _ with e | ⟨rfl, e⟩ <;> rw [e] <;> simpa using h)
+  case ciRun v =>
+    simp only [step, ciRun, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨_, rfl⟩ := hs; exact ⟨id, id, id, id⟩
+  case poll =>
+    simp only [step, poll, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨_, rfl⟩ := hs
+    refine ⟨fun h => by simpa using h, fun h => ?_, fun h => by simpa using h, fun h => by simpa using h⟩
+    rw [pollOf_tk]; rcases prK_cases c s (s.tk t) with e | ⟨_, e⟩ | ⟨_, _, e⟩ | ⟨_, _, e⟩ <;> rw [e] <;> simp [h]
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
     hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung] at hs hn)
@@ -235,7 +250,7 @@ theorem spawnFor_tk (c : Cfg) (pl : List Nat) (y : State) (t' u : Nat) :
   · rename_i a' hna
     split
     · simp only []
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' t' u with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' t' u with e | e
       · exact Or.inl (by rw [e]; simp only [tk_mk, setAg_task, tk_def])
       · exact Or.inr (by rw [e, hna])
     · exact Or.inl rfl

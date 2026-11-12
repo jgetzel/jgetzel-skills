@@ -11,7 +11,8 @@ local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local DIR = os.getenv("SWARM_MODEL_TRACES") or (here .. "/../../model/traces")
 local COMMS, ROSTER, CAP = "m-comms", 2, "2"
 local agents_HUMAN = require("swarm.agents").HUMAN
-local SYS = { released = "system", digest = "system", nudge = "system", check = "system", dm = "dm", answer = "dm" }
+local SYS = { released = "system", digest = "system", nudge = "system", check = "system", dm = "dm", answer = "dm",
+  merged = "system", checks = "system" }
 
 -- the model's unread ids for a (Model.lean's unread)
 local function model_unread(st, a)
@@ -45,6 +46,7 @@ local function check(t, st, where, N, seen, M)
       if m.st == "claimed" and ((r.lease_until or 0) > now) ~= m.lease then fail("task #" .. id .. " lease live", r.lease_until, m.lease) end
       if m.st == "done" and ((r.evidence or "") ~= "") ~= m.ev then fail("task #" .. id .. " evidence", r.evidence, m.ev) end
       if (r.answer ~= nil) ~= m.answer then fail("task #" .. id .. " answer", r.answer, m.answer) end
+      if m.merged ~= nil and (r.merged_at ~= nil) ~= m.merged then fail("task #" .. id .. " merged_at", r.merged_at, m.merged) end
     end
   end
   for slot, g in pairs(st.ag) do
@@ -161,10 +163,26 @@ local function commscheck(t, st, where, R)
       local gh, mh = sorted(g.hung, function(n) return R[n] or n end), sorted(md.hung, function(x) return x end)
       if gh ~= mh then fail("digest hung", gh, mh) end
     end
+    if md.merged then  -- board #80: merged since away by GitHub's merge time, in that order; main's latest run
+      local gm = {}
+      for i, r in ipairs(g.merged) do gm[i] = r.id end
+      if ids(gm) ~= ids(md.merged) then fail("digest merged", ids(gm), ids(md.merged)) end
+      local ci = type(g.ci) == "table" and (g.ci.status ~= "completed" and "pending" or g.ci.conclusion == "success" and "green"
+        or "red") or json.null
+      local mci = md.ci == nil and json.null or md.ci  -- the trace's null decodes as nil
+      if ci ~= mci then fail("digest ci", ci, mci) end
+    end
   end
 end
 
 local function setdb(t, sql, ...) t:q(sql, ...) end
+
+-- a PR's statusCheckRollup as gh reports it for the model's verdict, and a time as GitHub writes it
+local function rollup(v)
+  if v == "pending" then return { { __typename = "CheckRun", name = "ci", status = "IN_PROGRESS", conclusion = "" } } end
+  return { { __typename = "CheckRun", name = "ci", status = "COMPLETED", conclusion = v == "green" and "SUCCESS" or "FAILURE" } }
+end
+local function iso(x) return os.date("!%Y-%m-%dT%H:%M:%SZ", x) end
 
 -- ---- git: the model's worktree slots, branches and commits in the fixture's repo ----
 -- G.P[w] the path of worktree slot w's current incarnation, G.BR[b] branch b's name, G.C[k] model commit k's sha.
@@ -393,6 +411,8 @@ local function act(t, name, p, N, G, prev)
   elseif name == "releaseOther" then sw(COMMS, "task", "release", tostring(p.t32))
   -- board #47: the user's away and back, each run twice (the second changes nothing: A4); the communicator's read
   elseif name == "awayOn" then
+    -- board #80: merged_at is GitHub's second, since away's: a PR merged in this second must be before away
+    while t.merged_at and util.now() <= t.merged_at do require("posix.time").nanosleep({ tv_sec = 0, tv_nsec = 50000000 }) end
     sw(agents_HUMAN, "away", "lunch"); sw(agents_HUMAN, "away")
   elseif name == "back" then sw(agents_HUMAN, "away", "--back"); sw(agents_HUMAN, "away", "--back")
   elseif name == "commsRead" then sw(COMMS, "read")
@@ -428,6 +448,36 @@ local function act(t, name, p, N, G, prev)
   elseif name == "endOther" then  -- H1: the user's or the communicator's `swarm end`, --force or not
     if p.f33 then sw(COMMS, "end", p.a33, "--force") else sw(COMMS, "end", p.a33) end
   elseif name == "tick" then wd()
+  -- board #80: task t's PR is #100+t from <owner>/<t> into its base; gh's `pr list` answers what the model has of it, and
+  -- `api .../actions/runs` main's one push run
+  elseif name == "openPr" or name == "push" or name == "merge" or name == "finish" then
+    t.prs = t.prs or {}
+    local id = p.t60 or p.t61 or p.t62 or p.t63
+    local x = t.prs[id]
+    if name == "openPr" then
+      t.prs[id] = { number = 100 + id, headRefName = p.a60 .. "/" .. id, headRefOid = ("h%d-1"):format(id), heads = 1,
+        baseRefName = G.BR[prev.task[id].base], state = "OPEN", statusCheckRollup = rollup("pending") }
+    elseif name == "push" then
+      x.heads = x.heads + 1
+      x.headRefOid, x.statusCheckRollup = ("h%d-%d"):format(id, x.heads), rollup("pending")
+    elseif name == "finish" then x.statusCheckRollup = rollup(p.ok63 and "green" or "red")
+    else  -- GitHub's merge time, now (a later `swarm away` waits for the next second)
+      x.state, x.mergedAt, x.mergeCommit = "MERGED", iso(now), { oid = ("m%d000000"):format(id) }
+      t.merged_at = now
+    end
+    local l = {}
+    for i = 1, #prev.task do if t.prs[i] then l[#l + 1] = t.prs[i] end end
+    t:set_gh("pr", l)
+  elseif name == "ciRun" then
+    t:set_gh("api", { { databaseId = 9001, headSha = "c0ffee0", status = p.v64 == "pending" and "in_progress" or "completed",
+      conclusion = p.v64 == "green" and "success" or p.v64 == "red" and "failure" or "", url = "u", createdAt = iso(now),
+      updatedAt = iso(now), event = "push", workflow = "ci", path = ".github/workflows/ci.yml" } })
+    t.runs = true
+  elseif name == "poll" then  -- watchd --ci with its polls due; the tick part has nothing to do (Traces.lean's prSteps)
+    if not t.prs then t:set_gh("pr", {}) end
+    if not t.runs then t:set_gh("api", {}) end
+    setdb(t, "delete from meta where k in ('pr_watched', 'pr_polled', 'ci_polled')")
+    wd("--ci")
   elseif name == "failExit" then  -- the tick's launch fails: launch.sh exits non-zero
     local f = t.d .. "/launch.fail"
     io.open(f, "w"):close()
@@ -533,11 +583,6 @@ local function replay_pr(t, trace)
     for id = 1, #s0.task do if prs[id] then l[#l + 1] = prs[id] end end
     t:set_gh("pr", l)
   end
-  local function rollup(v)
-    if v == "pending" then return { { __typename = "CheckRun", name = "ci", status = "IN_PROGRESS", conclusion = "" } } end
-    return { { __typename = "CheckRun", name = "ci", status = "COMPLETED", conclusion = v == "green" and "SUCCESS" or "FAILURE" } }
-  end
-  local function iso(x) return os.date("!%Y-%m-%dT%H:%M:%SZ", x) end
   local function sw(who, ...) return t:sw(who, ...) end
   gh()
   local function check(st, where)

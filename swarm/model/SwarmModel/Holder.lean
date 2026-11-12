@@ -108,6 +108,7 @@ theorem step_gen {c : Cfg} {s s' : State} {a : Nat} {act : Action}
   case hcClear b => exact absurd rfl (hq.2 b).2.2.2.2.2.2.1
   case wakeWrite b => exact absurd rfl (hq.2 b).2.2.2.2.2.2.2.1
   case endOther b f => exact absurd rfl ((hq.2 b).2.2.2.2.2.2.2.2 f)
+  case poll => obtain ⟨_, rfl⟩ := hs; exact ⟨⟨⟨_, pollOf_log c s⟩, rfl⟩, by simpa using hl⟩
   case unblock t₀ =>
     split at hs
     · rw [when_eq_some] at hs; obtain ⟨hg, rfl⟩ := hs
@@ -203,7 +204,7 @@ theorem spawnFor_own {c : Cfg} {pl : List Nat} {y : State} {u a t : Nat} (hlt : 
     · rename_i hc
       simp only [hna]
       rw [if_pos hc]
-      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' u t with e | e
+      rcases claimed_tk (State.mk _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) a' u t with e | e
       · refine Or.inl ?_
         simp only [ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h ⊢
         rw [e] at h; simpa only [tk_mk, setAg_task, tk_def] using h
@@ -375,6 +376,12 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .endStay b, hs => exact step_gen (by simp) hl hs
   | .stayCheck b, hs => exact step_gen (by simp) hl hs
   | .stayHung b, hs => exact step_gen (by simp) hl hs
+  | .openPr b u, hs => exact step_gen (by simp) hl hs
+  | .push b u, hs => exact step_gen (by simp) hl hs
+  | .merge b u, hs => exact step_gen (by simp) hl hs
+  | .finish u ok, hs => exact step_gen (by simp) hl hs
+  | .ciRun v, hs => exact step_gen (by simp) hl hs
+  | .poll, hs => exact step_gen (by simp) hl hs
 
 
 -- ---------- no agent starts a background job ----------

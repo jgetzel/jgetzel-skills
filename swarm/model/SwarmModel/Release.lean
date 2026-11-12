@@ -37,7 +37,7 @@ theorem showMsg_released {s : State} {a i : Nat} (hk : (s.msg i).kind = .release
     (s.msg i).task ∉ ((showMsg s a i).agt a).believes := by
   have e1 : (Kind.released == Kind.answer) = false := rfl
   unfold showMsg
-  simp only [hk, e1, beq_self_eq_true, Bool.false_and, Bool.false_eq_true, ite_false, ite_true]
+  simp only [hk, e1, beq_self_eq_true, Bool.false_and, Bool.false_eq_true, Bool.true_or, ite_false, ite_true]
   rw [agt_setAg]; split
   · simp
   · rename_i h

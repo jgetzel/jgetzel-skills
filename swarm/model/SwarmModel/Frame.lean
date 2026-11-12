@@ -337,4 +337,52 @@ theorem tickOf_git (c : Cfg) (s : State) :
 @[simp] theorem ends_tickOf (c : Cfg) (s : State) (a : Nat) : ends c (tickOf c s) a = ends c (tickS c s) a := by
   obtain ⟨_, _, h⟩ := tickOf_ex c s; rw [h]; rfl
 
+-- watchd --ci's poll (board #80): it changes the tasks, the log, the events and the ci table only
+@[simp] theorem pollOf_ag (c : Cfg) (s : State) : (pollOf c s).ag = s.ag := rfl
+@[simp] theorem pollOf_lock (c : Cfg) (s : State) : (pollOf c s).lock = s.lock := rfl
+@[simp] theorem pollOf_cursor (c : Cfg) (s : State) : (pollOf c s).cursor = s.cursor := rfl
+@[simp] theorem pollOf_start (c : Cfg) (s : State) : (pollOf c s).start = s.start := rfl
+@[simp] theorem pollOf_seen (c : Cfg) (s : State) : (pollOf c s).seen = s.seen := rfl
+@[simp] theorem pollOf_pend (c : Cfg) (s : State) : (pollOf c s).pend = s.pend := rfl
+@[simp] theorem pollOf_early (c : Cfg) (s : State) : (pollOf c s).early = s.early := rfl
+@[simp] theorem pollOf_git (c : Cfg) (s : State) : (pollOf c s).git = s.git := rfl
+@[simp] theorem pollOf_away (c : Cfg) (s : State) : (pollOf c s).away = s.away := rfl
+@[simp] theorem pollOf_cbox (c : Cfg) (s : State) : (pollOf c s).cbox = s.cbox := rfl
+@[simp] theorem pollOf_ccur (c : Cfg) (s : State) : (pollOf c s).ccur = s.ccur := rfl
+@[simp] theorem pollOf_digest (c : Cfg) (s : State) : (pollOf c s).digest = s.digest := rfl
+@[simp] theorem pollOf_run (c : Cfg) (s : State) : (pollOf c s).run = s.run := rfl
+@[simp] theorem pollOf_task (c : Cfg) (s : State) : (pollOf c s).task = s.task.map (prK c s) := rfl
+@[simp] theorem pollOf_ci (c : Cfg) (s : State) : (pollOf c s).ci = s.run := rfl
+theorem pollOf_log (c : Cfg) (s : State) : (pollOf c s).log = s.log ++ c.tasks.filterMap (prMsg c s) := rfl
+@[simp] theorem pollOf_agt (c : Cfg) (s : State) (a : Nat) : (pollOf c s).agt a = s.agt a := rfl
+@[simp] theorem pollOf_cur (c : Cfg) (s : State) (a : Nat) : (pollOf c s).cur a = s.cur a := rfl
+theorem prK_default (c : Cfg) (s : State) : prK c s default = default := rfl
+@[simp] theorem pollOf_tk (c : Cfg) (s : State) (t : Nat) : (pollOf c s).tk t = prK c s (s.tk t) := by
+  simp only [State.tk, pollOf_task]; split
+  · rfl
+  · simp only [List.getD_eq_getElem?_getD, List.getElem?_map]; cases s.task[t - 1]? <;> rfl
+/-- the poll's change of one task: none, ci.pr_ci's merged recorded, done (its PR merged), or told -/
+theorem prK_cases (c : Cfg) (s : State) (k : Task) : prK c s k = k ∨
+    (k.st = .done ∧ prK c s k = { k with merged := true }) ∨
+    (prAct c s k = some true ∧ k.st = .claimed ∧ prK c s k = { k with st := .done, lease := false, ev := true, merged := true }) ∨
+    (prAct c s k = some false ∧ k.st = .claimed ∧ prK c s k = { k with pr := { k.pr with told := true } }) := by
+  unfold prK
+  cases h : prAct c s k with
+  | none => simp only []; split <;> simp_all
+  | some d =>
+    have hc : k.st = .claimed := by
+      unfold prAct at h; split at h
+      · split at h
+        · simp at *; simp_all
+        · cases h
+      · cases h
+    cases d <;> simp [hc]
+/-- the poll keeps a task's state, owner, deps and stop, but a claimed one done -/
+theorem prK_owner (c : Cfg) (s : State) (k : Task) : (prK c s k).owner = k.owner ∧ (prK c s k).deps = k.deps ∧
+    (prK c s k).stopTo = k.stopTo ∧ (prK c s k).stopMsg = k.stopMsg ∧ (prK c s k).reaped = k.reaped ∧
+    (prK c s k).answer = k.answer ∧ (prK c s k).hcq = k.hcq := by
+  rcases prK_cases c s k with h | ⟨_, h⟩ | ⟨_, _, h⟩ | ⟨_, _, h⟩ <;> rw [h] <;> simp
+theorem prK_st (c : Cfg) (s : State) (k : Task) : (prK c s k).st = k.st ∨ (k.st = .claimed ∧ (prK c s k).st = .done) := by
+  rcases prK_cases c s k with h | ⟨_, h⟩ | ⟨_, h1, h⟩ | ⟨_, _, h⟩ <;> rw [h] <;> simp_all
+
 end Swarm

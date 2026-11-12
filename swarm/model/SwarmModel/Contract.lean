@@ -37,26 +37,31 @@ theorem s1_oneWorker {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease 
   oneWorker_of_reachable hfix hhr h
 
 /-- S1 at the board: a task an agent at work believes it holds is held by it on the board (claimed or blocked, it the
-owner), or was dropped. Switches: `release = .idle`, `humanRelease` off. Env: none. -/
+owner), or was dropped, or (board #80) watchd's poll marked it done when its PR merged (`merged`: the merge recorded),
+which the agent hasn't read yet. Switches: `release = .idle`, `humanRelease` off. Env: none. -/
 theorem s1_believes_held {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State} (h : Reachable c s) {a t : Nat}
-    (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) : held (s.tk t) a = true ∨ (s.tk t).st = .dropped := by
+    (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) :
+    held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true) := by
   rcases (J_of_reachable hfix (Or.inl hhr) h).1 a t ht with hi | hd | hs
   · exact absurd hi.1 (by simp [ha])
   · exact hd
   · have := hs.1.1; rw [stopTo_none hhr h] at this; cases this
 
 /-- S1 at the board, with H2 and its fix (board #53): a task an agent at work believes it holds is held by it, or was
-dropped, or the user released it from that agent, which hasn't read the stop yet: the task is open, its stop names the
-agent, and no one may take it (`stopped`). Switches: `release = .idle`, `stopFirst`. Env: none. -/
+dropped, or done by watchd's poll (board #80), or the user released it from that agent, which hasn't read the stop yet:
+the task is open, its stop names the agent, and no one may take it (`stopped`). Switches: `release = .idle`,
+`stopFirst`. Env: none. -/
 theorem s1_believes_held_stop {c : Cfg} (hfix : c.release = .idle) (hsf : c.stopFirst = true) {s : State} (h : Reachable c s)
     {a t : Nat} (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) :
-    held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .opn ∧ stopped s t = true) := by
+    held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true) ∨
+      ((s.tk t).st = .opn ∧ stopped s t = true) := by
   rcases (J_of_reachable hfix (Or.inr hsf) h).1 a t ht with hi | hd | hs
   · exact absurd hi.1 (by simp [ha])
-  · rcases hd with e | e
+  · rcases hd with e | e | e
     · exact Or.inl e
     · exact Or.inr (Or.inl e)
-  · refine Or.inr (Or.inr ⟨hs.2, ?_⟩)
+    · exact Or.inr (Or.inr (Or.inl e))
+  · refine Or.inr (Or.inr (Or.inr ⟨hs.2, ?_⟩))
     unfold stopped; rw [hs.1.1]; simp [ha, hs.1.2.1]
 
 /-- S2: no task was ever claimed while a task it is after wasn't done. Switches: `claimChecksDeps`. Env: none. -/
