@@ -25,6 +25,10 @@ theorem never_works_on_others {c : Cfg} (hfix : c.release = .idle) (hhr : c.huma
     · rcases hd with hd | hd <;> simp [held, hd]
   · cases hw
 
+/-- the readable S1 gives back the checker's form that the replay runs: restating it (board #86) lost nothing -/
+example {c : Cfg} (fixes : S1Fixes c) {s : State} (reachable : Reachable c s) : oneWorker s = true :=
+  (oneWorker_iff s).mpr (one_worker_per_task fixes reachable)
+
 /-- `env_landedRef` on `Env.ideal`, a machine whose tools tell the truth: its two assumptions are proved here, not
 assumed (`Env.consistent` proves all of them at once) -/
 theorem ideal_landed {w : Env.ideal.World} {k b : Nat} (h : Env.landedRef Env.ideal w k b false = true) :

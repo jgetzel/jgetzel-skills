@@ -52,7 +52,9 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
 | `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
 | `SwarmModel/Cut.lean` | a tick an error ends partway (board #84): `Cut`, `tickCut` (Model.lean) and `Reachable.cut`, so every invariant of reachable states holds of what a failed tick leaves; N1, W1 and W2 of a cut tick (`N1cut_of`), Q1 of one whose notice pass ran (`Q1cut`), a failed pass stops no other with `passGuard` (`passesIndep_of`) and stops them all without it (finding #36: `not_passesIndep`, `stuck36`, the run `pre36`) |
-| `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
+| `SwarmModel/Contract.lean` | the spec: the theorems to build on downstream (board #25), restated over the model's types, each after the readable definitions it needs (board #86, `STYLE.md`; S1, N1, L4, R1 (a') and reap-reads-gone so far): *Using these proofs downstream*, *What a reviewer reads and trusts* |
+| `SwarmModel/Checkers.lean` | each Bool checker the replay and the counterexamples run (`oneWorker`, `holdsWork`, `keptBy`, `deadLive`, `midTick`) is the readable Prop of `Contract.lean`: `oneWorker_spec`, … |
+| `STYLE.md` | how a statement of `Contract.lean` is written so a reviewer can read it |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
 | `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
@@ -1167,7 +1169,7 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 
 | Property | Theorem (`Contract.lean`) | Needs | Shown needed by |
 |---|---|---|---|
-| S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `s1_oneWorker` … `digest_hung'` | none | |
+| S1-S5, N1, W1-W4, L1-L4, H1-H2, Q1, A2-A3, stays | `one_worker_per_task` … `digest_hung'` | none | |
 | N1, W1, W2 of a tick an error cut partway; a failed pass stops no other | `n1_cut`, `passes_indep` (`N1cut_of`, `passesIndep_of`) | none | |
 | landed_ref says landed → reachable | `Tools.landedRef_reach` (`env_landedRef`) | `AncestorReach`, `SameContentReach` | `need_landedRef_ancestor`, `need_landedRef_sameContent` |
 | the sweep's gate is W1's premise | `Tools.sweepGate_W1` (`env_sweepGate`) | `AncestorReach`, `SameContentReach`, `StatusClean`, `ListedOn`, `CwdsProc`, `TouchedRecent` | `need_sweep_ancestor`, `_sameContent`, `_statusClean`, `_listedOn`, `_cwdsProc`, `_touchedRecent` |
@@ -1175,7 +1177,7 @@ actions any run may take. Each property at the tools, with the hypotheses it tak
 | a deleted branch's tip was the checked HEAD | `Tools.delRef_guarded` | `DelRef` | `need_delRef` |
 | `--restart`'s watchd is alive (R1 at the tools) | `Tools.restart_alive` | `HcRunStarts`, `HcLsShows`, `Kill0Finds` | `need_restart_hcRun`, `_hcLs`, `_kill0` |
 | `hc kill` ends the terminal, keeps git (W2 at the tools) | `Tools.endAgent_keepsGit` | `HcKillEnds` | `need_hcKill` |
-| reap reads gone exactly when gone | `Tools.reap_gone` (`env_reapGone`) | `HcLsLive` | `need_hcLsLive` |
+| reap reads gone exactly when gone | `Tools.reap_gone` (`reap_reads_gone_iff_terminal_gone`) | `HcLsLive` | `need_hcLsLive` |
 | the waiter check is the waiter alive | `Tools.waiter_alive` | `Kill0Alive` | `need_kill0Alive` |
 | a lapsed lease stays lapsed | `Tools.lapsed_stays` | `NowMono` | `need_nowMono` |
 | ci.pr_act on gh's answers is the model's poll | `Tools.prAct` | `GhChecks`, `GhState` | `need_prAct_checks`, `need_prAct_state` |
@@ -1207,9 +1209,9 @@ claimed, proved never to work on a task another agent holds (`never_works_on_oth
 `env_landedRef` used on `Env.ideal` with its two assumptions proved in place.
 
 What is proved. `Contract.lean` lists the theorems, each with what it guarantees and what it rests on: S1-S5 of every
-reachable state (`s1_oneWorker`, `s1_believes_held`, `s2_noEarlyStart`, `s3_noSharedFile`, `s4_inboxExact`,
-`s5_doneHasEvidence`), W1 and N1 of every step and tick (`w1_gcOk`, `n1_noWorkLost`), L2 and L4 over fair runs
-(`l2_idleClaim`, `l4_deadLive`), N1' of a nudge (`n1'_nudge`), and at the tools: `env_landedRef`, `env_sweepGate`, `env_reapGone`, `db_serializable`.
+reachable state (`one_worker_per_task`, `s1_believes_held`, `s2_noEarlyStart`, `s3_noSharedFile`, `s4_inboxExact`,
+`s5_doneHasEvidence`), W1 and N1 of every step and tick (`w1_gcOk`, `no_work_lost`), L2 and L4 over fair runs
+(`l2_idleClaim`, `gone_terminal_row_is_ended`), R1 (a') of every step of several swarms (`ticks_never_overlap`), N1' of a nudge (`n1'_nudge`), and at the tools: `env_landedRef`, `env_sweepGate`, `reap_reads_gone_iff_terminal_gone`, `db_serializable`.
 The model theorems hold for every `Cfg` whose switches they take as hypotheses (the fixes; main runs with them on) and
 rest on Lean's axioms alone. They are about the model: that the Lua does what the model does is replayed (random and
 scripted runs through the CLI, `cli_model_spec.lua`), and proved only for what is lifted (`Lifted/`, `Decide.lean`,
@@ -1227,6 +1229,43 @@ theorem whose statement takes an environment hypothesis with the ones it takes a
 `hc_ls_live`, `hc_run_starts`, `hc_send_targets` and `hc_kill_ends`, which start terminals in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
 which ask GitHub about this repo's PRs), and `luajit swarm/lua/test/run.lua sqlite` runs `sqlite_spec.lua` (the five
 sqlite ones, many processes at once).
+
+## What a reviewer reads and trusts (board #86)
+
+A reviewer of a change reads its intent and the spec, not the code or the proofs. The spec is `Contract.lean`: its
+statements and the definitions they mention, written to `STYLE.md`.
+
+**Lean checks, so you need not read:** every proof; that each statement follows from Lean's three axioms and the
+hypotheses written in it (`Audit.lean`); that each readable Prop is exactly what its Bool checker checks
+(`Checkers.lean`, the `_iff` lines); that a definition shown by an `example … := rfl` line is the definition.
+
+**You must read, for a statement to mean what it says:**
+
+- The statement, the definitions before it, and its fixes structure. A statement only speaks of a `Cfg` with those
+  switches on; that main's code has them on is the defaults of `Cfg` in `Model.lean` and the replay, not a theorem.
+- Every hypothesis in the statement that is not a fix. An `Env.lean` hypothesis is a claim about git, hc, gh, the
+  kernel or sqlite that a test case checks on one machine (`env_spec.lua`, `sqlite_spec.lua`), never a proof. A
+  condition like `watchd_runs` or `fair` says when the guarantee applies.
+- The model the statement is about, in `Model.lean`: `State` and the fields the statement reads; `Action` and `step`,
+  which say what can happen (a property of "every reachable state" covers only the moves `step` has); `init` and
+  `Reachable`; `tickOf` where a statement names the tick; `Run` and `Run.Fair` in `Fair.lean` for a liveness
+  statement (fairness is an assumption about scheduling: what `fair` lists is taken if it stays enabled); `World`,
+  `CAction` and `cstep` in `Comms.lean` for several swarms. A Bool query a statement uses as `= true` (`Agent.live`,
+  `owns`, `wtmap`, `Git.landedIn`, `fenced`) is read at its definition.
+- Ghost state. `believes` (S1) is the model's record of what an agent thinks it holds. No Lua variable is it; S1 is
+  about agents that act only on what their commands told them.
+
+**You must trust, because no proof covers it:**
+
+- That the Lua does what the model does. Proved only for what is lifted from the Lua source by lua-lean
+  (`Lifted/`, `Decide.lean`, `Glob.lean`, `Real.lean`: the lock patterns, the pure decisions, parts of tasks and
+  watchd), and that rests on lua-lean's semantics being LuaJIT's, which is tested (`luasem`), not proved. For the
+  rest it is the replay: random and scripted runs through the real CLI compared with the model state by state
+  (`cli_model_spec.lua`, `replay.sh`). Random runs are not exhaustive.
+- That the SQL does what `Sql.lean` says (random cases against sqlite, `sql_model_spec.lua`).
+- What is not modelled at all: *What is proved, what is replayed, what isn't modelled* lists it (task priority and the
+  human's `swarm spawn`, among others).
+- That the sentence in a docstring is what the Lean under it says. Lean does not read docstrings.
 
 ## Running
 
