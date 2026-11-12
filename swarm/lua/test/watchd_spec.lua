@@ -149,3 +149,16 @@ assert(not peer:one("select 1 from msg where dest='t-comms'"))  -- a lost race i
 
 unistd.chdir(home)
 proc.run({ "rm", "-rf", dir })
+
+-- the whole tick is under pcall: an error in a pass that was not wrapped (ci_poll) used to end watchd
+do
+  local ci = require "swarm.ci"
+  local real = ci.ci_poll
+  ci.ci_poll = function() error("boom") end
+  local c2 = db.connect()
+  assert(watchd.safe_tick(c2, "t-comms", "/nonexistent", { min_free_gib = 0 }) == false)
+  assert(watchd.safe_tick(c2, "t-comms", "/nonexistent", { min_free_gib = 0 }) == false)
+  assert(#c2:all("select 1 from event where kind='watchd-tick-error'") == 1)  -- once per distinct message
+  ci.ci_poll = real
+  assert(watchd.safe_tick(c2, "t-comms", nil, { min_free_gib = 0 }) == true)
+end
