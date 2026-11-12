@@ -6,6 +6,7 @@ local M = {}
 
 M.LEASE = 7200
 M.RED_TASK = "main red: "  -- a red main is one board task, so one agent fixes it; watchd closes it on the next green
+M.DEFAULT_PRIORITY = 2  -- P0 urgent .. P3 someday; lower is picked first
 M.TASK_KINDS = { "task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop" }
 
 local function py(x)  -- Python truthiness for a db value: NULL, 0 and '' are false
@@ -135,7 +136,7 @@ end
 function M.pool(c)
   local r = {}
   for _, t in ipairs(c:all("select * from task t where state='open' and not exists (select 1 from task d where d.state!='done' "
-      .. "and ','||t.deps||',' like '%,'||d.id||',%') order by title like ? desc, id", M.RED_TASK .. "%")) do
+      .. "and ','||t.deps||',' like '%,'||d.id||',%') order by title like ? desc, priority, id", M.RED_TASK .. "%")) do
     if not M.stop_pending(c, t) then r[#r + 1] = t end
   end
   return r
@@ -218,8 +219,8 @@ function M.cmd_task(c, a)
       no_task_to_wait_on(c, deps)
       local ds = {}
       for i, x in ipairs(deps) do ds[i] = d(x) end
-      c:exec("insert into task(title,body,created_by,deps,model,effort,base,created_at) values(?,?,?,?,?,?,?,?)",
-        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, a.base, t)
+      c:exec("insert into task(title,body,created_by,deps,model,effort,base,created_at,priority) values(?,?,?,?,?,?,?,?,?)",
+        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, a.base, t, a.priority or M.DEFAULT_PRIORITY)
       local id = c:last_id()
       db.log(c, n, "task-add", nil, ("#%s %s"):format(d(id), a.title))
       return id
@@ -275,6 +276,7 @@ function M.cmd_task(c, a)
     local s = ("#%s %s %s  %s\ntiming: queue %s, work %s, total %s, blocked %s, claims %d, releases %d, held by %s"):format(
       d(r.id), r.state, py(r.owner) or "-", r.title, f("queue_wait_s"), f("work_s"), f("total_s"), f("blocked_s"),
       tm.claims, tm.releases, py(table.concat(tm.holders, ", ")) or "-")
+    s = s .. "\npriority: P" .. d(r.priority or M.DEFAULT_PRIORITY)
     if py(r.base) then s = s .. "\nbase: " .. r.base end
     if py(tm.claim_ctx) then s = s .. (", ctx %dk at claim"):format(math.floor(tm.claim_ctx / 1000)) end
     if py(tm.done_ctx) then s = s .. (" -> %dk at done"):format(math.floor(tm.done_ctx / 1000)) end
@@ -298,6 +300,16 @@ function M.cmd_task(c, a)
       db.log(c, n, "task-after", nil, ("#%s after %s"):format(d(a.id), py(table.concat(ds, ",")) or "-"))
     end)
     print(("#%s after %s"):format(d(a.id), py(ids(a.deps)) or "nothing"))
+
+  elseif a.act == "priority" then
+    if r.state ~= "open" and r.state ~= "claimed" then
+      util.die(("task #%s is %s; only an open or claimed task's priority can change"):format(d(a.id), r.state))
+    end
+    c:tx(function()
+      c:exec("update task set priority=? where id=?", a.priority, a.id)
+      db.log(c, n, "task-priority", nil, ("#%s P%s"):format(d(a.id), d(a.priority)))
+    end)
+    print(("#%s P%s"):format(d(a.id), d(a.priority)))
 
   elseif a.act == "renew" then
     local until_ = t + util.dur(a.lease)
@@ -410,14 +422,14 @@ function M.cmd_board(c, a)
   local role = {}
   for _, x in ipairs(c:all("select name, role from agent where ended is null and role is not null")) do role[x.name] = x.role end
   local rows = c:all("select * from task " .. (a.all and "" or "where state in ('open','claimed','blocked') ")
-    .. "order by title like '" .. M.RED_TASK .. "%' and state!='done' desc, id")
+    .. "order by title like '" .. M.RED_TASK .. "%' and state!='done' desc, priority, id")
   print(agents.limits_line(c))
   local held = c:one("select v from meta where k='spawn_held'")
   if held then print(held.v) end
   for _, r in ipairs(rows) do
     local who = (py(r.owner) or "-") .. (role[r.owner] and (" (" .. role[r.owner] .. ")") or "")
     if r.state == "blocked" then
-      print(("#%s blocked by %s: %s  %s"):format(d(r.id), who, r.question or "None", r.title))
+      print(("#%s blocked by %s: %s  %s"):format(d(r.id), who, r.question or "None", r.title) .. "  [P" .. d(r.priority or M.DEFAULT_PRIORITY) .. "]")
     else
       local lease = ""
       if r.state == "claimed" then
@@ -429,6 +441,7 @@ function M.cmd_board(c, a)
         return "#" .. d(x.id) .. (x.state == "dropped" and " (dropped)" or "")
       end)) or ""
       print(("#%s %-7s %s%s%s  %s"):format(d(r.id), r.state, who, lease, wait, r.title)
+        .. "  [P" .. d(r.priority or M.DEFAULT_PRIORITY) .. "]"
         .. (py(r.body) and "  [body: task show]" or "")
         .. (py(r.evidence) and ("  [evidence: " .. r.evidence .. "]") or ""))
     end

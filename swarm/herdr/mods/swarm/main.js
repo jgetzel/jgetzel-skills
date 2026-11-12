@@ -432,6 +432,9 @@ export default class Swarm extends View {
   }
   taskColor(t, k) { return { blocked: t.blocked, claimed: t.working, done: t.ansi2, dropped: t.dim }[k.state] ?? (k.waiting ? t.dim : t.muted); }
   taskWord(k) { return { blocked: "waiting on you", claimed: "in progress", open: k.waiting ? "waiting" : "ready" }[k.state] ?? k.state; }
+  // Priority P0 (urgent) to P3 (someday), 2 when the row has none: the board's order is priority, then id.
+  prio(k) { return k.priority ?? 2; }
+  prioChip(t, k) { return this.chip(t, `P${this.prio(k)}`, [t.blocked, t.ansi3, null, t.dim][this.prio(k)], this.prio(k) < 2).tooltip("Priority: lower is picked first"); }
   undone(k) { return k.waiting ? k.deps.filter(i => this.s.tasks.find(x => x.id === i)?.state !== "done") : []; }
   taskRow(t, k, i) {
     const e = k.state === "done" ? evidence(k.evidence) : null, after = this.undone(k);
@@ -441,6 +444,7 @@ export default class Swarm extends View {
       .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
       .child(div().flex_1().min_w(0).truncate().text_color(k.state === "dropped" || k.waiting ? t.muted : t.foreground).child(k.title))
       .when(Boolean(e?.chip), el => el.child(this.chip(t, e.chip, e.chip.startsWith("PR") ? t.ansi2 : null)))
+      .when(k.state !== "done" && k.state !== "dropped", el => el.child(this.prioChip(t, k)))
       .child(div().flex_none().max_w(120).truncate().text_size(11).text_color(k.state === "blocked" ? t.blocked : t.dim).child(right))
       .child(this.chev(t, "right"));
   }
@@ -552,7 +556,7 @@ export default class Swarm extends View {
   home(t, d) {
     const s = this.s, two = this.width >= 760;
     const rank = k => k.state === "blocked" ? 0 : k.state === "claimed" ? 1 : k.waiting ? 3 : 2;
-    const left = s.tasks.filter(k => ["blocked", "claimed", "open"].includes(k.state)).sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+    const left = s.tasks.filter(k => ["blocked", "claimed", "open"].includes(k.state)).sort((a, b) => rank(a) - rank(b) || this.prio(a) - this.prio(b) || a.id - b.id);
     const shown = left.slice(0, 7), nd = d.count("done"), ndrop = d.count("dropped"), total = s.tasks.length - ndrop;
     const agents = v_flex().min_w(0)
       .child(this.title(t, "Agents", s.limits?.max != null ? `${d.live.length} of ${s.limits.max}` : d.live.length,
@@ -588,7 +592,7 @@ export default class Swarm extends View {
   }
   // ---- Board: every task, by state; a row opens the task ----------------------------------------
   board(t, d) {
-    const s = this.s, f = this.r.f, by = st => s.tasks.filter(k => k.state === st), open = by("open");
+    const s = this.s, f = this.r.f, by = st => s.tasks.filter(k => k.state === st).sort((a, b) => st === "done" || st === "dropped" ? 0 : this.prio(a) - this.prio(b) || a.id - b.id), open = by("open");
     const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
       : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first"]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
@@ -626,6 +630,8 @@ export default class Swarm extends View {
     const facts = [
       k.owner ? [k.state === "done" ? "Done by" : "Owner", h_flex().gap(8).items_center().child(who(k.owner))
         .when(live && k.lease_left != null, el => el.child(dim(k.lease_left > 0 ? `lease ${ago(k.lease_left)} left` : "lease expired")))] : ["Owner", dim(k.state === "open" ? "nobody yet" : "nobody")],
+      k.state === "open" || live ? ["Priority", this.seg(t, "t-prio", [0, 1, 2, 3].map(n => [n, `P${n}`]), this.prio(k),
+        (n, cx) => n !== this.prio(k) && this.act(cx, ["task", "priority", String(k.id), String(n)]))] : null,
       ["Added", h_flex().gap(8).child(k.created_by ?? "?").when(Boolean(k.created_at), el => el.child(dim(hhmm(k.created_at))))],
       k.deps.length ? ["Waits on", refs(k.deps)] : null,
       k.blocks?.length ? ["Holds back", refs(k.blocks)] : null,
@@ -1196,6 +1202,7 @@ const KIND = Object.fromEntries(Object.entries({
   drop: ["x", "tasks", "Dropped", "A task was taken off the board for good. Nothing for you to do.", "", 1],
   reap: ["clock", "tasks", "Taken back", "The swarm took back a task or lock whose holder went quiet, so another agent can pick it up.", "warn", 1],
   "lease-late": ["clock", "tasks", "Lease late", "An agent has held a task past its lease while idle. The comms was told.", "", 0],
+  "task-priority": ["link", "tasks", "Priority set", "A task's priority was changed. Nothing for you to do.", "", 0],
   "task-after": ["link", "tasks", "Order set", "A task was set to wait for other tasks to finish first.", "", 0],
   startable: ["info", "tasks", "Startable", "A waiting task became free to claim (older swarms).", "", 0],
   push: ["arrow-up", "code", "Pushed", "An agent pushed a branch to GitHub. Nothing for you to do.", "", 1],

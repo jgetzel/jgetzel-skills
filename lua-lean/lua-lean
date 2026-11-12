@@ -12,13 +12,14 @@
 #   lua-lean luajit                       the path of the LuaJIT the others run
 #   lua-lean check [-n <per>] [--lean] <file.lua>...  what is outside the subset, by line; <per> (20) random calls
 #                                         of each top-level function under the semantics and (but --lean) LuaJIT
-#   lua-lean corpus [<dir>]               fetch test/corpus.txt's scripts into <dir> and check them, under the
-#                                         semantics only: what parses, what is in the subset, the commonest misses
+#   lua-lean corpus [-t <secs>] [<dir>]   fetch test/corpus.txt's scripts into <dir> and check them, under the
+#                                         semantics only: what parses, what is in the subset, the commonest misses;
+#                                         a file still checking after <secs> (120; 0: no limit) is reported timed out
 here=$(cd "$(dirname "$0")" && pwd)
 abs() { case $1 in /*) printf %s "$1" ;; *) printf %s "$PWD/$1" ;; esac; }
 lake_do() { (cd "$here" && if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi); }
 tool() { t=$1; shift; lake_do build -q LuaLean >&2 && lake_do env lean --run "tools/$t.lean" "$@"; }
-usage() { sed -n '4,16s/^#   //p' "$0" >&2; exit 2; }
+usage() { sed -n '4,17s/^#   //p' "$0" >&2; exit 2; }
 # the reference LuaJIT's version: bump it with flake.lock, then regenerate test/cases.lua.gz (DESIGN.md)
 ref=2.1.1791890110
 luajit_ref() {
@@ -89,6 +90,7 @@ check)
     "$LUAJIT" -joff test/luasem.lua --cases "$tmp/cases.lua" --any || r=1
   exit $r ;;
 corpus)
+  secs=120; [ "$1" = -t ] && { secs=$2; shift 2; }
   dir=${1:-${XDG_CACHE_HOME:-$HOME/.cache}/lua-lean-corpus}
   list() { grep -v '^#' "$here/test/corpus.txt" | while read -r repo sha lic paths; do
     for p in $paths; do echo "$repo $sha $repo/$p"; done; done; }
@@ -98,16 +100,22 @@ corpus)
       { echo "$f: not fetched" >&2; exit 1; }
   done || exit 1
   # the semantics runs no effect: nothing fetched runs outside it
-  out=$(cd "$dir" && "$here/lua-lean" check -n 5 --lean $(list | cut -d' ' -f3))
+  # a file at a time, so one that runs long is cut off at $secs, not the run
+  start=$(date +%s)
+  out=$(cd "$dir" && for f in $(list | cut -d' ' -f3); do
+    timeout "$secs" "$here/lua-lean" check -n 5 --lean "$f" || [ $? -ne 124 ] || echo "$f: timed out after ${secs}s"
+  done)
   printf '%s\n' "$out"
   # per file once: each construct outside the subset (the message up to its first ':')
   printf '%s\n' "$out" | awk '
     / parse error: / { n++; next }
+    / timed out after / { n++; to++; next }
     / outside the subset, / { n++; ok++; if ($3 == 0) sub_++; fn += $7; cs += $9; next }
     /^[^ ]*:[0-9]+: / { f = $1; sub(/:[0-9]+:$/, "", f); m = $0; sub(/^[^ ]* /, "", m); sub(/:.*/, "", m)
       if (m !~ /^(effect|undefined) / && !seen[f SUBSEP m]++) count[m]++ }
-    END { printf "\n%d files: %d parse, %d in the subset; %d top-level functions, %d pure cases\n", n, ok, sub_, fn, cs
-      for (m in count) printf "%4d  %s\n", count[m], m | "sort -rn | head -25" }' ;;
+    END { printf "\n%d files: %d parse, %d in the subset, %d timed out; %d top-level functions, %d pure cases; %ds\n",
+        n, ok, sub_, to, fn, cs, took
+      for (m in count) printf "%4d  %s\n", count[m], m | "sort -rn | head -25" }' took=$(($(date +%s) - start)) ;;
 parsecheck)
   [ $# -ge 1 ] || usage
   tmp=$(mktemp -d) || exit 1
