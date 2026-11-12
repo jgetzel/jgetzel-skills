@@ -84,7 +84,7 @@ example : (run { nwts := 1 } [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit
 agent boots, a waiter with a message it wakes on wakes, an hc prompt is answered, a working agent reads its
 messages and takes work, a background job ends, and the second half of a split command follows the first. -/
 def fair (c : Cfg) (s : State) : List Action :=
-  .tick :: c.tasks.map .expire ++ c.agents.map .reapGone ++ (c.agents.filter fun a => !(s.agt a).dead).flatMap fun a =>
+  .tick :: .poll :: c.tasks.map .expire ++ c.agents.map .reapGone ++ (c.agents.filter fun a => !(s.agt a).dead).flatMap fun a =>
     [.age a, .bgEnd a, .nudge a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
       ++ c.tasks.map (.claim a) ++ c.tasks.map (.claimRead a)
 /-- no fair action is enabled: a fair run may stay in this state forever. A dead agent's own actions don't count:

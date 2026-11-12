@@ -236,6 +236,14 @@ theorem msg_post_new (s : State) (m : Msg) : (post s m).msg (s.log.length + 1) =
   simp [State.msg, post, List.getD_eq_getElem?_getD]
 theorem addressed_post {s : State} {m : Msg} {a i : Nat} (h : i ≤ s.log.length) : addressed (post s m) a i = addressed s a i := by
   simp [addressed, msg_post h]
+theorem msg_pollOf {c : Cfg} {s : State} {i : Nat} (h : i ≤ s.log.length) : (pollOf c s).msg i = s.msg i := by
+  by_cases h0 : i = 0
+  · simp [State.msg, h0]
+  · have : i - 1 < s.log.length := by omega
+    simp [State.msg, pollOf_log, h0, List.getD_eq_getElem?_getD, List.getElem?_append_left this]
+theorem addressed_pollOf {c : Cfg} {s : State} {a i : Nat} (h : i ≤ s.log.length) :
+    addressed (pollOf c s) a i = addressed s a i := by
+  simp [addressed, msg_pollOf h]
 @[simp] theorem post_log_length (s : State) (m : Msg) : (post s m).log.length = s.log.length + 1 := by simp [post]
 
 theorem mem_unread {s : State} {a i : Nat} : i ∈ unread s a ↔ s.cur a < i ∧ i ≤ s.log.length ∧ addressed s a i = true := by
@@ -268,16 +276,18 @@ theorem foldl_max (ids : List Nat) (c : Nat) :
 theorem showMsg_cursor (s : State) (a i : Nat) : (showMsg s a i).cursor = s.cursor.modify a (max · i) := by frame showMsg
 theorem showMsg_seen (s : State) (a i : Nat) : (showMsg s a i).seen = s.seen.modify a (· ++ [i]) := by frame showMsg
 theorem showMsg_ag (s : State) (a i : Nat) : (showMsg s a i).ag =
-    if (s.msg i).kind = .released then
+    if (s.msg i).kind = .released ∨ (s.msg i).kind = .merged then
       s.ag.modify a (fun g => { g with believes := g.believes.filter (· != (s.msg i).task) })
     else s.ag := by
   unfold showMsg; simp only []
   split
   · rename_i h; simp at h; simp [h.1]
-  · split <;> simp_all [setAg]
+  · split
+    · rename_i h1 h2; simp only [Bool.or_eq_true, beq_iff_eq] at h2; simp [h2, setAg]
+    · rename_i h1 h2; simp only [Bool.or_eq_true, beq_iff_eq] at h2; simp [h2]
 
 theorem showMsg_bel (s : State) (a i b u : Nat) : u ∈ ((showMsg s a i).agt b).believes ↔
-    u ∈ (s.agt b).believes ∧ ¬(b = a ∧ (s.msg i).kind = .released ∧ (s.msg i).task = u) := by
+    u ∈ (s.agt b).believes ∧ ¬(b = a ∧ ((s.msg i).kind = .released ∨ (s.msg i).kind = .merged) ∧ (s.msg i).task = u) := by
   simp only [State.agt, showMsg_ag]
   split
   · rename_i hk
@@ -314,7 +324,7 @@ theorem showAll_proj {β : Type} (p : Agent → β) (hp : ∀ g l, p { g with be
   | nil => rfl
   | cons i is ih => rw [showAll_cons, ih, showMsg_proj p hp]
 theorem showAll_bel (ids : List Nat) (s : State) (a b u : Nat) : u ∈ ((showAll s a ids).agt b).believes ↔
-    u ∈ (s.agt b).believes ∧ ¬(b = a ∧ ∃ i ∈ ids, (s.msg i).kind = .released ∧ (s.msg i).task = u) := by
+    u ∈ (s.agt b).believes ∧ ¬(b = a ∧ ∃ i ∈ ids, ((s.msg i).kind = .released ∨ (s.msg i).kind = .merged) ∧ (s.msg i).task = u) := by
   induction ids generalizing s with
   | nil => simp [showAll]
   | cons i is ih =>
@@ -541,6 +551,8 @@ theorem ii_spawnFor {c : Cfg} {pl : List Nat} {s : State} {t : Nat} (h : InbInv 
     · exact ii_setTask (ii_reset _ (fun _ => rfl) h)
     · exact h
   · exact h
+theorem ii_pollOf {c : Cfg} {s : State} (h : InbInv c s) : InbInv c (pollOf c s) :=
+  ⟨h.1, h.2.1, fun a => inb_mono (by simp [pollOf_log]) (fun _ hi => addressed_pollOf hi) rfl rfl rfl (Or.inl rfl) (h.2.2 a)⟩
 theorem ii_tickOf {c : Cfg} {s : State} (h : InbInv c s) : InbInv c (tickOf c s) :=
   tick_inv (InbInv c) (fun _ _ => ii_reapTask) (fun _ => ii_frame rfl rfl rfl rfl rfl) (fun _ _ => ii_endAgent)
     (fun _ _ _ hx => ii_post (ii_setAg (fun _ => Or.inl rfl) hx)) (fun _ _ _ hx _ => ii_spawnFor hx) h
@@ -576,6 +588,7 @@ theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c
     · rw [when_eq_some] at hstep; obtain ⟨_, rfl⟩ := hstep; exact ii_frame rfl rfl rfl rfl rfl (ii_post (ii_setTask hs))
     · cases hstep
   case tick => obtain ⟨_, rfl⟩ := hstep; exact ii_tickOf hs
+  case poll => obtain ⟨_, rfl⟩ := hstep; exact ii_pollOf hs
   case wakeRead a => obtain ⟨_, rfl⟩ := hstep; exact ii_wakeRead hs
   case wakeWrite a =>
     obtain ⟨hg, rfl⟩ := hstep

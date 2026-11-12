@@ -18,13 +18,29 @@ inductive TSt where | absent | opn | claimed | blocked | done | dropped
   deriving DecidableEq, Repr, Inhabited
 inductive ASt where | unborn | working | idle | blocked | ended
   deriving DecidableEq, Repr, Inhabited
-/-- `check`: watchd's liveness check of a stayer -/
-inductive Kind where | dm | answer | released | digest | nudge | check
+/-- `check`: watchd's liveness check of a stayer; `merged`: watchd's poll marked the task done, its PR merged (reading it
+drops the belief, as `released`); `checks`: the poll told the owner its PR's checks finished (board #28) -/
+inductive Kind where | dm | answer | released | digest | nudge | check | merged | checks
   deriving DecidableEq, Repr, Inhabited
 /-- the events agents.digest reads (the Lua's event rows, and task.done_at, agent.ended): `task block` of t
 (`block`), t's question told to the communicator, or an hc prompt's (`task-blocked`, hc's or not), t done, slot a ended,
-slot a's stay hung (`stay-hung`: it did not answer the liveness check) -/
+slot a's stay hung (`stay-hung`: it did not answer the liveness check); and `merge`, t's PR merged on GitHub: no event
+row, but its place in `evs` is the PR's mergedAt (GitHub's clock), which the digest's merged reads (board #80) -/
 inductive Ev where | block (t : Nat) | tblocked (t : Nat) (hc : Bool) | done (t : Nat) | ended (a : Nat) | hung (a : Nat)
+  | merge (t : Nat)
+  deriving DecidableEq, Repr, Inhabited
+/-- a PR's checks, or main's CI run: ci.verdict's pending, green or red -/
+inductive Checks where | pending | green | red
+  deriving DecidableEq, Repr, Inhabited
+/-- ci.verdict's name for it -/
+def Checks.name : Checks → String | .pending => "pending" | .green => "green" | .red => "red"
+/-- a task's PR on GitHub (board #80), from its owner's task branch into its base: opened, its head's checks, merged, and
+`told`: watchd told the owner this head's verdict (its `pr-wake` event) -/
+structure Pr where
+  opened : Bool := false
+  checks : Checks := .pending
+  merged : Bool := false
+  told : Bool := false
   deriving DecidableEq, Repr, Inhabited
 /-- what the communicator is told: a block (of task t; 0: an hc prompt with no claimed task), the user away, the user
 back (the questions that wait), a stayer hung (`task` is its slot) -/
@@ -43,6 +59,10 @@ structure Digest where
   done : List Nat
   ended : List Nat
   hung : List Nat := []
+  /-- board #80: the tasks whose PR merged since away by GitHub's clock (task.merged_at), recorded by watchd, in order -/
+  merged : List Nat := []
+  /-- main's latest CI run, as watchd polled it (the ci table's newest row) -/
+  ci : Option Checks := none
   deriving DecidableEq, Repr, Inhabited
 
 /-- The instance: sizes, and one switch per fix, so the model is the code before and after it. The defaults
@@ -130,6 +150,9 @@ structure Cfg where
   awayQuiet : Bool := true
   /-- `swarm away --back` (A2): the communicator is sent one urgent message naming the questions that wait -/
   backTells : Bool := true
+  /-- `.claude/swarm.json` `ci.flow` is "pr-gated": a PR merges once its checks are green, and watchd's poll tells the
+  owner when they finish (board #28) -/
+  gated : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Task where
@@ -147,6 +170,10 @@ structure Task where
   `stop_msg`); kept until the next such release -/
   stopTo : Option Nat := none
   stopMsg : Nat := 0
+  /-- its PR on GitHub (board #80) -/
+  pr : Pr := {}
+  /-- task.merged_at is set: watchd recorded its PR's merge (ci.pr_watch, ci.pr_ci) -/
+  merged : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Agent where
@@ -261,6 +288,9 @@ structure State where
   ccur : Nat := 0
   /-- meta away_digest: the last `--back`'s digest, until the next away -/
   digest : Option Digest := none
+  /-- board #80: main's latest push run on GitHub, and the newest the ci table has (watchd's poll copies it) -/
+  run : Option Checks := none
+  ci : Option Checks := none
   deriving DecidableEq, Repr, Inhabited
 
 def Cfg.tasks (c : Cfg) : List Nat := List.range' 1 c.ntasks
@@ -381,7 +411,7 @@ def showMsg (s : State) (a id : Nat) : State :=
   let m := s.msg id
   let s1 := { s with seen := s.seen.modify a (· ++ [id]), cursor := s.cursor.modify a (max · id) }
   if m.kind == .answer && (s1.tk m.task).owner == some a then { s1 with pend := s1.pend.filter (· != m.task) }
-  else if m.kind == .released then setAg s1 a fun g => { g with believes := g.believes.filter (· != m.task) }
+  else if m.kind == .released || m.kind == .merged then setAg s1 a fun g => { g with believes := g.believes.filter (· != m.task) }
   else s1
 def showAll (s : State) (a : Nat) (ids : List Nat) : State := ids.foldl (showMsg · a ·) s
 def deliver (s : State) (a : Nat) : State := showAll s a (unread s a)
@@ -798,6 +828,8 @@ def digestOf (c : Cfg) (s : State) (since : Nat) : Digest where
   done := (s.evs.drop since).filterMap fun | .done t => if (s.tk t).st == .done then some t else none | _ => none
   ended := (s.evs.drop since).filterMap fun | .ended a => some a | _ => none
   hung := c.agents.filter (hungSince s since)
+  merged := (s.evs.drop since).filterMap fun | .merge t => if (s.tk t).merged then some t else none | _ => none
+  ci := s.ci
 /-- `swarm away`: away since now, the last digest dropped, the communicator told (not urgent). Already away, the Lua
 changes nothing ("already away since"): here the step is not enabled, so a second away keeps the first since (A4) -/
 def awayOn (s : State) : Option State :=
@@ -813,6 +845,56 @@ def commsRead (s : State) : Option State := when (s.ccur < s.cbox.length) { s wi
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
 
+-- ---------- PRs and main's CI (board #80) ----------
+/-- `gh pr create` from the owner's task branch -/
+def openPr (s : State) (a t : Nat) : Option State :=
+  when (working s a && ownsClaimed s a t && !(s.tk t).pr.opened) (setTask s t ({ · with pr := { opened := true } }))
+/-- a new head: its checks start again, and watchd has told nothing of it -/
+def push (s : State) (a t : Nat) : Option State :=
+  let p := (s.tk t).pr
+  when (working s a && ownsClaimed s a t && p.opened && !p.merged)
+    (setTask s t ({ · with pr := { p with checks := .pending, told := false } }))
+/-- `gh pr merge`; in a pr-gated repo only once the checks are green. Its place in `evs` is GitHub's mergedAt -/
+def merge (c : Cfg) (s : State) (a t : Nat) : Option State :=
+  let p := (s.tk t).pr
+  when (working s a && ownsClaimed s a t && p.opened && !p.merged && (!c.gated || p.checks == .green))
+    (setTask (logEv s (.merge t)) t ({ · with pr := { p with merged := true } }))
+/-- CI: the PR head's checks finish -/
+def finish (s : State) (t : Nat) (ok : Bool) : Option State :=
+  let p := (s.tk t).pr
+  when (p.opened && p.checks == .pending && !p.merged)
+    (setTask s t ({ · with pr := { p with checks := if ok then .green else .red } }))
+/-- CI on main: its latest push run is now v (a new run, pending, or the run finishing) -/
+def ciRun (s : State) (v : Checks) : Option State := when (s.run != some v) { s with run := some v }
+/-- watchd --ci's decision on task k (ci.pr_watch, with ci.pr_act's): for a claimed task of a live owner whose PR is open
+or merged, `some true` once it is merged (the task done, evidence "PR #N merged as ..", a done event, the owner told,
+urgent); in a pr-gated repo `some false` once its head's checks finished and the owner wasn't told (told, urgent) -/
+def prAct (c : Cfg) (s : State) (k : Task) : Option Bool :=
+  match k.owner with
+  | some o =>
+    if k.st == .claimed && (s.agt o).live && k.pr.opened then
+      if k.pr.merged then some true
+      else if c.gated && k.pr.checks != .pending && !k.pr.told then some false
+      else none
+    else none
+  | none => none
+/-- what the poll makes of task k: `prAct`'s change, and ci.pr_ci's: a done task's merged PR recorded -/
+def prK (c : Cfg) (s : State) (k : Task) : Task :=
+  match prAct c s k with
+  | some true => { k with st := .done, lease := false, ev := true, merged := true }
+  | some false => { k with pr := { k.pr with told := true } }
+  | none => if k.st == .done && k.pr.merged then { k with merged := true } else k
+/-- the message the poll posts about task t -/
+def prMsg (c : Cfg) (s : State) (t : Nat) : Option Msg :=
+  (prAct c s (s.tk t)).map fun d => ⟨none, (s.tk t).owner.getD 0, true, if d then .merged else .checks, t⟩
+/-- watchd --ci's part of the tick: ci_poll (main's latest run into the ci table), then pr_ci and pr_watch on every task
+in id order, each task's messages and done event in that order. In the Lua it ends the same tick; here it is a step of its
+own, which only adds interleavings -/
+def pollOf (c : Cfg) (s : State) : State :=
+  { s with task := s.task.map (prK c s), ci := s.run, log := s.log ++ c.tasks.filterMap (prMsg c s),
+           evs := s.evs ++ c.tasks.filterMap fun t => if prAct c s (s.tk t) == some true then some (.done t) else none }
+def poll (c : Cfg) (s : State) : Option State := when (c.watchd && pollOf c s != s) (pollOf c s)
+
 /-- Everything that can happen: the agents' commands, the environment, the communicator, watchd. -/
 inductive Action where
   | bgStart (a : Nat) | bgEnd (a : Nat)
@@ -826,6 +908,7 @@ inductive Action where
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
   | endOther (a : Nat) (force : Bool) | awayOn | back | commsRead | tick
+  | openPr (a t : Nat) | push (a t : Nat) | merge (a t : Nat) | finish (t : Nat) (ok : Bool) | ciRun (v : Checks) | poll
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
@@ -845,6 +928,8 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .unblock t => unblock c s t | .drop t => drop s t | .releaseOther t => releaseOther c s t
   | .endOther a f => endOther c s a f | .awayOn => awayOn s | .back => back c s | .commsRead => commsRead s
   | .tick => tick c s
+  | .openPr a t => openPr s a t | .push a t => push s a t | .merge a t => merge c s a t | .finish t ok => finish s t ok
+  | .ciRun v => ciRun s v | .poll => poll c s
 
 /-- The states the system can be in. -/
 inductive Reachable (c : Cfg) : State → Prop

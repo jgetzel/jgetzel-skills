@@ -1,7 +1,7 @@
 import SwarmModel.Model
 
-/-! PRs and the wait on their checks (board #28). The main model has no PRs, no CI and no `swarm stay`; this layer has
-the least that states the stall: tasks claimed by agents, each task's PR (opened, its head's checks pending, green or
+/-! PRs and the wait on their checks (board #28). Board #80 put PRs, main's CI and the poll into the main model
+(`Merged.lean` proves P1 and P2 of its `step`); this layer stays for the stalls, with the least that states them: tasks claimed by agents, each task's PR (opened, its head's checks pending, green or
 red, merged or not), agents working or idle with their waiter armed, staying or not, with an urgent message unread or
 not, and watchd's poll of the PRs (`ci.pr_watch`). Time and leases are left out: in the main model an idle owner's
 lapsed claim is reaped (L2), which is how the stall ended without the fix, two hours on, the task reopened with its PR
@@ -18,11 +18,7 @@ namespace Swarm.PrW
 set_option linter.unusedSimpArgs false
 set_option linter.deprecated false
 
-inductive Checks where | pending | green | red
-  deriving DecidableEq, Repr, Inhabited
-
-/-- ci.verdict's name for it -/
-def Checks.name : Checks → String | .pending => "pending" | .green => "green" | .red => "red"
+-- `Checks` is Model.lean's
 
 /-- the instance: sizes, the repo's CI flow, and the fixes' switches. The defaults are main now -/
 structure PCfg where

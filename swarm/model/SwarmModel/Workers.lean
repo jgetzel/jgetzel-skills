@@ -42,6 +42,12 @@ theorem pfx_setTask {s : State} {t : Nat} {f : Task → Task}
     rcases tk_setTask_or s t u f with e | ⟨rfl, e⟩
     · rw [e]
     · rw [e]; exact ⟨fun ha => absurd ha (h h0).2, fun ha => absurd ha (h h0).1⟩
+theorem pfx_setTask_st {s : State} {t : Nat} {f : Task → Task} (h : ∀ k, (f k).st = k.st) (hp : Pfx s) :
+    Pfx (setTask s t f) := by
+  by_cases h0 : t = 0
+  · subst h0; exact hp
+  · refine pfx_same (by unfold setTask; split <;> simp) (fun u => ?_) hp
+    rcases tk_setTask_or s t u f with e | ⟨rfl, e⟩ <;> rw [e]; rw [h]
 theorem pfx_map {s s' : State} {g : Task → Task} (hg : g default = default) (h : ∀ k, (g k).st = .absent ↔ k.st = .absent)
     (ht : s'.task = s.task.map g) (hp : Pfx s) : Pfx s' :=
   pfx_same (by rw [ht]; simp) (fun u => by rw [tk_map hg ht]; exact h _) hp
@@ -90,6 +96,8 @@ macro "pf_tac" : tactic => `(tactic|
     | ((with_reducible refine pfx_task (deliver_task ..) ?_))
     | ((with_reducible refine pfx_task (takes_task ..) ?_))
     | with_reducible apply pfx_endAgent
+    | ((with_reducible refine pfx_setTask_st (fun _ => rfl) ?_))
+    | ((with_reducible refine pfx_task (logEv_task ..) ?_))
     | assumption))
 
 theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
@@ -153,6 +161,9 @@ theorem pfx_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : Pfx s := by
     obtain ⟨hg, rfl⟩ := hstep
     have hg' : (s.tk t).st = .claimed ∨ (s.tk t).st = .blocked := by simp at hg; exact hg.2
     exact pfx_task (post_task ..) (pfx_setTask (fun _ => ⟨by rcases hg' with e | e <;> simp [e], by simp⟩) hs)
+  case poll =>
+    obtain ⟨_, rfl⟩ := hstep
+    exact pfx_map (prK_default c s) (fun k => by rcases prK_st c s k with e | ⟨e1, e2⟩ <;> simp_all) (pollOf_task c s) hs
   case add deps =>
     obtain ⟨hg, rfl⟩ := hstep
     obtain ⟨n, h2, h3⟩ := hs
@@ -173,7 +184,8 @@ def rel (s : State) (a t : Nat) : Prop :=
   ∃ i, s.cur a < i ∧ i ≤ s.log.length ∧ addressed s a i = true ∧ (s.msg i).kind = .released ∧ (s.msg i).task = t
 /-- a's belief that it holds t is stale, and a will learn so before it works again -/
 def idleRel (s : State) (a t : Nat) : Prop := active (s.agt a) = false ∧ rel s a t
-def HD (s : State) (a t : Nat) : Prop := held (s.tk t) a = true ∨ (s.tk t).st = .dropped
+/-- held, dropped, or (board #80) done by watchd's poll when its PR merged: the owner's belief stays until it reads that -/
+def HD (s : State) (a t : Nat) : Prop := held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true)
 /-- board #53: the user released t from a, and a hasn't read the stop the task records (`stopTo`, `stopMsg`) -/
 def stopRel (s : State) (a t : Nat) : Prop :=
   (s.tk t).stopTo = some a ∧ s.cur a < (s.tk t).stopMsg ∧ (s.tk t).stopMsg ≤ s.log.length ∧
@@ -237,6 +249,10 @@ theorem held_unique {k : Task} {a b : Nat} (h1 : held k a = true) (h2 : held k b
   simp [held] at h1 h2; exact Option.some.inj (h1.1.symm.trans h2.1)
 theorem held_not_dropped {k : Task} {a : Nat} (h : held k a = true) : k.st ≠ .dropped := by
   simp [held] at h; rcases h.2 with e | e <;> simp [e]
+theorem held_not_done {k : Task} {a : Nat} (h : held k a = true) : k.st ≠ .done := by
+  simp [held] at h; rcases h.2 with e | e <;> simp [e]
+theorem held_not_dd {k : Task} {a : Nat} (h : held k a = true) : ¬(k.st = .dropped ∨ (k.st = .done ∧ k.merged = true)) :=
+  fun e => e.elim (held_not_dropped h) (fun e => held_not_done h e.1)
 
 /-- only the board changed -/
 theorem J_tasks {s s' : State} (hag : s'.ag = s.ag) (hlog : s'.log = s.log) (hcur : s'.cursor = s.cursor)
@@ -259,7 +275,7 @@ theorem J_frame {s s' : State} (hag : s'.ag = s.ag) (hlog : s'.log = s.log) (hcu
 /-- a change of task t: what backed a belief in t still does. `hs`: a belief resting on t's stop (t open) is held after
 it, or t dropped, or still open with its stop -/
 theorem J_setTask {s : State} {t : Nat} {f : Task → Task}
-    (hm : ∀ b, HD s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped)
+    (hm : ∀ b, HD s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped ∨ ((f (s.tk t)).st = .done ∧ (f (s.tk t)).merged = true))
     (hs : ∀ b, t ∈ (s.agt b).believes → HS s b t → ¬idleRel s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped ∨
       ((f (s.tk t)).stopTo = (s.tk t).stopTo ∧ (f (s.tk t)).stopMsg = (s.tk t).stopMsg ∧ (f (s.tk t)).st = .opn))
     (h : J s) : J (setTask s t f) :=
@@ -271,7 +287,7 @@ theorem J_setTask {s : State} {t : Nat} {f : Task → Task}
     · exact J_tasks_same (by simp) (by simp) e hsu
     · rcases hs b ‹_› hsu hi with e1 | e1 | ⟨q1, q2, q3⟩
       · exact Or.inl (Or.inl (by rw [e]; exact e1))
-      · exact Or.inl (Or.inr (by rw [e]; exact e1))
+      · exact Or.inl (Or.inr (Or.inl (by rw [e]; exact e1)))
       · exact Or.inr (HS_of hsu.1 (by rw [e]; exact q1) (by rw [e]; exact q2) (by rw [e]; exact q3) ⟨[], by simp⟩ (by simp [State.cur]))) h
 /-- no belief rests on the stop of a task that isn't open -/
 theorem HS_not_opn {s : State} {b t : Nat} (h : (s.tk t).st ≠ .opn) : ¬ HS s b t := fun hs => h hs.2
@@ -319,7 +335,7 @@ theorem J_showAll {s : State} {a : Nat} {ids : List Nat}
       apply Nat.lt_of_not_le; intro hle
       rcases m3 with e | e
       · omega
-      · exact hbel.2 ⟨rfl, i, hns _ e i i1 hle i3, i4, i5⟩
+      · exact hbel.2 ⟨rfl, i, hns _ e i i1 hle i3, Or.inl i4, i5⟩
     · exact i1
   refine J_of h (fun b t ht => ((showAll_bel ..).mp ht).1) (fun b t ht hi => ?_)
     (fun b t _ _ hd => Or.inr (Or.inl (by unfold HD; rw [htk]; exact hd))) (fun b t ht _ hs => ?_)
@@ -346,7 +362,7 @@ theorem norel_deliver {s : State} {a u : Nat} (hu : u ∈ ((deliver s a).agt a).
     · exact (foldl_max _ _).1
     · exact Nat.le_refl _
   have i1' : (showAll s a (unread s a)).cur a < i := i1
-  exact hbel.2 ⟨rfl, i, mem_unread.mpr ⟨by omega, i2, i3⟩, i4, i5⟩
+  exact hbel.2 ⟨rfl, i, mem_unread.mpr ⟨by omega, i2, i3⟩, Or.inl i4, i5⟩
 /-- a turn starts: the prompt hook delivers, then the agent is at work -/
 theorem J_wake {s : State} {a : Nat} {f : Agent → Agent} (hf : ∀ g, (f g).believes = g.believes) (h : J s) :
     J (setAg (deliver s a) a f) :=
@@ -373,10 +389,11 @@ theorem J_takes {c : Cfg} {s : State} {a t : Nat} (hheld : held (s.tk t) a = tru
     simp only [idleRel, hact, rel_congr (s := s) (s' := setAg s a fun g => { g with believes := t :: g.believes }) rfl rfl]
   have key : ∀ b, t ∈ (s.agt b).believes → ¬idleRel s b t → b = a := by
     intro b hb hn
-    rcases h.1 b t hb with e | (e | e) | e
+    rcases h.1 b t hb with e | (e | e | e) | e
     · exact absurd e hn
     · exact held_unique e hheld
     · exact absurd e (held_not_dropped hheld)
+    · exact absurd e.1 (held_not_done hheld)
     · exfalso; have := e.2; simp [held, this] at hheld
   refine ⟨fun b u hu => ?_, fun x y u hx hy nx ny => ?_⟩
   · rcases hmem b u hu with e | ⟨e1, e2⟩
@@ -394,7 +411,7 @@ theorem J_takes {c : Cfg} {s : State} {a t : Nat} (hheld : held (s.tk t) a = tru
 
 /-- a gives up a task only it holds: released, done or dropped -/
 theorem J_giveup {s : State} {a t : Nat} {f : Task → Task} (hown : ∀ b, held (s.tk t) b = true → b = a)
-    (hnd : (s.tk t).st ≠ .dropped) (hno : (s.tk t).st ≠ .opn) (h : J s) : J (unbelieve (setTask s t f) a t) := by
+    (hnd : ¬((s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true))) (hno : (s.tk t).st ≠ .opn) (h : J s) : J (unbelieve (setTask s t f) a t) := by
   have hrel : ∀ b u, rel (unbelieve (setTask s t f) a t) b u ↔ rel s b u := fun b u =>
     rel_congr (by simp) (by simp [State.cur])
   have hagt : ∀ b, (setTask s t f).agt b = s.agt b := fun b => by simp [State.agt]
@@ -417,7 +434,8 @@ theorem J_giveup {s : State} {a t : Nat} {f : Task → Task} (hown : ∀ b, held
       · exact absurd ⟨hown b e, rfl⟩ hne
       · exact absurd e hnd
     · right; left
-      show held ((setTask s t f).tk u) b = true ∨ ((setTask s t f).tk u).st = .dropped
+      show held ((setTask s t f).tk u) b = true ∨ ((setTask s t f).tk u).st = .dropped ∨
+        (((setTask s t f).tk u).st = .done ∧ ((setTask s t f).tk u).merged = true)
       rw [tk_setTask_ne hut]; exact hd
   · by_cases hut : u = t
     · subst hut; exact absurd hs.2 hno
@@ -447,8 +465,8 @@ theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle) (h
       rcases tk_setTask_or (post x ⟨none, o, false, .released, t⟩) t u _ with e1 | ⟨rfl, e1⟩
       · unfold HD; rw [e1]; exact hd
       · exfalso; apply hi
-        have hd' : held (x.tk u) b = true ∨ (x.tk u).st = .dropped := hd
-        rcases hd' with e2 | e2
+        have hd' : held (x.tk u) b = true ∨ (x.tk u).st = .dropped ∨ ((x.tk u).st = .done ∧ (x.tk u).merged = true) := hd
+        rcases hd' with e2 | e2 | e2
         · have hb : o = b := by simp [held, ho] at e2; exact e2.1
           subst hb
           refine ⟨hna, x.log.length + 1, ?_, by simp, ?_, ?_, ?_⟩
@@ -457,6 +475,7 @@ theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle) (h
           · rw [msg_post_new]
           · rw [msg_post_new]
         · rw [hst] at e2; cases e2
+        · simp [hst] at e2
     · exact h
   · exact h
 
@@ -481,12 +500,13 @@ theorem J_endAgent {s : State} {a : Nat} (h : J s) : J (endAgent s a) := by
       · simp [State.tk]) hs) h1
   have hba : b ≠ a := by rintro rfl; rw [hbel] at hu; cases hu
   unfold HD; rw [endAgent_tk]
-  have hd' : held (s.tk u) b = true ∨ (s.tk u).st = .dropped := hd
+  have hd' : held (s.tk u) b = true ∨ (s.tk u).st = .dropped ∨ ((s.tk u).st = .done ∧ (s.tk u).merged = true) := hd
   split
   · rename_i hh
-    rcases hd' with e | e
+    rcases hd' with e | e | e
     · exact absurd (held_unique e hh) hba
     · exact absurd e (held_not_dropped hh)
+    · exact absurd e.1 (held_not_done hh)
   · exact hd'
 
 /-- a spawn: a new agent in slot a, believing nothing, holding a task that was open -/
@@ -552,10 +572,11 @@ theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk
           · exact absurd ⟨by rw [← e, ← hag]; rfl, rel_of_stopRel hs.1⟩ hi
           · rfl
         unfold stopped at hst; rw [h1] at hst; simp [ha] at hst; omega
-      have hd' : held (x.tk t) b = true ∨ (x.tk t).st = .dropped := hd
-      rcases hd' with e | e
+      have hd' : held (x.tk t) b = true ∨ (x.tk t).st = .dropped ∨ ((x.tk t).st = .done ∧ (x.tk t).merged = true) := hd
+      rcases hd' with e | e | e
       · simp [held, hopn] at e
       · rw [hopn] at e; cases e
+      · simp [hopn] at e
     · exact h
   · exact h
 
@@ -580,12 +601,13 @@ theorem J_claim {c : Cfg} {s : State} {a t : Nat} (hopn : (s.tk t).st = .opn) (h
     J (takes c (claimed s a t) a t) := by
   refine J_takes ?_ (J_setTask (fun b hd => ?_) (fun b _ hs hi => absurd (not_HS_of_stopped hst hs hi) id) h)
   · unfold claimed; rw [tk_setTask_self (by rw [hopn]; simp)]; simp [held]
-  · rcases hd with e | e
+  · rcases hd with e | e | e
     · simp [held, hopn] at e
     · rw [hopn] at e; cases e
+    · simp [hopn] at e
 /-- a change of a task no belief rests on by its stop: one not open -/
 theorem J_setTask_no {s : State} {t : Nat} {f : Task → Task} (hno : (s.tk t).st ≠ .opn)
-    (hm : ∀ b, HD s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped) (h : J s) : J (setTask s t f) :=
+    (hm : ∀ b, HD s b t → held (f (s.tk t)) b = true ∨ (f (s.tk t)).st = .dropped ∨ ((f (s.tk t)).st = .done ∧ (f (s.tk t)).merged = true)) (h : J s) : J (setTask s t f) :=
   J_setTask hm (fun _ _ hs _ => absurd hs.2 hno) h
 
 theorem msg_app {s s' : State} {e : List Msg} (h : s'.log = s.log ++ e) {i : Nat} (hi : i ≤ s.log.length) : s'.msg i = s.msg i := by
@@ -618,13 +640,43 @@ theorem J_released {s s' : State} {t o : Nat} (hag : s'.ag = s.ag) (hcs : s'.cur
         right; right
         refine ⟨⟨ht.2.1, by rw [hc, ht.2.2]; have := hcur b; omega, by rw [ht.2.2, hlog]; simp, ?_, ?_, ?_⟩, ht.1⟩ <;>
           rw [ht.2.2] <;> simp [addressed, hm]
-      · rcases hst with e2 | e2 <;> rw [e2] at e <;> cases e
+      · rcases hst with e2 | e2 <;> rcases e with e | e <;> simp [e2] at e
     · right; left
       unfold HD; rw [htk u hut]; exact hd
   · by_cases hut : u = t
     · subst hut; rcases hst with e | e <;> exact absurd hsu.2 (by rw [e]; simp)
     · have e := htk u hut
       exact Or.inr (Or.inr (HS_of hsu.1 (by rw [e]) (by rw [e]) (by rw [e]; exact hsu.2) ⟨_, hlog⟩ (hc b)))
+
+/-- a change of task t that keeps its state, owner and stop (its PR's) -/
+theorem J_setTask_keep {s : State} {t : Nat} {f : Task → Task}
+    (hf : ∀ k, (f k).st = k.st ∧ (f k).owner = k.owner ∧ (f k).stopTo = k.stopTo ∧ (f k).stopMsg = k.stopMsg ∧
+      (f k).merged = k.merged) (h : J s) :
+    J (setTask s t f) :=
+  J_setTask (fun b hd => by obtain ⟨e1, e2, -, -, e5⟩ := hf (s.tk t); simpa [HD, held, e1, e2, e5] using hd)
+    (fun b _ hs _ => by obtain ⟨e1, -, e3, e4, -⟩ := hf (s.tk t); exact Or.inr (Or.inr ⟨e3, e4, by rw [e1]; exact hs.2⟩)) h
+
+/-- the poll keeps what backs a belief: a task it marks done was held, and a done one backs it as a held one does -/
+theorem HD_prK {c : Cfg} {s : State} {k : Task} {b : Nat}
+    (h : held k b = true ∨ k.st = .dropped ∨ (k.st = .done ∧ k.merged = true)) :
+    held (prK c s k) b = true ∨ (prK c s k).st = .dropped ∨ ((prK c s k).st = .done ∧ (prK c s k).merged = true) := by
+  rcases prK_cases c s k with e | ⟨h1, e⟩ | ⟨_, h1, e⟩ | ⟨_, h1, e⟩ <;> rw [e]
+  · exact h
+  · exact Or.inr (Or.inr ⟨h1, rfl⟩)
+  · exact Or.inr (Or.inr ⟨rfl, rfl⟩)
+  · exact h
+theorem J_pollOf {c : Cfg} {s : State} (h : J s) : J (pollOf c s) := by
+  have hlog := pollOf_log c s
+  refine J_of h (fun _ _ ht => ht) (fun b t _ hi => ⟨hi.1, ?_⟩) (fun b t _ _ hd => Or.inr (Or.inl ?_))
+    (fun b t _ _ hs => Or.inr (Or.inr ?_))
+  · obtain ⟨i, h1, h2, h3, h4, h5⟩ := hi.2
+    exact ⟨i, h1, by rw [hlog]; simp; omega, by simp only [addressed, msg_app hlog h2] at h3 ⊢; exact h3,
+      by rw [msg_app hlog h2]; exact h4, by rw [msg_app hlog h2]; exact h5⟩
+  · unfold HD; rw [pollOf_tk]; exact HD_prK hd
+  · obtain ⟨-, -, o3, o4, -⟩ := prK_owner c s (s.tk t)
+    have hst : (prK c s (s.tk t)).st = .opn := by
+      have := hs.2; rcases prK_st c s (s.tk t) with e | ⟨e, _⟩ <;> simp_all
+    exact HS_of hs.1 (by rw [pollOf_tk, o3]) (by rw [pollOf_tk, o4]) (by rw [pollOf_tk]; exact hst) ⟨_, hlog⟩ rfl
 
 theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
     (h : Reachable c s) :
@@ -638,6 +690,12 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   have hP := pfx_of_reachable hr
   open_step hstep
   case awayOn => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case openPr a t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask_keep (fun _ => ⟨rfl, rfl, rfl, rfl, rfl⟩) hs
+  case push a t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask_keep (fun _ => ⟨rfl, rfl, rfl, rfl, rfl⟩) hs
+  case merge a t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask_keep (fun _ => ⟨rfl, rfl, rfl, rfl, rfl⟩) (J_frame (s := s) rfl rfl rfl rfl hs)
+  case finish t ok => obtain ⟨_, rfl⟩ := hstep; exact J_setTask_keep (fun _ => ⟨rfl, rfl, rfl, rfl, rfl⟩) hs
+  case ciRun v => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
+  case poll => obtain ⟨_, rfl⟩ := hstep; exact J_pollOf hs
   case back => obtain ⟨_, rfl⟩ := hstep; exact hs
   case commsRead => obtain ⟨_, rfl⟩ := hstep; exact hs
   case hnudge => obtain ⟨_, rfl⟩ := hstep; exact hs
@@ -675,7 +733,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
     exact J_giveup (s := logEv s (.done t)) (own_unique hg.1.2.2) (by simp [hg.1.2.1]) (by simp [hg.1.2.1]) hs
   case dropOwn a t =>
     obtain ⟨hg, rfl⟩ := hstep; simp at hg
-    exact J_giveup (fun b hb => held_unique hb hg.2) (held_not_dropped hg.2)
+    exact J_giveup (fun b hb => held_unique hb hg.2) (held_not_dd hg.2)
       (by have := hg.2; simp [held] at this; rcases this.2 with e | e <;> simp [e]) hs
   case lock a p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
   case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
@@ -733,13 +791,14 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
       · rw [h0]; simp [State.tk]
       · rw [(fc_owns h0).1]; simp
     refine J_setTask_no (by simpa [State.tk] using hfc) (fun b hd => ?_) (J_setAg_act (fun _ => rfl) (by simp [active, hg.1]) hs)
-    have hd' : held (s.tk (firstClaimed c s a)) b = true ∨ (s.tk (firstClaimed c s a)).st = .dropped := hd
+    have hd' : held (s.tk (firstClaimed c s a)) b = true ∨ (s.tk (firstClaimed c s a)).st = .dropped ∨
+      ((s.tk (firstClaimed c s a)).st = .done ∧ (s.tk (firstClaimed c s a)).merged = true) := hd
     rcases hd' with e | e
     · left; simp [held] at e ⊢; exact e.1
     · exfalso
       by_cases h0 : firstClaimed c s a = 0
       · rw [h0] at e; simp [State.tk] at e
-      · rw [(fc_owns h0).1] at e; cases e
+      · rw [(fc_owns h0).1] at e; simp at e
   case hcClear a =>
     obtain ⟨_, rfl⟩ := hstep
     refine J_wake (fun _ => rfl) (J_tasks (s := s) rfl rfl rfl (fun b u _ _ hd => ?_) (fun b u _ _ hsu => ?_) hs)
@@ -756,8 +815,9 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
       if k.owner == some a && k.st == .blocked && k.hcq then { k with st := .claimed, hcq := false, lease := true } else k)
       (by simp) rfl]
     split
-    · rcases hd with e | e
+    · rcases hd with e | e | e
       · left; simp [held] at e ⊢; exact e.1
+      · rename_i hh; simp [e] at hh
       · rename_i hh; simp [e] at hh
     · exact hd
   case add deps =>
@@ -770,23 +830,25 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
       · exact e
       · have := this.mp e; omega
     exact J_setTask_no (by rw [habs]; simp) (fun b hd => by
-      rcases hd with e | e
+      rcases hd with e | e | e
       · simp [held, habs] at e
-      · rw [habs] at e; cases e) hs
+      · rw [habs] at e; cases e
+      · simp [habs] at e) hs
   case after t deps =>
     obtain ⟨hg, rfl⟩ := hstep; simp at hg
-    exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr e)
+    exact J_setTask (fun b hd => by rcases hd with e | e; exact Or.inl (by simpa [held] using e); exact Or.inr (by simpa using e))
       (fun _ _ _ _ => Or.inr (Or.inr ⟨rfl, rfl, hg.1⟩)) hs
   case unblock t =>
     split at hstep
     · rename_i o ho
       rw [when_eq_some] at hstep; obtain ⟨hg, rfl⟩ := hstep; simp at hg
       refine J_frame (s := post (setTask s t _) _) rfl rfl rfl rfl (J_post (J_setTask_no (by rw [hg]; simp) (fun b hd => ?_) hs))
-      rcases hd with e | e
+      rcases hd with e | e | e
       · left; simp [held] at e ⊢; exact e.1
       · rw [hg] at e; cases e
+      · simp [hg] at e
     · cases hstep
-  case drop t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask (fun b _ => Or.inr rfl) (fun _ _ _ _ => Or.inr (Or.inl rfl)) hs
+  case drop t => obtain ⟨_, rfl⟩ := hstep; exact J_setTask (fun b _ => Or.inr (Or.inl rfl)) (fun _ _ _ _ => Or.inr (Or.inl rfl)) hs
   case releaseOther t =>
     rcases hhr with hhr | hsf
     · simp [hhr] at hstep

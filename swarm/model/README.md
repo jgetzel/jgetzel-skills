@@ -48,6 +48,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` and `Env.N1'_real` with `hc send` as `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
+| `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
 | `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung` |
 | `SwarmModel/Contract.lean` | the theorems to build on downstream (board #25), restated over the model's types: *Using these proofs downstream* |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
@@ -62,7 +63,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an axiom outside Env.lean, or one with no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 19 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-pr-*`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
+| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 20 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-pr-digest`: board #80's, the main model's PRs, CI and poll through a fake `gh`; `script-pr-green`, `-red`, `-merged`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
 | `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
 | `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
 | `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
@@ -227,6 +228,27 @@ its own fairness: watchd polls, a waiter with an urgent message wakes, a working
   Refuted with `wakeFix` off (finding #30), proved with it on (`P1_of`)
 - **P2** In every flow, a task whose PR is merged does not stay claimed forever. `mergedClaimed`. Refuted with `closeFix`
   off (finding #31), proved with it on (`P2_of`)
+
+PRs in the main model (board #80; `Merged.lean`). Each task has its PR in `State` (`Task.pr`: opened, its head's checks,
+merged, `told`; `Task.merged`: watchd recorded the merge, task.merged_at), and so does main's CI (`State.run`, GitHub's
+latest push run on main, and `State.ci`, the ci table's newest). An agent's `openPr`, `push` and `merge` (pr-gated:
+`Cfg.gated`, only once green), CI's `finish` and `ciRun`, and watchd --ci's `poll` are actions of `step`; `poll` is
+ci_poll, ci.pr_ci and ci.pr_watch (`prAct`, `prK`, `pollOf`): a claimed task of a live owner whose PR merged is done with
+evidence (a done event), and the owner told (`.merged`, which drops its belief, as `.released` does); in a pr-gated repo the
+owner is told once per head that its checks finished (`.checks`). The Lua runs the poll at the end of the tick; here it is
+a step of its own, which only adds interleavings. A merge's place in `evs` (`Ev.merge`) is GitHub's merge time. S1-S5, N1,
+W1-W4, L1-L4, H1, H2 and A1-A4 are proved with all of it in `step`; S1's invariant counts a belief in a task the poll
+marked done as backed until the owner reads that (`HD`, and `s1_believes_held`: held, dropped, or done with its merge
+recorded). The poll is in `fair`. Over fair runs, with main's fixes:
+
+- **P2** (`P2_of`) a task claimed with its PR merged does not stay so: the poll marks it done.
+- **P1** (`P1_of`, pr-gated) the owner of a claimed task whose PR's checks finished is told, by one urgent message, which
+  its waiter wakes it on (`wakes`). Stated as told, not woken: the wake is the waiter's (fair `wake`), and the stayer's
+  wait is board #79's.
+
+`--back`'s digest has `merged` (`digest_merged`: the tasks whose merge is since away by GitHub's clock and recorded by
+watchd, in merge order: so a PR merged before away and polled after is not since, as the Lua's `merged_at >= since`, the
+reason it reads GitHub's time and not a merged event's id) and `ci` (`digest_ci`: main's latest run as watchd polled it).
 
 Workspaces (sw-bases; `Workspaces.lean` states each as a `Prop`). The protected refs are the bases (`Cfg.bases`: main,
 and a swarm's own such as `formal`); `Git.safe` is reachability from one, checked the way workspace GC must check it
@@ -921,7 +943,11 @@ merged and then reverted still answers merged. `branch -d`, which `delete_branch
 either: it checks merged into the main checkout's HEAD, and only differs from the guarded `update-ref` when the branch
 moved after the sweep's check.
 
-**Not modelled**: the red-main task and CI on the base (a PR's checks are, in `PrWatch.lean`, a layer with no leases and no time: in the main model an idle owner's lapsed claim is reaped, L2, which is how finding #30's stall ended without the fix, two hours on, the task reopened with its PR green); conflict notices and the edit hook (but for agent.wt, and the lock patterns
+**Not modelled**: the red-main task (ci_check; the replay's main runs are pending or green), CI's check-run detail and
+pr_ci's 24 h window and ci_green_at; of PRs (board #80): a task's PR is the task's, from whichever agent owns it, where the
+Lua matches the owner's branch `<owner>/<task>` merged since the first claim (a PR opened by an agent the task was then
+taken from is not replayed); the random runs have no PR or CI steps (only `script-pr-digest`); PrWatch.lean's stalls
+(findings #30, #31) are refuted in its layer, not in `step`; conflict notices and the edit hook (but for agent.wt, and the lock patterns
 it matches, which are lifted); `swarm run` and machines;
 of git: `origin` (the replay has none, so `main` is the base), `gh`'s merged-PR check in landed_ref (ci.pr_watch's is `gh_state`), rebases, the worktree a spawn makes
 (a spawned agent's `recorded` flag and `rhead`, the base tip it was made at, stand for it: no action edits it, so it stays
@@ -940,7 +966,8 @@ an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and la
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
 generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: the user as an actor apart from the communicator; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
-(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs and main's CI (no PR or CI in `State`; board #80), the notes' text and the away line the hooks print to the communicator; a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
+(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): the merge time's one-second grain and GitHub's clock skew (the model's clock is exact; the
+replay merges a PR before away in an earlier second), the notes' text and the away line the hooks print to the communicator; a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a worker agent's own terminal is the model's

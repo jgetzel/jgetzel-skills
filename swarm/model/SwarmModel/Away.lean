@@ -16,7 +16,8 @@ W1-W4 and L1-L4 are proved with them in. Here:
   with `backTells` off (`not_A2live`), on a fair run.
 - A3 (`A3`): non-interference: the away flag changes no staffing decision: the tick's reap, spawns, ends, git and
   events are the same with it on and off; only the notices' urgency differs.
-- A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`): away and back are
+- A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, and board #80's
+  `digest_merged`, `digest_ci`): away and back are
   idempotent (a second away is refused and keeps the first since); back's digest is the events since away. -/
 
 namespace Swarm
@@ -585,6 +586,19 @@ theorem digest_done (c : Cfg) (s : State) (since t : Nat) :
     cases e <;> simp at h
     obtain ⟨h1, rfl⟩ := h; exact ⟨he, h1⟩
   · rintro ⟨he, h⟩; exact ⟨_, he, by simp [h]⟩
+/-- the digest's merged (board #80): the tasks whose PR merged since away by GitHub's clock (its merge's place in `evs`,
+the Lua's merged_at), with the merge recorded by watchd (task.merged_at set). So a PR merged before away and polled after
+is not since, and one merged since away but not yet polled is not listed -/
+theorem digest_merged (c : Cfg) (s : State) (since t : Nat) :
+    t ∈ (digestOf c s since).merged ↔ Ev.merge t ∈ s.evs.drop since ∧ (s.tk t).merged = true := by
+  simp only [digestOf, List.mem_filterMap]
+  constructor
+  · rintro ⟨e, he, h⟩
+    cases e <;> simp at h
+    obtain ⟨h1, rfl⟩ := h; exact ⟨he, h1⟩
+  · rintro ⟨he, h⟩; exact ⟨_, he, by simp [h]⟩
+/-- the digest's ci: main's latest CI run as watchd last polled it -/
+theorem digest_ci (c : Cfg) (s : State) (since : Nat) : (digestOf c s since).ci = s.ci := rfl
 /-- the digest's ended: the slots whose agent ended since away -/
 theorem digest_ended (c : Cfg) (s : State) (since a : Nat) :
     a ∈ (digestOf c s since).ended ↔ Ev.ended a ∈ s.evs.drop since := by

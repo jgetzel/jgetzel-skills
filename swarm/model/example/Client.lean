@@ -22,7 +22,7 @@ theorem never_works_on_others {c : Cfg} (hfix : c.release = .idle) (hhr : c.huma
       · rfl
       · simp only [held, Bool.and_eq_true, beq_iff_eq] at hh e
         exact absurd (Option.some.inj (e.1.symm.trans hh.1)) hab
-    · simp [held, hd]
+    · rcases hd with hd | hd <;> simp [held, hd]
   · cases hw
 
 /-- `env_landedRef` on `Env.ideal`, a machine whose tools tell the truth: its two assumptions are proved here, not

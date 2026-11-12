@@ -63,7 +63,7 @@ structure Tools where
   /-- w' comes after w: whatever the swarm and the world did in between -/
   Later : World → World → Prop
   /-- PR p's head's checks as GitHub runs them (board #28) -/
-  prChecks : World → Nat → PrW.Checks
+  prChecks : World → Nat → Checks
   /-- PR p is merged into its base -/
   prMerged : World → Nat → Bool
   /-- ci.verdict of PR p's `statusCheckRollup` in `gh pr list --json` -/
@@ -158,7 +158,7 @@ structure IdealWorld where
   inputs : Nat → List String
   procs : Nat → Bool
   clock : Nat
-  checks : Nat → PrW.Checks
+  checks : Nat → Checks
   merged : Nat → Bool
 
 def ideal : Tools where

@@ -41,7 +41,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     (hn : act ≠ .tick ∧ act ≠ .boot a ∧ act ≠ .leave a ∧ act ≠ .reapGone a ∧ act ≠ .drop t ∧ act ≠ .releaseOther t ∧
       act ≠ .endOther a true)
     (hq : ∀ b, act ≠ .bgStart b ∧ act ≠ .die b)
-    (hp : Pfx s) (hs : step c s act = some s') (h : Booting s a t) : Booting s' a t := by
+    (hp : Pfx s) (hs : step c s act = some s') (h : Booting s a t) (hnd : (s'.tk t).st ≠ .done) : Booting s' a t := by
   have h0 := h
   obtain ⟨h, hb, hl, hans, hw, hd⟩ := h
   simp only [idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h
@@ -119,9 +119,20 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
       rintro rfl
       simp [hbf, bootingOwner, hown, hb] at hc
     simpa [Booting, idleClaim, ownsClaimed, setTask_agt, tk_setTask_ne hne] using h0
+  case poll =>
+    simp only [step, poll, when, Option.ite_none_right_eq_some, Option.some.injEq] at hs
+    obtain ⟨_, rfl⟩ := hs
+    rw [pollOf_tk] at hnd
+    simp only [Booting, idleClaim, ownsClaimed, pollOf_agt, pollOf_tk]
+    rcases prK_cases c s (s.tk t) with e | ⟨e1, e⟩ | ⟨_, _, e⟩ | ⟨_, _, e⟩ <;> rw [e] at hnd ⊢
+    · simp [hst, hown, hidle, hb, hl, hans, hw, hd]
+    · rw [hst] at e1; cases e1
+    · exact absurd rfl hnd
+    · simp [hst, hown, hidle, hb, hl, hans, hw, hd]
   all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
-    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung] at hs)
+    hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung,
+    openPr, push, merge, finish, ciRun] at hs)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)
   all_goals (try obtain ⟨hc, hs⟩ := hs)
   all_goals (try subst hs)
@@ -260,6 +271,9 @@ theorem booting_reads {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true)
     intro k hk
     refine forever (fun k => Reachable c (r.st k)) n hR (fun k _ ih => ?_) k hk
     exact Reachable.step (r.act k) ih (r.ok k)
+  by_cases hdn : ∃ k, n ≤ k ∧ ((r.st k).tk t).st = .done
+  · obtain ⟨k, -, hk⟩ := hdn; exact ⟨k, by simp [answered, hk]⟩
+  have hnd : ∀ k, n ≤ k → ((r.st k).tk t).st ≠ .done := fun k hk e => hdn ⟨k, hk, e⟩
   by_cases hex : ∃ k, n ≤ k ∧ r.act k = .boot a ∧ Booting (r.st k) a t
   · obtain ⟨k, hk, hact, hB⟩ := hex
     have := boot_reads hao (hfc k hk) (hact ▸ r.ok k) hB
@@ -273,7 +287,7 @@ theorem booting_reads {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true)
       · have hb : r.act k ≠ .boot a := fun e => hex ⟨k, hk, e, ih⟩
         obtain ⟨q1, q2, q3, q4, q6⟩ := hq k hk
         have q5 : r.act k ≠ .releaseOther t := fun e => releaseOther_fc (e ▸ hok) ih (hfc (k + 1) (by omega))
-        exact keep hr hbf ⟨ht, hb, q2, q3, q4, q5, q6⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih
+        exact keep hr hbf ⟨ht, hb, q2, q3, q4, q5, q6⟩ q1 (pfx_of_reachable (hRk k hk)) hok ih (hnd (k + 1) (by omega))
     obtain ⟨k, hk, hact⟩ := Run.fair_ev hf (f := .boot a) (N0 := n) (fun k hk => by
         have := (hall k hk).2.2.2.2.2
         simp [fair, ha, this]) (fun k hk => by
