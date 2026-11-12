@@ -497,6 +497,146 @@ local function replay_pr(t, trace)
   end
 end
 
+-- ---- Restart.lean's layer (board #49): a trace with "restart" replays watchd --restart with real watchd processes ----
+-- Each model watchd is a real `swarm watchd --interval 1` in terminal m<x>; the replay holds every one at the start of
+-- its tick: a fake `hc ls` (a tick's first call) waits for go.<terminal> and marks at.<terminal> while it waits, so a
+-- watchd's tick is a step the replay takes. The new watchd `--restart` starts waits stopped (SIGSTOP) until its takeover,
+-- and the restart itself is stopped but at its own steps. A watchd held at its tick read the record before a takeover;
+-- its loop step lets that tick finish (the check-then-tick gap of Restart.lean's (a)), and its next loop decides.
+-- Checked after each step: meta.watchd and meta.watchd_up name the model's watchds, and each runs as the model says.
+local function replay_rs(t, trace)
+  local signal, wait, fcntl = require "posix.signal", require "posix.sys.wait", require "posix.fcntl"
+  local cli = require "test.cli"
+  local D = util.shquote(t.d)
+  t:fake("hc", "#!/bin/sh\necho \"$*\" >> " .. D .. "/hc.log\ncase \"$1\" in\n"
+    .. "ls) f=" .. D .. "/go.$HC_TERMINAL_ID; touch " .. D .. "/at.$HC_TERMINAL_ID\n"
+    .. "  while [ ! -f $f ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n"
+    .. "  rm -f $f " .. D .. "/at.$HC_TERMINAL_ID; exit 1 ;;\n"
+    .. "run) while [ \"$1\" != -- ]; do shift; done; shift; x=$(cat " .. D .. "/next.term)\n"
+    .. "  HC_TERMINAL_ID=$x nohup sh -c 'kill -STOP $$; exec \"$@\"' sh \"$@\" > " .. D .. "/new.out 2>&1 < /dev/null &\n"
+    .. "  echo $! > " .. D .. "/new.pid; echo \"{\\\"address\\\":\\\"$x\\\"}\" ;;\n"
+    .. "*) echo '{}' ;;\nesac\n")
+  local function sleep(s) require("posix.time").nanosleep({ tv_sec = math.floor(s), tv_nsec = math.floor((s % 1) * 1e9) }) end
+  local function until_(what, f)
+    for _ = 1, 300 do
+      if f() then return end
+      sleep(0.05)
+    end
+    error("timed out waiting for " .. what, 0)
+  end
+  local function exists(p) return lfs.attributes(t.d .. "/" .. p) ~= nil end
+  local function meta(k) local r = t:q1("select v from meta where k=?", k); return r and r.v end
+  local kids, dead = {}, {}  -- forked pids (reaped by us), and those seen exited
+  local function bg(argv, env, out)
+    local pid = unistd.fork()
+    if pid == 0 then
+      local fd = fcntl.open(t.d .. "/" .. out, fcntl.O_WRONLY + fcntl.O_CREAT + fcntl.O_TRUNC, 420)
+      unistd.dup2(fd, 1); unistd.dup2(fd, 2)
+      stdlib.setenv("SWARM_DB", t.db); stdlib.setenv("PATH", t.fakebin .. ":" .. cli.PATH)
+      stdlib.setenv("XDG_DATA_HOME", cli.XDG); stdlib.setenv("SWARM_COMMS", nil)
+      for k, v in pairs(env) do stdlib.setenv(k, v or nil) end
+      unistd.chdir(t.repo)
+      unistd.execp(cli.SWARM, argv)
+      unistd._exit(127)
+    end
+    kids[pid] = true
+    t:defer(function() if not dead[pid] then signal.kill(pid, signal.SIGKILL); pcall(wait.wait, pid) end end)
+    return pid
+  end
+  local function alive(pid)
+    if dead[pid] then return false end
+    if kids[pid] then
+      local p, how, code = wait.wait(pid, wait.WNOHANG)
+      if p == pid then dead[pid] = { how, code }; return false end
+      return true
+    end
+    return signal.kill(pid, 0) == 0
+  end
+  local wds, restart = {}, nil  -- model pid -> {pid=, term=}; the restart's process
+  t:defer(function() for _, w in ipairs(wds) do if w.pid and not kids[w.pid] then signal.kill(w.pid, signal.SIGKILL) end end end)
+  local function rec(p) return p ~= json.null and p and ("%d %s"):format(wds[p + 1].pid, wds[p + 1].term) or nil end
+  local function check(st, where)
+    local function fail(what, got, want)
+      error(("%s: %s: got %s, model has %s"):format(where, what, tostring(got), tostring(want)), 0)
+    end
+    if meta("watchd") ~= rec(st.rec) then fail("meta.watchd", meta("watchd"), rec(st.rec)) end
+    if meta("watchd_up") ~= rec(st.up) then fail("meta.watchd_up", meta("watchd_up"), rec(st.up)) end
+    for p, x in ipairs(st.wds) do
+      if alive(wds[p].pid) ~= x.alive then fail("watchd " .. (p - 1) .. " (pid " .. wds[p].pid .. ") runs", not x.alive, x.alive) end
+    end
+  end
+  local function held(w) until_("watchd " .. w.pid .. " at its tick", function() return exists("at." .. w.term) end) end
+  local function go(w) os.execute("touch " .. D .. "/go." .. w.term) end
+  check(trace.states[1].s, "init")
+  for i = 2, #trace.states do
+    local x = trace.states[i]
+    local p, name, st = x.picks, x.action, x.s
+    local where = ("step %d %s %s"):format(i - 1, name, t.repr(p))
+    local ok, err = pcall(function()
+      if name == "open" then  -- a terminal is a name: m<x>
+      elseif name == "watchd" then
+        local w = { term = "m" .. p.x }
+        w.pid = bg({ "watchd", "--interval", "1" }, { SWARM_NAME = "comms", HC_TERMINAL_ID = w.term }, "wd" .. #wds .. ".out")
+        wds[#wds + 1] = w
+        until_("its record", function() return meta("watchd") == rec(#wds - 1) end)
+        held(w)
+      elseif name == "tick" then  -- the record's watchd, held at its tick
+        local w = wds[st.rec + 1]
+        held(w); go(w)
+        until_("its tick", function() return not exists("go." .. w.term) end)
+        held(w)
+      elseif name == "restart" then
+        local f = assert(io.open(t.d .. "/next.term", "w")); f:write("m" .. p.x); f:close()
+        os.remove(t.d .. "/new.pid")
+        restart = bg({ "watchd", "--restart" }, { SWARM_NAME = false, HC_TERMINAL_ID = false, SWARM_WATCHD_UP_WAIT = "50" }, "restart.out")
+        until_("hc run", function() return tonumber(util.slurp(t.d .. "/new.pid") or "") end)
+        signal.kill(restart, signal.SIGSTOP)
+        local w = { pid = tonumber(util.slurp(t.d .. "/new.pid")), term = "m" .. p.x }
+        wds[#wds + 1] = w
+        until_("the new watchd stopped before its start", function()
+          return (t:exec({ "ps", "-o", "stat=", "-p", tostring(w.pid) }).stdout or ""):match("^%s*T") ~= nil
+        end)
+      elseif name == "takeover" then
+        local w = wds[p.p + 1]
+        signal.kill(w.pid, signal.SIGCONT)
+        until_("its record", function() return meta("watchd") == rec(p.p) end)
+        held(w)
+      elseif name == "rpoll" then signal.kill(restart, signal.SIGCONT); sleep(0.6); signal.kill(restart, signal.SIGSTOP)
+      elseif name == "rok" or name == "rfail" then
+        signal.kill(restart, signal.SIGCONT)
+        until_("the restart's report", function() return not alive(restart) end)
+        local how, code = dead[restart][1], dead[restart][2]
+        local out = util.slurp(t.d .. "/restart.out") or ""
+        if name == "rok" then
+          if code ~= 0 then error("--restart exited " .. tostring(code) .. ": " .. out, 0) end
+          local w = wds[st.rec + 1]
+          t:has(out, ("watchd restarted: pid %d, terminal %s"):format(w.pid, w.term))
+        else
+          if code ~= 1 then error("--restart exited " .. tostring(how) .. " " .. tostring(code) .. ": " .. out, 0) end
+          t:has(out, "watchd restart failed: ")
+          local w = st.rec ~= json.null and wds[st.rec + 1]
+          if w and st.wds[st.rec + 1].alive then t:has(out, ("the old watchd (pid %d) still runs"):format(w.pid)) end
+        end
+      elseif name == "crash" then
+        local w = wds[p.p + 1]
+        signal.kill(w.pid, signal.SIGKILL)
+        until_("it to die", function() return not alive(w.pid) end)
+      elseif name == "loop" then  -- held at a tick it read the record for: that tick ends, then its loop decides
+        local w = wds[p.p + 1]
+        held(w); go(w)
+        if st.wds[p.p + 1].alive then
+          until_("the record", function() return meta("watchd") == rec(st.rec) end)
+          held(w)
+        else
+          until_("it to exit", function() return not alive(w.pid) end)
+        end
+      else error("no replay for Restart action " .. name, 0) end
+    end)
+    if not ok then error(where .. ": " .. tostring(err), 0) end
+    check(st, where)
+  end
+end
+
 local T = {}
 if lfs.attributes(DIR, "mode") == "directory" then
   for f in lfs.dir(DIR) do
@@ -506,7 +646,7 @@ if lfs.attributes(DIR, "mode") == "directory" then
         local file = DIR .. "/" .. f
         local text = file:match("%.gz$") and t:exec({ "gzip", "-dc", file }).stdout or util.slurp(file)
         local trace = json.decode(text)
-        if trace.pr then replay_pr(t, trace) else replay(t, file) end
+        if trace.pr then replay_pr(t, trace) elseif trace.restart then replay_rs(t, trace) else replay(t, file) end
       end
     end
   end

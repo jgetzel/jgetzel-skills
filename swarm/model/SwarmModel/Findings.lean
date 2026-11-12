@@ -1,4 +1,5 @@
 import SwarmModel.Comms
+import SwarmModel.Restart
 import SwarmModel.Spawn
 import SwarmModel.PrWatch
 
@@ -359,6 +360,37 @@ theorem not_C1all_fixed : ¬ C1all { cfg23 with ensureComms := true } :=
 /-- #22 to #24 with `ensureComms` (board #10): C1 holds in each one's world, so no run of it breaks C1 -/
 example : C1 { cfg22 with ensureComms := true } ∧ C1 { cfg23 with ensureComms := true } ∧
     C1 { cfg24 with ensureComms := true } := ⟨C1_of _ rfl, C1_of _ rfl, C1_of _ rfl⟩
+
+-- #34, R1 (b) (board #49). `swarm watchd --restart` with the loop as it was before board #41: a watchd exits as soon as
+-- the record is not its own. Watchd 0 runs from terminal 0 and has ticked; the restart starts watchd 1 in terminal 1,
+-- which takes the record; watchd 0's loop sees a record not its own and exits; watchd 1 dies before its first tick
+-- (a crash, a kill, its hidden terminal gone). No watchd runs, and none will: the restart's report says so, but nothing
+-- restarts it.
+def cfg34 : CCfg := { sw := { nagents := 0, roster := 0, ntasks := 0 }, nswarms := 1, home := [0] }
+def pre34 : List CAction := [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1]
+/-- swarm i has no running watchd process -/
+def noWatchd (w : World) (i : Nat) : Bool := !(List.range w.wds.length).any fun p => (w.proc p).sw == i && w.alive p
+example : (crun cfg34 (pre34 ++ [.loop 0, .crash 1])).any (noWatchd · 0) = true := by decide +kernel
+-- with `waitUp` watchd 0 waits while watchd 1 hasn't ticked, and takes the record back when it dies
+example : crun { cfg34 with waitUp := true } (pre34 ++ [.loop 0]) = none := by decide +kernel
+example : (crun { cfg34 with waitUp := true } (pre34 ++ [.crash 1, .loop 0])).any (fun w => watchdUp w 0 && w.wdOf 0 == some 0)
+    = true := by decide +kernel
+-- and hands over once watchd 1 has ticked
+example : (crun { cfg34 with waitUp := true } (pre34 ++ [.tick 0, .loop 0])).any (fun w => watchdUp w 0 && w.wdOf 0 == some 1
+    && !w.alive 0) = true := by decide +kernel
+
+/-- #34: without board #41's handover the old watchd exits for a new one that never ticks -/
+theorem not_R1b : ¬ R1b cfg34 := by
+  intro h
+  obtain ⟨q, -, hr, -, hu, -⟩ := h.1 ((crun cfg34 pre34).getD default) ((crun cfg34 (pre34 ++ [.loop 0])).getD default) 0
+    (creachable_of_run (acts := pre34) (by decide +kernel)) (by decide +kernel) (by decide +kernel)
+  have e1 : ((crun cfg34 (pre34 ++ [.loop 0])).getD default).wdOf (((crun cfg34 pre34).getD default).proc 0).sw = some 1 := by
+    decide +kernel
+  have e2 : ((crun cfg34 (pre34 ++ [.loop 0])).getD default).upOf (((crun cfg34 pre34).getD default).proc 0).sw = some 0 := by
+    decide +kernel
+  rw [e1] at hr; rw [e2] at hu; cases hr; cases hu
+-- #34 with `waitUp`: R1 (b) holds in its world
+example : R1b { cfg34 with waitUp := true } := R1b_of _ rfl
 
 -- #28, Sp1 and Sp2 (board #16). A spawn's launch raises before launch.sh runs (launch_agent's `die`: it can't write the
 -- agent's settings file), and only launch.sh's exit was undone. Agent 1 leaves, #1 is added, and the tick's launch for
