@@ -138,6 +138,14 @@ local function parser()
   q = p:command("release")  -- give a claimed task back, still open; drop kills it
   q:argument("id"):convert(int)
   opt(q, "--after", nil, id_list):description("ids it now waits on: 3 or 3,5")
+  q = p:command("edit")  -- title, body, model or effort of an open, claimed or blocked task
+  q:argument("id"):convert(int)
+  opt(q, "--title")
+  q:mutex(opt(q, "--body"), opt(q, "--body-file"):description("replace the body with this file's text"),
+    opt(q, "--append"):description("add this text to the end of the body"))
+  opt(q, "--model")
+  opt(q, "--effort"):choices(EFFORTS)
+  q:flag("--urgent"):description("make the owner's notice urgent")
   p:command("drop"):argument("id"):convert(int)
 
   p = ap:command("rules"):command_target("act")

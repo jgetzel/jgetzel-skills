@@ -13,7 +13,7 @@ if main then
   package.cpath = tree .. "/lib/lua/5.1/?.so;" .. package.cpath
 end
 
-local KINDS = "'task-add','claim','spawn','done','block','unblock','release','drop'"  -- tasks.TASK_KINDS
+local KINDS = "'task-add','claim','spawn','done','block','unblock','release','drop','task-edit'"  -- tasks.TASK_KINDS
 local function qs(n) local r = {} for i = 1, n do r[i] = "?" end return table.concat(r, ",") end
 local function each(xs, f) local r = {} for _, x in ipairs(xs) do r[#r + 1] = f(x) end return r end
 

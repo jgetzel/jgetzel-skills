@@ -147,7 +147,7 @@ with subagents.
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.
   `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
 - **Priority.** `swarm task add "<title>" -p N` (0-3, default 2; P0 urgent, P3 someday) and
-  `swarm task priority <id> <N>` (open or claimed task). Startable tasks go by priority, then id: the board,
+  `swarm task priority <id> <N>` (open or claimed task). `swarm task edit <id> [--title T] [--body B | --body-file F | --append TEXT] [--model M] [--effort E] [--urgent]` changes an open, claimed or blocked task: the owner is told, `task show` lists the edit. Startable tasks go by priority, then id: the board,
   the pool a free agent is offered and auto-spawn all use that order, a red main (`main red:`) first of all.
   It never preempts: it takes no claimed task and stops no agent. Known limit: strict order, no aging, so
   new P0-P2 tasks arriving can starve a P3 one.
