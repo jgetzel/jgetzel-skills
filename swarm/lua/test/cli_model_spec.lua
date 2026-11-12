@@ -136,17 +136,10 @@ local function commscheck(t, st, where, R)
   if (dg ~= nil) ~= (md ~= nil) then fail("away_digest", dg and dg.v, md and "a digest") end
   if dg then
     local g = json.decode(dg.v)
-    -- the questions in the model's order (by event); the Lua's times are seconds, so a tie may be ordered by id there
-    local since, got = {}, {}
-    for i, q in ipairs(g.questions) do since[q.id] = q.since; got[i] = q.id end
-    local want = {}
-    for i, id in ipairs(md.qs) do want[i] = id end
-    local sg, sw = { unpack(got) }, { unpack(want) }
-    table.sort(sg); table.sort(sw)
-    if ids(sg) ~= ids(sw) then fail("digest questions", ids(got), ids(want)) end
-    for i = 2, #want do
-      if since[want[i - 1]] > since[want[i]] then fail("digest question order", ids(got), ids(want)) end
-    end
+    -- the questions in the model's order: by their latest question event
+    local got = {}
+    for i, q in ipairs(g.questions) do got[i] = q.id end
+    if ids(got) ~= ids(md.qs) then fail("digest questions", ids(got), ids(md.qs)) end
     local function sorted(rows_, f)
       local o = {}
       for i, r in ipairs(rows_) do o[i] = f(r) end
@@ -386,10 +379,6 @@ local function act(t, name, p, N, G, prev)
   elseif name == "releaseOther" then sw(COMMS, "task", "release", tostring(p.t32))
   -- board #47: the user's away and back, each run twice (the second changes nothing: A4); the communicator's read
   elseif name == "awayOn" then
-    -- a second passes first: the digest's since is a second, so what happened in away's own second counts as since
-    setdb(t, "update event set ts=ts-1")
-    setdb(t, "update task set done_at=done_at-1 where done_at is not null")
-    setdb(t, "update agent set ended=ended-1 where ended is not null")
     sw(agents_HUMAN, "away", "lunch"); sw(agents_HUMAN, "away")
   elseif name == "back" then sw(agents_HUMAN, "away", "--back"); sw(agents_HUMAN, "away", "--back")
   elseif name == "commsRead" then sw(COMMS, "read")

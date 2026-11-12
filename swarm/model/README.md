@@ -317,7 +317,9 @@ so S1-S5, N1, W1-W4 and L1-L4 above are proved with them in.
 - **A4** Away and back are idempotent: a second away is refused and keeps the first since (`away_twice`, `since_kept`),
   `--back` when not away is refused (`back_twice`); back's digest is the events since away (`back_digest`): the questions
   oldest first by their latest question event, then id (`questions_sorted`), the tasks done since and still done
-  (`digest_done`), the agents ended since (`digest_ended`). The replay runs each away and back twice.
+  (`digest_done`), the agents ended since (`digest_ended`). The Lua reads these by event id after the away event's
+  (board #74), as the model by index in `evs`, so what happened in away's own second before it is not since. The replay
+  runs each away and back twice.
 
 Nudge (board #50; `Nudge.lean`). `swarm nudge a` is the action `hnudge a` of `step` (not watchd's unclean `nudge`):
 enabled for a live agent with a terminal (the CLI refuses an unknown, ended or unbound one: `hnudge_enabled`), and the
@@ -904,7 +906,7 @@ an error that is no `exit` (it ends the tick), the human's `swarm spawn`, and la
 terminal while `hc ls` doesn't list it live yet (the row is undone and the agent runs anyway, with its row ended); the handoff and the fence's other half (ctx_tokens is a model bit, `big`, set when the agent stops); the background job is a flag that starts and ends (the Lua reads processes: `machine.bg_agents`), and the replay
 generates none (`bgLives` is checked by `cli_lifecycle_spec`); of H1: `swarm end`'s `stay` check (no model agent stays) and the user as an actor apart from the communicator; of H2: `release --after` (the agent's own release has no `--after` either), the user as an
 actor apart from the communicator, and the stop's text; `reaped` forgets a reap once another agent claims, so after a manual release by the retaker the Lua still lets it retake and the model does not; compaction
-(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs, main's CI and hung stays (no PR, CI or stay in `State`), the notes' text and the away line the hooks print to the communicator; the digest's since is a second in the Lua, so what happens in away's own second, before it, counts as since (the replay lets a second pass before each away); a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
+(`compacted_at`: the model's log only grows); death in the middle of a split command (`die` needs none pending); notices to the communicator but a block's, `swarm away`'s and `--back`'s; of the digest (board #47): merged PRs, main's CI and hung stays (no PR, CI or stay in `State`; boards #79 and #80), the notes' text and the away line the hooks print to the communicator; a failed launch's row is no ended agent (the Lua's digest skips an end with no reap, leave or end event, as Sp1 says nothing is left of it); the 9000-character delivery budget
 (every delivery shows all unread); `swarm join` (an ended agent never returns; its slot is a new agent); several waiters at once; the
 `@all` channel; the hc terminal's own status (only its prompts are modelled, as watchd sees them).
 Of the communicator (`Comms.lean`): the swarms share nothing but terminals (a worker agent's own terminal is the model's
