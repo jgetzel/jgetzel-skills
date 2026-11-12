@@ -6,3 +6,4 @@ import LuaLean.FrameCall
 import LuaLean.Gen
 import LuaLean.Denote
 import LuaLean.Print
+import LuaLean.Contract
