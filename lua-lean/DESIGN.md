@@ -253,7 +253,12 @@ stack") and of a value neither a string nor a number (returned as it is), a thre
 number or a string read as one, an integer mod 2^32 and a double through lj_num2bit (plus 2^52 + 2^51, the low 32
 bits: rounded to even, inf and NaN 0; `Num.toBit`, which the kernel computes), a shift's count mod 32, each result an
 int32 (an integer on dual-number, a double on single-number), `tohex`'s width negative for upper case and at most 254;
-`bitFn`, `RunP.bit` and `bit_tobit`, `bit_band`, `bit_lshift`; the FFI's pure part (`require "ffi"`; #36: `ffiFn`,
+`bitFn`, `RunP.bit` and `bit_tobit`, `bit_band`, `bit_lshift`; with a cdata argument (`band`, `bor`, `bxor`'s any,
+the others' first; #76: `bitFn64`, `check64`) 64-bit, as lib_bit.c and lj_carith_check64 do it: each cdata a scalar
+converted to `int64_t`, or `uint64_t` if one is an 8-byte unsigned integer (a pointer, an array, a struct LuaJIT's
+`cannot convert 'int *' to 'int64_t'`), `band`'s kind every argument converted to that type (a double truncated:
+lj_num2i64), the result a new cdata of it, a shift's count the int32 of its argument mod 64, `tohex` 16 digits unless
+given; `tobit` of a cdata, and a cdata as a 32-bit op's count or `tohex`'s width, its low 32 bits as an int32; the FFI's pure part (`require "ffi"`; #36: `ffiFn`,
 `cdIndex`, `cdSet`, `cdEq`, `RunP.ffi`, `RunP.ctype`, `RunP.cdIndex`): C types of `bool`, the 1- to 8-byte integers
 (LuaJIT's built-in `int8_t` … `uint64_t`, `size_t`, `intptr_t`, …), `float`, `double`, `const`, fixed and
 variable-length (`[?]`) arrays, structs and unions, as LP64 (x64's and arm64's alike) lays them out
@@ -397,8 +402,7 @@ the name by scanning the bytecode back);
    `ffi.copy` or `ffi.fill`), what is LuaJIT's heap's (an address from a number but 0, or into an integer but NULL's;
    `<` or `-` of pointers into two allocations; a pointer stored in a cdata's bytes, or read from them; `tostring`
    of a cdata but a 64-bit integer or a ctype: its address), of a 64-bit integer: a double past its range or NaN
-   into its arithmetic (x64 and arm64 convert them differently), the bit
-   library on a cdata (lj_carith_check64's 64-bit forms, a task of the roadmap), another task's (a ctype indexed or
+   into its arithmetic or the bit library (x64 and arm64 convert them differently), another task's (a ctype indexed or
    used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a message; of C
    calls: an aggregate passed or returned by value, an integer argument past 2^53, a vararg neither a number, a
    string nor nil, a C function's or variable's address or type (`ffi.typeof(C.f)`, a C variable read or written),
@@ -514,7 +518,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, done: "The subset", but the bit library on them; metatypes, enums and C calls #59, done: "The
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, done: "The subset"; the bit library on them #76, done: "The subset"; metatypes, enums and C calls #59, done: "The
 subset"), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) and #33's levels past 1 are #44 (done: "The call
   stack"; a coroutine's stack, `L` and a file's chunk's last line still stop).

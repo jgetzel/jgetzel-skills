@@ -810,7 +810,7 @@ return {commas ops}"
 /-- the FFI's 64-bit integers (#58): numerals (each one object: #77), boxed reads of `int64_t` and `uint64_t`
 elements, arithmetic and
 comparisons of numbers and scalar cdata (signed or unsigned, by 0, past 2^63), tostring, tonumber, string.format's
-`%d` and `%x`, conversions into narrower and wider types, and the errors -/
+`%d` and `%x`, conversions into narrower and wider types, the bit library on them (#76), and the errors -/
 def i64Ops : G String := do
   let v : G String := pick ["1LL", "-1LL", "0LL", "1ULL", "0ULL", "18446744073709551615ULL", "9223372036854775807LL",
     "(-9223372036854775807LL - 1)", "0x7fffffffLL", "4294967296LL", "12345678901234LL", "3ULL", "0x8000000000000000ULL",
@@ -825,7 +825,7 @@ def i64Ops : G String := do
   let ar : G String := pick ["+", "-", "*", "/", "%", "^", "+", "-", "*"]
   let cmp : G String := pick ["==", "~=", "<", "<=", ">", ">="]
   let op : G String := do
-    match ← rnd 10 with
+    match ← rnd 12 with
     | 0 | 1 => pure s!"return tostring({← v} {← ar} {← v})"
     | 2 => pure s!"return {← v} {← cmp} {← v}, {← v} {← cmp} {← v}"
     | 3 => pure s!"return tostring(- {← v}), tonumber({← v}), type({← v})"
@@ -834,7 +834,11 @@ def i64Ops : G String := do
     | 6 => pure s!"return tostring(ffi.cast(\"{← pick ["int64_t", "uint64_t", "size_t"]}\", {← v})), tostring(ffi.new(\"{← pick ["int64_t", "uint64_t", "const int64_t"]}\", {← v}))"
     | 7 => pure s!"return {← pick ["#1LL", "#a", "1LL .. \"\"", "\"\" .. 1ULL", "a[0] .. a[1]", "ffi.typeof(a[0]) == ffi.typeof(\"int64_t\")", "ffi.typeof(u[0]) == ffi.typeof(\"size_t\")", "tostring(ffi.typeof(1ULL))", "tostring(ffi.typeof(\"const int64_t[2]\"))", "tostring(ffi.typeof(a))", "math.floor(1LL)", "(\"x\"):rep(2LL)", "1LL + \"1\"", "1LL < \"2\"", "1LL + p", "p + 1LL - p", "-a", "1ULL - 2"]}"
     | 8 => pure s!"local function f() return {← v} end local function mk() return function() return {← v} end end local t = \{[f()] = 1} return rawequal(f(), f()), rawequal(mk()(), mk()()), rawequal({← v}, {← v}), t[f()], t[{← v}]"
-    | _ => pure s!"local x = {← v} x = x {← ar} {← v} return tostring(x), x == {← v}, tostring(a[0] {← ar} u[0]), tostring(a[1] {← ar} 1)"
+    | 9 => pure s!"local x = {← v} x = x {← ar} {← v} return tostring(x), x == {← v}, tostring(a[0] {← ar} u[0]), tostring(a[1] {← ar} 1)"
+    | _ => do
+      let f ← pick ["tobit", "bnot", "bswap", "band", "bor", "bxor", "lshift", "rshift", "arshift", "rol", "ror", "tohex"]
+      let as ← (List.range (← pick [1, 2, 2, 3, 0])).mapM fun _ => v
+      pure s!"return tostring(bit.{f}({commas as}))"
   let ops ← (List.range 6).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
   return s!"local ffi = require(\"ffi\")
 local a = ffi.new(\"int64_t[2]\", {← pick ["5", "-7", "2^40", "-2^62"]}, {← pick ["3", "-1", "0", "2^33 + 1"]})
@@ -868,6 +872,18 @@ return {commas ops}"
       "k[f()], rawequal(l(), l()), rawequal(l(), loadstring(s)()), rawequal(d(), l()), rawequal(d(), d()), " ++
       "tostring(g()), tostring(- -1LL)").toList ==
   "ok:true,true,false,true,nil,3,true,false,false,true,\"-1LL\",\"1LL\""
+
+-- the bit library on cdata (lib_bit.c, lj_carith_check64), LuaJIT 2.1's on x64: 64-bit unless tobit's, uint64_t if an
+-- argument is one, a number converted to the type, a shift's count an int32, tohex 16 digits
+#guard runCase (fun _ => none) .single []
+    ("local ffi = require('ffi') return tostring(bit.band(-1, 0xffLL)), tostring(bit.bor(1LL, 2ULL)), " ++
+      "tostring(bit.bnot(5ULL)), tostring(bit.bswap(0x0102030405060708LL)), tostring(bit.lshift(1LL, 63)), " ++
+      "tostring(bit.arshift(-256LL, 4)), tostring(bit.rol(0x8000000000000001LL, 1)), bit.lshift(1, 2LL), " ++
+      "bit.tobit(0xffffffffffffffffULL), bit.tohex(-1LL), bit.tohex(255, 12), " ++
+      "select(2, pcall(bit.band, 1LL, ffi.new('int[2]')))").toList ==
+  "ok:\"255LL\",\"3ULL\",\"18446744073709551610ULL\",\"578437695752307201LL\",\"-9223372036854775808LL\"," ++
+    "\"-16LL\",\"3LL\",4,-1,\"ffffffffffffffff\",\"0000000000ff\"," ++
+    "\"bad argument #2 to '?' (cannot convert 'int [2]' to 'int64_t')\""
 
 /-- the FFI's metatypes, enums, its other functions and C calls (#59): a struct's metatype with some of `__index`
 (a table, a function), `__newindex`, the arithmetic metamethods, `__eq`, `__lt`, `__le`, `__len`, `__concat`,
