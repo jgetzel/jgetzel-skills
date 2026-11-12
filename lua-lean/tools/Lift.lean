@@ -1,7 +1,7 @@
 import LuaLean.Show
 import LuaLean.Shallow
 
-/-! `lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]` writes the Lua file as Lean: for each
+/-! `lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]] [--only <f>,...]` writes the Lua file as Lean: for each
 of its functions (the chunk itself is `chunk`), its parsed body `f_body`, the shallow function `f` (`LuaLean/Shallow.lean`'s
 combinators, every local the Lean variable naming its cell) and `f_ok`, the proof that `f` is the interpreter's
 call of the closure, for every fuel: `D.fn_ok` (`LuaLean/Denote.lean`) at the closure. This printer is not trusted:
@@ -323,16 +323,23 @@ partial def drain (i : Nat) (acc : Array (Job × String)) : T (Array (Job × Str
   else pure acc
 
 def main (args : List String) : IO UInt32 := do
+  -- `--only f,g`: just those functions and the ones nested in them (`f_…`)
+  let (args, only) := match args.reverse with
+    | ns :: "--only" :: rest => (rest.reverse, some (ns.splitOn ","))
+    | _ => (args, none)
   let (modName, file, src) ← match args with
     | [m, f] => pure (m, f, none)
     | [m, f, s] => pure (m, f, some s)
-    | _ => do IO.eprintln "usage: Lift.lean <Namespace> <file.lua> [<Import>:<Const>]"; return 1
+    | _ => do IO.eprintln "usage: Lift.lean <Namespace> <file.lua> [<Import>:<Const>] [--only <f>,...]"; return 1
   let bytes ← IO.FS.readBinFile file
   match parseChunk (bytesOf bytes) ((System.FilePath.mk file).fileName.getD file) with
   | .error e => IO.eprintln e; return 1
   | .ok b =>
     let st : St := { jobs := #[⟨"chunk", [], true, b, [], ""⟩], names := ["chunk"] }
     let (out, _) := (drain 0 #[]).run st
+    let out := match only with
+      | some ns => out.filter fun (p : Job × String) => let j := p.1; ns.any fun f => j.name == f || j.name.startsWith (f ++ "_")
+      | none => out
     if out.any (fun (_, d) => (d.splitOn "UNSUPPORTED").length > 1) then
       IO.eprintln s!"{file}: a tree the parser does not make (an assignment target other than a name or an index)"; return 1
     let (imp, srcConst) := match src with

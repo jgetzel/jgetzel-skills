@@ -1,7 +1,8 @@
 #!/bin/sh
 # lua-lean: LuaJIT scripts to Lean, with proofs (DESIGN.md). Needs lake (elan) on the PATH, or nix to fetch it; parsecheck
 # and difftest run the reference LuaJIT (DESIGN.md): $LUAJIT if set, else the repo flake's, else the PATH's.
-#   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]]  the Lean module: each function's body, shallow form and proof (D.fn_ok)
+#   lua-lean lift <file.lua> [<Namespace> [<Import>:<Const>]] [--only <f>,...]  the Lean module: each function's
+#                                         body, shallow form and proof (D.fn_ok); --only: those and their nested ones
 #   lua-lean prove <file.lua>...          lift each into a scratch directory and check its proofs
 #   lua-lean dump (<Name> <file.lua>)...  each file's syntax tree as `def <Name>Src : Block`
 #   lua-lean print <file.lua>             the parsed file printed back as Lua

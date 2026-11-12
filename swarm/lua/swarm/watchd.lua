@@ -930,21 +930,58 @@ function M.restart(c)
   fail(("no new watchd took over within %d s"):format(wait))
 end
 
--- One whole tick under pcall: an error is logged and told to the communicator once per distinct message; the loop goes on.
+-- An error out of a pass: to stderr, and logged and told to the communicator once per distinct message.
 M.LAST_TICK_ERR = nil
-function M.safe_tick(c, comms, repo, opts)
-  local ok, err = pcall(M.watchd_tick, c, comms, repo, opts)
-  if ok then M.LAST_TICK_ERR = nil; return true end
+function M.tick_failed(c, comms, err)
   local msg = type(err) == "table" and ("exit " .. tostring(err.exit)) or tostring(err)
   io.stderr:write("watchd tick: ", msg, "\n")
   if msg ~= M.LAST_TICK_ERR then
     M.LAST_TICK_ERR = msg
-    pcall(function()
-      db.log(c, "swarm", "watchd-tick-error", nil, msg)
-      if comms then msgs.post(c, "swarm", comms, "watchd tick failed (it carries on): " .. msg, false, "system") end
-    end)
+    db.log(c, "swarm", "watchd-tick-error", nil, msg)
+    if comms then msgs.post(c, "swarm", comms, "watchd tick failed (it carries on): " .. msg, false, "system") end
   end
-  return false
+end
+
+-- One pass of watchd's loop: the record, then the tick. Returns up (a tick has finished), and why watchd exits if it
+-- should.
+function M.watchd_pass(c, mine, comms, repo, opts, up)
+  local cur = c:one("select v from meta where k='watchd'")
+  if not cur then return up, ": its record is gone" end
+  if cur.v ~= mine then
+    -- hand over only to a live watchd that has finished a tick; a replacement that died gets the record back
+    local by = c:one("select v from meta where k='watchd_up'")
+    if by and by.v == cur.v and run.pid_alive(cur.v:match("^%S+")) then return up, " was replaced by " .. cur.v end
+    if not run.pid_alive(cur.v:match("^%S+")) then
+      c:tx(function()  -- the record and its event together: a reader that sees one sees both
+        if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
+          db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
+        end
+      end)
+    end
+    return up
+  end
+  M.watchd_tick(c, comms, repo, opts)
+  M.LAST_TICK_ERR = nil
+  if not up then c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine) end
+  return true
+end
+
+-- The pass, an error's report and the pause, each under pcall: an error in one leaves the others to run.
+local function iteration(c, mine, comms, repo, opts, up)
+  local ok, r, why = pcall(M.watchd_pass, c, mine, comms, repo, opts, up)
+  if ok then up = r else pcall(M.tick_failed, c, comms, r) end
+  if not why and not opts.once then
+    pcall(function() io.stdout:flush(); unistd.sleep(opts.interval) end)
+  end
+  return up, why
+end
+
+-- One iteration of watchd's loop. No error escapes it, whatever its calls do (swarm/model/SwarmModel/LoopSafe.lean):
+-- iteration's lines between its pcalls cannot fail in practice, and this pcall makes that a theorem, not a reading.
+-- Returns up, and why watchd exits if it should.
+function M.iterate(c, mine, comms, repo, opts, up)
+  local ok, r, why = pcall(iteration, c, mine, comms, repo, opts, up)
+  return ok and r, why
 end
 
 function M.cmd_watchd(c, a)
@@ -983,32 +1020,10 @@ function M.cmd_watchd(c, a)
   if a.max_agents or not mn then
     c:exec("insert or replace into meta(k,v) values('agent_min',?)", d(a.max_agents or live))
   end
-  local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval }
-  local up = false
-  while true do
-    local cur = c:one("select v from meta where k='watchd'")
-    if not cur then util.die(("watchd (pid %s): its record is gone; exiting"):format(d(unistd.getpid()))) end
-    if cur.v ~= mine then
-      -- hand over only to a live watchd that has finished a tick; a replacement that died gets the record back
-      local by = c:one("select v from meta where k='watchd_up'")
-      if by and by.v == cur.v and run.pid_alive(cur.v:match("^%S+")) then
-        util.die(("watchd (pid %s) was replaced by %s; exiting"):format(d(unistd.getpid()), cur.v))
-      elseif not run.pid_alive(cur.v:match("^%S+")) then
-        c:tx(function()  -- the record and its event together: a reader that sees one sees both
-          if c:exec("update meta set v=? where k='watchd' and v=?", mine, cur.v) > 0 then
-            db.log(c, "swarm", "watchd-back", nil, ("%s died before its first tick; %s carries on"):format(cur.v, mine))
-          end
-        end)
-      end
-    else
-      if M.safe_tick(c, comms, repo, opts) and not up then
-        up = true; c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine)
-      end
-    end
-    if a.once then return end
-    io.stdout:flush()
-    unistd.sleep(a.interval)
-  end
+  local opts = { min_free_gib = a.min_free_mem, model = a.model, effort = a.effort, interval = a.interval, once = a.once }
+  local up, why = false, nil
+  repeat up, why = M.iterate(c, mine, comms, repo, opts, up) until why or a.once
+  if why then util.die(("watchd (pid %s)%s; exiting"):format(d(unistd.getpid()), why)) end
 end
 
 -- Settings file and launch of agent name in cwd, in the swarm's Herdr space; returns launch.sh's output, nil on failure.

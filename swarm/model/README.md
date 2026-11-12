@@ -39,7 +39,8 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
 | `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
 | `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
-| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean` | locks.lua and tasks.lua lifted, built by `check.sh` |
+| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean`, `Watchd.lean` | locks.lua and tasks.lua lifted, and watchd.lua's `M.iterate` (`--only`), built by `check.sh` |
+| `SwarmModel/LoopSafe.lean` | R2 (board #67): no Lua error escapes an iteration of watchd's loop (`iterate_safe`), with `Ok`, a run that ends in no Lua error, and its rules for the shallow combinators |
 | `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34): every assumption about git, hc (`hc_run_starts`: `hc run --bg` starts the program, board #49), gh (`gh_checks`, `gh_state`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named axiom each about `real`; `consistent`: an ideal machine has them all. And sqlite's (board #33): `Db`, `realDb`, one axiom per kind of op (`sqlite_begin`, `sqlite_read`, `sqlite_write`, `sqlite_commit`, `sqlite_rollback`); `sqlite_consistent` |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the assumptions each names as hypotheses (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's assumptions is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`); and each for `real` and `realDb` from Env.lean's axioms, under its old name: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit`, `reap_gone`, `restart_alive`, `waiter_alive`, `lapsed_stays`, `prAct_real`, `realDb_reach`, `real_serializable`, `real_stmt_out`, `real_busyClean` |
@@ -393,6 +394,25 @@ watchd takes the record, the old one exits, the new one dies before its first ti
 if the record's watchd stops running, the one that runs is enabled to take the record over (its start) or back (its loop),
 and fairness takes it. What R1 leaves out: a hand `--takeover` and `--once`; two restarts of one swarm at a time; pid reuse;
 `--restart`'s 90 s as time (its failure may come at any step).
+
+- **R2** No Lua error escapes an iteration of watchd's loop, on the real Lua (board #67). The loop's body is
+  `M.iterate` (`swarm/lua/swarm/watchd.lua`). It calls `iteration` under `pcall` and returns the fresh results.
+  `iteration` runs the pass (the record, then the tick), an error's report and the pause, each under its own `pcall`, so
+  an error in one still leaves the others to run. `LoopSafe.iterate_safe`: a call of `M.iterate`, lifted by `lua-lean
+  lift --only M_iterate` (`Lifted/Watchd.lean`), ends in no Lua error (`Err.val` or `Err.rt`). That holds for every
+  oracle, every fuel and every argument, and for every value `iteration` holds, whatever it does when called: it may
+  return any values, raise any value, change the heap in any way and call any effect. So it covers every behaviour of
+  every call into hc, git, sqlite, re and io. It rests on one thing: the global `pcall` is the builtin, read from a `_G`
+  with no metatable. That is how the semantics starts (`pcall_init`). If `M.iterate` is called with the pcall
+  removed, the proof fails.
+
+R2 does not cover a segfault, a hang (an effect that never returns), running out of memory, or a kill: the process
+ends, or never comes back, without a Lua error. Restarting watchd is R1. A run that stops in the semantics (out of
+fuel, an effect no oracle answers, a feature outside the subset) is not a Lua error either, so R2 says nothing about
+it. Not proved: the lines of `iteration` between its pcalls, and the loop around `M.iterate` (`repeat … until why`,
+then `util.die(why)` on purpose). Proving those needs a frame rule in lua-lean: a call leaves the cells it cannot reach
+unchanged. Without one, a proof cannot trust a local read back after an arbitrary call, so `M.iterate` reads nothing
+it held before the call. The frame rule is board #75.
 
 Spawn reservation and launch failure (`Spawn.lean`, board #16). `swarm spawn --task N` reserves the name and the task in
 one transaction (a row with no terminal, the task claimed for it), makes the worktree, then launches. `SWorld` is the
@@ -1049,7 +1069,7 @@ luajit swarm/lua/test/sql_inventory.lua > /tmp/inv &&
   gzip -9c /tmp/sql.json > swarm/model/sqlcases.json.gz
 luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
 luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
-swarm/model/lift.sh                       # after a change to locks.lua or tasks.lua: regenerate Lifted/
+swarm/model/lift.sh                       # after a change to locks.lua, tasks.lua or watchd.lua: regenerate Lifted/
 swarm/model/lift.sh --all                 # every module lifted and proved, in a scratch directory
 lua-lean/check.sh                         # lua-lean on its own
 lua-lean/lua-lean parsecheck swarm/lua/swarm/*.lua   # the parser against LuaJIT's bytecode

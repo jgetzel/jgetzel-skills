@@ -150,15 +150,22 @@ assert(not peer:one("select 1 from msg where dest='t-comms'"))  -- a lost race i
 unistd.chdir(home)
 proc.run({ "rm", "-rf", dir })
 
--- the whole tick is under pcall: an error in a pass that was not wrapped (ci_poll) used to end watchd
+-- the whole iteration is under pcall: an error in a pass that was not wrapped (ci_poll) used to end watchd, and so did
+-- one in the loop's own read of the record
 do
   local ci = require "swarm.ci"
   local real = ci.ci_poll
   ci.ci_poll = function() error("boom") end
   local c2 = db.connect()
-  assert(watchd.safe_tick(c2, "t-comms", "/nonexistent", { min_free_gib = 0 }) == false)
-  assert(watchd.safe_tick(c2, "t-comms", "/nonexistent", { min_free_gib = 0 }) == false)
+  c2:exec("insert or replace into meta(k,v) values('watchd','me')")
+  local opts = { min_free_gib = 0, once = true }
+  assert(watchd.iterate(c2, "me", "t-comms", "/nonexistent", opts, false) == false)
+  assert(watchd.iterate(c2, "me", "t-comms", "/nonexistent", opts, false) == false)
   assert(#c2:all("select 1 from event where kind='watchd-tick-error'") == 1)  -- once per distinct message
   ci.ci_poll = real
-  assert(watchd.safe_tick(c2, "t-comms", nil, { min_free_gib = 0 }) == true)
+  assert(watchd.iterate(c2, "me", "t-comms", nil, opts, false) == true)
+  assert(c2:one("select v from meta where k='watchd_up'").v == "me")
+  local gone = setmetatable({}, { __index = function() error("database is locked") end })
+  local up, why = watchd.iterate(gone, "me", "t-comms", nil, opts, true)
+  assert(up == true and why == nil)
 end
