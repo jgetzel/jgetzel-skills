@@ -664,6 +664,10 @@ def nudge (c : Cfg) (s : State) (a : Nat) : Option State :=
   let g := s.agt a
   when (c.uncleanNudge && idleFree s a && unlanded c s a && g.stale && g.waiter && !g.nudged)
     (post (setAg s a ({ · with nudged := true })) ⟨none, a, true, .nudge, 0⟩)
+/-- `swarm nudge a` (agents.cmd_nudge): refused for an unknown, ended or unbound agent; else `hc send` types one line
+into a's terminal (Env.lean's `hcSendTargets`) and logs a nudge event, neither of which the model keeps. The line's
+effect on a is a's own `prompt`. Not watchd's `nudge` -/
+def hnudge (c : Cfg) (s : State) (a : Nat) : Option State := when ((s.agt a).live && !c.unbound.contains a) s
 /-- the owner of `t` has not had its first turn -/
 def bootingOwner (s : State) (t : Nat) : Bool := match (s.tk t).owner with | some o => (s.agt o).boot | none => false
 def expire (c : Cfg) (s : State) (t : Nat) : Option State :=
@@ -768,7 +772,7 @@ inductive Action where
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
-  | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat)
+  | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat) | hnudge (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
@@ -784,6 +788,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .stop a big => stop c s a big | .wake a => wake c s a | .wakeRead a => wakeRead c s a
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
   | .git a op => gitCmd c s a op | .world w op => world s w op | .stale a => stale s a | .nudge a => nudge c s a
+  | .hnudge a => hnudge c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps

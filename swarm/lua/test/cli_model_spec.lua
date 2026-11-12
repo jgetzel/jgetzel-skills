@@ -393,6 +393,23 @@ local function act(t, name, p, N, G, prev)
     sw(agents_HUMAN, "away", "lunch"); sw(agents_HUMAN, "away")
   elseif name == "back" then sw(agents_HUMAN, "away", "--back"); sw(agents_HUMAN, "away", "--back")
   elseif name == "commsRead" then sw(COMMS, "read")
+  elseif name == "hnudge" then  -- N1' (board #50): the communicator's `swarm nudge`; the step changes nothing in the model
+    -- a roster agent joined outside hc has no terminal, which the model's replay instance (no `unbound`) doesn't have:
+    -- bound for this command only
+    local r = t:q1("select hc from agent where name=?", p.a48)
+    local bound = r.hc and r.hc ~= ""
+    if not bound then setdb(t, "update agent set hc=? where name=?", "hc-" .. p.a48, p.a48) end
+    local ev = t:q1("select count(*) n from event").n
+    local ok, e = pcall(sw, COMMS, "nudge", p.a48)
+    if not bound then setdb(t, "update agent set hc=null where name=?", p.a48) end
+    if not ok then error(e, 0) end
+    local log = util.splitlines(util.slurp(t.d .. "/hc.log") or "")
+    local want = "send " .. (bound and r.hc or "hc-" .. p.a48) .. " " .. require("swarm.agents").NUDGE
+    if log[#log] ~= want then error(("hc's last call was %q, want %q"):format(tostring(log[#log]), want), 0) end
+    local new = t:q("select kind, agent, path from event order by id desc limit 1")[1]
+    if t:q1("select count(*) n from event").n ~= ev + 1 or new.kind ~= "nudge" or new.agent ~= COMMS or new.path ~= p.a48 then
+      error("nudge's event: " .. t.repr(new), 0)
+    end
   elseif name == "endOther" then  -- H1: the user's or the communicator's `swarm end`, --force or not
     if p.f33 then sw(COMMS, "end", p.a33, "--force") else sw(COMMS, "end", p.a33) end
   elseif name == "tick" then sw(COMMS, "watchd", "--once", "--comms", COMMS, "--max-agents", CAP, "--min-free-mem", "0")

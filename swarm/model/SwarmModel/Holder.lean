@@ -370,6 +370,7 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .awayOn, hs => exact step_gen (by simp) hl hs
   | .back, hs => exact step_gen (by simp) hl hs
   | .commsRead, hs => exact step_gen (by simp) hl hs
+  | .hnudge b, hs => exact step_gen (by simp) hl hs
 
 
 -- ---------- no agent starts a background job ----------

@@ -709,6 +709,7 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case awayOn => obtain ⟨_, rfl⟩ := hstep; exact hs
   case back => obtain ⟨_, rfl⟩ := hstep; exact hs
   case commsRead => obtain ⟨_, rfl⟩ := hstep; exact hs
+  case hnudge => obtain ⟨_, rfl⟩ := hstep; exact hs
   case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case age a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
