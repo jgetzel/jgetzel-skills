@@ -437,7 +437,7 @@ md5.lua's `str2lei`) and C declarations (#59).
 
 ```sh
 lua-lean/check.sh                              # gates, build, audit, committed chunks, test scripts: about 15 s
-lua-lean/lua-lean lift f.lua [Ns [Imp:Const]] > F.lean   # the module; import it with LuaLean on the path
+lua-lean/lua-lean lift f.lua [Ns [Imp:Const]] [--only f,g] > F.lean  # the module (--only: those functions and their nested ones); import it with LuaLean on the path
 lua-lean/lua-lean prove f.lua...               # lift each and check its proofs in a scratch directory
 lua-lean/lua-lean parsecheck f.lua...          # the parser against LuaJIT's bytecode
 lua-lean/lua-lean run [--lib p=dir] f.lua      # f.lua under the semantics; luajit lua-lean/test/luasem.lua f.lua under LuaJIT
