@@ -457,6 +457,40 @@ function M.fate(a, t, x, has_terms, f)
   return "end"
 end
 
+M.JOB_IDLE = 10 * 60   -- a finished agent idle this long, held only by a sleep-loop job, is nudged once
+M.JOB_GRACE = 10 * 60  -- ...and ended this long after the nudge if still idle
+
+-- Whether job process p (a Bash-tool shell) is just waiting: no descendant but sleep/shells, and little CPU.
+-- shortcut: cpu_s is cumulative, so a shell that once ran hot (>30 s) is spared forever; fine for a poll loop.
+function M.sleep_loop(p, procs)
+  local light = { sleep = true, bash = true, sh = true, zsh = true }
+  local function walk(pid)
+    for _, q in pairs(procs) do
+      if q.ppid == pid and (not light[q.comm] or (q.cpu_s or 0) > 30 or not walk(q.pid)) then return false end
+    end
+    return true
+  end
+  return (p.cpu_s or 0) <= 30 and walk(p.pid)
+end
+
+-- An agent fate kept only for its background job (f.proc): once idle JOB_IDLE, post one nudge; JOB_GRACE later, end it
+-- and tell the communicator the job's command line. A real run (non-sleep child, CPU time) is left alone.
+function M.idle_job(c, a, f, t, comms, x, has_terms)
+  local last = a.last_active or 0
+  if t - last < M.JOB_IDLE or not f.proc then return end
+  local only = setmetatable({ job = function() return false end, rec = false }, { __index = f })
+  local v = M.fate(a, t, x, has_terms, only)
+  if v ~= "end" and v ~= "reuse" then return end
+  if not M.sleep_loop(f.proc, machine.procs()) then return end
+  local nudge = c:one("select ts from event where agent=? and kind='job-nudge' and ts>=? order by id desc limit 1", a.name, last)
+  if not nudge then
+    db.log(c, a.name, "job-nudge")
+    msgs.post(c, "swarm", a.name, "Your task is done; kill your background job or say why you stay (`swarm stay \"<what>\"`).", false, "system")
+  elseif t - nudge.ts >= M.JOB_GRACE and M.end_agent(c, a) then
+    msgs.post(c, "swarm", comms, ("ended %s: idle with only a background job left: %s"):format(a.name, util.cut(f.proc.args, 120)), false, "notice")
+  end
+end
+
 -- fate's reads for one tick (lifecycle) or one snapshot (state --json): reads(n) is agent n's f. Its unlanded() leaves
 -- the worktree and bases in f.held, f.B; job() leaves the process in f.proc.
 function M.reads(c, main, wts, all_wts, pool)
@@ -535,8 +569,10 @@ function M.lifecycle(c, t, comms, terms, opts)
   local reusable = {}
   for _, a in ipairs(agents.live_agents(c)) do
     local f = R.f(a.name)
-    local v = M.fate(a, t, nz(a.hc) and terms ~= nil and by[a.hc] or nil, terms ~= nil, f)
-    if v == "unclean" then M.unclean(c, a, f.held, f.B[1], t, comms)
+    local x = nz(a.hc) and terms ~= nil and by[a.hc] or nil
+    local v = M.fate(a, t, x, terms ~= nil, f)
+    if v == nil and f.proc then M.idle_job(c, a, f, t, comms, x, terms ~= nil)
+    elseif v == "unclean" then M.unclean(c, a, f.held, f.B[1], t, comms)
     elseif v == "reuse" then reusable[#reusable + 1] = a
     elseif v == "end" then M.end_agent(c, a) end
   end
