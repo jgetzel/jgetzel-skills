@@ -53,6 +53,20 @@ def erase : CType → CType
 def same (a b : CType) : Option Bool :=
   if a == b then some true else if a.erase == b.erase then none else some false
 
+/-- a pointer's or array's element type, `const` in a `const` array -/
+def elem : CType → Option CType
+  | .ptr t | .arr t _ => some t
+  | .const (.arr t _) => some (.const t)
+  | .const t => elem t
+  | _ => none
+
+/-- a number type's kind, as lj_cconv_compatptr tells them apart: a bool, a float, an integer -/
+def numKind : CType → Option Nat
+  | .bool => some 0
+  | .float | .double => some 1
+  | .int .. | .ch => some 2
+  | _ => none
+
 def roundUp (n a : Nat) : Nat := (n + a - 1) / a * a
 
 mutual
@@ -88,6 +102,24 @@ def recSize (u : Bool) : List (String × CType) → Nat → Option Nat
     let s ← size t
     recSize u fs (if u then max o s else roundUp o (align t) + s)
 end
+
+/-- lj_cconv_compatptr: whether a pointer of type `d` takes the address in a value of type `s` (a pointer, an array
+or a struct), by `mode`: 0 as C does (no qualifier discarded, a `void *` on either side), 1 qualifiers ignored
+(CCF_IGNQUAL: a difference, `<`), 2 the same qualifiers (CCF_SAME: what pointers point to). An integer's sign is not
+looked at -/
+partial def compat (mode : Nat) (d s : CType) : Bool :=
+  match d.elem with
+  | none => false
+  | some de =>
+    let (dc, dq) := de.strip
+    let (sc, sq) := match s.elem with | some se => se.strip | none => (s.strip.1, false)
+    let qok := if mode == 2 then dq == sq else mode == 1 || dq || !sq
+    qok && ((mode == 0 && (dc == .void || sc == .void)) ||
+      match dc, sc with
+      | .void, .void => true
+      | .ptr _, .ptr _ | .arr .., .arr .. => dc.size == sc.size && compat 2 dc sc
+      | .agg .., .agg .. => dc == sc
+      | _, _ => dc.numKind.isSome && dc.numKind == sc.numKind && dc.size == sc.size)
 
 /-- a struct's or union's fields, each at its offset -/
 def offsets (u : Bool) (fs : List (String × CType)) : List (String × Nat × CType) :=
@@ -392,5 +424,12 @@ def parseType (s : List Char) (d : CDecls) : Option (CType × CDecls) := do
 #guard (parseCdef "int printf(const char *fmt, ...);".toList {}).isSome
 #guard (CType.repr (.arr (.arr (.const (.int 4 true)) (some 3)) (some 2))) == some "const int [2][3]"
 #guard (CType.repr (.arr (.int 4 true) none)) == some "int [?]"
+-- LuaJIT's: a string to `const int *` and `char *` no, to `const uint8_t *` yes; `const double *` to `const void *`
+-- yes, to `void *` no; `const int **` to `int **` no; `-` of `uint32_t *` and `const int *` yes
+#guard !CType.compat 0 (.ptr (.const (.int 4 true))) (.arr (.const .ch) none) &&
+  CType.compat 0 (.ptr (.const (.int 1 false))) (.arr (.const .ch) none) && !CType.compat 0 (.ptr .ch) (.arr (.const .ch) none) &&
+  CType.compat 0 (.ptr (.const .void)) (.ptr (.const .double)) && !CType.compat 0 (.ptr .void) (.ptr (.const .double)) &&
+  !CType.compat 0 (.ptr (.ptr (.int 4 true))) (.ptr (.ptr (.const (.int 4 true)))) &&
+  CType.compat 1 (.ptr (.int 4 false)) (.ptr (.const (.int 4 true)))
 
 end Lua

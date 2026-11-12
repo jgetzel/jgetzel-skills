@@ -268,7 +268,19 @@ boolean 0 or 1, a table or cdata of the type into an aggregate), and LuaJIT's er
 ffi call's caller (`'T' has no member named 'k'`, `cannot be indexed with`, `cannot convert 'X' to 'T'`, `too many
 initializers`, `attempt to write to constant location`); `==` of two arrays or structs where their bytes start at
 one place, of one and a value not a cdata false, of two ctypes as one type; `type` `cdata`, `tonumber` of a scalar,
-`getmetatable` `"ffi"`. The world (*Effects*): `print` (with
+`getmetatable` `"ffi"`. Pointers (#57: `Obj.cptr`, `toPtr`, `ptrLookup`, `cdArith`, `cdLess`, `CType.compat`): a
+pointer is an allocation (a cdata's bytes, or a Lua string's bytes and NUL, `Obj.cstr`, read only) and an offset in
+it, or NULL; from nil (NULL), a string (`const char *`, as md5.lua's `str2lei` makes one), an array, a struct or
+another pointer, by `ffi.new`, a ctype's call or `ffi.cast` (which also takes 0 as NULL), the pointee types checked as
+lj_cconv_compatptr does (no qualifier discarded, `void *` either way, an integer's sign not looked at); `p[i]` and
+`->` (`p.f` through a pointer to a struct) read and write in the allocation, a const pointee LuaJIT's error; `p ± n`
+(and `n + p`, an array as its first element's pointer) a new `T *` in the allocation, to its end; `p - q` in elements;
+`==` by address (NULL is nil; a pointer to a string's first byte is that string, as LuaJIT interns them), `<` and
+`<=` in one allocation, NULL below every other; `ffi.string` of a pointer, `ffi.copy` (a string with its NUL) and
+`ffi.fill`; LuaJIT's errors for the rest (`attempt to perform arithmetic on 'int *' and 'boolean'`, `attempt to
+compare`, `attempt to concatenate`, `size of C type is unknown or too large`, `cannot convert 'const int [2]' to
+'int *'`), arithmetic and `..` of any cdata reaching them through every cdata's metamethods (`ffi.__add`, …). The
+world (*Effects*): `print` (with
 the builtin `tostring`) and `io.write` as LuaJIT writes their arguments, `io.write`'s bad argument raised after the
 arguments before it are written; `os.time` of a date table (each field through `__index`, truncated, the defaults and
 `field 'day' missing in date table`); `os.date` with or without `!`, `*t`, and strftime's conversions in the C locale
@@ -279,7 +291,7 @@ Out: LuaJIT's syntax beyond Lua 5.1 backported from 3.0 (its `doc/extensions.htm
 `~`, `<<`, `>>`, `~>>`), `!`, `&&`, `||`, `!=`, the conditional `a ? b : c`, safe navigation (`t?.k`, `t?.[k]`,
 `f?.()`, `o?.:m()`, `o:m?.()`), `??`, compound assignment (`+= -= *= /= %= &= |= ~= <<= >>= ~>>= ..=`), the
 `continue` statement, `const` declarations, short functions (`x -> e`, `|a, b| -> e`, `|| -> do ... end`),
-underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); FFI pointers (#57), 64-bit integer cdata (#58),
+underscores in numerals (`1_000`), FFI numerals (`1LL`, `2i`); 64-bit integer cdata (#58),
 `ffi.metatype`, enums and C calls with cdata (#59): `ffi`'s other fields are handles; `__gc`, `string.format("%a")`, and the rest of LuaJIT 2.1's library: `jit`, `debug`'s `getlocal`, `setlocal`,
 `getregistry`, `getfenv`, `setfenv`, `upvalueid`, `upvaluejoin`, `sethook`, `gethook`, `debug.debug`,
 `collectgarbage`, `gcinfo`, `module`, `newproxy`, `loadfile`, `arg` and
@@ -343,9 +355,13 @@ the name by scanning the bytecode back);
    one ABI only; a 1-byte integer's or an anonymous struct's name in a message, `char`/`signed char` and `struct 102`
    being the ABI's and LuaJIT's numbering), undefined in C or on the CPU (an index out of bounds, a read past a
    cdata's bytes, a double past int64's range or NaN into an integer, a NaN stored or read, a string or table that
-   leaves a new array partly uninitialized), another task's (a pointer's value, an 8-byte integer read: LuaJIT's
-   boxed one, arithmetic, `<`, `..`, `#`, `tostring` and `==` of a scalar cdata, a ctype indexed or used as a
-   value), a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
+   leaves a new array partly uninitialized; of a pointer: NULL dereferenced, an element or a result of `p ± n`
+   outside its allocation, a write into a Lua string, overlapping bytes to `ffi.copy`, a negative length to
+   `ffi.copy` or `ffi.fill`), what is LuaJIT's heap's (an address from a number but 0, or into an integer but NULL's;
+   `<` or `-` of pointers into two allocations; a pointer stored in a cdata's bytes, or read from them), another
+   task's (an 8-byte integer read: LuaJIT's boxed one, arithmetic, `<`, `#`, `tostring` and `==` of a scalar cdata, a
+   ctype indexed or used as a value; a function as a pointer: a callback), a `const` pointer's or array's type in a
+   message, a C declaration outside `CDecl.lean`'s subset (or one LuaJIT refuses: the message would be its parser's),
    a reference's type given to `ffi.typeof`, `new` or `cast`, a ctype call's bad argument (LuaJIT names no function),
    an allocation past 64 KiB.
 3. **Known gaps**, where the semantics answers and LuaJIT may answer otherwise, so a proof could be about the wrong
@@ -371,6 +387,9 @@ the name by scanning the bytecode back);
      dumps of distinct closures are unequal, where LuaJIT's bytes may be equal (one function made twice), and calls
      the dump (an error);
    - `getmetatable` of a dump: nil, as of any string above;
+   - what a pointer points at stays: LuaJIT frees a cdata or string no value holds though a pointer still points into
+     it (the pointer does not hold it), and reading it then is undefined. A spec about a pointer must keep its
+     allocation held (md5.lua's `str2lei` reads its argument's bytes while the argument is live);
    - `type` of an effect handle (`io.read`, `os.getenv`, `math.random`): `userdata`, a function in LuaJIT; and a
      handle read rather than called (`jit.os`, `package.preload`, `ffi.os`) is a handle where LuaJIT has a
      string or a table. `lua-lean check` names each use.
@@ -387,7 +406,7 @@ the other 47, 39 are in the subset (29 of 53, before the metamethods of G3c, `st
 pure part), and their 632 top-level functions give 1451 calls that reach no effect. Outside it, by the files that use
 each: `debug.upvaluejoin` 2, `package.config` 2, `jit` 2, a module not given as source 2 (`resty.sha`,
 `pl.operator`). Of the calls left out, most stop at an effect: Penlight's chunks at a `load` of a syntax error (#62),
-FFI pointers (#57) and C declarations (#59).
+FFI pointers (#57, since in the subset: md5.lua's `str2lei`) and C declarations (#59).
 
 ## Layout and use
 
@@ -442,7 +461,7 @@ proof; a statement is never weakened to make a proof go through.
 
 - **G2** subset checker: `lua-lean check f.lua` and the corpus (done; "The subset"). Its commonest misses are
   tasks of their own: `debug` (#31, done without a call stack: "The subset"), weak tables (#32, done: "Tables"), function environments (#33, done but a level past 1: "The subset"),
-  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
+  `string.dump` (#34, done: "The subset"), `bit` (#35, done: "The subset"), an FFI subset (#36, done: "The subset"; pointers #57, done: "The subset"; 64-bit integers #58, metatypes, enums and C calls #59), check's own (#37, done: a script's sibling modules as source, and a call's error of level 2). What #31 left for a model of the call stack (a level
   to `getinfo`, `traceback`'s text, a closure's source and lines) and #33's levels past 1 are #44 (done: "The call
   stack"; a coroutine's stack, `L` and a file's chunk's last line still stop).
 - **G3** metamethods as LuaJIT 2.1 does them, in the interpreter, translator and rules: `__index`, `__newindex`,

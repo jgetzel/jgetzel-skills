@@ -96,7 +96,7 @@ theorem callPrim_bit (I : Sem) (n : Nat) (name : String) (args : List Val) (hn :
 theorem callPrim_ffi (I : Sem) (n : Nat) (name : String) (args : List Val) (hn : name ∈ ffis.map ("ffi." ++ ·)) :
     callPrim I.srcs I.oracle I.tgt (n + 1) name [] args = ffiFn name args := by
   simp only [ffis, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, String.reduceAppend] at hn
-  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
+  rcases hn with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rw [callPrim, basicFn] <;> simp
 
 /-- a cdata's call: a ctype's, its ffi.new -/
 theorem call_cdata (I : Sem) (n a : Nat) (args : List Val) :
