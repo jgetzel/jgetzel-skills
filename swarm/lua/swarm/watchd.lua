@@ -152,9 +152,12 @@ end
 -- Nothing in worktree wt is unlanded relative to ref B, or to any ref of the list B (sw-lifecycle §4.2).
 function M.landed(wt, B, main)
   if not exists(wt) then  -- nothing uncommitted can be lost; judge by its branch if git still knows it
-    local m = re.search("^worktree " .. re.escape(wt) .. "\\n(?:.*\\n)*?branch refs/heads/(.*)$",
-      proc.run({ "git", "-C", main, "worktree", "list", "--porcelain" }) or "", re.M)
-    return not m or M.landed_ref(main, m[1], B)
+    local br, inwt  -- line scan of the porcelain list: no backtracking
+    for line in (proc.run({ "git", "-C", main, "worktree", "list", "--porcelain" }) or ""):gmatch("[^\n]+") do
+      if line:sub(1, 9) == "worktree " then inwt = line:sub(10) == wt
+      elseif inwt and line:sub(1, 18) == "branch refs/heads/" then br = line:sub(19); break end
+    end
+    return not br or M.landed_ref(main, br, B)
   end
   local st = proc.run({ "git", "-C", wt, "status", "--porcelain" })
   if st == nil or util.strip(st) ~= "" then return false end
@@ -924,6 +927,23 @@ function M.restart(c)
   fail(("no new watchd took over within %d s"):format(wait))
 end
 
+-- One whole tick under pcall: an error is logged and told to the communicator once per distinct message; the loop goes on.
+M.LAST_TICK_ERR = nil
+function M.safe_tick(c, comms, repo, opts)
+  local ok, err = pcall(M.watchd_tick, c, comms, repo, opts)
+  if ok then M.LAST_TICK_ERR = nil; return true end
+  local msg = type(err) == "table" and ("exit " .. tostring(err.exit)) or tostring(err)
+  io.stderr:write("watchd tick: ", msg, "\n")
+  if msg ~= M.LAST_TICK_ERR then
+    M.LAST_TICK_ERR = msg
+    pcall(function()
+      db.log(c, "swarm", "watchd-tick-error", nil, msg)
+      if comms then msgs.post(c, "swarm", comms, "watchd tick failed (it carries on): " .. msg, false, "system") end
+    end)
+  end
+  return false
+end
+
 function M.cmd_watchd(c, a)
   if a.dry_run then
     for _, x in ipairs(M.sweep_worktrees(c, nil, true)) do
@@ -978,8 +998,9 @@ function M.cmd_watchd(c, a)
         end)
       end
     else
-      M.watchd_tick(c, comms, repo, opts)
-      if not up then up = true; c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine) end
+      if M.safe_tick(c, comms, repo, opts) and not up then
+        up = true; c:exec("insert or replace into meta(k,v) values('watchd_up',?)", mine)
+      end
     end
     if a.once then return end
     io.stdout:flush()
