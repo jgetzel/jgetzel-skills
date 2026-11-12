@@ -56,7 +56,8 @@ local tmp = os.tmpname(); os.remove(tmp); os.execute("mkdir -p " .. q(tmp))
 local list = assert(io.open(tmp .. "/jobs", "w"))
 for i, j in ipairs(jobs) do
   -- Portable timeout (no GNU timeout on macOS): a watchdog kills the job; the job's status is then 137.
-  list:write(("(luajit %s --one %s %s >%s/%d.out 2>&1 & p=$!; (sleep %d; kill -9 $p 2>/dev/null) & w=$!; wait $p; echo $? >%s/%d.rc; kill $w 2>/dev/null)\n"):format(
+  -- The watchdog's fds go to /dev/null: its orphaned sleep would otherwise hold a piped stdout open.
+  list:write(("(luajit %s --one %s %s >%s/%d.out 2>&1 & p=$!; (sleep %d; kill -9 $p) >/dev/null 2>&1 & w=$!; wait $p; echo $? >%s/%d.rc; kill $w 2>/dev/null)\n"):format(
     q(arg[0]), q(j.f), j.k and q(j.k) or "", tmp, i, TIMEOUT, tmp, i))
 end
 list:close()
