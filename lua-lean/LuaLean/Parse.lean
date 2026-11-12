@@ -6,7 +6,8 @@ not part of what is proved: proofs are about the syntax tree it gives, written o
 namespace Lua
 
 inductive Token where
-  | name (s : String) | kw (s : String) | num (n : Num) | str (s : List Char) | sym (s : String) | eof
+  | name (s : String) | kw (s : String) | num (n : Num) | cnum (v : Nat) (u : Bool) | str (s : List Char)
+  | sym (s : String) | eof
   deriving Inhabited
 
 def keywords : List String :=
@@ -106,6 +107,22 @@ partial def quoted (q : Char) (s : List Char) (acc : List Char) (nl : Nat := 0) 
       else .error "invalid escape sequence"
     | [] => .error "unfinished string"
 
+/-- an FFI numeral (lj_strscan's STRSCAN_OPT_LL): a decimal or hex integer and `LL`, `ULL` or `LLU`, in either
+case, below 2^64; its value and whether it is a `uint64_t` -/
+def cnumeral (w : List Char) : Option (Nat × Bool) := do
+  let l := w.map Num.lower
+  let sfx (x : String) := l.drop (l.length - x.length) == x.toList
+  let (ds, u) ← if sfx "ull" || sfx "llu" then some (l.take (l.length - 3), true)
+    else if sfx "ll" then some (l.take (l.length - 2), false) else none
+  let (b, ds) := match ds with | '0' :: 'x' :: r => (16, r) | r => (10, r)
+  let (v, n, rest) := Num.spanDigits b ds 0 0
+  if n == 0 || !rest.isEmpty || v ≥ 2 ^ 64 then none else some (v, u)
+
+#guard ["1LL", "1ull", "0x10lLU", "18446744073709551615ULL", "00012LL", "0x00000000000000001LL", "1L", "1LLL",
+  "1ULLU", "1e2LL", "1.5LL", "0xLL", "18446744073709551616ULL", "0x10000000000000000LL", "2i"].map
+  (cnumeral ·.toList) == [some (1, false), some (1, true), some (16, true), some (2 ^ 64 - 1, true), some (12, false),
+  some (1, false), none, none, none, none, none, none, none, none, none]
+
 def syms3 : List String := ["..."]
 def syms2 : List String := ["==", "~=", "<=", ">=", "..", "::"]
 def syms1 : List Char := "+-*/%^#<>=(){}[];:,.".toList
@@ -139,7 +156,9 @@ partial def lex (s : List Char) (acc : Array (Token × Nat)) (line : Nat := 1) :
       let (w, rest) := numeral (c :: r) []
       match Num.scanNum w with
       | some (f, []) => lex rest (acc.push (.num (Num.narrow f), line)) line
-      | _ => .error s!"malformed number {String.ofList w}"
+      | _ => match cnumeral w with
+        | some (v, u) => lex rest (acc.push (.cnum v u, line)) line
+        | none => .error s!"malformed number {String.ofList w}"
     else if c == '"' || c == '\'' then do
       let (str, rest, nl) ← quoted c r []
       lex rest (acc.push (.str str, line + nl)) (line + nl)
@@ -300,6 +319,7 @@ partial def expr (limit : Nat := 0) : P Exp := do
 partial def simpleExp : P Exp := do
   match ← peek with
   | .num n => advance; return .num n
+  | .cnum v u => advance; return .cnum v u
   | .str s => advance; return .str s
   | .kw "nil" => advance; return .nil
   | .kw "true" => advance; return .tru

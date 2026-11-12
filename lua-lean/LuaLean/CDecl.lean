@@ -259,7 +259,8 @@ def ofWords (ws : List String) : Option CType :=
   | ["char"], none => some .ch
   | ["char"], some s => some (.int 1 s)
   | ["short"], s | ["int", "short"], s => some (.int 2 (s.getD true))
-  | ["long"], s | ["int", "long"], s | ["long", "long"], s | ["int", "long", "long"], s => some (.int 8 (s.getD true))
+  | ["long"], s | ["int", "long"], s => some (.int 8 (s.getD true))
+  -- `long long` is a ctype of LuaJIT's apart from int64_t, named as it is: outside the subset
   | ["void"], none => some .void
   | ["bool"], none | ["_Bool"], none => some .bool
   | ["float"], none => some .float

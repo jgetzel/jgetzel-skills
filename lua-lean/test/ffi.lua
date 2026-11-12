@@ -68,4 +68,18 @@ function M.pad(s, n, c)
   return ffi.string(buf, n)
 end
 
+-- a string's 64-bit polynomial hash (FNV's offset and prime, mod 2^64): its digits and its hex
+function M.hash64(s)
+  local h = 14695981039346656037ULL
+  for i = 1, #s do h = h * 1099511628211ULL + s:byte(i) end
+  return tostring(h), string.format("%016x", h)
+end
+
+-- a 64-bit integer's high and low 32 bits, its sign, and its negation, from an int64_t array element
+function M.split64(x)
+  local v = ffi.new("int64_t[1]", x)
+  local hi, lo = v[0] / 4294967296LL, v[0] % 4294967296LL
+  return tonumber(hi), tonumber(lo), v[0] < 0, tostring(-v[0]), v[0] == x
+end
+
 return M

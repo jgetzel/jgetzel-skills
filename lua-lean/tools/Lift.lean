@@ -144,6 +144,7 @@ partial def tExp (cx : Cx) (e : Exp) (name : String := "") : T String := do
   | .tru => pure "S.eTrue"
   | .fls => pure "S.eFalse"
   | .num n => pure s!"(S.eNum {num n})"
+  | .cnum v u => pure s!"(S.eCnum {v} {u})"
   | .str s => pure s!"(S.eStr {chars s})"
   | .vararg => pure s!"(S.eVa {cx.va})"
   | .func ps va b ln =>
