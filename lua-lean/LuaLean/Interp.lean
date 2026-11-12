@@ -451,10 +451,8 @@ def getObj (a : Nat) : M Obj := do
   | some o => pure o
   | none => die "dangling address"
 
-def alloc (o : Obj) : M Nat := do
-  let h ← get
-  set (h.push o)
-  pure h.size
+-- modifyGet, not get then set: the heap stays unshared, so the push is in place (get's copy made each alloc O(heap))
+def alloc (o : Obj) : M Nat := modifyGet fun h => (h.size, h.push o)
 
 def getTbl (a : Nat) : M Tbl := do
   match ← getObj a with
