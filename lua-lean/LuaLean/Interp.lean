@@ -766,7 +766,8 @@ def format (fmt : List Char) (args : List Val) (ts : Val → M Val) : M (List Ch
               -- LuaJIT's %f of a tiny number overruns its 64-limb buffer and prints garbage: not modelled
               throw (.eff "lj_strfmt %f below 1e-150" [])
             let sign := if fl.isNaN then (if space then [' '] else []) else if Num.negative fl then ['-'] else if plus then ['+'] else if space then [' '] else []
-            pure (pad left (zero && fl.isFinite) w sign body)
+            let over := if c == 'g' || c == 'G' then Num.gOverlen fl ((pr.map toN).getD 6) alt else 0
+            pure (pad left (zero && fl.isFinite) (w - over) sign body)
           | 'q' => do pure (quoteStr (← strArg arg).text)
           | _ => do
             let arg ← strArg arg
