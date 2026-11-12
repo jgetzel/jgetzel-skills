@@ -747,6 +747,66 @@ return {commas ops}"
   "ok:1,-2,0,44,255,5,2,0,24,67305985,65535,5,\"DCBA\",\"c:1: 'struct a' has no member named 'z'\"," ++
     "\"c:1: cannot convert 'string' to 'int'\",\"too many initializers for 'int [2]'\",true,false,true"
 
+/-- the FFI's pointers (#57): from arrays, structs, strings, nil and numbers (ffi.new, ffi.cast, a ctype's call),
+their elements read and written (`p[i]`, `->`), arithmetic in and past an allocation, differences, `==` and `<`,
+ffi.string of one, ffi.copy and ffi.fill, and their errors -/
+def ptrOps : G String := do
+  let id ← rnd 999999999
+  let st := s!"q{id}"
+  let it : G String := pick ["int16_t", "uint16_t", "int32_t", "uint32_t", "int", "double", "float", "bool", "uint8_t",
+    "const int", "const uint8_t", "void", "const void", s!"struct {st}", "int32_t", "unsigned short", "const double"]
+  let n ← pick [2, 3, 4, 5]
+  let et ← pick ["int32_t", "uint8_t", "int16_t", "double", "uint32_t", "int32_t"]
+  let k : G String := pick ["0", "1", "2", "0", "1", "-1", s!"{n}", "0.5", "1.9", "-0.5", "true", "\"1\"", "nil"]
+  let v : G String := pick ["0", "1", "-1", "300", "65", "1.5", "true", "nil", "\"x\"", "{}", "p", "a", "2^31", "7"]
+  let src : G String := pick ["a", "p", "s", "s[0]", "s[1]", "q", "nil", "0", "\"abcd\"", "\"\"", "true", "{}", "u",
+    "a", "p", "ffi.new(\"double*\")", "ffi.new(\"const int[2]\")", "ffi.cast(\"uint16_t*\", a)", "\"hello world\""]
+  let str : G String := pick ["\"abcd\"", "\"\"", "\"hello world\"", "\"\\1\\2\\3\\4\\5\\6\\7\\8\"", "\"\\255\\128ab\""]
+  let op : G String := do
+    match ← rnd 13 with
+    | 0 => pure s!"local r = ffi.cast(\"{← it}*\", {← src}) return r[{← k}], r[0], r == {← src}, ffi.sizeof(r)"
+    | 1 => pure s!"local r = a + {← k} return r[0], r[{← k}], r - a, a - r, r == p, r < p, r <= a, p < r"
+    | 2 => pure s!"local r = ffi.new(\"{← it}*\", {← src}) return r == nil, r == {← src}, tonumber(r), type(r)"
+    | 3 => pure s!"local r = ffi.cast(\"const {← pick ["char", "uint8_t", "int8_t", "int32_t", "uint16_t", "int16_t", "double"]}*\", {← str}) return r[{← k}], r[0], ffi.string(r), ffi.string(r + {← pick ["0", "1", "2"]}), ffi.string(r, {← pick ["0", "1", "3", "5"]})"
+    | 4 => pure s!"local r = ffi.cast(\"{← it}*\", a) r[{← k}] = {← v} return a[0], a[1], a[{n - 1}]"
+    | 5 => pure s!"local r = s + {← pick ["0", "1", "2", "3"]} return r.x, r.y, r.z, r[0].x, (r + 1).x, r - s"
+    | 6 => pure s!"local r = s + {← pick ["0", "1"]} r.{← pick ["x", "y", "z", "c"]} = {← v} r[{← k}] = {← v} return s[0].x, s[1].x, s[1].y"
+    | 7 => pure s!"local b = ffi.new(\"uint8_t[8]\") ffi.fill(b, {← pick ["8", "3", "0", "9", "-1", "\"2\""]}{← pick ["", ", 65", ", 300", ", -1", ", nil", ", \"7\""]}) ffi.copy(b + {← pick ["0", "1", "4", "8"]}, {← (← pick [str, src, pure "a", pure "p", pure "s"])}{← pick ["", ", 0", ", 2", ", 4", ", 8", ", -1"]}) return ffi.string(b, 8)"
+    | 8 => pure s!"return {← pick ["p + 1", "1 + p", "p - 1", "p - a", "p * 2", "-p", "p + true", "p + p", "s + 1", "s - s", "u + 1", "p .. \"\"", "1 .. p", "p < 1", "p < nil", "nil < p", "p < s", "p <= a", "p > a", "p - ffi.cast(\"double*\", a)", "p < ffi.cast(\"uint8_t*\", a)", "ffi.new(\"void*\") - ffi.new(\"void*\")", "p - ffi.cast(\"const int32_t*\", a)", "c + 0", "ffi.new(\"int*\") + 0", "ffi.new(\"int*\") + 1", "ffi.new(\"int*\") - ffi.new(\"int*\")"]}"
+    | 9 => pure s!"return p == {← src}, {← src} == p, a == s, s == s[0], ffi.new(\"int*\") == nil, q == {← str}, q + 0 == q, (q + 1) == q"
+    | 10 => pure s!"return ffi.string({← src}{← pick ["", ", 0", ", 1", ", 4"]})"
+    | 11 => pure s!"local r = ffi.cast(\"{← it}*\", {← src}) return r.x, r[0].y"
+    | _ => pure s!"return {← pick ["ffi.new(\"char*\", \"x\")", "ffi.new(\"int*\", 1, 2)", "ffi.cast(\"int*\", 1)", "ffi.cast(\"intptr_t\", ffi.new(\"int*\"))", "tonumber(ffi.cast(\"int32_t\", ffi.new(\"int*\")))", "ffi.new(\"int\", p)", "ffi.cast(\"double\", p)", "ffi.new(\"int[2]\", p)", "ffi.new(\"void*\")[0]", "ffi.typeof(p) == ffi.typeof(\"int32_t*\")", "ffi.cast(\"int32_t*\", p) == p", "rawequal(ffi.cast(\"int32_t*\", p), p)", "ffi.copy(q, \"x\")", "ffi.copy(a)", "ffi.fill()", "ffi.copy(a, 1, 1)", "ffi.copy(a, \"ab\", \"1\")"]}"
+  let ops ← (List.range 3).mapM fun _ => do pure s!"\{pcall(function() {← op} end)}"
+  return s!"local ffi = require(\"ffi\")
+ffi.cdef[[struct {st} \{ int32_t x; double y; uint8_t c[2]; };]]
+local a = ffi.new(\"{et}[{n}]\", {commas ((List.range n).map fun i => toString (i * 3 + 1))})
+local p = ffi.cast(\"int32_t*\", a) + {← pick ["0", "1"]}
+local s = ffi.new(\"struct {st}[2]\", \{\{1, 1.5, \{2, 3}}, \{4, -2.5}})
+local q = ffi.new(\"const char*\", {← str})
+local u = ffi.new(\"int\", 3)
+local c = ffi.typeof(\"int*\")
+return {commas ops}"
+
+-- the values of LuaJIT 2.1 on x64: an element through a pointer, a difference, ==, <, md5's str2lei, ffi.string of a
+-- pointer, ffi.copy and ffi.fill, `->`, NULL, and the errors
+#guard runCase (fun _ => none) .single []
+    ("local ffi = require('ffi') ffi.cdef[[struct b { int x; double y; };]] local a = " ++
+      "ffi.new('int[4]', 5, 6, 7) local p = a + 2 local s = ffi.new('struct b[2]', {{1, 1.5}, {2, " ++
+      "2.5}}) local q = ffi.cast('const char*', 'hello') local b = ffi.new('uint8_t[8]') ffi.copy(b, " ++
+      "'abc') ffi.fill(b + 4, 3, 65) return p[0], p[-1], (a + 3) - p, p == a + 2, p < a, a <= p, " ++
+      "ffi.cast('const int*', ffi.new('const char*', 'abcd'))[0], ffi.string(q + 1), ffi.string(q, 3), " ++
+      "q == 'hello', q + 1 == 'ello', ffi.string(b, 8), (s + 1).y, ffi.cast('struct b*', s).x, " ++
+      "ffi.new('int*') == nil, tonumber(p), select(2, pcall(function() return p + true end)), select(2, " ++
+      "pcall(function() return p < ffi.cast('double*', a) end)), select(2, pcall(ffi.new, 'int*', " ++
+      "ffi.new('const int[2]'))), select(2, pcall(function() return (s + 1).z end)), select(2, " ++
+      "pcall(function() return ffi.new('void*') - ffi.new('void*') end))").toList ==
+  "ok:7,6,1,true,false,true,1684234849,\"ello\",\"hel\",true,false,\"abc\\000AAA\\000\",2.5,1,true,nil," ++
+    "\"c:1: attempt to perform arithmetic on 'int *' and 'boolean'\"," ++
+    "\"c:1: attempt to compare 'int *' with 'double *'\",\"cannot convert 'const int [2]' to 'int *'\"," ++
+    "\"c:1: 'struct b' has no member named 'z'\"," ++
+    "\"c:1: attempt to perform arithmetic on 'void *' and 'void *'\""
+
 -- ---------- the world: print, io.write, os ----------
 
 /-- print and io.write, their arguments converted and what they write (`caseFx`: stdout), and os's computed part:
@@ -1157,7 +1217,7 @@ def chunk : G String := do
   | 6 => ctrl
   | 7 | 8 => diffs
   | 9 => match ← rnd 3 with | 0 => metas | 1 => opMetas | 2 => weaks | _ => compares
-  | 10 => match ← rnd 4 with | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | _ => ffiOps
+  | 10 => match ← rnd 5 with | 0 => libs | 1 => debugs | 2 => bitOps | 3 => stacks | 4 => ffiOps | _ => ptrOps
   | 11 => traverse
   | 12 => if ← chance 4 then dumps else if ← chance 3 then fenvs else loads
   | 13 => coros

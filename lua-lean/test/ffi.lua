@@ -39,4 +39,33 @@ function M.casts(x)
   return tonumber(ffi.cast("int32_t", x)), tonumber(ffi.cast("uint8_t", x)), tonumber(ffi.cast("bool", x))
 end
 
+-- a 32-bit integer from a string's first 4 bytes, little-endian (md5.lua's str2lei)
+local ct_constcharptr = ffi.typeof("const char*")
+local ct_constintptr = ffi.typeof("const int*")
+function M.str2lei(s)
+  local int = ct_constcharptr(s)
+  return ffi.cast(ct_constintptr, int)[0]
+end
+
+-- a string's bytes reversed, a pointer walking back from the end of a buffer
+function M.reverse(s)
+  local n = #s
+  local buf = ffi.new("uint8_t[?]", n + 1)
+  local src = ffi.cast("const uint8_t*", s)
+  local p = buf + n
+  for i = 0, n - 1 do
+    p = p - 1
+    p[0] = src[i]
+  end
+  return ffi.string(buf), p == buf, (buf + n) - p
+end
+
+-- a string cut or padded to n bytes with c
+function M.pad(s, n, c)
+  local buf = ffi.new("uint8_t[?]", n)
+  ffi.fill(buf, n, c)
+  ffi.copy(buf, s, math.min(#s, n))
+  return ffi.string(buf, n)
+end
+
 return M
