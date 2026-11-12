@@ -277,7 +277,7 @@ namespace R
 def pid (o : Option Nat) : Json := (o.map toJson).getD Json.null
 
 def worldJson (w : World) : Json :=
-  Json.mkObj [("rec", pid (w.wdOf 0)), ("up", pid (w.upOf 0)), ("restart", (w.rsOf 0).isSome),
+  Json.mkObj [("rec", pid (w.wdOf 0)), ("up", pid (w.upOf 0)), ("tk", pid (w.tkOf 0)), ("restart", (w.rsOf 0).isSome),
     ("wds", Json.arr ((List.range w.wds.length).toArray.map fun p =>
       Json.mkObj [("term", (w.proc p).term), ("alive", w.alive p)]))]
 
@@ -293,6 +293,7 @@ def actJson : CAction → String × Json
   | .rpoll i => ("rpoll", Json.mkObj [("i", i)])
   | .rok i => ("rok", Json.mkObj [("i", i)])
   | .rfail i => ("rfail", Json.mkObj [("i", i)])
+  | .tend p => ("tend", Json.mkObj [("p", p)])
   | a => (s!"{repr a}", Json.mkObj [])
 
 /-- a run of one swarm, each step enabled: `{"restart": {}, "states": [{"s"}, {"action", "picks", "s"}, ..]}` -/
@@ -311,14 +312,15 @@ def script (c : CCfg) (acts : List CAction) : Except String Json := do
 /-- one swarm with nothing to tick but the watchds, and board #41's handover (the Lua's) -/
 def cfg : CCfg := { sw := { nagents := 0, roster := 0, ntasks := 0 }, nswarms := 1, home := [0], waitUp := true }
 
-/-- `restart-ok`: watchd 0, started by hand, ticks; `--restart` starts watchd 1, which takes the record; the restart's
-poll sees it; watchd 1 ticks; the restart reports success and watchd 0's loop exits. `restart-dies`: watchd 1 takes the
-record and dies before its first tick; watchd 0's loop takes the record back; the restart reports the failure. -/
+/-- `restart-ok`: watchd 0, started by hand, ticks; `--restart` starts watchd 1, which takes the record while watchd 0 is
+mid-tick; the restart's poll sees it; watchd 0's tick ends (board #71: until then watchd 1's waits); watchd 1 ticks; the
+restart reports success and watchd 0's loop exits. `restart-dies`: watchd 1 takes the record and dies before its first
+tick; watchd 0's tick ends and its loop takes the record back; the restart reports the failure. -/
 def scripts : List (String × CCfg × List CAction) := [
-  ("restart-ok", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .tick 0, .rok 0,
-    .loop 0]),
-  ("restart-dies", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .crash 1, .loop 0,
-    .rfail 0])]
+  ("restart-ok", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .tend 0, .tick 0,
+    .rok 0, .loop 0]),
+  ("restart-dies", cfg, [.open 0, .watchd 0 0, .tick 0, .open 0, .restart 0 1, .takeover 1, .rpoll 0, .crash 1, .tend 0,
+    .loop 0, .rfail 0])]
 end R
 
 def main (args : List String) : IO UInt32 := do

@@ -76,6 +76,8 @@ structure World where
   wds : List Wd := []
   /-- each swarm's `swarm watchd --restart` waiting for its new watchd, if any -/
   rs : List (Option Rst) := []
+  /-- each swarm's meta.watchd_tick (board #71): the watchd that claimed its tick and has not ended it -/
+  tk : List (Option Nat) := []
   deriving DecidableEq, Repr, Inhabited
 
 def CCfg.swarms (c : CCfg) : List Nat := List.range c.nswarms
@@ -90,6 +92,11 @@ def World.proc (w : World) (p : Nat) : Wd := w.wds.getD p default
 def World.alive (w : World) (p : Nat) : Bool := (w.proc p).on && (w.tm (w.proc p).term).live
 def World.upOf (w : World) (i : Nat) : Option Nat := w.up.getD i none
 def World.rsOf (w : World) (i : Nat) : Option Rst := w.rs.getD i none
+def World.tkOf (w : World) (i : Nat) : Option Nat := w.tk.getD i none
+/-- swarm i's tick lease is free for p: no one holds it, p does, or its holder is dead -/
+def leaseFree (w : World) (i p : Nat) : Bool := (w.tkOf i).all fun r => r == p || !w.alive r
+/-- meta.watchd_tick after p's claim of swarm i's tick: p's if it was free -/
+def claimTk (w : World) (i p : Nat) : List (Option Nat) := if leaseFree w i p then w.tk.set i (some p) else w.tk
 
 /-- what C1 asks a communicator for: some live agent or open task -/
 def hasWork (s : State) : Bool := s.ag.any (·.live) || s.task.any (·.st == .opn)
@@ -113,6 +120,7 @@ def cinit (c : CCfg) : World where
   spc := c.swarms.map fun i => c.sw.agents.map fun _ => c.homeOf i
   up := c.swarms.map fun _ => none
   rs := c.swarms.map fun _ => none
+  tk := c.swarms.map fun _ => none
 
 /-- `SWARM_NAME=<i's communicator> swarm join [--takeover]` from terminal x -/
 def cjoin (c : CCfg) (w : World) (i x : Nat) (tk : Bool) : Option World :=
@@ -125,17 +133,18 @@ def cjoin (c : CCfg) (w : World) (i x : Nat) (tk : Bool) : Option World :=
 names a running one -/
 def startWd (c : CCfg) (w : World) (i x : Nat) : Option World :=
   cwhen (i < c.nswarms && (w.tm x).live && !watchdUp w i)
-    { w with wd := w.wd.set i (some w.wds.length), wds := w.wds ++ [⟨i, x, true, false, true⟩] }
+    { w with wd := w.wd.set i (some w.wds.length), wds := w.wds ++ [⟨i, x, true, false, true⟩], tk := claimTk w i w.wds.length }
 /-- terminal x dies, and every process in it (the watchd started from it is the communicator's background Bash); the
 record stays, naming a dead pid, as in meta -/
 def cdie (w : World) (x : Nat) : Option World :=
   cwhen (w.tm x).live { w with term := w.term.modify x ({ · with live := false }) }
-/-- watchd's tick of swarm i: reap ends a communicator row whose terminal is gone, the model's tick runs (its spawns land
-in watchd's terminal's space), and with `ensureComms` a communicator is launched where C1 wants one -/
-def tickW (c : CCfg) (w : World) (i : Nat) : World :=
+/-- watchd p's tick of swarm i (the record's watchd, unless said): reap ends a communicator row whose terminal is gone, the
+model's tick runs (its spawns land in p's terminal's space), and with `ensureComms` a communicator is launched where C1
+wants one -/
+def tickW (c : CCfg) (w : World) (i : Nat) (p : Nat := (w.wdOf i).getD 0) : World :=
   let s := w.st i
   let s' := tickOf c.sw s
-  let sp := if c.ensureComms then c.homeOf i else (w.tm (w.proc ((w.wdOf i).getD 0)).term).space
+  let sp := if c.ensureComms then c.homeOf i else (w.tm (w.proc p).term).space
   let l := c.sw.agents.foldl (fun l a => if s'.agt a != s.agt a && (s'.agt a).boot then l.set a sp else l) (w.spc.getD i [])
   let w1 := { w with sw := w.sw.set i s', spc := w.spc.set i l,
                      comms := w.comms.set i ((w.cm i).filter fun y => (w.tm y).live) }
@@ -143,11 +152,14 @@ def tickW (c : CCfg) (w : World) (i : Nat) : World :=
     { w1 with term := w1.term ++ [⟨true, c.homeOf i, some i⟩], comms := w1.comms.set i (some w1.term.length) }
   else w1
 
-/-- after the tick, the loop's first-tick write: meta.watchd_up := the record's watchd, once per process -/
+/-- after p's tick of swarm i, the loop's first-tick write: meta.watchd_up := p, once per process -/
+def firstTick (w : World) (i p : Nat) : World :=
+  if (w.proc p).ticked then w else { w with wds := w.wds.modify p ({ · with ticked := true }), up := w.up.set i (some p) }
+
+/-- the same, of the record's watchd -/
 def wdTicked (w : World) (i : Nat) : World :=
   match w.wdOf i with
-  | some p => if (w.proc p).ticked then w
-      else { w with wds := w.wds.modify p ({ · with ticked := true }), up := w.up.set i (some p) }
+  | some p => firstTick w i p
   | none => w
 
 def stopWd (w : World) (p : Nat) : World := { w with wds := w.wds.modify p ({ · with on := false }) }
@@ -161,25 +173,34 @@ model's `Cfg.roster` fixes). -/
 def restart (c : CCfg) (w : World) (i x : Nat) : Option World :=
   cwhen (i < c.nswarms && (w.tm x).live && (w.wdOf i).isSome && (w.rsOf i).isNone)
     { w with wds := w.wds ++ [⟨i, x, true, false, false⟩], rs := w.rs.set i (some ⟨w.wdOf i, none⟩) }
-/-- a started watchd's start transaction: `--takeover` writes the record, whoever it names -/
+/-- a started watchd's start transaction: `--takeover` writes the record, whoever it names; then its loop claims the tick
+lease if it is free (else it waits for the tick of the watchd that holds it: `tend`) -/
 def takeover (w : World) (p : Nat) : Option World :=
   cwhen (w.alive p && !(w.proc p).took)
-    { w with wd := w.wd.set (w.proc p).sw (some p), wds := w.wds.modify p ({ · with took := true }) }
+    { w with wd := w.wd.set (w.proc p).sw (some p), wds := w.wds.modify p ({ · with took := true }),
+             tk := claimTk w (w.proc p).sw p }
 /-- a watchd dies: a crash, a kill -9 -/
 def crash (w : World) (p : Nat) : Option World := cwhen (w.alive p) (stopWd w p)
-/-- the loop of watchd p, when the record isn't its own (with it, the loop ticks: `tick`). With `waitUp` it exits only if
-the record's watchd is alive and meta.watchd_up names it; takes the record back from a dead one (event watchd-back); and
-else does nothing. Without, it exits. A record gone (never, once it took one) ends it too -/
+/-- the loop of watchd p, not mid-tick, when the record isn't its own (with it, the loop ticks: `tick`). With `waitUp` it
+exits only if the record's watchd is alive and meta.watchd_up names it; takes the record back from a dead one (event
+watchd-back), and claims the tick lease if it is free; and else does nothing. Without, it exits. A record gone (never,
+once it took one) ends it too -/
 def loop (c : CCfg) (w : World) (p : Nat) : Option World :=
   let i := (w.proc p).sw
-  if !(w.alive p && (w.proc p).took) then none else
+  if !(w.alive p && (w.proc p).took && w.tkOf i != some p) then none else
   match w.wdOf i with
   | none => some (stopWd w p)
   | some q =>
     if q == p then none
     else if !c.waitUp || (w.upOf i == some q && w.alive q) then some (stopWd w p)
-    else if !w.alive q then some { w with wd := w.wd.set i (some p) }
+    else if !w.alive q then some { w with wd := w.wd.set i (some p), tk := claimTk w i p }
     else none
+/-- board #71: the tick watchd p claimed while the record was its own ends after another took the record: p's tick runs
+(its spawns land in p's terminal's space), its first writes meta.watchd_up, and p gives the lease back -/
+def tend (c : CCfg) (w : World) (p : Nat) : Option World :=
+  let i := (w.proc p).sw
+  cwhen (w.alive p && w.tkOf i == some p && w.wdOf i != some p)
+    { firstTick (tickW c w i p) i p with tk := w.tk.set i none }
 /-- the restart's poll reads a record other than the one it started with -/
 def rpoll (w : World) (i : Nat) : Option World :=
   match w.rsOf i, w.wdOf i with
@@ -208,6 +229,8 @@ inductive CAction where
   | join (i x : Nat) (takeover : Bool)
   | watchd (i x : Nat)
   | die (x : Nat)
+  /-- the record's watchd's tick of swarm i, once no other running watchd holds the tick lease (board #71): it claims the
+  lease, ticks, and claims it again for its next tick, the record still its own -/
   | tick (i : Nat)
   /-- board #41: `swarm watchd --restart` of swarm i, its new watchd in the hidden terminal x -/
   | restart (i x : Nat)
@@ -217,6 +240,8 @@ inductive CAction where
   | rpoll (i : Nat)
   | rok (i : Nat)
   | rfail (i : Nat)
+  /-- board #71: watchd p's tick, claimed before a takeover, ends -/
+  | tend (p : Nat)
   deriving DecidableEq, Repr
 
 def cstep (c : CCfg) (w : World) : CAction → Option World
@@ -226,7 +251,8 @@ def cstep (c : CCfg) (w : World) : CAction → Option World
   | .join i x tk => cjoin c w i x tk
   | .watchd i x => startWd c w i x
   | .die x => cdie w x
-  | .tick i => cwhen (watchdUp w i) (wdTicked (tickW c w i) i)
+  | .tick i => cwhen (watchdUp w i && leaseFree w i ((w.wdOf i).getD 0))
+      { wdTicked (tickW c w i) i with tk := w.tk.set i (w.wdOf i) }
   | .restart i x => restart c w i x
   | .takeover p => takeover w p
   | .crash p => crash w p
@@ -234,6 +260,7 @@ def cstep (c : CCfg) (w : World) : CAction → Option World
   | .rpoll i => rpoll w i
   | .rok i => rok w i
   | .rfail i => rfail w i
+  | .tend p => tend c w p
 
 inductive CReachable (c : CCfg) : World → Prop
   | init : CReachable c (cinit c)
@@ -325,8 +352,8 @@ theorem set_getD_self (l : List (List Nat)) (i : Nat) : l.set i (l.getD i []) = 
   · simp [List.set_eq_of_length_le (Nat.le_of_not_lt h)]
 
 /-- with the fix the tick launches into the swarm's space, where every agent already was -/
-theorem tickW_spc {c : CCfg} {w : World} (hc : c.ensureComms = true) (hs : w.spc = (cinit c).spc) (i : Nat) :
-    (tickW c w i).spc = w.spc := by
+theorem tickW_spc {c : CCfg} {w : World} (hc : c.ensureComms = true) (hs : w.spc = (cinit c).spc) (i : Nat)
+    (p : Nat := (w.wdOf i).getD 0) : (tickW c w i p).spc = w.spc := by
   have hall : ∀ x ∈ w.spc.getD i [], x = c.homeOf i := by rw [hs]; exact cinit_spc_all c i
   unfold tickW; simp only [hc, ite_true]
   rw [foldl_fix (l := w.spc.getD i []), set_getD_self]
@@ -335,10 +362,11 @@ theorem tickW_spc {c : CCfg} {w : World} (hc : c.ensureComms = true) (hs : w.spc
     · exact set_all_eq hall a
     · rfl
 
-theorem cinv_tickW {c : CCfg} {w : World} (h : CInv c w) (i : Nat) : CInv c (tickW c w i) where
+theorem cinv_tickW {c : CCfg} {w : World} (h : CInv c w) (i : Nat) (p : Nat := (w.wdOf i).getD 0) :
+    CInv c (tickW c w i p) where
   sw := by unfold tickW; split <;> simp [apply_ite (f := World.sw), h.sw]
   comms := by unfold tickW; split <;> simp [apply_ite (f := World.comms), apply_ite (f := List.length), h.comms]
-  spc := fun hc => (tickW_spc hc (h.spc hc) i).trans (h.spc hc)
+  spc := fun hc => (tickW_spc hc (h.spc hc) i p).trans (h.spc hc)
 
 /-- the restart's actions: what touches only the watchd fields -/
 def CAction.isWd : CAction → Bool
@@ -351,12 +379,19 @@ theorem wd_frame {c : CCfg} {w w' : World} {a : CAction} (ha : a.isWd = true) (h
     simp only [cstep, restart, takeover, crash, loop, rpoll, rok, rfail, cwhen, stopWd] at h <;>
     (repeat' split at h) <;> simp only [reduceCtorEq, Option.some.injEq] at h <;> subst h <;> exact ⟨rfl, rfl, rfl, rfl⟩
 
+theorem firstTick_frame (w : World) (i p : Nat) :
+    (firstTick w i p).sw = w.sw ∧ (firstTick w i p).comms = w.comms ∧ (firstTick w i p).spc = w.spc ∧
+      (firstTick w i p).term = w.term := by
+  unfold firstTick; split <;> exact ⟨rfl, rfl, rfl, rfl⟩
+
 theorem wdTicked_frame (w : World) (i : Nat) :
     (wdTicked w i).sw = w.sw ∧ (wdTicked w i).comms = w.comms ∧ (wdTicked w i).spc = w.spc ∧ (wdTicked w i).term = w.term := by
-  unfold wdTicked; split <;> (try split) <;> exact ⟨rfl, rfl, rfl, rfl⟩
+  unfold wdTicked; split
+  · exact firstTick_frame w i _
+  · exact ⟨rfl, rfl, rfl, rfl⟩
 
 theorem c1_wdTicked (c : CCfg) (w : World) (i j : Nat) : c1 c (wdTicked w i) j = c1 c w j := by
-  unfold wdTicked; split <;> (try split) <;> rfl
+  unfold wdTicked; split <;> (try unfold firstTick; split) <;> rfl
 
 theorem cinv_frame {c : CCfg} {w w' : World} (h : CInv c w) (h1 : w'.sw = w.sw) (h2 : w'.comms = w.comms)
     (h3 : w'.spc = w.spc) : CInv c w' :=
@@ -383,6 +418,10 @@ theorem cinv_of_reachable {c : CCfg} {w : World} (h : CReachable c w) : CInv c w
       simp only [cstep, cwhen] at hs; split at hs <;> simp at hs; subst hs
       obtain ⟨h1, h2, h3, -⟩ := wdTicked_frame (tickW c _ i) i
       exact cinv_frame (cinv_tickW ih i) h1 h2 h3
+    | tend p =>
+      simp only [cstep, tend, cwhen] at hs; split at hs <;> simp at hs; subst hs
+      obtain ⟨h1, h2, h3, -⟩ := firstTick_frame (tickW c _ _ p) _ p
+      exact cinv_frame (cinv_tickW ih _ p) h1 h2 h3
     | restart => obtain ⟨h1, h2, h3, -⟩ := wd_frame rfl hs; exact cinv_frame ih h1 h2 h3
     | takeover => obtain ⟨h1, h2, h3, -⟩ := wd_frame rfl hs; exact cinv_frame ih h1 h2 h3
     | crash => obtain ⟨h1, h2, h3, -⟩ := wd_frame rfl hs; exact cinv_frame ih h1 h2 h3
@@ -404,8 +443,8 @@ theorem C1_of (c : CCfg) (hc : c.ensureComms = true) : C1 c := by
   simp only [c1, home, Bool.and_true]
   simp only [tickW, hc, ite_true]
   generalize tickOf c.sw (w.st i) = s'
-  have hst : ∀ cm wd tm sp u ws r, (World.mk (w.sw.set i s') cm wd tm sp u ws r).st i = s' := by
-    intro _ _ _ _ _ _ _; simp [World.st, List.getD_eq_getElem?_getD, h.sw, hi]
+  have hst : ∀ cm wd tm sp u ws r t, (World.mk (w.sw.set i s') cm wd tm sp u ws r t).st i = s' := by
+    intro _ _ _ _ _ _ _ _; simp [World.st, List.getD_eq_getElem?_getD, h.sw, hi]
   split
   · simp [commsOk, World.cm, World.tm, List.getD_eq_getElem?_getD, h.comms, hi]
   · rename_i hw
@@ -419,7 +458,8 @@ structure CRun (c : CCfg) where
   act : Nat → CAction
   ok : ∀ n, cstep c (st n) (act n) = some (st (n + 1))
 
-/-- watchd ticks: a swarm whose watchd runs at infinitely many steps is ticked at infinitely many -/
+/-- watchd ticks: a swarm whose watchd runs at infinitely many steps is ticked at infinitely many. With the tick lease
+(board #71) a tick can wait for one that a watchd claimed before a takeover: `tend`, which `CRun.FairWd` takes -/
 def CRun.Fair {c : CCfg} (r : CRun c) : Prop :=
   ∀ i, (∀ N, ∃ n ≥ N, watchdUp (r.st n) i = true) → ∀ N, ∃ n ≥ N, r.act n = .tick i
 
@@ -442,7 +482,8 @@ theorem comms_replaced {c : CCfg} (hc : c.ensureComms = true) (r : CRun c) (hf :
     refine ⟨n + 1, by omega, ?_⟩
     simp only [Option.some.injEq] at hs
     rw [← hs]
-    rw [c1_wdTicked]; exact C1_of c hc _ _ (r.reachable h0 n) hi hu
+    show c1 c (wdTicked (tickW c (r.st n) i) i) i = true
+    rw [c1_wdTicked]; exact C1_of c hc _ _ (r.reachable h0 n) hi ((Bool.and_eq_true _ _).mp hu).1
   · simp at hs
 
 end Swarm
