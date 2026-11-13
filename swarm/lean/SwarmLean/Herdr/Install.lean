@@ -122,6 +122,13 @@ def agentsPatch : List (String × String) := [
   (r##"openOverlay({ mod: "agents","##,
    r##"openOverlay({ mod: "jgetzel-agents","##)]
 
+/-- The newer Herdr's one differing anchor, put back to the older form agentsPatch expects (an unknown form still dies in patch). -/
+def agentsNormalize : List (String × String) := [
+  (r##"      .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
+"##,
+   r##"      .on_click(() => this.peek(k.address))
+"##)]
+
 def die (msg : String) : IO α := do IO.eprintln msg; IO.Process.exit 1
 
 /-- `argv`'s stdout when it exits 0, else none (proc.run). -/
@@ -201,7 +208,9 @@ def main : IO UInt32 := do
   -- Everything that can fail on a changed Herdr runs before the first write: rewriting the tab bar reloads it, which
   -- ends the task that reports a failed re-install (feed.js).
   let tabsJs ← patch (← IO.FS.readFile (mods ++ "/tabs/main.js")) tabsPatch "tabs"
-  let agentsJs ← patch (← IO.FS.readFile (mods ++ "/agents/main.js")) agentsPatch "agents"
+  let agentsSrc := (← IO.FS.readFile (mods ++ "/agents/main.js"))
+  let agentsSrc := agentsNormalize.foldl (fun s (a, b) => s.replace a b) agentsSrc
+  let agentsJs ← patch agentsSrc agentsPatch "agents"
   let lay ← match Json.decode (← IO.FS.readFile (home ++ "/layouts/main.json")) with
     | some l => pure l
     | none => die s!"install: {home}/layouts/main.json is not JSON"
