@@ -8,6 +8,7 @@ import Tests.Cli.Spawn
 import Tests.Cli.Stay
 import Tests.Cli.Stop
 import Tests.Cli.WatchdRun
+import Tests.Spec.Cost
 import Tests.Spec.Db
 import Tests.Spec.Foundation
 import Tests.Spec.Watchd
@@ -28,6 +29,7 @@ def specs : List (String × List Case) := [
   ("cli_stay_spec", Stay.tests),
   ("cli_stop_spec", Stop.tests),
   ("cli_watchd_run_spec", WatchdRun.tests),
+  ("cost_spec", Spec.Cost.tests),
   ("db_spec", Spec.Db.tests),
   ("foundation_spec", Spec.Foundation.tests),
   ("watchd_spec", Spec.Watchd.tests)]
