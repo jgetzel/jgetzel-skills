@@ -21,7 +21,8 @@ for ref in "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
     model/SwarmModel/Glob.lean model/SwarmModel/Model.lean model/SwarmModel/PrWatch.lean model/SwarmModel/Decide.lean \
     -newer "$ref" 2>/dev/null | head -n 1)
   [ -z "$new" ] && exec "$bin" "$@"
-  [ -n "$stale" ] || stale=$bin why=$new
+  # both stale: run the newer one (a leftover lake build must not shadow a later nix build)
+  if [ -z "$stale" ] || [ -n "$(find "$ref" -newer "$sref" 2>/dev/null)" ]; then stale=$bin why=$new sref=$ref; fi
 done
 if [ -n "$stale" ]; then
   [ "$1" = hook ] || echo "swarm: $exe is older than $why; rebuild it with $hint" >&2
