@@ -23,7 +23,7 @@ def test_install_main_path (t : T) : IO Unit := do
   put (h ++ "/mods/tabs/main.js") (anchors Herdr.Install.tabsPatch)
   put (h ++ "/mods/agents/main.js") (anchors Herdr.Install.agentsPatch)
   put (h ++ "/layouts/main.json") ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"tabs\"}}," ++
-    "{\"id\":\"agents\",\"content\":{\"mod\":\"agents\"}},{\"id\":\"panel\",\"max\":400,\"size\":{\"px\":300}," ++
+    "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"agents\"}}]},{\"id\":\"panel\",\"max\":400,\"size\":{\"px\":300}," ++
     "\"children\":[{\"id\":\"panel-body\",\"children\":[{\"id\":\"files\"},{\"id\":\"swarm\"}]}]}]}")
   let fb ← t.fake "herdr-app" "#!/bin/sh\nexit 1\n"
   let r ← t.exec [← herdrMods, "install"]
@@ -34,11 +34,15 @@ def test_install_main_path (t : T) : IO Unit := do
   for (_, rep) in Herdr.Install.tabsPatch do has tabs rep
   let agents := (← slurp (h ++ "/mods/jgetzel-agents/main.js")).getD ""
   for (_, rep) in Herdr.Install.agentsPatch do has agents rep
-  let some lay := Json.decode ((← slurp (h ++ "/layouts/jgetzel.json")).getD "") | fail "layout is not JSON"
-  eq lay (Json.parse ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"jgetzel-tabs\"}}," ++
-    "{\"id\":\"agents\",\"content\":{\"mod\":\"jgetzel-agents\"}},{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
+  let layout (lists : String) := Json.parse ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"jgetzel-tabs\"}}," ++
+    lists ++ ",{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
     "\"children\":[{\"id\":\"panel-body\",\"children\":[{\"id\":\"files\"},{\"id\":\"swarm\",\"type\":\"block\"," ++
-    "\"content\":{\"mod\":\"swarm\"}},{\"id\":\"calendar\",\"type\":\"block\",\"content\":{\"mod\":\"calendar\"}}]}]}]}") |>.toOption.get!)
+    "\"content\":{\"mod\":\"swarm\"}},{\"id\":\"calendar\",\"type\":\"block\",\"content\":{\"mod\":\"calendar\"}}]}]}]}") |>.toOption.get!
+  let some lay := Json.decode ((← slurp (h ++ "/layouts/jgetzel.json")).getD "") | fail "layout is not JSON"
+  eq lay (layout "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"jgetzel-agents\"}}]}")
+  let some rw := Json.decode ((← slurp (h ++ "/layouts/rework.json")).getD "") | fail "rework layout is not JSON"
+  eq rw (layout "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}")
+  unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")
   eq (← IO.FS.realPath (h ++ "/mods/swarm")).toString (← IO.FS.realPath ((← swarmDir) ++ "/herdr/mods/swarm")).toString
   unless ← System.FilePath.pathExists (h ++ "/mods/calendar/feed.js") do fail "no calendar copy"

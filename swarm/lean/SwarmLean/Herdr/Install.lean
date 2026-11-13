@@ -10,7 +10,9 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-Switch to it once with: herdr-app do layout.switch --name jgetzel
+  mods/rw-rail          <- copy of swarm/herdr/mods/rw-rail, the rework's rail (swarm/herdr/UI-SPEC.md)
+  layouts/rework.json   <- jgetzel.json with rw-rail in place of the spaces and agents lists
+Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
 
 namespace SwarmLean.Herdr.Install
@@ -176,6 +178,14 @@ partial def edit (j : Json) : Json := Id.run do
   if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map edit))
   return j
 
+/-- The rework layout: the jgetzel layout with one rw-rail block in place of the sidebar's spaces and agents lists. -/
+partial def rework (j : Json) : Json := Id.run do
+  if Json.fstr j "id" == some "sidebar-lists" then
+    return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
+  let mut j := j
+  if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map rework))
+  return j
+
 def exists_ (p : String) (follow := true) : IO Bool := do
   try
     discard <| if follow then System.FilePath.metadata p else System.FilePath.symlinkMetadata p
@@ -219,6 +229,7 @@ def main : IO UInt32 := do
     die s!"install: Herdr's main layout changed (no tabs block or panel-body stack); update {SRC}"
   if modOf (find lay "agents") != some "agents" then die s!"install: Herdr's main layout changed (no agents block); update {SRC}"
   if (find lay "panel").isNone then die s!"install: Herdr's main layout changed (no panel column); update {SRC}"
+  if (find lay "sidebar-lists").isNone then die s!"install: Herdr's main layout changed (no sidebar-lists column); update {SRC}"
   let lay := edit lay
 
   let link := mods ++ "/swarm"
@@ -269,8 +280,20 @@ def main : IO UInt32 := do
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
+  -- A copy, like the calendar's: hot reload and svg() don't follow a symlinked mod dir.
+  let rail := mods ++ "/rw-rail"
+  if ← exists_ rail false then discard <| run ["rm", "-rf", rail]
+  IO.FS.createDirAll rail
+  for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/rw-rail") do
+    if !e.fileName.startsWith "." then copy e.path.toString rail
+  IO.println s!"wrote {rail}"
+  let out := home ++ "/layouts/rework.json"
+  IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
+  IO.FS.rename (out ++ ".tmp") out
+  IO.println s!"wrote {out}"
+
   if version.isSome then
-    for m in [tabs, agents, cal] do
+    for m in [tabs, agents, cal, rail] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 
