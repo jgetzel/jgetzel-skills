@@ -134,9 +134,11 @@ def UtilSrc : Block :=
   []), (.ret [(.site ⟨"util.lua", 108, [("", ""), ("", "")], ("", ""), false⟩ (.bin .concat (.str "'".toList) (.site ⟨"util.lua", 108, [("", ""), ("", "")], ("", ""), false⟩ (.bin .concat (.site ⟨"util.lua", 108, [("local", "s")], ("method", "gsub"), false⟩ (.method (.var "s") "gsub" [(.str "'".toList), (.str "'\"'\"'".toList)])) (.str "'".toList)))))])] (106, 109))]), (.assign [(.site ⟨"util.lua", 111, [("local", "M")], ("", ""), false⟩ (.index (.var "M") (.str "shjoin".toList)))] [(.func ["argv"] false 
   [(.loc ["r"] [(.table [])]), (.site ⟨"util.lua", 113, [("", "")], ("local", "(for generator)"), false⟩ (.forin ["i", "a"] [(.site ⟨"util.lua", 113, [], ("global", "ipairs"), false⟩ (.call (.var "ipairs") [(.var "argv")]))] 
   [(.assign [(.site ⟨"util.lua", 113, [("local", "r")], ("", ""), false⟩ (.index (.var "r") (.var "i")))] [(.site ⟨"util.lua", 113, [], ("field", "shquote"), false⟩ (.call (.site ⟨"util.lua", 113, [("upvalue", "M")], ("", ""), false⟩ (.index (.var "M") (.str "shquote".toList))) [(.var "a")]))])])), (.ret [(.site ⟨"util.lua", 114, [], ("field", "concat"), true⟩ (.call (.site ⟨"util.lua", 114, [("global", "table")], ("", ""), false⟩ (.index (.var "table") (.str "concat".toList))) [(.var "r"), (.str " ".toList)]))])] (111, 115))]), (.assign [(.site ⟨"util.lua", 117, [("local", "M")], ("", ""), false⟩ (.index (.var "M") (.str "slurp".toList)))] [(.func ["path"] false 
-  [(.loc ["f"] [(.site ⟨"util.lua", 118, [], ("field", "open"), false⟩ (.call (.site ⟨"util.lua", 118, [("global", "io")], ("", ""), false⟩ (.index (.var "io") (.str "open".toList))) [(.var "path"), (.str "rb".toList)]))]), (.ite (.un .not (.var "f")) 
+  [(.ite (.bin .eq (.var "path") (.str "-".toList)) 
+  [(.ret [(.site ⟨"util.lua", 118, [("field", "stdin")], ("method", "read"), true⟩ (.method (.site ⟨"util.lua", 118, [("global", "io")], ("", ""), false⟩ (.index (.var "io") (.str "stdin".toList))) "read" [(.str "*a".toList)]))])] 
+  []), (.loc ["f"] [(.site ⟨"util.lua", 119, [], ("field", "open"), false⟩ (.call (.site ⟨"util.lua", 119, [("global", "io")], ("", ""), false⟩ (.index (.var "io") (.str "open".toList))) [(.var "path"), (.str "rb".toList)]))]), (.ite (.un .not (.var "f")) 
   [(.ret [.nil])] 
-  []), (.loc ["s"] [(.site ⟨"util.lua", 120, [("local", "f")], ("method", "read"), false⟩ (.method (.var "f") "read" [(.str "*a".toList)]))]), (.call (.site ⟨"util.lua", 121, [("local", "f")], ("method", "close"), false⟩ (.method (.var "f") "close" []))), (.ret [(.var "s")])] (117, 123))]), (.ret [(.var "M")])]
--- checksum Util 1877752805
+  []), (.loc ["s"] [(.site ⟨"util.lua", 121, [("local", "f")], ("method", "read"), false⟩ (.method (.var "f") "read" [(.str "*a".toList)]))]), (.call (.site ⟨"util.lua", 122, [("local", "f")], ("method", "close"), false⟩ (.method (.var "f") "close" []))), (.ret [(.var "s")])] (117, 124))]), (.ret [(.var "M")])]
+-- checksum Util 3430438461
 
 end Swarm

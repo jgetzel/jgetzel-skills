@@ -40,7 +40,8 @@ with subagents.
    `swarm limits` prints both and the live count; change them only on the
    user's word, and watchd reads them on its next tick.
 1. Write the goal as tasks, each independently doable with a definition of
-   done: `swarm task add "<title>" --body "<done means …>"`. Aim for tasks
+   done: `swarm task add "<title>" --body "<done means …>"` (or `--body-file F`, `-` for stdin; the title is
+   one line, and over 100 chars it needs a body). Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
 2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
    running as a background Bash (`run_in_background`, never `&` or `disown`: a
@@ -81,7 +82,7 @@ with subagents.
    runs on the base after, and a red run is the board task above), `pr-gated` (a PR's checks gate its merge: the
    agent stays for them and stops, and watchd wakes it, urgent, once per head, when they finish green or red),
    `promoted` (CI on a dev base that promotes itself: tasks land on that base, as post-merge). Unset is post-merge
-   with nothing enforced. The user watches in Herdr's Swarm panel
+   with nothing enforced. Each spawn message ends with the flow's "CI here" line. The user watches in Herdr's Swarm panel
    (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
    The panel also acts, always through this CLI as `SWARM_NAME=human` (the user, with your rights), so expect
@@ -147,7 +148,7 @@ with subagents.
   task out of the pool (and out of auto-spawn) until #3 and #5 are done.
   `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
 - **Priority.** `swarm task add "<title>" -p N` (0-3, default 2; P0 urgent, P3 someday) and
-  `swarm task priority <id> <N>` (open or claimed task). `swarm task edit <id> [--title T] [--body B | --body-file F | --append TEXT] [--model M] [--effort E] [--urgent]` changes an open, claimed or blocked task: the owner is told, `task show` lists the edit. Startable tasks go by priority, then id: the board,
+  `swarm task priority <id> <N>` (open or claimed task). `swarm task edit <id> [--title T] [--body B | --body-file F (- for stdin) | --append TEXT] [--model M] [--effort E] [--urgent]` changes an open, claimed or blocked task: the owner is told, `task show` lists the edit. Startable tasks go by priority, then id: the board,
   the pool a free agent is offered and auto-spawn all use that order, a red main (`main red:`) first of all.
   It never preempts: it takes no claimed task and stops no agent. Known limit: strict order, no aging, so
   new P0-P2 tasks arriving can starve a P3 one.

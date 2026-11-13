@@ -221,6 +221,21 @@ function T.test_spawn_task_claims_before_launch(t)
   t:has(t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", { ok = false }).stderr, "live agent")  -- a live name is refused
 end
 
+-- The spawn message keeps the task line and body with the spawner's text after them, and ends with the repo's ci.flow line.
+function T.test_spawn_message_task_body_text_and_ci_flow(t)
+  t:fakes()
+  t:sw("a", "task", "add", "do it", "--body", "done means X")
+  t:sw("a", "spawn", "t-9", "--model", "haiku", "--task", "1", "--", "start with Y")
+  local brief = t:launched()[1].argv[3]
+  t:has(brief, "Board task #1: do it."); t:has(brief, "done means X\n\nstart with Y")
+  t:has(brief, "`ci.flow` post-merge, or unset")  -- the new worktree has no .claude/swarm.json
+  os.execute("mkdir -p " .. t.repo .. "/.claude")
+  put(t.repo .. "/.claude/swarm.json", '{"ci": {"flow": "pr-gated"}}')
+  t:sw("a", "spawn", "t-8", "--model", "haiku", "--", "go")
+  brief = t:launched()[2].argv[3]
+  t:has(brief, "`ci.flow` pr-gated"); t:hasnt(brief, "Board task")
+end
+
 function T.test_spawned_agent_skips_older_broadcasts(t)
   t:fakes()
   t:sw("a", "task", "add", "do it")

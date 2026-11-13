@@ -979,6 +979,8 @@ function T.test_task_edit(t)
   t:write("b", "body.txt", "from file")
   t:sw("b", "task", "edit", "1", "--body-file", "body.txt")
   t:eq(t:q1("select body from task where id=1").body, "from file")
+  t:sw("b", "task", "edit", "1", "--body-file", "-", { stdin = "from stdin" })
+  t:eq(t:q1("select body from task where id=1").body, "from stdin")
   -- no flag, no change, bad input: error, nothing written
   local n = #t:q("select * from event where kind='task-edit'")
   for _, args in ipairs({ { "edit", "1" }, { "edit", "1", "--title", "uno" }, { "edit", "1", "--title", "" },
@@ -992,6 +994,27 @@ function T.test_task_edit(t)
   t:has(t:sw("b", "task", "edit", "1", "--title", "z", { ok = false }).stderr, "done")
   t:sw("a", "task", "add", "two"); t:sw("a", "task", "drop", "2")
   t:has(t:sw("b", "task", "edit", "2", "--title", "z", { ok = false }).stderr, "dropped")
+end
+
+
+-- task add: --body-file (- is stdin); an empty, multi-line, or over-long bodiless title is refused and adds nothing
+function T.test_task_add_validates_title_and_reads_body_file(t)
+  t:fakes()
+  t:agent("a")
+  t:write("a", "b.txt", "from file")
+  t:sw("a", "task", "add", "one", "--body-file", "b.txt")
+  t:sw("a", "task", "add", "two", "--body-file", "-", { stdin = "from stdin" })
+  t:eq(t:q("select body from task order by id"), { { body = "from file" }, { body = "from stdin" } })
+  local long = ("x"):rep(101)
+  for _, args in ipairs({ { "" }, { "  " }, { "a\nb" }, { long }, { "t", "--body-file", "/nonexistent" },
+      { "t", "--body", "x", "--body-file", "b.txt" } }) do
+    args[#args + 1] = { ok = false }
+    t:sw("a", "task", "add", unpack(args))
+  end
+  t:eq(#t:q("select * from task"), 2)
+  t:sw("a", "task", "add", long, "--body", "detail")
+  t:sw("a", "task", "add", ("x"):rep(100))
+  t:eq(#t:q("select * from task"), 4)
 end
 
 return T

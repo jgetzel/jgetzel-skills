@@ -190,7 +190,7 @@ function T.test_liveness_check_hung_and_answered(t)
   t:q("update event set ts=ts-400 where kind='stay-check' and id=(select max(id) from event where kind='stay-check')")
   comms_tick(t); comms_tick(t)
   t:eq(evs(t, "stay-hung"), 1)
-  t:eq(#t:q("select 1 x from msg where dest='comms' and urgent=1 and body like 's stays for%liveness check%'"), 1)
+  t:eq(#t:q("select 1 x from msg where dest='comms' and urgent=1 and body like 's stays for%liveness check%swarm nudge s`%'"), 1)
   t:eq(live(t, "s"), 2)
 end
 

@@ -108,7 +108,7 @@ local function parser()
   p = ap:command("task"):command_target("act")
   local q = p:command("add")
   q:argument("title")
-  opt(q, "--body", "")
+  q:mutex(opt(q, "--body", ""), opt(q, "--body-file"):description("the body is this file's text; - reads stdin"))
   opt(q, "--after", nil, id_list):description("ids it waits on: 3 or 3,5")
   opt(q, "--model")
   opt(q, "--effort"):choices(EFFORTS)
@@ -141,7 +141,7 @@ local function parser()
   q = p:command("edit")  -- title, body, model or effort of an open, claimed or blocked task
   q:argument("id"):convert(int)
   opt(q, "--title")
-  q:mutex(opt(q, "--body"), opt(q, "--body-file"):description("replace the body with this file's text"),
+  q:mutex(opt(q, "--body"), opt(q, "--body-file"):description("replace the body with this file's text; - reads stdin"),
     opt(q, "--append"):description("add this text to the end of the body"))
   opt(q, "--model")
   opt(q, "--effort"):choices(EFFORTS)

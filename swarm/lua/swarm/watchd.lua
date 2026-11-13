@@ -462,7 +462,7 @@ function M.hung(c, t, comms, terms, opts)
             for _, y in ipairs(terms or {}) do if y.address == a.hc then x = y end end
             db.log(c, n, "stay-hung")
             msgs.post(c, "swarm", comms, ("%s stays for '%s' and did not answer the liveness check (terminal %s, hc status %s). "
-              .. "Unstick it with `hc send`, or end it."):format(n, a.stay, a.hc or "?", x and x.status or "unknown"), true, "system")
+              .. "Unstick it with `swarm nudge %s`, or end it."):format(n, a.stay, a.hc or "?", x and x.status or "unknown", n), true, "system")
           end
         elseif t - last >= M.LIVENESS_IDLE and not agents.cold_reason(a, t) then  -- a cold wake resends the whole context
           db.log(c, n, "stay-check")
@@ -1272,8 +1272,9 @@ function M.cmd_spawn(c, a)
   local ok2, out = pcall(function()
     if a.role then agents.set_role(c, name, a.role) end
     if a.stay then c:exec("update agent set stay=? where name=?", agents.one_line(a.stay), name) end  -- a stayer before its first turn
-    if tid and task == "" then
-      task = ("Board task #%s: %s. It is claimed for you; read its body with `swarm task show %s`."):format(d(tid), r.title, d(tid))
+    if tid then  -- the task line and body, then any text the spawner gave
+      task = ("Board task #%s: %s. It is claimed for you; `swarm task show %s` prints it.%s%s"):format(d(tid), r.title, d(tid),
+        nz(r.body) and ("\n\n" .. r.body) or "", task ~= "" and ("\n\n" .. task) or "")
     end
     if tid or a.attach then
       local path, br, base
@@ -1293,6 +1294,7 @@ function M.cmd_spawn(c, a)
     local brief = (util.slurp(util.join(here, "brief.md")) or "")
       .. ("\n\n---\nYour name: %s. Roster: %s.\nYour area and first task:\n%s\n"):format(
         name, #roster > 0 and table.concat(roster, ", ") or "nobody yet", task)
+    brief = brief .. "\n" .. ci.FLOW_LINE[ci.flow(wt) or "post-merge"] .. "\n"
     local rules = c:one("select v from meta where k='rules'")
     if rules then brief = brief .. ("\nRules for this repo, from the communicator:\n%s\n"):format(rules.v or "None") end
     return M.launch_agent(c, name, brief, a.model, a.effort, wt)
