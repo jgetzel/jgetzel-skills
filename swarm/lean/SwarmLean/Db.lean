@@ -1,74 +1,59 @@
-import Lean.Data.Json
-open Lean (ToJson FromJson)
+import SwarmLean.Db.Rows
 
 namespace SwarmLean
 
-/-- Where a task is in its life. -/
-inductive Status
-  | «open» | claimed | done
-  deriving DecidableEq, Repr, ToJson, FromJson
-
-/-- One board task. -/
-structure Task where
-  id : Nat
-  title : String
-  status : Status
-  owner : Option String
-  deriving DecidableEq, Repr, ToJson, FromJson
-
-/-- The whole store: the tasks and the id the next `add` hands out. -/
+/-- The whole database: every table of the schema as its rows (in rowid or key order, as loaded), and the id the next
+insert into each AUTOINCREMENT table gets. A command loads only the tables it reads (`Table`); the others stay empty
+here and only gain the rows it inserts. -/
 structure Db where
+  agents : List Agent := []
+  msgs : List Msg := []
+  cursors : List Cursor := []
   tasks : List Task := []
-  next : Nat := 1
-  deriving DecidableEq, Repr, ToJson, FromJson
+  locks : List Lock := []
+  conflicts : List Conflict := []
+  pairkeys : List Pairkey := []
+  metas : List Meta := []
+  events : List Event := []
+  workspaces : List Workspace := []
+  cis : List Ci := []
+  taskNext : Nat := 1
+  msgNext : Nat := 1
+  eventNext : Nat := 1
+  deriving DecidableEq, Repr, Inhabited
 
-/-- A command of the slice; `claim` and `release` carry the agent ($SWARM_NAME). -/
-inductive Cmd
-  | add (title : String)
-  | claim (id : Nat) (agent : String)
-  | release (id : Nat) (agent : String)
-  | board
-  deriving DecidableEq, Repr
-
-/-- What a command answers. -/
-inductive Result
-  | added (id : Nat)
-  | claimed
-  | held (owner : Option String)
-  | notOpen
-  | released
-  | notYours
-  | noSuch
-  | board (tasks : List Task)
+/-- A table of the schema. -/
+inductive Table
+  | agent | msg | cursor | task | lock | conflict | pairkey | «meta» | event | workspace | ci
   deriving DecidableEq, Repr
 
 /-- The task with id `i`. -/
-def Db.find (db : Db) (i : Nat) : Option Task := db.tasks.find? (·.id == i)
+def Db.find (db : Db) (i : Int) : Option Task := db.tasks.find? (fun t => (t.id : Int) == i)
 
 /-- `db` with `f` applied to the task with id `i`. -/
-def Db.set (db : Db) (i : Nat) (f : Task → Task) : Db :=
-  { db with tasks := db.tasks.map fun t => if t.id = i then f t else t }
+def Db.set (db : Db) (i : Int) (f : Task → Task) : Db :=
+  { db with tasks := db.tasks.map fun t => if (t.id : Int) = i then f t else t }
 
-/-- A command's whole effect on the store, and its answer. -/
-def Cmd.step : Cmd → Db → Db × Result
-  | .add title, db => ({ tasks := db.tasks ++ [⟨db.next, title, .open, none⟩], next := db.next + 1 }, .added db.next)
-  | .claim i a, db => match db.find i with
-    | none => (db, .noSuch)
-    | some t => match t.status with
-      | .open => (db.set i ({ · with status := .claimed, owner := some a }), .claimed)
-      | .claimed => (db, .held t.owner)
-      | .done => (db, .notOpen)
-  | .release i a, db => match db.find i with
-    | none => (db, .noSuch)
-    | some t =>
-      if t.status = .claimed ∧ t.owner = some a then (db.set i ({ · with status := .open, owner := none }), .released)
-      else (db, .notYours)
-  | .board, db => (db, .board db.tasks)
+/-- The agent row named `n`. -/
+def Db.agent (db : Db) (n : String) : Option Agent := db.agents.find? (·.name == n)
 
-/-- The store file's text for `db`. -/
-def Db.encode (db : Db) : String := (Lean.toJson db).compress
+/-- `db` with `f` applied to the agent row named `n`. -/
+def Db.setAgent (db : Db) (n : String) (f : Agent → Agent) : Db :=
+  { db with agents := db.agents.map fun a => if a.name = n then f a else a }
 
-/-- The db a store file holds. -/
-def Db.decode (s : String) : Except String Db := Lean.Json.parse s >>= Lean.fromJson?
+/-- The meta row with key `k`. -/
+def Db.getMeta (db : Db) (k : String) : Option Meta := db.metas.find? (·.k == k)
+
+/-- `db` with meta `k` set to `v` (insert or replace). -/
+def Db.setMeta (db : Db) (k : String) (v : Option String) : Db :=
+  if db.metas.any (·.k == k) then { db with metas := db.metas.map fun m => if m.k = k then { m with v } else m }
+  else { db with metas := db.metas ++ [{ k, v }] }
+
+/-- `db` with an event appended to the log (db.log). -/
+def Db.log (db : Db) (ts : Int) (agent : Option String) (kind : String) (path data : Option String) : Db :=
+  { db with events := db.events ++ [{ id := db.eventNext, ts, agent, kind, path, data }], eventNext := db.eventNext + 1 }
+
+/-- The cursor row of agent `n`. -/
+def Db.cursor (db : Db) (n : String) : Option Cursor := db.cursors.find? (·.agent == n)
 
 end SwarmLean

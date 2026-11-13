@@ -262,7 +262,7 @@ function T.test_launch_sh_survives_failure_after_hc_run(t)
   local j = json.encode({ spaces = { { id = "s", tabs = { { id = "b", terminals = { { terminal = "t1" } } } } } } })
   put(fb .. "/hc", "#!/bin/sh\necho '{\"address\": \"t5\"}'\n", "755")
   put(fb .. "/herdr-app", "#!/bin/sh\n[ \"$1\" = ls ] && echo '" .. j .. "' || exit 1\n", "755")
-  local sh = cli.SWARM:match("^(.*)/[^/]*$") .. "/../relaunch/launch.sh"
+  local sh = cli.DIR .. "/../relaunch/launch.sh"
   local r = t:exec({ sh, "x", "tab", "task" }, { env = { PATH = fb .. ":" .. cli.PATH, HC_TERMINAL_ID = "t1" } })
   t:eq({ r.code, util.splitlines(util.strip(r.stdout))[#util.splitlines(util.strip(r.stdout))] }, { 0, "t5" }, r.stderr)
 end
