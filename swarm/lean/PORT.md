@@ -51,7 +51,7 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    `SWARM_LEAN_STRICT=1` unless the env sets it. It also gained `cli.DIR` (swarm/), which two specs now use for paths
    they derived from the launcher's.
 7. **Ported here:** `task add/priority/after/claim/renew/show/done/block/unblock/release/edit/drop`, `board`, `rules`
-   (all of tasks.lua's commands). #99: `lock`, `unlock`. bases.lua has no command; its helpers port with their first user (#100's endable,
+   (all of tasks.lua's commands). #99: `lock`, `unlock`; #111: `hook` (all five events). bases.lua has no command; its helpers port with their first user (#100's endable,
    watchd's sweep). `--mixed` passes all 236 tests.
    #98: `post`, `read`, `wait`, `nudge` (msgs.lua, and agents.cmd_nudge) in Cmd/Msgs; msgs.lua's pure parts in
    Db/Msgs (`deliverStep` is deliver's pick as a step; Lib/Msgs's `deliver` formats it); agents.lua's hc helpers and
@@ -97,6 +97,8 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   lookbehind, the `x` flag. A possessive quantifier matches as greedy. Unicode classes are approximated (`shortcut:`
   in the file): non-ASCII is `\w` but for the common punctuation and symbol blocks, `\d` is ASCII, caseless folds
   ASCII.
+- **hook.lua** (#111): `Cmd/Hook.lean` runs the events; `Lib/Hook.lean` holds the transcript readings, set_status,
+  and the JSON answer (strings escaped as cjson does: `/` not escaped, DEL as `\u007f`), its keys in Python's order.
 - **difflib.lua, conflict.lua** (#99, #111): `Lib/Difflib.lean`, `Lib/Conflict.lean`: hunks, edits, clash, real_hunk,
   and the world parts (snapshot, onto, trial_merge, line_range, base_sha, `conflictTick`). The tick takes wt_map's
   agent→worktree list and bases.base_for as arguments (#100's), so watchd (#102) wires them. snapshot's temp
@@ -143,6 +145,9 @@ Ported as they are:
 - `lock` replaces a dead or expired lock by `insert or replace`, which moves the row to the end of the table; Lean's
   write-back updates it in place, so when two locks cover one path `lock_holder` may name the other one (the Lua's
   order is SQLite's, unspecified, too).
+- `hook`'s push log expands a leading `~` of the `cd` or `-C` directory to $HOME even as `~user` (`~x` → `$HOMEx`).
+- The stop and session hooks clear `ctx_tokens` when the transcript gives no figure even where touch would not write
+  (another terminal's row), as the Lua's `set_null` does.
 - `hook.ctx_from` reads a transcript's last 300 KB as bytes; Lean drops the whole tail when the cut lands inside a
   UTF-8 character (`shortcut:` in Lib/Hook).
 - `msgs.take` loops forever on a cursor row whose `last_msg_id` is NULL (its guarded UPDATE never matches); Lean reads

@@ -3,7 +3,8 @@ import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Re
 import SwarmLean.Lib.Msgs
 import SwarmLean.Lib.Cost
-import SwarmLean.Lib.Bases
+import SwarmLean.Lib.Lifecycle
+import SwarmLean.Lib.Workspaces
 import SwarmLean.Lib.Machine
 import SwarmLean.Sys
 
@@ -24,8 +25,6 @@ def STOP_CAP : Nat := 2
 
 /-- `git … push`, with its `-C dir` (log_push). -/
 def PUSH : String := "\\bgit\\s+(?:-C\\s+(\\S+)\\s+)?push\\b"
-/-- `git checkout|switch <branch>` (workspaces.base_checkout). -/
-def CHECKOUT : String := "\\bgit\\s+(?:checkout|switch)\\s+(?:-[qf]\\s+)*([^\\s;&|-][^\\s;&|]*)\\s*(?:$|[;&|])"
 /-- A `cd dir` at the start or after `; & | (` (log_push). -/
 def CD : String := "(?:^|[;&|(]\\s*)cd\\s+([^\\s;&|)]+)"
 
@@ -53,25 +52,7 @@ def tostr (j : Json) (k : String) : String :=
 def truthy (j : Json) (k : String) : Bool :=
   match j.getObjVal? k with | .ok .null | .ok (.bool false) | .error _ => false | _ => true
 
-/-- One reason the agent is not endable (watchd.endable_reasons). -/
-structure Reason where
-  key : String
-  text : String
-  declared : Bool
-
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
-
--- ---------- pending: the other ports' parts the hook calls; replaced by theirs as they land ----------
-
-/-- The base branch `cmd` would check out in an agent's workspace (`git checkout main`), or none
-(workspaces.base_checkout). -/
-def baseCheckout (name cmd cwd : String) : m (Option String) := do
-  let (hasWs, named) ← Store.txn [.workspace, .task] fun db =>
-    (db, (db.workspaces.any (·.agent == name), (db.tasks.filterMap (·.base)).eraseDups))
-  if !hasWs then return none
-  let some mt := (Re.search CHECKOUT cmd).toOption.join | return none
-  let some b := mt.group 1 | return none
-  return (← Bases.protectedBases named (some cwd)).find? fun x => b == x || b == "origin/" ++ x
 
 /-- The pre-tool Bash note when the command is heavy here (cost.predict) and memory is short: information only,
 never a deny. -/
@@ -81,10 +62,6 @@ def costNote (cmd cwd : String) : m (Option String) := do
   if !(pr.peak_kb * 2 > avail || Machine.pressureHigh avail total psi) then return none
   let mins := max 1 (fdiv (pr.wall_s + 30) 60)
   return some s!"`{pr.key}` took ~{fixed (Float.ofInt pr.peak_kb / 1048576) 1}G and {mins} min the last {pr.n} time{if pr.n == 1 then "" else "s"} here; {fixed (Float.ofInt avail / 1048576) 1}G is available now.\n{← Machine.note}"
-/-- machine.claude_pid (board #100). -/
-def claudePid : m (Option Int) := return none
-/-- watchd.endable_reasons for a live row (board #100). -/
-def endableReasons (row : Agent) : m (List Reason) := do let _ := row; return []
 
 -- ---------- the hook ----------
 
@@ -105,7 +82,8 @@ def preTool (name cwd : String) (tool : Option String) (ti : Json) (here : Optio
     emit "PreToolUse" none (some (why ++ s!" Use `swarm post {tgt.name} …`: it reads the message when it next wakes. If it truly can't wait, resend starting with `[urgent]`."))
   | some "Bash" =>
     let cmd := tostr ti "command"
-    if let some base ← baseCheckout name cmd cwd then
+    let wdb ← Store.txn [.workspace, .task] fun db => (db, db)
+    if let some base ← Workspaces.baseCheckout wdb name cmd (some cwd) then
       Store.txn [] fun db => (db.log t (some name) "deny-base" (some base) (some (cut cmd 120)), ())
       emit "PreToolUse" none (some s!"Don't check out {base} in your worktree: a base checked out here blocks `git push . HEAD:{base}` for everyone. Land by a fast-forward of it from your branch (`git push . HEAD:{base}`), or a PR for a remote base.")
       return
@@ -168,7 +146,8 @@ def stopBlock (name : String) (p : Json) (k : Option Int) : m (Option String) :=
   if isC then return none
   if ← errorTurn (str? p "transcript_path") then return none
   let some row := row | return none
-  let rs ← endableReasons row
+  let (db, f) ← Lifecycle.readsNow name
+  let rs ← Lifecycle.endableReasons db row f
   let bg := match p.getObjVal? "background_tasks" with
     | .ok (.arr ts) => ts.toList.filter fun x =>
         str? x "status" == some "running" && !((Re.search "swarm\\s+wait" (tostr x "command")).toOption.join.isSome)
@@ -243,7 +222,7 @@ def hook (ev : String) : m UInt32 := do
       (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ())
     if let some why ← stopBlock name p k then Env.out ("{\"decision\": \"block\", \"reason\": " ++ jstr why ++ "}")
   | "session" =>
-    let pid ← claudePid
+    let pid ← Machine.claudePid
     Store.txn [.agent, .event] fun db =>
       ((Agents.touchWith db name none here now false fun a => match pid with | some x => { a with claude_pid := some x } | none => a).1, ())
     if str? p "source" == some "compact" then
