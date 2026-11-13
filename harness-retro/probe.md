@@ -63,7 +63,7 @@ $P wait <out>          # with run_in_background; the notification wakes you
 If the session ends first, the agents keep running in their tabs. The next
 `probe.sh wait <out> 1` collects what they finished.
 
-The agents run with `--permission-mode auto`, no AskUserQuestion, and `probe-guard.lua` as a
+The agents run with `--permission-mode auto`, no AskUserQuestion, and `probe-guard.sh` as a
 PreToolUse hook on every tool: no pushes, PRs, ssh, herdr, SendMessage, shared git refs, writes
 outside the worktree (this keeps them out of the shared auto-memory), or commands naming the live
 repo. If `launch` stops at a trust dialog or `wait` reports `blocked`, show the user the pane

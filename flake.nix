@@ -1,5 +1,5 @@
 {
-  description = "swarm-lean, the swarm CLI (swarm/lean); LuaJIT with the rocks the Herdr panels and retro tools need (keep in sync with ROCKS in install.sh), plus the sqlite3 CLI";
+  description = "swarm-lean, the swarm CLI (swarm/lean); LuaJIT with the rocks the Herdr panels need (keep in sync with ROCKS in install.sh), plus the sqlite3 CLI";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs = { self, nixpkgs }:
     let
@@ -18,9 +18,9 @@
           export HOME=$TMPDIR
           grep -qx "leanprover/lean4:v${pkgs.lean4.version}" swarm/lean/lean-toolchain ||
             { echo "swarm/lean/lean-toolchain is not nixpkgs' lean4 ${pkgs.lean4.version}: nix flake update, or build with elan" >&2; exit 1; }
-          cd swarm/lean && lake build swarm-lean swarm-report
+          cd swarm/lean && lake build swarm-lean swarm-report harness-retro
         '';
-        installPhase = "install -Dm755 -t $out/bin .lake/build/bin/swarm-lean .lake/build/bin/swarm-report";
+        installPhase = "install -Dm755 -t $out/bin .lake/build/bin/swarm-lean .lake/build/bin/swarm-report .lake/build/bin/harness-retro";
         meta.mainProgram = "swarm-lean";
       };
     in {

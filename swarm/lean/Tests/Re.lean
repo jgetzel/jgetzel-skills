@@ -26,6 +26,9 @@ def fa (pat s : String) (fl : Flags := {}) : List String := (ok (findall pat s f
   let hs := ok (finditer hunk "x\n<<<<<<< o\nA\n||||||| b\nB\n=======\nC\n>>>>>>> t\n" (S.or M))
   hs.length == 1 && hs.map (fun h => [h.group 1, h.group 2, h.group 3]) == [[some "A\n", some "B\n", some "C\n"]]
 #guard (fa "x*" "é").length == 2
+-- harness-lint's hook-path token: lookbehind, positive and negative
+#guard fa "(?:^|(?<=[\\s\"'=(]))(/[^\\s\"';|&]*)" "sh /a/b.sh x=/c 'q' y/d" == ["/a/b.sh", "/c"]
+#guard fa "(?<!a)b" "ab cb" == ["b"] && (ok (search "(?<=ab)c" "abc")).map (·.s) == some 2
 #guard ok (sub "[^\\w.-]" "_" "my repo/é") == "my_repo_é"
 #guard escape "main red: run (1)" == "main\\ red\\:\\ run\\ \\(1\\)" && (ok («match» (escape "a.b") "axb")).isNone
 #guard match compile "(unclosed" with | .error _ => true | .ok _ => false

@@ -230,7 +230,7 @@ CLI (`swarm/swarm` runs swarm-lean, built in `swarm/lean/`), `SKILL.md` for the 
 `brief.md` for agents (prepended by `spawn`), `settings.template.json` for
 their hooks, and the CLI's tests (`swarm/lean/check.sh`, or `swarm-tests` alone). `swarm -h` lists commands.
 `swarm/lua/swarm/` keeps seven modules of the old Lua CLI only as the library the Herdr panels' installer
-(herdr-mods/install.lua) and harness-retro load; they are not part of the CLI.
+(herdr-mods/install.lua) loads; they are not part of the CLI.
 
 ### Store
 

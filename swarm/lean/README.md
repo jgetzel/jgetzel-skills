@@ -32,6 +32,8 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `Audit.lean` | every theorem's axioms (Lean's three only, or it fails), and the theorems taking each assumption |
 | `TestMain.lean`, `Tests/Cli/`, `Tests/Spec/` | `swarm-tests [pattern]`: the CLI's test suite (the Lua specs ported), parallel, per-test timeout |
 | `Tests/*.lean` | the pure specs as `#guard`s, checked by `lake build` |
+| `HarnessRetro/`, `HarnessRetroMain.lean` | `harness-retro <tool>`: the harness-retro skill's tools (transcript, time-report, harness-lint, probe-guard, probe-json), run by `../../harness-retro/<tool>.sh` |
+| `test-harness-retro.sh` | those tools on `Tests/harness-retro`'s fixture, against what the Lua tools printed for it |
 | `test-claim.sh` | 50 `task claim 1` processes on one db; exactly one wins |
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
 | `Report.lean` | `swarm-report`, swarm-retro's evidence report (its old swarm-report.lua), run by ../../swarm-retro/swarm-report |

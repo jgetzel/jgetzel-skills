@@ -1,0 +1,8 @@
+{"type":"user","timestamp":"2026-11-12T10:00:00Z","message":{"content":"You are ll-9 <system-reminder>hidden</system-reminder> do it"}}
+{"type":"assistant","timestamp":"2026-11-12T10:00:30Z","message":{"content":[{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"just test","run_in_background":false}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git push","run_in_background":true}}]}}
+{"type":"user","timestamp":"2026-11-12T10:02:30Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok\nline2"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"started"}]}]}}
+{"type":"assistant","timestamp":"2026-11-12T10:03:30Z","message":{"content":[{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/x/é.md","limit":5}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T10:05:30Z","content":"<tool-use-id>t2</tool-use-id> done"}
+{"type":"user","timestamp":"2026-11-12T10:06:30Z","message":{"content":[{"type":"tool_result","tool_use_id":"t3","content":"text"}]}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-11-12T10:07:00Z","message":{"content":[{"type":"text","text":"side"}]}}
+{"type":"assistant","timestamp":"2026-11-12T10:08:00Z","message":{"content":[{"type":"text","text":"PROBE DONE"}]}}

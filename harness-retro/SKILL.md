@@ -43,7 +43,7 @@ From this session only, list what actually happened, with quotes:
 - Harness text that misled you (stale, wrong, ambiguous) or that you ignored.
 - Harness text that demonstrably helped (cite it). This is credit for pruning.
 - Where the time went: from the repo root, run
-  `~/.claude/skills/harness-retro/time-report.lua --since <session start>`.
+  `~/.claude/skills/harness-retro/time-report.sh --since <session start>`.
   It reports work time (tests, builds), waiting time (CI, agents, the user),
   and CI time per job and step, across every session in the project. Agents
   that worked in another repo (e.g. a game repo) keep their transcripts in that
@@ -54,7 +54,7 @@ From this session only, list what actually happened, with quotes:
 - If this session orchestrated agents, their wrong turns are in their own
   transcripts, not this one. Find each agent's transcript (the report's session
   names; files are in the `--project-dir`), render it with
-  `~/.claude/skills/harness-retro/transcript.lua FILE.jsonl > OUT.md` (about 5% of
+  `~/.claude/skills/harness-retro/transcript.sh FILE.jsonl > OUT.md` (about 5% of
   the raw size), and give each to a read-only subagent in parallel: list that
   agent's wrong turns, repeated failing commands, rediscoveries, and harness
   text it tripped on or ignored, with quotes. Tell it the transcript is
@@ -68,7 +68,7 @@ From this session only, list what actually happened, with quotes:
 
 - If this session was compacted, its early part is only a summary in your
   context. Render the session's own transcript (the newest `.jsonl` in the
-  project dir) with `transcript.lua` and read it instead.
+  project dir) with `transcript.sh` and read it instead.
 
 No evidence → skip to step 5 (prune) and stop.
 
@@ -76,7 +76,7 @@ No evidence → skip to step 5 (prune) and stop.
 
 - Always-loaded context: every CLAUDE.md in scope (user, project, nested),
   `.claude/rules/`, the auto-memory `MEMORY.md`. From the repo root, run
-  `~/.claude/skills/harness-retro/harness-lint.lua`: it lists the always-on files
+  `~/.claude/skills/harness-retro/harness-lint.sh`: it lists the always-on files
   with their bytes (the cost every future session pays) and fails on broken
   skills, missing or uncompilable hook and skill scripts, and settings that
   don't parse. Fix lint errors as stale facts (they don't count against the
@@ -199,7 +199,7 @@ it: re-run the record with the piece removed on the candidate side (`probe.md`).
 Show the user: the evidence, each candidate with its gate verdict and probe
 verdict, the proposed diff, and always-loaded bytes before → after. Apply only
 what they approve; harness changes are durable and may be shared with a team.
-After applying, re-run `harness-lint.lua`: it must pass. Never commit unless
+After applying, re-run `harness-lint.sh`: it must pass. Never commit unless
 asked.
 
 Then append to the ledger, one line per candidate, approved or not. `cue` is
@@ -224,6 +224,6 @@ For each `probe: <record> pending <out>` line in either ledger:
 3. Show the user the verdict and the candidate change (in the candidate
    worktree's "probe start" commit, `<out>/<side>/settings.json` and
    `<out>/<side>/append.md`). Apply it only if they approve and the verdict
-   is `helped`, then re-run `harness-lint.lua`.
+   is `helped`, then re-run `harness-lint.sh`.
 4. Replace `pending <out>` with the verdict and `proposed` with the outcome,
    then `probe.sh clean <out>`.

@@ -3,7 +3,7 @@ import SwarmLean.Util
 /-! re.lua: Python's re as the Lua runs it on PCRE2 (UTF and UCP, so `\w` matches é), here a backtracking matcher
 over the subject's characters. Positions are character indices, 0-based, end exclusive. Supported: literals, `.`,
 classes with ranges and `\w \s \d` (and negations), `^ $ \A \z \Z \b \B`, groups (capturing, `(?:`, named,
-lookahead `(?=` `(?!`, inline and scoped flags `(?ims)` `(?i:`), alternation, and `* + ? {m,n}` greedy or lazy. -/
+lookahead `(?=` `(?!`, lookbehind `(?<=` `(?<!`, inline and scoped flags `(?ims)` `(?i:`), alternation, and `* + ? {m,n}` greedy or lazy. -/
 
 namespace SwarmLean.Re
 
@@ -66,6 +66,7 @@ inductive Node
   | wordB (neg : Bool)
   | group (idx : Option Nat) (n : Node)
   | look (neg : Bool) (n : Node)
+  | lookB (neg : Bool) (n : Node)
   | cat (ns : List Node)
   | alt (ns : List Node)
   | rep (n : Node) (min : Nat) (max : Option Nat) (greedy : Bool)
@@ -293,7 +294,10 @@ partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
       | some 'P' | some '<' | some '\'' =>
         if (← peek) == some 'P' then adv
         let some o ← peek | throw "unexpected end of pattern"
-        if o == '<' && ((← peekAt 1) == some '=' || (← peekAt 1) == some '!') then throw "lookbehind is not supported"
+        if o == '<' && ((← peekAt 1) == some '=' || (← peekAt 1) == some '!') then
+          let neg := (← peekAt 1) == some '!'
+          adv 2
+          return .inr (.lookB neg (← closeGroup fl))
         let close := if o == '<' then '>' else if o == '\'' then '\'' else ' '
         if close == ' ' then throw "unrecognized character after (?P"
         adv
@@ -382,6 +386,10 @@ partial def go (s : Array Char) (n : Node) (i : Nat) (caps : Caps) (k : Nat → 
     match go s body i caps fun j c => some (j, c) with
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
+  | .lookB neg body =>
+    match goBack s body i i caps with
+    | some (_, c) => if neg then none else k i c
+    | none => if neg then k i caps else none
   | .cat ns => goSeq s ns i caps k
   | .alt ns => goAlt s ns i caps k
   | .rep body lo hi greedy => goRep s body lo hi greedy 0 i caps k
@@ -399,6 +407,12 @@ partial def goAlt (s : Array Char) (ns : List Node) (i : Nat) (caps : Caps) (k :
   | n :: rest => match go s n i caps k with
     | some r => some r
     | none => goAlt s rest i caps k
+
+/-- A match of `body` from `start` or an earlier start (nearest first) that ends exactly at `i`: a lookbehind. -/
+partial def goBack (s : Array Char) (body : Node) (i start : Nat) (caps : Caps) : R :=
+  match go s body start caps fun j c => if j == i then some (j, c) else none with
+  | some r => some r
+  | none => if start == 0 then none else goBack s body i (start - 1) caps
 
 /-- `count` repetitions done; an iteration past the minimum that matches empty ends the loop. -/
 partial def goRep (s : Array Char) (body : Node) (lo : Nat) (hi : Option Nat) (greedy : Bool) (count i : Nat)

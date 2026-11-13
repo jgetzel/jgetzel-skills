@@ -10,7 +10,7 @@
 # OUT/state holds the sides; `cand=` names the candidate side. Never hand OUT/state to the judge.
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-json() { "$here/probe-json.lua" get "$1"; }
+json() { "$here/probe-json.sh" get "$1"; }
 
 case ${1:-} in
 setup)
@@ -28,7 +28,7 @@ setup)
     GIT_LFS_SKIP_SMUDGE=1 git -C "$repo" worktree add -q --detach "$wt" "$commit"
     [ -f "$repo/.claude/settings.local.json" ] && mkdir -p "$wt/.claude" && cp "$repo/.claude/settings.local.json" "$wt/.claude/"
     mkdir -p "$out/$s"; : > "$out/$s/append.md"
-    "$here/probe-json.lua" settings "$here/probe-guard.lua" "$wt" "$repo" > "$out/$s/settings.json"
+    "$here/probe-json.sh" settings "$here/probe-guard.sh" "$wt" "$repo" > "$out/$s/settings.json"
     printf 'wt_%s=%q\n' "$s" "$wt" >> "$out/state"
   done
   . "$out/state"; w=wt_$cand
@@ -53,7 +53,7 @@ launch)
       echo "agent $name did not start (trust dialog?); show the user, then probe.sh clean $out" >&2; exit 1
     fi
     herdr agent prompt "$name" "$(cat "$here/probe-preamble.md" "$out/prompt.md")" >/dev/null
-    printf 'sid_%s=%s\n' "$s" "$(herdr agent get "$name" | json '(d.result.agent.agent_session or {}).value')" >> "$out/state"
+    printf 'sid_%s=%s\n' "$s" "$(herdr agent get "$name" | json 'd.result.agent.agent_session.value')" >> "$out/state"
   done
   echo "launched probe-$id-a and probe-$id-b; next: probe.sh wait $out (run_in_background)"
   ;;
@@ -64,12 +64,12 @@ wait)
     name=probe-$id-$s; st=timeout; v=sid_$s; sid=${!v:-}
     tx=$(ls ~/.claude/projects/*/"$sid.jsonl" 2>/dev/null | head -1)
     while :; do
-      [ -n "$tx" ] && "$here/transcript.lua" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
+      [ -n "$tx" ] && "$here/transcript.sh" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
       [ "$(date +%s)" -lt "$deadline" ] || break
       herdr agent wait "$name" --timeout $(( (deadline - $(date +%s)) * 1000 )) >/dev/null 2>&1 || true
       info=$(herdr agent get "$name" 2>/dev/null) || { st=gone; break; }
       tx=$(ls ~/.claude/projects/*/"$sid.jsonl" 2>/dev/null | head -1)
-      [ -n "$tx" ] && "$here/transcript.lua" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
+      [ -n "$tx" ] && "$here/transcript.sh" "$tx" --last | grep -q 'PROBE DONE' && { st=done; break; }
       [ "$(json 'd.result.agent.agent_status' <<<"$info")" = blocked ] && { st=blocked; break; }
       sleep 60
     done
@@ -78,7 +78,7 @@ wait)
   . "$out/state"; mkdir -p "$out/judge"; cp "$out/prompt.md" "$out/judge/"
   for s in a b; do
     w=wt_$s; t=tx_$s; r=start_$s
-    [ -n "${!t}" ] && "$here/transcript.lua" "${!t}" --redact "${!w}=<checkout>" --redact "probe-$id-$s=probe" > "$out/judge/$s.md"
+    [ -n "${!t}" ] && "$here/transcript.sh" "${!t}" --redact "${!w}=<checkout>" --redact "probe-$id-$s=probe" > "$out/judge/$s.md"
     git -C "${!w}" add -A -N && git -C "${!w}" diff "${!r}" > "$out/judge/$s.diff"
   done
   grep '^status_' "$out/state"; ls "$out/judge"
