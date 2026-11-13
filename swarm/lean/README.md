@@ -166,7 +166,7 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | End: `endOther_spec`, `N1end_of` (H1), `endOther_enabled`, `finished_eq`, `releaseAll_free` | moved | `WatchdProofs.endStep_free`, `endStep_frame`, `endStep_ends`, `end_atomic`, `endWhy_lifted`, `release_free` |
 | End: `endOther_git` | not moved | that the end touches no worktree needs `hc kill`'s effect (`HcKillEnds`) on a world that records commands: board #115 |
 | End: `endOther_force`, `not_N1end_force*` | not applicable | `--force` skips the check by design |
-| NoWorkLost: `N1_of`, `replay_N1`, `finished_of_holds`, `lifecycle_keeps`, `reapTask_keeps`, `lifecycle_tk` | moved, but N1 (1) is false | (1) fails on the code by design: watchd's `idleJob` ends an idle agent whose only job is a sleep loop (#106's finding; the model has no `idleJob`). Moved: `fate_end_free`, `endStep_free`, `keeps_bg`, `keeps_iff`, `reapTask_spec`, `reap_atomic`. (4), W1's part: not moved, #115 |
+| NoWorkLost: `N1_of`, `replay_N1`, `finished_of_holds`, `lifecycle_keeps`, `reapTask_keeps`, `lifecycle_tk` | moved | (1) as the model now states it: a stalled job (a sleep loop or a hung tree, `idleJob`) is not work (#106's finding, board #125: the model's `bgStall`; `hungStep_hung` on the code; `idleJob`'s loop itself is not proved). Moved: `fate_end_free`, `endStep_free`, `keeps_bg`, `keeps_iff`, `reapTask_spec`, `reap_atomic`. (4), W1's part: not moved, #115 |
 | NoWorkLost: `not_N1_*`, `pre*`, `cfg*` | not applicable | runs with a fix switched off |
 | Spawn: `Sp1_of`, `Sp2_of` | moved | `WatchdProofs.unreserve_spec`, `reserve_max` |
 | Spawn: `Sp3_of`, `noSpawn_startable`, `first_pool`, `tickG_id`, `sfail_eq`, `failed_s`, `tk_endAgent_keep`, `lifecycleG_nil_keep` | not moved | Sp3 is auto-spawn's backoff over fair runs, decided in the monadic `autoSpawn` loop; the rest are its model world's lemmas |
@@ -201,7 +201,7 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | Trust: `need_*`, `i_*`, `nudge_enabled` | not moved | they show each tool hypothesis of Real.lean's theorems is needed; no Lean theorem takes a tool assumption yet, so there is nothing to show needed |
 | Checkers: `*_spec` | not applicable | the model's Bool checkers against its Props |
 | Contract: all | as their family above | restatements over the model's types (each row above covers its Contract name) |
-| Findings: all | not applicable | the model's counterexample runs; each fix is built into the code. Findings in the port: S3's lock by an ended agent (fixed, `Locks.lock`), `Msgs.wakes` asking `cold` for an urgent row (fixed), N1 (1) with `idleJob` (by design): PORT.md |
+| Findings: all | not applicable | the model's counterexample runs; each fix is built into the code. Findings in the port: S3's lock by an ended agent (fixed, `Locks.lock`), `Msgs.wakes` asking `cold` for an urgent row (fixed), N1 (1) with `idleJob` (by design; the model's N1 now says it, board #125): PORT.md |
 | Exists: `lasso_run`, `fair_run_exists` | not applicable | non-vacuity of the model's fair runs; the code's run statements take any run |
 | example/Client.lean | not applicable | a downstream proof of Contract.lean |
 

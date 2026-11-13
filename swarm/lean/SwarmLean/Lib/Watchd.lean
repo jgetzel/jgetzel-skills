@@ -29,6 +29,9 @@ def LIVENESS_WAIT : Int := 5 * 60
 def JOB_IDLE : Int := 10 * 60
 /-- ...and ended this long (s) after the nudge if still idle. -/
 def JOB_GRACE : Int := 10 * 60
+/-- A finished agent's job whose process tree used no CPU second, started or ended no process this long (s) is hung, as
+a sleep loop is idle (board #125: a `lake env lean X | head` that sat 5 h at 0% CPU). A build burns CPU every tick. -/
+def JOB_HUNG : Int := 20 * 60
 /-- Failed launches in a row before auto-spawn gives up on a task. -/
 def SPAWN_FAILS : Nat := 5
 
@@ -354,28 +357,46 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
           (say db now n (s!"Liveness check: you have stayed {fdiv (t - last) 60} min for '{stay}'. If that still holds, do nothing. " ++
             "If it is over, `swarm stay --end`.") false "system", ())
 
-/-- An agent fate kept only for its background job `p`: once idle JOB_IDLE, one nudge; JOB_GRACE later, ended and comms
-told the job's command line. A real run (a non-sleep child, CPU time) is left alone (watchd.idle_job). -/
+/-- Whether agent `n`'s job tree `sig` (`Lifecycle.jobTree`) is hung at `t`, and whether to log `sig` as its new
+`job-cpu` checkpoint: the first tree seen, or a changed one once the last is JOB_HUNG old. So at most one event per
+JOB_HUNG, and a stall shows between JOB_HUNG and twice that after it began. -/
+def hungStep (db : Db) (n sig : String) (t : Int) : Bool × Bool :=
+  match (db.events.filter fun e => e.agent == some n && e.kind == some "job-cpu").getLast? with
+  | none => (false, true)
+  | some e => let old := t - e.ts.getD 0 ≥ JOB_HUNG; if e.data == some sig then (old, false) else (false, old)
+
+/-- An agent fate kept only for its background job `p`, a sleep loop or hung (`hungStep`): once idle JOB_IDLE, one
+nudge naming the pid; JOB_GRACE later, ended and comms told the job's command line. A real run (CPU time, a process
+started or ended, a known waiter) is left alone (watchd.idle_job). -/
 def idleJob (a : Agent) (f : Lifecycle.Reads m) (p : Machine.Ps) (procs : List Machine.Ps) (t : Int) (comms : String)
     (x : Option Term) (hasTerms : Bool) : m Unit := do
   let last := a.last_active.getD 0
   if t - last < JOB_IDLE then return
   let v ← Lifecycle.fate a t x hasTerms { f with job := pure none }
   if v != some "end" && v != some "reuse" then return
-  if !Lifecycle.sleepLoop p procs then return
   let db ← Store.txn [.event] fun db => (db, db)
+  let loop := Lifecycle.sleepLoop p procs
+  if !loop then
+    let some sig := Lifecycle.jobTree p procs | return
+    let (hung, cp) := hungStep db a.name sig t
+    if cp then
+      let now ← Clock.now
+      Store.txn [] fun db => (db.log now (some a.name) "job-cpu" (some (d p.pid)) (some sig), ())
+    if !hung then return
+  let why := if loop then "is a sleep-only loop" else s!"has used no CPU for {JOB_HUNG / 60} min"
   let nudge := (db.events.filter fun e => e.agent == some a.name && e.kind == some "job-nudge" && e.ts.any (· ≥ last)).getLast?
   match nudge with
   | none =>
     let now ← Clock.now
     Store.txn [] fun db =>
       let db := db.log now (some a.name) "job-nudge" none none
-      (say db now a.name "Your task is done; kill your background job or say why you stay (`swarm stay \"<what>\"`)." false "system", ())
+      (say db now a.name (s!"Your task is done and your background job (pid {p.pid}) {why}: {cut (Machine.jobCmd p.args) 120}. " ++
+        s!"Kill it, or say why you stay (`swarm stay \"<what>\"`); else watchd ends you in {JOB_GRACE / 60} min.") false "system", ())
   | some e =>
     if t - e.ts.getD 0 ≥ JOB_GRACE then
       if ← Lifecycle.endAgent a false none then
         let now ← Clock.now
-        Store.txn [] fun db => (say db now comms s!"ended {a.name}: idle with only a background job left: {cut p.args 120}" false "notice", ())
+        Store.txn [] fun db => (say db now comms s!"ended {a.name}: idle with only a background job left, which {why}: {cut p.args 120}" false "notice", ())
 
 -- ---------- auto-spawn ----------
 

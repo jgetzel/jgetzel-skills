@@ -123,27 +123,29 @@ def fateRow (g : Agent) (t : Int) : ARow :=
     ctx := some (if g.big then smallCtx else 0), waiter := if g.waiter then some 1 else none,
     ended := if g.st == .ended then some 0 else none, stay := if g.stay then some "s" else none }
 
-/-- fate's reads on the model: its claims and locks, its unlanded work, its background job, the pool, and passed over
+/-- fate's reads on the model: its claims and locks, its unlanded work, its background job unless stalled (lifecycle
+reads the job, and `Watchd.idleJob` asks fate again without a stalled one), the pool, and passed over
 (told of the whole pool, nothing unread: the model has no notices) -/
 def factsOf (c : Cfg) (s : State) (a : Nat) : Facts :=
-  { ours := true, claims := holds s a, locks := lockHeld s a, unlanded := unlanded c s a, job := (s.agt a).bg,
+  { ours := true, claims := holds s a, locks := lockHeld s a, unlanded := unlanded c s a,
+    job := (s.agt a).bg && !(s.agt a).stalled,
     pool := (pool c s).length,
     passedOver := (pool c s).all (s.agt a).told.contains && (unread s a).isEmpty, alive := true }
 
 /-- the model's lifecycle verdict on a -/
 def modelFate (c : Cfg) (s : State) (a : Nat) : Verdict :=
-  if !idleFree s a then .keep else if unlanded c s a then .unclean else if c.bgLives && (s.agt a).bg then .keep
+  if !idleFree s a then .keep else if unlanded c s a then .unclean else if c.bgLives && (s.agt a).bg && !(s.agt a).stalled then .keep
   else if reusable c s a then .reuse else .end_
 
-theorem fate_core (g : Agent) (t : Int) (h1 h2 h3 : Bool) (pl u : List Nat) :
-    fateL (fateRow g t) t none false ⟨true, h1, h2, h3, g.bg, pl.length, pl.all g.told.contains && u.isEmpty, true⟩ =
-      if !(g.st == .idle && g.aged && !g.stay && !h1 && !h2) then .keep else if h3 then .unclean else if g.bg then .keep
+theorem fate_core (g : Agent) (t : Int) (h1 h2 h3 j : Bool) (pl u : List Nat) :
+    fateL (fateRow g t) t none false ⟨true, h1, h2, h3, j, pl.length, pl.all g.told.contains && u.isEmpty, true⟩ =
+      if !(g.st == .idle && g.aged && !g.stay && !h1 && !h2) then .keep else if h3 then .unclean else if j then .keep
       else if !g.big && !pl.isEmpty && !(pl.all g.told.contains && u.isEmpty) && g.waiter then .reuse else .end_ := by
   have h120 : t - (t - 120) = 120 := by omega
   have hpl : (0 < pl.length) = (pl.isEmpty = false) := by cases pl <;> simp
-  rcases g with ⟨st, _, big, aged, _, _, _, _, _, _, bg, _, _, _, _, _, _, _, _, stay, _, _⟩
+  rcases g with ⟨st, _, big, aged, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, stay, _, _⟩
   simp only [fateL, fateRow, nz, smallCtx, hpl]
-  cases stay <;> cases st <;> cases aged <;> cases big <;> cases h1 <;> cases h2 <;> cases h3 <;> cases bg <;>
+  cases stay <;> cases st <;> cases aged <;> cases big <;> cases h1 <;> cases h2 <;> cases h3 <;> cases j <;>
     simp_all [statusOf, Int.sub_self]
 
 /-- lifecycle's verdict is the model's, on the current Cfg (`bgLives`, board #15, as the replay), for an agent between no read and its write -/
@@ -154,13 +156,13 @@ theorem fate_lifted {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver
   simp only [hp, hw, hb, hr, hs, beq_self_eq_true, List.isEmpty_nil, Bool.and_true, Bool.not_true, Bool.or_false,
     Bool.true_and]
   cases h1 : holds s a <;> cases h2 : lockHeld s a <;> cases h3 : unlanded c s a <;>
-    cases ((s.agt a).st == .idle && (s.agt a).aged) <;> cases (s.agt a).stay <;> cases (s.agt a).bg <;> simp
+    cases ((s.agt a).st == .idle && (s.agt a).aged) <;> cases (s.agt a).stay <;> cases (s.agt a).bg <;> cases (s.agt a).stalled <;> simp
 
 theorem fate_end {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver = true) (hw : c.waiterAlive = true)
     (hb : c.bgLives = true) (hr : (s.agt a).reading = 0) (hs : (s.agt a).snap = []) :
     fateL (fateRow (s.agt a) t) t none false (factsOf c s a) = .end_ ↔ ends c s a = true := by
   rw [fate_lifted hp hw hb hr hs, modelFate, ends, finished, hb]
-  cases idleFree s a <;> cases unlanded c s a <;> cases reusable c s a <;> cases (s.agt a).bg <;> simp
+  cases idleFree s a <;> cases unlanded c s a <;> cases reusable c s a <;> cases (s.agt a).bg <;> cases (s.agt a).stalled <;> simp
 
 theorem fate_reuse {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver = true) (hw : c.waiterAlive = true)
     (hb : c.bgLives = true) (hr : (s.agt a).reading = 0) (hs : (s.agt a).snap = []) :
@@ -168,7 +170,7 @@ theorem fate_reuse {c : Cfg} {s : State} {a : Nat} {t : Int} (hp : c.passedOver 
   rw [fate_lifted hp hw hb hr hs, modelFate, hb]
   have : reusable c s a = true → finished c s a = true := fun h => by
     simp only [reusable, Bool.and_eq_true] at h; exact h.1.1.1.1
-  cases hi : idleFree s a <;> cases hu : unlanded c s a <;> cases hre : reusable c s a <;> cases hg : (s.agt a).bg <;>
+  cases hi : idleFree s a <;> cases hu : unlanded c s a <;> cases hre : reusable c s a <;> cases hg : (s.agt a).bg <;> cases hst : (s.agt a).stalled <;>
     simp_all [finished]
 
 /-! H1 (board #46): `swarm end A` without --force, watchd.end_why: why it refuses, on fate's reads. -/
@@ -188,9 +190,10 @@ def endWhyL (a : ARow) (f : Facts) : Option Why :=
   else if f.unlanded then some .unlanded
   else none
 
-/-- `swarm end`'s check is the model's `endable` on the model's view of the agent (as lifecycle reads it) -/
+/-- `swarm end`'s check is the model's `endable` on the model's view of the agent (as lifecycle reads it, but a stalled
+job is still a job: end_why reads the job alone) -/
 theorem endWhy_lifted (c : Cfg) (s : State) (a : Nat) (t : Int) :
-    (endWhyL (fateRow (s.agt a) t) (factsOf c s a)).isNone = endable c s a := by
+    (endWhyL (fateRow (s.agt a) t) { factsOf c s a with job := (s.agt a).bg }).isNone = endable c s a := by
   have hi : (statusOf (s.agt a).st != "idle") = !((s.agt a).st == .idle) := by cases (s.agt a).st <;> rfl
   simp only [endWhyL, fateRow, factsOf, endable, nz, hi]
   by_cases h0 : (s.agt a).st == .idle <;> by_cases h5 : (s.agt a).stay <;> by_cases h1 : holds s a <;>

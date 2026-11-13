@@ -11,12 +11,23 @@ namespace Swarm
 /-- `swarm end A --force` is `leave` of A: the checks skipped, A's row ended, its claims and locks released -/
 theorem endOther_force (c : Cfg) (s : State) (a : Nat) : step c s (.endOther a true) = step c s (.leave a) := rfl
 
-/-- lifecycle's `finished` (with `bgLives`) is `swarm end`'s check and the 2 min idle, between the model's ghost reads -/
-theorem finished_eq {c : Cfg} (hb : c.bgLives = true) (s : State) (a : Nat) :
+/-- lifecycle's `finished` (with `bgLives`) is `swarm end`'s check and the 2 min idle, between the model's ghost reads,
+for an agent whose job has not stalled (a stalled one lifecycle ends and `swarm end` refuses: `finished_of_endable`) -/
+theorem finished_eq {c : Cfg} (hb : c.bgLives = true) (s : State) (a : Nat) (hs : (s.agt a).stalled = false) :
     finished c s a = (endable c s a && (s.agt a).aged && (s.agt a).reading == 0 && (s.agt a).snap.isEmpty) := by
-  simp only [finished, idleFree, endable, hb, Bool.true_and]
+  simp only [finished, idleFree, endable, hb, hs, Bool.true_and, Bool.not_false, Bool.and_true]
   cases ((s.agt a).st == .idle) <;> cases (s.agt a).aged <;> cases (s.agt a).stay <;> cases holds s a <;> cases lockHeld s a <;>
     cases ((s.agt a).reading == 0) <;> cases (s.agt a).snap.isEmpty <;> cases unlanded c s a <;> cases (s.agt a).bg <;> rfl
+
+/-- whatever `swarm end`'s check passes (and the 2 min idle, between the ghost reads), lifecycle calls finished too,
+stalled job or not -/
+theorem finished_of_endable {c : Cfg} (hb : c.bgLives = true) {s : State} {a : Nat}
+    (h : (endable c s a && (s.agt a).aged && (s.agt a).reading == 0 && (s.agt a).snap.isEmpty) = true) :
+    finished c s a = true := by
+  cases hs : (s.agt a).stalled
+  · rw [finished_eq hb s a hs]; exact h
+  · simp only [endable, Bool.and_eq_true, Bool.not_eq_true'] at h
+    simp_all [finished, idleFree]
 
 /-- H1: `swarm end A` without --force is enabled exactly when its check passes (between the model's ghost reads) -/
 theorem endOther_enabled {c : Cfg} {s : State} {a : Nat} :
@@ -85,7 +96,7 @@ theorem N1end_of {c : Cfg} (haw : c.allWts = true) (hoa : c.ownAdded = true) (hp
   simp only [endable, Bool.and_eq_true, Bool.not_eq_true'] at he
   obtain ⟨⟨⟨⟨_, _⟩, _⟩, hbg⟩, hu⟩ := he
   obtain ⟨_, (hb | hw') | ho⟩ := hw
-  · rw [hb] at hbg; cases hbg
+  · rw [hb.1] at hbg; cases hbg
   · have : unlanded c s a = true := by simp only [unlanded, e, hw', Bool.true_or]
     rw [this] at hu; cases hu
   · have : unlanded c s a = true := by simp only [unlanded, e, ho, haw, hoa, Bool.or_true, Bool.and_true, Bool.true_or]

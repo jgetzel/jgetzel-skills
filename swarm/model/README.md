@@ -64,7 +64,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the hypotheses each takes (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's hypotheses is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`) |
 | `SwarmModel/Trust.lean` | each hypothesis a theorem takes is needed (board #68): per theorem and hypothesis, a machine with the theorem's other hypotheses where its guarantee fails (`need_*`); the dbs are the engine with one kind of op broken (`broken`) |
 | `SwarmModel/Release.lean` | H2, the user's or the communicator's release of a task another agent holds (board #45): `releaseOther_spec`, `releaseOther_enabled`, `deliver_released`, `stop_read` and `released_reads` over fair runs; finding #32 (`not_S1_humanRelease`), the run in which it breaks S1 without board #53's fix; L1 over fair runs, `startable_leads_to`, with `stop_lifts` (the stop lifts for good) |
-| `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
+| `SwarmModel/End.lean` | H1, `swarm end` by the user or the communicator (board #46): `endOther_spec`, `endOther_enabled`, `finished_eq` (its check is lifecycle's but the 2 min, for a job that has not stalled; `finished_of_endable` for any), `N1end_of` (it ends no agent that holds work), `endOther_git`, `endOther_force` (`--force` is `leave`); finding #33 (`not_N1end_force`), the forced end of an agent mid-job |
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` with `hc send` as the hypothesis `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
@@ -322,7 +322,7 @@ an end of the holder frees the task, as a `leave` does.
 
 - **H1** Without `--force`, `swarm end A` makes lifecycle's checks but the 2 min idle, whoever runs it: idle, no stay, no
   claim, no lock, no background job, no work off its tasks' bases (`endable`; lifecycle's `finished` is `endable` and the
-  2 min, `finished_eq`; the Lua's check is `watchd.end_why`, over fate's own reads, lifted as `Decide.endWhyL` and proved
+  2 min, `finished_eq`, but for a stalled job, which lifecycle ends and `swarm end` refuses: `finished_of_endable`; the Lua's check is `watchd.end_why`, over fate's own reads, lifted as `Decide.endWhyL` and proved
   the model's: `endWhy_lifted`, and whatever fate would end or reuse it ends, `endWhy_of_fate`). It is enabled exactly
   then (`endOther_enabled`), and it changes nothing but A's row: no task, lock, message, cursor, git ref or other agent
   (`endOther_spec`). So it ends no agent that holds work (`N1end`, the N1 of `swarm end`: `N1end_of`, on PR #123's
@@ -413,7 +413,9 @@ No work lost (board #15, `NoWorkLost.lean`):
 
 - **N1** watchd never discards work that isn't landed. Four parts (`N1`): (1) the tick leaves every agent that holds work
   as it was, but for the pool ids a digest told it of (`keptBy`): not ended, its slot not given to a spawn, its job,
-  agent.wt and worktrees its own still. An agent holds work (`holdsWork`) when it is live and its background job runs, or
+  agent.wt and worktrees its own still. An agent holds work (`holdsWork`) when it is live and its background job runs and
+  has not stalled (`bgStall`: a sleep-only loop, or a tree with no CPU for JOB_HUNG, past its nudge's grace; boards #106,
+  #125: watchd's `idleJob` ends such an agent, the job with it, `preStall`), or
   a worktree it works in (`wt_map`) or owns is dirty or has its HEAD on no base of a task it owns (main if none). (2) Reap
   never reopens a claim whose live owner's job runs: after the tick the task has that owner still. (3) An agent reap took a
   task from may claim it back until another agent does: the 350k fence doesn't refuse it. (4) W1: GC removes a worktree or
@@ -429,7 +431,7 @@ What N1 does not say. Its tasks' bases are those of the tasks the agent owns onc
 loses a lapsed claim to reap (it is told, and may retake it), and if its worktree is clean with its HEAD on main but not
 on that task's base, the same tick ends it. The commits are on main, a protected ref, and the task is open again.
 An agent's own `leave` and the reap of a dead terminal (`reapGone`, whose job died with it) end agents too; N1 is about
-lifecycle and GC. A job that never ends keeps its idle agent forever (W3 takes `bgEnd` as fair).
+lifecycle and GC. A job that never ends and never stalls keeps its idle agent forever (W3 takes `bgEnd` as fair).
 
 The communicator (`Comms.lean`). The model above is one swarm with an anonymous communicator; C1 needs several swarms
 (one per repo db) sharing hc terminals, so `World` holds a `State` per swarm, the terminals (live or dead, a Herdr space,

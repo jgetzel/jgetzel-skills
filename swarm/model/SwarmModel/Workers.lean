@@ -775,6 +775,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   case age a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case bgStart a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case bgEnd a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
+  case bgStall a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case die a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case cool a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case git a op => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs

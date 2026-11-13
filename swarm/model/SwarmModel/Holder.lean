@@ -339,6 +339,7 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
     simp [hr] at hs
   | .bgStart b, hs => exact step_gen (by simp) hl hs
   | .bgEnd b, hs => exact step_gen (by simp) hl hs
+  | .bgStall b, hs => exact step_gen (by simp) hl hs
   | .claim b u, hs => exact step_gen (by simp) hl hs
   | .claimRead b u, hs => exact step_gen (by simp) hl hs
   | .claimWrite b, hs => exact step_gen (by simp) hl hs

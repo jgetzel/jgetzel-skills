@@ -167,7 +167,7 @@ theorem git_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = som
     s'.git = s.git ∨ (∃ a op, act = .git a op) ∨ (∃ w op, act = .world w op) ∨ act = .tick := by
   cases act <;> first
     | (right; left; exact ⟨_, _, rfl⟩) | (right; right; left; exact ⟨_, _, rfl⟩) | (right; right; right; rfl)
-    | (left; simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
+    | (left; simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
         readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf,
         hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, openPr, push, merge, finish, ciRun, poll, when] at h
        (repeat' split at h) <;> first | (simp only [Option.some.injEq] at h; subst h; simp; done) | simp at h)
@@ -668,7 +668,7 @@ theorem done_finished {c : Cfg} (hp : c.perTaskBase = true) {s : State} {a : Nat
   obtain ⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩ := h
   have e : ∀ refs w, landedC c s.git refs w = s.git.landedIn refs w := fun _ _ => by simp [landedC, hp]
   have ek : ∀ refs k, landedK c s.git refs k = refs.any (s.git.reachFrom k) := fun _ _ => by simp [landedK, hp]
-  simp only [finished, unlanded, e, ek, h1, h2, h3, h4, h5, Bool.true_and, Bool.false_or, Bool.and_false, Bool.not_false]
+  simp only [finished, unlanded, e, ek, h1, h2, h3, h4, h5, Bool.true_and, Bool.false_or, Bool.and_false, Bool.false_and, Bool.not_false]
 
 theorem idle_of {s : State} {a : Nat} (h : idleFree s a = true) :
     (s.agt a).st = .idle ∧ (s.agt a).reading = 0 ∧ (s.agt a).snap = [] := by

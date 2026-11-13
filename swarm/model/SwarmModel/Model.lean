@@ -199,6 +199,9 @@ structure Agent where
   reading : Nat
   /-- a background job of its own is running (a build, a model check, a Monitor) -/
   bg : Bool := false
+  /-- that job has stalled: a sleep-only loop, or its process tree used no CPU second, started or ended no process for
+  JOB_HUNG (board #125), and the nudge's grace passed (`Watchd.idleJob`). It still runs, but lifecycle no longer counts it -/
+  stalled : Bool := false
   /-- agent.wt: the worktree it last edited in (the Edit hook sets it) -/
   wt : Option Nat := none
   /-- the worktrees it added, with their generation: their directory is named after it (`owned_wts`) -/
@@ -454,8 +457,10 @@ def reapLocks (s : State) : State := { s with lock := s.lock.map fun l => if l.e
 def idleFree (s : State) (a : Nat) : Bool :=
   let g := s.agt a
   g.st == .idle && g.aged && !g.stay && !holds s a && !lockHeld s a && g.reading == 0 && g.snap.isEmpty
-/-- lifecycle may end or reuse a: idle and free, no unlanded worktree, and (`bgLives`) no background job running -/
-def finished (c : Cfg) (s : State) (a : Nat) : Bool := idleFree s a && !unlanded c s a && !(c.bgLives && (s.agt a).bg)
+/-- lifecycle may end or reuse a: idle and free, no unlanded worktree, and (`bgLives`) no background job running but a
+stalled one -/
+def finished (c : Cfg) (s : State) (a : Nat) : Bool :=
+  idleFree s a && !unlanded c s a && !(c.bgLives && (s.agt a).bg && !(s.agt a).stalled)
 /-- lifecycle's reusable agents: since PR #116 one told of the whole pool, its inbox read, has passed it over:
 ended, not reusable; since PR #119 one with no live waiter (it would never read a digest) is ended too -/
 def reusable (c : Cfg) (s : State) (a : Nat) : Bool :=
@@ -630,7 +635,11 @@ def claimWrite (c : Cfg) (s : State) (a : Nat) : Option State :=
     else setAg s a ({ · with reading := 0 })
 /-- the agent starts a background job, or it ends -/
 def bgStart (s : State) (a : Nat) : Option State := when (busy s a && !(s.agt a).bg) (setAg s a ({ · with bg := true }))
-def bgEnd (s : State) (a : Nat) : Option State := when ((s.agt a).live && (s.agt a).bg) (setAg s a ({ · with bg := false }))
+def bgEnd (s : State) (a : Nat) : Option State :=
+  when ((s.agt a).live && (s.agt a).bg) (setAg s a ({ · with bg := false, stalled := false }))
+/-- the agent's job stalls (time passing with no CPU, board #125; a sleep loop) -/
+def bgStall (s : State) (a : Nat) : Option State :=
+  when ((s.agt a).live && (s.agt a).bg && !(s.agt a).stalled) (setAg s a ({ · with stalled := true }))
 def renew (s : State) (a t : Nat) : Option State :=
   when (working s a && ownsClaimed s a t) (setTask s t ({ · with lease := true }))
 def release (s : State) (a t : Nat) : Option State :=
@@ -950,7 +959,7 @@ def poll (c : Cfg) (s : State) : Option State := when (c.watchd && pollOf c s !=
 
 /-- Everything that can happen: the agents' commands, the environment, the communicator, watchd. -/
 inductive Action where
-  | bgStart (a : Nat) | bgEnd (a : Nat)
+  | bgStart (a : Nat) | bgEnd (a : Nat) | bgStall (a : Nat)
   | claim (a t : Nat) | claimRead (a t : Nat) | claimWrite (a : Nat) | renew (a t : Nat) | release (a t : Nat)
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
   | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
@@ -965,7 +974,7 @@ inductive Action where
   deriving DecidableEq, Repr
 
 def step (c : Cfg) (s : State) : Action → Option State
-  | .bgStart a => bgStart s a | .bgEnd a => bgEnd s a
+  | .bgStart a => bgStart s a | .bgEnd a => bgEnd s a | .bgStall a => bgStall s a
   | .claim a t => claim c s a t | .claimRead a t => claimRead c s a t | .claimWrite a => claimWrite c s a
   | .renew a t => renew s a t | .release a t => release s a t | .block a t => block s a t
   | .done a t ev => done c s a t ev | .dropOwn a t => dropOwn s a t | .lock a p => lock c s a p

@@ -35,7 +35,7 @@ theorem oneWorker_spec (s : State) : oneWorker s = true ↔
 
 theorem holdsWork_spec (c : Cfg) (s : State) (a : Nat) : holdsWork c s a = true ↔
     (s.agt a).live = true ∧
-      ((s.agt a).bg = true
+      ((s.agt a).bg = true ∧ (s.agt a).stalled = false
         ∨ (∃ w, wtmap c s a = some w ∧ s.git.landedIn (abases c s a) w = false)
         ∨ ∃ w gen, (w, gen) ∈ (s.agt a).own ∧ owns s a w = true ∧ s.git.landedIn (abases c s a) w = false) := by
   simp [holdsWork, or_assoc, Option.any_eq_true]
