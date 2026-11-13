@@ -1221,7 +1221,7 @@ const KIND = Object.fromEntries(Object.entries({
   sweep: ["trash", "code", "Worktree removed", "A finished agent's worktree was cleaned up.", "", 0],
   spawn: ["user-plus", "agents", "Started", "A new agent joined the swarm. Nothing for you to do.", "", 1],
   join: ["log-in", "agents", "Joined", "An agent registered with the swarm.", "", 0],
-  takeover: ["refresh", "agents", "Relaunched", "An agent handed off to a fresh session of itself. Nothing for you to do.", "", 1],
+  takeover: ["refresh", "agents", "Moved", "An agent moved to another terminal (a restarted session took its name). Nothing for you to do.", "", 1],
   blocked: ["circle-help", "agents", "Waiting on you", "An agent is stopped at a prompt in its terminal. Open it and answer.", "you", 1],
   end: ["user-minus", "agents", "Ended", "An agent's work is on main, so the swarm closed it. Nothing for you to do.", "", 1],
   leave: ["log-out", "agents", "Left", "An agent left the swarm.", "", 0],

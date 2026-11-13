@@ -150,7 +150,7 @@ def test_join_refused_on_live_binding_takeover_moves_and_logs (t : T) : IO Unit 
   let err := (← t.sw "a" ["join"] (nok "t2")).stderr
   has err "a is bound to t1; this terminal is t2. `swarm join --takeover`"
   eq ((← t.q1 "select hc from agent").f "hc") "t1"
-  -- relaunch: the predecessor t1 is still live, the successor takes over from t2
+  -- a restart: the predecessor t1 is still live, the successor takes over from t2
   t.sw_ "a" ["join", "--takeover"] (okc "t2")
   eq ((← t.q1 "select hc from agent").f "hc") "t2"
   eq ((← t.q1 "select data from event where kind='takeover'").f "data") "t1 -> t2"
