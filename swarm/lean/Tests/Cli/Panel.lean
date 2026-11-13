@@ -274,7 +274,33 @@ def test_watchd_hands_over_only_to_a_ticked_one (t : T) : IO Unit := do
   t.q_ "update meta set v=? where k='watchd_up'" [.text s!"{me} t9"]
   until_ "the old watchd to exit" 10 (exited oc)
 
+-- board #139: a view sends open work and live agents whole, done/dropped tasks and ended agents only where its screen
+-- lists them, and `counts` of them all
+def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
+  t.agent "e" [("ended", .int 1)]
+  t.agent "w" [("status", "working")]
+  t.q_ "insert into task(id, title, state, owner) values (1, 'one', 'done', 'w'), (2, 'two', 'done', 'x'), (3, 'three', 'dropped', null), (4, 'four', 'open', null)"
+  t.q_ "update task set deps='1,2' where id=4"
+  t.q_ "insert into event(ts, agent, kind, data) values (1, 'x', 'done', '#2 sha')"
+  let ids (s : Json) : List Int := match s.f "tasks" with
+    | .arr a => a.toList.filterMap fun k => (k.f "id").getInt?.toOption
+    | _ => []
+  let names (s : Json) : List String := match s.f "agents" with
+    | .arr a => a.toList.filterMap fun x => (x.f "name").getStr?.toOption
+    | _ => []
+  let o ← st t ["--view", "overview"]  -- its event feed names #2
+  eq (ids o) [2, 4]
+  eq (o.f "counts") (json% {"open": 1, "claimed": 0, "blocked": 0, "done": 2, "dropped": 1, "ended": 1})
+  eq ((nth (o.f "tasks") 1).f "undone") (json% [])
+  if (names o).contains "e" then fail "overview sent an ended agent"
+  eq (ids (← st t ["--view", "board"])) [1, 2, 3, 4]
+  eq (ids (← st t ["--view", "agents", "--agent", "w"])) [1, 4]
+  eq (ids (← st t ["--view", "agents", "--task", "4"])) [1, 2, 4]
+  unless (names (← st t ["--view", "agents"])).contains "e" do fail "the agents view left out an ended agent"
+  eq (ids (← st t)) [1, 2, 3, 4]
+
 def tests : List Case := [
+  ("test_state_sends_what_the_view_lists", test_state_sends_what_the_view_lists),
   ("test_fate_is_the_ticks_verdict", test_fate_is_the_ticks_verdict),
   ("test_fate_held_task_and_lock", test_fate_held_task_and_lock),
   ("test_state_ci_and_watchd", test_state_ci_and_watchd),

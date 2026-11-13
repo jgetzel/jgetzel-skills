@@ -520,7 +520,7 @@ def test_state_json_view (t : T) : IO Unit := do
   t.sw_ "b" ["lock", "b.txt"]
   t.sw_ "a" ["post", "b", "hi"]
   t.sw_ "b" ["leave"]
-  let head := ["active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci"]
+  let head := ["active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci", "counts"]
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
   let views : List (String × List String) := [("board", []), ("activity", ["messages", "events"]),
     ("system", ["events", "locks", "running", "costly", "cost_top"]), ("overview", ["messages", "events"]), ("agents", [])]
