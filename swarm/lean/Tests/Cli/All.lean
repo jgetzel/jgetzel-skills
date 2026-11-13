@@ -11,6 +11,7 @@ import Tests.Cli.WatchdRun
 import Tests.Spec.Cost
 import Tests.Spec.Db
 import Tests.Spec.Env
+import Tests.Spec.Report
 import Tests.Spec.Foundation
 import Tests.Spec.Sqlite
 import Tests.Spec.Watchd
@@ -36,6 +37,7 @@ def specs : List (String × List Case) := [
   ("env_spec", Spec.Env.tests),
   ("foundation_spec", Spec.Foundation.tests),
   ("sqlite_spec", Spec.Sqlite.tests),
+  ("swarm_report_spec", Spec.Report.tests),
   ("watchd_spec", Spec.Watchd.tests)]
 
 end SwarmLean.Tests.Cli

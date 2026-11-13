@@ -1,13 +1,15 @@
 #!/bin/sh
-# swarm-report on LuaJIT: find the real file through symlinks, put swarm's lua/ dir and rock tree on the module path.
+# swarm-report: runs swarm-lean's swarm-report (swarm/lean/Report.lean); swarm/lean/build.sh builds it.
 p=$0
 while [ -L "$p" ]; do
   l=$(readlink "$p")
   case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
 done
 here=$(cd -P "$(dirname "$p")" && pwd)
-tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
 export SWARM_RETRO_HERE="$here"
-export LUA_PATH="$here/../swarm/lua/?.lua;$tree/share/lua/5.1/?.lua;$tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}"
-export LUA_CPATH="$tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
-exec luajit "$here/swarm-report.lua" "$@"
+# shortcut: no staleness check as swarm/swarm's; rebuild after a pull with build.sh
+for bin in "$here/../swarm/lean/.lake/build/bin/swarm-report" "$here/../swarm/lean/.lake/nix/bin/swarm-report"; do
+  [ -x "$bin" ] && exec "$bin" "$@"
+done
+echo "swarm-report: not built; build it with $here/../swarm/lean/build.sh" >&2
+exit 127

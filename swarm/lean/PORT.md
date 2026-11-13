@@ -165,6 +165,12 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   lifts the `←` above the `||`); msgs.wakes calls `cold()` only for a non-urgent wake, so the Lean does too
   (`Proofs/Msgs.lean`: `wakes_urgent`). `swarm wait` passes `pure cold`, so its behaviour was the same either way.
 
+- **swarm-report** (#122): swarm-retro's swarm-report.lua is `Report.lean`, an extra executable of this package
+  (it reads the swarm db and the cost history, and runs `swarm state --json`), in plain IO on `Sqlite.Conn` with the
+  Lua's SQL; its test_swarm_report.lua is swarm-tests' `swarm_report_spec`. The shim gained `swarm_mktime` (os.time)
+  and a `!` (UTC) format in `swarm_strftime`. A failed main run's fixing run must be created later than it: the Lua's
+  unstable sort left two runs created in the same second in no set order.
+
 ## Lua behaviours to revisit
 
 Ported as they are:

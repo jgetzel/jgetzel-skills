@@ -13,9 +13,9 @@ for skill in */SKILL.md; do
   ln -sfn "$PWD/$name" "$dest/$name"
   echo "linked $name"
 done
-# The swarm CLI is swarm-lean (swarm/lean), built with elan's lake or else nix.
+# The swarm CLI is swarm-lean (swarm/lean), built with elan's lake or else nix; build.sh also builds swarm-retro's swarm-report.
 swarm/lean/build.sh || echo "swarm: swarm-lean did not build; swarm/swarm says so until it does" >&2
-# The Herdr panels' installer and the retro tools (harness-retro, swarm-retro) run on LuaJIT plus 7 rocks, with the Lua
+# The Herdr panels' installer and harness-retro run on LuaJIT plus 7 rocks, with the Lua
 # library left in swarm/lua (swarm/research/sw-lua.md section 4). Installs only into the per-user rock tree; never sudo.
 ROCKS="lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8"
 tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua

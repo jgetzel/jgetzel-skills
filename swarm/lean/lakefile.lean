@@ -46,6 +46,12 @@ target shim.o pkg : FilePath := do
 extern_lib libswarmshim pkg := do
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "swarmshim") #[← shim.o.fetch]
 
+/-- swarm-report (../../swarm-retro): evidence for a swarm retro, read from the swarm db. -/
+@[default_target]
+lean_exe «swarm-report» where
+  root := `Report
+  moreLinkArgs := run_io sqliteLink
+
 /-- The CLI's test suite (TestMain.lean): `swarm-tests [pattern]`. -/
 @[default_target]
 lean_exe «swarm-tests» where

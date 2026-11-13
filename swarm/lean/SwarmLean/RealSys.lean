@@ -9,6 +9,7 @@ namespace Shim
 @[extern "swarm_getppid"] opaque getppid : IO UInt64
 @[extern "swarm_now_f"] opaque nowF : IO Float
 @[extern "swarm_strftime"] opaque strftime (fmt : @& String) (t : Int64) : IO String
+@[extern "swarm_mktime"] opaque mktime (y mo d h mi s : Int64) : IO UInt64
 @[extern "swarm_hostname"] opaque hostname : IO String
 @[extern "swarm_environ"] opaque environ : IO (Array String)
 @[extern "swarm_setenv"] opaque setenv (k v : @& String) : IO Unit

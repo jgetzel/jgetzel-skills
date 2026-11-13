@@ -34,7 +34,8 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `Tests/*.lean` | the pure specs as `#guard`s, checked by `lake build` |
 | `test-claim.sh` | 50 `task claim 1` processes on one db; exactly one wins |
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
-| `build.sh` | builds the binary the launcher runs (elan's lake, else nix) |
+| `Report.lean` | `swarm-report`, swarm-retro's evidence report (its old swarm-report.lua), run by ../../swarm-retro/swarm-report |
+| `build.sh` | builds the binary the launcher runs and swarm-report (elan's lake, else nix) |
 | `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`, each assumption's test tag, swarm-tests and test-claim.sh on both binaries |
 
 ## What is proved of the running code
