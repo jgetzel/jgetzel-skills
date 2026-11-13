@@ -57,17 +57,17 @@ instance : Sys App where
   environ := return (← Shim.environ).toList.map fun e =>
     match e.splitOn "=" with | k :: v => (k, "=".intercalate v) | [] => (e, "")
   setenv k v := Shim.setenv k v
-  realpath p := do try return some (← IO.FS.realPath p).toString catch _ => return none
-  readlink p := do try return some (← Shim.readlink p) catch _ => return none
-  kind p follow := do
+  realpath p := (do try return some (← IO.FS.realPath p).toString catch _ => return none : IO _)
+  readlink p := (do try return some (← Shim.readlink p) catch _ => return none : IO _)
+  kind p follow := (do
     try
       let md ← if follow then System.FilePath.metadata p else System.FilePath.symlinkMetadata p
       return match md.type with | .file => .file | .dir => .dir | .symlink => .link | _ => .other
-    catch _ => return .none
-  mtime p := do try return some (← System.FilePath.metadata p).modified.sec catch _ => return none
-  mkdirp p := do try IO.FS.createDirAll p; return true catch _ => return false
-  link a b := do try Shim.link a b; return true catch _ => return false
-  remove p := do try IO.FS.removeFile p; return true catch _ => return false
+    catch _ => return .none : IO _)
+  mtime p := (do try return some (← System.FilePath.metadata p).modified.sec catch _ => return none : IO _)
+  mkdirp p := (do try IO.FS.createDirAll p; return true catch _ => return false : IO _)
+  link a b := (do try Shim.link a b; return true catch _ => return false : IO _)
+  remove p := (do try IO.FS.removeFile p; return true catch _ => return false : IO _)
   exec argv o := execIO' argv o
 
 end SwarmLean

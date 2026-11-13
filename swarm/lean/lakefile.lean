@@ -26,6 +26,11 @@ lean_lib SwarmLean
 @[default_target]
 lean_lib Tests
 
+/-- locks.lua's glob, lifted and proved in ../model: built from that file, not copied. -/
+lean_lib SwarmModelGlob where
+  srcDir := "../model"
+  roots := #[`SwarmModel.Glob]
+
 @[default_target]
 lean_exe «swarm-lean» where
   root := `Main
