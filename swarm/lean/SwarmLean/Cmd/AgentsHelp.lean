@@ -36,7 +36,7 @@ def helpStay : String :=
 
 /-- `swarm limits -h`. -/
 def helpLimits : String :=
-  "Usage: swarm limits [-h] [--min <min>] [--max <max>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --min <min>           auto-spawn number: watchd staffs tasks until this many agents are live\n   --max <max>           agent max: `swarm spawn` refuses at this many live agents"
+  "Usage: swarm limits [-h] [--min <min>] [--max <max>]\n       [--queue-only {on,off}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --min <min>           auto-spawn number: watchd staffs tasks until this many agents are live\n   --max <max>           agent max: `swarm spawn` refuses at this many live agents\n   --queue-only {on,off}\n                         on: auto-spawn staffs only `swarm queue` (and main red tasks); unqueued tasks are\n                         backlog (default off)"
 
 /-- `swarm away -h`. -/
 def helpAway : String :=

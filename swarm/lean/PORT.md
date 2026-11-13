@@ -174,6 +174,11 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   and a `!` (UTC) format in `swarm_strftime`. A failed main run's fixing run must be created later than it: the Lua's
   unstable sort left two runs created in the same second in no set order.
 
+- **Queue and holds** (#128, new, no Lua): `Db/Queue.lean` (the steps, and `staffing`, the one order auto-spawn,
+  lifecycle's digest and reuse check, and state's "ready" read), `swarm queue` and `task hold`/`unhold` in Cmd/Tasks,
+  `limits --queue-only` in Cmd/Agents; task columns `qpos`, `hold`. `task done`/`drop` run `Queue.done`/`Queue.drop`
+  (Tasks' step, then `tidy`), so the proofs about `Tasks.done`/`drop` stand as they were.
+
 ## Lua behaviours to revisit
 
 Ported as they are:

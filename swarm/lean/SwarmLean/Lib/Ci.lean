@@ -1,6 +1,6 @@
 import SwarmLean.Lib.Bases
 import SwarmLean.Db.Msgs
-import SwarmLean.Db.Tasks
+import SwarmLean.Db.Queue
 
 /-! ci.lua: the flows of `.claude/swarm.json`, GitHub's time stamps and a PR's check verdict. -/
 
@@ -204,7 +204,7 @@ def prWatchApply (now : Int) (gated : Bool) (t : Held) (pr : Lean.Json) (db : Db
     let ev := s!"PR #{d num} merged as {short (((Json.field pr "mergeCommit").bind (Json.fstr · "oid")).orElse fun _ => some "?")}"
     if (db.find t.id).any (·.state = .claimed) then
       let db := db.set t.id fun x => { x with state := .done, evidence := some ev, lease_until := none, done_at := some now, pr := some num, merged_at := some (ts ((Json.fstr pr "mergedAt").getD "")) }
-      let db := db.log now (some "swarm") "done" none (some s!"#{d t.id} {ev}")
+      let db := Queue.tidy (db.log now (some "swarm") "done" none (some s!"#{d t.id} {ev}"))
       (Msgs.post db now "swarm" t.owner s!"{ev}: watchd marked #{d t.id} done, so no `task done` is needed. If you stay for it, `swarm stay --end`." true (some "system")).1
     else db
   | some "wake" =>
@@ -299,7 +299,7 @@ def ciCheckStep (now : Int) (db : Db) : Db × Option NewRed :=
     let openRed := db.tasks.filter fun t => likePrefix (t.title.getD "") Tasks.RED_TASK &&
       (t.state = .open || t.state = .claimed || t.state = .blocked)
     if red.conclusion == some "success" then
-      (openRed.foldl (fun db t =>
+      (Queue.tidy <| openRed.foldl (fun db t =>
         let n := (t.title.getD "").toList.drop (Tasks.RED_TASK ++ "run ").length |>.takeWhile Char.isDigit
         let n := if (t.title.getD "").startsWith (Tasks.RED_TASK ++ "run ") && !n.isEmpty then (String.ofList n).toNat? else none
         if n.any (red.id < ·) then db else

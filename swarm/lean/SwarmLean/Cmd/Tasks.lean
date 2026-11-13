@@ -1,6 +1,6 @@
 import SwarmLean.Cmd
 import SwarmLean.Cmd.TasksHelp
-import SwarmLean.Db.Tasks
+import SwarmLean.Db.Queue
 import SwarmLean.Lib.Machine
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
@@ -26,7 +26,7 @@ def taskSpec : Spec :=
        opt "--base"] [["body", "body_file"]] [] none,
     .mk "priority" helpTaskPriority [idArg, { name := "priority", conv := some prio }] [] [] [] none,
     .mk "after" helpTaskAfter [idArg, { name := "deps", minArgs := 0, conv := some idList }] [] [] [] none,
-    .mk "claim" helpTaskClaim [idArg] [leaseOpt] [] [] none,
+    .mk "claim" helpTaskClaim [idArg] [leaseOpt, flag "--force"] [] [] none,
     .mk "renew" helpTaskRenew [idArg] [leaseOpt] [] [] none,
     .mk "show" helpTaskShow [idArg] [] [] [] none,
     .mk "done" helpTaskDone [idArg] [{ opt "--evidence" with minCount := 1 }] [] [] none,
@@ -36,7 +36,13 @@ def taskSpec : Spec :=
     .mk "edit" helpTaskEdit [idArg]
       [opt "--title", opt "--body", opt "--body-file", opt "--append", opt "--model",
        { opt "--effort" with choices := EFFORTS }, flag "--urgent"] [["body", "body_file", "append"]] [] none,
-    .mk "drop" helpTaskDrop [idArg] [] [] [] none])
+    .mk "drop" helpTaskDrop [idArg] [] [] [] none,
+    .mk "hold" helpTaskHold [idArg] [{ opt "--why" with minCount := 1 }] [] [] none,
+    .mk "unhold" helpTaskUnhold [idArg] [] [] [] none])
+
+/-- The `queue` parser: its words are the action and the ids, read by `queue`. -/
+def queueSpec : Spec := .mk "queue" helpQueue [{ name := "words", minArgs := 0, maxArgs := 1000000 }]
+  [flag "--front", opt "--before" none (some int), opt "--after" none (some int)] [["front", "before", "after"]] [] none
 
 /-- The `rules` parser. -/
 def rulesSpec : Spec :=
@@ -71,6 +77,8 @@ def showText (db : Db) (r : Task) : m String := do
       s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {data}"
   s := s ++ "\npriority: P" ++ d (r.priority.getD DEFAULT_PRIORITY)
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
+  if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
+  if let some h := r.hold then s := s ++ "\nheld: " ++ h
   if let some k := pyI tm.claim_ctx then s := s ++ s!", ctx {fdiv k 1000}k at claim"
   if let some k := pyI tm.done_ctx then s := s ++ s!" -> {fdiv k 1000}k at done"
   if let some ma := pyI tm.merged_at then
@@ -95,7 +103,7 @@ def task (a : Parsed) : m UInt32 := do
                                     model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority" })
     out s!"task #{d n}"
   | "claim" =>
-    let r ← step [.task, .agent, .cursor, .event] (claim c id ((a.str "lease").getD "2h"))
+    let r ← step [.task, .agent, .cursor, .event, .«meta»] (claim { c with force := a.flag "force" } id ((a.str "lease").getD "2h"))
     out s!"claimed #{d id} until {← Clock.hhmm r.«until»}"
     if let some (avail, total, psi) ← Machine.mem then
       if Machine.pressureHigh avail total psi then
@@ -118,7 +126,7 @@ def task (a : Parsed) : m UInt32 := do
     let u ← step [.task] (renew c id ((a.str "lease").getD "2h"))
     out s!"renewed #{d id} until {← Clock.hhmm u}"
   | "done" =>
-    match ← step [.task, .agent, .cursor] (done c id ((a.str "evidence").getD "")) with
+    match ← step [.task, .agent, .cursor, .«meta»] (Queue.done c id ((a.str "evidence").getD "")) with
     | .red => out s!"#{d id} stays yours until a green run: watchd marks it done then, and you can go idle now."
     | .done k stay n =>
       out s!"done #{d id}"
@@ -148,9 +156,15 @@ def task (a : Parsed) : m UInt32 := do
     if st = .claimed && (hasSub fs "model" || hasSub fs "effort") then
       out "model/effort change the row only: they apply at the next spawn/claim"
   | "drop" =>
-    let ws ← step [.task, .«meta»] (drop c id)
+    let ws ← step [.task, .«meta»] (Queue.drop c id)
     out s!"dropped #{d id}"
     for w in ws do out s!"#{d w.id} waits on #{d id}: drop it too, or `swarm task after {d w.id} …`"
+  | "hold" =>
+    step [.task] (Queue.hold c id ((a.str "why").getD ""))
+    out s!"held #{d id}: neither auto-spawn nor an agent asking for work takes it until `swarm task unhold {d id}`"
+  | "unhold" =>
+    step [.task] (Queue.unhold c id)
+    out s!"unheld #{d id}"
   | act => die s!"unknown task action {act}"
   return 0
 
@@ -182,12 +196,49 @@ def board (a : Parsed) : m UInt32 := do
       let wait := if u.isEmpty then "" else
         " after " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.state = .dropped then " (dropped)" else ""))
       out (s!"#{d r.id} {padRight r.state.text 7} {who}{lease}{wait}  {r.title.getD ""}" ++ pr ++
+        (match r.qpos with | some q => s!"  [queue {q}]" | none => "") ++
         (if (py r.body).isSome then "  [body: task show]" else "") ++
+        (match r.hold with | some h => s!"  held: {h}" | none => "") ++
         (match py r.evidence with | some e => s!"  [evidence: {e}]" | none => ""))
   if all then out s!"({rows.length} tasks)"
   else out s!"({rows.length} shown, {(db.tasks.filter (·.state = .done)).length} done)"
   for x in (live db).filter (·.stay.isSome) do
     out s!"staying: {x.name}{match x.role with | some r => " " ++ r | none => ""}: {x.stay.getD ""}"
+  return 0
+
+/-- `swarm queue`, `queue add <id>… [--front | --before <id> | --after <id>]`, `queue rm <id>…` (board #128). -/
+def queue (a : Parsed) : m UInt32 := do
+  let out := Env.out (m := m)
+  let usage := "usage: swarm queue [add <id>... [--front | --before <id> | --after <id>] | rm <id>...]"
+  let ids (ws : List String) : m (List Int) := ws.mapM fun w => match parseInt (if w.startsWith "#" then (w.drop 1).toString else w) with
+    | some i => pure i
+    | none => die s!"not a task id: '{w}'"
+  -- no SWARM_NAME: the user
+  let c : Tasks.Ctx := { me := (← env "SWARM_NAME").getD HUMAN, now := ← Clock.now, comms := ← env "SWARM_COMMS" }
+  match a.strs "words" with
+  | [] =>
+    let db ← Store.txn [.task, .«meta», .agent, .cursor] fun db => (db, db)
+    let q := Queue.queued db
+    if Queue.queueOnly db then out "queue-only: auto-spawn staffs only the queue (and main red tasks)"
+    if q.isEmpty then out "(queue empty)"
+    for t in q do
+      let why := (Queue.whyNot db t).getD "startable"
+      out s!"{(t.qpos.map d).getD "?"}. #{d t.id} {padRight t.state.text 7} {why}  {t.title.getD ""}  [P{d (t.priority.getD DEFAULT_PRIORITY)}]"
+  | "add" :: ws@(_ :: _) =>
+    let w : Queue.Place := match a.flag "front", a.int "before", a.int "after" with
+      | true, _, _ => .front
+      | _, some x, _ => .before x
+      | _, _, some x => .after x
+      | _, _, _ => .back
+    let is ← ids ws
+    step [.task, .agent, .«meta», .event] (Queue.add c is w)
+    out s!"queued {idsText (Queue.dedup is)}"
+  | "rm" :: ws@(_ :: _) =>
+    if a.flag "front" || (a.int "before").isSome || (a.int "after").isSome then die usage
+    let is ← ids ws
+    step [.task, .agent, .«meta», .event] (Queue.rm c is)
+    out s!"unqueued {idsText (Queue.dedup is)}"
+  | _ => die usage
   return 0
 
 /-- `swarm rules [show | set <text>…]` (tasks.cmd_rules). -/
@@ -202,10 +253,11 @@ def rules (a : Parsed) : m UInt32 := do
 
 /-- The group: task, rules and board. -/
 def group : Group m where
-  specs := [("task", taskSpec), ("rules", rulesSpec), ("board", boardSpec)]
+  specs := [("task", taskSpec), ("rules", rulesSpec), ("board", boardSpec), ("queue", queueSpec)]
   run a := match a.cmd with
     | "task" => task a
     | "rules" => rules a
+    | "queue" => queue a
     | _ => board a
 
 end SwarmLean.Cmd.Tasks

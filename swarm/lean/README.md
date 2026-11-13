@@ -61,6 +61,13 @@ one urgent message, and changes nothing else. The board's order is a total preor
 sorted by it; the pool is exactly the open tasks with no undone dependency and no stop pending; `task done` frees the
 tasks waiting on it and `release --after` makes the task wait (F1's board half).
 
+**Queue and holds** (`Proofs/Queue.lean`, board #128). `queue add`, `queue rm`, and the renumbering that `task done`,
+`task drop` and watchd's done marks end with keep the queued tasks' places a permutation of 1..n (`QInv`) and change
+nothing but the places and the events they log; `task hold`/`unhold` leave the places. The staffing order (auto-spawn,
+an idle agent's digest) never holds a held task, its queue part is exactly the startable queued tasks not held, in queue
+order; with an empty queue and queue-only off it is the pool without the held tasks, exactly the pool when none is held
+(`staffing_today`). `task claim` of a held task succeeds only with the communicator's (or the user's) `--force`.
+
 **Messages** (`Proofs/Msgs.lean`). Over any transactions, the deliveries to an agent show it, in order, exactly the
 messages for it (from another sender, to it or to all) that its cursor moved past: each once, nothing else, and no
 cursor passes a message it did not show (S4), with processes at once too. A post is unread by each addressee right
@@ -82,7 +89,8 @@ an agent idle 2 min with no stay, claim or lock, whose unlanded and job reads ca
 through found the agent live, idle on the terminal judged, staying for nothing and holding nothing, and it changes no
 task and no lock. Reap reopens only a task still claimed by the owner it judged with a lapsed lease, drops only a lock
 still expired, ends only a row still live and bound to the terminal hc no longer lists, and releases all it held.
-Spawn's reservation finds fewer live agents than the max, auto-spawn's claim takes only the pool's top, and a failed
+Spawn's reservation finds fewer live agents than the max, auto-spawn's claim takes only the staffing order's top (a
+startable task not held; the first startable queued one when no red main's task is left: `reserveTask_top`), and a failed
 launch leaves no claim behind. A takeover refuses if the row changed since it was read. watchd's `guard` lets no
 exception out of a pass.
 

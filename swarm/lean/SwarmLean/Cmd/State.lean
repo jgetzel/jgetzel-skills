@@ -94,7 +94,7 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
   let reuse := v == some "reuse"
   if has "context" on then on := setKey (setKey on "context" reuse) "waiter" reuse  -- they keep it only together
   if v.isSome && v != some "unclean" then last := none  -- a verdict past every keeping check: none of them holds
-  let pool := Tasks.pool db
+  let pool := Queue.staffing db
   let (w, u) := Lifecycle.waking db x.name
   if has "unread" on then on := setKey on "unread" (reuse && w > 0)
   let mut detail : List (String × String) := []
@@ -221,6 +221,7 @@ def taskJson (db : Db) (r : Task) (evs : List Event) (t : Int) : Json :=
     ("dropped_at", NI tm.dropped_at), ("pr", NI tm.pr), ("merged_at", NI tm.merged_at), ("ci_conclusion", N tm.ci_conclusion),
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
+    ("qpos", NI r.qpos), ("hold", N r.hold),
     ("lease_left", NI lease), ("waiting", .bool waiting), ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
     ("queue_wait_s", NI tm.queue_wait_s), ("work_s", NI tm.work_s), ("total_s", NI tm.total_s),
     ("blocked_s", Json.int tm.blocked_s), ("claims", Json.int tm.claims), ("releases", Json.int tm.releases),
@@ -382,7 +383,7 @@ def state (a : Parsed) : m UInt32 := do
           let main ← Workspaces.main none
           let wm ← if lanes then pure wts else Workspaces.wtMap db
           let all ← Workspaces.worktrees
-          let pool := Tasks.pool db
+          let pool := Queue.staffing db
           pure (byT, fun n => Lifecycle.reads db main wm all n pool)
       reads := some (byT, rf)
       l := l ++ [("fate", ← fateJson db x t (rf x.name) byT (me == some x.name))]

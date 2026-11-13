@@ -27,7 +27,8 @@ def roleSpec : Spec := .mk "role" helpRole [many "text"] [] [] [] none
 /-- `swarm stay`'s parser. -/
 def staySpec : Spec := .mk "stay" helpStay [many "text"] [flag "--end"] [] [] none
 /-- `swarm limits`'s parser. -/
-def limitsSpec : Spec := .mk "limits" helpLimits [] [opt "--min" none (some int), opt "--max" none (some int)] [] [] none
+def limitsSpec : Spec := .mk "limits" helpLimits []
+  [opt "--min" none (some int), opt "--max" none (some int), { opt "--queue-only" with choices := ["on", "off"] }] [] [] none
 /-- `swarm away`'s parser. -/
 def awaySpec : Spec := .mk "away" helpAway [many "note"] [flag "--back"] [] [] none
 /-- `swarm spawn`'s parser. -/
@@ -165,6 +166,10 @@ def limitsCmd (a : Parsed) : m UInt32 := do
     let me := (← env "SWARM_NAME").getD HUMAN
     let now ← Clock.now
     orDie (← Store.txn [.agent, .«meta»] (setLimits · envComms me mn mx now))
+  if let some q := a.str "queue_only" then
+    let me := (← env "SWARM_NAME").getD HUMAN
+    let now ← Clock.now
+    Store.txn [.«meta»] fun db => (setQueueOnly db me (q == "on") now, ())
   Env.out (← Store.txn [.agent, .«meta»] fun db => (db, limitsLine db envComms))
   return 0
 

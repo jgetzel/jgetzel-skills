@@ -320,6 +320,8 @@ theorem claim_deps_done {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed}
     dsimp only at h
     split at h
     · cases h
+    split at h
+    · cases h
     · assumption
   intro j hj u hfu
   unfold undone at hu
@@ -794,6 +796,8 @@ theorem claim_not_stopped {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claime
   · cases h
   split at h
   · cases h
+  split at h
+  · cases h
   rw [find_congr tt, hr] at h
   dsimp only at h
   split at h
@@ -828,11 +832,11 @@ theorem reapedFrom_events {db db' : Db} (h : db'.events = db.events) (n : String
     reapedFrom db' n i = reapedFrom db n i := by
   simp only [reapedFrom, taskEvents, h]
 
-/-- `task claim` is enabled for a task that is open, waits on no task not done, has no stop pending, and is not
-behind the context fence (model: `claim_enabled`, `claimable`, `fenced`; N1's retake: an agent reap took the task
-from may claim it back), with a lease text it reads. -/
+/-- `task claim` is enabled for a task that is open, not held (or claimed with the communicator's --force, board #128),
+waits on no task not done, has no stop pending, and is not behind the context fence (model: `claim_enabled`,
+`claimable`, `fenced`; N1's retake: an agent reap took the task from may claim it back), with a lease text it reads. -/
 theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u : Int} (hr : db.find i = some r)
-    (ho : r.state = .open) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
+    (hh : (r.hold.isSome && !(c.force && Agents.inCharge db c.comms c.me)) = false) (ho : r.state = .open) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
     (hk : ctxOf db c.me < CTX_WARN ∨ reapedFrom db c.me i = true) (hl : dur l = some u) :
     ∃ x, (Tasks.claim c i l db).2 = .ok x := by
   obtain ⟨tt, -⟩ := touch_frame db c.me none c.here c.now
@@ -844,7 +848,7 @@ theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u :
     rcases hk with hk | hk <;> simp [hk]
     omega
   unfold Tasks.claim
-  simp only [hr, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, ho, hb',
+  simp only [hr, hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, ho, hb',
     Bool.not_false, Bool.and_true, decide_true]
   exact ⟨_, rfl⟩
 

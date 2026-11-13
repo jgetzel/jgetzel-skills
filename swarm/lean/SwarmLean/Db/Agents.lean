@@ -39,7 +39,7 @@ def limits (db : Db) (envComms : Option String) : Nat × Option Int × Option In
 /-- `agents: N live, …` (agents.limits_line). -/
 def limitsLine (db : Db) (envComms : Option String) : String :=
   let (n, mn, mx) := limits db envComms
-  s!"agents: {n} live, {match mn with | some x => s!"auto-spawn to {x}" | none => "no auto-spawn number"}, {match mx with | some x => s!"max {x}" | none => "no max set"}"
+  s!"agents: {n} live, {match mn with | some x => s!"auto-spawn to {x}" | none => "no auto-spawn number"}, {match mx with | some x => s!"max {x}" | none => "no max set"}{if ((db.getMeta "queue_only").bind (·.v)) == some "on" then ", queue-only" else ""}"
 
 /-- The user's away flag: since (none when the text has no leading number) and note (agents.away). -/
 def away (db : Db) : Option (Option Int × Option String) :=
@@ -198,6 +198,11 @@ where
     let db := match mn with | some a => db.setMeta "agent_min" (some (toString a)) | none => db
     let db := match mx with | some b => db.setMeta "agent_max" (some (toString b)) | none => db
     (db.log now (some me) "limits" none (some s!"min {tostr mn'} max {tostr mx'}"), .ok ())
+
+/-- `swarm limits --queue-only on|off` by `me` (board #128): on, auto-spawn staffs only the queue and main red tasks. -/
+def setQueueOnly (db : Db) (me : String) (on : Bool) (now : Int) : Db :=
+  (db.setMeta "queue_only" (some (if on then "on" else "off"))).log now (some me) "limits" none
+    (some s!"queue-only {if on then "on" else "off"}")
 
 /-- A question waiting in the away digest: a blocked task and since when. -/
 structure Question where

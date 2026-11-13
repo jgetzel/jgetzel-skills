@@ -4,7 +4,7 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   block\n   unblock\n   release\n   edit\n   drop"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   block\n   unblock\n   release\n   edit\n   drop\n   hold\n   unhold"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
@@ -20,7 +20,19 @@ def helpTaskAfter : String :=
 
 /-- `swarm task claim -h`. -/
 def helpTaskClaim : String :=
-  "Usage: swarm task claim [-h] [--lease <lease>] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h"
+  "Usage: swarm task claim [-h] [--lease <lease>] [--force] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h\n   --force               claim a held task (the communicator or the user only)"
+
+/-- `swarm task hold -h`. -/
+def helpTaskHold : String :=
+  "Usage: swarm task hold [-h] --why <why> <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why <why>           what the task waits for; until `task unhold`, neither auto-spawn nor an agent asking for\n                         work takes it, and `task claim` refuses it"
+
+/-- `swarm task unhold -h`. -/
+def helpTaskUnhold : String :=
+  "Usage: swarm task unhold [-h] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit."
+
+/-- `swarm queue -h`. -/
+def helpQueue : String :=
+  "Usage: swarm queue [-h] [add <id>... [--front | --before <id> | --after <id>] | rm <id>...]\n\nThe order auto-spawn staffs in, after main red tasks and before priority. With no action: the queue in order,\neach with whether it is startable now. add appends (several ids keep their order; a queued id moves); rm takes ids out.\nAny agent may append and move or remove what it queued; --front, --before, --after and changing another's\nentries are the communicator's or the user's. A task done or dropped leaves the queue.\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --front               add at the front\n   --before <id>         add before this queued task\n   --after <id>          add after this queued task"
 
 /-- `swarm task renew -h`. -/
 def helpTaskRenew : String :=
