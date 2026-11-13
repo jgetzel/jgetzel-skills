@@ -267,8 +267,8 @@ def test_comms_ctx_note_from_commands (t : T) : IO Unit := do
   let mark := (← tmpdir) ++ "/claude-ctx-" ++ s
   t.defer (rm mark)
   let env := [("HOME", some (t.d ++ "/home")), ("CLAUDE_CODE_SESSION_ID", some s)]
-  has (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "pass on what you hold"
-  hasnt (← t.sw "x-comms" ["who"] { env, ok := false }).stdout "pass on what you hold"  -- once per step
+  has (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "keep what you hold"
+  hasnt (← t.sw "x-comms" ["who"] { env, ok := false }).stdout "keep what you hold"  -- once per step
 
 def test_burst_capped_rest_stays_unread (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
