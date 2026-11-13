@@ -135,7 +135,7 @@ const openUrl = url => exec(window()?.platform === "macos" ? "open" : "xdg-open"
 
 export default class Swarm extends View {
   init(_props, cx) {
-    this.s = null; this.prs = null; this.error = null;
+    this.s = null; this.prs = null; this.error = null; this.cache = new Map(); this.gen = 0;
     this.seen = new Set(); this.fresh = new Set(); this.delay = new Map(); this.open = {}; this.width = 520;
     const r0 = route(SCREEN); this.stack = r0.s === "task" ? [{ s: "board", f: "active" }, r0] : r0.s === "agent" ? [{ s: "agents" }, r0] : [r0]; this.flash = null; this.pending = null; this.actFilter = "all";
     // Text fields: Enter sends, Esc clears (field()).
@@ -187,33 +187,47 @@ export default class Swarm extends View {
       || age > (this.on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL);
   }
 
+  // Asks state --json for the shown screen. A call for another folder, or from before an action, is not waited on: a
+  // newer call supersedes it and its answer is dropped. A switch to another folder shows that folder's last state at
+  // once, marked refreshing, until its own answer comes.
   refresh(cx) {
-    if (this.loading) return;
-    const { cwd, on } = location();
-    this.loc = locKey();
+    const { cwd, on } = location(), key = locKey();
+    if (this.busy || this.loading?.key === key && this.loading.gen === this.gen) return; // an action refreshes when it ends
     if (!cwd) { this.s = null; this.error = "No folder"; return; }
-    const r = this.r, view = this.view();
+    if (key !== this.loc) {
+      const c = this.cache.get(key);
+      if (c) this.show(c, cwd, on, cx);
+      this.stale = true;
+    }
+    this.loc = key;
+    const r = this.r, view = this.view(), call = { key, gen: this.gen };
     const args = ["state", "--json", "--view", this.tab, ...(r.s === "agent" ? ["--agent", r.name] : r.s === "task" ? ["--task", String(r.id)] : [])];
-    this.loading = true; this.at = Date.now(); this.dirty = false; this.polled = view;
+    this.loading = call; this.at = Date.now(); this.dirty = false; this.polled = view;
     cx.spawn(async cx => {
       try {
         const r = await swarm(cwd, on, args);
+        const live = () => this.loading === call && call.gen === this.gen && locKey() === key;
+        if (!live()) return; // superseded
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = JSON.parse(r.stdout);
-        const now = location();
-        if (now.cwd !== cwd || now.on !== on) return; // moved to another folder meanwhile; the next render asks again
-        const same = s.db === this.s?.db && on === this.on;
-        if (!same) {
-          if (this.s) { this.seen.clear(); this.stack = [{ s: "home" }]; this.flash = null; } // another repo: its swarm, not the last one's
-          this.prs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
-        }
-        // A view sends only its sections; the others keep their last values (empty at first) until their screen asks.
-        this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
-        if (this.s.agents) { const d = this.derive(); this.acts = [this.buildActs(d, false), this.buildActs(d, true)]; }
+        if (!live()) return;
+        this.show(s, cwd, on, cx); this.stale = false;
+        this.cache.set(key, this.s);
         if (on) this.watching = null; else if (s.agents) this.watch(s.db.replace(/\/[^/]*$/, ""), cx);
-      } catch (e) { this.error = String(e.message ?? e); }
-      finally { this.loading = false; cx.notify(); }
+      } catch (e) { if (this.loading === call && call.gen === this.gen) this.error = String(e.message ?? e); }
+      finally { if (this.loading === call) this.loading = null; cx.notify(); }
     });
+  }
+  // State `s` of folder `cwd` on screen; another repo's resets the screen to Home.
+  show(s, cwd, on, cx) {
+    const same = s.db === this.s?.db && on === this.on;
+    if (!same) {
+      if (this.s) { this.seen.clear(); this.stack = [{ s: "home" }]; this.flash = null; } // another repo: its swarm, not the last one's
+      this.prs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
+    }
+    // A view sends only its sections; the others keep their last values (empty at first) until their screen asks.
+    this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
+    if (this.s.agents) { const d = this.derive(); this.acts = [this.buildActs(d, false), this.buildActs(d, true)]; }
   }
 
   // Marks the data stale when the db folder changes; the POLL tick does the asking. Our own reads touch
@@ -284,15 +298,36 @@ export default class Swarm extends View {
   // o.gh: a `gh` command instead (re-run CI); o.ok(): after it succeeded.
   act(cx, args, o = {}) {
     const { cwd, on } = location();
-    this.busy = true; cx.notify();
+    this.busy = true; this.gen++;
+    if (!o.gh && this.s) this.patch(args);
+    cx.notify();
     cx.spawn(async cx => {
       try {
         const r = await (o.gh ? exec("gh", args, { cwd, on }) : swarm(cwd, on, args));
         this.flash = r.code === 0 ? { ok: one(r.stdout) || "Done" } : { error: (r.stderr.trim() || r.stdout.trim() || `${o.gh ? "gh" : "swarm"} exited ${r.code}`).replace(/^swarm: /, ""), args };
         if (r.code === 0) o.ok?.();
       } catch (e) { this.flash = { error: String(e.message ?? e), args }; }
-      this.busy = false; this.dirty = true; this.at = 0; cx.notify();
+      this.busy = false; this.gen++; this.refresh(cx); cx.notify();
     });
+  }
+  // A setting's new value on screen at once (limits, queue-only, priority, hold, a queue move, away); the refresh after
+  // the command shows what it really did.
+  patch(args) {
+    const s = this.s, [c, x, y, z] = args, k = s.tasks?.find(t => t.id === Number(y));
+    if (c === "limits" && x === "--queue-only") s.limits = { ...s.limits, queue_only: y === "on" };
+    else if (c === "limits" && (x === "--min" || x === "--max")) s.limits = { ...s.limits, [x.slice(2)]: Number(y) };
+    else if (c === "away") s.away = x === "--back" ? null : { since: s.now, note: null };
+    else if (c === "task" && k && x === "priority") k.priority = Number(z);
+    else if (c === "task" && k && x === "hold") k.hold = args[4];
+    else if (c === "task" && k && x === "unhold") k.hold = null;
+    else if (c === "queue" && x === "add" && k && args.length === 4) { // a move: --front
+      const q = s.tasks.filter(t => t.qpos != null && t !== k).sort((a, b) => a.qpos - b.qpos);
+      q.unshift(k); q.forEach((t, i) => { t.qpos = i + 1; });
+    } else if (c === "queue" && x === "add" && k && args.length === 5) { // --before/--after <id>
+      const q = s.tasks.filter(t => t.qpos != null && t !== k).sort((a, b) => a.qpos - b.qpos), at = q.findIndex(t => t.id === Number(args[4]));
+      if (at >= 0) { q.splice(z === "--after" ? at + 1 : at, 0, k); q.forEach((t, i) => { t.qpos = i + 1; }); }
+    } else return;
+    if (s.agents) { const d = this.derive(); this.acts = [this.buildActs(d, false), this.buildActs(d, true)]; }
   }
   // A destructive command: Herdr's confirm dialog first; its Confirm sends this mod "yes".
   ask(title, detail, args, o = {}) {
@@ -391,7 +426,8 @@ export default class Swarm extends View {
     const live = s.agents.filter(a => a.status !== "ended" && a.name !== comms)
       .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.name.localeCompare(b.name));
     const ended = s.agents.filter(a => a.status === "ended" && a.name !== comms).sort((a, b) => (b.ended ?? 0) - (a.ended ?? 0));
-    const count = st => s.tasks.filter(k => k.state === st).length;
+    // state --json sends done and dropped tasks and ended agents only as far as a screen lists them; counts has them all
+    const count = st => s.counts?.[st] ?? s.tasks.filter(k => k.state === st).length, nEnded = s.counts?.ended ?? ended.length;
     // main's CI, from the table watchd fills: [word, color] of the latest run, and the newest finished run when it is red.
     const runs = s.ci?.runs ?? [], last = runs.find(r => r.status === "completed" && r.conclusion !== "cancelled"), reds = s.ci?.red_streak ?? 0;
     const ci = !runs.length ? null : runs[0].status !== "completed" ? ["pending", "ansi3"] : reds ? ["red", "blocked"] : last?.conclusion === "success" ? ["green", "ansi2"] : [runs[0].conclusion ?? "?", "ansi3"];
@@ -399,7 +435,7 @@ export default class Swarm extends View {
     // shortcut: the CI fixer is the claimed task that mentions red/CI; a ci-red -> task link in the db would be exact.
     const fix = s.tasks.find(k => (k.state === "claimed" || k.state === "blocked") && /\b(red|ci)\b/i.test(k.title));
     const told = id => s.messages.filter(m => m.kind === "system" && m.body.startsWith(`main CI is red (run ${id}`)).length;
-    return { comms, commsAgent: s.agents.find(a => a.name === comms), live, ended, count, runs, reds, redRun: reds ? last : null, ci, watchdDead, fix, told };
+    return { comms, commsAgent: s.agents.find(a => a.name === comms), live, ended, nEnded, count, runs, reds, redRun: reds ? last : null, ci, watchdDead, fix, told };
   }
 
   // ---- shared parts of the screens ------------------------------------------------------------
@@ -443,7 +479,7 @@ export default class Swarm extends View {
   // Priority P0 (urgent) to P3 (someday), 2 when the row has none: the board's order is priority, then id.
   prio(k) { return k.priority ?? 2; }
   prioChip(t, k) { return this.chip(t, `P${this.prio(k)}`, [t.blocked, t.ansi3, null, t.dim][this.prio(k)], this.prio(k) < 2).tooltip("Priority: lower is picked first"); }
-  undone(k) { return k.waiting ? k.deps.filter(i => this.s.tasks.find(x => x.id === i)?.state !== "done") : []; }
+  undone(k) { return k.undone ?? (k.waiting ? k.deps.filter(i => this.s.tasks.find(x => x.id === i)?.state !== "done") : []); }
   // Why a task on the board can't be staffed now (Queue.whyNot's words); null: startable.
   whyNot(k) {
     const after = this.undone(k);
@@ -593,10 +629,10 @@ export default class Swarm extends View {
     const s = this.s, two = this.width >= 760;
     const rank = k => k.state === "blocked" ? 0 : k.state === "claimed" ? 1 : k.waiting ? 3 : 2;
     const left = s.tasks.filter(k => ["blocked", "claimed", "open"].includes(k.state)).sort((a, b) => rank(a) - rank(b) || this.prio(a) - this.prio(b) || a.id - b.id);
-    const shown = left.slice(0, 7), nd = d.count("done"), ndrop = d.count("dropped"), total = s.tasks.length - ndrop;
+    const shown = left.slice(0, 7), nd = d.count("done"), ndrop = d.count("dropped"), total = ["open", "claimed", "blocked", "done"].reduce((n, st) => n + d.count(st), 0);
     const agents = v_flex().min_w(0)
       .child(this.title(t, "Agents", s.limits?.max != null ? `${d.live.length} of ${s.limits.max}` : d.live.length,
-        this.more(t, "all-agents", d.ended.length ? `All, ${d.ended.length} ended ›` : "All ›", cx => this.push({ s: "agents" }, cx))))
+        this.more(t, "all-agents", d.nEnded ? `All, ${d.nEnded} ended ›` : "All ›", cx => this.push({ s: "agents" }, cx))))
       .child(d.live.length ? this.group(t, "g-agents").children(d.live.map((a, i) => this.agentRow(t, a, i, d))) : this.empty(t, "No agents are running"));
     const tasks = v_flex().min_w(0)
       .child(this.title(t, "Tasks", `${nd} of ${total} done`, this.more(t, "all-tasks", "Board ›", cx => this.push({ s: "board", f: "active" }, cx))))
@@ -623,7 +659,7 @@ export default class Swarm extends View {
       .child(v_flex().child(this.title(t, "Running", d.live.length))
         .child(d.live.length ? this.group(t, "g-live").children(d.live.map((a, i) => this.agentRow(t, a, i, d))) : this.empty(t, "No agents are running")))
       .when(Boolean(c), el => el.child(v_flex().child(this.title(t, "Communicator", "your channel to the swarm; not counted")).child(this.group(t, "g-comms").child(this.agentRow(t, c, 0, d)))))
-      .when(d.ended.length > 0, el => el.child(v_flex().child(this.title(t, "Ended", `${d.ended.length} · newest first`))
+      .when(d.ended.length > 0, el => el.child(v_flex().child(this.title(t, "Ended", `${d.nEnded} · newest first`))
         .child(this.group(t, "g-ended").children(d.ended.slice(0, 60).map((a, i) => this.agentRow(t, a, i, d))))));
   }
   // ---- Board: every task, by state; a row opens the task ----------------------------------------
@@ -634,7 +670,7 @@ export default class Swarm extends View {
     const queue = f === "active" && q.length > 0 && v_flex().child(this.title(t, "Queue", `${q.length} · staffed first, in this order`))
       .child(this.group(t, "g-queue").children(q.map((k, i) => this.queueRow(t, q, i, head))));
     const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
-      : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first"]]).filter(([, ks]) => ks.length);
+      : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first", d.count(f)]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
     const form = this.adding ? this.group(t, "new-task").px(12).py(10).gap(8)
       .child(div().text_size(12.5).font_semibold().child("New task"))
@@ -648,10 +684,10 @@ export default class Swarm extends View {
       : h_flex().child(this.btn(t, "nt-open", "+ New task", cx => { this.adding = true; this.in.title.focus(); cx.notify(); })).child(div().flex_1());
     return v_flex().gap(10)
       .child(form)
-      .child(this.seg(t, "bf", [["active", "Active", q.length + by("blocked").length + by("claimed").length + open.length], ["done", "Done", by("done").length], ["dropped", "Dropped", by("dropped").length]], f,
+      .child(this.seg(t, "bf", [["active", "Active", q.length + by("blocked").length + by("claimed").length + open.length], ["done", "Done", d.count("done")], ["dropped", "Dropped", d.count("dropped")]], f,
         (id, cx) => { this.r.f = id; this.landed(cx); }))
       .when(Boolean(queue), el => el.child(queue))
-      .children(sets.map(([label, ks, note]) => v_flex().child(this.title(t, label, note ? `${ks.length} · ${note}` : ks.length))
+      .children(sets.map(([label, ks, note, n]) => v_flex().child(this.title(t, label, note ? `${n ?? ks.length} · ${note}` : ks.length))
         .child(this.group(t, `g-${label}`).children(ks.slice(0, 80).map((k, i) => this.taskRow(t, k, i))))))
       .when(!sets.length && !queue, el => el.child(this.empty(t, f === "active" ? "Nothing left on the board" : `No ${f} tasks`)));
   }
@@ -1138,7 +1174,7 @@ export default class Swarm extends View {
   render(cx) {
     const t = theme(), el = this.draw(t);
     if (this.visible()) {
-      if (!this.loading && this.due()) this.refresh(cx);
+      if (this.due()) this.refresh(cx);
       if (Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx);
     }
     // Keys first drawn in this frame sit at their start values; a frame later they move, staggered.
@@ -1202,6 +1238,7 @@ export default class Swarm extends View {
     const head = h_flex().h(48).flex_none().px(16).gap(8).items_center().min_w(0)
       .child(div().flex_none().font_semibold().text_size(14).child("Swarm"))
       .child(div().truncate().min_w(0).text_size(12).text_color(t.dim).child(base(this.cwd)))
+      .when(Boolean(this.stale), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child("refreshing…")))
       .when(Boolean(d.ci), el => el.child(h_flex().id("ci-dot").flex_none().gap(5).items_center().text_size(11).text_color(d.ci[0] === "green" ? t.dim : t[d.ci[1]]).cursor_pointer()
         .tooltip(`main's CI: ${d.ci[0]}`).on_click((_e, cx) => this.push({ s: "more", tab: "system" }, cx))
         .child(this.dot(t[d.ci[1]], 7)).when(this.width >= 420, el => el.child(d.ci[0]))))

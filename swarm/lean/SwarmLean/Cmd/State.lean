@@ -347,13 +347,28 @@ def state (a : Parsed) : m UInt32 := do
   let evBy := groupBy db.events (·.agent.toList)
   let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
   let lockBy := groupBy db.locks (·.agent.toList)
-  let tasksJ := db.tasks.map fun r => taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])
+  -- what the view lists (no view: everything): open work and live agents always; the Board the newest 80 done and
+  -- dropped (it shows 80), the Agents screen the newest 60 ended (it shows 60), an agent's screen its done tasks, a
+  -- task's screen it and its deps, the event feeds the tasks their events name; the rest only as `counts`
+  let deep := view == some "activity"  -- the Activity tab folds and filters, so it reads further back
+  let evShown := if wants view "events" then (db.events.filter shown).reverse.take (if deep then 300 else 60) else []
+  let newest (s : Status) : List Int := ((db.tasks.filter (·.state = s)).reverse.take 80).map (·.id)
+  let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++
+    (match tid with | some i => i :: ((db.find i).map Tasks.depsOf).getD [] | none => []) ++
+    evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
+  let sent (r : Task) : Bool := full || !(r.state = .done || r.state = .dropped) || page.contains r.id ||
+    (r.state = .done && me.isSome && r.owner == me)
+  let tasksJ := (db.tasks.filter sent).map fun r => taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])
+  let endedPage := if view == some "agents" then
+      (((db.agents.filter (·.ended.isSome)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
+    else []
+  let sentA (x : Agent) : Bool := full || x.ended.isNone || me == some x.name || endedPage.contains x.name
   let wts ← if lanes then Workspaces.wtMap db else pure []
   let mut seen : Agents.Seen := []
   let mut reads : Option (Option (List Agents.Term) × (String → Lifecycle.Reads m)) := none
   let mut agsA : Array (Json × Bool × String) := #[]
   let byName := fun (l : List Agent) => l.mergeSort (·.name ≤ ·.name)
-  for x in byName (db.agents.filter (·.ended.isNone)) ++ byName (db.agents.filter (·.ended.isSome)) do
+  for x in byName (db.agents.filter fun x => x.ended.isNone && sentA x) ++ byName (db.agents.filter fun x => x.ended.isSome && sentA x) do
     let own := (ownBy.getD x.name #[]).toList
     let aev := (evBy.getD x.name #[]).toList
     let live := x.ended.isNone
@@ -437,6 +452,10 @@ def state (a : Parsed) : m UInt32 := do
       ("max", some (NI ((metaV "agent_max").bind parseInt))), ("held", some (N (metaV "spawn_held"))),
       ("queue_only", some (.bool (Queue.queueOnly db)))]),
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
+    -- every task by state, and the ended agents but the communicator: what the trimmed lists leave out
+    ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped"].map fun k =>
+      (k, Json.int (db.tasks.filter (·.state.text == k)).length)) ++
+      [("ended", Json.int (db.agents.filter fun x => x.ended.isSome && some x.name != cv).length)])),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>
       Json.mkObj [("a", .str c.a), ("b", .str c.b), ("path", .str c.path), ("since", NI c.since)]).toArray),
     ("pressure", .arr press.toArray), ("machine", mach),
@@ -465,12 +484,10 @@ def state (a : Parsed) : m UInt32 := do
           ("kind", e.kind.map .str), ("data", e.data.map .str)]).toArray),
         ("messages", .arr ((ms.take 20).map (msgJson · false)).toArray)])]
     | none => out := out ++ [("task", .null)]
-  let deep := view == some "activity"  -- the Activity tab folds and filters, so it reads further back
   if wants view "messages" then
     out := out ++ [("messages", .arr ((db.msgs.reverse.take (if deep then 120 else 40)).map (msgJson · true)).toArray)]
   if wants view "events" then
-    let evs := (db.events.filter shown).reverse.take (if deep then 300 else 60)
-    out := out ++ [("events", .arr (evs.map (eventJson · true true)).toArray)]
+    out := out ++ [("events", .arr (evShown.map (eventJson · true true)).toArray)]
   if wants view "locks" then
     out := out ++ [("locks", .arr ((db.locks.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun k =>
       Json.mkObj [("path", .str k.path), ("agent", N k.agent), ("reason", N k.reason), ("since", NI k.since),
