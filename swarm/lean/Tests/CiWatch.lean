@@ -112,3 +112,9 @@ def w2 : Db := watch w1 prs3 true (now := T0 + 120)
 def w3 : Db := watch w2 (js s!"[\{\"number\":30,\"headRefName\":\"a/9\",\"headRefOid\":\"h9\",\"baseRefName\":\"main\",\"state\":\"MERGED\",\"mergedAt\":\"2030-01-01T00:00:00Z\",\"mergeCommit\":\{\"oid\":\"abcdef123\"},\"statusCheckRollup\":{okRollup}}]") false (now := T0 + 240)
 #guard let t := (w3.find 9).get!; t.state = .done && t.evidence == some "PR #30 merged as abcdef1" && t.pr == some 30
 #guard (w3.msgs.filter fun m => m.dest == some "a" && m.urgent == some 1).length == 2
+-- not pr-gated: green checks wake no one
+def w4 : Db := watch { w3 with tasks := w3.tasks ++ [{ id := 10, title := some "t10", state := .claimed, owner := some "a", first_claimed_at := some (T0 - 60) }] }
+  (js s!"[\{\"number\":40,\"headRefName\":\"a/10\",\"headRefOid\":\"h10\",\"baseRefName\":\"main\",\"state\":\"OPEN\",\"statusCheckRollup\":{okRollup}}]") false (now := T0 + 360)
+#guard (w4.msgs.filter (·.dest == some "a")).length == 2
+-- flow none: no CI, so ci_poll asks nothing
+#guard !(ciPollGate T0 true 60 {}).2

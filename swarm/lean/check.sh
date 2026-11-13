@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds swarm-lean and its proofs, refuses an open proof or an axiom beyond Lean's three, and on the stock binary and
-# the hpl one (when ../../../high-perf-lean has an hpl binary, or $HPL is set) runs parity.sh, strict and --mixed,
-# and test-claim.sh.
+# the hpl one (when ../../../high-perf-lean has an hpl binary, or $HPL is set) runs swarm-tests (the Lean suite),
+# parity.sh, strict and --mixed, and test-claim.sh.
 cd "$(dirname "$0")" || exit 1
 if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
@@ -12,7 +12,7 @@ echo "$ax"
 if echo "$ax" | sed -n 's/.*axioms: \[\(.*\)\]/\1/p' | tr ',' '\n' | tr -d ' ' | grep -v '^\(propext\|Classical.choice\|Quot.sound\)$'; then
   echo "an axiom beyond Lean's three" >&2; exit 1
 fi
-on() { ./parity.sh "$1" && ./parity.sh --mixed "$1" && ./test-claim.sh "$1"; }
+on() { SWARM_BIN=$(realpath "$1") .lake/build/bin/swarm-tests >.lake/swarm-tests.log 2>&1 || { grep -v "^ok " .lake/swarm-tests.log; return 1; }; tail -1 .lake/swarm-tests.log; ./parity.sh "$1" && ./parity.sh --mixed "$1" && ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
 if [ -n "$HPL" ] || [ -x ../../../high-perf-lean/.lake/build/bin/hpl ]; then
   # hpl notes every box it makes: the log keeps them, a failure shows its tail

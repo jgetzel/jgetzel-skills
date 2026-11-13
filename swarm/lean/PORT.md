@@ -90,7 +90,14 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 - **JSON** (`Lib/Json.lean`) is Lean's `Lean.Json`: compact as cjson, but object keys sorted where cjson follows the Lua
   table, so its readers parse it (the Herdr mod does); the same values and types otherwise.
 - **Tests.** The Lua specs' asserts on ported pure functions are `#guard`s in `Tests/` (lean_lib `Tests`, built by
-  `lake build`, so a failing one fails the build).
+  `lake build`, so a failing one fails the build). The rest is `swarm-tests` (#107, `TestMain.lean`), run.lua and
+  cli.lua in Lean: `Tests/Cli/Fixture.lean` is the fixture (its header maps cli.lua's API), `Tests/Cli/<Spec>.lean` one
+  file per cli_*_spec.lua with every test under its Lua name, `Tests/Spec/<spec>.lean` the plain specs' asserts that
+  need the world, `Tests/Cli/All.lean` the list. One worker process per test, SWARM_TEST_JOBS (8) at a time, killed
+  past SWARM_TEST_TIMEOUT (60 s); every CLI call is strict (no Lua fall-through). The fakes cli.lua wrote in Lua are the
+  test binary (`--fake-launch`, `--sql`). Not ported, the Lua-to-model link, to go with the Lua (#110) or move with the
+  model's assumptions (#109): locks_model, locksrc, decide_model, luasem, sql_model (and sql_inventory.lua), env and
+  sqlite (Env.lean's assumptions, by tag, through the Lua), and cli_model (replays swarm/model/traces through the CLI).
 - **`try` in `App`** catches `Exit` (App's `ExceptT`), not `IO.Error`: an `App` instance method that must survive an
   IO error runs its body in `IO` (`(do try … catch … : IO _)`, as `RealSys.lean` does).
 - **Locks** (#99): `covers` and `overlaps` are swarm/model's `Glob.lean` itself (the lakefiles build that one file as
