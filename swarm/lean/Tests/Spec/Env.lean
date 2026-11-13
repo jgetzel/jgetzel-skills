@@ -49,7 +49,7 @@ def listed (main : String) : IO (List String) := do
 
 /-- The sweep's and landed's reading of status: clean when it prints nothing but space. -/
 def clean (wt : String) : IO Bool := do
-  return match ← outputIO ["git", "-C", wt, "status", "--porcelain"] none [] with
+  return match ← outputIO ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"] none [] with
     | some o => o.code == 0 && strip o.stdout == ""
     | none => false
 

@@ -103,10 +103,11 @@ def SameContentReach : Prop := ∀ w cwd ref b mb files o,
     (d.stdout.splitOn "\x00").filter (· ≠ "") = files) → files ≠ [] →
   Ok0 (M.out w (["git", "-C", cwd, "diff", "--quiet", ref, b, "--"] ++ files) none) → M.Holds w cwd ref b
 
-/-- git: a worktree that is there and whose `git -C wt status --porcelain` prints nothing but space has nothing
-uncommitted, untracked files included (env_spec: status_clean). -/
+/-- git: a worktree that is there and whose `git --no-optional-locks -C wt status --porcelain` prints nothing but space
+has nothing uncommitted, untracked files included (env_spec: status_clean). -/
 def StatusClean : Prop := ∀ w wt o, M.There w wt →
-  M.out w ["git", "-C", wt, "status", "--porcelain"] none = some o → o.code = 0 → strip o.stdout = "" → ¬ M.Dirty w wt
+  M.out w ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"] none = some o → o.code = 0 → strip o.stdout = "" →
+    ¬ M.Dirty w wt
 
 /-- git: a worktree `git worktree list --porcelain` lists is there (env_spec: listed_on). -/
 def ListedOn : Prop := ∀ w cwd o p,
