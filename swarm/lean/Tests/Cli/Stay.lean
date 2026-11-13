@@ -99,8 +99,9 @@ def test_stayer_done_line (t : T) : IO Unit := do
 
 -- the quiet notice (§8 item 3): on the edge into quiet, one message per stayer and one notice to comms; none on the
 -- next tick; a new task re-arms it
-def to (t : T) (name : String) : IO (Array Json) :=
-  t.q "select body from msg where dest=? and body not like '%no waiter%'" [.text name]
+def to (t : T) (name : String) : IO (Array Json) :=  -- not the host's memory pressure notice (board #141)
+  t.q "select body from msg where dest=? and body not like '%no waiter%' and body not like 'memory pressure:%'"
+    [.text name]
 def test_quiet_notice_once_per_edge (t : T) : IO Unit := do
   idle t "comms"; idle t "r" [("stay", "PRs to review"), ("role", "reviewer"), ("last_active", .int ((← now) - 60))]
   t.agent "w" [("status", "working")]
