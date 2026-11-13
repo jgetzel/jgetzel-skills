@@ -72,6 +72,14 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 - **Bridges.** The full machine note (machine.machine_note, which claim prints under memory pressure) is #100's;
   until then `Cmd/Tasks.machineNote` runs the Lua CLI's `swarm machine` and prints its output. Remove it when
   Lib/Machine has the note.
+- **Sys** (`Sys.lean`, its `App` instance in `RealSys.lean`, the C in `c/shim.c`): the process and file calls beyond
+  `Env`/`Fs`/`Proc`, one class for every ported module (pid, alive, sleep, sub-second clock, `os.date`, hostname,
+  environ, setenv, realpath, readlink, path kind, mtime, mkdir -p, hard link, remove, and `exec`: proc.exec with
+  stdin, env unsets, merged stderr and a stdout file). A command that uses it asks for `[Sys m]`.
+- **JSON** (`Lib/Json.lean`) is Lean's `Lean.Json`: compact as cjson, but object keys sorted where cjson follows the Lua
+  table, so its readers parse it (the Herdr mod does); the same values and types otherwise.
+- **Tests.** The Lua specs' asserts on ported pure functions are `#guard`s in `Tests/` (lean_lib `Tests`, built by
+  `lake build`, so a failing one fails the build).
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.

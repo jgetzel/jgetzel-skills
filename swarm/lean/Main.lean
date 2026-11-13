@@ -1,5 +1,6 @@
 import SwarmLean.Dispatch
 import SwarmLean.Real
+import SwarmLean.RealSys
 open SwarmLean
 
 /-- A command not ported yet: the Lua CLI with the same argv and environment, or under SWARM_LEAN_STRICT=1 a failure. -/
