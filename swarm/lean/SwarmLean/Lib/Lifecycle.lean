@@ -242,22 +242,26 @@ def endableReasons [Clock m] (db : Db) (a : Agent) (f : Reads m) : m (List Reaso
         "\n  ".intercalate (commits.take 10), pushed⟩]
   return out
 
+/-- end_agent's transaction: if live row `n` is still idle on terminal `hc` with no stay, claim or lock (or `force`),
+its holdings released and the row ended, with its event; true when it ended it. -/
+def endStep (n : String) (hc : Option String) (force : Bool) (by_ : Option String) (now : Int) (db : Db) : Db × Bool :=
+  let row := (live db).find? (·.name == n)
+  let fine := match row with
+    | none => false
+    | some r => force || (r.status == some "idle" && r.hc == hc && r.stay.isNone &&
+        !db.tasks.any (fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)) &&
+        !db.locks.any (·.agent == some n))
+  if !fine then (db, false) else
+  let db := (release db n).setAgent n ({ · with ended := some now, status := some "ended" })
+  (db.log now (some n) "end" none (some ((if force then "forced" else "landed") ++ (match by_ with | some b => " by " ++ b | none => ""))), true)
+
 /-- Agent GC: re-checks that `a` is still idle on the same terminal with no claim, lock or stay (unless `force`),
-releases and ends it, then kills its terminal and what it left in its cgroup scope; false when it changed
+releases and ends it (`endStep`), then kills its terminal and what it left in its cgroup scope; false when it changed
 (watchd.end_agent). `by_`: who ended it by hand. -/
 def endAgent [Store m] [Clock m] [Env m] (a : Agent) (force : Bool) (by_ : Option String) : m Bool := do
   let n := a.name
   let now ← Clock.now
-  let ok ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] fun db =>
-    let row := (live db).find? (·.name == n)
-    let fine := match row with
-      | none => false
-      | some r => force || (r.status == some "idle" && r.hc == a.hc && r.stay.isNone &&
-          !db.tasks.any (fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)) &&
-          !db.locks.any (·.agent == some n))
-    if !fine then (db, false) else
-    let db := (release db n).setAgent n ({ · with ended := some now, status := some "ended" })
-    (db.log now (some n) "end" none (some ((if force then "forced" else "landed") ++ (match by_ with | some b => " by " ++ b | none => ""))), true)
+  let ok ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] (endStep n a.hc force by_ now)
   if !ok then return false
   let cg ← match a.claude_pid with  -- read while claude lives
     | some p => Machine.cgroup p
