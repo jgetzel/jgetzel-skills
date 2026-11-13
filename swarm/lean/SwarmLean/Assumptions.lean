@@ -13,7 +13,12 @@ used:
 - the store: `Atomic`, the one assumption #103-#106 took, which also stands for Env.lean's five sqlite hypotheses
   (`SqliteBegin`, `SqliteRead`, `SqliteWrite`, `SqliteCommit`, `SqliteRollback`): the code runs every write as one
   `BEGIN IMMEDIATE … COMMIT` (`Store.txn`), and what those five give such a transaction is that concurrent ones apply
-  in some order;
+  in some order. Since board #137 `Store.txn` first loads and applies in a read transaction (no write lock: under many
+  writers a poll that took one starved past the busy timeout) and commits a read-only one there; a write goes to a new
+  BEGIN IMMEDIATE transaction, as computed when `pragma data_version` says no other connection committed since (the
+  state it holds is the one it read), else loaded and applied again. So `Atomic` also rests on a read transaction
+  reading one committed state (WAL), placed in the order after the last write it saw, and on data_version
+  (sqlite_version);
 - the tools, through `Tools`: what a command line answers (`Proc.output`, `Git.git`), what `Sys.pidAlive`,
   `Sys.mtime`, `Clock.now` and `Machine.cwds` return, and what is true of the repo, the terminals, the processes and
   the PRs. Each assumption below says that one answer means one truth, as Env.lean's did of its `Tools`.
@@ -28,7 +33,7 @@ open Lean (Json)
 /-- What "the store is well behaved" means, assumed of the real store and not proved: when processes ran their
 requests `ran` (each with the answer it got) at once on a store holding `before` and left `after`, the requests
 applied one after another in some order give those answers and `after` (sqlite_spec: sqlite_begin, sqlite_write,
-sqlite_commit, sqlite_rollback). -/
+sqlite_read, sqlite_commit, sqlite_rollback, sqlite_version). -/
 def Atomic (step : τ → Db → Db × α) (before after : Db) (ran : List (τ × α)) : Prop :=
   ∃ order : List (τ × α), order.Perm ran ∧ replay step before (order.map (·.1)) = (after, order)
 

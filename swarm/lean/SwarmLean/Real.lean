@@ -175,19 +175,36 @@ def storeDb (c : Conn) (old new : Db) : IO Unit := do
   storeRows c old.workspaces new.workspaces
   storeRows c old.cis new.cis
 
-/-- The real store's transaction: BEGIN IMMEDIATE, load the tables `ts`, apply `f`, write back what changed, COMMIT;
-any error rolls back. -/
-def sqliteTxn (c : Conn) (ts : List Table) (f : Db → Db × α) : IO α := do
-  discard <| c.exec "begin immediate"
+/-- `act` between `begin` and COMMIT; any error rolls back. -/
+def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
+  discard <| c.exec begin
   try
-    let db ← loadDb c ts
-    let (db', a) := f db
-    if db' ≠ db then storeDb c db db'
+    let a ← act
     discard <| c.exec "commit"
     return a
   catch e =>
     try discard <| c.exec "rollback" catch _ => pure ()
     throw e
+
+/-- The commits other connections made: changed by each (sqlite's `pragma data_version`). -/
+def dataVersion (c : Conn) : IO (Array (Array Val)) := c.query "pragma data_version"
+
+/-- The real store's transaction: load the tables `ts` and apply `f` in a read transaction (BEGIN, no write lock, so
+readers never wait on or starve each other); if `f` changed the db, write it back under BEGIN IMMEDIATE, as computed when
+no other connection committed since (data_version unchanged), else loaded and applied again there. Any error rolls back.
+-/
+def sqliteTxn (c : Conn) (ts : List Table) (f : Db → Db × α) : IO α := do
+  let (db, v) ← inTxn c "begin" do pure (← loadDb c ts, ← dataVersion c)
+  let (db', a) := f db
+  if db' = db then return a
+  inTxn c "begin immediate" do
+    if (← dataVersion c) == v then
+      storeDb c db db'
+      return a
+    let db ← loadDb c ts
+    let (db', a) := f db
+    if db' ≠ db then storeDb c db db'
+    return a
 
 instance : Store App where
   txn ts f := do sqliteTxn (← theConn) ts f

@@ -29,6 +29,16 @@ static void init_classes(void) {
 static sqlite3 *conn_of(b_lean_obj_arg c) { return (sqlite3 *)lean_get_external_data(c); }
 static sqlite3_stmt *stmt_of(b_lean_obj_arg s) { return (sqlite3_stmt *)lean_get_external_data(s); }
 
+/* busy_timeout(10000) with 1-3 ms sleeps: sqlite's own sleeps grow to 100 ms, so under many writers one that has waited
+   a while keeps missing the free lock and starves out its 10 s (board #137). n counts this lock's tries. */
+static int busy_wait(void *p, int n) {
+  (void)p;
+  if (n >= 5000) return 0;
+  struct timespec ts = {0, (1000 + rand() % 2000) * 1000L};
+  nanosleep(&ts, NULL);
+  return 1;
+}
+
 LEAN_EXPORT lean_obj_res swarm_db_open(b_lean_obj_arg path, uint8_t ro, lean_obj_arg w) {
   init_classes();
   sqlite3 *db = NULL;
@@ -39,7 +49,8 @@ LEAN_EXPORT lean_obj_res swarm_db_open(b_lean_obj_arg path, uint8_t ro, lean_obj
     sqlite3_close_v2(db);
     return e;
   }
-  sqlite3_busy_timeout(db, 10000);
+  srand((unsigned)getpid());
+  sqlite3_busy_handler(db, busy_wait, NULL);
   return lean_io_result_mk_ok(lean_alloc_external(conn_cls, db));
 }
 

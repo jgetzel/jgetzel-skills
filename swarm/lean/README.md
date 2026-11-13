@@ -121,7 +121,7 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 
 | Assumption | About | Says | Taken by |
 |---|---|---|---|
-| `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
+| `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`; since #137 a read-only `Store.txn` is one WAL read transaction, and a write reuses what that read computed only when `pragma data_version` shows no commit since) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
 | `AncestorReach` | git | `merge-base --is-ancestor ref b` exiting 0 means `b` holds `ref`'s changes | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
 | `SameContentReach` | git | `diff --quiet ref b -- <files ref changed since the merge base>` exiting 0 means the same | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
 | `StatusClean` | git | an empty `status --porcelain` means nothing uncommitted | `sweepGate_W1`, `gateW1` |
