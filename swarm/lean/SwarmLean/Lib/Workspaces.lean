@@ -67,16 +67,21 @@ variable [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git
 
 /-- `git worktree add ../<repo>-<agent> -b <agent>/<task> <base ref>`, recorded: path, branch, base
 (workspaces.create). -/
-def create (name : String) (task : Task) (cwd : Option String) : m (String × String × String) := do
+def create (name : String) (task : Task) (cwd : Option String) (start : Option String := none) : m (String × String × String) := do
   let some main ← main cwd | die "not in a git repo: no worktree to make"
   let base ← Bases.baseFor task.base (some main)
   Bases.fetch base (some main)
+  -- the worktree starts at --base / spawn.base when git has it, else at the landing base
+  let wanted ← match start with | some s => pure (some s) | none => Bases.spawnBase (some main)
+  let from_ ← match wanted with
+    | some r => pure ((← Bases.startRef r (some main)).getD (← Bases.ref base (some main)))
+    | none => Bases.ref base (some main)
   let mut path := joinPath (dirname main) (basename main ++ "-" ++ name)
   if (← Sys.kind path true) != .none then path := path ++ "-" ++ d task.id  -- a predecessor's worktree is still there
   let mut branch := s!"{name}/{task.id}"
   if (← Git.git ["rev-parse", "--verify", "-q", "refs/heads/" ++ branch] (some main)).isSome then
     branch := branch ++ "-" ++ d (← Clock.now)
-  let o ← Proc.output ["git", "-C", main, "worktree", "add", "-q", path, "-b", branch, ← Bases.ref base (some main)] none []
+  let o ← Proc.output ["git", "-C", main, "worktree", "add", "-q", path, "-b", branch, from_] none []
   match o with
   | some o => if o.code != 0 then die ("git worktree add failed: " ++ strip o.stderr)
   | none => die "git worktree add failed: "

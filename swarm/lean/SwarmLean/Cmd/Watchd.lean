@@ -18,9 +18,9 @@ def helpWatchd : String :=
 /-- The parser, as main.lua declares it. -/
 def watchdSpec : Spec :=
   .mk "watchd" helpWatchd []
-    [opt "--comms", opt "--interval" (some "30") (some int), flag "--once", flag "--ci", flag "--takeover", flag "--restart",
-     flag "--dry-run", opt "--max-agents" none (some int), opt "--min-free-mem" (some "4") (some Cmd.Msgs.num),
-     opt "--blocker-idle" (some "25") (some Cmd.Msgs.num), opt "--model",
+    [opt "--comms", opt "--interval" none (some int), flag "--once", flag "--ci", flag "--takeover", flag "--restart",
+     flag "--dry-run", opt "--max-agents" none (some int), opt "--min-free-mem" none (some Cmd.Msgs.num),
+     opt "--blocker-idle" none (some Cmd.Msgs.num), opt "--model",
      { opt "--effort" with choices := ["low", "medium", "high", "xhigh", "max"] }] [] [] none
 
 /-- What watchd keeps between ticks: the sweep's "not landed" cache, the last tick error told, the cost tick's memory. -/
@@ -40,6 +40,22 @@ def flags (a : Parsed) (comms : Option String) : List String :=
   (if a.flag "ci" then ["--ci"] else []) ++
   (match a.str "model" with | some x => ["--model", x] | none => []) ++
   (match a.str "effort" with | some x => ["--effort", x] | none => [])
+
+/-- The flags given on this command line, as argv (what `--restart` amends the recorded flags with). -/
+def given (a : Parsed) : List String :=
+  [("comms", "--comms"), ("interval", "--interval"), ("min_free_mem", "--min-free-mem"), ("blocker_idle", "--blocker-idle"),
+   ("model", "--model"), ("effort", "--effort"), ("max_agents", "--max-agents")].flatMap (fun (k, f) =>
+    match a.str k with | some v => [f, v] | none => (match a.int k with | some v => [f, d v] | none => [])) ++
+  (if a.flag "ci" then ["--ci"] else [])
+
+/-- The recorded flags with those of `over` replacing same-named ones. -/
+def amend (fl over : List String) : List String :=
+  let rec go : List String → List String
+    | f :: v :: r => if f.startsWith "--" && !v.startsWith "--" then (if over.contains f then go r else f :: v :: go r)
+                     else if over.contains f then go (v :: r) else f :: go (v :: r)
+    | [f] => if over.contains f then [] else [f]
+    | [] => []
+  go fl ++ over
 
 /-- The first word of a watchd record, its pid. -/
 def pidOf (rec : String) : Option Int := parseInt ((words rec).headD "")
@@ -301,7 +317,7 @@ def loop (mine : String) (comms repo : Option String) (opts : Opts) : m (Option 
 
 /-- `swarm watchd --restart`: the same watchd (recorded flags and cwd) in a hidden hc terminal, taking over; success
 only once it has finished a tick (watchd.restart). -/
-def restart : m UInt32 := do
+def restart (over : List String := []) : m UInt32 := do
   let db ← Store.txn [.«meta»] fun db => (db, db)
   let rec_ := ((db.getMeta "watchd_run").bind (·.v)).bind Json.decode
   let some (fl, cwd) := rec_.bind (fun j => match Json.field j "flags", Json.fstr j "cwd" with
@@ -311,7 +327,7 @@ def restart : m UInt32 := do
     | die "no recorded watchd flags (it predates them); start it by hand once"
   let old := (db.getMeta "watchd").bind (·.v)
   let here := (← Spawn.swarmHere).getD "."
-  let argv := ["hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--cwd", cwd, "--", joinPath here "swarm", "watchd", "--takeover"] ++ fl
+  let argv := ["hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--cwd", cwd, "--", joinPath here "swarm", "watchd", "--takeover"] ++ amend fl over
   let o ← Sys.exec argv { env := [("SWARM_DB", some (← Spawn.dbPath))] }
   let fail (why : String) : m Unit := do
     let still ← match old with | some o => recAlive o | none => pure false
@@ -346,7 +362,7 @@ def watchd (a : Parsed) : m UInt32 := do
   if a.flag "dry_run" then
     for (wt, br, mb) in (← sweep none true []).1 do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
     return 0
-  if a.flag "restart" then return ← restart
+  if a.flag "restart" then return ← restart (given a)
   let repo ← if a.flag "ci" then git ["rev-parse", "--show-toplevel"] else pure none
   let comms ← match py (a.str "comms") with | some c => pure (some c) | none => env "SWARM_COMMS"
   let mine := s!"{← Sys.getpid} {(← env "HC_TERMINAL_ID").getD "-"}"  -- the watchd record

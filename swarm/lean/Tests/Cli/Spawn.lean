@@ -223,6 +223,22 @@ def test_spawn_task_claims_before_launch (t : T) : IO Unit := do
   eq ((← t.q1 "select hc from agent where name='t-9'").f "hc") "hc1"
   has (← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { ok := false }).stderr "live agent"  -- a live name is refused
 
+-- --base and spawn.base pick the start ref; a missing ref falls back to the landing base.
+def test_spawn_base_ref (t : T) : IO Unit := do
+  t.fakes
+  discard <| t.git (some t.repo) ["branch", "green"]
+  discard <| t.git (some t.repo) ["commit", "-q", "--allow-empty", "-m", "ahead"]  -- main moves past green
+  let sha (r : String) : IO String := return strip ((← t.git (some t.repo) ["rev-parse", r]))
+  for i in [1:5] do t.sw_ "a" ["task", "add", s!"t{i}"]
+  t.sw_ "a" ["spawn", "s1", "--model", "haiku", "--task", "1", "--base", "green"]
+  eq (← sha "s1/1") (← sha "green")
+  IO.FS.createDirAll (t.repo ++ "/.claude")
+  put (t.repo ++ "/.claude/swarm.json") "{\"spawn\": {\"base\": \"green\"}}"
+  t.sw_ "a" ["spawn", "s2", "--model", "haiku", "--task", "2"]
+  eq (← sha "s2/2") (← sha "green")
+  t.sw_ "a" ["spawn", "s3", "--model", "haiku", "--task", "3", "--base", "nope"]
+  eq (← sha "s3/3") (← sha "main")
+
 -- The spawn message keeps the task line and body with the spawner's text after them, and ends with the repo's ci.flow line.
 def test_spawn_message_task_body_text_and_ci_flow (t : T) : IO Unit := do
   t.fakes
@@ -648,6 +664,7 @@ def tests : List Case := [
   ("test_spawn_refused_at_the_max", test_spawn_refused_at_the_max),
   ("test_two_spawns_race_for_the_last_place", test_two_spawns_race_for_the_last_place),
   ("test_spawn_effort", test_spawn_effort),
+  ("test_spawn_base_ref", test_spawn_base_ref),
   ("test_spawn_task_claims_before_launch", test_spawn_task_claims_before_launch),
   ("test_spawn_message_task_body_text_and_ci_flow", test_spawn_message_task_body_text_and_ci_flow),
   ("test_spawned_agent_skips_older_broadcasts", test_spawned_agent_skips_older_broadcasts),
