@@ -33,9 +33,11 @@ def taskOf (db : Db) (name : String) : String :=
   | t :: _ => s!"task #{d t.id}: {t.title.getD ""}"
   | [] => "no claimed task"
 
-/-- `swarm lock` on the repo-relative `path`: refused when it overlaps a live peer's lock; else this agent's lock
-(insert or replace). An error leaves the db as it was (the Lua's transaction rolls back). -/
+/-- `swarm lock` on the repo-relative `path`: refused for an ended agent (a lock `swarm join` would bring back unchecked)
+or when it overlaps a live peer's lock; else this agent's lock (insert or replace). An error leaves the db as it was
+(the Lua's transaction rolls back). -/
 def lock (c : Tasks.Ctx) (path reason lease : String) (db0 : Db) : Db × Except String Unit :=
+  if let some (.ended ..) := fence db0 c.me c.here then (db0, .error s!"{c.me} was ended; `swarm join` to return.") else
   let db := touch db0 c.me none c.here c.now
   match (others db c.me c.now).find? fun o => overlaps path o.path with
   | some o => (db0, .error s!"{path} overlaps {o.path}, locked by {o.agent.getD ""}; message it")

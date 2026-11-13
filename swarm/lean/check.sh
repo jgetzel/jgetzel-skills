@@ -8,7 +8,7 @@ lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkg
 lean_do build || exit 1
 ax=$(lean_do env lean Audit.lean) || exit 1
 echo "$ax"
-[ "$(echo "$ax" | grep -c "^'SwarmLean")" = 20 ] || { echo "Audit.lean printed no axioms for some theorem" >&2; exit 1; }
+[ "$(echo "$ax" | grep -c "^'SwarmLean")" = "$(grep -c "^#print axioms" Audit.lean)" ] || { echo "Audit.lean printed no axioms for some theorem" >&2; exit 1; }
 if echo "$ax" | sed -n 's/.*axioms: \[\(.*\)\]/\1/p' | tr ',' '\n' | tr -d ' ' | grep -v '^\(propext\|Classical.choice\|Quot.sound\)$'; then
   echo "an axiom beyond Lean's three" >&2; exit 1
 fi

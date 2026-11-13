@@ -142,6 +142,12 @@ Ported as they are:
 - `swarm watch` loads the event table whole each second (Store has no query; `shortcut:` in Cmd/State).
 - `agents.session_active`'s `hc get` cache (`term_seen`) lives one command; Lean threads it as a value (`Seen`).
 
+Fixed in the port (a proof found it):
+
+- `swarm lock` by an ended agent was granted (agents.touch's fence was ignored); its lock didn't count while the row
+  was ended, so a peer could lock the same path, and `swarm join` brought both back live: two agents holding one file
+  (S3). `Locks.lock` refuses an ended agent (board #105, `Proofs/Locks.lean`).
+
 ## hpl
 
 The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.sh prints the current list):
