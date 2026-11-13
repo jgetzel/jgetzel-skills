@@ -57,8 +57,11 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    Db/Msgs (`deliverStep` is deliver's pick as a step; Lib/Msgs's `deliver` formats it); agents.lua's hc helpers and
    cold rule in Lib/Agents. `wait --me` sets SWARM_NAME in `Dispatch.runParsed` (`Sys.setenv`), before the comms nudge
    reads it, as main.lua does.
-   #100 so far: `join`, `leave`, `role`, `stay`, `limits`, `away`, `machine` (agents.lua's commands but who; machine.lua
-   whole but cwds and claude_pid).
+   #100: `spawn`, `join`, `leave`, `end`, `endable`, `who`, `role`, `stay`, `limits`, `away`, `machine`. Pure steps in
+   Db/Agents (agents.lua) and Db/Spawn (agents.reserve, tasks.reserve/unreserve); machine.lua whole in Lib/Machine;
+   workspaces.lua and conflict.lua's worktrees/owned_wts/wt_map in Lib/Workspaces; watchd.lua's spawn and
+   launch_agent in Lib/Spawn; its landed_ref, landed, unlanded, unclean_list, sleep_loop, one agent's fate reads,
+   end_why, endable_reasons and end_agent in Lib/Lifecycle (watchd's fate builds on them).
 8. **Builds.** Stock Lean (`lake build`) and hpl (`hpl/`, every module `--all`). hpl compiles the whole program;
    the functions it refuses get Lean's C (listed below and by check.sh).
 9. **Style.** One-sentence doc comments; no sorry/admit/axiom/native_decide; a Lua behaviour that looks wrong is
@@ -108,6 +111,9 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   bases.lua is `Lib/Bases`. Each watchd step takes its own transactions around the gh and git calls, where the Lua
   wrote as it went on one connection. `swarm run`'s command is split off before parsing in `Dispatch.run` (main.lua's
   split_run) and reaches the group as `argv`.
+- **Agents** (#100): swarm-lean has no launcher to set `SWARM_HERE`, so spawn (brief.md, settings.template.json,
+  the `swarm` it links into the db's bin/) and who's Herdr check read `$SWARM_HERE`, else the Lua launcher's directory.
+  launch_agent's symlink of that `swarm` is `ln -s` (Sys has hard links only).
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
@@ -124,6 +130,11 @@ Ported as they are:
 - `task show` appends `, ctx Nk at claim` and ` -> Nk at done` to the priority (or base) line, not on a line of their
   own.
 - `task claim` creates the agent's row (touch) before the context check, and keeps it when the claim is refused.
+- `swarm leave NAME` for a name with no row logs a `leave` event anyway; `swarm stay --end` with no stay logs a
+  `stay-end` with NULL data; `swarm limits` logs `min nil max nil` for an unset number.
+- Where a Lua `%s` of nil raises (an agent row with a NULL status in `who`, a cached machine with no state in the
+  machine note, a task with no title in a spawn brief), Lean prints `nil` (or the empty title) instead.
+- `machine.job_cmd`'s 200-character tail counts characters, where Lua's `sub(-200)` counts bytes (`shortcut:`).
 - The `task add` title limit counts bytes, not characters.
 - `task release --after ""` stores deps as the empty string, not NULL.
 - `board` prints `nil` for a `spawn_held` meta row whose value is NULL; `task unblock` says `only nil or the

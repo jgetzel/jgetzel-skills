@@ -1,4 +1,5 @@
 import SwarmLean.World
+import SwarmLean.Sys
 import SwarmLean.Db
 import Std.Data.HashMap
 import Lean.Data.Json
@@ -328,5 +329,32 @@ def note [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] (ps : Option (Lis
     lines := lines ++ [s!"  {h.agent} {gib h.kb}G{match h.top with | some t => s!" ({cut t 40} {gib h.top_kb}G)" | none => ""}"]
   if hs.length > 3 then lines := lines ++ [s!"  +{hs.length - 3} more holders"]
   return "\n".intercalate (lines ++ (← remoteLines metas events (← Clock.now)))
+
+/-- Each process's working directory, none when no process's can be read (callers then assume every dir is in use)
+(machine.cwds). -/
+def cwds [Monad m] [Env m] [Fs m] [Proc m] [Sys m] : m (Option (List (Int × String))) := do
+  if (← osName) == "Darwin" then  -- own processes need no sudo; others' are skipped
+    let o ← Proc.output ["lsof", "-a", "-d", "cwd", "-Fpn"] none []
+    let out := parseLsof ((o.map (·.stdout)).getD "")
+    return if out.isEmpty then none else some out
+  let root ← procRoot
+  let some es ← Fs.list root | return none
+  let mut out := []
+  for e in es do
+    if !e.isEmpty && e.all Char.isDigit then
+      if let some l ← Sys.readlink s!"{root}/{e}/cwd" then out := out ++ [(((e.toNat?.getD 0 : Nat) : Int), l)]
+  return some out
+
+/-- The nearest ancestor of this process that is the claude process (its command's name holds `claude`)
+(machine.claude_pid); `ps` is read unless given. -/
+def claudePid [Monad m] [Proc m] [Sys m] (ps : Option (List Ps) := none) : m (Option Int) := do
+  let ps ← match ps with | some p => pure p | none => procs
+  let by_ := byPid ps
+  let rec up : Nat → Option Ps → Option Int
+    | 0, _ => none
+    | n + 1, p => match p with
+      | none => none
+      | some p => if p.pid ≤ 1 then none else if hasSub p.comm "claude" then some p.pid else up n (by_.get? p.ppid)
+  return up 64 (by_.get? (← Sys.getppid))
 
 end SwarmLean.Machine
