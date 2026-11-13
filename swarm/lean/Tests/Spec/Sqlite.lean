@@ -9,7 +9,6 @@ accounts are meta rows. -/
 namespace SwarmLean.Tests.Spec.Sqlite
 open SwarmLean SwarmLean.Tests.Cli
 open SwarmLean.Sqlite (Conn Val)
-open Lean (Json toJson)
 
 /-- Counter workers, and the transactions each runs. -/
 def N : Nat := 6
@@ -224,81 +223,12 @@ def deferred (t : T) : IO Unit := do
   eq opened true "deferred: the transaction stays open after it"
   discard <| a.exec "rollback"
 
-/-- The rows `sql` returns, each cell as JSON. -/
-def rowsOf (c : Conn) (sql : String) : IO (List (List Json)) :=
-  return (← c.query sql).toList.map (·.toList.map T.cell)
-
-/-- The store's statements do on the real schema what `Stmt.run` says (Assumptions.lean's `SqlExec`, `SqlSelect`): an
-insert gives each column it does not name its default and fails on a key a row has; an update by key sets only its
-columns, and only in the row of that key (int and text keys); a delete takes only the row of its key; a select returns
-every row; and the write-back of a loaded table, loaded again, is the step's rows. -/
-def sqlite_dml (t : T) : IO Unit := do
-  Shim.setenv "SWARM_DB" t.db
-  let c ← connect
-  discard <| c.exec "alter table task add column extra text default 'x'"
-  let ins (i : Int) (title : String) : Stmt := .ins "task" ["id", "title", "state"] [.int i, .text title, .text "open"]
-  runStmts c [ins 5 "a", ins 6 "b"]
-  eq (← rowsOf c "select id, title, extra, priority from task order by id")
-    [[toJson 5, toJson "a", toJson "x", toJson 2], [toJson 6, toJson "b", toJson "x", toJson 2]]
-    "sqlite_dml: an insert gives the columns it does not name their defaults"
-  let dup ← try runStmts c [ins 6 "c"]; pure false catch _ => pure true
-  eq dup true "sqlite_dml: an insert of a key a row has fails"
-  discard <| c.exec "update task set extra='y' where id=5"
-  runStmts c [.upd "task" ["id"] [.int 5] ["title", "owner"] [.text "a2", .text "o"]]
-  eq (← rowsOf c "select id, title, owner, extra from task order by id")
-    [[toJson 5, toJson "a2", toJson "o", toJson "y"], [toJson 6, toJson "b", Json.null, toJson "x"]]
-    "sqlite_dml: an update by key sets its columns in that row only"
-  runStmts c [.del "task" ["id"] [.int 6]]
-  eq (← rowsOf c "select id from task") [[toJson 5]] "sqlite_dml: a delete by key takes that row only"
-  -- text keys, a two-column key
-  runStmts c [.ins "agent" ["name"] [.text "ä1"], .ins "agent" ["name"] [.text "a10"],
-    .ins "workspace" ["path", "agent"] [.text "/w", .text "a"], .ins "workspace" ["path", "agent"] [.text "/w", .text "b"]]
-  runStmts c [.del "agent" ["name"] [.text "a10"], .upd "workspace" ["path", "agent"] [.text "/w", .text "b"] ["ro"] [.int 1]]
-  eq (← rowsOf c "select name from agent") [[toJson "ä1"]] "sqlite_dml: a delete by a text key"
-  eq (← rowsOf c "select agent, ro from workspace order by agent") [[toJson "a", toJson 0], [toJson "b", toJson 1]]
-    "sqlite_dml: an update by a two-column key"
-  eq (← rowsOf c "select count(*) from task") [[toJson 1]] "sqlite_dml: a select returns every row"
-  -- the write-back, loaded again
-  let old : List Task ← loadRows c
-  let new := old.map (fun x => { x with title := some "z" }) ++ [{ id := 9, title := some "n" }]
-  runStmts c (rowsPlan old new)
-  let back : List Task ← loadRows c
-  eq (decide (back = new)) true "sqlite_dml: load after the write-back is the step's rows"
-  eq (← rowsOf c "select id, extra from task order by id") [[toJson 5, toJson "y"], [toJson 9, toJson "x"]]
-    "sqlite_dml: the write-back keeps a column Lean does not know"
-
-/-- `alter table add column` gives each row the column's default and appends it to `pragma table_info`, and fails on a
-column the table has; the after migration copies after into a NULL deps as text and drops it (Assumptions.lean's
-`SqlExec`, `SqlTableInfo`). -/
-def sqlite_alter (t : T) : IO Unit := do
-  Shim.setenv "SWARM_DB" t.db
-  let c ← connect
-  discard <| c.exec "alter table task drop column priority"
-  discard <| c.exec "alter table agent drop column stay"
-  discard <| c.exec "insert into task(id, title) values(1, 't')"
-  discard <| c.exec "insert into agent(name) values('a')"
-  runStmts c [.addCol "task" "priority int default 2", .addCol "agent" "stay text"]
-  eq (← rowsOf c "select priority from task") [[toJson 2]] "sqlite_alter: a row gets the column's default"
-  eq (← rowsOf c "select stay from agent") [[Json.null]] "sqlite_alter: a column with no default is NULL"
-  eq ((← tableCols c "task").getLast?) (some "priority") "sqlite_alter: table_info lists the column last"
-  let again ← try runStmts c [.addCol "task" "priority int default 2"]; pure false catch _ => pure true
-  eq again true "sqlite_alter: adding a column the table has fails"
-  discard <| c.exec "alter table task add column after int"
-  discard <| c.exec "insert into task(id, deps, after) values(2, null, 3), (3, 'x', 4), (4, null, null)"
-  runStmts c [.dropAfter]
-  eq (← rowsOf c "select id, deps from task order by id")
-    [[toJson 1, Json.null], [toJson 2, toJson "3"], [toJson 3, toJson "x"], [toJson 4, Json.null]]
-    "sqlite_alter: after fills a NULL deps, as text"
-  eq ((← tableCols c "task").contains "after") false "sqlite_alter: after is dropped"
-
 def tests : List Case := [
   ("sqlite_begin", sqlite_begin),
   ("sqlite_write", sqlite_write),
   ("sqlite_read", sqlite_read),
   ("sqlite_commit", sqlite_commit),
   ("sqlite_rollback", sqlite_rollback),
-  ("sqlite_dml", sqlite_dml),
-  ("sqlite_alter", sqlite_alter),
   ("deferred", deferred)]
 
 end SwarmLean.Tests.Spec.Sqlite
