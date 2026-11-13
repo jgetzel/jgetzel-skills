@@ -82,4 +82,40 @@ def dur (s : String) : Option Int :=
 /-- Lua's `gmatch("[^,]+")`: the nonempty pieces between commas. -/
 def commaPieces (s : String) : List String := (s.splitOn ",").filter (· ≠ "")
 
+/-- util.ago: how long before `now` epoch second `t` was, as `5m` or `2h05m`. -/
+def ago (now t : Int) : String :=
+  let s := max 0 (now - t)
+  if s ≥ 3600 then
+    let mm := toString (fdiv (s % 3600) 60)
+    s!"{fdiv s 3600}h{if mm.length < 2 then "0" ++ mm else mm}m"
+  else s!"{fdiv s 60}m"
+
+/-- The last component of a path (util.basename: Lua's `[^/]*$`). -/
+def basename (p : String) : String := (p.splitOn "/").getLastD ""
+
+/-- The path without its last component (util.dirname): "" for a bare name, "/" at the root. -/
+def dirname (p : String) : String :=
+  match (p.splitOn "/").dropLast with
+  | [] => ""
+  | [""] => "/"
+  | l => "/".intercalate l
+
+/-- os.path.join of two paths (util.join). -/
+def joinPath (a b : String) : String :=
+  if b.startsWith "/" || a.isEmpty then b else if a.endsWith "/" then a ++ b else a ++ "/" ++ b
+
+/-- Python's `s.split()`: the runs of non-space (util.split with no separator). -/
+def words (s : String) : List String :=
+  let rec go (cur : List Char) (acc : List String) : List Char → List String
+    | [] => (if cur.isEmpty then acc else String.ofList cur.reverse :: acc).reverse
+    | c :: cs => if isSpace c then go [] (if cur.isEmpty then acc else String.ofList cur.reverse :: acc) cs
+      else go (c :: cur) acc cs
+  go [] [] s.toList
+
+/-- util.splitlines: the lines of `s` split at `\n`, a last line without one included, none for "". -/
+def splitlines (s : String) : List String :=
+  if s.isEmpty then [] else
+  let l := s.splitOn "\n"
+  if s.endsWith "\n" then l.dropLast else l
+
 end SwarmLean

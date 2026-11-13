@@ -57,6 +57,8 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    Db/Msgs (`deliverStep` is deliver's pick as a step; Lib/Msgs's `deliver` formats it); agents.lua's hc helpers and
    cold rule in Lib/Agents. `wait --me` sets SWARM_NAME in `Dispatch.runParsed` (`Sys.setenv`), before the comms nudge
    reads it, as main.lua does.
+   #100 so far: `join`, `leave`, `role`, `stay`, `limits`, `away`, `machine` (agents.lua's commands but who; machine.lua
+   whole but cwds and claude_pid).
 8. **Builds.** Stock Lean (`lake build`) and hpl (`hpl/`, every module `--all`). hpl compiles the whole program;
    the functions it refuses get Lean's C (listed below and by check.sh).
 9. **Style.** One-sentence doc comments; no sorry/admit/axiom/native_decide; a Lua behaviour that looks wrong is
@@ -73,9 +75,6 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 - **Rows** are named as the columns (`lease_until`, `created_by`), every non-key column optional. `task.state` is
   `Status`; a state text Lean does not know fails the load. A cell of the wrong storage class is coerced as SQLite's
   affinity would (integral text in an int column reads as the integer).
-- **Bridges.** The full machine note (machine.machine_note, which claim prints under memory pressure) is #100's;
-  until then `Cmd/Tasks.machineNote` runs the Lua CLI's `swarm machine` and prints its output. Remove it when
-  Lib/Machine has the note.
 - **Sys** (`Sys.lean`, its `App` instance in `RealSys.lean`, the C in `c/shim.c`): the process and file calls beyond
   `Env`/`Fs`/`Proc`, one class for every ported module (pid, alive, sleep, sub-second clock, `os.date`, hostname,
   environ, setenv, realpath, readlink, path kind, mtime, mkdir -p, hard link, remove, and `exec`: proc.exec with
