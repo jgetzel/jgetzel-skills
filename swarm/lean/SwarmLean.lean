@@ -12,3 +12,4 @@ import SwarmLean.Proofs.Trust
 import SwarmLean.Proofs.WriteBack
 import SwarmLean.Proofs.Migrate
 import SwarmLean.Proofs.Queue
+import SwarmLean.Proofs.Keep

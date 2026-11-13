@@ -245,6 +245,12 @@ structure Tools where
   Dirty : World → String → Prop
   /-- branch `b`'s tip -/
   tip : World → String → Option String
+  /-- the commit `git -C x` resolves HEAD to: worktree `x`'s HEAD -/
+  head : World → String → Option String
+  /-- commit `c` is reachable from a branch, a tag, a remote ref or a worktree's HEAD -/
+  Reach : World → String → Prop
+  /-- commit `c` is commit `k` or an ancestor of it -/
+  Anc : String → String → Prop
   /-- some process's working directory is inside worktree `wt` -/
   Inside : World → String → Prop
   /-- worktree `wt` was used (an edit, a commit, a checkout) in the last `Watchd.SWEEP_IDLE` seconds -/
@@ -263,10 +269,11 @@ structure Tools where
 variable (M : Tools)
 
 /-- The repo is the same in `w` and `w'`: every worktree there or not and dirty or not as it was, every branch tip,
-and what each commit's changes are in. -/
+what each commit's changes are in, every worktree's HEAD and every commit reachable or not. -/
 def Tools.SameRepo (w w' : M.World) : Prop :=
   (∀ b, M.tip w' b = M.tip w b) ∧ (∀ x, (M.There w' x ↔ M.There w x) ∧ (M.Dirty w' x ↔ M.Dirty w x)) ∧
-    ∀ cwd a b, M.Holds w' cwd a b ↔ M.Holds w cwd a b
+    (∀ cwd a b, M.Holds w' cwd a b ↔ M.Holds w cwd a b) ∧ (∀ x, M.head w' x = M.head w x) ∧
+    ∀ c, M.Reach w' c ↔ M.Reach w c
 
 /-- The command exited 0. -/
 def Ok0 (o : Option ProcOut) : Prop := ∃ x, o = some x ∧ x.code = 0
@@ -392,19 +399,63 @@ def ListedOn : Prop := ∀ w cwd o l,
   l.startsWith "worktree " = true → M.There w (l.drop 9).toString
 
 /-- git: `git -C main worktree remove wt` takes a clean worktree away and nothing else (every branch, every other
-worktree, every commit stay), and refuses a dirty one, changing nothing (env_spec: wt_remove). -/
+worktree, every commit stay: a commit it leaves unreachable was reached only from `wt`'s HEAD), and refuses a dirty one,
+changing nothing (env_spec: wt_remove). -/
 def WtRemove : Prop := ∀ w main wt,
   let w' := M.after w ["git", "-C", main, "worktree", "remove", wt] none
   (M.There w wt ∧ ¬ M.Dirty w wt → ¬ M.There w' wt) ∧ (M.Dirty w wt → M.SameRepo w w') ∧
     (∀ b, M.tip w' b = M.tip w b) ∧ (∀ x, x ≠ wt → (M.There w' x ↔ M.There w x) ∧ (M.Dirty w' x ↔ M.Dirty w x)) ∧
-    ∀ cwd a b, M.Holds w' cwd a b ↔ M.Holds w cwd a b
+    (∀ cwd a b, M.Holds w' cwd a b ↔ M.Holds w cwd a b) ∧
+    ∀ c, M.Reach w c → M.Reach w' c ∨ ∃ k, M.head w wt = some k ∧ M.Anc c k
 
 /-- git: `git -C main update-ref -d refs/heads/b k` deletes branch `b` if its tip is `k`, and else changes nothing; no
-other branch, no worktree and no commit changes (env_spec: del_ref). -/
+other branch, no worktree and no commit changes (a commit it leaves unreachable is `k` or an ancestor of it)
+(env_spec: del_ref). -/
 def DelRef : Prop := ∀ w main b k,
   let w' := M.after w ["git", "-C", main, "update-ref", "-d", "refs/heads/" ++ b, k] none
   M.tip w' b = (if M.tip w b = some k then none else M.tip w b) ∧ (∀ b', b' ≠ b → M.tip w' b' = M.tip w b') ∧
-    (∀ x, (M.There w' x ↔ M.There w x) ∧ (M.Dirty w' x ↔ M.Dirty w x)) ∧ ∀ cwd a c, M.Holds w' cwd a c ↔ M.Holds w cwd a c
+    (∀ x, (M.There w' x ↔ M.There w x) ∧ (M.Dirty w' x ↔ M.Dirty w x)) ∧
+    (∀ cwd a c, M.Holds w' cwd a c ↔ M.Holds w cwd a c) ∧ ∀ c, M.Reach w c → M.Reach w' c ∨ M.Anc c k
+
+/-- git: `git -C main branch -d b` leaves every commit reachable (it deletes only a branch merged into HEAD or its
+upstream) and every worktree there or not as it was (env_spec: branch_d). -/
+def BranchD : Prop := ∀ w main b,
+  let w' := M.after w ["git", "-C", main, "branch", "-d", b] none
+  (∀ c, M.Reach w c → M.Reach w' c) ∧ ∀ x, M.There w' x ↔ M.There w x
+
+/-- git: `git -C x rev-parse HEAD`, when it prints a commit, prints `x`'s HEAD (env_spec: rev_parse_head). -/
+def RevParseHead : Prop := ∀ w x o, M.git w ["-C", x, "rev-parse", "HEAD"] none = some o → strip o ≠ "" →
+  M.head w x = some (strip o)
+
+/-- The git commands the sweep runs to read (through `Proc.output`): the worktree list, a status, a merge base, a
+diff, a rev-parse. Their arguments are paths and revisions (shas git printed, branch names), never options. -/
+def GitRead : List String → Prop
+  | ["git", "worktree", "list", "--porcelain"] => True
+  | ["git", "-C", _, "worktree", "list", "--porcelain"] => True
+  | ["git", "--no-optional-locks", "-C", _, "status", "--porcelain"] => True
+  | ["git", "-C", _, "merge-base", _, _] => True
+  | ["git", "-C", _, "merge-base", "--is-ancestor", _, _] => True
+  | ["git", "-C", _, "diff", "--name-only", "-z", _, _] => True
+  | "git" :: "-C" :: _ :: "diff" :: "--quiet" :: _ => True
+  | ["git", "-C", _, "rev-parse", _] => True
+  | ["git", "-C", _, "rev-parse", "--abbrev-ref", _] => True
+  | _ => False
+
+/-- git: the sweep's reads leave the repo as it was (env_spec: git_reads_keep). -/
+def GitReadsKeep : Prop := ∀ w argv cwd, GitRead argv → M.SameRepo w (M.after w argv cwd)
+
+/-- The other commands the sweep runs: `du` of a worktree, `gh pr list`, `lsof` (macOS's cwds), and `hc exec … rm -rf`
+of a job's copy (`Run.runDirOk`: under `~/.cache/swarm-run`, no `..`) on the machine it ran on (Run.cleanRemote). -/
+def ToolRead : List String → Prop
+  | ["du", "-sk", _] => True
+  | "gh" :: "pr" :: "list" :: _ => True
+  | ["lsof", "-a", "-d", "cwd", "-Fpn"] => True
+  | ["hc", "exec", "--on", _, "--timeout", "120", "rm", "-rf", d] => Run.runDirOk d = true
+  | _ => False
+
+/-- du, gh, lsof, hc: the sweep's other commands leave the repo as it was (it is not under a job's copy)
+(env_spec: tools_keep). -/
+def ToolsKeep : Prop := ∀ w argv cwd, ToolRead argv → M.SameRepo w (M.after w argv cwd)
 
 /-! ### hc -/
 
@@ -520,6 +571,9 @@ def Tools.idle : Tools where
   There _ _ := False
   Dirty _ _ := False
   tip _ _ := none
+  head _ _ := none
+  Reach _ _ := False
+  Anc _ _ := False
   Inside _ _ := False
   Recent _ _ := False
   Live _ _ := False
@@ -531,11 +585,12 @@ def Tools.idle : Tools where
 /-- The tool assumptions hold together: the idle machine has them all. That the real tools have them is what
 swarm-tests' env_spec cases test. -/
 theorem consistent : AncestorReach .idle ∧ SameContentReach .idle ∧ StatusClean .idle ∧ ListedOn .idle ∧
-    WtRemove .idle ∧ DelRef .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcRmKeeps .idle ∧ HcSendTargets .idle ∧
+    WtRemove .idle ∧ DelRef .idle ∧ BranchD .idle ∧ RevParseHead .idle ∧ GitReadsKeep .idle ∧ ToolsKeep .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcRmKeeps .idle ∧ HcSendTargets .idle ∧
     HcRunStarts .idle ∧ CgroupKillKeeps .idle ∧ Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧
     NowMono .idle ∧ GhChecks .idle ∧ GhState .idle := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-    simp [AncestorReach, SameContentReach, StatusClean, ListedOn, WtRemove, DelRef, HcLsLive, HcKillEnds, HcRmKeeps,
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+    simp [AncestorReach, SameContentReach, StatusClean, ListedOn, WtRemove, DelRef, BranchD, RevParseHead, GitReadsKeep,
+      ToolsKeep, HcLsLive, HcKillEnds, HcRmKeeps,
       HcSendTargets, HcRunStarts, CgroupKillKeeps, Kill0Alive, CwdsProc, TouchedRecent, NowMono, GhChecks, GhState,
       Tools.idle, Tools.SameRepo, Ok0]
 

@@ -132,6 +132,22 @@ every cell the db had but a NULL task.deps the after migration fills, and run ag
 Not covered: the next ids (`nextId` reads them, the store never writes them), and one theorem for all eleven tables at
 once (each table's plan touches its table alone, so they compose).
 
+**No work lost, end to end** (`Proofs/Keep.lean`, board #132). A run is any sequence of sweeps (watchd's, `--dry-run`'s)
+and ends (`swarm end`, lifecycle's and hung's), from any state, on a machine with the git, hc and cgroup assumptions
+`no_work_lost` takes (the table below). After it, every commit reachable before from a branch, a tag, a remote ref or a worktree's HEAD is
+reachable after, unless it is the HEAD, or below the HEAD, of a worktree a `worktree remove` in the run took away, on
+the machine it ran on, after that worktree passed the sweep's `Gate`; and every worktree there before is there after,
+unless a `worktree remove` in the run took it away when it had nothing uncommitted, after it passed `Gate`
+(`no_work_lost`). "Landed" is what `Gate` checked, as the code decides it (`Lifecycle.landed`, `sweepGate_W1`): the
+worktree's directory was gone, or one of the protected bases' refs holds its HEAD by `merge-base --is-ancestor`, by
+`diff --quiet` over the files it changed since the merge base (a squash or rebase merge), or by a merged PR whose head
+is that commit (gh's word, assumed of nothing). The branch delete loses only what that same remove did: its guard is
+the HEAD the sweep read before `landed` (`tie_lost`, `deleteBranch_kept`). The sweep alone: `sweep_kept`. Not in the run: spawn's undo of a failed launch
+(`Workspaces.discardWs`, `worktree remove --force` and `branch -D` of the worktree it just made), and watchd's other
+passes (their commands were read, not proved, to include no git write). Two fixes came with it: the sweep read HEAD
+again after `landed`, so a commit made between the two reads was deleted with the branch, judged by the older HEAD;
+and `Run.cleanRemote` took `.cache/swarm-run/../..` for a job's copy (`runDirOk` now refuses `..`).
+
 ## What the proofs assume
 
 All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes as a hypothesis (none is an axiom).
@@ -147,14 +163,18 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | `SameContentReach` | git | `diff --quiet ref b -- <files ref changed since the merge base>` exiting 0 means the same | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
 | `StatusClean` | git | an empty `status --porcelain` means nothing uncommitted | `sweepGate_W1`, `gateW1` |
 | `ListedOn` | git | a worktree `worktree list` lists is there | `sweepGate_W1`, `gateW1` |
-| `WtRemove` | git | `worktree remove` takes a clean worktree away and nothing else, refuses a dirty one | `wtRemove_only` |
-| `DelRef` | git | `update-ref -d refs/heads/b k` deletes `b` only if its tip is `k`, nothing else | `delRef_guarded` |
+| `WtRemove` | git | `worktree remove` takes a clean worktree away and nothing else (what it leaves unreachable is below its HEAD), refuses a dirty one | `wtRemove_only`, `no_work_lost` |
+| `DelRef` | git | `update-ref -d refs/heads/b k` deletes `b` only if its tip is `k`, nothing else; what it leaves unreachable is below `k` | `delRef_guarded`, `no_work_lost` |
+| `BranchD` | git | `branch -d b` leaves every commit reachable (it deletes only a merged branch) and every worktree | `no_work_lost` |
+| `RevParseHead` | git | `git -C x rev-parse HEAD`, when it prints a commit, prints `x`'s HEAD | `no_work_lost` |
+| `GitReadsKeep` | git | the sweep's git reads (`GitRead`: worktree list, status, merge-base, diff, rev-parse) leave the repo as it was | `no_work_lost` |
+| `ToolsKeep` | du, gh, lsof, hc | the sweep's other commands (`ToolRead`) leave the repo; a job's copy (`Run.runDirOk`) is not the repo | `no_work_lost` |
 | `HcLsLive` | hc | `hc ls --json`, when it answers, lists a terminal live exactly when it is | none |
-| `HcKillEnds` | hc | `hc kill h` ends `h` and leaves the repo | `endAgent_keepsGit` |
-| `HcRmKeeps` | hc | `hc rm h` leaves the repo | `endAgent_keepsGit` |
+| `HcKillEnds` | hc | `hc kill h` ends `h` and leaves the repo | `endAgent_keepsGit`, `no_work_lost` |
+| `HcRmKeeps` | hc | `hc rm h` leaves the repo | `endAgent_keepsGit`, `no_work_lost` |
 | `HcSendTargets` | hc | `hc send h l` types `l` into `h` alone, starts or ends no terminal, leaves the repo | none |
 | `HcRunStarts` | hc | `hc run --json --bg` that exits 0 started the terminal and pid it prints | none |
-| `CgroupKillKeeps` | cgroups | "1" to a scope's `cgroup.kill` leaves the repo | `endAgent_keepsGit` |
+| `CgroupKillKeeps` | cgroups | "1" to a scope's `cgroup.kill` leaves the repo | `endAgent_keepsGit`, `no_work_lost` |
 | `Kill0Alive` | OS | `kill(p, 0)` is 0 exactly when `p` is in the process table | none |
 | `CwdsProc` | OS | `Machine.cwds` lists a directory inside every worktree a process sits in | `sweepGate_W1`, `gateW1` |
 | `TouchedRecent` | filesystem | a worktree used in the last 30 min has an mtime within 30 min | `sweepGate_W1`, `gateW1` |
@@ -223,7 +243,7 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | Nudge: `Tools.N1'`, `hnudge_enabled`, `hnudge_reachable` | not moved | the nudge's `hc send` and its refusals are in the monadic `Cmd.Msgs.nudge`; `HcSendTargets` is stated (Assumptions.lean) but no theorem takes it yet |
 | PrWatch: `P1_of`, `P2_of`, `main_P1`, `main_P2`, `poll_*`, `merged*`; Merged: `poll_ends`, `P1_of`, `P2_of`, `main_P*`, `owner_live`, `pollOf_ne` | not moved | the poll's decision is moved (`WatchdProofs.prAct_eq`); its db step `Ci.prWatchApply` takes gh's answer as an argument and was not stated; P1/P2 over fair runs need that step, the monadic poll and `GhChecks`/`GhState` |
 | PrWatch: `fair_of_stall`, `not_P*_of`, `getD_*`, `tk_*`, `agt_*`, `preach*` | not applicable | refutations with a switch off and the model's lemmas (`PrWatch.lean` itself stays: Decide.lean imports it) |
-| Workspaces: `W1_of`, `W2_of`; Real: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` | moved | on `RecM`, the code run on a machine that records each command (Assumptions.lean): `SweepProofs.sweep_W1` (every `worktree remove` the sweep runs passed `Gate` on the calls before it), `sweepGate_W1` (a worktree that passed `Gate` is listed and there, has no process inside, is clean, was not used in the last 30 min, and its HEAD is reached from a protected ref or its directory is gone), `landed_reach_spec`, `landedRef_reach_spec`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` (W2) |
+| Workspaces: `W1_of`, `W2_of`; Real: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` | moved | on `RecM`, the code run on a machine that records each command (Assumptions.lean): `SweepProofs.sweep_W1` (every `worktree remove` the sweep runs passed `Gate` on the calls before it), `sweepGate_W1` (a worktree that passed `Gate` is listed and there, has no process inside, is clean, was not used in the last 30 min, and its HEAD is reached from a protected ref or its directory is gone), `landed_reach_spec`, `landedRef_reach_spec`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` (W2); end to end over any run of sweeps and ends, branch deletes included: `SweepProofs.no_work_lost` |
 | Workspaces: `replay_W`, `gitTick_gcOk` | not moved | the model's replay instance and its GC step; the code's sweep is the one `sweep_W1` is about |
 | Workspaces: `W3_of`, `orphan_ev`, `agent_ev`, `ends_tick`, `reusable_ready`, `finished_reap` | not moved | W3 is liveness over fair runs on top of W1 and the agents' behaviour |
 | Workspaces: `W4_of`, `B1_of` | not moved | `Workspaces.baseOut` and the per-task bases are monadic over git |
