@@ -1,4 +1,5 @@
 import SwarmLean.Proofs
+import SwarmLean.Proofs.Queue
 import SwarmLean.Cmd.Watchd
 import SwarmLean.Real
 
@@ -722,27 +723,38 @@ theorem reserve_max {db : Db} {e : Option String} {name cwd : String} {model : O
   · rename_i db' hr; exact reserveAgent_max hr
   · cases h
 
-/-- F1's `launch_top` on the code: auto-spawn's reservation (`top`) claims task `tid` only if, in the transaction
-that claims it, `tid` heads the pool as `top` reads it; and the max held there. -/
+/-- F1's `launch_top` on the code, with the queue (board #128): auto-spawn's reservation claims task `tid` only if,
+in the transaction that claims it, `tid` heads the staffing order (`Queue.staffHead`, the tasks it has not given up on)
+and the max held there (a free slot). So `tid` is startable and not held, and when no startable red task is left to
+staff and some startable queued task is not held, `tid` is the first such in queue order. -/
 theorem reserveTask_top {db : Db} {e : Option String} {name cwd : String} {tid : Int} {model : Option String}
-    {now : Int} {f : Db → Option Int} {r : Task}
-    (h : (Spawn.reserveTask db e name cwd tid model now (some f)).2 = .ok r) :
-    f db = some tid ∧ ∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x := by
-  unfold Spawn.reserveTask at h
-  split at h
-  · rename_i db' r' hg
-    unfold Spawn.reserveTask.go at hg
-    simp only at hg
-    split at hg
-    · cases hg
-    · rename_i htop
-      simp only [bne_iff_ne, ne_eq, Decidable.not_not] at htop
-      refine ⟨htop, ?_⟩
-      simp only [Bind.bind, Except.bind] at hg
+    {now : Int} {skip : Task → Bool} {r : Task}
+    (h : (Spawn.reserveTask db e name cwd tid model now (some (Queue.staffHead skip))).2 = .ok r) :
+    Queue.staffHead skip db = some tid ∧ (∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x) ∧
+    (∃ t ∈ Tasks.pool db, (t.id : Int) = tid ∧ t.hold = none) ∧
+    ∀ q, (∀ t ∈ Queue.staffRed db, skip t = true) → (Queue.staffQueue db).find? (!skip ·) = some q →
+      tid = (q.id : Int) := by
+  have top : Queue.staffHead skip db = some tid ∧ ∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x := by
+    unfold Spawn.reserveTask at h
+    split at h
+    · rename_i db' r' hg
+      unfold Spawn.reserveTask.go at hg
+      simp only at hg
       split at hg
       · cases hg
-      · rename_i db1 hr; exact reserveAgent_max hr
-  · cases h
+      · rename_i htop
+        simp only [bne_iff_ne, ne_eq, Decidable.not_not] at htop
+        refine ⟨htop, ?_⟩
+        simp only [Bind.bind, Except.bind] at hg
+        split at hg
+        · cases hg
+        · rename_i db1 hr; exact reserveAgent_max hr
+    · cases h
+  refine ⟨top.1, top.2, ?_, fun q hr hq => ?_⟩
+  · obtain ⟨t, ht, hi, hh, -⟩ := QueueProofs.staffHead_not_held top.1
+    exact ⟨t, ht, hi, hh⟩
+  · have := top.1.symm.trans (QueueProofs.staffHead_queue hr hq)
+    exact Option.some.inj this
 
 /-- Sp1 and Sp2 on the code: after a failed launch no claim of the new agent on its task remains, the task it held is
 open with no owner (back in the pool at once), and the row, if no terminal took it, is ended. -/

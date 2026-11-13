@@ -15,7 +15,8 @@ your name is in `$SWARM_NAME`.
   what you wait for: `swarm stay "<what>"`, and watchd won't end you. `swarm
   stay --end` when it is over. A stayer idle 50 min gets a "Liveness check"
   message: if the stay still holds, do nothing; if it is over, `swarm stay --end`.
-- **The board.** Run `swarm board` first. `swarm task show <id>` prints a task's body (the board marks tasks that have
+- **The board.** Run `swarm board` first; looking for work, take the first startable entry of `swarm queue`, else the
+  board's order (never a task marked `held:`). `swarm task show <id>` prints a task's body (the board marks tasks that have
   one); `swarm task claim <id>` before you
   work on a task (it fails if someone holds it, and prints the task body), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A

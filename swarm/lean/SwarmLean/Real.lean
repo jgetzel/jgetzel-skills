@@ -36,7 +36,8 @@ def columns : List (String × String) :=
   ("task", "ci_green_at int"), ("task", "claim_ctx int"), ("task", "done_ctx int"), ("task", "deps text"),
   ("ci", "workflow text"), ("task", "answer text"), ("task", "effort text"),
   ("agent", "role text"), ("agent", "stay text"), ("task", "base text"), ("task", "stop_to text"),
-  ("task", "stop_msg int"), ("task", "priority int default 2")]
+  ("task", "stop_msg int"), ("task", "priority int default 2"),
+  ("task", "qpos int"), ("task", "hold text")]
 
 /-- What the real monad carries: the db path and the connection, opened at the first transaction. -/
 structure Ctx where

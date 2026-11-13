@@ -154,6 +154,9 @@ with subagents.
   the pool a free agent is offered and auto-spawn all use that order, a red main (`main red:`) first of all.
   It never preempts: it takes no claimed task and stops no agent. Known limit: strict order, no aging, so
   new P0-P2 tasks arriving can starve a P3 one.
+- **Queue and holds.** `swarm queue add <id>… [--front | --before <id> | --after <id>]` / `queue rm` order what is
+  staffed next, ahead of priority (after a red main); `swarm limits --queue-only on` staffs only the queue. `swarm task
+  hold <id> --why <text>` keeps a task from being staffed or claimed until `task unhold` (your `claim --force` overrides).
 
 ## 3. Rules that carry over from /orchestrate
 
@@ -168,6 +171,6 @@ with subagents.
 
 ## Reference
 
-Commands: `spawn join leave end endable post read wait nudge board who task rules role stay limits away
+Commands: `spawn join leave end endable post read wait nudge board queue who task rules role stay limits away
 lock unlock ci cost machine run state watch watchd`; `swarm <cmd> -h` has flags. State is in
 `<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.

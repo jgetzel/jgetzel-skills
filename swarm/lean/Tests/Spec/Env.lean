@@ -277,14 +277,15 @@ def cwds_proc (t : T) : IO Unit := do
 /-- A process in a swarm-agent scope, in a worktree; "1" to the scope's `cgroup.kill` as `Lifecycle.endAgent` writes
 it. Skipped where there is no systemd user scope. -/
 def cgroup_kill_keeps (t : T) : IO Unit := do
-  let unit := s!"--unit=swarm-agent-env-{← IO.Process.getPID}.scope"
-  let args := #["--user", "--scope", "--quiet", "--collect", unit, "--", "sleep", "300"]
+  let name := s!"swarm-agent-env-{← IO.Process.getPID}.scope"
+  let args := #["--user", "--scope", "--quiet", "--collect", s!"--unit={name}", "--", "sleep", "300"]
   let c ← IO.Process.spawn
     { cmd := "systemd-run", args, cwd := some t.wt, stdin := .null, stdout := .null, stderr := .null }
   let pid : Int := c.pid.toNat
   let mut cg := none
   for _ in [0:50] do
-    cg ← app (Machine.cgroup pid : App _)
+    -- until systemd moves it, the pid is in the caller's cgroup: an agent's own swarm-agent scope, never to be killed
+    cg := (← app (Machine.cgroup pid : App _)).filter (·.dir.endsWith s!"/{name}")
     if cg.isSome then break
     IO.sleep 100
   let some g := cg

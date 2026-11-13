@@ -2,7 +2,7 @@ import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.Msgs
-import SwarmLean.Db.Tasks
+import SwarmLean.Db.Queue
 
 /-! watchd.lua's parts that `swarm end` and `swarm endable` run: whether an agent's work landed (landed_ref, landed,
 unlanded, unclean_list), what keeps it (end_why, endable_reasons, over fate's reads of one agent), and the end itself
@@ -139,7 +139,7 @@ def waking (db : Db) (n : String) : Nat × Nat :=
 /-- The reads of agent `n` on `db` (agent, task, lock and workspace tables; `passedOver` also the event, msg and
 cursor tables); `pool` the startable tasks. -/
 def reads (db : Db) (main : Option String) (wts all : List (String × String)) (n : String)
-    (pool : List Task := Tasks.pool db) : Reads m where
+    (pool : List Task := Queue.staffing db) : Reads m where
   claims := db.tasks.any fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)
   locks := db.locks.any (·.agent == some n)
   job := do return (Machine.bgAgents db.agents (← Machine.procs)).lookup n
@@ -154,7 +154,7 @@ def reads (db : Db) (main : Option String) (wts all : List (String × String)) (
 
 /-- The reads of agent `n` now: the db, the main worktree, the agents' and every worktree. -/
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
-  let db ← Store.txn [.agent, .task, .lock, .workspace] fun db => (db, db)
+  let db ← Store.txn [.agent, .task, .lock, .workspace, .«meta»] fun db => (db, db)
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.worktrees) n)
 
 /-- What a fate run heard: each check made, in order, with whether it held; the unlanded worktree and its refs (once

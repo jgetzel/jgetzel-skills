@@ -129,7 +129,7 @@ def afterSpawnRead (h : Hooks) (fn : IO Unit) : IO (IO Unit) := do
   h.after.set fun ts => do
     match ← st.get with
     | 0 => if ts == [.agent, .«meta», .task] then st.set 1
-    | 1 => if ts == [.task] then st.set 2; fn
+    | 1 => if ts == [.task, .«meta»] then st.set 2; fn
     | _ => pure ()
   return do if (← st.get) != 2 then fail "the peer never ran"
 

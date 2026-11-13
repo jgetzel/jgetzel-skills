@@ -5,6 +5,7 @@ import Tests.Cli.Core
 import Tests.Cli.Herdr
 import Tests.Cli.Lifecycle
 import Tests.Cli.Panel
+import Tests.Cli.Queue
 import Tests.Cli.Spawn
 import Tests.Cli.Stay
 import Tests.Cli.Stop
@@ -30,6 +31,7 @@ def specs : List (String × List Case) := [
   ("herdr_mods_spec", Herdr.tests),
   ("cli_lifecycle_spec", Lifecycle.tests),
   ("cli_panel_spec", Panel.tests),
+  ("cli_queue_spec", Queue.tests),
   ("cli_spawn_spec", Spawn.tests),
   ("cli_stay_spec", Stay.tests),
   ("cli_stop_spec", Stop.tests),
