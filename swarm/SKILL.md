@@ -20,7 +20,7 @@ with subagents.
    rules; nothing here overrides them.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
-   Your `ListAgents` name is the address agents' blocked notices reach.
+   The communicator is not a `SendMessage` address: agents' blocked notices and posts wait in your inbox until your next `swarm wait` delivers them.
 4. The CLI needs LuaJIT plus 7 rocks. `install.sh` checks and installs them by one of three routes: Nix
    (`nix profile install github:jgetzel/jgetzel-skills`, the repo flake), Homebrew, or distro packages + luarocks.
 5. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
@@ -124,7 +124,7 @@ with subagents.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
-- **Stop hook.** When you stop and something keeps watchd from ending you (`swarm endable --why` lists it: claim,
+- **Stop hook** (agents only; you have no hooks). When an agent stops and something keeps watchd from ending it (`swarm endable --why` lists it: claim,
   lock, dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue:
   (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
   counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
@@ -134,7 +134,7 @@ with subagents.
   Worktrees are a separate sweep: watchd removes any worktree of this repo (yours included) that is clean, has no
   live agent attached and no process in it, was untouched for 30 minutes and is on a ref some task base, `main` or
   `origin/*` already has, then deletes its branch (`git branch -d`, else `update-ref -d` guarded by the tip it checked; never a base, never `-D`): tell the user before the
-  first watchd if they park worktrees here. When all tasks are done, tell
+  first watchd if they park worktrees here (`swarm watchd --dry-run` lists what the sweep would remove). When all tasks are done, tell
   the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
   waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `swarm nudge <agent>`
   (one fixed line typed into its terminal), or end it. `swarm stay --end <agent>` (you or `human`) ends another
@@ -165,6 +165,6 @@ with subagents.
 
 ## Reference
 
-Commands: `spawn join leave post read board who task lock unlock machine run
-watch watchd`; `swarm <cmd> -h` has flags. State is in
+Commands: `spawn join leave end endable post read wait nudge board who task rules role stay limits away
+lock unlock ci cost machine run state watch watchd`; `swarm <cmd> -h` has flags. State is in
 `<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.
