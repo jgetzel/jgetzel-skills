@@ -114,6 +114,23 @@ its directory is gone (`sweepGate_W1`); each of those six assumptions is needed 
 moves no branch and changes no other worktree (`wtRemove_only`), and the branch delete deletes only at the tip it read
 (`delRef_guarded`). Ending an agent leaves every worktree, branch and commit as they were (`endAgent_keepsGit`, W2).
 
+**The store** (`Proofs/Store.lean`, `Proofs/WriteBack.lean`, `Proofs/Migrate.lean`, board #134). The store's SQL is
+data: `Db/Plan.lean`'s `Stmt`s, which Real.lean's `runStmts` runs (`storeDb` runs `dbPlan`, `connect` runs `migs`), and
+`decodeRows`, which `loadRows` applies to what its select returned. Every row type's codec round-trips
+(`decode_encode`), and decoding refuses rather than misreads: each cell of a decoded row is the value its field encodes
+to, or one of the documented coercions (a number read as text, integral text or float read as an integer); anything
+else is an error (`decode_reads`). Run by SQLite (`SqlExec`) on a table that holds exactly the rows loaded, the
+write-back of a step's rows fails at no statement, leaves the table holding exactly those rows, keeps every column Lean
+does not know of each row it keeps (a new row gets the defaults there), and changes no other table (`write_back`). A
+table left as loaded gets no statement (`rowsPlan_same`); one that was not loaded gets an insert of each row the step
+added (`rowsPlan_unloaded`). Loading a table returns its rows in key order whatever order SQLite gives them
+(`load_rows`), so load after store is the identity on rows that are keyed, in key order and whose ints fit int64
+(`store_load`). Each migration takes a db at schema version n (the first n of `migs` not needed) to version n+1, keeps
+every cell the db had but a NULL task.deps the after migration fills, and run again changes nothing
+(`migrate_version`); all of them take a db at any version to the last, where they change nothing (`migrateAll_last`).
+Not covered: the next ids (`nextId` reads them, the store never writes them), and one theorem for all eleven tables at
+once (each table's plan touches its table alone, so they compose).
+
 ## What the proofs assume
 
 All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes as a hypothesis (none is an axiom).
@@ -122,6 +139,9 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | Assumption | About | Says | Taken by |
 |---|---|---|---|
 | `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`; since #137 a read-only `Store.txn` is one WAL read transaction, and a write reuses what that read computed only when `pragma data_version` shows no commit since) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
+| `SqlExec` | SQLite | each statement the store runs does what `Stmt.run` says: delete and update by key, insert with defaults that fails on a key a row has, `add column` with its default, the after migration | `write_back`, `store_load`, `runs_dels`, `runs_up`, `runs_ups`, `migrate_step`, `migrate_version`, `migrateAll_last` |
+| `SqlSelect` | SQLite | `select cs from t` returns each row's cells, in some order | `load_rows`, `store_load` |
+| `SqlTableInfo` | SQLite | `pragma table_info(t)` lists t's columns | `migrate_step`, `migrate_version`, `migrateAll_last`, `migrateAll_none` |
 | `AncestorReach` | git | `merge-base --is-ancestor ref b` exiting 0 means `b` holds `ref`'s changes | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
 | `SameContentReach` | git | `diff --quiet ref b -- <files ref changed since the merge base>` exiting 0 means the same | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
 | `StatusClean` | git | an empty `status --porcelain` means nothing uncommitted | `sweepGate_W1`, `gateW1` |
@@ -141,7 +161,7 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | `GhChecks` | gh | the verdict `Ci.verdict` reads off a listed PR is its checks' state | none |
 | `GhState` | gh | a listed PR not closed is MERGED when merged, else OPEN | none |
 
-`consistent`: a machine on which no command runs has every tool assumption, so they are jointly satisfiable; that the
+`sql_consistent`: the model (`Stmt.run`) has the three SQLite assumptions. `consistent`: a machine on which no command runs has every tool assumption, so they are jointly satisfiable; that the
 real tools have them is what the case in each tag tests (swarm-tests' env_spec and sqlite_spec, `Tests/Spec/Env.lean`
 and `Sqlite.lean`, which check.sh requires to exist). Locks' `Before t cs` (S3's time `t` is no earlier than each lock's clock) is a condition of
 the statement, not of the world: a clock that never goes back (`NowMono`) gives it at any moment after the locks.

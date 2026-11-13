@@ -29,10 +29,11 @@ def Sqlite.Val.key : Val → Except String String
     | some s => pure s
     | none => throw "NULL in a primary key"
 
-/-- A primary-key integer cell (a rowid). -/
+/-- A primary-key integer cell (a rowid); a negative one is refused, not read as 0. -/
 def Sqlite.Val.id : Val → Except String Nat
   | v => do match ← v.oi with
-    | some i => pure i.toNat
+    | some (.ofNat n) => pure n
+    | some i => throw s!"negative id {i}"
     | none => throw "NULL id"
 
 /-- An optional text as a cell. -/
