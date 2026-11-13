@@ -1,5 +1,6 @@
 import SwarmLean.Cmd.Tasks
 import SwarmLean.Lib.Hook
+import SwarmLean.Lib.Agents
 
 /-! The ported command groups and main.lua's dispatch around them: the fence and the communicator's nudge. -/
 
@@ -31,13 +32,8 @@ def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
   if let some name ← env "SWARM_NAME" then
     if FENCED.contains a.cmd && a.act != "show" then
       let here ← env "HC_TERMINAL_ID"
-      match ← Store.txn [.agent, .event] fun db => (db, Agents.fence db name here) with
-      | some (.ended t why) =>
-        let tail := match why with | some w => if w != "" then s!" ({w})" else "" | none => ""
-        die s!"{name} was ended at {← Clock.hhmm (t.getD 0)}{tail}; `swarm join` to return."
-      | some (.bound hc here) =>
-        die s!"{name} is bound to {hc}; this terminal is {here.getD "outside Herdr"}. `swarm join --takeover` moves it here."
-      | none => pure ()
+      if let some f ← Store.txn [.agent, .event] fun db => (db, Agents.fence db name here) then
+        die (← Agents.fenceText name f)
   if NUDGED.contains a.cmd then Hook.commsNudge (a.cmd == "wait")
   g.run a
 
