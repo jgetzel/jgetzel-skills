@@ -1,4 +1,5 @@
 import SwarmLean.Sys
+import SwarmLean.Lib.Machine
 
 /-! cost.lua: the cmd-cost history (one row per finished command that cost something), outside swarm.db, per user and
 machine: the key a command is filed under, the summary `swarm cost` prints, the prediction the hook shows. watchd's
@@ -225,5 +226,160 @@ def predict [Env m] [Sys m] [Git m] (cmd : String) (cwd : Option String) : m (Op
   if rows.isEmpty then return none
   return some { n := rows.length, wall_s := median (rows.map fun r => vi (r.getD 0 .null)),
                 peak_kb := median (rows.map fun r => vi (r.getD 1 .null)), key := k }
+
+/-- A command shell the tick has seen open (a value of cost.open_cmds): whose, its command, wall seconds, peak RSS
+(KiB), CPU seconds, and the agent's cgroup peak when it was the one open command as that rose. -/
+structure OpenCmd where
+  agent : String
+  cmd : String
+  wall : Int := 0
+  peak : Int := 0
+  cpu : Float := 0
+  exact_kb : Option Int := none
+  deriving Repr
+
+/-- What the tick keeps between ticks (watchd's memory; a restart forgets it): each agent's cgroup peak at the last
+tick (cost.cg_peak) and the open command shells by pid (cost.open_cmds). -/
+structure TickMem where
+  cgPeak : List (String × Int) := []
+  opens : List (Int × OpenCmd) := []
+  deriving Repr
+
+/-- What one tick reads: the live agents' claude pids, each one's cgroup peak (KiB) where it has a cgroup, `ps`, the
+processes' cwds, the repo's worktrees (none outside a repo), and the CPU seconds a shell's reaped children used. -/
+structure TickIn where
+  owners : List (Int × String)
+  cgs : List (String × Int) := []
+  procs : List Machine.Ps
+  cwds : List (Int × String) := []
+  wts : Option (List String) := none
+  reaped : Int → Float := fun _ => 0
+
+/-- A Bash-tool shell: its args name a shell snapshot. -/
+def isShell (p : Machine.Ps) : Bool := hasSub p.args "/shell-snapshots/snapshot-"
+
+/-- `p` is `w` or under it. -/
+def inside (p : String) (dirs : List String) : Bool := dirs.any fun w => p == w || p.startsWith (w ++ "/")
+
+/-- The first non-space word after `pre` followed by `sep` (one of its characters), as Lua's
+`match("%s" .. pre .. sep .. "(%S+)")` finds it. -/
+def argAfter (args pre : String) (seps : List Char) : Option String :=
+  let s := args.toList
+  let p := pre.toList
+  (List.range s.length).findSome? fun i =>
+    let r := s.drop i
+    match r with
+    | c :: r => if !isSpace c || !r.take p.length == p then none else
+      let r := r.drop p.length
+      let r := if seps == [' '] then (match r with | c :: _ => if isSpace c then r.dropWhile isSpace else [] | [] => [])
+        else (match r with | c :: t => if seps.contains c then t else [] | [] => [])
+      let w := r.takeWhile (!isSpace ·)
+      if w.isEmpty then none else some (String.ofList w)
+    | [] => none
+
+/-- A user's own session's name: `user:<its -n or --name>`, a trailing `:` dropped, else `user`. -/
+def userWho (args : String) : String :=
+  let n := ((argAfter args "-n" [' ']).orElse fun _ => argAfter args "--name" [' ', '=']).getD ""
+  let n := if n.endsWith ":" then (n.dropEnd 1).toString else n
+  if n == "" then "user" else "user:" ++ n
+
+/-- The shells under a claude process of no agent: the tick needs the repo's worktrees and the cwds only for these. -/
+def needsUser (owners : List (Int × String)) (procs : List Machine.Ps) : Bool :=
+  let by_ := Machine.byPid procs
+  procs.any fun sh => isShell sh && (owners.lookup sh.ppid).isNone &&
+    (by_.get? sh.ppid).any fun par => hasSub par.comm "claude"
+
+/-- One watchd tick of the cmd-cost history (cost.tick): updates the open command shells and gives a row for each one
+gone (ts `t`; machine and repo left empty, for the caller). User sessions (claude processes of no agent) count when
+their cwd is in the repo. -/
+def tickStep (mem : TickMem) (i : TickIn) (t : Int) : TickMem × List Rec := Id.run do
+  let rose : List (String × Int) := i.cgs.filterMap fun (n, pk) =>
+    match mem.cgPeak.lookup n with
+    | some old => if pk > old then some (n, pk) else none
+    | none => none
+  let cgPeak := i.cgs.foldl (fun l (n, pk) => (n, pk) :: l.filter (·.1 != n)) mem.cgPeak
+  let by_ := Machine.byPid i.procs
+  let kids (pid : Int) := i.procs.filter (·.ppid == pid)
+  let mut opens := mem.opens
+  let mut seen : List Int := []
+  let mut nopen : List (String × Nat) := []
+  for sh in i.procs.filter isShell do
+    let mut who := i.owners.lookup sh.ppid
+    if who.isNone then
+      if let some par := by_.get? sh.ppid then
+        if hasSub par.comm "claude" then
+          if let (some wts, some cw) := (i.wts, i.cwds.lookup par.pid) then
+            if inside cw wts then who := some (userWho par.args)
+    let some w := who | continue
+    -- the shell's tree, breadth first; each level goes one process down, so as many levels as processes
+    let mut rss : Int := 0
+    let mut cpu : Int := 0
+    let mut q := [sh]
+    for _ in [0:i.procs.length + 1] do
+      if q.isEmpty then break
+      rss := rss + (q.map (·.rss_kb)).sum
+      cpu := cpu + (q.map (·.cpu_s)).sum
+      q := q.flatMap fun p => kids p.pid
+    let o := match opens.lookup sh.pid with
+      | some o => if sh.age < o.wall then none else some o  -- the pid was reused
+      | none => none
+    let o := o.getD { agent := w, cmd := (shellCmd sh.args).getD "?" }
+    let o := { o with wall := sh.age, peak := max o.peak rss, cpu := max (max o.cpu (Float.ofInt cpu)) (i.reaped sh.pid) }
+    opens := if (opens.lookup sh.pid).isSome then opens.map fun (p, x) => (p, if p == sh.pid then o else x)
+      else opens ++ [(sh.pid, o)]
+    seen := sh.pid :: seen
+    nopen := (w, (nopen.lookup w).getD 0 + 1) :: nopen.filter (·.1 != w)
+  -- the agent's cgroup peak rose while exactly one of its commands was open: that figure is the command's, exactly
+  opens := opens.map fun (p, o) =>
+    match seen.contains p, rose.lookup o.agent with
+    | true, some kb => if nopen.lookup o.agent == some 1 then (p, { o with exact_kb := some kb }) else (p, o)
+    | _, _ => (p, o)
+  let gone := opens.filter fun (p, _) => !seen.contains p
+  let recs := gone.map fun (_, o) =>
+    let r : Rec := { ts := t, machine := "", repo := "", agent := o.agent, cmd := o.cmd, wall_s := o.wall,
+                     cpu_s := o.cpu.floor.toInt64.toInt, peak_kb := max o.peak (o.exact_kb.getD 0),
+                     exact := if o.exact_kb.isSome then 1 else 0 }
+    r
+  return ({ cgPeak, opens := opens.filter fun (p, _) => seen.contains p }, recs)
+
+/-- Seconds of CPU a shell's reaped children used (Linux; fields 16 and 17 of /proc/<pid>/stat at 100 ticks a second),
+0 where there is no such file. -/
+def reapedCpu [Env m] [Fs m] (pid : Int) : m Float := do
+  -- shortcut: CLK_TCK as 100 (Linux's on every common arch; Sys has no sysconf), upgrade if a machine differs
+  let some s ← Fs.read s!"{← Machine.procRoot}/{d pid}/stat" | return 0
+  match s.splitOn ")" with
+  | _ :: _ :: _ =>
+    let f := words ((s.splitOn ")").getLast!)
+    let n (k : Nat) : Float := Float.ofInt ((f[k]?.bind parseInt).getD 0)
+    return (n 13 + n 14) / 100
+  | _ => return 0
+
+/-- The repo's name and every worktree path, from the cwd (cost.lua's repo_info). -/
+def repoInfo [Git m] : m (Option (String × List String)) := do
+  let some name ← repoName | return none
+  let ls := splitlines ((← Git.git ["worktree", "list", "--porcelain"] none).getD "")
+  return some (name, ls.filterMap fun l => if l.startsWith "worktree " && l.length > 9 then some (l.drop 9).toString else none)
+
+/-- watchd's cmd-cost tick (cost.tick) on `procs` (machine.procs) at `t`: reads the agents' cgroups (and, for user
+sessions, the cwds and the repo's worktrees), runs `tickStep`, and writes a row for each finished command. -/
+def tick [Store m] [Env m] [Fs m] [Proc m] [Sys m] [Git m] (mem : TickMem) (procs : List Machine.Ps) (t : Int) :
+    m TickMem := do
+  let agents ← Store.txn [.agent] fun db => (db, db.agents)
+  let owners := Machine.claudeOwners agents
+  let mut cgs := []
+  for (pid, n) in owners do
+    if let some cg ← Machine.cgroup pid then cgs := cgs ++ [(n, cg.peak_kb)]
+  let (info, cwds) ← if needsUser owners procs then
+      pure (← repoInfo, ((← Machine.cwds).getD []))
+    else pure (none, [])
+  let mut reaped := []
+  for sh in procs.filter isShell do reaped := reaped ++ [(sh.pid, ← reapedCpu sh.pid)]
+  let i : TickIn := { owners, cgs, procs, cwds, wts := info.map (·.2), reaped := fun p => (reaped.lookup p).getD 0 }
+  let (mem, recs) := tickStep mem i t
+  if !recs.isEmpty then
+    let repo := ((← repoName).getD "?")
+    let host ← Sys.hostname
+    for r in recs do discard <| record { r with machine := host, repo }
+  return mem
 
 end SwarmLean.Cost

@@ -4,6 +4,7 @@ import Tests.Re
 import Tests.Conflict
 import Tests.Machine
 import Tests.Cost
+import Tests.CostTick
 import Tests.CiWatch
 import Tests.Run
 import Tests.Hook
