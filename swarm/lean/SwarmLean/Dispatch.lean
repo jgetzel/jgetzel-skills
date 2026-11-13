@@ -7,6 +7,7 @@ import SwarmLean.Cmd.Cost
 import SwarmLean.Cmd.Ci
 import SwarmLean.Cmd.Run
 import SwarmLean.Cmd.State
+import SwarmLean.Cmd.Hook
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
 
@@ -26,7 +27,8 @@ def groups : List (Group m) := [
   Cmd.Cost.group,
   Cmd.Ci.group,
   Cmd.Run.group,
-  Cmd.State.group
+  Cmd.State.group,
+  Cmd.Hook.group
 ]
 
 /-- main.lua's root usage, printed before a parse error. -/
