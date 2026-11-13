@@ -95,9 +95,10 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   file per cli_*_spec.lua with every test under its Lua name, `Tests/Spec/<spec>.lean` the plain specs' asserts that
   need the world, `Tests/Cli/All.lean` the list. One worker process per test, SWARM_TEST_JOBS (8) at a time, killed
   past SWARM_TEST_TIMEOUT (60 s); every CLI call is strict (no Lua fall-through). The fakes cli.lua wrote in Lua are the
-  test binary (`--fake-launch`, `--sql`). Not ported, the Lua-to-model link, to go with the Lua (#110) or move with the
-  model's assumptions (#109): locks_model, locksrc, decide_model, luasem, sql_model (and sql_inventory.lua), env and
-  sqlite (Env.lean's assumptions, by tag, through the Lua), and cli_model (replays swarm/model/traces through the CLI).
+  test binary (`--fake-launch`, `--sql`; `--sqlite` is sqlite_spec's worker). env_spec and sqlite_spec (#117,
+  `Tests/Spec/Env.lean`, `Tests/Spec/Sqlite.lean`) test Assumptions.lean's assumptions against the real tools, one case
+  per tag. Not ported, the Lua-to-model link, to go with the Lua (#110): locks_model, locksrc, decide_model, luasem,
+  sql_model (and sql_inventory.lua), and cli_model (replays swarm/model/traces through the CLI).
 - **`try` in `App`** catches `Exit` (App's `ExceptT`), not `IO.Error`: an `App` instance method that must survive an
   IO error runs its body in `IO` (`(do try … catch … : IO _)`, as `RealSys.lean` does).
 - **Locks** (#99): `covers` and `overlaps` are swarm/model's `Glob.lean` itself (the lakefiles build that one file as

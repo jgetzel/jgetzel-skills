@@ -10,7 +10,9 @@ import Tests.Cli.Stop
 import Tests.Cli.WatchdRun
 import Tests.Spec.Cost
 import Tests.Spec.Db
+import Tests.Spec.Env
 import Tests.Spec.Foundation
+import Tests.Spec.Sqlite
 import Tests.Spec.Watchd
 
 /-! Every spec of swarm-tests, by the Lua spec file it ports. -/
@@ -31,7 +33,9 @@ def specs : List (String × List Case) := [
   ("cli_watchd_run_spec", WatchdRun.tests),
   ("cost_spec", Spec.Cost.tests),
   ("db_spec", Spec.Db.tests),
+  ("env_spec", Spec.Env.tests),
   ("foundation_spec", Spec.Foundation.tests),
+  ("sqlite_spec", Spec.Sqlite.tests),
   ("watchd_spec", Spec.Watchd.tests)]
 
 end SwarmLean.Tests.Cli

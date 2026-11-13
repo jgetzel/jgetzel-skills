@@ -3,7 +3,7 @@ import Tests.Cli.All
 /-! swarm-tests: the CLI's test suite (run.lua's runner). `swarm-tests [pattern]` runs every test whose spec or name
 contains the pattern, one worker process per test, SWARM_TEST_JOBS (8) at a time; a test running past
 SWARM_TEST_TIMEOUT (60 s) is killed and reported as HUNG. `--list` prints the tests; `--one <spec> <test>` is a worker;
-`--fake-launch` and `--sql` are the fakes the fixture writes as scripts. -/
+`--fake-launch` and `--sql` are the fakes the fixture writes as scripts; `--sqlite` is sqlite_spec's worker. -/
 
 open SwarmLean SwarmLean.Tests.Cli
 
@@ -74,6 +74,7 @@ def coordinate (pat : Option String) : IO UInt32 := do
 def main (args : List String) : IO UInt32 := do
   match args with
   | "--fake-launch" :: d :: argv => T.fakeLaunch d argv
+  | "--sqlite" :: role :: rest => SwarmLean.Tests.Spec.Sqlite.worker role rest
   | ["--sql", db, stmt] => discard <| (← SwarmLean.Sqlite.Conn.open db false).exec stmt; return 0
   | ["--one", s, n] => one s n
   | ["--list"] => for (s, n, _) in all do IO.println s!"{s} {n}"

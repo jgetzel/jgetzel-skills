@@ -18,8 +18,9 @@ used:
   `Sys.mtime`, `Clock.now` and `Machine.cwds` return, and what is true of the repo, the terminals, the processes and
   the PRs. Each assumption below says that one answer means one truth, as Env.lean's did of its `Tools`.
 
-Each tool assumption names, in its `(env_spec: …)` tag, the case of swarm/lua/test/env_spec.lua that tests it against
-the real tool (check.sh fails on a tag with no case there). `consistent`: one machine has them all. -/
+Each assumption names, in its `(env_spec: …)` or `(sqlite_spec: …)` tag, the case of swarm-tests (Tests/Spec/Env.lean,
+Tests/Spec/Sqlite.lean) that tests it against the real tool (check.sh fails on a tag with no case there).
+`consistent`: one machine has them all. -/
 
 namespace SwarmLean
 open Lean (Json)
@@ -221,7 +222,7 @@ def Tools.idle : Tools where
   merged _ _ := false
 
 /-- The tool assumptions hold together: the idle machine has them all. That the real tools have them is what
-env_spec.lua's cases test. -/
+swarm-tests' env_spec cases test. -/
 theorem consistent : AncestorReach .idle ∧ SameContentReach .idle ∧ StatusClean .idle ∧ ListedOn .idle ∧
     WtRemove .idle ∧ DelRef .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcSendTargets .idle ∧ HcRunStarts .idle ∧
     Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧ NowMono .idle ∧ GhChecks .idle ∧ GhState .idle := by
