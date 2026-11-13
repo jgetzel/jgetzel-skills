@@ -10,11 +10,16 @@ lean_do build || exit 1
 ax=$(lean_do env lean Audit.lean) || { echo "$ax"; exit 1; }
 echo "$ax" | grep -v ": \[\(propext\|Classical.choice\|Quot.sound\|, \)*\]$"
 echo "$ax" | grep -c "^'\?Swarm" | sed 's/^/theorems audited: /'
-# each assumption's tag names a case of the test that checks it against the real tool
-for a in $(sed -n 's/.*(\(env\|sqlite\)_spec: \([a-z0-9_, ]*\)).*/\2/p' SwarmLean/Assumptions.lean | tr ',' ' '); do
-  cat ../lua/test/env_spec.lua ../lua/test/sqlite_spec.lua | grep -qw "$a" ||
-    { echo "Assumptions.lean's $a has no case in env_spec.lua or sqlite_spec.lua" >&2; exit 1; }
-done
+# each assumption's tag names a case of swarm-tests' env_spec or sqlite_spec, which checks it against the real tool (a
+# tag may wrap a line)
+cases=$(.lake/build/bin/swarm-tests --list) || exit 1
+tags=$(tr '\n' ' ' <SwarmLean/Assumptions.lean | grep -o '(\(env\|sqlite\)_spec: [a-z0-9_, ]*)' | tr -d '(),:')
+[ -n "$tags" ] || { echo "Assumptions.lean has no (env_spec: …) tag" >&2; exit 1; }
+echo "$tags" | while read -r spec names; do
+  for a in $names; do
+    echo "$cases" | grep -qx "$spec $a" || { echo "Assumptions.lean's $a has no case in swarm-tests' $spec" >&2; exit 1; }
+  done
+done || exit 1
 on() { SWARM_BIN=$(realpath "$1") .lake/build/bin/swarm-tests >.lake/swarm-tests.log 2>&1 || { grep -v "^ok " .lake/swarm-tests.log; return 1; }; tail -1 .lake/swarm-tests.log; ./parity.sh "$1" && ./parity.sh --mixed "$1" && ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
 if [ -n "$HPL" ] || [ -x ../../../high-perf-lean/.lake/build/bin/hpl ]; then
