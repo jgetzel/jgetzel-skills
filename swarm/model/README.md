@@ -7,6 +7,30 @@ can reach. The five safety properties are theorems about every reachable state, 
 locks and messages. Every bug the model found is a run that Lean evaluates. Random runs are replayed through
 the real CLI against a scratch `swarm.db`, so a model that drifts from the code fails a test.
 
+## After the Lua (board #110)
+
+The Lua CLI this models was deleted (board #110); swarm-lean (`../lean`) is the swarm, and its README's table says, per
+theorem family here, what is proved of the running code (moved), what was about the Lua or the model's own machinery
+(not applicable), and what is not proved of the code (not moved). #110 deleted what tied this model to the Lua: the
+lifted Lua (`Lifted/`, `lift.sh`, `LoopSafe.lean`: R2 was a theorem about watchd.lua), `LockSrc.lean` and
+`gen-lock-src.sh`, the random-case generators and their committed cases (`GlobCases`, `LuaCases`, `SqlCases`,
+`DecideCases`), the traces the Lua suite replayed (`Traces.lean`, `traces/`, `replay.sh`) and `SqlParse.lean`; the model
+no longer needs lua-lean. Everything else stays:
+
+- `Glob`, `Model`, `PrWatch` and `Decide` are built into swarm-lean (its lakefile's `SwarmModelGlob`): locks'
+  `covers`/`overlaps` and watchd's `keeps` are their functions.
+- Each of these has a theorem the code does not carry (not moved), so this model is still its only proof:
+  `Workers` (S1), `Taken` (L1), `Boot`, `Holder`, `Answer` (L3), `Release`, `End` (`endOther_git`), `NoWorkLost`,
+  `Spawn` (Sp3), `Stay` (St2, St3), `Away` (A2, Q1), `Nudge`, `Merged` and `PrWatch` (P1, P2), `Workspaces` (W1-W4),
+  `Comms` (C1), `Restart` (R1), `Real` (the tool-backed liveness), `Iso` (`migrate_ok`), `Cut`, `Fair` and `Gone`
+  (the halves of L2 and L4 the code does not prove), `Trust`; and `Contract`, which restates them for downstream use
+  (`example/Client.lean`).
+- The rest have only moved or not-applicable theorems but are imported by those above: `Frame`, `Basic`, `Locks`,
+  `Inbox`, `Liveness`, `Findings`, `Exists`, `Checkers`, `Staff`, `Env`, `Sql`.
+
+Below, what the README says of the Lua, the replay and the case files is the history of how the model was checked
+against the code; docstrings here that name the deleted files are too. `check.sh` still checks every theorem.
+
 It replaces the Quint model of board task #107 (branch `sr-92/quint-model`, never merged), whose TLC checks
 covered two agents and at most three tasks and mostly didn't finish: *Results* compares the two.
 
@@ -35,14 +59,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Gone.lean` | L4 over fair runs: `deadLive_leads_to` (and `Rz`, `rz_of_reachable`: with `racy = false` no agent is between a read and its write) |
 | `SwarmModel/Exists.lean` | non-vacuity: `lasso_run` (a lasso whose cycle takes every fair action enabled in it is a fair `Run`) and `fair_run_exists`, a fair run of `replay` meeting L1-L3's side conditions |
 | `SwarmModel/Answer.lean` | L3 over fair runs, one statement per task: `answer_reaches`; `L3I`, the invariant the halves took as hypotheses (`l3_of_reachable`); `owner_step` |
-| `SwarmModel/Traces.lean` | writes random runs of the `sreplay` instance (`replay` with auto-spawn's launch failures) as JSON, and the scripted runs (`script`; `P.script`, PrWatch.lean's) |
-| `SwarmModel/GlobCases.lean` | writes random lock patterns and paths with Glob.lean's answers, for `locks_model_spec.lua` |
 | `../../lua-lean` | the Lua semantics, parser, translator and program logic, a package of its own the model requires (`lua-lean/DESIGN.md`): `LuaLean/Interp.lean` the semantics (board #28), `Shallow.lean` the translator's target and `tools/Lift.lean` the translator (board #31), `Hoare.lean` `RunP` (board #39); the CLI `lua-lean/lua-lean` |
-| `SwarmModel/LuaCases.lean` | writes random chunks with the interpreter's results, for `luasem_spec.lua`: lua-lean's, and calls of util.lua, locks.lua and difflib.lua |
-| `SwarmModel/LockSrc.lean` | locks.lua and util.lua as syntax trees (`gen-lock-src.sh`, with `lua-lean dump`) |
-| `SwarmModel/Lifted/Locks.lean`, `Tasks.lean`, `Watchd.lean` | locks.lua and tasks.lua lifted, and watchd.lua's `M.loop` and `iteration` (`--only`), built by `check.sh` |
-| `SwarmModel/LoopSafe.lean` | R2 (board #67): no Lua error escapes watchd's loop (`loop_safe`) or an iteration (`iteration_safe`), with `Ok`, a run that ends in no Lua error, its rules for the shallow combinators, and `Owns`, locals the frame rule keeps across a call |
-| `lift.sh [--check \| --all]` | writes `Lifted/` with `lua-lean lift`; `--check`: fails if it is stale; `--all`: lifts every module and checks each proof (`lua-lean prove`) |
 | `SwarmModel/Env.lean` | the environment (board #34, #68): what the model may trust about git, hc (`HcRunStarts`: `hc run --bg` starts the program, board #49), gh (`GhChecks`, `GhState`, board #28), processes, files and the clock, as `Tools` (what the swarm runs) and one named hypothesis each, a `Prop` on any `Tools`; and sqlite's (board #33): `Db`, one hypothesis per kind of op (`SqliteBegin`, `SqliteRead`, `SqliteWrite`, `SqliteCommit`, `SqliteRollback`). No axiom: *What the model trusts*. `consistent`, `sqlite_consistent`: an ideal machine has them all |
 | `SwarmModel/Real.lean` | the Lua's decisions on the tools' answers are the model's on its view, for any `Tools` given the hypotheses each takes (`Tools.landedRef_reach`, `Tools.sweepGate_W1`, `Tools.wtRemove_only`, `Tools.delRef_guarded`, `Tools.endAgent_keepsGit`, `Tools.reap_gone`, `Tools.restart_alive` (`--restart`'s new watchd is alive as the model's `restart` makes it), `Tools.waiter_alive`, `Tools.lapsed_stays`, `Tools.prAct`: ci.pr_act on gh's answers); a run of any db with sqlite's hypotheses is a run of `Iso.lean`'s engine (`Db.engine_reach`, `Db.serializable`, `Db.stmt_out`, `Db.busyClean`) |
 | `SwarmModel/Trust.lean` | each hypothesis a theorem takes is needed (board #68): per theorem and hypothesis, a machine with the theorem's other hypotheses where its guarantee fails (`need_*`); the dbs are the engine with one kind of op broken (`broken`) |
@@ -59,26 +76,9 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
 | `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
-| `SwarmModel/DecideCases.lean` | writes random inputs with Decide.lean's answers, for `decide_model_spec.lua` |
 | `Audit.lean` | `check.sh`'s gate: fails on any axiom but Lean's three, or an environment hypothesis with no test tag; prints the environment hypotheses each theorem's statement names |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
-| `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
-| `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5540 of those cases (20 per statement, seed 29) the Lua suite runs |
-| `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
-| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an `axiom` or `opaque`, or a hypothesis whose tag names no case in `env_spec.lua` or `sqlite_spec.lua` |
-| `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
-| `traces/*.json.gz` | 12 runs of 50 steps (seed 107) and 21 scripted runs the Lua suite replays (`script-away`: board #47's; `script-nudge`: board #50's; `script-stay`: board #79's; `script-stay-work`: board #48's; `script-pr-digest`: board #80's, the main model's PRs, CI and poll through a fake `gh`; `script-pr-green`, `-red`, `-merged`: PrWatch.lean's, through a fake `gh`; `script-restart-*`: Restart.lean's, real watchd processes held at a fake `hc ls`) |
-| `globs.json.gz` | 3000 of those cases (seed 26) the Lua suite checks |
-| `../lua/test/cli_model_spec.lua` | the replay: one test per trace |
-| `luasem.lua.gz` | 3000 of those chunks (seed 28) the Lua suite runs under LuaJIT |
-| `../lua/test/luasem_spec.lua` | each chunk under LuaJIT must give the Lean interpreter's results (`lua-lean/test/luasem.lua`) |
-| `../lua/test/env_spec.lua` | each of Env.lean's assumptions against the real tool, by its name (hc's three with `SWARM_TEST_HC=1`, gh's two with `SWARM_TEST_GH=1`: this repo's latest PRs, `gh pr list` against GitHub's REST API and git) |
-| `../lua/test/sqlite_spec.lua` | Env.lean's sqlite assumptions against real sqlite through db.lua, many processes at once |
-| `decide.json.gz` | 3000 cases each of keeps, fate, wakes and pr_act (seed 28) the Lua suite checks |
-| `../lua/test/decide_model_spec.lua` | watchd.keeps, watchd.fate, msgs.wakes and ci.pr_act against Decide.lean's on each case |
-| `../lua/test/locks_model_spec.lua` | locks.lua's `tokens`, `covers` and `overlaps` against Glob.lean's on each case, and `gm` against fnmatch on the tame ones |
-| `../lua/test/sql_model_spec.lua` | each case through db.lua on real sqlite, against Sql.lean's answer; and the cases' statements are exactly the inventory's |
+| `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an `axiom` or `opaque`, or a hypothesis whose tag names no case in swarm-tests' env_spec or sqlite_spec (`../lean/Tests/Spec/`) |
 | `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | Lean 4.35.0, no packages |
 
 ## The model
@@ -1250,9 +1250,9 @@ is a claim about git, hc, gh, the kernel, the clock or sqlite that a test checks
 How to recheck. `swarm/model/check.sh` builds every theorem (`lake build`), runs `Audit.lean`, which prints each
 theorem whose statement takes an environment hypothesis with the ones it takes and fails on any axiom but Lean's three
 (no `sorry`, no `native_decide`), and checks `example/Client.lean`. Each assumption's test is the case named after it:
-`luajit swarm/lua/test/run.lua env` runs `env_spec.lua` (git, the kernel, files, the clock; `SWARM_TEST_HC=1` adds
+`swarm/lean/.lake/build/bin/swarm-tests env_spec` runs swarm-tests' env_spec (git, the kernel, files, the clock; `SWARM_TEST_HC=1` adds
 `hc_ls_live`, `hc_run_starts`, `hc_send_targets` and `hc_kill_ends`, which start terminals in your hc; `SWARM_TEST_GH=1` adds `gh_checks` and `gh_state`,
-which ask GitHub about this repo's PRs), and `luajit swarm/lua/test/run.lua sqlite` runs `sqlite_spec.lua` (the five
+which ask GitHub about this repo's PRs), and `swarm-tests sqlite_spec` its sqlite_spec (the five
 sqlite ones, many processes at once).
 
 ## What a reviewer reads and trusts (board #86)
@@ -1295,24 +1295,9 @@ hypotheses written in it (`Audit.lean`); that each readable Prop is exactly what
 ## Running
 
 ```sh
-swarm/model/check.sh            # every theorem and counterexample, about 12 s
-swarm/model/replay.sh 60 40     # 60 fresh 40-step runs through the CLI, and fresh glob, Lua and SQL cases
-luajit swarm/lua/test/run.lua sql_model   # the committed SQL cases
-# after a change to a statement or the schema, regenerate the SQL cases:
-luajit swarm/lua/test/sql_inventory.lua > /tmp/inv &&
-  (cd swarm/model && lake env lean --run SwarmModel/SqlCases.lean /tmp/inv 20 29 /tmp/sql.json) &&
-  gzip -9c /tmp/sql.json > swarm/model/sqlcases.json.gz
-luajit swarm/lua/test/run.lua cli_model   # the committed runs (also part of the whole suite)
-luajit swarm/lua/test/run.lua luasem      # the committed Lua chunks under LuaJIT
-swarm/model/lift.sh                       # after a change to locks.lua, tasks.lua or watchd.lua: regenerate Lifted/
-swarm/model/lift.sh --all                 # every module lifted and proved, in a scratch directory
-lua-lean/check.sh                         # lua-lean on its own
-lua-lean/lua-lean parsecheck swarm/lua/swarm/*.lua   # the parser against LuaJIT's bytecode
-SWARM_TEST_HC=1 luajit swarm/lua/test/run.lua env   # Env.lean's assumptions against git, hc, the kernel, the clock
-luajit swarm/lua/test/run.lua sqlite      # and its sqlite assumptions against sqlite, many processes at once
-lua-lean/lua-lean run --lib swarm=swarm/lua/swarm f.lua   # f.lua under the Lean semantics, and
-LUA_PATH='swarm/lua/?.lua;;' luajit lua-lean/test/luasem.lua f.lua   # under LuaJIT, written alike
+swarm/model/check.sh            # every theorem and counterexample, and Audit.lean
 ```
 
-`check.sh` and `replay.sh` need `lake` (elan) on the PATH, or nix, which they use to fetch it
-(`nix shell nixpkgs#elan`). The Lua suite needs neither.
+`check.sh` needs `lake` (elan) on the PATH, or nix, which it uses to fetch it (`nix shell nixpkgs#elan`). The replay
+through the CLI, the random cases against the Lua and the lifted Lua went with the Lua CLI (board #110); swarm-lean's
+tests are `../lean/check.sh`.

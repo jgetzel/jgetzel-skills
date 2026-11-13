@@ -4,6 +4,10 @@ The swarm CLI (swarm/lua/swarm, LuaJIT) moves to Lean here, in this order: port 
 proofs over, delete the Lua. Board #97 laid the foundation and ported `task`, `board` and `rules` (tasks.lua,
 bases.lua); #98-#101 port the rest in parallel on top of it. This file is what they build on.
 
+Board #110 deleted the Lua CLI (all but seven library modules other tools load, swarm/lua/README.md), its specs,
+parity.sh and the fall-through to Lua: what this file says of them is the port's history. A word no group ports is now
+a usage error (exit 2); `swarm -h` lists the command words; `Proc.luaCli` became `Proc.launcherDir`.
+
 ## Progress
 
 `./parity.sh` runs the Lua CLI's cli_*_spec.lua tests against swarm-lean and prints, per spec file, passed / failed /

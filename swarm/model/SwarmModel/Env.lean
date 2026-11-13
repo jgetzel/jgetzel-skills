@@ -13,8 +13,8 @@ tool call may return any value of its type (a failed call is one of them: `hc ls
 taken by a theorem as a hypothesis, in the direction its proof uses; there is no axiom and no bundle of them. A
 theorem is "these assumptions about the outside world → this guarantee". `Trust.lean` shows each hypothesis a theorem
 takes is needed: a machine with every other one where the guarantee fails. Each is tested against the real tool by the
-case named in its `(env_spec: …)` or `(sqlite_spec: …)` tag, in `../lua/test/`; check.sh fails on a tag with no case,
-Audit.lean on a hypothesis with no tag. `consistent` and `sqlite_consistent`: an ideal machine has them all, so
+case named in its `(env_spec: …)` or `(sqlite_spec: …)` tag, in swarm-tests (`../lean/Tests/Spec/`); check.sh fails on a
+tag with no case, Audit.lean on a hypothesis with no tag. `consistent` and `sqlite_consistent`: an ideal machine has them all, so
 together they are satisfiable. -/
 
 namespace Swarm.Env
@@ -199,7 +199,7 @@ transaction, SQLITE_BUSY), on `Sql.lean`'s statements (`Iso.sqlLang`), with the 
 `begin immediate`; WAL and `busy_timeout(10000)` on every connection, as db.lua sets them). One assumption per kind of
 operation: it does what the engine says. They are sqlite's documented guarantees for a WAL db (isolation.html,
 wal.html, lang_transaction.html), not a model of its internals; each is stress-tested against real sqlite through
-db.lua, many processes at once, by the case its tag names in `../lua/test/sqlite_spec.lua`. -/
+swarm-lean's store, many processes at once, by the case its tag names in swarm-tests' sqlite_spec. -/
 
 /-- sqlite as the swarm's processes see it -/
 structure Db where

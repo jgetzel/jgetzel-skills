@@ -15,8 +15,6 @@ def all : List (String × String × (T → IO Unit)) :=
 def one (spec name : String) : IO UInt32 := do
   let some (_, _, f) := all.find? fun (s, n, _) => s == spec && n == name
     | IO.eprintln s!"no test {spec} {name}"; return 1
-  -- no command may fall through to the Lua CLI
-  SwarmLean.Shim.setenv "SWARM_LEAN_STRICT" "1"
   let t ← T.new
   let err ← try f t; pure none catch e => pure (some (toString e))
   t.cleanup err.isNone

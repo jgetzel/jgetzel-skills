@@ -1,14 +1,6 @@
 {"version": "1.3.0",
  "packagesDir": ".lake/packages",
- "packages":
- [{"type": "path",
-   "scope": "",
-   "name": "«lua-lean»",
-   "manifestFile": "lake-manifest.json",
-   "inherited": false,
-   "dir": "../../lua-lean",
-   "copy": false,
-   "configFile": "lakefile.toml"}],
+ "packages": [],
  "name": "«swarm-model»",
  "lakeDir": ".lake",
  "fixedToolchain": false}

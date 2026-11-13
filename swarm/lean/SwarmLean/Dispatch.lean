@@ -36,6 +36,10 @@ def groups : List (Group m) := [
 /-- main.lua's root usage, printed before a parse error. -/
 def USAGE : String := "Usage: swarm [-h] <command> ..."
 
+/-- `swarm -h`: the usage and every command word. -/
+def help : String :=
+  s!"{USAGE}\n\ncommands: {", ".intercalate ((groups (m := m)).flatMap (·.specs.map (·.1)))}"
+
 /-- The commands main.lua fences: their writes are refused to a terminal the agent is not bound to. -/
 def FENCED : List String := ["post", "read", "task", "lock", "unlock", "leave", "stay"]
 

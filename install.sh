@@ -14,9 +14,9 @@ for skill in */SKILL.md; do
   echo "linked $name"
 done
 # The swarm CLI is swarm-lean (swarm/lean), built with elan's lake or else nix.
-swarm/lean/build.sh || echo "swarm: swarm-lean did not build; swarm runs the Lua CLI until it does" >&2
-# The Lua CLI (swarm/swarm-lua, the fallback) and the Herdr panels' installer run on LuaJIT plus 7 rocks
-# (swarm/research/sw-lua.md section 4). Installs only into the per-user rock tree swarm-lua reads; never runs sudo.
+swarm/lean/build.sh || echo "swarm: swarm-lean did not build; swarm/swarm says so until it does" >&2
+# The Herdr panels' installer and the retro tools (harness-retro, swarm-retro) run on LuaJIT plus 7 rocks, with the Lua
+# library left in swarm/lua (swarm/research/sw-lua.md section 4). Installs only into the per-user rock tree; never sudo.
 ROCKS="lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8"
 tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
 lua_missing() {
@@ -32,21 +32,21 @@ rocks() {  # $1: luarocks --lua-dir, $2/$3: SQLITE_DIR/PCRE2_DIR args (empty on 
 }
 if [ -n "$(lua_missing)" ]; then
   if command -v nix >/dev/null 2>&1; then
-    echo "swarm needs LuaJIT: nix profile install github:jgetzel/jgetzel-skills" >&2
+    echo "the Herdr panels need LuaJIT: nix profile install github:jgetzel/jgetzel-skills" >&2
     echo "  (or add that flake's packages.\${system}.default to home.packages)" >&2
   elif command -v brew >/dev/null 2>&1; then
     brew install luajit luarocks sqlite pcre2 &&
       rocks "$(brew --prefix luajit)" "SQLITE_DIR=$(brew --prefix sqlite)" "PCRE2_DIR=$(brew --prefix pcre2)"
   elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
     command -v luarocks >/dev/null 2>&1 || {
-      echo "swarm needs LuaJIT; install it, then re-run:" >&2
+      echo "the Herdr panels need LuaJIT; install it, then re-run:" >&2
       echo "  sudo apt install luajit libluajit-5.1-dev luarocks libsqlite3-dev libpcre2-dev build-essential" >&2
       echo "  (or: sudo dnf install luajit luajit-devel luarocks sqlite-devel pcre2-devel gcc)" >&2
     }
     command -v luarocks >/dev/null 2>&1 && rocks
   fi
   m=$(lua_missing)
-  if [ -n "$m" ]; then echo "swarm: still missing: $m" >&2; exit 1; fi
+  if [ -n "$m" ]; then echo "the Herdr panels: still missing: $m" >&2; exit 1; fi
 fi
 # The Herdr Swarm and Calendar panels (run on the LuaJIT checked above), when the Herdr desktop app is installed.
 if [ -d "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/tabs" ]; then
