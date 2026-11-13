@@ -17,10 +17,10 @@ your name is in `$SWARM_NAME`.
   message: if the stay still holds, do nothing; if it is over, `swarm stay --end`.
 - **The board.** Run `swarm board` first. `swarm task show <id>` prints a task's body (the board marks tasks that have
   one); `swarm task claim <id>` before you
-  work on a task (it fails if someone holds it), `swarm task renew <id>` on long work,
+  work on a task (it fails if someone holds it, and prints the task body), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A
   claim without evidence is a rumor to the others. Add tasks for what you
-  find (`swarm task add "<title>"`); split a task that is too big. Can't
+  find (`swarm task add "<title>" [--body <text>] [--after N] [-p <priority>]`; `swarm task edit <id>` changes a live task); split a task that is too big. Can't
   finish it? `swarm task release <id>` (not `drop`, which kills the task);
   can't start until another task lands? `release <id> --after N`.
   Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours.

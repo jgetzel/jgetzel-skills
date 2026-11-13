@@ -158,8 +158,8 @@ local function pre_tool(c, name, cwd, tool, ti)
     local lk = locks.lock_holder(c, name, path, t)
     if lk then
       db.log(c, name, "deny-lock", path, lk.agent)
-      return emit("PreToolUse", nil, ("%s is locked by %s since %s%s. Ask it with SendMessage."):format(
-        path, lk.agent, util.hhmm(lk.since), (lk.reason and lk.reason ~= "") and (" (" .. lk.reason .. ")") or ""))
+      return emit("PreToolUse", nil, ("%s is locked by %s since %s%s. Ask it with `swarm post %s ...`."):format(
+        path, lk.agent, util.hhmm(lk.since), (lk.reason and lk.reason ~= "") and (" (" .. lk.reason .. ")") or "", lk.agent))
     end
     c:exec("update agent set wt=? where name=?", top, name)
     for _, o in ipairs(c:all("select name from agent where wt=? and name!=? and ended is null", top, name)) do
