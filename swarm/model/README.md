@@ -64,7 +64,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `SwarmModel/SqlParse.lean` | a statement's text to `Sql.Stmt`: lexer and parser for that subset; `claimWrite`, `task claim`'s write, evaluated by the kernel |
 | `SwarmModel/SqlCases.lean` | writes random cases of every statement with `Sql.exec`'s answers, for `sql_model_spec.lua` |
-| `sqlcases.json.gz` | 5340 of those cases (20 per statement, seed 29) the Lua suite runs |
+| `sqlcases.json.gz` | 5540 of those cases (20 per statement, seed 29) the Lua suite runs |
 | `../lua/test/sql_inventory.lua` | every SQL statement in `swarm/lua/swarm`, read from the source (310 sites, 264 statements) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an `axiom` or `opaque`, or a hypothesis whose tag names no case in `env_spec.lua` or `sqlite_spec.lua` |
 | `replay.sh [n] [steps] [seed]` | `n` fresh runs, each replayed through the CLI |
