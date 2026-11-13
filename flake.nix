@@ -1,13 +1,12 @@
 {
-  description = "swarm-lean, the swarm CLI (swarm/lean), with swarm-report, harness-retro and herdr-mods; LuaJIT with the rocks swarm/lua's library needs, which nothing loads since board #120 (keep in sync with ROCKS in install.sh), plus the sqlite3 CLI";
+  description = "swarm-lean, the swarm CLI (swarm/lean), with swarm-report, harness-retro and herdr-mods, plus the sqlite3 CLI";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
-      lj = pkgs: pkgs.luajit.withPackages (p: with p; [ lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8 ]);
-      # default adds the sqlite3 CLI, for reading a swarm's board by hand; luajit is the interpreter alone.
-      env = pkgs: pkgs.symlinkJoin { name = "jgetzel-skills-env"; paths = [ (lj pkgs) pkgs.sqlite ]; };
+      # default adds the sqlite3 CLI, for reading a swarm's board by hand.
+      env = pkgs: pkgs.symlinkJoin { name = "jgetzel-skills-env"; paths = [ (swarm-lean pkgs) pkgs.sqlite ]; };
       sqlite = pkgs: pkgs.symlinkJoin { name = "sqlite-lib"; paths = [ pkgs.sqlite.out pkgs.sqlite.dev ]; };
       # the swarm CLI in Lean (swarm/lean), built by lake with nixpkgs' Lean; its lean-toolchain must name the same version
       swarm-lean = pkgs: pkgs.stdenv.mkDerivation {
@@ -25,7 +24,8 @@
       };
     in {
       # sqlite: the library and header swarm/lean links (its lakefile builds this output)
-      packages = forAll (pkgs: { default = env pkgs; luajit = lj pkgs; sqlite = sqlite pkgs; swarm-lean = swarm-lean pkgs; });
+      # luajit: lua-lean's reference interpreter (lua-lean/lua-lean, its CI), not in default
+      packages = forAll (pkgs: { default = env pkgs; luajit = pkgs.luajit; sqlite = sqlite pkgs; swarm-lean = swarm-lean pkgs; });
       devShells = forAll (pkgs: { default = pkgs.mkShell { packages = [ (env pkgs) ]; }; });
     };
 }

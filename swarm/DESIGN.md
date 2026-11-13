@@ -229,8 +229,7 @@ Everything lives in `swarm/`, symlinked to `~/.claude/skills/swarm`: one
 CLI (`swarm/swarm` runs swarm-lean, built in `swarm/lean/`), `SKILL.md` for the communicator,
 `brief.md` for agents (prepended by `spawn`), `settings.template.json` for
 their hooks, and the CLI's tests (`swarm/lean/check.sh`, or `swarm-tests` alone). `swarm -h` lists commands.
-`swarm/lua/swarm/` keeps seven modules of the old Lua CLI that nothing loads any more (board #124 deletes them). The
-Herdr panels' installer and calendar feed are swarm/lean's executable herdr-mods (`herdr-mods/herdr-mods install|events`).
+The Herdr panels' installer and calendar feed are swarm/lean's executable herdr-mods (`herdr-mods/herdr-mods install|events`).
 
 ### Store
 
