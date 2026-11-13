@@ -417,7 +417,8 @@ def state (a : Parsed) : m UInt32 := do
     ("view", N view), ("comms", N cv),
     -- the user's staffing numbers (agents.limits) and the board's "auto-spawn holding" line while it holds
     ("limits", obj [("live", some (Json.int nlive)), ("min", some (NI ((metaV "agent_min").bind parseInt))),
-      ("max", some (NI ((metaV "agent_max").bind parseInt))), ("held", some (N (metaV "spawn_held")))]),
+      ("max", some (NI ((metaV "agent_max").bind parseInt))), ("held", some (N (metaV "spawn_held"))),
+      ("queue_only", some (.bool (Queue.queueOnly db)))]),
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>
       Json.mkObj [("a", .str c.a), ("b", .str c.b), ("path", .str c.path), ("since", NI c.since)]).toArray),
