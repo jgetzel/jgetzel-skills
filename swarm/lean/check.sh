@@ -15,7 +15,8 @@ fi
 on() { ./parity.sh "$1" && ./parity.sh --mixed "$1" && ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
 if [ -n "$HPL" ] || [ -x ../../../high-perf-lean/.lake/build/bin/hpl ]; then
-  (cd hpl && lean_do build) || exit 1
+  # hpl notes every box it makes: the log keeps them, a failure shows its tail
+  (cd hpl && lean_do build >../.lake/hpl-build.log 2>&1) || { tail -40 .lake/hpl-build.log; exit 1; }
   cat hpl/.lake/build/ir/hpl/*.refused 2>/dev/null | cut -f2,4 | sed 's/^/hpl refused: /'
   on hpl/.lake/build/bin/swarm-lean || exit 1
 else echo "no hpl binary: skipped the hpl build"; fi
