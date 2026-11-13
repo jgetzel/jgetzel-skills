@@ -1,4 +1,7 @@
 import Tests.Cli.Fixture
+import SwarmLean.Lib.Machine
+import SwarmLean.Real
+import SwarmLean.Db.Tasks
 
 /-! cli_lifecycle_spec.lua: join/leave, locks, sweep, landed agents, digests, CI, block/unblock, task deps. -/
 
@@ -291,7 +294,255 @@ def test_watchd_makes_comms_a_stayer (t : T) : IO Unit := do
   commsTick t
   eq ((← t.q1 "select stay from agent where name='comms'").f "stay") "the user and the PR queue"
 
---CHUNK2--
+def test_squash_merged_agent_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  squash t
+  commsTick t
+  ok (← ended t "e")
+
+def test_dirty_or_unlanded_not_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.write "b" "new.txt" "wip"
+  commsTick t
+  ok (!(← ended t "e")) "dirty"
+  discard <| t.git t.wt ["add", "."]
+  discard <| t.git t.wt ["commit", "-qm", "wip"]
+  commsTick t
+  ok (!(← ended t "e")) "clean but not on main"
+  ok (← exists_ t.wt)
+
+-- An idle agent kept only by an unclean worktree is told what holds it, once; idle again and still unclean, or with
+-- no live waiter to wake, the communicator is told once instead.
+def nudgeMsgs (t : T) : IO (Array Json) := t.q "select body from msg where dest='e' and urgent=1"
+def told (t : T) : IO (Array Json) := t.q "select body from msg where dest='comms'"
+
+/-- A pid that is not running (a finished `sh`'s). -/
+def deadPid : IO Int := do
+  let r ← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }
+  return (strip r.stdout).toNat!
+
+def test_unclean_agent_nudged_once_then_ended_when_clean (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt), ("last_active", .int ((← now) - 600))]
+  t.write "b" "scratch.txt" "x"
+  commsTick t; eq (← nudgeMsgs t).size 0  -- idle under the threshold
+  t.q_ "update agent set last_active=? where name='e'" [.int (← old)]
+  commsTick t; commsTick t
+  eq (← nudgeMsgs t).size 1
+  has ((← nudgeMsgs t)[0]!.f "body") "?? scratch.txt"
+  eq (← told t).size 0
+  IO.FS.removeFile (t.wt ++ "/scratch.txt")
+  commsTick t
+  ok (← ended t "e") "cleaned up and not ended"
+
+def test_nudged_and_still_unclean_tells_comms_once (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  commitWip t "new.txt"
+  commsTick t; eq (← nudgeMsgs t).size 1
+  has ((← nudgeMsgs t)[0]!.f "body") "wip"
+  t.q_ "update event set ts=ts-5000"  -- e woke after the nudge and is idle again, still holding the commit
+  commsTick t; commsTick t
+  eq (← nudgeMsgs t).size 1
+  eq (← told t).size 1
+  has ((← told t)[0]!.f "body") "wip"
+  ok (!(← ended t "e"))
+
+def test_unclean_agent_without_waiter_tells_comms (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt), ("waiter", .int (← deadPid))]
+  t.write "b" "scratch.txt" "x"
+  commsTick t; commsTick t
+  eq (← nudgeMsgs t).size 0
+  eq (← told t).size 1
+  has ((← told t)[0]!.f "body") "?? scratch.txt"
+
+-- wt_map picks one worktree; e's landed t.wt must not hide unlanded work in another worktree e owns
+def test_agent_with_a_second_unlanded_worktree_not_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  let byPath := t.d ++ "/repo-e-ev"  -- owned by its directory name
+  discard <| t.git t.repo ["worktree", "add", "-q", "-b", "zz", byPath]
+  put (byPath ++ "/new.txt") "wip"
+  commsTick t
+  ok (!(← ended t "e")) "dirty worktree named -e-"
+  discard <| t.git t.repo ["worktree", "remove", "--force", byPath]
+  let byBranch := t.d ++ "/other"  -- owned by its branch e/…
+  discard <| t.git t.repo ["worktree", "add", "-q", "-b", "e/topic", byBranch]
+  put (byBranch ++ "/new.txt") "wip"
+  discard <| t.git byBranch ["add", "."]
+  discard <| t.git byBranch ["commit", "-qm", "wip"]
+  commsTick t
+  ok (!(← ended t "e")) "unpushed commit on e/topic"
+  discard <| t.git byBranch ["reset", "-q", "--hard", "main"]
+  commsTick t
+  ok (← ended t "e") "every worktree landed"
+
+-- board #15: a spawned agent's worktrees are its record, and also any it added itself
+def test_recorded_agent_with_a_worktree_it_added_not_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.q_ "insert into workspace(path, branch, base, agent) values(?, 'w2', 'main', 'e')" [.text t.wt]
+  let added := t.d ++ "/repo-e-2"
+  discard <| t.git t.repo ["worktree", "add", "-q", "-b", "e/2", added]
+  put (added ++ "/new.txt") "wip"
+  commsTick t
+  ok (!(← ended t "e")) "its own worktree holds an uncommitted file"
+  IO.FS.removeFile (added ++ "/new.txt")
+  commsTick t
+  ok (← ended t "e") "every worktree landed"
+
+-- board #78: a recorded worktree is landed on the base swarm made it from, though e owns no task on that base now
+def test_recorded_worktree_on_its_base_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  commitWip t "new.txt"
+  discard <| t.git t.wt ["branch", "formal"]
+  t.q_ "insert into workspace(path, branch, base, agent) values(?, 'w2', 'main', 'e')" [.text t.wt]
+  commsTick t
+  ok (!(← ended t "e")) "its commit is on no base it was made from"
+  t.q_ "update workspace set base='formal'"
+  commsTick t
+  ok (← ended t "e") "its HEAD is on formal"
+
+def test_missing_worktree (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  rmtree t.wt  -- branch w2 still registered; its commits are on main
+  commsTick t
+  ok (← ended t "e")
+  idle t "f" [("wt", .text (t.wt ++ "-gone"))]  -- no worktree, no branch
+  commsTick t
+  ok (← ended t "f")
+
+def test_missing_worktree_unlanded_branch_not_ended (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  commitWip t "new.txt"
+  rmtree t.wt
+  commsTick t
+  ok (!(← ended t "e"))
+
+def test_missing_worktree_squash_merged_branch_ended (t : T) : IO Unit := do
+  t.fakes
+  idle t "e" [("wt", t.wt)]
+  squash t
+  rmtree t.wt
+  commsTick t
+  ok (← ended t "e")
+
+-- A merged PR counts only when it merged this commit: a branch reused after its PR merged holds new work.
+def test_merged_pr_of_reused_branch_not_ended (t : T) : IO Unit := do
+  t.fakes
+  idle t "e" [("wt", t.wt)]
+  commitWip t "new.txt"
+  t.setGhJ "pr" (json% [{"number": 1, "headRefOid": "0000000000000000000000000000000000000000"}])
+  commsTick t
+  ok (!(← ended t "e")) "the merged PR was an earlier commit"
+  ok (← exists_ t.wt)
+  let head := strip (← t.git t.wt ["rev-parse", "HEAD"])
+  t.setGhJ "pr" (json% [{"number": 2, "headRefOid": $(head)}])
+  commsTick t
+  ok (← ended t "e") "the merged PR is this commit"
+
+def test_end_agent_keeps_worktree_a_live_peer_uses (t : T) : IO Unit := do
+  t.fakes
+  idle t "e" [("wt", t.wt)]
+  t.agent "p" [("wt", t.wt)]
+  commsTick t
+  ok (← ended t "e")
+  ok (← exists_ t.wt)
+
+def test_idle_owner_past_lease_loses_claim (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=1"
+  commsTick t
+  ok (!(← ended t "e"))
+  eq ((← t.q1 "select state from task").f "state") "open"
+  has (← t.sw "e" ["read"]).stdout "lease expired while idle"
+
+def test_idle_owner_with_background_job_keeps_claim (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=1"
+  addProc pr 401 400 "luajit" ["luajit", "main.lua", "wait"]  -- the hook waiter: not a job
+  addProc pr 402 400 "zsh" ["zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'make'"]
+  tick
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+  rmtree (pr ++ "/402")  -- the job ended
+  tick
+  eq ((← t.q1 "select state from task").f "state") "open"
+
+-- board #15: an idle agent with no claim whose background job runs is kept; ending it would kill the job
+def test_idle_agent_with_background_job_not_ended (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  addProc pr 402 400 "zsh" ["zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'make'"]
+  tick
+  ok (!(← ended t "e")) "its job runs"
+  t.agent "comms" [("status", "idle")]
+  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  has (← t.sw "comms" ["end", "e"] { ok := false, env := [("SWARM_PROC", some pr)] }).stderr "background job running"
+  rmtree (pr ++ "/402")  -- the job ended
+  tick
+  ok (← ended t "e")
+
+-- board #73: a finished agent held only by a sleep loop is nudged once, then ended after JOB_GRACE
+def LOOP : List String :=
+  ["zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'while true; do sleep 5; done'"]
+def jobTick (t : T) (pr : String) : IO Unit :=
+  t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+def jobNudges (t : T) : IO Json :=
+  return (← t.q1 "select count(*) n from event where kind='job-nudge' and agent='e'").f "n"
+
+def test_sleep_loop_job_nudged_once_then_ended (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  addProc pr 402 400 "zsh" LOOP
+  addProc pr 403 402 "sleep" ["sleep", "5"]
+  jobTick t pr; jobTick t pr
+  eq (← jobNudges t) 1
+  ok (!(← ended t "e")) "grace not over"
+  t.q_ "update event set ts=ts-1200 where kind='job-nudge'"
+  jobTick t pr
+  ok (← ended t "e")
+  has (← t.sw "comms" ["read"]).stdout "while true; do sleep 5"
+
+-- board #93: the report's exact Monitor command line, under a snapshot preamble
+def MON : List String := ["/run/current-system/sw/bin/zsh", "-c", "source /home/jgetzel/.claude/shell-snapshots/snapshot-zsh-1778-abc.sh 2>/dev/null || true && setopt aliases 2>/dev/null || true && eval 'while pgrep -f \"tests/smoke.sh\" >/dev/null; do sleep 10; done; tail -2 out' < /dev/null && pwd -P >| /tmp/claude-cwd"]
+def stopHook (t : T) (env : String) (bg : Option Json) (again : Bool := false) : IO (Option String) := do
+  let mut p := Json.mkObj [("cwd", toJson (← t.cwdOf "e"))]
+  if let some b := bg then p := p.setObjVal! "background_tasks" b
+  if again then p := p.setObjVal! "stop_hook_active" true
+  let r ← t.sw "e" ["hook", "stop"] { stdin := p.compress, env := [("SWARM_PROC", some env)] }
+  if strip r.stdout == "" then return none
+  return ((Json.parse r.stdout).toOption.getD .null |>.f "reason").s?
+
+def test_idle_pgrep_loop_blocks_stop_and_names_the_job (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("claude_pid", 400)]
+  addProc pr 402 400 "zsh" MON
+  addProc pr 403 402 "sleep" ["sleep", "10"]
+  let r ← stopHook t pr (some (json% [{"status": "running", "command": "while pgrep -f tests/smoke.sh"}]))
+  has r "background job (pid 402"
+  has r "while pgrep -f"
+  hasnt r "snapshot"
+  has r "is idle"; has r "watches a name, not a pid"
+  has (← stopHook t pr none true) "is idle"
+  eq (← stopHook t pr none true) Json.null  -- the 2-block cap still lets go
+
+def test_real_job_named_and_allows_stop (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("claude_pid", 400)]
+  addProc pr 402 400 "zsh" MON
+  addProc pr 403 402 "fuzz" ["fuzz", "--run"]
+  eq (← stopHook t pr none) Json.null
+  let w := (← t.sw "e" ["endable", "--why"] { ok := false, env := [("SWARM_PROC", some pr)] }).stdout
+  has w "a child of your own session (pid 402): stop it (TaskStop/KillShell) or wait for it"
+  hasnt w "snapshot"
+
+def test_job_cmd_without_eval_is_last_200_chars (_ : T) : IO Unit := do
+  let xs (n : Nat) := String.ofList (List.replicate n 'x')
+  eq (SwarmLean.Machine.jobCmd (xs 300 ++ "END")) (xs 197 ++ "END")
+  eq (SwarmLean.Machine.jobCmd "zsh -c eval 'a '\\''b'\\'''") "a 'b'"
+
+--CHUNK3--
 
 def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
@@ -308,6 +559,26 @@ def tests : List Case := [
   ("test_sweep_keeps_a_checked_out_base", test_sweep_keeps_a_checked_out_base),
   ("test_swarm_end", test_swarm_end),
   ("test_foreign_comms_not_ended", test_foreign_comms_not_ended),
-  ("test_watchd_makes_comms_a_stayer", test_watchd_makes_comms_a_stayer)]
+  ("test_watchd_makes_comms_a_stayer", test_watchd_makes_comms_a_stayer),
+  ("test_squash_merged_agent_ended", test_squash_merged_agent_ended),
+  ("test_dirty_or_unlanded_not_ended", test_dirty_or_unlanded_not_ended),
+  ("test_unclean_agent_nudged_once_then_ended_when_clean", test_unclean_agent_nudged_once_then_ended_when_clean),
+  ("test_nudged_and_still_unclean_tells_comms_once", test_nudged_and_still_unclean_tells_comms_once),
+  ("test_unclean_agent_without_waiter_tells_comms", test_unclean_agent_without_waiter_tells_comms),
+  ("test_agent_with_a_second_unlanded_worktree_not_ended", test_agent_with_a_second_unlanded_worktree_not_ended),
+  ("test_recorded_agent_with_a_worktree_it_added_not_ended", test_recorded_agent_with_a_worktree_it_added_not_ended),
+  ("test_recorded_worktree_on_its_base_ended", test_recorded_worktree_on_its_base_ended),
+  ("test_missing_worktree", test_missing_worktree),
+  ("test_missing_worktree_unlanded_branch_not_ended", test_missing_worktree_unlanded_branch_not_ended),
+  ("test_missing_worktree_squash_merged_branch_ended", test_missing_worktree_squash_merged_branch_ended),
+  ("test_merged_pr_of_reused_branch_not_ended", test_merged_pr_of_reused_branch_not_ended),
+  ("test_end_agent_keeps_worktree_a_live_peer_uses", test_end_agent_keeps_worktree_a_live_peer_uses),
+  ("test_idle_owner_past_lease_loses_claim", test_idle_owner_past_lease_loses_claim),
+  ("test_idle_owner_with_background_job_keeps_claim", test_idle_owner_with_background_job_keeps_claim),
+  ("test_idle_agent_with_background_job_not_ended", test_idle_agent_with_background_job_not_ended),
+  ("test_sleep_loop_job_nudged_once_then_ended", test_sleep_loop_job_nudged_once_then_ended),
+  ("test_idle_pgrep_loop_blocks_stop_and_names_the_job", test_idle_pgrep_loop_blocks_stop_and_names_the_job),
+  ("test_real_job_named_and_allows_stop", test_real_job_named_and_allows_stop),
+  ("test_job_cmd_without_eval_is_last_200_chars", test_job_cmd_without_eval_is_last_200_chars)]
 
 end SwarmLean.Tests.Cli.Lifecycle
