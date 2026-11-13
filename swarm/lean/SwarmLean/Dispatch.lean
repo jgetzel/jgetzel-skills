@@ -1,6 +1,7 @@
 import SwarmLean.Cmd.Tasks
 import SwarmLean.Lib.Ci
 import SwarmLean.Sys
+import SwarmLean.Cmd.Msgs
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
 
@@ -9,11 +10,12 @@ import SwarmLean.Lib.Agents
 namespace SwarmLean.Dispatch
 open Args
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Sys m]
 
 /-- Every ported group: a new group is one line here (and its import above). -/
 def groups : List (Group m) := [
-  Cmd.Tasks.group
+  Cmd.Tasks.group,
+  Cmd.Msgs.group
 ]
 
 /-- main.lua's root usage, printed before a parse error. -/
@@ -31,6 +33,7 @@ def find (w : String) : Option (Group m × Spec) :=
 
 /-- Runs a ported command line as main.lua's main does after parsing: fence, nudge, then the group. -/
 def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
+  if a.cmd == "wait" then if let some n := a.str "me" then Sys.setenv "SWARM_NAME" n
   if let some name ← env "SWARM_NAME" then
     if FENCED.contains a.cmd && a.act != "show" then
       let here ← env "HC_TERMINAL_ID"

@@ -53,6 +53,10 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 7. **Ported here:** `task add/priority/after/claim/renew/show/done/block/unblock/release/edit/drop`, `board`, `rules`
    (all of tasks.lua's commands). bases.lua has no command; its helpers port with their first user (#100's endable,
    watchd's sweep). `--mixed` passes all 236 tests.
+   #98: `post`, `read`, `wait`, `nudge` (msgs.lua, and agents.cmd_nudge) in Cmd/Msgs; msgs.lua's pure parts in
+   Db/Msgs (`deliverStep` is deliver's pick as a step; Lib/Msgs's `deliver` formats it); agents.lua's hc helpers and
+   cold rule in Lib/Agents. `wait --me` sets SWARM_NAME in `Dispatch.runParsed` (`Sys.setenv`), before the comms nudge
+   reads it, as main.lua does.
 8. **Builds.** Stock Lean (`lake build`) and hpl (`hpl/`, every module `--all`). hpl compiles the whole program;
    the functions it refuses get Lean's C (listed below and by check.sh).
 9. **Style.** One-sentence doc comments; no sorry/admit/axiom/native_decide; a Lua behaviour that looks wrong is
@@ -99,6 +103,11 @@ Ported as they are:
   communicator` for a task with no owner.
 - `hook.ctx_from` reads a transcript's last 300 KB as bytes; Lean drops the whole tail when the cut lands inside a
   UTF-8 character (`shortcut:` in Lib/Hook).
+- `msgs.take` loops forever on a cursor row whose `last_msg_id` is NULL (its guarded UPDATE never matches); Lean reads
+  it as 0 and moves it. Not ported as is: an endless loop.
+- `swarm wait` on an agent row deleted under it fails in Lua (indexing nil); Lean exits 0, as superseded.
+- `wait --poll` takes a decimal (`0.2`, `1`); Lua's `tonumber` also takes hex and exponents.
+- `agents.session_active`'s `hc get` cache (`term_seen`) lives one command; Lean threads it as a value (`Seen`).
 
 ## hpl
 
