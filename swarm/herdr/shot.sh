@@ -7,7 +7,7 @@
 #   board's copy): clicks and keys for the private display (xdotool), or a swarm command against the copy.
 # --db (default $SWARM_DB): the board to show, copied in; with neither, a backup of this repo's real board.
 # --theme: light/dark set settings.json's appearance; anything else is a theme name (themes/ or Herdr's own).
-# --fixture: a made-up swarm from `luajit swarm/herdr/demo.lua DIR`: its board, machine reading, processes and cost history.
+# --fixture: a made-up swarm from `swarm/herdr/demo.sh DIR`: its board, machine reading, processes and cost history.
 # Everything lives under one /tmp/hs.* dir (socket paths must be shorter than SUN_LEN): its own Xvfb display,
 # HERDR_APP_HOME, hc session and a demo repo holding the board; on exit it stops only what it started.
 set -eu
@@ -67,7 +67,7 @@ trap 'exit 1' INT TERM HUP
 # The board: the panel unsets SWARM_DB and reads <cwd's git common dir>/swarm/swarm.db, so a demo repo holds it.
 mkdir -p "$D/demo/.git/swarm" "$H"
 git -C "$D/demo" init -q
-# A fixture's live watchd is recorded as pid 1 (demo.lua), which this user can't signal: make it this script's pid.
+# A fixture's live watchd is recorded as pid 1 (demo.sh), which this user can't signal: make it this script's pid.
 luajit - "$db" "$D/demo/.git/swarm/swarm.db" ${fx:+$$} <<'L'
 local s = require "lsqlite3"
 local h = assert(s.open("file:" .. arg[1] .. "?mode=ro", s.OPEN_READONLY + s.OPEN_URI))

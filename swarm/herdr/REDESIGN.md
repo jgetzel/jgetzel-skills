@@ -2,7 +2,7 @@
 
 Status: **built** (board #40 the rights and away, #41 state and the new commands, #42 the panel). §8 is what the
 user approved and overrides the text above it; the answer field on a waiting task is not built. Every shot below is
-this checkout's panel in a private Herdr on a made-up swarm (`demo.lua`), from `shot.sh`; `shots/redesign/` holds each
+this checkout's panel in a private Herdr on a made-up swarm (`demo.sh`), from `shot.sh`; `shots/redesign/` holds each
 screen at 420, 520 and 860px, dark and light (`<screen>-<width>[-light].png`).
 
 Before, for comparison: [the current first screen](shots/redesign/before-home-520.png).
