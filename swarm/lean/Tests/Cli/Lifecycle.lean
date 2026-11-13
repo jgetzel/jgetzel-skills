@@ -813,7 +813,8 @@ def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
   t.q_ "update event set ts=? where kind='spawn'" [.int ((← now) - 300)]
   tick
   eq ((← t.q1 "select state from task").f "state") "blocked"
-  let m ← t.q "select body from msg where dest='t-comms'"
+  -- not the host's memory pressure notice (board #141)
+  let m ← t.q "select body from msg where dest='t-comms' and body not like 'memory pressure:%'"
   eq m.size 1; has (m[0]!.f "body") "no Claude session yet"; has (m[0]!.f "body") "hc read h1"
   eq ((← t.q1 "select status from agent where name='a'").f "status") "blocked"
   t.setHc [json% {"address": "h1", "status": "working"}]  -- the human accepted the dialog
