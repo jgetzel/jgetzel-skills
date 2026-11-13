@@ -25,11 +25,13 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('swarm/lean/lean-toolchain') }}
-      - name: Lean through elan (lean-toolchain picks the version)
+          key: elan-nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('swarm/lean/lean-toolchain') }}
+      # nixpkgs' elan, as check.sh uses locally: its leanc finds glibc's headers (c/shim.c needs errno.h and the rest);
+      # upstream elan's leanc ships none.
+      - name: Lean through nixpkgs' elan (lean-toolchain picks the version)
         run: |
-          [ -x ~/.elan/bin/elan ] || curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          nix build nixpkgs#elan -o "$RUNNER_TEMP/elan"
+          echo "$RUNNER_TEMP/elan/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
           path: swarm/lean/.lake
