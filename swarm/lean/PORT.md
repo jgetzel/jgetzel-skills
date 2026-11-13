@@ -122,5 +122,9 @@ The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.
 | `Cmd.Tasks.task._redArg`, `Hook.handoffNudge._redArg._lam_9` | partial application of a lambda which takes more than 16 arguments |
 | `loadRows._redArg`, `storeRows._redArg` | partial application of a lambda which has a `void` parameter |
 | `Dispatch.runParsed…spec_3` (in Main) | variable has a type outside the subset |
+| `Agents.hcTerminals…` (in Main, specialized for post) | internal: a Option String is used where a Option (List SwarmLean.Agents.Term) is expected |
+| `Cmd.Msgs.post._redArg._lam_20`; `Cmd.Msgs.wait._redArg._lam_20`…`_lam_31` (8) | partial application of a lambda which takes more than 16 arguments |
+| `List.forIn'.loop…` (in Main, post's loop), `repeatM…` (in Main, wait's loop) | partial application of a lambda which has a `void` parameter |
+| `List.forIn'.loop…_lam_1` (post's loop), `Msgs.wakes…` (in Main, specialized for wait) | variable has a type outside the subset |
 
 The "internal" ones look like hpl bugs (a structure update on a row with many optional fields).
