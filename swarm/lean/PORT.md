@@ -176,8 +176,8 @@ The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.
 | `Agents.touch`, `Tasks.add`, `Tasks.drop._lam_0`, `Tasks.reopenF`, `Tasks.reopenFromF` | internal: a Option String is used where a Option Int is expected |
 | `Machine.mem._redArg._lam_11` | internal: a Option String is used where a Option Float is expected |
 | `outputIO` | internal: a Option String is used where a Option SwarmLean.ProcOut is expected |
-| `Hook.ctxFrom._redArg._lam_3` | construction of a value of the builtin type `String` |
-| `Cmd.Tasks.task._redArg`, `Hook.handoffNudge._redArg._lam_9` | partial application of a lambda which takes more than 16 arguments |
+| `Hook.ctxFrom._redArg._lam_3`, `Hook.tailLines._redArg._lam_0` (#111) | construction of a value of the builtin type `String` |
+| `Cmd.Tasks.task._redArg`, `Hook.handoffNudge._redArg._lam_9`; #111: `Cmd.Hook.hook._redArg` and its `_lam_32 35 36 37 39 41`, `Cmd.Hook.preTool._redArg` and `_lam_24`, `Cmd.Hook.stopBlock._redArg` and `_lam_19 20 21` | partial application of a lambda which takes more than 16 arguments |
 | `loadRows._redArg`, `storeRows._redArg` | partial application of a lambda which has a `void` parameter |
 | `execIO'`, `execIO'._lam_1` (RealSys) | partial application of a lambda which has a `void` parameter |
 | `Cmd.Run.run._redArg` and 33 of its lambdas, `Cmd.Ci.ci._redArg._lam_13`…`_lam_20` (6), `Ci.ciPoll…_lam_7`, `Ci.prWatch…_lam_5`, `Run.remoteTick…_lam_12`, `_lam_14` | partial application of a lambda which takes more than 16 arguments |
