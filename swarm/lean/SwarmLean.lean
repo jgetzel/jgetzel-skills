@@ -7,3 +7,5 @@ import SwarmLean.Proofs.Locks
 import SwarmLean.Proofs.Msgs
 import SwarmLean.Proofs.Watchd
 import SwarmLean.Proofs.Cross
+import SwarmLean.Proofs.Sweep
+import SwarmLean.Proofs.Trust

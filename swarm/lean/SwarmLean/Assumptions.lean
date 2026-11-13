@@ -32,8 +32,22 @@ sqlite_commit, sqlite_rollback). -/
 def Atomic (step : τ → Db → Db × α) (before after : Db) (ran : List (τ × α)) : Prop :=
   ∃ order : List (τ × α), order.Perm ran ∧ replay step before (order.map (·.1)) = (after, order)
 
-/-- The machine at one moment, as the assumptions read it: what the code's calls to the world answer there, the world
-after a command, and what is true of the repo, hc's terminals, the processes and GitHub's PRs. Any value of this type
+/-- A call of the code that changes the machine other than a command line: a line written to stdout or stderr, a file
+written, a directory made, a hard link, a file removed, an environment variable set, a sleep, statements run on an
+SQLite file. -/
+inductive Eff
+  | line (err : Bool) (s : String)
+  | write (path text : String)
+  | mkdirp (path : String)
+  | link (a b : String)
+  | remove (path : String)
+  | setenv (k v : String)
+  | sleep (ms : Nat)
+  | sql (path schema : String) (stmts : List (String × List Sqlite.Val)) (ro : Bool)
+
+/-- The machine at one moment, as the assumptions read it: what each of the code's calls to the world (each method of
+World.lean's and Sys.lean's classes but `Store`) answers there, the world after a command or an effect, and what is true
+of the repo, hc's terminals, the processes and GitHub's PRs. Any value of this type
 is a machine: each call may answer anything (a failed call is one of the answers). -/
 structure Tools where
   /-- the machine at one moment -/
@@ -50,8 +64,48 @@ structure Tools where
   mtime : World → String → Option Int
   /-- what `Clock.now` returns in `w` -/
   now : World → Int
-  /-- the working directories `Machine.cwds` lists in `w`, none when it can't tell -/
-  cwds : World → Option (List String)
+  /-- what `Clock.hhmm t` returns in `w` -/
+  hhmm : World → Int → String
+  /-- what `Env.var k` returns in `w` -/
+  var : World → String → Option String
+  /-- what `Env.cwd` returns in `w` -/
+  cwd : World → String
+  /-- what `Env.stdin` returns in `w` -/
+  stdin : World → String
+  /-- what `Fs.read path` returns in `w` -/
+  read : World → String → Option String
+  /-- what `Fs.list dir` returns in `w` -/
+  list : World → String → Option (List String)
+  /-- what `Sys.getpid` returns in `w` -/
+  getpid : World → Int
+  /-- what `Sys.getppid` returns in `w` -/
+  getppid : World → Int
+  /-- what `Sys.nowF` returns in `w` -/
+  nowF : World → Float
+  /-- what `Sys.date fmt t` returns in `w` -/
+  date : World → String → Int → String
+  /-- what `Sys.hostname` returns in `w` -/
+  hostname : World → String
+  /-- what `Sys.environ` returns in `w` -/
+  environ : World → List (String × String)
+  /-- what `Sys.realpath path` returns in `w` -/
+  realpath : World → String → Option String
+  /-- what `Sys.readlink path` returns in `w` -/
+  readlink : World → String → Option String
+  /-- what `Sys.kind path follow` returns in `w` -/
+  kind : World → String → Bool → Kind
+  /-- what `Proc.launcherDir` returns in `w` -/
+  launcherDir : World → Option String
+  /-- what `Proc.exec argv` returns in `w` (it returns only when the exec failed) -/
+  exec : World → List String → String
+  /-- what `Sys.exec argv opts` returns in `w` -/
+  run : World → List String → RunOpts → ProcOut
+  /-- the machine after effect `e` in `w` -/
+  effect : World → Eff → World
+  /-- what effect `e` returns in `w` (`Fs.write`, `Sys.mkdirp`, `Sys.link`, `Sys.remove`: whether it worked) -/
+  ok : World → Eff → Bool
+  /-- the rows `Sys.sqlAt` returns in `w` -/
+  rows : World → Eff → List (Array (Array Sqlite.Val))
   /-- `w'` comes after `w`, whatever the swarm and the world did in between -/
   Later : World → World → Prop
   /-- the repo, checked out at `cwd`, holds every change of commit `ref` in `b` (by ancestry or the same content) -/
@@ -88,20 +142,113 @@ def Tools.SameRepo (w w' : M.World) : Prop :=
 /-- The command exited 0. -/
 def Ok0 (o : Option ProcOut) : Prop := ∃ x, o = some x ∧ x.code = 0
 
+/-! ### The code on a machine
+
+`RecM M` runs the code on machine `M` and records what it did: every command line (`Proc.output`, `Sys.exec`,
+`Proc.exec`), git command (`Git.git`) and effect (`Eff`), each with the machine it ran on. A command or an effect moves
+the machine on (`after`, `effect`); a read answers from the machine as it is; `Git.git` is a read (Tools gives no
+machine after it: the code runs git's writes through `Proc.output`), recorded all the same. The store is a `Db` the
+transactions apply to in turn. A theorem about the code on a machine runs it in `RecM M` from any state. -/
+
+/-- A call that can change the machine: a command line run from `cwd`, a git command, an effect. -/
+inductive Call
+  | cmd (argv : List String) (cwd : Option String)
+  | git (args : List String) (cwd : Option String)
+  | eff (e : Eff)
+
+/-- The recording world's state: the machine now, the store, and every call so far with the machine it ran on. -/
+structure Rec where
+  w : M.World
+  db : Db
+  log : List (M.World × Call)
+
+/-- The code run on machine `M`, recording its calls; an early exit keeps the state. -/
+abbrev RecM := ExceptT Exit (StateM (Rec M))
+
+/-- `argv` run with `env` set (`some`) and unset (`none`): `env -u K … K=V … argv`, the same command. -/
+def withEnv (env : List (String × Option String)) (argv : List String) : List String :=
+  if env.isEmpty then argv else
+    "env" :: (env.filterMap fun (k, v) => if v.isNone then some k else none).flatMap (["-u", ·]) ++
+      (env.filterMap fun (k, v) => v.map (k ++ "=" ++ ·)) ++ argv
+
+namespace Rec
+variable {M}
+
+/-- Runs command `argv` from `cwd`, answering `ans` of the machine it ran on: recorded, and the machine moves on. -/
+def cmd (argv : List String) (cwd : Option String) (ans : M.World → α) : RecM M α :=
+  modifyGet fun s => (ans s.w, { s with w := M.after s.w argv cwd, log := s.log ++ [(s.w, .cmd argv cwd)] })
+
+/-- Effect `e`, answering `ans` of the machine it ran on: recorded, and the machine moves on. -/
+def eff (e : Eff) (ans : M.World → α) : RecM M α :=
+  modifyGet fun s => (ans s.w, { s with w := M.effect s.w e, log := s.log ++ [(s.w, .eff e)] })
+
+/-- A read of the machine as it is. -/
+def ask (f : M.World → α) : RecM M α := modifyGet fun s => (f s.w, s)
+
+end Rec
+
+instance : Store (RecM M) where
+  txn _ f := modifyGet fun s => let (db, a) := f s.db; (a, { s with db })
+instance : Clock (RecM M) where
+  now := Rec.ask M.now
+  hhmm t := Rec.ask (M.hhmm · t)
+instance : Env (RecM M) where
+  var k := Rec.ask (M.var · k)
+  out l := Rec.eff (.line false l) fun _ => ()
+  err l := Rec.eff (.line true l) fun _ => ()
+  stdin := Rec.ask M.stdin
+  cwd := Rec.ask M.cwd
+instance : Fs (RecM M) where
+  read p := Rec.ask (M.read · p)
+  list p := Rec.ask (M.list · p)
+  write p t := Rec.eff (.write p t) (M.ok · (.write p t))
+instance : Proc (RecM M) where
+  output argv cwd env := Rec.cmd (withEnv (env.map fun (k, v) => (k, some v)) argv) cwd
+    (M.out · (withEnv (env.map fun (k, v) => (k, some v)) argv) cwd)
+  exec argv := Rec.cmd argv none (M.exec · argv)
+  launcherDir := Rec.ask M.launcherDir
+instance : Git (RecM M) where
+  git args cwd := modifyGet fun s => (M.git s.w args cwd, { s with log := s.log ++ [(s.w, .git args cwd)] })
+instance : Sys (RecM M) where
+  getpid := Rec.ask M.getpid
+  getppid := Rec.ask M.getppid
+  pidAlive p := Rec.ask (M.pidAlive · p)
+  sleep ms := Rec.eff (.sleep ms) fun _ => ()
+  nowF := Rec.ask M.nowF
+  date f t := Rec.ask (M.date · f t)
+  hostname := Rec.ask M.hostname
+  environ := Rec.ask M.environ
+  setenv k v := Rec.eff (.setenv k v) fun _ => ()
+  realpath p := Rec.ask (M.realpath · p)
+  readlink p := Rec.ask (M.readlink · p)
+  kind p f := Rec.ask (M.kind · p f)
+  mtime p := Rec.ask (M.mtime · p)
+  mkdirp p := Rec.eff (.mkdirp p) (M.ok · (.mkdirp p))
+  link a b := Rec.eff (.link a b) (M.ok · (.link a b))
+  remove p := Rec.eff (.remove p) (M.ok · (.remove p))
+  exec argv o := Rec.cmd (withEnv o.env argv) o.cwd (M.run · argv o)
+  sqlAt p sc st ro := Rec.eff (.sql p sc st ro) (M.rows · (.sql p sc st ro))
+
+/-- `x` run on the machine from state `s`: its result and the state it left. -/
+@[irreducible] def Rec.go {M : Tools} (x : RecM M α) (s : Rec M) : Except Exit α × Rec M := x.run.run s
+
 /-! ### git -/
 
 /-- git: `git -C cwd merge-base --is-ancestor ref b` exiting 0 means `b` holds `ref`'s changes (env_spec: ancestor_reach). -/
 def AncestorReach : Prop := ∀ w cwd ref b,
   Ok0 (M.out w ["git", "-C", cwd, "merge-base", "--is-ancestor", ref, b] none) → M.Holds w cwd ref b
 
-/-- git: when `git diff --name-only -z mb ref` lists some files, `mb` the merge base git printed, and
-`git diff --quiet ref b -- <them>` exits 0, `b` holds `ref`'s changes: a squash or rebase merge
-(Lifecycle.landedRef1's second check) (env_spec: same_content_reach). -/
-def SameContentReach : Prop := ∀ w cwd ref b mb files o,
-  M.out w ["git", "-C", cwd, "merge-base", b, ref] none = some o → o.code = 0 → strip o.stdout = mb →
-  (∃ d, M.out w ["git", "-C", cwd, "diff", "--name-only", "-z", mb, ref] none = some d ∧ d.code = 0 ∧
-    (d.stdout.splitOn "\x00").filter (· ≠ "") = files) → files ≠ [] →
-  Ok0 (M.out w (["git", "-C", cwd, "diff", "--quiet", ref, b, "--"] ++ files) none) → M.Holds w cwd ref b
+/-- git: when `git -C cwd merge-base b ref` prints the merge base `mb`, then `git diff --name-only -z mb ref` lists some
+files and `git diff --quiet ref b -- <them>` exits 0, each on the machine the one before left, `b` holds `ref`'s changes
+there: a squash or rebase merge (Lifecycle.landedRef1's second check) (env_spec: same_content_reach). -/
+def SameContentReach : Prop := ∀ w cwd ref b o d,
+  let a1 := ["git", "-C", cwd, "merge-base", b, ref]
+  let w1 := M.after w a1 none
+  let a2 := ["git", "-C", cwd, "diff", "--name-only", "-z", strip o.stdout, ref]
+  let w2 := M.after w1 a2 none
+  let files := (d.stdout.splitOn "\x00").filter (· ≠ "")
+  M.out w a1 none = some o → o.code = 0 → strip o.stdout ≠ "" → M.out w1 a2 none = some d → d.code = 0 → files ≠ [] →
+  Ok0 (M.out w2 (["git", "-C", cwd, "diff", "--quiet", ref, b, "--"] ++ files) none) → M.Holds w2 cwd ref b
 
 /-- git: a worktree that is there and whose `git --no-optional-locks -C wt status --porcelain` prints nothing but space
 has nothing uncommitted, untracked files included (env_spec: status_clean). -/
@@ -109,10 +256,11 @@ def StatusClean : Prop := ∀ w wt o, M.There w wt →
   M.out w ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"] none = some o → o.code = 0 → strip o.stdout = "" →
     ¬ M.Dirty w wt
 
-/-- git: a worktree `git worktree list --porcelain` lists is there (env_spec: listed_on). -/
-def ListedOn : Prop := ∀ w cwd o p,
-  M.out w ["git", "worktree", "list", "--porcelain"] cwd = some o → o.code = 0 → ("worktree " ++ p) ∈ splitlines o.stdout →
-  M.There w p
+/-- git: the path on a `worktree <path>` line `git worktree list --porcelain` prints is a worktree that is there
+(env_spec: listed_on). -/
+def ListedOn : Prop := ∀ w cwd o l,
+  M.out w ["git", "worktree", "list", "--porcelain"] cwd = some o → o.code = 0 → l ∈ splitlines o.stdout →
+  l.startsWith "worktree " = true → M.There w (l.drop 9).toString
 
 /-- git: `git -C main worktree remove wt` takes a clean worktree away and nothing else (every branch, every other
 worktree, every commit stay), and refuses a dirty one, changing nothing (env_spec: wt_remove). -/
@@ -149,6 +297,9 @@ def HcLsLive : Prop := ∀ w o ts h, M.out w ["hc", "ls", "--json"] none = some 
 /-- hc: `hc kill h` ends terminal `h` and leaves the repo as it was (env_spec: hc_kill_ends). -/
 def HcKillEnds : Prop := ∀ w h, ¬ M.Live (M.after w ["hc", "kill", h] none) h ∧ M.SameRepo w (M.after w ["hc", "kill", h] none)
 
+/-- hc: `hc rm h` drops terminal `h`'s record and leaves the repo as it was (env_spec: hc_rm_keeps). -/
+def HcRmKeeps : Prop := ∀ w h, M.SameRepo w (M.after w ["hc", "rm", h] none)
+
 /-- hc: `hc send h l` to a live terminal types `l` into `h` and into no other terminal, starts or ends no terminal and
 leaves the repo as it was (`swarm nudge`) (env_spec: hc_send_targets). -/
 def HcSendTargets : Prop := ∀ w h l, M.Live w h →
@@ -165,18 +316,24 @@ def HcRunStarts : Prop := ∀ w rest o, M.out w (["hc", "run", "--json", "--bg"]
 
 /-! ### processes, files, the clock -/
 
+/-- cgroups: writing "1" to a scope's `cgroup.kill` (`dir ++ "/cgroup.kill"`) kills what runs in it and leaves the repo
+as it was (env_spec: cgroup_kill_keeps). -/
+def CgroupKillKeeps : Prop := ∀ w dir, M.SameRepo w (M.effect w (.write (dir ++ "/cgroup.kill") "1"))
+
 /-- processes: `kill(p, 0)` is 0 exactly when process `p` is in the process table, a zombie included (env_spec: kill0_alive). -/
 def Kill0Alive : Prop := ∀ w p, M.pidAlive w p = true ↔ M.Running w p
 
-/-- processes: `Machine.cwds`, when it answers, lists a directory inside every worktree a process sits in (Linux: each
-/proc/<pid>/cwd; macOS: lsof) (env_spec: cwds_proc). -/
-def CwdsProc : Prop := ∀ w wt cs, M.cwds w = some cs → M.Inside w wt → ∃ c ∈ cs, Watchd.inside c wt = true
+/-- processes: `Machine.cwds`, when it answers, lists for every process inside a worktree a working directory whose
+realpath (on the machine it left) is inside it (Linux: each /proc/<pid>/cwd; macOS: lsof) (env_spec: cwds_proc). -/
+def CwdsProc : Prop := ∀ (s : Rec M) cs wt, (Rec.go Machine.cwds s).1 = .ok (some cs) → M.Inside s.w wt →
+  ∃ c ∈ cs, Watchd.inside ((M.realpath (Rec.go Machine.cwds s).2.w c.2).getD c.2) wt = true
 
 /-- filesystem: a worktree used in the last `SWEEP_IDLE` seconds reads as touched then: the later mtime of its directory
-and of its git dir's `logs/HEAD` (`gd`, what `git rev-parse --absolute-git-dir` printed) is within that (env_spec:
-touched_recent). -/
+and of its git dir's `logs/HEAD` (`gd`, what `git rev-parse --absolute-git-dir` printed, stripped) is within that
+(env_spec: touched_recent). -/
 def TouchedRecent : Prop := ∀ w wt gd, M.Recent w wt → M.git w ["-C", wt, "rev-parse", "--absolute-git-dir"] none = some gd →
-  M.now w - max ((M.mtime w wt).getD 0) ((M.mtime w (joinPath (joinPath (strip gd) "logs") "HEAD")).getD 0) < Watchd.SWEEP_IDLE
+  M.now w - max ((M.mtime w wt).getD 0) ((M.mtime w (joinPath (joinPath ((py (some (strip gd))).getD wt) "logs") "HEAD")).getD 0)
+    < Watchd.SWEEP_IDLE
 
 /-- clock: `Clock.now` never goes back (a clock stepped back would read a lapsed lease live again) (env_spec: now_mono). -/
 def NowMono : Prop := ∀ w w', M.Later w w' → M.now w ≤ M.now w'
@@ -208,7 +365,27 @@ def Tools.idle : Tools where
   pidAlive _ _ := false
   mtime _ _ := none
   now _ := 0
-  cwds _ := none
+  hhmm _ _ := ""
+  var _ _ := none
+  cwd _ := ""
+  stdin _ := ""
+  read _ _ := none
+  list _ _ := none
+  getpid _ := 0
+  getppid _ := 0
+  nowF _ := 0
+  date _ _ _ := ""
+  hostname _ := ""
+  environ _ := []
+  realpath _ _ := none
+  readlink _ _ := none
+  kind _ _ _ := .none
+  launcherDir _ := none
+  exec _ _ := ""
+  run _ _ _ := ⟨127, "", ""⟩
+  effect w _ := w
+  ok _ _ := false
+  rows _ _ := []
   Later _ _ := True
   Holds _ _ _ _ := False
   There _ _ := False
@@ -225,10 +402,12 @@ def Tools.idle : Tools where
 /-- The tool assumptions hold together: the idle machine has them all. That the real tools have them is what
 swarm-tests' env_spec cases test. -/
 theorem consistent : AncestorReach .idle ∧ SameContentReach .idle ∧ StatusClean .idle ∧ ListedOn .idle ∧
-    WtRemove .idle ∧ DelRef .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcSendTargets .idle ∧ HcRunStarts .idle ∧
-    Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧ NowMono .idle ∧ GhChecks .idle ∧ GhState .idle := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-    simp [AncestorReach, SameContentReach, StatusClean, ListedOn, WtRemove, DelRef, HcLsLive, HcKillEnds, HcSendTargets,
-      HcRunStarts, Kill0Alive, CwdsProc, TouchedRecent, NowMono, GhChecks, GhState, Tools.idle, Tools.SameRepo, Ok0]
+    WtRemove .idle ∧ DelRef .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcRmKeeps .idle ∧ HcSendTargets .idle ∧
+    HcRunStarts .idle ∧ CgroupKillKeeps .idle ∧ Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧
+    NowMono .idle ∧ GhChecks .idle ∧ GhState .idle := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+    simp [AncestorReach, SameContentReach, StatusClean, ListedOn, WtRemove, DelRef, HcLsLive, HcKillEnds, HcRmKeeps,
+      HcSendTargets, HcRunStarts, CgroupKillKeeps, Kill0Alive, CwdsProc, TouchedRecent, NowMono, GhChecks, GhState,
+      Tools.idle, Tools.SameRepo, Ok0]
 
 end SwarmLean
