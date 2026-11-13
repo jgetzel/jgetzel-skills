@@ -22,8 +22,6 @@ def stay (t : T) (name : String) : IO Json :=
   return (← t.q1 "select stay from agent where name=?" [.text name]).f "stay"
 def digested (t : T) (name : String) : IO Nat :=
   return (← t.q "select 1 x from msg where dest=? and body like '%open task%'" [.text name]).size
-def rm (p : String) : IO Unit := do try IO.FS.removeFile p catch _ => pure ()
-def tmpdir : IO String := return (← IO.getEnv "TMPDIR").getD "/tmp"
 /-- The pid of a process that has exited. -/
 def deadPid : IO Int := do
   let r ← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }
@@ -91,22 +89,13 @@ def test_stayers_expired_claim_reopens (t : T) : IO Unit := do
   eq (← stay t "e") "reviews"
 
 -- task done and the context note tell a stayer to keep staying and keep what it holds, not to go idle and end
-def test_stayer_done_line_and_ctx_note (t : T) : IO Unit := do
+def test_stayer_done_line (t : T) : IO Unit := do
   t.agent "e"
   t.sw_ "e" ["stay", "reviews"]
   t.sw_ "e" ["task", "add", "t1"]; t.sw_ "e" ["task", "claim", "1"]
   let out := (← t.sw "e" ["task", "done", "1", "--evidence", "x"]).stdout
   has out "you stay for 'reviews'"
   hasnt out "go idle"
-  let tr := t.d ++ "/t.jsonl"
-  put tr ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 360000}}}).compress ++ "\n")
-  let s := s!"st{← IO.Process.getPID}{← IO.rand 0 1000000000}"
-  let tmp ← tmpdir
-  t.defer (rm (tmp ++ "/claude-ctx-" ++ s))
-  let ctx := (← t.hook "e" "post-tool"
-    (json% {"tool_name": "Read", "tool_input": {}, "transcript_path": $tr, "session_id": $s})).f "additionalContext"
-  has ctx "keep what you hold"
-  hasnt ctx "go idle"
 
 -- the quiet notice (§8 item 3): on the edge into quiet, one message per stayer and one notice to comms; none on the
 -- next tick; a new task re-arms it
@@ -221,7 +210,7 @@ def tests : List Case := [
   ("test_stay_fenced_and_kept_by_takeover", test_stay_fenced_and_kept_by_takeover),
   ("test_reap_clears_stay", test_reap_clears_stay),
   ("test_stayers_expired_claim_reopens", test_stayers_expired_claim_reopens),
-  ("test_stayer_done_line_and_ctx_note", test_stayer_done_line_and_ctx_note),
+  ("test_stayer_done_line", test_stayer_done_line),
   ("test_quiet_notice_once_per_edge", test_quiet_notice_once_per_edge),
   ("test_quiet_cold_or_waiterless_stayer_not_woken", test_quiet_cold_or_waiterless_stayer_not_woken),
   ("test_hung_waiterless_reported_once", test_hung_waiterless_reported_once),

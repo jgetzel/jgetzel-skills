@@ -18,4 +18,8 @@ def helpWait : String :=
 def helpNudge : String :=
   "Usage: swarm nudge [-h] <agent>\n\ntype one fixed line into an agent's terminal: read your messages and continue\n\nArguments:\n   agent\n\nOptions:\n   -h, --help            Show this help message and exit."
 
+/-- `swarm compact -h`. -/
+def helpCompact : String :=
+  "Usage: swarm compact [-h] [--keep <keep>]\n\ntype `/compact <what to keep>` into your own terminal; it runs when this turn ends\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --keep <keep>         more to keep, after your task, worktree and branch"
+
 end SwarmLean.Cmd.Msgs

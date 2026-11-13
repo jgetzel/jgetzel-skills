@@ -121,6 +121,39 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
           (say db now c (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
         | none => (db, ())
 
+/-- Context compaction (board #136): each live agent holding work (a task, a stay, the communicator's role) gets
+`Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. -/
+def compactPass (terms : List Term) (comms : String) : m Unit := do
+  let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
+  let (nAt, cAt, too) := (Compact.nudgeAt db, Compact.compactAt db, Compact.stayersToo db)
+  for a in Agents.live db do
+    let some h := py a.hc | continue
+    let some x := terms.find? (·.address == some h) | continue
+    let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
+      (·.id ≤ ·.id)).head?
+    let stays := a.name == comms || a.stay.isSome
+    if !stays && task.isNone then continue  -- holds nothing: watchd ends it soon
+    let k := a.ctx_tokens.getD 0
+    let force := too || !stays
+    let s0 := Compact.load db a.name
+    let (act, s) := Compact.step k nAt cAt force (Compact.Term.ofHc x.status) s0
+    let now ← Clock.now
+    let done ← match act with
+      | .nothing => pure true
+      | .nudge =>
+        Store.txn [.agent, .msg, .cursor, .event] fun db =>
+          ((say db now a.name (Compact.nudgeText k cAt (task.map (·.id)) force) false "system").log now (some a.name)
+            "ctx-nudge" none (some (d k)), true)
+      | .compact =>
+        match ← Msgs.typeLine h (← Msgs.compactLine db a none) with
+        | some e => Env.err s!"compact {a.name}: hc send {h} failed: {e}"; pure false
+        | none => Store.txn [.event] fun db => (db.log now (some a.name) "ctx-compact" none (some (d k)), true)
+      | .failed =>
+        Store.txn [.agent, .msg, .cursor, .event] fun db =>
+          ((say db now comms (Compact.failedText a.name k cAt h) false "system").log now (some a.name)
+            "ctx-compact-failed" none (some (d k)), true)
+    if done && s != s0 then Store.txn [.«meta»] fun db => (Compact.save db a.name s, ())
+
 /-- Each blocked task's question told to comms once per block: a task-blocked event after its latest `task block`. -/
 def notices (comms : String) (away : Bool) : m Unit := do
   let db ← Store.txn [.task] fun db => (db, db)
@@ -168,6 +201,8 @@ def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option 
     if let .error e ← Guard.guard (quiet t c) then errs := errs ++ ["quiet: " ++ e]
     if let .error e ← Guard.guard (hung t c terms opts.interval) then errs := errs ++ ["hung: " ++ e]
     if let .error e ← Guard.guard (blockers t c opts.blockerIdle) then errs := errs ++ ["blockers: " ++ e]
+    if let some ts := terms then
+      if let .error e ← Guard.guard (compactPass ts c) then errs := errs ++ ["compact: " ++ e]
   match ← Guard.guard (machineTick st.cost) with
   | .ok c => st := { st with cost := c }
   | .error e => errs := errs ++ ["machine: " ++ e]

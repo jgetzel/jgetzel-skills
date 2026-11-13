@@ -167,10 +167,10 @@ with subagents.
   check. Kill by PID, never `pkill -f`.
 - Clean up every terminal you start (`hc kill <t> && hc rm <t>`) when the
   swarm ends.
-- The harness compacts your context; keep the board and your notes current so a compaction loses nothing. You have no hooks, so `swarm read/wait/board/who` print the context-size note for you.
+- Keep the board and your notes current so a compaction loses nothing. From 325k watchd asks an agent (you too) to `swarm compact`; from 400k it compacts an idle agent itself, not you or a stayer unless `swarm limits --compact-stayers on` (`--ctx-nudge/--ctx-compact N`, 0 off). You have no hooks, so `swarm read/wait/board/who` record your context for watchd.
 
 ## Reference
 
-Commands: `spawn join leave end endable post read wait nudge board queue who task rules role stay limits away
+Commands: `spawn join leave end endable post read wait nudge compact board queue who task rules role stay limits away
 lock unlock ci cost machine run state watch watchd`; `swarm <cmd> -h` has flags. State is in
 `<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.

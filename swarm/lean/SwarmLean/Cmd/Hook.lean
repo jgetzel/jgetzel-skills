@@ -195,19 +195,14 @@ def hook (ev : String) : m UInt32 := do
     return 0
   Store.txn [.agent, .event, .cursor] fun db => (Agents.touch db name (some cwd) here now, ())
   let transcript := str? p "transcript_path"
-  let sid := str? p "session_id"
   match ev with
   | "pre-tool" => preTool name cwd tool ti here
   | "post-tool" =>
     Store.txn [.agent, .event] fun db => (setStatus db name here now "working", ())
     if tool == some "Bash" then logPush name cwd (tostr ti "command")
     let ctx ← Msgs.deliver name
-    let n ← handoffNudge name transcript sid false
-    match ctx != "", n with
-    | true, some x => emit "PostToolUse" (some (ctx ++ "\n" ++ x)) none
-    | true, none => emit "PostToolUse" (some ctx) none
-    | false, some x => emit "PostToolUse" (some x) none
-    | false, none => pure ()
+    recordCtx name transcript
+    if ctx != "" then emit "PostToolUse" (some ctx) none
   | "prompt" =>
     Store.txn [.agent, .event] fun db => (setStatus db name here now "working", ())
     let msg ← Msgs.deliver name
@@ -228,7 +223,6 @@ def hook (ev : String) : m UInt32 := do
         let db := (Agents.touchWith db name none here now false fun a =>
           { a with compacted_at := some now, ctx_tokens := k.orElse fun _ => a.ctx_tokens }).1
         (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ())
-      discard <| Sys.remove (← ctxMark sid)
       Store.txn [] fun db => (db.log now (some name) "compact" none none, ())
     else Store.txn [.agent, .event] fun db => (setStatus db name here now "idle", ())
   | _ => die s!"unknown hook event {ev}"

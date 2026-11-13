@@ -28,7 +28,9 @@ def roleSpec : Spec := .mk "role" helpRole [many "text"] [] [] [] none
 def staySpec : Spec := .mk "stay" helpStay [many "text"] [flag "--end"] [] [] none
 /-- `swarm limits`'s parser. -/
 def limitsSpec : Spec := .mk "limits" helpLimits []
-  [opt "--min" none (some int), opt "--max" none (some int), { opt "--queue-only" with choices := ["on", "off"] }] [] [] none
+  [opt "--min" none (some int), opt "--max" none (some int), { opt "--queue-only" with choices := ["on", "off"] },
+   opt "--ctx-nudge" none (some int), opt "--ctx-compact" none (some int),
+   { opt "--compact-stayers" with choices := ["on", "off"] }] [] [] none
 /-- `swarm away`'s parser. -/
 def awaySpec : Spec := .mk "away" helpAway [many "note"] [flag "--back"] [] [] none
 /-- `swarm spawn`'s parser. -/
@@ -170,7 +172,15 @@ def limitsCmd (a : Parsed) : m UInt32 := do
     let me := (← env "SWARM_NAME").getD HUMAN
     let now ← Clock.now
     Store.txn [.«meta»] fun db => (setQueueOnly db me (q == "on") now, ())
-  Env.out (← Store.txn [.agent, .«meta»] fun db => (db, limitsLine db envComms))
+  let cn := a.int "ctx_nudge"
+  let cc := a.int "ctx_compact"
+  let cs := (a.str "compact_stayers").map (· == "on")
+  if cn.any (· < 0) || cc.any (· < 0) then die "a context threshold is tokens, 0 for off"
+  if cn.isSome || cc.isSome || cs.isSome then
+    let me := (← env "SWARM_NAME").getD HUMAN
+    let now ← Clock.now
+    Store.txn [.«meta», .event] fun db => (Compact.setLimits db me cn cc cs now, ())
+  Env.out (← Store.txn [.agent, .«meta»] fun db => (db, limitsLine db envComms ++ "\n" ++ Compact.limitsLine db))
   return 0
 
 /-- The communicator's name: meta comms when set and not empty, else $SWARM_COMMS (agents.comms_name). -/
