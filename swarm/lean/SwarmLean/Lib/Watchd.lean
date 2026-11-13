@@ -196,7 +196,8 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
     let mut last : Int := 0
     for p in [wt, joinPath (joinPath ((py gd).getD wt) "logs") "HEAD"] do
       last := max last ((← Sys.mtime p).getD 0)
-    let st ← Lifecycle.run ["git", "-C", wt, "status", "--porcelain"]
+    -- no index.lock: an agent committing in wt meanwhile must not fail (#127)
+    let st ← Lifecycle.run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]
     if t - last < SWEEP_IDLE || st.isNone || strip (st.getD "") != "" then continue  -- dirty or unreadable: never landed
     let mut shas := []
     for b in bs do shas := shas ++ [(← git ["-C", main, "rev-parse", b]).getD ""]

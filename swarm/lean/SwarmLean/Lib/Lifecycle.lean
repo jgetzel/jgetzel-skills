@@ -58,7 +58,7 @@ def landed [Proc m] [Sys m] (wt : String) (bs : List String) (main : Option Stri
     match br with
     | none => return true
     | some b => return ← landedRef (main.getD "") b bs
-  let some st ← run ["git", "-C", wt, "status", "--porcelain"] | return false
+  let some st ← run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"] | return false
   if strip st != "" then return false
   return some wt == main || (← landedRef wt "HEAD" bs)
 
@@ -80,7 +80,7 @@ def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (Stri
 /-- What keeps worktree `wt` from landing on ref `b`: git status lines and `commit …` lines (watchd.unclean_list). -/
 def uncleanList (wt b : String) : m String := do
   if (← Sys.kind wt true) == .none then return s!"{wt} is gone; its branch holds commits not on {b}"
-  let st := (splitlines ((← run ["git", "-C", wt, "status", "--porcelain"]).getD "")).filter (· ≠ "")
+  let st := (splitlines ((← run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]).getD "")).filter (· ≠ "")
   let lg := (splitlines ((← run ["git", "-C", wt, "log", "--oneline", b ++ "..HEAD"]).getD "")).filter (· ≠ "")
   return "\n".intercalate (st ++ lg.map ("commit " ++ ·))
 
