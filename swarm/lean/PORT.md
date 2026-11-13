@@ -133,7 +133,10 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   reason (launch_err) instead of exiting; `spawn` is it with the old exits. `keeps` is the model's
   `Decide.keepsL` on the owner row's columns, so `keeps_lifted` is about the code that runs (the lakefiles build
   Decide.lean and what it imports from ../model, as they build Glob.lean). fate and end_why were ported before
-  (Lifecycle, #100/#113) as monadic reads made only when needed; tying them to `Decide.fateL`/`endWhyL` is #106's.
+  (Lifecycle, #100/#113) as monadic reads made only when needed; #106 ties them to `Decide.fateRec`/`endWhyL`
+  (`Proofs/Watchd.lean`: `fateHeard_rec`, `endWhy_lifted`, stated with `Sat`, a postcondition that holds whatever each
+  read returns). For its proofs end_agent's and reap's transactions are named steps (`Lifecycle.endStep`,
+  `Watchd.reapTask`, `reapLock`, `reapGone`), the same functions the code hands `Store.txn`.
 - **Agents** (#100): swarm-lean has no launcher to set `SWARM_HERE`, so spawn (brief.md, settings.template.json,
   the `swarm` it links into the db's bin/) and who's Herdr check read `$SWARM_HERE`, else the Lua launcher's directory.
   launch_agent's symlink of that `swarm` is `ln -s` (Sys has hard links only).
@@ -208,6 +211,8 @@ Ported as they are:
 - `--restart` prints a fractional SWARM_WATCHD_UP_WAIT floored; watchd_run's `--min-free-mem` and `--blocker-idle` are
   printed `%g`-like (6 digits) where Lua's tostring gives 14.
 - ensure_comms matches a comms row with a NULL hc to a terminal with no address (both nil in the Lua), as is.
+- end_agent's re-check (`Lifecycle.endStep`) refuses a row whose stay is `""` (`stay is null` in the Lua), where fate and
+  end_why read `""` as no stay: such an agent gets the verdict "end" every tick and is never ended (no work lost).
 
 Fixed in the port (a proof found it):
 

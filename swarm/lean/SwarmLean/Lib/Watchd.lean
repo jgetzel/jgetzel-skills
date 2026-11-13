@@ -66,6 +66,40 @@ def lastEvent (db : Db) (kinds : List String) : Option String :=
 def say (db : Db) (now : Int) (dest body : String) (urgent : Bool) (kind : String) : Db :=
   (Msgs.post db now "swarm" dest body urgent (some kind)).1
 
+-- ---------- reap ----------
+
+/-- Reap's reopen of lapsed claim `r` (read before): only if the task is still claimed by the same owner with its lease
+before `t` (a renew or re-claim since the read keeps it); the owner is told; true when it reopened it. -/
+def reapTask (r : Task) (t now : Int) (db : Db) : Db × Bool :=
+  match db.find r.id with
+  | some x =>
+    if x.owner == r.owner && x.owner.isSome && x.state = .claimed && x.lease_until.any (· < t) then
+      let db := db.set r.id fun x => { x with state := .open, owner := none, lease_until := none }
+      let own := r.owner.getD "nil"
+      let db := say db now own (s!"released #{d r.id} ({r.title.getD "nil"}): lease expired while idle; renew on long work. " ++
+        s!"`swarm task claim {d r.id}` to take it back.") false "system"
+      (db.log now r.owner "reap" none (some s!"task #{d r.id} lease expired"), true)
+    else (db, false)
+  | none => (db, false)
+
+/-- Reap's drop of expired lock `l` (read before): only if that agent's lock on the path is still expired at `t` (a
+fresh lock on the path since the read stays); true when it dropped it. -/
+def reapLock (l : Lock) (t now : Int) (db : Db) : Db × Bool :=
+  if db.locks.any fun x => x.path == l.path && x.agent == l.agent && x.lease_until.any (· < t) then
+    let db := { db with locks := db.locks.filter fun x => !(x.path == l.path && x.agent == l.agent) }
+    (db.log now l.agent "reap" (some l.path) (some "lock expired"), true)
+  else (db, false)
+
+/-- Reap of agent `n` whose terminal `h` hc no longer lists: only if the row is still live and bound to `h`; it ends,
+what it held is released, everyone is told; true when it ended it. -/
+def reapGone (n h : String) (t : Int) (db : Db) : Db × Bool :=
+  if (db.agent n).any fun x => x.hc == some h && x.ended.isNone then
+    let db := db.setAgent n ({ · with ended := some t, status := some "ended" })
+    let db := release db n
+    let db := say db t "@all" s!"{n} is gone; its tasks and locks are released." false "system"
+    (db.log t (some n) "reap" none (some "agent gone"), true)
+  else (db, false)
+
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
 /-- git's stdout stripped, none when it fails (proc.git). -/
@@ -73,8 +107,6 @@ def git (args : List String) (cwd : Option String := none) : m (Option String) :
 
 /-- A path's realpath, the path itself when it has none. -/
 def real (p : String) : m String := Workspaces.real p
-
--- ---------- reap ----------
 
 /-- Reopens expired task leases (a lapsed claim whose owner keeps it is told to the communicator instead), drops
 expired locks, ends the agents whose bound terminal hc no longer lists (`live`: none skips that) (watchd.reap). -/
@@ -102,41 +134,18 @@ def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (Li
             (say db t c s!"{own} has held #{d r.id} past its lease (idle {idle})." false "notice", ())
     else
       let now ← Clock.now
-      let done ← Store.txn [.task] fun db =>
-        -- re-check: a renew or re-claim since the read keeps the task
-        match db.find r.id with
-        | some x =>
-          if x.owner == r.owner && x.owner.isSome && x.state = .claimed && x.lease_until.any (· < t) then
-            let db := db.set r.id fun x => { x with state := .open, owner := none, lease_until := none }
-            let own := r.owner.getD "nil"
-            let db := say db now own (s!"released #{d r.id} ({r.title.getD "nil"}): lease expired while idle; renew on long work. " ++
-              s!"`swarm task claim {d r.id}` to take it back.") false "system"
-            (db.log now r.owner "reap" none (some s!"task #{d r.id} lease expired"), true)
-          else (db, false)
-        | none => (db, false)
+      let done ← Store.txn [.task] (reapTask r t now)
       if done then out := out ++ [s!"task #{d r.id}"]
   let locks ← Store.txn [.lock] fun db => (db, db.locks.filter (·.lease_until.any (· < t)))
   for l in locks do
     let now ← Clock.now
-    let done ← Store.txn [.lock] fun db =>
-      -- re-check: a fresh lock on the path since the read stays
-      if db.locks.any fun x => x.path == l.path && x.agent == l.agent && x.lease_until.any (· < t) then
-        let db := { db with locks := db.locks.filter fun x => !(x.path == l.path && x.agent == l.agent) }
-        (db.log now l.agent "reap" (some l.path) (some "lock expired"), true)
-      else (db, false)
+    let done ← Store.txn [.lock] (reapLock l t now)
     if done then out := out ++ [s!"lock {l.path}"]
   if let some up := live then
     for a in Agents.live (← Store.txn [.agent] fun db => (db, db)) do
       let some h := py a.hc | continue
       if up.contains h then continue
-      let done ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] fun db =>
-        -- re-check: still bound to the address judged dead, still live
-        if (db.agent a.name).any fun x => x.hc == some h && x.ended.isNone then
-          let db := db.setAgent a.name ({ · with ended := some t, status := some "ended" })
-          let db := release db a.name
-          let db := say db t "@all" s!"{a.name} is gone; its tasks and locks are released." false "system"
-          (db.log t (some a.name) "reap" none (some "agent gone"), true)
-        else (db, false)
+      let done ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] (reapGone a.name h t)
       if done then out := out ++ [s!"agent {a.name}"]
   return out
 
