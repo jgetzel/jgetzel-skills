@@ -111,6 +111,9 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
+- **Port bug fixed (board #104).** `Msgs.wakes` ran its `cold` action even with an urgent row (`urgent || !(← cold)`
+  lifts the `←` above the `||`); msgs.wakes calls `cold()` only for a non-urgent wake, so the Lean does too
+  (`Proofs/Msgs.lean`: `wakes_urgent`). `swarm wait` passes `pure cold`, so its behaviour was the same either way.
 
 ## Lua behaviours to revisit
 

@@ -29,3 +29,15 @@ import SwarmLean
 #print axioms SwarmLean.Locks.lockHolder_some
 #print axioms SwarmLean.Locks.lockHolder_none
 #print axioms SwarmLean.Locks.lockHolder_agent
+#print axioms SwarmLean.Inbox.exactly_once
+#print axioms SwarmLean.Inbox.exactly_once_atomic
+#print axioms SwarmLean.Inbox.shown_once
+#print axioms SwarmLean.Inbox.shown_for_it
+#print axioms SwarmLean.Inbox.cursor_passes_only_shown
+#print axioms SwarmLean.Inbox.post_unread
+#print axioms SwarmLean.Inbox.wakes_spec
+#print axioms SwarmLean.Inbox.wakes_urgent
+#print axioms SwarmLean.Inbox.waiter_wakes
+#print axioms SwarmLean.Inbox.delivery_lifts_stop
+#print axioms SwarmLean.Inbox.release_stop
+#print axioms SwarmLean.Inbox.nudge_frame
