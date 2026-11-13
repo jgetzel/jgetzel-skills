@@ -74,12 +74,13 @@ def test_comms_is_exempt (t : T) : IO Unit := do
   discard <| t.q "insert or replace into meta(k,v) values('comms','comms')"
   eq (← stop t "comms") Json.null
 
-def test_context_too_high_says_hand_off (t : T) : IO Unit := do
+-- board #135: high context gets the usual verdict; the harness compacts, nobody relaunches
+def test_context_too_high_gets_the_usual_verdict (t : T) : IO Unit := do
   t.agent "a"; claim t "a"
   let tr := t.d ++ "/c.jsonl"
   put tr ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 600000}}}).compress ++ "\n")
   let r ← stop t "a" (json% {"transcript_path": $tr})
-  has r "hand off"; hasnt r "(a) finish"
+  has r "(a) finish"; hasnt r "relaunch"
 
 def test_cap_two_blocks_per_chain_then_allow_and_tell_comms (t : T) : IO Unit := do
   t.agent "a"; t.agent "comms"; claim t "a"
@@ -101,7 +102,7 @@ def tests : List Case := [
   ("test_own_background_job_allows_but_swarm_wait_does_not", test_own_background_job_allows_but_swarm_wait_does_not),
   ("test_error_turn_allows", test_error_turn_allows),
   ("test_comms_is_exempt", test_comms_is_exempt),
-  ("test_context_too_high_says_hand_off", test_context_too_high_says_hand_off),
+  ("test_context_too_high_gets_the_usual_verdict", test_context_too_high_gets_the_usual_verdict),
   ("test_cap_two_blocks_per_chain_then_allow_and_tell_comms", test_cap_two_blocks_per_chain_then_allow_and_tell_comms)]
 
 end SwarmLean.Tests.Cli.Stop

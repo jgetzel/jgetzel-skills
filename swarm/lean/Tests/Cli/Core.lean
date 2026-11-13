@@ -246,9 +246,12 @@ def test_ctx_note_steps_marker_and_claim_refusal (t : T) : IO Unit := do
   has ((← post).f "additionalContext") "go idle"
   eq (← post) emptyObj  -- same step
   t.sw_ "b" ["task", "add", "t1"]
-  unless (← t.sw "b" ["task", "claim", "1"] { ok := false }).code ≠ 0 do fail "claim allowed at high ctx"
+  let r ← t.sw "b" ["task", "claim", "1"] { ok := false }
+  unless r.code ≠ 0 do fail "claim allowed at high ctx"
+  has r.stderr "compact (/compact) or finish"
   usage 560000
-  has ((← post).f "additionalContext") "hand off now"
+  let n := (← post).f "additionalContext"
+  has n "compacts your context"; has n "swarm task release"; hasnt n "relaunch"
   put mark "9"  -- the repo hook already fired for this step
   usage (1000000 - 1)
   eq (← post) emptyObj

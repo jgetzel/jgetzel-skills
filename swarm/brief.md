@@ -58,10 +58,11 @@ your name is in `$SWARM_NAME`.
   (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
   counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
   Wait on your own job by its completion notification or its PID, never `pgrep -f <script name>`: peers run the same scripts. A sleep-only poll loop is not a wait. A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
-- **Context.** From 350k tokens a hook note says finish and go idle; `task claim`
-  refuses. From 550k hand off now with the `relaunch` skill, same model, and post
-  the successor's name (or `task release` if barely started). A successor
-  runs `swarm join --takeover` (same `SWARM_NAME`) before ending you.
+- **Context.** The harness compacts it; keep working and commit WIP often so a
+  compaction loses nothing on disk. From 350k a hook note says finish and go idle;
+  `task claim` refuses. If after a compaction you no longer understand the task,
+  `swarm task release <id>` with a note (what is done, what is next, the branch)
+  and stop: watchd staffs a fresh agent.
 - **Ending.** After `task done`, do what it prints (take the next task, or go
   idle). Don't close your tab, end yourself or remove your worktree: watchd
   ends you once you are idle, own no claim or lock, stay for nothing and your
