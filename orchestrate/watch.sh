@@ -28,9 +28,8 @@ main() {
 inbox() { [ -n "$INBOX" ] || return 1; local f=${INBOX#*:} c n s; c=(cat "$f"); [ "$f" != "$INBOX" ] && c=(ssh -o ConnectTimeout=10 "${INBOX%%:*}" "cat $f")
   n=$("${c[@]}" 2>/dev/null | wc -l) || return 1; s=$(cat "$SEEN" 2>/dev/null); s=${s:-0}
   [ "$n" -gt "$s" ] || return 1; "${c[@]}" | tail -n +$((s+1)); echo "$n" > "$SEEN"; }
-idle() { hc ls --json 2>/dev/null | P="$P" luajit -e 'local ig = {} for w in (os.getenv("WATCH_IGNORE") or ""):gmatch("%S+") do ig[w] = true end
-for _, t in ipairs(require("cjson").decode(io.read("*a")).terminals) do local n = t.name
-  if type(n) == "string" and n:sub(1, #os.getenv("P")) == os.getenv("P") and t.status ~= "working" and t.address ~= os.getenv("HC_TERMINAL_ID") and not ig[n] then print(n) end end'; }
+idle() { hc ls --json 2>/dev/null | jq -r --arg p "$P" --arg me "${HC_TERMINAL_ID-}" --arg ig " ${WATCH_IGNORE-} " \
+  '.terminals[] | select(. as $t | ($t.name | type) == "string" and ($t.name | startswith($p)) and $t.status != "working" and $t.address != $me and ($ig | contains(" " + $t.name + " ") | not)) | .name'; }
 declare -A n; [ -f "$ST" ] && source "$ST"
 m0=$(main)
 for i in $(seq 30); do

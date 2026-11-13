@@ -31,9 +31,6 @@ case $width in ''|*[!0-9]*) echo "shot.sh: --width takes px" >&2; exit 2 ;; esac
 case $out in /*) ;; *) out=$PWD/$out ;; esac
 
 here=$(cd -P "$(dirname "$0")" && pwd)
-# The rocks install.sh puts in the per-user tree (Homebrew/apt; Nix's luajit has them built in).
-lua_tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
-export LUA_PATH="$lua_tree/share/lua/5.1/?.lua;$lua_tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}" LUA_CPATH="$lua_tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
 repo=$(cd "$here/../.." && pwd)
 real=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/swarm/swarm.db
 [ -n "$db" ] || db=$real
@@ -68,12 +65,8 @@ trap 'exit 1' INT TERM HUP
 mkdir -p "$D/demo/.git/swarm" "$H"
 git -C "$D/demo" init -q
 # A fixture's live watchd is recorded as pid 1 (demo.sh), which this user can't signal: make it this script's pid.
-luajit - "$db" "$D/demo/.git/swarm/swarm.db" ${fx:+$$} <<'L'
-local s = require "lsqlite3"
-local h = assert(s.open("file:" .. arg[1] .. "?mode=ro", s.OPEN_READONLY + s.OPEN_URI))
-assert(h:exec("vacuum into '" .. arg[2]:gsub("'", "''") .. "'") == s.OK, h:errmsg())
-if arg[3] then assert(assert(s.open(arg[2])):exec("update meta set v='" .. tonumber(arg[3]) .. " t3' where k='watchd' and v like '1 %'") == s.OK) end
-L
+sqlite3 -readonly "$db" "vacuum into '$D/demo/.git/swarm/swarm.db'"
+[ -z "$fx" ] || sqlite3 "$D/demo/.git/swarm/swarm.db" "update meta set v='$$ t3' where k='watchd' and v like '1 %'"
 
 # The panel runs <app home>/../swarm: this checkout's CLI.
 ln -s "$repo/swarm/swarm" "$D/swarm"
@@ -113,14 +106,8 @@ grep -q "^const SCREEN = \"$screen\";" "$H/mods/swarm/main.js" || { echo "shot.s
 
 if [ -n "$theme" ]; then
   key=theme; case $theme in light|dark) key=appearance ;; esac
-  luajit - "$H/settings.json" "$key" "$theme" <<'L'
-local j = require "cjson"
-local f = io.open(arg[1])
-local s = f and j.decode(f:read "*a") or {}
-if f then f:close() end
-s[arg[2]] = arg[3]
-f = assert(io.open(arg[1], "w")); f:write(j.encode(s)); f:close()
-L
+  [ -f "$H/settings.json" ] || echo '{}' >"$H/settings.json"
+  jq -c --arg k "$key" --arg v "$theme" '.[$k] = $v' "$H/settings.json" >"$H/settings.new" && mv "$H/settings.new" "$H/settings.json"
 fi
 
 hd() { herdr-app do "$@" >/dev/null; }
@@ -131,14 +118,13 @@ hd layout.select --stack panel-body --child swarm
 hd layout.resize --id panel --px "$width"
 sleep 8 # the panel's first `swarm state` and icon copy, then a frame
 # First-run overlays (the welcome) can open late; close whatever is up just before the shot.
-for o in $(herdr-app status | luajit -e 'for _, o in ipairs(require("cjson").decode(io.read "*a").overlays or {}) do print(o) end'); do
+for o in $(herdr-app status | jq -r '.overlays[]?'); do
   hd overlay.close --id "$o"
 done
 case $screen in *+ask) hd swarm.ask ;; esac
 sleep 1
 [ -z "$before" ] || { DEMO_DB=$D/demo/.git/swarm/swarm.db sh -c "$before"; sleep 5; } # 5 s: the command's result and the next poll
-errs=$(herdr-app status | luajit -e 'local e = require("cjson").decode(io.read "*a").errors or {}
-for _, x in ipairs(e) do print(type(x) == "table" and require("cjson").encode(x) or x) end')
+errs=$(herdr-app status | jq -r '.errors[]? | if type == "object" then tojson else . end')
 [ -z "$errs" ] || echo "shot.sh: Herdr reports: $errs" >&2
 herdr-app shot "$out" >/dev/null
 echo "$out"
