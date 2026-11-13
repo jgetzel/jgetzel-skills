@@ -5,24 +5,19 @@
 # Prints its hc address. Run from the folder the agent should start in.
 #   launch.sh <name> tab|split <task> [claude args...]
 set -euo pipefail
-# The rocks install.sh puts in the per-user tree (Homebrew/apt; Nix's luajit has them built in).
-lua_tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
-export LUA_PATH="$lua_tree/share/lua/5.1/?.lua;$lua_tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}" LUA_CPATH="$lua_tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
 [ $# -ge 3 ] || { echo "usage: launch.sh <name> tab|split <task> [claude args...]" >&2; exit 2; }
 [ -n "${HC_TERMINAL_ID:-}" ] || { echo "launch.sh: not in a Herdr terminal (no HC_TERMINAL_ID)" >&2; exit 2; }
 name=$1 place=$2 task=$3; shift 3
 case $place in tab | split) ;; *) echo "launch.sh: place is tab or split, not $place" >&2; exit 2 ;; esac
 
 # Prints "<space id> <tab id>" of the window tab showing terminal $1, or nothing (also when no window runs here).
-where() { herdr-app ls 2>/dev/null | ADDR="$1" luajit -e 'local ok, d = pcall(require("cjson").decode, io.read("*a"))
-for _, s in ipairs(ok and d.spaces or {}) do for _, t in ipairs(s.tabs) do for _, x in ipairs(t.terminals) do
-  if x.terminal == os.getenv("ADDR") then print(s.id .. " " .. t.id) return end end end end print("")'; }
+where() { herdr-app ls 2>/dev/null | jq -r --arg a "$1" 'first(.spaces[]? as $s | $s.tabs[] as $t | $t.terminals[]
+  | select(.terminal == $a) | "\($s.id) \($t.id)") // ""' 2>/dev/null || true; }
 # The window labels every terminal it shows with its space and tab, and hc keeps the labels, so this works
 # when the window runs on another machine; ask the local window only when the labels are missing.
 space=${SWARM_SPACE:-} tab=
-[ -n "$space" ] || read -r space tab <<<"$(hc get "$HC_TERMINAL_ID" 2>/dev/null | luajit -e 'local ok, d = pcall(require("cjson").decode, io.read("*a"))
-local l = ok and type(d.labels) == "table" and d.labels or {}
-print((l["herdr.space"] or "") .. " " .. (l["herdr.tab"] or ""))')"
+[ -n "$space" ] || read -r space tab <<<"$(hc get "$HC_TERMINAL_ID" 2>/dev/null |
+  jq -r '(.labels | objects) // {} | "\(.["herdr.space"] // "") \(.["herdr.tab"] // "")"' 2>/dev/null || true)"
 [ -n "$space" ] || read -r space tab <<<"$(where "$HC_TERMINAL_ID")"
 [ -n "$space" ] || { echo "launch.sh: $HC_TERMINAL_ID has no herdr.space label and no Herdr window here shows it" >&2; exit 1; }
 labels=(--label "herdr.space=$space")
@@ -43,7 +38,7 @@ fi
 
 out=$(hc run --json --bg --outlive-parent --no-notify --name "$name" --cwd "$PWD" "${labels[@]}" \
   -- env "${unset_vars[@]+"${unset_vars[@]}"}" ${scope[@]+"${scope[@]}"} claude -n "$name" "$@" "$task")
-addr=$(luajit -e 'print(require("cjson").decode(io.read("*a")).address)' <<<"$out")
+addr=$(jq -r .address <<<"$out")
 
 # The agent runs now: report it, and treat naming the tab as best effort.
 echo "$addr"
