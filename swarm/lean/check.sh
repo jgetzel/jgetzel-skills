@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds swarm-lean and its proofs, refuses an open proof or an axiom beyond Lean's three (Audit.lean), and on the stock binary and
 # the hpl one (when ../../../high-perf-lean has an hpl binary, or $HPL is set) runs swarm-tests (the Lean suite) and
-# test-claim.sh.
+# test-claim.sh; and harness-retro's test (test-harness-retro.sh).
 cd "$(dirname "$0")" || exit 1
-if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build || exit 1
 # Audit.lean prints every theorem's axioms and the theorems taking each assumption, and fails on any axiom but Lean's three
@@ -22,6 +22,7 @@ echo "$tags" | while read -r spec names; do
 done || exit 1
 on() { SWARM_BIN=$(realpath "$1") .lake/build/bin/swarm-tests >.lake/swarm-tests.log 2>&1 || { grep -v "^ok " .lake/swarm-tests.log; return 1; }; tail -1 .lake/swarm-tests.log; ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
+./test-harness-retro.sh || exit 1
 if [ -n "$HPL" ] || [ -x ../../../high-perf-lean/.lake/build/bin/hpl ]; then
   # hpl notes every box it makes: the log keeps them, a failure shows its tail
   (cd hpl && lean_do build >../.lake/hpl-build.log 2>&1) || { tail -40 .lake/hpl-build.log; exit 1; }

@@ -37,6 +37,15 @@ lean_exe «swarm-lean» where
   root := `Main
   moreLinkArgs := run_io sqliteLink
 
+/-- The harness-retro skill's tools (../../harness-retro/*.sh run it): transcript, time-report, harness-lint,
+probe-guard, probe-json. -/
+lean_lib HarnessRetro
+
+@[default_target]
+lean_exe «harness-retro» where
+  root := `HarnessRetroMain
+  moreLinkArgs := run_io sqliteLink
+
 /-- The C shim (c/shim.c), compiled against Lean's and sqlite's headers. -/
 target shim.o pkg : FilePath := do
   let src ← inputTextFile (pkg.dir / "c" / "shim.c")

@@ -6,9 +6,9 @@ name: swarm-lean
 on:
   push:
     branches: [main]
-    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
+    paths: [swarm/lean/**, harness-retro/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
   pull_request:
-    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
+    paths: [swarm/lean/**, harness-retro/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
   workflow_dispatch:
 
 jobs:

@@ -3,7 +3,7 @@ import SwarmLean.Util
 /-! re.lua: Python's re as the Lua runs it on PCRE2 (UTF and UCP, so `\w` matches é), here a backtracking matcher
 over the subject's characters. Positions are character indices, 0-based, end exclusive. Supported: literals, `.`,
 classes with ranges and `\w \s \d` (and negations), `^ $ \A \z \Z \b \B`, groups (capturing, `(?:`, named,
-lookahead `(?=` `(?!`, inline and scoped flags `(?ims)` `(?i:`), alternation, and `* + ? {m,n}` greedy or lazy. -/
+lookahead `(?=` `(?!`, lookbehind `(?<=` `(?<!`, inline and scoped flags `(?ims)` `(?i:`), alternation, and `* + ? {m,n}` greedy or lazy. -/
 
 namespace SwarmLean.Re
 
@@ -66,6 +66,7 @@ inductive Node
   | wordB (neg : Bool)
   | group (idx : Option Nat) (n : Node)
   | look (neg : Bool) (n : Node)
+  | lookB (neg : Bool) (n : Node)
   | cat (ns : List Node)
   | alt (ns : List Node)
   | rep (n : Node) (min : Nat) (max : Option Nat) (greedy : Bool)
@@ -293,7 +294,10 @@ partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
       | some 'P' | some '<' | some '\'' =>
         if (← peek) == some 'P' then adv
         let some o ← peek | throw "unexpected end of pattern"
-        if o == '<' && ((← peekAt 1) == some '=' || (← peekAt 1) == some '!') then throw "lookbehind is not supported"
+        if o == '<' && ((← peekAt 1) == some '=' || (← peekAt 1) == some '!') then
+          let neg := (← peekAt 1) == some '!'
+          adv 2
+          return .inr (.lookB neg (← closeGroup fl))
         let close := if o == '<' then '>' else if o == '\'' then '\'' else ' '
         if close == ' ' then throw "unrecognized character after (?P"
         adv
@@ -380,6 +384,12 @@ partial def go (s : Array Char) (n : Node) (i : Nat) (caps : Caps) (k : Nat → 
   | .group idx body => go s body i caps fun j c => k j (match idx with | some g => c.set! g (some (i, j)) | none => c)
   | .look neg body =>
     match go s body i caps fun j c => some (j, c) with
+    | some (_, c) => if neg then none else k i c
+    | none => if neg then k i caps else none
+  | .lookB neg body =>
+    -- any start at or before i whose match of body ends exactly at i, nearest first
+    let hit := (List.range (i + 1)).findSome? fun d => go s body (i - d) caps fun j c => if j == i then some (j, c) else none
+    match hit with
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
   | .cat ns => goSeq s ns i caps k
