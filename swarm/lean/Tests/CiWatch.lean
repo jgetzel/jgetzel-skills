@@ -85,6 +85,14 @@ def wfDb : Db := check (ciPollApply T0 (some (js s!"[{wfRun 22 "success" "push" 
 #guard (wfDb.tasks.filter fun t => (t.title.get!).startsWith "main red: run 20" && t.state = .open).length == 1
 instance : Git Id := ⟨fun _ _ => none⟩
 #guard (Id.run (ciFor wfDb.cis RED none)).1 == "failure"
+-- a sha's own finished run beats a later pending one; a later finished run stands for a cancelled sha
+def batch (own : String) : List _root_.SwarmLean.Ci :=
+  [{ id := 1, sha := some "a", status := some "completed", conclusion := some own, created := some "2026-11-08T10:00:00Z" },
+   { id := 2, sha := some "b", status := some "in_progress", created := some "2026-11-08T10:05:00Z" }]
+@[instance_reducible] def allAncestors : Git Id := ⟨fun _ _ => some ""⟩
+#guard (letI := allAncestors; Id.run (ciFor (batch "failure") "a" none)) matches ("failure", some { id := 1, .. })
+#guard (letI := allAncestors; Id.run (ciFor (batch "cancelled") "a" none)) matches ("pending", some { id := 2, .. })
+#guard (letI := allAncestors; Id.run (ciFor ({ (batch "failure")[1]! with status := some "completed", conclusion := some "success" } :: batch "cancelled") "a" none)) matches ("success", some { id := 2, .. })
 
 -- pr_watch: no gh call while no live agent holds a claim; then one a minute, matched by <owner>/<task> into the base
 def okRollup : String := "[{\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\",\"name\":\"ci\"}]"
