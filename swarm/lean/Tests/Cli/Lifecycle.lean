@@ -864,6 +864,23 @@ def test_watchd_compacts_at_context_limit (t : T) : IO Unit := do
   t.sw_ "human" ["limits", "--ctx-compact", "0"]
   has (← t.sw "human" ["limits"]).stdout "compact at off"
 
+-- board #143: after a compaction ends (the hook's `compact` event) an idle agent that the stop hook would block is
+-- sent that verdict as a prompt, once
+def test_watchd_continues_after_compaction (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  let term (st : String) : IO Unit :=
+    t.setHc [json% {"address": "h1", "status": $st}, json% {"address": "hc0", "status": "done"}]
+  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).length
+  term "done"; tick; eq (← sends) 0  -- no compaction yet
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'a', 'compact')" []
+  term "working"; tick; eq (← sends) 0  -- mid-turn
+  term "done"; tick; tick
+  eq (← sends) 1
+  has ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).head! "#1"
+
 -- ---- task deps ----
 def test_after_dependency (t : T) : IO Unit := do
   t.agent "a"
@@ -1074,6 +1091,7 @@ def test_task_add_validates_title_and_reads_body_file (t : T) : IO Unit := do
 def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
   ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
+  ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),
   ("test_lock_prefix_and_overlap", test_lock_prefix_and_overlap),
