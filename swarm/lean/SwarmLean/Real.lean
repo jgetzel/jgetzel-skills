@@ -239,15 +239,15 @@ def execIO (argv : List String) : IO String := do
   try Sqlite.execvp (argv.headD "") argv.toArray; return "exec returned"
   catch e => return toString e
 
-/-- The Lua CLI's launcher: $SWARM_LUA_CLI, else the `swarm` beside a `lua/swarm/main.lua` in a directory above this
-binary (swarm/ in the repo). -/
+/-- The Lua CLI's launcher: $SWARM_LUA_CLI, else the `swarm-lua` beside a `lua/swarm/main.lua` in a directory above
+this binary (swarm/ in the repo; its `swarm` is the launcher that runs this binary). -/
 def luaCliIO : IO (Option String) := do
   if let some p ← IO.getEnv "SWARM_LUA_CLI" then if p ≠ "" then return some p
   let mut dir := (← IO.appPath).parent
   while dir.isSome do
     let d := dir.get!
-    if (← (d / "lua" / "swarm" / "main.lua").pathExists) && (← (d / "swarm").pathExists) then
-      return some (d / "swarm").toString
+    if (← (d / "lua" / "swarm" / "main.lua").pathExists) && (← (d / "swarm-lua").pathExists) then
+      return some (d / "swarm-lua").toString
     dir := if d.parent == some d then none else d.parent
   return none
 

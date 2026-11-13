@@ -3,10 +3,11 @@ import SwarmLean.Real
 import SwarmLean.RealSys
 open SwarmLean
 
-/-- A command not ported yet: the Lua CLI with the same argv and environment, or under SWARM_LEAN_STRICT=1 a failure. -/
+/-- A command swarm-lean does not know: a failure, or under SWARM_LEAN_STRICT=0 the Lua CLI with the same argv and
+environment (every command is ported: parity.sh --mixed uses it). -/
 def fallThrough (args : List String) : IO UInt32 := do
   let w := args.headD ""
-  if (← IO.getEnv "SWARM_LEAN_STRICT") == some "1" then
+  if (← IO.getEnv "SWARM_LEAN_STRICT") != some "0" then
     IO.eprintln s!"swarm: not ported: {w}"
     -- for parity.sh: a test that swallows the message still leaves this in its fixture, beside its db
     if let some db ← IO.getEnv "SWARM_DB" then

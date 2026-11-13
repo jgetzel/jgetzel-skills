@@ -21,8 +21,10 @@ with subagents.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
    The communicator is not a `SendMessage` address: agents' blocked notices and posts wait in your inbox until your next `swarm wait` delivers them.
-4. The CLI needs LuaJIT plus 7 rocks. `install.sh` checks and installs them by one of three routes: Nix
-   (`nix profile install github:jgetzel/jgetzel-skills`, the repo flake), Homebrew, or distro packages + luarocks.
+4. The CLI is swarm-lean (`lean/`, Lean 4). Build it once per checkout, and again after a pull that changes
+   `lean/`: `~/.claude/skills/swarm/lean/build.sh` (lake from elan, else the repo flake through nix; `install.sh`
+   runs it). Until then, or while a source is newer than the binary, `swarm` runs the old Lua CLI (`swarm-lua`,
+   LuaJIT plus 7 rocks) and says so on stderr.
 5. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
 6. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
    knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
