@@ -172,15 +172,29 @@ LEAN_EXPORT lean_obj_res swarm_now_f(lean_obj_arg w) {
   return lean_io_result_mk_ok(lean_box_float((double)ts.tv_sec + ts.tv_nsec / 1e9));
 }
 
-// os.date(fmt, t) in local time.
+// os.date(fmt, t): local time, or UTC when fmt starts with '!'.
 LEAN_EXPORT lean_obj_res swarm_strftime(b_lean_obj_arg fmt, int64_t t, lean_obj_arg w) {
   time_t tt = (time_t)t;
   struct tm tm;
   char buf[256];
-  if (!localtime_r(&tt, &tm)) return io_err("localtime failed");
-  size_t n = strftime(buf, sizeof buf, lean_string_cstr(fmt), &tm);
+  const char *f = lean_string_cstr(fmt);
+  if (*f == '!') {
+    f++;
+    if (!gmtime_r(&tt, &tm)) return io_err("gmtime failed");
+  } else if (!localtime_r(&tt, &tm)) return io_err("localtime failed");
+  size_t n = strftime(buf, sizeof buf, f, &tm);
   buf[n] = 0;
   return lean_io_result_mk_ok(lean_mk_string(buf));
+}
+
+// os.time{year, month, day, hour, min, sec}: local time, fields normalized, DST left to mktime.
+LEAN_EXPORT lean_obj_res swarm_mktime(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s, lean_obj_arg w) {
+  struct tm tm = {0};
+  tm.tm_year = (int)(y - 1900); tm.tm_mon = (int)(mo - 1); tm.tm_mday = (int)d;
+  tm.tm_hour = (int)h; tm.tm_min = (int)mi; tm.tm_sec = (int)s; tm.tm_isdst = -1;
+  time_t t = mktime(&tm);
+  if (t == (time_t)-1) return io_err("time out of range");
+  return lean_io_result_mk_ok(lean_box_uint64((uint64_t)(int64_t)t));
 }
 
 // uname().nodename.

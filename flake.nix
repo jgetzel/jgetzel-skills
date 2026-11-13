@@ -18,9 +18,9 @@
           export HOME=$TMPDIR
           grep -qx "leanprover/lean4:v${pkgs.lean4.version}" swarm/lean/lean-toolchain ||
             { echo "swarm/lean/lean-toolchain is not nixpkgs' lean4 ${pkgs.lean4.version}: nix flake update, or build with elan" >&2; exit 1; }
-          cd swarm/lean && lake build swarm-lean
+          cd swarm/lean && lake build swarm-lean swarm-report
         '';
-        installPhase = "install -Dm755 .lake/build/bin/swarm-lean $out/bin/swarm-lean";
+        installPhase = "install -Dm755 -t $out/bin .lake/build/bin/swarm-lean .lake/build/bin/swarm-report";
         meta.mainProgram = "swarm-lean";
       };
     in {
