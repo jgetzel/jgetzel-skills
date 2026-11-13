@@ -228,9 +228,10 @@ def test_sweep_caches_not_landed (t : T) : IO Unit := do
   discard <| t.git t.repo ["commit", "-q", "--allow-empty", "-m", "x"]
   let noOrigin := if (← t.exec ["git", "-C", t.repo, "remote", "get-url", "origin"]).code != 0 then 1 else 0
   tick 2; eq (← asked) (1 + noOrigin)  -- B moved only when it is local main
+  let n ← asked  -- before the commit: a tick in flight may ask about the new HEAD before oldWt returns
   discard <| t.git t.wt ["commit", "-q", "--allow-empty", "-m", "y"]
   oldWt t t.wt
-  let n ← asked; tick 2; eq (← asked) (n + 1)  -- HEAD moved
+  tick 2; eq (← asked) (n + 1)  -- HEAD moved
 
 -- ---- landed agents ----
 def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
