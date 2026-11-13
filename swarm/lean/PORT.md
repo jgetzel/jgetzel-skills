@@ -51,7 +51,7 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    `SWARM_LEAN_STRICT=1` unless the env sets it. It also gained `cli.DIR` (swarm/), which two specs now use for paths
    they derived from the launcher's.
 7. **Ported here:** `task add/priority/after/claim/renew/show/done/block/unblock/release/edit/drop`, `board`, `rules`
-   (all of tasks.lua's commands). bases.lua has no command; its helpers port with their first user (#100's endable,
+   (all of tasks.lua's commands). #99: `lock`, `unlock`. bases.lua has no command; its helpers port with their first user (#100's endable,
    watchd's sweep). `--mixed` passes all 236 tests.
    #98: `post`, `read`, `wait`, `nudge` (msgs.lua, and agents.cmd_nudge) in Cmd/Msgs; msgs.lua's pure parts in
    Db/Msgs (`deliverStep` is deliver's pick as a step; Lib/Msgs's `deliver` formats it); agents.lua's hc helpers and
@@ -84,6 +84,18 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   table, so its readers parse it (the Herdr mod does); the same values and types otherwise.
 - **Tests.** The Lua specs' asserts on ported pure functions are `#guard`s in `Tests/` (lean_lib `Tests`, built by
   `lake build`, so a failing one fails the build).
+- **`try` in `App`** catches `Exit` (App's `ExceptT`), not `IO.Error`: an `App` instance method that must survive an
+  IO error runs its body in `IO` (`(do try … catch … : IO _)`, as `RealSys.lean` does).
+- **Locks** (#99): `covers` and `overlaps` are swarm/model's `Glob.lean` itself (the lakefiles build that one file as
+  lean_lib `SwarmModelGlob`), over a path's bytes as Lua sees them; its proofs (`covers_iff`, `overlaps_iff`) are about
+  the code that runs. Pure steps in `Db/Locks.lean`, `repo_rel` and the commands in `Cmd/Locks.lean`.
+- **re.lua** is `Lib/Re.lean`, a backtracking matcher for the PCRE2 subset Python patterns use: literals, `.`,
+  classes, `\w \s \d \b \A \z \Z ^ $`, groups (capturing, named, `(?:`, `(?=`, `(?!`, `(?ims)`), alternation,
+  greedy and lazy quantifiers. Positions are characters. Not supported (a compile error): backreferences,
+  lookbehind, the `x` flag. A possessive quantifier matches as greedy. Unicode classes are approximated (`shortcut:`
+  in the file): non-ASCII is `\w` but for the common punctuation and symbol blocks, `\d` is ASCII, caseless folds
+  ASCII.
+- **difflib.lua, conflict.lua** (#99): `Lib/Difflib.lean`, `Lib/Conflict.lean` (hunks, edits, clash, real_hunk).
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
@@ -101,6 +113,10 @@ Ported as they are:
 - `task release --after ""` stores deps as the empty string, not NULL.
 - `board` prints `nil` for a `spawn_held` meta row whose value is NULL; `task unblock` says `only nil or the
   communicator` for a task with no owner.
+- `unlock` logs an `unlock` event even when the agent held no such lock.
+- `lock` replaces a dead or expired lock by `insert or replace`, which moves the row to the end of the table; Lean's
+  write-back updates it in place, so when two locks cover one path `lock_holder` may name the other one (the Lua's
+  order is SQLite's, unspecified, too).
 - `hook.ctx_from` reads a transcript's last 300 KB as bytes; Lean drops the whole tail when the cut lands inside a
   UTF-8 character (`shortcut:` in Lib/Hook).
 - `msgs.take` loops forever on a cursor row whose `last_msg_id` is NULL (its guarded UPDATE never matches); Lean reads
