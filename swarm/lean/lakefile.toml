@@ -1,0 +1,9 @@
+name = "swarm-lean"
+defaultTargets = ["SwarmLean", "swarm-lean"]
+
+[[lean_lib]]
+name = "SwarmLean"
+
+[[lean_exe]]
+name = "swarm-lean"
+root = "Main"
