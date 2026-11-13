@@ -53,7 +53,7 @@ extern_lib libswarmshim pkg := do
 /-- locks.lua's glob, as in ../lakefile.lean. -/
 lean_lib SwarmModelGlob where
   srcDir := "../../model"
-  roots := #[`SwarmModel.Glob]
+  roots := #[`SwarmModel.Glob, `SwarmModel.Model, `SwarmModel.PrWatch, `SwarmModel.Decide]
   nativeFacets := fun _ => #[(⟨Module.facetKind ++ `hplO, FamilyOut.fam_eq⟩ : ModuleFacet FilePath)]
 
 lean_lib SwarmLean where

@@ -191,6 +191,14 @@ def sqliteTxn (c : Conn) (ts : List Table) (f : Db → Db × α) : IO α := do
 instance : Store App where
   txn ts f := do sqliteTxn (← theConn) ts f
 
+instance : Guard App where
+  guard x := ExceptT.mk fun ctx => do
+    try
+      match ← x.run ctx with
+      | .ok a => pure (.ok (.ok a))
+      | .error e => pure (.ok (.error s!"exit {e.code}"))
+    catch e => pure (.ok (.error (toString e)))
+
 instance : Clock App where
   now := return (← Sqlite.now).toNat
   hhmm t := Sqlite.hhmm (Int64.ofInt t)

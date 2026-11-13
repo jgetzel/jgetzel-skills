@@ -76,8 +76,9 @@ def refuse (e : Refusal) : m α := do
   | .refused msg | .lost msg => Env.err msg; throw (Exit.mk 1)
 
 /-- `swarm spawn` (watchd.cmd_spawn): reserve (and claim), make or link the worktree, write the brief, launch; any
-failure after the reservation undoes it. -/
-def spawn (a : Args) : m Unit := do
+failure after the reservation undoes it. A refused reservation comes back unprinted (auto-spawn tells them apart), a
+launch that failed as `some` launch.sh's reason (after `swarm: launch.sh failed`); any other failure exits. -/
+def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   let name := a.name
   let task := " ".intercalate a.task
   if a.taskId.isNone && task == "" then
@@ -98,7 +99,7 @@ def spawn (a : Args) : m Unit := do
     | .ok r => pure r
     | .error e =>
       if let .refused _ := e then Store.txn [] fun db => (db.log now (some spawner) "spawn-refused" none (some name), ())
-      refuse e
+      return .error e
   let undo (wt : Option (String × String)) : m Unit := do
     if let some (p, b) := wt then Workspaces.discardWs name p b a.attach.isNone
     let now ← Clock.now
@@ -135,8 +136,8 @@ def spawn (a : Args) : m Unit := do
     brief := brief ++ "\n" ++ ((Ci.FLOW_LINE ((← Ci.flow (wt.map (·.1))).getD "post-merge")).getD "") ++ "\n"
     if let some rules := db.getMeta "rules" then
       brief := brief ++ s!"\nRules for this repo, from the communicator:\n{rules.v.getD "None"}\n"
-    pure (← launchAgent name brief a.model a.effort (wt.map (·.1))).1) fun e => do undo wt; throw e
-  let some out := out | do undo wt; die "launch.sh failed"
+    launchAgent name brief a.model a.effort (wt.map (·.1))) fun e => do undo wt; throw e
+  let (some out, _) := out | do undo wt; Env.err "swarm: launch.sh failed"; return .ok (some out.2)
   let addr := (splitlines (strip out)).getLastD ""
   let now ← Clock.now
   Store.txn [.agent] fun db =>
@@ -144,5 +145,13 @@ def spawn (a : Args) : m Unit := do
     (db.log now (some spawner) "spawn" none (some name), ())
   Env.out s!"spawned {name} at {strip out}"
   Env.out (← Machine.note)
+  return .ok none
+
+/-- `swarm spawn`: `spawnE`, a refusal printed and a failed launch exiting 1. -/
+def spawn (a : Args) : m Unit := do
+  match ← spawnE a with
+  | .error e => refuse e
+  | .ok (some _) => throw (Exit.mk 1)
+  | .ok none => pure ()
 
 end SwarmLean.Spawn

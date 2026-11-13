@@ -67,6 +67,11 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 9. **Style.** One-sentence doc comments; no sorry/admit/axiom/native_decide; a Lua behaviour that looks wrong is
    ported as is and listed below.
 
+   #102: `watchd`, the last command: every command is ported (strict parity 236 of 236). watchd.lua's passes in
+   Lib/Watchd (reap and `keeps`, the sweep, lifecycle with idle_job, unclean, quiet, hung, blockers, auto_spawn, and
+   machine_tick); the tick, the record and its takeover, the tick lease, the loop, `--restart` and `--dry-run` in
+   Cmd/Watchd (ensure_comms there too: it binds through Cmd/Agents).
+
 ## Beyond the above
 
 - **One transaction per command.** The Lua runs some checks and writes outside its transaction (claim's dep check,
@@ -121,6 +126,14 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   its asserts in `Tests/CostTick`; `Cost.tick` reads the world for it (the cwds and worktrees only when a shell sits
   under a claude process of no agent, as the Lua's lazy reads) and records. `Real.nextId` reads a db without
   sqlite_sequence as 0.
+- **watchd** (#102): a pass's pcall is `Guard.guard` (`World.lean`; App's instance catches an `Exit` as `exit N` and an
+  IO error as its text), so a pass that fails ends alone and the tick reports the errors joined, as the Lua's. What the
+  Lua kept in module tables between ticks (NOT_LANDED, LAST_TICK_ERR, cost's memory) is `Cmd.Watchd.St`, threaded
+  through the loop. auto_spawn calls `Spawn.spawnE`, which returns a refused or lost reservation and a failed launch's
+  reason (launch_err) instead of exiting; `spawn` is it with the old exits. `keeps` is the model's
+  `Decide.keepsL` on the owner row's columns, so `keeps_lifted` is about the code that runs (the lakefiles build
+  Decide.lean and what it imports from ../model, as they build Glob.lean). fate and end_why were ported before
+  (Lifecycle, #100/#113) as monadic reads made only when needed; tying them to `Decide.fateL`/`endWhyL` is #106's.
 - **Agents** (#100): swarm-lean has no launcher to set `SWARM_HERE`, so spawn (brief.md, settings.template.json,
   the `swarm` it links into the db's bin/) and who's Herdr check read `$SWARM_HERE`, else the Lua launcher's directory.
   launch_agent's symlink of that `swarm` is `ln -s` (Sys has hard links only).
@@ -178,6 +191,24 @@ Ported as they are:
   neither uses it.
 - `agents.session_active`'s `hc get` cache (`term_seen`) lives one command; Lean threads it as a value (`Seen`).
 
+- watchd's passes read one snapshot per pass where the Lua re-queried per row: lifecycle's fate reads see the db as it
+  was before an agent ended earlier in the same pass, reap judges owners on the rows it read first. Each write re-checks
+  in its own transaction, as the Lua's do.
+- watchd loads the event table whole in the passes that read it (Store has no query; `shortcut:` as `swarm state`).
+- The hc get cache of the cold rule (agents.term_seen) lives one tick, where the Lua's lived the process.
+- auto_spawn's notice for a launch that died before launch.sh ran (a reservation's die) says `launch error`; the Lua
+  printed the last launch's reason left in M.launch_err.
+- auto_spawn reads a spawn_backoff row that is not `until,delay,name` as no backoff; the Lua raised comparing nil.
+- machine_tick groups an agent cwd outside git with the missing ones (no repo); the Lua raised (a nil table key). The
+  orphan-kill event names the first agent of that repo by name, the Lua's by rowid.
+- Signals (`--restart`'s stop of a watchd that never ticked, orphan kills) go through `kill -TERM`; Sys has no
+  signal call (`shortcut:`).
+- `swarm watchd`'s "already runs" and the tick lease check the other watchd's pid outside their transaction; a record
+  (or lease) changed in between counts as alive (the Lua checked inside).
+- `--restart` prints a fractional SWARM_WATCHD_UP_WAIT floored; watchd_run's `--min-free-mem` and `--blocker-idle` are
+  printed `%g`-like (6 digits) where Lua's tostring gives 14.
+- ensure_comms matches a comms row with a NULL hc to a terminal with no address (both nil in the Lua), as is.
+
 Fixed in the port (a proof found it):
 
 - `swarm lock` by an ended agent was granted (agents.touch's fence was ignored); its lock didn't count while the row
@@ -209,5 +240,7 @@ The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.
 | `Cmd.State.state._redArg` and 13 of its lambdas, `Cmd.State.fateJson._redArg` and 4 of its lambdas, `Cmd.State.running._redArg`, `_lam_21` (#113) | partial application of a lambda which takes more than 16 arguments |
 | `List.forIn'.loop…Cmd.State.state…` (2), `Cmd.State.fateJson…`, `Lifecycle.fateHeard…`, `Lifecycle.endWhy…`, `Lifecycle.endableReasons…` (in Main, specialized) | variable has a type outside the subset |
 | `Lifecycle.reads…` (in Main, specialized for state) | partial application of a lambda which has a `void` parameter |
+| #102: `Watchd.reap`, `sweep`, `lifecycle`, `autoSpawn`, `machineTick`, `idleJob`, `unclean` (`_redArg` and most of their lambdas), `Watchd.hung…`, `Watchd.quiet…_lam_15`; `Cmd.Watchd.tick`, `watchd`, `watchdPass`, `loop`, `restart`, `ensureComms`, `hcBlocked` (and lambdas); `Spawn.spawnE._redArg` and 9 lambdas | partial application of a lambda which takes more than 16 arguments |
+| #102: the loops of `reap`, `hung`, `lifecycle`, `Conflict.conflictTick`, `idleJob`, `tick`, and `restart`'s `repeatM` (in Main, specialized for watchd); `Spawn.spawnE…` (3, specialized for spawn); `instGuardApp._lam_0` | partial application of a lambda which has a `void` parameter, or a variable of a type outside the subset |
 
 The "internal" ones look like hpl bugs (a structure update on a row with many optional fields).
