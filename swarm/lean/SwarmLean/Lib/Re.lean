@@ -387,9 +387,7 @@ partial def go (s : Array Char) (n : Node) (i : Nat) (caps : Caps) (k : Nat → 
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
   | .lookB neg body =>
-    -- any start at or before i whose match of body ends exactly at i, nearest first
-    let hit := (List.range (i + 1)).findSome? fun d => go s body (i - d) caps fun j c => if j == i then some (j, c) else none
-    match hit with
+    match goBack s body i i caps with
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
   | .cat ns => goSeq s ns i caps k
@@ -409,6 +407,12 @@ partial def goAlt (s : Array Char) (ns : List Node) (i : Nat) (caps : Caps) (k :
   | n :: rest => match go s n i caps k with
     | some r => some r
     | none => goAlt s rest i caps k
+
+/-- A match of `body` from `start` or an earlier start (nearest first) that ends exactly at `i`: a lookbehind. -/
+partial def goBack (s : Array Char) (body : Node) (i start : Nat) (caps : Caps) : R :=
+  match go s body start caps fun j c => if j == i then some (j, c) else none with
+  | some r => some r
+  | none => if start == 0 then none else goBack s body i (start - 1) caps
 
 /-- `count` repetitions done; an iteration past the minimum that matches empty ends the loop. -/
 partial def goRep (s : Array Char) (body : Node) (lo : Nat) (hi : Option Nat) (greedy : Bool) (count i : Nat)
