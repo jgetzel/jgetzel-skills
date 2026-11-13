@@ -20,7 +20,7 @@ your name is in `$SWARM_NAME`.
   work on a task (it fails if someone holds it, and prints the task body), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. A
   claim without evidence is a rumor to the others. Add tasks for what you
-  find (`swarm task add "<title>" [--body <text>] [--after N] [-p <priority>]`; `swarm task edit <id>` changes a live task); split a task that is too big. Can't
+  find (`swarm task add "<title>" [--body <text> | --body-file <path, - for stdin>] [--after N] [-p <priority>]`: a one-line title, over 100 chars only with a body; `swarm task edit <id>` changes a live task); split a task that is too big. Can't
   finish it? `swarm task release <id>` (not `drop`, which kills the task);
   can't start until another task lands? `release <id> --after N`.
   Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours.
@@ -39,15 +39,10 @@ your name is in `$SWARM_NAME`.
   it frees itself when your work on it lands, or `swarm unlock`.
 - **Commits.** Every commit carries a `Swarm-Agent: <your name>` trailer.
 - **CI.** Work is done once it is on your task's base (`swarm task show` prints `base:` when the task has one, else
-  the repo's `.claude/swarm.json` base, else main): your commit (or its PR's merge) is on `origin/<base>`, or on the
-  local branch for a local-only base. Then `swarm task
-  done <id> --evidence <sha>`; a merged PR from your task branch (`<you>/<task>`) watchd marks done for you and
-  tells you. How CI fits is the repo's `ci.flow` in `.claude/swarm.json`: `none` or `post-merge` (or unset):
-  land on green local checks and don't wait for CI; watchd makes a red run on the base one `main red: …` task, done
-  by watchd on the next green run. `pr-gated`: the PR's checks gate the merge; `swarm stay "CI on PR #N, then
-  merge"` and stop, and watchd wakes you when they finish (merge on green, fix and push on red). `promoted`: land on
-  the dev base your task names, as post-merge. `swarm ci <sha> [--wait]` reads what watchd polled (exit 0 green,
-  1 red, 2 pending). Never `gh run watch` or a `gh` loop: every agent shares one API limit.
+  the repo's `.claude/swarm.json` base, else main): on `origin/<base>`, or the local branch for a local-only base.
+  Then `swarm task done <id> --evidence <sha>`; a merged PR from `<you>/<task>` watchd marks done for you. How this
+  repo's CI fits (its `ci.flow`) is the "CI here" line at the end of your task below. `swarm ci <sha> [--wait]` reads
+  what watchd polled (exit 0 green, 1 red, 2 pending). Never `gh run watch` or a `gh` loop: every agent shares one API limit.
 - **Heavy work.** Before a build or test, read the machine note the hook shows (it appears when the history says the command is costly). Under pressure prefer other work, or message the agent holding the most memory. `swarm cost "<command>"` says what that command took here before (`--top`: the most intensive). Don't poll.
 - **Other machines.** `swarm run --on <machine> -- <cmd>` runs a build or test on another
   machine (`hc machine ls`) against a copy of your worktree and brings back what it wrote. The

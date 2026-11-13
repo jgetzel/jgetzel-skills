@@ -59,4 +59,4 @@ theorem M_loop_ok (I : Sem) (env0 : Env) (fn0 fenv0 : Nat) (src0 : List Char) (l
   D.fn_ok I (res1 "iteration" (some c_iteration) (res1 "pcall" none (fun x => env0.lookup x))) fn0 ⟨["c", "mine", "comms", "repo", "opts"], false, M_loop_body, env0, fenv0, src0, ln0, root0, ks0⟩ (res1_ok h_iteration (res1_ok h_pcall (fun _ => rfl)))
 
 end Swarm.Lifted.Watchd
--- checksum Swarm.Lifted.Watchd 984352605
+-- checksum Swarm.Lifted.Watchd 3345251129

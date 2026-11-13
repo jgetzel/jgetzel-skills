@@ -7,6 +7,7 @@ local M = {}
 M.LEASE = 7200
 M.RED_TASK = "main red: "  -- a red main is one board task, so one agent fixes it; watchd closes it on the next green
 M.DEFAULT_PRIORITY = 2  -- P0 urgent .. P3 someday; lower is picked first
+M.TITLE_MAX = 100  -- a longer `task add` title needs a body: the detail belongs there
 M.TASK_KINDS = { "task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit" }
 
 local function py(x)  -- Python truthiness for a db value: NULL, 0 and '' are false
@@ -214,13 +215,20 @@ function M.cmd_task(c, a)
   local n = agents.me()
   local t = util.now()
   if a.act == "add" then
+    local body = a.body
+    if a.body_file then body = util.slurp(a.body_file) or util.die("can't read " .. a.body_file) end
+    if not a.title:match("%S") then util.die("the title can't be empty") end
+    if a.title:find("\n", 1, true) then util.die("the title is one line; put the rest in --body or --body-file") end
+    if #a.title > M.TITLE_MAX and not py(body) then
+      util.die(("the title is over %d characters with no body; move the detail to --body or --body-file"):format(M.TITLE_MAX))
+    end
     local deps = a.after or {}
     local id = c:tx(function()
       no_task_to_wait_on(c, deps)
       local ds = {}
       for i, x in ipairs(deps) do ds[i] = d(x) end
       c:exec("insert into task(title,body,created_by,deps,model,effort,base,created_at,priority) values(?,?,?,?,?,?,?,?,?)",
-        a.title, a.body, n, py(table.concat(ds, ",")), a.model, a.effort, a.base, t, a.priority or M.DEFAULT_PRIORITY)
+        a.title, body, n, py(table.concat(ds, ",")), a.model, a.effort, a.base, t, a.priority or M.DEFAULT_PRIORITY)
       local id = c:last_id()
       db.log(c, n, "task-add", nil, ("#%s %s"):format(d(id), a.title))
       return id

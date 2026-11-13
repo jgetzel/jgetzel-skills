@@ -114,7 +114,8 @@ function M.shjoin(argv)
   return table.concat(r, " ")
 end
 
-function M.slurp(path)  -- file contents, or nil
+function M.slurp(path)  -- file contents, or nil; "-" reads stdin
+  if path == "-" then return io.stdin:read("*a") end
   local f = io.open(path, "rb")
   if not f then return nil end
   local s = f:read("*a")

@@ -89,6 +89,16 @@ end
 -- base after a merge; a red run is a board task), "pr-gated" (a PR's checks gate its merge: watchd wakes the owner when
 -- they finish), "promoted" (CI on a dev base that promotes itself); nil: unset, the post-merge polling with nothing enforced.
 M.FLOWS = { none = true, ["post-merge"] = true, ["pr-gated"] = true, promoted = true }
+-- The spawn message's CI line for each flow (brief.md points to it).
+M.FLOW_LINE = {
+  none = "CI here (`ci.flow` none): there is no CI; land on green local checks.",
+  ["post-merge"] = "CI here (`ci.flow` post-merge, or unset): land on green local checks and don't wait for CI; a red run "
+    .. "on the base becomes one `main red: …` task, done by watchd on the next green run.",
+  ["pr-gated"] = "CI here (`ci.flow` pr-gated): the PR's checks gate the merge. `swarm stay \"CI on PR #N, then merge\"` and "
+    .. "stop; watchd wakes you when they finish: merge on green, fix and push on red.",
+  promoted = "CI here (`ci.flow` promoted): land on the dev base your task names, as post-merge: green local checks, "
+    .. "don't wait for CI.",
+}
 function M.flow(repo)
   local f = ci_cfg(repo).flow
   return M.FLOWS[f] and f or nil
