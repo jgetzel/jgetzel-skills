@@ -1,5 +1,5 @@
 {
-  description = "swarm-lean, the swarm CLI (swarm/lean); LuaJIT with the rocks the Herdr panels and swarm-retro need (keep in sync with ROCKS in install.sh), plus the sqlite3 CLI";
+  description = "swarm-lean, the swarm CLI (swarm/lean); LuaJIT with the rocks the Herdr panels need (keep in sync with ROCKS in install.sh), plus the sqlite3 CLI";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs = { self, nixpkgs }:
     let
