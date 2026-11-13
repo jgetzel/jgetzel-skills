@@ -53,15 +53,6 @@ def Stmt.bind (s : Stmt) (i : UInt32) : Val → IO Unit
   | .real v => s.bindReal i v
   | .text v => s.bindText i v
 
-/-- The value `bind` hands SQLite: an int as `Int64.ofInt`, so one outside int64 wraps. -/
-def Val.bound : Val → Val
-  | .int v => .int (Int64.ofInt v).toInt
-  | v => v
-
-/-- A value's storage class: 0 NULL, 1 integer, 2 real, 3 text. -/
-def Val.cls : Val → Nat
-  | .null => 0 | .int _ => 1 | .real _ => 2 | .text _ => 3
-
 /-- Column `i` of the current row. -/
 def Stmt.column (s : Stmt) (i : UInt32) : IO Val := do
   match ← s.columnType i with
