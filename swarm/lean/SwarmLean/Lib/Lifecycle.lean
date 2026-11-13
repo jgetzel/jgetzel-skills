@@ -1,6 +1,8 @@
 import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
+import SwarmLean.Db.Msgs
+import SwarmLean.Db.Tasks
 
 /-! watchd.lua's parts that `swarm end` and `swarm endable` run: whether an agent's work landed (landed_ref, landed,
 unlanded, unclean_list), what keeps it (end_why, endable_reasons, over fate's reads of one agent), and the end itself
@@ -101,18 +103,97 @@ structure Reads (m : Type → Type) where
   job : m (Option Machine.Ps)
   /-- a worktree of its with work not on its bases, and those refs -/
   unlanded : m (Option (String × List String))
+  /-- a terminal's cwd is in this repo or one of its worktrees (else another swarm's terminal) -/
+  ours : String → m Bool
+  /-- how many tasks are startable -/
+  pool : Nat
+  /-- process `pid` lives -/
+  alive : Int → m Bool
+  /-- it was told of every startable task and has read what would wake it -/
+  passedOver : Bool
 
-/-- The reads of agent `n` on `db` (agent, task, lock and workspace tables). -/
-def reads (db : Db) (main : Option String) (wts all : List (String × String)) (n : String) : Reads m where
+/-- The task ids `n`'s digests named (watchd.reads' told_of). -/
+def toldOf (db : Db) (n : String) : List Int :=
+  (db.events.filter fun e => e.kind == some "digest" && e.agent == some n).flatMap fun e =>
+    ((e.data.getD "").splitOn ",").filterMap fun i => if i == "" then none else parseInt i
+
+/-- `n`'s unread messages that would wake it, and how many of them are urgent (watchd.reads' waking). -/
+def waking (db : Db) (n : String) : Nat × Nat :=
+  let us := Msgs.unread db n
+  ((us.filter fun r => r.kind != some "notice" || r.urgent.getD 0 != 0).length, (us.filter (·.urgent.getD 0 != 0)).length)
+
+/-- The reads of agent `n` on `db` (agent, task, lock and workspace tables; `passedOver` also the event, msg and
+cursor tables); `pool` the startable tasks. -/
+def reads (db : Db) (main : Option String) (wts all : List (String × String)) (n : String)
+    (pool : List Task := Tasks.pool db) : Reads m where
   claims := db.tasks.any fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)
   locks := db.locks.any (·.agent == some n)
   job := do return (Machine.bgAgents db.agents (← Machine.procs)).lookup n
   unlanded := unlanded db n main wts all
+  ours cwd := do
+    let cwd ← Workspaces.real cwd
+    let under (w : String) := cwd == w || cwd.startsWith (w ++ "/")
+    return all.any (under ·.1) || main.any under
+  pool := pool.length
+  alive := Sys.pidAlive
+  passedOver := let told := toldOf db n; pool.all (told.contains ·.id) && (waking db n).1 == 0
 
 /-- The reads of agent `n` now: the db, the main worktree, the agents' and every worktree. -/
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
   let db ← Store.txn [.agent, .task, .lock, .workspace] fun db => (db, db)
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.worktrees) n)
+
+/-- What a fate run heard: each check made, in order, with whether it held; the unlanded worktree and its refs (once
+that check was made); the job's process (once that one was). -/
+structure Heard where
+  checks : List (String × Bool) := []
+  held : Option (String × List String) := none
+  proc : Option Machine.Ps := none
+
+/-- Lifecycle's verdict on live agent row `a` (watchd.fate, model Decide.lean's fateL), and what it heard: none (kept:
+staying, busy, idle under 2 min, in another swarm's or a busy terminal, holding a claim or lock, or, once its work is
+landed, running a background job); "unclean", idle but kept by work not on its bases; "reuse", small, the pool not
+empty and not passed over, its waiter alive; else "end". `x`: its hc terminal; `hasTerms`: hc answered. With `all`
+no check holds, so every one is made (the verdict is then meaningless). -/
+def fateHeard (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Reads m) (all : Bool := false) :
+    m (Option String × Heard) := do
+  let mut h : Heard := {}
+  -- one check: heard, and with `all` it never holds
+  let k (h : Heard) (label : String) (v : Bool) : Heard × Bool := ({ h with checks := h.checks ++ [(label, v)] }, v && !all)
+  let (h1, b) := k h "stay" (py a.stay).isSome
+  h := h1; if b then return (none, h)
+  let (h1, b) := k h "idle" (a.status != some "idle" || t - a.last_active.getD 0 < 120)
+  h := h1; if b then return (none, h)
+  let other ← match x.bind (·.cwd) |>.bind (py ·) with
+    | some c => pure !(← f.ours c)
+    | none => pure false
+  let busy := (py a.hc).isSome && hasTerms && match x with
+    | none => true
+    | some x => x.status != some "idle" && x.status != some "done"
+  let (h1, b) := k h "terminal" (other || busy)
+  h := h1; if b then return (none, h)
+  let (h1, b) := k h "task" f.claims
+  h := h1; if b then return (none, h)
+  let (h1, b) := k h "lock" f.locks
+  h := h1; if b then return (none, h)
+  let u ← f.unlanded
+  let (h1, b) := k { h with held := u } "unlanded" u.isSome
+  h := h1; if b then return (some "unclean", h)
+  let j ← f.job  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
+  let (h1, b) := k { h with proc := j } "job" j.isSome
+  h := h1; if b then return (none, h)
+  let (h1, small) := k h "context" (a.ctx_tokens.getD 0 < SMALL_CTX && f.pool > 0 && !f.passedOver)
+  h := h1
+  let w ← match a.waiter with
+    | some p => f.alive p
+    | none => pure false
+  let (h1, b) := k h "waiter" w
+  h := h1
+  return (if b && small then some "reuse" else some "end", h)
+
+/-- Lifecycle's verdict on live agent row `a` (watchd.fate; see `fateHeard`). -/
+def fate (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Reads m) : m (Option String) :=
+  return (← fateHeard a t x hasTerms f).1
 
 /-- Why `swarm end` without `--force` refuses live agent row `a`, or none (watchd.end_why). -/
 def endWhy (a : Agent) (f : Reads m) : m (Option String) := do

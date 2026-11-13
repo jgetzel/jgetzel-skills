@@ -134,9 +134,11 @@ def storeRows [Row α] [BEq α] (c : Conn) (old new : List α) : IO Unit := do
       discard <| c.exec s!"insert into {Row.table α}({", ".intercalate cols}) values({", ".intercalate (cols.map fun _ => "?")})"
         (Row.enc r)
 
-/-- The next id of an AUTOINCREMENT table: one past the larger of its sqlite_sequence entry and its largest id. -/
+/-- The next id of an AUTOINCREMENT table: one past the larger of its sqlite_sequence entry and its largest id (an
+old db with no AUTOINCREMENT table has no sqlite_sequence: 0). -/
 def nextId (c : Conn) (t : String) : IO Nat := do
-  let seq ← c.query "select seq from sqlite_sequence where name=?" [.text t]
+  let has ← c.query "select 1 from sqlite_master where name='sqlite_sequence'" []
+  let seq ← if has.isEmpty then pure #[] else c.query "select seq from sqlite_sequence where name=?" [.text t]
   let mx ← c.query s!"select coalesce(max(id),0) from {t}"
   let get (rows : Array (Array Val)) : Nat := match rows[0]?.bind (·[0]?) with | some (Val.int i) => i.toNat | _ => 0
   return max (get seq) (get mx) + 1

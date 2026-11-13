@@ -105,7 +105,7 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   index is made with `mktemp -d`, `cp -p` (which keeps the index's mtime to the nanosecond, where the Lua kept whole
   seconds: git rehashes no more) and `rm -rf` through `Proc`.
 - **difflib.lua, conflict.lua** (#99): `Lib/Difflib.lean`, `Lib/Conflict.lean` (hunks, edits, clash, real_hunk).
-- **ci, cost, run, state** (#101): `Cmd/Ci`, `Cmd/Cost`, `Cmd/Run`, `Cmd/State` (state, watch), their `-h` texts in
+- **ci, cost, run, state** (#101): `Cmd/Ci`, `Cmd/Cost`, `Cmd/Run`, `Cmd/State` (watch; state is #113's), their `-h` texts in
   `Cmd/OpsHelp`. ci.lua's watchd side (pr_ci, pr_watch, ci_poll, ci_check) is in `Lib/Ci` as pure steps on the db
   (`prCiApply`, `prWatchApply`, `ciPollApply`, `ciCheckStep`, `ciNewRedTask`) with gh's answers as arguments, and
   world wrappers (`prCi`, `prWatch`, `ciPoll`, `ciCheck`) for watchd; run.lua's watchd side (`remoteTick`,
@@ -113,6 +113,14 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   bases.lua is `Lib/Bases`. Each watchd step takes its own transactions around the gh and git calls, where the Lua
   wrote as it went on one connection. `swarm run`'s command is split off before parsing in `Dispatch.run` (main.lua's
   split_run) and reaches the group as `argv`.
+- **state, fate, cost.tick** (#113): `swarm state --json` in `Cmd/State` (its fate JSON is `fateJson`), on one snapshot
+  of every table it reads. watchd.fate is `Lifecycle.fateHeard` (the verdict and the checks it made, the unlanded
+  worktree and the job it read, which state.fate's recording reads gave) and `Lifecycle.fate`; `Reads` gained watchd's
+  `ours`, `pool`, `alive` and `passed_over` (`toldOf`, `waking`). cost.tick is `Cost.tickStep`, pure over `TickIn` (the
+  owners, their cgroup peaks, `ps`, the cwds, the repo's worktrees, the reaped CPU) and `TickMem` (cg_peak, open_cmds),
+  its asserts in `Tests/CostTick`; `Cost.tick` reads the world for it (the cwds and worktrees only when a shell sits
+  under a claude process of no agent, as the Lua's lazy reads) and records. `Real.nextId` reads a db without
+  sqlite_sequence as 0.
 - **Agents** (#100): swarm-lean has no launcher to set `SWARM_HERE`, so spawn (brief.md, settings.template.json,
   the `swarm` it links into the db's bin/) and who's Herdr check read `$SWARM_HERE`, else the Lua launcher's directory.
   launch_agent's symlink of that `swarm` is `ln -s` (Sys has hard links only).
@@ -159,6 +167,15 @@ Ported as they are:
 - ci_check's "Later red" appends to the red task's body with SQL `||`, so a task with a NULL body keeps NULL.
 - pr_ci matches a PR to a task with no owner by the head branch prefix `nil/` (Lua's `tostring(nil)`).
 - `swarm watch` loads the event table whole each second (Store has no query; `shortcut:` in Cmd/State).
+- `swarm state` loads its tables whole where the Lua selects the rows it prints (`shortcut:` in Cmd/State), and in a
+  transaction (BEGIN IMMEDIATE, as every read-only command here) where the Lua opened the db read-only. On a db from
+  before a migration that means Lean adds the missing columns and tables first, so a task row shows a newer column as
+  null where the Lua's omitted it, and fate's "no such table" fallback (null) never arises.
+- state.fate's job read runs `ps` per agent asked; the Lua read `bg_agents` once per snapshot.
+- cost.tick writes the finished commands in the order first seen (the Lua's `pairs` order is unspecified) and reads
+  CLK_TCK as 100 (`shortcut:` in Lib/Cost; Sys has no sysconf).
+- `Lifecycle.reads`' `passedOver` reads the event, msg and cursor tables, which `readsNow` (end, endable) does not load;
+  neither uses it.
 - `agents.session_active`'s `hc get` cache (`term_seen`) lives one command; Lean threads it as a value (`Seen`).
 
 Fixed in the port (a proof found it):
@@ -189,5 +206,8 @@ The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.
 | `Cmd.Msgs.post._redArg._lam_20`; `Cmd.Msgs.wait._redArg._lam_20`…`_lam_31` (8) | partial application of a lambda which takes more than 16 arguments |
 | `List.forIn'.loop…` (in Main, post's loop), `repeatM…` (in Main, wait's loop) | partial application of a lambda which has a `void` parameter |
 | `List.forIn'.loop…_lam_1` (post's loop), `Msgs.wakes…` (in Main, specialized for wait) | variable has a type outside the subset |
+| `Cmd.State.state._redArg` and 13 of its lambdas, `Cmd.State.fateJson._redArg` and 4 of its lambdas, `Cmd.State.running._redArg`, `_lam_21` (#113) | partial application of a lambda which takes more than 16 arguments |
+| `List.forIn'.loop…Cmd.State.state…` (2), `Cmd.State.fateJson…`, `Lifecycle.fateHeard…`, `Lifecycle.endWhy…`, `Lifecycle.endableReasons…` (in Main, specialized) | variable has a type outside the subset |
+| `Lifecycle.reads…` (in Main, specialized for state) | partial application of a lambda which has a `void` parameter |
 
 The "internal" ones look like hpl bugs (a structure update on a row with many optional fields).
