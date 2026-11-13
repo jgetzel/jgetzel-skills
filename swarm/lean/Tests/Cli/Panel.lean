@@ -228,6 +228,17 @@ def test_watchd_restart_same_flags_old_exits (t : T) : IO Unit := do
   eq (← mval t "agent_min") "5"  -- --max-agents is not replayed over the user's number
   eq (((← st t).f "watchd").f "pid") new.toNat!
 
+-- flags given with --restart replace the recorded ones and add new ones
+def test_watchd_restart_amends_flags (t : T) : IO Unit := do
+  restartHc t
+  t.sw_ "comms" ["join"]
+  let (_, old) ← firstWatchd t ["--interval", "1", "--comms", "comms", "--model", "haiku"]
+  until_ "the first watchd's tick" 10 do return (← mval t "watchd_up") == Json.str s!"{old} -"
+  let r ← t.sw "x" ["watchd", "--restart", "--ci", "--model", "sonnet"] { env := [("SWARM_NAME", none)] }
+  has r.stdout "watchd restarted: pid "
+  let call := ((← t.calls "hc").filter (·.startsWith "run ")).getLast?.getD ""
+  has call "watchd --takeover --interval 1 --min-free-mem 4 --comms comms --blocker-idle 25 --model sonnet --ci"
+
 -- a new watchd that never shows up: refused, the old one keeps the record and runs on
 def test_watchd_restart_nothing_started (t : T) : IO Unit := do
   restartHc t
@@ -307,6 +318,7 @@ def tests : List Case := [
   ("test_nudge", test_nudge),
   ("test_stay_end_for_another", test_stay_end_for_another),
   ("test_watchd_restart_same_flags_old_exits", test_watchd_restart_same_flags_old_exits),
+  ("test_watchd_restart_amends_flags", test_watchd_restart_amends_flags),
   ("test_watchd_restart_nothing_started", test_watchd_restart_nothing_started),
   ("test_watchd_restart_new_dies", test_watchd_restart_new_dies),
   ("test_watchd_hands_over_only_to_a_ticked_one", test_watchd_hands_over_only_to_a_ticked_one)]

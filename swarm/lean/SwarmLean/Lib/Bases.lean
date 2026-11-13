@@ -16,6 +16,12 @@ def default (cwd : Option String) : m String := do
   let txt := (← Fs.read s!"{top}/.claude/swarm.json").getD ""
   return ((Json.decode txt).bind (Json.fstr · "base")).filter (· ≠ "") |>.getD "main"
 
+/-- `.claude/swarm.json`'s `spawn.base`: the ref new worktrees start from, if set. -/
+def spawnBase (cwd : Option String) : m (Option String) := do
+  let some top := (← Git.git ["rev-parse", "--show-toplevel"] cwd).map strip | return none
+  let txt := (← Fs.read s!"{top}/.claude/swarm.json").getD ""
+  return ((Json.decode txt).bind (Json.field · "spawn")).bind (Json.fstr · "base") |>.filter (· ≠ "")
+
 /-- A task's base: its own, else the default (bases.base_for). -/
 def baseFor (base : Option String) (cwd : Option String) : m String := do
   match base with
@@ -33,6 +39,11 @@ def ref (b : String) (cwd : Option String) : m String := return (← remoteRef b
 def fetch [Proc m] (b : String) (cwd : Option String) : m Unit := do
   if strip ((← Git.git ["remote", "get-url", "origin"] cwd).getD "") != "" then
     discard <| Proc.output ["git", "fetch", "-q", "origin", b] cwd []
+
+/-- A spawn start ref `r` (fetching `origin/<b>` first): `r` itself when git has it, else none. -/
+def startRef [Proc m] (r : String) (cwd : Option String) : m (Option String) := do
+  if r.startsWith "origin/" then fetch (r.drop 7).toString cwd
+  return (← Git.git ["rev-parse", "--verify", "-q", r ++ "^{commit}"] cwd).map fun _ => r
 
 /-- The bases an agent's work must be on: those of the tasks it owns, else the default (bases.of_agent). -/
 def ofAgent (owned : List (Option String)) (cwd : Option String) : m (List String) := do

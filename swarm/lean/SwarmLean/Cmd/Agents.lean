@@ -37,7 +37,7 @@ def awaySpec : Spec := .mk "away" helpAway [many "note"] [flag "--back"] [] [] n
 def spawnSpec : Spec :=
   .mk "spawn" helpSpawn [{ name := "name" }, many "task"]
     [opt "--model" (some "sonnet"), { opt "--effort" with choices := ["low", "medium", "high", "xhigh", "max"] }, opt "--stay",
-     { opt "--task" none (some int) with target := "task_id" }, opt "--role", opt "--attach"] [] [] none
+     { opt "--task" none (some int) with target := "task_id" }, opt "--role", opt "--attach", opt "--base"] [] [] none
 /-- `swarm end`'s parser. -/
 def endSpec : Spec := .mk "end" helpEnd [{ name := "agent" }] [flag "--force"] [] [] none
 /-- `swarm endable`'s parser. -/
@@ -276,7 +276,7 @@ def who : m UInt32 := do
 def spawnCmd (a : Parsed) : m UInt32 := do
   let task := a.strs "task"
   Spawn.spawn { name := (a.str "name").getD "", model := (a.str "model").getD "sonnet", effort := a.str "effort",
-                stay := a.str "stay", taskId := a.int "task_id", role := a.str "role", attach := a.str "attach",
+                stay := a.str "stay", taskId := a.int "task_id", role := a.str "role", attach := a.str "attach", base := a.str "base",
                 task := if task.head? == some "--" then task.tail else task }
   return 0
 
