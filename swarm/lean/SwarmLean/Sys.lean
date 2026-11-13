@@ -50,5 +50,8 @@ class Sys (m : Type → Type) where
   remove : String → m Bool
   /-- proc.exec: runs argv to its end, waiting; code 127 when it can't start, 128+N when killed by signal N. -/
   exec : List String → RunOpts → m ProcOut
+  /-- Runs statements in one transaction on the SQLite file at a path other than the swarm db (db.open_at: made, with its
+  dirs and the schema, when missing); each statement's rows. `ro` (db.open_ro): no schema, never made, no transaction. -/
+  sqlAt : (path schema : String) → List (String × List Sqlite.Val) → (ro : Bool := false) → m (List (Array (Array Sqlite.Val)))
 
 end SwarmLean

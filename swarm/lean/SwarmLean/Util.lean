@@ -118,4 +118,12 @@ def splitlines (s : String) : List String :=
   let l := s.splitOn "\n"
   if s.endsWith "\n" then l.dropLast else l
 
+/-- util.shquote: as is when only `[%w@%%+=:,./_-]`, else single-quoted. -/
+def shquote (s : String) : String :=
+  if s != "" && s.toList.all (fun c => c.isAlphanum || "@%+=:,./_-".contains c) then s
+  else "'" ++ s.replace "'" "'\"'\"'" ++ "'"
+
+/-- util.shjoin. -/
+def shjoin (argv : List String) : String := " ".intercalate (argv.map shquote)
+
 end SwarmLean

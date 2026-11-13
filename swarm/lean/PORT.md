@@ -99,6 +99,15 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   agent→worktree list and bases.base_for as arguments (#100's), so watchd (#102) wires them. snapshot's temp
   index is made with `mktemp -d`, `cp -p` (which keeps the index's mtime to the nanosecond, where the Lua kept whole
   seconds: git rehashes no more) and `rm -rf` through `Proc`.
+- **difflib.lua, conflict.lua** (#99): `Lib/Difflib.lean`, `Lib/Conflict.lean` (hunks, edits, clash, real_hunk).
+- **ci, cost, run, state** (#101): `Cmd/Ci`, `Cmd/Cost`, `Cmd/Run`, `Cmd/State` (state, watch), their `-h` texts in
+  `Cmd/OpsHelp`. ci.lua's watchd side (pr_ci, pr_watch, ci_poll, ci_check) is in `Lib/Ci` as pure steps on the db
+  (`prCiApply`, `prWatchApply`, `ciPollApply`, `ciCheckStep`, `ciNewRedTask`) with gh's answers as arguments, and
+  world wrappers (`prCi`, `prWatch`, `ciPoll`, `ciCheck`) for watchd; run.lua's watchd side (`remoteTick`,
+  `cleanRemote`) and the job env are `Lib/Run`; cost.lua is `Lib/Cost` (its history db through `Sys.sqlAt`);
+  bases.lua is `Lib/Bases`. Each watchd step takes its own transactions around the gh and git calls, where the Lua
+  wrote as it went on one connection. `swarm run`'s command is split off before parsing in `Dispatch.run` (main.lua's
+  split_run) and reaches the group as `argv`.
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
@@ -126,6 +135,11 @@ Ported as they are:
   it as 0 and moves it. Not ported as is: an endless loop.
 - `swarm wait` on an agent row deleted under it fails in Lua (indexing nil); Lean exits 0, as superseded.
 - `wait --poll` takes a decimal (`0.2`, `1`); Lua's `tonumber` also takes hex and exponents.
+- `cost.key` strips `swarm run … -- ` only with a word between `run` and `--` (`swarm run -- make` keys as
+  `swarm run --`).
+- ci_check's "Later red" appends to the red task's body with SQL `||`, so a task with a NULL body keeps NULL.
+- pr_ci matches a PR to a task with no owner by the head branch prefix `nil/` (Lua's `tostring(nil)`).
+- `swarm watch` loads the event table whole each second (Store has no query; `shortcut:` in Cmd/State).
 - `agents.session_active`'s `hc get` cache (`term_seen`) lives one command; Lean threads it as a value (`Seen`).
 
 ## hpl
@@ -140,6 +154,11 @@ The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.
 | `Hook.ctxFrom._redArg._lam_3` | construction of a value of the builtin type `String` |
 | `Cmd.Tasks.task._redArg`, `Hook.handoffNudge._redArg._lam_9` | partial application of a lambda which takes more than 16 arguments |
 | `loadRows._redArg`, `storeRows._redArg` | partial application of a lambda which has a `void` parameter |
+| `execIO'`, `execIO'._lam_1` (RealSys) | partial application of a lambda which has a `void` parameter |
+| `Cmd.Run.run._redArg` and 33 of its lambdas, `Cmd.Ci.ci._redArg._lam_13`…`_lam_20` (6), `Ci.ciPoll…_lam_7`, `Ci.prWatch…_lam_5`, `Run.remoteTick…_lam_12`, `_lam_14` | partial application of a lambda which takes more than 16 arguments |
+| `Ci.ciNewRedTask` | internal: a Option String is used where a Option Int is expected |
+| `List.forIn'.loop…Cmd.Run.run…` (in Main) | partial application of a lambda which has a `void` parameter |
+| `Cmd.Run.run…spec_26` (in Main) | variable has a type outside the subset |
 | `Dispatch.runParsed…spec_3` (in Main) | variable has a type outside the subset |
 | `Agents.hcTerminals…` (in Main, specialized for post) | internal: a Option String is used where a Option (List SwarmLean.Agents.Term) is expected |
 | `Cmd.Msgs.post._redArg._lam_20`; `Cmd.Msgs.wait._redArg._lam_20`…`_lam_31` (8) | partial application of a lambda which takes more than 16 arguments |

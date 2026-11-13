@@ -46,6 +46,24 @@ def execIO' (argv : List String) (o : RunOpts) : IO ProcOut := do
       finish child.stdout child.stderr child.wait
   catch _ => return { code := 127, stdout := "", stderr := "" }
 
+/-- Sys.sqlAt on IO. -/
+def sqlAtIO (path schema : String) (stmts : List (String × List Sqlite.Val)) (ro : Bool) :
+    IO (List (Array (Array Sqlite.Val))) := do
+  if ro then
+    let c ← Sqlite.Conn.open path true
+    return ← stmts.mapM fun (q, ps) => c.query q ps
+  if let some d := (path : System.FilePath).parent then if d.toString ≠ "" then IO.FS.createDirAll d
+  let c ← Sqlite.Conn.open path false
+  c.script schema
+  discard <| c.exec "begin immediate"
+  try
+    let r ← stmts.mapM fun (q, ps) => c.query q ps
+    discard <| c.exec "commit"
+    return r
+  catch e =>
+    try discard <| c.exec "rollback" catch _ => pure ()
+    throw e
+
 instance : Sys App where
   getpid := return (← IO.Process.getPID).toNat
   getppid := return (← Shim.getppid).toNat
@@ -69,5 +87,6 @@ instance : Sys App where
   link a b := (do try Shim.link a b; return true catch _ => return false : IO _)
   remove p := (do try IO.FS.removeFile p; return true catch _ => return false : IO _)
   exec argv o := execIO' argv o
+  sqlAt path schema stmts ro := sqlAtIO path schema stmts ro
 
 end SwarmLean
