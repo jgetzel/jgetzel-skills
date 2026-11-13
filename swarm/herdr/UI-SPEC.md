@@ -34,10 +34,10 @@ not tried.
 | Need | Source | Status |
 | --- | --- | --- |
 | Whole window from a layout (rail, bar, cards, no status bar) | layout nodes `block`, `row`, `column`, `stack`; root `"titlebar":"none"` with a `window_drag` block; `pane.radius/border/focus/gap` on the tab block | documented |
-| Every terminal with space, tab, parent, name, status | `terminals()` (the `hc ls --json` record: `labels["herdr.space"]`, `labels["herdr.tab"]`, `parent`, `name`, `title`, `cwd`), `agents()`, `panes()` | documented |
+| Every terminal with space, tab, parent, name, status | `terminals()` (the `hc ls --json` record: `labels["herdr.space"]`, `labels["herdr.tab"]`, `parent`, `name`, `title`, `cwd`), `agents()`, `panes()` | checked in slice 1; `status_ms` is null there, so `rw-rail` stamps change times itself as the shipped agents mod does |
 | Status words | `working`, `blocked`, `done`, `idle`. The core also has `error`, and `kind` (permission, question, auth) | documented |
 | "Done" clears when you look | the app does it; no mod call clears it | documented |
-| A shell's front program | `program` on the terminal follows what runs; `foreground {argv, cwd, name, pid}` in `hc schema` | `foreground` in `terminals()` is unchecked: log it in a mod first |
+| A shell's front program | `program` on the terminal follows what runs; `foreground {argv, cwd, name, pid}` in `hc schema` | checked in slice 1: `terminals()` carries `foreground` |
 | A shell's last exit status | none | not available |
 | Focus and navigation | `focused()`, `pane.focus`, `agent.focus`, `tab.select`, `space.select`, `tab.new {mod, props}`, `pane.split {direction, mod, props}` | documented |
 | Overlays | `openOverlay({kind: "dialog" \| "popup" \| "window"})`, `notify()` toasts, `HoverCard`, `Popover`, right-click popup | documented |
@@ -262,8 +262,7 @@ Each is one PR and usable on its own once the layout is switched to.
 
 ## Still unchecked
 
-- `foreground` on `terminals()`.
-- Everything marked unchecked above; no mod in this spec has been run.
+- Everything marked unchecked above; of the mods here only `rw-rail` has been run.
 - Cost of `exec` polling for several swarms at once.
 - Whether `layout.switch` back and forth keeps each layout's pane state; the
   guide says switching starts the layout's mods fresh.
