@@ -752,7 +752,212 @@ def test_hc_blocked_marks_task (t : T) : IO Unit := do
   tick
   eq ((← t.q1 "select state from task").f "state") "claimed"
 
---CHUNK4--
+-- ---- task deps ----
+def test_after_dependency (t : T) : IO Unit := do
+  t.agent "a"
+  t.sw_ "a" ["task", "add", "first"]; t.sw_ "a" ["task", "add", "second", "--after", "1"]
+  has (← t.sw "a" ["board"]).stdout "after #1"
+  let r ← t.sw "a" ["task", "claim", "2"] { ok := false }
+  ok (r.code != 0)
+  has r.stderr "waits on #1"
+  t.sw_ "a" ["task", "claim", "1"]; t.sw_ "a" ["task", "done", "1", "--evidence", "e"]
+  t.sw_ "a" ["task", "claim", "2"]
+
+def test_deps_migration (t : T) : IO Unit := do
+  -- a task.after from before task.deps
+  let h ← SwarmLean.Sqlite.Conn.open t.db false
+  h.script ("create table task(id integer primary key, title text, body text, state text default 'open', owner text,"
+    ++ " lease_until int, created_by text, evidence text, after int);"
+    ++ "insert into task(title) values('one'); insert into task(title,after) values('two',1);")
+  t.agent "a"
+  let rows ← t.q "select deps from task"
+  eq [rows[0]!.f "deps", rows[1]!.f "deps"] (json% [null, "1"])
+  for c in ← t.q "pragma table_info(task)" do ok (c.f "name" != "after") "after column left"
+  has (← t.sw "a" ["board"]).stdout "after #1  two"
+
+def poolIds (t : T) : IO (List Nat) := do
+  Shim.setenv "SWARM_DB" t.db
+  let c ← connect
+  let db ← loadDb c [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  return (SwarmLean.Tasks.pool db).map (·.id)
+
+def test_priority_orders_pool_and_board (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"
+  t.sw_ "a" ["task", "add", "plain"]                  -- #1 default P2
+  t.sw_ "a" ["task", "add", "someday", "-p", "3"]     -- #2
+  t.sw_ "a" ["task", "add", "urgent", "--priority", "0"]  -- #3
+  t.sw_ "a" ["task", "add", "soon", "-p", "1"]        -- #4
+  t.sw_ "a" ["task", "add", "plain2  [P2]"]                 -- #5
+  eq ((← t.q1 "select priority from task where id=1").f "priority") 2
+  let b := (← t.sw "a" ["board"]).stdout
+  let mut pos : List Nat := []
+  for x in ["urgent", "soon", "plain  [P2]", "plain2  [P2]", "someday"] do
+    match b.splitOn x with
+    | pre :: _ :: _ => pos := pos ++ [pre.length]
+    | _ => fail s!"{x} not in {b}"
+  ok (pos == pos.mergeSort && pos.eraseDups.length == 5) b
+  has b "P0"; has b "P3"
+  has (← t.sw "a" ["task", "show", "3"]).stdout "priority: P0"
+  -- the pool: priority, then id; the red task still first
+  eq (← poolIds t) [3, 4, 1, 5, 2]
+  t.sw_ "a" ["task", "priority", "2", "0"]
+  t.sw_ "a" ["task", "priority", "5", "1"]
+  eq (← poolIds t) [2, 3, 4, 5, 1]
+  -- never preempts: a claimed task keeps its owner; a done or bad priority is refused
+  t.sw_ "a" ["task", "claim", "1"]
+  t.sw_ "a" ["task", "priority", "1", "0"]
+  eq (← t.q1 "select owner, priority from task where id=1") (json% {"owner": "a", "priority": 0})
+  ok ((← t.sw "a" ["task", "priority", "1", "4"] { ok := false }).code != 0)
+  t.sw_ "a" ["task", "done", "1", "--evidence", "x"]
+  ok ((← t.sw "a" ["task", "priority", "1", "1"] { ok := false }).code != 0)
+
+def test_deps_list_holds_until_last_done (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"
+  for x in ["one", "two", "three"] do t.sw_ "a" ["task", "add", x]
+  t.sw_ "a" ["task", "add", "four", "--after", "3,1"]
+  eq ((← t.q1 "select deps from task where id=4").f "deps") "3,1"
+  let check (ready : List Nat) : IO Unit := do
+    let mut ids : Array Int := #[]
+    for x in tasksOf (← state t) do
+      let w := x.f "waiting"
+      if x.f "state" == "open" && !(w != .null && w != .bool false) then ids := ids.push (x.f "id").i
+    eq (ids.qsort (· < ·)) ready
+    unless ready.contains 4 do
+      has (← t.sw "a" ["task", "claim", "4"] { ok := false }).stderr "waits on"
+      has (← t.sw "a" ["spawn", "t-9", "--task", "4"] { ok := false }).stderr "waits on"
+  check [1, 2, 3]
+  for (n, ready) in [(1, [2, 3]), (2, [3]), (3, [4])] do
+    t.sw_ "a" ["task", "claim", toString n]; t.sw_ "a" ["task", "done", toString n, "--evidence", "e"]
+    check ready
+  has (← t.sw "a" ["task", "show", "4"]).stdout "after: #3 done, #1 done"
+  t.sw_ "a" ["task", "claim", "4"]
+  has (← t.sw "a" ["task", "add", "x", "--after", "1,9"] { ok := false }).stderr "no task #9"
+
+def test_release_after_leaves_pool (t : T) : IO Unit := do
+  t.agent "a"
+  t.sw_ "a" ["task", "add", "dep"]; t.sw_ "a" ["task", "add", "work"]
+  t.sw_ "a" ["task", "claim", "2"]
+  has (← t.sw "a" ["task", "release", "2", "--after", "2"] { ok := false }).stderr "#2 → #2"
+  has (← t.sw "a" ["task", "release", "2", "--after", "1"]).stdout "after #1"
+  has (← t.sw "a" ["board"]).stdout "after #1  work"
+  has (← t.sw "a" ["task", "claim", "2"] { ok := false }).stderr "#1"
+
+def test_task_after_cycle_and_lines (t : T) : IO Unit := do
+  t.agent "a"
+  for x in ["one", "two", "three"] do t.sw_ "a" ["task", "add", x]
+  t.sw_ "a" ["task", "after", "2", "1"]
+  t.sw_ "a" ["task", "after", "3", "2,1"]
+  let r ← t.sw "a" ["task", "after", "1", "3"] { ok := false }
+  has r.stderr "#1 → #3 → #2 → #1"
+  has (← t.sw "a" ["task", "after", "1", "1"] { ok := false }).stderr "#1 → #1"
+  has (← t.sw "a" ["board"]).stdout "after #1  two"
+  let shown := (← t.sw "a" ["task", "show", "1"]).stdout
+  has shown "blocks: #2, #3"
+  hasnt shown "after:"
+  has (← t.sw "a" ["task", "show", "3"]).stdout "after: #2 open, #1 open"
+  let ts := tasksOf (← state t)
+  let s (i : Int) : Json := (ts.find? fun x => (x.f "id").i == i).getD .null
+  eq [(s 3).f "deps", (s 1).f "blocks", (s 3).f "blocks"] (json% [[2, 1], [2, 3], []])
+  let out := (← t.sw "a" ["task", "drop", "1"]).stdout
+  has out "#2 waits on #1: drop it too, or `swarm task after 2 …`"
+  has out "#3 waits on #1"
+  has (← t.sw "a" ["board"]).stdout "after #2, #1 (dropped)  three"  -- still held back
+  t.sw_ "a" ["task", "after", "3", ""]  -- cleared
+  eq ((← t.q1 "select deps from task where id=3").f "deps") ""
+  t.sw_ "a" ["task", "claim", "2"] { ok := false }
+  t.sw_ "a" ["task", "claim", "3"]
+  has (← t.sw "a" ["task", "after", "3", "2"] { ok := false }).stderr "is claimed"
+
+-- An idle agent whose claim open tasks wait on (transitively) is asked once per idle stretch; comms is told once.
+def blockerSetup (t : T) (chain : Bool) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.sw_ "e" ["task", "add", "gate"]; t.sw_ "e" ["task", "claim", "1"]
+  t.sw_ "e" ["task", "add", "d1", "--after", "1"]
+  if chain then t.sw_ "e" ["task", "add", "d2", "--after", "2"]
+def asked (t : T) : IO (Array Json) :=
+  t.q "select body from msg where dest='e' and body like 'What are you waiting on?%'"
+
+def test_blocker_nudged_once_per_idle_stretch_and_rearms (t : T) : IO Unit := do
+  blockerSetup t false
+  commsTick t; commsTick t
+  eq (← asked t).size 1
+  eq (← t.q "select body from msg where dest='comms' and body like '%holding #1, which 1 open%'").size 1
+  t.q_ "update event set ts=ts-5000"; t.q_ "update agent set last_active=? where name='e'" [.int ((← now) - 1500)]  -- woke, idle again
+  commsTick t
+  eq (← asked t).size 2
+
+def test_blocker_counts_transitive_dependants (t : T) : IO Unit := do
+  blockerSetup t true
+  commsTick t
+  eq (← t.q "select body from msg where dest='comms' and body like '%which 2 open%'").size 1
+
+def test_blocker_spared_without_dependants_or_under_threshold (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.sw_ "e" ["task", "add", "alone"]; t.sw_ "e" ["task", "claim", "1"]
+  commsTick t
+  eq (← asked t).size 0
+  t.sw_ "e" ["task", "add", "d1", "--after", "1"]
+  t.q_ "update agent set last_active=? where name='e'" [.int ((← now) - 600)]
+  commsTick t
+  eq (← asked t).size 0
+
+-- board #92
+def test_task_edit (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"; t.agent "b"
+  t.sw_ "a" ["task", "add", "one", "--body", "old", "--model", "m1", "--priority", "1"]
+  t.sw_ "a" ["task", "claim", "1"]
+  -- open/claimed edit: row, history in show, one plain notice to the owner (not to the editor)
+  t.sw_ "b" ["read"]
+  let r ← t.sw "b" ["task", "edit", "1", "--title", "uno", "--append", "more", "--model", "m2", "--effort", "high"]
+  has r.stdout "apply at the next spawn/claim"
+  let row ← t.q1 "select title,body,model,effort,priority,owner,state from task where id=1"
+  eq row (json% {"title": "uno", "body": "old\nmore", "model": "m2", "effort": "high", "priority": 1, "owner": "a", "state": "claimed"})
+  let msg := (← t.sw "a" ["read"]).stdout
+  has msg "title: one -> uno"; has msg "model: m1 -> m2"; has msg "body appended: more"
+  eq ((← t.q1 "select urgent from msg where dest='a' order by id desc limit 1").f "urgent") 0
+  let s := (← t.sw "a" ["task", "show", "1"]).stdout
+  has s "by b: title, body, model, effort"
+  -- body replace, --urgent, body file
+  t.sw_ "b" ["task", "edit", "1", "--body", "new", "--urgent"]
+  eq ((← t.q1 "select urgent from msg where dest='a' order by id desc limit 1").f "urgent") 1
+  has (← t.sw "a" ["read"]).stdout "body replaced: task show 1"
+  t.write "b" "body.txt" "from file"
+  t.sw_ "b" ["task", "edit", "1", "--body-file", "body.txt"]
+  eq ((← t.q1 "select body from task where id=1").f "body") "from file"
+  t.sw_ "b" ["task", "edit", "1", "--body-file", "-"] { stdin := some "from stdin" }
+  eq ((← t.q1 "select body from task where id=1").f "body") "from stdin"
+  -- no flag, no change, bad input: error, nothing written
+  let n := (← t.q "select * from event where kind='task-edit'").size
+  for args in [["edit", "1"], ["edit", "1", "--title", "uno"], ["edit", "1", "--title", ""],
+      ["edit", "1", "--body", "x", "--append", "y"], ["edit", "1", "--effort", "bogus"],
+      ["edit", "1", "--body-file", "/nonexistent"]] do
+    t.sw_ "b" ("task" :: args) { ok := false }
+  eq (← t.q "select * from event where kind='task-edit'").size n
+  -- done and dropped refuse
+  t.sw_ "a" ["task", "done", "1", "--evidence", "x"]
+  has (← t.sw "b" ["task", "edit", "1", "--title", "z"] { ok := false }).stderr "done"
+  t.sw_ "a" ["task", "add", "two"]; t.sw_ "a" ["task", "drop", "2"]
+  has (← t.sw "b" ["task", "edit", "2", "--title", "z"] { ok := false }).stderr "dropped"
+
+-- task add: --body-file (- is stdin); an empty, multi-line, or over-long bodiless title is refused and adds nothing
+def test_task_add_validates_title_and_reads_body_file (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"
+  t.write "a" "b.txt" "from file"
+  t.sw_ "a" ["task", "add", "one", "--body-file", "b.txt"]
+  t.sw_ "a" ["task", "add", "two", "--body-file", "-"] { stdin := some "from stdin" }
+  eq (← t.q "select body from task order by id") (json% [{"body": "from file"}, {"body": "from stdin"}])
+  let long := String.ofList (List.replicate 101 'x')
+  for args in [[""], ["  "], ["a\nb"], [long], ["t", "--body-file", "/nonexistent"],
+      ["t", "--body", "x", "--body-file", "b.txt"]] do
+    t.sw_ "a" (["task", "add"] ++ args) { ok := false }
+  eq (← t.q "select * from task").size 2
+  t.sw_ "a" ["task", "add", long, "--body", "detail"]
+  t.sw_ "a" ["task", "add", String.ofList (List.replicate 100 'x')]
+  eq (← t.q "select * from task").size 4
 
 def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
@@ -805,6 +1010,17 @@ def tests : List Case := [
   ("test_ci_poll_once_for_all", test_ci_poll_once_for_all),
   ("test_ci_reads_the_table", test_ci_reads_the_table),
   ("test_block_unblock", test_block_unblock),
-  ("test_hc_blocked_marks_task", test_hc_blocked_marks_task)]
+  ("test_hc_blocked_marks_task", test_hc_blocked_marks_task),
+  ("test_after_dependency", test_after_dependency),
+  ("test_deps_migration", test_deps_migration),
+  ("test_priority_orders_pool_and_board", test_priority_orders_pool_and_board),
+  ("test_deps_list_holds_until_last_done", test_deps_list_holds_until_last_done),
+  ("test_release_after_leaves_pool", test_release_after_leaves_pool),
+  ("test_task_after_cycle_and_lines", test_task_after_cycle_and_lines),
+  ("test_blocker_nudged_once_per_idle_stretch_and_rearms", test_blocker_nudged_once_per_idle_stretch_and_rearms),
+  ("test_blocker_counts_transitive_dependants", test_blocker_counts_transitive_dependants),
+  ("test_blocker_spared_without_dependants_or_under_threshold", test_blocker_spared_without_dependants_or_under_threshold),
+  ("test_task_edit", test_task_edit),
+  ("test_task_add_validates_title_and_reads_body_file", test_task_add_validates_title_and_reads_body_file)]
 
 end SwarmLean.Tests.Cli.Lifecycle
