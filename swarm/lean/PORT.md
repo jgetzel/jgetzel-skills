@@ -1,0 +1,109 @@
+# Porting the swarm CLI to Lean
+
+The swarm CLI (swarm/lua/swarm, LuaJIT) moves to Lean here, in this order: port until it is functional, move the
+proofs over, delete the Lua. Board #97 laid the foundation and ported `task`, `board` and `rules` (tasks.lua,
+bases.lua); #98-#101 port the rest in parallel on top of it. This file is what they build on.
+
+## Progress
+
+`./parity.sh` runs the Lua CLI's cli_*_spec.lua tests against swarm-lean and prints, per spec file, passed / failed /
+not-ported. It is strict (SWARM_LEAN_STRICT=1): a command not ported fails, so a test counts as passed only when
+every command it runs is ported. `./parity.sh --mixed` runs the same tests letting unported commands fall through to
+the Lua CLI: every test must pass there, which checks each ported command against the Lua running the rest. Report a
+port's progress as parity.sh's table; `./check.sh` runs both modes on both builds.
+
+## Decisions
+
+1. **Same database.** swarm-lean reads and writes the Lua CLI's SQLite db (`$SWARM_DB`, else
+   `<git common dir>/swarm/swarm.db`), schema and migrations as db.lua's (`Real.lean`: `schema`, `columns`,
+   `connect`). SQLite comes through `c/shim.c` (`@[extern]` in `Sqlite.lean`), linked to the repo flake's `sqlite`
+   output (`nix build .#sqlite`, which the lakefile runs into `.lake/sqlite`; `$SWARM_SQLITE` overrides with a prefix
+   holding lib/ and include/). The shim also gives `now`, the local `HH:MM` and `execvp`.
+2. **Proof shape.** `Db` (`Db.lean`) holds every table as a list of rows plus the next id of each AUTOINCREMENT
+   table. A command's effect is a pure `… → Db → Db × Except String α` (`Db/<module>.lean`), run by
+   `Store.txn tables f`: BEGIN IMMEDIATE, load the listed tables, apply `f`, write back, COMMIT
+   (`Real.lean`: `sqliteTxn`). The write-back diffs by primary key: deletes the rows gone, UPDATEs the changed ones
+   (known columns only, so a column Lean does not know keeps its value), INSERTs the new. A table not loaded is empty
+   in the `Db` and only gains the rows the step inserts (an event appended needs no load). `Atomic` stays the one
+   store assumption; it now also covers "a step reads only the tables it lists". The slice's theorems are proved of
+   the real steps (`Proofs.lean`).
+3. **The world through interfaces** (`World.lean`, instances for `App` in `Real.lean`): `Store`, `Clock` (now, hhmm),
+   `Env` (variables, stdout/stderr lines, stdin, cwd), `Fs` (read, list, write), `Proc` (output, exec, luaCli),
+   `Git`. A command is generic in its monad `m` and asks for the classes it uses; early exit is
+   `MonadExceptOf Exit m` (`die` writes `swarm: <msg>` and exits 1). No command calls IO. To add one (gh, hc, a
+   process's spawn/wait/kill/alive): a class in `World.lean` (or its own file imported there), its `App` instance in
+   `Real.lean`, and `[X m]` on the commands that use it.
+4. **Layout.** One file per command group, `Cmd/<Group>.lean`, ending in `def group : Group m` (its parsers and its
+   run); `Dispatch.groups` lists the groups, one line each (and one import). Pure steps per Lua module under `Db/`
+   (`Db/Tasks.lean`, `Db/Agents.lean`, `Db/Msgs.lean`); world-facing helpers per Lua module under `Lib/`
+   (`Lib/Machine.lean`, `Lib/Hook.lean`). Row types are all in `Db/Rows.lean` (the schema is fixed; a task adds a
+   column there). A file belongs to the task porting its Lua module, so parallel tasks do not touch the same files:
+   #98 Db/Msgs, Cmd/Msgs; #99 Lib/Hook, Cmd/Locks, Cmd/Hook; #100 Db/Agents, Lib/Machine, Cmd/Agents; #101 Cmd/Ci …
+5. **main.** `Main.lean`: the first word picks a group (`Dispatch.find`); `Args.lean` parses the rest as argparse
+   does (same errors, exit 2 with `Usage: swarm [-h] <command> ...` before `swarm: error: <msg>`; `-h` prints the
+   help to stdout, exit 0). The `-h` texts are literals copied from the Lua (`./swarm <cmd> -h`), in
+   `Cmd/<Group>Help.lean`. `Dispatch.runParsed` does main.lua's fence and the communicator's nudge, then the group.
+   A word no group ports execs the Lua launcher with the same argv and environment (`$SWARM_LUA_CLI`, else the
+   `swarm` next to `lua/swarm/main.lua` in a directory above the binary). With `SWARM_LEAN_STRICT=1` it fails
+   instead: `swarm: not ported: <cmd>`, exit 1, and it appends `<cmd>` to `swarm-lean-not-ported` beside `$SWARM_DB`
+   (how parity.sh tells a test that swallows the message).
+6. **Parity.** `swarm/lua/test/cli.lua` runs `$SWARM_BIN` instead of the launcher when that is set, with
+   `SWARM_LEAN_STRICT=1` unless the env sets it. It also gained `cli.DIR` (swarm/), which two specs now use for paths
+   they derived from the launcher's.
+7. **Ported here:** `task add/priority/after/claim/renew/show/done/block/unblock/release/edit/drop`, `board`, `rules`
+   (all of tasks.lua's commands). bases.lua has no command; its helpers port with their first user (#100's endable,
+   watchd's sweep). `--mixed` passes all 236 tests.
+8. **Builds.** Stock Lean (`lake build`) and hpl (`hpl/`, every module `--all`). hpl compiles the whole program;
+   the functions it refuses get Lean's C (listed below and by check.sh).
+9. **Style.** One-sentence doc comments; no sorry/admit/axiom/native_decide; a Lua behaviour that looks wrong is
+   ported as is and listed below.
+
+## Beyond the above
+
+- **One transaction per command.** The Lua runs some checks and writes outside its transaction (claim's dep check,
+  `agents.touch`, the context check, the claim's event); here each command is one `Store.txn` (two for the fence),
+  so it is at least as atomic. What the Lua wrote before a die inside its transaction still stays: the step returns
+  that db with the error (claim's touch).
+- **Read-only commands** (`board`, `task show`) take a snapshot (`Store.txn ts fun db => (db, db)`) and format it in
+  the monad, since `HH:MM` is the world's.
+- **Rows** are named as the columns (`lease_until`, `created_by`), every non-key column optional. `task.state` is
+  `Status`; a state text Lean does not know fails the load. A cell of the wrong storage class is coerced as SQLite's
+  affinity would (integral text in an int column reads as the integer).
+- **Bridges.** The full machine note (machine.machine_note, which claim prints under memory pressure) is #100's;
+  until then `Cmd/Tasks.machineNote` runs the Lua CLI's `swarm machine` and prints its output. Remove it when
+  Lib/Machine has the note.
+- **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
+  (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
+  assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
+
+## Lua behaviours to revisit
+
+Ported as they are:
+
+- `task drop` drops a task in any state, done included.
+- `tasks.stop_pending` compares the cursor with a NULL `stop_msg` (a Lua error); Lean reads NULL as 0.
+- `task show` appends `, ctx Nk at claim` and ` -> Nk at done` to the priority (or base) line, not on a line of their
+  own.
+- `task claim` creates the agent's row (touch) before the context check, and keeps it when the claim is refused.
+- The `task add` title limit counts bytes, not characters.
+- `task release --after ""` stores deps as the empty string, not NULL.
+- `board` prints `nil` for a `spawn_held` meta row whose value is NULL; `task unblock` says `only nil or the
+  communicator` for a task with no owner.
+- `hook.ctx_from` reads a transcript's last 300 KB as bytes; Lean drops the whole tail when the cut lands inside a
+  UTF-8 character (`shortcut:` in Lib/Hook).
+
+## hpl
+
+The hpl build (`hpl/`) refuses these, all compiled with Lean's C instead (check.sh prints the current list):
+
+| function | hpl's reason |
+|---|---|
+| `Agents.touch`, `Tasks.add`, `Tasks.drop._lam_0`, `Tasks.reopenF`, `Tasks.reopenFromF` | internal: a Option String is used where a Option Int is expected |
+| `Machine.mem._redArg._lam_11` | internal: a Option String is used where a Option Float is expected |
+| `outputIO` | internal: a Option String is used where a Option SwarmLean.ProcOut is expected |
+| `Hook.ctxFrom._redArg._lam_3` | construction of a value of the builtin type `String` |
+| `Cmd.Tasks.task._redArg`, `Hook.handoffNudge._redArg._lam_9` | partial application of a lambda which takes more than 16 arguments |
+| `loadRows._redArg`, `storeRows._redArg` | partial application of a lambda which has a `void` parameter |
+| `Dispatch.runParsed…spec_3` (in Main) | variable has a type outside the subset |
+
+The "internal" ones look like hpl bugs (a structure update on a row with many optional fields).

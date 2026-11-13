@@ -1,36 +1,39 @@
-import SwarmLean.Store
+import SwarmLean.Dispatch
+import SwarmLean.Real
 open SwarmLean
 
-/-- The command a command line asks for, as `agent`. -/
-def parse (agent : Option String) : List String → Except String Cmd
-  | ["board"] => pure .board
-  | "task" :: "add" :: title@(_ :: _) => pure (.add (" ".intercalate title))
-  | ["task", verb, id] => do
-    let some i := id.toNat? | throw s!"not a task id: {id}"
-    let some a := agent | throw "SWARM_NAME is not set"
-    match verb with
-    | "claim" => pure (.claim i a)
-    | "release" => pure (.release i a)
-    | _ => throw s!"unknown: task {verb}"
-  | _ => throw "usage: swarm-lean task add <title> | task claim <id> | task release <id> | board"
-
-/-- An answer's text, and whether it is a success. -/
-def render : Result → String × Bool
-  | .added i => (s!"added #{i}", true)
-  | .claimed => ("claimed", true)
-  | .held o => (s!"held by {o.getD "?"}", false)
-  | .notOpen => ("not open", false)
-  | .released => ("released", true)
-  | .notYours => ("not claimed by you", false)
-  | .noSuch => ("no such task", false)
-  | .board ts => ("\n".intercalate (ts.map fun t =>
-      s!"#{t.id} {match t.status with | .open => "open" | .claimed => "claimed" | .done => "done"} {t.owner.getD "-"}  {t.title}"), true)
+/-- A command not ported yet: the Lua CLI with the same argv and environment, or under SWARM_LEAN_STRICT=1 a failure. -/
+def fallThrough (args : List String) : IO UInt32 := do
+  let w := args.headD ""
+  if (← IO.getEnv "SWARM_LEAN_STRICT") == some "1" then
+    IO.eprintln s!"swarm: not ported: {w}"
+    -- for parity.sh: a test that swallows the message still leaves this in its fixture, beside its db
+    if let some db ← IO.getEnv "SWARM_DB" then
+      if let some dir := (db : System.FilePath).parent then
+        try
+          let h ← IO.FS.Handle.mk (dir / "swarm-lean-not-ported") .append
+          h.putStrLn w
+        catch _ => pure ()
+    return 1
+  match ← luaCliIO with
+  | none => IO.eprintln s!"swarm: not ported: {w}, and the Lua CLI is not found (set SWARM_LUA_CLI)"; return 127
+  | some lua =>
+    let why ← execIO (lua :: args)
+    IO.eprintln s!"swarm: can't run the Lua CLI {lua}: {why}"
+    return 127
 
 def main (args : List String) : IO UInt32 := do
-  let path : System.FilePath := (← IO.getEnv "SWARM_LEAN_DB").getD ".claude/swarm-lean.json"
-  match parse ((← IO.getEnv "SWARM_NAME").filter (· ≠ "")) args with
-  | .error e => IO.eprintln e; pure 2
-  | .ok c =>
-    let (out, ok) := render (← ReaderT.run (exec c) path)
-    (if ok then IO.println out else IO.eprintln out)
-    pure (if ok then 0 else 1)
+  match args with
+  | w :: rest =>
+    match Dispatch.find (m := App) w with
+    | none => fallThrough args
+    | some (g, spec) =>
+      let ctx : Ctx := { conn := ← IO.mkRef none }
+      try
+        match ← (Dispatch.run g spec rest).run ctx with
+        | .ok code => pure code
+        | .error e => pure e.code
+      catch e =>
+        IO.eprintln s!"swarm: {e}"
+        pure 1
+  | [] => fallThrough args

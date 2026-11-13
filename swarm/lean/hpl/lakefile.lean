@@ -26,13 +26,38 @@ module_facet hplO (mod : Module) : FilePath := do
   buildLeanO (mod.irDir / "hpl" / (mod.name.toString ++ ".o")) cJob mod.weakLeancArgs
     (mod.leancArgs ++ #["-DLEAN_EXPORTING"])
 
+/-- The sqlite library and header, as in ../lakefile.lean: $SWARM_SQLITE, else the flake output there. -/
+def sqlitePrefix : IO FilePath := do
+  if let some p ← IO.getEnv "SWARM_SQLITE" then if p ≠ "" then return p
+  let out := __dir__ / ".." / ".lake" / "sqlite"
+  unless ← out.pathExists do
+    IO.FS.createDirAll (__dir__ / ".." / ".lake")
+    let r ← IO.Process.output { cmd := "nix", args := #["build", "-o", out.toString, s!"{__dir__}/../../..#sqlite"] }
+    if r.exitCode ≠ 0 then throw <| IO.userError s!"nix build of the flake's sqlite failed: {r.stderr}"
+  return out
+
+/-- Link flags for sqlite: its lib dir on the search path and the rpath. -/
+def sqliteLink : IO (Array String) := do
+  let lib := (← sqlitePrefix) / "lib"
+  return #[s!"-L{lib}", "-lsqlite3", s!"-Wl,-rpath,{← IO.FS.realPath lib}"]
+
+/-- The C shim, as in ../lakefile.lean (plain C: hpl compiles Lean, not C). -/
+target shim.o pkg : FilePath := do
+  let src ← inputTextFile (pkg.dir / ".." / "c" / "shim.c")
+  let inc := (← sqlitePrefix) / "include"
+  buildO (pkg.buildDir / "c" / "shim.o") src #["-I", inc.toString] #["-fPIC", "-O2"] (← getLeanc)
+
+extern_lib libswarmshim pkg := do
+  buildStaticLib (pkg.staticLibDir / nameToStaticLib "swarmshim") #[← shim.o.fetch]
+
 lean_lib SwarmLean where
   srcDir := ".."
-  roots := #[`SwarmLean.Db, `SwarmLean.Store]
+  roots := #[`SwarmLean]
   nativeFacets := fun _ => #[(⟨Module.facetKind ++ `hplO, FamilyOut.fam_eq⟩ : ModuleFacet FilePath)]
 
 @[default_target]
 lean_exe «swarm-lean» where
   srcDir := ".."
   root := `Main
+  moreLinkArgs := run_io sqliteLink
   nativeFacets := fun _ => #[(⟨Module.facetKind ++ `hplO, FamilyOut.fam_eq⟩ : ModuleFacet FilePath)]

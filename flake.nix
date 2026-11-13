@@ -9,7 +9,9 @@
       # default adds the sqlite3 CLI, for reading a swarm's board by hand; luajit is the interpreter alone.
       env = pkgs: pkgs.symlinkJoin { name = "jgetzel-skills-env"; paths = [ (lj pkgs) pkgs.sqlite ]; };
     in {
-      packages = forAll (pkgs: { default = env pkgs; luajit = lj pkgs; });
+      # sqlite: the library and header swarm/lean links (its lakefile builds this output)
+      packages = forAll (pkgs: { default = env pkgs; luajit = lj pkgs;
+        sqlite = pkgs.symlinkJoin { name = "sqlite-lib"; paths = [ pkgs.sqlite.out pkgs.sqlite.dev ]; }; });
       devShells = forAll (pkgs: { default = pkgs.mkShell { packages = [ (env pkgs) ]; }; });
     };
 }

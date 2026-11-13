@@ -28,7 +28,13 @@ local stdlib = require "posix.stdlib"
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]*$") or "."
 local M = {}
 M.XDG = os.getenv("XDG_DATA_HOME") or ((os.getenv("HOME") or "") .. "/.local/share")
-M.SWARM = os.getenv("SWARM_CLI") or stdlib.realpath(here .. "/../../swarm")
+M.DIR = stdlib.realpath(here .. "/../..")  -- swarm/, whichever binary runs
+M.SWARM = os.getenv("SWARM_CLI") or (M.DIR .. "/swarm")
+-- SWARM_BIN: run swarm-lean (swarm/lean) instead, strict: a command it has not ported fails "not ported: <cmd>"
+if (os.getenv("SWARM_BIN") or "") ~= "" then  -- SWARM_LEAN_STRICT=0 in the env keeps the fall-through (parity.sh --mixed)
+  M.SWARM = os.getenv("SWARM_BIN")
+  if not os.getenv("SWARM_LEAN_STRICT") then stdlib.setenv("SWARM_LEAN_STRICT", "1") end
+end
 stdlib.setenv("XDG_STATE_HOME", stdlib.mkdtemp((os.getenv("TMPDIR") or "/tmp") .. "/swarm-state-XXXXXX"))  -- the cmd-cost history is per user: never the real one
 M.PATH = os.getenv("PATH")  -- before any spec puts its own fakes on PATH
 local T = {}
