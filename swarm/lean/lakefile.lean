@@ -61,6 +61,12 @@ lean_exe «swarm-report» where
   root := `Report
   moreLinkArgs := run_io sqliteLink
 
+/-- This repo's Herdr mods tools (SwarmLean/Herdr): `herdr-mods install`, `herdr-mods events`. -/
+@[default_target]
+lean_exe «herdr-mods» where
+  root := `SwarmLean.Herdr.Main
+  moreLinkArgs := run_io sqliteLink
+
 /-- The CLI's test suite (TestMain.lean): `swarm-tests [pattern]`. -/
 @[default_target]
 lean_exe «swarm-tests» where

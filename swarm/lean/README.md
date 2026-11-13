@@ -11,7 +11,7 @@ the binary it still runs it, with one stderr line naming `./build.sh`, and with 
 gets a "swarm hooks are OFF" note instead). That one command builds it either way:
 
 - **elan + lake**: with `lake` on PATH ([elan](https://github.com/leanprover/elan) installs it and reads
-  `lean-toolchain`), `lake build swarm-lean`, then a touch of the binary (lake keeps an up-to-date one's mtime).
+  `lean-toolchain`), `lake build swarm-lean herdr-mods`, then a touch of the binary (lake keeps an up-to-date one's mtime).
 - **nix**: otherwise, `nix build ../..#swarm-lean -o .lake/nix`, the repo flake's package (nixpkgs' Lean, which must
   match `lean-toolchain`). `nix run github:jgetzel/jgetzel-skills#swarm-lean -- board` also works, without the
   launcher's `SWARM_HERE`.
@@ -27,6 +27,7 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `SwarmLean/Store.lean`, `World.lean`, `Sys.lean` | the interfaces (`Store`, `Clock`, `Env`, `Fs`, `Proc`, `Git`, `Sys`) |
 | `SwarmLean/Real.lean`, `Sqlite.lean`, `c/shim.c` | the real world: the SQLite store, IO |
 | `SwarmLean/Args.lean`, `Cmd/*.lean`, `Dispatch.lean`, `Main.lean` | argparse's grammar, the command groups, main |
+| `SwarmLean/Herdr/*.lean` | the second executable, herdr-mods: the Herdr panels' installer and calendar feed (was Lua; `../../herdr-mods/herdr-mods` runs it through `../swarm` with `SWARM_EXE=herdr-mods`) |
 | `SwarmLean/Assumptions.lean` | every assumption the proofs make about the world: `Atomic`, and the tools' (`Tools`) |
 | `SwarmLean/Proofs.lean`, `Proofs/*.lean` | the theorems, about the functions the CLI runs (below) |
 | `Audit.lean` | every theorem's axioms (Lean's three only, or it fails), and the theorems taking each assumption |

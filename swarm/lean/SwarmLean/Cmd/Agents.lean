@@ -219,7 +219,7 @@ def herdrStale : m (Option String) := do
   let some here ← Spawn.swarmHere | return none
   if !((← exists_ (home ++ "/mods/jgetzel-tabs")) || (← exists_ (home ++ "/mods/swarm-tabs"))) then return none
   let stamp := strip ((← Fs.read (home ++ "/jgetzel-install.stamp")).getD "")
-  let o ← Proc.output ["sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | { sha256sum 2>/dev/null || shasum -a 256; }"]
+  let o ← Proc.output ["sh", "-c", herdrStampCmd]
     (some (here ++ "/../herdr-mods")) []
   match o with
   | some o => if o.code == 0 && String.ofList ((strip o.stdout).toList.take 64) != stamp then

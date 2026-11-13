@@ -105,7 +105,7 @@ wait_for 30 test -f "$H/layouts/main.json" -a -d "$H/mods/tabs"
 # Install like a person would, then swap the mods/swarm symlink for a real copy: hot reload and icon
 # loading don't follow a symlinked mod dir. The copy opens on --screen (the anchor is main.js's SCREEN line).
 echo '{"url_command": "true"}' > "$H/calendar.json" # no calendar: never ask a keyring
-luajit "$here/../../herdr-mods/install.lua" >/dev/null
+"$here/../../herdr-mods/herdr-mods" install >/dev/null
 rm "$H/mods/swarm"
 cp -r "$here/mods/swarm" "$H/mods/swarm"
 sed -i "s|^const SCREEN = \"home\";|const SCREEN = \"$screen\";|" "$H/mods/swarm/main.js"

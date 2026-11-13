@@ -1,6 +1,7 @@
 #!/bin/sh
 # The swarm CLI: runs swarm-lean (lean/). A binary older than its sources still runs, with one stderr line saying how to
 # rebuild; with no binary, it says how to build one. A hook gets no such line and never waits on a build.
+# SWARM_EXE names another executable of lean/ to run the same way (herdr-mods/herdr-mods sets it).
 p=$0
 while [ -L "$p" ]; do
   l=$(readlink "$p")
@@ -11,8 +12,9 @@ export SWARM_HERE="$here"
 hint="$here/lean/build.sh"
 stale=
 # lake's binary (lean/build.sh touches it), then nix's out-link (its own mtime: find -newer does not follow it)
-for ref in "$here/lean/.lake/build/bin/swarm-lean" "$here/lean/.lake/nix"; do
-  bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/swarm-lean
+exe=${SWARM_EXE:-swarm-lean}; unset SWARM_EXE
+for ref in "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
+  bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/$exe
   [ -x "$bin" ] || continue
   # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds
   new=$(cd "$here" && find lean/Main.lean lean/lakefile.lean lean/lean-toolchain lean/SwarmLean lean/c \
@@ -22,10 +24,10 @@ for ref in "$here/lean/.lake/build/bin/swarm-lean" "$here/lean/.lake/nix"; do
   [ -n "$stale" ] || stale=$bin why=$new
 done
 if [ -n "$stale" ]; then
-  [ "$1" = hook ] || echo "swarm: swarm-lean is older than $why; rebuild it with $hint" >&2
+  [ "$1" = hook ] || echo "swarm: $exe is older than $why; rebuild it with $hint" >&2
   exec "$stale" "$@"
 fi
-msg="swarm-lean is not built; build it with $hint"
+msg="$exe is not built; build it with $hint"
 if [ "$1" = hook ]; then
   # no double quotes or backslashes in msg: written into JSON as is
   [ -n "$SWARM_NAME" ] || exit 0
