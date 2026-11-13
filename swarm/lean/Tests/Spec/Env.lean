@@ -153,6 +153,14 @@ def same_content_reach (t : T) : IO Unit := do
 
 -- ---------- status_clean, listed_on, wt_remove, del_ref ----------
 
+/-- The commits reachable from a ref or a worktree's HEAD (Tools.Reach). -/
+def reach (t : T) : IO (List String) := return SwarmLean.splitlines (← git t t.repo ["rev-list", "--all"])
+
+/-- Every commit reachable in `before` and not in `after` is `k` or below it. -/
+def lostBelow (t : T) (before after : List String) (k : String) : IO Bool := do
+  let below := SwarmLean.splitlines (← git t t.repo ["rev-list", k])
+  return (before.filter (!after.contains ·)).all below.contains
+
 def status_clean (t : T) : IO Unit := do
   setup t
   let wt := t.wt
@@ -195,6 +203,13 @@ def wt_remove (t : T) : IO Unit := do
   eq (← git t t.repo ["rev-list", "--all"]) commits "wt_remove: every commit stays"
   eq (← git t w2 ["status", "--porcelain"]) "?? untracked" "wt_remove: other worktrees stay as they were"
   eq (← clean w3) true "wt_remove: other worktrees stay as they were"
+  discard <| git t w3 ["checkout", "-q", "--detach"]
+  put s!"{w3}/d" "d\n"; discard <| git t w3 ["add", "-A"]; discard <| git t w3 ["commit", "-q", "-m", "detached"]
+  let h3 ← git t w3 ["rev-parse", "HEAD"]
+  let r ← reach t
+  eq (← gx t t.repo ["worktree", "remove", w3]) 0 "wt_remove: a clean detached worktree is removed"
+  eq ((← reach t).contains h3) false "wt_remove: its HEAD's own commit goes"
+  eq (← lostBelow t r (← reach t) h3) true "wt_remove: what goes was reached only from its HEAD"
 
 /-- `Watchd.deleteBranch`: `branch -d` when merged into HEAD, else `update-ref -d` guarded by the tip the sweep checked. -/
 def del_ref (t : T) : IO Unit := do
@@ -214,6 +229,73 @@ def del_ref (t : T) : IO Unit := do
   eq ((← gx t t.repo ["rev-parse", "-q", "--verify", "refs/heads/w1"]) != 0) true "del_ref: the checked tip is deleted"
   eq (← git t t.repo ["for-each-ref", "refs/heads"])
     ("\n".intercalate ((SwarmLean.splitlines refs).filter (!·.endsWith "refs/heads/w1"))) "del_ref: no other branch goes"
+  let k ← git t t.repo ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "lone"]
+  discard <| git t t.repo ["branch", "lone", k]
+  let r ← reach t
+  app (Watchd.deleteBranch t.repo (some "lone") (some k) [])
+  eq ((← reach t).contains k) false "del_ref: an unmerged branch's own commit goes"
+  eq (← lostBelow t r (← reach t) k) true "del_ref: what goes is below the checked tip"
+
+/-- `git branch -d`, the branch delete's first try: it deletes a merged branch and refuses the rest, losing no commit. -/
+def branch_d (t : T) : IO Unit := do
+  setup t
+  let k ← git t t.repo ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "side"]
+  discard <| git t t.repo ["branch", "side", k]
+  discard <| git t t.repo ["branch", "merged"]
+  let r ← reach t
+  let wl ← git t t.repo ["worktree", "list", "--porcelain"]
+  eq ((← gx t t.repo ["branch", "-d", "side"]) != 0) true "branch_d: an unmerged branch is refused"
+  eq (← gx t t.repo ["branch", "-d", "merged"]) 0 "branch_d: a merged branch is deleted"
+  eq ((← gx t t.repo ["rev-parse", "-q", "--verify", "refs/heads/merged"]) != 0) true "branch_d: it is gone"
+  eq ((← gx t t.repo ["branch", "-d", (← git t t.wt ["rev-parse", "--abbrev-ref", "HEAD"])]) != 0) true
+    "branch_d: a branch a worktree has checked out is refused"
+  eq (← reach t) r "branch_d: every commit stays reachable"
+  eq (← git t t.repo ["worktree", "list", "--porcelain"]) wl "branch_d: every worktree stays"
+
+/-- `git -C x rev-parse HEAD`, as the sweep reads it, is the HEAD `worktree list` shows for x. -/
+def rev_parse_head (t : T) : IO Unit := do
+  setup t
+  let shown (x : String) : IO String := do
+    let ls := SwarmLean.splitlines (← git t t.repo ["worktree", "list", "--porcelain"])
+    let mut cur := ""
+    for l in ls do
+      if l.startsWith "worktree " then cur := (l.drop 9).toString
+      else if l.startsWith "HEAD " && cur == x then return (l.drop 5).toString
+    return ""
+  let wt ← IO.FS.realPath t.wt
+  eq (← app (Watchd.git ["-C", t.wt, "rev-parse", "HEAD"] : App _)) (some (← shown wt.toString)) "rev_parse_head: a branch's HEAD"
+  discard <| git t t.wt ["checkout", "-q", "--detach"]
+  put s!"{t.wt}/d" "d\n"; discard <| git t t.wt ["add", "-A"]; discard <| git t t.wt ["commit", "-q", "-m", "d"]
+  eq (← app (Watchd.git ["-C", t.wt, "rev-parse", "HEAD"] : App _)) (some (← shown wt.toString)) "rev_parse_head: a detached HEAD"
+
+/-- The git commands the sweep reads with (Assumptions.GitRead), each leaving the repo as it was. -/
+def git_reads_keep (t : T) : IO Unit := do
+  setup t
+  put s!"{t.wt}/w" "w\n"; discard <| git t t.wt ["add", "-A"]; discard <| git t t.wt ["commit", "-q", "-m", "w"]
+  put s!"{t.wt}/untracked" "x\n"
+  let mb ← git t t.wt ["merge-base", "main", "HEAD"]
+  let before ← durable t
+  for argv in [["git", "worktree", "list", "--porcelain"], ["git", "-C", t.repo, "worktree", "list", "--porcelain"],
+      ["git", "--no-optional-locks", "-C", t.wt, "status", "--porcelain"], ["git", "-C", t.wt, "merge-base", "main", "HEAD"],
+      ["git", "-C", t.wt, "merge-base", "--is-ancestor", "HEAD", "main"],
+      ["git", "-C", t.wt, "diff", "--name-only", "-z", mb, "HEAD"], ["git", "-C", t.wt, "diff", "--quiet", "HEAD", "main", "--", "w"],
+      ["git", "-C", t.wt, "rev-parse", "HEAD"], ["git", "-C", t.wt, "rev-parse", "--abbrev-ref", "HEAD"]] do
+    discard <| t.exec argv { cwd := some t.repo }
+    eq (← durable t) before s!"git_reads_keep: {argv} leaves the repo"
+
+/-- du, gh and lsof leave the repo; `Run.runDirOk` accepts only a job's copy, nothing that climbs out of it. -/
+def tools_keep (t : T) : IO Unit := do
+  setup t
+  put s!"{t.wt}/untracked" "x\n"
+  let before ← durable t
+  let lsof := (← t.exec ["sh", "-c", "command -v lsof"]).code == 0
+  for argv in [["du", "-sk", t.wt], ["gh", "pr", "list", "--head", "w", "--state", "merged", "--json", "number,headRefOid"]] ++
+      (if lsof then [["lsof", "-a", "-d", "cwd", "-Fpn"]] else []) do
+    discard <| t.exec argv { cwd := some t.wt }
+    eq (← durable t) before s!"tools_keep: {argv} leaves the repo"
+  eq (Run.runDirOk ".cache/swarm-run/repo/wt") true "tools_keep: a job's copy is a run dir"
+  for d in [".cache/swarm-run/../..", ".cache/swarm-run/repo/..", ".cache/swarm-run/repo", "/home/u/repo", "repo/wt"] do
+    eq (Run.runDirOk d) false s!"tools_keep: {d} is not a run dir"
 
 -- ---------- touched_recent ----------
 
@@ -476,6 +558,10 @@ def tests : List Case := [
   ("listed_on", listed_on),
   ("wt_remove", wt_remove),
   ("del_ref", del_ref),
+  ("branch_d", branch_d),
+  ("rev_parse_head", rev_parse_head),
+  ("git_reads_keep", git_reads_keep),
+  ("tools_keep", tools_keep),
   ("touched_recent", touched_recent),
   ("kill0_alive", kill0_alive),
   ("cwds_proc", cwds_proc),

@@ -198,10 +198,11 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
     let st ← Lifecycle.run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]
     if t - last < SWEEP_IDLE || st.isNone || strip (st.getD "") != "" then continue  -- dirty or unreadable: never landed
     let shas ← bs.mapM fun b => return (← git ["-C", main, "rev-parse", b]).getD ""
-    let key := "\x00".intercalate [wt, (← git ["-C", wt, "rev-parse", "HEAD"]).getD "", ",".intercalate shas]
+    -- read before `landed`: the branch delete's guard is the HEAD landed then judged, not a later commit
+    let head := py (← git ["-C", wt, "rev-parse", "HEAD"])
+    let key := "\x00".intercalate [wt, head.getD "", ",".intercalate shas]
     if cache.contains key then continue
     if !(← Lifecycle.landed wt bs (some main)) then cache := cache ++ [key]; continue
-    let head := py (← git ["-C", wt, "rev-parse", "HEAD"])
     let du := (← Lifecycle.run ["du", "-sk", wt]).getD "0"
     let mb := fdiv ((String.ofList ((du.toList.dropWhile (!·.isDigit)).takeWhile Char.isDigit)).toNat?.getD 0) 1024
     let mut removed := true

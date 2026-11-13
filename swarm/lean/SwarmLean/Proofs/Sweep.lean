@@ -844,11 +844,13 @@ theorem delRef_guarded (hdr : DelRef M) (w : M.World) (main b k : String) :
 theorem discard_eq (x : RecM M α) : discard x = (x >>= fun _ => pure ()) := by
   simp only [discard, LawfulFunctor.map_const, Function.comp, map_eq_pure_bind]
 
-theorem sameRepo_refl (w : M.World) : M.SameRepo w w := ⟨fun _ => rfl, fun _ => ⟨Iff.rfl, Iff.rfl⟩, fun _ _ _ => Iff.rfl⟩
+theorem sameRepo_refl (w : M.World) : M.SameRepo w w :=
+  ⟨fun _ => rfl, fun _ => ⟨Iff.rfl, Iff.rfl⟩, fun _ _ _ => Iff.rfl, fun _ => rfl, fun _ => Iff.rfl⟩
 
 theorem sameRepo_trans {a b c : M.World} (h1 : M.SameRepo a b) (h2 : M.SameRepo b c) : M.SameRepo a c :=
   ⟨fun x => (h2.1 x).trans (h1.1 x), fun x => ⟨(h2.2.1 x).1.trans (h1.2.1 x).1, (h2.2.1 x).2.trans (h1.2.1 x).2⟩,
-    fun cwd x b => (h2.2.2 cwd x b).trans (h1.2.2 cwd x b)⟩
+    fun cwd x b => (h2.2.2.1 cwd x b).trans (h1.2.2.1 cwd x b), fun x => (h2.2.2.2.1 x).trans (h1.2.2.2.1 x),
+    fun x => (h2.2.2.2.2 x).trans (h1.2.2.2.2 x)⟩
 
 /-- W2 on a machine: ending an agent (its row, its terminal, its cgroup scope) changes no worktree, branch or commit. -/
 theorem endAgent_keepsGit (hk : HcKillEnds M) (hr : HcRmKeeps M) (hc : CgroupKillKeeps M) (w0 : M.World) (a : Agent)

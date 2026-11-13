@@ -197,17 +197,20 @@ def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit :
       ("exit", some (.str "lost")), ("s", some (Json.int (t - j.ts)))])))) db
     (db.setMeta "machines" (some (Json.encode (Json.mkObj out))), ())
 
+/-- A job's copy, `RUN_DIR/<repo>/<worktree>`, with no `..` that would climb out of it. -/
+def runDirOk (dir : String) : Bool :=
+  (Re.fullmatch (Re.escape RUN_DIR ++ "/[\\w.-]+/[\\w.-]+") dir).toOption.join.isSome && !(dir.splitOn "/").contains ".."
+
 /-- Removes a landed worktree's dirs on every machine its jobs ran on (run.clean_remote). -/
 def cleanRemote [Proc m] [Store m] [Clock m] (wt : String) : m Unit := do
   let db ← Store.txn [.event] fun db => (db, db)
-  let pat := Re.escape RUN_DIR ++ "/[\\w.-]+/[\\w.-]+"
   let mut seen : List (String × String) := []
   for e in db.events.filter (·.kind == some "job-start") do
     let some j := Json.decode (e.data.getD "{}") | continue
     let some mach := Json.fstr j "machine" | continue
     let some dir := Json.fstr j "dir" | continue
     if mach == "" || Json.fstr j "wt" != some wt || seen.contains (mach, dir) then continue
-    unless (Re.fullmatch pat dir).toOption.join.isSome do continue
+    unless runDirOk dir do continue
     seen := (mach, dir) :: seen
     let ok := (← Proc.output ["hc", "exec", "--on", mach, "--timeout", "120", "rm", "-rf", dir] none []).any (·.code == 0)
     let now ← Clock.now
