@@ -8,6 +8,7 @@ import SwarmLean.Cmd.Ci
 import SwarmLean.Cmd.Run
 import SwarmLean.Cmd.State
 import SwarmLean.Cmd.Hook
+import SwarmLean.Cmd.Watchd
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
 
@@ -16,7 +17,7 @@ import SwarmLean.Lib.Agents
 namespace SwarmLean.Dispatch
 open Args
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m] [Guard m]
 
 /-- Every ported group: a new group is one line here (and its import above). -/
 def groups : List (Group m) := [
@@ -28,7 +29,8 @@ def groups : List (Group m) := [
   Cmd.Ci.group,
   Cmd.Run.group,
   Cmd.State.group,
-  Cmd.Hook.group
+  Cmd.Hook.group,
+  Cmd.Watchd.group
 ]
 
 /-- main.lua's root usage, printed before a parse error. -/

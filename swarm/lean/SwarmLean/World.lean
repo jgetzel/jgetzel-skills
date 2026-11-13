@@ -58,6 +58,11 @@ class Git (m : Type → Type) where
 structure Exit where
   code : UInt32
 
+/-- Runs an action and catches whatever ends it early, an `Exit` (as `exit N`) or an error of the world, as its message:
+the pcall around each of watchd's passes. -/
+class Guard (m : Type → Type) where
+  guard {α : Type} : m α → m (Except String α)
+
 /-- An environment variable, none when unset or empty (agents.env). -/
 def env [Monad m] [Env m] (k : String) : m (Option String) := return py (← Env.var k)
 

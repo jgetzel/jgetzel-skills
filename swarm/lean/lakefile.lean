@@ -26,10 +26,11 @@ lean_lib SwarmLean
 @[default_target]
 lean_lib Tests
 
-/-- locks.lua's glob, lifted and proved in ../model: built from that file, not copied. -/
+/-- locks.lua's glob and watchd's keeps, lifted and proved in ../model: built from those files (and what Decide imports), not
+copied. -/
 lean_lib SwarmModelGlob where
   srcDir := "../model"
-  roots := #[`SwarmModel.Glob]
+  roots := #[`SwarmModel.Glob, `SwarmModel.Model, `SwarmModel.PrWatch, `SwarmModel.Decide]
 
 @[default_target]
 lean_exe «swarm-lean» where
