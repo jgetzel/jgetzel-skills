@@ -1,4 +1,5 @@
 import SwarmLean.Cmd.Agents
+import SwarmLean.Cmd.Hook
 import SwarmLean.Cmd.Msgs
 import SwarmLean.Lib.Watchd
 import SwarmLean.Lib.Ci
@@ -124,7 +125,7 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
 /-- Context compaction (board #136): each live agent holding work (a task, a stay, the communicator's role) gets
 `Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. -/
 def compactPass (terms : List Term) (comms : String) : m Unit := do
-  let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
+  let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
   let (nAt, cAt, too) := (Compact.nudgeAt db, Compact.compactAt db, Compact.stayersToo db)
   for a in Agents.live db do
     let some h := py a.hc | continue
@@ -133,6 +134,17 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
       (·.id ≤ ·.id)).head?
     let stays := a.name == comms || a.stay.isSome
     if !stays && task.isNone then continue  -- holds nothing: watchd ends it soon
+    -- a compaction has ended (the hook logged "compact") and nothing woke the agent since: send it the stop hook's
+    -- verdict as a prompt, once; a hook cannot start a turn itself
+    let ev (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.bind (·.ts)
+    if Compact.Term.ofHc x.status == .idle then
+      if let some t0 := ev "compact" then
+        if (ev "ctx-continue").all (· < t0) then
+          let now ← Clock.now
+          Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
+          if let some why ← Hook.stopBlock a.name (Lean.Json.mkObj []) then
+            if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+          continue
     let k := a.ctx_tokens.getD 0
     let force := too || !stays
     let s0 := Compact.load db a.name
