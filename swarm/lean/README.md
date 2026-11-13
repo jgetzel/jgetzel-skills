@@ -97,6 +97,15 @@ reap reaches a row whose terminal is gone, the row does not stay live and bound 
 `swarm stay --end A` changes A's stay alone (St4, `endStay_frame`); `swarm away` and `--back` change no task, lock,
 agent or cursor (A1, `away_keeps`, `back_keeps`), and a second one is refused and changes nothing (A4).
 
+**Workspace GC and the end, on a machine** (`Proofs/Sweep.lean`, `Proofs/Trust.lean`, board #115). `RecM` runs the code
+on a machine (`Tools`) and records each command with the machine it ran on. Every `git worktree remove` the sweep runs
+passed `Gate` on the calls before it (`sweep_W1`). On a machine with the git, cwd and mtime assumptions, a worktree that
+passed `Gate` is listed and there, has no process inside, was clean when `status` read it, was not used in the last
+30 min (when git printed its git dir and the clock did not go back), and its HEAD is reached from a protected ref unless
+its directory is gone (`sweepGate_W1`); each of those six assumptions is needed (`need_sweep_*`). `worktree remove`
+moves no branch and changes no other worktree (`wtRemove_only`), and the branch delete deletes only at the tip it read
+(`delRef_guarded`). Ending an agent leaves every worktree, branch and commit as they were (`endAgent_keepsGit`, W2).
+
 ## What the proofs assume
 
 All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes as a hypothesis (none is an axiom).
@@ -105,19 +114,21 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | Assumption | About | Says | Taken by |
 |---|---|---|---|
 | `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
-| `AncestorReach` | git | `merge-base --is-ancestor ref b` exiting 0 means `b` holds `ref`'s changes | none yet (#115) |
-| `SameContentReach` | git | `diff --quiet ref b -- <files ref changed since the merge base>` exiting 0 means the same | none yet (#115) |
-| `StatusClean` | git | an empty `status --porcelain` means nothing uncommitted | none yet (#115) |
-| `ListedOn` | git | a worktree `worktree list` lists is there | none yet (#115) |
-| `WtRemove` | git | `worktree remove` takes a clean worktree away and nothing else, refuses a dirty one | none yet (#115) |
-| `DelRef` | git | `update-ref -d refs/heads/b k` deletes `b` only if its tip is `k`, nothing else | none yet (#115) |
+| `AncestorReach` | git | `merge-base --is-ancestor ref b` exiting 0 means `b` holds `ref`'s changes | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
+| `SameContentReach` | git | `diff --quiet ref b -- <files ref changed since the merge base>` exiting 0 means the same | `sweepGate_W1`, `gateW1`, `landedRef1_reach`, `landedRef1_reach_spec`, `landedRef_reach_spec`, `landed_reach_spec` |
+| `StatusClean` | git | an empty `status --porcelain` means nothing uncommitted | `sweepGate_W1`, `gateW1` |
+| `ListedOn` | git | a worktree `worktree list` lists is there | `sweepGate_W1`, `gateW1` |
+| `WtRemove` | git | `worktree remove` takes a clean worktree away and nothing else, refuses a dirty one | `wtRemove_only` |
+| `DelRef` | git | `update-ref -d refs/heads/b k` deletes `b` only if its tip is `k`, nothing else | `delRef_guarded` |
 | `HcLsLive` | hc | `hc ls --json`, when it answers, lists a terminal live exactly when it is | none |
-| `HcKillEnds` | hc | `hc kill h` ends `h` and leaves the repo | none (#115: W2) |
+| `HcKillEnds` | hc | `hc kill h` ends `h` and leaves the repo | `endAgent_keepsGit` |
+| `HcRmKeeps` | hc | `hc rm h` leaves the repo | `endAgent_keepsGit` |
 | `HcSendTargets` | hc | `hc send h l` types `l` into `h` alone, starts or ends no terminal, leaves the repo | none |
 | `HcRunStarts` | hc | `hc run --json --bg` that exits 0 started the terminal and pid it prints | none |
+| `CgroupKillKeeps` | cgroups | "1" to a scope's `cgroup.kill` leaves the repo | `endAgent_keepsGit` |
 | `Kill0Alive` | OS | `kill(p, 0)` is 0 exactly when `p` is in the process table | none |
-| `CwdsProc` | OS | `Machine.cwds` lists a directory inside every worktree a process sits in | none (#115) |
-| `TouchedRecent` | filesystem | a worktree used in the last 30 min has an mtime within 30 min | none (#115) |
+| `CwdsProc` | OS | `Machine.cwds` lists a directory inside every worktree a process sits in | `sweepGate_W1`, `gateW1` |
+| `TouchedRecent` | filesystem | a worktree used in the last 30 min has an mtime within 30 min | `sweepGate_W1`, `gateW1` |
 | `NowMono` | clock | `Clock.now` never goes back | none |
 | `GhChecks` | gh | the verdict `Ci.verdict` reads off a listed PR is its checks' state | none |
 | `GhState` | gh | a listed PR not closed is MERGED when merged, else OPEN | none |
@@ -165,9 +176,9 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | Release: `stop_read`, `released_reads`, `stop_lifts`, `startable_leads_to` | not moved | liveness of the ex-owner reading the stop at its turns: agents' behaviour |
 | Release: `stopTo_none`, `not_S1_humanRelease` | not applicable | runs with a model switch off; the code has stop-first (`claim_not_stopped`) |
 | End: `endOther_spec`, `N1end_of` (H1), `endOther_enabled`, `finished_eq`, `releaseAll_free` | moved | `WatchdProofs.endStep_free`, `endStep_frame`, `endStep_ends`, `end_atomic`, `endWhy_lifted`, `release_free` |
-| End: `endOther_git` | not moved | that the end touches no worktree needs `hc kill`'s effect (`HcKillEnds`) on a world that records commands: board #115 |
+| End: `endOther_git` | moved | `SweepProofs.endAgent_keepsGit`: `Lifecycle.endAgent` (its row, `hc kill`, `hc rm`, the cgroup kill) leaves every worktree, branch and commit, on a machine with `HcKillEnds`, `HcRmKeeps`, `CgroupKillKeeps` |
 | End: `endOther_force`, `not_N1end_force*` | not applicable | `--force` skips the check by design |
-| NoWorkLost: `N1_of`, `replay_N1`, `finished_of_holds`, `lifecycle_keeps`, `reapTask_keeps`, `lifecycle_tk` | moved | (1) as the model now states it: a stalled job (a sleep loop or a hung tree, `idleJob`) is not work (#106's finding, board #125: the model's `bgStall`; `hungStep_hung` on the code; `idleJob`'s loop itself is not proved). Moved: `fate_end_free`, `endStep_free`, `keeps_bg`, `keeps_iff`, `reapTask_spec`, `reap_atomic`. (4), W1's part: not moved, #115 |
+| NoWorkLost: `N1_of`, `replay_N1`, `finished_of_holds`, `lifecycle_keeps`, `reapTask_keeps`, `lifecycle_tk` | moved | (1) as the model now states it: a stalled job (a sleep loop or a hung tree, `idleJob`) is not work (#106's finding, board #125: the model's `bgStall`; `hungStep_hung` on the code; `idleJob`'s loop itself is not proved). Moved: `fate_end_free`, `endStep_free`, `keeps_bg`, `keeps_iff`, `reapTask_spec`, `reap_atomic`. (4), W1's part: `SweepProofs.sweep_W1`, `sweepGate_W1` |
 | NoWorkLost: `not_N1_*`, `pre*`, `cfg*` | not applicable | runs with a fix switched off |
 | Spawn: `Sp1_of`, `Sp2_of` | moved | `WatchdProofs.unreserve_spec`, `reserve_max` |
 | Spawn: `Sp3_of`, `noSpawn_startable`, `first_pool`, `tickG_id`, `sfail_eq`, `failed_s`, `tk_endAgent_keep`, `lifecycleG_nil_keep` | not moved | Sp3 is auto-spawn's backoff over fair runs, decided in the monadic `autoSpawn` loop; the rest are its model world's lemmas |
@@ -183,7 +194,8 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | Nudge: `Tools.N1'`, `hnudge_enabled`, `hnudge_reachable` | not moved | the nudge's `hc send` and its refusals are in the monadic `Cmd.Msgs.nudge`; `HcSendTargets` is stated (Assumptions.lean) but no theorem takes it yet |
 | PrWatch: `P1_of`, `P2_of`, `main_P1`, `main_P2`, `poll_*`, `merged*`; Merged: `poll_ends`, `P1_of`, `P2_of`, `main_P*`, `owner_live`, `pollOf_ne` | not moved | the poll's decision is moved (`WatchdProofs.prAct_eq`); its db step `Ci.prWatchApply` takes gh's answer as an argument and was not stated; P1/P2 over fair runs need that step, the monadic poll and `GhChecks`/`GhState` |
 | PrWatch: `fair_of_stall`, `not_P*_of`, `getD_*`, `tk_*`, `agt_*`, `preach*` | not applicable | refutations with a switch off and the model's lemmas (`PrWatch.lean` itself stays: Decide.lean imports it) |
-| Workspaces: `W1_of`, `W2_of`, `replay_W`, `gitTick_gcOk`; Real: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` | not moved | the sweep decides in a monadic loop from git's answers; "it removes only a clean, landed, unused worktree" needs a world that records the commands run, with the git assumptions (now named in Assumptions.lean): board #115 |
+| Workspaces: `W1_of`, `W2_of`; Real: `landedRef_reach`, `sweepGate_W1`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` | moved | on `RecM`, the code run on a machine that records each command (Assumptions.lean): `SweepProofs.sweep_W1` (every `worktree remove` the sweep runs passed `Gate` on the calls before it), `sweepGate_W1` (a worktree that passed `Gate` is listed and there, has no process inside, is clean, was not used in the last 30 min, and its HEAD is reached from a protected ref or its directory is gone), `landed_reach_spec`, `landedRef_reach_spec`, `wtRemove_only`, `delRef_guarded`, `endAgent_keepsGit` (W2) |
+| Workspaces: `replay_W`, `gitTick_gcOk` | not moved | the model's replay instance and its GC step; the code's sweep is the one `sweep_W1` is about |
 | Workspaces: `W3_of`, `orphan_ev`, `agent_ev`, `ends_tick`, `reusable_ready`, `finished_reap` | not moved | W3 is liveness over fair runs on top of W1 and the agents' behaviour |
 | Workspaces: `W4_of`, `B1_of` | not moved | `Workspaces.baseOut` and the per-task bases are monadic over git |
 | Workspaces: `not_W*`, `forever_of_loopOk`, the rest | not applicable | refutations with switches off, the model's frames |
@@ -199,7 +211,8 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | LoopSafe: `iteration_safe` (R2) | moved | `WatchdProofs.guard_ok` |
 | LoopSafe: `loop_safe` | not moved | `Cmd.Watchd.loop` is `partial`; each turn is `guard` (`guard_ok`) and `Sys.sleep` |
 | Env: the hypotheses, `consistent`, `sqlite_consistent` | moved | `Assumptions.lean`: each tool hypothesis on the code's calls (`AncestorReach` … `GhState`; `HcLsShows`, `Kill0Finds` are one direction of `HcLsLive`, `Kill0Alive`), the five sqlite ones as `Atomic`; `consistent` |
-| Trust: `need_*`, `i_*`, `nudge_enabled` | not moved | they show each tool hypothesis of Real.lean's theorems is needed; no Lean theorem takes a tool assumption yet, so there is nothing to show needed |
+| Trust: `need_sweep_*` | moved | `SweepProofs.need_sweep_*` (Proofs/Trust.lean): for each of `sweepGate_W1`'s six tool assumptions, a machine with the other five on which a worktree passes `Gate` and the guarantee fails |
+| Trust: the other `need_*`, `i_*`, `nudge_enabled` | not moved | their theorems (`landedRef_reach`'s and the hc and process ones) are not stated on the code with the same hypotheses, or not moved |
 | Checkers: `*_spec` | not applicable | the model's Bool checkers against its Props |
 | Contract: all | as their family above | restatements over the model's types (each row above covers its Contract name) |
 | Findings: all | not applicable | the model's counterexample runs; each fix is built into the code. Findings in the port: S3's lock by an ended agent (fixed, `Locks.lock`), `Msgs.wakes` asking `cold` for an urgent row (fixed), N1 (1) with `idleJob` (by design; the model's N1 now says it, board #125): PORT.md |

@@ -78,6 +78,9 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 
 ## Beyond the above
 
+- **The sweep's loops as `mapM`** (#115). watchd.lua's sweep_worktrees builds the worktree list, the paths agents use,
+  the processes' cwds and a worktree's last-touched time in loops; `Watchd.sweep` builds them with `wtLines` and
+  `mapM` (the same calls in the same order), so the proofs need no loop invariant for them.
 - **One transaction per command.** The Lua runs some checks and writes outside its transaction (claim's dep check,
   `agents.touch`, the context check, the claim's event); here each command is one `Store.txn` (two for the fence),
   so it is at least as atomic. What the Lua wrote before a die inside its transaction still stays: the step returns

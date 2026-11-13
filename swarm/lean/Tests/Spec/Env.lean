@@ -272,6 +272,29 @@ def cwds_proc (t : T) : IO Unit := do
   for (p, d) in (← app (Machine.cwds : App _)).getD [] do
     if Watchd.inside (← realOr d) t.wt then fail s!"cwds_proc: no process left inside, but {p}"
 
+-- ---------- cgroup_kill_keeps ----------
+
+/-- A process in a swarm-agent scope, in a worktree; "1" to the scope's `cgroup.kill` as `Lifecycle.endAgent` writes
+it. Skipped where there is no systemd user scope. -/
+def cgroup_kill_keeps (t : T) : IO Unit := do
+  let unit := s!"--unit=swarm-agent-env-{← IO.Process.getPID}.scope"
+  let args := #["--user", "--scope", "--quiet", "--collect", unit, "--", "sleep", "300"]
+  let c ← IO.Process.spawn
+    { cmd := "systemd-run", args, cwd := some t.wt, stdin := .null, stdout := .null, stderr := .null }
+  let pid : Int := c.pid.toNat
+  let mut cg := none
+  for _ in [0:50] do
+    cg ← app (Machine.cgroup pid : App _)
+    if cg.isSome then break
+    IO.sleep 100
+  let some g := cg
+    | c.kill; discard <| c.wait; IO.eprintln "env_spec: cgroup_kill_keeps skipped (no systemd user scope here)"
+  let d ← durable t
+  IO.FS.writeFile (g.dir ++ "/cgroup.kill") "1"
+  discard <| c.wait
+  eq (← app (Sys.pidAlive pid : App Bool)) false "cgroup_kill_keeps: what ran in the scope is gone"
+  eq (← durable t) d "cgroup_kill_keeps: the repo's durable state stays"
+
 -- ---------- now_mono ----------
 
 def now_mono (_ : T) : IO Unit := do
@@ -287,7 +310,7 @@ def now_mono (_ : T) : IO Unit := do
   IO.sleep 1100
   eq (decide ((← app (Clock.now : App Int)) > t0)) true "now_mono: it moves on"
 
--- ---------- hc_ls_live, hc_run_starts, hc_send_targets, hc_kill_ends ----------
+-- ---------- hc_ls_live, hc_run_starts, hc_send_targets, hc_kill_ends, hc_rm_keeps ----------
 
 def hcOn : IO Bool := return (← IO.getEnv "SWARM_TEST_HC") == some "1"
 
@@ -370,6 +393,17 @@ def hc_kill_ends (t : T) : IO Unit := do
   eq ((← live hb) && (← hereLive)) true "hc_kill_ends: no other terminal ends"
   eq (← durable t) g "hc_kill_ends: the repo's durable state stays"
 
+def hc_rm_keeps (t : T) : IO Unit := do
+  if !(← hcOn) then return
+  hcSetup
+  let (ha, _) ← hcRun t "ra" t.wt ["sleep", "300"]
+  let (hb, _) ← hcRun t "rb" t.wt ["sleep", "300"]
+  discard <| t.exec ["hc", "kill", ha]
+  let g ← durable t
+  discard <| t.exec ["hc", "rm", ha]
+  eq ((← live hb) && (← hereLive)) true "hc_rm_keeps: no other terminal ends"
+  eq (← durable t) g "hc_rm_keeps: the repo's durable state stays"
+
 -- ---------- gh_checks, gh_state ----------
 -- What Ci.ghList reads from `gh pr list` against what GitHub's REST API says of the same PRs: their check runs and
 -- commit statuses, and whether they are merged (the merge commit then on the base, by git).
@@ -449,6 +483,8 @@ def tests : List Case := [
   ("hc_run_starts", hc_run_starts),
   ("hc_send_targets", hc_send_targets),
   ("hc_kill_ends", hc_kill_ends),
+  ("hc_rm_keeps", hc_rm_keeps),
+  ("cgroup_kill_keeps", cgroup_kill_keeps),
   ("gh_checks", gh_checks),
   ("gh_state", gh_state)]
 

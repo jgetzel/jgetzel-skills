@@ -162,6 +162,14 @@ def deleteBranch (main : String) (br tip : Option String) (prot : List String) :
   if (← Lifecycle.code ["git", "-C", main, "branch", "-d", br]) != 0 then
     discard <| Lifecycle.code ["git", "-C", main, "update-ref", "-d", "refs/heads/" ++ br, tip]
 
+/-- The (path, branch) of each worktree `git worktree list --porcelain` lines list, the path as printed. -/
+def wtLines (ls : List String) : List (String × Option String) :=
+  (ls.foldl (fun (wts : Array (String × Option String)) l =>
+    if l.startsWith "worktree " then wts.push ((l.drop 9).toString, none)
+    else if l.startsWith "branch refs/heads/" && !wts.isEmpty then
+      wts.modify (wts.size - 1) fun (p, _) => (p, some (l.drop 18).toString)
+    else wts) #[]).toList
+
 /-- Workspace GC: removes clean, landed worktrees (and their local branch) that no live agent or process uses; `dry`
 only lists them. The worktrees and swept sizes (MB), and the "not landed" cache (worktree, HEAD and the bases' shas)
 grown (watchd.sweep_worktrees, NOT_LANDED). -/
@@ -173,19 +181,11 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
   let db ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
   let prot ← Workspaces.protectedOf db (some main)
   let bs ← Bases.refs prot (some main)
-  let mut wts : Array (String × Option String) := #[]
-  for l in lines.tail do
-    if l.startsWith "worktree " then wts := wts.push (← real (l.drop 9).toString, none)
-    else if l.startsWith "branch refs/heads/" && !wts.isEmpty then
-      wts := wts.modify (wts.size - 1) fun (p, _) => (p, some (l.drop 18).toString)
-  let mut used := []
-  for a in Agents.live db do
-    for p in [a.wt.getD "", a.cwd.getD ""] do
-      if p != "" then used := used ++ [← real p]
-  used := used ++ (Workspaces.wtMapOf db (← Workspaces.worktrees)).map (·.2)
+  let wts ← (wtLines lines.tail).mapM fun (p, br) => return (← real p, br)
+  let used := (← (((Agents.live db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM real) ++
+    (Workspaces.wtMapOf db (← Workspaces.worktrees)).map (·.2)
   let some cw ← Machine.cwds | return ([], notLanded)  -- which worktrees a process sits in is unknown: sweep none
-  let mut pcwd := []
-  for (_, l) in cw do pcwd := pcwd ++ [← real l]
+  let pcwd ← cw.mapM fun (_, l) => real l
   let t ← Clock.now
   let mut out := []
   let mut freed : Int := 0
@@ -193,14 +193,11 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
   for (wt, br) in wts do
     if wt == main || (← Sys.kind wt true) != .dir || used.any (inside · wt) || pcwd.any (inside · wt) then continue
     let gd ← git ["-C", wt, "rev-parse", "--absolute-git-dir"]
-    let mut last : Int := 0
-    for p in [wt, joinPath (joinPath ((py gd).getD wt) "logs") "HEAD"] do
-      last := max last ((← Sys.mtime p).getD 0)
+    let last := max (max 0 ((← Sys.mtime wt).getD 0)) ((← Sys.mtime (joinPath (joinPath ((py gd).getD wt) "logs") "HEAD")).getD 0)
     -- no index.lock: an agent committing in wt meanwhile must not fail (#127)
     let st ← Lifecycle.run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]
     if t - last < SWEEP_IDLE || st.isNone || strip (st.getD "") != "" then continue  -- dirty or unreadable: never landed
-    let mut shas := []
-    for b in bs do shas := shas ++ [(← git ["-C", main, "rev-parse", b]).getD ""]
+    let shas ← bs.mapM fun b => return (← git ["-C", main, "rev-parse", b]).getD ""
     let key := "\x00".intercalate [wt, (← git ["-C", wt, "rev-parse", "HEAD"]).getD "", ",".intercalate shas]
     if cache.contains key then continue
     if !(← Lifecycle.landed wt bs (some main)) then cache := cache ++ [key]; continue
