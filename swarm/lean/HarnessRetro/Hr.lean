@@ -45,7 +45,7 @@ def lossy (b : ByteArray) : String := Id.run do
 def read (p : String) : IO (Option String) := do
   try return some (lossy (← IO.FS.readBinFile p)) catch _ => return none
 
-/-- A file's size in bytes and its bytes as text (util.slurp, for byte counts). -/
+/-- A file's bytes, empty when it can't be read (util.slurp). -/
 def slurp (p : String) : IO ByteArray := do
   try IO.FS.readBinFile p catch _ => return .empty
 
