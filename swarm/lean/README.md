@@ -12,10 +12,12 @@ a command not ported yet runs the Lua CLI. Lean 4.35.0, no Lean dependencies; li
 | `SwarmLean/Real.lean`, `Sqlite.lean`, `c/shim.c` | the real world: the SQLite store, IO |
 | `SwarmLean/Args.lean`, `Cmd/*.lean`, `Dispatch.lean`, `Main.lean` | argparse's grammar, the command groups, main |
 | `SwarmLean/Proofs.lean` | the slice's theorems about the real steps |
-| `parity.sh` | the cli specs against swarm-lean: passed / failed / not-ported per spec file |
+| `TestMain.lean`, `Tests/Cli/`, `Tests/Spec/` | `swarm-tests [pattern]`: the CLI's test suite (the Lua specs ported), parallel, per-test timeout |
+| `Tests/*.lean` | the pure specs as `#guard`s, checked by `lake build` |
+| `parity.sh` | the Lua cli specs against swarm-lean: passed / failed / not-ported per spec file |
 | `test-claim.sh` | 50 `task claim 1` processes on one db; exactly one wins |
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
-| `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`'s axioms, parity.sh and test-claim.sh on both binaries |
+| `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`'s axioms, swarm-tests, parity.sh and test-claim.sh on both binaries |
 
 Proved (no `sorry`, `admit`, `axiom` or `native_decide`), of the steps the CLI runs: the invariant (unique task ids
 below the next id; a claimed task has an owner, an open one none) holds after any `task add`/`claim`/`release`/`board`
