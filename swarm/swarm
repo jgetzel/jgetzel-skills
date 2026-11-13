@@ -1,13 +1,15 @@
 #!/bin/sh
-# The swarm CLI: swarm-lean (lean/) when its binary is built and no source is newer, else the Lua CLI (swarm-lua) with
-# one stderr line saying how to build it. A hook gets no such line and never waits on a build.
+# The swarm CLI: runs swarm-lean (lean/). A binary older than its sources still runs, with one stderr line saying how to
+# rebuild; with no binary, it says how to build one. A hook gets no such line and never waits on a build.
 p=$0
 while [ -L "$p" ]; do
   l=$(readlink "$p")
   case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
 done
 here=$(cd -P "$(dirname "$p")" && pwd)
-export SWARM_HERE="$here" SWARM_LUA_CLI="$here/swarm-lua"
+export SWARM_HERE="$here"
+hint="$here/lean/build.sh"
+stale=
 # lake's binary (lean/build.sh touches it), then nix's out-link (its own mtime: find -newer does not follow it)
 for ref in "$here/lean/.lake/build/bin/swarm-lean" "$here/lean/.lake/nix"; do
   bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/swarm-lean
@@ -17,9 +19,22 @@ for ref in "$here/lean/.lake/build/bin/swarm-lean" "$here/lean/.lake/nix"; do
     model/SwarmModel/Glob.lean model/SwarmModel/Model.lean model/SwarmModel/PrWatch.lean model/SwarmModel/Decide.lean \
     -newer "$ref" 2>/dev/null | head -n 1)
   [ -z "$new" ] && exec "$bin" "$@"
-  why="is older than $new"
+  [ -n "$stale" ] || stale=$bin why=$new
 done
-# no double quotes or backslashes in it: swarm-lua's hook branch writes it into JSON as is
-export SWARM_INSTALL_HINT="$here/lean/build.sh"
-[ "$1" = hook ] || echo "swarm: running the Lua CLI: swarm-lean ${why:-is not built}; build it with $SWARM_INSTALL_HINT" >&2
-exec "$here/swarm-lua" "$@"
+if [ -n "$stale" ]; then
+  [ "$1" = hook ] || echo "swarm: swarm-lean is older than $why; rebuild it with $hint" >&2
+  exec "$stale" "$@"
+fi
+msg="swarm-lean is not built; build it with $hint"
+if [ "$1" = hook ]; then
+  # no double quotes or backslashes in msg: written into JSON as is
+  [ -n "$SWARM_NAME" ] || exit 0
+  case $2 in
+    pre-tool) ev=PreToolUse ;; post-tool) ev=PostToolUse ;; prompt) ev=UserPromptSubmit ;; session) ev=SessionStart ;;
+    *) echo "swarm: $msg" >&2; exit 1 ;;
+  esac
+  printf '{"hookSpecificOutput": {"hookEventName": "%s", "additionalContext": "swarm hooks are OFF: %s"}, "systemMessage": "swarm hooks are OFF: %s"}\n' "$ev" "$msg" "$msg"
+  exit 0
+fi
+echo "swarm: $msg" >&2
+exit 127

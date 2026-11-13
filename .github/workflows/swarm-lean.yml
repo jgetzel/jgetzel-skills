@@ -1,14 +1,14 @@
 # swarm-lean (swarm/lean): check.sh builds it with its proofs and #guard tests, refuses sorry/admit/native_decide and
-# any axiom beyond Lean's three (Audit.lean), and runs the Lua CLI's specs against the binary (parity.sh, strict and
-# --mixed) and test-claim.sh. The hpl build needs ../high-perf-lean beside the checkout, so it is local only (check.sh
-# skips it here). Linux only: the specs read /proc and ps as on Linux.
+# any axiom beyond Lean's three (Audit.lean), and runs swarm-tests (the CLI's test suite) and test-claim.sh. The hpl
+# build needs ../high-perf-lean beside the checkout, so it is local only (check.sh skips it here). Linux only: the specs
+# read /proc and ps as on Linux.
 name: swarm-lean
 on:
   push:
     branches: [main]
-    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/lua/**, swarm/swarm, swarm/swarm-lua, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
+    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
   pull_request:
-    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/lua/**, swarm/swarm, swarm/swarm-lua, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
+    paths: [swarm/lean/**, swarm/model/SwarmModel/**, swarm/swarm, flake.nix, flake.lock, .github/workflows/swarm-lean.yml]
   workflow_dispatch:
 
 jobs:
@@ -18,10 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - name: LuaJIT and its rocks from the repo flake (parity.sh runs the Lua specs)
-        run: |
-          nix build .#luajit -o "$RUNNER_TEMP/luajit"
-          echo "$RUNNER_TEMP/luajit/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
           path: ~/.elan

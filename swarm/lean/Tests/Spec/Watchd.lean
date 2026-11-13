@@ -63,7 +63,7 @@ instance : Proc TM where
     | some r => pure r
     | none => (Proc.output argv cwd env : App _)
   exec argv := (Proc.exec argv : App _)
-  luaCli := (Proc.luaCli : App _)
+  launcherDir := (Proc.launcherDir : App _)
 
 instance : Git TM where
   git args cwd := do

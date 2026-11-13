@@ -300,8 +300,7 @@ def running (db : Db) (t : Int) : m (List (String × Json)) := do
   return [("costly", .arr rc.toArray), ("cost_top", .arr top.toArray), ("running", .arr run.toArray)]
 
 /-- watchd's record (pid, terminal), what it was started with, and whether the swarm code changed since it started
-(stale: a lua/swarm/*.lua under $SWARM_HERE, else the Lua launcher's directory, or a swarm-lean binary the launcher runs
-is newer). -/
+(stale: a swarm-lean binary the launcher runs is newer). -/
 def watchdJson (wr : String) (runV : Option String) : m Json := do
   let runJ := match runV.bind Json.decode with | some j@(.obj _) => j | _ => Json.mkObj []
   let cs := wr.toList
@@ -309,10 +308,7 @@ def watchdJson (wr : String) (runV : Option String) : m Json := do
   let term := String.ofList (((cs.drop pidT.length).dropWhile isSpace).takeWhile (!isSpace ·))
   let pid := if pidT.isEmpty then none else parseInt (String.ofList pidT)
   let here := (← Spawn.swarmHere).getD "."
-  let dir := joinPath (joinPath here "lua") "swarm"
   let mut newest : Int := 0
-  for f in (← Fs.list dir).getD [] do
-    if f.endsWith ".lua" then if let some mt ← Sys.mtime (joinPath dir f) then newest := max newest mt
   for b in ["lean/.lake/build/bin/swarm-lean", "lean/.lake/nix"] do
     if let some mt ← Sys.mtime (joinPath here b) then newest := max newest mt
   let started := raw runJ "started"

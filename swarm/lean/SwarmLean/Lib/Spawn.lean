@@ -19,10 +19,10 @@ def dbPath : m String := do
   | some dir => if strip dir != "" then return joinPath (joinPath (strip dir) "swarm") "swarm.db" else die "not in a git repo and SWARM_DB is unset"
   | none => die "not in a git repo and SWARM_DB is unset"
 
-/-- The swarm/ directory (the launcher's SWARM_HERE): $SWARM_HERE, else the Lua launcher's directory. -/
+/-- The swarm/ directory (the launcher's SWARM_HERE): $SWARM_HERE, else the one above this binary. -/
 def swarmHere : m (Option String) := do
   if let some h ← env "SWARM_HERE" then return some h
-  return (← Proc.luaCli).map dirname
+  Proc.launcherDir
 
 /-- Writes agent `name`'s settings file and runs launch.sh for it in `cwd`, in the swarm's Herdr space: launch.sh's
 output (none on failure) and the first line of its stderr (watchd.launch_agent). -/

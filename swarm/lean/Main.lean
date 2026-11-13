@@ -3,32 +3,18 @@ import SwarmLean.Real
 import SwarmLean.RealSys
 open SwarmLean
 
-/-- A command swarm-lean does not know: a failure, or under SWARM_LEAN_STRICT=0 the Lua CLI with the same argv and
-environment (every command is ported: parity.sh --mixed uses it). -/
-def fallThrough (args : List String) : IO UInt32 := do
-  let w := args.headD ""
-  if (← IO.getEnv "SWARM_LEAN_STRICT") != some "0" then
-    IO.eprintln s!"swarm: not ported: {w}"
-    -- for parity.sh: a test that swallows the message still leaves this in its fixture, beside its db
-    if let some db ← IO.getEnv "SWARM_DB" then
-      if let some dir := (db : System.FilePath).parent then
-        try
-          let h ← IO.FS.Handle.mk (dir / "swarm-lean-not-ported") .append
-          h.putStrLn w
-        catch _ => pure ()
-    return 1
-  match ← luaCliIO with
-  | none => IO.eprintln s!"swarm: not ported: {w}, and the Lua CLI is not found (set SWARM_LUA_CLI)"; return 127
-  | some lua =>
-    let why ← execIO (lua :: args)
-    IO.eprintln s!"swarm: can't run the Lua CLI {lua}: {why}"
-    return 127
+/-- No known command word: `-h` prints the commands; anything else is argparse's usage error (exit 2). -/
+def noCommand (args : List String) : IO UInt32 := do
+  match args.head? with
+  | some "-h" | some "--help" => IO.println (Dispatch.help (m := App)); return 0
+  | some w => IO.eprintln s!"{Dispatch.USAGE}\nswarm: error: unknown command '{w}'"; return 2
+  | none => IO.eprintln s!"{Dispatch.USAGE}\nswarm: error: a command is required"; return 2
 
 def main (args : List String) : IO UInt32 := do
   match args with
   | w :: rest =>
     match Dispatch.find (m := App) w with
-    | none => fallThrough args
+    | none => noCommand args
     | some (g, spec) =>
       let ctx : Ctx := { conn := ← IO.mkRef none }
       try
@@ -38,4 +24,4 @@ def main (args : List String) : IO UInt32 := do
       catch e =>
         IO.eprintln s!"swarm: {e}"
         pure 1
-  | [] => fallThrough args
+  | [] => noCommand args

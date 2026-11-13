@@ -46,8 +46,8 @@ class Proc (m : Type → Type) where
   output : List String → Option String → List (String × String) → m (Option ProcOut)
   /-- Replaces this process with `argv` (looked up on PATH), same environment; returns only on failure, with why. -/
   exec : List String → m String
-  /-- The Lua CLI's launcher (swarm/swarm), for what is not ported yet; none when it can't be found. -/
-  luaCli : m (Option String)
+  /-- The swarm/ directory above this binary (its launcher `swarm` and `lean/`); none when there is none (nix's build). -/
+  launcherDir : m (Option String)
 
 /-- git, which the commands run only through this (bases.lua). -/
 class Git (m : Type → Type) where

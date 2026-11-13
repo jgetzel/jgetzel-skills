@@ -1,14 +1,14 @@
 # swarm-lean: the swarm CLI in Lean
 
-The port of swarm/lua/swarm to Lean (PORT.md: the decisions, the layout, how a command group is added, what is
-ported). `swarm-lean` takes the Lua CLI's command line and works on its SQLite db, so both run on one live swarm.
-Every command is ported; with `SWARM_LEAN_STRICT=0` a command it does not know runs the Lua CLI (`../swarm-lua`),
-otherwise it fails. Lean 4.35.0, no Lean dependencies; libsqlite3 from the repo flake.
+The swarm CLI, ported from the Lua CLI it replaced (PORT.md: the decisions, the layout, how a command group is added;
+board #110 deleted the Lua). It keeps the Lua CLI's command line and SQLite db. Lean 4.35.0, no Lean dependencies;
+libsqlite3 from the repo flake.
 
 ## Install
 
-The launcher `../swarm` runs `.lake/build/bin/swarm-lean` (or the nix link `.lake/nix`) when no source is newer than
-it, else the Lua CLI with one stderr line naming `./build.sh`. That one command builds it either way:
+The launcher `../swarm` runs `.lake/build/bin/swarm-lean` (or the nix link `.lake/nix`); when a source is newer than
+the binary it still runs it, with one stderr line naming `./build.sh`, and with no binary it fails naming it (a hook
+gets a "swarm hooks are OFF" note instead). That one command builds it either way:
 
 - **elan + lake**: with `lake` on PATH ([elan](https://github.com/leanprover/elan) installs it and reads
   `lean-toolchain`), `lake build swarm-lean`, then a touch of the binary (lake keeps an up-to-date one's mtime).
@@ -32,11 +32,10 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `Audit.lean` | every theorem's axioms (Lean's three only, or it fails), and the theorems taking each assumption |
 | `TestMain.lean`, `Tests/Cli/`, `Tests/Spec/` | `swarm-tests [pattern]`: the CLI's test suite (the Lua specs ported), parallel, per-test timeout |
 | `Tests/*.lean` | the pure specs as `#guard`s, checked by `lake build` |
-| `parity.sh` | the Lua cli specs against swarm-lean: passed / failed / not-ported per spec file |
 | `test-claim.sh` | 50 `task claim 1` processes on one db; exactly one wins |
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
 | `build.sh` | builds the binary the launcher runs (elan's lake, else nix) |
-| `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`, each assumption's test tag, swarm-tests, parity.sh and test-claim.sh on both binaries |
+| `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`, each assumption's test tag, swarm-tests and test-claim.sh on both binaries |
 
 ## What is proved of the running code
 
@@ -120,8 +119,8 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | `GhState` | gh | a listed PR not closed is MERGED when merged, else OPEN | none |
 
 `consistent`: a machine on which no command runs has every tool assumption, so they are jointly satisfiable; that the
-real tools have them is what the case in each tag tests (swarm/lua/test/env_spec.lua and sqlite_spec.lua, which
-check.sh requires to exist). Locks' `Before t cs` (S3's time `t` is no earlier than each lock's clock) is a condition of
+real tools have them is what the case in each tag tests (swarm-tests' env_spec and sqlite_spec, `Tests/Spec/Env.lean`
+and `Sqlite.lean`, which check.sh requires to exist). Locks' `Before t cs` (S3's time `t` is no earlier than each lock's clock) is a condition of
 the statement, not of the world: a clock that never goes back (`NowMono`) gives it at any moment after the locks.
 
 ## swarm/model's theorems: moved or not
@@ -133,7 +132,9 @@ swarm the code does not yet carry a proof of (why given). The deletion task (#11
 applicable; what is not moved is the proof coverage lost with swarm/model. Four model files are not deletable at all:
 `Glob.lean`, `Model.lean`, `PrWatch.lean` and `Decide.lean` are built into swarm-lean (lean_lib `SwarmModelGlob` in
 lakefile.lean): `locks.covers`/`overlaps` and watchd's `keeps` are their functions. Move them under swarm/lean before
-deleting swarm/model.
+deleting swarm/model. #110 deleted only the model's link to the Lua (Lifted/, LockSrc, LoopSafe, the case generators,
+case files and traces, SqlParse): every other model file has a not-moved theorem or is imported by one that has
+(swarm/model/README.md, first section).
 
 | Model family (file: theorems) | Status | Lean theorem / why |
 |---|---|---|
