@@ -198,6 +198,23 @@ def test_concurrent_lock_waits_not_double_writes (t : T) : IO Unit := do
   unless code ≠ 0 do fail "lock succeeded on a held path"
   eq (← t.q "select path,agent from lock") (json% [{"path": "a.txt", "agent": "a"}])
 
+/-- A peer holds the write lock past the 10 s busy handler: `wait` tries its write again rather than exit 1, and reads
+go through meanwhile (board #137). -/
+def test_wait_outlasts_a_busy_db (t : T) : IO Unit := do
+  t.agent "a"
+  let peer ← Sqlite.Conn.open t.db false
+  discard <| peer.exec "begin immediate"
+  let child ← IO.Process.spawn
+    { cmd := ← swarmBin, args := #["wait", "--timeout", "1"], cwd := some t.repo, stdin := .null, stdout := .null,
+      stderr := .piped, env := #[("SWARM_DB", some t.db), ("SWARM_NAME", some "a"), ("HC_TERMINAL_ID", none)] }
+  has (← t.sw "a" ["who"]).stdout "a"  -- a read takes no write lock
+  IO.sleep 11500
+  unless (← child.tryWait).isNone do fail "wait did not wait out the held lock"
+  discard <| peer.exec "commit"
+  let err ← child.stderr.readToEnd
+  eq (json% [$((← child.wait).toNat), $err]) (json% [0, ""])
+  unless (← t.q1 "select waiter from agent where name='a'").f "waiter" != .null do fail "wait did not record its pid"
+
 def test_drop_claimed_only_by_owner_or_comms (t : T) : IO Unit := do
   for i in [0:3] do t.sw_ "a" ["task", "add", s!"t{i}"]
   t.sw_ "a" ["task", "claim", "1"]
@@ -427,6 +444,7 @@ def tests : List Case := [
   ("test_takeover_then_predecessor_death_keeps_agent_claims_locks", test_takeover_then_predecessor_death_keeps_agent_claims_locks),
   ("test_second_lock_on_held_path_refused", test_second_lock_on_held_path_refused),
   ("test_concurrent_lock_waits_not_double_writes", test_concurrent_lock_waits_not_double_writes),
+  ("test_wait_outlasts_a_busy_db", test_wait_outlasts_a_busy_db),
   ("test_drop_claimed_only_by_owner_or_comms", test_drop_claimed_only_by_owner_or_comms),
   ("test_cursor", test_cursor),
   ("test_post_delivery_in_post_tool", test_post_delivery_in_post_tool),

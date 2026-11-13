@@ -25,8 +25,8 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    holding lib/ and include/). The shim also gives `now`, the local `HH:MM` and `execvp`.
 2. **Proof shape.** `Db` (`Db.lean`) holds every table as a list of rows plus the next id of each AUTOINCREMENT
    table. A command's effect is a pure `… → Db → Db × Except String α` (`Db/<module>.lean`), run by
-   `Store.txn tables f`: BEGIN IMMEDIATE, load the listed tables, apply `f`, write back, COMMIT
-   (`Real.lean`: `sqliteTxn`). The write-back diffs by primary key: deletes the rows gone, UPDATEs the changed ones
+   `Store.txn tables f`: load the listed tables and apply `f` in a read transaction, write back a change under BEGIN
+   IMMEDIATE (applied again if another connection committed since), COMMIT (`Real.lean`: `sqliteTxn`). The write-back diffs by primary key: deletes the rows gone, UPDATEs the changed ones
    (known columns only, so a column Lean does not know keeps its value), INSERTs the new. A table not loaded is empty
    in the `Db` and only gains the rows the step inserts (an event appended needs no load). `Atomic` stays the one
    store assumption; it now also covers "a step reads only the tables it lists". The slice's theorems are proved of
@@ -216,7 +216,7 @@ Ported as they are:
 - pr_ci matches a PR to a task with no owner by the head branch prefix `nil/` (Lua's `tostring(nil)`).
 - `swarm watch` loads the event table whole each second (Store has no query; `shortcut:` in Cmd/State).
 - `swarm state` loads its tables whole where the Lua selects the rows it prints (`shortcut:` in Cmd/State), and in a
-  transaction (BEGIN IMMEDIATE, as every read-only command here) where the Lua opened the db read-only. On a db from
+  read transaction (as every read-only command here; BEGIN IMMEDIATE until board #137) where the Lua opened the db read-only. On a db from
   before a migration that means Lean adds the missing columns and tables first, so a task row shows a newer column as
   null where the Lua's omitted it, and fate's "no such table" fallback (null) never arises.
 - state.fate's job read runs `ps` per agent asked; the Lua read `bg_agents` once per snapshot.

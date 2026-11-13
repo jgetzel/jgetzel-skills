@@ -80,24 +80,34 @@ def read : m UInt32 := do
   Env.out (← if rows.isEmpty then pure "no unread messages" else fmtMsgs rows)
   return 0
 
+/-- `Store.txn ts f`, tried again a second later while the db is busy ("database is locked": busy_timeout ran out),
+for about an hour: a waiter that exits on a busy db is read as broken (board #137). -/
+def txnBusy [Guard m] (ts : List Table) (f : Db → Db × α) : m α := do
+  for _ in [0:300] do
+    match ← Guard.guard (Store.txn ts f) with
+    | .ok a => return a
+    | .error e => if !hasSub e "database is locked" then die e
+    Sys.sleep 1000
+  Store.txn ts f
+
 /-- `swarm wait [--me N] [--timeout S] [--poll S]` (msgs.cmd_wait): 2 after a delivery to stderr, 3 when fenced, 0 on
 a timeout or when superseded or working. -/
-def wait (a : Parsed) : m UInt32 := do
+def wait [Guard m] (a : Parsed) : m UInt32 := do
   let n ← me
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
   -- the Stop hook set last_active; the cold rule needs it untouched
-  if let some f ← Store.txn [.agent, .event, .cursor] (touchWith · n none here now true ({ · with status := some "idle" })) then
+  if let some f ← txnBusy [.agent, .event, .cursor] (touchWith · n none here now true ({ · with status := some "idle" })) then
     -- fenced: this waiter can never wake; 3 so it isn't read as a timeout (0) or messages (2)
     Env.err (← fenceText n f)
     throw (Exit.mk 3)
   let pid ← Sys.getpid  -- every Stop starts a waiter and none is killed: the newest owns the inbox
-  Store.txn [.agent] fun db => (db.setAgent n ({ · with waiter := some pid }), ())
+  txnBusy [.agent] fun db => (db.setAgent n ({ · with waiter := some pid }), ())
   let deadline := (← Clock.now) + (a.int "timeout").getD 21000
   let pollMs := ((parseFloat (strip ((a.str "poll").getD "1"))).getD 1 * 1000).toUInt64.toNat
   let mut seen : Seen := []
   while (← Clock.now) < deadline do
-    let (ag, rows) ← Store.txn [.agent, .msg, .cursor] fun db => (db, (db.agent n, unread db n))
+    let (ag, rows) ← txnBusy [.agent, .msg, .cursor] fun db => (db, (db.agent n, unread db n))
     let some ag := ag | return 0
     if ag.waiter != some pid || ag.status == some "working" then return 0  -- superseded, or its hooks deliver
     let urg (r : Msg) : Bool := r.urgent.getD 0 != 0
@@ -110,7 +120,7 @@ def wait (a : Parsed) : m UInt32 := do
       cold := cr.isSome
     if (← wakes rows (pure cold : m Bool)).isSome then
       let t ← Clock.now
-      Store.txn [] fun db => (db.log t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}"), ())
+      txnBusy [] fun db => (db.log t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}"), ())
       Env.err (← deliver n)
       throw (Exit.mk 2)
     Sys.sleep pollMs
@@ -162,7 +172,7 @@ def compact (a : Parsed) : m UInt32 := do
   return 0
 
 /-- The group: post, read, wait, nudge and compact. -/
-def group : Group m where
+def group [Guard m] : Group m where
   specs := [("post", postSpec), ("read", readSpec), ("wait", waitSpec), ("nudge", nudgeSpec), ("compact", compactSpec)]
   run a := match a.cmd with
     | "post" => post a

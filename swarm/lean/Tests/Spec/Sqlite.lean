@@ -1,8 +1,9 @@
 import Tests.Cli.Fixture
 
 /-! sqlite_spec.lua: the store assumption (Assumptions.lean's `Atomic`, and the sqlite behaviour its tags name) against
-real sqlite through the code's own store: `connect` (WAL, busy_timeout 10 s) and `sqliteTxn` (`Store.txn`: BEGIN
-IMMEDIATE, load, write back, COMMIT), many processes at once. Each case carries the name a tag gives. The other
+real sqlite through the code's own store: `connect` (WAL, a 10 s busy handler) and `sqliteTxn` (`Store.txn`: load
+and apply in a read transaction; a change written under BEGIN IMMEDIATE, applied again if another connection committed
+since), many processes at once. Each case carries the name a tag gives. The other
 processes are this binary's `--sqlite <role> …` (`worker`), each on its own connection to $SWARM_DB. Counters and
 accounts are meta rows. -/
 
@@ -211,7 +212,8 @@ def sqlite_rollback (t : T) : IO Unit := do
   eq ((← c.query "pragma integrity_check")[0]?.bind (·[0]?) == some (.text "ok")) true "sqlite_rollback: the db is whole"
 
 /-- A deferred transaction that has read, then writes after another connection's commit, gets SQLITE_BUSY
-(BUSY_SNAPSHOT) at once, busy_timeout (10 s) not waited, and stays open: why Store.txn begins IMMEDIATE. -/
+(BUSY_SNAPSHOT) at once, busy_timeout (10 s) not waited, and stays open: why Store.txn never upgrades its read
+transaction but writes in a new BEGIN IMMEDIATE one. -/
 def deferred (t : T) : IO Unit := do
   let a ← setup t
   let b ← connect
@@ -223,12 +225,30 @@ def deferred (t : T) : IO Unit := do
   eq opened true "deferred: the transaction stays open after it"
   discard <| a.exec "rollback"
 
+/-- `pragma data_version` stays put while no other connection commits (across this connection's own transactions) and
+changes when one does, read inside BEGIN IMMEDIATE too; a read-only Store.txn takes no write lock, so it goes through at
+once while another connection holds it (board #137). -/
+def sqlite_version (t : T) : IO Unit := do
+  let a ← setup t
+  let b ← connect
+  let v ← inTxn a "begin" (dataVersion a)
+  sqliteTxn a [.«meta»] fun db => (setI db "tx" 1, ())
+  eq ((← inTxn a "begin immediate" (dataVersion a)) == v) true "sqlite_version: unchanged by this connection's commits"
+  discard <| b.exec "update meta set v='2' where k='tx'"
+  eq ((← inTxn a "begin immediate" (dataVersion a)) == v) false "sqlite_version: changed by another connection's commit"
+  pragma200 a
+  holding t "hold" do
+    let t0 ← IO.monoMsNow
+    eq (← sqliteTxn a [.«meta»] fun db => (db, getI db "tx")) 2 "sqlite_version: a read-only Store.txn reads the last commit"
+    eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_version: a read-only Store.txn doesn't wait on the writer"
+
 def tests : List Case := [
   ("sqlite_begin", sqlite_begin),
   ("sqlite_write", sqlite_write),
   ("sqlite_read", sqlite_read),
   ("sqlite_commit", sqlite_commit),
   ("sqlite_rollback", sqlite_rollback),
-  ("deferred", deferred)]
+  ("deferred", deferred),
+  ("sqlite_version", sqlite_version)]
 
 end SwarmLean.Tests.Spec.Sqlite
