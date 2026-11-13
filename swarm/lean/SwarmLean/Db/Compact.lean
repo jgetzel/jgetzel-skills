@@ -85,6 +85,9 @@ def save (db : Db) (n : String) (s : St) : Db :=
 /-- One line: newlines to spaces. -/
 def oneLine (s : String) : String := s.map fun c => if c == '\n' || c == '\r' then ' ' else c
 
+/-- Longest `--keep` text sent inline; Claude Code pastes anything over ~800 chars as an attachment, not a command. -/
+def maxKeep : Nat := 300
+
 /-- The `/compact` line for agent `name`: what to keep, from its task, worktree and branch, plus `extra`. -/
 def line (name : String) (task : Option (Int × String)) (cwd branch : Option String) (extra : Option String) : String :=
   let t := match task with | some (i, ti) => s!" on task #{i} ({ti})" | none => ""
