@@ -14,7 +14,9 @@ const swarm = (cwd, on, args) => on
 // POLL: the fastest rate, while the db changes. QUIET_POLL: a watched local db that hasn't changed (idle
 // timers, cache countdowns and the machine reading still move). REMOTE_POLL: other machines, unwatched.
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;
-const CTX_MAX = 600000, FINISH = 350000, HANDOFF = 550000; // the context bar's scale and its two ticks
+// the context bar's scale and its two ticks, `swarm limits`' defaults (board #136)
+// shortcut: the defaults, not the db's --ctx-nudge/--ctx-compact; read them from state --json if they get changed
+const CTX_MAX = 600000, FINISH = 325000, HANDOFF = 400000;
 const route = spec => {
   const [s, x] = spec.replace(/\+(ask|new)$/, "").split(":");
   return s === "task" ? { s, id: Number(x) } : s === "agent" ? { s, name: x } : s === "board" ? { s, f: x ?? "active" } : s === "more" ? { s, tab: x ?? "activity" } : { s };
@@ -370,7 +372,7 @@ export default class Swarm extends View {
   statusColor(t, s) { return { working: t.working, idle: t.idle, blocked: t.blocked, ended: t.dim }[s] ?? t.unknown; }
   signChip(t, a) { const g = SIGN[a.stay_sign]; return g ? this.chip(t, g[0], g[2] ? t.blocked : t.ansi3, true).tooltip(g[1]) : null; }
 
-  // Context bar on a 0..600k scale with ticks at the 350k finish note and the 550k compaction note; it fills
+  // Context bar on a 0..600k scale with ticks at the 325k compact nudge and watchd's 400k compaction; it fills
   // 0 -> value once per key (a lane, or the detail pane for one agent).
   ctxBar(t, key, n, big) {
     const pct = Math.min(100, (n / CTX_MAX) * 100), { first } = this.enter(`bar:${key}`, false), h = big ? 6 : 4;
@@ -795,7 +797,7 @@ export default class Swarm extends View {
         ["Model", [a.model ?? "?", a.started ? `started ${hhmm(a.started)}` : null, a.hc ? `terminal ${a.hc}` : null].filter(Boolean).join(" · ")],
         ["Context", v_flex().gap(7)
           .child(h_flex().gap(8).child(div().font_semibold().child(n ? kilo(n) : "–"))
-            .child(dim(!n ? "no reading for this session" : n >= HANDOFF ? "past 550k: compacting; it releases the task if it loses the thread" : n >= FINISH ? "past 350k: it finishes and takes no new task" : "takes new tasks up to 350k")))
+            .child(dim(!n ? "no reading for this session" : n >= HANDOFF ? "past 400k: watchd compacts it when it is idle" : n >= FINISH ? "past 325k: told to compact; takes no new task" : "takes new tasks up to 325k")))
           .when(n > 0, el => el.child(h_flex().h(6).child(this.ctxBar(t, `det-${a.name}`, n, true))))],
         !ended ? ["Cache", a.cold_guarded ? "cold: messages wait in its inbox" : a.cache === "warm" ? `warm${left > 0 ? `, cold in ${ago(left)}` : ""}` : "cold"] : null,
         ["Branch", h_flex().gap(8).min_w(0).child(this.mono(div().flex_none().text_size(11.5).child(branch ?? "–"))).child(dim(a.worktree ? "its own worktree" : "the main checkout"))
@@ -1276,6 +1278,10 @@ const KIND = Object.fromEntries(Object.entries({
   leave: ["log-out", "agents", "Left", "An agent left the swarm.", "", 0],
   compact: ["shrink", "agents", "Compacted", "An agent's context was summarized to free room.", "", 0],
   "ctx-note": ["gauge", "agents", "Context note", "An agent's context passed a size mark and it was told to wrap up or keep working through compaction.", "", 0],
+  "ctx-nudge": ["gauge", "agents", "Told to compact", "An agent's context passed the nudge mark; it was told to save its state and compact itself.", "", 0],
+  "compact-asked": ["shrink", "agents", "Compacting itself", "An agent ran swarm compact; it compacts when its turn ends.", "", 0],
+  "ctx-compact": ["shrink", "agents", "Compacting", "An idle agent's context passed the compaction mark, so watchd started a compaction.", "", 0],
+  "ctx-compact-failed": ["gauge", "agents", "Still too big", "A compaction left an agent's context over the mark; the communicator was told.", "", 1],
   fenced: ["ban", "agents", "Fenced", "An old session of an agent acted after its successor took over, and was ignored.", "", 0],
   wake: ["bell", "messages", "Woke", "An idle agent woke up to read new messages.", "", 0],
   digest: ["info", "messages", "Board nudge", "An idle agent was told there are open tasks.", "", 0],

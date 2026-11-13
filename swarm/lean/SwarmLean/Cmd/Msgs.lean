@@ -3,8 +3,10 @@ import SwarmLean.Cmd.MsgsHelp
 import SwarmLean.Lib.Msgs
 import SwarmLean.Lib.Agents
 import SwarmLean.Sys
+import SwarmLean.Db.Compact
 
-/-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait) and `swarm nudge` (agents.cmd_nudge). -/
+/-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait), `swarm nudge` (agents.cmd_nudge) and
+`swarm compact` (board #136). -/
 
 namespace SwarmLean.Cmd.Msgs
 open Args _root_.SwarmLean.Msgs Agents
@@ -23,6 +25,9 @@ def waitSpec : Spec :=
   .mk "wait" helpWait [] [opt "--me", opt "--timeout" (some "21000") (some int), opt "--poll" (some "1") (some num)] [] [] none
 /-- The `nudge` parser. -/
 def nudgeSpec : Spec := .mk "nudge" helpNudge [{ name := "agent" }] [] [] [] none
+
+/-- The `compact` parser. -/
+def compactSpec : Spec := .mk "compact" helpCompact [] [opt "--keep"] [] [] none
 
 /-- The fixed line `swarm nudge` types (agents.NUDGE). -/
 def NUDGE : String := "read your messages and continue, or say what you wait for"
@@ -127,13 +132,43 @@ def nudge (a : Parsed) : m UInt32 := do
   Env.out s!"nudged {ag} ({hc})"
   return 0
 
-/-- The group: post, read, wait and nudge. -/
+/-- Types `text` into terminal `hc` as if at its keyboard: hc wraps text sent from an agent's terminal in `<hc from>`,
+and a wrapped `/compact` is no command. Its error, or none. -/
+def typeLine (hc text : String) : m (Option String) := do
+  let o ← Sys.exec ["hc", "send", hc, text] { env := [("HC_TERMINAL_ID", none)] }
+  return if o.code == 0 then none else some (strip (o.stderr ++ o.stdout))
+
+/-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136). -/
+def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
+  let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
+    (·.id ≤ ·.id)).head?
+  let br ← match a.cwd with
+    | some c => pure ((← Proc.output ["git", "-C", c, "branch", "--show-current"] none []).bind fun o =>
+        if o.code == 0 then some (strip o.stdout) else none)
+    | none => pure none
+  return Compact.line a.name (task.map fun r => ((r.id : Int), r.title.getD "")) a.cwd br extra
+
+/-- `swarm compact [--keep <text>]`: types `/compact <what to keep>` into the agent's own terminal; Claude Code runs it
+when the turn ends (board #136). -/
+def compact (a : Parsed) : m UInt32 := do
+  let some me ← env "SWARM_NAME" | die "swarm compact: SWARM_NAME is not set"
+  let (row, db) ← Store.txn [.agent, .task] fun db => (db, (db.agent me, db))
+  let some r := row.filter (·.ended.isNone) | die s!"{me} is not a live agent"
+  let some hc := py r.hc | die s!"{me} has no terminal"
+  if let some e ← typeLine hc (← compactLine db r (a.str "keep")) then die s!"hc send {hc} failed: {e}"
+  let now ← Clock.now
+  Store.txn [] fun db => (db.log now (some me) "compact-asked" none none, ())
+  Env.out s!"/compact queued in {hc}: it runs when this turn ends."
+  return 0
+
+/-- The group: post, read, wait, nudge and compact. -/
 def group : Group m where
-  specs := [("post", postSpec), ("read", readSpec), ("wait", waitSpec), ("nudge", nudgeSpec)]
+  specs := [("post", postSpec), ("read", readSpec), ("wait", waitSpec), ("nudge", nudgeSpec), ("compact", compactSpec)]
   run a := match a.cmd with
     | "post" => post a
     | "read" => read
     | "wait" => wait a
+    | "compact" => compact a
     | _ => nudge a
 
 end SwarmLean.Cmd.Msgs

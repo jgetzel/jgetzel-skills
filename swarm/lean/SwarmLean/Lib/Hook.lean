@@ -3,7 +3,7 @@ import SwarmLean.Lib.Agents
 import SwarmLean.World
 import Lean.Data.Json
 
-/-! hook.lua's helpers: the transcript's context readings, the context-size note, the communicator's nudge (which
+/-! hook.lua's helpers: the transcript's context readings, the communicator's nudge (which
 board prints), set_status, and the hook's JSON answer. `Cmd/Hook.lean` runs the hooks. -/
 
 namespace SwarmLean.Hook
@@ -32,34 +32,18 @@ def ctxFrom [Monad m] [Fs m] (path : Option String) : m (Option Int) := do
     return some (num "input_tokens" + num "cache_read_input_tokens" + num "cache_creation_input_tokens")
   return none
 
-/-- tempfile.gettempdir(): $TMPDIR, $TEMP or $TMP, else /tmp. -/
-def tmpdir [Monad m] [Env m] : m String := do
-  return (← env "TMPDIR").getD <| (← env "TEMP").getD <| (← env "TMP").getD "/tmp"
-
-/-- The context note at each +100k from 350k, once per step per session (hook.handoff_nudge). -/
-def handoffNudge [Monad m] [Store m] [Clock m] [Env m] [Fs m] (name : String) (transcript : Option String)
-    (sid : Option String) (comms : Bool) : m (Option String) := do
-  let some k ← ctxFrom transcript | return none
-  if k == 0 then return none
+/-- Records the transcript's context on `name`'s row; watchd's compaction pass reads it (board #136). -/
+def recordCtx [Monad m] [Store m] [Fs m] (name : String) (transcript : Option String) : m Unit := do
+  let some k ← ctxFrom transcript | return
+  if k == 0 then return
   Store.txn [.agent] fun db => (db.setAgent name ({ · with ctx_tokens := some k }), ())
-  let step := fdiv (k - (Tasks.CTX_WARN - 100000)) 100000
-  if step < 1 then return none
-  let sidS := match sid with | some s => if s != "" then s else "x" | none => "x"
-  let dir ← tmpdir
-  let mark := if dir.endsWith "/" then dir ++ "claude-ctx-" ++ sidS else dir ++ "/claude-ctx-" ++ sidS
-  let last := ((← Fs.read mark).bind parseInt).getD 0
-  if step ≤ last then return none
-  discard <| Fs.write mark (d step)
-  let now ← Clock.now
-  let stays ← Store.txn [.agent] fun db => (db.log now (some name) "ctx-note" none (some (d k)), (stayOf db name).isSome)
-  return some s!"Context is ~{fdiv k 1000}k tokens: {Tasks.ctxAdvice k (comms || stays)}"
 
 /-- What the communicator is told while the user is away (agents.away_line). -/
 def awayLine [Monad m] [Clock m] (aw : Option Int × Option String) : m String := do
   let since ← Clock.hhmm (← match aw.1 with | some s => pure s | none => Clock.now)
   return s!"the user is away since {since}{match aw.2 with | some n => s!" ({n})" | none => ""}: don't ask them; decide what is yours to decide, queue the rest."
 
-/-- The communicator runs no swarm hooks: read/wait/board/who print its away reminder and context note
+/-- The communicator runs no swarm hooks: read/wait/board/who print its away reminder and record its context
 (hook.comms_nudge); `toErr` for wait. -/
 def commsNudge [Monad m] [Store m] [Clock m] [Env m] [Fs m] (toErr : Bool) : m Unit := do
   let some name ← env "SWARM_NAME" | return
@@ -67,21 +51,17 @@ def commsNudge [Monad m] [Store m] [Clock m] [Env m] [Fs m] (toErr : Bool) : m U
   let envComms ← env "SWARM_COMMS"
   let (isC, aw) ← Store.txn [.meta] fun db => (db, (isComms db envComms (some name), away db))
   if !isC then return
-  let n ← match sid with
-    | none => pure none
-    | some s =>
-      let home := (← Env.var "HOME").getD ""
-      let dirs := (((← Fs.list (home ++ "/.claude/projects")).getD []).toArray.qsort (· < ·)).toList
-      let mut tr : Option String := none
-      for dd in dirs do
-        if ((← Fs.list s!"{home}/.claude/projects/{dd}").getD []).contains s!"{s}.jsonl" then
-          tr := some s!"{home}/.claude/projects/{dd}/{s}.jsonl"; break
-      handoffNudge name tr sid true
-  let awL ← match aw with
-    | some a => pure [← awayLine a]
-    | none => pure []
-  let say := awL ++ n.toList
-  for s in say do if toErr then Env.err s else Env.out s
+  if let some s := sid then
+    let home := (← Env.var "HOME").getD ""
+    let dirs := (((← Fs.list (home ++ "/.claude/projects")).getD []).toArray.qsort (· < ·)).toList
+    let mut tr : Option String := none
+    for dd in dirs do
+      if ((← Fs.list s!"{home}/.claude/projects/{dd}").getD []).contains s!"{s}.jsonl" then
+        tr := some s!"{home}/.claude/projects/{dd}/{s}.jsonl"; break
+    recordCtx name tr
+  if let some a := aw then
+    let s ← awayLine a
+    if toErr then Env.err s else Env.out s
 
 /-- A string as cjson writes it (forward slashes not escaped, other text as is). -/
 def jstr (s : String) : String :=
@@ -135,12 +115,6 @@ def errorTurn [Monad m] [Fs m] (path : Option String) : m Bool := do
     if j.getObjVal? "type" matches .ok (.str "assistant") then
       return j.getObjVal? "isApiErrorMessage" matches .ok (.bool true)
   return false
-
-/-- The step marker the context note shares with the repo hook (hook.ctx_mark). -/
-def ctxMark [Monad m] [Env m] (sid : Option String) : m String := do
-  let dir ← tmpdir
-  let sidS := match sid with | some s => if s != "" then s else "x" | none => "x"
-  return if dir.endsWith "/" then dir ++ "claude-ctx-" ++ sidS else dir ++ "/claude-ctx-" ++ sidS
 
 /-- agents.set_status: `status` and last_active (and `f`'s fields) on `name`'s row through touch; a status event
 when it changed. A fenced name is left as it is. -/

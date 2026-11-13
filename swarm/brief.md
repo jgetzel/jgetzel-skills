@@ -52,9 +52,9 @@ your name is in `$SWARM_NAME`.
   scripts) or a sleep loop.
 - **Unattended.** Nobody answers permission prompts. Run `rm -rf` as its own plain command, never inside `sh -c` or a
   loop; for scratch output use a fresh `mktemp -d` in your scratchpad.
-- **Context.** The harness compacts it; keep working and commit WIP often so a
-  compaction loses nothing on disk. From 350k a hook note says finish and go idle;
-  `task claim` refuses. If after a compaction you no longer understand the task,
+- **Context.** Commit WIP often so a compaction loses nothing on disk. From 325k watchd
+  asks you to note on the task what is done and next, then `swarm compact [--keep "<text>"]`
+  (`task claim` refuses until then); from 400k it compacts you when idle. If after a compaction you no longer understand the task,
   `swarm task release <id>` with a note (what is done, what is next, the branch)
   and stop: watchd staffs a fresh agent.
 - **Ending.** After `task done`, do what it prints (take the next task, or go

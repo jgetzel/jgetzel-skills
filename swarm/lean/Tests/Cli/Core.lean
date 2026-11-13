@@ -11,12 +11,10 @@ def state (t : T) : IO Json := do
   | .ok j => return j
   | .error e => fail s!"state --json: {e}"
 def count (s sub : String) : Nat := (s.splitOn sub).length - 1
-def tmpdir : IO String := return (← IO.getEnv "TMPDIR").getD "/tmp"
 def sid (p : String) : IO String := do
   return s!"{p}{← IO.Process.getPID}{← IO.monoNanosNow}{← IO.rand 0 1000000000}"
 def nth (j : Json) (i : Nat) : Json := ((j.getArrVal? i).toOption).getD .null
 def num (j : Json) : Float := match j with | .num n => n.toFloat | _ => -1
-def rm (p : String) : IO Unit := do try IO.FS.removeFile p catch _ => pure ()
 def okc (hc : String) : Opts := { hc := some hc }
 def nok (hc : String) : Opts := { hc := some hc, ok := false }
 def emptyObj : Json := Json.mkObj []
@@ -230,33 +228,21 @@ def test_post_delivery_in_post_tool (t : T) : IO Unit := do
   has (out.f "additionalContext") "look at X"
   eq (← t.hook "b" "post-tool" (json% {"tool_name": "Read", "tool_input": {}})) emptyObj
 
-def test_ctx_note_steps_marker_and_claim_refusal (t : T) : IO Unit := do
+-- board #136: the hook records context (watchd's compaction pass reads it) and adds no note; claims stop at the nudge
+def test_ctx_recorded_and_claim_refusal (t : T) : IO Unit := do
   t.agent "b"
   let tr := (← t.cwdOf "b") ++ "/t.jsonl"
-  let usage (n : Nat) : IO Unit :=
-    put tr ((json% {"type": "assistant", "message": {"usage": {"input_tokens": $n}}}).compress ++ "\n")
-  let s ← sid "t"
-  let mark := (← tmpdir) ++ "/claude-ctx-" ++ s
-  let post : IO Json := t.hook "b" "post-tool"
-    (json% {"tool_name": "Read", "tool_input": {}, "transcript_path": $tr, "session_id": $s})
-  t.defer (rm mark)
-  usage 300000
-  eq (← post) emptyObj
-  usage 360000
-  has ((← post).f "additionalContext") "go idle"
-  eq (← post) emptyObj  -- same step
+  put tr ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 330000}}}).compress ++ "\n")
+  eq (← t.hook "b" "post-tool" (json% {"tool_name": "Read", "tool_input": {}, "transcript_path": $tr})) emptyObj
+  eq ((← t.q1 "select ctx_tokens c from agent where name='b'").f "c").i 330000
   t.sw_ "b" ["task", "add", "t1"]
   let r ← t.sw "b" ["task", "claim", "1"] { ok := false }
   unless r.code ≠ 0 do fail "claim allowed at high ctx"
-  has r.stderr "compact (/compact) or finish"
-  usage 560000
-  let n := (← post).f "additionalContext"
-  has n "compacts your context"; has n "swarm task release"; hasnt n "relaunch"
-  put mark "9"  -- the repo hook already fired for this step
-  usage (1000000 - 1)
-  eq (← post) emptyObj
+  has r.stderr "`swarm compact`"
+  t.sw_ "human" ["limits", "--ctx-nudge", "0"]  -- off: no fence
+  has (← t.sw "b" ["task", "claim", "1"]).stdout "claimed #1"
 
-def test_comms_ctx_note_from_commands (t : T) : IO Unit := do
+def test_comms_ctx_recorded_from_commands (t : T) : IO Unit := do
   t.agent "x-comms"
   t.q_ "insert or replace into meta(k,v) values('comms','x-comms')"
   let s ← sid "c"
@@ -264,11 +250,22 @@ def test_comms_ctx_note_from_commands (t : T) : IO Unit := do
   discard <| t.exec ["mkdir", "-p", home]
   put (home ++ "/" ++ s ++ ".jsonl")
     ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 360000}}}).compress ++ "\n")
-  let mark := (← tmpdir) ++ "/claude-ctx-" ++ s
-  t.defer (rm mark)
   let env := [("HOME", some (t.d ++ "/home")), ("CLAUDE_CODE_SESSION_ID", some s)]
-  has (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "keep what you hold"
-  hasnt (← t.sw "x-comms" ["who"] { env, ok := false }).stdout "keep what you hold"  -- once per step
+  hasnt (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "Context is"
+  eq ((← t.q1 "select ctx_tokens c from agent where name='x-comms'").f "c").i 360000
+
+-- board #136: `swarm compact` types an unwrapped /compact with the agent's task, worktree and --keep into its terminal
+def test_compact_types_into_own_terminal (t : T) : IO Unit := do
+  t.fakes
+  discard <| t.fake "hc" s!"#!/bin/sh\necho \"[$HC_TERMINAL_ID] $*\" >> {t.d}/hc.log\n"
+  t.agent "a" [("hc", "h1")]
+  t.sw_ "a" ["task", "add", "the thing"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  has (← t.sw "a" ["compact", "--keep", "the plan"] { hc := some "h1" }).stdout "runs when this turn ends"
+  let c := (← t.calls "hc").getLastD ""
+  has c "[] send h1 /compact Keep what swarm agent a needs"; has c "task #1 (the thing)"; has c "the plan"
+  has c (← t.cwdOf "a")
+  -- another terminal is fenced
+  unless (← t.sw "a" ["compact"] { hc := some "h2", ok := false }).code ≠ 0 do fail "compact from another terminal"
 
 def test_burst_capped_rest_stays_unread (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
@@ -433,8 +430,9 @@ def tests : List Case := [
   ("test_drop_claimed_only_by_owner_or_comms", test_drop_claimed_only_by_owner_or_comms),
   ("test_cursor", test_cursor),
   ("test_post_delivery_in_post_tool", test_post_delivery_in_post_tool),
-  ("test_ctx_note_steps_marker_and_claim_refusal", test_ctx_note_steps_marker_and_claim_refusal),
-  ("test_comms_ctx_note_from_commands", test_comms_ctx_note_from_commands),
+  ("test_ctx_recorded_and_claim_refusal", test_ctx_recorded_and_claim_refusal),
+  ("test_comms_ctx_recorded_from_commands", test_comms_ctx_recorded_from_commands),
+  ("test_compact_types_into_own_terminal", test_compact_types_into_own_terminal),
   ("test_burst_capped_rest_stays_unread", test_burst_capped_rest_stays_unread),
   ("test_new_agent_skips_older_broadcasts", test_new_agent_skips_older_broadcasts),
   ("test_post_compact_ctx", test_post_compact_ctx),

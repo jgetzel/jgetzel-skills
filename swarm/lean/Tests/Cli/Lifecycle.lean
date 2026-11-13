@@ -821,6 +821,47 @@ def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
   -- board #135: the row follows the terminal again, or watchd never ends it
   eq ((← t.q1 "select status from agent where name='a'").f "status") "working"
 
+-- board #136: one nudge per crossing of the first threshold; at the second watchd compacts an idle agent once, tells
+-- comms once if it did not shrink, and does it again only after a reading below; never into a prompt
+def test_watchd_compacts_at_context_limit (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  let term (st : String) : IO Unit :=
+    t.setHc [json% {"address": "h1", "status": $st}, json% {"address": "hc0", "status": "done"}]
+  let ctx (who : String) (k : Nat) : IO Unit := t.q_ "update agent set ctx_tokens=? where name=?" [.int k, .text who]
+  let nudges : IO Nat := return (← t.q "select 1 x from msg where dest='a' and body like '%swarm compact%'").size
+  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send h1 /compact")).length
+  term "working"; ctx "a" 300000; tick
+  eq (← nudges) 0
+  ctx "a" 330000; tick; tick
+  eq (← nudges) 1  -- once per crossing
+  ctx "a" 410000; tick
+  eq (← sends) 0  -- mid-turn: never
+  term "blocked"; tick
+  eq (← sends) 0  -- a prompt: never
+  term "done"; tick
+  eq (← sends) 1
+  has ((← t.calls "hc").getLastD "") "task #1 (t1)"
+  tick  -- idle again, still over: comms told once, no second compaction
+  tick
+  eq (← sends) 1
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%after a compaction%'").size 1
+  ctx "a" 60000; tick  -- seen below: both cleared
+  eq (← t.q "select 1 x from meta where k='ctx:a'").size 0
+  ctx "a" 410000; tick
+  eq (← sends) 2; eq (← nudges) 1  -- compacted without a second nudge
+  -- the communicator is nudged, not compacted, unless the limit says so
+  ctx "t-comms" 410000; tick
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%swarm compact%'").size 1
+  eq ((← t.calls "hc").filter (·.startsWith "send hc0")).length 0
+  t.sw_ "human" ["limits", "--compact-stayers", "on"]; tick
+  eq ((← t.calls "hc").filter (·.startsWith "send hc0 /compact")).length 1
+  -- 0 turns a threshold off
+  t.sw_ "human" ["limits", "--ctx-compact", "0"]
+  has (← t.sw "human" ["limits"]).stdout "compact at off"
+
 -- ---- task deps ----
 def test_after_dependency (t : T) : IO Unit := do
   t.agent "a"
@@ -1030,6 +1071,7 @@ def test_task_add_validates_title_and_reads_body_file (t : T) : IO Unit := do
 
 def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
+  ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),
   ("test_lock_prefix_and_overlap", test_lock_prefix_and_overlap),

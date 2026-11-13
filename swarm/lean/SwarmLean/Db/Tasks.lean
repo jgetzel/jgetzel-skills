@@ -1,4 +1,5 @@
 import SwarmLean.Db.Agents
+import SwarmLean.Db.Compact
 import SwarmLean.Db.Msgs
 
 /-! tasks.lua's board logic as pure functions of the db: deps, the pool, timing, and each `task` action's effect.
@@ -19,19 +20,6 @@ def TITLE_MAX : Nat := 100
 /-- The event kinds about a task (tasks.TASK_KINDS). -/
 def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit",
   "queue", "unqueue", "hold", "unhold"]
-/-- Context from which an agent takes no new work (hook.CTX_WARN). -/
-def CTX_WARN : Int := 350000
-
-/-- What to do at context `k` (hook.ctx_advice): the harness compacts context; nobody relaunches (board #135). -/
-def ctxAdvice (k : Int) (stays : Bool) : String :=
-  if stays then
-    "the harness compacts your context: keep working, and keep what you hold (what you stay for, open threads) on " ++
-    "the board or on disk so a compaction loses nothing."
-  else if k ≥ 550000 then
-    "the harness compacts your context: keep working and commit WIP often. If after a compaction you no longer " ++
-    "understand the task, `swarm task release <id>` with a note (what is done, what is next, the branch) and stop."
-  else "finish this task, then go idle (watchd ends you and a fresh agent takes the next task); don't claim another."
-
 /-- The task id an event is about: data `#<id>` or `auto #<id>`, then the end or a space (tasks.event_task). -/
 def eventTask (e : Event) : Option Nat :=
   let s := e.data.getD ""
@@ -282,8 +270,8 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
     | [] =>
       let db := touch db c.me none c.here c.now
       let k := ctxOf db c.me
-      if k ≥ CTX_WARN && !reapedFrom db c.me id then
-        (db, .error s!"context ~{fdiv k 1000}k, too high to take new work: compact (/compact) or finish what you hold and go idle")
+      if Compact.over k (Compact.nudgeAt db) && !reapedFrom db c.me id then
+        (db, .error s!"context ~{fdiv k 1000}k, too high to take new work: `swarm compact` (it runs when this turn ends) or finish what you hold and go idle")
       else match dur lease with
       | none => (db, .error s!"bad duration '{lease}' (use 90s, 30m, 2h)")
       | some l =>

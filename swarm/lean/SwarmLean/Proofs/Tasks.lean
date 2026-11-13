@@ -815,6 +815,19 @@ theorem touch_events (db : Db) (n : String) (cwd here : Option String) (now : In
     · rfl
     · split <;> rfl
 
+theorem touch_metas (db : Db) (n : String) (cwd here : Option String) (now : Int) :
+    (Agents.touch db n cwd here now).metas = db.metas := by
+  unfold Agents.touch Agents.newInbox
+  split
+  · rfl
+  · split
+    · rfl
+    · split <;> rfl
+
+theorem nudgeAt_touch (db : Db) (n : String) (cwd here : Option String) (now : Int) :
+    Compact.nudgeAt (Agents.touch db n cwd here now) = Compact.nudgeAt db := by
+  simp only [Compact.nudgeAt, Agents.metaNum, Db.getMeta, touch_metas]
+
 theorem ctxOf_touch (db : Db) (n : String) (cwd here : Option String) (now : Int) :
     ctxOf (Agents.touch db n cwd here now) n = ctxOf db n := by
   unfold Agents.touch
@@ -837,16 +850,16 @@ waits on no task not done, has no stop pending, and is not behind the context fe
 `claimable`, `fenced`; N1's retake: an agent reap took the task from may claim it back), with a lease text it reads. -/
 theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u : Int} (hr : db.find i = some r)
     (hh : (r.hold.isSome && !(c.force && Agents.inCharge db c.comms c.me)) = false) (ho : r.state = .open) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
-    (hk : ctxOf db c.me < CTX_WARN ∨ reapedFrom db c.me i = true) (hl : dur l = some u) :
+    (hk : Compact.over (ctxOf db c.me) (Compact.nudgeAt db) = false ∨ reapedFrom db c.me i = true) (hl : dur l = some u) :
     ∃ x, (Tasks.claim c i l db).2 = .ok x := by
   obtain ⟨tt, -⟩ := touch_frame db c.me none c.here c.now
   have hb' : blockedByDeps (Agents.touch db c.me none c.here c.now) r = false := by
     unfold blockedByDeps at hb ⊢; rw [tt]; exact hb
-  have hk' : (decide (ctxOf (Agents.touch db c.me none c.here c.now) c.me ≥ CTX_WARN) &&
+  have hk' : (Compact.over (ctxOf (Agents.touch db c.me none c.here c.now) c.me)
+      (Compact.nudgeAt (Agents.touch db c.me none c.here c.now)) &&
       !reapedFrom (Agents.touch db c.me none c.here c.now) c.me i) = false := by
-    rw [ctxOf_touch, reapedFrom_events (touch_events ..)]
+    rw [ctxOf_touch, nudgeAt_touch, reapedFrom_events (touch_events ..)]
     rcases hk with hk | hk <;> simp [hk]
-    omega
   unfold Tasks.claim
   simp only [hr, hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, ho, hb',
     Bool.not_false, Bool.and_true, decide_true]
