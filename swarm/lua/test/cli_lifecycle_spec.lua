@@ -793,6 +793,28 @@ function T.test_hc_blocked_marks_task(t)
   t:eq(t:q1("select state from task").state, "claimed")
 end
 
+-- board #114: Claude stuck on its folder-trust dialog leaves the terminal with no hc status; after START_WAIT that is a prompt
+function T.test_hc_no_status_after_spawn_blocks(t)
+  t:fakes()
+  t:set_hc({ address = "h1" })
+  t:agent("a", { hc = "h1", status = "working" }); t:agent("t-comms")
+  t:sw("a", "task", "add", "t1", { hc = "h1" }); t:sw("a", "task", "claim", "1", { hc = "h1" })
+  local function tick() t:sw("a", "watchd", "--once", "--comms", "t-comms", "--max-agents", "0") end
+  tick()  -- no spawn event: a joined agent, never counted as stuck
+  t:eq(t:q1("select state from task").state, "claimed")
+  t:q("insert into event(ts,agent,kind,data) values(?,'human','spawn','a')", os.time() - 60)
+  tick()  -- spawned a minute ago: still starting
+  t:eq(t:q1("select state from task").state, "claimed")
+  t:q("update event set ts=? where kind='spawn'", os.time() - 300)
+  tick()
+  t:eq(t:q1("select state from task").state, "blocked")
+  local m = t:q("select body from msg where dest='t-comms'")
+  t:eq(#m, 1); t:has(m[1].body, "no Claude session yet"); t:has(m[1].body, "hc read h1")
+  t:set_hc({ address = "h1", status = "working" })  -- the human accepted the dialog
+  tick()
+  t:eq(t:q1("select state from task").state, "claimed")
+end
+
 -- ---- task deps ----
 function T.test_after_dependency(t)
   t:agent("a")
