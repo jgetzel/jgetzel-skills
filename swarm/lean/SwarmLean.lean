@@ -9,4 +9,6 @@ import SwarmLean.Proofs.Watchd
 import SwarmLean.Proofs.Cross
 import SwarmLean.Proofs.Sweep
 import SwarmLean.Proofs.Trust
+import SwarmLean.Proofs.WriteBack
+import SwarmLean.Proofs.Migrate
 import SwarmLean.Proofs.Queue
