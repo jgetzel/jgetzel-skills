@@ -22,6 +22,7 @@ def touch (p : String) (at_ : Option Int := none) : IO Unit :=
 def count (s sub : String) : Nat := (s.splitOn sub).length - 1
 def state (t : T) : IO Json := do
   return (Json.parse (← t.sw "a" ["state", "--json"]).stdout).toOption.getD .null
+def tasksOf (j : Json) : Array Json := match j.f "tasks" with | .arr a => a | _ => #[]
 def swp (pr : String) : Opts := { env := [("SWARM_PROC", some pr)] }
 
 def commsTick (t : T) : IO Unit :=
@@ -542,7 +543,216 @@ def test_job_cmd_without_eval_is_last_200_chars (_ : T) : IO Unit := do
   eq (SwarmLean.Machine.jobCmd (xs 300 ++ "END")) (xs 197 ++ "END")
   eq (SwarmLean.Machine.jobCmd "zsh -c eval 'a '\\''b'\\'''") "a 'b'"
 
---CHUNK3--
+def test_real_run_job_not_nudged (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  addProc pr 402 400 "zsh" LOOP
+  addProc pr 403 402 "fuzz" ["fuzz", "--run"]
+  jobTick t pr
+  eq (← jobNudges t) 0
+  ok (!(← ended t "e"))
+
+def test_claim_holder_with_sleep_loop_spared (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
+  addProc pr 402 400 "zsh" LOOP
+  jobTick t pr
+  eq (← jobNudges t) 0
+  ok (!(← ended t "e"))
+
+def test_high_context_agent_retakes_only_its_reaped_task (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "add", "u"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=1"
+  commsTick t
+  t.q_ "update agent set ctx_tokens=400000 where name='e'"
+  has (← t.sw "e" ["task", "claim", "2"] { ok := false }).stderr "too high to take new work"
+  has (← t.sw "e" ["task", "claim", "1"]).stdout "claimed #1"
+
+def test_working_owner_past_lease_keeps_claim (t : T) : IO Unit := do
+  t.fakes
+  t.agent "e" [("status", "working")]; t.agent "comms"
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=1"
+  commsTick t
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+  has (← t.sw "comms" ["read"]).stdout "past its lease"
+  commsTick t
+  eq ((← t.q1 "select count(*) n from msg where dest='comms'").f "n") 1  -- once per lease period
+
+def test_prompt_blocked_owner_past_lease_keeps_claim (t : T) : IO Unit := do
+  t.fakes
+  t.agent "e" [("status", "blocked")]; t.agent "comms"
+  t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=1"
+  commsTick t
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+
+def test_comms_never_digested_or_ended_reusable_digested (t : T) : IO Unit := do
+  idle t "comms"; idle t "r"
+  t.sw_ "comms" ["task", "add", "t"]
+  commsTick t
+  ok (!(← ended t "comms")); ok (!(← ended t "r"))
+  has (← t.sw "r" ["read"]).stdout "1 open task"
+  hasnt (← t.sw "comms" ["read"]).stdout "open task"
+
+def test_digest_edge_triggered (t : T) : IO Unit := do
+  idle t "comms"; idle t "r"
+  let digests : IO Nat := return (← t.q "select 1 x from msg where dest='r' and body like '%open task%'").size
+  t.sw_ "comms" ["task", "add", "t1"]
+  commsTick t; eq (← digests) 1
+  t.q_ "update event set ts=ts-5000"; t.q_ "update agent set last_active=last_active-5000"
+  commsTick t; eq (← digests) 1  -- unchanged pool, 900 s later: silent
+  t.sw_ "comms" ["task", "add", "t2"]
+  commsTick t; eq (← digests) 2  -- a new id
+  t.sw_ "comms" ["task", "claim", "2"]; t.sw_ "comms" ["task", "block", "2", "q"]
+  t.sw_ "comms" ["task", "add", "t3", "--after", "2"]  -- waits on a blocked task: not startable
+  commsTick t; eq (← digests) 2
+
+-- A reusable agent that has read a digest naming every startable task and is idle again had its chance: it is
+-- ended, not kept as a reason to spawn no one. Else a task that reopens after the agent was told of it waits for good
+-- (swarm/model: l_after, L1).
+def test_reusable_agent_told_and_idle_again_is_ended (t : T) : IO Unit := do
+  t.fakes
+  idle t "comms"; idle t "r"
+  t.sw_ "comms" ["task", "add", "t1"]
+  commsTick t
+  has (← t.sw "r" ["read"]).stdout "1 open task"  -- r wakes, reads it, and stops without taking #1
+  t.q_ "update agent set status='idle', last_active=? where name='r'" [.int (← old)]
+  commsTick t
+  ok (← ended t "r") "r, told of #1 and idle again, still holds the slot"
+  t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
+  eq ((← t.q1 "select state from task where id=1").f "state") "claimed"  -- the freed slot is filled for #1
+
+-- An idle agent whose waiter exited (swarm wait timed out) never reads a digest: it is ended, not kept as a reason to
+-- spawn no one (swarm/model: l_after_waiter, L1 and L3).
+def test_reusable_agent_with_dead_waiter_is_ended (t : T) : IO Unit := do
+  t.fakes
+  let dead ← deadPid
+  idle t "comms"; idle t "r" [("waiter", .int dead)]
+  t.sw_ "comms" ["task", "add", "t1"]
+  commsTick t
+  ok (← ended t "r") "r can't wake, yet holds the slot"
+  t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
+  eq ((← t.q1 "select state from task where id=1").f "state") "claimed"
+
+def test_big_context_finished_even_with_open_tasks (t : T) : IO Unit := do
+  idle t "big" [("ctx_tokens", 120000)]
+  t.sw_ "big" ["task", "add", "t"]
+  commsTick t
+  ok (← ended t "big")
+
+def test_task_done_says_what_next (t : T) : IO Unit := do
+  t.agent "a" [("ctx_tokens", 20000)]
+  for x in ["x", "y", "z"] do t.sw_ "a" ["task", "add", x]
+  t.sw_ "a" ["task", "claim", "1"]
+  has (← t.sw "a" ["task", "done", "1", "--evidence", "e"]).stdout "take the next task"
+  t.q_ "update agent set ctx_tokens=120000"
+  t.sw_ "a" ["task", "claim", "2"]
+  has (← t.sw "a" ["task", "done", "2", "--evidence", "e"]).stdout "go idle"
+
+-- ---- CI ----
+def test_pr_ci_merge_to_green (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"
+  t.sw_ "a" ["task", "add", "t1"]; t.sw_ "a" ["task", "claim", "1"]
+  t.sw_ "a" ["task", "done", "1", "--evidence", "PR #7 merged"]
+  t.setGhJ "pr" (json% [{"number": 7, "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": "red"}, "headRefName": "a/x"}])
+  let runs : List (String × String × String × String) :=
+    [("red", "failure", "2026-11-08T10:00:05Z", "2026-11-08T10:02:00Z"),
+     ("fix", "success", "2026-11-08T10:05:00Z", "2026-11-08T10:08:00Z")]
+  let mut i : Int := 0
+  for (sha, concl, created, updated) in runs do
+    i := i + 1
+    t.q_ "insert into ci(id,sha,status,conclusion,created,updated) values(?,?,'completed',?,?,?)"
+      [.int i, .text sha, .text concl, .text created, .text updated]
+  let prs : IO Nat := return (← t.calls "gh").filter (·.startsWith "pr ") |>.length
+  t.sw_ "a" ["watchd", "--once", "--ci"]
+  let s := (tasksOf (← state t))[0]!
+  eq [s.f "pr", s.f "ci_conclusion", s.f "merge_to_green_s"] (json% [7, "failure", 480])
+  has (← t.sw "a" ["task", "show", "1"]).stdout "PR #7 merged"
+  eq (← prs) 1  -- runs come from the ci table, not GitHub
+  t.sw_ "a" ["watchd", "--once", "--ci"]
+  eq (← prs) 1  -- the PR list is asked for at most every 10 minutes
+
+def test_ci_poll_once_for_all (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"
+  t.setGhJ "api" (json% [{"databaseId": 1, "headSha": "a1", "status": "completed", "conclusion": "failure", "url": "u1",
+                          "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-08T10:03:00Z", "event": "push"}])
+  t.setGh "run" (some "server, e2e\n")
+  let subs : IO (List String) := do  -- the poll's own calls
+    return (← t.calls "gh").filterMap fun x =>
+      if x.startsWith "api" || subIn x "--json jobs" then (x.splitOn " ").head? else none
+  t.sw_ "a" ["watchd", "--once", "--ci"]
+  eq (← subs) ["api", "run"]  -- one request for the runs, one for the red run's jobs
+  let c ← t.q1 "select conclusion, failed from ci where id=1"
+  eq [c.f "conclusion", c.f "failed"] ["failure", "server, e2e"]
+  t.sw_ "a" ["watchd", "--once", "--ci"]
+  eq (← subs).length 2  -- within the minute: no call
+  t.q_ "update meta set v='0' where k='ci_polled'"
+  t.setGh "api" none  -- rate limited
+  t.sw_ "a" ["watchd", "--once", "--ci"]
+  eq (← t.q "select 1 x from ci").size 1  -- kept
+  ok ((← t.q1 "select 1 x from meta where k='ci_error'") != .null)
+
+def test_ci_reads_the_table (t : T) : IO Unit := do
+  let sha : IO String := return strip (← t.git t.repo ["rev-parse", "HEAD"])
+  let commit : IO Unit := discard <| t.git t.repo ["commit", "-q", "--allow-empty", "-m", "c"]
+  let c1 ← sha; commit; let c2 ← sha; commit; let c3 ← sha
+  t.sw_ "a" ["join"]
+  eq (count (← t.sw "a" ["ci", c1, "--wait", "--timeout", "2", "--poll", "1"] { ok := false }).stderr "nobody is polling") 1
+  t.q_ "insert into meta(k,v) values('ci_polled',?)" [.text (toString (← now))]
+  eq (← t.sw "a" ["ci", c1] { ok := false }).code 2  -- no run yet
+  t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(1,?,'completed','cancelled','u','2026-11-08T10:00:00Z')" [.text c2]  -- replaced by the next push
+  t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(2,?,'in_progress',null,'u','2026-11-08T10:01:00Z')" [.text c3]
+  eq (← t.sw "a" ["ci", c1] { ok := false }).code 2  -- c3's run includes c1, still running
+  t.q_ "update ci set status='completed', conclusion='failure', failed='e2e' where id=2"
+  let r ← t.sw "a" ["ci", c1] { ok := false }
+  eq r.code 1
+  has r.stdout "failed: e2e"
+  t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(3,?,'completed','success','u','2026-11-08T10:05:00Z')" [.text c3]  -- a re-run, green
+  eq (← t.sw "a" ["ci", c2]).code 0
+  eq (← t.sw "a" ["ci", c3, "--wait", "--timeout", "5"]).code 0
+
+-- ---- block, unblock ----
+def test_block_unblock (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a"; t.agent "t-comms"
+  t.sw_ "a" ["task", "add", "t1"]; t.sw_ "a" ["task", "claim", "1"]
+  t.sw_ "b" ["task", "block", "1", "q?"] { ok := false }
+  t.sw_ "a" ["task", "block", "1", "which db?"]
+  has (← t.sw "a" ["board"]).stdout "#1 blocked by a: which db?"
+  t.q_ "update task set lease_until=1"
+  for _ in [0:2] do t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  eq ((← t.q1 "select state,owner from task").f "state") "blocked"
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%which db?%'").size 1
+  t.sw_ "b" ["task", "unblock", "1"] { ok := false }
+  t.sw_ "t-comms" ["task", "unblock", "1", "--answer", "sqlite"]
+  eq ((← t.q1 "select state,owner from task").f "owner") "a"
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq (← t.q "select 1 x from msg where dest='a' and body like '%sqlite%'").size 1
+  has (← t.sw "a" ["task", "show", "1"]).stdout "sqlite"
+  -- the answer outlives the owner: a second agent claiming the released task sees it
+  t.sw_ "a" ["task", "release", "1"]; t.agent "c"
+  let claimed := (← t.sw "c" ["task", "claim", "1"]).stdout
+  has (claimed ++ (← t.sw "c" ["task", "show", "1"]).stdout) "sqlite"
+
+def test_hc_blocked_marks_task (t : T) : IO Unit := do
+  t.fakes
+  t.setHc [json% {"address": "h1", "status": "blocked"}]
+  t.agent "a" [("hc", "h1"), ("status", "working")]; t.agent "t-comms"
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  tick
+  eq ((← t.q1 "select state from task").f "state") "blocked"
+  eq (← t.q "select 1 x from msg where dest='t-comms'").size 1  -- one notice, not two
+  t.setHc [json% {"address": "h1", "status": "working"}]
+  tick
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+
+--CHUNK4--
 
 def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
@@ -579,6 +789,22 @@ def tests : List Case := [
   ("test_sleep_loop_job_nudged_once_then_ended", test_sleep_loop_job_nudged_once_then_ended),
   ("test_idle_pgrep_loop_blocks_stop_and_names_the_job", test_idle_pgrep_loop_blocks_stop_and_names_the_job),
   ("test_real_job_named_and_allows_stop", test_real_job_named_and_allows_stop),
-  ("test_job_cmd_without_eval_is_last_200_chars", test_job_cmd_without_eval_is_last_200_chars)]
+  ("test_job_cmd_without_eval_is_last_200_chars", test_job_cmd_without_eval_is_last_200_chars),
+  ("test_real_run_job_not_nudged", test_real_run_job_not_nudged),
+  ("test_claim_holder_with_sleep_loop_spared", test_claim_holder_with_sleep_loop_spared),
+  ("test_high_context_agent_retakes_only_its_reaped_task", test_high_context_agent_retakes_only_its_reaped_task),
+  ("test_working_owner_past_lease_keeps_claim", test_working_owner_past_lease_keeps_claim),
+  ("test_prompt_blocked_owner_past_lease_keeps_claim", test_prompt_blocked_owner_past_lease_keeps_claim),
+  ("test_comms_never_digested_or_ended_reusable_digested", test_comms_never_digested_or_ended_reusable_digested),
+  ("test_digest_edge_triggered", test_digest_edge_triggered),
+  ("test_reusable_agent_told_and_idle_again_is_ended", test_reusable_agent_told_and_idle_again_is_ended),
+  ("test_reusable_agent_with_dead_waiter_is_ended", test_reusable_agent_with_dead_waiter_is_ended),
+  ("test_big_context_finished_even_with_open_tasks", test_big_context_finished_even_with_open_tasks),
+  ("test_task_done_says_what_next", test_task_done_says_what_next),
+  ("test_pr_ci_merge_to_green", test_pr_ci_merge_to_green),
+  ("test_ci_poll_once_for_all", test_ci_poll_once_for_all),
+  ("test_ci_reads_the_table", test_ci_reads_the_table),
+  ("test_block_unblock", test_block_unblock),
+  ("test_hc_blocked_marks_task", test_hc_blocked_marks_task)]
 
 end SwarmLean.Tests.Cli.Lifecycle
