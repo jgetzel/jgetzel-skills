@@ -50,6 +50,12 @@ target shim.o pkg : FilePath := do
 extern_lib libswarmshim pkg := do
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "swarmshim") #[← shim.o.fetch]
 
+/-- locks.lua's glob, as in ../lakefile.lean. -/
+lean_lib SwarmModelGlob where
+  srcDir := "../../model"
+  roots := #[`SwarmModel.Glob]
+  nativeFacets := fun _ => #[(⟨Module.facetKind ++ `hplO, FamilyOut.fam_eq⟩ : ModuleFacet FilePath)]
+
 lean_lib SwarmLean where
   srcDir := ".."
   roots := #[`SwarmLean]
