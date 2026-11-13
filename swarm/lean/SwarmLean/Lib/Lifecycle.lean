@@ -93,6 +93,20 @@ def sleepLoop (p : Machine.Ps) (ps : List Machine.Ps) : Bool :=
     | n + 1, pid => ps.all fun q => q.ppid != pid || (light.contains q.comm && q.cpu_s ≤ 30 && walk n q.pid)
   p.cpu_s ≤ 30 && walk ps.length p.pid
 
+/-- Processes that wait on something outside this machine with little CPU (a CI run, a remote build, a message): a job
+running one is never hung. -/
+def WAITERS : List String := ["gh", "ssh", "swarm", "swarm-lean", "hc", "nix"]
+
+/-- Job process `p`'s tree as `pid:cpu_s,…`, which changes whenever a process in it uses a CPU second, starts or ends;
+none when a known waiter is in it (board #125). -/
+def jobTree (p : Machine.Ps) (ps : List Machine.Ps) : Option String :=
+  -- each level goes one process down; the tree is at most as deep as there are processes
+  let rec walk : Nat → List Int → List Machine.Ps
+    | 0, _ => []
+    | n + 1, pids => let cs := ps.filter (pids.contains ·.ppid); if cs.isEmpty then [] else cs ++ walk n (cs.map (·.pid))
+  let tree := p :: walk ps.length [p.pid]
+  if tree.any (WAITERS.contains ·.comm) then none else some (",".intercalate (tree.map fun q => s!"{q.pid}:{q.cpu_s}"))
+
 /-- Fate's reads of one agent, each made only when asked (watchd.reads(…).f(n)). -/
 structure Reads (m : Type → Type) where
   /-- it owns a claimed or blocked task -/

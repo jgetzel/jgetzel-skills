@@ -10,7 +10,7 @@ theorem when_eq_some {b : Bool} {x s' : State} : when b x = some s' ↔ b = true
 /-- turn `step c s act = some s'` into the action's guard and `s' = ..`, one goal per action -/
 macro "open_step" h:ident : tactic => `(tactic|
   (cases ‹Action› <;>
-   simp only [step, bgStart, bgEnd, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
+   simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
      stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf, hcPrompt,
      hcClear, die, reapGone, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, tick, openPr, push, merge, finish, ciRun, poll, when_eq_some] at $h:ident))
 

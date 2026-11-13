@@ -56,14 +56,15 @@ def fakeProc (t : T) : IO String := do
   -- machine.procs() reads the fixture
   discard <| t.fake "ps" "#!/bin/sh\ncat \"$SWARM_PROC\"/[0-9]*/ps 2>/dev/null; exit 0\n"
   return r
-def addProc (r : String) (pid ppid : Nat) (comm : String) (argv : List String) (cwd : Option String := none) : IO Unit := do
+def addProc (r : String) (pid ppid : Nat) (comm : String) (argv : List String) (cwd : Option String := none)
+    (cpu : String := "0:00") : IO Unit := do
   let d := s!"{r}/{pid}"
   mkdirp d
   let f := ["S", toString ppid] ++ List.replicate 17 "0" ++ [toString ((10000 - 240) * 100), "0", "0"]  -- starttime (CLK_TCK 100), vsize, rss
   put (d ++ "/stat") s!"{pid} ({comm}) {" ".intercalate f}"
   put (d ++ "/cmdline") ("\u0000".intercalate argv ++ "\u0000")
   put (d ++ "/oom_score_adj") "0"
-  put (d ++ "/ps") s!"{pid} {ppid} 0 4:00 0:00 {" ".intercalate argv}\n"
+  put (d ++ "/ps") s!"{pid} {ppid} 0 4:00 {cpu} {" ".intercalate argv}\n"
   if let some c := cwd then discard <| IO.Process.output { cmd := "ln", args := #["-s", c, d ++ "/cwd"] }
 
 -- ---- join, leave, who ----
@@ -504,6 +505,51 @@ def test_sleep_loop_job_nudged_once_then_ended (t : T) : IO Unit := do
   jobTick t pr
   ok (← ended t "e")
   has (← t.sw "comms" ["read"]).stdout "while true; do sleep 5"
+
+-- board #125: a finished agent's job whose tree uses no CPU for JOB_HUNG (not a sleep loop: `head` is in it) is nudged
+-- with its pid, then ended after JOB_GRACE
+def HEAD : List String :=
+  ["zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'lake env lean X.lean | head -30'"]
+def jobCpus (t : T) : IO Json :=
+  return (← t.q1 "select count(*) n from event where kind='job-cpu' and agent='e'").f "n"
+
+def test_hung_job_nudged_with_its_pid_then_ended (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  addProc pr 402 400 "zsh" HEAD
+  addProc pr 403 402 "head" ["head", "-30"]
+  jobTick t pr; jobTick t pr
+  eq (← jobCpus t) 1
+  eq (← jobNudges t) 0  -- not idle JOB_HUNG yet
+  t.q_ "update event set ts=ts-1300 where kind='job-cpu'"
+  jobTick t pr
+  eq (← jobNudges t) 1
+  has (← t.sw "e" ["read"]).stdout "background job (pid 402) has used no CPU for 20 min"
+  t.q_ "update event set ts=ts-1200 where kind='job-nudge'"
+  jobTick t pr
+  ok (← ended t "e")
+  has (← t.sw "comms" ["read"]).stdout "no CPU"
+
+def test_job_using_cpu_or_waiting_on_ci_kept (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  idle t "e" [("wt", t.wt), ("claude_pid", 400)]
+  addProc pr 402 400 "zsh" HEAD
+  addProc pr 403 402 "head" ["head", "-30"]
+  jobTick t pr
+  t.q_ "update event set ts=ts-1300 where kind='job-cpu'"
+  addProc pr 403 402 "head" ["head", "-30"] (cpu := "0:05")  -- it ran since the checkpoint
+  jobTick t pr
+  eq (← jobNudges t) 0
+  eq (← jobCpus t) 2  -- a new checkpoint
+  t.q_ "delete from event where kind='job-cpu'"
+  rmtree (pr ++ "/403")
+  addProc pr 403 402 "gh" ["gh", "run", "watch", "7"]  -- a known waiter: never hung
+  jobTick t pr
+  eq (← jobCpus t) 0
+  t.q_ "update event set ts=ts-99999"
+  jobTick t pr
+  eq (← jobNudges t) 0
+  ok (!(← ended t "e")) "a CI wait is a real job"
 
 -- board #93: the report's exact Monitor command line, under a snapshot preamble
 def MON : List String := ["/run/current-system/sw/bin/zsh", "-c", "source /home/jgetzel/.claude/shell-snapshots/snapshot-zsh-1778-abc.sh 2>/dev/null || true && setopt aliases 2>/dev/null || true && eval 'while pgrep -f \"tests/smoke.sh\" >/dev/null; do sleep 10; done; tail -2 out' < /dev/null && pwd -P >| /tmp/claude-cwd"]
@@ -1013,6 +1059,8 @@ def tests : List Case := [
   ("test_idle_owner_with_background_job_keeps_claim", test_idle_owner_with_background_job_keeps_claim),
   ("test_idle_agent_with_background_job_not_ended", test_idle_agent_with_background_job_not_ended),
   ("test_sleep_loop_job_nudged_once_then_ended", test_sleep_loop_job_nudged_once_then_ended),
+  ("test_hung_job_nudged_with_its_pid_then_ended", test_hung_job_nudged_with_its_pid_then_ended),
+  ("test_job_using_cpu_or_waiting_on_ci_kept", test_job_using_cpu_or_waiting_on_ci_kept),
   ("test_idle_pgrep_loop_blocks_stop_and_names_the_job", test_idle_pgrep_loop_blocks_stop_and_names_the_job),
   ("test_real_job_named_and_allows_stop", test_real_job_named_and_allows_stop),
   ("test_job_cmd_without_eval_is_last_200_chars", test_job_cmd_without_eval_is_last_200_chars),

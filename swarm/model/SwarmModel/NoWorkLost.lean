@@ -9,10 +9,11 @@ fix's switch off (findings #10, #11, #12, #26, #27) and proved with them on: `N1
 namespace Swarm
 set_option linter.unusedSimpArgs false
 
-/-- a holds work: it is live, and its background job runs, or a worktree it works in (wt_map) or owns is dirty or has its
-HEAD on no base of a task it owns (main if none). Read off the state alone, whatever lifecycle's switches are -/
+/-- a holds work: it is live, and its background job runs and has not stalled (a stalled job, a sleep loop or one with no
+CPU for JOB_HUNG past its nudge's grace, is not work: board #125), or a worktree it works in (wt_map) or owns is dirty
+or has its HEAD on no base of a task it owns (main if none). Read off the state alone, whatever lifecycle's switches are -/
 def holdsWork (c : Cfg) (s : State) (a : Nat) : Bool :=
-  (s.agt a).live && ((s.agt a).bg || (wtmap c s a).any (!s.git.landedIn (abases c s a) ·)
+  (s.agt a).live && (((s.agt a).bg && !(s.agt a).stalled) || (wtmap c s a).any (!s.git.landedIn (abases c s a) ·)
     || (s.agt a).own.any fun (w, _) => owns s a w && !s.git.landedIn (abases c s a) w)
 
 /-- s' leaves agent a as s had it, but for the pool ids a digest told it of: the same agent, not ended, its job, agent.wt
@@ -100,6 +101,11 @@ example : n1Breaks { cfg27 with ownAdded := true } pre27 0 = false := by decide
 example : n1Breaks { nwts := 2 } pre12 0 = false := by decide
 example : reapBreaks {} pre10 1 0 = false := by decide
 example : retakeBreaks {} pre11 0 1 = false := by decide
+/-- #106/#125: agent 0's job stalls (a sleep loop, or no CPU for JOB_HUNG past its nudge's grace); the tick ends agent 0
+and the job with it. N1 holds: a stalled job is not work -/
+def preStall : List Action := pre26 ++ [.bgStall 0]
+example : (run { bgLives := true } preStall).any (fun s => ((tickOf { bgLives := true } s).agt 0).st == .ended) = true := by decide
+example : n1Breaks { bgLives := true } preStall 0 = false := by decide
 
 -- ---------- the proof ----------
 

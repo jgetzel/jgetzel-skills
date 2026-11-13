@@ -214,11 +214,12 @@ theorem workspace_gc_removes_only_landed {c : Cfg} (fixes : W1Fixes c) : GcRemov
 no base of a task `a` owns (main, if it owns none). -/
 def Unlanded (c : Cfg) (s : State) (a w : Nat) : Prop := s.git.landedIn (abases c s a) w = false
 
-/-- Agent `a` holds work: its row is live, and a background job of its own runs, or the worktree it works in is
+/-- Agent `a` holds work: its row is live, and a background job of its own runs and has not stalled (a sleep loop or no
+CPU for JOB_HUNG past its nudge, board #125), or the worktree it works in is
 unlanded, or one it added is. -/
 def HoldsWork (c : Cfg) (s : State) (a : Nat) : Prop :=
   (s.agt a).live = true ∧
-    ((s.agt a).bg = true
+    ((s.agt a).bg = true ∧ (s.agt a).stalled = false
       ∨ (∃ w, wtmap c s a = some w ∧ Unlanded c s a w)
       ∨ ∃ w gen, (w, gen) ∈ (s.agt a).own ∧ owns s a w = true ∧ Unlanded c s a w)
 

@@ -825,4 +825,18 @@ theorem guard_ok {α : Type} (x : App α) (ctx : Ctx) (w : Void IO.RealWorld) :
   | ok r w1 => cases r <;> exact ⟨_, _, rfl⟩
   | error e w1 => exact ⟨_, _, rfl⟩
 
+/-- The model's `bgStall` on the code (board #125): `Watchd.hungStep` calls a job tree hung only when agent `n`'s last
+`job-cpu` checkpoint holds that same tree and is JOB_HUNG old, so a tree that used a CPU second, started or ended a
+process since is never hung. -/
+theorem hungStep_hung {db : Db} {n sig : String} {t : Int} (h : (Watchd.hungStep db n sig t).1 = true) :
+    ∃ e, (db.events.filter fun e => e.agent == some n && e.kind == some "job-cpu").getLast? = some e ∧
+      e.data = some sig ∧ Watchd.JOB_HUNG ≤ t - e.ts.getD 0 := by
+  unfold Watchd.hungStep at h
+  split at h
+  · cases h
+  · rename_i e he
+    by_cases hd : e.data = some sig
+    · simp only [hd, beq_self_eq_true, ite_true, decide_eq_true_eq] at h; exact ⟨e, he, hd, h⟩
+    · simp [hd] at h
+
 end SwarmLean.WatchdProofs
