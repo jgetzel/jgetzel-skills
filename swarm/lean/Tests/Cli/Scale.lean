@@ -2,7 +2,7 @@ import Tests.Cli.Fixture
 
 /-! cli_scale_spec: the write commands stay fast on a big db (board #138: a write-back quadratic in a table's rows made
 hook post-tool take 82 s on 12.6k events, holding the write lock). Each command's best of three is under a second on
-20k events, 500 tasks, 400 agents. -/
+20k events, 500 tasks, 400 agents; each view of state --json under 300 ms (board #139). -/
 
 namespace SwarmLean.Tests.Cli.Scale
 open SwarmLean.Tests.Cli
@@ -50,6 +50,21 @@ def test_write_commands_fast_on_a_big_db (t : T) : IO Unit := do
     t.tick
     eq ((← t.q1 "select state from task where id=?" [.int id]).f "state") "open" "the lapsed claim was not reaped")
 
-def tests : List Case := [("write_commands_fast_on_a_big_db", test_write_commands_fast_on_a_big_db)]
+-- board #139: state --json, which the panel runs every 3 s, scanned the events once per task and per agent (2-4 s on a
+-- db this size); each view's best of three is under 300 ms
+def test_state_fast_on_a_big_db (t : T) : IO Unit := do
+  big t
+  t.fakes
+  let n ← now
+  -- each task's life in events (what task timing reads), and half the agents ended
+  gen t 6000 "event(ts, agent, kind, data)"
+    s!"select {n}-6000+i, 'ag'||(i%400), case i%3 when 0 then 'task-add' when 1 then 'claim' else 'done' end, '#'||(i%500+1)"
+  t.q_ s!"update agent set ended={n}-60 where name like 'ag%' and rowid%2=0"
+  for v in [[], ["--view", "board"], ["--view", "overview"], ["--view", "agents"], ["--view", "board", "--task", "7"]] do
+    let ms ← best3 fun _ => t.sw_ "a" (["state", "--json"] ++ v)
+    if ms ≥ 300 then fail s!"state --json {" ".intercalate v} took {ms} ms on a big db (best of three)"
+
+def tests : List Case := [("write_commands_fast_on_a_big_db", test_write_commands_fast_on_a_big_db),
+  ("state_fast_on_a_big_db", test_state_fast_on_a_big_db)]
 
 end SwarmLean.Tests.Cli.Scale

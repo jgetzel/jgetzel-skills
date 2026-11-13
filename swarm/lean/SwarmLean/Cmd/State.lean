@@ -1,3 +1,4 @@
+import Std.Data.HashMap
 import SwarmLean.Cmd
 import SwarmLean.Cmd.OpsHelp
 import SwarmLean.Db.Agents
@@ -206,13 +207,17 @@ def msgJson (r : Msg) (fill : Bool) : Json :=
     ("dest", r.dest.map .str), ("body", r.body.map fun b => .str (cut b 500)), ("urgent", r.urgent.map Json.int), ("kind", r.kind.map .str)]
   if fill then Json.mkObj (l.map fun (k, v) => (k, v.getD .null)) else obj l
 
-/-- A task row as state prints it: its columns but the body, its timing, lease left, deps, waiting and blocks. -/
-def taskJson (db : Db) (r : Task) (evs : List Event) (t : Int) : Json :=
+/-- `xs` grouped by `key` (the groups an element is in), each group in `xs`' order. -/
+def groupBy [BEq κ] [Hashable κ] (xs : List α) (key : α → List κ) : Std.HashMap κ (Array α) :=
+  xs.foldl (fun g x => (key x).foldl (fun g k => g.alter k fun a => some ((a.getD #[]).push x)) g) {}
+
+/-- A task row as state prints it: its columns but the body, its timing, lease left, deps, the deps not done (`undone`),
+waiting and blocks. `evs`: its events; `st`: each task's state; `waitersOf`: the open tasks naming it a dep. -/
+def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (waitersOf : Array Task) : Json :=
   let tm := Tasks.timing r evs t
   let deps := Tasks.depsOf r
-  let waiting := deps.any fun x => ((db.find x).map (·.state)) != some .done
-  let blocks := if r.state = .done then [] else
-    (db.tasks.filter fun x => x.state = .open && (Tasks.depsOf x).contains r.id).map fun x => (x.id : Int)
+  let undone := deps.filter fun x => st[x]? != some .done
+  let blocks := if r.state = .done then [] else waitersOf.toList.map fun x => (x.id : Int)
   let lease := if r.state = .claimed || r.state = .blocked then (pyI r.lease_until).map (· - t) else none
   Json.mkObj [("id", Json.int r.id), ("title", N r.title), ("state", .str r.state.text), ("owner", N r.owner),
     ("lease_until", NI r.lease_until), ("created_by", N r.created_by), ("evidence", N r.evidence),
@@ -222,7 +227,8 @@ def taskJson (db : Db) (r : Task) (evs : List Event) (t : Int) : Json :=
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
     ("qpos", NI r.qpos), ("hold", N r.hold),
-    ("lease_left", NI lease), ("waiting", .bool waiting), ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
+    ("lease_left", NI lease), ("waiting", .bool !undone.isEmpty), ("undone", .arr (undone.map Json.int).toArray),
+    ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
     ("queue_wait_s", NI tm.queue_wait_s), ("work_s", NI tm.work_s), ("total_s", NI tm.total_s),
     ("blocked_s", Json.int tm.blocked_s), ("claims", Json.int tm.claims), ("releases", Json.int tm.releases),
     ("holders", .arr (tm.holders.map .str).toArray), ("merge_to_green_s", NI tm.merge_to_green_s)]
@@ -326,23 +332,30 @@ def state (a : Parsed) : m UInt32 := do
   if (← Sys.kind p true) == .none then
     Env.out (Json.encode (Json.mkObj [("active", .bool false), ("db", .str p), ("now", Json.int t)]))
     return 0
-  -- shortcut: loads the tables whole (Store has no query) where the Lua reads only the rows it prints; upgrade if a
-  -- long event log makes the panel slow
   let db ← Store.txn [.task, .event, .agent, .msg, .lock, .conflict, .«meta», .ci, .workspace, .cursor] fun db => (db, db)
   let view := a.str "view"
   let full := view.isNone
   let lanes := wants view "lanes"
   let me := a.str "agent"
+  let tid := a.int "task"
+  -- every per-task and per-agent lookup below reads these, built in one pass each (a list scan per row took seconds)
   let tev := db.events.filter fun e => (e.kind.map (Tasks.TASK_KINDS.contains ·)).getD false
-  let tasksJ := db.tasks.map fun r => taskJson db r (tev.filter (Tasks.eventTask · == some r.id)) t
+  let tevBy := groupBy tev fun e => (Tasks.eventTask e).toList
+  let stOf : Std.HashMap Int Status := db.tasks.foldl (fun h r => h.insert r.id r.state) {}
+  let waitersBy := groupBy (db.tasks.filter (·.state = .open)) fun x => (Tasks.depsOf x).eraseDups
+  let ownBy := groupBy (db.tasks.filter fun r => r.state = .claimed || r.state = .blocked) (·.owner.toList)
+  let evBy := groupBy db.events (·.agent.toList)
+  let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
+  let lockBy := groupBy db.locks (·.agent.toList)
+  let tasksJ := db.tasks.map fun r => taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])
   let wts ← if lanes then Workspaces.wtMap db else pure []
   let mut seen : Agents.Seen := []
   let mut reads : Option (Option (List Agents.Term) × (String → Lifecycle.Reads m)) := none
-  let mut ags : List (Json × Bool × String) := []
+  let mut agsA : Array (Json × Bool × String) := #[]
   let byName := fun (l : List Agent) => l.mergeSort (·.name ≤ ·.name)
   for x in byName (db.agents.filter (·.ended.isNone)) ++ byName (db.agents.filter (·.ended.isSome)) do
-    let own := db.tasks.filter fun r => r.owner == some x.name && (r.state = .claimed || r.state = .blocked)
-    let sn := match x.snap with | some s => if s.startsWith "{" then (Json.decode s).getD .null else .null | none => .null
+    let own := (ownBy.getD x.name #[]).toList
+    let aev := (evBy.getD x.name #[]).toList
     let live := x.ended.isNone
     let wt := py ((wts.lookup x.name).orElse fun _ => x.wt)
     let (act, s1) ← if live && lanes then Agents.sessionActive seen x t else pure (x.last_active.getD 0, seen)
@@ -350,7 +363,7 @@ def state (a : Parsed) : m UInt32 := do
     let status := if !live then some "ended" else if own.any (·.state = .blocked) then some "blocked" else x.status
     -- a stayer's hung sign (watchd.hung): its worst stay-* event since it was last active
     let sign := if live && (py x.stay).isSome && x.status == some "idle" then
-        let got := (db.events.filter fun e => e.agent == some x.name && e.ts.any (· ≥ x.last_active.getD 0)).filterMap (·.kind)
+        let got := (aev.filter fun e => e.ts.any (· ≥ x.last_active.getD 0)).filterMap (·.kind)
         if got.contains "stay-hung" then some "hung" else if got.contains "stay-nowaiter" then some "nowaiter"
         else if got.contains "stay-unwoken" then some "unwoken" else none
       else none
@@ -359,7 +372,10 @@ def state (a : Parsed) : m UInt32 := do
     let branch ← match live, wt with
       | true, some w => pure (N (← headBranch w))
       | _, _ => pure .null
-    let files := if full || live || me == some x.name then Json.items ((Json.field sn "files").getD .null) else []
+    let files := if full || live || me == some x.name then
+        let sn := match x.snap with | some s => if s.startsWith "{" then (Json.decode s).getD .null else .null | none => .null
+        Json.items ((Json.field sn "files").getD .null)
+      else []
     let mut l : List (String × Json) := [("name", .str x.name), ("hc", N x.hc), ("model", N x.model), ("role", N x.role),
       ("stay", N x.stay), ("stay_sign", N sign), ("ctx_tokens", Json.int (x.ctx_tokens.getD 0)), ("status", N status),
       ("idle_s", Json.int (t - (if act == 0 then t else act))), ("started", NI x.started), ("ended", NI x.ended),
@@ -371,9 +387,9 @@ def state (a : Parsed) : m UInt32 := do
         | none => .null),
       ("files", .arr files.toArray)]
     if full then
-      l := l ++ [("locks", .arr ((db.locks.filter (·.agent == some x.name)).map fun k => Json.str k.path).toArray)]
+      l := l ++ [("locks", .arr ((lockBy.getD x.name #[]).map fun k => Json.str k.path))]
     if full || (lanes && live) || me == some x.name then
-      let evs := ((db.events.filter fun e => e.agent == some x.name && shown e).reverse.take 5)
+      let evs := ((aev.filter shown).reverse.take 5)
       l := l ++ [("events", .arr (evs.map (eventJson · false false)).toArray)]
     if live && x.status == some "idle" && (lanes || me == some x.name) then  -- watchd's verdict and why (REDESIGN.md §2)
       let (byT, rf) ← match reads with
@@ -388,17 +404,18 @@ def state (a : Parsed) : m UInt32 := do
       reads := some (byT, rf)
       l := l ++ [("fate", ← fateJson db x t (rf x.name) byT (me == some x.name))]
     if full || me == some x.name then  -- the detail pane's messages
-      let ms := ((db.msgs.filter fun r => r.frm == some x.name || r.dest == some x.name).reverse.take 5)
+      let ms := (msgBy.getD x.name #[]).toList.reverse.take 5
       l := l ++ [("messages", .arr (ms.map (msgJson · false)).toArray)]
-    ags := ags ++ [(Json.mkObj l, live, x.name)]
+    agsA := agsA.push (Json.mkObj l, live, x.name)
+  let ags := agsA.toList
   -- pressure episodes, newest first, the last five
   let eps := (db.events.filter fun e => e.kind == some "pressure" || e.kind == some "pressure-end").foldl
     (fun (eps : List (Option Int × Option Int × Option String)) e =>
-      if e.kind == some "pressure" then eps ++ [(e.ts, none, e.data)]
-      else match eps.getLast? with
-        | some (s, none, l) => eps.dropLast ++ [(s, e.ts, l)]
+      if e.kind == some "pressure" then (e.ts, none, e.data) :: eps
+      else match eps with
+        | (s, none, l) :: rest => (s, e.ts, l) :: rest
         | _ => eps) []
-  let press := (eps.reverse.take 5).map fun (s, e, l) => obj [("start", s.map Json.int), ("end", some (NI e)), ("line", some (N l))]
+  let press := (eps.take 5).map fun (s, e, l) => obj [("start", s.map Json.int), ("end", some (NI e)), ("line", some (N l))]
   let mach ← match ← Machine.mem with
     | some (av, tot, psi) => pure (Json.mkObj [("line", .str (Machine.line av tot psi)), ("avail_kb", Json.int av),
         ("total_kb", Json.int tot), ("psi", obj [("memory", psi.memory.map Json.float), ("cpu", psi.cpu.map Json.float),
@@ -436,10 +453,10 @@ def state (a : Parsed) : m UInt32 := do
       obj [("since", if ds.isEmpty then none else (parseInt (String.ofList ds)).map Json.int), ("note", some (N note))]
     | none => .null)]
   out := out ++ [("back", ((metaV "away_digest").bind Json.decode).getD .null)]  -- `swarm away --back`'s digest
-  if let some tid := a.int "task" then  -- the task screen: what the board's rows leave out
+  if let some tid := tid then  -- the task screen: what the board's rows leave out
     match db.find tid with
     | some r =>
-      let evs := tev.filter (Tasks.eventTask · == some r.id)
+      let evs := (tevBy.getD r.id #[]).toList
       let key := "#" ++ d tid
       let ms := ((db.msgs.reverse.filter fun x => hasSub (x.body.getD "") key).take 200).filter fun x =>
         (((cut (x.body.getD "") 500 ++ " ").splitOn key).tail.any fun rest => rest.toList.head?.any (!·.isDigit))
