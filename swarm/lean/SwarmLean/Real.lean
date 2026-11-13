@@ -1,4 +1,5 @@
 import SwarmLean.World
+import SwarmLean.Db.Plan
 import Std.Data.HashMap
 
 /-! The real world: the instances of the interfaces on IO, and the SQLite store on the Lua CLI's database. -/
@@ -28,17 +29,6 @@ create table if not exists ci(id integer primary key, sha text, status text, con
   created text, updated text, failed text);
 "
 
-/-- db.lua's COLUMNS: the columns added to dbs made before them. -/
-def columns : List (String × String) :=
-  [("agent", "wt text"), ("lock", "seen int default 0"), ("task", "model text"), ("task", "question text"),
-  ("agent", "claude_pid int"), ("task", "created_at int"), ("task", "first_claimed_at int"), ("task", "done_at int"),
-  ("task", "dropped_at int"), ("task", "pr int"), ("task", "merged_at int"), ("task", "ci_conclusion text"),
-  ("task", "ci_green_at int"), ("task", "claim_ctx int"), ("task", "done_ctx int"), ("task", "deps text"),
-  ("ci", "workflow text"), ("task", "answer text"), ("task", "effort text"),
-  ("agent", "role text"), ("agent", "stay text"), ("task", "base text"), ("task", "stop_to text"),
-  ("task", "stop_msg int"), ("task", "priority int default 2"),
-  ("task", "qpos int"), ("task", "hold text")]
-
 /-- What the real monad carries: the db path and the connection, opened at the first transaction. -/
 structure Ctx where
   conn : IO.Ref (Option Conn)
@@ -59,6 +49,11 @@ def dbPath : IO String := do
   if r.exitCode ≠ 0 || d.isEmpty then throw <| IO.userError "not in a git repo and SWARM_DB is unset"
   return d ++ "/swarm/swarm.db"
 
+/-- Runs the statements in order. -/
+def runStmts (c : Conn) (p : List Stmt) : IO Unit := do
+  for st in p do
+    for (q, ps) in st.sql do discard <| c.exec q ps
+
 /-- Opens the db as db.connect does: makes its dir, turns on WAL (retrying a first connect that races another), runs
 the schema and adds missing columns. -/
 def connect : IO Conn := do
@@ -73,26 +68,16 @@ def connect : IO Conn := do
       if i ≥ 500 || !hasSub (toString e) "database is locked" then throw e
       IO.sleep 20
   c.script schema
-  let missing ← do
-    let mut miss := false
-    for (t, col) in columns do
-      let name := (col.splitOn " ").headD col
-      if !(← tableCols c t).contains name then miss := true
-    pure miss
-  if missing then
+  -- each migration checked again inside the transaction: another connect may have run it
+  let has : IO (String → List String) := do
+    let l ← migTables.mapM fun t => do pure (t, ← tableCols c t)
+    pure fun t => (l.lookup t).getD []
+  let now ← has
+  if migs.any (·.needed now) then
     discard <| c.exec "begin immediate"
     try
-      for (t, col) in columns do
-        let name := (col.splitOn " ").headD col
-        if !(← tableCols c t).contains name then discard <| c.exec s!"alter table {t} add column {col}"
-      discard <| c.exec "commit"
-    catch e => discard (c.exec "rollback"); throw e
-  if (← tableCols c "task").contains "after" then
-    discard <| c.exec "begin immediate"
-    try
-      if (← tableCols c "task").contains "after" then
-        discard <| c.exec "update task set deps=after where deps is null and after is not null"
-        discard <| c.exec "alter table task drop column after"
+      for m in migs do
+        if m.needed (← has) then runStmts c [m]
       discard <| c.exec "commit"
     catch e => discard (c.exec "rollback"); throw e
   return c
@@ -106,34 +91,8 @@ def theConn : App Conn := do
 
 /-- All rows of a row type's table, in key order. -/
 def loadRows [Row α] (c : Conn) : IO (List α) := do
-  let cols := Row.cols α
-  let keys := ", ".intercalate (cols.take (Row.nkey α))
-  let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} order by {keys}"
-  rows.toList.mapM fun v => IO.ofExcept ((Row.dec v : Except String α).mapError fun e => s!"{Row.table α}: {e}")
-
-/-- Writes `new` over `old` (the rows loaded, or none if the table was not): deletes the rows gone, updates the ones
-changed and inserts the new, by primary key. Columns Lean does not know keep their values. -/
-def storeRows [Row α] [BEq α] (c : Conn) (old new : List α) : IO Unit := do
-  let n := Row.nkey α
-  let cols := Row.cols α
-  let key (r : α) : String := toString (repr ((Row.enc r).take n))
-  let keyCols := cols.take n
-  let whereKey := " and ".intercalate (keyCols.map (· ++ "=?"))
-  let oldM : Std.HashMap String α := old.foldl (fun m r => m.insert (key r) r) {}
-  let newM : Std.HashMap String α := new.foldl (fun m r => m.insert (key r) r) {}
-  for r in old do
-    if !newM.contains (key r) then
-      discard <| c.exec s!"delete from {Row.table α} where {whereKey}" ((Row.enc r).take n)
-  for r in new do
-    match oldM.get? (key r) with
-    | some o =>
-      if !(o == r) then
-        let vals := Row.enc r
-        discard <| c.exec s!"update {Row.table α} set {", ".intercalate ((cols.drop n).map (· ++ "=?"))} where {whereKey}"
-          (vals.drop n ++ vals.take n)
-    | none =>
-      discard <| c.exec s!"insert into {Row.table α}({", ".intercalate cols}) values({", ".intercalate (cols.map fun _ => "?")})"
-        (Row.enc r)
+  let rows ← c.query s!"select {", ".intercalate (Row.cols α)} from {Row.table α}"
+  IO.ofExcept (decodeRows rows.toList)
 
 /-- The next id of an AUTOINCREMENT table: one past the larger of its sqlite_sequence entry and its largest id (an
 old db with no AUTOINCREMENT table has no sqlite_sequence: 0). -/
@@ -161,19 +120,8 @@ def loadDb (c : Conn) (ts : List Table) : IO Db := do
     cis := ← if has .ci then loadRows c else pure []
     taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
 
-/-- Writes every table of `new` over what `old` loaded. -/
-def storeDb (c : Conn) (old new : Db) : IO Unit := do
-  storeRows c old.agents new.agents
-  storeRows c old.msgs new.msgs
-  storeRows c old.cursors new.cursors
-  storeRows c old.tasks new.tasks
-  storeRows c old.locks new.locks
-  storeRows c old.conflicts new.conflicts
-  storeRows c old.pairkeys new.pairkeys
-  storeRows c old.metas new.metas
-  storeRows c old.events new.events
-  storeRows c old.workspaces new.workspaces
-  storeRows c old.cis new.cis
+/-- Writes every table of `new` over what `old` loaded (`dbPlan`). -/
+def storeDb (c : Conn) (old new : Db) : IO Unit := runStmts c (dbPlan old new)
 
 /-- The real store's transaction: BEGIN IMMEDIATE, load the tables `ts`, apply `f`, write back what changed, COMMIT;
 any error rolls back. -/
