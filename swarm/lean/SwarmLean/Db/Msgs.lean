@@ -85,7 +85,8 @@ def wakes [Monad m] (rows : List Msg) (cold : m Bool) : m (Option (List Msg × B
   let wake := rows.filter fun r => r.kind != some "notice" || urg r
   let urgent := wake.any urg
   if wake.isEmpty then return none
-  if urgent || !(← cold) then return some (wake, urgent)
+  if urgent then return some (wake, true)
+  if !(← cold) then return some (wake, false)
   return none
 
 end SwarmLean.Msgs
