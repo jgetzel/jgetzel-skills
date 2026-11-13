@@ -358,14 +358,15 @@ def ciCheck (repo comms : Option String) : m Unit := do
   let tail := "\n".intercalate (lines.drop (lines.length - 30))
   Store.txn [.agent, .task] fun db => (ciNewRedTask now comms r rng (authors log) tail db, ())
 
-/-- The newest main CI run that includes `sha`, skipping cancelled ones: success, failure or pending, and the run
-(ci.ci_for). -/
+/-- The verdict for `sha`: the newest completed, non-cancelled main CI run that includes it (its own, or a later run
+of the batch it was pushed in), else pending with the newest unfinished one, and the run (ci.ci_for). -/
 def ciFor (runs : List Ci) (sha : String) (cwd : Option String) : m (String × Option Ci) := do
+  let mut pend : Option Ci := none
   for r in runs.mergeSort fun a b => a.created.getD "" ≥ b.created.getD "" do
     if r.sha == some sha || (← Git.git ["merge-base", "--is-ancestor", sha, r.sha.getD "nil"] cwd).isSome then
-      if r.status != some "completed" then return ("pending", some r)
-      if r.conclusion != some "cancelled" then
+      if r.status != some "completed" then pend := pend.orElse fun _ => some r
+      else if r.conclusion != some "cancelled" then
         return (if r.conclusion == some "success" then "success" else "failure", some r)
-  return ("pending", none)
+  return ("pending", pend)
 
 end SwarmLean.Ci
