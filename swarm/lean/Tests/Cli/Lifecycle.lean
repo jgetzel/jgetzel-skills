@@ -752,6 +752,27 @@ def test_hc_blocked_marks_task (t : T) : IO Unit := do
   tick
   eq ((← t.q1 "select state from task").f "state") "claimed"
 
+-- board #114: Claude stuck on its folder-trust dialog leaves the terminal with no hc status; after START_WAIT that is a prompt
+def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
+  t.fakes
+  t.setHc [json% {"address": "h1"}]
+  t.agent "a" [("hc", "h1"), ("status", "working")]; t.agent "t-comms"
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  tick  -- no spawn event: a joined agent, never counted as stuck
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+  t.q_ "insert into event(ts,agent,kind,data) values(?,'human','spawn','a')" [.int ((← now) - 60)]
+  tick  -- spawned a minute ago: still starting
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+  t.q_ "update event set ts=? where kind='spawn'" [.int ((← now) - 300)]
+  tick
+  eq ((← t.q1 "select state from task").f "state") "blocked"
+  let m ← t.q "select body from msg where dest='t-comms'"
+  eq m.size 1; has (m[0]!.f "body") "no Claude session yet"; has (m[0]!.f "body") "hc read h1"
+  t.setHc [json% {"address": "h1", "status": "working"}]  -- the human accepted the dialog
+  tick
+  eq ((← t.q1 "select state from task").f "state") "claimed"
+
 -- ---- task deps ----
 def test_after_dependency (t : T) : IO Unit := do
   t.agent "a"
@@ -1011,6 +1032,7 @@ def tests : List Case := [
   ("test_ci_reads_the_table", test_ci_reads_the_table),
   ("test_block_unblock", test_block_unblock),
   ("test_hc_blocked_marks_task", test_hc_blocked_marks_task),
+  ("test_hc_no_status_after_spawn_blocks", test_hc_no_status_after_spawn_blocks),
   ("test_after_dependency", test_after_dependency),
   ("test_deps_migration", test_deps_migration),
   ("test_priority_orders_pool_and_board", test_priority_orders_pool_and_board),
