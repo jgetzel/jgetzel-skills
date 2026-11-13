@@ -16,6 +16,9 @@ def COLD_IDLE : Int := 55 * 60
 structure Term where
   state : Option String
   address : Option String
+  name : Option String := none
+  cwd : Option String := none
+  status : Option String := none
 
 /-- `hc ls --json`'s terminals; none when hc fails or prints no list (agents.hc_terminals). -/
 def hcTerminals [Monad m] [Proc m] : m (Option (List Term)) := do
@@ -24,7 +27,11 @@ def hcTerminals [Monad m] [Proc m] : m (Option (List Term)) := do
   let some j := (Lean.Json.parse o.stdout).toOption | return none
   let str (x : Lean.Json) (k : String) : Option String := (x.getObjValAs? String k).toOption
   match j.getObjVal? "terminals" with
-  | .ok (.arr ts) => return some (ts.toList.map fun x => { state := str x "state", address := str x "address" })
+  | .ok (.arr ts) =>
+    let term (x : Lean.Json) : Term :=
+      { state := str x "state", address := str x "address", name := str x "name", cwd := str x "cwd",
+        status := str x "status" }
+    return some (ts.toList.map term)
   | .ok (.obj _) => return some []
   | _ => return none
 

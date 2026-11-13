@@ -3,8 +3,10 @@ import SwarmLean.Cmd.AgentsHelp
 import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Machine
+import SwarmLean.Lib.Spawn
+import SwarmLean.Lib.Lifecycle
 
-/-! `swarm join`, `leave`, `role`, `stay`, `limits`, `away` and `machine` (agents.lua's commands and
+/-! `swarm join`, `leave`, `role`, `stay`, `limits`, `away`, `who` and `machine` (agents.lua's commands and
 machine.cmd_machine). -/
 
 namespace SwarmLean.Cmd.Agents
@@ -28,17 +30,21 @@ def staySpec : Spec := .mk "stay" helpStay [many "text"] [flag "--end"] [] [] no
 def limitsSpec : Spec := .mk "limits" helpLimits [] [opt "--min" none (some int), opt "--max" none (some int)] [] [] none
 /-- `swarm away`'s parser. -/
 def awaySpec : Spec := .mk "away" helpAway [many "note"] [flag "--back"] [] [] none
+/-- `swarm spawn`'s parser. -/
+def spawnSpec : Spec :=
+  .mk "spawn" helpSpawn [{ name := "name" }, many "task"]
+    [opt "--model" (some "sonnet"), { opt "--effort" with choices := ["low", "medium", "high", "xhigh", "max"] }, opt "--stay",
+     { opt "--task" none (some int) with target := "task_id" }, opt "--role", opt "--attach"] [] [] none
+/-- `swarm end`'s parser. -/
+def endSpec : Spec := .mk "end" helpEnd [{ name := "agent" }] [flag "--force"] [] [] none
+/-- `swarm endable`'s parser. -/
+def endableSpec : Spec := .mk "endable" helpEndable [maybe "agent"] [flag "--why"] [] [] none
+/-- `swarm who`'s parser. -/
+def whoSpec : Spec := .mk "who" helpWho [] [] [] [] none
 /-- `swarm machine`'s parser. -/
 def machineSpec : Spec := .mk "machine" helpMachine [] [] [] [] none
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m]
-
-/-- The db file (db.dbpath): $SWARM_DB, else swarm/swarm.db in the repo's git common dir. -/
-def dbPath : m String := do
-  if let some p ← env "SWARM_DB" then return p
-  match ← Git.git ["rev-parse", "--path-format=absolute", "--git-common-dir"] none with
-  | some dir => if strip dir != "" then return joinPath (joinPath (strip dir) "swarm") "swarm.db" else die "not in a git repo and SWARM_DB is unset"
-  | none => die "not in a git repo and SWARM_DB is unset"
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
 /-- A fenced step's value, or die with the fence. -/
 def unfence (name : String) : Except Fence α → m α
@@ -80,12 +86,12 @@ def join (a : Parsed) : m UInt32 := do
     if let (some sp, some i) := (sp, space) then
       if i != sp then die s!"{n} is the communicator of a swarm in space {sp}; this terminal is in space {i}."
     if let some c := comms then
-      if c != (← dbPath) && !a.flag "takeover" then
+      if c != (← Spawn.dbPath) && !a.flag "takeover" then
         die s!"this terminal is the communicator of another swarm ({c}). `swarm join --takeover` takes it for this one."
   bindAgent n (some (← Env.cwd)) here (a.str "model") (a.flag "takeover")
   let mut space := none
   if let (true, some h) := (isC, here) then
-    discard <| Proc.output ["hc", "label", h, "swarm.comms=" ++ (← dbPath)] none []
+    discard <| Proc.output ["hc", "label", h, "swarm.comms=" ++ (← Spawn.dbPath)] none []
     space := (← hcInfo h).1
   let now ← Clock.now
   Store.txn [.«meta»] fun db =>
@@ -204,6 +210,86 @@ def awayCmd (a : Parsed) : m UInt32 := do
   | none => Env.out s!"away{if note != "" then ": " ++ note else ""}; questions wait for you, work goes on"
   return 0
 
+/-- Something is at `p` (lfs.attributes). -/
+def exists_ (p : String) : m Bool := return (← Sys.kind p true) != .none
+
+/-- A notice when install.sh's Herdr copies predate this checkout's herdr-mods (agents.herdr_stale). -/
+def herdrStale : m (Option String) := do
+  let home := (← Env.var "HERDR_APP_HOME").getD (((← Env.var "HOME").getD "") ++ "/.config/herdr-app")
+  let some here ← Spawn.swarmHere | return none
+  if !((← exists_ (home ++ "/mods/jgetzel-tabs")) || (← exists_ (home ++ "/mods/swarm-tabs"))) then return none
+  let stamp := strip ((← Fs.read (home ++ "/jgetzel-install.stamp")).getD "")
+  let o ← Proc.output ["sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | { sha256sum 2>/dev/null || shasum -a 256; }"]
+    (some (here ++ "/../herdr-mods")) []
+  match o with
+  | some o => if o.code == 0 && String.ofList ((strip o.stdout).toList.take 64) != stamp then
+      return some "herdr panel: out of date: run install.sh" else return none
+  | none => return none
+
+/-- `swarm who` (agents.cmd_who). -/
+def who : m UInt32 := do
+  let t ← Clock.now
+  let db ← Store.txn [.agent, .«meta», .lock, .workspace] fun db => (db, db)
+  let wts ← Workspaces.wtMap db
+  Env.out (limitsLine db (← env "SWARM_COMMS"))
+  if let some (avail, total, psi) ← Machine.mem then Env.out (Machine.line avail total psi)
+  if let some s ← herdrStale then Env.out s
+  let (here, gone) ← splitAgents db
+  for x in gone do Env.out s!"{x.name} gone: no terminal; swarm join --takeover {x.name}"
+  let mut seen : Seen := []
+  for x in here do
+    let k := fdiv (x.ctx_tokens.getD 0) 1000
+    let (last, s1) ← sessionActive seen x t
+    let (cold, s2) ← coldReason s1 x t
+    seen := s2
+    let snap := match x.snap with
+      | some sn => if sn.startsWith "{" then (Lean.Json.parse sn).toOption else none
+      | none => none
+    let fs := match snap.map (·.getObjVal? "files") with
+      | some (.ok (.arr a)) => a.toList.filterMap fun (j : Lean.Json) => j.getStr?.toOption
+      | _ => []
+    let lk := (db.locks.filter (·.agent == some x.name)).map (·.path)
+    let mut l := s!"{x.name} {x.status.getD "nil"}{match x.role with | some r => " role=" ++ r | none => ""}{match x.stay with | some s => s!" stays: \"{s}\"" | none => ""} ctx={k}k idle={ago t last} cache={if t - last < COLD_IDLE then "warm" else "cold"}"
+    l := l ++ (if cold.isSome then " COLD-GUARDED" else "") ++ " wt: " ++ ((wts.lookup x.name).map basename).getD "?"
+    if !fs.isEmpty then
+      l := l ++ " files: " ++ ", ".intercalate (fs.take 5) ++ (if fs.length > 5 then s!" +{fs.length - 5} more" else "")
+    if !lk.isEmpty then l := l ++ " locks: " ++ ", ".intercalate lk
+    Env.out l
+  return 0
+
+/-- `swarm spawn <name> [options] [-- <task>…]` (watchd.cmd_spawn). -/
+def spawnCmd (a : Parsed) : m UInt32 := do
+  let task := a.strs "task"
+  Spawn.spawn { name := (a.str "name").getD "", model := (a.str "model").getD "sonnet", effort := a.str "effort",
+                stay := a.str "stay", taskId := a.int "task_id", role := a.str "role", attach := a.str "attach",
+                task := if task.head? == some "--" then task.tail else task }
+  return 0
+
+/-- `swarm endable [agent] [--why]`: exit 0 when nothing keeps the agent from being ended, else 1 (watchd.cmd_endable). -/
+def endableCmd (a : Parsed) : m UInt32 := do
+  let n ← match a.str "agent" with | some n => pure n | none => me
+  let (db, f) ← Lifecycle.readsNow n
+  let some row := (live db).find? (·.name == n) | die s!"{n} is not a live agent"
+  let rs ← Lifecycle.endableReasons db row f
+  if a.flag "why" then for r in rs do Env.out r.text
+  return if rs.isEmpty then 0 else 1
+
+/-- `swarm end <agent> [--force]`: the communicator's manual agent GC (watchd.cmd_end). -/
+def endCmd (a : Parsed) : m UInt32 := do
+  let me ← me
+  let envComms ← env "SWARM_COMMS"
+  if !(← Store.txn [.«meta»] fun db => (db, inCharge db envComms me)) then
+    die "only the communicator or the user (`human`) ends agents"
+  let n := (a.str "agent").getD ""
+  let (db, f) ← Lifecycle.readsNow n
+  let some row := (live db).find? (·.name == n) | die s!"{n} is not a live agent"
+  let force := a.flag "force"
+  if !force then
+    if let some why ← Lifecycle.endWhy row f then die s!"{n} {why}; `swarm end {n} --force` ends it anyway."
+  if !(← Lifecycle.endAgent row force (some me)) then die s!"{n} changed state; try again"
+  Env.out s!"{n} ended"
+  return 0
+
 /-- `swarm machine` (machine.cmd_machine). -/
 def machineCmd : m UInt32 := do
   Env.out (← Machine.note)
@@ -211,15 +297,19 @@ def machineCmd : m UInt32 := do
 
 /-- The group. -/
 def group : Group m where
-  specs := [("join", joinSpec), ("leave", leaveSpec), ("role", roleSpec), ("stay", staySpec), ("limits", limitsSpec),
-    ("away", awaySpec), ("machine", machineSpec)]
+  specs := [("spawn", spawnSpec), ("join", joinSpec), ("end", endSpec), ("endable", endableSpec), ("leave", leaveSpec), ("role", roleSpec), ("stay", staySpec), ("limits", limitsSpec),
+    ("away", awaySpec), ("who", whoSpec), ("machine", machineSpec)]
   run a := match a.cmd with
+    | "spawn" => spawnCmd a
     | "join" => join a
+    | "end" => endCmd a
+    | "endable" => endableCmd a
     | "leave" => leaveCmd a
     | "role" => roleCmd a
     | "stay" => stayCmd a
     | "limits" => limitsCmd a
     | "away" => awayCmd a
+    | "who" => who
     | _ => machineCmd
 
 end SwarmLean.Cmd.Agents
