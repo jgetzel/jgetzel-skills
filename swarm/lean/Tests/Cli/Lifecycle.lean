@@ -814,9 +814,12 @@ def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
   eq ((← t.q1 "select state from task").f "state") "blocked"
   let m ← t.q "select body from msg where dest='t-comms'"
   eq m.size 1; has (m[0]!.f "body") "no Claude session yet"; has (m[0]!.f "body") "hc read h1"
+  eq ((← t.q1 "select status from agent where name='a'").f "status") "blocked"
   t.setHc [json% {"address": "h1", "status": "working"}]  -- the human accepted the dialog
   tick
   eq ((← t.q1 "select state from task").f "state") "claimed"
+  -- board #135: the row follows the terminal again, or watchd never ends it
+  eq ((← t.q1 "select status from agent where name='a'").f "status") "working"
 
 -- ---- task deps ----
 def test_after_dependency (t : T) : IO Unit := do

@@ -139,7 +139,7 @@ def commsName (db : Db) (envComms : Option String) : Option String :=
   | _ => envComms
 
 /-- The Stop hook's verdict: none lets the stop through, else why it continues (hook.stop_block). -/
-def stopBlock (name : String) (p : Json) (k : Option Int) : m (Option String) := do
+def stopBlock (name : String) (p : Json) : m (Option String) := do
   let envComms ← env "SWARM_COMMS"
   let (isC, row) ← Store.txn [.«meta», .agent] fun db =>
     (db, (Agents.isComms db envComms (some name), db.agents.find? fun a => a.name == name && a.ended.isNone))
@@ -170,9 +170,6 @@ def stopBlock (name : String) (p : Json) (k : Option Int) : m (Option String) :=
     else (db.log t (some name) "stop-block" none (some key), false)
   if capped then return none
   let head := "You are not endable: " ++ "\n".intercalate (rs.map (·.text))
-  let claimed ← Store.txn [.task] fun db => (db, db.tasks.any fun x => x.owner == some name && x.state = .claimed)
-  if k.getD 0 ≥ 550000 && claimed then
-    return some (head ++ "\n\nYour context is too large to continue: hand off. Commit WIP, `swarm task release <id>` (or the relaunch skill, same model), and leave a note for the successor.")
   return some (head ++ "\n\nEnd this by changing state, not by arguing: (a) finish and land (`swarm task done`); (b) drop: `swarm task release <id>` and commit, ignore or delete what is listed (pushing the branch counts as handing off commits); (c) declare the wait: `swarm task block <id> \"<question>\"` or `swarm stay \"<what>\"`.")
 
 /-- `swarm hook <event>` (hook.hook). -/
@@ -220,7 +217,7 @@ def hook (ev : String) : m UInt32 := do
     Store.txn [.agent, .event] fun db =>
       let db := setStatus db name here now "idle" fun a => match k with | some k => { a with ctx_tokens := some k } | none => a
       (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ())
-    if let some why ← stopBlock name p k then Env.out ("{\"decision\": \"block\", \"reason\": " ++ jstr why ++ "}")
+    if let some why ← stopBlock name p then Env.out ("{\"decision\": \"block\", \"reason\": " ++ jstr why ++ "}")
   | "session" =>
     let pid ← Machine.claudePid
     Store.txn [.agent, .event] fun db =>

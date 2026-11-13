@@ -50,12 +50,11 @@ with subagents.
    detached waiter sends no notification and lingers): it is your inbox. Exit
    2 means messages (on stderr), 0 a timeout: run `swarm read`, act, and start
    it again. Exit 3 means this terminal doesn't hold your name (stderr says who
-   does): run `swarm join` (`--takeover` after a relaunch) before restarting it.
+   does): run `swarm join` (`--takeover` to move it here) before restarting it.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
    One watchd per repo: a second is refused while the first lives, naming it;
-   `--takeover` replaces it (the old one exits once the new one has ticked). A relaunched
-   communicator starts its watchd with `--takeover`. `swarm watchd --restart` starts the same watchd (the flags
+   `--takeover` replaces it (the old one exits once the new one has ticked). `swarm watchd --restart` starts the same watchd (the flags
    it recorded) in a hidden hc terminal and reports success only once the new one has ticked; else it exits 1
    and the old one runs on.
    Auto-spawn goes through `swarm spawn --task N`, which makes the agent's worktree (`../<repo>-<agent>`, branch
@@ -168,7 +167,7 @@ with subagents.
   check. Kill by PID, never `pkill -f`.
 - Clean up every terminal you start (`hc kill <t> && hc rm <t>`) when the
   swarm ends.
-- At high context hand off with the `relaunch` skill, same model; your handoff tells the successor to run `swarm join --takeover` (same `SWARM_NAME`) before it ends you. You have no hooks, so `swarm read/wait/board/who` print the context-size note for you.
+- The harness compacts your context; keep the board and your notes current so a compaction loses nothing. You have no hooks, so `swarm read/wait/board/who` print the context-size note for you.
 
 ## Reference
 

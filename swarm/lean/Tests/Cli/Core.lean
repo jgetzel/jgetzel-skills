@@ -150,7 +150,7 @@ def test_join_refused_on_live_binding_takeover_moves_and_logs (t : T) : IO Unit 
   let err := (← t.sw "a" ["join"] (nok "t2")).stderr
   has err "a is bound to t1; this terminal is t2. `swarm join --takeover`"
   eq ((← t.q1 "select hc from agent").f "hc") "t1"
-  -- relaunch: the predecessor t1 is still live, the successor takes over from t2
+  -- a restart: the predecessor t1 is still live, the successor takes over from t2
   t.sw_ "a" ["join", "--takeover"] (okc "t2")
   eq ((← t.q1 "select hc from agent").f "hc") "t2"
   eq ((← t.q1 "select data from event where kind='takeover'").f "data") "t1 -> t2"
@@ -246,9 +246,12 @@ def test_ctx_note_steps_marker_and_claim_refusal (t : T) : IO Unit := do
   has ((← post).f "additionalContext") "go idle"
   eq (← post) emptyObj  -- same step
   t.sw_ "b" ["task", "add", "t1"]
-  unless (← t.sw "b" ["task", "claim", "1"] { ok := false }).code ≠ 0 do fail "claim allowed at high ctx"
+  let r ← t.sw "b" ["task", "claim", "1"] { ok := false }
+  unless r.code ≠ 0 do fail "claim allowed at high ctx"
+  has r.stderr "compact (/compact) or finish"
   usage 560000
-  has ((← post).f "additionalContext") "hand off now"
+  let n := (← post).f "additionalContext"
+  has n "compacts your context"; has n "swarm task release"; hasnt n "relaunch"
   put mark "9"  -- the repo hook already fired for this step
   usage (1000000 - 1)
   eq (← post) emptyObj
@@ -264,8 +267,8 @@ def test_comms_ctx_note_from_commands (t : T) : IO Unit := do
   let mark := (← tmpdir) ++ "/claude-ctx-" ++ s
   t.defer (rm mark)
   let env := [("HOME", some (t.d ++ "/home")), ("CLAUDE_CODE_SESSION_ID", some s)]
-  has (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "pass on what you hold"
-  hasnt (← t.sw "x-comms" ["who"] { env, ok := false }).stdout "pass on what you hold"  -- once per step
+  has (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "keep what you hold"
+  hasnt (← t.sw "x-comms" ["who"] { env, ok := false }).stdout "keep what you hold"  -- once per step
 
 def test_burst_capped_rest_stays_unread (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"

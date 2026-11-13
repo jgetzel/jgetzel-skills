@@ -90,7 +90,7 @@ def test_stayers_expired_claim_reopens (t : T) : IO Unit := do
   eq ((← t.q1 "select state from task").f "state") "open"
   eq (← stay t "e") "reviews"
 
--- task done and the context note tell a stayer to keep staying and hand off what it holds, not to go idle and end
+-- task done and the context note tell a stayer to keep staying and keep what it holds, not to go idle and end
 def test_stayer_done_line_and_ctx_note (t : T) : IO Unit := do
   t.agent "e"
   t.sw_ "e" ["stay", "reviews"]
@@ -105,7 +105,7 @@ def test_stayer_done_line_and_ctx_note (t : T) : IO Unit := do
   t.defer (rm (tmp ++ "/claude-ctx-" ++ s))
   let ctx := (← t.hook "e" "post-tool"
     (json% {"tool_name": "Read", "tool_input": {}, "transcript_path": $tr, "session_id": $s})).f "additionalContext"
-  has ctx "pass on what you hold"
+  has ctx "keep what you hold"
   hasnt ctx "go idle"
 
 -- the quiet notice (§8 item 3): on the edge into quiet, one message per stayer and one notice to comms; none on the

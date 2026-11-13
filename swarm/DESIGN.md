@@ -310,7 +310,7 @@ terminal, the communicator, watchd) changes under one rule set:
 - **The bound terminal is the fencing token.** Only `swarm join` moves
   `agent.hc`, and a live binding moves only with `--takeover` (logged).
   A command from another terminal is refused with the holder's name; a hook
-  there writes nothing. A relaunched successor's one step is `swarm join --takeover`.
+  there writes nothing. A restarted session's one step is `swarm join --takeover`.
 - **Intent before effect.** `swarm spawn <name> --task N` claims before it
   launches and rolls back if the launch fails.
 - **Ended agents return only through `join`.**

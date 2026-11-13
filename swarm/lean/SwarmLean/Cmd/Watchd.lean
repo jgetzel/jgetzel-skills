@@ -102,7 +102,11 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
       let back (r : Task) : Task :=
         if r.owner == some a.name && r.state == .blocked && r.question == some HC_Q then
           { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
-      Store.txn [.task] fun db => ({ db with tasks := db.tasks.map back }, ())
+      -- the row this pass blocked follows the terminal again (board #135: a session started there later)
+      let st := if x.status == some "working" then "working" else "idle"
+      Store.txn [.task, .agent, .event] fun db =>
+        let db := { db with tasks := db.tasks.map back }
+        (if a.status == some "blocked" then (db.setAgent a.name ({ · with status := some st })).log now (some a.name) "status" none (some st) else db, ())
     else if a.status != some "blocked" then
       Store.txn [.agent, .task] fun db =>
         let db := (db.setAgent a.name ({ · with status := some "blocked" })).log now (some a.name) "blocked" none none
