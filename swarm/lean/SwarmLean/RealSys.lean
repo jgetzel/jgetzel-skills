@@ -28,7 +28,11 @@ def execIO' (argv : List String) (o : RunOpts) : IO ProcOut := do
     let errT ← IO.asTask stderr.readToEnd
     let out ← stdout.readToEnd
     let err ← IO.ofExcept (← IO.wait errT)
-    return { code := ← wait, stdout := out, stderr := err }
+    let code ← wait
+    -- Lean's spawn reports an exec that failed in the child as 255 and this text; proc.exec's is 127
+    if code == 255 && err.startsWith "could not execute external process" then
+      return { code := 127, stdout := out, stderr := "" }
+    return { code, stdout := out, stderr := err }
   try
     match o.input with
     | some s =>

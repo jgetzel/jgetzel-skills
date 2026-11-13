@@ -47,6 +47,7 @@ extern_lib libswarmshim pkg := do
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "swarmshim") #[← shim.o.fetch]
 
 /-- The CLI's test suite (TestMain.lean): `swarm-tests [pattern]`. -/
+@[default_target]
 lean_exe «swarm-tests» where
   root := `TestMain
   moreLinkArgs := run_io sqliteLink
