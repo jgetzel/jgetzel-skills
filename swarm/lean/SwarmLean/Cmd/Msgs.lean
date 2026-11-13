@@ -4,6 +4,7 @@ import SwarmLean.Lib.Msgs
 import SwarmLean.Lib.Agents
 import SwarmLean.Sys
 import SwarmLean.Db.Compact
+import SwarmLean.Lib.Spawn
 
 /-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait), `swarm nudge` (agents.cmd_nudge) and
 `swarm compact` (board #136). -/
@@ -32,7 +33,7 @@ def compactSpec : Spec := .mk "compact" helpCompact [] [opt "--keep"] [] [] none
 /-- The fixed line `swarm nudge` types (agents.NUDGE). -/
 def NUDGE : String := "read your messages and continue, or say what you wait for"
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Proc m] [Sys m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
 /-- The delivery groups `post` reports, in order. -/
 def KEYS : List String :=
@@ -155,6 +156,15 @@ def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
   let br ← match a.cwd with
     | some c => pure ((← Proc.output ["git", "-C", c, "branch", "--show-current"] none []).bind fun o =>
         if o.code == 0 then some (strip o.stdout) else none)
+    | none => pure none
+  -- Claude Code turns a long paste (over ~800 chars) into an attachment, so a long keep note goes by file
+  let extra ← match extra with
+    | some e =>
+      if e.length ≤ Compact.maxKeep then pure (some e) else do
+        let sd := joinPath (dirname (← Spawn.dbPath)) "agents"
+        let f := joinPath sd (a.name ++ ".keep.txt")
+        discard <| Sys.mkdirp sd
+        pure (some (if ← Fs.write f e then s!"Keep: read {f} first." else (e.take Compact.maxKeep).toString))
     | none => pure none
   return Compact.line a.name (task.map fun r => ((r.id : Int), r.title.getD "")) a.cwd br extra
 

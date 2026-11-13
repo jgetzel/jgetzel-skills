@@ -281,6 +281,10 @@ def test_compact_types_into_own_terminal (t : T) : IO Unit := do
   let c := (← t.calls "hc").getLastD ""
   has c "[] send h1 /compact Keep what swarm agent a needs"; has c "task #1 (the thing)"; has c "the plan"
   has c (← t.cwdOf "a")
+  -- a long keep goes by file: the typed line stays short (board #145)
+  t.sw_ "a" ["compact", "--keep", "".pushn 'k' 2500] { hc := some "h1" }
+  let l := (← t.calls "hc").getLastD ""
+  has l "a.keep.txt"; unless l.length < 700 do fail s!"{l.length}"
   -- another terminal is fenced
   unless (← t.sw "a" ["compact"] { hc := some "h2", ok := false }).code ≠ 0 do fail "compact from another terminal"
 
