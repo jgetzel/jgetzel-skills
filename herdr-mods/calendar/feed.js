@@ -2,7 +2,7 @@ import { div } from "gpui-kit";
 import { shared, setShared, exec, appHome, run, layout, nextCommand, notify, readTextFile } from "herdr";
 
 // Calendar plumbing for the tab bar, which always runs (the panel only starts once opened).
-// The source is herdr-mods/calendar/feed.js in jgetzel-skills; install.lua copies it into mods/jgetzel-tabs.
+// The source is herdr-mods/calendar/feed.js in jgetzel-skills; `herdr-mods install` copies it into mods/jgetzel-tabs.
 // - shared "calendar" holds the last fetch and persists in shared.json, so a restart shows it at once.
 // - the panel's ↻ bumps shared "calendar.refresh"; the "jgetzel-tabs.calendar" key toggles the panel.
 
@@ -26,8 +26,8 @@ function toggle() {
   else { markCalendarOpened(); run("layout.select", { stack: "panel-body", child: "calendar" }); run("layout.show", { id: "panel" }); }
 }
 
-// After a Herdr update, rebuild this tab bar copy and the layout from the new originals: install.lua,
-// whose path the copy's mod.json records along with the Herdr version it was built from.
+// After a Herdr update, rebuild this tab bar copy and the layout from the new originals: `herdr-mods install`, the
+// launcher whose path the copy's mod.json records (installer) along with the Herdr version it was built from.
 async function reinstallIfUpdated() {
   const mod = JSON.parse((await readTextFile(`${appHome()}/mods/jgetzel-tabs/mod.json`)) ?? "{}");
   const running = (await exec("herdr-app", ["--version"])).stdout.trim().split(/\s+/).pop();
@@ -35,10 +35,10 @@ async function reinstallIfUpdated() {
   // A successful run rewrites this mod, which reloads it and ends this task, so the reloaded copy
   // announces it (see calendarFeed). A failed run writes nothing, so this task survives to report it.
   setShared("jgetzel.reinstalled", running);
-  const r = await exec("luajit", [mod.installer]);
+  const r = await exec(mod.installer, ["install"]);
   if (r.code !== 0) {
     setShared("jgetzel.reinstalled", null);
-    notify({ title: "Herdr mods re-install failed", body: `${(r.stderr || r.stdout).trim().split("\n").pop()}. Run luajit ${mod.installer} to see why.`, level: "error" });
+    notify({ title: "Herdr mods re-install failed", body: `${(r.stderr || r.stdout).trim().split("\n").pop()}. Run ${mod.installer} install to see why.`, level: "error" });
   }
 }
 
@@ -52,7 +52,8 @@ export function calendarFeed(cx) {
     feed.asked = shared("calendar.refresh") ?? 0; feed.fetching = true; feed.tried = Date.now(); setShared("calendar.loading", true);
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("luajit", [`${appHome()}/mods/calendar/events.lua`]);
+        const mod = JSON.parse((await readTextFile(`${appHome()}/mods/jgetzel-tabs/mod.json`)) ?? "{}");
+        const r = await exec(mod.installer, ["events"]);
         if (r.code !== 0) throw new Error(r.stderr.trim().split("\n").pop() || `exit ${r.code}`);
         // stderr on success: rules or time zones it skipped
         setShared("calendar", { events: JSON.parse(r.stdout), updated: Date.now(), error: r.stderr.trim() || null });

@@ -106,8 +106,7 @@ def test_who_flags_stale_herdr_copies (t : T) : IO Unit := do
   mkdirp (home ++ "/mods/jgetzel-tabs")
   let run : IO String := return (← t.sw "x" ["who"] { env := [("HERDR_APP_HOME", some home)] }).stdout
   has (← run) "out of date: run install.sh"
-  let stamp := ((← t.exec ["sh", "-c", "cat install.lua calendar/* ../swarm/herdr/mods/swarm/swarm.svg | sha256sum"]
-    { cwd := (← swarmDir) ++ "/../herdr-mods" }).stdout.splitOn " ").head!
+  let stamp := ((← t.exec ["sh", "-c", herdrStampCmd] { cwd := (← swarmDir) ++ "/../herdr-mods" }).stdout.splitOn " ").head!
   put (home ++ "/jgetzel-install.stamp") (stamp ++ "\n")
   hasnt (← run) "out of date"
 

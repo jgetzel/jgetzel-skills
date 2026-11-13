@@ -236,3 +236,10 @@ LEAN_EXPORT lean_obj_res swarm_link(b_lean_obj_arg a, b_lean_obj_arg b, lean_obj
    initializes the whole compiler library (~90 MB). Only the runtime is needed: each module initializes its imports. */
 void lean_initialize_runtime_module(void);
 void lean_initialize(void) { lean_initialize_runtime_module(); }
+
+// TZ set to tz (unset when `unset`), then tzset(): the zone mktime and localtime_r then use (herdr-mods events).
+LEAN_EXPORT lean_obj_res swarm_set_tz(b_lean_obj_arg tz, uint8_t unset, lean_obj_arg w) {
+  if (unset) unsetenv("TZ"); else setenv("TZ", lean_string_cstr(tz), 1);
+  tzset();
+  return lean_io_result_mk_ok(lean_box(0));
+}

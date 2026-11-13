@@ -1,0 +1,5 @@
+#!/bin/sh
+# This repo's Herdr mods tools, swarm/lean's herdr-mods executable, found and run as swarm/swarm runs swarm-lean:
+#   herdr-mods/herdr-mods install     install the Swarm and Calendar panels (install.sh runs it)
+#   herdr-mods/herdr-mods events …    the Calendar panel's feed (--ics FILE, --date YYYY-MM-DD, --test)
+SWARM_EXE=herdr-mods exec "$(cd -P "$(dirname "$0")" && pwd)/../swarm/swarm" "$@"
