@@ -94,7 +94,11 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   lookbehind, the `x` flag. A possessive quantifier matches as greedy. Unicode classes are approximated (`shortcut:`
   in the file): non-ASCII is `\w` but for the common punctuation and symbol blocks, `\d` is ASCII, caseless folds
   ASCII.
-- **difflib.lua, conflict.lua** (#99): `Lib/Difflib.lean`, `Lib/Conflict.lean` (hunks, edits, clash, real_hunk).
+- **difflib.lua, conflict.lua** (#99, #111): `Lib/Difflib.lean`, `Lib/Conflict.lean`: hunks, edits, clash, real_hunk,
+  and the world parts (snapshot, onto, trial_merge, line_range, base_sha, `conflictTick`). The tick takes wt_map's
+  agent→worktree list and bases.base_for as arguments (#100's), so watchd (#102) wires them. snapshot's temp
+  index is made with `mktemp -d`, `cp -p` (which keeps the index's mtime to the nanosecond, where the Lua kept whole
+  seconds: git rehashes no more) and `rm -rf` through `Proc`.
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
