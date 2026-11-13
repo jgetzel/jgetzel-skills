@@ -6,3 +6,4 @@ import SwarmLean.Proofs.Tasks
 import SwarmLean.Proofs.Locks
 import SwarmLean.Proofs.Msgs
 import SwarmLean.Proofs.Watchd
+import SwarmLean.Proofs.Cross
