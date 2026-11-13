@@ -91,11 +91,14 @@ def AWAY : String := " The user is away: answer it if it is yours to decide; els
 
 /-- An hc terminal's prompt blocks its agent (blocked, the claim marked, comms told); gone, the claim given back. -/
 def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool) : m Unit := do
-  let as := Agents.live (← Store.txn [.agent] fun db => (db, db))
-  for a in as do
+  let db0 ← Store.txn [.agent, .event] fun db => (db, db)
+  for a in Agents.live db0 do
     let some x := a.hc.bind (fun h => terms.find? (·.address == some h)) | continue
     let now ← Clock.now
-    if x.status != some "blocked" then  -- the prompt is gone: give back the claim hc blocked
+    -- no agent in it yet, long after its spawn: a dialog before the session (folder trust)
+    let spawned := (db0.events.filter fun e => e.kind == some "spawn" && e.data == some a.name).filterMap (·.ts)
+    let nostart := x.status.isNone && spawned.foldl (fun acc s => acc || t - s >= START_WAIT) false
+    if x.status != some "blocked" && !nostart then  -- the prompt is gone: give back the claim hc blocked
       let back (r : Task) : Task :=
         if r.owner == some a.name && r.state == .blocked && r.question == some HC_Q then
           { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
@@ -108,7 +111,10 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
             (db.set r.id ({ · with state := .blocked, question := some HC_Q })).log now (some a.name) "task-blocked" (some (d r.id)) (some HC_Q)
           | none => db
         match comms with  -- while the user is away the question queues: not urgent
-        | some c => (say db now c (a.name ++ " is blocked (a prompt or question needs the human)." ++ (if away then AWAY else "")) (!away) "system", ())
+        | some c =>
+          let hint := if nostart then
+            s!" Its terminal {a.hc.getD ""} has no Claude session yet (a folder-trust prompt?): `hc read {a.hc.getD ""}`." else ""
+          (say db now c (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
         | none => (db, ())
 
 /-- Each blocked task's question told to comms once per block: a task-blocked event after its latest `task block`. -/

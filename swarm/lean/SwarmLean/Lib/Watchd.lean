@@ -13,6 +13,10 @@ open Agents
 
 /-- The question an hc-blocked task carries (watchd.HC_Q). -/
 def HC_Q : String := "a prompt needs the human"
+
+/-- Seconds after its spawn a terminal with no hc status counts as hc-blocked: Claude never started (a folder-trust
+dialog; watchd.START_WAIT). -/
+def START_WAIT : Int := 120
 /-- A worktree untouched this long (s) may be swept. -/
 def SWEEP_IDLE : Int := 1800
 /-- An idle agent kept only by its unclean worktree this long (s) is told what holds it. -/

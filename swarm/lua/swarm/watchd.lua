@@ -11,6 +11,7 @@ local M = {}
 
 M.LEASE = tasks.LEASE
 M.HC_Q = "a prompt needs the human"
+M.START_WAIT = 120  -- s after its spawn a terminal with no hc status counts as hc-blocked: Claude never started (trust prompt)
 M.SWEEP_IDLE = 1800  -- a worktree untouched this long (s) may be swept
 M.NOT_LANDED = {}    -- worktree\0HEAD\0B verdicts "not landed", so unchanged worktrees don't hit gh every tick
 
@@ -808,11 +809,17 @@ function M.watchd_tick(c, comms, repo, opts)
       end
       for _, a in ipairs(agents.live_agents(c)) do
         local x = a.hc and by[a.hc]
-        if x and x.status ~= "blocked" then  -- the prompt is gone: give back the claim hc blocked
+        local nostart = false  -- no agent in it yet, long after its spawn: a dialog before the session (folder trust)
+        if x and x.status == nil then
+          local s = c:one("select max(ts) ts from event where kind='spawn' and data=?", a.name)
+          nostart = s and s.ts and t - s.ts >= M.START_WAIT or false
+        end
+        local hcb = x and (x.status == "blocked" or nostart)
+        if x and not hcb then  -- the prompt is gone: give back the claim hc blocked
           c:exec("update task set state='claimed', question=null, lease_until=? where owner=? and state='blocked' and question=?",
             t + M.LEASE, a.name, M.HC_Q)
         end
-        if x and x.status == "blocked" and a.status ~= "blocked" then
+        if hcb and a.status ~= "blocked" then
           c:exec("update agent set status='blocked' where name=?", a.name)
           db.log(c, a.name, "blocked")
           local t_ = c:one("select id from task where owner=? and state='claimed' order by id limit 1", a.name)
@@ -821,7 +828,9 @@ function M.watchd_tick(c, comms, repo, opts)
             db.log(c, a.name, "task-blocked", d(t_.id), M.HC_Q)
           end
           if comms then  -- while the user is away the question queues: not urgent (away rule 1)
-            msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human)." .. (away and AWAY or ""),
+            msgs.post(c, "swarm", comms, a.name .. " is blocked (a prompt or question needs the human)."
+              .. (nostart and (" Its terminal %s has no Claude session yet (a folder-trust prompt?): `hc read %s`."):format(a.hc, a.hc) or "")
+              .. (away and AWAY or ""),
               not away, "system")
           end
         end
