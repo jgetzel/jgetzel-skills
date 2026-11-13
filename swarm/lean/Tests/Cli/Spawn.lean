@@ -586,7 +586,7 @@ def test_state_json_staffing (t : T) : IO Unit := do
   t.agent "b" [("status", "idle"), ("stay", "reviews"), ("last_active", 1000)]
   t.agent "cm"
   t.q_ "insert or replace into meta(k,v) values('comms','cm')"
-  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2})  -- the communicator is not counted; unset numbers are null
+  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false})  -- the communicator is not counted; unset numbers are null
   t.sw_ "cm" ["limits", "--min", "2", "--max", "3"]
   t.q_ "insert into meta(k,v) values('spawn_held','auto-spawn holding: 2 live, the auto-spawn number is 2; 1 task(s) startable; max 3')"
   t.q_ "insert into event(ts,agent,kind) values(900,'b','stay-hung')"  -- before it was last active: over
