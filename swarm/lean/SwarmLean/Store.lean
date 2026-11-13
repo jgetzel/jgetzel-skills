@@ -15,10 +15,4 @@ def replay (step : τ → Db → Db × α) : Db → List τ → Db × List (τ �
     let (d, l) := replay step db' xs
     (d, (x, a) :: l)
 
-/-- What "the store is well behaved" means, assumed of the real store and not proved: when processes ran their
-requests `ran` (each with the answer it got) at once on a store holding `before` and left `after`, the requests
-applied one after another in some order give those answers and `after`. -/
-def Atomic (step : τ → Db → Db × α) (before after : Db) (ran : List (τ × α)) : Prop :=
-  ∃ order : List (τ × α), order.Perm ran ∧ replay step before (order.map (·.1)) = (after, order)
-
 end SwarmLean

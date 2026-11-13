@@ -150,6 +150,12 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
 - **Proof statements.** `exactly_one_winner` now assumes each claim would succeed alone on the store as it was
   (the real claim also checks deps, a pending stop, the claimer's context and the lease text), where the slice
   assumed only "task i is open". The rest keep their shape over `Int` task ids and `Cmd`'s real arguments.
+- **Assumptions and the top level (#109).** `Atomic` moved from Store.lean to `Assumptions.lean`, the one file of what
+  the proofs assume: `Atomic` and swarm/model's Env.lean tool hypotheses restated on the code's own calls (`Tools`:
+  `Proc.output`, `Git.git`, `Sys.pidAlive`, `Sys.mtime`, `Clock.now`, `Machine.cwds`). `Proofs/Cross.lean` proves every
+  area's invariant under all areas' transactions at once, S4 with them, and L2's and L4's reap halves on runs.
+  `Audit.lean` now walks every theorem (no hand list). README.md: what is proved, the assumptions, and the table of
+  swarm/model's theorems moved or not, which is what #110 may delete by.
 - **Port bug fixed (board #104).** `Msgs.wakes` ran its `cold` action even with an urgent row (`urgent || !(← cold)`
   lifts the `←` above the `||`); msgs.wakes calls `cold()` only for a non-urgent wake, so the Lean does too
   (`Proofs/Msgs.lean`: `wakes_urgent`). `swarm wait` passes `pure cold`, so its behaviour was the same either way.

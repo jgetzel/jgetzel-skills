@@ -1,5 +1,5 @@
 import SwarmLean.Db.Tasks
-import SwarmLean.Store
+import SwarmLean.Assumptions
 
 /-! The slice's theorems (board #96) about the real steps: `Cmd.step` runs Db/Tasks.lean's `add`, `claim` and
 `release`, the functions the CLI runs in `Store.txn`. -/
