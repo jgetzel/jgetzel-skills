@@ -3,6 +3,7 @@ import SwarmLean.Lib.Ci
 import SwarmLean.Sys
 import SwarmLean.Cmd.Msgs
 import SwarmLean.Cmd.Locks
+import SwarmLean.Cmd.Agents
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
 
@@ -17,7 +18,8 @@ variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m
 def groups : List (Group m) := [
   Cmd.Tasks.group,
   Cmd.Msgs.group,
-  Cmd.Locks.group
+  Cmd.Locks.group,
+  Cmd.Agents.group
 ]
 
 /-- main.lua's root usage, printed before a parse error. -/

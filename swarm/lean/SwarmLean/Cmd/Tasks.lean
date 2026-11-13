@@ -55,13 +55,6 @@ def ctx : m Tasks.Ctx := do
 /-- Runs a task step in one transaction over `ts`, dying with its error. -/
 def step (ts : List Table) (f : Db → Db × Except String α) : m α := do orDie (← Store.txn ts f)
 
-/-- The full machine note: machine.machine_note, not ported yet (board #100), so the Lua CLI's `swarm machine`. -/
-def machineNote : m (Option String) := do
-  let some lua ← Proc.luaCli | return none
-  match ← Proc.output [lua, "machine"] none [] with
-  | some o => if o.code == 0 then return some (String.ofList (o.stdout.toList.reverse.dropWhile (· == '\n')).reverse) else return none
-  | none => return none
-
 /-- `task show`'s text (tasks.lua's show branch). -/
 def showText (db : Db) (r : Task) : m String := do
   let now ← Clock.now
@@ -106,7 +99,7 @@ def task (a : Parsed) : m UInt32 := do
     out s!"claimed #{d id} until {← Clock.hhmm r.«until»}"
     if let some (avail, total, psi) ← Machine.mem then
       if Machine.pressureHigh avail total psi then
-        out ((← machineNote).getD (Machine.line avail total psi))
+        out (← Machine.note)
       else out (Machine.line avail total psi)
     out (r.body.getD "(no body)")
   | "show" =>
