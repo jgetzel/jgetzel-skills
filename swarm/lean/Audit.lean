@@ -20,3 +20,12 @@ import SwarmLean
 #print axioms SwarmLean.Board.mem_pool
 #print axioms SwarmLean.Board.done_frees
 #print axioms SwarmLean.Board.release_waits
+#print axioms SwarmLean.Locks.covers_iff
+#print axioms SwarmLean.Locks.overlaps_iff
+#print axioms SwarmLean.Locks.locks_disjoint
+#print axioms SwarmLean.Locks.no_shared_file
+#print axioms SwarmLean.Locks.atomic_good
+#print axioms SwarmLean.Locks.lock_ok_iff
+#print axioms SwarmLean.Locks.lockHolder_some
+#print axioms SwarmLean.Locks.lockHolder_none
+#print axioms SwarmLean.Locks.lockHolder_agent
