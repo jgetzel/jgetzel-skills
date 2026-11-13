@@ -217,3 +217,8 @@ LEAN_EXPORT lean_obj_res swarm_link(b_lean_obj_arg a, b_lean_obj_arg b, lean_obj
   if (link(lean_string_cstr(a), lean_string_cstr(b)) != 0) return io_err(strerror(errno));
   return lean_io_result_mk_ok(lean_box(0));
 }
+
+/* Lean's main calls lean_initialize() once any Lean.* module is imported (here only Lean.Data.Json), which links and
+   initializes the whole compiler library (~90 MB). Only the runtime is needed: each module initializes its imports. */
+void lean_initialize_runtime_module(void);
+void lean_initialize(void) { lean_initialize_runtime_module(); }

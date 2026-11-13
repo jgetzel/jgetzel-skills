@@ -1,35 +1,25 @@
 #!/bin/sh
-# swarm on LuaJIT (research/sw-lua.md §3, §4): find the real file through symlinks, put its lua/ dir and the
-# per-user rock tree on the module path, exec main.lua. Without luajit: say so, and never block a hook.
+# The swarm CLI: swarm-lean (lean/) when its binary is built and no source is newer, else the Lua CLI (swarm-lua) with
+# one stderr line saying how to build it. A hook gets no such line and never waits on a build.
 p=$0
 while [ -L "$p" ]; do
   l=$(readlink "$p")
   case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
 done
 here=$(cd -P "$(dirname "$p")" && pwd)
-tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
-export SWARM_HERE="$here"
-export LUA_PATH="$here/lua/?.lua;$tree/share/lua/5.1/?.lua;$tree/share/lua/5.1/?/init.lua;${LUA_PATH:-;}"
-export LUA_CPATH="$tree/lib/lua/5.1/?.so;${LUA_CPATH:-;}"
-# no double quotes or backslashes in it: the hook branch below writes it into JSON as is
-if command -v nix >/dev/null 2>&1; then
-  SWARM_INSTALL_HINT="nix profile install --impure --expr 'with import <nixpkgs> {}; luajit.withPackages (p: with p; [ lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8 ])' (or that withPackages in home.packages)"
-else
-  SWARM_INSTALL_HINT="LuaJIT and its rocks, per $here/research/sw-lua.md section 4 (Homebrew, apt or dnf, then luarocks into $tree)"
-fi
-export SWARM_INSTALL_HINT
-if command -v luajit >/dev/null 2>&1; then
-  exec luajit "$here/lua/swarm/main.lua" "$@"
-fi
-msg="swarm hooks are OFF: luajit is not on PATH; install with $SWARM_INSTALL_HINT"
-if [ "$1" = hook ]; then
-  [ -n "$SWARM_NAME" ] || exit 0
-  case $2 in
-    pre-tool) ev=PreToolUse ;; post-tool) ev=PostToolUse ;; prompt) ev=UserPromptSubmit ;; session) ev=SessionStart ;;
-    *) echo "swarm: $msg" >&2; exit 1 ;;
-  esac
-  printf '{"hookSpecificOutput": {"hookEventName": "%s", "additionalContext": "%s"}, "systemMessage": "%s"}\n' "$ev" "$msg" "$msg"
-  exit 0
-fi
-echo "swarm: luajit is not on PATH; install $SWARM_INSTALL_HINT" >&2
-exit 127
+export SWARM_HERE="$here" SWARM_LUA_CLI="$here/swarm-lua"
+# lake's binary (lean/build.sh touches it), then nix's out-link (its own mtime: find -newer does not follow it)
+for ref in "$here/lean/.lake/build/bin/swarm-lean" "$here/lean/.lake/nix"; do
+  bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/swarm-lean
+  [ -x "$bin" ] || continue
+  # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds
+  new=$(cd "$here" && find lean/Main.lean lean/lakefile.lean lean/lean-toolchain lean/SwarmLean lean/c \
+    model/SwarmModel/Glob.lean model/SwarmModel/Model.lean model/SwarmModel/PrWatch.lean model/SwarmModel/Decide.lean \
+    -newer "$ref" 2>/dev/null | head -n 1)
+  [ -z "$new" ] && exec "$bin" "$@"
+  why="is older than $new"
+done
+# no double quotes or backslashes in it: swarm-lua's hook branch writes it into JSON as is
+export SWARM_INSTALL_HINT="$here/lean/build.sh"
+[ "$1" = hook ] || echo "swarm: running the Lua CLI: swarm-lean ${why:-is not built}; build it with $SWARM_INSTALL_HINT" >&2
+exec "$here/swarm-lua" "$@"

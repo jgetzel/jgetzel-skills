@@ -13,8 +13,10 @@ for skill in */SKILL.md; do
   ln -sfn "$PWD/$name" "$dest/$name"
   echo "linked $name"
 done
-# The swarm CLI runs on LuaJIT plus 7 rocks (swarm/research/sw-lua.md section 4). Installs only into the
-# per-user rock tree the swarm/swarm launcher reads; never runs sudo.
+# The swarm CLI is swarm-lean (swarm/lean), built with elan's lake or else nix.
+swarm/lean/build.sh || echo "swarm: swarm-lean did not build; swarm runs the Lua CLI until it does" >&2
+# The Lua CLI (swarm/swarm-lua, the fallback) and the Herdr panels' installer run on LuaJIT plus 7 rocks
+# (swarm/research/sw-lua.md section 4). Installs only into the per-user rock tree swarm-lua reads; never runs sudo.
 ROCKS="lsqlite3 lua-cjson luaposix lrexlib-pcre2 luafilesystem argparse luautf8"
 tree=${XDG_DATA_HOME:-$HOME/.local/share}/swarm/lua
 lua_missing() {
