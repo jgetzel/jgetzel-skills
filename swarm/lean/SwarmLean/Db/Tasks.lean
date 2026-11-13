@@ -423,6 +423,31 @@ structure EditArgs where
   effort : Option String := none
   urgent : Bool := false
 
+/-- `task edit`'s new title, body, model and effort for row `r` with the new body `newBody`, the columns changed and a
+note for each. -/
+def editCols (id : Int) (r : Task) (a : EditArgs) (newBody : Option String) :
+    (Option String × Option String × Option String × Option String) × List String × List String :=
+  -- change(col, new, note): a no-op when new equals the current value, as Python truthiness reads it
+  let ch (cur : Option String) (new : Option String) (col note : String) (acc : Option String × List String × List String) :=
+    if new == py cur then acc else (new, acc.2.1 ++ [col], acc.2.2 ++ [note])
+  let (title, f1, n1) := match a.title with
+    | some t => ch r.title (some t) "title" s!"title: {r.title.getD ""} -> {t}" (r.title, [], [])
+    | none => (r.title, [], [])
+  let (body, f2, n2) := match newBody with
+    | some b => ch r.body (some b) "body" s!"body replaced: task show {d id}" (r.body, f1, n1)
+    | none => (r.body, f1, n1)
+  let (body, f3, n3) := match a.append with
+    | some x => ch body (some ((match py r.body with | some b => b ++ "\n" | none => "") ++ x)) "body"
+        s!"body appended: {x}" (body, f2, n2)
+    | none => (body, f2, n2)
+  let (model, f4, n4) := match a.model with
+    | some m => ch r.model (py (some m)) "model" s!"model: {(py r.model).getD "-"} -> {(py (some m)).getD "-"}" (r.model, f3, n3)
+    | none => (r.model, f3, n3)
+  let (effort, fields, notes) := match a.effort with
+    | some e => ch r.effort (py (some e)) "effort" s!"effort: {(py r.effort).getD "-"} -> {(py (some e)).getD "-"}" (r.effort, f4, n4)
+    | none => (r.effort, f4, n4)
+  ((title, body, model, effort), fields, notes)
+
 /-- `task edit`: the fields changed and the task's state. -/
 def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (List String × Status) :=
   match db.find id with
@@ -431,27 +456,9 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
     if r.state = .done || r.state = .dropped then (db, .error s!"task #{d id} is {r.state.text}; it can't be edited")
     else if a.title == some "" then (db, .error "the title can't be empty")
     else
-      -- change(col, new, note): a no-op when new equals the current value, as Python truthiness reads it
-      let ch (cur : Option String) (new : Option String) (col note : String) (acc : Option String × List String × List String) :=
-        if new == py cur then acc else (new, acc.2.1 ++ [col], acc.2.2 ++ [note])
-      let (title, f1, n1) := match a.title with
-        | some t => ch r.title (some t) "title" s!"title: {r.title.getD ""} -> {t}" (r.title, [], [])
-        | none => (r.title, [], [])
       if let some (p, none) := a.bodyFile then (db, .error s!"can't read {p}") else
       let newBody := match a.bodyFile with | some (_, some t) => some t | _ => a.body
-      let (body, f2, n2) := match newBody with
-        | some b => ch r.body (some b) "body" s!"body replaced: task show {d id}" (r.body, f1, n1)
-        | none => (r.body, f1, n1)
-      let (body, f3, n3) := match a.append with
-        | some x => ch body (some ((match py r.body with | some b => b ++ "\n" | none => "") ++ x)) "body"
-            s!"body appended: {x}" (body, f2, n2)
-        | none => (body, f2, n2)
-      let (model, f4, n4) := match a.model with
-        | some m => ch r.model (py (some m)) "model" s!"model: {(py r.model).getD "-"} -> {(py (some m)).getD "-"}" (r.model, f3, n3)
-        | none => (r.model, f3, n3)
-      let (effort, fields, notes) := match a.effort with
-        | some e => ch r.effort (py (some e)) "effort" s!"effort: {(py r.effort).getD "-"} -> {(py (some e)).getD "-"}" (r.effort, f4, n4)
-        | none => (r.effort, f4, n4)
+      let ((title, body, model, effort), fields, notes) := editCols id r a newBody
       if fields.isEmpty then (db, .error "nothing to change") else
       let db := db.set id ({ · with title, body, model, effort })
       let db := db.log c.now (some c.me) "task-edit" none (some s!"#{d id} {", ".intercalate fields}")
