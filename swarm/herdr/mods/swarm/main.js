@@ -82,6 +82,7 @@ const SAYS = {
   "spawn-refused": d => `could not start ${d}: the swarm is at its max`,
   "spawn-held": d => `auto-spawn is ${held(d)}`,
   limits: d => `set the limits: ${d.replace(/min (\S+) max (\S+)/, (_, a, b) => `auto-spawn to ${a === "nil" ? "no number" : a}, max ${b === "nil" ? "unset" : b}`)}`,
+  queue: d => `queued ${d}`, unqueue: d => `took ${d} out of the queue`, hold: d => `held ${d.replace(/^(#\d+) /, "$1: ")}`, unhold: d => `unheld ${d}`,
   block: d => `asked you: ${d.replace(/^#\d+\s*/, "")}`, stay: d => `stays for ${d}`, "stay-end": () => "stopped staying", role: d => `is now ${d}`,
 };
 // What an event says, as one line: { k: short kind, text, sub: dim tail, red }.
@@ -139,7 +140,7 @@ export default class Swarm extends View {
     const input = (placeholder, send) => { const st = InputState.new({ placeholder }); st.on("submit", (_e, cx) => send(cx)); return st; };
     const add = cx => this.addTask(cx);
     this.in = { msg: input("Message this agent", cx => this.sendMsg(cx)), title: input("Title", add), body: input("Description (optional)", add),
-      after: input("After tasks, e.g. 3,5", add), model: input("Model, e.g. opus", add) };
+      after: input("After tasks, e.g. 3,5", add), model: input("Model, e.g. opus", add), hold: input("Why hold it, e.g. waits for the design", cx => this.holdTask(cx)) };
     this.urgent = false; this.adding = SCREEN.endsWith("+new"); this.moreOpts = false; this.nudged = new Map();
     this.refresh(cx); this.copyIcons(cx);
     // Data timers only; each tick returns at once while the panel isn't shown or nothing is due.
@@ -324,7 +325,12 @@ export default class Swarm extends View {
     const v = k => this.in[k].value().trim(), title = v("title"), after = v("after").replace(/[#\s]/g, "");
     if (!title || this.busy) return;
     this.act(cx, ["task", "add", ...(v("body") ? ["--body", v("body")] : []), ...(after ? ["--after", after] : []), ...(v("model") ? ["--model", v("model")] : []), "--", title],
-      { ok: () => { for (const k in this.in) if (k !== "msg") this.in[k].set_value(""); this.adding = false; } });
+      { ok: () => { for (const k of ["title", "body", "after", "model"]) this.in[k].set_value(""); this.adding = false; } });
+  }
+  holdTask(cx) {
+    const why = this.in.hold.value().trim();
+    if (!why || this.busy) return;
+    this.act(cx, ["task", "hold", String(this.r.id), "--why", why], { ok: () => this.in.hold.set_value("") });
   }
   askRelease(k) {
     this.ask(`Release #${k.id} from ${k.owner}?`, `"${k.title}" goes back to the board as open, for any agent to claim. ${k.owner} is told to stop; what it already wrote stays in its worktree.`, ["task", "release", String(k.id)]);
@@ -431,22 +437,48 @@ export default class Swarm extends View {
       .child(div().w(76).flex_none().text_color(t.dim).child(label)).child(div().flex_1().min_w(0).child(el))));
   }
   taskColor(t, k) { return { blocked: t.blocked, claimed: t.working, done: t.ansi2, dropped: t.dim }[k.state] ?? (k.waiting ? t.dim : t.muted); }
-  taskWord(k) { return { blocked: "waiting on you", claimed: "in progress", open: k.waiting ? "waiting" : "ready" }[k.state] ?? k.state; }
+  taskWord(k) { return { blocked: "waiting on you", claimed: "in progress", open: k.hold ? "held" : k.waiting ? "waiting" : "ready" }[k.state] ?? k.state; }
   // Priority P0 (urgent) to P3 (someday), 2 when the row has none: the board's order is priority, then id.
   prio(k) { return k.priority ?? 2; }
   prioChip(t, k) { return this.chip(t, `P${this.prio(k)}`, [t.blocked, t.ansi3, null, t.dim][this.prio(k)], this.prio(k) < 2).tooltip("Priority: lower is picked first"); }
   undone(k) { return k.waiting ? k.deps.filter(i => this.s.tasks.find(x => x.id === i)?.state !== "done") : []; }
+  // Why a task on the board can't be staffed now (Queue.whyNot's words); null: startable.
+  whyNot(k) {
+    const after = this.undone(k);
+    return k.hold ? `held: ${one(k.hold)}` : k.state === "claimed" ? `claimed by ${k.owner ?? "-"}` : k.state === "blocked" ? `blocked by ${k.owner ?? "-"}`
+      : after.length ? `waits on ${after.map(x => `#${x}`).join(" ")}` : null;
+  }
+  heldChip(t, k) { return this.chip(t, "held", t.ansi3, true).tooltip(`Never staffed or claimed until unheld: ${one(k.hold)}`); }
   taskRow(t, k, i) {
     const e = k.state === "done" ? evidence(k.evidence) : null, after = this.undone(k);
-    const right = k.state === "blocked" ? "waiting on you" : k.state === "open" ? (after.length ? `after ${after.map(x => `#${x}`).join(" ")}` : "ready") : k.owner ?? "";
+    const right = k.state === "blocked" ? "waiting on you" : k.state === "open" ? (k.hold ? one(k.hold) : after.length ? `after ${after.map(x => `#${x}`).join(" ")}` : "ready") : k.owner ?? "";
     return this.row(t, `task-${k.id}`, i, cx => this.push({ s: "task", id: k.id }, cx))
       .child(this.dot(this.taskColor(t, k), 7))
       .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
       .child(div().flex_1().min_w(0).truncate().text_color(k.state === "dropped" || k.waiting ? t.muted : t.foreground).child(k.title))
       .when(Boolean(e?.chip), el => el.child(this.chip(t, e.chip, e.chip.startsWith("PR") ? t.ansi2 : null)))
+      .when(Boolean(k.hold), el => el.child(this.heldChip(t, k)))
       .when(k.state !== "done" && k.state !== "dropped", el => el.child(this.prioChip(t, k)))
       .child(div().flex_none().max_w(120).truncate().text_size(11).text_color(k.state === "blocked" ? t.blocked : t.dim).child(right))
       .child(this.chev(t, "right"));
+  }
+  // One entry of the staffing queue `q`: its place, why it can't start, and ⤒ ↑ ↓ (`swarm queue add`) to move it.
+  queueRow(t, q, i, head) {
+    const k = q[i], why = this.whyNot(k), id = String(k.id);
+    const mv = (key, ch, tip, args) => args ? div().id(`q-${key}-${k.id}`).size(22).flex_none().flex().items_center().justify_center().rounded(5).text_size(13).text_color(t.muted)
+      .cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip(tip).on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, ["queue", "add", id, ...args]); }).child(ch)
+      : div().size(22).flex_none();
+    return this.row(t, `q-${k.id}`, i, cx => this.push({ s: "task", id: k.id }, cx)).pr(6)
+      .child(div().w(14).flex_none().text_size(11).text_color(t.dim).child(String(i + 1)))
+      .child(this.dot(this.taskColor(t, k), 7))
+      .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
+      .child(div().flex_1().min_w(0).truncate().text_color(why ? t.muted : t.foreground).child(k.title))
+      .when(k === head, el => el.child(this.chip(t, "next", t.accent, true).tooltip("Auto-spawn staffs it next (after a main red: task, if one is open).")))
+      .when(Boolean(k.hold), el => el.child(this.heldChip(t, k)))
+      .child(div().flex_none().max_w(150).truncate().text_size(11).text_color(k.state === "blocked" ? t.blocked : t.dim).child(k.hold ? one(k.hold) : why ?? "ready"))
+      .child(mv("front", "⤒", "Move to the front", i > 1 ? ["--front"] : null))
+      .child(mv("up", "↑", "Move up", i > 0 ? ["--before", String(q[i - 1].id)] : null))
+      .child(mv("down", "↓", "Move down", i < q.length - 1 ? ["--after", String(q[i + 1].id)] : null));
   }
   agentRow(t, a, i, d) {
     const ended = a.status === "ended", sign = !ended && SIGN[a.stay_sign];
@@ -526,7 +558,9 @@ export default class Swarm extends View {
         .when(l.min > 0, el => el.child(this.btn(t, "pause", "Pause", cx => { setShared(key, l.min); this.act(cx, ["limits", "--min", "0"]); }).tooltip("Stops auto-spawn; running agents go on.")))
         .when(l.min === 0 && saved > 0, el => el.child(this.btn(t, "resume", `Resume (${saved})`, cx => this.act(cx, ["limits", "--min", String(saved)]))))
         .child(div().flex_1())
-        .child(this.stepper(t, "max", "Max", l.max, (cx, n) => this.act(cx, ["limits", "--max", String(n)]))))
+        .child(this.stepper(t, "max", "Max", l.max, (cx, n) => this.act(cx, ["limits", "--max", String(n)])))
+        .child(this.tick(t, "queue-only", "Queue only", Boolean(l.queue_only), cx => this.act(cx, ["limits", "--queue-only", l.queue_only ? "off" : "on"]))
+          .tooltip("Auto-spawn staffs only the queue; unqueued tasks wait as backlog.")))
       .when(Boolean(l.held), el => el.child(div().text_size(11).line_height("15px").whitespace_normal().text_color(t.ansi3).child(`Auto-spawn is ${held(l.held)}`)));
   }
 
@@ -592,7 +626,11 @@ export default class Swarm extends View {
   }
   // ---- Board: every task, by state; a row opens the task ----------------------------------------
   board(t, d) {
-    const s = this.s, f = this.r.f, by = st => s.tasks.filter(k => k.state === st).sort((a, b) => st === "done" || st === "dropped" ? 0 : this.prio(a) - this.prio(b) || a.id - b.id), open = by("open");
+    // Queued tasks show in the Queue, in place order, and in no other group (only board tasks hold a place).
+    const s = this.s, f = this.r.f, by = st => s.tasks.filter(k => k.state === st && k.qpos == null).sort((a, b) => st === "done" || st === "dropped" ? 0 : this.prio(a) - this.prio(b) || a.id - b.id), open = by("open");
+    const q = s.tasks.filter(k => k.qpos != null).sort((a, b) => a.qpos - b.qpos), head = q.find(k => k.state === "open" && !this.whyNot(k));
+    const queue = f === "active" && q.length > 0 && v_flex().child(this.title(t, "Queue", `${q.length} · staffed first, in this order`))
+      .child(this.group(t, "g-queue").children(q.map((k, i) => this.queueRow(t, q, i, head))));
     const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
       : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first"]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
@@ -608,11 +646,12 @@ export default class Swarm extends View {
       : h_flex().child(this.btn(t, "nt-open", "+ New task", cx => { this.adding = true; this.in.title.focus(); cx.notify(); })).child(div().flex_1());
     return v_flex().gap(10)
       .child(form)
-      .child(this.seg(t, "bf", [["active", "Active", by("blocked").length + by("claimed").length + open.length], ["done", "Done", by("done").length], ["dropped", "Dropped", by("dropped").length]], f,
+      .child(this.seg(t, "bf", [["active", "Active", q.length + by("blocked").length + by("claimed").length + open.length], ["done", "Done", by("done").length], ["dropped", "Dropped", by("dropped").length]], f,
         (id, cx) => { this.r.f = id; this.landed(cx); }))
+      .when(Boolean(queue), el => el.child(queue))
       .children(sets.map(([label, ks, note]) => v_flex().child(this.title(t, label, note ? `${ks.length} · ${note}` : ks.length))
         .child(this.group(t, `g-${label}`).children(ks.slice(0, 80).map((k, i) => this.taskRow(t, k, i))))))
-      .when(!sets.length, el => el.child(this.empty(t, f === "active" ? "Nothing left on the board" : `No ${f} tasks`)));
+      .when(!sets.length && !queue, el => el.child(this.empty(t, f === "active" ? "Nothing left on the board" : `No ${f} tasks`)));
   }
 
   // ---- Task: everything the board knows about one task ------------------------------------------
@@ -633,6 +672,11 @@ export default class Swarm extends View {
       k.state === "open" || live ? ["Priority", this.seg(t, "t-prio", [0, 1, 2, 3].map(n => [n, `P${n}`]), this.prio(k),
         (n, cx) => n !== this.prio(k) && this.act(cx, ["task", "priority", String(k.id), String(n)]))] : null,
       ["Added", h_flex().gap(8).child(k.created_by ?? "?").when(Boolean(k.created_at), el => el.child(dim(hhmm(k.created_at))))],
+      k.qpos != null ? ["Queue", `${k.qpos} of ${s.tasks.filter(y => y.qpos != null).length}: staffed ahead of priority`] : null,
+      k.state === "open" || live ? ["Hold", k.hold ? h_flex().gap(8).items_center().min_w(0).child(div().flex_1().min_w(0).line_height("17px").whitespace_normal().text_color(t.ansi3).child(one(k.hold)))
+          .child(this.btn(t, "t-unhold", "Unhold", cx => this.act(cx, ["task", "unhold", String(k.id)])))
+        : h_flex().gap(8).items_center().child(this.field(t, "t-hold", this.in.hold)).child(this.btn(t, "t-hold-go", "Hold", cx => this.holdTask(cx))
+          .tooltip("Never staffed or claimed until unheld; an agent holding it now keeps it."))] : null,
       k.deps.length ? ["Waits on", refs(k.deps)] : null,
       k.blocks?.length ? ["Holds back", refs(k.blocks)] : null,
       times.length ? ["Time", times.join(" · ")] : null,
@@ -646,7 +690,8 @@ export default class Swarm extends View {
           .when(Boolean(k.ci_conclusion), el => el.child(this.chip(t, `CI ${k.ci_conclusion}`, k.ci_conclusion === "success" ? t.ansi2 : t.blocked))))
         .child(div().line_height("17px").whitespace_normal().text_color(t.muted).child(k.evidence))] : null,
     ].filter(Boolean);
-    const says = { "task-add": "added it", claim: "claimed it", spawn: "was started for it", done: "finished it", unblock: "was unblocked", release: "gave it back", drop: "dropped it" };
+    const says = { "task-add": "added it", claim: "claimed it", spawn: "was started for it", done: "finished it", unblock: "was unblocked", release: "gave it back", drop: "dropped it",
+      queue: "queued it", unqueue: "took it out of the queue", hold: "held it", unhold: "unheld it" };
     return v_flex().gap(12)
       .child(v_flex().gap(7).px(2)
         .child(h_flex().gap(8).items_center().child(this.chip(t, this.taskWord(k), this.taskColor(t, k), true)).child(div().text_size(11).text_color(t.dim).child(`#${k.id}`)))
@@ -1204,6 +1249,10 @@ const KIND = Object.fromEntries(Object.entries({
   "lease-late": ["clock", "tasks", "Lease late", "An agent has held a task past its lease while idle. The comms was told.", "", 0],
   "task-priority": ["link", "tasks", "Priority set", "A task's priority was changed. Nothing for you to do.", "", 0],
   "task-after": ["link", "tasks", "Order set", "A task was set to wait for other tasks to finish first.", "", 0],
+  queue: ["link", "tasks", "Queued", "A task was put in the staffing queue, or moved in it: auto-spawn staffs the queue first, in its order.", "", 1],
+  unqueue: ["link", "tasks", "Unqueued", "A task left the staffing queue; it is staffed by priority again.", "", 0],
+  hold: ["ban", "tasks", "Held", "A task is kept from being staffed or claimed until someone unholds it.", "", 1],
+  unhold: ["play", "tasks", "Unheld", "A held task can be staffed and claimed again.", "", 1],
   startable: ["info", "tasks", "Startable", "A waiting task became free to claim (older swarms).", "", 0],
   push: ["arrow-up", "code", "Pushed", "An agent pushed a branch to GitHub. Nothing for you to do.", "", 1],
   "ci-red": ["circle-x", "code", "CI red", "main's CI failed. The swarm put a fix task on the board; act only if no agent takes it.", "warn", 1],

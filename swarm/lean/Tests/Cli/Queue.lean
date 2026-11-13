@@ -130,6 +130,8 @@ def test_staffing_queue_only (t : T) : IO Unit := do
   t.sw_ "t-comms" ["task", "add", "backlog", "-p", "0"]
   has (← t.sw "t-comms" ["limits", "--queue-only", "on"]).stdout ", queue-only"
   eq (← staffed t) Json.null  -- unqueued tasks are backlog
+  let j := (Json.parse (← t.sw "t-comms" ["state", "--json"]).stdout).toOption.getD .null
+  eq ((j.f "limits").f "queue_only") (Json.bool true)  -- the panel's Staffing switch reads it
   t.sw_ "t-comms" ["task", "add", "queued", "-p", "3"]
   t.sw_ "t-comms" ["queue", "add", "2"]
   eq (← staffed t) (toJson 2)

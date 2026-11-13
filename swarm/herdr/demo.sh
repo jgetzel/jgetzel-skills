@@ -1,6 +1,6 @@
 #!/bin/sh
 # A made-up swarm for shot.sh: swarm/herdr/demo.sh DIR [away|back|dead|stale], then swarm/herdr/shot.sh --fixture DIR out.png.
-# Writes DIR/swarm.db (a board mid-work: the limits reached, auto-spawn holding, a hung stayer, a blocked task),
+# Writes DIR/swarm.db (a board mid-work: the limits reached, auto-spawn holding, a hung stayer, a blocked task, a queue),
 # DIR/proc (the machine reading and `ps` output), DIR/bin/ps and DIR/state (a cmd-cost history for repo "demo").
 # Variants: the user away, just back (the digest card), watchd dead or older than the code.
 set -eu
@@ -59,6 +59,9 @@ insert into task(title,state,owner,created_by,evidence,deps,question,lease_until
 update task set priority=0 where title like 'Planner: cost model for hash%';
 update task set priority=3 where title like 'Bench:%';
 update task set priority=1 where title like 'Docs:%';
+-- the staffing queue: one waiting on a task, one held, the head (the first startable), one claimed
+update task set qpos=case id when 9 then 1 when 8 then 2 when 7 then 3 when 4 then 4 end where id in (4,7,8,9);
+update task set hold='waits for the 200-table schema dump' where id=8;
 
 -- events, oldest first
 insert into event(ts,agent,kind,path,data) values
@@ -74,6 +77,9 @@ insert into event(ts,agent,kind,path,data) values
   (@now-31*60,null,'pressure-end',null,null),
   (@now-30*60,'ox-comms','limits',null,'min 5 max 5'),
   (@now-24*60,'ox-2','task-add',null,'#8'),
+  (@now-23*60,'ox-comms','queue',null,'#9'), (@now-23*60,'ox-comms','queue',null,'#8'),
+  (@now-23*60,'ox-comms','queue',null,'#7'), (@now-23*60,'ox-comms','queue',null,'#4'),
+  (@now-22*60,'ox-comms','hold',null,'#8 waits for the 200-table schema dump'),
   (@now-20*60,'ox-4','stay-nowaiter',null,null),
   (@now-12*60,'ox-1','push','{"branch":"ox-1/index-scan-cost","subject":"planner: cost index scans by selectivity"}','git push'),
   (@now-9*60,'swarm','spawn',null,'auto #6'), (@now-9*60,'ox-5','claim',null,'#6'),
