@@ -448,7 +448,7 @@ def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
   let mut lost := 0
   repeat
     -- read again before each launch (model Staff.lean, `freshPool`): a task freed meanwhile must not wait (board #91)
-    let pool ← Store.txn [.task] fun db => (db, Tasks.pool db)
+    let pool ← Store.txn [.task, .«meta»] fun db => (db, Queue.staffing db)
     let rest := pool.dropWhile skip
     let some task := rest.head? | break
     let startable := (rest.filter (!skip ·)).length
@@ -461,9 +461,8 @@ def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
       | some n => if n != "" then pure n else do top := top + 1; pure (pre ++ toString top)
       | none => do top := top + 1; pure (pre ++ toString top)
     let model := (py task.model).getD ((py opts.model).getD "sonnet")
-    let headOf (db : Db) : Option Int := ((Tasks.pool db).find? (!skip ·)).map (·.id)
     let sa : Spawn.Args := { name := name, model := model, effort := (py task.effort).orElse (fun _ => py opts.effort),
-                             taskId := some (task.id : Int), top := some headOf }
+                             taskId := some (task.id : Int), top := some (Queue.staffHead skip) }
     let r ← tryCatchThe Exit (do return some (← Spawn.spawnE sa)) fun _ => pure none
     let now ← Clock.now
     match r with
@@ -523,8 +522,8 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
         "Switch back to your own branch.") false "notice"
       (say db now comms s!"{n}'s worktree {path} has base {base} checked out." false "notice", ())
   let by_ (h : String) : Option Term := (terms.getD []).find? (·.address == some h)
-  let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor] fun db => (db, db)
-  let pool := Tasks.pool db
+  let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor, .«meta»] fun db => (db, db)
+  let pool := Queue.staffing db
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
   for a in Agents.live db do

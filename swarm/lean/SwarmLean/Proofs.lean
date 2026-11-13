@@ -121,6 +121,8 @@ theorem claim_spec (c : Tasks.Ctx) (i : Int) (l : String) (db : Db) :
   · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
   · split
     · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+    split
+    · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
     · dsimp only
       split
       · exact ⟨tn, .inl ⟨tt, fun _ => nofun⟩⟩

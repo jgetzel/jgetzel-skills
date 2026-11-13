@@ -17,7 +17,8 @@ def DEFAULT_PRIORITY : Int := 2
 /-- The longest title without a body (tasks.TITLE_MAX). -/
 def TITLE_MAX : Nat := 100
 /-- The event kinds about a task (tasks.TASK_KINDS). -/
-def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit"]
+def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit",
+  "queue", "unqueue", "hold", "unhold"]
 /-- Context from which an agent takes no new work (hook.CTX_WARN). -/
 def CTX_WARN : Int := 350000
 
@@ -234,6 +235,8 @@ structure Ctx where
   comms : Option String := none
   /-- the working directory -/
   cwd : Option String := none
+  /-- `task claim --force`: the communicator claims a held task -/
+  force : Bool := false
 
 /-- What `task add` was given. -/
 structure AddArgs where
@@ -271,6 +274,10 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
+    if r.hold.isSome && !(c.force && inCharge db c.comms c.me) then
+      (db, .error s!"task #{d id} is held: {r.hold.getD ""}; {if c.force then "only the communicator or the user can --force it"
+        else "`swarm task unhold` it first (or the communicator's --force)"}")
+    else
     match undone db r with
     | dep :: _ =>
       (db, .error s!"#{d id} waits on #{d dep.id} ({dep.state.text}{match py dep.owner with
