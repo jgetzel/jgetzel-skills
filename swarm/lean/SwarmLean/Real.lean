@@ -89,9 +89,10 @@ def theConn : App Conn := do
   | some c => pure c
   | none => let c ← connect; r.set (some c); pure c
 
-/-- All rows of a row type's table, in key order. -/
+/-- All rows of a row type's table, in key order (asked of SQLite so that `decodeRows` only checks it). -/
 def loadRows [Row α] (c : Conn) : IO (List α) := do
-  let rows ← c.query s!"select {", ".intercalate (Row.cols α)} from {Row.table α}"
+  let cols := Row.cols α
+  let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} order by {", ".intercalate (cols.take (Row.nkey α))}"
   IO.ofExcept (decodeRows rows.toList)
 
 /-- The next id of an AUTOINCREMENT table: one past the larger of its sqlite_sequence entry and its largest id (an

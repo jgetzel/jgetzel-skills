@@ -19,8 +19,16 @@ def Sqlite.Val.ord : Val → List Int
 /-- A row's primary key, as `Val.ord`s of its key cells. -/
 def Row.key [Row α] (r : α) : List Int := ((Row.enc r).take (Row.nkey α)).flatMap Val.ord
 
-/-- Rows in key order: SQLite returns a select's rows in no order the store relies on. -/
-def sortRows [Row α] (rs : List α) : List α := rs.mergeSort fun a b => decide (Row.key a ≤ Row.key b)
+/-- Whether keyed rows are in key order. -/
+def keysSorted : List (List Int × α) → Bool
+  | a :: b :: l => decide (a.1 ≤ b.1) && keysSorted (b :: l)
+  | _ => true
+
+/-- Rows in key order: SQLite returns a select's rows in no order the store relies on (`loadRows` asks for key order,
+so this is mostly a check). Each key is computed once, not per comparison (board #138). -/
+def sortRows [Row α] (rs : List α) : List α :=
+  let ps := rs.map fun r => (Row.key r, r)
+  if keysSorted ps then rs else (ps.mergeSort fun a b => decide (a.1 ≤ b.1)).map (·.2)
 
 /-- The rows a select of `Row.cols α` from `Row.table α` returned, decoded, in key order. -/
 def decodeRows [Row α] (rows : List (Array Val)) : Except String (List α) :=
@@ -63,13 +71,28 @@ def upOf [Row α] [BEq α] (oldM : Std.HashMap (List Int) α) (r : α) : Option 
     some (.upd (Row.table α) ((Row.cols α).take n) ((Row.enc r).take n) ((Row.cols α).drop n) ((Row.enc r).drop n))
   | none => some (.ins (Row.table α) (Row.cols α) (Row.enc r))
 
-/-- The write-back of `new` over `old` (the rows loaded, or none if the table was not), by primary key: a delete for
-each row gone, then `upOf` each new row. Columns Lean does not know keep their values. -/
+/-- The statement the write-back runs for old row `r`, given the new rows by key: a delete when it is gone. -/
+def delOf [Row α] (newM : Std.HashMap (List Int) α) (r : α) : Option Stmt :=
+  if newM.contains (Row.key r) then none else
+    some (.del (Row.table α) ((Row.cols α).take (Row.nkey α)) ((Row.enc r).take (Row.nkey α)))
+
+/-- The write-back of `new` over `old` by primary key: a delete for each row gone, then `upOf` each new row. Each map
+is built once, as an argument: built inside a lambda, it was rebuilt per row (82 s a transaction on 12k events, board
+#138). -/
+def planOf [Row α] [BEq α] (old new : List α) : List Stmt :=
+  old.filterMap (delOf (byKey new)) ++ new.filterMap (upOf (byKey old))
+
+/-- `old` and `new` past their longest common prefix. -/
+def dropSame [BEq α] : List α → List α → List α × List α
+  | a :: as, b :: bs => if a == b then dropSame as bs else (a :: as, b :: bs)
+  | as, bs => (as, bs)
+
+/-- The write-back of `new` over `old` (the rows loaded, or none if the table was not): `planOf` past their common
+prefix, which most steps leave as loaded (an event appended changes only the end), so a step costs the rows it changed
+plus one comparison per row kept (board #138). Columns Lean does not know keep their values. -/
 def rowsPlan [Row α] [BEq α] (old new : List α) : List Stmt :=
-  let n := Row.nkey α
-  old.filterMap (fun r => if (byKey new).contains (Row.key r) then none else
-    some (.del (Row.table α) ((Row.cols α).take n) ((Row.enc r).take n))) ++
-  new.filterMap (upOf (byKey old))
+  let p := dropSame old new
+  planOf p.1 p.2
 
 /-- The write-back of every table of `new` over what `old` loaded. -/
 def dbPlan (old new : Db) : List Stmt :=

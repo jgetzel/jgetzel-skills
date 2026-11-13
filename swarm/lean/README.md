@@ -123,7 +123,8 @@ else is an error (`decode_reads`). Run by SQLite (`SqlExec`) on a table that hol
 write-back of a step's rows fails at no statement, leaves the table holding exactly those rows, keeps every column Lean
 does not know of each row it keeps (a new row gets the defaults there), and changes no other table (`write_back`). A
 table left as loaded gets no statement (`rowsPlan_same`); one that was not loaded gets an insert of each row the step
-added (`rowsPlan_unloaded`). Loading a table returns its rows in key order whatever order SQLite gives them
+added (`rowsPlan_unloaded`). The plan skips the rows old and new share as a prefix, and on keyed rows equals the plan
+over the whole lists (`rowsPlan_keyed`), so a step costs about the rows it changed (board #138). Loading a table returns its rows in key order whatever order SQLite gives them
 (`load_rows`), so load after store is the identity on rows that are keyed, in key order and whose ints fit int64
 (`store_load`). Each migration takes a db at schema version n (the first n of `migs` not needed) to version n+1, keeps
 every cell the db had but a NULL task.deps the after migration fills, and run again changes nothing

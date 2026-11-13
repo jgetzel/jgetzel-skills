@@ -126,11 +126,77 @@ theorem byKey_none {l : List α} {k : List Int} (h : (byKey l)[k]? = none) : ∀
   have : (byKey l).contains (Row.key o) := by rw [byKey_contains]; simpa using ⟨o, ho, rfl⟩
   rw [Std.HashMap.contains_eq_isSome_getElem?, h] at this; cases this
 
+theorem byKey_self {l : List α} (hl : Keyed l) {x : α} (hx : x ∈ l) : (byKey l)[Row.key x]? = some x := by
+  have hp : (l.map fun r => (Row.key r, r)).Pairwise fun a b => (a.1 == b.1) = false := by
+    rw [List.pairwise_map]; exact hl.imp fun h => by simpa using h
+  exact Std.HashMap.getElem?_ofList_of_mem (k := Row.key x) (by simp) hp (List.mem_map_of_mem hx)
+
+/-- Past a prefix `p` none of whose keys is `k`, the lookup of `k` is the suffix's. -/
+theorem byKey_append {p o : List α} (hl : Keyed (p ++ o)) {k : List Int} (hk : ∀ y ∈ p, Row.key y ≠ k) :
+    (byKey (p ++ o))[k]? = (byKey o)[k]? := by
+  cases h : (byKey o)[k]? with
+  | some y =>
+    obtain ⟨hy, rfl⟩ := byKey_get (List.pairwise_append.mp hl).2.1 h
+    exact byKey_self hl (List.mem_append_right p hy)
+  | none =>
+    have hc : (byKey (p ++ o)).contains k = false := by
+      rw [byKey_contains]
+      simpa using ⟨hk, byKey_none h⟩
+    rw [Std.HashMap.contains_eq_isSome_getElem?] at hc
+    simpa using hc
+
+/-- `dropSame` drops a common prefix. -/
+theorem dropSame_spec (old new : List α) :
+    ∃ p, old = p ++ (dropSame old new).1 ∧ new = p ++ (dropSame old new).2 := by
+  induction old generalizing new with
+  | nil => exact ⟨[], rfl, rfl⟩
+  | cons a as ih =>
+    cases new with
+    | nil => exact ⟨[], rfl, rfl⟩
+    | cons b bs =>
+      by_cases h : a = b
+      · subst h
+        obtain ⟨p, h1, h2⟩ := ih bs
+        refine ⟨a :: p, ?_, ?_⟩ <;> simp only [dropSame, beq_self_eq_true, ite_true, List.cons_append] <;> congr
+      · exact ⟨[], by simp [dropSame, h], by simp [dropSame, h]⟩
+
+theorem filterMap_congr {f g : β → Option γ} {l : List β} (h : ∀ x ∈ l, f x = g x) : l.filterMap f = l.filterMap g := by
+  induction l with
+  | nil => rfl
+  | cons a l ih => simp only [List.filterMap_cons, h a (by simp), ih fun x hx => h x (by simp [hx])]
+
+/-- A common prefix of keyed rows gets no statement. -/
+theorem planOf_prefix {p o n : List α} (ko : Keyed (p ++ o)) (kn : Keyed (p ++ n)) :
+    planOf (p ++ o) (p ++ n) = planOf o n := by
+  have dp : ∀ y ∈ p, ∀ x ∈ o, Row.key y ≠ Row.key x := (List.pairwise_append.mp ko).2.2
+  have dn : ∀ y ∈ p, ∀ x ∈ n, Row.key y ≠ Row.key x := (List.pairwise_append.mp kn).2.2
+  simp only [planOf, List.filterMap_append]
+  congr 1
+  · rw [List.filterMap_eq_nil_iff.mpr fun x hx => ?_, List.nil_append]
+    · refine filterMap_congr fun x hx => ?_
+      have : (byKey (p ++ n)).contains (Row.key x) = (byKey n).contains (Row.key x) := by
+        have : (p.map Row.key).contains (Row.key x) = false := by simpa using fun y hy => dp y hy x hx
+        rw [byKey_contains, byKey_contains, List.map_append, List.contains_append, this, Bool.false_or]
+      simp only [delOf, this]
+    · have : (byKey (p ++ n)).contains (Row.key x) = true := by rw [byKey_contains]; simpa using Or.inl ⟨x, hx, rfl⟩
+      simp [delOf, this]
+  · rw [List.filterMap_eq_nil_iff.mpr fun x hx => ?_, List.nil_append]
+    · refine filterMap_congr fun x hx => ?_
+      simp only [upOf, byKey_append ko fun y hy => dn y hy x hx]
+    · simp [upOf, byKey_self ko (List.mem_append_left o hx)]
+
+/-- On keyed rows the plan is `planOf` the whole lists. -/
+theorem rowsPlan_keyed {old new : List α} (ko : Keyed old) (kn : Keyed new) : rowsPlan old new = planOf old new := by
+  obtain ⟨p, h1, h2⟩ := dropSame_spec old new
+  have := planOf_prefix (p := p) (h1 ▸ ko) (h2 ▸ kn)
+  rw [← h1, ← h2] at this
+  exact this.symm
+
 /-- The plan, its two halves named. -/
-theorem rowsPlan_eq (old new : List α) : rowsPlan old new =
+theorem rowsPlan_eq {old new : List α} (ko : Keyed old) (kn : Keyed new) : rowsPlan old new =
     old.filterMap (fun r => if (byKey new).contains (Row.key r) then none else
       some (.del (Row.table α) ((Row.cols α).take (Row.nkey α)) ((Row.enc r).take (Row.nkey α)))) ++
-    new.filterMap (upOf (byKey old)) := rfl
+    new.filterMap (upOf (byKey old)) := rowsPlan_keyed ko kn
 
 /-! The deletes. -/
 
@@ -357,7 +423,7 @@ theorem write_back (S : Sql) (hS : SqlExec S) (db : SDb) (hT : Shaped α (db (Ro
   have hupds := runs_ups S hS hT db ko h1 new [] (by simpa using kn) rn
   rw [show upRows old T R₁ [] = R₁ by simp [upRows, hR₁]] at hupds
   refine ⟨upRows old T R₁ new, ?_, ?_, ?_⟩
-  · rw [rowsPlan_eq, Sql.runs_append, hdb, runs_dels S hS hT db _ old ro T.rows kr0, Option.bind_some, SDb.set_set]
+  · rw [rowsPlan_eq ko kn, Sql.runs_append, hdb, runs_dels S hS hT db _ old ro T.rows kr0, Option.bind_some, SDb.set_set]
     simpa using hupds
   · -- each kept row now holds the new row of its key
     have hkept : ∀ r ∈ R₁, ∃ x ∈ new, keyOf α r = Row.key x ∧ cellsOf α (applyUpds new r) = Row.enc x := by
@@ -439,20 +505,42 @@ def Sorted (xs : List α) : Prop := xs.Pairwise fun a b => Row.key a < Row.key b
 theorem Sorted.keyed {xs : List α} (h : Sorted xs) : Keyed xs :=
   h.imp fun hab e => by rw [e] at hab; exact List.lt_irrefl _ hab
 
+theorem keysSorted_pairwise : ∀ {l : List (List Int × α)}, keysSorted l = true → l.Pairwise fun a b => a.1 ≤ b.1
+  | [], _ => .nil
+  | [_], _ => List.pairwise_singleton _ _
+  | a :: b :: l, h => by
+    simp only [keysSorted, Bool.and_eq_true, decide_eq_true_eq] at h
+    have ih := keysSorted_pairwise h.2
+    refine List.Pairwise.cons (fun c hc => ?_) ih
+    rcases List.mem_cons.mp hc with rfl | hc
+    · exact h.1
+    · exact List.le_trans h.1 (List.rel_of_pairwise_cons ih hc)
+
 /-- Sorting by key gives back a list in key order from any order of it. -/
 theorem sortRows_eq {ys xs : List α} (hp : ys.Perm xs) (srt : Sorted xs) : sortRows ys = xs := by
-  have total : ∀ a b : α, (decide (Row.key a ≤ Row.key b) || decide (Row.key b ≤ Row.key a)) = true := fun a b => by
-    rcases List.le_total (Row.key a) (Row.key b) with h | h <;> simp [h]
-  have trans : ∀ a b c : α, decide (Row.key a ≤ Row.key b) = true → decide (Row.key b ≤ Row.key c) = true →
-      decide (Row.key a ≤ Row.key c) = true := fun a b c h1 h2 => by
-    simp only [decide_eq_true_eq] at *; exact List.le_trans h1 h2
-  apply List.Perm.eq_of_pairwise (le := fun a b => decide (Row.key a ≤ Row.key b) = true)
-  · intro a b ha hb h1 h2
-    have ha' : a ∈ xs := ((List.mergeSort_perm ys _).trans hp).mem_iff.mp ha
-    exact Keyed.eq srt.keyed ha' hb (List.le_antisymm (by simpa using h1) (by simpa using h2))
-  · exact List.pairwise_mergeSort trans total ys
-  · exact srt.imp fun h => by simpa using List.le_of_lt h
-  · exact (List.mergeSort_perm ys _).trans hp
+  -- a permutation of `xs` in key order is `xs`
+  have uniq : ∀ {zs : List α}, zs.Perm xs → zs.Pairwise (fun a b => Row.key a ≤ Row.key b) → zs = xs := fun hz hs => by
+    apply List.Perm.eq_of_pairwise (le := fun a b => decide (Row.key a ≤ Row.key b) = true)
+    · intro a b ha hb h1 h2
+      exact Keyed.eq srt.keyed (hz.mem_iff.mp ha) hb (List.le_antisymm (by simpa using h1) (by simpa using h2))
+    · exact hs.imp fun h => by simpa using h
+    · exact srt.imp fun h => by simpa using List.le_of_lt h
+    · exact hz
+  let le := fun (a b : List Int × α) => decide (a.1 ≤ b.1)
+  have total : ∀ a b, (le a b || le b a) = true := fun a b => by
+    rcases List.le_total a.1 b.1 with h | h <;> simp [le, h]
+  have trans : ∀ a b c, le a b = true → le b c = true → le a c = true := fun a b c h1 h2 => by
+    simp only [le, decide_eq_true_eq] at *; exact List.le_trans h1 h2
+  let ps := ys.map fun r => (Row.key r, r)
+  show (if keysSorted ps then ys else (ps.mergeSort le).map (·.2)) = xs
+  split
+  · next h => exact uniq hp (by simpa [ps, List.pairwise_map] using keysSorted_pairwise h)
+  · have hkey : ∀ q ∈ ps.mergeSort le, q.1 = Row.key q.2 := fun q hq => by
+      obtain ⟨r, -, rfl⟩ := List.mem_map.mp ((List.mergeSort_perm ps le).mem_iff.mp hq); rfl
+    refine uniq (((List.mergeSort_perm ps le).map _).trans (by simpa [ps, List.map_map, Function.comp_def] using hp)) ?_
+    rw [List.pairwise_map]
+    refine (List.pairwise_mergeSort trans total ps).imp_of_mem fun ha hb h => ?_
+    rw [← hkey _ ha, ← hkey _ hb]; simpa [le] using h
 
 /-- Loading a table that holds exactly `xs`, in key order, gives `xs`: SQLite returns its rows in some order, each
 decodes, and `decodeRows` sorts them. -/
@@ -488,7 +576,7 @@ theorem store_load [Inhabited α] (S : Sql) (hS : SqlExec S) (hQ : SqlSelect S) 
 
 /-- A table the step left as loaded gets no statement. -/
 theorem rowsPlan_same {l : List α} (k : Keyed l) : rowsPlan l l = [] := by
-  rw [rowsPlan_eq, List.append_eq_nil_iff]
+  rw [rowsPlan_eq k k, List.append_eq_nil_iff]
   constructor
   · apply List.filterMap_eq_nil_iff.mpr; intro x hx
     have : (byKey l).contains (Row.key x) = true := by rw [byKey_contains]; simpa using ⟨x, hx, rfl⟩
@@ -506,7 +594,8 @@ theorem rowsPlan_unloaded (new : List α) :
     rowsPlan [] new = new.map fun x => .ins (Row.table α) (Row.cols α) (Row.enc x) := by
   have h0 : ∀ k : List Int, (byKey ([] : List α))[k]? = none := fun k => by
     simp only [byKey, List.map_nil]; exact Std.HashMap.getElem?_ofList_of_contains_eq_false (by simp)
-  rw [rowsPlan_eq]; simp only [List.filterMap_nil, List.nil_append]
+  show planOf [] new = _
+  simp only [planOf, List.filterMap_nil, List.nil_append]
   induction new with
   | nil => rfl
   | cons x l ih => simp [List.filterMap_cons, upOf, h0, ih]
