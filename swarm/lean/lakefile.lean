@@ -22,6 +22,10 @@ def sqliteLink : IO (Array String) := do
 @[default_target]
 lean_lib SwarmLean
 
+/-- The Lua specs' asserts on the ported pure functions, as `#guard`s checked when this builds. -/
+@[default_target]
+lean_lib Tests
+
 @[default_target]
 lean_exe «swarm-lean» where
   root := `Main

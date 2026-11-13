@@ -150,3 +150,70 @@ LEAN_EXPORT lean_obj_res swarm_execvp(b_lean_obj_arg file, b_lean_obj_arg args, 
 LEAN_EXPORT lean_obj_res swarm_now(lean_obj_arg w) {
   return lean_io_result_mk_ok(lean_box_uint64((uint64_t)time(NULL)));
 }
+
+// Board #101's Sys (SwarmLean/Sys.lean): the process and file calls Lean's IO lacks.
+#include <signal.h>
+#include <limits.h>
+extern char **environ;
+
+// posix.signal.kill(pid, 0) == 0: the process exists and may be signalled.
+LEAN_EXPORT lean_obj_res swarm_alive(int64_t pid, lean_obj_arg w) {
+  return lean_io_result_mk_ok(lean_box(pid > 0 && kill((pid_t)pid, 0) == 0));
+}
+
+LEAN_EXPORT lean_obj_res swarm_getppid(lean_obj_arg w) {
+  return lean_io_result_mk_ok(lean_box_uint64((uint64_t)getppid()));
+}
+
+// Epoch seconds with the fraction (clock_gettime(CLOCK_REALTIME)).
+LEAN_EXPORT lean_obj_res swarm_now_f(lean_obj_arg w) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return lean_io_result_mk_ok(lean_box_float((double)ts.tv_sec + ts.tv_nsec / 1e9));
+}
+
+// os.date(fmt, t) in local time.
+LEAN_EXPORT lean_obj_res swarm_strftime(b_lean_obj_arg fmt, int64_t t, lean_obj_arg w) {
+  time_t tt = (time_t)t;
+  struct tm tm;
+  char buf[256];
+  if (!localtime_r(&tt, &tm)) return io_err("localtime failed");
+  size_t n = strftime(buf, sizeof buf, lean_string_cstr(fmt), &tm);
+  buf[n] = 0;
+  return lean_io_result_mk_ok(lean_mk_string(buf));
+}
+
+// uname().nodename.
+LEAN_EXPORT lean_obj_res swarm_hostname(lean_obj_arg w) {
+  char buf[256];
+  if (gethostname(buf, sizeof buf) != 0) return io_err(strerror(errno));
+  buf[sizeof buf - 1] = 0;
+  return lean_io_result_mk_ok(lean_mk_string(buf));
+}
+
+// Every NAME=VALUE of the environment.
+LEAN_EXPORT lean_obj_res swarm_environ(lean_obj_arg w) {
+  lean_object *a = lean_mk_empty_array();
+  for (char **e = environ; *e; e++) a = lean_array_push(a, lean_mk_string(*e));
+  return lean_io_result_mk_ok(a);
+}
+
+LEAN_EXPORT lean_obj_res swarm_setenv(b_lean_obj_arg k, b_lean_obj_arg v, lean_obj_arg w) {
+  if (setenv(lean_string_cstr(k), lean_string_cstr(v), 1) != 0) return io_err(strerror(errno));
+  return lean_io_result_mk_ok(lean_box(0));
+}
+
+// readlink(2); an error when p is not a symlink.
+LEAN_EXPORT lean_obj_res swarm_readlink(b_lean_obj_arg p, lean_obj_arg w) {
+  char buf[PATH_MAX + 1];
+  ssize_t n = readlink(lean_string_cstr(p), buf, PATH_MAX);
+  if (n < 0) return io_err(strerror(errno));
+  buf[n] = 0;
+  return lean_io_result_mk_ok(lean_mk_string(buf));
+}
+
+// link(2): a hard link to a at b.
+LEAN_EXPORT lean_obj_res swarm_link(b_lean_obj_arg a, b_lean_obj_arg b, lean_obj_arg w) {
+  if (link(lean_string_cstr(a), lean_string_cstr(b)) != 0) return io_err(strerror(errno));
+  return lean_io_result_mk_ok(lean_box(0));
+}

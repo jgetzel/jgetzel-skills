@@ -1,4 +1,6 @@
 import SwarmLean.Cmd.Tasks
+import SwarmLean.Lib.Ci
+import SwarmLean.Sys
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
 
