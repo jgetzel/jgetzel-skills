@@ -12,7 +12,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
-  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf } from "./tree.js";
+  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -53,6 +53,9 @@ export default class Rail extends View {
     this.renaming = null; // the machine whose heading is a field
     this.name = InputState.new({});
     this.name.on("submit", (_e, cx) => this.rename(cx));
+    this.drag = null; // { space, tab, y, live, pane }: a row pressed, dragged once it moves 4 px (Part II.2)
+    this.overTab = null; // { space, tab }: the tab under the pointer
+    this.keys = cx.focus_handle(); // holds the keyboard while a drag is live, for Escape
     this.retitle = null; // { tab, address }: the row whose tab is renamed in place (Part II.2)
     this.tabInput = InputState.new({});
     this.tabInput.on("submit", (_e, cx) => {
@@ -390,8 +393,8 @@ export default class Rail extends View {
     const p = r.pane && this.paneBy.get(r.pane), cwd = p?.cwd ?? r.t.cwd;
     const state = { working: "working", asks: "asks you", hung: "hung", done: "done", idle: "idle", run: "a program in front", prompt: "at a prompt" }[r.mark];
     const where = [cwd && line(this.home && cwd.startsWith(this.home) ? `~${cwd.slice(this.home.length)}` : cwd, 120), p?.branch && line(p.branch, 60),
-      [state, r.mark === "run" || r.mark === "prompt" ? null : sideText].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
-    return v_flex().ml(30).w(300).px(10).py(8).gap(2).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      sideText?.startsWith(state) ? sideText : [state, r.mark === "run" || r.mark === "prompt" ? null : sideText].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+    return v_flex().ml(30).w(300).px(10).py(8).gap(2).overflow_hidden().rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
       .text_size(12.5).whitespace_normal()
       .child(div().text_color(t.muted).child(line(r.t.title, 200) || name))
       .child(div().text_color(t.dim).child(where));
@@ -414,9 +417,11 @@ export default class Rail extends View {
       .text_size(12.5).cursor_pointer()
       .when(on, (el) => el.bg(t.raised))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2)) this.open(r, cx); }) // a double click's second focuses the field
-      // Double click: rename its tab in place.
+      // A double click's second focuses the field; a drop isn't a click.
+      .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) this.open(r, cx); })
+      // Press: a drag of its tab may start (not a sub-terminal's). Double click: rename its tab in place.
       .when(plain && Boolean(r.tab), (el) => el.on_mouse_down("left", (e, cx) => {
+        if (e.click_count === 1 && r.pane && !r.lines.length) this.drag = { space: this.spaceOfTab.get(r.tab), tab: r.tab, y: e.position.y, live: false };
         if (e.click_count !== 2) return;
         this.retitle = { tab: r.tab, address: r.t.address };
         this.tabInput.set_value(this.tabName.get(r.tab) ?? name); cx.notify();
@@ -436,7 +441,9 @@ export default class Rail extends View {
         .text_size(13).text_color(t.dim).hover((s) => s.bg(t.input).text_color(t.foreground))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : mark(t, r.mark));
-    return card ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el).content(this.card(t, r, name, sideText)) : el;
+    // Kept through a drag with nothing in it: swapping the wrapper out mid-press stops the moves reaching other rows.
+    return card ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el)
+      .content(this.drag?.live ? div() : this.card(t, r, name, sideText)) : el;
   }
 
   counts(t, rows) {
@@ -486,11 +493,43 @@ export default class Rail extends View {
     openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
   }
 
-  // A tab's rows: a split tab's joined by a bracket, with the tab's name over it when it was named.
-  tabOf(t, g, draw) {
-    if (!g.split) return g.rows.map(draw);
-    const name = this.tabName.get(g.tab);
-    return [v_flex().id(`tab-${g.tab}`).flex_none().ml(6).pl(2).border_l(2).border_color(t.input)
+  // Where a live drag would drop: { tab, over, after } with the line after `over` when the tab moves down (as the shipped
+  // spaces mod draws it), or null over its own tab or another space.
+  target() {
+    const d = this.drag, o = this.overTab;
+    if (!d?.live) return null;
+    if (!o || o.space !== d.space || o.tab === d.tab) return { tab: d.tab, over: null, after: false };
+    const at = (id) => (this.tabsOf.get(d.tab) ?? []).find((x) => x.id === id)?.index ?? 0;
+    return { tab: d.tab, over: o.tab, after: at(d.tab) < at(o.tab) };
+  }
+
+  // Drop the dragged tab where the line shows (tab.move), or cancel; the keyboard goes back to the pane it was on.
+  endDrag(cx, drop) {
+    const d = this.drag, to = this.target();
+    this.drag = null;
+    if (!d?.live) return;
+    this.droppedAt = Date.now();
+    const index = drop && to.over && dropAt(this.tabsOf.get(d.tab) ?? [], d.tab, to.over, to.after);
+    if (index) run("tab.move", { id: d.tab, index });
+    if (d.pane) run("pane.focus", { pane: d.pane });
+    cx.notify();
+  }
+
+  // A tab's rows: a split tab's joined by a bracket, with the tab's name over it when it was named. A tab of the rail's
+  // own rows (not a swarm's) is a drag target: the line shows before or after it, never inside a bracket.
+  tabOf(t, s, g, draw) {
+    if (!g.tab) return g.rows.map(draw);
+    const d = this.drag?.live && this.drag.space === s.id ? this.target() : null, name = g.split && this.tabName.get(g.tab);
+    return [v_flex().id(`tab-${g.tab}`).relative().flex_none()
+      .when(g.split, (el) => el.ml(6).pl(2).border_l(2).border_color(t.input))
+      .when(d?.tab === g.tab, (el) => el.rounded(8).bg(t.selected).shadow_lg().ml(g.split ? 20 : 14))
+      // Hover still follows the pointer during a press (moves stop reaching rows once the drag is live).
+      .on_hover((h, cx) => {
+        if (h) this.overTab = { space: s.id, tab: g.tab }; else if (this.overTab?.tab === g.tab) this.overTab = null;
+        if (this.drag?.live) cx.notify();
+      })
+      .when(d?.over === g.tab, (el) => el.child(div().absolute().left(4).right(4).h(2).rounded(1).bg(t.working)
+        .when(d.after, (l) => l.bottom(-1)).when(!d.after, (l) => l.top(-1))))
       .when(Boolean(name), (el) => el.child(div().h(18).flex_none().px(8).truncate().text_size(11.5).text_color(t.dim).child(line(name, 80))))
       .children(g.rows.map(draw))];
   }
@@ -503,7 +542,9 @@ export default class Rail extends View {
     const tabs = s.tabs.length;
     const stop = (_e, cx) => cx.stop_propagation();
     const draw = (r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { card: !fly });
+    const away = this.drag?.live && this.drag.space !== s.id; // no command moves a tab to another space
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
+      .when(away, (el) => el.opacity(0.45))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
         .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
         .on_hover((on, cx) => { if (on) this.hot = s.id; else if (this.hot === s.id) this.hot = null; cx.notify(); })
@@ -523,7 +564,7 @@ export default class Rail extends View {
       // The space's rows hang on a guide line under its chevron.
       .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
         .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now, fly)))
-        .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, g, draw)).flat())
+        .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, s, g, draw)).flat())
         .when(adds, (el) => el.child(h_flex().id(`new-tab-${s.id}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
           .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
           .on_click(() => this.newTab(s))
@@ -594,6 +635,7 @@ export default class Rail extends View {
     const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
     this.paneBy = new Map(ps.map((p) => [p.pane, p]));
     this.tabsOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.tabs])));
+    this.spaceOfTab = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.id])));
     const tabName = this.tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     if (!this.started) { this.started = true; this.swarms(cx); }
@@ -669,7 +711,15 @@ export default class Rail extends View {
     if (narrow) return v_flex().size_full().min_h(0).pt(10).gap(14).items_center().bg(t.chrome).text_size(13)
       .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
       .child(v_flex().id("rail-tiles").flex_1().min_h(0).w_full().pb(12).gap(14).items_center().overflow_y_scrollbar().children(items));
-    return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+    return v_flex().id("rail").size_full().min_h(0).bg(t.chrome).text_size(13).track_focus(this.keys)
+      // A release drops where the line shows; one outside the rail is seen at the next press, which cancels.
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) this.endDrag(cx, true); })
+      .on_mouse_down_out((_e, cx) => { if (this.drag) this.endDrag(cx, false); })
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.drag) { cx.stop_propagation(); this.endDrag(cx, false); } })
+      .on_mouse_move((e, cx) => {
+        const dr = this.drag;
+        if (dr && !dr.live && Math.abs(e.position.y - dr.y) >= 4) { dr.live = true; dr.pane = focused()?.pane ?? null; this.keys.focus(); cx.notify(); }
+      })
       .when(sums.length > 1 || shownAll, (el) => el.child(this.allRow(t, sums, shownAll)))
       .child(h_flex().h(31).flex_none().pl(20).pr(14).pt(6).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().child("Spaces")).child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))

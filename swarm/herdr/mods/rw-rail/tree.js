@@ -257,6 +257,16 @@ export function tabGroups(rows) {
   return out;
 }
 
+// A rail drag's drop (Part II.2): tab `from` lands before tab `over`, or after it; the 1-based index for tab.move, or
+// null when nothing moves. `tabs`: the space's tabs (TabInfo, any order).
+export function dropAt(tabs, from, over, after) {
+  const ids = [...tabs].sort((a, b) => a.index - b.index).map((x) => x.id);
+  if (from === over || !ids.includes(from) || !ids.includes(over)) return null;
+  const rest = ids.filter((id) => id !== from);
+  const at = rest.indexOf(over) + (after ? 1 : 0);
+  return at === ids.indexOf(from) ? null : at + 1;
+}
+
 // Closing a plain rail row (Part II.1): its tab when the tab has one pane, else that pane; null for a row with no pane.
 // `ask` (the confirm dialog's title and detail) when an agent works or asks, a program is in front of a shell, or the tab
 // is its space's last (closing it closes the space); else it closes at once. `tabs`: the row's space's tabs.
