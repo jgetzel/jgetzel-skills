@@ -18,7 +18,8 @@ def test_events_selftest (t : T) : IO Unit := do
 copies, the layout, the Swarm link, the Calendar copy, and the stamp `swarm who` compares. -/
 def test_install_main_path (t : T) : IO Unit := do
   let h := t.d ++ "/herdr"
-  for d in ["mods/tabs", "mods/agents", "layouts"] do IO.FS.createDirAll (h ++ "/" ++ d)
+  for d in ["mods/tabs", "mods/agents", "layouts", "frame/settings"] do IO.FS.createDirAll (h ++ "/" ++ d)
+  put (h ++ "/frame/settings/main.js") "const X = 1;\nconst SECTIONS = [];\nexport default class Settings extends View {}\n"
   let anchors (ps : List (String × String)) := "\n".intercalate (ps.map (·.1))
   put (h ++ "/mods/tabs/main.js") (anchors Herdr.Install.tabsPatch)
   put (h ++ "/mods/agents/main.js") (anchors Herdr.Install.agentsPatch)
@@ -52,8 +53,9 @@ def test_install_main_path (t : T) : IO Unit := do
     |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
   -- The other rw mods' tree.js and marks.js are links to rw-rail's in the checkout, and files in the copies.
-  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js"] do
+  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js", "rw-settings/tree.js"] do
     unless (← System.FilePath.symlinkMetadata (h ++ "/mods/" ++ f)).type == .file do fail s!"no {f} copy"
+  has ((← slurp (h ++ "/mods/rw-settings/app.js")).getD "") "export default class Settings extends View {}\n\nexport { SECTIONS };"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")
   eq (← IO.FS.realPath (h ++ "/mods/swarm")).toString (← IO.FS.realPath ((← swarmDir) ++ "/herdr/mods/swarm")).toString
   unless ← System.FilePath.pathExists (h ++ "/mods/calendar/feed.js") do fail "no calendar copy"
