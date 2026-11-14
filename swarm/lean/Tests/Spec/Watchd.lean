@@ -186,14 +186,11 @@ def reap_kills_an_ended_rows_terminal (t : T) : IO Unit := do
 def sweep_branches_deletes_an_ended_agents_merged_branch (t : T) : IO Unit := do
   setup t
   let h ← hooks t
-  let g (args : List String) : IO Unit := do
-    let o ← IO.Process.output { cmd := "git", args := (["-C", t.repo] ++ args).toArray }
-    if o.exitCode != 0 then fail s!"git {args}: {o.stderr}"
+  let g (args : List String) : IO Unit := discard <| t.git (some t.repo) args
   g ["branch", "x/1"]; g ["branch", "y/1"]
   g ["checkout", "-q", "-b", "x/2"]; g ["commit", "-q", "--allow-empty", "-m", "x2"]; g ["checkout", "-q", "main"]
   run h (Watchd.sweepBranches t.repo ["x"] [])
-  let o ← IO.Process.output { cmd := "git", args := #["-C", t.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"] }
-  let bs := (o.stdout.splitOn "\n").filter (· != "")
+  let bs := ((← t.git (some t.repo) ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]).splitOn "\n").filter (· != "")
   eq (bs.contains "x/1") false; eq (bs.contains "x/2") true; eq (bs.contains "y/1") true
 
 -- a renew after reap's select of expired leases keeps the task; a fresh lock after its lock select keeps the lock
