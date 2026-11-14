@@ -7,7 +7,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard } from "gpui-base";
 import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, layout, appHome } from "herdr";
-import { AGENT, abbrev, openAsk, rollOf, rowText, rowsOf, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { AGENT, abbrev, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -59,11 +59,13 @@ export default class Rail extends View {
   open(r, cx) {
     if (r.pane && r.ask) openAsk(run, panes(), r.pane, r.ask, (f) => cx.timer.after(300, f));
     else if (r.pane) run("pane.focus", { pane: r.pane }); else run("terminal.peek", { terminal: r.t.address });
-    if (!this.opened.has(r.t.address)) {
-      this.opened.add(r.t.address);
-      localStorage.setItem("opened", JSON.stringify([...this.opened].slice(-200)));
-      cx?.notify();
-    }
+    if (this.remember(r.t.address)) cx?.notify();
+  }
+  remember(address) {
+    if (this.opened.has(address)) return false;
+    this.opened.add(address);
+    localStorage.setItem("opened", JSON.stringify([...this.opened].slice(-200)));
+    return true;
   }
 
   // The swarm tab (slice 7): the overview, mod rw-swarm, split beside the communicator's terminal, on the left, and that
@@ -268,6 +270,13 @@ export default class Rail extends View {
       swBy.set(s.id, sw);
       return [s.id, sw.rows];
     }));
+    // A large swarm (slice 9): the tabs of workers you haven't opened are put away, so the bar shows the ones you have.
+    for (const [id, sw] of swBy) {
+      const o = settleOf(new Set(sw.put), new Set(sw.hot), ps, sp.find((s) => s.id === id).tabs);
+      for (const tab of o.settle) run("tab.settle", { id: tab });
+      for (const tab of o.unsettle) run("tab.unsettle", { id: tab });
+      for (const a of o.opened) this.remember(a);
+    }
     // An agent alone in its tab: the tab's change time is the app's own, kept while the rail isn't shown.
     const tabOf = new Map(sp.flatMap((s) => s.tabs).map((tab) => [tab.id, tab]));
     const changedAt = new Map(ps.filter((p) => p.terminal && tabOf.get(p.tab)?.panes === 1).map((p) => [p.terminal, tabOf.get(p.tab).changed_at]));

@@ -115,6 +115,13 @@ done
     \"swarm/lean/SwarmLean/Proofs/Watchd.lean\",\"swarm/lean/SwarmLean/Db/Spawn.lean\",\"swarm/lean/SwarmLean/Lib/Spawn.lean\",
     \"swarm/lean/SwarmLean/Lib/Conflict.lean\",\"swarm/lean/SwarmLean/Cmd/State.lean\"]}' where name = 'll-97';
   insert into event(ts, agent, kind, data) values($((now - 9000)), 'll-97', 'compact', '')"
+# The large swarm's table and board: models, 12 ended agents, the next tasks' priorities.
+[ "$sw" != 24 ] || sqlite3 -cmd ".timeout 9000" "$db" "update agent set model = case cast(substr(name, 4) as int) % 3 when 0 then 'opus'
+  when 1 then 'sonnet' else 'fable' end, ctx_tokens = 40000 + cast(substr(name, 4) as int) % 9 * 31000 where name != 'll-comms';
+  with recursive n(i) as (select 1 union all select i + 1 from n where i < 12) insert into agent(name, hc, status, last_active, started,
+  ended, model, wt) select 'll-'||(180 + i), 'tx'||i, 'idle', $now - i * 1500, $now - i * 1500 - 5400, $now - i * 1500, 'opus',
+  '/w/jgetzel-skills-ll-'||(180 + i) from n;
+  update task set priority = (id % 3) + 1 where id > 2000"
 opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")
 # With a swarm, this computer's other spaces fold (shot.sh's demo and notes too), as on the rail board.
 [ -z "$sw" ] || folds="$folds $(herdr-app ls | jq -r '.. | objects | select(.name? == "demo" or .name? == "notes" or .name? == "high-perf-lean") | .id? // empty' | grep -v / || :)"

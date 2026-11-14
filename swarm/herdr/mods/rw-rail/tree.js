@@ -140,14 +140,16 @@ export function abbrev(name) {
 export const rollOf = (rows) => ["asks", "hung", "working", "done", "idle"].filter((k) => rows.some((r) => r.mark === k));
 
 const nat = (s) => s.replace(/\d+/g, (d) => d.padStart(9, "0")); // ll-97 before ll-107 (Herdr's JS has no numeric collation)
-const FOLD = 8; // past this many agents, a swarm's working and idle workers fold into counts
+export const FOLD = 8; // past this many agents, a swarm's working and idle workers fold into counts
 
 // A space's swarm (UI-SPEC.md, slice 6) from `swarm state --json --view summary` (`sum`) of the space's folder on
 // machine `on`: its block (the communicator, then the workers by name, each with its sub-terminals) and the space's
 // other rows. An agent's mark is its terminal's, but asks when its task is blocked on you, hung on watchd's sign, and
 // a worker's done is idle (a worker's turns report to the communicator). Past FOLD agents, unless `all`, workers that
 // neither ask, are hung nor are in `keep` (addresses you opened) fold into a working and an idle count.
-// Returns { rows: the space's rows, marks as above, block first; block: [{r, kids, side} | {fold, n, more}], rest }.
+// Returns { rows: the space's rows, marks as above, block first; block: [{r, kids, side} | {fold, n, more}], rest, big,
+// put: the folding workers' addresses and their sub-terminals' (slice 9 puts their tabs away, `all` or not), hot: the
+// asking and hung ones' }.
 export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
   const trees = [];
   for (const r of rows) r.lines.length ? trees.at(-1)?.push(r) : trees.push([r]);
@@ -168,6 +170,9 @@ export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
   const rest = trees.filter((tr) => !taken.has(tr)).flat();
   const big = !all && items.length > FOLD;
   const kept = (it) => it.comms || it.r.mark === "asks" || it.r.mark === "hung" || keep.has(it.r.t.address);
+  const addrs = (its) => its.flatMap((it) => [it.r.t.address, ...it.kids.map((k) => k.t.address)]);
+  const put = items.length > FOLD ? addrs(items.filter((it) => !kept(it))) : [];
+  const hot = addrs(items.filter((it) => !it.comms && (it.r.mark === "asks" || it.r.mark === "hung")));
   const block = big ? [...items.filter((it) => it.comms), ...items.filter((it) => !it.comms && it.r.mark === "asks"),
     ...items.filter((it) => !it.comms && it.r.mark === "hung"),
     ...items.filter((it) => !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && kept(it))] : items;
@@ -175,7 +180,24 @@ export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
   const count = (mark) => folded.filter((it) => (it.r.mark === "working") === (mark === "working")).length;
   const out = [...block, ...["working", "idle"].map((fold) => ({ fold, n: count(fold), more: block.some((it) => !it.comms && it.r.mark === fold) }))
     .filter((c) => c.n > 0)];
-  return { rows: [...items.flatMap((it) => [it.r, ...it.kids]), ...rest], block: out, rest, big };
+  return { rows: [...items.flatMap((it) => [it.r, ...it.kids]), ...rest], block: out, rest, big, put, hot };
+}
+
+// A large swarm's tabs (slice 9): a tab holding only folding workers (`put`) is put away unless shown, and when shown
+// its agents count as opened; one put away that holds an asking or hung worker (`hot`) comes back (Herdr brings a tab
+// back only for its terminal's own needs, not a swarm question). Tabs of anything else are left as they are.
+// Returns { settle: tab ids, unsettle: tab ids, opened: addresses }.
+export function settleOf(put, hot, ps, tabs) {
+  const out = { settle: [], unsettle: [], opened: [] };
+  for (const tab of tabs) {
+    const ts = ps.filter((p) => p.tab === tab.id);
+    const terms = ts.filter((p) => p.terminal).map((p) => p.terminal);
+    if (!terms.length || !ts.every((p) => p.terminal || p.mod === "rw-question")) continue;
+    if (terms.every((a) => put.has(a))) {
+      if (tab.active) out.opened.push(...terms); else if (!tab.settled) out.settle.push(tab.id);
+    } else if (tab.settled && terms.every((a) => put.has(a) || hot.has(a)) && terms.some((a) => hot.has(a))) out.unsettle.push(tab.id);
+  }
+  return out;
 }
 
 // A swarm row's name (the agent's), what follows it ("communicator" or the task number) and its side text.

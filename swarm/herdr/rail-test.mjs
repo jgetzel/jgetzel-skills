@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -150,4 +150,17 @@ later.forEach((f) => f());
 assert.deepEqual(calls, [["pane.split", "p1"], ["pane.focus", "p1"], ["pane.focus", "p1"], ["pane.swap", "down"]]);
 calls.length = 0; openAsk(log, qPs, "p2", {}, () => assert.fail("no split"));
 assert.deepEqual(calls, [["pane.focus", "p2"]]);
+
+// A large swarm (slice 9): tabs holding only folding workers are put away unless shown (shown: opened); one put away
+// with an asking worker comes back; a tab with anything else in it is left alone.
+const sTabs = [{ id: "A", active: false, settled: false }, { id: "B", active: true, settled: false }, { id: "C", active: false, settled: true },
+  { id: "D", active: false, settled: true }, { id: "E", active: false, settled: false }, { id: "F", active: false, settled: true }];
+const sPs = [{ tab: "A", terminal: "w1" }, { tab: "A", terminal: "w1k" }, { tab: "B", terminal: "w2" }, { tab: "C", terminal: "w3" },
+  { tab: "D", terminal: "q" }, { tab: "D", mod: "rw-question" }, { tab: "E", terminal: "w4" }, { tab: "E", terminal: "zsh" }, { tab: "F", terminal: "w5" }];
+assert.deepEqual(settleOf(new Set(["w1", "w1k", "w2", "w3", "w4", "w5"]), new Set(["q"]), sPs, sTabs), { settle: ["A"], unsettle: ["D"], opened: ["w2"] });
+const huge = { comms: "c", agents: [A("c", "c"), ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => A(`w${i}`, `w${i}`, { status: "working" })),
+  A("q", "q", { status: "blocked" })] };
+const bigT = new Map([..."c q w1 w2 w3 w4 w5 w6 w7 w8 w9".split(" ")].map((a) => [a, { address: a, status: "working" }]));
+const bs = swarmOf([], huge, bigT, null, new Set(["w2"]), true);
+assert.deepEqual([bs.big, bs.put.length, bs.put.includes("w2"), bs.hot], [false, 8, false, ["q"]]);
 console.log("rail-test: ok");

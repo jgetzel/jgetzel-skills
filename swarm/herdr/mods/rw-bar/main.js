@@ -1,7 +1,8 @@
 // The rework's title bar (swarm/herdr/UI-SPEC.md, slice 2): the shown space and its machine, its tabs as pills (name,
 // title, mark at the end), a Needs you button with its list, the palette button and, where the system draws none, the
 // window buttons. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm
-// agents wait on (slice 6), from the rail's summaries.
+// agents wait on (slice 6), from the rail's summaries. Tabs put away (tab.settle; the rail puts away a large swarm's
+// workers you haven't opened, slice 9) are one "N more" pill, which shows the swarm tab.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -101,6 +102,8 @@ export default class Bar extends View {
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
     const mac = w?.platform === "macos" && !w.fullscreen;
     const sub = [space?.machine ?? "This computer", space?.branch].filter(Boolean).join(" · ");
+    const tabs = space?.tabs ?? [], away = tabs.filter((tab) => tab.settled).length, last = [...tabs].reverse().find((tab) => tab.settled);
+    const swarmTab = tabs.find((tab) => ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm"));
     return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -109,7 +112,11 @@ export default class Bar extends View {
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
       .child(h_flex().id("pills").flex_1().min_w(0).items_center().overflow_x_scrollbar()
         .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.raised).border(1).border_color(t.border)
-          .children((space?.tabs ?? []).map((tab, i) => this.pill(t, space, tab, i, ps, byAddr)))
+          // The tabs put away are one pill where the last of them sits.
+          .children(tabs.flatMap((tab, i) => (tab !== last ? tab.settled ? [] : [this.pill(t, space, tab, i, ps, byAddr)]
+            : [h_flex().id("tabs-away").h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)
+              .when(Boolean(swarmTab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+              .on_mouse_down("left", stop).on_click(() => swarmTab && run("tab.select", { id: swarmTab.id })).child(`${away} more`)])))
           .child(this.button(t, "tab-new", svg("mods/workspace-chrome/plus.svg").size(14),
             () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))))
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)

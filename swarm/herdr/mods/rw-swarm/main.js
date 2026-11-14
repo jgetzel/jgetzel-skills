@@ -1,11 +1,13 @@
 // The rework's swarm tab (swarm/herdr/UI-SPEC.md, slice 7): one swarm's overview, as a mod pane beside its
 // communicator's terminal (the rail's swarm heading opens it). Needs you with an answer field, the agents with their
 // tasks, the board with staffing, the latest messages, and landing (main's CI, PRs). props: {folder, machine}.
+// A large swarm (past FOLD workers, slice 9) groups the agents by state under a filter, and the board is counts and the
+// next tasks to staff. Ended agents are one line; opening it lists them, read-only.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window } from "herdr";
-import { asksOf, agentRows, boardRows, dur, openAsk } from "./tree.js";
+import { FOLD, asksOf, agentRows, boardRows, dur, openAsk } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -16,6 +18,8 @@ const swarm = (cwd, on, args) => on
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;
 const CTX = 400000; // the context bar's full mark: watchd's compaction
 const SHOWN = 8; // board rows before "N more"
+const NEXT = 5; // a large board's next tasks
+const GROUPS = [["asks", "Ask you"], ["hung", "Hung"], ["working", "Working"], ["idle", "Idle"]];
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const openUrl = (url) => exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]);
@@ -25,6 +29,9 @@ export default class SwarmTab extends View {
     this.s = null; this.prs = null; this.error = null; this.flash = null; this.answers = new Map(); this.adding = false;
     this.title = InputState.new({ placeholder: "Title of the new task" });
     this.title.on("submit", (_e, cx) => this.addTask(cx));
+    this.filter = InputState.new({ placeholder: "Filter agents and tasks" });
+    this.filter.on("change", (_e, cx) => cx.notify());
+    this.ended = null; // the ended agents, read when you open their line
     this.refresh(cx); this.refreshPrs(cx);
     cx.timer.every(POLL, (cx) => { if (this.due()) this.refresh(cx); });
     cx.timer.every(PR_POLL, (cx) => this.refreshPrs(cx));
@@ -96,6 +103,19 @@ export default class SwarmTab extends View {
     const text = this.title.value().trim();
     if (text && !this.busy) this.act(cx, ["task", "add", "--", text], () => { this.title.set_value(""); this.adding = false; });
   }
+  // The ended agents: `state --view agents` sends the newest 60.
+  showEnded(cx) {
+    if (this.ended) { this.ended = null; cx.notify(); return; }
+    const { cwd, on } = this.where();
+    this.ended = [];
+    cx.spawn(async (cx) => {
+      try {
+        const r = await swarm(cwd, on, ["state", "--json", "--view", "agents"]);
+        if (r.code === 0 && this.ended) this.ended = JSON.parse(r.stdout).agents.filter((a) => a.status === "ended");
+      } catch {}
+      cx.notify();
+    });
+  }
   // An agent's terminal: its pane here, with its question above it when it asks (slice 8), else a peek.
   focus(name, cx) {
     const hc = this.s?.agents?.find((a) => a.name === name)?.hc, { cwd, on } = this.where();
@@ -162,32 +182,68 @@ export default class SwarmTab extends View {
   }
 
   agents(t, s) {
-    const rows = agentRows(s), ended = s.counts?.ended ?? 0, n = rows.filter((r) => !r.comms).length;
+    const all = agentRows(s), ended = s.counts?.ended ?? 0, n = all.filter((r) => !r.comms).length, big = n > FOLD;
+    const q = big ? this.filter.value().trim().toLowerCase() : "";
+    const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
     const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
+    const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
+    const row = (r) => h_flex().id(`agent-${r.a.name}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
+      .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
+      .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
+      .child(mark(t, r.mark))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
+      .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.state))
+      .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
+        .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= CTX ? t.blocked : t.muted)
+          .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / CTX))}%`))))
+      .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
+        .child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
+    const group = ([m, label]) => {
+      const g = rows.filter((r) => !r.comms && r.mark === m);
+      return g.length ? [h_flex().id(`group-${m}`).mx(6).px(10).pt(10).pb(5).gap(8).items_center().text_size(11.5).font_semibold()
+        .text_color(m === "asks" || m === "hung" ? t.blocked : t.muted).child(mark(t, m, 7)).child(label)
+        .child(div().font_normal().text_color(t.dim).child(String(g.length))), ...g.map(row)] : [];
+    };
+    const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter)) : null;
     return this.card(t, "agents").pb(6)
-      .child(this.head(t, "Agents", `${n} running${rows.some((r) => r.comms) ? ", the communicator" : ""}${ended ? ` · ${ended} ended` : ""}`))
-      .children(rows.map((r) => h_flex().id(`agent-${r.a.name}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
-        .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
-        .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
-        .child(mark(t, r.mark))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
-        .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.state))
-        .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
-          .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= CTX ? t.blocked : t.muted)
-            .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / CTX))}%`))))));
+      .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
+      .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map(row)] : rows.map(row))
+      .when(big && !rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("No agent matches")))
+      .when(ended > 0, (el) => el.child(h_flex().id("ended").mx(6).mt(4).px(10).h(34).gap(8).items_center().border_t(1).border_color(t.border)
+        .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.showEnded(cx))
+        .child(div().flex_1().child(`${ended} ended`)).child(div().text_color(t.accent).child(this.ended ? "Hide ended" : "Show ended"))))
+      .when(Boolean(this.ended), (el) => el.children(this.ended.length ? this.ended.map((a) => h_flex().id(`ended-${a.name}`).h(28).mx(6).px(10)
+        .gap(12).items_center().min_w(0).text_size(12).text_color(t.dim)
+        .child(div().w(72).flex_none().truncate().text_color(t.muted).child(a.name))
+        .child(div().flex_1().min_w(0).truncate().child(a.branch ?? a.worktree?.replace(/.*\//, "") ?? ""))
+        .child(div().flex_none().child(a.ended && s.now ? `ended ${dur((s.now - a.ended) * 1000)} ago` : "ended"))
+        .child(div().w(52).flex_none().truncate().child(a.model ?? "")))
+        : [div().px(16).py(4).text_size(12).text_color(t.dim).child("Reading…")]));
   }
 
   board(t, s) {
+    const big = (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length > FOLD;
+    const q = big ? this.filter.value().trim().toLowerCase() : "";
     const rows = boardRows(s), c = s.counts ?? {}, done = c.done ?? 0, total = done + (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
     const l = s.limits ?? {}, tone = { blocked: t.blocked, muted: t.muted, foreground: t.foreground, dim: t.dim };
+    const shown = !big ? rows.slice(0, SHOWN) : q ? rows.filter((r) => `#${r.k.id} ${r.k.title}`.toLowerCase().includes(q)).slice(0, SHOWN)
+      : rows.filter((r) => r.tone === "foreground") // as auto-spawn staffs: the queue, then priority (none first), then id
+        .sort((x, y) => (x.k.qpos ?? 1e9) - (y.k.qpos ?? 1e9) || (x.k.priority ?? -1) - (y.k.priority ?? -1) || x.k.id - y.k.id).slice(0, NEXT);
+    const side = (k, state) => (big && !q && k.priority != null ? `P${k.priority}` : state);
     return this.card(t, "board").pb(10)
       .child(this.head(t, "Board", `${done} of ${total} done${c.dropped ? ` · ${c.dropped} dropped` : ""}`))
       .child(div().mx(16).mb(6).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(t.ansi2).w(`${total ? (100 * done) / total : 0}%`)))
-      .children(rows.slice(0, SHOWN).map(({ k, state, tone: tn }) => h_flex().id(`task-${k.id}`).h(30).mx(6).px(10).gap(12).items_center().min_w(0).text_size(12.5)
+      .when(big, (el) => el.child(h_flex().mx(16).mt(4).mb(8).gap(18).flex_wrap()
+        .children([["muted", "claimed"], ["blocked", "wait on you"], ["foreground", "ready"], ["dim", "wait on a task or held"]].map(([tn, label]) =>
+          h_flex().gap(6).items_baseline().child(div().text_size(18).font_semibold().text_color(tone[tn]).child(String(rows.filter((r) => r.tone === tn).length)))
+            .child(div().text_size(12).text_color(t.dim).child(label))))))
+      .when(big, (el) => el.child(div().px(16).pt(4).pb(2).text_size(11.5).font_semibold().text_color(t.muted)
+        .child(q ? "Tasks that match" : "Next to be staffed")))
+      .children(shown.map(({ k, state, tone: tn }) => h_flex().id(`task-${k.id}`).h(30).mx(6).px(10).gap(12).items_center().min_w(0).text_size(12.5)
         .child(div().w(40).flex_none().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`#${k.id}`))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title))
-        .child(div().flex_none().max_w(160).truncate().text_color(tone[tn]).child(state))))
-      .when(rows.length > SHOWN, (el) => el.child(div().px(16).py(4).text_size(12).text_color(t.dim).child(`${rows.length - SHOWN} more`)))
+        .child(div().flex_none().max_w(160).truncate().text_color(tone[tn]).child(side(k, state)))))
+      .when(!big && rows.length > SHOWN, (el) => el.child(div().px(16).py(4).text_size(12).text_color(t.dim).child(`${rows.length - SHOWN} more`)))
       .when(!rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Nothing left on the board")))
       .child(h_flex().mt(6).mx(16).pt(10).gap(12).items_center().flex_wrap().border_t(1).border_color(t.border)
         .child(this.stepper(t, "min", "Auto-spawn to", l.min, (cx, n) => this.act(cx, ["limits", "--min", String(n)])))
