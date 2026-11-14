@@ -3,20 +3,84 @@
 // by Settings at the rail's foot, as the user asked). With the swarm view shown, its sections (Part II.3). The
 // tabs live in the rail only: the shown tab is named by its rail row and its pane header. With All swarms shown it names
 // that view. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm agents
-// wait on (slice 6), from the rail's summaries.
+// wait on (slice 6), from the rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}}
+// it is a swarm agent's menu from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal).
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared } from "herdr";
-import { SECTIONS, allShown, ciWord, line, looked, needsYou, peekWindow, questionsOf, rowText, showAll, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome } from "herdr";
+import { SECTIONS, allShown, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
 const NEEDS = 60; // Needs you rows drawn
+// The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
+const swarm = (cwd, on, args) => on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
 const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
+  init() {
+    if (!props()?.agentMenu) return;
+    this.step = null; // null: the items; "message"; "end"; "refused" (this.why); "force"
+    this.msg = InputState.new({ placeholder: "Message…" });
+    this.msg.on("submit", (_e, cx) => this.send(cx));
+  }
+
+  // ---- a swarm agent's menu (II.1b) ----
+  send(cx) {
+    const m = props().agentMenu, text = this.msg.value().trim();
+    if (text) this.cmd(cx, ["post", "--", m.name, text]);
+  }
+  // A swarm command; done: the menu closes. `swarm end` refused: why, and End anyway.
+  cmd(cx, args) {
+    const m = props().agentMenu;
+    this.busy = true; cx.notify();
+    cx.spawn(async (cx) => {
+      let r = null;
+      try { r = await swarm(m.folder, m.machine, args); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
+      this.busy = false;
+      if (r.code === 0) { closeOverlay(props().overlay); return; }
+      this.why = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
+      this.step = "refused"; cx.notify();
+    });
+  }
+  menu(t, m) {
+    const name = line(m.name, 60), close = () => closeOverlay(props().overlay);
+    const item = (id, text, act, red) => div().id(id).px(10).py(6).rounded(6).text_size(12.5).cursor_pointer()
+      .text_color(red ? t.blocked : t.foreground).hover((s) => s.bg(t.hover)).on_click((_e, cx) => act(cx)).child(text);
+    const btn = (id, text, act, solid) => div().id(id).flex_none().px(12).py(5).rounded(8).text_size(12.5).cursor_pointer()
+      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold())
+      .when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+      .on_click((_e, cx) => { if (!this.busy) act(cx); }).child(text);
+    const ask = (title, body, ...btns) => v_flex().p(12).gap(8).text_size(12.5)
+      .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child(title))
+      .child(div().line_height(1.45).whitespace_normal().text_color(t.muted).child(body))
+      .child(h_flex().gap(8).justify_end().children(btns));
+    const root = v_flex().size_full().p(5).bg(t.popover).text_color(t.foreground);
+    if (this.step === "message") return root.child(v_flex().p(8).gap(8)
+      .child(div().text_size(12).text_color(t.dim).child(`Message ${name}`))
+      .child(div().h(30).px(10).flex().items_center().rounded(8).border(1).border_color(t.border).bg(t.background)
+        .child(Input.new(this.msg).h_full().text_size(12.5).text_color(t.foreground)))
+      .child(h_flex().gap(8).justify_end().child(btn("m-cancel", "Cancel", close)).child(btn("m-send", "Send", (cx) => this.send(cx), true))));
+    if (this.step === "end") return root.child(ask(`End ${name}?`,
+      `Closes its terminal. The swarm refuses if it is working, holds a task or a lock, or has work not on main. Its worktree and branch stay.`,
+      btn("e-no", "Cancel", close), btn("e-yes", this.busy ? "Ending…" : "End agent", (cx) => this.cmd(cx, ["end", "--", m.name]), true)));
+    if (this.step === "refused") return root.child(ask(`${name} was not ended`, this.why,
+      btn("r-keep", "Keep it", close), btn("r-force", "End anyway…", (cx) => { this.step = "force"; cx.notify(); })));
+    if (this.step === "force") return root.child(ask(`End ${name} anyway?`,
+      `Its terminal closes now, with whatever it was doing.${m.task ? ` Task #${m.task} goes back to the board.` : ""} Its worktree and branch stay.`,
+      btn("f-no", "Cancel", close), btn("f-yes", this.busy ? "Ending…" : "End anyway", (cx) => this.cmd(cx, ["end", "--force", "--", m.name]), true)));
+    return root
+      .child(item("a-msg", `Message ${name}…`, (cx) => { this.step = "message"; cx.notify(); cx.timer.after(50, () => this.msg.focus()); }))
+      .child(item("a-page", "Open its page", () => { close(); showSwarm(run, setShared, { folder: m.folder, machine: m.machine ?? null, page: { agent: m.name, back: "tab" } }); }))
+      .child(item("a-nudge", "Nudge", (cx) => this.cmd(cx, nudgeArgs(m.name))))
+      .when(!m.comms, (el) => el.child(div().h(1).mx(4).my(3).bg(t.border))
+        .child(item("a-end", "End agent…", (cx) => { this.step = "end"; cx.notify(); }, true)));
+  }
+
   // The swarm view's sections (Part II.3), with a count where one helps: agents running, tasks left.
   sections(t, v, sum) {
     const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
@@ -78,6 +142,7 @@ export default class Bar extends View {
   render() {
     const t = theme();
     if (props()?.needs) return this.list(t);
+    if (props()?.agentMenu) return this.menu(t, props().agentMenu);
     const sp = spaces();
     const space = sp.find((s) => s.active);
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
