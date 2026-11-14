@@ -94,7 +94,9 @@ export default class Bar extends View {
     const at = v.section ?? "overview", anim = animOn(shared("rw.animations"));
     return h_flex().id("sections").flex_none().min_w(0).p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
       .children(SECTIONS.map(([id, label]) => h_flex().id(`section-${id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
-        .text_color(at === id ? t.foreground : t.muted).when(at === id, (el) => el.bg(t.selected))
+        .text_color(at === id ? t.foreground : t.muted).when(at === id && !anim, (el) => el.bg(t.selected))
+        // the selected section's highlight fades between sections (II.4c; a slide needs each section's x)
+        .when(anim, (el) => el.relative().child(div().id(`sel-${id}`).absolute().inset_0().rounded(9).bg(t.selected).opacity(at === id ? 1 : 0).transition("opacity", 140)))
         .when(at !== id && !anim, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
         .when(at !== id && anim, (el) => el.cursor_pointer().relative().child(hoverLayer(t, `hv-section-${id}`, this.hovSec === id, 9))
           .on_hover((h, cx) => { if (h) this.hovSec = id; else if (this.hovSec === id) this.hovSec = null; cx.notify(); }))
