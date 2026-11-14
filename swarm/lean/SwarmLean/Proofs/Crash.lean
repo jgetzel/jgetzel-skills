@@ -1125,16 +1125,22 @@ theorem hook_keeps (hM : ∀ w, M.now w ≤ t) (a : Args.Parsed) :
   all_goals xstep
 
 set_option maxHeartbeats 20000000 in
-/-- Every `Watchd` command keeps the cross-area invariant at every commit (`Cmd.Watchd.group`). -/
-theorem watchd_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (a : Args.Parsed) :
-    Keeps (XInv · t) ((Cmd.Watchd.group (m := RecM M)).run a) := by
-  keeps_walk
-  all_goals xstep
-
-set_option maxHeartbeats 20000000 in
 /-- One watchd pass keeps the cross-area invariant at every commit. -/
 theorem pass_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine comms repo opts up st :
     Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine comms repo opts up st) := by
+  keeps_walk
+  all_goals xstep
+
+/-- `pass_keeps` under the name `keeps_walk` looks for (`K.<function>`): `watchd_keeps` applies it at the loop's
+pass instead of walking the pass a second time. -/
+theorem K.SwarmLean.Cmd.Watchd.watchdPass (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine comms repo opts
+    up st : Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine comms repo opts up st) :=
+  pass_keeps hM hL mine comms repo opts up st
+
+set_option maxHeartbeats 20000000 in
+/-- Every `Watchd` command keeps the cross-area invariant at every commit (`Cmd.Watchd.group`). -/
+theorem watchd_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (a : Args.Parsed) :
+    Keeps (XInv · t) ((Cmd.Watchd.group (m := RecM M)).run a) := by
   keeps_walk
   all_goals xstep
 
