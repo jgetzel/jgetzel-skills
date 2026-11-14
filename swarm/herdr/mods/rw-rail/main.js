@@ -5,12 +5,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, home } from "herdr";
-import { AGENT, agentWhat, dur, rowsOf, stamp } from "./tree.js";
+import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, home, exec } from "herdr";
+import { AGENT, dur, rowText, rowsOf, stamp } from "./tree.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "working", "done", "idle"]; // a folded space's counts, then its shells
-const base = (p) => (p ?? "").replace(/\/+$/, "").split("/").pop().replace(/^-/, "");
 
 export default class Rail extends View {
   init(_props, cx) {
@@ -18,6 +17,37 @@ export default class Rail extends View {
     // Each agent's mark, turn and since when (ms), kept across restarts: terminals() leaves status_ms null.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     cx.timer.every(30000, (cx) => cx.notify()); // the rows' times
+    this.load = {}; // machine ("" here) -> { used, total } in kB, or null where /proc/meminfo can't be read
+    cx.timer.every(10000, (cx) => this.poll(cx));
+  }
+
+  // The shown space's machine's memory in use, for the foot.
+  poll(cx) {
+    const on = spaces().find((s) => s.active)?.machine ?? null;
+    if (this.loading) return;
+    this.loading = true;
+    cx.spawn(async (cx) => {
+      let v = null;
+      try {
+        const r = await exec("cat", ["/proc/meminfo"], { on });
+        const kb = (k) => Number(r.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
+        const total = kb("MemTotal"), avail = kb("MemAvailable");
+        if (r.code === 0 && total > 0 && avail >= 0) v = { used: total - avail, total };
+      } catch {}
+      this.loading = false;
+      this.load[on ?? ""] = v;
+      cx.notify();
+    });
+  }
+
+  foot(t) {
+    const m = spaces().find((s) => s.active)?.machine ?? null;
+    const l = this.load[m ?? ""];
+    if (!l) return null;
+    const g = (kb) => Math.round(kb / 1048576);
+    return v_flex().flex_none().px(20).pt(8).pb(10).gap(6).text_size(11.5).text_color(t.dim)
+      .child(div().truncate().child(`${m ?? "This computer"} · ${g(l.used)} of ${g(l.total)} G in use`))
+      .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(t.dim).w(`${Math.round((100 * l.used) / l.total)}%`)));
   }
 
   fold(id, cx) {
@@ -37,16 +67,6 @@ export default class Rail extends View {
       case "prompt": return box.child(div().size(5).rounded(3).bg(t.dim));
     }
     return box;
-  }
-
-  // What a row says after its name: for an agent see agentWhat, a shell's front program (else its folder).
-  what(r, name, tabName) {
-    const { t } = r;
-    if (AGENT.has(r.mark)) return agentWhat(t, name, tabName);
-    const fg = t.foreground;
-    if (r.mark === "run") return fg?.argv?.length ? fg.argv.join(" ") : t.program?.name ?? "";
-    const cwd = fg?.cwd ?? t.cwd ?? "";
-    return this.home && cwd.startsWith(this.home) ? `~${cwd.slice(this.home.length)}` : cwd;
   }
 
   track(rows, now, at) {
@@ -76,10 +96,8 @@ export default class Rail extends View {
   }
 
   row(t, r, tabName, on, now) {
-    const agent = AGENT.has(r.mark);
-    const shell = !agent;
-    const name = agent ? r.t.name || (["agent", "program"].includes(r.t.program?.key) ? r.t.program?.name : r.t.program?.key) || r.t.address
-      : r.t.name || base(r.t.argv?.[0]) || r.t.program?.name || r.t.address;
+    const shell = !AGENT.has(r.mark);
+    const { name, what } = rowText(r.t, r.mark, tabName, this.home);
     const sideText = this.side(r, now);
     return h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
@@ -90,7 +108,7 @@ export default class Rail extends View {
       .child(div().flex_none().max_w(120).truncate().font_medium().text_color(shell ? t.muted : t.foreground)
         .when(shell, (el) => el.font_family(settings().font_family ?? "JetBrains Mono").text_size(12))
         .child(name))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(this.what(r, name, tabName)))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
       .when(Boolean(sideText), (el) => el.child(div().flex_none().text_size(11.5).text_color(r.mark === "asks" ? t.blocked : t.dim).child(sideText)))
       .child(this.mark(t, r.mark));
   }
@@ -125,7 +143,7 @@ export default class Rail extends View {
         .children(rows.map((r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now)))));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
     const now = Date.now();
     this.home = home();
@@ -133,6 +151,7 @@ export default class Rail extends View {
     const byAddr = new Map(all.filter((x) => x.state === "live").map((x) => [x.address, x]));
     const ps = panes();
     const sp = spaces();
+    if (!((sp.find((s) => s.active)?.machine ?? "") in this.load)) this.poll(cx); // a machine not read yet
     const shownTerm = focused()?.terminal ?? null;
     const tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
@@ -159,6 +178,7 @@ export default class Rail extends View {
 
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(div().h(31).flex_none().pl(20).pt(10).text_size(11.5).text_color(t.dim).child("Spaces"))
-      .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items));
+      .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items))
+      .children([this.foot(t)].filter(Boolean));
   }
 }

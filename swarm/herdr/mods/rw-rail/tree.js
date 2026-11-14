@@ -19,6 +19,20 @@ export function agentWhat(t, name, tabName) {
   return [t.title, t.report?.msg, tabName, base(t.cwd)].map(clean).find((s) => s && !not.includes(s.toLowerCase()) && !/^[~/]/.test(s)) ?? "";
 }
 
+// A row's or pill's name and what follows it: an agent's hc name (else its program) and agentWhat; a shell's name (else
+// the started shell), then its front program's argv, or its folder at a prompt (`~` for `home`).
+export function rowText(t, mark, tabName, home) {
+  if (AGENT.has(mark)) {
+    const name = t.name || (["agent", "program"].includes(t.program?.key) ? t.program?.name : t.program?.key) || t.address;
+    return { name, what: agentWhat(t, name, tabName) };
+  }
+  const name = t.name || base(t.argv?.[0]) || t.program?.name || t.address;
+  const fg = t.foreground;
+  if (mark === "run") return { name, what: fg?.argv?.length ? fg.argv.join(" ") : t.program?.name ?? "" };
+  const cwd = fg?.cwd ?? t.cwd ?? "";
+  return { name, what: home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd };
+}
+
 // Stamps since when each agent shows its mark, in `changed` (address -> {m, turn, at}); true if it changed any.
 // Done and idle count as one (looking at a done agent makes it idle); a new turn restamps, so a turn the rail didn't
 // see while it wasn't shown can't leave an old time. `at(address)` is the app's own time for that change, if any.
@@ -82,4 +96,14 @@ export function rowsOf(space, ps, byAddr) {
   for (const t of roots.filter((t) => t.status != null)) walk(t, []);
   for (const t of roots.filter((t) => t.status == null)) walk(t, []);
   return out;
+}
+
+// The bar's Needs you list: every live agent that is blocked or in error, on every machine; never a shell.
+export const needsYou = (all) => all.filter((t) => t.state === "live" && !t.program?.shell && (t.status === "blocked" || t.status === "error"));
+
+// The terminal a tab's pill speaks for: the agent whose status is the tab's own (its most urgent), else its first agent,
+// else its first terminal; null for a tab of mod panes.
+export function pillOf(tab, ps, byAddr) {
+  const ts = ps.filter((p) => p.tab === tab.id && byAddr.has(p.terminal)).map((p) => byAddr.get(p.terminal));
+  return ts.find((t) => tab.status && t.status === tab.status) ?? ts.find((t) => t.status != null) ?? ts[0] ?? null;
 }
