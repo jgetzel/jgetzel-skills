@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, exec, theme, run, appHome, shared, settings, layout } from "herdr";
-import { agentRows, allShown, asksOf, boardRows, dur, memoryOf, openAsk, showAll, sumFor, tagOf } from "./tree.js";
+import { agentRows, allShown, asksOf, boardRows, dur, memoryOf, openAsk, overOf, showAll, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -15,6 +15,9 @@ const swarm = (cwd, on, args) => on
   : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
 const POLL = 5000; // while the view shows
 const TASKS = 3; // a column's next tasks
+const AGENTS = 12; // a column's agents, who asks first; then "N more"
+const NEEDS = 20; // Needs you cards; then "N more"
+const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const key = (w) => `${w.on ?? ""}:${w.db}`;
 const g = (kb) => Math.round(kb / 1048576);
@@ -24,18 +27,23 @@ export default class AllSwarms extends View {
   init(_props, cx) {
     this.over = {}; // key -> the swarm's `state --view overview`
     this.mem = null; // this computer's { used, total } in kB
-    cx.timer.every(POLL, (cx) => { if (allShown(layout())) this.refresh(cx); });
+    // A round reads every swarm's overview, one at a time; the next waits at least twice as long as it took (50 swarms
+    // of 500 agents take minutes).
+    cx.timer.every(POLL, (cx) => { if (allShown(layout()) && Date.now() >= (this.next ?? 0)) this.refresh(cx); });
     this.refresh(cx);
   }
 
   refresh(cx) {
     if (this.loading) return;
     this.loading = true;
-    const ws = shared("rw-rail.swarms") ?? [];
+    const ws = sumsOf(), t0 = Date.now();
     cx.spawn(async (cx) => {
       const over = {};
       for (const w of ws) {
-        try { const r = await swarm(w.folder, w.on, ["state", "--json", "--view", "overview"]); if (r.code === 0) over[key(w)] = JSON.parse(r.stdout); } catch {}
+        try {
+          const r = await swarm(w.folder, w.on, ["state", "--json", "--view", "overview"]), s = r.code === 0 ? overOf(JSON.parse(r.stdout)) : null;
+          if (s) over[key(w)] = s; else if (this.over[key(w)]) over[key(w)] = this.over[key(w)]; // a read that fails keeps the last
+        } catch { if (this.over[key(w)]) over[key(w)] = this.over[key(w)]; }
       }
       try {
         const r = await exec("cat", ["/proc/meminfo"], {});
@@ -43,7 +51,7 @@ export default class AllSwarms extends View {
         const total = kb("MemTotal"), avail = kb("MemAvailable");
         this.mem = r.code === 0 && total > 0 && avail >= 0 ? { used: total - avail, total } : null;
       } catch { this.mem = null; }
-      this.over = over; this.loading = false; cx.notify();
+      this.over = over; this.loading = false; this.next = Date.now() + Math.max(POLL, 2 * (Date.now() - t0)); cx.notify();
     });
   }
 
@@ -77,11 +85,12 @@ export default class AllSwarms extends View {
   needs(t, ws) {
     const asks = ws.flatMap(({ w, s }) => asksOf(s).map((n) => ({ ...n, w, s })));
     if (!asks.length) return null;
+    const more = asks.length - NEEDS;
     return v_flex().id("needs").flex_none().gap(10).px(16).py(14).rounded(12).border(1).border_color(t.blocked + "88").bg(t.blocked + "14")
       .child(h_flex().gap(8).items_center().text_size(13).font_semibold().text_color(t.blocked)
         .child(mark(t, "asks", 8)).child("Needs you")
         .child(div().font_normal().child(`${asks.length}, across ${ws.length === 2 ? "both swarms" : `${ws.length} swarms`}`)))
-      .child(h_flex().gap(12).flex_wrap().items_start().children(asks.map((n, i) => {
+      .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
         const title = n.kind === "question" ? `${n.agent} asks about #${n.task.id}` : n.kind === "prompt" ? `${n.agent} stopped at a prompt` : `${n.agent} is hung`;
         const text = n.kind === "question" ? one(n.task.question) || n.task.title : n.kind === "prompt" ? "Open its terminal and answer." : "watchd keeps it, but it has done nothing for a long time.";
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
@@ -92,7 +101,8 @@ export default class AllSwarms extends View {
           .child(h_flex().gap(8).items_center()
             .when(n.kind === "question", (el) => el.child(this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)))
             .child(this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))));
-      })));
+      })))
+      .when(more > 0, (el) => el.child(div().text_size(12.5).text_color(t.blocked).child(`${more} more`)));
   }
 
   column(t, w, s, i) {
@@ -105,7 +115,7 @@ export default class AllSwarms extends View {
     const next = rows.filter((r) => r.tone === "foreground" || r.tone === "dim")
       .sort((x, y) => (x.tone === y.tone ? 0 : x.tone === "foreground" ? -1 : 1) || (x.k.qpos ?? 1e9) - (y.k.qpos ?? 1e9) || x.k.id - y.k.id).slice(0, TASKS);
     const comms = s.agents?.find((a) => a.name === s.comms && a.status !== "ended");
-    const repo = w.folder.replace(/\/+$/, "").replace(/.*\//, "");
+    const repo = String(w.folder ?? "").replace(/\/+$/, "").replace(/.*\//, ""), ags = agentRows(s);
     const staff = `Auto-spawn to ${l.min ?? 0}${l.max != null ? `, max ${l.max}` : ""}.${l.held ? ` ${l.held.replace(/^auto-spawn holding: /, "Holding: ")}` : ""}`;
     return v_flex().id(`swarm-${i}`).flex_1().min_w(360).pt(12).pb(10).px(6).rounded(12).border(1).border_color(t.border).bg(t.surface)
       .child(h_flex().px(10).pb(8).gap(8).items_center().flex_wrap()
@@ -115,13 +125,16 @@ export default class AllSwarms extends View {
         .child(div().flex_1())
         .when(Boolean(comms), (el) => el.child(this.btn(t, `comms-${i}`, "Communicator", (cx) => this.focus(w, s, comms.name, false, cx))))
         .child(this.btn(t, `space-${i}`, "Open space", () => this.openSpace(w))))
-      .children(agentRows(s).map((r) => h_flex().id(`agent-${i}-${r.a.name}`).h(34).px(10).gap(10).items_center().min_w(0)
+      .children(ags.slice(0, AGENTS).map((r, j) => h_flex().id(`agent-${i}-${j}`).h(34).px(10).gap(10).items_center().min_w(0)
         .border_t(1).border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click((_e, cx) => this.focus(w, s, r.a.name, r.mark === "asks", cx))
         .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(mark(t, r.mark))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
         .child(div().flex_none().max_w(170).truncate().text_color(r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim).child(r.state))))
+      .when(ags.length > AGENTS, (el) => el.child(div().id(`agents-more-${i}`).h(30).px(10).flex().items_center().border_t(1).border_color(t.border)
+        .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openSpace(w))
+        .child(`${ags.length - AGENTS} more in its space`)))
       .child(h_flex().mt(8).px(10).pt(10).gap(8).items_baseline().border_t(1).border_color(t.border).text_size(12.5)
         .child(div().font_semibold().text_color(t.foreground).child("Board"))
         .child(div().text_color(t.muted).child(`${done} of ${total} done`)).child(div().flex_1())
@@ -155,7 +168,7 @@ export default class AllSwarms extends View {
   }
 
   render(cx) {
-    const t = theme(), sums = shared("rw-rail.swarms") ?? [];
+    const t = theme(), sums = sumsOf();
     const ws = sums.map((w) => ({ w, s: this.over[key(w)] })).filter((x) => x.s);
     const n = sums.reduce((k, s) => k + (s.agents?.length ?? 0), 0);
     const page = v_flex().id("rw-swarms").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);

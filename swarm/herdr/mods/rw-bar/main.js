@@ -8,11 +8,14 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared, setShared } from "herdr";
-import { agentAt, allShown, ciWord, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
+import { agentAt, allShown, ciWord, line, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
+const PILLS = 40; // pills drawn, around the shown tab; the tabs either side are a pill each that selects the next one
+const NEEDS = 60; // Needs you rows drawn
+const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
   init() {
@@ -28,17 +31,17 @@ export default class Bar extends View {
     return parts ? parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("") : "Commands";
   }
 
-  pill(t, space, tab, i, ps, byAddr) {
+  // `sum`: the space's swarm summary (sumFor), read once a render: spaces() and shared() are host calls of ~10 ms.
+  pill(t, space, tab, i, ps, byAddr, sum) {
     const term = pillOf(tab, ps, byAddr);
     const m = term ? markOf(term, false) : null;
-    let { name, what } = term ? rowText(term, m, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
+    let { name, what } = term ? rowText(term, m, null, home()) : { name: line(ps.find((p) => p.tab === tab.id)?.title ?? tab.name, 120), what: "" };
     // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm; a swarm agent's pill is its name.
-    const sum = sumFor(shared("rw-rail.swarms"), space, new Set(spaces().map((s) => s.id)));
     const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm") && sum;
     const a = term && agentAt(sum, term.address);
     if (sw) { name = "Swarm"; what = `${sw.agents.length} ${sw.agents.length === 1 ? "agent" : "agents"}`; }
     else if (a) { name = a.name === sum.comms ? "Communicator" : a.name; what = ""; }
-    if (tab.named) name = tab.name;
+    if (tab.named) name = line(tab.name, 120);
     if (m === "asks") what = "asks";
     if (what === name) what = "";
     return h_flex().id(`tab-${tab.id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
@@ -85,10 +88,11 @@ export default class Bar extends View {
     const spaceOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s])));
     const paneOf = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, p]));
     const asks = needsYou(all);
-    const qs = questionsOf(shared("rw-rail.swarms"), new Set(asks.map((x) => x.address)));
-    const items = [...asks.map((term) => ({ address: term.address, ...rowText(term, "asks", null, home()) })), ...qs].map(({ address, name, what }, i) => {
+    const qs = questionsOf(sumsOf(), new Set(asks.map((x) => x.address)));
+    const all_ = [...asks.map((term) => ({ address: term.address, ...rowText(term, "asks", null, home()) })), ...qs];
+    const items = all_.slice(0, NEEDS).map(({ address, name, what }, i) => {
       const p = paneOf.get(address), s = p && spaceOf.get(p.tab);
-      return h_flex().id(`needs-${address ?? i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
+      return h_flex().id(`needs-${i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
         .cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click(() => {
           closeOverlay(props().overlay);
@@ -98,12 +102,13 @@ export default class Bar extends View {
         .child(div().flex_none().max_w(110).truncate().font_medium().text_color(t.foreground).child(name))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
         .when(Boolean(s), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(11.5).text_color(t.muted)
-          .child(s.machine ? `${s.machine} · ${s.name}` : s.name)))
+          .child(line(s.machine ? `${s.machine} · ${s.name}` : s.name, 80))))
         .child(mark(t, "asks"));
     });
     return v_flex().size_full().p(6).gap(2).bg(t.popover).text_color(t.foreground)
       .child(div().px(10).pt(4).pb(6).text_size(11.5).text_color(t.dim).child("Needs you"))
-      .children(items.length ? items : [div().px(10).py(6).text_size(12.5).text_color(t.muted).child("Nothing needs you")]);
+      .children(items.length ? items : [div().px(10).py(6).text_size(12.5).text_color(t.muted).child("Nothing needs you")])
+      .when(all_.length > NEEDS, (el) => el.child(div().px(10).py(6).text_size(12.5).text_color(t.dim).child(`${all_.length - NEEDS} more`)));
   }
 
   render() {
@@ -114,28 +119,35 @@ export default class Bar extends View {
     const ps = panes();
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
     const asks = needsYou([...byAddr.values()]);
-    const needs = asks.length + questionsOf(shared("rw-rail.swarms"), new Set(asks.map((x) => x.address))).length;
+    const needs = asks.length + questionsOf(sumsOf(), new Set(asks.map((x) => x.address))).length;
     const w = window();
     const sidebar = find(layout(), "sidebar");
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
     const mac = w?.platform === "macos" && !w.fullscreen;
     // A swarm's space: its base's CI from the rail's summary ("main green"), else the space's branch.
-    const sum = space && sumFor(shared("rw-rail.swarms"), space, new Set(sp.map((s) => s.id)));
+    const sum = space && sumFor(sumsOf(), space, new Set(sp.map((s) => s.id)));
     const ci = ciWord(sum?.ci);
-    const sub = [space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · ");
+    const sub = line([space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · "), 120);
     const tabs = space?.tabs ?? [], away = tabs.filter((tab) => tab.settled).length, last = [...tabs].reverse().find((tab) => tab.settled);
     const swarmTab = tabs.find((tab) => ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm"));
+    const open = tabs.filter((tab) => !tab.settled), at = Math.max(0, open.findIndex((tab) => tab.active));
+    const lo = Math.max(0, Math.min(at - PILLS / 2, open.length - PILLS)), hi = Math.min(open.length, lo + PILLS);
+    const win = new Set(open.slice(lo, hi));
+    const edge = (id, n, to) => [h_flex().id(id).h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("tab.select", { id: to.id })).child(`${n} more`)];
+    const edges = new Map([...(lo > 0 ? [[open[lo - 1], edge("tabs-before", lo, open[lo - 1])]] : []),
+      ...(hi < open.length ? [[open[hi], edge("tabs-after", open.length - hi, open[hi])]] : [])]);
     return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(v_flex().w(mac ? Math.max(60, left - 64) : left).flex_none().min_w(0)
-        .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(space?.name ?? ""))
+        .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(line(space?.name, 80)))
         .child(h_flex().min_w(0).gap(4).text_size(11.5).text_color(t.dim).child(div().truncate().child(sub))
           .when(Boolean(ci), (el) => el.child(div().flex_none().text_color(ci === "green" ? t.ansi2 : ci === "checks run" ? t.working : t.blocked).child(ci)))))
       .child(h_flex().id("pills").flex_1().min_w(0).items_center().overflow_x_scrollbar()
         .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
-          // The tabs put away are one pill where the last of them sits.
-          .children(tabs.flatMap((tab, i) => (tab !== last ? tab.settled ? [] : [this.pill(t, space, tab, i, ps, byAddr)]
+          // The tabs put away are one pill where the last of them sits. Past PILLS tabs, those around the shown one.
+          .children(tabs.flatMap((tab, i) => (tab !== last ? tab.settled || !win.has(tab) ? edges.get(tab) ?? [] : [this.pill(t, space, tab, i, ps, byAddr, sum)]
             : [h_flex().id("tabs-away").h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)
               .when(Boolean(swarmTab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
               .on_mouse_down("left", stop).on_click(() => swarmTab && run("tab.select", { id: swarmTab.id })).child(`${away} more`)])))

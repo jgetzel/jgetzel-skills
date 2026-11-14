@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { panes, exec, theme, run, appHome, props, settings, watchFolder } from "herdr";
-import { dur } from "./tree.js";
+import { answerArgs, dur, line, overOf } from "./tree.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 const swarm = (cwd, on, args) => on
@@ -29,7 +29,8 @@ export default class Question extends View {
   where() { const p = props() ?? {}; return { cwd: p.folder, on: p.machine ?? null, name: p.agent }; }
   due() {
     const age = Date.now() - (this.at ?? 0);
-    return this.dirty || age > (this.where().on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL);
+    // never more often than 3× as long as a read takes (a big board's overview takes seconds)
+    return age > 3 * (this.took ?? 0) && (this.dirty || age > (this.where().on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
   refresh(cx) {
     const { cwd, on, name } = this.where();
@@ -37,13 +38,15 @@ export default class Question extends View {
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", "overview", "--agent", name]);
+        const r = await swarm(cwd, on, ["state", "--json", "--view", "overview", `--agent=${name}`]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
-        this.s = JSON.parse(r.stdout); this.error = null;
+        const s = overOf(JSON.parse(r.stdout));
+        if (!s) throw new Error("swarm state printed no overview");
+        this.s = s; this.error = null;
         if (!on && this.s.db) this.watch(this.s.db.replace(/\/[^/]*$/, ""));
         if (!this.ask()) this.close();
-      } catch (e) { this.error = String(e.message ?? e); }
-      this.loading = false; cx.notify();
+      } catch (e) { this.error = line(e?.message ?? e, 300) || "swarm state failed"; }
+      this.took = Date.now() - this.at; this.loading = false; cx.notify();
     });
   }
   // As rw-swarm: the db folder changing marks the data stale; our own reads touch only the -shm index.
@@ -74,14 +77,14 @@ export default class Question extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, args);
-        if (r.code === 0) ok?.(); else this.flash = [(r.stderr.trim() || r.stdout.trim() || `swarm exited ${r.code}`).replace(/^swarm: /, ""), true];
-      } catch (e) { this.flash = [String(e.message ?? e), true]; }
+        if (r.code === 0) ok?.(); else this.flash = [line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`, true];
+      } catch (e) { this.flash = [line(e?.message ?? e, 300), true]; }
       this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
     });
   }
   answer(cx) {
     const q = this.ask(), text = this.input.value().trim();
-    if (q && text && !this.busy) this.act(cx, ["task", "unblock", String(q.k.id), "--answer", text], () => this.input.set_value(""));
+    if (q && text && !this.busy) this.act(cx, answerArgs(q.k.id, text), () => this.input.set_value(""));
   }
   // The question stays blocked; the communicator answers it in your place.
   delegate(cx) {

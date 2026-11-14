@@ -14,6 +14,9 @@
 #   names; "vps" is unreachable.
 # - large: real, with jgetzel-skills at 24 live agents and 110 ended.
 # - small: the rail's first demo; with no other flag no swarm, else as the flags say.
+# - hostile: large, plus a space "hostile" (#180) whose name breaks a line, reverses text and runs 300 characters, an agent
+#   whose title says "asks you" while it works, a tab named in RTL, zero-width and combining text, 300 shell tabs, and in
+#   jgetzel-skills a task whose title breaks lines and runs 600 characters, its question starting with a dash.
 # Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one gets
 # it as its parent. Flags imply small. --fold folds jk_ledger, nixos and linn-studio (shells only). --swarm N adds a
 # space, jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24: its D) that register their own
@@ -36,7 +39,8 @@ while [ $# -gt 0 ]; do
     *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;;
   esac
 done
-case $preset in small|real|large) ;; *) echo "rail-demo.sh: no preset $preset (small, real, large)" >&2; exit 2 ;; esac
+hostile=; [ "$preset" != hostile ] || { hostile=1 preset=large; }
+case $preset in small|real|large) ;; *) echo "rail-demo.sh: no preset $preset (small, real, large, hostile)" >&2; exit 2 ;; esac
 D=$(dirname "$HERDR_APP_HOME")
 do_() { herdr-app do "$@"; }
 id() { jq -r ".$1"; }
@@ -181,6 +185,18 @@ if [ "$preset" != small ]; then
   tab "$lua" '["zsh"]'
   do_ space.new --name dotfiles --folder "$(dir dotfiles)" >/dev/null
   do_ space.new --name housing_search --folder "$(dir housing_search)" --argv "$(agent working 'compare the three listings')" >/dev/null
+fi
+
+if [ -n "$hostile" ]; then
+  long=$(printf '%0300d' 0 | tr 0 x)
+  ho=$(do_ space.new --name "$(printf 'evil\nname \342\200\256desrever\342\200\254 %s' "$long")" --folder "$(dir hostile)" \
+    --argv "$(agent working 'asks you')" | id space)
+  tab "$ho" "$(agent idle "$(printf 'two\\nlines \342\200\213\342\200\213 bidi \342\200\256gnol')")"
+  hn=$(herdr-app ls | jq -r --arg s "$ho" '.spaces[] | select(.id == $s) | .tabs[-1].id')
+  do_ tab.rename --id "$hn" --name "$(printf 'مرحبا \342\200\213 👨‍👩‍👧 Z\314\267\314\241\314\233\314\244a\314\265l\314\264g\314\266o')" >/dev/null
+  i=0; while [ $i -lt 300 ]; do do_ tab.new --space "$ho" --argv '["sh","-c","exec sleep 1d"]' >/dev/null; i=$((i + 1)); done
+  sql "update task set title = 'Line one
+line two: $long$long', question = '-1 or --force? Answer with a dash.' where id = 180"
 fi
 
 folds=; [ -z "$fold" ] || folds="$jk $nix $linn"

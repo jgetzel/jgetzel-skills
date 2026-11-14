@@ -1,10 +1,11 @@
 #!/bin/sh
 # Screenshot this checkout's Swarm panel in a private, headless Herdr; never the person's window, mods or board.
-#   swarm/herdr/shot.sh --rework real|large|small [--width PX] [--theme T] [--before CMD] out.png
+#   swarm/herdr/shot.sh --rework real|large|small|hostile [--width PX] [--theme T] [--before CMD] out.png
 #   swarm/herdr/shot.sh [--screen home|agents|board[:done|dropped]|task:ID|agent:NAME|more:activity|more:system][+ask] [--width PX] [--db FILE] [--theme light|dark|NAME] [--fixture DIR] [--before CMD] out.png
 # --rework: the rework layout over a made-up window (rail-demo.sh's presets; check UI work on real, the default for
 #   rework shots): real is about the user's window (10 spaces, 15 agents, two swarms shaped as `swarm spawn` makes them,
-#   a second machine and an unreachable one), large the same with a swarm of 24 live and 110 ended, small the first demo.
+#   a second machine and an unreachable one), large the same with a swarm of 24 live and 110 ended, small the first demo,
+#   hostile large with hostile names and titles and 300 tabs in one space (rail-demo.sh says which).
 # --screen: the screen the panel opens on (default home); +ask also opens its confirmation (End agent, Release task,
 #   Restart watchd on more:system); board+new opens the new-task form.
 # --before: a shell command run just before the shot, in the sandbox (its DISPLAY, HERDR_APP_HOME, and $DEMO_DB the
@@ -34,8 +35,8 @@ done
 case ${screen%+*} in home|agents|board|board:done|board:dropped|task:[0-9]*|agent:?*|more:activity|more:system) ;; *) echo "shot.sh: no screen $screen" >&2; exit 2 ;; esac
 case $width in ''|*[!0-9]*) echo "shot.sh: --width takes px" >&2; exit 2 ;; esac
 case $out in /*) ;; *) out=$PWD/$out ;; esac
-case $rework in '') ;; small|real|large) before="sh '$(cd -P "$(dirname "$0")" && pwd)/rail-demo.sh' --preset $rework${before:+; $before}" ;;
-  *) echo "shot.sh: no preset $rework (real, large, small)" >&2; exit 2 ;; esac
+case $rework in '') ;; small|real|large|hostile) before="sh '$(cd -P "$(dirname "$0")" && pwd)/rail-demo.sh' --preset $rework${before:+; $before}" ;;
+  *) echo "shot.sh: no preset $rework (real, large, small, hostile)" >&2; exit 2 ;; esac
 
 here=$(cd -P "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)

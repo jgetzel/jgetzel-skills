@@ -6,7 +6,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, terminals, agents, spaces, props, run, theme, shared, home, exec, appHome } from "herdr";
-import { agentAt, looked, markOf, rowText, since, sumFor } from "./tree.js";
+import { agentAt, line, looked, markOf, rowText, since, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -48,9 +48,9 @@ export default class PaneHeader extends View {
     if (p.mod === "rw-swarm" || p.mod === "rw-question") return div().size_full().bg(t.background).on_click(() => run("pane.focus", { pane: p.pane }));
     const term = p.terminal ? looked(terminals(), agents()).find((x) => x.address === p.terminal) : null;
     const m = term ? markOf(term, false) : null;
-    const space = spaces().find((s) => s.tabs.some((x) => x.id === p.tab)), tab = space?.tabs.find((x) => x.id === p.tab);
-    let { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: p.title, what: "" };
-    const sum = term && space && sumFor(shared("rw-rail.swarms"), space, new Set(spaces().map((s) => s.id)));
+    const sp = spaces(), space = sp.find((s) => s.tabs.some((x) => x.id === p.tab)), tab = space?.tabs.find((x) => x.id === p.tab);
+    let { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: line(p.title, 120), what: "" };
+    const sums = shared("rw-rail.swarms"), sum = term && space && sumFor(Array.isArray(sums) ? sums : [], space, new Set(sp.map((s) => s.id)));
     const a = term && agentAt(sum, term.address), comms = a && a.name === sum.comms;
     if (comms) { name = "Communicator"; what = `${a.name} · your channel to the swarm`; }
     else if (a) { name = a.name; what = a.task ? `#${a.task.id} ${a.task.title}` : what; }

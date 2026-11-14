@@ -8,8 +8,85 @@ export function dur(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+// Text from outside (a title any program sets, an agent's task, a name) as one line of at most `max` characters: no
+// control, format (bidi, zero-width) or line-break characters, at most two combining marks in a row (a ZWJ between two
+// pictographs stays: emoji). para keeps line breaks, at most one blank line in a row.
+const CC = /[\p{Cc}\u2028\u2029]+/gu, CF = /(?!\u200d)\p{Cf}|\u200d(?!\p{Extended_Pictographic})|(?<!\p{Extended_Pictographic}\p{M}?)\u200d/gu;
+export function line(s, max = 200) {
+  if (s == null || typeof s === "object") return "";
+  const x = String(s).slice(0, 4 * max + 16).replace(CF, "").replace(CC, " ").replace(/(\p{M}{2})\p{M}+/gu, "$1").replace(/ {2,}/g, " ").trim();
+  return x.length > max ? x.slice(0, max).replace(/[\ud800-\udbff]$/, "") : x; // never half a surrogate pair
+}
+export function para(s, max = 4000) {
+  if (s == null || typeof s === "object") return "";
+  return String(s).slice(0, 2 * max).split(/\r\n|[\n\r\u2028\u2029]/).map((l) => line(l, max)).join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, max);
+}
+
+// The swarm CLI's JSON as the mods read it (`swarm state --json`): each field the type they expect or null, text through
+// line (para for a question, a message, a verdict), lists bounded, agents unique by name and terminal, tasks by id.
+const Tx = (x) => (typeof x === "string" || (typeof x === "number" && Number.isFinite(x)) ? line(x, 300) : null);
+const Px = (x) => (typeof x === "string" ? para(x) : null);
+const Nx = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+const Bx = (x) => x === true;
+const Lx = (f, max = 20000) => (x) => (Array.isArray(x) ? x.slice(0, max).map(f).filter((v) => v != null) : []);
+const Ox = (spec) => (x) => {
+  if (!x || typeof x !== "object" || Array.isArray(x)) return null;
+  const o = {};
+  for (const k in spec) o[k] = spec[k](x[k]);
+  return o;
+};
+const uniq = (xs, ...keys) => {
+  const seen = keys.map(() => new Set());
+  return xs.filter((x) => {
+    if (keys.some((k, i) => x[k] != null && seen[i].has(x[k]))) return false;
+    keys.forEach((k, i) => x[k] != null && seen[i].add(x[k]));
+    return true;
+  });
+};
+const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, ended: Nx });
+const sumAgent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, hung: Bx });
+const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx });
+const summary = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, space: Tx, rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
+  needs: Lx(need, 5000), ci: Ox({ status: Tx, conclusion: Tx }), away: Bx });
+// `--view summary`: null unless an object.
+export function sumOf(j) {
+  const s = summary(j);
+  if (s) s.agents = uniq(s.agents.filter((a) => a.name), "name", "hc");
+  return s;
+}
+const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, stay_sign: Tx, stay: Tx, ctx_tokens: Nx,
+  model: Tx, fate: Ox({ verdict: Tx, says: Px, checks: Lx(Ox({ on: Bx, label: Tx, detail: Tx }), 50) }), events: Lx(Ox({ kind: Tx, ts: Nx }), 500),
+  files: Lx(Tx, 500), cache: Tx, branch: Tx, worktree: Tx, ended: Nx });
+const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
+  pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx });
+const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Bx, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx }),
+  agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
+  ci: Ox({ runs: Lx(Ox({ status: Tx, conclusion: Tx }), 20) }) });
+// `--view overview`, `agents` or `board` (all one shape): null unless an object.
+export function overOf(j) {
+  const s = overview(j);
+  if (s) { s.agents = uniq(s.agents.filter((a) => a.name), "name"); s.tasks = uniq(s.tasks.filter((k) => k.id != null), "id"); }
+  return s;
+}
+// `--view swarms`' registry entries: a db and an absolute folder each.
+export const swarmsOf = (j) => Lx(Ox({ db: Tx, folder: Tx }), 500)(j?.swarms).filter((w) => w.db && w.folder?.startsWith("/"));
+// `gh pr list --json number,headRefName,state,isDraft,statusCheckRollup,url`; a url only if it is https.
+export const prsOf = (j) => Lx(Ox({ number: Nx, headRefName: Tx, state: Tx, isDraft: Bx, url: Tx,
+  statusCheckRollup: Lx(Ox({ conclusion: Tx, state: Tx, status: Tx }), 200) }), 20)(j)
+  .filter((p) => p.number != null).map((p) => ({ ...p, url: /^https:\/\/[^\s]+$/.test(p.url ?? "") ? p.url : null }));
+
+// When a folder's swarm is read again, in ms: a live swarm at least every 5 s and never more often than 3× as long as
+// its read took; a folder with no swarm every 30 s; a read that failed `fails` times in a row 5 s doubling, up to 5 min.
+export const pollNext = (took, ok, active, fails) => (!ok ? Math.min(300000, 5000 * 2 ** Math.min(fails - 1, 6))
+  : Math.max(active ? 5000 : 30000, 3 * took));
+
+// The swarm commands whose arguments come from outside: an answer someone typed, an agent's name. `--answer=` and `--`
+// keep one that starts with a dash ("-1", "--help") a value, never an option.
+export const answerArgs = (id, text) => ["task", "unblock", String(id), `--answer=${text}`];
+export const nudgeArgs = (name) => ["nudge", "--", name];
+
 export const AGENT = new Set(["asks", "hung", "working", "done", "idle"]);
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+const clean = (s) => line(s).replace(/^[^\p{L}\p{N}]+/u, "").trim();
 const base = (p) => (p ?? "").replace(/\/+$/, "").split("/").pop().replace(/^-/, "");
 
 // What an agent's row says after its name: its title, its last report, its tab's name, its folder; the first that
@@ -23,14 +100,14 @@ export function agentWhat(t, name, tabName) {
 // the started shell), then its front program's argv, or its folder at a prompt (`~` for `home`).
 export function rowText(t, mark, tabName, home) {
   if (AGENT.has(mark)) {
-    const name = t.name || (["agent", "program"].includes(t.program?.key) ? t.program?.name : t.program?.key) || t.address;
+    const name = line(t.name || (["agent", "program"].includes(t.program?.key) ? t.program?.name : t.program?.key) || t.address, 120);
     return { name, what: agentWhat(t, name, tabName) };
   }
-  const name = t.name || base(t.argv?.[0]) || t.program?.name || t.address;
+  const name = line(t.name || base(t.argv?.[0]) || t.program?.name || t.address, 120);
   const fg = t.foreground;
-  if (mark === "run") return { name, what: fg?.argv?.length ? fg.argv.join(" ") : t.program?.name ?? "" };
+  if (mark === "run") return { name, what: line(fg?.argv?.length ? fg.argv.slice(0, 50).join(" ") : t.program?.name) };
   const cwd = fg?.cwd ?? t.cwd ?? "";
-  return { name, what: home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd };
+  return { name, what: line(home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd) };
 }
 
 // What a row or header says of its mark: "asks you", or how long the mark has held (`at`, ms; "" when unknown).
@@ -62,6 +139,14 @@ export function stamp(changed, rows, now, at = () => null) {
   return dirty;
 }
 
+// Drops stamps of terminals not in `live`: those older than 30 days, then the oldest until at most `max` are left.
+export function prune(changed, live, now, max) {
+  const gone = Object.keys(changed).filter((k) => !live.has(k));
+  for (const k of gone) if (now - changed[k].at > 30 * 86400000) delete changed[k];
+  const over = Object.keys(changed).length - max;
+  if (over > 0) for (const k of gone.filter((k) => changed[k]).sort((a, b) => changed[a].at - changed[b].at).slice(0, over)) delete changed[k];
+}
+
 // terminals() with the app's status: the core keeps "done" after you look at the agent; agents() turns it idle then.
 export function looked(ts, ags) {
   const seen = new Set(ags.filter((a) => a.status !== "done").map((a) => a.address));
@@ -80,42 +165,61 @@ export function markOf(t, nested) {
   }
 }
 
+export const DEPTH = 8; // tree lines drawn in front of a row at most: a deeper row shows its last 8 levels
+
 // `vps/t7`'s parent `t3` is `vps/t3`: the core records it on that machine.
 const parentOf = (t) => (t.parent && t.address.includes("/") && !t.parent.includes("/") ? `${t.address.split("/")[0]}/${t.parent}` : t.parent);
+
+// What rowsOf reads of every pane and terminal, built once per panes() and terminals() snapshot (a render's): each tab's
+// panes that show a live terminal, the tabs showing each terminal, each terminal's live sub-terminals.
+const INDEX = new WeakMap();
+function indexOf(ps, byAddr) {
+  const had = INDEX.get(ps);
+  if (had?.byAddr === byAddr) return had;
+  const byTab = new Map(), tabsOf = new Map(), kids = new Map();
+  for (const p of ps) {
+    if (!p.terminal) continue;
+    tabsOf.has(p.terminal) ? tabsOf.get(p.terminal).add(p.tab) : tabsOf.set(p.terminal, new Set([p.tab]));
+    if (byAddr.has(p.terminal)) byTab.has(p.tab) ? byTab.get(p.tab).push(p) : byTab.set(p.tab, [p]);
+  }
+  for (const t of byAddr.values()) {
+    const up = parentOf(t);
+    if (up && t.state === "live") kids.has(up) ? kids.get(up).push(t) : kids.set(up, [t]);
+  }
+  const ix = { byAddr, byTab, tabsOf, kids };
+  INDEX.set(ps, ix);
+  return ix;
+}
 
 // One space's rows: agents then shells among its panes' terminals, each followed by its live sub-terminals, depth
 // first; `lines` is the tree drawn in front of a nested row ("│" passing, "├" a child, "└" the last child, "" none).
 // `own`: the space's swarm agents (swarmAddrs), each a tree of its own, though a worker's parent is the communicator.
 export function rowsOf(space, ps, byAddr, own = new Set()) {
+  const { byTab, tabsOf, kids } = indexOf(ps, byAddr);
   const tabIndex = new Map(space.tabs.map((tab) => [tab.id, tab.index]));
-  const mine = ps.filter((p) => p.terminal && tabIndex.has(p.tab) && byAddr.has(p.terminal))
-    .sort((a, b) => tabIndex.get(a.tab) - tabIndex.get(b.tab));
+  const mine = [...space.tabs].sort((a, b) => a.index - b.index).flatMap((tab) => byTab.get(tab.id) ?? []);
   const paneOf = new Map(mine.map((p) => [p.terminal, p.pane]));
-  const elsewhere = new Set(ps.filter((p) => p.terminal && !tabIndex.has(p.tab)).map((p) => p.terminal));
-  const kids = new Map();
-  for (const t of byAddr.values()) {
-    const up = parentOf(t);
-    if (up && t.state === "live" && !own.has(t.address)) kids.set(up, [...(kids.get(up) ?? []), t]);
-  }
+  const elsewhere = { has: (a) => [...(tabsOf.get(a) ?? [])].some((tab) => !tabIndex.has(tab)) };
   const seen = new Set();
   const out = [];
   const walk = (t, lead) => {
     if (seen.has(t.address)) return;
     seen.add(t.address);
     out.push({ t, pane: paneOf.get(t.address) ?? null, lines: lead, mark: markOf(t, lead.length > 0) });
-    const ks = (kids.get(t.address) ?? []).filter((k) => !seen.has(k.address) && !elsewhere.has(k.address));
+    const ks = (kids.get(t.address) ?? []).filter((k) => !own.has(k.address) && !seen.has(k.address) && !elsewhere.has(k.address));
     ks.forEach((k, i) => {
       const last = i === ks.length - 1;
       const pass = lead.map((l) => (l === "├" || l === "│" ? "│" : ""));
-      walk(k, [...pass, last ? "└" : "├"]);
+      walk(k, [...pass, last ? "└" : "├"].slice(-DEPTH));
     });
   };
   // A terminal whose parent is in this space hangs under it, pane or not. One whose parent is gone, has no pane, or is
   // in another space is a root in its own space; a child with a pane in another space shows there, not here.
   const roots = [...mine.map((p) => byAddr.get(p.terminal)).filter((t) => own.has(t.address) || !(parentOf(t) && paneOf.has(parentOf(t)))),
     ...[...own].filter((a) => byAddr.has(a) && !paneOf.has(a) && !elsewhere.has(a)).map((a) => byAddr.get(a))];
-  for (const t of roots.filter((t) => t.status != null)) walk(t, []);
-  for (const t of roots.filter((t) => t.status == null)) walk(t, []);
+  // A pane's terminal no root reaches (its parents form a cycle, or it is its own parent) is a root too.
+  for (const t of [...roots, ...mine.map((p) => byAddr.get(p.terminal))].filter((t) => t.status != null)) walk(t, []);
+  for (const t of [...roots, ...mine.map((p) => byAddr.get(p.terminal))].filter((t) => t.status == null)) walk(t, []);
   return out;
 }
 
@@ -128,7 +232,7 @@ export function questionsOf(swarms, counted) {
   return (swarms ?? []).flatMap((j) => (j.needs ?? []).filter((n) => n.kind === "question").map((n) => {
     const hc = (j.agents ?? []).find((a) => a.name === n.agent)?.hc;
     const address = hc ? (j.on && !hc.includes("/") ? `${j.on}/${hc}` : hc) : null;
-    return { address, name: n.agent ?? "", what: n.question || n.title || `#${n.task}` };
+    return { address, name: n.agent ?? "", what: line(n.question) || n.title || `#${n.task}` };
   })).filter((q) => !q.address || !counted.has(q.address));
 }
 
@@ -212,15 +316,27 @@ export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
 // back only for its terminal's own needs, not a swarm question). Tabs of anything else are left as they are.
 // Returns { settle: tab ids, unsettle: tab ids, opened: addresses }.
 export function settleOf(put, hot, ps, tabs) {
-  const out = { settle: [], unsettle: [], opened: [] };
+  const out = { settle: [], unsettle: [], opened: [] }, byTab = new Map();
+  for (const p of ps) byTab.has(p.tab) ? byTab.get(p.tab).push(p) : byTab.set(p.tab, [p]);
   for (const tab of tabs) {
-    const ts = ps.filter((p) => p.tab === tab.id);
+    const ts = byTab.get(tab.id) ?? [];
     const terms = ts.filter((p) => p.terminal).map((p) => p.terminal);
     if (!terms.length || !ts.every((p) => p.terminal || p.mod === "rw-question")) continue;
     if (terms.every((a) => put.has(a))) {
-      if (tab.active) out.opened.push(...terms); else if (!tab.settled) out.settle.push(tab.id);
+      // Never the tab you are in, nor one whose own terminal asks (a worker's sub-agent at a prompt, say).
+      if (tab.active) out.opened.push(...terms); else if (!tab.settled && !["blocked", "error"].includes(tab.status)) out.settle.push(tab.id);
     } else if (tab.settled && terms.every((a) => put.has(a) || hot.has(a)) && terms.some((a) => hot.has(a))) out.unsettle.push(tab.id);
   }
+  return out;
+}
+
+// Of tab ids `ids`, those not asked about in the last `ms` (`asked`: id -> when, shared by settle and unsettle), at most
+// `max`, stamped now: a tab Herdr hasn't put away yet isn't asked again each frame, one that came back can't go again
+// at once, and a flood of workers goes a few at a time.
+export function due(asked, ids, now, ms = 10000, max = 20) {
+  for (const [id, at] of asked) if (now - at >= ms) asked.delete(id);
+  const out = ids.filter((id) => !asked.has(id)).slice(0, max);
+  for (const id of out) asked.set(id, now);
   return out;
 }
 
@@ -237,18 +353,20 @@ export function swarmText(it, at, now, opened) {
 // What waits on you: questions (tasks blocked on you), agents stopped at a prompt, hung agents.
 export function asksOf(s) {
   const tasks = s.tasks ?? [], live = (s.agents ?? []).filter((a) => a.status !== "ended");
+  const asked = new Set(tasks.filter((k) => k.state === "blocked").map((k) => k.owner));
   return [
     ...tasks.filter((k) => k.state === "blocked").map((k) => ({ kind: "question", agent: k.owner, task: k, ago: k.blocked_s })),
-    ...live.filter((a) => a.status === "blocked" && !tasks.some((k) => k.state === "blocked" && k.owner === a.name)).map((a) => ({ kind: "prompt", agent: a.name, ago: a.idle_s })),
+    ...live.filter((a) => a.status === "blocked" && !asked.has(a.name)).map((a) => ({ kind: "prompt", agent: a.name, ago: a.idle_s })),
     ...live.filter((a) => a.stay_sign === "hung").map((a) => ({ kind: "hung", agent: a.name, ago: a.idle_s })),
   ];
 }
 // An agent row: its mark, its task (title, not the terminal's last line) and its state words; who asks first, the
 // communicator last.
 export function agentRows(s) {
-  const tasks = s.tasks ?? [];
+  const asks = new Map();
+  for (const k of s.tasks ?? []) if (k.state === "blocked" && !asks.has(k.owner)) asks.set(k.owner, k);
   const rows = (s.agents ?? []).filter((a) => a.status !== "ended").map((a) => {
-    const comms = a.name === s.comms, q = tasks.find((k) => k.state === "blocked" && k.owner === a.name);
+    const comms = a.name === s.comms, q = asks.get(a.name);
     const idle = `idle ${dur((a.idle_s ?? 0) * 1000)}`;
     const [mark, state, hot] = q || a.status === "blocked" ? ["asks", q ? `asks you · ${dur((q.blocked_s ?? 0) * 1000)}` : "at a prompt", "blocked"]
       : a.stay_sign === "hung" ? ["hung", `hung ${dur((a.idle_s ?? 0) * 1000)}`, "blocked"]
