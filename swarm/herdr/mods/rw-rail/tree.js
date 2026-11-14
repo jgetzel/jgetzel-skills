@@ -766,7 +766,7 @@ const findId = (node, id) => (node?.id === id ? node : (node?.children ?? []).re
 export const allShown = (lay) => findId(lay, "view")?.active === "all-swarms";
 export const showAll = (run, on) => run("layout.select", { stack: "view", child: on ? "all-swarms" : "main" });
 // The swarm view (Part II.3): the stack's "swarm" child, rw-swarm full width; which swarm, section and page it shows is
-// shared("rw-swarm.view") ({folder, machine, section}). viewShown: a view other than the tabs shows.
+// shared("rw-swarm.view") ({folder, machine, section, page}). viewShown: a view other than the tabs shows.
 export const swarmShown = (lay) => findId(lay, "view")?.active === "swarm";
 export const viewShown = (lay) => (findId(lay, "view")?.active ?? "main") !== "main";
 export const SECTIONS = [["overview", "Overview"], ["agents", "Agents"], ["board", "Board"], ["activity", "Activity"], ["landing", "Landing"],
@@ -774,6 +774,25 @@ export const SECTIONS = [["overview", "Overview"], ["agents", "Agents"], ["board
 export function showSwarm(run, setShared, view) {
   setShared("rw-swarm.view", { section: "overview", ...view });
   run("layout.select", { stack: "view", child: "swarm" });
+}
+// The side view (II.7): rw-swarm as the side panel's "swarm-side" child, beside the tabs; Calendar shares the panel.
+export const sideShown = (lay) => { const p = findId(lay, "panel"); return Boolean(p && !p.hidden && findId(lay, "panel-body")?.active === "swarm-side"); };
+export function showSide(run, on) {
+  if (!on) return run("layout.hide", { id: "panel" });
+  run("layout.select", { stack: "panel-body", child: "swarm-side" }); run("layout.show", { id: "panel" });
+}
+// Side and Full (II.7), each a toggle and never both open; `sum` is the swarm Full opens (the shown space's).
+export function toggleSide(run, lay) {
+  if (sideShown(lay)) return showSide(run, false);
+  if (swarmShown(lay)) showAll(run, false);
+  showSide(run, true);
+}
+export function toggleFull(run, setShared, shared, lay, sum) {
+  if (swarmShown(lay)) return showAll(run, false);
+  if (!sum) return;
+  if (sideShown(lay)) showSide(run, false);
+  const v = shared("rw-swarm.view") ?? {}, same = v.folder === sum.folder && (v.machine ?? null) === (sum.on ?? null);
+  showSwarm(run, setShared, { ...(same ? v : { section: v.section }), folder: sum.folder, machine: sum.on ?? null });
 }
 // An event as one line of an agent's Latest: what it did, in words.
 export const evText = (e) => line(evWords(e), 300);

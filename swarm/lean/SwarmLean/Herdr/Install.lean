@@ -15,7 +15,7 @@ the herdr-mods/herdr-mods launcher).
                            view (swarm/herdr/UI-SPEC.md);
                            rw-settings/app.js is the app's Settings screen (frame/settings/main.js), which it extends
   layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, rw-settings
-                           at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms, only Calendar in the side panel, and no brand block, tab bar or status
+                           at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms and rw-swarm, Calendar and rw-swarm's side view in the side panel, and no brand block, tab bar or status
                            bar; its dark look is themes/rework.json (copy of swarm/herdr/themes/rework.json, the canvas's warm
                            palette), its light look Herdr's paper
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
@@ -185,8 +185,8 @@ partial def edit (j : Json) : Json := Id.run do
   return j
 
 /-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, rw-settings'
-foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, only Calendar in the side panel, and no brand block, tab bar
-or status bar (rw-bar replaces them). -/
+foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, Calendar and the swarm side
+view in a 420 px side panel, and no brand block, tab bar or status bar (rw-bar replaces them). -/
 partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
@@ -194,10 +194,12 @@ partial def reworkBody (j : Json) : Json := Id.run do
     -- three rows (Settings, Calendar, Add machine) of 28 px, 4 above and 8 below
     return (j.setObjVal! "content" (Json.mkObj [("mod", "rw-settings"), ("props", Json.mkObj [("footer", true)])])).setObjVal! "size"
       (Json.mkObj [("px", 97)])
-  -- Only the calendar: the swarm tab replaces the Swarm panel, and the person doesn't use Files or Changes.
+  -- Only the calendar and the swarm side view (UI-SPEC.md, II.7): the person doesn't use Files or Changes.
   if Json.fstr j "id" == some "panel-body" then
     let kids := (Json.items ((Json.field j "children").getD .null)).filter (Json.fstr · "id" == some "calendar")
-    return (j.setObjVal! "children" (.arr kids.toArray)).setObjVal! "active" "calendar"
+    let side := Json.mkObj [("id", "swarm-side"), ("type", "block"),
+      ("content", Json.mkObj [("mod", "rw-swarm"), ("props", Json.mkObj [("view", true), ("side", true)])])]
+    return (j.setObjVal! "children" (.arr (kids ++ [side]).toArray)).setObjVal! "active" "calendar"
   -- Panes as cards with rw-pane's header (UI-SPEC.md, "Panes as cards").
   if Json.fstr j "id" == some "main" then
     let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
@@ -212,6 +214,9 @@ partial def reworkBody (j : Json) : Json := Id.run do
     let sw := Json.mkObj [("id", "swarm"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-swarm"), ("props", Json.mkObj [("view", true)])])]
     return Json.mkObj [("id", "view"), ("type", "stack"), ("active", "main"), ("children", .arr #[main, all, sw])]
   let mut j := j
+  -- the side view's width, Calendar's too (II.7)
+  if Json.fstr j "id" == some "panel" then
+    j := ((j.setObjVal! "size" (Json.mkObj [("px", 420)])).setObjVal! "min" 360).setObjVal! "max" 720
   if let some (.arr cs) := Json.field j "children" then
     let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
     j := j.setObjVal! "children" (.arr (keep.map reworkBody))
@@ -348,8 +353,8 @@ def main : IO UInt32 := do
   copy (here ++ "/../swarm/herdr/themes/rework.json") (home ++ "/themes")
   IO.println s!"wrote {home}/themes/rework.json"
   let out := home ++ "/layouts/rework.json"
-  -- An older rework had Swarm in the side panel: a window showing it now hides the panel, which may have shown Swarm.
-  let old := (Json.decode (← try IO.FS.readFile out catch _ => pure "")).bind (find · "swarm")
+  -- An older rework had the old Swarm mod in the side panel: a window showing it now hides the panel, which may have shown it.
+  let old := ((Json.decode (← try IO.FS.readFile out catch _ => pure "")).bind (find · "panel-body")).bind (find · "swarm")
   IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"

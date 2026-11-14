@@ -2,16 +2,17 @@
 // full-width swarm view (a child of the "view" stack): the swarm, section and page are shared("rw-swarm.view")
 // ({folder, machine, section}), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
 // width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
-// cards. Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
+// cards. With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
+// last one it showed, in one column under 700 px, under a head with Expand and Close. Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
 // agents with their tasks, the board with staffing, the latest messages, and landing (main's CI, PRs).
 // A large swarm (past FOLD workers, slice 9) groups the agents by state under a filter, and the board is counts and the
 // next tasks to staff. Ended agents are one line; opening it lists them, read-only. The board's Done and Dropped links
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -81,15 +82,18 @@ export default class SwarmTab extends View {
 
   where() {
     const p = props() ?? {}, s = spaces().find((x) => x.active), v = p.view ? shared("rw-swarm.view") ?? {} : null;
-    if (v?.folder) return { cwd: v.folder, on: v.machine ?? null };
-    if (v) { // none chosen: the shown space's swarm, as the rail finds it
-      const sums = shared("rw-rail.swarms"), sum = s && Array.isArray(sums) ? sumFor(sums, s, new Set(spaces().map((x) => x.id))) : null;
-      return { cwd: sum?.folder ?? null, on: sum?.on ?? null };
+    const spaceSum = () => { const sums = shared("rw-rail.swarms"); return s && Array.isArray(sums) ? sumFor(sums, s, new Set(spaces().map((x) => x.id))) : null; };
+    if (p.side) { // the shown space's swarm; a space with none keeps the last one, else the full view's
+      const sum = spaceSum();
+      if (sum) this.last = { cwd: sum.folder, on: sum.on ?? null };
+      return this.last ?? { cwd: v.folder ?? null, on: v.machine ?? null };
     }
+    if (v?.folder) return { cwd: v.folder, on: v.machine ?? null };
+    if (v) { const sum = spaceSum(); return { cwd: sum?.folder ?? null, on: sum?.on ?? null }; } // none chosen: the shown space's swarm
     return p.folder ? { cwd: p.folder, on: p.machine ?? null } : { cwd: s?.folder, on: s?.machine ?? null };
   }
   due() {
-    if (props()?.view && !swarmShown(layout())) return false; // the view reads only while it shows
+    if (props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout()))) return false; // the view reads only while it shows
     const age = Date.now() - (this.at ?? 0), { on } = this.where();
     // never more often than 3× as long as a read takes (500 agents' overview takes seconds)
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
@@ -588,6 +592,7 @@ export default class SwarmTab extends View {
 
   overview(t, s, cols, cx) {
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
+    if (cols === 1) return col("c1", [this.allNeeds(t, s, cx), this.digest(t, s), this.fewAgents(t, s), this.fewBoard(t, s), this.latest(t, s)].filter(Boolean)); // the side view (II.7)
     const c1 = [this.allNeeds(t, s, cx), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
@@ -651,7 +656,7 @@ export default class SwarmTab extends View {
   back(pg) {
     const v = shared("rw-swarm.view") ?? {};
     setShared("rw-swarm.view", { ...v, page: null });
-    if (pg.back === "tab") showAll(run, false);
+    if (pg.back === "tab" && !props()?.side) showAll(run, false);
   }
   message(t, name) {
     if (this.msgFor !== name) { this.msgFor = name; this.urgent = false; this.msg.set_value(""); }
@@ -1268,7 +1273,7 @@ export default class SwarmTab extends View {
   }
 
   view(t, s, cx) {
-    const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
+    const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", w = this.width ?? 0, cols = w >= 1900 ? 3 : w && w < 700 ? 1 : 2;
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
     const body = v.page?.agent ? page(this.agentPage(t, s, v.page)) : Number.isInteger(v.page?.task) ? page(this.taskPage(t, s, v.page))
       : section === "overview" ? this.overview(t, s, cols, cx)
@@ -1299,6 +1304,20 @@ export default class SwarmTab extends View {
     if (this.anim && this.ent.end()) cx.timer.after(20, (cx) => cx.notify());
     return el;
   }
+  // The side view's head (II.7): the swarm's name, Expand (full width, same section and page) and Close.
+  sideHead(t) {
+    const icon = (id, path, f) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim).cursor_pointer()
+      .hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); f(); }).child(svg(path).size(14));
+    const { cwd, on } = this.where(), tag = tagOf(this.s?.comms);
+    return h_flex().id("side-head").flex_none().h(40).pl(14).pr(8).gap(8).items_center().min_w(0)
+      .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.foreground))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground)
+        .child(tag ? `Swarm ${tag}` : line(cwd?.replace(/\/+$/, "").replace(/.*\//, "") ?? "Swarm", 60)))
+      .when(Boolean(cwd), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
+        showSide(run, false); showSwarm(run, setShared, { ...(shared("rw-swarm.view") ?? {}), folder: cwd, machine: on });
+      })))
+      .child(icon("side-close", "mods/pane/close.svg", () => showSide(run, false)));
+  }
   // While a swarm is first read (II.4c): placeholder rows that pulse; without animations, the words.
   reading(t) {
     if (this.error || !this.anim) return div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…");
@@ -1314,8 +1333,10 @@ export default class SwarmTab extends View {
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
-        .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } });
-      if (!this.s) return root.items_center().justify_center().child(this.reading(t));
+        .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } })
+        .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
+      if (props().side && !this.where().cwd) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
+      if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
       return root.child(this.view(t, this.s, cx));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
