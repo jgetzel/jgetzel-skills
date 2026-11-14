@@ -279,4 +279,14 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(evText({ kind: "lock", path: "b.js" }), "lock b.js");
   assert.equal(evText(null), "");
 }
+// The task page (II.3c): `--task`'s detail and the fields its facts read.
+{
+  const o = overOf({ active: true, tasks: [{ id: 9, state: "done", holders: ["a", 3, null], blocks: [10, "x"], claims: 2, releases: 1,
+    created_by: "human", merge_to_green_s: 360, answer: "yes\nno", ci_conclusion: "success" }],
+    task: { id: 9, body: "# T\nbody", events: [{ ts: 1, agent: "a", kind: "claim" }, 5], messages: [{ ts: 2, frm: "a", dest: "all", body: "hi" }] } });
+  const k = o.tasks[0];
+  assert.deepEqual([k.holders, k.blocks, k.claims, k.created_by, k.merge_to_green_s, k.answer], [["a", "3"], [10], 2, "human", 360, "yes\nno"]);
+  assert.equal(o.task.body, "# T\nbody"); assert.equal(o.task.events.length, 1); assert.equal(o.task.messages[0].dest, "all");
+  assert.equal(overOf({ active: true, task: "no" }).task, null);
+}
 console.log("rail-test: ok");

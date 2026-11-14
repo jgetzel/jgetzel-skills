@@ -78,7 +78,7 @@ const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }],
 assert.deepEqual([ov.agents.length, ov.tasks.length, ov.messages, ov.limits, ov.tasks[0].title], [1, 1, [], null, null]);
 for (let i = 0; i < 3000; i++) {
   const j = rnd() < 0.5 ? junk() : { ...junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk(), ci: junk(),
-    watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk(), locks: junk() };
+    watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk(), locks: junk(), task: junk() };
   const s = T.sumOf(j), o = T.overOf(j);
   if (s) {
     for (const a of s.agents) assert.ok(typeof a.name === "string" && (a.hc === null || typeof a.hc === "string"));
@@ -92,6 +92,7 @@ for (let i = 0; i < 3000; i++) {
     for (const n of T.needsOf(o)) assert.ok(["watchd", "ci", "question", "prompt", "hung", "memory"].includes(n.kind));
     for (const r of o.ci?.runs ?? []) assert.ok(r.url === null || r.url.startsWith("https://"));
     // the agent page (II.3d): its messages, events and locks are lists of objects, each event one bounded line
+    assert.ok(o.task === null || ((o.task.body === null || typeof o.task.body === "string") && Array.isArray(o.task.events) && Array.isArray(o.task.messages)));
     for (const l of o.locks) assert.ok(l && typeof l === "object" && (l.path === null || typeof l.path === "string"));
     for (const a of o.agents) {
       assert.ok(Array.isArray(a.messages) && Array.isArray(a.events));
