@@ -509,7 +509,11 @@ def state (a : Parsed) : m UInt32 := do
     -- the user's staffing numbers (agents.limits) and the board's "auto-spawn holding" line while it holds
     ("limits", obj [("live", some (Json.int nlive)), ("min", some (NI ((metaV "agent_min").bind parseInt))),
       ("max", some (NI ((metaV "agent_max").bind parseInt))), ("held", some (N (metaV "spawn_held"))),
-      ("queue_only", some (.bool (Queue.queueOnly db)))]),
+      ("queue_only", some (.bool (Queue.queueOnly db))),
+      -- the compaction limits (`swarm limits --ctx-nudge/--ctx-compact/--compact-stayers`): the view's Rules and limits card
+      ("ctx_nudge", some (Json.int (SwarmLean.Compact.nudgeAt db))), ("ctx_compact", some (Json.int (SwarmLean.Compact.compactAt db))),
+      ("compact_stayers", some (.bool (SwarmLean.Compact.stayersToo db)))]),
+    ("rules", N (metaV "rules")),  -- `swarm rules show`: what every agent's brief starts with
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     -- every task by state, and the ended agents but the communicator: what the trimmed lists leave out
     ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped"].map fun k =>

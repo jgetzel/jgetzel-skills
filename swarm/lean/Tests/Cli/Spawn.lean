@@ -602,7 +602,14 @@ def test_state_json_staffing (t : T) : IO Unit := do
   t.agent "b" [("status", "idle"), ("stay", "reviews"), ("last_active", 1000)]
   t.agent "cm"
   t.q_ "insert or replace into meta(k,v) values('comms','cm')"
-  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false})  -- the communicator is not counted; unset numbers are null
+  -- the communicator is not counted; unset numbers are null; the compaction limits at their defaults
+  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false})
+  eq ((← stj t ["--view", "overview"]).f "rules") Json.null
+  t.sw_ "cm" ["limits", "--ctx-nudge", "300000", "--ctx-compact", "0", "--compact-stayers", "on"]
+  t.sw_ "cm" ["rules", "set", "Work only in your own worktree."]
+  let o ← stj t ["--view", "overview"]
+  eq (row (o.f "limits") ["ctx_nudge", "ctx_compact", "compact_stayers"]) (json% [300000, 0, true])  -- the Rules and limits card (II.3k)
+  eq (o.f "rules") (Json.str "Work only in your own worktree.")
   t.sw_ "cm" ["limits", "--min", "2", "--max", "3"]
   t.q_ "insert into meta(k,v) values('spawn_held','auto-spawn holding: 2 live, the auto-spawn number is 2; 1 task(s) startable; max 3')"
   t.q_ "insert into event(ts,agent,kind) values(900,'b','stay-hung')"  -- before it was last active: over
