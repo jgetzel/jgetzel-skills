@@ -28,11 +28,19 @@ const Tx = (x) => (typeof x === "string" || (typeof x === "number" && Number.isF
 const Px = (x) => (typeof x === "string" ? para(x) : null);
 const Nx = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
 const Bx = (x) => x === true;
+const Ax = (x) => x === true || (!!x && typeof x === "object" && !Array.isArray(x)); // away: true, or the CLI's {since, note}
 const Lx = (f, max = 20000) => (x) => (Array.isArray(x) ? x.slice(0, max).map(f).filter((v) => v != null) : []);
 const Ox = (spec) => (x) => {
   if (!x || typeof x !== "object" || Array.isArray(x)) return null;
   const o = {};
   for (const k in spec) o[k] = spec[k](x[k]);
+  // a field the CLI added since: kept when a plain scalar (text through line), up to 50, never over a listed one
+  let n = 0;
+  for (const k of Object.keys(x)) {
+    if (k in spec || k === "__proto__" || n >= 50) continue;
+    const v = typeof x[k] === "boolean" ? x[k] : typeof x[k] === "number" ? Nx(x[k]) : Tx(x[k]);
+    if (v != null) { o[k] = v; n++; }
+  }
   return o;
 };
 const uniq = (xs, ...keys) => {
@@ -47,7 +55,7 @@ const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, e
 const sumAgent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, hung: Bx });
 const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx });
 const summary = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, space: Tx, rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
-  needs: Lx(need, 5000), ci: Ox({ status: Tx, conclusion: Tx }), away: Bx });
+  needs: Lx(need, 5000), ci: Ox({ status: Tx, conclusion: Tx }), away: Ax });
 // `--view summary`: null unless an object.
 export function sumOf(j) {
   const s = summary(j);
@@ -59,7 +67,7 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   files: Lx(Tx, 500), cache: Tx, branch: Tx, worktree: Tx, ended: Nx });
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx });
-const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Bx, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx }),
+const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Ax, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx }),
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
   ci: Ox({ runs: Lx(Ox({ status: Tx, conclusion: Tx }), 20) }) });
 // `--view overview`, `agents` or `board` (all one shape): null unless an object.
