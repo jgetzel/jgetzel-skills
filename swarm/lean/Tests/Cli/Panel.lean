@@ -326,7 +326,7 @@ def test_state_summary (t : T) : IO Unit := do
   eq (s.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 1, "done": 1, "dropped": 0})
   let ags := match s.f "agents" with | .arr a => a.toList | _ => []
   eq (ags.map (·.f "name")) [json% "comms", json% "p", json% "q", json% "s", json% "w"]
-  eq (byName s "q") (json% {"name": "q", "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})
+  eq (byName s "q") (json% {"name": "q", "hc": null, "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})
   eq ((byName s "w").f "task") (json% {"id": 1, "title": "one"})
   eq ((byName s "s").f "hung") (json% true)
   unless (((byName s "comms").f "idle_s").getInt?.toOption.getD 0) ≥ 100 do fail "comms' idle_s"

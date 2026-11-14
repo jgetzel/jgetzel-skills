@@ -139,6 +139,11 @@ opened stay named.
   today's swarm mod does (`cwd`, and `on` for another machine).
 - Buildable: part of `rw-rail`.
 - Needs the summary output below to stay cheap at 24 agents.
+- Built in slice 6: one `swarm state --json --view summary` per space folder every 5 s; the block shows in the space
+  whose id is the board's `space` (else every space on that folder). A row is the agent's terminal (`hc`), its
+  sub-terminals under it; an agent with no terminal here still gets a row. "You opened" is an agent you clicked in the
+  rail (kept across restarts); "show" lists every worker until "show fewer". rw-bar's Needs you also counts the
+  summary's questions (tasks blocked on you) whose agent isn't already asking at a prompt.
 
 ### Swarm tab (screen 2)
 
@@ -232,7 +237,7 @@ In swarm-lean, since the CLI is being ported there.
 1. `swarm state --json --view summary`: task counts, per live agent only
    `name`, `status`, `task`, `idle_s`, hung or not, and the list of what needs
    the human. No ended agents, events or messages.
-   Built in slice 5: `counts`, `agents` (`name`, `status`, `task` {id, title}, `idle_s`, `hung`), `needs` (kinds
+   Built in slice 5: `counts`, `agents` (`name`, `hc`, `status`, `task` {id, title}, `idle_s`, `hung`), `space` (meta's Herdr space), `needs` (kinds
    `question`, `prompt`, `hung`, `ci`, `memory`, as the swarm panel's Needs you), `comms`, `active`. `idle_s` is the
    hook's `last_active`, not hc's lookup, so it stays one db read.
 2. A list of the swarms on this machine, with repo folder, tag and db path.

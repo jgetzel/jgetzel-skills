@@ -333,8 +333,8 @@ def staySign (x : Agent) (aev : List Event) : Option String :=
     else if got.contains "stay-unwoken" then some "unwoken" else none
   else none
 
-/-- `--view summary` (UI-SPEC.md, "New swarm CLI output" 1): task counts, the live agents in five fields, and what
-needs the human as the panel's Needs you lists it; no ended agents, events or messages. -/
+/-- `--view summary` (UI-SPEC.md, "New swarm CLI output" 1): task counts, the live agents in six fields (`hc` ties a row
+to its terminal), the Herdr space the swarm runs in, and what needs the human as the panel's Needs you lists it; no ended agents, events or messages. -/
 def summary (db : Db) (p : String) (t : Int) : m Json := do
   let cv ← match py ((db.getMeta "comms").bind (·.v)) with | some c => pure (some c) | none => env "SWARM_COMMS"
   let live := (db.agents.filter (·.ended.isNone)).mergeSort (·.name ≤ ·.name)
@@ -346,7 +346,7 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
     let own := mine .blocked x.name ++ mine .claimed x.name
     let act := x.last_active.getD 0
     let hung := staySign x (evs.filter (·.agent == some x.name)) == some "hung"
-    (x, hung, Json.mkObj [("name", .str x.name),
+    (x, hung, Json.mkObj [("name", .str x.name), ("hc", N x.hc),
       ("status", N (if own.any (·.state = .blocked) then some "blocked" else x.status)),
       ("task", match own.head? with
         | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str)]
@@ -370,7 +370,7 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
       | some (av, tot, psi) => if Machine.pressureHigh av tot psi then [need "memory" [("line", some (.str (Machine.line av tot psi)))]] else []
       | none => [])
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
-    ("comms", N cv),
+    ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))),
     ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray)]

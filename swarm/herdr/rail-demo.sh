@@ -1,14 +1,19 @@
 #!/bin/sh
 # Made-up spaces, agents and shells for screenshots of the rework rail (rw-rail), then the rework layout. Run inside
 # shot.sh's sandbox, never in the person's window:
-#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold]' out.png
+#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24]' out.png
 # Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one
-# gets it as its parent. --fold folds jk_ledger, nixos and linn-studio (shells only). A second hc session on this
-# machine stands in for another machine, "desktop"; it stops once shot.sh removes the sandbox.
+# gets it as its parent. --fold folds jk_ledger, nixos and linn-studio (shells only). --swarm N adds a space,
+# jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24: its D) that register their own
+# terminals in its board, and shows it. A second hc session on this machine stands in for another machine, "desktop";
+# it stops once shot.sh removes the sandbox.
 set -eu
 [ -n "${HERDR_APP_HOME:-}" ] && case $HERDR_APP_HOME in /tmp/hs.*) ;; *) false ;; esac ||
   { echo "rail-demo.sh: only inside shot.sh's sandbox" >&2; exit 2; }
-fold=; [ "${1:-}" = --fold ] && fold=1
+fold= sw=
+while [ $# -gt 0 ]; do
+  case $1 in --fold) fold=1; shift ;; --swarm) sw=$2; shift 2 ;; *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;; esac
+done
 D=$(dirname "$HERDR_APP_HOME")
 do_() { herdr-app do "$@"; }
 id() { jq -r ".$1"; }
@@ -43,9 +48,44 @@ docs=$(do_ space.new --name notes --folder "$(dir notes)")
 do_ tab.new --space "$(echo "$docs" | jq -r .space)" --mod files >/dev/null
 do_ tab.close --id "$(echo "$docs" | jq -r .tab)" --confirmed true >/dev/null
 
-if [ -n "$fold" ]; then
-  mkdir -p "$HERDR_APP_HOME/data/rw-rail"
-  jq -n --arg f "$(jq -cn --arg a "$jk" --arg b "$nix" --arg c "$linn" '[$a,$b,$c]')" '{folded: $f}' >"$HERDR_APP_HOME/data/rw-rail/store.json"
+folds=; [ -z "$fold" ] || folds="$jk $nix $linn"
+if [ -n "$sw" ]; then
+  # The swarm: a repo whose board the swarm CLI made, its agents and tasks; each fake agent records its own terminal.
+  repo=$(dir jgetzel-skills); git -C "$repo" init -q
+  (cd "$repo" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed >/dev/null 2>&1)
+  db=$repo/.git/swarm/swarm.db now=$(date +%s)
+  sqlite3 -cmd ".timeout 9000" "$db" "delete from task; insert or replace into meta(k, v) values('comms', 'll-comms')"
+  cat >"$D/w/reg.sh" <<'EOF'
+sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, hc, status, last_active, started, stay) values('$2', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''))"
+EOF
+  # swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers, then as agent()
+  swagent() {
+    n=$1 st=$2 ago=$3 stay=$4; shift 4
+    jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
+  }
+  task() { sqlite3 -cmd ".timeout 9000" "$db" "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''))"; }
+  skills=$(do_ space.new --name jgetzel-skills --folder "$repo" --argv "$(swagent ll-comms idle 120 '' done ll-comms)" | id space)
+  if [ "$sw" = 5 ]; then
+    tab "$skills" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Prove the crash lemmas' blocked ll-97 'Squash the two commits or keep them?'
+    tab "$skills" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' claimed ll-110
+    tab "$skills" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' claimed ll-111
+    tab "$skills" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' claimed ll-107
+    task 150 'Collapsed rail' open; task 151 'Settings' open
+    folds="$nix $linn"
+  else
+    tab "$skills" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' blocked ll-203 'Keep the old panel?'
+    tab "$skills" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' blocked ll-205 'Which machine is the vps?'
+    tab "$skills" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' claimed ll-209
+    sqlite3 -cmd ".timeout 9000" "$db" "insert into event(ts, agent, kind, data) values($((now - 60)), 'll-209', 'stay-hung', '')"
+    i=210; while [ $i -le 223 ]; do # 14 working, ll-211 among them (you opened it)
+      tab "$skills" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
+    done
+    for i in 224 225 226 227 228 229; do tab "$skills" "$(swagent ll-$i idle 1800 '' done ll-$i)"; done
+    sqlite3 -cmd ".timeout 9000" "$db" "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state) select 2000 + i, 'Later '||i, 'open' from n"
+    folds="$jk $nix $linn"
+  fi
+  tab "$skills" "$(agent working 'read the watchd log')"
+  tab "$skills" '["zsh"]'
 fi
 
 # "desktop": spaces named like this computer's, with shells.
@@ -60,8 +100,20 @@ done
 do_ tab.new --space "$dn" --argv '["sh","-c","exec sleep 1d"]' >/dev/null
 do_ space.new --machine desktop --name jk_ledger --folder /tmp >/dev/null
 sleep 2 # the helpers start and report
+n=0; while [ -n "$sw" ] && [ $n -lt 30 ] && [ "$(sqlite3 -cmd ".timeout 9000" "$db" "select count(*) from agent")" -lt "$sw" ]; do
+  sleep 1; n=$((n + 1)) # every swarm agent has recorded its terminal
+done
+opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")
+# With a swarm, this computer's other spaces fold (shot.sh's demo and notes too), as on the rail board.
+[ -z "$sw" ] || folds="$folds $(herdr-app ls | jq -r '.. | objects | select(.name? == "demo" or .name? == "notes" or .name? == "high-perf-lean") | .id? // empty' | grep -v / || :)"
+if [ -n "$folds$sw" ]; then
+  mkdir -p "$HERDR_APP_HOME/data/rw-rail"
+  jq -n --arg f "$(printf '%s\n' $folds | jq -Rcs 'split("\n") | map(select(. != ""))')" --arg o "$opened" '{folded: $f, opened: $o}' \
+    >"$HERDR_APP_HOME/data/rw-rail/store.json"
+fi
 do_ layout.switch --name rework >/dev/null
 do_ layout.hide --id panel >/dev/null
-do_ space.select --id "$jk" >/dev/null
-first=$(herdr-app ls | jq -r --arg s "$jk" '[.. | objects | select(.id? == $s)][0] | [.. | objects | select(.pane? != null)][0].pane')
+show=$jk; [ -z "$sw" ] || show=$skills
+do_ space.select --id "$show" >/dev/null
+first=$(herdr-app ls | jq -r --arg s "$show" '[.. | objects | select(.id? == $s)][0] | [.. | objects | select(.pane? != null)][0].pane')
 [ "$first" = null ] || do_ pane.focus --pane "$first" >/dev/null

@@ -8,7 +8,7 @@ export function dur(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-export const AGENT = new Set(["asks", "working", "done", "idle"]);
+export const AGENT = new Set(["asks", "hung", "working", "done", "idle"]);
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 const base = (p) => (p ?? "").replace(/\/+$/, "").split("/").pop().replace(/^-/, "");
 
@@ -38,6 +38,7 @@ export function since(mark, at, now) {
   const ago = at ? dur(now - at) : "";
   switch (mark) {
     case "asks": return "asks you";
+    case "hung": return "hung";
     case "working": return ago;
     case "done": return ago && `done ${ago}`;
     case "idle": return ago && `idle ${ago}`;
@@ -113,6 +114,16 @@ export function rowsOf(space, ps, byAddr) {
 // The bar's Needs you list: every live agent that is blocked or in error, on every machine; never a shell.
 export const needsYou = (all) => all.filter((t) => t.state === "live" && !t.program?.shell && (t.status === "blocked" || t.status === "error"));
 
+// The questions swarm agents wait on you for (tasks blocked on you), from the rail's summaries (shared
+// "rw-rail.swarms"), less those whose terminal needsYou already counts: [{address, name, what}].
+export function questionsOf(swarms, counted) {
+  return (swarms ?? []).flatMap((j) => (j.needs ?? []).filter((n) => n.kind === "question").map((n) => {
+    const hc = (j.agents ?? []).find((a) => a.name === n.agent)?.hc;
+    const address = hc ? (j.on && !hc.includes("/") ? `${j.on}/${hc}` : hc) : null;
+    return { address, name: n.agent ?? "", what: n.question || n.title || `#${n.task}` };
+  })).filter((q) => !q.address || !counted.has(q.address));
+}
+
 // The terminal a tab's pill speaks for: the agent whose status is the tab's own (its most urgent), else its first agent,
 // else its first terminal; null for a tab of mod panes.
 export function pillOf(tab, ps, byAddr) {
@@ -126,4 +137,52 @@ export function abbrev(name) {
   const w = (name ?? "").split(/[\s-]+/).filter(Boolean);
   return w.length > 1 ? w[0][0] + w[1][0] : (w[0] ?? "").slice(0, 2);
 }
-export const rollOf = (rows) => ["asks", "working", "done", "idle"].filter((k) => rows.some((r) => r.mark === k));
+export const rollOf = (rows) => ["asks", "hung", "working", "done", "idle"].filter((k) => rows.some((r) => r.mark === k));
+
+const nat = (s) => s.replace(/\d+/g, (d) => d.padStart(9, "0")); // ll-97 before ll-107 (Herdr's JS has no numeric collation)
+const FOLD = 8; // past this many agents, a swarm's working and idle workers fold into counts
+
+// A space's swarm (UI-SPEC.md, slice 6) from `swarm state --json --view summary` (`sum`) of the space's folder on
+// machine `on`: its block (the communicator, then the workers by name, each with its sub-terminals) and the space's
+// other rows. An agent's mark is its terminal's, but asks when its task is blocked on you, hung on watchd's sign, and
+// a worker's done is idle (a worker's turns report to the communicator). Past FOLD agents, unless `all`, workers that
+// neither ask, are hung nor are in `keep` (addresses you opened) fold into a working and an idle count.
+// Returns { rows: the space's rows, marks as above, block first; block: [{r, kids, side} | {fold, n, more}], rest }.
+export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
+  const trees = [];
+  for (const r of rows) r.lines.length ? trees.at(-1)?.push(r) : trees.push([r]);
+  const addr = (hc) => (on && !hc.includes("/") ? `${on}/${hc}` : hc);
+  const named = (sum.agents ?? []).filter((a) => a.hc)
+    .sort((a, b) => (b.name === sum.comms) - (a.name === sum.comms) || (nat(a.name) < nat(b.name) ? -1 : 1));
+  const taken = new Set();
+  const items = named.map((a) => {
+    const at = addr(a.hc);
+    const tree = trees.find((tr) => tr[0].t.address === at);
+    if (tree) taken.add(tree);
+    const t = byAddr.get(at) ?? { address: at, name: a.name, status: a.status === "working" ? "working" : "idle" };
+    const root = tree?.[0] ?? { t, pane: null, lines: [], mark: markOf(t, false) };
+    const comms = a.name === sum.comms;
+    const mark = a.status === "blocked" ? "asks" : a.hung ? "hung" : root.mark === "done" && !comms ? "idle" : root.mark;
+    return { r: { ...root, mark }, kids: tree?.slice(1) ?? [], a, comms };
+  });
+  const rest = trees.filter((tr) => !taken.has(tr)).flat();
+  const big = !all && items.length > FOLD;
+  const kept = (it) => it.comms || it.r.mark === "asks" || it.r.mark === "hung" || keep.has(it.r.t.address);
+  const block = big ? [...items.filter((it) => it.comms), ...items.filter((it) => !it.comms && it.r.mark === "asks"),
+    ...items.filter((it) => !it.comms && it.r.mark === "hung"),
+    ...items.filter((it) => !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && kept(it))] : items;
+  const folded = big ? items.filter((it) => !kept(it)) : [];
+  const count = (mark) => folded.filter((it) => (it.r.mark === "working") === (mark === "working")).length;
+  const out = [...block, ...["working", "idle"].map((fold) => ({ fold, n: count(fold), more: block.some((it) => !it.comms && it.r.mark === fold) }))
+    .filter((c) => c.n > 0)];
+  return { rows: [...items.flatMap((it) => [it.r, ...it.kids]), ...rest], block: out, rest, big };
+}
+
+// A swarm row's name (the agent's), what follows it ("communicator" or the task number) and its side text.
+export function swarmText(it, at, now, opened) {
+  const name = it.a.name, what = it.comms ? "communicator" : it.a.task ? `#${it.a.task.id}` : "";
+  if (it.r.mark === "hung") return { name, what, side: `hung ${dur(it.a.idle_s * 1000)}` };
+  if (opened) return { name, what, side: "open" };
+  const side = since(it.r.mark, at, now);
+  return { name, what, side: it.comms && it.r.mark === "done" ? side.replace(/^done/, "replied") : side };
+}
