@@ -44,6 +44,8 @@ Cause (#175): the live spaces' `folder`s are rotated one space along (jgetzel-sk
 has the jgetzel-skills repo), so the rail keyed jgetzel-skills' summary to high-perf-lean's space and then dropped it
 there (its `space` is another space). The rail, bar and All swarms now find a space's swarm by the summary's `space`
 first, and each swarm agent heads its own tree. rail-demo.sh starts workers from the communicator's terminal.
+Its real preset (#179) puts the folders off the same way: on the commit before the fix it draws no block
+(`../real-preset-pre175.png`), on main it does (`../real-preset.png`).
 
 ## 3. Old Swarm side panel still in the layout -> task C (part needs the user)
 Built `panel-live.png`; canvas has no side panel (`swarmtab-canvas.png`).
