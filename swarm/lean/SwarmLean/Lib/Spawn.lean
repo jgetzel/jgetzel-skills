@@ -50,9 +50,33 @@ def swarmHere : m (Option String) := do
   if let some h ← env "SWARM_HERE" then return some h
   Proc.launcherDir
 
+/-- The skills a lean agent keeps. -/
+def LEAN_SKILLS : List String := ["hc", "herdr-app", "swarm", "terse-comments", "code-review"]
+
+/-- Claude Code's bundled skills (2.1.319). -/
+def BUNDLED_SKILLS : List String :=
+  ["dataviz", "artifact-design", "artifact-diagramming", "artifact-capabilities", "update-config", "keybindings-help",
+   "simplify", "fewer-permission-prompts", "loop", "schedule", "claude-api", "workflow-authoring", "claude-in-chrome",
+   "run", "plugin-authoring", "init", "security-review", "code-review"]
+
+/-- The lean profile's settings (SKILL.md, "Lean profile"): every installed plugin off, claude.ai's synced skills and
+Workflows off, and each user, project (in `cwd`) and bundled skill but LEAN_SKILLS off. -/
+def leanSettings (cwd : String) : m (List (String × Lean.Json)) := do
+  let cfg ← match ← env "CLAUDE_CONFIG_DIR" with | some c => pure c | none => pure (((← env "HOME").getD "") ++ "/.claude")
+  let plugins := match ((← Fs.read (cfg ++ "/plugins/installed_plugins.json")).bind Json.decode).bind (Json.field · "plugins") with
+    | some (.obj kv) => kv.keys
+    | _ => []
+  let mut skills := BUNDLED_SKILLS
+  for dir in [cfg ++ "/skills", cwd ++ "/.claude/skills"] do skills := skills ++ ((← Fs.list dir).getD [])
+  let off := skills.eraseDups.filter (!LEAN_SKILLS.contains ·)
+  return [("enabledPlugins", Lean.Json.mkObj (plugins.map (·, Lean.Json.bool false))),
+          ("skillOverrides", Lean.Json.mkObj (off.map (·, Lean.Json.str "off"))),
+          ("syncClaudeAiSkills", Lean.Json.bool false), ("disableWorkflows", Lean.Json.bool true)]
+
 /-- Writes agent `name`'s settings file and runs launch.sh for it in `cwd`, in the swarm's Herdr space: launch.sh's
-output (none on failure) and the first line of its stderr (watchd.launch_agent). -/
-def launchAgent (name brief model : String) (effort cwd : Option String) : m (Option String × String) := do
+output (none on failure) and the first line of its stderr (watchd.launch_agent). Unless `full`, the agent gets the lean
+profile: `leanSettings` and no MCP servers. -/
+def launchAgent (name brief model : String) (effort cwd : Option String) (full : Bool) : m (Option String × String) := do
   let here := (← swarmHere).getD "."
   let self_ := joinPath here "swarm"
   let dbp ← dbPath
@@ -66,12 +90,16 @@ def launchAgent (name brief model : String) (effort cwd : Option String) : m (Op
     discard <| Proc.output ["ln", "-s", self_, joinPath bindir "swarm"] none []
   let path := (← Env.var "PATH").getD ""
   let text := ((((tpl.replace "{{SWARM}}" self_).replace "{{DB}}" dbp).replace "{{NAME}}" name).replace "{{PATH}}" (bindir ++ ":" ++ path))
+  let text ← if full then pure text else do
+    let some j := Json.decode text | die s!"settings.template.json in {here} is not JSON"
+    pure (Json.encode ((← leanSettings (cwd.getD (← Env.cwd))).foldl (fun j (k, v) => j.setObjVal! k v) j))
   if !(← Fs.write sf text) then die s!"can't write {sf}"
   let launch ← match ← env "SWARM_LAUNCH" with
     | some l => pure l
     | none => pure (joinPath (joinPath (joinPath here "..") "relaunch") "launch.sh")
   let argv := [launch, name, "tab", brief, "--permission-mode", "auto", "--model", model, "--settings", sf] ++
-    (match effort with | some e => ["--effort", e] | none => [])
+    (match effort with | some e => ["--effort", e] | none => []) ++
+    (if full then [] else ["--strict-mcp-config", "--no-chrome"])
   let space ← Store.txn [.«meta»] fun db => (db, (db.getMeta "space").bind (·.v))
   let o ← Proc.output argv cwd (match space with | some s => [("SWARM_SPACE", s)] | none => [])
   let err := match o with | some o => ((strip o.stderr).splitOn "\n").headD "" | none => ""
@@ -92,6 +120,8 @@ structure Args where
   attach : Option String := none
   /-- the ref the worktree starts from (default: spawn.base of .claude/swarm.json, else the landing base) -/
   base : Option String := none
+  /-- every skill, plugin and connector (`--full`), not the lean profile -/
+  full : Bool := false
   /-- the words after the options: text for the brief -/
   task : List String := []
   /-- auto-spawn: the head of the pool, checked in the claim's transaction -/
@@ -110,7 +140,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   let name := a.name
   let task := " ".intercalate a.task
   if a.taskId.isNone && task == "" then
-    die "usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] [--attach WT] -- <task>"
+    die "usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] [--attach WT] [--full] -- <task>"
   let spawner := (← env "SWARM_NAME").getD HUMAN
   orDie (notHuman name)
   let envComms ← env "SWARM_COMMS"
@@ -164,7 +194,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
     brief := brief ++ "\n" ++ ((Ci.FLOW_LINE ((← Ci.flow (wt.map (·.1))).getD "post-merge")).getD "") ++ "\n"
     if let some rules := db.getMeta "rules" then
       brief := brief ++ s!"\nRules for this repo, from the communicator:\n{rules.v.getD "None"}\n"
-    launchAgent name brief a.model a.effort (wt.map (·.1))) fun e => do undo wt; throw e
+    launchAgent name brief a.model a.effort (wt.map (·.1)) a.full) fun e => do undo wt; throw e
   let (some out, _) := out | do undo wt; Env.err "swarm: launch.sh failed"; return .ok (some out.2)
   let addr := (splitlines (strip out)).getLastD ""
   let now ← Clock.now
