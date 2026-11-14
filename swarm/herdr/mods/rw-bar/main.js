@@ -39,7 +39,7 @@ export default class Bar extends View {
     if (m === "asks") what = "asks";
     if (what === name) what = "";
     return h_flex().id(`tab-${tab.id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
-      .bg(tab.active ? t.selected : t.raised).text_color(tab.active ? t.foreground : t.muted)
+      .when(tab.active, (el) => el.bg(t.selected)).text_color(tab.active ? t.foreground : t.muted)
       .when(!tab.active, (el) => el.hover((s) => s.bg(t.hover)))
       // Press, drag onto another pill, release: move it there (as the shipped tabs mod does). Double press: rename.
       .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: tab.id }); })
@@ -106,14 +106,14 @@ export default class Bar extends View {
     const sub = [space?.machine ?? "This computer", space?.branch].filter(Boolean).join(" · ");
     const tabs = space?.tabs ?? [], away = tabs.filter((tab) => tab.settled).length, last = [...tabs].reverse().find((tab) => tab.settled);
     const swarmTab = tabs.find((tab) => ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm"));
-    return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(v_flex().w(mac ? Math.max(60, left - 64) : left).flex_none().min_w(0)
         .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(space?.name ?? ""))
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
       .child(h_flex().id("pills").flex_1().min_w(0).items_center().overflow_x_scrollbar()
-        .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.raised).border(1).border_color(t.border)
+        .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
           // The tabs put away are one pill where the last of them sits.
           .children(tabs.flatMap((tab, i) => (tab !== last ? tab.settled ? [] : [this.pill(t, space, tab, i, ps, byAddr)]
             : [h_flex().id("tabs-away").h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)

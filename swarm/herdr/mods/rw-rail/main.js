@@ -340,7 +340,7 @@ export default class Rail extends View {
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
       .on_click((_e, cx) => { this.all.delete(s.id); cx.notify(); }).child("show fewer"));
-    return v_flex().id(`swarm-${s.id}`).flex_none().mx(4).mb(6).pt(5).pb(4).rounded(8).border(1).border_color(t.border).bg(t.chrome)
+    return v_flex().id(`swarm-${s.id}`).flex_none().mx(4).mb(6).pt(5).pb(4).rounded(8).border(1).border_color(t.input).bg(t.swarm_block ?? t.chrome)
       .child(h_flex().id(`swarm-head-${s.id}`).mx(4).px(6).pt(3).pb(5).gap(7).items_center().rounded(7).text_size(11.5).text_color(t.muted)
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.openSwarm(s, sw, cx))
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))

@@ -16,7 +16,8 @@ the herdr-mods/herdr-mods launcher).
                            rw-settings/app.js is the app's Settings screen (frame/settings/main.js), which it extends
   layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, rw-settings
                            at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms, and no brand block, tab bar or status
-                           bar
+                           bar; its dark look is themes/rework.json (copy of swarm/herdr/themes/rework.json, the canvas's warm
+                           palette), its light look Herdr's paper
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
 
@@ -195,7 +196,7 @@ partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "main" then
     let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
     let main := j.setObjVal! "content" (Json.mkObj [("tab", "active"), ("pane", Json.mkObj [("gap", 10), ("radius", 12),
-      ("background", "surface"), ("border", line "border"), ("focus", line "accent"), ("lone", true),
+      ("background", "surface"), ("border", line "border"), ("focus", line "ring"), ("lone", true),
       ("header", Json.mkObj [("content", Json.mkObj [("mod", "rw-pane")]), ("height", 38), ("position", "top"),
         ("reveal", "always")])])])
     -- The All swarms view (UI-SPEC.md, "Two swarms"): a tab can't belong to no space, so it is the tab area's sibling in
@@ -213,9 +214,11 @@ def rework (lay : Json) : Json :=
   let bar := Json.mkObj [("id", "bar"), ("type", "block"), ("size", Json.mkObj [("px", 52)]), ("window_drag", true),
     ("content", Json.mkObj [("mod", "rw-bar")])]
   let body := match reworkBody lay with
-    | .obj kv => Json.obj (["titlebar", "traffic_lights", "terminal_padding"].foldl (·.erase ·) kv) |>.setObjVal! "id" "body"
+    -- no divider: the rail and the work area share one ground
+    | .obj kv => Json.obj (["titlebar", "traffic_lights", "terminal_padding", "divider"].foldl (·.erase ·) kv) |>.setObjVal! "id" "body"
     | j => j
-  (lay.setObjVal! "type" "column").setObjVal! "children" (.arr #[bar, body]) |> fun j =>
+  let theme := Json.mkObj [("light", "paper"), ("dark", "rework")]
+  ((lay.setObjVal! "type" "column").setObjVal! "theme" theme).setObjVal! "children" (.arr #[bar, body]) |> fun j =>
     match j with | .obj kv => .obj (kv.erase "divider") | j => j
 
 def exists_ (p : String) (follow := true) : IO Bool := do
@@ -333,6 +336,9 @@ def main : IO UInt32 := do
       if !e.fileName.startsWith "." then copy e.path.toString m
     IO.println s!"wrote {m}"
   IO.FS.writeFile (sets ++ "/app.js") (appSettings ++ "\nexport { SECTIONS };\n")
+  IO.FS.createDirAll (home ++ "/themes")
+  copy (here ++ "/../swarm/herdr/themes/rework.json") (home ++ "/themes")
+  IO.println s!"wrote {home}/themes/rework.json"
   let out := home ++ "/layouts/rework.json"
   IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
   IO.FS.rename (out ++ ".tmp") out
