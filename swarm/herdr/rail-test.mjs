@@ -1,7 +1,7 @@
-// node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks) and rw-bar's pills and Needs you list from
-// made-up Herdr data.
+// node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
+// Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -94,4 +94,37 @@ assert.deepEqual(rowText(T("c", { name: "ll-1", title: "fix it", program: { key:
 // The collapsed rail's tiles: two letters, and one mark per kind, worst first.
 assert.deepEqual(["nixos", "linn-studio", "jk_ledger", "Mother Wants My Skin", "x"].map(abbrev), ["ni", "ls", "jk", "MW", "x"]);
 assert.deepEqual(rollOf(rows), ["asks", "working", "idle"]);
+
+// The swarm block (slice 6): the communicator first, then the workers by name (numbers as numbers), each with its
+// sub-terminals; a blocked task asks, a hung sign is hung, a worker's done is idle; other rows stay outside.
+const swT = [T("c", { status: "done" }), T("w97", { status: "working" }), T("w110", { status: "working" }),
+  T("x", { status: "working", parent: "w110" }), T("w107", { status: "done" }), T("plain", { status: "working" }), T("z", { program: sh })];
+const swBy = new Map(swT.map((t) => [t.address, t]));
+const swSp = { tabs: swT.filter((t) => !t.parent).map((t, i) => ({ id: t.address, index: i + 1 })) };
+const swPs = swT.filter((t) => !t.parent).map((t) => ({ pane: `p${t.address}`, tab: t.address, terminal: t.address }));
+const A = (name, hc, o) => ({ name, hc, status: "idle", task: null, idle_s: 0, hung: false, ...o });
+const sum = { comms: "ll-comms", counts: { open: 4, claimed: 2 }, agents: [A("ll-107", "w107", { task: { id: 142 } }),
+  A("ll-110", "w110", { status: "working", task: { id: 146 } }), A("ll-97", "w97", { status: "blocked", task: { id: 133 } }),
+  A("ll-comms", "c"), A("ll-99", "gone", { hung: true, idle_s: 3480 })] };
+const sw = swarmOf(rowsOf(swSp, swPs, swBy), sum, swBy, null);
+assert.deepEqual(sw.block.map((it) => [it.a.name, it.r.mark, it.kids.map((k) => k.t.address)]), [["ll-comms", "done", []],
+  ["ll-97", "asks", []], ["ll-99", "hung", []], ["ll-107", "idle", []], ["ll-110", "working", ["x"]]]);
+assert.deepEqual(sw.rest.map((r) => r.t.address), ["plain", "z"]);
+assert.deepEqual(rollOf(sw.rows), ["asks", "hung", "working", "done", "idle"]);
+assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied 2m" },
+  { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "idle 2m" },
+  { name: "ll-110", what: "#146", side: "2m" }]);
+// Another machine's swarm: its hc ids are that machine's.
+assert.equal(swarmOf([], { agents: [A("r", "t3")] }, new Map(), "vps").block[0].r.t.address, "vps/t3");
+// Past 8 agents: the communicator, who asks, who is hung and who you opened stay named; the rest are two counts.
+const many = { comms: "c", agents: [A("c", "c"), A("a", "a", { status: "blocked" }), A("h", "h", { hung: true }),
+  ...[1, 2, 3, 4, 5].map((i) => A(`w${i}`, `w${i}`, { status: "working" })), A("i1", "i1"), A("i2", "i2")] };
+const mBy = new Map(many.agents.map((a) => [a.hc, T(a.hc, { status: a.status === "working" ? "working" : "idle" })]));
+const big = swarmOf([], many, mBy, null, new Set(["w3"]));
+assert.deepEqual(big.block.map((it) => it.fold ? `${it.n} ${it.fold}${it.more ? " more" : ""}` : it.a.name), ["c", "a", "h", "w3", "4 working more", "2 idle"]);
+assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
+// rw-bar: a swarm question counts unless its agent's terminal already does.
+const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
+  { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
+assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three" }]);
 console.log("rail-test: ok");

@@ -1,11 +1,12 @@
 // The rework's title bar (swarm/herdr/UI-SPEC.md, slice 2): the shown space and its machine, its tabs as pills (name,
 // title, mark at the end), a Needs you button with its list, the palette button and, where the system draws none, the
-// window buttons. Opened as a popup with props {needs: true} it is that list.
+// window buttons. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm
+// agents wait on (slice 6), from the rail's summaries.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home } from "herdr";
-import { markOf, needsYou, pillOf, rowText } from "./tree.js";
+import { spaces, panes, terminals, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
+import { markOf, needsYou, pillOf, questionsOf, rowText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -60,14 +61,15 @@ export default class Bar extends View {
     const sp = spaces();
     const spaceOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s])));
     const paneOf = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, p]));
-    const items = needsYou(all).map((term) => {
-      const p = paneOf.get(term.address), s = p && spaceOf.get(p.tab);
-      const { name, what } = rowText(term, "asks", null, home());
-      return h_flex().id(`needs-${term.address}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
+    const asks = needsYou(all);
+    const qs = questionsOf(shared("rw-rail.swarms"), new Set(asks.map((x) => x.address)));
+    const items = [...asks.map((term) => ({ address: term.address, ...rowText(term, "asks", null, home()) })), ...qs].map(({ address, name, what }, i) => {
+      const p = paneOf.get(address), s = p && spaceOf.get(p.tab);
+      return h_flex().id(`needs-${address ?? i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
         .cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click(() => {
           closeOverlay(props().overlay);
-          p ? run("pane.focus", { pane: p.pane }) : run("terminal.peek", { terminal: term.address });
+          if (p) run("pane.focus", { pane: p.pane }); else if (address) run("terminal.peek", { terminal: address });
         })
         .child(div().flex_none().max_w(110).truncate().font_medium().text_color(t.foreground).child(name))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
@@ -87,7 +89,8 @@ export default class Bar extends View {
     const space = sp.find((s) => s.active);
     const ps = panes();
     const byAddr = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
-    const needs = needsYou([...byAddr.values()]).length;
+    const asks = needsYou([...byAddr.values()]);
+    const needs = asks.length + questionsOf(shared("rw-rail.swarms"), new Set(asks.map((x) => x.address))).length;
     const w = window();
     const sidebar = find(layout(), "sidebar");
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
