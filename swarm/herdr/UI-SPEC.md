@@ -370,33 +370,42 @@ mod was written. "Tested" means run in shot.sh's sandbox or a private headless c
 "read" means found in `AGENTS.md`, `herdr.d.ts`, `gpui-kit.d.ts`, `herdr-app commands` or `hc schema` and not tried.
 Slices are numbered II.n; each is one PR.
 
+Round 2 (the user's answers, 2026-11-14): screens are a MacBook (assumed 1512 x 982), a Framework at 1800 x 1200 and
+a desktop at 2560 x 1440; the swarm view is full width; task and agent detail are pages with a back arrow; tabs live
+only in the rail (no pills); no x on swarm tabs; blur is held; all the motion and more, with a switch; one builder,
+in the order at the end.
+
 ## II.1 Close button on tabs
 
 - Facts (read): `tab.close {id, confirmed}` ends the tab's terminals; Herdr asks only for a space's last tab.
   `pane.close {pane}`. `on_mouse_down("middle")` is in the kit's types. No undo: a closed terminal is ended.
-- Pills: the shown tab always draws a ×; another plain tab draws it on hover in the mark's place (the pill keeps its
-  width). Never on the swarm tab, the communicator or a swarm agent (rw-bar already tells these: `sw`, `agentAt`).
-- Rail rows: the same on hover; it closes the tab when the tab has one pane, else that pane.
+- Rail rows: a plain row draws a x on hover in the mark's place (the row keeps its width); middle click too. It
+  closes the tab when the tab has one pane, else that pane. Never on a swarm agent, the communicator or the swarm row.
 - Ask first (the shipped `confirm` dialog) when an agent is `working` or `blocked`, when a shell has a program in
   front, and when the tab is the space's last. Otherwise close at once with `confirmed: true`.
-- Swarm agents: our own popup menu (Message, Details, Nudge, End agent). End runs `swarm end NAME`; a refusal that
-  names `--force` offers End anyway, as the old panel did.
-- Slices: II.1a × on pills and middle click (rw-bar). II.1b × on rail rows (rw-rail). II.1c the swarm agent menu
-  (after II.3d).
+- Swarm agents: our own popup menu (Message, Open its page, Nudge, End agent). End runs the plain `swarm end NAME`
+  (ends only an idle agent with its work landed); a refusal shows its reason and End anyway (`--force`) as a
+  second, confirmed step.
+- Slices: II.1a x on rail rows, middle click, confirmation. II.1b the swarm agent menu (after II.3d).
 
-## II.2 Tab width
+## II.2 Tabs live in the rail
 
-- Facts (read): `flex_shrink`, `min_w`, `max_w`, `truncate`; the bar's width from `on_size_change`. A mod cannot
-  measure text, so "how many fit" is width / floor.
-- Chrome style, the default: a pill is at most 240 px and shrinks to 72 px; under 140 px it drops its title and keeps
-  name and mark; the shown tab keeps 150 px and its title. Tabs past `floor((pills width) / 72)` become one "N more"
-  pill carrying their most urgent mark; it opens a popup list with a filter, marks and ×. This replaces `PILLS = 40`,
-  the edge pills and `overflow_x_scrollbar`; settled tabs (slice 9) join the same list.
-- Arc style, a setting ("Tabs in the top bar", off): rw-bar draws the shown tab's name, title, mark and "k of n" as
-  text in the pills' place (double press renames). Needs you and the palette button stay. The bar stays: it is the
-  title bar and drag region. rw-rail gains a New tab row at the end of the shown space and a Calendar row at its foot
-  between Settings and Add machine (the user's placement; #154 still holds the calendar's place with pills shown).
-- Slices: II.2a shrinking pills. II.2b the "N more" list. II.2c the Arc setting (rw-settings, rw-bar, rw-rail).
+- Decided: no pills. rw-bar draws, after the space, the shown tab's name, title and mark as text; Needs you and the
+  palette button stay; the bar stays as title bar and drag region. With the swarm view shown it draws the sections
+  (II.3); with All swarms, the name only. `PILLS`, the edge pills, the "N more" pill and the pill drag go.
+- Rail: a + on a space's heading on hover and a New tab row at the end of the shown space, both opening the shipped
+  `new-menu` (`tab.new {space, argv}`); the Calendar row at the foot between Settings and Add machine; a split tab's
+  rows joined by a bracket, with the tab's name over it when named; double click renames in place
+  (`tab.rename {id, name}`); a `HoverCard` with the full title, folder, branch and state. A large swarm's put-away
+  workers are the block's "N working / N idle" rows only.
+- Drag to reorder inside a space: `tab.move {id, index}`; the drag is built from press, move (4 px threshold) and
+  release, as the shipped `spaces` mod does for spaces; a drop line, rows parting, Escape cancels; a tab moves whole
+  and nothing lands inside a bracket; swarm agents and sub-terminals don't drag.
+- Not possible: moving a tab to another space (no command; relabelling its terminals with `hc label` is untried and
+  would lose splits and mod panes) and dragging a row into another tab as a split (no command moves a pane).
+- Sizes: the rail is 268 px on all three screens (resizable to 480).
+- Slices: II.2a bar without pills, the rail's +, New tab row, brackets and Calendar row. II.2b rename in place and
+  the full-title card. II.2c drag to reorder.
 
 ## II.3 Full swarm information
 
@@ -407,10 +416,11 @@ rw-swarm's own Away box reads `away === true` but `--view overview` sends `{sinc
 drop every field they do not list, so a restored item starts by adding its fields there.
 
 Shape: the swarm view is a child of the `view` stack (as All swarms), full width; rw-swarm with a `section` prop.
-While it shows, rw-bar draws the sections in the pills' place (Overview, Agents, Board, Activity, Landing, System,
-History) and a "Tabs" button back: this is the bar's swarm nav left open in Part I. Task and agent detail are
-`openOverlay({kind: "window", key})` windows opened from any task number or agent name in any rw-* mod.
-Open question to the user: full width, or keep the split beside the communicator for Overview.
+While it shows, rw-bar draws the sections (Overview, Agents, Board, Activity, Landing, System, History): this is the
+bar's swarm nav left open in Part I. Task and agent detail are pages inside the view with a back button that names
+where you came from (a section, or the tab you were on); any task number or agent name in any rw-* mod opens them
+(`shared("rw-swarm.page")` plus `layout.select`). Sizes: cards in two columns under 1900 px of view width (MacBook,
+Framework), three from there (desktop); pages and the Activity list stop at 1100 px.
 
 - Overview: Needs you with every `needs[]` kind (question with answer field, prompt per II.6, hung with Nudge, `ci`
   with Open run and `gh run rerun --failed`, watchd not running with Restart, `memory`); the Away banner and the
@@ -420,8 +430,8 @@ Open question to the user: full width, or keep the split beside the communicator
 - Board: the queue (`qpos`) with "next", why-not, move (`queue add --front/--before/--after`), remove (`queue rm`) and
   add (`queue add`); the four groups; done and dropped (`--view board`) with `work_s` and `done_ctx - claim_ctx`;
   the new-task form with body, after, priority, model, effort, queue, hold.
-- Task window (`--task ID`): all the old task screen had, plus `task edit`, `task after`, queue add, `merge_to_green_s`.
-- Agent window (`--agent NAME`): all the old agent screen had, plus Compact (`swarm compact`) and its locks.
+- Task page (`--task ID`): all the old task screen had, plus `task edit`, `task after`, queue add, `merge_to_green_s`.
+- Agent page (`--agent NAME`): all the old agent screen had, plus Compact (`swarm compact`) and its locks.
 - Activity (`--view activity`): the old screen, plus a search field.
 - Landing: open PRs (`gh pr list`, with agent, checks, review); main's CI runs with re-run; landed today with
   `merge_to_green_s`; branches not on main.
@@ -435,7 +445,7 @@ CLI additions (swarm-lean): `rules` and `limits.ctx_nudge / ctx_compact / compac
 `--view board --before ID` and `--view agents --before TS`; a past peak on each `running[]` row;
 `needs[kind=ci].fixer`. Not possible: an agent's cost in money (nothing records it).
 
-Slices: II.3a the two fixes. II.3b full-width view, bar nav, Overview. II.3c task window. II.3d agent window.
+Slices: II.3a the two fixes. II.3b full-width view, bar nav, Overview. II.3c task page. II.3d agent page.
 II.3e Board. II.3f Away banner and digest. II.3g Activity. II.3h Landing. II.3i System with the forecast.
 II.3j Message the swarm and Spawn. II.3k CLI rules and limits, then their card. II.3l CLI paging, then History.
 II.3m All swarms links into the sections and shows the same needs.
@@ -448,12 +458,17 @@ II.3m All swarms links into the sections and shows the same needs.
   scale or rotation of a box. Nothing of the app's own animates: terminals and the tab's content, the app's dialogs,
   toasts, palette, layout show/hide and stack switches, pane splits. A floating block's `peek` drawer slides (read).
   Hover styles apply in one step; a hover highlight as an opacity layer is read, not tested (no pointer in the sandbox).
-- Spec: selected pill and selected rail row highlight slide (`left`, `width`, 140 ms); a new pill or row grows in
-  and a closed one out (`width` or `height` and `opacity`, 160 ms); folds and cards (`height`, 160 ms); our popups'
-  and windows' content fades in and rises 6 px (`opacity`, `top`, 120 ms; mount at 0, then set the target); a new
-  "asks" mark pulses for a minute (`loop`); meters slide (`width`, 300 ms); rail collapse (`width`, 180 ms).
-  One "Motion" switch in rw-settings turns it off.
-- Slices: II.4a bar. II.4b rail. II.4c views, windows and the switch. II.4d hover fade, after testing with xdotool.
+- Spec, all from those five properties: hover as a highlight layer fading in 90 ms and out 140 ms (read, not seen
+  working: the pointer test did not reach the test mod; fall back to instant hover); the rail's selected-row and the
+  bar's selected-section highlight slide (`top`/`left` and size, 140 ms); rows coming and going (`height` and
+  `opacity`, 160 ms); drag: rows part (`height`, 120 ms), the dropped row springs; pages push in from the right
+  24 px (`left`, `opacity`, 160 ms) and back; popups and menus fade in and rise 6 px (120 ms; mount at 0, then set
+  the target); folds, cards and the hung toast (`height`, 160 ms); a new "asks" mark pulses a minute and Needs you
+  pulses twice when its count rises (`loop`); marks cross-fade on a state change (two stacked, `opacity`, 200 ms);
+  meters slide (`width`, 300 ms); rail collapse (`width`, 180 ms); placeholder rows pulse while a swarm is first read.
+  "Animations" in rw-settings, on by default; off leaves only the working spinner.
+- Slices: II.4a the setting and the rail. II.4b hover, after a pointer check. II.4c swarm view. II.4d popups, menus,
+  toast, drag.
 
 ## II.5 Blur
 
@@ -467,8 +482,7 @@ II.3m All swarms links into the sections and shows the same needs.
   blurry unless `xwayland.force_zero_scaling`, which then needs Herdr's zoom at 1.6 and changes every XWayland app.
 - B: a Hyprland window rule `opacity` for class `herdr-app`: whole window fades, text included. Not tested.
 - C: ask Herdr's author for a transparent Wayland window (`background_appearance` is in the binary, not exposed).
-- Slices: II.5a the user tries B. II.5b "Glass" strength in rw-settings writing alpha into the layout's colours.
-  II.5c a launcher for A, if wanted. II.5d draft C with `herdr-app feedback`.
+- Held by the user (round 2): no slices. They may move to an app of their own on hc, where this is one flag.
 
 ## II.6 Answer prompts in place
 
@@ -484,3 +498,8 @@ II.3m All swarms links into the sections and shows the same needs.
   board, making "what it asks" exact. The communicator answering by itself is out of scope.
 - Slices: II.6a spike: real permission and question prompts in the sandbox as parser fixtures; check the hook.
   II.6b tier 1. II.6c tier 2. II.6d the hook route, if II.6a finds one.
+
+## Part II build order (one builder, in sequence)
+
+II.2a, II.1a, II.2b, II.2c, II.3a, II.3b, II.6a, II.6b, II.3d, II.1b, II.3c, II.3e, II.3f, II.3j, II.3g, II.3h,
+II.3i, II.6c (and II.6d if the spike finds a hook), II.3k, II.3l, II.3m, II.4a, II.4b, II.4c, II.4d.
