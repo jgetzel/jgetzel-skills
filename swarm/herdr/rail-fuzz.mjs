@@ -68,6 +68,11 @@ for (let i = 0; i < 2000; i++) {
   for (const b of T.branchesOf(`${pick(HOSTILE)}\t${pick(HOSTILE)}\t${pick(["1 2", pick(HOSTILE)])}\n${pick(HOSTILE)}`)) assert.ok(ok1(b.name, 120), b.name);
   for (const x of T.landedToday(T.prsOf([{ number: 1, state: "MERGED", mergedAt: pick([pick(HOSTILE), new Date().toISOString()]), title: pick(HOSTILE) }]), junk(), Date.now() / 1000))
     assert.ok(ok1(x.title, 300), x.title);
+  // System (II.3i): hostile commands and keys give a bounded key and a number or null
+  const kk = T.keyOf(pick(HOSTILE)); assert.ok(typeof kk === "string" && kk.length <= 2000);
+  const so = T.overOf({ agents: junk(), running: [{ agent: pick(HOSTILE), command: pick(HOSTILE), rss_kb: junk(), top_kb: junk(), machine: pick([null, pick(HOSTILE)]) }],
+    cost_top: [{ key: pick(HOSTILE), peak_kb: junk() }, junk()] });
+  const sm = T.memOf(so); assert.ok(sm.next === null || Number.isFinite(sm.next.peak_kb));
   // Spawn (II.3j): a suggested name is a name the form takes; a hostile one gives no command or a plain one
   const nn = T.nextName(pick([pick(HOSTILE), "ll-comms", null]), [junk(), pick(HOSTILE), "ll-99999999999", "ll-3"]);
   assert.ok(ok1(nn, 60), nn);

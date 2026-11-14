@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -88,10 +88,11 @@ export default class SwarmTab extends View {
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
   // The page shown (II.3c/d): "agent:NAME" or "task:ID"; the view then reads `--view system --agent` / `--task`.
-  // "activity" while Activity shows: `--view activity` is overview with 300 events (II.3g).
+  // "activity" or "system" while that section shows: `--view activity` is overview with 300 events (II.3g), `--view
+  // system` adds memory holders, command cost, locks and memory episodes (II.3i).
   pageKey() {
     const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page;
-    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" ? "activity" : null;
+    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" || v?.section === "system" ? v.section : null;
   }
   refresh(cx) {
     const { cwd, on } = this.where(), who = this.pageKey();
@@ -99,7 +100,7 @@ export default class SwarmTab extends View {
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" ? ["--view", "activity"] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
+        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" || who === "system" ? ["--view", who] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
@@ -511,13 +512,27 @@ export default class SwarmTab extends View {
       .when(Boolean(l.held), (el) => el.child(div().mt(8).text_size(12).text_color(t.working).whitespace_normal().child(l.held.replace(/^auto-spawn holding: /, "Holding: "))));
   }
 
-  // The machine line: memory in use.
-  machineCard(t, s) {
-    const m = s.machine, { on } = this.where(), g = (kb) => Math.round(kb / 1048576);
+  // The machine line: memory in use, the swarm's share, and the running command that will peak highest (II.3i).
+  machineCard(t, s, cx) {
+    if (cx && !s.running) this.loadSys(cx);
+    const m = s.machine, { on } = this.where(), g = (kb) => Math.round(kb / 1048576), mm = memOf(s.running ? s : this.sys ?? s);
     const used = m?.total_kb ? `${g(m.total_kb - (m.avail_kb ?? 0))} of ${g(m.total_kb)} G in use` : line(m?.line?.replace(/^machine: /, "")) || "not read";
     return this.card(t, "machine").px(16).pb(12)
       .child(this.head(t, on ? line(on, 60) : "This computer", null, this.link(t, "system-all", "System ›", "system")).px(0))
-      .child(div().text_size(12.5).text_color(m?.high ? t.blocked : t.muted).child(used));
+      .child(h_flex().gap(8).items_center().flex_wrap().child(div().text_size(12.5).text_color(m?.high ? t.blocked : t.muted).child(used))
+        .when(mm.swarm_kb >= 1048576, (el) => el.child(this.chip(t, `swarm ${g(mm.swarm_kb)} G`)))
+        .when(Boolean(mm.next), (el) => el.child(this.chip(t, `${line(mm.next.agent, 40)}'s ${line(mm.next.key, 60)} peaks at ${g(mm.next.peak_kb)} G`, t.working))));
+  }
+  // Overview's machine line reads `--view system` for the running commands, every 30 s.
+  loadSys(cx) {
+    if ((this.sys && Date.now() - this.sys.at < QUIET_POLL) || this.sysLoading) return;
+    const { cwd, on } = this.where();
+    this.sysLoading = true;
+    cx.spawn(async (cx) => {
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "system"]); const x = r.code === 0 ? overOf(JSON.parse(r.stdout)) : null; if (x && this.where().cwd === cwd) this.sys = { ...x, at: Date.now() }; }
+      catch {}
+      this.sysLoading = false; cx.notify();
+    });
   }
 
   // The latest messages, newest first.
@@ -532,9 +547,9 @@ export default class SwarmTab extends View {
       .when(!ms.length, (el) => el.child(div().px(16).text_size(12.5).text_color(t.dim).child("No messages yet")));
   }
 
-  overview(t, s, cols) {
+  overview(t, s, cols, cx) {
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    const c1 = [this.allNeeds(t, s), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
+    const c1 = [this.allNeeds(t, s), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
     return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
@@ -837,6 +852,65 @@ export default class SwarmTab extends View {
     return v_flex().gap(10).child(prCard).child(ciCard).child(landCard).child(brCard);
   }
 
+  // ---- the System section (II.3i) -----------------------------------------------------------------------------------
+  // The old System screen: watchd, the machine with memory by agent and other machines' jobs, locks, conflicts and memory
+  // episodes, command cost, refused spawns; new: lock age and expiry, and each running command's past peak.
+  systemView(t, s) {
+    if (!s.running) return this.card(t, "sys-wait").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("Reading the system…"));
+    const now = s.now ?? Date.now() / 1000, gb = (kb) => `${(kb / 1048576).toFixed(kb >= 10485760 ? 0 : 1)} G`, ago = (sec) => dur(Math.max(0, sec) * 1000);
+    const row = (id, kids, go) => h_flex().id(id).min_h(30).py(4).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
+      .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go())).children(kids);
+    const txt = (x, c, mono) => div().flex_1().min_w(0).truncate().text_color(c ?? t.muted).when(Boolean(mono), (el) => el.font_family(settings().font_family ?? "JetBrains Mono").text_size(12)).child(x);
+    const dim = (x) => div().flex_none().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(6).text_size(12.5).text_color(t.dim).child(x);
+    const names = new Set((s.agents ?? []).map((a) => a.name));
+    // watchd
+    const w = s.watchd, ok = w?.alive && !w.stale;
+    const wCard = this.card(t, "s-watchd", w && !w.alive).pb(8)
+      .child(this.head(t, "watchd", null, w ? div().text_size(12).text_color(!w.alive ? t.blocked : w.stale ? t.ansi3 : t.ansi2).child(!w.alive ? "not running" : w.stale ? "older than the code" : "running") : null))
+      .children(!w ? [none("No watchd has run for this swarm")] : [
+        row("s-w", [txt(!w.alive ? `pid ${w.pid ?? "?"} is not running: nothing is reaped, spawned or told until it runs again`
+          : `${w.stale ? "The code changed after it started; restart it to run the new code. " : ""}pid ${w.pid ?? "?"}${w.started ? ` · started ${hhmm(w.started)}` : ""}${w.terminal ? ` · terminal ${w.terminal}` : ""}`, ok ? t.muted : t.foreground),
+          this.twice(t, "watchd", "Restart…", "Restart watchd", (cx) => this.act(cx, ["watchd", "--restart"]))]),
+        ...(w.flags.length ? [row("s-wf", [txt(line(`watchd ${w.flags.join(" ")}`, 300), t.dim, true)])] : []),
+        ...(s.events ?? []).filter((e) => e.kind === "spawn-refused").slice(0, 3).map((e, i) => row(`s-ref-${i}`, [dim(hhmm(e.ts)), txt(`could not start ${line(e.data, 80)}: the swarm is at its max`)]))]);
+    // this computer: memory, memory by agent with each command's past peak, other machines' jobs
+    const m = s.machine, mm = memOf(s), most = Math.max(1, ...mm.here.map((j) => j.rss_kb ?? 0));
+    const mCard = this.card(t, "s-machine", m?.high).pb(8)
+      .child(this.head(t, this.where().on ? line(this.where().on, 60) : "This computer", null, m ? div().text_size(12).text_color(m.high ? t.blocked : t.ansi2).child(m.high ? "short on memory" : "ok") : null))
+      .children(!m?.total_kb ? [none(line(m?.line, 200) || "No machine reading")] : [
+        h_flex().px(16).pb(8).gap(8).items_center().flex_wrap().text_size(12.5).child(div().text_color(t.foreground).child(`${gb(m.avail_kb ?? 0)} free of ${gb(m.total_kb)}`))
+          .when(m.psi?.memory != null, (el) => el.child(this.chip(t, `memory pressure ${m.psi.memory}%`, m.psi.memory > 0 ? t.ansi3 : null)))
+          .when(m.psi?.cpu != null, (el) => el.child(this.chip(t, `cpu ${m.psi.cpu}%`))).when(mm.swarm_kb >= 1048576, (el) => el.child(this.chip(t, `swarm ${gb(mm.swarm_kb)}`))),
+        div().mx(16).mb(8).h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(m.high ? t.blocked : t.working).w(`${Math.round(100 * (1 - (m.avail_kb ?? 0) / m.total_kb))}%`)),
+        ...mm.here.slice(0, 12).map((j, i) => row(`s-h-${i}`, [div().flex_none().w(110).truncate().font_medium().text_color(j.agent_ ? t.foreground : t.dim).child(j.agent_ ? j.agent : "other sessions"),
+          div().flex_none().w(56).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(j.agent_ ? t.ansi4 : t.dim).w(`${Math.max(3, (100 * (j.rss_kb ?? 0)) / most)}%`)),
+          div().flex_none().w(52).text_right().child(gb(j.rss_kb ?? 0)),
+          txt(j.command ? `${j.command} · ${gb(j.top_kb ?? 0)} · ${ago(j.elapsed_s ?? 0)}` : "its session only", t.dim, Boolean(j.command)),
+          ...(j.peak_kb != null && j.peak_kb > (j.top_kb ?? 0) ? [this.chip(t, `peaks at ${gb(j.peak_kb)}`, t.working)] : [])], j.agent_ ? () => this.openAgent(j.agent) : null)),
+        ...(mm.here.length > 12 ? [none(`${mm.here.length - 12} more`)] : []),
+        ...(mm.away.length ? [div().px(16).pt(8).pb(2).text_size(12).text_color(t.dim).child("On other machines")] : []),
+        ...mm.away.slice(0, 8).map((j, i) => row(`s-a-${i}`, [dim(ago(j.elapsed_s ?? 0)), txt(`${j.agent ?? "?"} · ${j.command ?? ""}`),
+          div().flex_none().text_size(12).text_color(j.lost || j.unreachable ? t.blocked : t.dim).child(`${j.machine}${j.unreachable ? " unreachable" : j.lost ? " lost" : j.rss_kb != null ? ` · ${gb(j.rss_kb)}` : ""}`)]))]);
+    // locks (age and expiry), conflicts, memory episodes
+    const locks = s.locks ?? [], cfs = s.conflicts ?? [], eps = s.pressure ?? [];
+    const lCard = this.card(t, "s-locks", cfs.length > 0).pb(8).child(this.head(t, `Locks · ${locks.length}`, `Conflicts · ${cfs.length} · Memory episodes · ${eps.length}`))
+      .children([
+        ...locks.slice(0, 50).map((l, i) => row(`s-l-${i}`, [txt(l.path, t.foreground, true),
+          dim(`${l.agent ?? "?"}${l.since ? ` · ${ago(now - l.since)}` : ""}${l.lease_until ? (l.lease_until > now ? ` · expires in ${ago(l.lease_until - now)}` : " · expired") : ""}${l.reason ? ` · ${line(l.reason, 60)}` : ""}`)],
+          names.has(l.agent) ? () => this.openAgent(l.agent) : null)),
+        ...cfs.slice(0, 50).map((c, i) => row(`s-c-${i}`, [div().flex_none().text_color(t.blocked).child("⚠"), txt(`${c.a ?? "?"} × ${c.b ?? "?"} · ${c.path ?? ""}`, t.foreground), dim(c.since ? ago(now - c.since) : "")])),
+        ...eps.slice(0, 10).map((p, i) => row(`s-p-${i}`, [dim(`${hhmm(p.start)}–${p.end ? hhmm(p.end) : "now"}`), txt((p.line ?? "").replace(/^machine: /, ""), p.end ? t.dim : t.blocked)])),
+        ...(!locks.length && !cfs.length && !eps.length ? [none("All clear")] : [])]);
+    // command cost: the most intensive here, then the latest
+    const tops = s.cost_top ?? [], costly = s.costly ?? [], mins = (sec) => `${Math.max(1, Math.round((sec ?? 0) / 60))}m`;
+    const cCard = this.card(t, "s-cost").pb(8).child(this.head(t, "Command cost", "this repo, this computer"))
+      .children(!tops.length && !costly.length ? [none("No history yet: a command is recorded once it runs a minute or takes 1 G")] : [
+        ...tops.map((r, i) => row(`s-t-${i}`, [txt(r.key, t.foreground, true), dim(`×${r.n ?? 0} · longest ${mins(r.wall_s)} · peak ${gb(r.peak_kb ?? 0)}`)])),
+        ...(costly.length ? [div().px(16).pt(8).pb(2).text_size(12).text_color(t.dim).child("Latest")] : []),
+        ...costly.slice(0, 6).map((e, i) => row(`s-r-${i}`, [dim(hhmm(e.ts)), txt(`${e.agent ?? "?"} · ${e.cmd ?? ""}`), dim(gb(e.peak_kb ?? 0))]))]);
+    return v_flex().gap(10).child(wCard).child(mCard).child(lCard).child(cCard);
+  }
+
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
   // `task add`, then queue and hold as the form says; its id is in "task #N".
   addFull(cx) {
@@ -1053,12 +1127,12 @@ export default class SwarmTab extends View {
     const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
     const body = v.page?.agent ? page(this.agentPage(t, s, v.page)) : Number.isInteger(v.page?.task) ? page(this.taskPage(t, s, v.page))
-      : section === "overview" ? this.overview(t, s, cols)
+      : section === "overview" ? this.overview(t, s, cols, cx)
       : section === "agents" ? page(this.agents(t, s))
       : section === "board" ? this.boardView(t, s, cx)
       : section === "activity" ? page(this.activityView(t, s))
       : section === "landing" ? page(this.landingView(t, s, cx))
-      : section === "system" ? page(this.machineCard(t, s))
+      : section === "system" ? page(this.systemView(t, s))
       : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
       .when(Boolean(s.away), (el) => el.child(this.awayBanner(t, s)))
@@ -1072,7 +1146,7 @@ export default class SwarmTab extends View {
     // The view's swarm changed (another swarm's heading): read the new one at once.
     if (props()?.view) {
       const k = JSON.stringify(this.where());
-      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.refresh(cx); this.refreshPrs(cx); }
+      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.sys = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)

@@ -349,6 +349,21 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(l.map((x) => [x.pr, x.title, x.task, x.green_s]), [[6, "six", null, null], [5, "Task 40", 40, 300]]);
   assert.equal(median([300, null, 100, 200]), 200); assert.equal(median([]), null);
 }
+// System (II.3i): cmd-cost's key, a running command's past peak, memory by agent and the machine line's forecast.
+{
+  const { keyOf, peakOf, memOf } = await import("./mods/rw-rail/tree.js");
+  assert.equal(keyOf("cd /x && FOO=1 lake build Foo 2>&1 | tail"), "lake build Foo"); assert.equal(keyOf("swarm run m -- just build all now"), "just build all");
+  assert.equal(keyOf("/nix/store/a/bin/lake build"), "lake build"); assert.equal(keyOf("cd /a; S=/b;"), ""); assert.equal(keyOf(null), "");
+  const tops = [{ key: "lake build", peak_kb: 5 }, { key: "lake", peak_kb: 9 }, { key: "lake env", peak_kb: 99 }, { key: "cd /a; S=/b;", peak_kb: 7 }];
+  assert.equal(peakOf("lake build Foo", tops), 9); assert.equal(peakOf("lakes", tops), null); assert.equal(peakOf("", tops), null);
+  const G = 1048576, o = overOf({ agents: [{ name: "a" }, { name: "b" }], cost_top: [{ key: "lake build", peak_kb: 31 * G }],
+    running: [{ agent: "a", command: "lake build X", rss_kb: 18 * G, top_kb: 16 * G }, { agent: "other session", rss_kb: 3 * G }, { agent: "b", rss_kb: 2 * G },
+      { agent: "a", command: "make", machine: "vps", rss_kb: G }] });
+  const mm = memOf(o);
+  assert.deepEqual(mm.here.map((j) => [j.agent, j.agent_, j.peak_kb]), [["a", true, 31 * G], ["other session", false, null], ["b", true, null]]);
+  assert.equal(mm.swarm_kb, 20 * G); assert.equal(mm.away.length, 1); assert.deepEqual(mm.next, { agent: "a", key: "lake build X", peak_kb: 31 * G });
+  assert.equal(memOf(overOf({})).next, null);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",

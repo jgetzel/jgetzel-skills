@@ -75,9 +75,14 @@ const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, 
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, kind: Tx, urgent: (x) => x === true || x === 1 }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
-  watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx }), machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx }),
+  watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx, terminal: Tx, flags: Lx(Tx, 50) }),
+  machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx, psi: Ox({ memory: Nx, cpu: Nx }) }),
+  // --view system (II.3i): memory holders and other machines' jobs, the cmd-cost history, memory episodes
+  running: Lx(Ox({ agent: Tx, command: Tx, elapsed_s: Nx, rss_kb: Nx, top_kb: Nx, machine: Tx, lost: Bx, unreachable: Bx }), 500),
+  cost_top: Lx(Ox({ key: Tx, n: Nx, peak_kb: Nx, wall_s: Nx }), 50), costly: Lx(Ox({ ts: Nx, agent: Tx, cmd: Tx, wall_s: Nx, peak_kb: Nx }), 50),
+  pressure: Lx(Ox({ start: Nx, end: Nx, line: Tx }), 200),
   events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px, path: Tx, branch: Tx, subject: Tx }), 500),
-  conflicts: Lx(Ox({ path: Tx, a: Tx, b: Tx }), 500), // --view activity, with the rest of Activity's (II.3g)
+  conflicts: Lx(Ox({ path: Tx, a: Tx, b: Tx, since: Nx }), 500), // --view activity, with the rest of Activity's (II.3g)
   locks: Lx(Ox({ path: Tx, agent: Tx, reason: Tx, since: Nx, lease_until: Nx }), 2000), // --view system
   // `swarm away --back`'s digest
   back: Ox({ since: Nx, back: Nx, note: Tx, questions: Lx(Ox({ id: Nx, title: Tx, question: Px, owner: Tx, since: Nx }), 200),
@@ -119,6 +124,36 @@ export function landedToday(prs, tasks, now) {
     .map((p) => { const k = byPr.get(p.number); return { pr: p.number, url: p.url, title: line(k?.title ?? p.title ?? p.headRefName ?? "", 300), task: k?.id ?? null,
       at: Math.floor(Date.parse(p.mergedAt) / 1000), green_s: k?.merge_to_green_s ?? null }; })
     .sort((x, y) => y.at - x.at);
+}
+// cmd-cost's key (swarm/cmd-cost.md): the command without a leading `cd … &&`, `swarm run … --` or `VAR=x`, cut at a
+// pipe, redirection or next command, its first three words; a path's program is its base name.
+export function keyOf(cmd) {
+  let c = String(cmd ?? "").slice(0, 2000).trim();
+  for (let i = 0; i < 20; i++) {
+    const n = c.replace(/^cd\s+\S+\s*(&&|;)\s*/, "").replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s*;?\s*/, "").replace(/^(env|exec)\s+/, "").replace(/^swarm\s+run\b.*?\s--\s+/, "");
+    if (n === c) break;
+    c = n;
+  }
+  const w = c.split(/\s*(?:\|\||&&|[|;<>]|\d?>)/)[0].trim().split(/\s+/).filter(Boolean).slice(0, 3);
+  if (w[0]) w[0] = w[0].split("/").pop();
+  return w.join(" ");
+}
+// A running command's past peak (II.3i forecast): the highest cost_top peak whose key starts the command's key.
+export function peakOf(command, tops) {
+  const k = keyOf(command);
+  if (!k) return null;
+  const ps = (tops ?? []).filter((x) => { const t = keyOf(x?.key); return t && (k === t || k.startsWith(`${t} `)); }).map((x) => x.peak_kb).filter(Number.isFinite);
+  return ps.length ? Math.max(...ps) : null;
+}
+// Memory by owner on this machine (an agent's whole process tree and its biggest process), other machines' jobs, the
+// swarm's share, and the forecast: the running command whose past peak is highest, when it is past what it holds now.
+export function memOf(s) {
+  const names = new Set((s?.agents ?? []).map((a) => a.name)), run = s?.running ?? [], tops = s?.cost_top ?? [];
+  const here = run.filter((j) => !j.machine).map((j) => ({ ...j, agent_: names.has(j.agent), peak_kb: j.command ? peakOf(j.command, tops) : null }))
+    .sort((x, y) => (y.rss_kb ?? 0) - (x.rss_kb ?? 0));
+  const swarm_kb = here.filter((j) => j.agent_).reduce((n, j) => n + (j.rss_kb ?? 0), 0);
+  const next = here.filter((j) => j.agent_ && j.peak_kb != null && j.peak_kb > (j.top_kb ?? 0)).sort((x, y) => y.peak_kb - x.peak_kb)[0] ?? null;
+  return { here, away: run.filter((j) => j.machine), swarm_kb, next: next && { agent: next.agent, key: keyOf(next.command), peak_kb: next.peak_kb } };
 }
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 
