@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -65,6 +65,9 @@ export default class SwarmTab extends View {
     this.actQ = InputState.new({ placeholder: "Search activity" }); // Activity's search (II.3g)
     this.actQ.on("change", (_e, cx) => cx.notify());
     this.acts = null; this.actFilter = "all"; // Activity's summary and log rows, built once per read
+    this.boxes = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
+    this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
+    this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -206,6 +209,25 @@ export default class SwarmTab extends View {
   peek(name) {
     const { addr, msg } = this.promptOf(name);
     if (addr) openOverlay(peekWindow(addr, name, msg || "stopped at a prompt"));
+  }
+  // Tier 2 (II.6c): the box's options as buttons, only on a full parse; a click re-reads and else shows the terminal.
+  promptBtns(t, name, i, cx) {
+    const { addr, msg } = this.promptOf(name), box = addr && cx ? boxFor(this.boxes, hc, addr, msg, cx) : null;
+    return promptButtons(box).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
+      if (b.say) { this.saying = { addr, box, b, name }; this.sayIn.set_value(""); cx.notify(); cx.timer.after(50, () => this.sayIn.focus()); }
+      else answerBox(this.boxes, hc, addr, box, b, null, cx, () => this.peek(name));
+    }, k === 0 && !b.say));
+  }
+  sayRow(t, name) {
+    if (this.saying?.name !== name) return null;
+    return h_flex().gap(8).items_center().child(this.field(t, "say-in", this.sayIn)).child(this.btn(t, "say-go", "Send", (cx) => this.sendSay(cx), true))
+      .child(this.btn(t, "say-x", "Cancel", (cx) => { this.saying = null; cx.notify(); }));
+  }
+  sendSay(cx) {
+    const w = this.saying, text = this.sayIn.value().trim();
+    if (!w || !text) return;
+    this.saying = null;
+    answerBox(this.boxes, hc, w.addr, w.box, w.b, text, cx, () => this.peek(w.name));
   }
 
   // ---- parts --------------------------------------------------------------------------------
@@ -420,7 +442,7 @@ export default class SwarmTab extends View {
 
   // Everything that waits on you: questions with their answer field, prompts, hung agents with Nudge, red main with
   // Open run and Re-run failed, watchd down with Restart, low memory (needsOf).
-  allNeeds(t, s) {
+  allNeeds(t, s, cx) {
     const ns = needsOf(s), now = s.now ?? Date.now() / 1000;
     if (!ns.length) return this.card(t, "needs").px(16).py(12).child(h_flex().gap(8).items_center().text_size(12.5).text_color(t.muted)
       .child(div().size(8).rounded(4).bg(t.ansi2)).child("Nothing needs you"));
@@ -435,7 +457,7 @@ export default class SwarmTab extends View {
         : ["asks", "The machine is short on memory", n.line];
       const st = n.kind === "question" ? this.answers.get(n.task.id) : null;
       const acts = n.kind === "question" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
-        : n.kind === "prompt" ? [this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))]
+        : n.kind === "prompt" ? [...this.promptBtns(t, n.agent, i, cx), this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))]
         : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(cx, nudgeArgs(n.agent))), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
         : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []),
           this.twice(t, `rerun-${n.run.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(n.run.id), "--failed"]))]
@@ -447,7 +469,8 @@ export default class SwarmTab extends View {
         .child(div().pl(17).text_size(13).line_height("19px").whitespace_normal().text_color(t.muted).child(text))
         .child(h_flex().pl(17).gap(8).items_center().flex_wrap()
           .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true)).child(this.btn(t, `send-${i}`, "Send", (cx) => this.answer(cx, n.task), true)))
-          .children(acts));
+          .children(acts))
+        .when(n.kind === "prompt" && this.saying?.name === n.agent, (el) => el.child(div().pl(17).child(this.sayRow(t, n.agent))));
     };
     return this.card(t, "needs", true).px(16).py(14).gap(10)
       .child(h_flex().gap(8).items_center().text_size(13).font_semibold().text_color(t.blocked)
@@ -549,7 +572,7 @@ export default class SwarmTab extends View {
 
   overview(t, s, cols, cx) {
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    const c1 = [this.allNeeds(t, s), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
+    const c1 = [this.allNeeds(t, s, cx), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
     return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));

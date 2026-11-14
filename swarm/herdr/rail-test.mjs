@@ -364,6 +364,46 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(mm.swarm_kb, 20 * G); assert.equal(mm.away.length, 1); assert.deepEqual(mm.next, { agent: "a", key: "lake build X", peak_kb: 31 * G });
   assert.equal(memOf(overOf({})).next, null);
 }
+// Prompts, tier 2 (II.6c): the fixtures' boxes, their buttons, and answering with the re-read guard.
+{
+  const { parsePrompt, promptButtons, answerPrompt } = await import("./mods/rw-rail/tree.js");
+  const { readFileSync } = await import("node:fs"), fx = (n) => readFileSync(new URL(`./fixtures/prompts/${n}.txt`, import.meta.url), "utf8");
+  const bash = parsePrompt(fx("bash-permission"));
+  assert.deepEqual([bash.kind, bash.title, bash.about, bash.detail, bash.ask, bash.cursor], ["permission", "Bash command", "List hostname and os-release files", "ls /etc/hostname /etc/os-release", "Do you want to proceed?", 1]);
+  assert.deepEqual(bash.options.map((o) => o.text), ["Yes", "Yes, allow reading from /nix/store from this project", "Yes, and switch to auto mode · auto mode handles these prompts for you", "No"]);
+  assert.deepEqual(promptButtons(bash).map((b) => [b.label, b.n, Boolean(b.say)]), [["Yes", 1, false], ["Yes, allow reading from /nix/store from this project", 2, false], ["Yes, and switch to auto mode", 3, false], ["No", 4, false], ["No, and say what…", 4, true]]);
+  const w2 = parsePrompt(fx("write-permission-cursor2"));
+  assert.deepEqual([w2.title, w2.about, w2.cursor, w2.options.length], ["Create file", "ll127-spike-test.txt", 2, 3]);
+  assert.equal(promptButtons(w2)[1].label, "Yes, and switch to accept edits for this session");
+  const f = parsePrompt(fx("fetch-permission"));
+  assert.equal(f.detail, "url: https://example.com/\nprompt: What is the title of this page? Reply with only the title.");
+  assert.deepEqual(promptButtons(f).map((b) => b.label), ["Yes", "Yes, and don't ask again for example.com", "No, and say what…"]);
+  const q = parsePrompt(fx("question"));
+  assert.deepEqual([q.kind, q.title, q.ask, q.options.map((o) => o.text)], ["question", "Color", "Which color do you prefer?", ["Red (warm)", "Blue (cool)", "Green (calm)", "Type something."]]);
+  assert.deepEqual(promptButtons(q).at(-1), { n: 4, label: "Type an answer…", say: true, type: true });
+  assert.equal(parsePrompt(fx("question-multi")), null); // multi-select, two questions: tier 1
+  assert.equal(parsePrompt(fx("bash-permission").replace("   2. Yes, allow", "   3. Yes, allow")), null); // numbering off
+  assert.equal(parsePrompt(fx("bash-permission").replace(" ❯ 1. Yes", "   1. Yes")), null); // no cursor
+  assert.equal(parsePrompt("hello\n$ "), null); assert.equal(parsePrompt(null), null);
+  // answering: keys from the cursor, the guard, text after the key
+  const fake = (screen) => { const calls = []; return { calls, hc: async (a) => { calls.push(a); return a[0] === "read" ? { code: 0, stdout: screen } : { code: 0 }; } }; };
+  const wait = async () => {};
+  let h = fake(fx("write-permission-cursor2"));
+  assert.equal(await answerPrompt(h.hc, "t1", w2, { n: 3 }, null, wait), true);
+  assert.deepEqual(h.calls.slice(1), [["keys", "t1", "down", "enter"]]);
+  h = fake(fx("write-permission-cursor2"));
+  assert.equal(await answerPrompt(h.hc, "t1", w2, { n: 1 }, null, wait), true); assert.deepEqual(h.calls[1], ["keys", "t1", "up", "enter"]);
+  h = fake(fx("bash-permission"));
+  assert.equal(await answerPrompt(h.hc, "m/t2", bash, { n: 4, say: true }, "use cat", wait), true);
+  assert.deepEqual(h.calls.slice(1), [["keys", "m/t2", "down", "down", "down", "enter"], ["send", "--force", "m/t2", "use cat"]]);
+  h = fake(fx("question"));
+  assert.equal(await answerPrompt(h.hc, "t3", q, { n: 4, say: true, type: true }, "Purple", wait), true);
+  assert.deepEqual(h.calls.slice(1), [["keys", "t3", "down", "down", "down"], ["send", "--force", "t3", "Purple"]]);
+  h = fake(fx("fetch-permission")); // another box now: nothing pressed
+  assert.equal(await answerPrompt(h.hc, "t1", bash, { n: 1 }, null, wait), false); assert.equal(h.calls.length, 1);
+  h = fake(fx("bash-permission"));
+  assert.equal(await answerPrompt(h.hc, "t1", bash, { n: 4, say: true }, "", wait), false); assert.equal(h.calls.length, 1);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",

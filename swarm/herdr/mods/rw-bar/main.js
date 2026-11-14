@@ -8,8 +8,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome } from "herdr";
-import { SECTIONS, allShown, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
+import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome } from "herdr";
+import { SECTIONS, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -23,6 +23,11 @@ const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(
 
 export default class Bar extends View {
   init() {
+    if (props()?.needs) { // a prompt's buttons and its "say what" field (II.6c)
+      this.boxes = new Map(); this.saying = null;
+      this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
+      this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
+    }
     if (!props()?.agentMenu) return;
     this.step = null; // null: the items; "message"; "end"; "refused" (this.why); "force"
     this.msg = InputState.new({ placeholder: "Message…" });
@@ -115,8 +120,33 @@ export default class Bar extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
   }
 
+  sendSay(cx) {
+    const w = this.saying, text = this.sayIn.value().trim();
+    if (!w || !text) return;
+    this.saying = null;
+    answerBox(this.boxes, hc, w.address, w.box, w.b, text, cx, w.show);
+  }
+  // A prompt's options as buttons under its row, only on a full parse (II.6c); a click re-reads, else shows the terminal.
+  promptLine(t, address, msg, show, i, cx) {
+    const box = boxFor(this.boxes, hc, address, msg, cx), bs = promptButtons(box);
+    if (!bs.length) return null;
+    const b_ = (id, label, solid, f) => div().id(id).flex_none().h(24).px(8).flex().items_center().rounded(6).text_size(12)
+      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold()).when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((st) => st.bg(t.hover)))
+      .on_click((_e, cx) => { cx.stop_propagation(); f(cx); }).child(label);
+    const saying = this.saying?.address === address;
+    return v_flex().pl(10).pb(6).gap(6)
+      .child(h_flex().gap(6).flex_wrap().children(bs.map((b, k) => b_(`pb-${i}-${k}`, b.label, k === 0 && !b.say, (cx) => {
+        if (b.say) { this.saying = { address, box, b, show }; this.sayIn.set_value(""); cx.notify(); cx.timer.after(50, () => this.sayIn.focus()); }
+        else answerBox(this.boxes, hc, address, box, b, null, cx, show); // the popup stays: closing it would drop the read
+      }))))
+      .when(saying, (el) => el.child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.background)
+          .child(Input.new(this.sayIn).h_full().text_size(12.5).text_color(t.foreground)))
+        .child(b_(`say-go-${i}`, "Send", true, (cx) => this.sendSay(cx)))));
+  }
+
   // The Needs you popup: one row per agent, focusing it on click; a prompt's row also shows its terminal in a window.
-  list(t) {
+  list(t, cx) {
     const all = terminals();
     const ps = panes();
     const sp = spaces();
@@ -126,8 +156,8 @@ export default class Bar extends View {
     const qs = questionsOf(sumsOf(), new Set(asks.map((x) => x.address)));
     const all_ = [...asks.map((term) => ({ address: term.address, peek: line(term.report?.msg, 300), ...rowText(term, "asks", null, home()) })), ...qs];
     const items = all_.slice(0, NEEDS).map(({ address, name, what, peek }, i) => {
-      const p = paneOf.get(address), s = p && spaceOf.get(p.tab);
-      return h_flex().id(`needs-${i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
+      const p = paneOf.get(address), s = p && spaceOf.get(p.tab), show = () => openOverlay(peekWindow(address, name, peek || what));
+      const row = h_flex().id(`needs-${i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
         .cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click(() => {
           closeOverlay(props().overlay);
@@ -140,19 +170,21 @@ export default class Bar extends View {
           .child(line(s.machine ? `${s.machine} · ${s.name}` : s.name, 80))))
         .when(peek != null, (el) => el.child(div().id(`needs-peek-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6)
           .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
-          .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); openOverlay(peekWindow(address, name, peek || what)); })
+          .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); show(); })
           .child("Show terminal")))
         .child(mark(t, "asks"));
+      const more = peek != null && address && cx ? this.promptLine(t, address, peek, show, i, cx) : null;
+      return more ? v_flex().id(`needs-w-${i}`).flex_none().child(row).child(more) : row;
     });
-    return v_flex().size_full().p(6).gap(2).bg(t.popover).text_color(t.foreground)
+    return v_flex().id("needs-list").w_full().max_h(480).overflow_y_scrollbar().p(6).gap(2).bg(t.popover).text_color(t.foreground)
       .child(div().px(10).pt(4).pb(6).text_size(11.5).text_color(t.dim).child("Needs you"))
       .children(items.length ? items : [div().px(10).py(6).text_size(12.5).text_color(t.muted).child("Nothing needs you")])
       .when(all_.length > NEEDS, (el) => el.child(div().px(10).py(6).text_size(12.5).text_color(t.dim).child(`${all_.length - NEEDS} more`)));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
-    if (props()?.needs) return this.list(t);
+    if (props()?.needs) return this.list(t, cx);
     if (props()?.agentMenu) return this.menu(t, props().agentMenu);
     const sp = spaces();
     const space = sp.find((s) => s.active);
@@ -186,7 +218,7 @@ export default class Bar extends View {
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 460, height: Math.min(420, 52 + 34 * needs), props: { needs: true } }))
+        .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 460, props: { needs: true } }) /* sized to its list: prompts grow by their buttons */)
         .child(mark(t, "asks", 8)).child(`Needs you ${needs}`)))
       .when(Boolean(w?.buttons), (el) => el
         .child(this.button(t, "minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
