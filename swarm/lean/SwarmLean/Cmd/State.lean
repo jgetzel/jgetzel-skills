@@ -14,7 +14,7 @@ namespace SwarmLean.Cmd.State
 open Args
 
 /-- The panel views (state.VIEWS' keys, sorted). -/
-def VIEWS : List String := ["activity", "agents", "board", "overview", "system"]
+def VIEWS : List String := ["activity", "agents", "board", "overview", "summary", "system"]
 
 /-- The `state` parser. -/
 def stateSpec : Spec := .mk "state" helpState []
@@ -325,6 +325,56 @@ def watchdJson (wr : String) (runV : Option String) : m Json := do
     ("stale", some (.bool (match started.bind Json.num? with | some s => Float.ofInt newest > s | none => false))),
     ("flags", some (match raw runJ "flags" with | some f@(.arr _) => f | some (.obj _) => .arr #[] | _ => .null))]
 
+/-- A live stayer's hung sign (watchd.hung): its worst stay-* event since it was last active. -/
+def staySign (x : Agent) (aev : List Event) : Option String :=
+  if (py x.stay).isSome && x.status == some "idle" then
+    let got := (aev.filter fun e => e.ts.any (· ≥ x.last_active.getD 0)).filterMap (·.kind)
+    if got.contains "stay-hung" then some "hung" else if got.contains "stay-nowaiter" then some "nowaiter"
+    else if got.contains "stay-unwoken" then some "unwoken" else none
+  else none
+
+/-- `--view summary` (UI-SPEC.md, "New swarm CLI output" 1): task counts, the live agents in five fields, and what
+needs the human as the panel's Needs you lists it; no ended agents, events or messages. -/
+def summary (db : Db) (p : String) (t : Int) : m Json := do
+  let cv ← match py ((db.getMeta "comms").bind (·.v)) with | some c => pure (some c) | none => env "SWARM_COMMS"
+  let live := (db.agents.filter (·.ended.isNone)).mergeSort (·.name ≤ ·.name)
+  let names := live.map (·.name)
+  let evs := db.events.filter fun e => e.kind.any (·.startsWith "stay-") && e.agent.any names.contains
+  let mine (s : Status) (n : String) := db.tasks.filter fun r => r.state = s && r.owner == some n
+  let asks := db.tasks.filter (·.state = .blocked)
+  let ags := live.map fun x =>
+    let own := mine .blocked x.name ++ mine .claimed x.name
+    let act := x.last_active.getD 0
+    let hung := staySign x (evs.filter (·.agent == some x.name)) == some "hung"
+    (x, hung, Json.mkObj [("name", .str x.name),
+      ("status", N (if own.any (·.state = .blocked) then some "blocked" else x.status)),
+      ("task", match own.head? with
+        | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str)]
+        | none => .null),
+      ("idle_s", Json.int (t - (if act == 0 then t else act))),
+      ("hung", .bool hung)])
+  let need (kind : String) (l : List (String × Option Json)) := obj ((("kind", some (Json.str kind))) :: l)
+  let ci := db.cis.mergeSort fun x y => x.created.getD "" ≥ y.created.getD ""
+  let fin := ci.filter fun r => r.status == some "completed" && r.conclusion.any (· != "cancelled")
+  let mach ← Machine.mem
+  let needs := asks.map (fun r => need "question" [("task", some (Json.int r.id)), ("agent", r.owner.map .str),
+      ("question", r.question.map .str), ("title", r.title.map .str)]) ++
+    (live.filter fun x => x.status == some "blocked" && !asks.any (·.owner == some x.name)).map
+      (fun x => need "prompt" [("agent", some (.str x.name))]) ++
+    (ags.filter (·.2.1)).map (fun (x, _) => need "hung" [("agent", some (.str x.name))]) ++
+    (match fin.head? with
+      | some r => if r.conclusion != some "success" then
+          [need "ci" [("run", some (Json.int r.id)), ("url", r.url.map .str), ("created", r.created.map .str)]] else []
+      | none => []) ++
+    (match mach with
+      | some (av, tot, psi) => if Machine.pressureHigh av tot psi then [need "memory" [("line", some (.str (Machine.line av tot psi)))]] else []
+      | none => [])
+  return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
+    ("comms", N cv),
+    ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped"].map fun k =>
+      (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
+    ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray)]
+
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
   let p ← Spawn.dbPath
@@ -334,6 +384,9 @@ def state (a : Parsed) : m UInt32 := do
     return 0
   let db ← Store.txn [.task, .event, .agent, .msg, .lock, .conflict, .«meta», .ci, .workspace, .cursor] fun db => (db, db)
   let view := a.str "view"
+  if view == some "summary" then
+    Env.out (Json.encode (← summary db p t))
+    return 0
   let full := view.isNone
   let lanes := wants view "lanes"
   let me := a.str "agent"
@@ -378,12 +431,7 @@ def state (a : Parsed) : m UInt32 := do
     let (act, s1) ← if live && lanes then Agents.sessionActive seen x t else pure (x.last_active.getD 0, seen)
     seen := s1
     let status := if !live then some "ended" else if own.any (·.state = .blocked) then some "blocked" else x.status
-    -- a stayer's hung sign (watchd.hung): its worst stay-* event since it was last active
-    let sign := if live && (py x.stay).isSome && x.status == some "idle" then
-        let got := (aev.filter fun e => e.ts.any (· ≥ x.last_active.getD 0)).filterMap (·.kind)
-        if got.contains "stay-hung" then some "hung" else if got.contains "stay-nowaiter" then some "nowaiter"
-        else if got.contains "stay-unwoken" then some "unwoken" else none
-      else none
+    let sign := if live then staySign x aev else none
     let (cold, s2) ← if live && lanes then Agents.coldReason seen x t else pure (none, seen)
     seen := s2
     let branch ← match live, wt with

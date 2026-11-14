@@ -16,7 +16,7 @@ def helpRun : String :=
 
 /-- `swarm state -h`. -/
 def helpState : String :=
-  "Usage: swarm state [-h] --json\n       [--view {activity,agents,board,overview,system}]\n       [--agent <agent>] [--task <task>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json\n   --view {activity,agents,board,overview,system}\n                         only what that panel view shows (default: everything)\n   --agent <agent>       also the detail pane's messages and events for this agent\n   --task <task>         also that task's body, events and the messages that name it"
+  "Usage: swarm state [-h] --json\n       [--view {activity,agents,board,overview,summary,system}]\n       [--agent <agent>] [--task <task>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json\n   --view {activity,agents,board,overview,summary,system}\n                         only what that panel view shows (default: everything)\n   --agent <agent>       also the detail pane's messages and events for this agent\n   --task <task>         also that task's body, events and the messages that name it"
 
 /-- `swarm watch -h`. -/
 def helpWatch : String :=

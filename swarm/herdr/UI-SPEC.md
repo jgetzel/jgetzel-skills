@@ -232,6 +232,9 @@ In swarm-lean, since the CLI is being ported there.
 1. `swarm state --json --view summary`: task counts, per live agent only
    `name`, `status`, `task`, `idle_s`, hung or not, and the list of what needs
    the human. No ended agents, events or messages.
+   Built in slice 5: `counts`, `agents` (`name`, `status`, `task` {id, title}, `idle_s`, `hung`), `needs` (kinds
+   `question`, `prompt`, `hung`, `ci`, `memory`, as the swarm panel's Needs you), `comms`, `active`. `idle_s` is the
+   hook's `last_active`, not hc's lookup, so it stays one db read.
 2. A list of the swarms on this machine, with repo folder, tag and db path.
    State is per repo today and nothing lists them, so this needs a small
    registry that watchd writes when it starts and clears when it ends.

@@ -310,8 +310,36 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
   unless (names (← st t ["--view", "agents"])).contains "e" do fail "the agents view left out an ended agent"
   eq (ids (← st t)) [1, 2, 3, 4]
 
+-- UI-SPEC.md slice 5: --view summary is task counts, the live agents in five fields and what needs the human
+def test_state_summary (t : T) : IO Unit := do
+  let n ← now t
+  t.agent "comms" [("status", "idle"), ("last_active", .int (n - 100))]
+  t.agent "w" [("status", "working"), ("last_active", .int n)]
+  t.agent "p" [("status", "blocked")]                                         -- stopped at a prompt
+  t.agent "q" [("status", "working"), ("last_active", .int 0)]               -- asks about #2; never active: idle 0
+  t.agent "s" [("status", "idle"), ("stay", "reviews"), ("last_active", .int (n - 50))]  -- hung
+  t.agent "e" [("ended", .int 1)]
+  t.q_ "insert into task(id, title, state, owner, question) values (1, 'one', 'claimed', 'w', null), (2, 'two', 'blocked', 'q', 'which?'), (3, 'three', 'done', 'w', null), (4, 'four', 'open', null, null)"
+  t.q_ "insert into event(ts, agent, kind, data) values (?, 's', 'stay-hung', ''), (?, 'w', 'claim', '#1')" [.int (n - 10), .int (n - 10)]
+  t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(7,'x','completed','failure','u','2026-11-08T10:00:00Z')"
+  let s ← st t ["--view", "summary"]
+  eq (s.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 1, "done": 1, "dropped": 0})
+  let ags := match s.f "agents" with | .arr a => a.toList | _ => []
+  eq (ags.map (·.f "name")) [json% "comms", json% "p", json% "q", json% "s", json% "w"]
+  eq (byName s "q") (json% {"name": "q", "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})
+  eq ((byName s "w").f "task") (json% {"id": 1, "title": "one"})
+  eq ((byName s "s").f "hung") (json% true)
+  unless (((byName s "comms").f "idle_s").getInt?.toOption.getD 0) ≥ 100 do fail "comms' idle_s"
+  let needs := match s.f "needs" with | .arr a => a.toList.filter fun (x : Json) => x.f "kind" != json% "memory" | _ => []
+  eq (toJson needs) (json% [{"kind": "question", "task": 2, "agent": "q", "question": "which?", "title": "two"},
+    {"kind": "prompt", "agent": "p"}, {"kind": "hung", "agent": "s"},
+    {"kind": "ci", "run": 7, "url": "u", "created": "2026-11-08T10:00:00Z"}])
+  for k in ["tasks", "events", "messages", "machine", "watchd"] do
+    if s.f k != .null then fail s!"summary sent {k}"
+
 def tests : List Case := [
   ("test_state_sends_what_the_view_lists", test_state_sends_what_the_view_lists),
+  ("test_state_summary", test_state_summary),
   ("test_fate_is_the_ticks_verdict", test_fate_is_the_ticks_verdict),
   ("test_fate_held_task_and_lock", test_fate_held_task_and_lock),
   ("test_state_ci_and_watchd", test_state_ci_and_watchd),

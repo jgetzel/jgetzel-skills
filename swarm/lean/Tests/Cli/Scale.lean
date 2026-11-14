@@ -60,7 +60,7 @@ def test_state_fast_on_a_big_db (t : T) : IO Unit := do
   gen t 6000 "event(ts, agent, kind, data)"
     s!"select {n}-6000+i, 'ag'||(i%400), case i%3 when 0 then 'task-add' when 1 then 'claim' else 'done' end, '#'||(i%500+1)"
   t.q_ s!"update agent set ended={n}-60 where name like 'ag%' and rowid%2=0"
-  for v in [[], ["--view", "board"], ["--view", "overview"], ["--view", "agents"], ["--view", "board", "--task", "7"]] do
+  for v in [[], ["--view", "summary"], ["--view", "board"], ["--view", "overview"], ["--view", "agents"], ["--view", "board", "--task", "7"]] do
     let ms ← best3 fun _ => t.sw_ "a" (["state", "--json"] ++ v)
     if ms ≥ 300 then fail s!"state --json {" ".intercalate v} took {ms} ms on a big db (best of three)"
 
