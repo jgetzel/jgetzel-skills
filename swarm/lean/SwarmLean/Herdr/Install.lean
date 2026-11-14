@@ -15,7 +15,7 @@ the herdr-mods/herdr-mods launcher).
                            view (swarm/herdr/UI-SPEC.md);
                            rw-settings/app.js is the app's Settings screen (frame/settings/main.js), which it extends
   layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, rw-settings
-                           at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms, and no brand block, tab bar or status
+                           at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms, only Calendar in the side panel, and no brand block, tab bar or status
                            bar; its dark look is themes/rework.json (copy of swarm/herdr/themes/rework.json, the canvas's warm
                            palette), its light look Herdr's paper
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
@@ -185,13 +185,17 @@ partial def edit (j : Json) : Json := Id.run do
   return j
 
 /-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, rw-settings'
-foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, and no brand block, tab bar
+foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, only Calendar in the side panel, and no brand block, tab bar
 or status bar (rw-bar replaces them). -/
 partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
   if Json.fstr j "id" == some "sidebar-footer" then
     return j.setObjVal! "content" (Json.mkObj [("mod", "rw-settings"), ("props", Json.mkObj [("footer", true)])])
+  -- Only the calendar: the swarm tab replaces the Swarm panel, and the person doesn't use Files or Changes.
+  if Json.fstr j "id" == some "panel-body" then
+    let kids := (Json.items ((Json.field j "children").getD .null)).filter (Json.fstr · "id" == some "calendar")
+    return (j.setObjVal! "children" (.arr kids.toArray)).setObjVal! "active" "calendar"
   -- Panes as cards with rw-pane's header (UI-SPEC.md, "Panes as cards").
   if Json.fstr j "id" == some "main" then
     let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
@@ -340,9 +344,14 @@ def main : IO UInt32 := do
   copy (here ++ "/../swarm/herdr/themes/rework.json") (home ++ "/themes")
   IO.println s!"wrote {home}/themes/rework.json"
   let out := home ++ "/layouts/rework.json"
+  -- An older rework had Swarm in the side panel: a window showing it now hides the panel, which may have shown Swarm.
+  let old := (Json.decode (← try IO.FS.readFile out catch _ => pure "")).bind (find · "swarm")
   IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
+  if old.isSome then
+    if ((← run ["herdr-app", "status"]).bind Json.decode).bind (Json.fstr · "layout") == some "rework" then
+      discard <| run ["herdr-app", "do", "layout.hide", "--id", "panel"]
 
   if version.isSome then
     for m in [tabs, agents, cal, rail, bar, pane, over, ask, sets, alls] do
@@ -352,7 +361,10 @@ def main : IO UInt32 := do
   -- The swarm-only copies an earlier installer made: move a window off them, then remove them. With no window to ask,
   -- or a switch that failed, they stay for a later run: the saved layout may still be "swarm".
   if let some status := (← run ["herdr-app", "status"]).bind Json.decode then
-    if Json.fstr status "layout" != some "swarm" || (← run ["herdr-app", "do", "layout.switch", "--name", "jgetzel"]).isSome then
+    -- not `|| (← run …)`: a nested action runs before the `||`, so it switched every window to jgetzel
+    let off ← if Json.fstr status "layout" == some "swarm" then
+      pure (← run ["herdr-app", "do", "layout.switch", "--name", "jgetzel"]).isSome else pure true
+    if off then
       discard <| run ["rm", "-rf", mods ++ "/swarm-tabs", home ++ "/layouts/swarm.json", home ++ "/swarm-install.stamp"]
 
   -- Hash of what the copies come from; `swarm who` runs the same command to say they're stale.

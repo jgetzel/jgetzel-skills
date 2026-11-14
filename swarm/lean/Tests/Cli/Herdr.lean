@@ -47,7 +47,8 @@ def test_install_main_path (t : T) : IO Unit := do
   eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"theme\":{\"light\":\"paper\",\"dark\":\"rework\"},\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
     "\"size\":{\"px\":52},\"window_drag\":true,\"content\":{\"mod\":\"rw-bar\"}},{\"id\":\"body\",\"children\":[" ++
     "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++
-    panel.replace "{\"id\":\"main\",\"content\":{\"tab\":\"active\"}}" ("{\"id\":\"view\",\"type\":\"stack\",\"active\":\"main\"," ++
+    (panel.replace ("{\"id\":\"files\"},{\"id\":\"swarm\",\"type\":\"block\",\"content\":{\"mod\":\"swarm\"}},")
+      "" |>.replace "\"panel-body\"," "\"panel-body\",\"active\":\"calendar\",").replace "{\"id\":\"main\",\"content\":{\"tab\":\"active\"}}" ("{\"id\":\"view\",\"type\":\"stack\",\"active\":\"main\"," ++
       "\"children\":[{\"id\":\"main\",\"content\":{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
       "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"ring\"},\"lone\":true," ++
       "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}}," ++
