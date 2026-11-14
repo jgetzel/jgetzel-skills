@@ -19,11 +19,18 @@
        "hooks": [{"type": "command", "command": "{{SWARM}} hook pre-tool"}]}
     ],
     "PostToolUse": [
-      {"hooks": [{"type": "command", "command": "{{SWARM}} hook post-tool"}]}
+      {"hooks": [
+        {"type": "command", "command": "{{SWARM}} hook post-tool"},
+        {"type": "command", "command": "sh $(dirname {{SWARM}})/herdr/prompt-hook.sh clear"}
+      ]}
+    ],
+    "PermissionRequest": [
+      {"hooks": [{"type": "command", "command": "sh $(dirname {{SWARM}})/herdr/prompt-hook.sh record"}]}
     ],
     "Stop": [
       {"hooks": [
         {"type": "command", "command": "{{SWARM}} hook stop"},
+        {"type": "command", "command": "sh $(dirname {{SWARM}})/herdr/prompt-hook.sh clear"},
         {"type": "command", "command": "{{SWARM}} wait", "async": true, "asyncRewake": true, "timeout": 21600}
       ]}
     ]

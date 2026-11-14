@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -65,7 +65,7 @@ export default class SwarmTab extends View {
     this.actQ = InputState.new({ placeholder: "Search activity" }); // Activity's search (II.3g)
     this.actQ.on("change", (_e, cx) => cx.notify());
     this.acts = null; this.actFilter = "all"; // Activity's summary and log rows, built once per read
-    this.boxes = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
+    this.boxes = new Map(); this.hooks = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
     this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
     this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
     this.ended = null; // the ended agents, read when you open their line
@@ -203,8 +203,13 @@ export default class SwarmTab extends View {
 
   // An agent at a prompt: what hc says it asks ("approve Bash: …"), and its terminal in a window (II.6 tier 1).
   promptOf(name) {
-    const hc = this.s?.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, this.where().on);
-    return { addr, msg: addr ? line(terminals().find((x) => x.address === addr)?.report?.msg, 300) : "" };
+    const hc = this.s?.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, this.where().on), term = addr && terminals().find((x) => x.address === addr);
+    return { addr, msg: term ? line(term.report?.msg, 300) : "", blocked: term?.status === "blocked" };
+  }
+  // II.6d: what the PermissionRequest hook recorded, only while its terminal is blocked; else hc's msg.
+  promptText(name, cx) {
+    const p = this.promptOf(name);
+    return (p.blocked && cx ? hookFor(this.hooks, exec, this.s?.db, name, p.msg, this.where(), cx) : null) || p.msg || "Answer it in its terminal.";
   }
   peek(name) {
     const { addr, msg } = this.promptOf(name);
@@ -450,7 +455,7 @@ export default class SwarmTab extends View {
     const item = (n, i) => {
       const ago = n.ago != null ? `${dur(n.ago * 1000)}` : "";
       const [m, title, text] = n.kind === "question" ? ["asks", `${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
-        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, this.promptOf(n.agent).msg || "Answer it in its terminal."]
+        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, this.promptText(n.agent, cx)]
         : n.kind === "hung" ? ["hung", `${n.agent} is hung`, `No answer to the liveness check${(() => { const a = s.agents.find((x) => x.name === n.agent); return a?.task ? ` · holds #${a.task.id}` : ""; })()}`]
         : n.kind === "ci" ? ["asks", "main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
         : n.kind === "watchd" ? ["asks", "watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
@@ -466,7 +471,7 @@ export default class SwarmTab extends View {
         .child(h_flex().gap(8).min_w(0).items_center().text_size(12.5).child(mark(t, m))
           .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
           .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(ago)))
-        .child(div().pl(17).text_size(13).line_height("19px").whitespace_normal().text_color(t.muted).child(text))
+        .child(v_flex().pl(17).text_size(13).line_height("19px").text_color(t.muted).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
         .child(h_flex().pl(17).gap(8).items_center().flex_wrap()
           .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true)).child(this.btn(t, `send-${i}`, "Send", (cx) => this.answer(cx, n.task), true)))
           .children(acts))

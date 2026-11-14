@@ -249,6 +249,41 @@ export function answerBox(boxes, hc, addr, box, b, text, cx, fallback) {
     cx.notify();
   });
 }
+// II.6d: the PermissionRequest hook's record (prompt-hook.sh) as plain text to show; null unless it parses. Its text is
+// untrusted: drawn, never run; a long Write shows its first lines and size. Never decides a key (that stays II.6c).
+export function hookText(raw) {
+  let j;
+  try { j = JSON.parse(String(raw ?? "")); } catch { return null; }
+  const tool = typeof j?.tool_name === "string" ? line(j.tool_name, 60) : null, x = j?.tool_input;
+  if (!tool || !x || typeof x !== "object" || Array.isArray(x)) return null;
+  const S = (v) => (typeof v === "string" ? v : "");
+  if (tool === "Bash") return para(`$ ${S(x.command)}`, 600);
+  if (tool === "Write") {
+    const c = S(x.content), n = c ? c.split("\n").length : 0, kb = Math.max(1, Math.ceil(c.length / 1024));
+    return para(`Write ${line(S(x.file_path), 200)} · ${n} line${n === 1 ? "" : "s"}, ${kb} KB${c ? `\n${c.split("\n").slice(0, 4).map((l) => line(l, 160)).join("\n")}` : ""}`, 1000);
+  }
+  if (/^(Edit|MultiEdit|NotebookEdit|Read)$/.test(tool)) return line(`${tool} ${S(x.file_path) || S(x.notebook_path)}`, 300);
+  if (tool === "WebFetch") return line(`Fetch ${S(x.url)}`, 300);
+  if (tool === "AskUserQuestion" && Array.isArray(x.questions))
+    return para(x.questions.slice(0, 4).map((q) => `${line(S(q?.question), 200)}${q?.multiSelect === true ? " (any of)" : ""}: ${(Array.isArray(q?.options) ? q.options : []).slice(0, 8).map((o) => line(S(o?.label), 60)).join(" · ")}`).join("\n"), 1200);
+  return line(`${tool}: ${Object.keys(x).slice(0, 6).join(", ")}`, 300);
+}
+// The hook's record for a swarm agent at a prompt, read once per hc msg into `hooks` (a Map per view): `exec`: herdr's,
+// `db`: the swarm's db path, `opts`: {cwd, on}. null until read, without a record, or for a name that is not one.
+export function hookFor(hooks, exec, db, name, msg, opts, cx) {
+  if (typeof db !== "string" || !db.includes("/") || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name ?? "")) return null;
+  const key = `${db}|${name}`, c = hooks.get(key);
+  if (c?.msg === msg) return c.text;
+  hooks.set(key, { msg, text: null });
+  if (hooks.size > 100) hooks.delete(hooks.keys().next().value);
+  cx.spawn(async (cx) => {
+    let text = null;
+    try { const r = await exec("cat", [`${db.replace(/\/[^/]*$/, "")}/prompts/${name}.json`], opts); text = r?.code === 0 ? hookText(r.stdout) : null; } catch {}
+    const e = hooks.get(key);
+    if (e?.msg === msg) { e.text = text; cx.notify(); }
+  });
+  return null;
+}
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 
 // When a folder's swarm is read again, in ms: a live swarm at least every 5 s and never more often than 3× as long as

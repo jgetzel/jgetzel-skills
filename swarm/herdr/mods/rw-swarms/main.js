@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, settings, layout, openOverlay } from "herdr";
-import { addrOf, agentRows, answerBox, boxFor, promptButtons, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
+import { addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -27,7 +27,7 @@ export default class AllSwarms extends View {
   init(_props, cx) {
     this.over = {}; // key -> the swarm's `state --view overview`
     this.mem = null; // this computer's { used, total } in kB
-    this.boxes = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
+    this.boxes = new Map(); this.hooks = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
     this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
     this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
     // A round reads every swarm's overview, one at a time; the next waits at least twice as long as it took (50 swarms
@@ -68,9 +68,12 @@ export default class AllSwarms extends View {
     else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
   }
   // An agent at a prompt: what hc says it asks, and its terminal in a window (II.6 tier 1).
-  promptOf(w, s, name) {
-    const hc = s.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, w.on);
-    return { addr, msg: addr ? line(terminals().find((x) => x.address === addr)?.report?.msg, 300) : "" };
+  promptOf(w, s, name, cx) {
+    const hc = s.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, w.on), term = addr && terminals().find((x) => x.address === addr);
+    const msg = term ? line(term.report?.msg, 300) : "";
+    // II.6d: what the PermissionRequest hook recorded, only while the terminal is blocked
+    const hook = term?.status === "blocked" && cx ? hookFor(this.hooks, exec, s.db, name, msg, { cwd: w.folder, on: w.on ?? null }, cx) : null;
+    return { addr, msg, hook };
   }
   // Tier 2 (II.6c): the box's options as buttons, only on a full parse; a click re-reads and else shows the terminal.
   promptBtns(t, pr, name, i, cx) {
@@ -114,13 +117,13 @@ export default class AllSwarms extends View {
         .child(div().font_normal().child(`${asks.length}, across ${ws.length === 2 ? "both swarms" : `${ws.length} swarms`}`)))
       .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
         const title = n.kind === "question" ? `${n.agent} asks about #${n.task.id}` : n.kind === "prompt" ? `${n.agent} stopped at a prompt` : `${n.agent} is hung`;
-        const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent) : null;
-        const text = n.kind === "question" ? one(n.task.question) || n.task.title : pr ? pr.msg || "Answer it in its terminal." : "watchd keeps it, but it has done nothing for a long time.";
+        const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent, cx) : null;
+        const text = n.kind === "question" ? one(n.task.question) || n.task.title : pr ? pr.hook || pr.msg || "Answer it in its terminal." : "watchd keeps it, but it has done nothing for a long time.";
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, tagOf(n.s.comms)))
             .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
             .child(div().truncate().text_color(t.dim).child(n.ago != null ? `· ${dur(n.ago * 1000)}` : "")))
-          .child(div().text_size(13.5).line_height("19px").whitespace_normal().text_color(t.foreground).child(text))
+          .child(v_flex().text_size(13.5).line_height("19px").text_color(t.foreground).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
           .child(h_flex().gap(8).items_center().flex_wrap()
             .when(n.kind === "question", (el) => el.child(this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)))
             .children(pr ? this.promptBtns(t, pr, n.agent, i, cx) : [])
