@@ -18,7 +18,7 @@ def VIEWS : List String := ["activity", "agents", "board", "overview", "summary"
 
 /-- The `state` parser. -/
 def stateSpec : Spec := .mk "state" helpState []
-  [{ flag "--json" with minCount := 1 }, { opt "--view" with choices := VIEWS }, opt "--agent", opt "--task" none (some int)]
+  [{ flag "--json" with minCount := 1 }, { opt "--view" with choices := VIEWS }, opt "--agent", opt "--task" none (some int), opt "--before" none (some int)]
   [] [] none
 
 /-- The `watch` parser. -/
@@ -414,7 +414,10 @@ def state (a : Parsed) : m UInt32 := do
   -- task's screen it and its deps, the event feeds the tasks their events name; the rest only as `counts`
   let deep := view == some "activity"  -- the Activity tab folds and filters, so it reads further back
   let evShown := if wants view "events" then (db.events.filter shown).reverse.take (if deep then 300 else 60) else []
-  let newest (s : Status) : List Int := ((db.tasks.filter (·.state = s)).reverse.take 80).map (·.id)
+  -- `--before`: the next page back, the Board's tasks numbered below it, the Agents' ended before it (UI-SPEC II.3l)
+  let before := a.int "before"
+  let below (n : Int) : Bool := match before with | some b => decide (n < b) | none => true
+  let newest (s : Status) : List Int := ((db.tasks.filter fun r => r.state = s && below r.id).reverse.take 80).map (·.id)
   let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++
     (match tid with | some i => i :: ((db.find i).map Tasks.depsOf).getD [] | none => []) ++
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
@@ -422,7 +425,7 @@ def state (a : Parsed) : m UInt32 := do
     (r.state = .done && me.isSome && r.owner == me)
   let tasksJ := (db.tasks.filter sent).map fun r => taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])
   let endedPage := if view == some "agents" then
-      (((db.agents.filter (·.ended.isSome)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
+      (((db.agents.filter fun x => x.ended.isSome && below (x.ended.getD 0)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
     else []
   let sentA (x : Agent) : Bool := full || x.ended.isNone || me == some x.name || endedPage.contains x.name
   let wts ← if lanes then Workspaces.wtMap db else pure []
