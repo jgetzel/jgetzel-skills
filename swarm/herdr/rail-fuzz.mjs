@@ -126,7 +126,6 @@ for (let i = 0; i < 3000; i++) {
   assert.equal(all.flat().length, 2200);
   assert.ok(all.flat().every((r) => r.lines.length <= T.DEPTH));
   time("rowText of every row", 60, () => all.flat().forEach((r) => T.rowText(r.t, r.mark, null, "/h")));
-  time("pillOf: 300 tabs in one space", 60, () => spaces[0].tabs.forEach((tab) => T.pillOf(tab, ps, by)));
   const agents = Array.from({ length: 500 }, (_, i) => ({ name: `ll-${i}`, hc: `t${i}`, status: pick(["working", "idle", "blocked"]), hung: rnd() < 0.02 }));
   const sum = T.sumOf({ comms: "ll-0", agents, needs: [], counts: {} });
   const sw = time("swarmOf: 500 agents", 50, () => T.swarmOf(T.rowsOf(spaces[0], ps, by, T.swarmAddrs(sum, null)), sum, by, null));

@@ -1,6 +1,6 @@
-// The rework's rail (swarm/herdr/UI-SPEC.md, slice 1): spaces by machine, each with its agents and then its shells,
-// one row each (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
-// their parent on a thin line. A space folds to one line of counts. Click a row to focus its terminal; click a space
+// The rework's rail (swarm/herdr/UI-SPEC.md, slice 1 and Part II.2): spaces by machine, each with its tabs in order,
+// a row per terminal (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
+// their parent on a thin line, a split tab's rows in a bracket, and a New tab row at the end of the shown space. A space folds to one line of counts. Click a row to focus its terminal; click a space
 // to show it, click the shown one or any chevron to fold it. A space with a live swarm (its communicator's space, else
 // its folder's) shows it as a block first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7). Each machine's
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
@@ -10,9 +10,9 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
+import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
-  swarmAddrs, swarmOf, swarmsOf, swarmText } from "./tree.js";
+  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -431,15 +431,34 @@ export default class Rail extends View {
       .children(rows);
   }
 
+  // The shipped new-menu (a terminal or an agent) in space `s`: it opens its tab in the shown space.
+  newTab(s) {
+    if (allShown(layout())) showAll(run, false);
+    if (!s.active) run("space.select", { id: s.id });
+    openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
+  }
+
+  // A tab's rows: a split tab's joined by a bracket, with the tab's name over it when it was named.
+  tabOf(t, g, draw) {
+    if (!g.split) return g.rows.map(draw);
+    const name = this.tabName.get(g.tab);
+    return [v_flex().id(`tab-${g.tab}`).flex_none().ml(6).pl(2).border_l(2).border_color(t.input)
+      .when(Boolean(name), (el) => el.child(div().h(18).flex_none().px(8).truncate().text_size(11.5).text_color(t.dim).child(line(name, 80))))
+      .children(g.rows.map(draw))];
+  }
+
   // `fly`: the collapsed rail's hover card, always open and not marked as shown. `sw`: the space's swarm (swarmOf).
   space(t, s, rows, tabNames, shownTerm, now, fly = false, sw = null) {
     const folded = !fly && this.folded.has(s.id);
-    const open = !folded && rows.length > 0;
+    const adds = s.active && !fly; // the shown space ends with a New tab row
+    const open = !folded && (rows.length > 0 || adds);
     const tabs = s.tabs.length;
     const stop = (_e, cx) => cx.stop_propagation();
+    const draw = (r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now);
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
         .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
+        .on_hover((on, cx) => { if (on) this.hot = s.id; else if (this.hot === s.id) this.hot = null; cx.notify(); })
         .on_click((_e, cx) => { if (allShown(layout())) showAll(run, false); else if (s.active && !fly) return this.fold(s.id, cx); run("space.select", { id: s.id }); })
         .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
           .hover((st) => st.bg(t.hover).text_color(t.foreground))
@@ -447,14 +466,23 @@ export default class Rail extends View {
           .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(12)))
         .child(div().flex_1().min_w(0).truncate().text_size(14).font_bold().text_color(t.foreground).child(line(s.name, 80)))
         .when(folded, (el) => el.child(h_flex().flex_none().gap(8).children(this.counts(t, rows))))
-        .when(!folded, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${tabs} ${tabs === 1 ? "tab" : "tabs"}`))))
+        .when(!folded, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${tabs} ${tabs === 1 ? "tab" : "tabs"}`)))
+        // New tab, on hover (Part II.2)
+        .when(!fly && this.hot === s.id, (el) => el.child(h_flex().id(`add-${s.id}`).size(18).flex_none().items_center().justify_center()
+          .rounded(5).text_color(t.dim).hover((st) => st.bg(t.input).text_color(t.foreground))
+          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.newTab(s); })
+          .child(svg("mods/workspace-chrome/plus.svg").size(12)))))
       // The space's rows hang on a guide line under its chevron.
       .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
         .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now)))
-        .children(this.capped(t, s.id, (sw ? sw.rest : rows), (r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now)))));
+        .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, g, draw)).flat())
+        .when(adds, (el) => el.child(h_flex().id(`new-tab-${s.id}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
+          .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+          .on_click(() => this.newTab(s))
+          .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none()).child("New tab")))));
   }
 
-  // A list of rows: past ROWS, the first ROWS - 1 and a line that shows the rest (`key`: the space's id).
+  // A list of rows (or a space's tabs): past ROWS, the first ROWS - 1 and a line that shows the rest (`key`: the space's id).
   capped(t, key, xs, draw) {
     if (xs.length <= ROWS || this.more.has(key)) return xs.map(draw);
     return [...xs.slice(0, ROWS - 1).map(draw), this.moreLine(t, `more-${key}`, `${xs.length - ROWS + 1} more`, key)];
@@ -516,7 +544,7 @@ export default class Rail extends View {
     if (shownAll && this.viewTab !== undefined && tab !== this.viewTab) showAll(run, false);
     this.viewTab = shownAll ? (this.viewTab === undefined ? tab : this.viewTab) : undefined;
     const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
-    const tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
+    const tabName = this.tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     if (!this.started) { this.started = true; this.swarms(cx); }
     const swBy = new Map();

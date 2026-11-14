@@ -191,7 +191,9 @@ partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
   if Json.fstr j "id" == some "sidebar-footer" then
-    return j.setObjVal! "content" (Json.mkObj [("mod", "rw-settings"), ("props", Json.mkObj [("footer", true)])])
+    -- three rows (Settings, Calendar, Add machine) of 28 px, 4 above and 8 below
+    return (j.setObjVal! "content" (Json.mkObj [("mod", "rw-settings"), ("props", Json.mkObj [("footer", true)])])).setObjVal! "size"
+      (Json.mkObj [("px", 97)])
   -- Only the calendar: the swarm tab replaces the Swarm panel, and the person doesn't use Files or Changes.
   if Json.fstr j "id" == some "panel-body" then
     let kids := (Json.items ((Json.field j "children").getD .null)).filter (Json.fstr · "id" == some "calendar")

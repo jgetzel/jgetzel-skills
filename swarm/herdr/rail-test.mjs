@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -27,13 +27,13 @@ const ps = [
   { pane: "pm", tab: "a", terminal: null }, // a mod pane
 ];
 const rows = rowsOf(space, ps, byAddr);
-assert.deepEqual(rows.map((r) => [r.t.address, r.lines.join(""), r.mark, r.pane]), [
-  ["t2", "", "working", "p2"], // agents first
-  ["t3", "├", "idle", null], // a helper's done reads idle
-  ["t4", "│└", "asks", null],
-  ["t5", "└", "working", null],
-  ["t1", "", "prompt", "p1"], // then shells, in tab order
-  ["t7", "", "run", "p7"],
+assert.deepEqual(rows.map((r) => [r.t.address, r.lines.join(""), r.mark, r.pane, r.tab]), [
+  ["t1", "", "prompt", "p1", "a"], // tab order, shells and agents alike (Part II.2: the rail is the tab list)
+  ["t7", "", "run", "p7", "a"],
+  ["t2", "", "working", "p2", "b"],
+  ["t3", "├", "idle", null, "b"], // a helper's done reads idle; a sub-terminal is its root's tab
+  ["t4", "│└", "asks", null, "b"],
+  ["t5", "└", "working", null, "b"],
 ]);
 const remote = rowsOf({ tabs: [{ id: "r", index: 1 }] }, [{ pane: "pr", tab: "r", terminal: "vps/t2" }], byAddr);
 assert.deepEqual(remote.map((r) => r.t.address), ["vps/t2", "vps/t3"]);
@@ -81,12 +81,10 @@ assert.equal(stamp(ch, [R("s", "prompt", 0)], 800), false);
 // ended terminal.
 const needs = [...terms, T("s1", { status: "blocked", program: sh }), T("t9", { status: "blocked", state: "finished" })];
 assert.deepEqual(needsYou(needs).map((t) => t.address), ["t4", "t8"]);
-// A pill speaks for the agent whose status is its tab's, else its first agent, else its first terminal.
-const tabPs = [{ tab: "x", terminal: "t1" }, { tab: "x", terminal: "t2" }, { tab: "x", terminal: "t5" }, { tab: "x", terminal: null }];
-assert.equal(pillOf({ id: "x", status: "working" }, tabPs, byAddr).address, "t2");
-assert.equal(pillOf({ id: "x", status: null }, tabPs, byAddr).address, "t2");
-assert.equal(pillOf({ id: "x", status: null }, [tabPs[0]], byAddr).address, "t1");
-assert.equal(pillOf({ id: "y", status: null }, tabPs, byAddr), null);
+// A space's tabs in the rail: runs of rows by tab; a tab with two rows in panes is split (a bracket).
+const gs = tabGroups([...rows, { t: { address: "z" }, pane: "pz", tab: null, lines: [] }]);
+assert.deepEqual(gs.map((g) => [g.tab, g.rows.map((r) => r.t.address), g.split]),
+  [["a", ["t1", "t7"], true], ["b", ["t2", "t3", "t4", "t5"], false], [null, ["z"], false]]);
 const zsh = T("z", { argv: ["/bin/zsh"], program: sh, foreground: { argv: ["npm", "run", "dev"], cwd: "/h/w" } });
 assert.deepEqual(rowText(zsh, "run", null, "/h"), { name: "zsh", what: "npm run dev" });
 assert.deepEqual(rowText(zsh, "prompt", null, "/h"), { name: "zsh", what: "~/w" });
