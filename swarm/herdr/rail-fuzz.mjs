@@ -96,6 +96,11 @@ for (let i = 0; i < 2000; i++) {
   assert.ok(ok1(nn, 60), nn);
   const sa = T.spawnArgs(pick(HOSTILE), { task: pick(HOSTILE) });
   assert.ok(sa === null || (sa.at(-2) === "--" && /^[A-Za-z0-9][\w.-]*$/.test(sa.at(-1))), JSON.stringify(sa));
+  // Rules and limits (II.3k): one bounded line; the command only whole numbers and on/off
+  const lo = T.overOf({ limits: { ctx_nudge: junk(), ctx_compact: junk(), compact_stayers: junk() }, rules: junk() })?.limits;
+  assert.ok(ok1(T.limitsLine(lo), 120), T.limitsLine(lo));
+  const la = T.limitArgs(lo, { nudge: pick(HOSTILE), compact: pick(["400", pick(HOSTILE)]), stayers: junk() });
+  assert.ok(la === null || la.every((x, i) => (i === 0 ? x === "limits" : /^--(ctx-nudge=\d+|ctx-compact=\d+|compact-stayers=(on|off))$/.test(x))), JSON.stringify(la));
 }
 
 // 2. The swarm CLI's JSON, malformed or hostile: the mods' readers never throw; types are as they expect.

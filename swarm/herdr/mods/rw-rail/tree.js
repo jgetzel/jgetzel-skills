@@ -72,7 +72,8 @@ const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
   claim_ctx: Nx, done_ctx: Nx });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
-const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
+const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
+  rules: Px, // II.3k
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, kind: Tx, urgent: (x) => x === true || x === 1 }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
   watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx, terminal: Tx, flags: Lx(Tx, 50) }),
@@ -684,6 +685,27 @@ export function spawnArgs(name, { model, effort, task } = {}) {
   const n = String(name ?? "").trim(), k = String(task ?? "").replace(/[#\s]/g, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(n) || !/^\d{0,9}$/.test(k)) return null;
   return ["spawn", ...(model ? [`--model=${model}`] : []), ...(effort ? [`--effort=${effort}`] : []), ...(k ? [`--task=${k}`] : []), "--", n];
+}
+
+// The context limits (II.3k), `swarm state`'s or the defaults before the CLI sent them: watchd nudges an agent to
+// compact past `nudge` (it takes no new task) and compacts it, idle, past `compact`; 0 is off.
+export const ctxOf = (l) => ({ nudge: l?.ctx_nudge ?? 325000, compact: l?.ctx_compact ?? 400000, stayers: Boolean(l?.compact_stayers) });
+const kOf = (n) => `${Math.round(n / 1000)}k`;
+// The Rules and limits card's line.
+export function limitsLine(l) {
+  const c = ctxOf(l);
+  return [c.nudge ? `Told to compact at ${kOf(c.nudge)}` : "Never told to compact", c.compact ? `compacted at ${kOf(c.compact)}` : "never compacted",
+    c.stayers ? "stayers too" : null].filter(Boolean).join(" · ");
+}
+// `swarm limits` for the edited values (thousands of tokens, "0" off), only what changed; null if one is not a number.
+export function limitArgs(l, { nudge, compact, stayers }) {
+  const c = ctxOf(l), n = String(nudge ?? "").trim(), k = String(compact ?? "").trim();
+  if (!/^\d{1,6}$/.test(n) || !/^\d{1,6}$/.test(k)) return null;
+  const a = [];
+  if (+n * 1000 !== c.nudge) a.push(`--ctx-nudge=${+n * 1000}`);
+  if (+k * 1000 !== c.compact) a.push(`--ctx-compact=${+k * 1000}`);
+  if (Boolean(stayers) !== c.stayers) a.push(`--compact-stayers=${stayers ? "on" : "off"}`);
+  return a.length ? ["limits", ...a] : [];
 }
 
 // An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the

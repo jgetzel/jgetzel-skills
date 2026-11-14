@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -21,7 +21,6 @@ const swarm = (cwd, on, args) => on
   : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
 // As the swarm mod: 3 s while the db changes, 30 s while its folder watch is quiet, 10 s on another machine; PRs a minute.
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;
-const CTX = 400000; // the context bar's full mark: watchd's compaction
 const SHOWN = 8; // board rows before "N more"
 const NEXT = 5; // a large board's next tasks
 const GROUPS = [["asks", "Ask you"], ["hung", "Hung"], ["working", "Working"], ["idle", "Idle"]];
@@ -29,7 +28,6 @@ const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const ROWS = 50; // a large swarm's agents drawn per group; the filter finds the rest
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const hhmm = (sec) => { const d = new Date((sec ?? 0) * 1000); return sec ? d.toTimeString().slice(0, 5) : ""; };
-const FINISH = 325000; // past this an agent takes no new task (watchd compacts it past CTX)
 const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]); // prsOf: https only
 
 export default class SwarmTab extends View {
@@ -68,6 +66,10 @@ export default class SwarmTab extends View {
     this.boxes = new Map(); this.hooks = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
     this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
     this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
+    // System's Rules and limits (II.3k): its edit form while open ({stayers})
+    this.rulesIn = TextareaState.new({ placeholder: "Added to every new agent's brief", rows: 6 });
+    this.nudgeIn = InputState.new({ placeholder: "325" }); this.compactIn = InputState.new({ placeholder: "400" });
+    this.limitsEdit = null;
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -303,6 +305,7 @@ export default class SwarmTab extends View {
     const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
     const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
+    const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
       .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
       .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
@@ -310,8 +313,8 @@ export default class SwarmTab extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
       .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.state))
       .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
-        .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= CTX ? t.blocked : t.muted)
-          .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / CTX))}%`))))
+        .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
+          .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`))))
       .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
         .child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
     const group = ([m, label]) => {
@@ -664,7 +667,7 @@ export default class SwarmTab extends View {
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(line(name, 80)));
     if (!a) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading ? "Reading…" : `No agent ${line(name, 80)} in this swarm`));
-    const comms = a.name === s.comms, ended = a.status === "ended", addr = a.hc && addrOf(a.hc, on), n = a.ctx_tokens;
+    const comms = a.name === s.comms, ended = a.status === "ended", addr = a.hc && addrOf(a.hc, on), n = a.ctx_tokens, c = ctxOf(s.limits);
     const row = agentRows(s).find((r) => r.a.name === name), m = ended ? "idle" : row?.mark ?? "idle";
     const state = ended ? `ended ${hhmm(a.ended)}` : row?.state ?? a.status;
     const task = a.task && s.tasks?.find((k) => k.id === a.task.id);
@@ -679,7 +682,7 @@ export default class SwarmTab extends View {
       ["Task", task ? this.taskLink(t, task.id, `#${task.id} ${task.title ?? ""} · ${task.state}`) : comms ? "none: the communicator is your channel to the swarm" : a.stay ? `none: it waits for ${a.stay}` : "none"],
       a.stay ? ["Waits for", a.stay] : null,
       ["Model", [a.model ?? "?", a.started ? `started ${hhmm(a.started)}` : null, a.hc ? `terminal ${a.hc}` : null].filter(Boolean).join(" · ")],
-      ["Context", !n ? "no reading for this session" : `${kilo(n)} · ${n >= CTX ? "past 400k: watchd compacts it when it is idle" : n >= FINISH ? "past 325k: takes no new task" : "takes new tasks up to 325k"}`],
+      ["Context", !n ? "no reading for this session" : `${kilo(n)} · ${c.compact && n >= c.compact ? `past ${kilo(c.compact)}: watchd compacts it when it is idle` : c.nudge && n >= c.nudge ? `past ${kilo(c.nudge)}: takes no new task` : c.nudge ? `takes new tasks up to ${kilo(c.nudge)}` : "no limit"}`],
       !ended ? ["Cache", a.cold_guarded ? "cold: messages wait in its inbox" : a.cache === "warm" ? `warm${left > 0 ? `, cold in ${dur(left * 1000)}` : ""}` : "cold"] : null,
       ["Branch", [a.branch ?? (comms ? "main" : "–"), a.worktree ? "its own worktree" : "the main checkout", push ? `pushed ${hhmm(push.ts)}` : null].filter(Boolean).join(" · ")],
       ["Pull request", pr ? `#${pr.number} · ${(pr.state ?? "").toLowerCase()}${pr.isDraft ? " draft" : ""}` : this.prs == null ? "unknown (gh is not available here)" : "none recent from this branch"],
@@ -936,7 +939,49 @@ export default class SwarmTab extends View {
         ...tops.map((r, i) => row(`s-t-${i}`, [txt(r.key, t.foreground, true), dim(`×${r.n ?? 0} · longest ${mins(r.wall_s)} · peak ${gb(r.peak_kb ?? 0)}`)])),
         ...(costly.length ? [div().px(16).pt(8).pb(2).text_size(12).text_color(t.dim).child("Latest")] : []),
         ...costly.slice(0, 6).map((e, i) => row(`s-r-${i}`, [dim(hhmm(e.ts)), txt(`${e.agent ?? "?"} · ${e.cmd ?? ""}`), dim(gb(e.peak_kb ?? 0))]))]);
-    return v_flex().gap(10).child(wCard).child(mCard).child(lCard).child(cCard);
+    return v_flex().gap(10).child(wCard).child(mCard).child(lCard).child(cCard).child(this.rulesCard(t, s));
+  }
+  // Rules and limits (II.3k): the context limits and the rules added to every new brief; Edit… opens a form.
+  rulesCard(t, s) {
+    const e = this.limitsEdit, c = ctxOf(s.limits), rules = s.rules ?? "";
+    const card = this.card(t, "s-rules").pb(10).child(this.head(t, "Rules and limits", null, e ? null
+      : div().id("s-rules-edit").text_size(12).text_color(t.muted).cursor_pointer().hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => {
+        this.rulesIn.set_value(rules); this.nudgeIn.set_value(String(c.nudge / 1000)); this.compactIn.set_value(String(c.compact / 1000));
+        this.limitsEdit = { stayers: c.stayers }; cx.notify();
+      }).child("Edit…")));
+    const text = (x, col) => div().px(16).pb(6).text_size(12.5).text_color(col).whitespace_normal().child(x);
+    if (!e) return card.child(text(limitsLine(s.limits), t.foreground))
+      .child(text(rules ? `Rules: ${rules.split("\n").slice(0, 6).join("\n")}${rules.split("\n").length > 6 ? "\n…" : ""}` : "No rules: a new agent's brief has only its task", t.muted));
+    const num = (id, label, st, note) => h_flex().gap(8).items_center().text_size(12.5).text_color(t.muted)
+      .child(div().w(150).flex_none().child(label)).child(div().w(100).flex_none().child(this.field(t, id, st).min_w(0))).child(div().text_size(12).text_color(t.dim).child(note));
+    const check = h_flex().id("s-stayers").gap(8).items_center().text_size(12.5).text_color(t.muted).cursor_pointer()
+      .on_click((_e, cx) => { e.stayers = !e.stayers; cx.notify(); })
+      .child(div().size(13).rounded(3).border(1).border_color(e.stayers ? t.working : t.border).bg(e.stayers ? t.working : t.background))
+      .child("Compact the communicator and agents with a stay too, not only nudge them");
+    return card.child(v_flex().px(16).gap(8)
+      .child(num("s-nudge", "Told to compact at", this.nudgeIn, "k tokens · it takes no new task · 0: off"))
+      .child(num("s-compact", "Compacted when idle at", this.compactIn, "k tokens · 0: off")).child(check)
+      .child(div().pt(4).text_size(12).text_color(t.dim).child("Rules: added to every new agent's brief"))
+      .child(div().rounded(9).border(1).border_color(t.border).bg(t.background).px(10).py(6).child(Textarea.new(this.rulesIn).text_size(12.5).text_color(t.foreground)))
+      .child(h_flex().gap(8).pt(2).child(this.btn(t, "s-rules-save", "Save", (cx) => this.saveLimits(cx, s), true))
+        .child(this.btn(t, "s-rules-cancel", "Cancel", (cx) => { this.limitsEdit = null; cx.notify(); }))
+        .when(Boolean(this.flash), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.blocked).child(this.flash)))));
+  }
+  saveLimits(cx, s) {
+    if (this.busy) return;
+    const a = limitArgs(s.limits, { nudge: this.nudgeIn.value(), compact: this.compactIn.value(), stayers: this.limitsEdit?.stayers });
+    if (!a) { this.flash = "The limits are whole thousands of tokens, 0 for off"; cx.notify(); return; }
+    const rules = this.rulesIn.value().trim(), steps = [...(a.length ? [a] : []), ...(rules !== (s.rules ?? "").trim() ? [["rules", "set", "--", rules]] : [])];
+    if (!steps.length) { this.limitsEdit = null; cx.notify(); return; }
+    const { cwd, on } = this.where();
+    this.busy = true; this.flash = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        for (const a of steps) { const r = await swarm(cwd, on, a); if (r.code !== 0) throw new Error(r.stderr || r.stdout || `swarm exited ${r.code}`); }
+        this.limitsEdit = null;
+      } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, ""); }
+      this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
+    });
   }
 
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------

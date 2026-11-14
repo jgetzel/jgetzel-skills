@@ -313,6 +313,21 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
   assert.equal(spawnArgs("a", { task: "1,2" }), null);
 }
+// Rules and limits (II.3k): the card's line, the defaults before the CLI sent them, and the form's command.
+{
+  const { ctxOf, limitsLine, limitArgs } = await import("./mods/rw-rail/tree.js");
+  const o = overOf({ limits: { ctx_nudge: 300000, ctx_compact: 0, compact_stayers: true }, rules: "Work in your worktree.\nNo force push." });
+  assert.equal(o.rules, "Work in your worktree.\nNo force push.");
+  assert.deepEqual(ctxOf(o.limits), { nudge: 300000, compact: 0, stayers: true });
+  assert.deepEqual(ctxOf(overOf({}).limits), { nudge: 325000, compact: 400000, stayers: false });
+  assert.equal(limitsLine(null), "Told to compact at 325k · compacted at 400k");
+  assert.equal(limitsLine(o.limits), "Told to compact at 300k · never compacted · stayers too");
+  assert.equal(limitsLine({ ctx_nudge: 0 }), "Never told to compact · compacted at 400k");
+  assert.deepEqual(limitArgs(null, { nudge: "325", compact: " 400 ", stayers: false }), []);
+  assert.deepEqual(limitArgs(null, { nudge: "300", compact: "0", stayers: true }), ["limits", "--ctx-nudge=300000", "--ctx-compact=0", "--compact-stayers=on"]);
+  assert.deepEqual(limitArgs(o.limits, { nudge: "300", compact: "0", stayers: false }), ["limits", "--compact-stayers=off"]);
+  for (const bad of ["", "3k", "-1", "1e3", "1234567", "3 0"]) assert.equal(limitArgs(null, { nudge: bad, compact: "400" }), null);
+}
 // Activity (II.3g): the old panel's summary (fan-out, folds, episodes, asks) and log, the filters and the search.
 {
   const { actItems, actShown, tailOf } = await import("./mods/rw-rail/activity.js");
