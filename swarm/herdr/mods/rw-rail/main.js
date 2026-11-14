@@ -4,13 +4,15 @@
 // to show it, click the shown one or any chevron to fold it.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, setShared, home, exec } from "herdr";
-import { AGENT, rowText, rowsOf, since, stamp } from "./tree.js";
+import { v_flex, h_flex, HoverCard } from "gpui-base";
+import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, layout } from "herdr";
+import { AGENT, abbrev, rollOf, rowText, rowsOf, since, stamp } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "working", "done", "idle"]; // a folded space's counts, then its shells
+const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
+const NARROW = 160; // a sidebar narrower than this shows tiles (as workspace-chrome goes by width)
 
 export default class Rail extends View {
   init(_props, cx) {
@@ -99,15 +101,16 @@ export default class Rail extends View {
       ...(n.shell ? [count("shell", svg("mods/workspace-chrome/terminal.svg").size(11).flex_none().text_color(t.dim))] : [])];
   }
 
-  space(t, s, rows, tabNames, shownTerm, now) {
-    const folded = this.folded.has(s.id);
+  // `fly`: the collapsed rail's hover card, always open and not marked as shown.
+  space(t, s, rows, tabNames, shownTerm, now, fly = false) {
+    const folded = !fly && this.folded.has(s.id);
     const open = !folded && rows.length > 0;
     const tabs = s.tabs.length;
     const stop = (_e, cx) => cx.stop_propagation();
-    return v_flex().id(`space-${s.id}`).flex_none().rounded(9).when(s.active, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
+    return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
-        .when(!s.active, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
-        .on_click((_e, cx) => (s.active ? this.fold(s.id, cx) : run("space.select", { id: s.id })))
+        .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
+        .on_click((_e, cx) => (s.active && !fly ? this.fold(s.id, cx) : run("space.select", { id: s.id })))
         .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
           .hover((st) => st.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.fold(s.id, cx); })
@@ -118,6 +121,35 @@ export default class Rail extends View {
       // The space's rows hang on a guide line under its chevron.
       .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
         .children(rows.map((r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now)))));
+  }
+
+  // To tiles, or back to the width the rail had (shared with workspace-chrome's toggle).
+  toggle(narrow) {
+    const width = find(layout(), "sidebar")?.size?.px;
+    if (!narrow) setShared("sidebar.width", width);
+    setShared("sidebar.collapsed", !narrow);
+    run("layout.resize", { id: "sidebar", px: narrow ? (shared("sidebar.width") ?? 268) : 64 });
+  }
+
+  button(t, id, icon, action) {
+    return h_flex().id(id).size(26).flex_none().items_center().justify_center().rounded(7).text_color(t.dim)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action)
+      .child(svg(`mods/workspace-chrome/${icon}.svg`).size(14));
+  }
+
+  // One tile per space with its agents' marks; hovering it opens the space's rows beside it.
+  tile(t, s, rows, tabNames, shownTerm, now) {
+    const roll = rollOf(rows);
+    const trigger = v_flex().id(`tile-${s.id}`).flex_none().items_center().gap(6).cursor_pointer()
+      .on_click(() => run("space.select", { id: s.id }))
+      .child(h_flex().size(40).items_center().justify_center().rounded(10).border(1)
+        .bg(s.active ? t.selected : t.raised).border_color(s.active ? t.accent : t.border)
+        .text_size(12).font_semibold().text_color(roll.length ? t.foreground : t.muted).child(abbrev(s.name)))
+      .child(h_flex().h(7).gap(3).items_center().children(roll.map((k) => mark(t, k, 7))));
+    return HoverCard.new(`hover-${s.id}`).anchor("top_left").open_delay(150).trigger(trigger)
+      // The card hangs from the tile's bottom left; the margins move it beside the tile, level with its top.
+      .content(v_flex().ml(52).mt(-54).w(290).py(4).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+        .child(this.space(t, s, rows, tabNames, shownTerm, now, true)));
   }
 
   render(cx) {
@@ -142,9 +174,14 @@ export default class Rail extends View {
     // A heading per machine once a space or a machine isn't this computer; spaces() lists this computer's first.
     const names = [null, ...new Set([...machines().map((m) => m.name), ...sp.map((s) => s.machine)].filter(Boolean))];
     const many = names.length > 1;
+    const narrow = (find(layout(), "sidebar")?.size?.px ?? Infinity) < NARROW;
     const items = names.flatMap((m) => {
       const mine = sp.filter((s) => (s.machine ?? null) === m);
       if (m && !mine.length) return [];
+      if (narrow) {
+        const line = div().id(`machine-${m}`).w(32).h(1).flex_none().bg(t.border);
+        return [...(m ? [line] : []), ...mine.map((s) => this.tile(t, s, rowsBy.get(s.id), tabNames, shownTerm, now))];
+      }
       const head = h_flex().id(`machine-${m ?? "local"}`).flex_none().mt(m ? 14 : 0).mb(2).pt(m ? 12 : 4).px(8).gap(7)
         .items_center().when(Boolean(m), (el) => el.border_t(1).border_color(t.border))
         .text_size(12).font_semibold().text_color(t.foreground)
@@ -153,8 +190,12 @@ export default class Rail extends View {
       return [...(many ? [head] : []), ...mine.map((s) => this.space(t, s, rowsBy.get(s.id), tabNames, shownTerm, now))];
     });
 
+    if (narrow) return v_flex().size_full().min_h(0).pt(10).gap(14).items_center().bg(t.chrome).text_size(13)
+      .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
+      .child(v_flex().id("rail-tiles").flex_1().min_h(0).w_full().pb(12).gap(14).items_center().overflow_y_scrollbar().children(items));
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
-      .child(div().h(31).flex_none().pl(20).pt(10).text_size(11.5).text_color(t.dim).child("Spaces"))
+      .child(h_flex().h(31).flex_none().pl(20).pr(14).pt(6).items_center().text_size(11.5).text_color(t.dim)
+        .child(div().flex_1().child("Spaces")).child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))
       .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items))
       .children([this.foot(t)].filter(Boolean));
   }

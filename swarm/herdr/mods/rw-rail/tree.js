@@ -119,3 +119,11 @@ export function pillOf(tab, ps, byAddr) {
   const ts = ps.filter((p) => p.tab === tab.id && byAddr.has(p.terminal)).map((p) => byAddr.get(p.terminal));
   return ts.find((t) => tab.status && t.status === tab.status) ?? ts.find((t) => t.status != null) ?? ts[0] ?? null;
 }
+
+// A collapsed rail's tile: two letters for a space (the first two words' initials, else its first two letters) and its
+// agents' marks, one per kind, worst first.
+export function abbrev(name) {
+  const w = (name ?? "").split(/[\s-]+/).filter(Boolean);
+  return w.length > 1 ? w[0][0] + w[1][0] : (w[0] ?? "").slice(0, 2);
+}
+export const rollOf = (rows) => ["asks", "working", "done", "idle"].filter((k) => rows.some((r) => r.mark === k));

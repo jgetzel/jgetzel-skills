@@ -96,6 +96,8 @@ outlined, its agents' marks under it. Hover or focus opens the space's rows
 beside the tile.
 
 - Buildable: the same mod at a narrow width, the panel with `HoverCard`.
+- Built in slice 4: below 160 px the rail draws tiles; its chevrons resize the sidebar to 64 px and back, sharing
+  `sidebar.width` with workspace-chrome. The card opens on hover only: a tile can't take keyboard focus.
 
 ### Title bar and tab pills (screen 1)
 
