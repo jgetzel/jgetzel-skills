@@ -270,3 +270,14 @@ export function machinesOf(sp, known, listed, hidden) {
       spaces: sp.filter((s) => (s.machine ?? null) === name) };
   }).filter((m) => !m.name || m.spaces.length);
 }
+
+// rw-settings' colors as typed: a JSON object of theme color names to #rrggbb, or empty for none. {value} or {wrong}.
+export function colorsOf(text, names) {
+  if (!text.trim()) return { value: null };
+  let v;
+  try { v = JSON.parse(text); } catch { return { wrong: 'Not JSON. Write it like {"accent": "#ff8800"}.' }; }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { wrong: 'Write an object, like {"accent": "#ff8800"}.' };
+  const bad = Object.entries(v).find(([k, c]) => !names.includes(k) || typeof c !== "string" || !/^#[0-9a-f]{6}$/i.test(c));
+  if (bad) return { wrong: names.includes(bad[0]) ? `${bad[0]}: write a color as #rrggbb.` : `${bad[0]} is not a theme color.` };
+  return { value: v };
+}

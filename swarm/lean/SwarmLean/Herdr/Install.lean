@@ -10,10 +10,12 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-  mods/rw-rail, rw-bar, rw-pane, rw-swarm, rw-question <- copies of swarm/herdr/mods/rw-*, the rework's rail, title
-                           bar, pane header, swarm overview and agent question (swarm/herdr/UI-SPEC.md)
-  layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, panes
-                           as cards with rw-pane headers, and no brand block, tab bar or status bar
+  mods/rw-rail, rw-bar, rw-pane, rw-swarm, rw-question, rw-settings <- copies of swarm/herdr/mods/rw-*, the rework's
+                           rail, title bar, pane header, swarm overview, agent question and settings (swarm/herdr/UI-SPEC.md);
+                           rw-settings/app.js is the app's Settings screen (frame/settings/main.js), which it extends
+  layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, rw-settings
+                           at the rail's foot, panes as cards with rw-pane headers, and no brand block, tab bar or status
+                           bar
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
 
@@ -180,11 +182,14 @@ partial def edit (j : Json) : Json := Id.run do
   if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map edit))
   return j
 
-/-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, panes as
-cards with rw-pane headers, and no brand block, tab bar or status bar (rw-bar replaces them). -/
+/-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, rw-settings'
+foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, and no brand block, tab bar
+or status bar (rw-bar replaces them). -/
 partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
+  if Json.fstr j "id" == some "sidebar-footer" then
+    return j.setObjVal! "content" (Json.mkObj [("mod", "rw-settings"), ("props", Json.mkObj [("footer", true)])])
   -- Panes as cards with rw-pane's header (UI-SPEC.md, "Panes as cards").
   if Json.fstr j "id" == some "main" then
     let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
@@ -253,6 +258,11 @@ def main : IO UInt32 := do
   if (find lay "panel").isNone then die s!"install: Herdr's main layout changed (no panel column); update {SRC}"
   if (find lay "sidebar-lists").isNone then die s!"install: Herdr's main layout changed (no sidebar-lists column); update {SRC}"
   let lay := edit lay
+  -- rw-settings extends the app's Settings screen; a mod can't import from frame/, so it gets a copy that exports the
+  -- section list too.
+  let appSettings ← try IO.FS.readFile (home ++ "/frame/settings/main.js") catch _ => pure ""
+  unless hasSub appSettings "\nconst SECTIONS = [" && hasSub appSettings "export default class Settings extends View" do
+    die s!"install: Herdr's Settings screen changed ({home}/frame/settings/main.js); update {SRC}"
 
   let link := mods ++ "/swarm"
   if ← exists_ link false then
@@ -309,19 +319,21 @@ def main : IO UInt32 := do
   let pane := mods ++ "/rw-pane"
   let over := mods ++ "/rw-swarm"
   let ask := mods ++ "/rw-question"
-  for m in [rail, bar, pane, over, ask] do
+  let sets := mods ++ "/rw-settings"
+  for m in [rail, bar, pane, over, ask, sets] do
     if ← exists_ m false then discard <| run ["rm", "-rf", m]
     IO.FS.createDirAll m
     for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/" ++ basename m) do
       if !e.fileName.startsWith "." then copy e.path.toString m
     IO.println s!"wrote {m}"
+  IO.FS.writeFile (sets ++ "/app.js") (appSettings ++ "\nexport { SECTIONS };\n")
   let out := home ++ "/layouts/rework.json"
   IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
   if version.isSome then
-    for m in [tabs, agents, cal, rail, bar, pane, over, ask] do
+    for m in [tabs, agents, cal, rail, bar, pane, over, ask, sets] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 

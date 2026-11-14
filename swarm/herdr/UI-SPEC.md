@@ -260,6 +260,14 @@ today exist only in `settings.json`: `font_ligatures`, `minimum_contrast`,
 - Not in ours: sending feedback (the API is the app's own; link to
   `app.feedback`) and the list of keys (open `keys.json`).
 - The canvas board lacks the "Send feedback" row. Add it when the board is next touched.
+- Built in slice 11: a mod can't import from `frame/`, so the installer copies the app's screen into
+  `rw-settings/app.js` (exporting its section list) and `rw-settings` extends it: the same sections and code, plus
+  the new rows. Keyboard shows on every system, since it also holds Open keys.json, which opens the file in
+  `$VISUAL`/`$EDITOR` in a new tab (a `terminal.peek` didn't stay up from the dialog). `colors` and `core` are typed in
+  place and checked first. Hide and Log in again sit on a line under each machine. The rail's foot is `rw-settings`
+  with `{footer: true}` in place of workspace-chrome's: Settings opens ours as a dialog; the app's stays on
+  `app.settings`. The board's "A failed shell" row is left out (nothing reports a shell's exit status). Each
+  install re-copies the app's screen, and stops if the screen no longer has `SECTIONS` or its `Settings` class.
 
 ## New swarm CLI output
 

@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -168,4 +168,8 @@ const mSp = [{ id: "a", machine: null }, { id: "b", machine: "desktop" }, { id: 
 const mOut = machinesOf(mSp, [null, "desktop", "empty"], [{ name: "vps", state: "unreachable", since_ms: 5 }, { name: "empty", state: "connected" }], ["vps"]);
 assert.deepEqual(mOut.map((m) => [m.name, m.state, m.since, m.hidden, m.spaces.map((s) => s.id)]),
   [[null, "connected", null, false, ["a"]], ["desktop", null, null, false, ["b", "d"]], ["vps", "unreachable", 5, true, ["c"]]]);
+// rw-settings' colors (slice 11): theme color names to #rrggbb; empty is none.
+assert.deepEqual(colorsOf(" ", ["accent"]), { value: null });
+assert.deepEqual(colorsOf('{"accent":"#FF8800"}', ["accent"]), { value: { accent: "#FF8800" } });
+assert.ok(colorsOf('{"accent":"red"}', ["accent"]).wrong && colorsOf('{"nope":"#000000"}', ["accent"]).wrong && colorsOf("[1]", ["accent"]).wrong && colorsOf("{", ["accent"]).wrong);
 console.log("rail-test: ok");
