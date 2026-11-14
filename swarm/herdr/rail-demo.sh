@@ -52,7 +52,7 @@ folds=; [ -z "$fold" ] || folds="$jk $nix $linn"
 if [ -n "$sw" ]; then
   # The swarm: a repo whose board the swarm CLI made, its agents and tasks; each fake agent records its own terminal.
   repo=$(dir jgetzel-skills); git -C "$repo" init -q
-  (cd "$repo" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed >/dev/null 2>&1)
+  (cd "$repo" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed && env -u SWARM_DB SWARM_NAME=human "$D/swarm" limits --min 0 --max 99) >/dev/null 2>&1
   db=$repo/.git/swarm/swarm.db now=$(date +%s)
   sqlite3 -cmd ".timeout 9000" "$db" "delete from task; insert or replace into meta(k, v) values('comms', 'll-comms')"
   cat >"$D/w/reg.sh" <<'EOF'
@@ -66,7 +66,7 @@ EOF
   task() { sqlite3 -cmd ".timeout 9000" "$db" "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''))"; }
   skills=$(do_ space.new --name jgetzel-skills --folder "$repo" --argv "$(swagent ll-comms idle 120 '' done ll-comms)" | id space)
   if [ "$sw" = 5 ]; then
-    tab "$skills" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Prove the crash lemmas' blocked ll-97 'Squash the two commits or keep them?'
+    tab "$skills" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Lean proofs: crash safety between any two steps' blocked ll-97 'Spawn.unreserve ends the row but keeps its locks. Fix it in this PR, or as its own task?'
     tab "$skills" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' claimed ll-110
     tab "$skills" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' claimed ll-111
     tab "$skills" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' claimed ll-107
@@ -103,6 +103,13 @@ sleep 2 # the helpers start and report
 n=0; while [ -n "$sw" ] && [ $n -lt 30 ] && [ "$(sqlite3 -cmd ".timeout 9000" "$db" "select count(*) from agent")" -lt "$sw" ]; do
   sleep 1; n=$((n + 1)) # every swarm agent has recorded its terminal
 done
+# The swarm tab's sections: context sizes, messages and main's CI.
+[ "$sw" != 5 ] || sqlite3 -cmd ".timeout 9000" "$db" "update agent set ctx_tokens = case name when 'll-97' then 221000 when 'll-110' then 51000
+  when 'll-111' then 61000 when 'll-107' then 121000 else 82000 end;
+  insert into msg(ts, frm, dest, body, kind) values($((now - 6780)), 'll-97', 'll-comms', 'Walker and step solver now close every CLI group but State and Watchd.', 'dm'),
+  ($((now - 3240)), 'swarm', 'll-97', 'Context is about 330k tokens: commit, note the task, then compact.', 'system'),
+  ($((now - 120)), 'll-comms', 'll-107', 'The verdict is already clear. Stop after the round now running, write up, and close #142.', 'dm');
+  insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, '08cc4a8', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean')"
 opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")
 # With a swarm, this computer's other spaces fold (shot.sh's demo and notes too), as on the rail board.
 [ -z "$sw" ] || folds="$folds $(herdr-app ls | jq -r '.. | objects | select(.name? == "demo" or .name? == "notes" or .name? == "high-perf-lean") | .id? // empty' | grep -v / || :)"

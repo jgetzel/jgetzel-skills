@@ -10,8 +10,8 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-  mods/rw-rail, rw-bar, rw-pane <- copies of swarm/herdr/mods/rw-*, the rework's rail, title bar and pane header
-                           (swarm/herdr/UI-SPEC.md)
+  mods/rw-rail, rw-bar, rw-pane, rw-swarm <- copies of swarm/herdr/mods/rw-*, the rework's rail, title bar, pane header
+                           and swarm overview (swarm/herdr/UI-SPEC.md)
   layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, panes
                            as cards with rw-pane headers, and no brand block, tab bar or status bar
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
@@ -302,12 +302,13 @@ def main : IO UInt32 := do
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
-  -- Copies, like the calendar's: hot reload and svg() don't follow a symlinked mod dir. rw-bar's and rw-pane's tree.js and
+  -- Copies, like the calendar's: hot reload and svg() don't follow a symlinked mod dir. The other rw mods' tree.js and
   -- marks.js are links to rw-rail's (mods can't import across mod folders), copied as files.
   let rail := mods ++ "/rw-rail"
   let bar := mods ++ "/rw-bar"
   let pane := mods ++ "/rw-pane"
-  for m in [rail, bar, pane] do
+  let over := mods ++ "/rw-swarm"
+  for m in [rail, bar, pane, over] do
     if ← exists_ m false then discard <| run ["rm", "-rf", m]
     IO.FS.createDirAll m
     for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/" ++ basename m) do
@@ -319,7 +320,7 @@ def main : IO UInt32 := do
   IO.println s!"wrote {out}"
 
   if version.isSome then
-    for m in [tabs, agents, cal, rail, bar, pane] do
+    for m in [tabs, agents, cal, rail, bar, pane, over] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 

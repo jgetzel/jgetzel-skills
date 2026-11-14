@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -127,4 +127,18 @@ assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
 const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
   { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
 assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three" }]);
+
+// The swarm tab (slice 7): who asks first and the communicator last, each with its task's title; the board's undone
+// tasks, blocked, claimed, ready, then waiting.
+const ov = { comms: "c", agents: [A("c", "c", { stay: "the user's channel" }), A("w2", "w2", { status: "working", task: { id: 2, title: "Two" } }),
+  A("q", "q", { status: "idle", task: { id: 3, title: "Three" }, idle_s: 60 }), A("i", "i", { idle_s: 3660, task: { id: 4, title: "Four" } }),
+  A("h", "h", { stay_sign: "hung", idle_s: 3480 }), A("e", "e", { status: "ended" })],
+  tasks: [{ id: 2, state: "claimed", owner: "w2", title: "Two" }, { id: 3, state: "blocked", owner: "q", title: "Three", question: "which?", blocked_s: 360 },
+    { id: 4, state: "claimed", owner: "i", title: "Four" }, { id: 5, state: "open", title: "Five", deps: [3] }, { id: 6, state: "open", title: "Six" },
+    { id: 7, state: "open", title: "Seven", hold: "later" }, { id: 1, state: "done", title: "One" }] };
+assert.deepEqual(agentRows(ov).map((r) => [r.a.name, r.mark, r.task, r.state]), [["q", "asks", "#3 Three", "asks you · 6m"],
+  ["h", "hung", "no task", "hung 58m"], ["w2", "working", "#2 Two", "working"], ["i", "idle", "#4 Four", "idle 1h · holds #4"],
+  ["c", "idle", "The communicator", "stays: the user's channel"]]);
+assert.deepEqual(asksOf(ov).map((n) => [n.kind, n.agent]), [["question", "q"], ["hung", "h"]]);
+assert.deepEqual(boardRows(ov).map((r) => [r.k.id, r.state]), [[3, "waiting on you"], [2, "w2"], [4, "i"], [6, "ready"], [5, "after #3"], [7, "held"]]);
 console.log("rail-test: ok");

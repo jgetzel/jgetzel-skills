@@ -30,6 +30,10 @@ export default class Bar extends View {
     const term = pillOf(tab, ps, byAddr);
     const m = term ? markOf(term, false) : null;
     let { name, what } = term ? rowText(term, m, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
+    // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm.
+    const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm")
+      && (shared("rw-rail.swarms") ?? []).find((j) => j.folder === space.folder && (j.on ?? null) === (space.machine ?? null));
+    if (sw) { name = "Swarm"; what = `${sw.agents.length} ${sw.agents.length === 1 ? "agent" : "agents"}`; }
     if (tab.named) name = tab.name;
     if (m === "asks") what = "asks";
     if (what === name) what = "";
@@ -44,9 +48,10 @@ export default class Bar extends View {
         else run("tab.select", { id: tab.id });
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
+      .when(Boolean(sw), (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(tab.active ? t.foreground : t.muted)))
       .child(div().max_w(140).truncate().font_medium().child(tab.zoomed ? `${name} Z` : name))
       .when(Boolean(what), (el) => el.child(div().max_w(180).truncate().font_normal().text_color(m === "asks" ? t.blocked : tab.active ? t.muted : t.dim).child(what)))
-      .when(Boolean(m), (el) => el.child(mark(t, m)));
+      .when(Boolean(m) && !sw, (el) => el.child(mark(t, m)));
   }
 
   button(t, id, label, action) {
