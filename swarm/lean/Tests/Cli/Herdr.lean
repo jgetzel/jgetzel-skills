@@ -44,15 +44,16 @@ def test_install_main_path (t : T) : IO Unit := do
   let some lay := Json.decode ((← slurp (h ++ "/layouts/jgetzel.json")).getD "") | fail "layout is not JSON"
   eq lay (layout "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"jgetzel-agents\"}}]}")
   let some rw := Json.decode ((← slurp (h ++ "/layouts/rework.json")).getD "") | fail "rework layout is not JSON"
-  eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
+  eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"theme\":{\"light\":\"paper\",\"dark\":\"rework\"},\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
     "\"size\":{\"px\":52},\"window_drag\":true,\"content\":{\"mod\":\"rw-bar\"}},{\"id\":\"body\",\"children\":[" ++
     "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++
     panel.replace "{\"id\":\"main\",\"content\":{\"tab\":\"active\"}}" ("{\"id\":\"view\",\"type\":\"stack\",\"active\":\"main\"," ++
       "\"children\":[{\"id\":\"main\",\"content\":{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
-      "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"accent\"},\"lone\":true," ++
+      "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"ring\"},\"lone\":true," ++
       "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}}," ++
       "{\"id\":\"all-swarms\",\"type\":\"block\",\"content\":{\"mod\":\"rw-swarms\"}}]}") ++ "]}]}")
     |>.toOption.get!)
+  unless ← System.FilePath.pathExists (h ++ "/themes/rework.json") do fail "no rework theme copy"
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
   -- The other rw mods' tree.js and marks.js are links to rw-rail's in the checkout, and files in the copies.
   for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js", "rw-settings/tree.js", "rw-swarms/tree.js", "rw-swarms/marks.js"] do
