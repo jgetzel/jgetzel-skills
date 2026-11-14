@@ -104,8 +104,9 @@ export default class Question extends View {
   }
   btn(t, id, label, onClick, solid) {
     return div().id(id).flex_none().h(30).px(14).flex().items_center().rounded(9).text_size(12.5).cursor_pointer()
-      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold().hover((s) => s.opacity(0.9)))
-      .when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+      // the rw mods' button set (round 4: rw-rail/marks.js look(), which this mod doesn't link)
+      .when(solid, (el) => el.bg(t.solid ?? t.foreground).text_color(t.solid_foreground ?? t.background).font_semibold().hover((s) => s.opacity(0.9)))
+      .when(!solid, (el) => el.border(1).border_color(t.input).bg(t.background).text_color(t.foreground).hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
   fact(t, label, value) {

@@ -13,7 +13,7 @@ import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
-import { mark, hoverLayer } from "./marks.js";
+import { mark, hoverLayer, look } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "hung", "working", "done", "idle"]; // a folded space's counts, then its shells
@@ -274,7 +274,7 @@ export default class Rail extends View {
         .child(h_flex().gap(8).justify_end()
           .child(div().id(`remove-no-${n}`).px(12).py(5).rounded(8).border(1).border_color(t.border).cursor_pointer()
             .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.removing = null; this.menu = null; cx.notify(); }).child("Cancel"))
-          .child(div().id(`remove-yes-${n}`).px(12).py(5).rounded(8).bg(t.blocked).text_color(t.background).font_semibold().cursor_pointer()
+          .child(look(div().id(`remove-yes-${n}`).px(12).py(5).rounded(8).cursor_pointer(), t, "solid")
             .on_click((_e, cx) => this.machineDo(m, "Removing…", ["rm", m], cx, () => this.hide(m, false))).child(`Remove ${shown}`)))
       : v_flex().w(190).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .child(item("rename", "Rename", (_e, cx) => {
