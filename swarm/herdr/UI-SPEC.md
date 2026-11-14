@@ -516,7 +516,55 @@ II.3m All swarms links into the sections and shows the same needs.
 - Slices: II.6a spike: real permission and question prompts in the sandbox as parser fixtures; check the hook.
   II.6b tier 1. II.6c tier 2. II.6d the hook route.
 
+## II.7 The swarm side view (round 4, board #184)
+
+The user, after using the build: "there's no way to pull up a side view of my swarm anymore while speaking to agents."
+
+- Shape: the swarm view in the layout's side panel (`panel`, the column Calendar opens in), not a pane split. A pane
+  split lives in one tab (gone when the user picks another agent), is always half the tab and changes that tab's
+  arrangement; the panel stays across tabs and spaces and resizes (`layout.resize {id: "panel", px}`).
+- Tested (sandbox, built layout at f8312676, 1512x982 / 1800x1200 / 2560x1440): a `panel-body` child
+  `{id: "swarm-side", content: {mod: "rw-swarm"}}` draws beside a terminal at 400 to 560 px and reads a board. In its
+  older pane mode it read the active space's folder ("not in a git repo" when that is not the swarm's): the side view
+  uses the view's lookup (`where()` with `view`). Not tested: the narrow section menu and pages (drawn, not built).
+- Layout: `panel-body` holds `calendar` and `swarm-side` (rw-swarm, props `{view: true, side: true}`). The view reads
+  while it shows: `due()` also passes when `panel` is not hidden and `panel-body`'s active child is `swarm-side`.
+- Narrow layout: default 420 px on every screen, 360 to 720. Cards in one column under 700 px of the view's own width
+  (then two, three from 1900). Order: Needs you (answers in place), Agents, Board, Latest; a "Message <communicator>"
+  line pinned at the foot. Head: the swarm's name, the section as a menu (the seven sections), Expand, Close. Task
+  and agent pages open inside the panel with the same back button.
+- Open and close: Side and Full in rw-bar whenever the shown space has a swarm (each a toggle; never both open; both
+  keep `shared("rw-swarm.view")`'s section and page). The rail's swarm heading: click is full width as today, a Side
+  button on hover. Expand: panel to full width. Side while full width shows: back to the tab with the panel open.
+  Commands `rw-swarm.side` and `rw-swarm.full` for keys and the palette. Calendar shares the panel: one replaces the
+  other. Width and section are kept.
+- Other agents and spaces: the panel stays on any tab; the agent whose terminal is focused has its row marked
+  ("shown"); a click on an agent row focuses its tab and the panel stays (its page is on the row's menu and its
+  name). A space with another swarm: the panel follows it. A space with no swarm: the panel keeps the last swarm.
+- Slices: II.7a the panel hosts the view (layout, reading, one column, head with Expand and Close, Side and Full in
+  the bar, the two commands). II.7b the section menu, pages in the panel, the "shown" mark, row click focuses the
+  tab, the message line, the heading's Side button.
+
+## Proposals after the build (round 4, not in the build order until the user picks)
+
+From sandbox shots of the built layout (`shot.sh --rework real`, three sizes), ranked:
+
+1. The hung card floats over the rail and hides rows (two spaces at 1512x982): drop it; hung is a Needs you row.
+2. Coral means needs you, hung, Send and a Board assignee; amber is working and "idle 25m": coral only for what
+   waits on the user; Send is the light solid button; names neutral.
+3. Nudge, Open its terminal, Show ended, + Queue are bare text: one button set (solid, outlined, link) in all rw mods.
+4. The Needs you popup opens over its own button and only prompt rows act: open under the bar; answer field on
+   question rows.
+5. Rail rows spend width on "<1m": no time on working rows, none under 5 min on idle ones.
+6. Overview's lower half is empty; laptops never see Latest: Latest under Message the swarm in two columns.
+7. Bare "288k" and an unlabelled meter: label the context column.
+8. The Board's New task form is always open: a button that opens it.
+9. Active space nests three boxes: the swarm block loses its border there.
+10. Unbuilt motion: build only rows leaving; leave sliding highlights, the drop spring and menu fades; the rail's
+    collapse is the app's show/hide and cannot animate.
+
 ## Part II build order (one builder, in sequence)
 
 II.2a, II.1a, II.2b, II.2c, II.3a, II.3b, II.6a, II.6b, II.3d, II.1b, II.3c, II.3e, II.3f, II.3j, II.3g, II.3h,
 II.3i, II.6c (and II.6d if the spike finds a hook), II.3k, II.3l, II.3m, II.4a, II.4b, II.4c, II.4d.
+Round 4: II.7a, II.7b follow, once the user accepts II.7.
