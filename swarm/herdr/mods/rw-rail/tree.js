@@ -843,6 +843,18 @@ export function memoryOf(sums, used) {
 // `enter(key)` is true the first frame `key` is drawn (never on the first render), `end()` after each render says
 // whether one came, so the caller draws once more. Keys not drawn in a render are forgotten.
 export const animOn = (v) => v !== false;
+// Rows leaving (round 4, proposal 10): `prev` the keys a list drew last, `keys` this render's, `ghosts` Map key ->
+// {after} of rows still shrinking out. Returns the new ghosts (each after the key before it in `prev`) and the order to
+// draw: [{k, ghost}], a ghost right after the row it followed (first when that row is gone too).
+export function leaving(prev, keys, ghosts) {
+  const here = new Set(keys), fresh = new Map();
+  prev.forEach((k, i) => { if (!here.has(k) && !ghosts.has(k)) fresh.set(k, { after: i ? prev[i - 1] : null }); });
+  const all = new Map([...ghosts, ...fresh]);
+  for (const k of keys) all.delete(k); // came back
+  const order = keys.map((k) => ({ k, ghost: false })), at = (k) => order.findIndex((o) => o.k === k);
+  for (const [k, g] of all) order.splice(g.after != null && at(g.after) >= 0 ? at(g.after) + 1 : 0, 0, { k, ghost: true });
+  return { fresh, order };
+}
 export class Entering {
   constructor() { this.seen = new Set(); this.now = new Set(); this.first = true; this.fresh = false; }
   enter(key) {

@@ -11,7 +11,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
+import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark, hoverLayer, look } from "./marks.js";
 
@@ -46,6 +46,7 @@ export default class Rail extends View {
     this.mids = new Map(); // machine name -> a number for its elements' ids (a name is never part of one)
     cx.timer.every(5000, (cx) => this.swarms(cx));
     this.listed = null; // `hc machine ls --json`'s machines, null until read
+    this.lists = new Map(); this.ghosts = new Map(); // rows leaving (proposal 10): list key -> last [{k, x}]; "<list>|<k>" -> {x, after, at, list}
     this.ent = new Entering(); this.marks = new Map(); // motion (II.4a): what just came; address -> {kind, prev, at} for the marks' cross-fade
     this.said = {}; // machine -> what is under way there, or what its last action failed with
     this.menu = null; // the machine whose menu is open
@@ -457,13 +458,13 @@ export default class Rail extends View {
     const left = ["open", "claimed", "blocked"].reduce((n, k) => n + (sum.counts?.[k] ?? 0), 0);
     const n = sum.agents.length;
     const rows = this.capped(t, `b:${s.id}`, sw.block.flatMap((it) => {
-      if (it.fold) return [() => h_flex().id(`fold-${s.id}-${it.fold}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
+      if (it.fold) return [Object.assign(() => h_flex().id(`fold-${s.id}-${it.fold}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
         .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click((_e, cx) => { this.all.add(s.id); cx.notify(); })
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground)
           .child(it.fold === "working" ? `${it.n} ${it.more ? "more " : ""}working` : `${it.n} ${it.more ? "more " : ""}idle`))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child("show"))
-        .child(mark(t, it.fold))];
+        .child(mark(t, it.fold)), { k: `fold:${it.fold}` })];
       const opened = sw.big && !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && this.opened.has(it.r.t.address);
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
@@ -471,8 +472,8 @@ export default class Rail extends View {
       // Right click: its menu (II.1b), rw-bar's popup.
       const menu = () => openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
         props: { agentMenu: { name: it.a.name, folder: sum.folder, machine: s.machine ?? null, comms: Boolean(it.comms), task: it.a.task?.id ?? null } } });
-      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly, menu: i ? null : menu }));
-    }), (f) => f());
+      return [root, ...it.kids].map((r, i) => Object.assign(() => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly, menu: i ? null : menu }), { k: r.t.address }));
+    }), (f) => f(), (f) => f.k ?? null);
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
       .on_click((_e, cx) => { this.all.delete(s.id); cx.notify(); }).child("show fewer"));
@@ -573,7 +574,7 @@ export default class Rail extends View {
       // The space's rows hang on a guide line under its chevron.
       .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
         .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now, fly)))
-        .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, s, g, draw)).flat())
+        .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, s, g, draw), (g) => g.tab ?? g.rows[0].t.address).flat())
         .when(adds, (el) => el.child(h_flex().id(`new-tab-${s.id}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
           .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
           .on_click(() => this.newTab(s))
@@ -581,9 +582,25 @@ export default class Rail extends View {
   }
 
   // A list of rows (or a space's tabs): past ROWS, the first ROWS - 1 and a line that shows the rest (`key`: the space's id).
-  capped(t, key, xs, draw) {
-    if (xs.length <= ROWS || this.more.has(key)) return xs.map(draw);
-    return [...xs.slice(0, ROWS - 1).map(draw), this.moreLine(t, `more-${key}`, `${xs.length - ROWS + 1} more`, key)];
+  // With Animations on, a row (or tab) gone since the last render is drawn once more in its place and shrinks out
+  // (height and opacity, 160 ms; round 4, proposal 10). `kOf`: an item's key.
+  capped(t, key, xs, draw, kOf) {
+    if (xs.length > ROWS && !this.more.has(key)) return [...xs.slice(0, ROWS - 1).map(draw), this.moreLine(t, `more-${key}`, `${xs.length - ROWS + 1} more`, key)];
+    if (!this.anim || !kOf) return xs.map(draw);
+    const ks = xs.map(kOf), was = this.lists.get(key) ?? [], mine = new Map();
+    for (const [gk, g] of this.ghosts) if (g.list === key) mine.set(gk.slice(key.length + 1), g);
+    const { fresh, order } = leaving(was.map((p) => p.k), ks, mine), now = Date.now();
+    for (const [k, g] of fresh) this.ghosts.set(`${key}|${k}`, { ...g, list: key, at: now, x: was.find((p) => p.k === k).x, n: 0 });
+    this.lists.set(key, xs.map((x, i) => ({ k: ks[i], x })));
+    const byK = new Map(xs.map((x, i) => [ks[i], x]));
+    return order.flatMap(({ k, ghost }) => {
+      if (!ghost) return [draw(byK.get(k))];
+      const g = this.ghosts.get(`${key}|${k}`);
+      if (!g || g.n > 0 && now - g.at > 200) { this.ghosts.delete(`${key}|${k}`); return []; }
+      const first = g.n++ === 0, h = (g.x.rows?.length ?? 1) * ROW;
+      return [div().id(`leave-${key}-${k}`).flex_none().overflow_hidden().h(first ? h : 0).opacity(first ? 1 : 0)
+        .transition("height", 160).transition("opacity", 160).child([draw(g.x)].flat()[0])];
+    });
   }
 
   // To tiles, or back to the width the rail had (shared with workspace-chrome's toggle).
@@ -632,7 +649,8 @@ export default class Rail extends View {
     const el = this.draw(cx);
     if (!this.anim) return el;
     for (const a of this.marks.keys()) if (!this.ent.now.has(`row:${a}`)) this.marks.delete(a);
-    const fresh = this.ent.end(), at = this.fadeAt; this.fadeAt = null;
+    for (const [k, g] of this.ghosts) if (Date.now() - g.at > 400) this.ghosts.delete(k); // its list wasn't drawn (folded)
+    const fresh = this.ent.end() || this.ghosts.size > 0, at = this.fadeAt; this.fadeAt = null; // a leaving row draws until it is gone
     if (fresh || at) cx.timer.after(fresh ? 20 : Math.max(20, at - Date.now()), (cx) => cx.notify());
     return el;
   }

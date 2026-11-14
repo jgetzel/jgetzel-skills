@@ -170,6 +170,15 @@ assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
 const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
   { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
 assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three", task: 3, folder: null, on: null }]);
+// rows leaving (round 4, proposal 10): a gone row is drawn once more after the one it followed
+{
+  const { leaving } = await import("./mods/rw-rail/tree.js");
+  const r = leaving(["a", "b", "c"], ["a", "c"], new Map());
+  assert.deepEqual([...r.fresh], [["b", { after: "a" }]]);
+  assert.deepEqual(r.order, [{ k: "a", ghost: false }, { k: "b", ghost: true }, { k: "c", ghost: false }]);
+  assert.deepEqual(leaving(["a", "b"], ["b"], new Map()).order, [{ k: "a", ghost: true }, { k: "b", ghost: false }]);
+  assert.deepEqual(leaving(["a"], ["a", "b"], new Map([["b", { after: "a" }]])).order.map((o) => o.k), ["a", "b"]); // came back: no ghost
+}
 // a hung agent is a Needs you row (round 4, proposal 1)
 assert.deepEqual(hungOf([{ folder: "/w", on: "vps", agents: [A("h", "t5", { hung: true, task: { id: 4 } }), A("i", "t6")] }], new Set()),
   [{ address: "vps/t5", name: "h", what: "hung · holds #4", hung: true, folder: "/w", on: "vps" }]);
