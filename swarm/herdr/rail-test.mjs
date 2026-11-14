@@ -335,6 +335,20 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(actShown(sum, "messages", "").map((i) => i.kind), ["urgent", "msg"]);
   assert.deepEqual(actItems(null, false), []);
 }
+// Landing (II.3h): PR checks, branches ahead of main, what landed today and the median merge-to-green.
+{
+  const { checksOf, branchesOf, landedToday, median, prsOf } = await import("./mods/rw-rail/tree.js");
+  assert.equal(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] }), "failing");
+  assert.equal(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }, { status: "IN_PROGRESS" }] }), "running");
+  assert.equal(checksOf({ statusCheckRollup: [{ conclusion: "SUCCESS" }] }), "passing"); assert.equal(checksOf({}), null);
+  assert.deepEqual(branchesOf("a/1\t100\t2 5\nb\t200\t0 3\nc\t300\t1 0\njunk\n"), [{ name: "c", at: 300, ahead: 1, behind: 0 }, { name: "a/1", at: 100, ahead: 2, behind: 5 }]);
+  const now = Date.parse("2026-11-14T12:00:00") / 1000, iso = (h) => new Date(Date.parse(`2026-11-14T${h}:00`)).toISOString();
+  const prs = prsOf([{ number: 5, state: "MERGED", mergedAt: iso("09:00"), title: "five" }, { number: 6, state: "MERGED", mergedAt: iso("11:00"), title: "six" },
+    { number: 7, state: "OPEN" }, { number: 8, state: "MERGED", mergedAt: "2026-11-10T10:00:00Z" }]);
+  const l = landedToday(prs, [{ id: 40, pr: 5, title: "Task 40", merge_to_green_s: 300 }], now);
+  assert.deepEqual(l.map((x) => [x.pr, x.title, x.task, x.green_s]), [[6, "six", null, null], [5, "Task 40", 40, 300]]);
+  assert.equal(median([300, null, 100, 200]), 200); assert.equal(median([]), null);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",

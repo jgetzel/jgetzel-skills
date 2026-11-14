@@ -94,10 +94,33 @@ export function overOf(j) {
 }
 // `--view swarms`' registry entries: a db and an absolute folder each.
 export const swarmsOf = (j) => Lx(Ox({ db: Tx, folder: Tx }), 500)(j?.swarms).filter((w) => w.db && w.folder?.startsWith("/"));
-// `gh pr list --json number,headRefName,state,isDraft,statusCheckRollup,url`; a url only if it is https.
-export const prsOf = (j) => Lx(Ox({ number: Nx, headRefName: Tx, state: Tx, isDraft: Bx, url: Tx,
-  statusCheckRollup: Lx(Ox({ conclusion: Tx, state: Tx, status: Tx }), 200) }), 20)(j)
+// `gh pr list --json number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url`; a url only if https.
+export const prsOf = (j) => Lx(Ox({ number: Nx, title: Tx, headRefName: Tx, state: Tx, isDraft: Bx, reviewDecision: Tx, mergedAt: Tx, url: Tx,
+  statusCheckRollup: Lx(Ox({ conclusion: Tx, state: Tx, status: Tx }), 200) }), 100)(j)
   .filter((p) => p.number != null).map((p) => ({ ...p, url: /^https:\/\/[^\s]+$/.test(p.url ?? "") ? p.url : null }));
+// A PR's checks: "failing", "running", "passing", or null with none.
+export function checksOf(p) {
+  const r = p?.statusCheckRollup ?? [];
+  return !r.length ? null : r.some((c) => ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"].includes(c.conclusion ?? c.state)) ? "failing"
+    : r.some((c) => (c.status && c.status !== "COMPLETED") || c.state === "PENDING") ? "running" : "passing";
+}
+// Landing (II.3h): `git for-each-ref --no-merged=origin/main --format=%(refname:short)%09%(committerdate:unix)%09%(ahead-behind:origin/main)`
+// as {name, at, ahead, behind}, newest first; a branch with nothing ahead is on main.
+export function branchesOf(out) {
+  return String(out ?? "").split("\n").slice(0, 2000).map((l) => l.split("\t")).filter((f) => f.length === 3)
+    .map(([name, at, ab]) => { const [a, b] = ab.split(" ").map(Number); return { name: line(name, 120), at: Number(at) || null, ahead: a, behind: b }; })
+    .filter((b) => b.name && Number.isInteger(b.ahead) && b.ahead > 0).sort((x, y) => (y.at ?? 0) - (x.at ?? 0)).slice(0, 100);
+}
+// The PRs merged on `now`'s local day, newest first, each with its task and how long main took to go green after it.
+export function landedToday(prs, tasks, now) {
+  const arr = (x) => (Array.isArray(x) ? x.filter((v) => v && typeof v === "object") : []);
+  const day = new Date(now * 1000).toDateString(), byPr = new Map(arr(tasks).filter((k) => k.pr != null).map((k) => [k.pr, k]));
+  return arr(prs).filter((p) => p.state === "MERGED" && p.mergedAt && new Date(p.mergedAt).toDateString() === day)
+    .map((p) => { const k = byPr.get(p.number); return { pr: p.number, url: p.url, title: line(k?.title ?? p.title ?? p.headRefName ?? "", 300), task: k?.id ?? null,
+      at: Math.floor(Date.parse(p.mergedAt) / 1000), green_s: k?.merge_to_green_s ?? null }; })
+    .sort((x, y) => y.at - x.at);
+}
+export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 
 // When a folder's swarm is read again, in ms: a live swarm at least every 5 s and never more often than 3× as long as
 // its read took; a folder with no swarm every 30 s; a read that failed `fails` times in a row 5 s doubling, up to 5 min.
