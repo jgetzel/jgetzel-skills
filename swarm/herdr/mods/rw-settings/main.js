@@ -7,7 +7,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { run, theme, shared, setShared, terminals, panes, spaces, props, openOverlay, updates, layout, window, appHome } from "herdr";
 import Settings, { SECTIONS } from "./app.js";
-import { needsYou, colorsOf } from "./tree.js";
+import { needsYou, colorsOf, line } from "./tree.js";
 
 const HIDDEN = "rw-rail.hidden"; // as rw-rail
 const mac = window()?.platform === "macos";
@@ -17,6 +17,8 @@ if (!SECTIONS.some((s) => s.id === "keyboard")) SECTIONS.splice(1, 0, { id: "key
 // Opens $1 in $VISUAL or $EDITOR, else nano or vi; says so and waits when none opens.
 const EDIT = 'e=${VISUAL:-$EDITOR}; [ -n "$e" ] || for x in nano vi; do command -v "$x" >/dev/null && e=$x && break; done; '
   + '${e:-vi} "$1" || { printf "\\nNo editor opened %s: set EDITOR. Press Enter to close. " "$1"; read _; }';
+const mids = new Map(); // machine name -> a number for its elements' ids (a name is never part of one)
+const mid = (name) => (mids.has(name) ? mids.get(name) : mids.set(name, mids.size).get(name));
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 
 export default class RwSettings extends Settings {
@@ -115,9 +117,10 @@ export default class RwSettings extends Settings {
     return super.machineRow(t, m, version).child(h_flex().gap(6).items_center()
       .child(div().flex_1().min_w(0).text_size(12.5).text_color(asks ? t.blocked : t.dim)
         .child(hidden ? `Hidden from the rail${asks ? ` · ${asks} ${asks === 1 ? "asks" : "ask"} you` : ""}` : ""))
-      .when(m.state === "needs_login", (el) => el.child(this.button(t, `rw-login-${m.name}`, "Log in again", () =>
-        this.inTab(`log in to ${m.name}`, 'hc machine login "$1"; printf "\\nPress Enter to close. "; read _', [m.name]))))
-      .child(this.button(t, `rw-hide-${m.name}`, hidden ? "Show in the rail" : "Hide from the rail", () => set(!hidden))));
+      // After `--`, a name that starts with a dash is still a name.
+      .when(m.state === "needs_login", (el) => el.child(this.button(t, `rw-login-${mid(m.name)}`, "Log in again", () =>
+        this.inTab(`log in to ${line(m.name, 40)}`, 'hc machine login -- "$1"; printf "\\nPress Enter to close. "; read _', [m.name]))))
+      .child(this.button(t, `rw-hide-${mid(m.name)}`, hidden ? "Show in the rail" : "Hide from the rail", () => set(!hidden))));
   }
 
   machines(t) {

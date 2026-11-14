@@ -8,7 +8,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window } from "herdr";
-import { FOLD, asksOf, agentRows, boardRows, dur, openAsk } from "./tree.js";
+import { FOLD, answerArgs, asksOf, agentRows, boardRows, dur, line, openAsk, overOf, prsOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -22,8 +22,9 @@ const SHOWN = 8; // board rows before "N more"
 const NEXT = 5; // a large board's next tasks
 const GROUPS = [["asks", "Ask you"], ["hung", "Hung"], ["working", "Working"], ["idle", "Idle"]];
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
+const ROWS = 50; // a large swarm's agents drawn per group; the filter finds the rest
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-const openUrl = (url) => exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]);
+const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]); // prsOf: https only
 
 export default class SwarmTab extends View {
   init(_props, cx) {
@@ -45,7 +46,8 @@ export default class SwarmTab extends View {
   }
   due() {
     const age = Date.now() - (this.at ?? 0), { on } = this.where();
-    return this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL);
+    // never more often than 3× as long as a read takes (500 agents' overview takes seconds)
+    return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
   refresh(cx) {
     const { cwd, on } = this.where();
@@ -55,14 +57,18 @@ export default class SwarmTab extends View {
       try {
         const r = await swarm(cwd, on, ["state", "--json", "--view", "overview"]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
-        this.s = JSON.parse(r.stdout); this.error = null;
+        const s = overOf(JSON.parse(r.stdout));
+        if (!s) throw new Error("swarm state printed no overview");
+        this.s = s; this.error = null;
+        const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
+        for (const id of this.answers.keys()) if (!blocked.has(id)) this.answers.delete(id); // answered: its field goes
         for (const k of (this.s.tasks ?? []).filter((k) => k.state === "blocked" && !this.answers.has(k.id))) { // an answer field per question
           const st = InputState.new({ placeholder: `Answer ${k.owner}…` });
           st.on("submit", (_e, cx) => this.answer(cx, k)); this.answers.set(k.id, st);
         }
         if (!on && this.s.db) this.watch(this.s.db.replace(/\/[^/]*$/, ""));
-      } catch (e) { this.error = String(e.message ?? e); }
-      this.loading = false; cx.notify();
+      } catch (e) { this.error = line(e?.message ?? e, 300) || "swarm state failed"; }
+      this.took = Date.now() - this.at; this.loading = false; cx.notify();
     });
   }
   // The db folder changing marks the data stale; our own reads touch only the -shm index.
@@ -80,7 +86,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "4", "--json", "number,headRefName,state,isDraft,statusCheckRollup,url"], { cwd, on });
-        this.prs = r.code === 0 ? JSON.parse(r.stdout) : null;
+        this.prs = r.code === 0 ? prsOf(JSON.parse(r.stdout)) : null;
       } catch { this.prs = null; } // no gh: Landing shows main's CI only
       cx.notify();
     });
@@ -92,14 +98,14 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, args);
-        if (r.code === 0) ok?.(); else this.flash = (r.stderr.trim() || r.stdout.trim() || `swarm exited ${r.code}`).replace(/^swarm: /, "");
-      } catch (e) { this.flash = String(e.message ?? e); }
+        if (r.code === 0) ok?.(); else this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
+      } catch (e) { this.flash = line(e?.message ?? e, 300); }
       this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
     });
   }
   answer(cx, k) {
     const st = this.answers.get(k.id), text = st?.value().trim();
-    if (text && !this.busy) this.act(cx, ["task", "unblock", String(k.id), "--answer", text], () => st.set_value(""));
+    if (text && !this.busy) this.act(cx, answerArgs(k.id, text), () => st.set_value(""));
   }
   addTask(cx) {
     const text = this.title.value().trim();
@@ -113,7 +119,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, ["state", "--json", "--view", "agents"]);
-        if (r.code === 0 && this.ended) this.ended = JSON.parse(r.stdout).agents.filter((a) => a.status === "ended");
+        if (r.code === 0 && this.ended) this.ended = (overOf(JSON.parse(r.stdout))?.agents ?? []).filter((a) => a.status === "ended");
       } catch {}
       cx.notify();
     });
@@ -127,7 +133,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]);
-        if (r.code === 0) this.pastTasks = JSON.parse(r.stdout).tasks ?? [];
+        if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? [];
       } catch {}
       cx.notify();
     });
@@ -204,7 +210,7 @@ export default class SwarmTab extends View {
     const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
     const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
-    const row = (r) => h_flex().id(`agent-${r.a.name}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
+    const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
       .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
       .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
       .child(mark(t, r.mark))
@@ -219,17 +225,19 @@ export default class SwarmTab extends View {
       const g = rows.filter((r) => !r.comms && r.mark === m);
       return g.length ? [h_flex().id(`group-${m}`).mx(6).px(10).pt(10).pb(5).gap(8).items_center().text_size(11.5).font_semibold()
         .text_color(m === "asks" || m === "hung" ? t.blocked : t.muted).child(mark(t, m, 7)).child(label)
-        .child(div().font_normal().text_color(t.dim).child(String(g.length))), ...g.map(row)] : [];
+        .child(div().font_normal().text_color(t.dim).child(String(g.length))), ...g.slice(0, ROWS).map(row),
+        ...(g.length > ROWS ? [div().id(`group-more-${m}`).mx(6).px(10).py(6).text_size(12).text_color(t.dim)
+          .child(`${g.length - ROWS} more: filter to find one`)] : [])] : [];
     };
     const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter)) : null;
     return this.card(t, "agents").pb(6)
       .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
-      .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map(row)] : rows.map(row))
+      .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map((r) => row(r, "comms"))] : rows.map(row))
       .when(big && !rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("No agent matches")))
       .when(ended > 0, (el) => el.child(h_flex().id("ended").mx(6).mt(4).px(10).h(34).gap(8).items_center().border_t(1).border_color(t.border)
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.showEnded(cx))
         .child(div().flex_1().child(`${ended} ended`)).child(div().text_color(t.accent).child(this.ended ? "Hide ended" : "Show ended"))))
-      .when(Boolean(this.ended), (el) => el.children(this.ended.length ? this.ended.map((a) => h_flex().id(`ended-${a.name}`).h(28).mx(6).px(10)
+      .when(Boolean(this.ended), (el) => el.children(this.ended.length ? this.ended.map((a, i) => h_flex().id(`ended-${i}`).h(28).mx(6).px(10)
         .gap(12).items_center().min_w(0).text_size(12).text_color(t.dim)
         .child(div().w(72).flex_none().truncate().text_color(t.muted).child(a.name))
         .child(div().flex_1().min_w(0).truncate().child(a.branch ?? a.worktree?.replace(/.*\//, "") ?? ""))
@@ -289,7 +297,7 @@ export default class SwarmTab extends View {
     const ms = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts).slice(0, 3), now = s.now ?? Date.now() / 1000;
     return this.card(t, "messages").flex_1().min_w(240).pb(12)
       .child(this.head(t, "Messages"))
-      .children(ms.map((m) => v_flex().id(`msg-${m.id}`).px(16).py(5).gap(2).min_w(0)
+      .children(ms.map((m, i) => v_flex().id(`msg-${i}`).px(16).py(5).gap(2).min_w(0)
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(`${m.frm} to ${m.dest ?? "all"} · ${dur((now - m.ts) * 1000)}`))
         .child(div().text_size(12.5).line_height("18px").whitespace_normal().max_h(36).overflow_hidden().text_color(t.foreground).child(m.body))))
       .when(!ms.length, (el) => el.child(div().px(16).text_size(12.5).text_color(t.dim).child("No messages yet")));
@@ -331,6 +339,7 @@ export default class SwarmTab extends View {
           .child(div().size(14).rounded(4).border(1).border_color(away ? t.working : t.border).bg(away ? t.working : t.background)
             .flex().items_center().justify_center().text_size(10).text_color(t.background).child(away ? "✓" : "")).child("Away"))))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
       .children([this.needs(t, s)].filter(Boolean))
       .child(this.agents(t, s))
       .child(this.board(t, s))
