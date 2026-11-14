@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -210,5 +210,15 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(tagOf("hpl-comms2"), "hpl");
   assert.equal(allShown({ id: "root", children: [{ id: "view", active: "all-swarms" }] }), true);
   assert.equal(allShown({ id: "root", children: [{ id: "view", active: "main" }] }), false);
+}
+// The CLI's away is {since, note}, not true; a field the views don't list yet still arrives (scalars only).
+{
+  const o = overOf({ away: { since: 5, note: "lunch" }, comms: "c", new_field: "x", nested: { a: 1 }, agents: [{ name: "a", extra: 3 }] });
+  assert.equal(o.away, true);
+  assert.equal(o.new_field, "x");
+  assert.equal("nested" in o, false);
+  assert.equal(o.agents[0].extra, 3);
+  assert.equal(overOf({ away: null }).away, false);
+  assert.equal(sumOf({ away: { since: 1 }, brand_new: true }).brand_new, true);
 }
 console.log("rail-test: ok");
