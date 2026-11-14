@@ -13,4 +13,11 @@ elif command -v nix >/dev/null 2>&1; then
   mkdir -p .lake && nix build ../..#swarm-lean -o .lake/nix
 else
   echo "swarm-lean needs lake (install elan: https://github.com/leanprover/elan) or nix" >&2; exit 1
+fi || exit 1
+# The hpl build, which the launcher runs first while it is newer than the sources: only where high-perf-lean has a
+# compiler (or $HPL names one), as in check.sh. A failure leaves the stock binary above in use.
+if [ -n "$HPL" ] || [ -x ../../../high-perf-lean/.lake/build/bin/hpl ]; then
+  if command -v lake >/dev/null 2>&1; then (cd hpl && lake build); else (cd hpl && nix shell nixpkgs#elan -c lake build); fi \
+    >.lake/hpl-build.log 2>&1 && touch hpl/.lake/build/bin/swarm-lean ||
+    echo "swarm-lean: the hpl build failed (.lake/hpl-build.log); the stock binary stays in use" >&2
 fi

@@ -11,9 +11,10 @@ here=$(cd -P "$(dirname "$p")" && pwd)
 export SWARM_HERE="$here"
 hint="$here/lean/build.sh"
 stale=
-# lake's binary (lean/build.sh touches it), then nix's out-link (its own mtime: find -newer does not follow it)
+# the hpl build of swarm-lean when lean/build.sh made one (faster to start), then lake's binary (build.sh touches
+# both), then nix's out-link (its own mtime: find -newer does not follow it)
 exe=${SWARM_EXE:-swarm-lean}; unset SWARM_EXE
-for ref in "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
+for ref in "$here/lean/hpl/.lake/build/bin/$exe" "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
   bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/$exe
   [ -x "$bin" ] || continue
   # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds

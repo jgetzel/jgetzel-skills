@@ -36,7 +36,7 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `HarnessRetro/`, `HarnessRetroMain.lean` | `harness-retro <tool>`: the harness-retro skill's tools (transcript, time-report, harness-lint, probe-guard, probe-json), run by `../../harness-retro/<tool>.sh` |
 | `test-harness-retro.sh` | those tools on `Tests/harness-retro`'s fixture, against what the Lua tools printed for it |
 | `test-claim.sh` | 50 `task claim 1` processes on one db; exactly one wins |
-| `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
+| `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all`; `build.sh` builds it where that checkout has a compiler, and `swarm/swarm` runs it first |
 | `Report.lean` | `swarm-report`, swarm-retro's evidence report (its old swarm-report.lua), run by ../../swarm-retro/swarm-report |
 | `build.sh` | builds the binary the launcher runs and swarm-report (elan's lake, else nix) |
 | `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`, each assumption's test tag, swarm-tests and test-claim.sh on both binaries |
