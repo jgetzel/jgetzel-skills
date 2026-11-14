@@ -497,8 +497,16 @@ II.3m All swarms links into the sections and shows the same needs.
 - Tier 2: parse the prompt box at the foot of `hc read` (numbered options, one with the cursor; the command and
   reason above). Draw buttons only on a full match. On click read again and send `hc keys` only if the options'
   text is unchanged; else fall back to tier 1. "No, and say what" opens a field whose text is sent after the key.
-- Unverified: a Claude Code hook that fires at a permission prompt and could record the pending tool call on the
-  board, making "what it asks" exact. The communicator answering by itself is out of scope.
+- II.6a found (Claude Code 2.1.319, fixtures in `swarm/herdr/fixtures/prompts`): a `PermissionRequest` hook fires
+  at every permission box and at AskUserQuestion, with `tool_name` and the full `tool_input` (Bash command, Write
+  path and content, WebFetch url and prompt; AskUserQuestion's questions with header, options, descriptions and
+  multiSelect). A `Notification` hook fires with `permission_prompt` for permission boxes only. hc's `msg` already
+  names a question's options ("answer: Which color? (Red · Blue)"), only the first question's. The boxes: a title,
+  the tool's detail between dashed rules, "Do you want to …?", options `❯ 1. Yes` with `❯` on the cursor, then
+  "Esc to cancel · Tab to amend". The option set differs by tool (Bash 4, Write 3, Fetch 3 with "No, and tell
+  Claude what to do differently (esc)"). Questions: `☐ Header` tabs, numbered options with description lines under
+  them, "Type something", a rule, "Chat about this"; multiSelect has `[ ]` boxes and Next. The communicator
+  answering by itself is out of scope.
 - Slices: II.6a spike: real permission and question prompts in the sandbox as parser fixtures; check the hook.
   II.6b tier 1. II.6c tier 2. II.6d the hook route, if II.6a finds one.
 
