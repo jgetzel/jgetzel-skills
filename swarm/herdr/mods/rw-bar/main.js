@@ -1,27 +1,21 @@
-// The rework's title bar (swarm/herdr/UI-SPEC.md, slice 2): the shown space and its machine, its tabs as pills (name,
-// title, mark at the end), a Needs you button with its list, the palette button and, where the system draws none, the
-// window buttons. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm
-// agents wait on (slice 6), from the rail's summaries. Tabs put away (tab.settle; the rail puts away a large swarm's
-// workers you haven't opened, slice 9) are one "N more" pill, which shows the swarm tab. The calendar button toggles the
-// layout's panel on the calendar (as herdr-mods/calendar/feed.js does), pressed while it shows.
+// The rework's title bar (swarm/herdr/UI-SPEC.md, slice 2 and Part II.2): the shown space and its machine, then nothing
+// until a Needs you button with its list, the palette button and, where the system draws none, the window buttons. The
+// tabs live in the rail only: the shown tab is named by its rail row and its pane header. With All swarms shown it names
+// that view. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm agents
+// wait on (slice 6), from the rail's summaries.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared, setShared } from "herdr";
-import { agentAt, allShown, ciWord, line, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
+import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
+import { allShown, ciWord, line, looked, needsYou, questionsOf, rowText, showAll, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
-const PILLS = 40; // pills drawn, around the shown tab; the tabs either side are a pill each that selects the next one
 const NEEDS = 60; // Needs you rows drawn
 const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
-  init() {
-    this.pressed = null;
-  }
-
   // The palette key as bound (as workspace-status shows it).
   hint() {
     const mac = window()?.platform === "macos";
@@ -31,53 +25,9 @@ export default class Bar extends View {
     return parts ? parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("") : "Commands";
   }
 
-  // `sum`: the space's swarm summary (sumFor), read once a render: spaces() and shared() are host calls of ~10 ms.
-  pill(t, space, tab, i, ps, byAddr, sum) {
-    const term = pillOf(tab, ps, byAddr);
-    const m = term ? markOf(term, false) : null;
-    let { name, what } = term ? rowText(term, m, null, home()) : { name: line(ps.find((p) => p.tab === tab.id)?.title ?? tab.name, 120), what: "" };
-    // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm; a swarm agent's pill is its name.
-    const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm") && sum;
-    const a = term && agentAt(sum, term.address);
-    if (sw) { name = "Swarm"; what = `${sw.agents.length} ${sw.agents.length === 1 ? "agent" : "agents"}`; }
-    else if (a) { name = a.name === sum.comms ? "Communicator" : a.name; what = ""; }
-    if (tab.named) name = line(tab.name, 120);
-    if (m === "asks") what = "asks";
-    if (what === name) what = "";
-    return h_flex().id(`tab-${tab.id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
-      .when(tab.active, (el) => el.bg(t.selected)).text_color(tab.active ? t.foreground : t.muted)
-      .when(!tab.active, (el) => el.hover((s) => s.bg(t.hover)))
-      // Press, drag onto another pill, release: move it there (as the shipped tabs mod does). Double press: rename.
-      .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: tab.id }); })
-      .on_mouse_up("left", () => {
-        const from = this.pressed; this.pressed = null;
-        if (from !== null && from !== i) run("tab.move", { id: space.tabs[from].id, index: i + 1 });
-        else run("tab.select", { id: tab.id });
-        if (allShown(layout())) showAll(run, false); // the All swarms view (slice 13) gives way to the tabs
-      })
-      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
-      .when(Boolean(sw), (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(tab.active ? t.foreground : t.muted)))
-      .child(div().max_w(140).truncate().font_medium().child(tab.zoomed ? `${name} Z` : name))
-      .when(Boolean(what), (el) => el.child(div().max_w(180).truncate().font_normal().text_color(m === "asks" ? t.blocked : tab.active ? t.muted : t.dim).child(what)))
-      .when(Boolean(m) && !sw, (el) => el.child(mark(t, m)));
-  }
-
   button(t, id, label, action) {
     return div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
-  }
-
-  // The calendar panel's toggle; "calendar.opened" tells the panel to animate in.
-  calendar(t) {
-    const root = layout(), panel = find(root, "panel"), on = Boolean(panel && !panel.hidden && find(root, "panel-body")?.active === "calendar");
-    return h_flex().id("cal-toggle").h(30).w(34).flex_none().items_center().justify_center().rounded(9).border(1).border_color(t.border)
-      .cursor_pointer().when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .on_mouse_down("left", stop).on_click(() => {
-        if (on) return run("layout.hide", { id: "panel" });
-        setShared("calendar.opened", Date.now());
-        run("layout.select", { stack: "panel-body", child: "calendar" }); run("layout.show", { id: "panel" });
-      })
-      .child(svg("mods/calendar/calendar.svg").size(15).text_color(on ? t.foreground : t.dim));
   }
 
   // The Needs you popup: one row per agent, focusing it on click.
@@ -116,43 +66,26 @@ export default class Bar extends View {
     if (props()?.needs) return this.list(t);
     const sp = spaces();
     const space = sp.find((s) => s.active);
-    const ps = panes();
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
     const asks = needsYou([...byAddr.values()]);
-    const needs = asks.length + questionsOf(sumsOf(), new Set(asks.map((x) => x.address))).length;
+    const sums = sumsOf();
+    const needs = asks.length + questionsOf(sums, new Set(asks.map((x) => x.address))).length;
     const w = window();
     const sidebar = find(layout(), "sidebar");
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
     const mac = w?.platform === "macos" && !w.fullscreen;
     // A swarm's space: its base's CI from the rail's summary ("main green"), else the space's branch.
-    const sum = space && sumFor(sumsOf(), space, new Set(sp.map((s) => s.id)));
-    const ci = ciWord(sum?.ci);
-    const sub = line([space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · "), 120);
-    const tabs = space?.tabs ?? [], away = tabs.filter((tab) => tab.settled).length, last = [...tabs].reverse().find((tab) => tab.settled);
-    const swarmTab = tabs.find((tab) => ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm"));
-    const open = tabs.filter((tab) => !tab.settled), at = Math.max(0, open.findIndex((tab) => tab.active));
-    const lo = Math.max(0, Math.min(at - PILLS / 2, open.length - PILLS)), hi = Math.min(open.length, lo + PILLS);
-    const win = new Set(open.slice(lo, hi));
-    const edge = (id, n, to) => [h_flex().id(id).h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("tab.select", { id: to.id })).child(`${n} more`)];
-    const edges = new Map([...(lo > 0 ? [[open[lo - 1], edge("tabs-before", lo, open[lo - 1])]] : []),
-      ...(hi < open.length ? [[open[hi], edge("tabs-after", open.length - hi, open[hi])]] : [])]);
+    const sum = space && sumFor(sums, space, new Set(sp.map((s) => s.id)));
+    const all = allShown(layout());
+    const ci = all ? null : ciWord(sum?.ci);
+    const name = all ? "All swarms" : line(space?.name, 80);
+    const sub = all ? `${sums.length} running` : line([space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · "), 120);
     return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
-      .on_mouse_up("left", () => { this.pressed = null; })
-      .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(v_flex().w(mac ? Math.max(60, left - 64) : left).flex_none().min_w(0)
-        .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(line(space?.name, 80)))
+        .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(name))
         .child(h_flex().min_w(0).gap(4).text_size(11.5).text_color(t.dim).child(div().truncate().child(sub))
           .when(Boolean(ci), (el) => el.child(div().flex_none().text_color(ci === "green" ? t.ansi2 : ci === "checks run" ? t.working : t.blocked).child(ci)))))
-      .child(h_flex().id("pills").flex_1().min_w(0).items_center().overflow_x_scrollbar()
-        .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
-          // The tabs put away are one pill where the last of them sits. Past PILLS tabs, those around the shown one.
-          .children(tabs.flatMap((tab, i) => (tab !== last ? tab.settled || !win.has(tab) ? edges.get(tab) ?? [] : [this.pill(t, space, tab, i, ps, byAddr, sum)]
-            : [h_flex().id("tabs-away").h(30).px(12).flex_none().items_center().rounded(9).text_size(13).text_color(t.muted)
-              .when(Boolean(swarmTab), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
-              .on_mouse_down("left", stop).on_click(() => swarmTab && run("tab.select", { id: swarmTab.id })).child(`${away} more`)])))
-          .child(this.button(t, "tab-new", svg("mods/workspace-chrome/plus.svg").size(14),
-            () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))))
+      .child(div().flex_1())
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
@@ -161,7 +94,6 @@ export default class Bar extends View {
       .child(h_flex().id("palette").h(30).px(12).flex_none().items_center().rounded(9).border(1).border_color(t.border)
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_mouse_down("left", stop).on_click(() => run("app.palette")).child(this.hint()))
-      .when(Boolean(find(layout(), "calendar")), (el) => el.child(this.calendar(t)))
       .when(Boolean(w?.buttons), (el) => el
         .child(this.button(t, "minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(this.button(t, "maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))

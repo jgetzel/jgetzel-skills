@@ -140,13 +140,22 @@ export default class RwSettings extends Settings {
 
   footer(t) {
     const narrow = (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
-    const row = (id, icon, label, dim, action) => h_flex().id(id).h(28).px(8).gap(9).items_center().rounded(8)
-      .text_color(dim ? t.dim : t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-      .on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14))
+    const root = layout(), panel = find(root, "panel");
+    const cal = Boolean(find(root, "calendar")), calOn = Boolean(panel && !panel.hidden && find(root, "panel-body")?.active === "calendar");
+    const row = (id, icon, label, dim, action, on = false) => h_flex().id(id).h(28).px(8).gap(9).items_center().rounded(8)
+      .text_color(on ? t.foreground : dim ? t.dim : t.muted).when(on, (el) => el.bg(t.selected))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
+      .on_click(action).child(svg(icon.includes("/") ? icon : `mods/workspace-chrome/${icon}.svg`).size(14))
       .when(!narrow, (el) => el.child(label));
     return v_flex().size_full().bg(t.chrome).px(8).pt(4).pb(8).text_size(13)
       .child(row("settings", "settings", "Settings", false, () => openOverlay({ mod: "rw-settings", kind: "dialog", width: 860, height: 620 }))
         .when(Boolean(updates().app.ready), (el) => el.child(div().size(6).rounded_full().bg(t.accent))))
+      // The calendar panel's toggle (Part II.2), pressed while it shows; "calendar.opened" tells the panel to animate in.
+      .when(cal, (el) => el.child(row("calendar", "mods/calendar/calendar.svg", "Calendar", false, () => {
+        if (calOn) return run("layout.hide", { id: "panel" });
+        setShared("calendar.opened", Date.now());
+        run("layout.select", { stack: "panel-body", child: "calendar" }); run("layout.show", { id: "panel" });
+      }, calOn)))
       .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
   }
 

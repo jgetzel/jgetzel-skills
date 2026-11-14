@@ -199,26 +199,28 @@ function indexOf(ps, byAddr) {
   return ix;
 }
 
-// One space's rows: agents then shells among its panes' terminals, each followed by its live sub-terminals, depth
-// first; `lines` is the tree drawn in front of a nested row ("│" passing, "├" a child, "└" the last child, "" none).
+// One space's rows: its panes' terminals in tab order (the rail is the tab list, Part II.2), each followed by its live
+// sub-terminals, depth first; `lines` is the tree drawn in front of a nested row ("│" passing, "├" a child, "└" the
+// last child, "" none); `tab` the tab of the row's pane, or of the root it hangs under.
 // `own`: the space's swarm agents (swarmAddrs), each a tree of its own, though a worker's parent is the communicator.
 export function rowsOf(space, ps, byAddr, own = new Set()) {
   const { byTab, tabsOf, kids } = indexOf(ps, byAddr);
   const tabIndex = new Map(space.tabs.map((tab) => [tab.id, tab.index]));
   const mine = [...space.tabs].sort((a, b) => a.index - b.index).flatMap((tab) => byTab.get(tab.id) ?? []);
-  const paneOf = new Map(mine.map((p) => [p.terminal, p.pane]));
+  const paneOf = new Map(mine.map((p) => [p.terminal, p.pane])), tabOf = new Map(mine.map((p) => [p.terminal, p.tab]));
   const elsewhere = { has: (a) => [...(tabsOf.get(a) ?? [])].some((tab) => !tabIndex.has(tab)) };
   const seen = new Set();
   const out = [];
-  const walk = (t, lead) => {
+  const walk = (t, lead, up = null) => {
     if (seen.has(t.address)) return;
     seen.add(t.address);
-    out.push({ t, pane: paneOf.get(t.address) ?? null, lines: lead, mark: markOf(t, lead.length > 0) });
+    const tab = tabOf.get(t.address) ?? up;
+    out.push({ t, pane: paneOf.get(t.address) ?? null, tab, lines: lead, mark: markOf(t, lead.length > 0) });
     const ks = (kids.get(t.address) ?? []).filter((k) => !own.has(k.address) && !seen.has(k.address) && !elsewhere.has(k.address));
     ks.forEach((k, i) => {
       const last = i === ks.length - 1;
       const pass = lead.map((l) => (l === "├" || l === "│" ? "│" : ""));
-      walk(k, [...pass, last ? "└" : "├"].slice(-DEPTH));
+      walk(k, [...pass, last ? "└" : "├"].slice(-DEPTH), tab);
     });
   };
   // A terminal whose parent is in this space hangs under it, pane or not. One whose parent is gone, has no pane, or is
@@ -226,8 +228,7 @@ export function rowsOf(space, ps, byAddr, own = new Set()) {
   const roots = [...mine.map((p) => byAddr.get(p.terminal)).filter((t) => own.has(t.address) || !(parentOf(t) && paneOf.has(parentOf(t)))),
     ...[...own].filter((a) => byAddr.has(a) && !paneOf.has(a) && !elsewhere.has(a)).map((a) => byAddr.get(a))];
   // A pane's terminal no root reaches (its parents form a cycle, or it is its own parent) is a root too.
-  for (const t of [...roots, ...mine.map((p) => byAddr.get(p.terminal))].filter((t) => t.status != null)) walk(t, []);
-  for (const t of [...roots, ...mine.map((p) => byAddr.get(p.terminal))].filter((t) => t.status == null)) walk(t, []);
+  for (const t of [...roots, ...mine.map((p) => byAddr.get(p.terminal))]) walk(t, []);
   return out;
 }
 
@@ -244,11 +245,16 @@ export function questionsOf(swarms, counted) {
   })).filter((q) => !q.address || !counted.has(q.address));
 }
 
-// The terminal a tab's pill speaks for: the agent whose status is the tab's own (its most urgent), else its first agent,
-// else its first terminal; null for a tab of mod panes.
-export function pillOf(tab, ps, byAddr) {
-  const ts = ps.filter((p) => p.tab === tab.id && byAddr.has(p.terminal)).map((p) => byAddr.get(p.terminal));
-  return ts.find((t) => tab.status && t.status === tab.status) ?? ts.find((t) => t.status != null) ?? ts[0] ?? null;
+// A space's rows as its tabs (Part II.2): runs of rows with the same tab, each { tab, rows, split } where `split` is a
+// tab showing more than one of the rows in panes (the rail joins them by a bracket). A row with no tab is alone.
+export function tabGroups(rows) {
+  const out = [];
+  for (const r of rows) {
+    const g = out.at(-1);
+    if (g && r.tab != null && g.tab === r.tab) g.rows.push(r); else out.push({ tab: r.tab ?? null, rows: [r], split: false });
+  }
+  for (const g of out) g.split = g.rows.filter((r) => r.pane).length > 1;
+  return out;
 }
 
 // A collapsed rail's tile: two letters for a space (the first two words' initials, else its first two letters) and its
