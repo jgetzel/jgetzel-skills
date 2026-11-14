@@ -336,6 +336,21 @@ def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String)
   | some c => if sus.isEmpty then (Msgs.post db now "swarm" c (msg ++ " No live agent has commits in it.") true (some "system")).1 else db
   | none => db
 
+/-- ci_check's first transaction: `ciCheckStep`'s commit when it needs no task; a new red run comes back uncommitted,
+for `ciCheckApply` to log with its task once the reads are done. -/
+def ciCheckFirst (now : Int) (db : Db) : Db × Option NewRed :=
+  match ciCheckStep now db with
+  | (_, some r) => (db, some r)
+  | x => x
+
+/-- ci_check's second transaction: the `ci-red` event and the task for red run `r` in one commit, so a stop never
+leaves the event without its task; if the check now finds another outcome it commits nothing (the next check redoes it). -/
+def ciCheckApply (now : Int) (comms : Option String) (r : NewRed) (rng : String) (names : List String) (tail : String)
+    (db : Db) : Db :=
+  match ciCheckStep now db with
+  | (db', some r') => if r'.red.id == r.red.id then ciNewRedTask now comms r' rng names tail db' else db
+  | _ => db
+
 /-- The `Swarm-Agent:` names in commit messages, distinct and sorted. -/
 def authors (log : String) : List String :=
   let ns := (splitlines log).filterMap fun l =>
@@ -345,7 +360,7 @@ def authors (log : String) : List String :=
 /-- ci.ci_check: a red run on top becomes one task naming the live suspects; a green one closes it. -/
 def ciCheck (repo comms : Option String) : m Unit := do
   let now ← Clock.now
-  let some r ← Store.txn [.ci, .task, .event] (ciCheckStep now) | return
+  let some r ← Store.txn [.ci, .task, .event] (ciCheckFirst now) | return
   let rng := match r.green with
     | some g => s!"{g.sha.getD ""}..{r.red.sha.getD ""}"
     | none => s!"-20 {r.red.sha.getD ""}"
@@ -356,7 +371,7 @@ def ciCheck (repo comms : Option String) : m Unit := do
     | some o => if o.code == 0 then splitlines o.stdout else []
     | none => []
   let tail := "\n".intercalate (lines.drop (lines.length - 30))
-  Store.txn [.agent, .task] fun db => (ciNewRedTask now comms r rng (authors log) tail db, ())
+  Store.txn [.agent, .ci, .task, .event] fun db => (ciCheckApply now comms r rng (authors log) tail db, ())
 
 /-- The verdict for `sha`: the newest completed, non-cancelled main CI run that includes it (its own, or a later run
 of the batch it was pushed in), else pending with the newest unfinished one, and the run (ci.ci_for). -/

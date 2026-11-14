@@ -279,7 +279,8 @@ def git_reads_keep (t : T) : IO Unit := do
       ["git", "--no-optional-locks", "-C", t.wt, "status", "--porcelain"], ["git", "-C", t.wt, "merge-base", "main", "HEAD"],
       ["git", "-C", t.wt, "merge-base", "--is-ancestor", "HEAD", "main"],
       ["git", "-C", t.wt, "diff", "--name-only", "-z", mb, "HEAD"], ["git", "-C", t.wt, "diff", "--quiet", "HEAD", "main", "--", "w"],
-      ["git", "-C", t.wt, "rev-parse", "HEAD"], ["git", "-C", t.wt, "rev-parse", "--abbrev-ref", "HEAD"]] do
+      ["git", "-C", t.wt, "rev-parse", "HEAD"], ["git", "-C", t.wt, "rev-parse", "--abbrev-ref", "HEAD"],
+      ["git", "-C", t.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"]] do
     discard <| t.exec argv { cwd := some t.repo }
     eq (← durable t) before s!"git_reads_keep: {argv} leaves the repo"
 

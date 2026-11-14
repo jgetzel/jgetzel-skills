@@ -55,9 +55,11 @@ def redRun (id : Nat) (concl : Option String) (at_ : String) (status := "complet
 def chkDb : Db := { agents := [{ name := "a", started := some 1 }], cis := [redRun 9 (some "failure") "2026-11-08T10:05:00Z" (url := "http://ci/9")] }
 /-- ci_check as watchd runs it, with the authors git log names. -/
 def check (db : Db) (names : List String := ["a", "gone"]) : Db :=
-  match ciCheckStep T0 db with
-  | (db, some r) => ciNewRedTask T0 (some "comms") r "-20 x" names "" db
+  match ciCheckFirst T0 db with
+  | (db, some r) => ciCheckApply T0 (some "comms") r "-20 x" names "" db
   | (db, none) => db
+-- F5: the first transaction leaves a new red run's `ci-red` event to the second, which commits it with the task
+#guard (ciCheckFirst T0 chkDb).1.events.isEmpty
 #guard authors "x\n\nSwarm-Agent: gone\n\x1e\ny\n\nSwarm-Agent: a\n\x1e\n" == ["a", "gone"]
 def c1 : Db := check (check chkDb)
 #guard (c1.tasks.filter (likePrefix ·.title.get! "main red:")).length == 1

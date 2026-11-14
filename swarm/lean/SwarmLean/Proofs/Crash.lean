@@ -1003,6 +1003,25 @@ theorem X.Ci.ciNewRedTask {now comms r rng names tail} (h : XInv db t) :
     | exact X.Msgs.post (X.List.foldl (fun d n hd => X.Msgs.post hd) (X.Db.log (xinv_addTask (by rfl) (by rfl) (by rfl) h)))
     | exact X.List.foldl (fun d n hd => X.Msgs.post hd) (X.Db.log (xinv_addTask (by rfl) (by rfl) (by rfl) h))
 
+theorem X.Ci.ciCheckFirst {now} (h : XInv db t) : XInv (Ci.ciCheckFirst now db).1 t := by
+  have := X.Ci.ciCheckStep (now := now) h
+  unfold SwarmLean.Ci.ciCheckFirst
+  rcases e : SwarmLean.Ci.ciCheckStep now db with ⟨d, _ | r⟩
+  · rw [e] at this; exact this
+  · exact h
+
+theorem X.Ci.ciCheckApply {now comms r rng names tail} (h : XInv db t) :
+    XInv (Ci.ciCheckApply now comms r rng names tail db) t := by
+  unfold SwarmLean.Ci.ciCheckApply
+  have := X.Ci.ciCheckStep (now := now) h
+  split
+  · next db' r' heq =>
+    rw [heq] at this
+    split
+    · exact X.Ci.ciNewRedTask this
+    · exact h
+  · exact h
+
 /-- `swarm limits`' compaction thresholds: meta keys and an event. -/
 theorem X.Compact.setLimits {me n c st now} (h : XInv db t) : XInv (Compact.setLimits db me n c st now) t := by
   unfold SwarmLean.Compact.setLimits
@@ -1121,6 +1140,21 @@ set_option maxHeartbeats 20000000 in
 /-- Every `Hook` command keeps the cross-area invariant at every commit (`Cmd.Hook.group`). -/
 theorem hook_keeps (hM : ∀ w, M.now w ≤ t) (a : Args.Parsed) :
     Keeps (XInv · t) ((Cmd.Hook.group (m := RecM M)).run a) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
+/-- Reap keeps the cross-area invariant at every commit: its own theorem, which `pass_keeps` applies (`K.<function>`)
+rather than walking it inline, so no one proof holds the whole pass. -/
+theorem K.SwarmLean.Watchd.reap (hM : ∀ w, M.now w ≤ t) live t' comms :
+    Keeps (M := M) (XInv · t) (Watchd.reap live t' comms) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
+/-- Lifecycle keeps the cross-area invariant at every commit (applied by `pass_keeps`, as `reap`). -/
+theorem K.SwarmLean.Watchd.lifecycle (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) t' comms terms opts nl :
+    Keeps (M := M) (XInv · t) (Watchd.lifecycle t' comms terms opts nl) := by
   keeps_walk
   all_goals xstep
 

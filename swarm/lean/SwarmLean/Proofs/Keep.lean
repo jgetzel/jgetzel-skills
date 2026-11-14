@@ -1,8 +1,8 @@
 import SwarmLean.Proofs.Trust
 
-/-! The sweep loses no work, end to end (board #132): after any run of sweeps and ends, every commit reachable before
-is reachable after unless it was below the HEAD of a worktree the sweep removed after `Gate` (which found it landed),
-and every worktree there before is there after unless the sweep removed it clean. -/
+/-! The sweep loses no work, end to end (board #132): after any run of sweeps, branch sweeps and ends, every commit
+reachable before is reachable after unless it was below the HEAD of a worktree the sweep removed after `Gate` (which
+found it landed), and every worktree there before is there after unless the sweep removed it clean. -/
 
 set_option linter.deprecated.syntax false
 attribute [local irreducible] String.startsWith String.drop SwarmLean.splitlines SwarmLean.strip String.splitOn String.intercalate SwarmLean.joinPath
@@ -427,7 +427,7 @@ theorem sweep_kept (hg : GitReadsKeep M) (ht : ToolsKeep M) (hwr : WtRemove M) (
     ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweep comms dry nl : RecM M _) ⦃⇓ _ s => ⌜Kept s0 s⌝⦄ := by
   cases comms <;> sweep_kept_vcs
 
-/-! ## Any run of sweeps and ends -/
+/-! ## Any run of sweeps, branch sweeps and ends -/
 
 theorem Lost.weaken {n n' : Nat} {l : List (M.World × Call)} (h : Lost n' c l) (hn : n ≤ n') : Lost n c l := by
   obtain ⟨i, w, m, x, k, hi, he, hh, ha⟩ := h; exact ⟨i, w, m, x, k, Nat.le_trans hn hi, he, hh, ha⟩
@@ -469,15 +469,39 @@ theorem endAgent_ext : Ext (Lifecycle.endAgent a force by_ : RecM M Bool) := ext
     Clock.now, Fs.write, Fs.read, Env.var, discard_eq]
   ext_close L
 
-/-- One step of watchd or the CLI that touches worktrees or branches: a sweep (watchd's, or `--dry-run`), or ending an
-agent (`swarm end`, lifecycle's end, hung's). -/
+/-- The branch sweep (`branch -d` of an ended agent's branches) keeps every commit and worktree, and removes none. -/
+theorem sweepBranches_kept (hg : GitReadsKeep M) (ht : ToolsKeep M) (hbd : BranchD M) (s0 : Rec M) (main : String)
+    (ended prot : List String) :
+    ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweepBranches main ended prot : RecM M Unit)
+    ⦃⇓ _ s => ⌜Kept s0 s ∧ ∃ l, s.log = s0.log ++ l ∧ ∀ e ∈ l, ¬ IsRm e.2⌝⦄ := by
+  mvcgen -trivial [Watchd.sweepBranches, Lifecycle.run, Lifecycle.code, Proc.output, discard_eq]
+  case inv1 => exact ⇓ _ s => ⌜Kept s0 s ∧ ∃ l, s.log = s0.log ++ l ∧ ∀ e ∈ l, ¬ IsRm e.2⌝
+  all_goals (try mleave)
+  all_goals (try simp only [withEnv_nil, List.map_nil] at *)
+  case vc3 => assumption
+  case vc2 =>
+    subst_vars
+    refine ⟨Kept.mkCmd hg ht (Kept.mk_self (Kept.refl _)) (.inl (by simp [GitRead])), _, rfl, ?_⟩
+    simp [IsRm, rmArgv]
+  case vc1 =>
+    obtain ⟨hk, l, hl, hn⟩ := ‹Kept s0 _ ∧ _›
+    refine ⟨Kept.mkBranchD hbd (Kept.mk_self hk), l ++ [_], by rw [hl, List.append_assoc], ?_⟩
+    intro e he
+    rcases List.mem_append.1 he with he | he
+    · exact hn e he
+    · simp at he; subst he; simp [IsRm, rmArgv]
+
+/-- One step of watchd or the CLI that touches worktrees or branches: a sweep (watchd's, or `--dry-run`), the branch
+sweep after it, or ending an agent (`swarm end`, lifecycle's end, hung's). -/
 inductive Step
   | sweep (comms : Option String) (dry : Bool) (notLanded : List String)
+  | branches (main : String) (ended prot : List String)
   | stop (a : Agent) (force : Bool) (by_ : Option String)
 
 /-- What a step runs. -/
 def Step.run : Step → RecM M Unit
   | .sweep comms dry nl => discard (Watchd.sweep comms dry nl)
+  | .branches main ended prot => Watchd.sweepBranches main ended prot
   | .stop a force by_ => discard (Lifecycle.endAgent a force by_)
 
 /-- From `s0` to `s`: `Kept`, and every `worktree remove` since passed `Gate`. -/
@@ -509,6 +533,11 @@ theorem step_inv (H : NoLossTools M) (st : Step) {s0 s1 : Rec M} (h : RunInv s0 
     obtain ⟨a', ha', hw⟩ := post_of' (sweep_W1 (M := M) s1 comms dry nl)
     simp only [Step.run, go_discard ha]
     exact ⟨⟨(), by simp⟩, h.1.trans hk, h.2.join hk.1 hw⟩
+  | branches main ended prot =>
+    obtain ⟨a, ha, hk, l, hl, hn⟩ := post_of' (sweepBranches_kept H.gitReads H.tools H.branchD s1 main ended prot)
+    simp only [Step.run]
+    refine ⟨⟨a, ha⟩, h.1.trans hk, ?_⟩
+    rw [hl]; exact h.2.append hn
   | stop a force by_ =>
     have he := endAgent_ext (M := M) (a := a) (force := force) (by_ := by_) s1
     obtain ⟨_, -, hs⟩ := post_of' (P := fun _ s => M.SameRepo s1.w s.w) (s0 := s1)
@@ -530,8 +559,8 @@ theorem run_inv (H : NoLossTools M) (steps : List Step) {s0 s : Rec M} (h : RunI
     rw [e] at hu h1; cases hu
     exact ih h1
 
-/-- **No work lost**, end to end: on a machine with these git, hc and cgroup assumptions, after any run of sweeps and ends from any state `s0`,
-every commit reachable before (from a branch, a tag, a remote ref or a worktree's HEAD) is reachable after, unless it
+/-- **No work lost**, end to end: on a machine with these git, hc and cgroup assumptions, after any run of sweeps,
+branch sweeps and ends from any state `s0`, every commit reachable before (from a branch, a tag, a remote ref or a worktree's HEAD) is reachable after, unless it
 is the HEAD, or below the HEAD, of a worktree `x` that a `worktree remove` in the run took away, on the machine it ran
 on, after `x` passed the sweep's `Gate` (which found it landed: `sweepGate_W1`); and every worktree there before is
 there after, unless a `worktree remove` in the run took it away when it had nothing uncommitted, after it passed

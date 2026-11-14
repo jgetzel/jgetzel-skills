@@ -436,7 +436,7 @@ def RevParseHead : Prop := ∀ w x o, M.git w ["-C", x, "rev-parse", "HEAD"] non
   M.head w x = some (strip o)
 
 /-- The git commands the sweep runs to read (through `Proc.output`): the worktree list, a status, a merge base, a
-diff, a rev-parse. Their arguments are paths and revisions (shas git printed, branch names), never options. -/
+diff, a rev-parse, the branch list. Their arguments are paths and revisions (shas git printed, branch names), never options. -/
 def GitRead : List String → Prop
   | ["git", "worktree", "list", "--porcelain"] => True
   | ["git", "-C", _, "worktree", "list", "--porcelain"] => True
@@ -447,6 +447,7 @@ def GitRead : List String → Prop
   | "git" :: "-C" :: _ :: "diff" :: "--quiet" :: _ => True
   | ["git", "-C", _, "rev-parse", _] => True
   | ["git", "-C", _, "rev-parse", "--abbrev-ref", _] => True
+  | ["git", "-C", _, "for-each-ref", "--format=%(refname:short)", "refs/heads/"] => True
   | _ => False
 
 /-- git: the sweep's reads leave the repo as it was (env_spec: git_reads_keep). -/

@@ -170,6 +170,32 @@ def reap_spares_a_rebound_terminal (t : T) : IO Unit := do
   eq (a.f "hc") "t2"; eq (a.f "ended") Json.null
   eq ((← task1 t).f "state") "claimed"
 
+-- an end stopped before its hc kill: reap kills the ended row's terminal hc still lists, not a live row's
+def reap_kills_an_ended_rows_terminal (t : T) : IO Unit := do
+  setup t
+  let h ← hooks t
+  claim t "a" "t"
+  t.q_ "insert into agent(name, started, hc, ended, status) values('b', 1, 't1', 1, 'ended'), ('c', 1, 't2', 1, 'ended')"
+  t.q_ "update agent set hc='t2' where name='a'"
+  -- (the test monad drops every hc call: `out` names the terminals reap killed)
+  let out ← run h (Watchd.reap (some ["t1", "t2"]) (← now) none)
+  eq out ["terminal b"]
+
+-- a sweep stopped between its worktree remove and the branch delete: the branch sweep deletes an ended agent's
+-- merged branch, not its unmerged one nor a live agent's
+def sweep_branches_deletes_an_ended_agents_merged_branch (t : T) : IO Unit := do
+  setup t
+  let h ← hooks t
+  let g (args : List String) : IO Unit := do
+    let o ← IO.Process.output { cmd := "git", args := (["-C", t.repo] ++ args).toArray }
+    if o.exitCode != 0 then fail s!"git {args}: {o.stderr}"
+  g ["branch", "x/1"]; g ["branch", "y/1"]
+  g ["checkout", "-q", "-b", "x/2"]; g ["commit", "-q", "--allow-empty", "-m", "x2"]; g ["checkout", "-q", "main"]
+  run h (Watchd.sweepBranches t.repo ["x"] [])
+  let o ← IO.Process.output { cmd := "git", args := #["-C", t.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/"] }
+  let bs := (o.stdout.splitOn "\n").filter (· != "")
+  eq (bs.contains "x/1") false; eq (bs.contains "x/2") true; eq (bs.contains "y/1") true
+
 -- a renew after reap's select of expired leases keeps the task; a fresh lock after its lock select keeps the lock
 def reap_keeps_a_renewed_lease_and_a_fresh_lock (t : T) : IO Unit := do
   setup t
@@ -356,6 +382,8 @@ def the_whole_iteration_is_under_pcall (t : T) : IO Unit := do
 
 def tests : List Case := [
   ("reap_spares_a_rebound_terminal", reap_spares_a_rebound_terminal),
+  ("reap_kills_an_ended_rows_terminal", reap_kills_an_ended_rows_terminal),
+  ("sweep_branches_deletes_an_ended_agents_merged_branch", sweep_branches_deletes_an_ended_agents_merged_branch),
   ("reap_keeps_a_renewed_lease_and_a_fresh_lock", reap_keeps_a_renewed_lease_and_a_fresh_lock),
   ("done_renew_block_release_by_a_reaped_owner_are_refused", done_renew_block_release_by_a_reaped_owner_are_refused),
   ("end_agent_rechecks_a_claim_since", end_agent_rechecks_a_claim_since),

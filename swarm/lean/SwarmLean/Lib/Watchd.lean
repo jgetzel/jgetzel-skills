@@ -112,7 +112,8 @@ def git (args : List String) (cwd : Option String := none) : m (Option String) :
 def real (p : String) : m String := Workspaces.real p
 
 /-- Reopens expired task leases (a lapsed claim whose owner keeps it is told to the communicator instead), drops
-expired locks, ends the agents whose bound terminal hc no longer lists (`live`: none skips that) (watchd.reap). -/
+expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
+none skips both) (watchd.reap). -/
 def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (List String) := do
   let db ← Store.txn [.task, .agent] fun db => (db, db)
   let mut out := []
@@ -150,6 +151,14 @@ def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (Li
       if up.contains h then continue
       let done ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] (reapGone a.name h t)
       if done then out := out ++ [s!"agent {a.name}"]
+    -- an ended row whose terminal hc still lists and no live row is bound to: its end stopped before the kill
+    let db ← Store.txn [.agent] fun db => (db, db)
+    for a in db.agents do
+      let some h := py a.hc | continue
+      if a.ended.isNone || !up.contains h || (Agents.live db).any (py ·.hc == some h) then continue
+      discard <| Proc.output ["hc", "kill", h] none []
+      discard <| Proc.output ["hc", "rm", h] none []
+      out := out ++ [s!"terminal {a.name}"]
   return out
 
 -- ---------- sweep ----------
@@ -221,6 +230,17 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
       let now ← Clock.now
       Store.txn [] fun db => (say db now c s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ())
   return (out, cache)
+
+/-- A branch the sweep leaves to `sweepBranches`: an ended agent's (`<name>/…`), not a protected base nor master. -/
+def leftBranch (ended prot : List String) (b : String) : Bool :=
+  !prot.contains b && b != "master" && ended.any fun n => b.startsWith (n ++ "/")
+
+/-- The branch of a worktree the sweep removed but stopped before deleting: each ended agent's branch gets
+`branch -d`, which git refuses for one not merged into HEAD or checked out somewhere (a squash-landed one stays). -/
+def sweepBranches (main : String) (ended prot : List String) : m Unit := do
+  let out := (← Lifecycle.run ["git", "-C", main, "for-each-ref", "--format=%(refname:short)", "refs/heads/"]).getD ""
+  for b in (splitlines out).filter (leftBranch ended prot) do
+    discard <| Lifecycle.code ["git", "-C", main, "branch", "-d", b]
 
 -- ---------- lifecycle's notices ----------
 
@@ -511,8 +531,10 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let all ← Workspaces.worktrees
   let wts := Workspaces.wtMapOf db0 all
   let main ← Workspaces.main none
-  for b in ← Workspaces.protectedOf db0 main do Bases.fetch b main
+  let prot ← Workspaces.protectedOf db0 main
+  for b in prot do Bases.fetch b main
   let (_, notLanded) ← sweep (some comms) false notLanded
+  if let some mn := main then sweepBranches mn ((db0.agents.filter (·.ended.isSome)).map (·.name)) prot
   let db ← Store.txn [.agent, .task, .workspace, .event] fun db => (db, db)
   for (n, path, base) in ← Workspaces.baseOut db all do  -- a base checked out in an agent's worktree: once per agent and base
     let now ← Clock.now
