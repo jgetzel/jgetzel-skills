@@ -388,7 +388,7 @@ export default class Rail extends View {
 
   // `text`: a swarm row's own what and side (swarmText); a swarm row has no x and no rename (`plain` false); the
   // collapsed rail's card draws rows without a card of their own (`card` false).
-  row(t, r, tabName, on, now, { text = null, plain = true, card = true } = {}) {
+  row(t, r, tabName, on, now, { text = null, plain = true, card = true, menu = null } = {}) {
     const shell = !AGENT.has(r.mark);
     let { name, what } = rowText(r.t, r.mark, tabName, this.home);
     let sideText = since(r.mark, this.changed[r.t.address]?.at, now);
@@ -416,6 +416,9 @@ export default class Rail extends View {
       .when(closes, (el) => el
         .on_hover((h, cx) => { if (h) this.hotRow = r.t.address; else if (this.hotRow === r.t.address) this.hotRow = null; cx.notify(); })
         .on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
+      // Right click: its menu; the row's hover card makes way until the pointer leaves the row.
+      .when(Boolean(menu), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuFor = r.t.address; cx.notify(); menu(); })
+        .on_hover((h, cx) => { if (!h && this.menuFor === r.t.address) { this.menuFor = null; cx.notify(); } }))
       .children(this.tree(t, r.lines))
       .child(div().flex_none().max_w(120).truncate().font_medium().text_color(shell ? t.muted : t.foreground)
         .when(shell, (el) => el.font_family(this.mono).text_size(12))
@@ -428,7 +431,7 @@ export default class Rail extends View {
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : mark(t, r.mark));
     // Kept through a drag with nothing in it: swapping the wrapper out mid-press stops the moves reaching other rows.
-    return card ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el)
+    return card && this.menuFor !== r.t.address ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el)
       .content(this.drag?.live ? div() : this.card(t, r, name, sideText)) : el;
   }
 
@@ -459,7 +462,10 @@ export default class Rail extends View {
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
       const root = asks ? { ...it.r, ask: { folder: sum.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
-      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly }));
+      // Right click: its menu (II.1b), rw-bar's popup.
+      const menu = () => openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
+        props: { agentMenu: { name: it.a.name, folder: sum.folder, machine: s.machine ?? null, comms: Boolean(it.comms), task: it.a.task?.id ?? null } } });
+      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly, menu: i ? null : menu }));
     }), (f) => f());
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
