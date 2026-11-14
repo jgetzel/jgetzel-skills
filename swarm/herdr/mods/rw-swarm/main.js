@@ -613,7 +613,8 @@ export default class SwarmTab extends View {
     const c1 = [this.allNeeds(t, s, cx), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
-    return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
+    // laptops: Latest under Message the swarm, where the left column ended (round 4, proposal 6)
+    return h_flex().items_start().gap(10).child(col("c1", [...c1, this.latest(t, s)])).child(col("c2", [...c2, ...c3]));
   }
 
   // ---- Message the swarm and Spawn (II.3j) --------------------------------------------------------------------------
@@ -1187,7 +1188,10 @@ export default class SwarmTab extends View {
     const f = this.form, seg = (...a) => this.seg(t, ...a);
     const tick = (id, label, on, flip) => h_flex().id(id).gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { flip(); cx.notify(); })
       .child(div().size(13).rounded(3).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)).child(label);
-    const form = this.card(t, "b-new").px(16).pb(12).gap(8).child(this.head(t, "New task", "Enter adds").px(0))
+    // the form opens from a button (round 4, proposal 8): closed, the Done list sits under the button
+    const form = !this.newOpen ? h_flex().id("b-new-row").flex_none().justify_end().child(this.btn(t, "b-new-open", "New task", (cx) => { this.newOpen = true; cx.notify(); cx.timer.after(50, () => this.title.focus()); }))
+      : this.card(t, "b-new").px(16).pb(12).gap(8).child(this.head(t, "New task", "Enter adds", div().id("b-new-x").text_size(12).text_color(t.dim).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.newOpen = false; cx.notify(); }).child("Close")).px(0))
       .child(this.field(t, "b-title", this.title))
       .child(div().px(10).py(6).rounded(9).border(1).border_color(t.border).bg(t.background).child(Textarea.new(this.newBody).h(64).text_size(12.5)))
       .child(h_flex().gap(8).items_center().flex_wrap().child(div().w(120).child(this.field(t, "b-after", this.newAfter)))
