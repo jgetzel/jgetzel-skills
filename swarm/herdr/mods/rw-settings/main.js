@@ -90,6 +90,10 @@ export default class RwSettings extends Settings {
         this.stepper(t, "rw-contrast", c.toFixed(1), contrast(-0.1), contrast(0.1))))
       .child(this.flag(t, "pane_scrollbars", true, "Scroll position in panes", "A thumb at a terminal's right edge while it has scrollback."))
       .child(div().h(18))
+      .child(this.heading(t, "Motion"))
+      .child(this.row(t, "Animations", "Rows that come and go, highlights, marks and meters move in short steps. Off: only the working spinner moves.",
+        this.toggle(t, "rw-animations", shared("rw.animations") !== false, () => setShared("rw.animations", shared("rw.animations") === false))))
+      .child(div().h(18))
       .child(this.heading(t, "Colors"))
       .child(this.typed(t, "colors", "Accent and other colors", listed ? `On top of the theme: ${listed}.` : "None: the theme's own. Name a theme color, like accent.",
         "Edit", this.colorsInput, Object.keys(colors).length ? JSON.stringify(colors) : ""));

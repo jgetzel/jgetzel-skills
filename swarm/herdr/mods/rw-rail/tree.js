@@ -810,3 +810,23 @@ export function memoryOf(sums, used) {
   const mine = parts.reduce((n, p) => n + p.kb, 0);
   return { parts, other: Math.max(0, used - mine) };
 }
+
+// Motion (UI-SPEC II.4): whether to animate ("rw.animations" in rw-settings, on unless false), and what just came. A
+// transition moves only a later change, so a newcomer mounts at its start and gets its target the next frame:
+// `enter(key)` is true the first frame `key` is drawn (never on the first render), `end()` after each render says
+// whether one came, so the caller draws once more. Keys not drawn in a render are forgotten.
+export const animOn = (v) => v !== false;
+export class Entering {
+  constructor() { this.seen = new Set(); this.now = new Set(); this.first = true; this.fresh = false; }
+  enter(key) {
+    this.now.add(key);
+    if (this.first || this.seen.has(key)) return false;
+    this.fresh = true; return true;
+  }
+  end() {
+    const fresh = this.fresh;
+    if (this.now.size || !this.first) { this.seen = this.now; this.first = false; }
+    this.now = new Set(); this.fresh = false;
+    return fresh;
+  }
+}
