@@ -12,7 +12,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
-  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups } from "./tree.js";
+  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -371,24 +371,40 @@ export default class Rail extends View {
       .when(l === "├" || l === "└", (el) => el.child(div().absolute().left(4).top(half).w(6).h(1).bg(t.input))));
   }
 
-  // `text`: a swarm row's own what and side (swarmText).
-  row(t, r, tabName, on, now, text = null) {
+  // Close a plain row's tab or pane (Part II.1), asking first where closeOf says to.
+  close(r, name, what) {
+    const c = closeOf(r, this.tabsOf.get(r.tab) ?? [], name, what);
+    if (!c) return;
+    if (c.ask) openOverlay({ mod: "confirm", kind: "dialog", width: 440, height: 200, props: { ...c.ask, command: c.command } });
+    else run(c.command.name, c.command.args);
+  }
+
+  // `text`: a swarm row's own what and side (swarmText); a swarm row has no x (`plain` false).
+  row(t, r, tabName, on, now, text = null, plain = true) {
     const shell = !AGENT.has(r.mark);
     let { name, what } = rowText(r.t, r.mark, tabName, this.home);
     let sideText = since(r.mark, this.changed[r.t.address]?.at, now);
     if (text) ({ name, what, side: sideText } = text);
+    const closes = plain && Boolean(r.pane), x = closes && this.hotRow === r.t.address;
     return h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
       .when(on, (el) => el.bg(t.raised))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => this.open(r, cx))
+      .when(closes, (el) => el
+        .on_hover((h, cx) => { if (h) this.hotRow = r.t.address; else if (this.hotRow === r.t.address) this.hotRow = null; cx.notify(); })
+        .on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
       .children(this.tree(t, r.lines))
       .child(div().flex_none().max_w(120).truncate().font_medium().text_color(shell ? t.muted : t.foreground)
         .when(shell, (el) => el.font_family(this.mono).text_size(12))
         .child(name))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
       .when(Boolean(sideText), (el) => el.child(div().flex_none().text_size(11.5).text_color(r.mark === "asks" || r.mark === "hung" ? t.blocked : t.dim).child(sideText)))
-      .child(mark(t, r.mark));
+      // On hover the x takes the mark's place, so the row keeps its width.
+      .child(x ? h_flex().id(`close-${r.t.address}`).size(16).mx(-3.5).flex_none().items_center().justify_center().rounded(5)
+        .text_size(13).text_color(t.dim).hover((s) => s.bg(t.input).text_color(t.foreground))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : mark(t, r.mark));
   }
 
   counts(t, rows) {
@@ -418,7 +434,7 @@ export default class Rail extends View {
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
       const root = asks ? { ...it.r, ask: { folder: sum.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
-      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text));
+      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text, false));
     }), (f) => f());
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
@@ -544,6 +560,7 @@ export default class Rail extends View {
     if (shownAll && this.viewTab !== undefined && tab !== this.viewTab) showAll(run, false);
     this.viewTab = shownAll ? (this.viewTab === undefined ? tab : this.viewTab) : undefined;
     const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
+    this.tabsOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.tabs])));
     const tabName = this.tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     if (!this.started) { this.started = true; this.swarms(cx); }

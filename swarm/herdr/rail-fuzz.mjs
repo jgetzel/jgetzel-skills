@@ -45,6 +45,9 @@ for (let i = 0; i < 2000; i++) {
   for (const m of ["working", "asks", "run", "prompt"]) {
     const { name, what } = T.rowText(t, m, pick([null, pick(HOSTILE)]), "/h");
     assert.ok(ok1(name, 120) && ok1(what, 200), JSON.stringify({ name, what }).slice(0, 200));
+    // the close question (Part II.1) quotes them: still one bounded line
+    const c = T.closeOf({ pane: "p", tab: "a", mark: m }, [{ id: "a", panes: 1 }], name, what);
+    assert.ok(ok1(c.ask.title, 90) && ok1(c.ask.detail, 300), JSON.stringify(c.ask).slice(0, 200));
   }
 }
 
