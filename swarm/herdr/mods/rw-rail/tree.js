@@ -481,6 +481,23 @@ export function moveArgs(q, i, how) {
   return null;
 }
 
+// The name auto-spawn gives next (watchd.autoSpawn): the communicator's prefix ("ll-comms" → "ll-"), one past the top number.
+export function nextName(comms, names) {
+  const c = typeof comms === "string" ? comms : "", p = c.endsWith("comms") ? c.slice(0, -5) : `${c}-`;
+  const pre = /^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$/.test(p) ? p : "agent-";
+  const top = (names ?? []).reduce((m, n) => {
+    const d = typeof n === "string" && n.startsWith(pre) ? n.slice(pre.length) : "";
+    return /^\d{1,9}$/.test(d) ? Math.max(m, +d) : m;
+  }, 0);
+  return `${pre}${top + 1}`;
+}
+// `swarm spawn` from the Spawn form (II.3j); null when the name or task number is not one.
+export function spawnArgs(name, { model, effort, task } = {}) {
+  const n = String(name ?? "").trim(), k = String(task ?? "").replace(/[#\s]/g, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(n) || !/^\d{0,9}$/.test(k)) return null;
+  return ["spawn", ...(model ? [`--model=${model}`] : []), ...(effort ? [`--effort=${effort}`] : []), ...(k ? [`--task=${k}`] : []), "--", n];
+}
+
 // An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the
 // agent's pane `pane`, once per tab; then that pane has focus. Splits only go right or down, so it splits down and swaps
 // the two once the new pane has its place (`later`: a timer; swap goes by geometry). `ps`: panes().

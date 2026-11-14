@@ -56,6 +56,11 @@ for (let i = 0; i < 2000; i++) {
   // a prompt's terminal window (II.6 tier 1) titles itself with them and hc's msg: bounded lines
   const pk = T.peekWindow("t1", pick(HOSTILE), pick(HOSTILE)).layout.children[0].content.props.peek;
   assert.ok(ok1(pk.who, 80) && ok1(pk.what, 160), JSON.stringify(pk).slice(0, 200));
+  // Spawn (II.3j): a suggested name is a name the form takes; a hostile one gives no command or a plain one
+  const nn = T.nextName(pick([pick(HOSTILE), "ll-comms", null]), [junk(), pick(HOSTILE), "ll-99999999999", "ll-3"]);
+  assert.ok(ok1(nn, 60), nn);
+  const sa = T.spawnArgs(pick(HOSTILE), { task: pick(HOSTILE) });
+  assert.ok(sa === null || (sa.at(-2) === "--" && /^[A-Za-z0-9][\w.-]*$/.test(sa.at(-1))), JSON.stringify(sa));
 }
 
 // 2. The swarm CLI's JSON, malformed or hostile: the mods' readers never throw; types are as they expect.
