@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -129,6 +129,10 @@ assert.equal(sumFor(sums, { id: "s1", folder: "/home" }, ids), sums[0]);
 assert.equal(sumFor(sums, { id: "s2", folder: "/w/b" }, ids), null); // /w/b's swarm lives in s1
 assert.equal(sumFor(sums, { id: "s3", folder: "/w/c" }, ids), sums[1]); // s9 is gone
 assert.equal(sumFor(sums, { id: "vps/t2", folder: "", machine: "vps" }, ids), sums[2]);
+assert.equal(agentAt({ on: "vps", agents: [{ name: "w", hc: "t2" }] }, "vps/t2")?.name, "w");
+assert.equal(agentAt({ on: null, agents: [{ name: "w", hc: "t2" }] }, "vps/t2"), null);
+assert.deepEqual([null, { status: "in_progress" }, { status: "completed", conclusion: "success" }, { status: "completed", conclusion: "failure" }]
+  .map(ciWord), [null, "checks run", "green", "red"]);
 assert.deepEqual(rollOf(sw.rows), ["asks", "hung", "working", "done", "idle"]);
 assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied 2m" },
   { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "idle 2m" },

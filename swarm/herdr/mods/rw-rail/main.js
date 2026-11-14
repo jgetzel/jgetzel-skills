@@ -6,6 +6,7 @@
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 // Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
+// A hung swarm agent is a toast at the rail's foot (canvas, Attention): what it holds, Nudge and Open.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
@@ -35,6 +36,7 @@ export default class Rail extends View {
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
     cx.timer.every(5000, (cx) => this.swarms(cx));
+    this.nudged = new Set(); // hung agents nudged from the toast ("<machine>:<db>:<name>"), until they aren't hung
     this.listed = null; // `hc machine ls --json`'s machines, null until read
     this.said = {}; // machine -> what is under way there, or what its last action failed with
     this.menu = null; // the machine whose menu is open
@@ -128,6 +130,31 @@ export default class Rail extends View {
       this.load[on ?? ""] = v;
       cx.notify();
     });
+  }
+
+  // The first hung swarm agent you haven't nudged: "<agent> is hung", what it holds, Nudge and Open.
+  hung(t, sums, ps) {
+    const key = (j, a) => `${j.on ?? ""}:${j.db}:${a.name}`;
+    const all = sums.flatMap((j) => (j.agents ?? []).filter((a) => a.hung).map((a) => ({ j, a, k: key(j, a) })));
+    for (const k of this.nudged) if (!all.some((h) => h.k === k)) this.nudged.delete(k);
+    const h = all.find((x) => !this.nudged.has(x.k));
+    if (!h) return null;
+    const { j, a, k } = h, address = a.hc && (j.on && !a.hc.includes("/") ? `${j.on}/${a.hc}` : a.hc);
+    const btn = (id, label, border, action) => div().id(id).flex_none().px(10).py(4).rounded(8).text_size(12.5).cursor_pointer()
+      .when(border, (el) => el.border(1).border_color(t.blocked + "66").text_color(t.foreground)).when(!border, (el) => el.text_color(t.muted))
+      .hover((s) => s.bg(t.hover)).on_click(action).child(label);
+    return v_flex().id("hung-toast").flex_none().mx(10).mb(4).px(12).py(10).gap(6).rounded(10).border(1).border_color(t.blocked + "66")
+      .bg(t.blocked + "14").text_size(12.5)
+      .child(div().font_medium().text_color(t.blocked).child(`${a.name} is hung`))
+      .child(div().line_height(1.4).whitespace_normal().text_color(t.foreground)
+        .child(`No answer to the liveness check. ${a.task ? `It holds #${a.task.id}.` : "It holds no task."}`))
+      .child(h_flex().gap(8)
+        .child(btn("hung-nudge", "Nudge", true, (_e, cx) => {
+          this.nudged.add(k); cx.notify();
+          swarm(j.folder, j.on, ["nudge", a.name]).catch(() => {});
+        }))
+        .when(Boolean(address), (el) => el.child(btn("hung-open", "Open", false, (_e, cx) =>
+          this.open({ t: { address }, pane: ps.find((p) => p.terminal === address)?.pane ?? null }, cx)))));
   }
 
   foot(t) {
@@ -488,6 +515,6 @@ export default class Rail extends View {
       .child(h_flex().h(31).flex_none().pl(20).pr(14).pt(6).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().child("Spaces")).child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))
       .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items))
-      .children([this.foot(t)].filter(Boolean));
+      .children([this.hung(t, sums, ps), this.foot(t)].filter(Boolean));
   }
 }

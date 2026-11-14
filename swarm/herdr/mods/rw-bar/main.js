@@ -7,7 +7,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
-import { allShown, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
+import { agentAt, allShown, ciWord, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -31,10 +31,12 @@ export default class Bar extends View {
     const term = pillOf(tab, ps, byAddr);
     const m = term ? markOf(term, false) : null;
     let { name, what } = term ? rowText(term, m, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
-    // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm.
-    const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm")
-      && sumFor(shared("rw-rail.swarms"), space, new Set(spaces().map((s) => s.id)));
+    // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm; a swarm agent's pill is its name.
+    const sum = sumFor(shared("rw-rail.swarms"), space, new Set(spaces().map((s) => s.id)));
+    const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm") && sum;
+    const a = term && agentAt(sum, term.address);
     if (sw) { name = "Swarm"; what = `${sw.agents.length} ${sw.agents.length === 1 ? "agent" : "agents"}`; }
+    else if (a) { name = a.name === sum.comms ? "Communicator" : a.name; what = ""; }
     if (tab.named) name = tab.name;
     if (m === "asks") what = "asks";
     if (what === name) what = "";
@@ -103,7 +105,10 @@ export default class Bar extends View {
     const sidebar = find(layout(), "sidebar");
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
     const mac = w?.platform === "macos" && !w.fullscreen;
-    const sub = [space?.machine ?? "This computer", space?.branch].filter(Boolean).join(" · ");
+    // A swarm's space: its base's CI from the rail's summary ("main green"), else the space's branch.
+    const sum = space && sumFor(shared("rw-rail.swarms"), space, new Set(sp.map((s) => s.id)));
+    const ci = ciWord(sum?.ci);
+    const sub = [space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · ");
     const tabs = space?.tabs ?? [], away = tabs.filter((tab) => tab.settled).length, last = [...tabs].reverse().find((tab) => tab.settled);
     const swarmTab = tabs.find((tab) => ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm"));
     return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
@@ -111,7 +116,8 @@ export default class Bar extends View {
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(v_flex().w(mac ? Math.max(60, left - 64) : left).flex_none().min_w(0)
         .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(space?.name ?? ""))
-        .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+        .child(h_flex().min_w(0).gap(4).text_size(11.5).text_color(t.dim).child(div().truncate().child(sub))
+          .when(Boolean(ci), (el) => el.child(div().flex_none().text_color(ci === "green" ? t.ansi2 : ci === "checks run" ? t.working : t.blocked).child(ci)))))
       .child(h_flex().id("pills").flex_1().min_w(0).items_center().overflow_x_scrollbar()
         .child(h_flex().flex_none().p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
           // The tabs put away are one pill where the last of them sits.

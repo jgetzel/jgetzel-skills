@@ -63,6 +63,9 @@ Canvas `swarmtab-canvas.png`, `asks-canvas.png`, `bar-canvas.png`; built `swarmt
 - Bar subtitle: canvas "This computer · main green" for a swarm's space; built has no CI word.
 - Hung toast at the rail's foot (Attention board): not built.
 - Board card: Done / Dropped links; Landing: PR rows. Left out in slice 7.
+- Built in #177 (`swarmtab-lookd.png`, `asks-lookd.png`, `board-done-lookd.png`): all six. The pane look is one for every
+  pane, so the swarm tab's and Needs you's panes keep their frame's border; only their fill and header (empty ground)
+  change. Landing's PR rows were already built (`gh pr list`); the sandbox has no GitHub repo, so its shots show none.
 
 ## 5. Rail weight (needs the user)
 Canvas `rail-canvas.png`: space name 13px medium with "N tabs" under it, no chevrons, no guide line, machine heading

@@ -334,7 +334,8 @@ def staySign (x : Agent) (aev : List Event) : Option String :=
   else none
 
 /-- `--view summary` (UI-SPEC.md, "New swarm CLI output" 1): task counts, the live agents in six fields (`hc` ties a row
-to its terminal), the Herdr space the swarm runs in, and what needs the human as the panel's Needs you lists it; no ended agents, events or messages. -/
+to its terminal), the Herdr space the swarm runs in, what needs the human as the panel's Needs you lists it, the latest
+CI run on the base and whether the user is away; no ended agents, events or messages. -/
 def summary (db : Db) (p : String) (t : Int) : m Json := do
   let cv ← match py ((db.getMeta "comms").bind (·.v)) with | some c => pure (some c) | none => env "SWARM_COMMS"
   let live := (db.agents.filter (·.ended.isNone)).mergeSort (·.name ≤ ·.name)
@@ -375,7 +376,10 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
     ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))), ("rss_kb", Json.int rss),
     ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
-    ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray)]
+    ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
+    -- the bar's "main green" and the communicator's Away switch
+    ("ci", match ci.head? with | some r => Json.mkObj [("status", N r.status), ("conclusion", N r.conclusion)] | none => .null),
+    ("away", .bool ((db.getMeta "away").bind (·.v)).isSome)]
 
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
