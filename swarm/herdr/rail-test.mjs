@@ -313,6 +313,28 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
   assert.equal(spawnArgs("a", { task: "1,2" }), null);
 }
+// Activity (II.3g): the old panel's summary (fan-out, folds, episodes, asks) and log, the filters and the search.
+{
+  const { actItems, actShown, tailOf } = await import("./mods/rw-rail/activity.js");
+  const o = overOf({ tasks: [{ id: 7, state: "blocked", title: "T7" }], agents: [{ name: "a", status: "working" }], comms: "c",
+    messages: [{ id: 1, ts: 100, frm: "c", dest: "a", body: "hi https://github.com/o/r/pull/12", kind: "dm" }, { id: 2, ts: 100, frm: "c", dest: "b", body: "hi https://github.com/o/r/pull/12", kind: "dm" },
+      { id: 3, ts: 500, frm: "a", dest: "c", body: "urgent!", kind: "dm", urgent: 1 }],
+    events: [{ id: 9, ts: 600, agent: "a", kind: "block", data: "#7 keep it?" }, { id: 8, ts: 590, agent: "swarm", kind: "task-blocked", path: "7", data: "keep it?" },
+      { id: 7, ts: 400, agent: "swarm", kind: "pressure-end" }, { id: 6, ts: 340, agent: "swarm", kind: "pressure" },
+      { id: 5, ts: 230, agent: "watchd", kind: "spawn", data: "y" }, { id: 4, ts: 200, agent: "watchd", kind: "spawn", data: "x" },
+      { id: 10, ts: 50, agent: "a", kind: "post", data: "x" }, { id: 11, ts: 40, agent: "a", kind: "weird", data: "?" }] });
+  const sum = actItems(o, false);
+  assert.deepEqual(sum.map((i) => [i.kind, i.text]), [["block", "asked you about #7: keep it?"], ["urgent", "urgent!"], ["pressure", "machine was short on memory for 1m"],
+    ["spawn", "started 2 agents: x and y"], ["msg", "hi"]]);
+  assert.equal(sum[0].task, 7); assert.equal(sum[0].full.length, 2); assert.equal(tailOf(sum[0]), "needs you");
+  assert.equal(sum[4].meta, "to 2 agents"); assert.equal(tailOf(sum[4]), "PR #12"); assert.equal(tailOf(sum[2]), null);
+  const log = actItems(o, true);
+  assert.equal(log.length, 9); assert.ok(log.some((i) => i.raw === "weird")); assert.ok(!log.some((i) => i.raw === "post"));
+  assert.deepEqual(actShown(sum, "you", "").map((i) => i.kind), ["block"]);
+  assert.deepEqual(actShown(sum, "all", "X AND").map((i) => i.kind), ["spawn"]);
+  assert.deepEqual(actShown(sum, "messages", "").map((i) => i.kind), ["urgent", "msg"]);
+  assert.deepEqual(actItems(null, false), []);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",

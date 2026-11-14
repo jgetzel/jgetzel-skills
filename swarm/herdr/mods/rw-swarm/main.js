@@ -9,10 +9,11 @@
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
+import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
 import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
+import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 const swarm = (cwd, on, args) => on
@@ -61,6 +62,9 @@ export default class SwarmTab extends View {
     this.spawnTask = InputState.new({ placeholder: "Task #" });
     this.spawnTask.on("submit", (_e, cx) => this.spawnAgent(cx));
     this.spawning = null; // the Spawn form's {model, effort} while it shows
+    this.actQ = InputState.new({ placeholder: "Search activity" }); // Activity's search (II.3g)
+    this.actQ.on("change", (_e, cx) => cx.notify());
+    this.acts = null; this.actFilter = "all"; // Activity's summary and log rows, built once per read
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -84,9 +88,10 @@ export default class SwarmTab extends View {
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
   // The page shown (II.3c/d): "agent:NAME" or "task:ID"; the view then reads `--view system --agent` / `--task`.
+  // "activity" while Activity shows: `--view activity` is overview with 300 events (II.3g).
   pageKey() {
-    const p = props()?.view ? shared("rw-swarm.view")?.page : null;
-    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : null;
+    const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page;
+    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" ? "activity" : null;
   }
   refresh(cx) {
     const { cwd, on } = this.where(), who = this.pageKey();
@@ -94,12 +99,13 @@ export default class SwarmTab extends View {
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", ...(who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
+        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" ? ["--view", "activity"] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
         if (this.where().cwd !== cwd || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
+        this.acts = who === "activity" ? [actItems(s, false), actItems(s, true)] : null; // built here: a render that builds them is cut short
         const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
         for (const id of this.answers.keys()) if (!blocked.has(id)) this.answers.delete(id); // answered: its field goes
         for (const k of (this.s.tasks ?? []).filter((k) => k.state === "blocked" && !this.answers.has(k.id))) { // an answer field per question
@@ -717,6 +723,50 @@ export default class SwarmTab extends View {
       .child(v_flex().px(16).children(rows));
   }
 
+  // ---- the Activity section (II.3g) ---------------------------------------------------------------------------------
+  // The old panel's Activity: Summary or Full log, the filters, a search; a row opens its task or agent page.
+  activityView(t, s) {
+    const log = Boolean(this.actLog), f = this.actFilter, all = this.acts?.[Number(log)], you = this.acts ? actShown(this.acts[0], "you").length : 0;
+    const pill = (id, label, on, pick, n) => h_flex().id(id).flex_none().h(26).px(10).gap(5).items_center().rounded(8).border(1).border_color(t.border)
+      .bg(on ? t.selected : t.background).text_size(12).text_color(on ? t.foreground : t.muted).cursor_pointer().hover((st) => st.bg(t.hover))
+      .on_click((_e, cx) => { pick(); cx.notify(); }).child(label).when(n > 0, (el) => el.child(div().text_size(11).text_color(t.blocked).child(String(n))));
+    const bar = h_flex().gap(4).items_center().flex_wrap()
+      .child(pill("v-sum", "Summary", !log, () => { this.actLog = false; })).child(pill("v-log", "Full log", log, () => { this.actLog = true; }).mr(8))
+      .children(FILTERS.map(([id, label]) => pill(`f-${id}`, label, id === f, () => { this.actFilter = id; }, id === "you" ? you : 0)));
+    const shown = all ? actShown(all, f, this.actQ.value()) : [], names = new Set((s.agents ?? []).map((a) => a.name));
+    const MAX = 150; // shortcut: 150 rows; the old panel's 200 overran Herdr's render deadline. Upgrade: a virtual list.
+    const color = (i, tail) => (tail === "needs you" ? t.blocked : tail === "unresolved" || tail === "ongoing" ? t.ansi3 : null);
+    const row = (i) => {
+      const tail = log ? null : tailOf(i), c = color(i, tail), go = i.task != null ? () => this.openTask(i.task) : names.has(i.who) ? () => this.openAgent(i.who) : null;
+      const text = `${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
+      const el = h_flex().id(`act-${i.key}`).px(10).py(6).gap(10).items_start().min_w(0).rounded(6)
+        .when(tail === "needs you", (el) => el.bg(t.blocked + "14"))
+        .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go()))
+        .child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child(hhmm(i.ts)))
+        .child(div().w(110).flex_none().truncate().text_size(12).font_medium().text_color(t.muted).child(i.who))
+        .when(log, (el) => el.child(div().w(96).flex_none().truncate().text_size(11.5).text_color(t.dim).child(i.raw ?? "")))
+        .child(div().flex_1().min_w(0).text_size(12.5).line_height("18px").when(log, (el) => el.truncate()).when(!log, (el) => el.whitespace_normal())
+          .text_color(c ?? (i.kind === "msg" || i.kind === "all" || i.kind === "urgent" ? t.foreground : t.muted)).child(text))
+        .when(!log && Boolean(i.meta), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(i.meta)))
+        .when(Boolean(tail), (el) => el.child(this.chip(t, tail, c ?? (tail.startsWith("PR") ? t.ansi4 : null))));
+      if (!(i.full?.length > 1)) return el;
+      return HoverCard.new(`act-tip-${i.key}`).anchor("top_left").open_delay(400).trigger(el)
+        .content(v_flex().max_w(560).px(10).py(8).gap(2).rounded(8).bg(t.surface).border(1).border_color(t.border).text_size(11.5)
+          .children(i.full.map((x) => div().whitespace_normal().text_color(t.muted).child(x))));
+    };
+    const kids = [];
+    let hour = null;
+    for (const i of shown.slice(0, MAX)) {
+      const h = hhmm(i.ts).slice(0, 2);
+      if (h !== hour) { hour = h; kids.push(h_flex().id(`hr-${i.key}`).px(10).pt(8).pb(2).gap(10).items_center().text_size(11).text_color(t.dim).child(`${h}:00`).child(div().flex_1().h(1).bg(t.border))); }
+      kids.push(row(i));
+    }
+    return v_flex().gap(10).child(bar).child(this.field(t, "act-q", this.actQ).flex_none())
+      .child(this.card(t, "act-list").px(6).py(6)
+        .children(kids.length ? kids : [div().px(10).py(8).text_size(12.5).text_color(t.dim).child(!all ? "Reading the activity…" : f === "you" ? "Nothing needs you right now." : "Nothing matches")])
+        .when(shown.length > MAX, (el) => el.child(div().px(10).py(6).text_size(12).text_color(t.dim).child(`${shown.length - MAX} older: narrow it with a filter or the search`))));
+  }
+
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
   // `task add`, then queue and hold as the form says; its id is in "task #N".
   addFull(cx) {
@@ -936,7 +986,7 @@ export default class SwarmTab extends View {
       : section === "overview" ? this.overview(t, s, cols)
       : section === "agents" ? page(this.agents(t, s))
       : section === "board" ? this.boardView(t, s, cx)
-      : section === "activity" ? page(this.messages(t, s))
+      : section === "activity" ? page(this.activityView(t, s))
       : section === "landing" ? page(this.landing(t, s))
       : section === "system" ? page(this.machineCard(t, s))
       : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));

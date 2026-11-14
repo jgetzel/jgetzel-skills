@@ -73,10 +73,11 @@ const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked
   claim_ctx: Nx, done_ctx: Nx });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
-  agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
+  agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, kind: Tx, urgent: (x) => x === true || x === 1 }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
   watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx }), machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx }),
-  events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px }), 500),
+  events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px, path: Tx, branch: Tx, subject: Tx }), 500),
+  conflicts: Lx(Ox({ path: Tx, a: Tx, b: Tx }), 500), // --view activity, with the rest of Activity's (II.3g)
   locks: Lx(Ox({ path: Tx, agent: Tx, reason: Tx, since: Nx, lease_until: Nx }), 2000), // --view system
   // `swarm away --back`'s digest
   back: Ox({ since: Nx, back: Nx, note: Tx, questions: Lx(Ox({ id: Nx, title: Tx, question: Px, owner: Tx, since: Nx }), 200),
