@@ -141,7 +141,7 @@ export default class RwSettings extends Settings {
       .text_color(dim ? t.dim : t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
       .on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14))
       .when(!narrow, (el) => el.child(label));
-    return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
+    return v_flex().size_full().bg(t.chrome).px(8).pt(4).pb(8).text_size(13)
       .child(row("settings", "settings", "Settings", false, () => openOverlay({ mod: "rw-settings", kind: "dialog", width: 860, height: 620 }))
         .when(Boolean(updates().app.ready), (el) => el.child(div().size(6).rounded_full().bg(t.accent))))
       .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
