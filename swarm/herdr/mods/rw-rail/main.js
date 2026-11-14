@@ -13,7 +13,7 @@ import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
-import { mark } from "./marks.js";
+import { mark, hoverLayer } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "hung", "working", "done", "idle"]; // a folded space's counts, then its shells
@@ -406,10 +406,11 @@ export default class Rail extends View {
     const el = h_flex().id(`row-${r.t.address}`).h(e ? 0 : ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
       .when(this.anim, (el) => el.relative().overflow_hidden().opacity(e ? 0 : 1).transition("height", 160).transition("opacity", 160)
+        .child(hoverLayer(t, `hv-${r.t.address}`, !on && this.hov === r.t.address))
         // the shown row's highlight, a layer that fades between rows (a slide needs every row's place, which flex keeps)
         .child(div().id(`hl-${r.t.address}`).absolute().inset_0().rounded(7).bg(t.raised).opacity(on ? 1 : 0).transition("opacity", 140)))
       .when(on && !this.anim, (el) => el.bg(t.raised))
-      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(!on && !this.anim, (el) => el.hover((s) => s.bg(t.hover)))
       // A double click's second focuses the field; a drop isn't a click.
       .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) this.open(r, cx); })
       // Press: a drag of its tab may start (not a sub-terminal's). Double click: rename its tab in place.
@@ -420,12 +421,16 @@ export default class Rail extends View {
         this.tabInput.set_value(this.tabName.get(r.tab) ?? name); cx.notify();
         cx.timer.after(50, () => this.tabInput.focus()); // once the field is drawn
       }))
-      .when(closes, (el) => el
-        .on_hover((h, cx) => { if (h) this.hotRow = r.t.address; else if (this.hotRow === r.t.address) this.hotRow = null; cx.notify(); })
-        .on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
+      // Hover: the x in place of the mark (closes), the hover layer (II.4b), and a menu's card making way until it leaves.
+      .when(closes || this.anim || Boolean(menu), (el) => el.on_hover((h, cx) => {
+        const a = r.t.address, was = [this.hotRow, this.hov, this.menuFor];
+        if (h) { if (closes) this.hotRow = a; this.hov = a; }
+        else { if (this.hotRow === a) this.hotRow = null; if (this.hov === a) this.hov = null; if (this.menuFor === a) this.menuFor = null; }
+        if (was[0] !== this.hotRow || was[2] !== this.menuFor || (this.anim && was[1] !== this.hov)) cx.notify();
+      }))
+      .when(closes, (el) => el.on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
       // Right click: its menu; the row's hover card makes way until the pointer leaves the row.
-      .when(Boolean(menu), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuFor = r.t.address; cx.notify(); menu(); })
-        .on_hover((h, cx) => { if (!h && this.menuFor === r.t.address) { this.menuFor = null; cx.notify(); } }))
+      .when(Boolean(menu), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuFor = r.t.address; cx.notify(); menu(); }))
       .children(this.tree(t, r.lines))
       .child(div().flex_none().max_w(120).truncate().font_medium().text_color(shell ? t.muted : t.foreground)
         .when(shell, (el) => el.font_family(this.mono).text_size(12))
@@ -562,7 +567,8 @@ export default class Rail extends View {
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .when(away, (el) => el.opacity(0.45))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
-        .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
+        .when((!s.active || fly) && !this.anim, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
+        .when((!s.active || fly) && this.anim, (el) => el.relative().child(hoverLayer(t, `hv-head-${fly ? "f" : ""}${s.id}`, this.hot === s.id, 9)))
         .on_hover((on, cx) => { if (on) this.hot = s.id; else if (this.hot === s.id) this.hot = null; cx.notify(); })
         .on_click((_e, cx) => { if (viewShown(layout())) showAll(run, false); else if (s.active && !fly) return this.fold(s.id, cx); run("space.select", { id: s.id }); })
         .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)

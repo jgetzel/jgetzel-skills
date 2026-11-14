@@ -15,3 +15,8 @@ export function mark(t, kind, size = 9) {
   }
   return box;
 }
+
+// A hover highlight as a layer behind an element's content (UI-SPEC II.4b): it fades in over 90 ms and out over 140.
+// The element is relative() and keeps `on` from its on_hover; the layer is its first child.
+export const hoverLayer = (t, id, on, radius = 7) => div().id(id).absolute().inset_0().rounded(radius).bg(t.hover)
+  .opacity(on ? 1 : 0).transition("opacity", on ? 90 : 140);
