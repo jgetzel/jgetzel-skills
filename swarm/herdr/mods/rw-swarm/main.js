@@ -10,8 +10,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, exec, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, addrOf, answerArgs, asksOf, agentRows, boardRows, dur, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, sumFor, swarmShown } from "./tree.js";
+import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
+import { FOLD, SECTIONS, addrOf, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -27,6 +27,8 @@ const GROUPS = [["asks", "Ask you"], ["hung", "Hung"], ["working", "Working"], [
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const ROWS = 50; // a large swarm's agents drawn per group; the filter finds the rest
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+const hhmm = (sec) => { const d = new Date((sec ?? 0) * 1000); return sec ? d.toTimeString().slice(0, 5) : ""; };
+const FINISH = 325000; // past this an agent takes no new task (watchd compacts it past CTX)
 const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]); // prsOf: https only
 
 export default class SwarmTab extends View {
@@ -36,6 +38,8 @@ export default class SwarmTab extends View {
     this.title.on("submit", (_e, cx) => this.addTask(cx));
     this.filter = InputState.new({ placeholder: "Filter agents and tasks" });
     this.filter.on("change", (_e, cx) => cx.notify());
+    this.msg = InputState.new({ placeholder: "Message this agent…" }); // the agent page's (an input can't be made in render)
+    this.msg.on("submit", (_e, cx) => this.send(cx, this.msgFor));
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -58,17 +62,19 @@ export default class SwarmTab extends View {
     // never more often than 3× as long as a read takes (500 agents' overview takes seconds)
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
+  // The agent page's agent (II.3d): the view then reads `--view system --agent` (its messages, events, locks).
+  pageAgent() { return props()?.view ? shared("rw-swarm.view")?.page?.agent ?? null : null; }
   refresh(cx) {
-    const { cwd, on } = this.where();
+    const { cwd, on } = this.where(), who = this.pageAgent();
     if (this.loading || this.busy || !cwd) return;
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", "overview"]);
+        const r = await swarm(cwd, on, ["state", "--json", ...(who ? ["--view", "system", `--agent=${who}`] : ["--view", "overview"])]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
-        if (this.where().cwd !== cwd) { this.loading = false; return; } // the view moved to another swarm meanwhile
+        if (this.where().cwd !== cwd || this.pageAgent() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
         const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
         for (const id of this.answers.keys()) if (!blocked.has(id)) this.answers.delete(id); // answered: its field goes
@@ -154,6 +160,7 @@ export default class SwarmTab extends View {
   focus(name, cx) {
     const hc = this.s?.agents?.find((a) => a.name === name)?.hc, { cwd, on } = this.where();
     if (!hc) return;
+    if (props()?.view) showAll(run, false);
     const addr = addrOf(hc, on), ps = panes(), p = ps.find((x) => x.terminal === addr);
     const asks = asksOf(this.s).some((n) => n.kind === "question" && n.agent === name);
     if (p && asks && cx) openAsk(run, ps, p.pane, { folder: cwd, machine: on, agent: name }, (f) => cx.timer.after(300, f));
@@ -233,7 +240,7 @@ export default class SwarmTab extends View {
     const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
-      .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
+      .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
       .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
       .child(mark(t, r.mark))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
@@ -418,7 +425,7 @@ export default class SwarmTab extends View {
     return this.card(t, "agents").pb(8)
       .child(this.head(t, `Agents · ${n}`, null, this.link(t, "agents-all", "All ›", "agents")))
       .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
-        .border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
+        .border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
         .child(mark(t, r.mark)).child(div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
         .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
@@ -492,10 +499,108 @@ export default class SwarmTab extends View {
     return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
   }
 
+  // ---- the agent page (II.3d) ----------------------------------------------------------------------------------------
+  openAgent(name) { setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), page: { agent: name } }); }
+  back(pg) {
+    const v = shared("rw-swarm.view") ?? {};
+    setShared("rw-swarm.view", { ...v, page: null });
+    if (pg.back === "tab") showAll(run, false);
+  }
+  message(t, name) {
+    if (this.msgFor !== name) { this.msgFor = name; this.urgent = false; this.msg.set_value(""); }
+    return this.msg;
+  }
+  send(cx, name) {
+    const text = this.msg?.value().trim();
+    if (text && !this.busy) this.act(cx, ["post", ...(this.urgent ? ["--urgent"] : []), "--", name, text], () => { this.msg.set_value(""); this.urgent = false; });
+  }
+  // `/compact` typed into an idle agent's terminal: `swarm compact` only compacts the one who runs it.
+  compact(cx, addr) {
+    cx.spawn(async (cx) => {
+      try { const r = await hc(["send", addr, "/compact"]); if (r?.code) this.flash = line(r.stderr || r.stdout, 300) || "hc send failed"; }
+      catch (e) { this.flash = line(e?.message ?? e, 300); }
+      cx.notify();
+    });
+  }
+  agentPage(t, s, pg) {
+    const name = pg.agent, a = s.agents?.find((x) => x.name === name), { on } = this.where();
+    const label = pg.back === "tab" ? "Back to the tab" : SECTIONS.find(([id]) => id === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
+    const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
+      .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(line(name, 80)));
+    if (!a) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading ? "Reading…" : `No agent ${line(name, 80)} in this swarm`));
+    const comms = a.name === s.comms, ended = a.status === "ended", addr = a.hc && addrOf(a.hc, on), n = a.ctx_tokens;
+    const row = agentRows(s).find((r) => r.a.name === name), m = ended ? "idle" : row?.mark ?? "idle";
+    const state = ended ? `ended ${hhmm(a.ended)}` : row?.state ?? a.status;
+    const task = a.task && s.tasks?.find((k) => k.id === a.task.id);
+    const pr = a.branch && this.prs?.find((p) => p.headRefName === a.branch), push = a.events?.find((e) => e.kind === "push");
+    const left = !ended && a.cache === "warm" && a.cold_at ? a.cold_at - (s.now ?? Date.now() / 1000) : null;
+    const locks = (s.locks ?? []).filter((l) => l.agent === name);
+    const SIGNS = { hung: "It did not answer the liveness check. The communicator was told to unstick it or end it.",
+      nowaiter: "It stays, but its waiter is gone, so no message can wake it.", unwoken: "A message has sat unread past two watchd ticks." };
+    const kv = (k, v) => h_flex().gap(10).items_start().min_w(0).py(3).text_size(12.5)
+      .child(div().w(96).flex_none().text_color(t.dim).child(k)).child(div().flex_1().min_w(0).text_color(t.muted).whitespace_normal().child(v));
+    const facts = [
+      ["Task", task ? `#${task.id} ${task.title ?? ""} · ${task.state}` : comms ? "none: the communicator is your channel to the swarm" : a.stay ? `none: it waits for ${a.stay}` : "none"],
+      a.stay ? ["Waits for", a.stay] : null,
+      ["Model", [a.model ?? "?", a.started ? `started ${hhmm(a.started)}` : null, a.hc ? `terminal ${a.hc}` : null].filter(Boolean).join(" · ")],
+      ["Context", !n ? "no reading for this session" : `${kilo(n)} · ${n >= CTX ? "past 400k: watchd compacts it when it is idle" : n >= FINISH ? "past 325k: takes no new task" : "takes new tasks up to 325k"}`],
+      !ended ? ["Cache", a.cold_guarded ? "cold: messages wait in its inbox" : a.cache === "warm" ? `warm${left > 0 ? `, cold in ${dur(left * 1000)}` : ""}` : "cold"] : null,
+      ["Branch", [a.branch ?? (comms ? "main" : "–"), a.worktree ? "its own worktree" : "the main checkout", push ? `pushed ${hhmm(push.ts)}` : null].filter(Boolean).join(" · ")],
+      ["Pull request", pr ? `#${pr.number} · ${(pr.state ?? "").toLowerCase()}${pr.isDraft ? " draft" : ""}` : this.prs == null ? "unknown (gh is not available here)" : "none recent from this branch"],
+      a.files?.length ? ["Editing", a.files.slice(0, 12).join(", ")] : null,
+      ["Locks", locks.length ? locks.map((l) => `${l.path}${l.since ? ` since ${hhmm(l.since)}` : ""}${l.reason ? ` (${l.reason})` : ""}`).join(", ") : "none"],
+    ].filter(Boolean);
+    const tab = this.agentTab ?? "latest", msgs = a.messages ?? [], done = (s.tasks ?? []).filter((k) => k.state === "done" && k.owner === name).reverse();
+    const tabBtn = (id, label) => div().id(`atab-${id}`).cursor_pointer().text_color(tab === id ? t.foreground : t.dim).hover((st) => st.text_color(t.foreground))
+      .on_click((_e, cx) => { this.agentTab = id; cx.notify(); }).child(label);
+    const list = tab === "messages" ? msgs.slice(0, 30).map((x, i) => v_flex().id(`am-${i}`).px(16).py(6).gap(2).border_t(1).border_color(t.border)
+        .child(h_flex().gap(8).text_size(11.5).text_color(t.dim).child(hhmm(x.ts))
+          .child(x.frm === name ? `to ${x.dest === "all" ? "everyone" : x.dest}` : `from ${x.frm}`).when(x.urgent, (el) => el.child(this.chip(t, "urgent", t.blocked))))
+        .child(div().text_size(12.5).line_height("18px").whitespace_normal().text_color(t.foreground).child(one(x.body))))
+      : tab === "finished" ? done.slice(0, 30).map((k, i) => h_flex().id(`ad-${i}`).h(30).px(16).gap(10).items_center().border_t(1).border_color(t.border).text_size(12.5)
+        .child(div().flex_none().text_color(t.dim).child(`#${k.id}`)).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? ""))
+        .when(k.pr != null, (el) => el.child(this.chip(t, `PR #${k.pr}`, t.accent))))
+      : (a.events ?? []).slice(0, 12).map((e, i) => h_flex().id(`ae-${i}`).h(30).px(16).gap(10).items_center().border_t(1).border_color(t.border).text_size(12.5)
+        .child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child(hhmm(e.ts))).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(evText(e))));
+    return v_flex().gap(12).min_w(0)
+      .child(crumb)
+      .child(h_flex().gap(10).items_center().min_w(0).child(mark(t, m, 9))
+        .child(div().flex_none().text_size(16).font_semibold().text_color(t.foreground).child(line(name, 80)))
+        .when(Boolean(a.role), (el) => el.child(this.chip(t, line(a.role, 60))))
+        .child(div().flex_1().min_w(0).truncate().text_color(m === "asks" || m === "hung" ? t.blocked : t.dim).child(state)))
+      .when(!ended, (el) => el.child(h_flex().gap(8).items_center().flex_wrap()
+        .when(Boolean(addr), (el) => el.child(this.btn(t, "a-term", "Open terminal", (cx) => this.focus(name, cx))))
+        .when(a.stay_sign === "hung" || (a.status === "idle" && Boolean(a.task)), (el) => el.child(this.btn(t, "a-nudge", "Nudge", (cx) => this.act(cx, nudgeArgs(name)))))
+        .when(Boolean(addr) && a.status === "idle" && !comms, (el) => el.child(this.twice(t, `compact-${name}`, "Compact", "Type /compact in it", (cx) => this.compact(cx, addr))))
+        .when(!comms, (el) => el.child(this.twice(t, `end-${name}`, "End agent…", "End it: refused if it holds work", (cx) => this.act(cx, ["end", "--", name]))))))
+      .when(!ended, (el) => el.child(h_flex().gap(8).items_center()
+        .child(this.field(t, "a-msg", this.message(t, name)))
+        .child(div().id("a-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
+          .border_color(this.urgent ? t.blocked : t.border).text_color(this.urgent ? t.blocked : t.muted)
+          .on_click((_e, cx) => { this.urgent = !this.urgent; cx.notify(); }).child("Urgent"))
+        .child(this.btn(t, "a-send", "Send", (cx) => this.send(cx, name), true))))
+      .when(!ended && Boolean(SIGNS[a.stay_sign]), (el) => el.child(this.card(t, "a-sign", a.stay_sign === "hung").px(16).py(10)
+        .child(div().text_size(12.5).whitespace_normal().text_color(t.foreground).child(SIGNS[a.stay_sign]))))
+      .when(Boolean(a.fate), (el) => el.child(this.card(t, "a-fate").pb(8)
+        .child(this.head(t, a.fate.verdict === "end" ? "Why it is about to end" : "Why it is still here", "watchd's own checks"))
+        .child(div().px(16).pb(6).text_size(12.5).whitespace_normal().text_color(t.muted).child(a.fate.says ?? ""))
+        .children(a.fate.checks.map((c, i) => h_flex().id(`af-${i}`).h(30).mx(6).px(10).gap(10).items_center().border_t(1).border_color(t.border).text_size(12.5)
+          .child(div().size(7).rounded(4).bg(c.on ? t.working : t.border))
+          .child(div().flex_none().text_color(c.on ? t.foreground : t.dim).child(c.label ?? ""))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(c.detail ?? ""))
+          .when(c.label === "Stays" && c.on && !comms, (el) => el.child(this.twice(t, `stay-${name}`, "End its stay…", "End its stay", (cx) => this.act(cx, ["stay", "--end", name]))))))))
+      .child(this.card(t, "a-facts").px(16).py(10).children(facts.map(([k, v]) => kv(k, v))))
+      .child(this.card(t, "a-latest").pb(8)
+        .child(h_flex().px(16).pt(12).pb(8).gap(12).items_center().text_size(13)
+          .child(tabBtn("latest", "Latest")).child(tabBtn("messages", `Messages ${msgs.length}`)).child(tabBtn("finished", `Finished ${done.length}`)))
+        .children(list.length ? list : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Nothing yet")]));
+  }
+
   view(t, s) {
-    const section = shared("rw-swarm.view")?.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
+    const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
-    const body = section === "overview" ? this.overview(t, s, cols)
+    const body = v.page?.agent ? page(this.agentPage(t, s, v.page))
+      : section === "overview" ? this.overview(t, s, cols)
       : section === "agents" ? page(this.agents(t, s))
       : section === "board" ? page(this.board(t, s))
       : section === "activity" ? page(this.messages(t, s))
@@ -514,6 +619,8 @@ export default class SwarmTab extends View {
     if (props()?.view) {
       const k = JSON.stringify(this.where());
       if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.refresh(cx); this.refreshPrs(cx); }
+      else if (this.pageAgent() !== this.pageWas) { this.loading = false; this.dirty = true; this.refresh(cx); } // read the page's agent at once
+      this.pageWas = this.pageAgent();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } });
       if (!this.s) return root.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));

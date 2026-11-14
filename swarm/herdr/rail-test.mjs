@@ -263,4 +263,20 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(w.layout.children[0].content.props.peek, { address: "box/t4", who: "ll-5", what: "approve Bash: ls /etc" });
   assert.equal(addrOf("t4", "box"), "box/t4"); assert.equal(addrOf("t4", null), "t4"); assert.equal(addrOf("box/t4", "box"), "box/t4");
 }
+// The agent page (II.3d): `--view system --agent` fields kept, the agent's locks, its events in words.
+{
+  const { evText } = await import("./mods/rw-rail/tree.js");
+  const o = overOf({ active: true, agents: [{ name: "ll-5", role: "builder", started: 100, cold_at: 400, cold_guarded: true,
+    fate: { verdict: "kept", short: "stays", says: "Kept", checks: [] }, events: [{ kind: "push", ts: 1, branch: "ll-5/9", subject: "fix\nmore" }],
+    messages: [{ id: 1, ts: 2, frm: "c", dest: "ll-5", body: "hi", urgent: true }, "junk"] }],
+    locks: [{ path: "a.js", agent: "ll-5", since: 5, lease_until: 9 }, { path: 3 }] });
+  const a = o.agents[0];
+  assert.equal(a.role, "builder"); assert.equal(a.cold_guarded, true); assert.equal(a.fate.short, "stays");
+  assert.deepEqual(a.messages.map((m) => [m.frm, m.urgent]), [["c", true]]);
+  assert.deepEqual(o.locks.map((l) => [l.path, l.agent]), [["a.js", "ll-5"], ["3", null]]);
+  assert.equal(evText(a.events[0]), "pushed ll-5/9 · fix more");
+  assert.equal(evText({ kind: "done", data: "#9 x\nmore" }), "finished #9 x");
+  assert.equal(evText({ kind: "lock", path: "b.js" }), "lock b.js");
+  assert.equal(evText(null), "");
+}
 console.log("rail-test: ok");

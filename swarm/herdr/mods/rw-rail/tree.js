@@ -63,15 +63,18 @@ export function sumOf(j) {
   return s;
 }
 const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, stay_sign: Tx, stay: Tx, ctx_tokens: Nx,
-  model: Tx, fate: Ox({ verdict: Tx, says: Px, checks: Lx(Ox({ on: Bx, label: Tx, detail: Tx }), 50) }), events: Lx(Ox({ kind: Tx, ts: Nx }), 500),
-  files: Lx(Tx, 500), cache: Tx, branch: Tx, worktree: Tx, ended: Nx });
+  model: Tx, fate: Ox({ verdict: Tx, says: Px, short: Tx, checks: Lx(Ox({ on: Bx, label: Tx, detail: Tx }), 50) }),
+  events: Lx(Ox({ kind: Tx, ts: Nx, data: Px, branch: Tx, subject: Tx, path: Tx }), 500), files: Lx(Tx, 500), cache: Tx, branch: Tx,
+  worktree: Tx, ended: Nx, role: Tx, started: Nx, cold_at: Nx, cold_guarded: Bx,
+  messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, urgent: Bx }), 200) }); // --agent: its own messages
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx });
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Ax, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
   watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx }), machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx }),
-  events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px }), 500) });
+  events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px }), 500),
+  locks: Lx(Ox({ path: Tx, agent: Tx, reason: Tx, since: Nx, lease_until: Nx }), 2000) }); // --view system
 // `--view overview`, `agents` or `board` (all one shape): null unless an object.
 export function overOf(j) {
   const s = overview(j);
@@ -495,6 +498,22 @@ export function showSwarm(run, setShared, view) {
   setShared("rw-swarm.view", { section: "overview", ...view });
   run("layout.select", { stack: "view", child: "swarm" });
 }
+// An event as one line of an agent's Latest: what it did, in words.
+export const evText = (e) => line(evWords(e), 300);
+function evWords(e) {
+  const d = (e?.data ?? "").split("\n")[0].trim();
+  switch (e?.kind) {
+    case "push": return `pushed ${e.branch ?? ""}${e.subject ? ` · ${e.subject}` : ""}`.trim();
+    case "claim": return `claimed ${d}`.trim();
+    case "done": return `finished ${d}`.trim();
+    case "end": return d ? `ended · ${d}` : "ended";
+    case "compact": return "compacted its context";
+    case "ci-red": return `main CI went red${d ? ` · run ${d}` : ""}`;
+    case "spawn": return `spawned ${d}`.trim();
+    default: return [e?.kind, d || e?.path].filter(Boolean).join(" ");
+  }
+}
+
 // A prompt's terminal, live, in a window over the layout (II.6 tier 1): rw-pane's title bar to drag it by, then the
 // terminal, where the user types the answer. One window per terminal (`key`); opening it again brings it back.
 export const peekWindow = (address, who, what) => ({
