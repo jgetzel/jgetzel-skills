@@ -5,8 +5,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, settings, layout, openOverlay } from "herdr";
-import { addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
+import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window } from "herdr";
+import { SECTIONS, addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, boardRows, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, overOf, peekWindow, showAll, showSwarm, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -22,6 +22,7 @@ const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean
 const key = (w) => `${w.on ?? ""}:${w.db}`;
 const g = (kb) => Math.round(kb / 1048576);
 const size = (kb) => (kb < 1048576 ? `${Math.round(kb / 1024)} M` : `${g(kb)} G`);
+const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]); // overOf: https only
 
 export default class AllSwarms extends View {
   init(_props, cx) {
@@ -89,6 +90,17 @@ export default class AllSwarms extends View {
     this.saying = null;
     answerBox(this.boxes, hc, w.addr, w.box, w.b, text, cx, w.show);
   }
+  // The swarm's view at a section, or a task's page (II.3m).
+  openSection(w, section, page) { showSwarm(run, setShared, { folder: w.folder, machine: w.on ?? null, section, page: page ?? null }); }
+  // A swarm command for a Needs you button (Nudge): its error shows over the view until the next one.
+  act(w, args, cx) {
+    this.flash = null;
+    cx.spawn(async (cx) => {
+      try { const r = await swarm(w.folder, w.on, args); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+      catch (e) { this.flash = line(e?.message ?? e, 300); }
+      this.next = 0; cx.notify();
+    });
+  }
   openSpace(w) {
     const sp = spaces(), ids = new Set(sp.map((x) => x.id)), s = sp.find((x) => sumFor([w], x, ids));
     showAll(run, false);
@@ -108,7 +120,7 @@ export default class AllSwarms extends View {
   }
 
   needs(t, ws, cx) {
-    const asks = ws.flatMap(({ w, s }) => asksOf(s).map((n) => ({ ...n, w, s })));
+    const hosts = new Set(), asks = ws.flatMap(({ w, s }) => needsOf(s).filter((n) => n.kind !== "memory" || !hosts.has(w.on ?? "") && hosts.add(w.on ?? "")).map((n) => ({ ...n, w, s })));
     if (!asks.length) return null;
     const more = asks.length - NEEDS;
     return v_flex().id("needs").flex_none().gap(10).px(16).py(14).rounded(12).border(1).border_color(t.blocked + "88").bg(t.blocked + "14")
@@ -116,19 +128,24 @@ export default class AllSwarms extends View {
         .child(mark(t, "asks", 8)).child("Needs you")
         .child(div().font_normal().child(`${asks.length}, across ${ws.length === 2 ? "both swarms" : `${ws.length} swarms`}`)))
       .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
-        const title = n.kind === "question" ? `${n.agent} asks about #${n.task.id}` : n.kind === "prompt" ? `${n.agent} stopped at a prompt` : `${n.agent} is hung`;
-        const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent, cx) : null;
-        const text = n.kind === "question" ? one(n.task.question) || n.task.title : pr ? pr.hook || pr.msg || "Answer it in its terminal." : "watchd keeps it, but it has done nothing for a long time.";
+        const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent, cx) : null, hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toTimeString().slice(0, 5); };
+        const [title, text] = n.kind === "question" ? [`${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
+          : n.kind === "prompt" ? [`${n.agent} stopped at a prompt`, pr.hook || pr.msg || "Answer it in its terminal."]
+          : n.kind === "hung" ? [`${n.agent} is hung`, "watchd keeps it, but it has done nothing for a long time."]
+          : n.kind === "ci" ? ["main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
+          : n.kind === "watchd" ? ["watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
+          : [n.w.on ? `${n.w.on} is short on memory` : "This computer is short on memory", n.line || ""];
+        const acts = n.kind === "question" ? [this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)]
+          : n.kind === "prompt" ? [...this.promptBtns(t, pr, n.agent, i, cx), this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))]
+          : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(n.w, nudgeArgs(n.agent), cx)), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))]
+          : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []), this.btn(t, `land-${i}`, "Landing", () => this.openSection(n.w, "landing"))]
+          : [this.btn(t, `sys-${i}`, n.kind === "watchd" ? "Restart in System" : "System", () => this.openSection(n.w, "system"))];
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, tagOf(n.s.comms)))
             .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
             .child(div().truncate().text_color(t.dim).child(n.ago != null ? `· ${dur(n.ago * 1000)}` : "")))
           .child(v_flex().text_size(13.5).line_height("19px").text_color(t.foreground).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
-          .child(h_flex().gap(8).items_center().flex_wrap()
-            .when(n.kind === "question", (el) => el.child(this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)))
-            .children(pr ? this.promptBtns(t, pr, n.agent, i, cx) : [])
-            .child(pr ? this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))
-              : this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))))
+          .child(h_flex().gap(8).items_center().flex_wrap().children(acts))
           .when(Boolean(pr?.addr) && this.saying?.addr === pr?.addr, (el) => el.child(h_flex().gap(8).items_center()
             .child(div().id(`say-in-${i}`).flex_1().min_w(160).h(28).px(10).flex().items_center().rounded(8).border(1).border_color(t.border).bg(t.background)
               .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.sayIn).h_full().text_size(12.5).text_color(t.foreground)))
@@ -151,9 +168,9 @@ export default class AllSwarms extends View {
     const staff = `Auto-spawn to ${l.min ?? 0}${l.max != null ? `, max ${l.max}` : ""}.${l.held ? ` ${l.held.replace(/^auto-spawn holding: /, "Holding: ")}` : ""}`;
     return v_flex().id(`swarm-${i}`).flex_1().min_w(360).pt(12).pb(10).px(6).rounded(12).border(1).border_color(t.border).bg(t.surface)
       .child(h_flex().px(10).pb(8).gap(8).items_center().flex_wrap()
-        .child(this.chip(t, tagOf(s.comms))).child(div().text_size(14).font_semibold().text_color(t.foreground).child(repo))
+        .child(this.chip(t, tagOf(s.comms))).child(this.link(t, `name-${i}`, repo, () => this.openSection(w, "overview")).text_size(14).font_semibold().text_color(t.foreground))
         .when(Boolean(w.on), (el) => el.child(div().text_size(12).text_color(t.dim).child(`on ${w.on}`)))
-        .child(div().text_size(12.5).text_color(ci?.[1] ?? t.dim).child(ci?.[0] ?? "no CI run seen"))
+        .child(this.link(t, `ci-${i}`, ci?.[0] ?? "no CI run seen", () => this.openSection(w, "landing")).text_color(ci?.[1] ?? t.dim))
         .child(div().flex_1())
         .when(Boolean(comms), (el) => el.child(this.btn(t, `comms-${i}`, "Communicator", (cx) => this.focus(w, s, comms.name, false, cx))))
         .child(this.btn(t, `space-${i}`, "Open space", () => this.openSpace(w))))
@@ -168,16 +185,23 @@ export default class AllSwarms extends View {
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openSpace(w))
         .child(`${ags.length - AGENTS} more in its space`)))
       .child(h_flex().mt(8).px(10).pt(10).gap(8).items_baseline().border_t(1).border_color(t.border).text_size(12.5)
-        .child(div().font_semibold().text_color(t.foreground).child("Board"))
+        .child(this.link(t, `board-${i}`, "Board", () => this.openSection(w, "board")).font_semibold().text_color(t.foreground))
         .child(div().text_color(t.muted).child(`${done} of ${total} done`)).child(div().flex_1())
         .child(div().text_size(12).text_color(t.dim).child(counts)))
       .child(div().mx(10).mt(6).mb(4).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(t.ansi2).w(`${total ? (100 * done) / total : 0}%`)))
-      .children(next.map(({ k, state, tone }) => h_flex().id(`task-${i}-${k.id}`).h(28).px(10).gap(10).items_center().min_w(0).text_size(12.5)
+      .children(next.map(({ k, state, tone }) => h_flex().id(`task-${i}-${k.id}`).h(28).px(10).gap(10).items_center().min_w(0).text_size(12.5).rounded(6)
+        .cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openSection(w, "board", { task: k.id }))
         .child(div().w(44).flex_none().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`#${k.id}`))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title))
         .child(div().flex_none().text_color(tone === "foreground" ? t.foreground : t.dim).child(state))))
       .when(!next.length, (el) => el.child(div().px(10).py(4).text_size(12.5).text_color(t.dim).child(rows.length ? "Nothing ready" : "Nothing left on the board")))
-      .child(div().px(10).pt(6).text_size(12).text_color(l.held ? t.working : t.muted).whitespace_normal().child(staff));
+      .child(div().px(10).pt(6).text_size(12).text_color(l.held ? t.working : t.muted).whitespace_normal().child(staff))
+      .child(h_flex().mt(8).px(10).pt(8).gap(12).flex_wrap().border_t(1).border_color(t.border)
+        .children(SECTIONS.map(([id, label]) => this.link(t, `sec-${i}-${id}`, label, () => this.openSection(w, id)))));
+  }
+  link(t, id, label, go) {
+    return div().id(id).flex_none().text_size(12.5).text_color(t.muted).cursor_pointer().hover((st) => st.text_color(t.foreground).underline())
+      .on_click((_e, cx) => { cx.stop_propagation(); go(); }).child(label);
   }
 
   memory(t, sums) {
@@ -209,6 +233,7 @@ export default class AllSwarms extends View {
         .child(div().text_size(16).font_semibold().text_color(t.foreground).child("All swarms"))
         .child(div().text_size(12).text_color(t.dim).child(`${sums.length} ${sums.length === 1 ? "swarm" : "swarms"} · ${n} ${n === 1 ? "agent" : "agents"}`)))
       .when(!ws.length, (el) => el.child(div().px(4).text_color(t.dim).child(sums.length ? "Reading the swarms…" : "No swarm runs")))
+      .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
       .children([this.needs(t, ws, cx)].filter(Boolean))
       .child(h_flex().flex_none().gap(10).items_start().flex_wrap().children(ws.map(({ w, s }, i) => this.column(t, w, s, i))))
       .children([this.memory(t, sums)].filter(Boolean)));
