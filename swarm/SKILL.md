@@ -96,7 +96,7 @@ with subagents.
    Destructive ones ask first; what the command printed, or its refusal, shows in a bar. The panel cannot
    answer a blocked task, message @all, spawn, free a lock or claim: those stay with you.
 4. Spawn agents, each with its own area so no two get identical prompts:
-   `swarm spawn <prefix>-<n> --model <m> [--effort <e>] [--task N] -- "<area and first tasks>"`.
+   `swarm spawn <prefix>-<n> --model <m> [--effort <e>] [--task N] [--full] -- "<area and first tasks>"`.
    With `--task N` the new agent's name and task #N are reserved in one step
    before launch (rolled back if the launch fails); the text may be omitted.
    Pick the model by kind of work: Opus for planning and hard diagnosis,
@@ -104,6 +104,13 @@ with subagents.
    a decision matters. `--effort low|medium|high|xhigh|max` sets the agent's
    Claude Code effort (default: its settings). Start with the agents the work can use; the user
    decides the count.
+   **Lean profile.** Every spawned agent, auto-spawns included, starts lean (a third less on its first
+   request): no MCP servers or connectors (`--strict-mcp-config --no-chrome`; WebSearch and WebFetch stay),
+   no Workflow tool, every plugin off (ponytail too), claude.ai's synced skills off, and of the user's,
+   the project's and Claude Code's own skills only hc, herdr-app, swarm, terse-comments and code-review.
+   It all goes through the agent's own settings file and flags; your sessions and the communicator keep
+   everything. Spawn with `--full` for a designer or any agent that needs other skills (hallmark,
+   impeccable, artifact-design, docx, …), plugins or connectors (Chrome, Gmail, Notion, …).
    Two starts. **Flat board** (the default): spawn implementers and let the
    board and auto-spawn staff the tasks. **Seeded orchestrator**: set the
    auto-spawn number to 0, then spawn one strong-model agent

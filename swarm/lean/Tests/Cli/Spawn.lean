@@ -214,6 +214,33 @@ def test_spawn_effort (t : T) : IO Unit := do
   tick t 5
   eq (after (← t.launched)[2]! "--effort") "low"
 
+-- Lean by default: no MCP servers, every plugin off, each skill but the kept ones off; --full: the template as it is.
+def test_spawn_lean_profile_and_full (t : T) : IO Unit := do
+  t.fakes
+  let cfg := t.d ++ "/claude"
+  IO.FS.createDirAll (cfg ++ "/plugins")
+  put (cfg ++ "/plugins/installed_plugins.json") "{\"plugins\": {\"ponytail@ponytail\": [{\"scope\": \"user\"}]}}"
+  for s in ["hallmark", "swarm"] do IO.FS.createDirAll (cfg ++ "/skills/" ++ s)
+  let env := [("CLAUDE_CONFIG_DIR", some cfg)]
+  let settings (n : String) : IO Json := do
+    match Json.parse ((← slurp s!"{t.d}/agents/{n}.settings.json").getD "") with
+    | .ok j => return j
+    | .error e => fail e
+  t.sw_ "a" ["spawn", "t-9", "--", "go"] { env }
+  let a := argvOf (← t.launched)[0]!
+  ok (a.contains "--strict-mcp-config" && a.contains "--no-chrome") "lean: no MCP servers"
+  let s ← settings "t-9"
+  eq ((s.f "env").f "SWARM_NAME") "t-9"
+  eq ((s.f "enabledPlugins").f "ponytail@ponytail") (Json.bool false)
+  eq (row (s.f "skillOverrides") ["hallmark", "dataviz", "swarm", "code-review", "hc"]) (json% ["off", "off", null, null, null])
+  eq (row s ["syncClaudeAiSkills", "disableWorkflows"]) (json% [false, true])
+  t.sw_ "a" ["spawn", "t-8", "--full", "--", "go"] { env }
+  let a := argvOf (← t.launched)[1]!
+  ok (!a.contains "--strict-mcp-config" && !a.contains "--no-chrome") "full: MCP servers"
+  let s ← settings "t-8"
+  eq (row s ["skillOverrides", "enabledPlugins", "disableWorkflows"]) (json% [null, null, null])
+  eq ((s.f "env").f "SWARM_NAME") "t-8"
+
 def test_spawn_task_claims_before_launch (t : T) : IO Unit := do
   t.fakes
   t.sw_ "a" ["task", "add", "do it"]
@@ -671,6 +698,7 @@ def tests : List Case := [
   ("test_spawn_refused_at_the_max", test_spawn_refused_at_the_max),
   ("test_two_spawns_race_for_the_last_place", test_two_spawns_race_for_the_last_place),
   ("test_spawn_effort", test_spawn_effort),
+  ("test_spawn_lean_profile_and_full", test_spawn_lean_profile_and_full),
   ("test_spawn_base_ref", test_spawn_base_ref),
   ("test_spawn_task_claims_before_launch", test_spawn_task_claims_before_launch),
   ("test_spawn_message_task_body_text_and_ci_flow", test_spawn_message_task_body_text_and_ci_flow),

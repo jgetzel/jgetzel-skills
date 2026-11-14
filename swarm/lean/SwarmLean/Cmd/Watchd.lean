@@ -91,7 +91,7 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
     | some a => a.model.getD "opus"
     | none => "opus"
   let cwd ← Env.cwd
-  let (out, err) ← Spawn.launchAgent comms brief model none (some cwd)
+  let (out, err) ← Spawn.launchAgent comms brief model none (some cwd) true
   let some out := out | do
     let now ← Clock.now
     Store.txn [.«meta»] fun db => (db.setMeta "comms_backoff" (some (d (now + 300))), ())
