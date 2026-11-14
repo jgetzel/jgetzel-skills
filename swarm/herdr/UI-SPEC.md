@@ -536,7 +536,8 @@ The user, after using the build: "there's no way to pull up a side view of my sw
 - Open and close: Side and Full in rw-bar whenever the shown space has a swarm (each a toggle; never both open; both
   keep `shared("rw-swarm.view")`'s section and page). The rail's swarm heading: click is full width as today, a Side
   button on hover. Expand: panel to full width. Side while full width shows: back to the tab with the panel open.
-  Commands `rw-swarm.side` and `rw-swarm.full` for keys and the palette. Calendar shares the panel: one replaces the
+  Commands `rw-bar.side` and `rw-bar.full` for keys (the bar is always shown; `<mod>.<command>` reaches shown copies
+  only). Mod commands are not in the app's palette. Calendar shares the panel: one replaces the
   other. Width and section are kept.
 - Other agents and spaces: the panel stays on any tab; the agent whose terminal is focused has its row marked
   ("shown"); a click on an agent row focuses its tab and the panel stays (its page is on the row's menu and its
@@ -545,7 +546,7 @@ The user, after using the build: "there's no way to pull up a side view of my sw
   the bar, the two commands). II.7b the section menu, pages in the panel, the "shown" mark, row click focuses the
   tab, the message line, the heading's Side button.
 
-## Proposals after the build (round 4, not in the build order until the user picks)
+## Proposals after the build (round 4, accepted by the user: all ten)
 
 From sandbox shots of the built layout (`shot.sh --rework real`, three sizes), ranked:
 
@@ -567,4 +568,4 @@ From sandbox shots of the built layout (`shot.sh --rework real`, three sizes), r
 
 II.2a, II.1a, II.2b, II.2c, II.3a, II.3b, II.6a, II.6b, II.3d, II.1b, II.3c, II.3e, II.3f, II.3j, II.3g, II.3h,
 II.3i, II.6c (and II.6d if the spike finds a hook), II.3k, II.3l, II.3m, II.4a, II.4b, II.4c, II.4d.
-Round 4: II.7a, II.7b follow, once the user accepts II.7.
+Round 4 (accepted): II.7a, II.7b, then the ten proposals.

@@ -1,6 +1,8 @@
 // The rework's title bar (swarm/herdr/UI-SPEC.md, slice 2 and Part II.2): the shown space and its machine, then nothing
 // until a Needs you button with its list and, where the system draws none, the window buttons (the palette's key is
-// by Settings at the rail's foot, as the user asked). With the swarm view shown, its sections (Part II.3). The
+// by Settings at the rail's foot, as the user asked). With the swarm view shown, its sections (Part II.3). Where the
+// space has a swarm, Side and Full (II.7): the swarm view in the side panel or full width; keys rw-bar.side and
+// rw-bar.full do the same. The
 // tabs live in the rail only: the shown tab is named by its rail row and its pane header. With All swarms shown it names
 // that view. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm agents
 // wait on (slice 6), from the rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}}
@@ -8,8 +10,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome } from "herdr";
-import { SECTIONS, animOn, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
+import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
+import { SECTIONS, animOn, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -22,7 +24,14 @@ const swarm = (cwd, on, args) => on
 const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
-  init() {
+  init(_props, cx) {
+    if (!props()?.needs && !props()?.agentMenu) cx.spawn(async (cx) => { // keys and the palette: rw-bar.side, rw-bar.full (II.7)
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "side") toggleSide(run, layout()); else if (c === "full") toggleFull(run, setShared, shared, layout(), this.spaceSum());
+        cx.notify();
+      }
+    });
     if (props()?.needs) { // a prompt's buttons and its "say what" field (II.6c)
       this.boxes = new Map(); this.saying = null;
       this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
@@ -117,6 +126,21 @@ export default class Bar extends View {
       .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
       .on_click((_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"]).catch(() => {}); })
       .child(on ? "✓ Away" : "Away");
+  }
+
+  spaceSum() {
+    const sp = spaces(), space = sp.find((s) => s.active);
+    return space ? sumFor(sumsOf(), space, new Set(sp.map((s) => s.id))) : null;
+  }
+  // Side and Full (II.7): the swarm view beside the tabs or full width, each a toggle.
+  views(t, lay, sum) {
+    const side = sideShown(lay), full = swarmShown(lay);
+    const b = (id, icon, label, on, f) => h_flex().id(id).h(24).px(10).gap(6).flex_none().items_center().rounded(7).text_size(12.5).cursor_pointer()
+      .text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .on_mouse_down("left", stop).on_click(f).child(svg(`mods/rw-rail/${icon}.svg`).size(14).flex_none()).child(label);
+    return h_flex().id("views").flex_none().p(3).gap(2).items_center().rounded(10).bg(t.surface).border(1).border_color(t.border)
+      .child(b("view-side", "side", "Side", side, () => toggleSide(run, layout())))
+      .child(b("view-full", "full", "Full", full, () => toggleFull(run, setShared, shared, layout(), sum)));
   }
 
   button(t, id, label, action) {
@@ -229,6 +253,7 @@ export default class Bar extends View {
           .when(Boolean(ci), (el) => el.child(div().flex_none().text_color(ci === "green" ? t.ansi2 : ci === "checks run" ? t.working : t.blocked).child(ci)))))
       .when(Boolean(v), (el) => el.child(this.sections(t, v, vsum)))
       .child(div().flex_1())
+      .when(!all && Boolean(sum), (el) => el.child(this.views(t, lay, sum)))
       .when(Boolean(v && vsum), (el) => el.child(this.away(t, vsum)))
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
