@@ -85,7 +85,8 @@ const parentOf = (t) => (t.parent && t.address.includes("/") && !t.parent.includ
 
 // One space's rows: agents then shells among its panes' terminals, each followed by its live sub-terminals, depth
 // first; `lines` is the tree drawn in front of a nested row ("│" passing, "├" a child, "└" the last child, "" none).
-export function rowsOf(space, ps, byAddr) {
+// `own`: the space's swarm agents (swarmAddrs), each a tree of its own, though a worker's parent is the communicator.
+export function rowsOf(space, ps, byAddr, own = new Set()) {
   const tabIndex = new Map(space.tabs.map((tab) => [tab.id, tab.index]));
   const mine = ps.filter((p) => p.terminal && tabIndex.has(p.tab) && byAddr.has(p.terminal))
     .sort((a, b) => tabIndex.get(a.tab) - tabIndex.get(b.tab));
@@ -94,7 +95,7 @@ export function rowsOf(space, ps, byAddr) {
   const kids = new Map();
   for (const t of byAddr.values()) {
     const up = parentOf(t);
-    if (up && t.state === "live") kids.set(up, [...(kids.get(up) ?? []), t]);
+    if (up && t.state === "live" && !own.has(t.address)) kids.set(up, [...(kids.get(up) ?? []), t]);
   }
   const seen = new Set();
   const out = [];
@@ -111,7 +112,8 @@ export function rowsOf(space, ps, byAddr) {
   };
   // A terminal whose parent is in this space hangs under it, pane or not. One whose parent is gone, has no pane, or is
   // in another space is a root in its own space; a child with a pane in another space shows there, not here.
-  const roots = mine.map((p) => byAddr.get(p.terminal)).filter((t) => !(parentOf(t) && paneOf.has(parentOf(t))));
+  const roots = [...mine.map((p) => byAddr.get(p.terminal)).filter((t) => own.has(t.address) || !(parentOf(t) && paneOf.has(parentOf(t)))),
+    ...[...own].filter((a) => byAddr.has(a) && !paneOf.has(a) && !elsewhere.has(a)).map((a) => byAddr.get(a))];
   for (const t of roots.filter((t) => t.status != null)) walk(t, []);
   for (const t of roots.filter((t) => t.status == null)) walk(t, []);
   return out;
@@ -148,6 +150,17 @@ export const rollOf = (rows) => ["asks", "hung", "working", "done", "idle"].filt
 const nat = (s) => s.replace(/\d+/g, (d) => d.padStart(9, "0")); // ll-97 before ll-107 (Herdr's JS has no numeric collation)
 export const FOLD = 8; // past this many agents, a swarm's working and idle workers fold into counts
 
+// A swarm agent's terminal address: the summary's `hc` is on the swarm's machine `on`.
+const addrOn = (hc, on) => (on && !hc.includes("/") ? `${on}/${hc}` : hc);
+export const swarmAddrs = (sum, on) => new Set((sum?.agents ?? []).filter((a) => a.hc).map((a) => addrOn(a.hc, on)));
+// Space s's swarm among the rail's summaries (shared "rw-rail.swarms"): the one whose communicator's space it is, else
+// one run in its folder whose space isn't another of `ids` (spaces()' ids). A space's folder can be wrong (#175).
+export function sumFor(sums, s, ids) {
+  const at = (j) => j.space && addrOn(j.space, j.on);
+  return (sums ?? []).find((j) => at(j) === s.id) ?? (sums ?? []).find((j) => s.folder && j.folder === s.folder
+    && (j.on ?? null) === (s.machine ?? null) && !(at(j) && ids.has(at(j)))) ?? null;
+}
+
 // A space's swarm (UI-SPEC.md, slice 6) from `swarm state --json --view summary` (`sum`) of the space's folder on
 // machine `on`: its block (the communicator, then the workers by name, each with its sub-terminals) and the space's
 // other rows. An agent's mark is its terminal's, but asks when its task is blocked on you, hung on watchd's sign, and
@@ -159,7 +172,7 @@ export const FOLD = 8; // past this many agents, a swarm's working and idle work
 export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
   const trees = [];
   for (const r of rows) r.lines.length ? trees.at(-1)?.push(r) : trees.push([r]);
-  const addr = (hc) => (on && !hc.includes("/") ? `${on}/${hc}` : hc);
+  const addr = (hc) => addrOn(hc, on);
   const named = (sum.agents ?? []).filter((a) => a.hc)
     .sort((a, b) => (b.name === sum.comms) - (a.name === sum.comms) || (nat(a.name) < nat(b.name) ? -1 : 1));
   const taken = new Set();

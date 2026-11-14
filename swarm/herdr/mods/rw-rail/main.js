@@ -1,8 +1,8 @@
 // The rework's rail (swarm/herdr/UI-SPEC.md, slice 1): spaces by machine, each with its agents and then its shells,
 // one row each (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
 // their parent on a thin line. A space folds to one line of counts. Click a row to focus its terminal; click a space
-// to show it, click the shown one or any chevron to fold it. A space whose folder has a live swarm shows it as a block
-// first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7). Each machine's
+// to show it, click the shown one or any chevron to fold it. A space with a live swarm (its communicator's space, else
+// its folder's) shows it as a block first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7). Each machine's
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 // Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
@@ -10,7 +10,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
-import { AGENT, abbrev, allShown, asksIn, dur, looked, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { AGENT, abbrev, allShown, asksIn, dur, looked, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, swarmAddrs, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -32,7 +32,6 @@ export default class Rail extends View {
     cx.timer.every(30000, (cx) => cx.notify()); // the rows' times
     this.load = {}; // machine ("" here) -> { used, total } in kB, or null where /proc/meminfo can't be read
     cx.timer.every(10000, (cx) => this.poll(cx));
-    this.sums = {}; // where (machine:folder) -> its swarm's summary, while one is live there
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
     cx.timer.every(5000, (cx) => this.swarms(cx));
@@ -53,12 +52,12 @@ export default class Rail extends View {
     this.reading = true;
     const at = [...new Map(spaces().filter((s) => s.folder).map((s) => [where(s), s])).values()];
     cx.spawn(async (cx) => {
-      const sums = {}, mine = [];
+      const mine = [];
       for (const s of at) {
         try {
           const r = await swarm(s.folder, s.machine ?? null, ["state", "--json", "--view", "summary"]);
           const j = r.code === 0 ? JSON.parse(r.stdout) : null;
-          if (j?.active && Array.isArray(j.agents)) { sums[where(s)] = j; mine.push({ ...j, on: s.machine ?? null, folder: s.folder }); }
+          if (j?.active && Array.isArray(j.agents)) mine.push({ ...j, on: s.machine ?? null, folder: s.folder });
         } catch {}
       }
       try {
@@ -66,13 +65,14 @@ export default class Rail extends View {
         const seen = new Set(mine.filter((m) => !m.on).map((m) => m.db));
         for (const w of r.code === 0 ? JSON.parse(r.stdout).swarms ?? [] : []) {
           if (seen.has(w.db)) continue;
-          const q = await swarm(w.folder, null, ["state", "--json", "--view", "summary"]);
-          const j = q.code === 0 ? JSON.parse(q.stdout) : null;
-          if (j?.active && Array.isArray(j.agents)) mine.push({ ...j, on: null, folder: w.folder });
+          try {
+            const q = await swarm(w.folder, null, ["state", "--json", "--view", "summary"]);
+            const j = q.code === 0 ? JSON.parse(q.stdout) : null;
+            if (j?.active && Array.isArray(j.agents)) mine.push({ ...j, on: null, folder: w.folder });
+          } catch {}
         }
       } catch {}
       this.reading = false;
-      this.sums = sums;
       setShared("rw-rail.swarms", mine); // rw-bar's Needs you counts their questions
       cx.notify();
     });
@@ -96,7 +96,7 @@ export default class Rail extends View {
   // tab moved first; one already open is focused. With no communicator pane here the overview is a tab of its own.
   openSwarm(s, sw, cx) {
     if (allShown(layout())) showAll(run, false);
-    const ps = panes(), props = { folder: s.folder, machine: s.machine ?? null };
+    const ps = panes(), props = { folder: sw.sum.folder, machine: s.machine ?? null };
     const comms = sw.block.find((it) => it.comms)?.r.pane, tab = comms && ps.find((p) => p.pane === comms)?.tab;
     const have = ps.find((p) => p.mod === "rw-swarm" && (tab ? p.tab === tab : s.tabs.some((x) => x.id === p.tab)));
     if (have) return run("pane.focus", { pane: have.pane });
@@ -334,7 +334,7 @@ export default class Rail extends View {
       const opened = sw.big && !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && this.opened.has(it.r.t.address);
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
-      const root = asks ? { ...it.r, ask: { folder: s.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
+      const root = asks ? { ...it.r, ask: { folder: sum.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
       return [root, ...it.kids].map((r, i) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text));
     });
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
@@ -430,10 +430,11 @@ export default class Rail extends View {
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     if (!this.started) { this.started = true; this.swarms(cx); }
     const swBy = new Map();
+    const ids = new Set(sp.map((s) => s.id));
     const rowsBy = new Map(sp.map((s) => {
-      const rows = rowsOf(s, ps, byAddr);
-      const sum = s.folder ? this.sums[where(s)] : null;
-      if (!sum || (sum.space && sum.space !== s.id && sp.some((o) => o.id === sum.space))) return [s.id, rows];
+      const sum = sumFor(sums, s, ids);
+      const rows = rowsOf(s, ps, byAddr, swarmAddrs(sum, s.machine ?? null));
+      if (!sum) return [s.id, rows];
       const sw = { ...swarmOf(rows, sum, byAddr, s.machine ?? null, this.opened, this.all.has(s.id)), sum };
       swBy.set(s.id, sw);
       return [s.id, sw.rows];

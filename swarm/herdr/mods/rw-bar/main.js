@@ -7,7 +7,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
-import { allShown, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll } from "./tree.js";
+import { allShown, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -33,7 +33,7 @@ export default class Bar extends View {
     let { name, what } = term ? rowText(term, m, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
     // The swarm tab (slice 7): the tab that holds the overview speaks for the swarm.
     const sw = ps.some((p) => p.tab === tab.id && p.mod === "rw-swarm")
-      && (shared("rw-rail.swarms") ?? []).find((j) => j.folder === space.folder && (j.on ?? null) === (space.machine ?? null));
+      && sumFor(shared("rw-rail.swarms"), space, new Set(spaces().map((s) => s.id)));
     if (sw) { name = "Swarm"; what = `${sw.agents.length} ${sw.agents.length === 1 ? "agent" : "agents"}`; }
     if (tab.named) name = tab.name;
     if (m === "asks") what = "asks";

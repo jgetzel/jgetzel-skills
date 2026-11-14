@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -110,6 +110,25 @@ const sw = swarmOf(rowsOf(swSp, swPs, swBy), sum, swBy, null);
 assert.deepEqual(sw.block.map((it) => [it.a.name, it.r.mark, it.kids.map((k) => k.t.address)]), [["ll-comms", "done", []],
   ["ll-97", "asks", []], ["ll-99", "hung", []], ["ll-107", "idle", []], ["ll-110", "working", ["x"]]]);
 assert.deepEqual(sw.rest.map((r) => r.t.address), ["plain", "z"]);
+// Live (#175): workers are started from the communicator's terminal, so their parent is it. Each is still one row of the
+// block with its own sub-terminals, never also the communicator's kid; one with no pane still heads its sub-terminals.
+const lvT = swT.map((t) => (["w97", "w110", "w107"].includes(t.address) ? { ...t, parent: "c" } : t))
+  .concat([T("cx", { status: "working", parent: "c" }), T("w5", { status: "working", parent: "c" }), T("w5x", { status: "working", parent: "w5" })]);
+const lvBy = new Map(lvT.map((t) => [t.address, t]));
+const lvSum = { ...sum, agents: [...sum.agents, A("ll-5", "w5", { status: "working" })] };
+const lv = swarmOf(rowsOf(swSp, swPs, lvBy, swarmAddrs(lvSum, null)), lvSum, lvBy, null);
+assert.deepEqual(lv.block.map((it) => [it.a.name, it.r.t.address, it.r.lines.join(""), it.kids.map((k) => k.t.address + k.lines.join(""))]), [
+  ["ll-comms", "c", "", ["cx└"]], ["ll-5", "w5", "", ["w5x└"]], ["ll-97", "w97", "", []], ["ll-99", "gone", "", []],
+  ["ll-107", "w107", "", []], ["ll-110", "w110", "", ["x└"]]]);
+assert.deepEqual(lv.rows.map((r) => r.t.address).sort(), [...new Set(lv.rows.map((r) => r.t.address))].sort());
+assert.deepEqual([...swarmAddrs({ agents: [A("a", "t3"), A("b", null)] }, "vps")], ["vps/t3"]);
+// A space's summary (#175): its communicator's space first (live spaces' folders can be off), else its folder's.
+const sums = [{ space: "s1", folder: "/w/b", on: null }, { space: "s9", folder: "/w/c", on: null }, { space: "t2", folder: "/w/v", on: "vps" }];
+const ids = new Set(["s1", "s2", "s3", "vps/t2"]);
+assert.equal(sumFor(sums, { id: "s1", folder: "/home" }, ids), sums[0]);
+assert.equal(sumFor(sums, { id: "s2", folder: "/w/b" }, ids), null); // /w/b's swarm lives in s1
+assert.equal(sumFor(sums, { id: "s3", folder: "/w/c" }, ids), sums[1]); // s9 is gone
+assert.equal(sumFor(sums, { id: "vps/t2", folder: "", machine: "vps" }, ids), sums[2]);
 assert.deepEqual(rollOf(sw.rows), ["asks", "hung", "working", "done", "idle"]);
 assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied 2m" },
   { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "idle 2m" },
