@@ -2,7 +2,7 @@
 // a row per terminal (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
 // their parent on a thin line, a split tab's rows in a bracket, and a New tab row at the end of the shown space. A space folds to one line of counts. Click a row to focus its terminal; click a space
 // to show it, click the shown one or any chevron to fold it. A space with a live swarm (its communicator's space, else
-// its folder's) shows it as a block first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm view (Part II.3). Each machine's
+// its folder's) shows it as a block first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm view (Part II.3), and its Side button on hover the side view (II.7). Each machine's
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 // Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
@@ -11,7 +11,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
+import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 
@@ -133,6 +133,12 @@ export default class Rail extends View {
   // The swarm view (Part II.3): the swarm full width in place of the tabs, from its Overview.
   openSwarm(s, sw) {
     showSwarm(run, setShared, { folder: sw.sum.folder, machine: s.machine ?? null, section: "overview" });
+  }
+  // The heading's Side button (II.7): the swarm's space shown, its swarm in the side panel beside the tabs.
+  openSide(s) {
+    if (!s.active) run("space.select", { id: s.id });
+    if (viewShown(layout())) showAll(run, false);
+    showSide(run, true);
   }
 
   // The shown space's machine's memory in use, for the foot.
@@ -502,8 +508,12 @@ export default class Rail extends View {
       .child(h_flex().id(`swarm-head-${s.id}`).mx(4).px(6).pt(3).pb(5).gap(7).items_center().rounded(7).text_size(11.5).text_color(t.muted)
         .when(this.swarmOn === sum.folder, (el) => el.bg(t.raised).text_color(t.foreground))
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click(() => this.openSwarm(s, sw))
+        .on_hover((h, cx) => { if (h) this.hovHead = s.id; else if (this.hovHead === s.id) this.hovHead = null; else return; cx.notify(); })
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).truncate().child(`Swarm${tag ? ` ${tag}` : ""} · ${n} ${n === 1 ? "agent" : "agents"} · ${left} left`)))
+        .child(div().flex_1().min_w(0).truncate().child(`Swarm${tag ? ` ${tag}` : ""} · ${n} ${n === 1 ? "agent" : "agents"} · ${left} left`))
+        .when(this.hovHead === s.id, (el) => el.child(h_flex().id(`swarm-side-${s.id}`).flex_none().h(18).px(6).gap(4).items_center().rounded(5)
+          .border(1).border_color(t.border).text_color(t.foreground).hover((st) => st.bg(t.selected))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.openSide(s); }).child(svg("mods/rw-rail/side.svg").size(11)).child("Side"))))
       .children(rows);
   }
 

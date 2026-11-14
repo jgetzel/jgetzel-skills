@@ -3,15 +3,17 @@
 // ({folder, machine, section}), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
 // width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
 // cards. With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
-// last one it showed, in one column under 700 px, under a head with Expand and Close. Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
+// last one it showed, in one column under 700 px, under a head with the section as a menu, Expand and Close, and over a
+// message line to the communicator; the focused agent's row is marked "shown", and a click on a row shows its terminal
+// (its name and its right-click menu open its page). Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
 // agents with their tasks, the board with staffing, the latest messages, and landing (main's CI, PRs).
 // A large swarm (past FOLD workers, slice 9) groups the agents by state under a filter, and the board is counts and the
 // next tasks to staff. Ended agents are one line; opening it lists them, read-only. The board's Done and Dropped links
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
+import { v_flex, h_flex, HoverCard, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
+import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
 import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -117,6 +119,10 @@ export default class SwarmTab extends View {
         if (!s) throw new Error("swarm state printed no overview");
         if (this.where().cwd !== cwd || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
+        if (props()?.side && s.comms !== this.sideFor) { // the side view's message line names its communicator
+          this.sideFor = s.comms; this.sideMsg = InputState.new({ placeholder: `Message ${line(s.comms ?? "the swarm", 40)}…` });
+          this.sideMsg.on("submit", (_e, cx) => this.sidePost(cx));
+        }
         this.acts = who === "activity" ? [actItems(s, false), actItems(s, true)] : null; // built here: a render that builds them is cut short
         const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
         for (const id of this.answers.keys()) if (!blocked.has(id)) this.answers.delete(id); // answered: its field goes
@@ -318,12 +324,14 @@ export default class SwarmTab extends View {
     const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
+    const side = Boolean(props()?.side), shown = side ? this.shownAgent(s) : null;
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
-      .text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `agent-${r.a.name}`, 0)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
-      .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
+      .text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `agent-${r.a.name}`, 0))
+      .when(side, (el) => this.sideRow(el, t, r.a, s, r.a.name === shown)).when(!side, (el) => el.on_click((_e, cx) => this.openAgent(r.a.name, cx)))
+      .child(side ? this.nameLink(t, r.a.name, 72) : div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
       .child(mark(t, r.mark))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
-      .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.state))
+      .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.a.name === shown ? `shown · ${r.state}` : r.state))
       .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
         .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
           .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`).when(this.anim, (el) => el.transition("width", 300)))))
@@ -504,17 +512,19 @@ export default class SwarmTab extends View {
   // The agents in short: the first few, each with its state, its keep-or-end word and stay sign, and its context.
   fewAgents(t, s) {
     const rows = agentRows(s), n = rows.filter((r) => !r.comms).length, SIGNS = { hung: "hung", nowaiter: "no waiter", unwoken: "not waking" };
+    const side = Boolean(props()?.side), shown = side ? this.shownAgent(s) : null;
     return this.card(t, "agents").pb(8)
       .child(this.head(t, `Agents · ${n}`, null, h_flex().gap(12).child(div().id("spawn-open").flex_none().text_size(12).text_color(t.dim).cursor_pointer()
         .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.openSpawn(s); cx.notify(); }).child("Spawn…"))
         .child(this.link(t, "agents-all", "All ›", "agents"))))
       .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t)))
       .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
-        .border_color(t.border).text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `few-${r.a.name}`, 0)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
-        .child(mark(t, r.mark)).child(div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
+        .border_color(t.border).text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `few-${r.a.name}`, 0))
+        .when(side, (el) => this.sideRow(el, t, r.a, s, r.a.name === shown)).when(!side, (el) => el.on_click((_e, cx) => this.openAgent(r.a.name, cx)))
+        .child(mark(t, r.mark)).child(side ? this.nameLink(t, r.a.name, 72) : div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
         .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
-        .child(div().flex_none().w(40).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens)))))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.a.name === shown ? "shown · " : ""}${kilo(r.a.ctx_tokens)}`))))
       .when(rows.length > 6, (el) => el.child(div().px(16).pt(6).text_size(12).text_color(t.dim).child(`${rows.length - 6} more`)));
   }
 
@@ -651,6 +661,47 @@ export default class SwarmTab extends View {
         .child(this.btn(t, "sp-go", this.busy ? "Spawning…" : "Spawn", (cx) => this.spawnAgent(cx), true)));
   }
 
+  // ---- the side view (II.7) ----
+  sidePost(cx) {
+    const text = this.sideMsg?.value().trim(), to = this.s?.comms ?? "all";
+    if (text && !this.busy) this.act(cx, ["post", "--", to, text], () => this.sideMsg.set_value(""));
+  }
+  // The agent whose terminal has the focus, if it is one of this swarm's.
+  shownAgent(s) {
+    const f = focused()?.terminal, { on } = this.where();
+    return f ? (s.agents ?? []).find((a) => a.hc && addrOf(a.hc, on) === f)?.name ?? null : null;
+  }
+  // A row of the side view's agents: a click shows its terminal, its name opens its page, a right click its menu.
+  sideRow(el, t, a, s, shown) {
+    const { cwd, on } = this.where();
+    return el.when(shown, (el) => el.bg(t.selected).rounded(7)).on_click((_e, cx) => this.focus(a.name, cx))
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
+        props: { agentMenu: { name: a.name, folder: cwd, machine: on, comms: a.name === s.comms, task: a.task?.id ?? null } } }); });
+  }
+  nameLink(t, name, w) {
+    return div().id(`name-${name}`).w(w).flex_none().truncate().font_medium().text_color(t.foreground).cursor_pointer().hover((st) => st.underline())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(name); }).child(name);
+  }
+  sectionMenu(t, s) {
+    const v = shared("rw-swarm.view") ?? {}, at = v.section ?? "overview", c = s?.counts ?? {};
+    const n = { agents: (s?.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length, board: (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) };
+    const label = SECTIONS.find(([id]) => id === at)?.[1] ?? "Overview";
+    return Popover.new("side-sections").anchor("top_left").open(Boolean(this.menuOpen))
+      .on_open_change((open, cx) => { this.menuOpen = open; cx.notify(); })
+      .trigger(h_flex().id("side-section").flex_none().h(24).px(9).gap(6).items_center().rounded(7).border(1).border_color(t.border).text_size(12)
+        .text_color(t.foreground).cursor_pointer().when(Boolean(this.menuOpen), (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover)).child(`${label} ▾`))
+      .content(v_flex().w(200).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+        .children(SECTIONS.map(([id, text]) => h_flex().id(`side-sec-${id}`).h(28).px(9).gap(8).items_center().rounded(6).text_size(12.5).cursor_pointer()
+          .text_color(id === at ? t.foreground : t.muted).when(id === at, (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => { this.menuOpen = false; this.go(id); cx.notify(); })
+          .child(div().flex_1().child(text)).when(n[id] > 0, (el) => el.child(div().text_color(t.dim).child(String(n[id])))))));
+  }
+  messageLine(t) {
+    if (!this.sideMsg) return null;
+    return h_flex().id("side-say").flex_none().px(12).pt(8).pb(12).gap(8).items_center().border_t(1).border_color(t.border)
+      .child(this.field(t, "side-msg", this.sideMsg).min_w(0)).child(this.btn(t, "side-send", "Send", (cx) => this.sidePost(cx)));
+  }
+
   // ---- the agent page (II.3d) ----------------------------------------------------------------------------------------
   openAgent(name) { setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), page: { agent: name } }); }
   back(pg) {
@@ -676,7 +727,7 @@ export default class SwarmTab extends View {
   }
   agentPage(t, s, pg) {
     const name = pg.agent, a = s.agents?.find((x) => x.name === name), { on } = this.where();
-    const label = pg.back === "tab" ? "Back to the tab" : SECTIONS.find(([id]) => id === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
+    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : SECTIONS.find(([id]) => id === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(line(name, 80)));
     if (!a) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading ? "Reading…" : `No agent ${line(name, 80)} in this swarm`));
@@ -1176,7 +1227,7 @@ export default class SwarmTab extends View {
   }
   taskPage(t, s, pg) {
     const id = pg.task, k = s.tasks?.find((x) => x.id === id), x = s.task?.id === id ? s.task : null;
-    const label = pg.back === "tab" ? "Back to the tab" : SECTIONS.find(([i]) => i === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
+    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : SECTIONS.find(([i]) => i === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(`Task #${id}`));
     if (!k) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading || !x ? "Reading…" : `No task #${id} on this board`));
@@ -1311,8 +1362,9 @@ export default class SwarmTab extends View {
     const { cwd, on } = this.where(), tag = tagOf(this.s?.comms);
     return h_flex().id("side-head").flex_none().h(40).pl(14).pr(8).gap(8).items_center().min_w(0)
       .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.foreground))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground)
+      .child(div().flex_none().max_w(170).truncate().text_size(13).font_semibold().text_color(t.foreground)
         .child(tag ? `Swarm ${tag}` : line(cwd?.replace(/\/+$/, "").replace(/.*\//, "") ?? "Swarm", 60)))
+      .when(Boolean(this.s), (el) => el.child(this.sectionMenu(t, this.s))).child(div().flex_1())
       .when(Boolean(cwd), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
         showSide(run, false); showSwarm(run, setShared, { ...(shared("rw-swarm.view") ?? {}), folder: cwd, machine: on });
       })))
@@ -1337,7 +1389,7 @@ export default class SwarmTab extends View {
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
       if (props().side && !this.where().cwd) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
-      return root.child(this.view(t, this.s, cx));
+      return root.child(this.view(t, this.s, cx)).when(Boolean(props().side), (el) => el.children([this.messageLine(t)].filter(Boolean)));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
