@@ -186,3 +186,42 @@ export function swarmText(it, at, now, opened) {
   const side = since(it.r.mark, at, now);
   return { name, what, side: it.comms && it.r.mark === "done" ? side.replace(/^done/, "replied") : side };
 }
+
+// The swarm tab (rw-swarm, slice 7), from `swarm state --json --view overview` (`s`).
+// What waits on you: questions (tasks blocked on you), agents stopped at a prompt, hung agents.
+export function asksOf(s) {
+  const tasks = s.tasks ?? [], live = (s.agents ?? []).filter((a) => a.status !== "ended");
+  return [
+    ...tasks.filter((k) => k.state === "blocked").map((k) => ({ kind: "question", agent: k.owner, task: k, ago: k.blocked_s })),
+    ...live.filter((a) => a.status === "blocked" && !tasks.some((k) => k.state === "blocked" && k.owner === a.name)).map((a) => ({ kind: "prompt", agent: a.name, ago: a.idle_s })),
+    ...live.filter((a) => a.stay_sign === "hung").map((a) => ({ kind: "hung", agent: a.name, ago: a.idle_s })),
+  ];
+}
+// An agent row: its mark, its task (title, not the terminal's last line) and its state words; who asks first, the
+// communicator last.
+export function agentRows(s) {
+  const tasks = s.tasks ?? [];
+  const rows = (s.agents ?? []).filter((a) => a.status !== "ended").map((a) => {
+    const comms = a.name === s.comms, q = tasks.find((k) => k.state === "blocked" && k.owner === a.name);
+    const idle = `idle ${dur((a.idle_s ?? 0) * 1000)}`;
+    const [mark, state, hot] = q || a.status === "blocked" ? ["asks", q ? `asks you · ${dur((q.blocked_s ?? 0) * 1000)}` : "at a prompt", "blocked"]
+      : a.stay_sign === "hung" ? ["hung", `hung ${dur((a.idle_s ?? 0) * 1000)}`, "blocked"]
+      : comms ? [a.status === "working" ? "working" : "idle", a.stay ? `stays: ${a.stay}` : a.status === "working" ? "working" : idle, null]
+      : a.status === "working" ? ["working", "working", null]
+      : ["idle", a.task ? `${idle} · holds #${a.task.id}` : idle, a.task ? "amber" : null];
+    return { a, comms, mark, state, hot, task: comms ? "The communicator" : a.task ? `#${a.task.id} ${a.task.title}` : "no task" };
+  });
+  const rank = (r) => r.comms ? 4 : { asks: 0, hung: 1, working: 2, idle: 3 }[r.mark];
+  return rows.sort((x, y) => rank(x) - rank(y) || (nat(x.a.name) < nat(y.a.name) ? -1 : 1));
+}
+// The board's tasks still to do, with what each waits on: blocked, claimed, ready, then waiting or held.
+export function boardRows(s) {
+  const tasks = s.tasks ?? [], undone = new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
+  const rows = tasks.filter((k) => undone.has(k.id)).map((k) => {
+    const after = (k.deps ?? []).filter((d) => undone.has(d));
+    const [state, tone] = k.state === "blocked" ? ["waiting on you", "blocked"] : k.state === "claimed" ? [k.owner ?? "claimed", "muted"]
+      : k.hold ? ["held", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"] : ["ready", "foreground"];
+    return { k, state, tone, rank: { blocked: 0, muted: 1, foreground: 2, dim: 3 }[tone] };
+  });
+  return rows.sort((x, y) => x.rank - y.rank || x.k.id - y.k.id);
+}

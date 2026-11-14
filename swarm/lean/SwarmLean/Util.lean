@@ -130,6 +130,6 @@ def shjoin (argv : List String) : String := " ".intercalate (argv.map shquote)
 /-- Run in herdr-mods/: the hash of what `herdr-mods install` copies into Herdr, which it writes as the install stamp
 and `swarm who` compares to say the copies are stale. -/
 def herdrStampCmd : String :=
-  "cat herdr-mods ../swarm/lean/SwarmLean/Herdr/Install.lean calendar/* ../swarm/herdr/mods/swarm/swarm.svg ../swarm/herdr/mods/rw-rail/* ../swarm/herdr/mods/rw-bar/* ../swarm/herdr/mods/rw-pane/* | { sha256sum 2>/dev/null || shasum -a 256; }"
+  "cat herdr-mods ../swarm/lean/SwarmLean/Herdr/Install.lean calendar/* ../swarm/herdr/mods/swarm/swarm.svg ../swarm/herdr/mods/rw-rail/* ../swarm/herdr/mods/rw-bar/* ../swarm/herdr/mods/rw-pane/* ../swarm/herdr/mods/rw-swarm/* | { sha256sum 2>/dev/null || shasum -a 256; }"
 
 end SwarmLean

@@ -158,6 +158,15 @@ answer field, the agent table, the board, staffing, messages, landing.
 - Agent rows show the task title, not the terminal's last line.
 - Buildable. Unchecked: that a mod pane split into the communicator's tab
   survives a restart in the right place.
+- Built in slice 7: the rail's swarm heading opens it. It splits `rw-swarm` (props `{folder, machine}`) right of the
+  communicator's pane, swaps the two so the overview is on the left as drawn (splits only go right or down), and moves
+  that tab first; a second click focuses it. With no communicator pane in the window it is a tab of its own. The pill
+  of that tab reads "Swarm · N agents" with the diamond. Data: `swarm state --json --view overview`, polled as the swarm
+  mod does (3 s while the db folder changes, 30 s quiet, 10 s remote); PRs from `gh pr list --state all --limit 4` once
+  a minute. Needs you lists questions with an answer field, agents stopped at a prompt and hung agents, each with Open
+  its terminal. Board shows the tasks left (8, then a count), staffing (auto-spawn, max) and New task. Messages are
+  the latest three. The Done and Dropped links, the Activity link and Landing's files-not-on-main line are left out:
+  the rework has no screen for them yet.
 
 ### An agent needs you (screen 3)
 

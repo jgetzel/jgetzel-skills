@@ -2,7 +2,7 @@
 // one row each (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
 // their parent on a thin line. A space folds to one line of counts. Click a row to focus its terminal; click a space
 // to show it, click the shown one or any chevron to fold it. A space whose folder has a live swarm shows it as a block
-// first (slice 6), from `swarm state --json --view summary`.
+// first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard } from "gpui-base";
@@ -45,7 +45,7 @@ export default class Rail extends View {
         try {
           const r = await swarm(s.folder, s.machine ?? null, ["state", "--json", "--view", "summary"]);
           const j = r.code === 0 ? JSON.parse(r.stdout) : null;
-          if (j?.active && Array.isArray(j.agents)) { sums[where(s)] = j; mine.push({ ...j, on: s.machine ?? null }); }
+          if (j?.active && Array.isArray(j.agents)) { sums[where(s)] = j; mine.push({ ...j, on: s.machine ?? null, folder: s.folder }); }
         } catch {}
       }
       this.reading = false;
@@ -62,6 +62,24 @@ export default class Rail extends View {
       localStorage.setItem("opened", JSON.stringify([...this.opened].slice(-200)));
       cx?.notify();
     }
+  }
+
+  // The swarm tab (slice 7): the overview, mod rw-swarm, split beside the communicator's terminal, on the left, and that
+  // tab moved first; one already open is focused. With no communicator pane here the overview is a tab of its own.
+  openSwarm(s, sw, cx) {
+    const ps = panes(), props = { folder: s.folder, machine: s.machine ?? null };
+    const comms = sw.block.find((it) => it.comms)?.r.pane, tab = comms && ps.find((p) => p.pane === comms)?.tab;
+    const have = ps.find((p) => p.mod === "rw-swarm" && (tab ? p.tab === tab : s.tabs.some((x) => x.id === p.tab)));
+    if (have) return run("pane.focus", { pane: have.pane });
+    if (tab) {
+      run("pane.split", { pane: comms, direction: "right", mod: "rw-swarm", props });
+      // Splits only go right or down: swap the two once the new pane has its place (swap goes by geometry).
+      cx.timer.after(300, () => { run("pane.focus", { pane: comms }); run("pane.swap", { direction: "right" }); });
+      return run("tab.move", { id: tab, index: 1 });
+    }
+    run("tab.new", { space: s.id, mod: "rw-swarm", props });
+    const made = spaces().find((x) => x.id === s.id)?.tabs.find((x) => x.active);
+    if (made) run("tab.move", { id: made.id, index: 1 });
   }
 
   // The shown space's machine's memory in use, for the foot.
@@ -165,7 +183,8 @@ export default class Rail extends View {
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
       .on_click((_e, cx) => { this.all.delete(s.id); cx.notify(); }).child("show fewer"));
     return v_flex().id(`swarm-${s.id}`).flex_none().mx(4).mb(6).pt(5).pb(4).rounded(8).border(1).border_color(t.border).bg(t.chrome)
-      .child(h_flex().px(10).pt(3).pb(5).gap(7).items_center().text_size(11.5).text_color(t.muted)
+      .child(h_flex().id(`swarm-head-${s.id}`).mx(4).px(6).pt(3).pb(5).gap(7).items_center().rounded(7).text_size(11.5).text_color(t.muted)
+        .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.openSwarm(s, sw, cx))
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(`Swarm${tag ? ` ${tag}` : ""} · ${n} ${n === 1 ? "agent" : "agents"} · ${left} left`)))
       .children(rows);
