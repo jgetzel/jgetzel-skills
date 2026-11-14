@@ -70,7 +70,8 @@ const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }],
   messages: "no", limits: [] });
 assert.deepEqual([ov.agents.length, ov.tasks.length, ov.messages, ov.limits, ov.tasks[0].title], [1, 1, [], null, null]);
 for (let i = 0; i < 3000; i++) {
-  const j = rnd() < 0.5 ? junk() : { ...junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk() };
+  const j = rnd() < 0.5 ? junk() : { ...junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk(), ci: junk(),
+    watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk() };
   const s = T.sumOf(j), o = T.overOf(j);
   if (s) {
     for (const a of s.agents) assert.ok(typeof a.name === "string" && (a.hc === null || typeof a.hc === "string"));
@@ -79,7 +80,11 @@ for (let i = 0; i < 3000; i++) {
     T.questionsOf([s], new Set()); T.swarmAddrs(s, null); T.agentAt(s, "t1"); T.sumFor([s], { id: "s", folder: "/w" }, new Set(["s"]));
     T.ciWord(s.ci); T.asksIn([s]); T.memoryOf([s], 100); T.tagOf(s.comms);
   }
-  if (o) { T.asksOf(o); T.agentRows(o); T.boardRows(o); }
+  if (o) {
+    T.asksOf(o); T.agentRows(o); T.boardRows(o);
+    for (const n of T.needsOf(o)) assert.ok(["watchd", "ci", "question", "prompt", "hung", "memory"].includes(n.kind));
+    for (const r of o.ci?.runs ?? []) assert.ok(r.url === null || r.url.startsWith("https://"));
+  }
 }
 
 // 3. Parent cycles and self-parents: every pane's terminal is still a row.
@@ -136,7 +141,7 @@ for (let i = 0; i < 3000; i++) {
   const big = { comms: "ll-0", agents: [...agents, ...Array.from({ length: 10000 }, (_, i) => ({ name: `e${i}`, status: "ended" }))],
     tasks: Array.from({ length: 10000 }, (_, i) => ({ id: i, state: pick(["open", "claimed", "blocked", "done"]), owner: `ll-${i % 500}`, deps: [i - 1] })) };
   const o = time("overOf: 10500 agents, 10000 tasks", 300, () => T.overOf(big));
-  time("asksOf + agentRows + boardRows of it", 150, () => { T.asksOf(o); T.agentRows(o); T.boardRows(o); });
+  time("asksOf + agentRows + boardRows + needsOf of it", 150, () => { T.asksOf(o); T.agentRows(o); T.boardRows(o); T.needsOf(o); });
   const sums = Array.from({ length: 50 }, (_, i) => ({ ...sum, folder: `/w/${i}`, space: `s${i}` }));
   const ids = new Set(spaces.map((s) => s.id));
   time("sumFor: 500 spaces among 50 swarms", 30, () => spaces.forEach((s) => T.sumFor(sums, s, ids)));

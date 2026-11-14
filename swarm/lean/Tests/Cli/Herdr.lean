@@ -52,7 +52,8 @@ def test_install_main_path (t : T) : IO Unit := do
       "\"children\":[{\"id\":\"main\",\"content\":{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
       "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"ring\"},\"lone\":true," ++
       "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}}," ++
-      "{\"id\":\"all-swarms\",\"type\":\"block\",\"content\":{\"mod\":\"rw-swarms\"}}]}") ++ "]}]}")
+      "{\"id\":\"all-swarms\",\"type\":\"block\",\"content\":{\"mod\":\"rw-swarms\"}}," ++
+      "{\"id\":\"swarm\",\"type\":\"block\",\"content\":{\"mod\":\"rw-swarm\",\"props\":{\"view\":true}}}]}") ++ "]}]}")
     |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/themes/rework.json") do fail "no rework theme copy"
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"

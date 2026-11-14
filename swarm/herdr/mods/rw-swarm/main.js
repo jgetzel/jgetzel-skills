@@ -1,14 +1,17 @@
-// The rework's swarm tab (swarm/herdr/UI-SPEC.md, slice 7): one swarm's overview, as a mod pane beside its
-// communicator's terminal (the rail's swarm heading opens it). Needs you with an answer field, the agents with their
-// tasks, the board with staffing, the latest messages, and landing (main's CI, PRs). props: {folder, machine}.
+// The rework's swarm view (swarm/herdr/UI-SPEC.md, slice 7 and Part II.3). With props {view: true} it is the layout's
+// full-width swarm view (a child of the "view" stack): the swarm, section and page are shared("rw-swarm.view")
+// ({folder, machine, section}), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
+// width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
+// cards. Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
+// agents with their tasks, the board with staffing, the latest messages, and landing (main's CI, PRs).
 // A large swarm (past FOLD workers, slice 9) groups the agents by state under a filter, and the board is counts and the
 // next tasks to staff. Ended agents are one line; opening it lists them, read-only. The board's Done and Dropped links
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window } from "herdr";
-import { FOLD, answerArgs, asksOf, agentRows, boardRows, dur, line, openAsk, overOf, prsOf } from "./tree.js";
+import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout } from "herdr";
+import { FOLD, answerArgs, asksOf, agentRows, boardRows, dur, line, needsOf, nudgeArgs, openAsk, overOf, prsOf, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -41,10 +44,16 @@ export default class SwarmTab extends View {
   }
 
   where() {
-    const p = props() ?? {}, s = spaces().find((x) => x.active);
+    const p = props() ?? {}, s = spaces().find((x) => x.active), v = p.view ? shared("rw-swarm.view") ?? {} : null;
+    if (v?.folder) return { cwd: v.folder, on: v.machine ?? null };
+    if (v) { // none chosen: the shown space's swarm, as the rail finds it
+      const sums = shared("rw-rail.swarms"), sum = s && Array.isArray(sums) ? sumFor(sums, s, new Set(spaces().map((x) => x.id))) : null;
+      return { cwd: sum?.folder ?? null, on: sum?.on ?? null };
+    }
     return p.folder ? { cwd: p.folder, on: p.machine ?? null } : { cwd: s?.folder, on: s?.machine ?? null };
   }
   due() {
+    if (props()?.view && !swarmShown(layout())) return false; // the view reads only while it shows
     const age = Date.now() - (this.at ?? 0), { on } = this.where();
     // never more often than 3× as long as a read takes (500 agents' overview takes seconds)
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
@@ -59,6 +68,7 @@ export default class SwarmTab extends View {
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
+        if (this.where().cwd !== cwd) { this.loading = false; return; } // the view moved to another swarm meanwhile
         this.s = s; this.error = null;
         const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
         for (const id of this.answers.keys()) if (!blocked.has(id)) this.answers.delete(id); // answered: its field goes
@@ -86,6 +96,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "4", "--json", "number,headRefName,state,isDraft,statusCheckRollup,url"], { cwd, on });
+        if (this.where().cwd !== cwd) return;
         this.prs = r.code === 0 ? prsOf(JSON.parse(r.stdout)) : null;
       } catch { this.prs = null; } // no gh: Landing shows main's CI only
       cx.notify();
@@ -325,8 +336,178 @@ export default class SwarmTab extends View {
       }));
   }
 
+  // ---- the swarm view (Part II.3) -----------------------------------------------------------------------------------
+  // A button that asks once more in its own place before it acts (`key`: which).
+  twice(t, key, label, sure, act) {
+    if (this.sure !== key) return this.btn(t, `ask-${key}`, label, (cx) => { this.sure = key; cx.notify(); });
+    return h_flex().gap(6).child(this.btn(t, `yes-${key}`, sure, (cx) => { this.sure = null; act(cx); }, true))
+      .child(this.btn(t, `no-${key}`, "Cancel", (cx) => { this.sure = null; cx.notify(); }));
+  }
+  // A command outside the swarm CLI (gh), with the same flash on failure.
+  run(cx, cmd, args) {
+    const { cwd, on } = this.where();
+    cx.spawn(async (cx) => {
+      try { const r = await exec(cmd, args, { cwd, on }); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300) || `${cmd} exited ${r.code}`; }
+      catch (e) { this.flash = line(e?.message ?? e, 300); }
+      this.dirty = true; cx.notify();
+    });
+  }
+  chip(t, text, color) {
+    return div().flex_none().px(6).rounded(5).bg(t.border).text_size(11).text_color(color ?? t.muted).child(text);
+  }
+  go(section) { setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), section, page: null }); }
+  link(t, id, label, section) {
+    return div().id(id).flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.go(section); }).child(label);
+  }
+
+  // Everything that waits on you: questions with their answer field, prompts, hung agents with Nudge, red main with
+  // Open run and Re-run failed, watchd down with Restart, low memory (needsOf).
+  allNeeds(t, s) {
+    const ns = needsOf(s), now = s.now ?? Date.now() / 1000;
+    if (!ns.length) return this.card(t, "needs").px(16).py(12).child(h_flex().gap(8).items_center().text_size(12.5).text_color(t.muted)
+      .child(div().size(8).rounded(4).bg(t.ansi2)).child("Nothing needs you"));
+    const hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toTimeString().slice(0, 5); };
+    const item = (n, i) => {
+      const ago = n.ago != null ? `${dur(n.ago * 1000)}` : "";
+      const [m, title, text] = n.kind === "question" ? ["asks", `${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
+        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, "Open its terminal and answer."]
+        : n.kind === "hung" ? ["hung", `${n.agent} is hung`, `No answer to the liveness check${(() => { const a = s.agents.find((x) => x.name === n.agent); return a?.task ? ` · holds #${a.task.id}` : ""; })()}`]
+        : n.kind === "ci" ? ["asks", "main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
+        : n.kind === "watchd" ? ["asks", "watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
+        : ["asks", "The machine is short on memory", n.line];
+      const st = n.kind === "question" ? this.answers.get(n.task.id) : null;
+      const acts = n.kind === "question" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
+        : n.kind === "prompt" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
+        : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(cx, nudgeArgs(n.agent))), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
+        : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []),
+          this.twice(t, `rerun-${n.run.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(n.run.id), "--failed"]))]
+        : n.kind === "watchd" ? [this.twice(t, "watchd", "Restart watchd", "Restart it", (cx) => this.act(cx, ["watchd", "--restart"]))] : [];
+      return v_flex().id(`need-${i}`).gap(6).min_w(0).when(i > 0, (el) => el.pt(10).border_t(1).border_color(t.blocked + "33"))
+        .child(h_flex().gap(8).min_w(0).items_center().text_size(12.5).child(mark(t, m))
+          .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(ago)))
+        .child(div().pl(17).text_size(13).line_height("19px").whitespace_normal().text_color(t.muted).child(text))
+        .child(h_flex().pl(17).gap(8).items_center().flex_wrap()
+          .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true)).child(this.btn(t, `send-${i}`, "Send", (cx) => this.answer(cx, n.task), true)))
+          .children(acts));
+    };
+    return this.card(t, "needs", true).px(16).py(14).gap(10)
+      .child(h_flex().gap(8).items_center().text_size(13).font_semibold().text_color(t.blocked)
+        .child("Needs you").child(div().font_normal().child(String(ns.length)))
+        .child(div().flex_1()).when(ns.some((n) => n.ago != null), (el) => el.child(div().font_normal().text_size(12).text_color(t.dim)
+          .child(`oldest ${dur(Math.max(...ns.map((n) => n.ago ?? 0)) * 1000)}`))))
+      .children(ns.slice(0, 20).map(item))
+      .when(ns.length > 20, (el) => el.child(div().text_size(12).text_color(t.dim).child(`${ns.length - 20} more`)));
+  }
+
+  // The agents in short: the first few, each with its state, its keep-or-end word and stay sign, and its context.
+  fewAgents(t, s) {
+    const rows = agentRows(s), n = rows.filter((r) => !r.comms).length, SIGNS = { hung: "hung", nowaiter: "no waiter", unwoken: "not waking" };
+    return this.card(t, "agents").pb(8)
+      .child(this.head(t, `Agents · ${n}`, null, this.link(t, "agents-all", "All ›", "agents")))
+      .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
+        .border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
+        .child(mark(t, r.mark)).child(div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
+        .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
+        .child(div().flex_none().w(40).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens)))))
+      .when(rows.length > 6, (el) => el.child(div().px(16).pt(6).text_size(12).text_color(t.dim).child(`${rows.length - 6} more`)));
+  }
+
+  // The board in short: done of all, the groups as counts, and the next task to staff.
+  fewBoard(t, s) {
+    const rows = boardRows(s), c = s.counts ?? {}, done = c.done ?? 0, total = done + (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
+    const n = (tn) => rows.filter((r) => r.tone === tn).length;
+    const next = rows.filter((r) => r.tone === "foreground")
+      .sort((x, y) => (x.k.qpos ?? 1e9) - (y.k.qpos ?? 1e9) || (x.k.priority ?? -1) - (y.k.priority ?? -1) || x.k.id - y.k.id)[0];
+    return this.card(t, "board-few").px(16).pb(12)
+      .child(this.head(t, `Board · ${done} of ${total} done`, null, this.link(t, "board-all", "Board ›", "board")).px(0))
+      .child(div().h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(t.working).w(`${total ? (100 * done) / total : 0}%`)))
+      .child(h_flex().mt(8).gap(6).flex_wrap()
+        .when(n("blocked") > 0, (el) => el.child(this.chip(t, `${n("blocked")} waits on you`, t.blocked)))
+        .child(this.chip(t, `${n("muted")} in progress`, t.working)).child(this.chip(t, `${n("foreground")} ready`))
+        .child(this.chip(t, `${n("dim")} waiting or held`, t.dim)))
+      .when(Boolean(next), (el) => el.child(h_flex().mt(8).gap(10).items_center().min_w(0).text_size(12.5)
+        .child(div().flex_none().text_color(t.dim).child("next")).child(div().flex_none().text_color(t.foreground).child(`#${next.k.id}`))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(next.k.title))
+        .when(next.k.priority != null, (el) => el.child(this.chip(t, `P${next.k.priority}`)))));
+  }
+
+  // Staffing: auto-spawn and max, Pause (auto-spawn to 0, the number kept for Resume) and Queue only.
+  staffing(t, s) {
+    const l = s.limits ?? {}, key = `rw-swarm.paused:${s.db}`, kept = shared(key);
+    const tick = h_flex().id("queue-only").flex_none().gap(6).items_center().cursor_pointer().text_size(12).text_color(l.queue_only ? t.foreground : t.muted)
+      .on_click((_e, cx) => this.act(cx, ["limits", "--queue-only", l.queue_only ? "off" : "on"]))
+      .child(div().size(14).rounded(4).border(1).border_color(l.queue_only ? t.working : t.border).bg(l.queue_only ? t.working : t.background)
+        .flex().items_center().justify_center().text_size(10).text_color(t.background).child(l.queue_only ? "✓" : "")).child("Queue only");
+    return this.card(t, "staffing").px(16).pb(12)
+      .child(this.head(t, "Staffing", `${(s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length} running`).px(0))
+      .child(h_flex().gap(12).items_center().flex_wrap()
+        .child(this.stepper(t, "min", "Auto-spawn to", l.min, (cx, n) => this.act(cx, ["limits", "--min", String(n)])))
+        .child(this.stepper(t, "max", "Max", l.max, (cx, n) => this.act(cx, ["limits", "--max", String(n)])))
+        .child(l.min > 0 ? this.btn(t, "pause", "Pause", (cx) => { setShared(key, l.min); this.act(cx, ["limits", "--min", "0"]); })
+          : this.btn(t, "resume", "Resume", (cx) => { setShared(key, null); this.act(cx, ["limits", "--min", String(kept || 1)]); }))
+        .child(tick))
+      .when(Boolean(l.held), (el) => el.child(div().mt(8).text_size(12).text_color(t.working).whitespace_normal().child(l.held.replace(/^auto-spawn holding: /, "Holding: "))));
+  }
+
+  // The machine line: memory in use.
+  machineCard(t, s) {
+    const m = s.machine, { on } = this.where(), g = (kb) => Math.round(kb / 1048576);
+    const used = m?.total_kb ? `${g(m.total_kb - (m.avail_kb ?? 0))} of ${g(m.total_kb)} G in use` : line(m?.line?.replace(/^machine: /, "")) || "not read";
+    return this.card(t, "machine").px(16).pb(12)
+      .child(this.head(t, on ? line(on, 60) : "This computer", null, this.link(t, "system-all", "System ›", "system")).px(0))
+      .child(div().text_size(12.5).text_color(m?.high ? t.blocked : t.muted).child(used));
+  }
+
+  // The latest messages, newest first.
+  latest(t, s) {
+    const ms = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts).slice(0, 5);
+    return this.card(t, "latest").pb(10)
+      .child(this.head(t, "Latest", null, this.link(t, "activity-all", "Activity ›", "activity")))
+      .children(ms.map((m, i) => h_flex().id(`latest-${i}`).h(28).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5)
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(new Date(m.ts * 1000).toTimeString().slice(0, 5)))
+        .child(div().flex_none().max_w(90).truncate().font_medium().text_color(t.foreground).child(m.frm))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${m.dest ? `to ${m.dest}: ` : ""}${one(m.body)}`))))
+      .when(!ms.length, (el) => el.child(div().px(16).text_size(12.5).text_color(t.dim).child("No messages yet")));
+  }
+
+  overview(t, s, cols) {
+    const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
+    const c1 = [this.allNeeds(t, s)], c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
+    if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
+      .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
+    return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
+  }
+
+  view(t, s) {
+    const section = shared("rw-swarm.view")?.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
+    const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
+    const body = section === "overview" ? this.overview(t, s, cols)
+      : section === "agents" ? page(this.agents(t, s))
+      : section === "board" ? page(this.board(t, s))
+      : section === "activity" ? page(this.messages(t, s))
+      : section === "landing" ? page(this.landing(t, s))
+      : section === "system" ? page(this.machineCard(t, s))
+      : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));
+    return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
+      .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
+      .child(body);
+  }
+
   render(cx) {
     const t = theme(), s = this.s;
+    // The view's swarm changed (another swarm's heading): read the new one at once.
+    if (props()?.view) {
+      const k = JSON.stringify(this.where());
+      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.refresh(cx); this.refreshPrs(cx); }
+      const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+        .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } });
+      if (!this.s) return root.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
+      return root.child(this.view(t, this.s));
+    }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
     const away = Boolean(s.away), { on } = this.where(), hc = s.agents?.find((a) => a.name === s.comms)?.hc;

@@ -208,7 +208,9 @@ partial def reworkBody (j : Json) : Json := Id.run do
     -- The All swarms view (UI-SPEC.md, "Two swarms"): a tab can't belong to no space, so it is the tab area's sibling in
     -- a stack, which the rail shows with layout.select.
     let all := Json.mkObj [("id", "all-swarms"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-swarms")])]
-    return Json.mkObj [("id", "view"), ("type", "stack"), ("active", "main"), ("children", .arr #[main, all])]
+    -- The swarm view (UI-SPEC.md, II.3): one swarm full width; which one is shared("rw-swarm.view").
+    let sw := Json.mkObj [("id", "swarm"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-swarm"), ("props", Json.mkObj [("view", true)])])]
+    return Json.mkObj [("id", "view"), ("type", "stack"), ("active", "main"), ("children", .arr #[main, all, sw])]
   let mut j := j
   if let some (.arr cs) := Json.field j "children" then
     let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")

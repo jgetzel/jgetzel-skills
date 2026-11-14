@@ -67,13 +67,16 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   files: Lx(Tx, 500), cache: Tx, branch: Tx, worktree: Tx, ended: Nx });
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx });
-const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Ax, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx }),
+const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Ax, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
-  ci: Ox({ runs: Lx(Ox({ status: Tx, conclusion: Tx }), 20) }) });
+  ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
+  watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx }), machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx }),
+  events: Lx(Ox({ id: Nx, ts: Nx, agent: Tx, kind: Tx, data: Px }), 500) });
 // `--view overview`, `agents` or `board` (all one shape): null unless an object.
 export function overOf(j) {
   const s = overview(j);
   if (s) { s.agents = uniq(s.agents.filter((a) => a.name), "name"); s.tasks = uniq(s.tasks.filter((k) => k.id != null), "id"); }
+  for (const r of s?.ci?.runs ?? []) if (!/^https:\/\/[^\s]+$/.test(r.url ?? "")) r.url = null;
   return s;
 }
 // `--view swarms`' registry entries: a db and an absolute folder each.
@@ -400,6 +403,20 @@ export function asksOf(s) {
     ...live.filter((a) => a.stay_sign === "hung").map((a) => ({ kind: "hung", agent: a.name, ago: a.idle_s })),
   ];
 }
+// Everything that waits on the user in one swarm (Part II.3, Overview's Needs you), most urgent first: watchd not
+// running, main's CI red (the last finished run, how many in a row, the task fixing it if one is claimed), then the
+// questions, prompts and hung agents (asksOf), then a machine short on memory.
+export function needsOf(s) {
+  const out = [];
+  if (s.active && s.watchd && s.watchd.alive === false) out.push({ kind: "watchd" });
+  const reds = s.ci?.red_streak ?? 0, run = (s.ci?.runs ?? []).find((r) => r.status === "completed" && r.conclusion !== "cancelled");
+  if (reds > 0 && run) out.push({ kind: "ci", run, reds,
+    fixer: (s.tasks ?? []).find((k) => (k.state === "claimed" || k.state === "blocked") && /\b(red|ci)\b/i.test(k.title ?? "")) ?? null });
+  out.push(...asksOf(s));
+  if (s.machine?.high) out.push({ kind: "memory", line: (s.machine.line ?? "").replace(/^machine: /, "") });
+  return out;
+}
+
 // An agent row: its mark, its task (title, not the terminal's last line) and its state words; who asks first, the
 // communicator last.
 export function agentRows(s) {
@@ -468,6 +485,16 @@ export function colorsOf(text, names) {
 const findId = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? findId(c, id), null));
 export const allShown = (lay) => findId(lay, "view")?.active === "all-swarms";
 export const showAll = (run, on) => run("layout.select", { stack: "view", child: on ? "all-swarms" : "main" });
+// The swarm view (Part II.3): the stack's "swarm" child, rw-swarm full width; which swarm, section and page it shows is
+// shared("rw-swarm.view") ({folder, machine, section}). viewShown: a view other than the tabs shows.
+export const swarmShown = (lay) => findId(lay, "view")?.active === "swarm";
+export const viewShown = (lay) => (findId(lay, "view")?.active ?? "main") !== "main";
+export const SECTIONS = [["overview", "Overview"], ["agents", "Agents"], ["board", "Board"], ["activity", "Activity"], ["landing", "Landing"],
+  ["system", "System"], ["history", "History"]];
+export function showSwarm(run, setShared, view) {
+  setShared("rw-swarm.view", { section: "overview", ...view });
+  run("layout.select", { stack: "view", child: "swarm" });
+}
 export const tagOf = (comms) => (comms ?? "").replace(/-?comms\d*$/, "");
 // What asks you across swarms: their summaries' needs that are an agent's (questions, prompts, hung).
 export const asksIn = (sums) => sums.flatMap((s) => (s.needs ?? []).filter((n) => ["question", "prompt", "hung"].includes(n.kind)));
