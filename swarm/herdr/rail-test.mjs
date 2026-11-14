@@ -153,9 +153,10 @@ assert.equal(agentAt({ on: null, agents: [{ name: "w", hc: "t2" }] }, "vps/t2"),
 assert.deepEqual([null, { status: "in_progress" }, { status: "completed", conclusion: "success" }, { status: "completed", conclusion: "failure" }]
   .map(ciWord), [null, "checks run", "green", "red"]);
 assert.deepEqual(rollOf(sw.rows), ["asks", "hung", "working", "done", "idle"]);
-assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied 2m" },
-  { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "idle 2m" },
-  { name: "ll-110", what: "#146", side: "2m" }]);
+assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied" },
+  { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "" },
+  { name: "ll-110", what: "#146", side: "" }]);
+assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 600e3, false).side), ["replied 10m", "asks you", "hung 58m", "idle 10m", ""]);
 // Another machine's swarm: its hc ids are that machine's.
 assert.equal(swarmOf([], { agents: [A("r", "t3")] }, new Map(), "vps").block[0].r.t.address, "vps/t3");
 // Past 8 agents: the communicator, who asks, who is hung and who you opened stay named; the rest are two counts.
