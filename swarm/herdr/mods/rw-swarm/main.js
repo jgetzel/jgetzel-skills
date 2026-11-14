@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -131,7 +131,7 @@ export default class SwarmTab extends View {
     if (!cwd) return;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "4", "--json", "number,headRefName,state,isDraft,statusCheckRollup,url"], { cwd, on });
+        const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "50", "--json", "number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url"], { cwd, on });
         if (this.where().cwd !== cwd) return;
         this.prs = r.code === 0 ? prsOf(JSON.parse(r.stdout)) : null;
       } catch { this.prs = null; } // no gh: Landing shows main's CI only
@@ -383,7 +383,7 @@ export default class SwarmTab extends View {
       .child(this.head(t, "Landing"))
       .child(h_flex().px(16).py(3).gap(8).text_size(12.5).child(div().text_color(ci?.[1] ?? t.dim).child("main"))
         .child(div().text_color(t.muted).child(ci ? ci[0] : "no CI run seen")))
-      .children((this.prs ?? []).map((p) => {
+      .children((this.prs ?? []).slice(0, 4).map((p) => {
         const [w, c] = pr(p);
         return h_flex().id(`pr-${p.number}`).px(16).py(3).gap(8).text_size(12.5).min_w(0)
           .child(div().flex_none().text_color(t.accent).cursor_pointer().hover((st) => st.underline()).on_click(() => openUrl(p.url)).child(`#${p.number}`))
@@ -767,6 +767,76 @@ export default class SwarmTab extends View {
         .when(shown.length > MAX, (el) => el.child(div().px(10).py(6).text_size(12).text_color(t.dim).child(`${shown.length - MAX} older: narrow it with a filter or the search`))));
   }
 
+  // ---- the Landing section (II.3h) ----------------------------------------------------------------------------------
+  // Branches not on main (git) and the board's done tasks (for merge_to_green_s), read as Landing shows, once a minute.
+  loadLanding(cx) {
+    if (this.land && Date.now() - this.land.at < PR_POLL || this.landLoading) return;
+    const { cwd, on } = this.where();
+    this.landLoading = true;
+    cx.spawn(async (cx) => {
+      const land = { at: Date.now(), branches: null, tasks: null };
+      try {
+        const g = await exec("git", ["for-each-ref", "--no-merged=origin/main", "--format=%(refname:short)%09%(committerdate:unix)%09%(ahead-behind:origin/main)", "refs/heads"], { cwd, on });
+        if (g.code === 0) land.branches = branchesOf(g.stdout);
+      } catch {}
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]); if (r.code === 0) land.tasks = overOf(JSON.parse(r.stdout))?.tasks ?? null; } catch {}
+      if (this.where().cwd === cwd) this.land = land;
+      this.landLoading = false; cx.notify();
+    });
+  }
+  landingView(t, s, cx) {
+    if (cx) this.loadLanding(cx);
+    const agents = s.agents ?? [], land = this.land, prs = this.prs;
+    const owner = (branch) => agents.find((a) => a.branch === branch)?.name ?? agents.find((a) => branch?.startsWith(`${a.name}/`))?.name ?? null;
+    const row = (id, kids, go) => h_flex().id(id).h(34).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
+      .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go())).children(kids);
+    const dim = (x) => div().flex_none().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(4).text_size(12.5).text_color(t.dim).child(x);
+    const prChip = (n) => this.chip(t, `#${n}`, t.ansi4);
+    // open pull requests: agent, checks, review
+    const open = (prs ?? []).filter((p) => p.state === "OPEN");
+    const CHECK = { failing: t.blocked, running: t.working, passing: t.ansi2 }, REVIEW = { APPROVED: ["approved", t.ansi2], CHANGES_REQUESTED: ["changes asked", t.ansi3], REVIEW_REQUIRED: ["review asked", t.dim] };
+    const prCard = this.card(t, "l-prs").pb(8).child(this.head(t, `Open pull requests${prs ? ` · ${open.length}` : ""}`, "from gh, once a minute"))
+      .children(prs == null ? [none("No PR data: gh is not available here")] : !open.length ? [none("None open")] : open.map((p) => {
+        const c = checksOf(p), rv = REVIEW[p.reviewDecision], who = owner(p.headRefName);
+        return row(`l-pr-${p.number}`, [prChip(p.number), div().flex_1().min_w(0).truncate().text_color(t.foreground).child(p.title ?? p.headRefName ?? ""),
+          who ? div().flex_none().text_size(12).text_color(t.muted).child(who) : dim(line(p.headRefName, 40)),
+          ...(c ? [div().flex_none().text_size(12).text_color(CHECK[c]).child(c === "passing" ? "checks pass" : c === "running" ? "checks run" : "failing")] : []),
+          ...(rv ? [div().flex_none().text_size(12).text_color(rv[1]).child(rv[0])] : []), ...(p.isDraft ? [this.chip(t, "draft")] : [])], () => openUrl(p.url));
+      }));
+    // main's CI runs, with Open and Re-run failed
+    const runs = s.ci?.runs ?? [], reds = s.ci?.red_streak ?? 0, tasks = s.tasks ?? [];
+    const fixer = tasks.find((k) => (k.state === "claimed" || k.state === "blocked") && /\b(red|ci)\b/i.test(k.title ?? ""));
+    const waiting = !fixer && tasks.find((k) => k.state === "open" && /\b(red|ci)\b/i.test(k.title ?? ""));
+    const ciCard = this.card(t, "l-ci", reds > 0).pb(8).child(this.head(t, "CI on main", reds ? `${reds} red run${reds === 1 ? "" : "s"} in a row` : runs.length ? "from watchd's polls" : null))
+      .children(!runs.length ? [none("No runs seen on main yet")] : runs.slice(0, 10).map((r) => {
+        const live = r.status !== "completed", ok = r.conclusion === "success", red = !live && r.conclusion === "failure";
+        return row(`l-run-${r.id}`, [div().w(12).flex_none().text_color(live ? t.working : ok ? t.ansi2 : red ? t.blocked : t.dim).child(live ? "●" : ok ? "✓" : red ? "✕" : "–"),
+          div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${hhmm(Date.parse(r.created ?? "") / 1000 || 0)} · run ${r.id ?? "?"} · ${live ? (r.status ?? "").replace("_", " ") : r.conclusion ?? "?"}`),
+          ...(r.url ? [this.btn(t, `l-open-${r.id}`, "Open", () => openUrl(r.url))] : []),
+          ...(red ? [this.twice(t, `rerun-${r.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(r.id), "--failed"]))] : [])]);
+      }))
+      .when(reds > 0, (el) => el.child(row("l-fix", fixer ? [div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${fixer.owner ?? "?"} is fixing it`), this.taskLink(t, fixer.id, `#${fixer.id}`)]
+        : waiting ? [div().flex_1().min_w(0).truncate().text_color(t.muted).child("Nobody has its fix task yet"), this.taskLink(t, waiting.id, `#${waiting.id}`)]
+        : [div().flex_1().min_w(0).text_color(t.muted).child("Nobody is fixing it yet"),
+          this.btn(t, "l-addfix", "Add a fix task", (cx) => this.act(cx, ["task", "add", "--priority=0", "--", `Fix main CI: run ${runs.find((r) => r.conclusion === "failure")?.id ?? ""} failed`.trim()]))])));
+    // landed today, with how long main took to go green after each merge
+    const landed = landedToday(prs, land?.tasks ?? tasks, s.now ?? Date.now() / 1000), med = median(landed.map((x) => x.green_s));
+    const landCard = this.card(t, "l-landed").pb(8).child(this.head(t, `Landed today${prs ? ` · ${landed.length}` : ""}`, med != null ? `merge to green, median ${dur(med * 1000)}` : null))
+      .children(prs == null ? [none("No PR data: gh is not available here")] : !landed.length ? [none("Nothing merged today")] : landed.slice(0, 40).map((x) =>
+        row(`l-l-${x.pr}`, [prChip(x.pr), div().flex_1().min_w(0).truncate().text_color(t.foreground).child(`${x.task != null ? `#${x.task} ` : ""}${x.title}`),
+          dim(`${hhmm(x.at)}${x.green_s != null ? ` · green in ${dur(x.green_s * 1000)}` : ""}`)], x.task != null ? () => this.openTask(x.task) : () => openUrl(x.url))));
+    // branches with commits main does not have
+    const br = land?.branches;
+    const brCard = this.card(t, "l-br").pb(8).child(this.head(t, `Not on main${br ? ` · ${br.length}` : ""}`, "local branches ahead of origin/main"))
+      .children(!land ? [none("Reading…")] : br == null ? [none("git could not list the branches here")] : !br.length ? [none("Everything is on main")] : br.map((b) => {
+        const who = owner(b.name);
+        return row(`l-b-${b.name}`, [div().flex_none().w(90).truncate().font_medium().text_color(who ? t.foreground : t.dim).child(who ?? "—"),
+          div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${b.ahead} commit${b.ahead === 1 ? "" : "s"} on ${b.name}${b.behind ? `, ${b.behind} behind` : ""}`),
+          dim(b.at ? `last ${hhmm(b.at)}` : "")], who ? () => this.openAgent(who) : null);
+      }));
+    return v_flex().gap(10).child(prCard).child(ciCard).child(landCard).child(brCard);
+  }
+
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
   // `task add`, then queue and hold as the form says; its id is in "task #N".
   addFull(cx) {
@@ -987,7 +1057,7 @@ export default class SwarmTab extends View {
       : section === "agents" ? page(this.agents(t, s))
       : section === "board" ? this.boardView(t, s, cx)
       : section === "activity" ? page(this.activityView(t, s))
-      : section === "landing" ? page(this.landing(t, s))
+      : section === "landing" ? page(this.landingView(t, s, cx))
       : section === "system" ? page(this.machineCard(t, s))
       : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
@@ -1002,7 +1072,7 @@ export default class SwarmTab extends View {
     // The view's swarm changed (another swarm's heading): read the new one at once.
     if (props()?.view) {
       const k = JSON.stringify(this.where());
-      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.refresh(cx); this.refreshPrs(cx); }
+      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
