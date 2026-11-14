@@ -53,6 +53,12 @@ export default class Rail extends View {
     this.renaming = null; // the machine whose heading is a field
     this.name = InputState.new({});
     this.name.on("submit", (_e, cx) => this.rename(cx));
+    this.retitle = null; // { tab, address }: the row whose tab is renamed in place (Part II.2)
+    this.tabInput = InputState.new({});
+    this.tabInput.on("submit", (_e, cx) => {
+      if (this.retitle) run("tab.rename", { id: this.retitle.tab, name: this.tabInput.value().trim() }); // empty: its number again
+      this.retitle = null; cx.notify();
+    });
     this.refreshMachines(cx);
     cx.timer.every(15000, (cx) => this.refreshMachines(cx));
   }
@@ -379,18 +385,43 @@ export default class Rail extends View {
     else run(c.command.name, c.command.args);
   }
 
-  // `text`: a swarm row's own what and side (swarmText); a swarm row has no x (`plain` false).
-  row(t, r, tabName, on, now, text = null, plain = true) {
+  // The full title, folder, branch and state of a row, resting on it (Part II.2).
+  card(t, r, name, sideText) {
+    const p = r.pane && this.paneBy.get(r.pane), cwd = p?.cwd ?? r.t.cwd;
+    const state = { working: "working", asks: "asks you", hung: "hung", done: "done", idle: "idle", run: "a program in front", prompt: "at a prompt" }[r.mark];
+    const where = [cwd && line(this.home && cwd.startsWith(this.home) ? `~${cwd.slice(this.home.length)}` : cwd, 120), p?.branch && line(p.branch, 60),
+      [state, r.mark === "run" || r.mark === "prompt" ? null : sideText].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+    return v_flex().ml(30).w(300).px(10).py(8).gap(2).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .text_size(12.5).whitespace_normal()
+      .child(div().text_color(t.muted).child(line(r.t.title, 200) || name))
+      .child(div().text_color(t.dim).child(where));
+  }
+
+  // `text`: a swarm row's own what and side (swarmText); a swarm row has no x and no rename (`plain` false); the
+  // collapsed rail's card draws rows without a card of their own (`card` false).
+  row(t, r, tabName, on, now, { text = null, plain = true, card = true } = {}) {
     const shell = !AGENT.has(r.mark);
     let { name, what } = rowText(r.t, r.mark, tabName, this.home);
     let sideText = since(r.mark, this.changed[r.t.address]?.at, now);
     if (text) ({ name, what, side: sideText } = text);
+    if (plain && r.tab && this.retitle?.address === r.t.address) return h_flex().id(`retitle-${r.t.address}`).h(ROW).flex_none().mx(4).px(2)
+      .items_center().rounded(7).bg(t.raised)
+      .on_key_down((e, cx) => { if (e.key === "escape") { this.retitle = null; cx.stop_propagation(); cx.notify(); } })
+      .child(div().flex_1().min_w(0).h(22).px(6).flex().items_center().rounded(6).border(1).border_color(t.ring ?? t.accent).bg(t.background)
+        .cursor_text().child(Input.new(this.tabInput).h_full().text_size(12.5).text_color(t.foreground)));
     const closes = plain && Boolean(r.pane), x = closes && this.hotRow === r.t.address;
-    return h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
+    const el = h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
       .when(on, (el) => el.bg(t.raised))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click((_e, cx) => this.open(r, cx))
+      .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2)) this.open(r, cx); }) // a double click's second focuses the field
+      // Double click: rename its tab in place.
+      .when(plain && Boolean(r.tab), (el) => el.on_mouse_down("left", (e, cx) => {
+        if (e.click_count !== 2) return;
+        this.retitle = { tab: r.tab, address: r.t.address };
+        this.tabInput.set_value(this.tabName.get(r.tab) ?? name); cx.notify();
+        cx.timer.after(50, () => this.tabInput.focus()); // once the field is drawn
+      }))
       .when(closes, (el) => el
         .on_hover((h, cx) => { if (h) this.hotRow = r.t.address; else if (this.hotRow === r.t.address) this.hotRow = null; cx.notify(); })
         .on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
@@ -405,6 +436,7 @@ export default class Rail extends View {
         .text_size(13).text_color(t.dim).hover((s) => s.bg(t.input).text_color(t.foreground))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : mark(t, r.mark));
+    return card ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el).content(this.card(t, r, name, sideText)) : el;
   }
 
   counts(t, rows) {
@@ -417,7 +449,7 @@ export default class Rail extends View {
   }
 
   // A swarm's block: a heading (tag, agents, tasks left), its agents' rows, and past 8 agents two counts that show all.
-  block(t, s, sw, tabNames, shownTerm, now) {
+  block(t, s, sw, tabNames, shownTerm, now, fly = false) {
     const sum = sw.sum;
     const tag = (sum.comms ?? "").replace(/-?comms\d*$/, "");
     const left = ["open", "claimed", "blocked"].reduce((n, k) => n + (sum.counts?.[k] ?? 0), 0);
@@ -434,7 +466,7 @@ export default class Rail extends View {
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
       const root = asks ? { ...it.r, ask: { folder: sum.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
-      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text, false));
+      return [root, ...it.kids].map((r, i) => () => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly }));
     }), (f) => f());
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))
@@ -470,7 +502,7 @@ export default class Rail extends View {
     const open = !folded && (rows.length > 0 || adds);
     const tabs = s.tabs.length;
     const stop = (_e, cx) => cx.stop_propagation();
-    const draw = (r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now);
+    const draw = (r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { card: !fly });
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
         .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
@@ -490,7 +522,7 @@ export default class Rail extends View {
           .child(svg("mods/workspace-chrome/plus.svg").size(12)))))
       // The space's rows hang on a guide line under its chevron.
       .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
-        .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now)))
+        .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now, fly)))
         .children(this.capped(t, s.id, tabGroups(sw ? sw.rest : rows), (g) => this.tabOf(t, g, draw)).flat())
         .when(adds, (el) => el.child(h_flex().id(`new-tab-${s.id}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
           .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
@@ -560,6 +592,7 @@ export default class Rail extends View {
     if (shownAll && this.viewTab !== undefined && tab !== this.viewTab) showAll(run, false);
     this.viewTab = shownAll ? (this.viewTab === undefined ? tab : this.viewTab) : undefined;
     const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
+    this.paneBy = new Map(ps.map((p) => [p.pane, p]));
     this.tabsOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.tabs])));
     const tabName = this.tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
