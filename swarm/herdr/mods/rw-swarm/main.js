@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, queueRows, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -53,6 +53,14 @@ export default class SwarmTab extends View {
     this.pastFilter = InputState.new({ placeholder: "Filter" });
     this.pastFilter.on("change", (_e, cx) => cx.notify());
     this.form = { p: 2, model: null, effort: null, queue: false, hold: false };
+    // Overview's Message the swarm and Spawn (II.3j)
+    this.swarmMsg = InputState.new({ placeholder: "Write a message…" });
+    this.swarmMsg.on("submit", (_e, cx) => this.post(cx));
+    this.spawnName = InputState.new({ placeholder: "Name" });
+    this.spawnName.on("submit", (_e, cx) => this.spawnAgent(cx));
+    this.spawnTask = InputState.new({ placeholder: "Task #" });
+    this.spawnTask.on("submit", (_e, cx) => this.spawnAgent(cx));
+    this.spawning = null; // the Spawn form's {model, effort} while it shows
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -216,6 +224,12 @@ export default class SwarmTab extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_key_down((e, cx) => { if (e.key === "escape") { st.set_value(""); cx.notify(); } })
       .child(Input.new(st).h_full().text_size(12.5).text_color(t.foreground));
+  }
+  // One of a few values, as joined buttons (`opts`: [value, label]).
+  seg(t, id, opts, v, set) {
+    return h_flex().flex_none().gap(2).children(opts.map(([val, label]) => div().id(`${id}-${label}`).px(7).h(24).flex().items_center()
+      .rounded(6).text_size(12).cursor_pointer().bg(v === val ? t.selected : t.background).text_color(v === val ? t.foreground : t.muted).border(1).border_color(t.border)
+      .on_click((_e, cx) => { set(val); cx.notify(); }).child(label)));
   }
   stepper(t, id, label, v, set) {
     const b = (k, ch, n) => div().id(`${id}-${k}`).w(24).h(24).flex().items_center().justify_center().rounded(6).text_color(t.muted)
@@ -441,7 +455,10 @@ export default class SwarmTab extends View {
   fewAgents(t, s) {
     const rows = agentRows(s), n = rows.filter((r) => !r.comms).length, SIGNS = { hung: "hung", nowaiter: "no waiter", unwoken: "not waking" };
     return this.card(t, "agents").pb(8)
-      .child(this.head(t, `Agents · ${n}`, null, this.link(t, "agents-all", "All ›", "agents")))
+      .child(this.head(t, `Agents · ${n}`, null, h_flex().gap(12).child(div().id("spawn-open").flex_none().text_size(12).text_color(t.dim).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.openSpawn(s); cx.notify(); }).child("Spawn…"))
+        .child(this.link(t, "agents-all", "All ›", "agents"))))
+      .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t)))
       .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
         .border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
         .child(mark(t, r.mark)).child(div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
@@ -511,10 +528,62 @@ export default class SwarmTab extends View {
 
   overview(t, s, cols) {
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    const c1 = [this.allNeeds(t, s), this.digest(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
+    const c1 = [this.allNeeds(t, s), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
     return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
+  }
+
+  // ---- Message the swarm and Spawn (II.3j) --------------------------------------------------------------------------
+  // `swarm post` to the communicator, everyone ("all") or one agent.
+  post(cx) {
+    const text = this.swarmMsg.value().trim(), to = this.to === "comms" ? this.s?.comms : this.to;
+    if (text && to && !this.busy) this.act(cx, ["post", ...(this.swarmUrgent ? ["--urgent"] : []), "--", to, text], () => { this.swarmMsg.set_value(""); this.swarmUrgent = false; });
+  }
+  messageCard(t, s) {
+    const live = (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).map((a) => a.name);
+    if (!(this.to === "all" || (this.to === "comms" && s.comms) || live.includes(this.to))) this.to = s.comms ? "comms" : "all";
+    const agent = this.to !== "comms" && this.to !== "all";
+    const pill = (id, label, on, f) => div().id(id).flex_none().max_w(160).truncate().h(26).px(10).flex().items_center().rounded(8).border(1).text_size(12).cursor_pointer()
+      .border_color(on ? t.working : t.border).bg(on ? t.working + "22" : t.background).text_color(on ? t.foreground : t.muted)
+      .on_click((_e, cx) => { cx.stop_propagation(); f(); cx.notify(); }).child(label);
+    return this.card(t, "say").px(16).pb(12).gap(8)
+      .child(this.head(t, "Message the swarm", null).px(0))
+      .child(h_flex().gap(6).items_center().flex_wrap().child(div().text_size(12).text_color(t.dim).child("To"))
+        .when(Boolean(s.comms), (el) => el.child(pill("to-comms", "Communicator", this.to === "comms", () => { this.to = "comms"; this.picking = false; })))
+        .child(pill("to-all", "Everyone", this.to === "all", () => { this.to = "all"; this.picking = false; }))
+        .when(live.length > 0, (el) => el.child(pill("to-one", `${agent ? line(this.to, 40) : "An agent"} ▾`, agent, () => { this.picking = !this.picking; }))))
+      .when(Boolean(this.picking), (el) => el.child(h_flex().gap(6).flex_wrap().children(live.slice(0, 40).map((n, i) =>
+        pill(`to-${i}`, line(n, 40), this.to === n, () => { this.to = n; this.picking = false; })))))
+      .child(h_flex().gap(8).items_center().child(this.field(t, "say-msg", this.swarmMsg))
+        .child(div().id("say-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
+          .border_color(this.swarmUrgent ? t.blocked : t.border).text_color(this.swarmUrgent ? t.blocked : t.muted)
+          .on_click((_e, cx) => { this.swarmUrgent = !this.swarmUrgent; cx.notify(); }).child("Urgent"))
+        .child(this.btn(t, "say-send", "Send", (cx) => this.post(cx), true)));
+  }
+  // shortcut: names come from the overview's agents, so a newer ended one can collide; spawn refuses and says so.
+  openSpawn(s) {
+    if (this.spawning) { this.spawning = null; return; }
+    this.spawning = { model: "sonnet", effort: null };
+    this.spawnName.set_value(nextName(s.comms, [...(s.agents ?? []), ...(this.ended ?? [])].map((a) => a.name)));
+    this.spawnTask.set_value("");
+  }
+  spawnAgent(cx) {
+    const f = this.spawning, args = f && spawnArgs(this.spawnName.value(), { ...f, task: this.spawnTask.value() });
+    if (!f || this.busy) return;
+    if (!args) { this.flash = "A name is letters, digits, '.', '_' or '-'; a task is its number"; cx.notify(); return; }
+    this.act(cx, args, () => { this.spawning = null; });
+  }
+  spawnForm(t) {
+    const f = this.spawning;
+    return v_flex().mx(16).mb(10).p(10).gap(8).rounded(9).border(1).border_color(t.border).bg(t.background)
+      .child(h_flex().gap(8).items_center().child(this.field(t, "sp-name", this.spawnName)).child(div().w(110).flex_none().child(this.field(t, "sp-task", this.spawnTask).min_w(0))))
+      .child(h_flex().gap(8).items_center().flex_wrap()
+        .child(this.seg(t, "sp-m", [["opus", "opus"], ["sonnet", "sonnet"], ["haiku", "haiku"]], f.model, (v) => { f.model = v; }))
+        .child(this.seg(t, "sp-e", [[null, "effort"], ["low", "low"], ["medium", "med"], ["high", "high"], ["xhigh", "xhigh"]], f.effort, (v) => { f.effort = v; })))
+      .child(h_flex().gap(8).items_center().child(div().flex_1().text_size(12).text_color(t.dim).child("Its own worktree and tab; with a task, it claims it first"))
+        .child(this.btn(t, "sp-cancel", "Cancel", (cx) => { this.spawning = null; cx.notify(); }))
+        .child(this.btn(t, "sp-go", this.busy ? "Spawning…" : "Spawn", (cx) => this.spawnAgent(cx), true)));
   }
 
   // ---- the agent page (II.3d) ----------------------------------------------------------------------------------------
@@ -715,9 +784,7 @@ export default class SwarmTab extends View {
       this.showWaiting ? group("b-wait", "Waiting on other tasks or held", waiting, (r) => [div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child(r.k.hold ? `held: ${r.k.hold}` : r.state), ...plus(r.k)]) : null,
       waiting.length && !this.showWaiting ? div().id("b-wait-show").px(4).text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
         .on_click((_e, cx) => { this.showWaiting = true; cx.notify(); }).child(`${waiting.length} waiting on other tasks or held ›`) : null].filter(Boolean);
-    const f = this.form, seg = (id, opts, v, set) => h_flex().flex_none().gap(2).children(opts.map(([val, label]) => div().id(`${id}-${label}`).px(7).h(24).flex().items_center()
-      .rounded(6).text_size(12).cursor_pointer().bg(v === val ? t.selected : t.background).text_color(v === val ? t.foreground : t.muted).border(1).border_color(t.border)
-      .on_click((_e, cx) => { set(val); cx.notify(); }).child(label)));
+    const f = this.form, seg = (...a) => this.seg(t, ...a);
     const tick = (id, label, on, flip) => h_flex().id(id).gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { flip(); cx.notify(); })
       .child(div().size(13).rounded(3).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)).child(label);
     const form = this.card(t, "b-new").px(16).pb(12).gap(8).child(this.head(t, "New task", "Enter adds").px(0))

@@ -303,6 +303,16 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(moveArgs(q, 2, "down"), ["queue", "add", "2", "--after", "5"]);
   assert.equal(moveArgs(q, 0, "up"), null); assert.equal(moveArgs(q, 4, "down"), null); assert.equal(moveArgs(q, 9, "up"), null);
 }
+// Spawn (II.3j): the next name as watchd picks it, and the form's command.
+{
+  const { nextName, spawnArgs } = await import("./mods/rw-rail/tree.js");
+  assert.equal(nextName("ll-comms", ["ll-comms", "ll-9", "ll-127", "ll-12x", "x-400", null]), "ll-128");
+  assert.equal(nextName("hub", ["hub-2"]), "hub-3"); assert.equal(nextName(null, []), "agent-1");
+  assert.deepEqual(spawnArgs(" ll-5 ", { model: "opus", effort: "high", task: "#12" }), ["spawn", "--model=opus", "--effort=high", "--task=12", "--", "ll-5"]);
+  assert.deepEqual(spawnArgs("a", {}), ["spawn", "--", "a"]);
+  for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
+  assert.equal(spawnArgs("a", { task: "1,2" }), null);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",
