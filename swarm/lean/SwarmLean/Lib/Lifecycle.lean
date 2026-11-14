@@ -3,6 +3,7 @@ import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.Msgs
 import SwarmLean.Db.Queue
+import SwarmLean.Db.Reuse
 
 /-! watchd.lua's parts that `swarm end` and `swarm endable` run: whether an agent's work landed (landed_ref, landed,
 unlanded, unclean_list), what keeps it (end_why, endable_reasons, over fate's reads of one agent), and the end itself
@@ -119,17 +120,17 @@ structure Reads (m : Type → Type) where
   unlanded : m (Option (String × List String))
   /-- a terminal's cwd is in this repo or one of its worktrees (else another swarm's terminal) -/
   ours : String → m Bool
-  /-- how many tasks are startable -/
+  /-- how many tasks it would be offered (`Reuse.candidates`) -/
   pool : Nat
+  /-- the reuse threshold (`Reuse.reuseBelow`); 0 is off -/
+  below : Nat
   /-- process `pid` lives -/
   alive : Int → m Bool
-  /-- it was told of every startable task and has read what would wake it -/
+  /-- it was offered every task it would be and has read what would wake it -/
   passedOver : Bool
 
-/-- The task ids `n`'s digests named (watchd.reads' told_of). -/
-def toldOf (db : Db) (n : String) : List Int :=
-  (db.events.filter fun e => e.kind == some "digest" && e.agent == some n).flatMap fun e =>
-    ((e.data.getD "").splitOn ",").filterMap fun i => if i == "" then none else parseInt i
+/-- The task ids `n`'s offers named since it finished its last task (watchd.reads' told_of). -/
+def toldOf (db : Db) (n : String) : List Int := (Reuse.offers db n).flatMap (·.2)
 
 /-- `n`'s unread messages that would wake it, and how many of them are urgent (watchd.reads' waking). -/
 def waking (db : Db) (n : String) : Nat × Nat :=
@@ -137,9 +138,9 @@ def waking (db : Db) (n : String) : Nat × Nat :=
   ((us.filter fun r => r.kind != some "notice" || r.urgent.getD 0 != 0).length, (us.filter (·.urgent.getD 0 != 0)).length)
 
 /-- The reads of agent `n` on `db` (agent, task, lock and workspace tables; `passedOver` also the event, msg and
-cursor tables); `pool` the startable tasks. -/
+cursor tables); `pool` the tasks it would be offered. -/
 def reads (db : Db) (main : Option String) (wts all : List (String × String)) (n : String)
-    (pool : List Task := Queue.staffing db) : Reads m where
+    (pool : List Task := []) : Reads m where
   claims := db.tasks.any fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)
   locks := db.locks.any (·.agent == some n)
   job := do return (Machine.bgAgents db.agents (← Machine.procs)).lookup n
@@ -149,6 +150,7 @@ def reads (db : Db) (main : Option String) (wts all : List (String × String)) (
     let under (w : String) := cwd == w || cwd.startsWith (w ++ "/")
     return all.any (under ·.1) || main.any under
   pool := pool.length
+  below := Reuse.reuseBelow db
   alive := Sys.pidAlive
   passedOver := let told := toldOf db n; pool.all (told.contains ·.id) && (waking db n).1 == 0
 
@@ -166,8 +168,8 @@ structure Heard where
 
 /-- Lifecycle's verdict on live agent row `a` (watchd.fate, model Decide.lean's fateL), and what it heard: none (kept:
 staying, busy, idle under 2 min, in another swarm's or a busy terminal, holding a claim or lock, or, once its work is
-landed, running a background job); "unclean", idle but kept by work not on its bases; "reuse", small, the pool not
-empty and not passed over, its waiter alive; else "end". `x`: its hc terminal; `hasTerms`: hc answered. With `all`
+landed, running a background job); "unclean", idle but kept by work not on its bases; "reuse", context under the
+reuse threshold, an offer of related tasks (`Reuse.candidates`) not passed over, its waiter alive; else "end". `x`: its hc terminal; `hasTerms`: hc answered. With `all`
 no check holds, so every one is made (the verdict is then meaningless). -/
 def fateHeard (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Reads m) (all : Bool := false) :
     m (Option String × Heard) := do
@@ -196,7 +198,7 @@ def fateHeard (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Rea
   let j ← f.job  -- a background job runs (a build, a CI wait): ending would kill it (board #15)
   let (h1, b) := k { h with proc := j } "job" j.isSome
   h := h1; if b then return (none, h)
-  let (h1, small) := k h "context" (a.ctx_tokens.getD 0 < SMALL_CTX && f.pool > 0 && !f.passedOver)
+  let (h1, small) := k h "context" ((a.ctx_tokens.getD 0).toNat < f.below && f.pool > 0 && !f.passedOver)
   h := h1
   let w ← match a.waiter with
     | some p => f.alive p

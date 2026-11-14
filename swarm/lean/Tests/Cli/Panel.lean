@@ -48,16 +48,18 @@ def test_fate_is_the_ticks_verdict (t : T) : IO Unit := do
   discard <| t.git t.repo ["worktree", "add", "-q", "-b", "u1", uw]
   t.write "a" "../wu/new.txt" "scratch"  -- one uncommitted file
   idle t "comms"
-  idle t "e" [("wt", t.wt)]                                     -- small, a ready task, a live waiter: reuse
+  idle t "e" [("wt", t.wt), ("model", "sonnet")]               -- small, a related task, a live waiter: reuse
   idle t "u" [("wt", uw)]                                       -- work not on its base: unclean
   idle t "s" [("wt", t.wt), ("stay", "reviews")]                -- kept by its stay
   idle t "z" [("wt", t.wt), ("waiter", .int 999999)]            -- small and a task ready, but no waiter: end
   idle t "w" [("wt", t.wt), ("status", "working")]              -- not idle: no fate
-  t.sw_ "comms" ["task", "add", "t1"]
+  t.sw_ "comms" ["limits", "--reuse-below", "50000"]
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('t0','done','e','sha','ui',1)"
+  t.sw_ "comms" ["task", "add", "t1", "--label", "ui"]
   let a ← st t ["--view", "agents"]
   let fate (n : String) := (byName a n).f "fate"
   eq (toJson [(fate "e").f "verdict", (fate "e").f "short", (fate "e").f "says"])
-    (json% ["reuse", "#1 is ready", "Kept for reuse: #1 is ready"])
+    (json% ["reuse", "offered #2", "Kept for an offer: offered #2"])
   eq (toJson [(fate "u").f "verdict", (fate "u").f "short"]) (json% ["unclean", "uncommitted work"])
   eq (toJson [(fate "s").f "verdict", (fate "s").f "short", (fate "s").f "says"])
     (json% ["kept", "stays", "Kept: stays"])

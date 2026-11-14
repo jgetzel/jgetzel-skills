@@ -232,6 +232,19 @@ structure AddArgs where
   effort : Option String := none
   base : Option String := none
   priority : Option Int := none
+  /-- `--label`: its labels, comma-separated as given -/
+  labels : Option String := none
+
+/-- A `--label` text as stored: split at commas and spaces, empties and repeats dropped; none when nothing is left. -/
+def labelsText (s : String) : Option String :=
+  let ls := ((s.map fun c => if isSpace c then ',' else c).splitOn ",").filter (· ≠ "")
+  if ls.isEmpty then none else some (",".intercalate ls.eraseDups)
+
+/-- A task's labels (board #186). -/
+def labelsOf (t : Task) : List String := ((t.labels.getD "").splitOn ",").filter (· ≠ "")
+
+/-- The tasks a task's creator held when it was added (board #186). -/
+def parentsOf (t : Task) : List Int := ((t.parents.getD "").splitOn ",").filterMap parseInt
 
 /-- `task add`: the new task's id. -/
 def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
@@ -245,7 +258,10 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
       let id := db.taskNext
       let t : Task := { id, title := some a.title, body := some a.body, created_by := some c.me,
                         deps := py (some (",".intercalate (a.deps.map d))), model := a.model, effort := a.effort,
-                        base := a.base, created_at := some c.now, priority := some (a.priority.getD DEFAULT_PRIORITY) }
+                        base := a.base, created_at := some c.now, priority := some (a.priority.getD DEFAULT_PRIORITY),
+                        labels := a.labels.bind labelsText,
+                        parents := py (some (",".intercalate ((db.tasks.filter fun t => t.owner == some c.me &&
+                          (t.state = .claimed || t.state = .blocked)).map (d ·.id)))) }
       let db := { db with tasks := db.tasks ++ [t], taskNext := db.taskNext + 1 }
       (db.log c.now (some c.me) "task-add" none (some s!"#{d id} {a.title}"), .ok id)
 
@@ -413,12 +429,14 @@ structure EditArgs where
   append : Option String := none
   model : Option String := none
   effort : Option String := none
+  /-- `task label`: the new labels (`labelsText`; "" clears them) -/
+  labels : Option String := none
   urgent : Bool := false
 
-/-- `task edit`'s new title, body, model and effort for row `r` with the new body `newBody`, the columns changed and a
-note for each. -/
+/-- `task edit`'s new title, body, model, effort and labels for row `r` with the new body `newBody`, the columns changed
+and a note for each. -/
 def editCols (id : Int) (r : Task) (a : EditArgs) (newBody : Option String) :
-    (Option String × Option String × Option String × Option String) × List String × List String :=
+    (Option String × Option String × Option String × Option String × Option String) × List String × List String :=
   -- change(col, new, note): a no-op when new equals the current value, as Python truthiness reads it
   let ch (cur : Option String) (new : Option String) (col note : String) (acc : Option String × List String × List String) :=
     if new == py cur then acc else (new, acc.2.1 ++ [col], acc.2.2 ++ [note])
@@ -435,10 +453,13 @@ def editCols (id : Int) (r : Task) (a : EditArgs) (newBody : Option String) :
   let (model, f4, n4) := match a.model with
     | some m => ch r.model (py (some m)) "model" s!"model: {(py r.model).getD "-"} -> {(py (some m)).getD "-"}" (r.model, f3, n3)
     | none => (r.model, f3, n3)
-  let (effort, fields, notes) := match a.effort with
+  let (effort, f5, n5) := match a.effort with
     | some e => ch r.effort (py (some e)) "effort" s!"effort: {(py r.effort).getD "-"} -> {(py (some e)).getD "-"}" (r.effort, f4, n4)
     | none => (r.effort, f4, n4)
-  ((title, body, model, effort), fields, notes)
+  let (labels, fields, notes) := match a.labels with
+    | some l => ch r.labels (labelsText l) "labels" s!"labels: {(py r.labels).getD "-"} -> {(labelsText l).getD "-"}" (r.labels, f5, n5)
+    | none => (r.labels, f5, n5)
+  ((title, body, model, effort, labels), fields, notes)
 
 /-- `task edit`: the fields changed and the task's state. -/
 def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (List String × Status) :=
@@ -450,9 +471,9 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
     else
       if let some (p, none) := a.bodyFile then (db, .error s!"can't read {p}") else
       let newBody := match a.bodyFile with | some (_, some t) => some t | _ => a.body
-      let ((title, body, model, effort), fields, notes) := editCols id r a newBody
+      let ((title, body, model, effort, labels), fields, notes) := editCols id r a newBody
       if fields.isEmpty then (db, .error "nothing to change") else
-      let db := db.set id ({ · with title, body, model, effort })
+      let db := db.set id ({ · with title, body, model, effort, labels })
       let db := db.log c.now (some c.me) "task-edit" none (some s!"#{d id} {", ".intercalate fields}")
       let db := match py r.owner with
         | some o =>

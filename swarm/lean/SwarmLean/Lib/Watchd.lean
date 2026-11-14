@@ -437,9 +437,9 @@ def numbered (pre name : String) : Option Nat :=
     if !rest.isEmpty && rest.all Char.isDigit then rest.toNat? else none
   else none
 
-/-- Staffs startable tasks up to the auto-spawn number; the board's "auto-spawn holding" line when a limit stops it
-(watchd.auto_spawn). -/
-def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
+/-- Staffs startable tasks up to the auto-spawn number, but none under an outstanding offer (`offered`); the board's
+"auto-spawn holding" line when a limit stops it (watchd.auto_spawn). -/
+def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Option String) := do
   let envComms ← env "SWARM_COMMS"
   let db ← Store.txn [.agent, .«meta», .task] fun db => (db, db)
   let (_, mn, mx) := limits db envComms
@@ -465,7 +465,7 @@ def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
       Store.txn [.«meta»] fun db => (delMeta db "spawn_halt", ())
       halt := none
   let haltOf := halt
-  let skip (x : Task) : Bool := haltOf == some (d x.id)
+  let skip (x : Task) : Bool := haltOf == some (d x.id) || offered.contains x.id
   let mut lost := 0
   repeat
     -- read again before each launch (model Staff.lean, `freshPool`): a task freed meanwhile must not wait (board #91)
@@ -481,7 +481,7 @@ def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
     let name ← match boName with
       | some n => if n != "" then pure n else do top := top + 1; pure (pre ++ toString top)
       | none => do top := top + 1; pure (pre ++ toString top)
-    let model := (py task.model).getD ((py opts.model).getD "sonnet")
+    let model := Reuse.modelOf ((py opts.model).getD "sonnet") task
     let sa : Spawn.Args := { name := name, model := model, effort := (py task.effort).orElse (fun _ => py opts.effort),
                              taskId := some (task.id : Int), top := some (Queue.staffHead skip) }
     let r ← tryCatchThe Exit (do return some (← Spawn.spawnE sa)) fun _ => pure none
@@ -523,8 +523,8 @@ def autoSpawn (comms : String) (opts : Opts) : m (Option String) := do
 
 -- ---------- lifecycle ----------
 
-/-- Ends finished agents, digests reusable ones, staffs startable tasks (watchd.lifecycle); the sweep's "not landed"
-cache before and after. -/
+/-- Ends finished agents, offers reusable ones related tasks (board #186), staffs the startable tasks not under an
+offer (watchd.lifecycle); the sweep's "not landed" cache before and after. -/
 def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Opts) (notLanded : List String) :
     m (List String) := do
   let db0 ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
@@ -549,27 +549,34 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let pool := Queue.staffing db
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
+  let dflt := (py opts.model).getD "sonnet"
   for a in Agents.live db do
-    let f : Lifecycle.Reads m := { Lifecycle.reads db main wts all a.name pool with
-      job := pure ((Machine.bgAgents db.agents procs).lookup a.name) }
+    let offer := Reuse.candidates db a.name a.model dflt pool
+    let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts all a.name offer
+    -- an offer unanswered OFFER_TTL counts as declined
+    let f := { f0 with job := pure ((Machine.bgAgents db.agents procs).lookup a.name),
+                       passedOver := f0.passedOver || Reuse.expired db a.name (offer.map (·.id : Task → Int)) t }
     let x := if terms.isSome then (py a.hc).bind by_ else none
     let (v, h) ← Lifecycle.fateHeard a t x terms.isSome f
     match v, h.proc with
     | none, some p => idleJob a f p procs t comms x terms.isSome
     | some "unclean", _ => if let some (w, bs) := h.held then unclean a w (bs.headD "nil") t comms
-    | some "reuse", _ => reusable := reusable ++ [a]
+    | some "reuse", _ => reusable := reusable ++ [(a, offer)]
     | some "end", _ => discard <| Lifecycle.endAgent a false none
     | _, _ => pure ()
-  let ids := (pool.map (·.id : Task → Int)).mergeSort (· ≤ ·)
-  for a in reusable do  -- edge-triggered: only when the pool holds an id this agent was never told about
+  for (a, offer) in reusable do  -- edge-triggered: only when the offer holds an id this agent was never offered
+    let ids := offer.map (·.id : Task → Int)
     let now ← Clock.now
     Store.txn [.event] fun db =>
       let told := Lifecycle.toldOf db a.name
       if ids.all told.contains then (db, ()) else
       -- the event marks it told: never without its message
       let db := db.log now (some a.name) "digest" none (some (",".intercalate (ids.map d)))
-      (say db now a.name s!"{pool.length} open task(s) and you are idle: `swarm board`." false "system", ())
-  let held ← if reusable.isEmpty && !pool.isEmpty then autoSpawn comms opts else pure none
+      (say db now a.name (Reuse.text offer) false "system", ())
+  let offered ← if pool.isEmpty then pure [] else do
+    let now ← Clock.now
+    Store.txn [.agent, .task, .event] fun db => (db, Reuse.offered db now)
+  let held ← if !pool.isEmpty then autoSpawn comms opts offered else pure none
   let now ← Clock.now
   Store.txn [.«meta»] fun db =>
     let old := db.getMeta "spawn_held"

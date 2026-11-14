@@ -167,7 +167,7 @@ with subagents.
   check. Kill by PID, never `pkill -f`.
 - Clean up every terminal you start (`hc kill <t> && hc rm <t>`) when the
   swarm ends.
-- Keep the board and your notes current so a compaction loses nothing. From 325k watchd asks an agent (you too) to `swarm compact`; from 400k it compacts an idle agent itself, not you or a stayer unless `swarm limits --compact-stayers on` (`--ctx-nudge/--ctx-compact N`, 0 off). You have no hooks, so `swarm read/wait/board/who` record your context for watchd.
+- Keep the board and your notes current so a compaction loses nothing. From 325k watchd asks an agent (you too) to `swarm compact`; from 400k it compacts an idle agent itself, not you or a stayer unless `swarm limits --compact-stayers on` (`--ctx-nudge/--ctx-compact N`, 0 off). You have no hooks, so `swarm read/wait/board/who` record your context for watchd. `swarm limits --reuse-below N` (0, the default, is off): an agent done under N tokens is offered up to five startable tasks related to its last (filed while it held it, `--after` it, or sharing a `--label`) for its model; it claims one or declines, and watchd ends it after a decline or 5 min. In queue-only mode only queued tasks are offered. Label tasks (`task add --label a,b`, `task label <id> a b`) so related work finds a warm agent.
 
 ## Reference
 

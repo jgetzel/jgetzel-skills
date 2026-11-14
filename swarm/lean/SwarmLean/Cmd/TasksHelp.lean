@@ -4,11 +4,11 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   block\n   unblock\n   release\n   edit\n   drop\n   hold\n   unhold"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   hold\n   unhold"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
-  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] <title>\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         priority 0-3, lower first (default 2)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)"
+  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>] <title>\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         priority 0-3, lower first (default 2)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one"
 
 /-- `swarm task priority -h`. -/
 def helpTaskPriority : String :=
@@ -61,6 +61,10 @@ def helpTaskRelease : String :=
 /-- `swarm task edit -h`. -/
 def helpTaskEdit : String :=
   "Usage: swarm task edit\n       ([--body <body>] | [--body-file <body_file>] | [--append <append>])\n       [-h] [--title <title>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [--urgent] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --title <title>\n   --body <body>\n   --body-file <body_file>\n                         replace the body with this file's text; - reads stdin\n   --append <append>     add this text to the end of the body\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n   --urgent              make the owner's notice urgent"
+
+/-- `swarm task label -h`. -/
+def helpTaskLabel : String :=
+  "Usage: swarm task label [-h] <id> [<labels>] ...\n\nArguments:\n   id\n   labels                its labels from now on: ui herdr or ui,herdr; none clears them\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm task drop -h`. -/
 def helpTaskDrop : String :=

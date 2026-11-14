@@ -110,7 +110,7 @@ def columns : List (String × String) :=
   ("ci", "workflow text"), ("task", "answer text"), ("task", "effort text"),
   ("agent", "role text"), ("agent", "stay text"), ("task", "base text"), ("task", "stop_to text"),
   ("task", "stop_msg int"), ("task", "priority int default 2"),
-  ("task", "qpos int"), ("task", "hold text")]
+  ("task", "qpos int"), ("task", "hold text"), ("task", "labels text"), ("task", "parents text")]
 
 /-- A column declaration's name. -/
 def colName (decl : String) : String := String.ofList (decl.toList.takeWhile (· ≠ ' '))

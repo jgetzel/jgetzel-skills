@@ -104,19 +104,24 @@ structure Task where
   qpos : Option Int := none
   /-- why the task is held from staffing (board #128); none: not held -/
   hold : Option String := none
+  /-- its labels, comma-separated (board #186) -/
+  labels : Option String := none
+  /-- the tasks its creator held when it was added, comma-separated ids (board #186) -/
+  parents : Option String := none
   deriving DecidableEq, Repr, Inhabited
 
 instance : Row Task where
   table := "task"
   cols := ["id", "title", "body", "state", "owner", "lease_until", "created_by", "evidence", "deps", "model", "question",
     "effort", "created_at", "first_claimed_at", "done_at", "dropped_at", "pr", "merged_at", "ci_conclusion",
-    "ci_green_at", "claim_ctx", "done_ctx", "answer", "base", "stop_to", "stop_msg", "priority", "qpos", "hold"]
+    "ci_green_at", "claim_ctx", "done_ctx", "answer", "base", "stop_to", "stop_msg", "priority", "qpos", "hold",
+    "labels", "parents"]
   nkey := 1
   enc t := [.int t.id, oS t.title, oS t.body, .text t.state.text, oS t.owner, oI t.lease_until, oS t.created_by,
     oS t.evidence, oS t.deps, oS t.model, oS t.question, oS t.effort, oI t.created_at, oI t.first_claimed_at,
     oI t.done_at, oI t.dropped_at, oI t.pr, oI t.merged_at, oS t.ci_conclusion, oI t.ci_green_at, oI t.claim_ctx,
     oI t.done_ctx, oS t.answer, oS t.base, oS t.stop_to, oI t.stop_msg, oI t.priority, oI t.qpos,
-    oS t.hold]
+    oS t.hold, oS t.labels, oS t.parents]
   dec v := do
     let st ← match ← (col v 3).os with
       | some s => Status.ofText s
@@ -129,7 +134,8 @@ instance : Row Task where
            merged_at := ← (col v 17).oi, ci_conclusion := ← (col v 18).os, ci_green_at := ← (col v 19).oi,
            claim_ctx := ← (col v 20).oi, done_ctx := ← (col v 21).oi, answer := ← (col v 22).os,
            base := ← (col v 23).os, stop_to := ← (col v 24).os, stop_msg := ← (col v 25).oi,
-           priority := ← (col v 26).oi, qpos := ← (col v 27).oi, hold := ← (col v 28).os }
+           priority := ← (col v 26).oi, qpos := ← (col v 27).oi, hold := ← (col v 28).os,
+           labels := ← (col v 29).os, parents := ← (col v 30).os }
 
 /-- One agent (table agent). -/
 structure Agent where

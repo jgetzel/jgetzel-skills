@@ -603,7 +603,7 @@ def test_state_json_staffing (t : T) : IO Unit := do
   t.agent "cm"
   t.q_ "insert or replace into meta(k,v) values('comms','cm')"
   -- the communicator is not counted; unset numbers are null; the compaction limits at their defaults
-  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false})
+  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false, "reuse_below": 0})
   eq ((← stj t ["--view", "overview"]).f "rules") Json.null
   t.sw_ "cm" ["limits", "--ctx-nudge", "300000", "--ctx-compact", "0", "--compact-stayers", "on"]
   t.sw_ "cm" ["rules", "set", "Work only in your own worktree."]

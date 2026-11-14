@@ -15,7 +15,7 @@ your name is in `$SWARM_NAME`.
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
   on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. Add tasks for what you find
-  (`swarm task add "<title>" [--body <text>] [--after N]`; `task edit` changes one); split a task that is too big.
+  (`swarm task add "<title>" [--body <text>] [--after N] [--label a,b]`; `task edit` changes one); split a task that is too big.
   Can't finish it? `swarm task release <id>` (not `drop`, which kills the task), with `--after N` if it must wait
   for another. Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours and the answer may
   come back on the task.
@@ -57,8 +57,9 @@ your name is in `$SWARM_NAME`.
   (`task claim` refuses until then); from 400k it compacts you when idle. If after a compaction you no longer understand the task,
   `swarm task release <id>` with a note (what is done, what is next, the branch)
   and stop: watchd staffs a fresh agent.
-- **Ending.** After `task done`, do what it prints (take the next task, or go
-  idle). Don't close your tab, end yourself or remove your worktree: watchd
+- **Ending.** After `task done`, do what it prints (go idle; with context to
+  spare watchd may offer you related tasks: claim one you have real context
+  for, or decline by stopping). Don't close your tab, end yourself or remove your worktree: watchd
   ends you once you are idle, own no claim or lock, stay for nothing and your
   work is on your task's base.
   If review asks for changes you are still here to make them. Don't poll; your

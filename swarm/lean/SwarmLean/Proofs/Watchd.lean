@@ -74,23 +74,21 @@ def RecOf (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (all : Bool)
 
 /-- `F`'s pure parts are the reads' pure fields. -/
 def Agrees {m : Type → Type} (f : Lifecycle.Reads m) (F : Decide.Facts) : Prop :=
-  F.claims = f.claims ∧ F.locks = f.locks ∧ F.pool = f.pool ∧ F.passedOver = f.passedOver
+  F.claims = f.claims ∧ F.locks = f.locks ∧ F.pool = f.pool ∧ F.passedOver = f.passedOver ∧ F.below = f.below
 
 theorem py_isSome (o : Option String) : (py o).isSome = Decide.nz o := by
   cases o with
   | none => rfl
   | some s => by_cases h : s = "" <;> simp [py, Decide.nz, Option.filter, h]
 
-theorem ctx_small (o : Option Int) : (decide ((o.map Int.toNat).getD 0 < Decide.smallCtx)) = decide (o.getD 0 < SMALL_CTX) := by
-  cases o with
-  | none => rfl
-  | some i => show decide (i.toNat < 40000) = decide (i < 40000); rw [decide_eq_decide]; omega
+theorem ctx_small (o : Option Int) (b : Nat) : (decide ((o.map Int.toNat).getD 0 < b)) = decide ((o.getD 0).toNat < b) := by
+  cases o <;> rfl
 
 /-- The facts of one fate run: the reads' pure fields and the answers `o` (ours), `u` (unlanded), `j` (job), `w` (alive). -/
 def mkF {m : Type → Type} (f : Lifecycle.Reads m) (o : Bool) (u : Option (String × List String))
     (j : Option Machine.Ps) (w : Bool) : Decide.Facts :=
   { ours := o, claims := f.claims, locks := f.locks, unlanded := u.isSome, job := j.isSome, pool := f.pool,
-    passedOver := f.passedOver, alive := w }
+    passedOver := f.passedOver, alive := w, below := f.below }
 
 theorem bne_dec {α : Type} [DecidableEq α] [BEq α] [LawfulBEq α] (a b : α) : (a != b) = !decide (a = b) := by
   by_cases h : a = b <;> simp [h]
@@ -166,8 +164,8 @@ theorem v_terminal_some {c : String} (h : ((x.bind fun x => x.cwd).bind fun x =>
   rw [this]
 
 theorem v_context : Decide.Check.val (row a) t (term x) hasTerms F .context =
-    (decide (a.ctx_tokens.getD 0 < SMALL_CTX) && decide (F.pool > 0) && !F.passedOver) := by
-  show (decide ((a.ctx_tokens.map Int.toNat).getD 0 < Decide.smallCtx) && decide (F.pool > 0) && !F.passedOver) = _
+    (decide ((a.ctx_tokens.getD 0).toNat < F.below) && decide (F.pool > 0) && !F.passedOver) := by
+  show (decide ((a.ctx_tokens.map Int.toNat).getD 0 < F.below) && decide (F.pool > 0) && !F.passedOver) = _
   rw [ctx_small]
 
 theorem v_waiter : Decide.Check.val (row a) t (term x) hasTerms F .waiter = (a.waiter.isSome && F.alive) := by
@@ -247,7 +245,7 @@ macro "vpos" hv:term:max : tactic => `(tactic| first
 
 /-- One leaf of fate's run: the result is `pure`, its facts `mkF f o u j w`, the verdict by lemma `fr`. -/
 macro "leaf" fr:ident o:term:max u:term:max j:term:max w:term:max hv:term:max : tactic => `(tactic|
-  exact Sat.pure ⟨mkF _ $o $u $j $w, ⟨rfl, rfl, rfl, rfl⟩, rfl, rfl, by
+  exact Sat.pure ⟨mkF _ $o $u $j $w, ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, by
     rw [Decide.fateRec, $fr:ident] <;> first | vneg $hv | vpos $hv | skip
     all_goals try simp only [v_context, v_waiter, mkF]
     all_goals first | rfl | (simp_all [verdictStr, busyL] <;> rfl) | (simp_all [verdictStr, busyL] <;> split <;> rfl), by
@@ -374,7 +372,7 @@ theorem endWhy_lifted {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) 
     cases a.status with
     | none => simp
     | some v => simp only [Option.getD_some, bne_dec, Option.some.injEq]
-  let F (j u : Bool) : Decide.Facts := ⟨true, f.claims, f.locks, u, j, 0, false, false⟩
+  let F (j u : Bool) : Decide.Facts := ⟨true, f.claims, f.locks, u, j, 0, false, false, 0⟩
   unfold Lifecycle.endWhy
   refine ite_sat (fun h => Sat.pure ⟨F false false, rfl, rfl, ?_⟩) (fun h => ?_)
   · simp only [Decide.endWhyL, hs, h]; rfl

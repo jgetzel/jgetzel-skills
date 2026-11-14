@@ -1028,6 +1028,11 @@ theorem X.Compact.setLimits {me n c st now} (h : XInv db t) : XInv (Compact.setL
   apply X.Db.log
   cases st <;> cases c <;> cases n <;> dsimp only <;> (repeat apply X.Db.setMeta) <;> exact h
 
+/-- `swarm limits --reuse-below`: a meta key and an event. -/
+theorem X.Reuse.setBelow {me n now} (h : XInv db t) : XInv (Reuse.setBelow db me n now) t := by
+  unfold SwarmLean.Reuse.setBelow
+  exact X.Db.log (X.Db.setMeta h)
+
 theorem xinv_ite {c : Prop} [Decidable c] {a b : Db} (ha : XInv a t) (hb : XInv b t) : XInv (if c then a else b) t := by
   split <;> assumption
 
