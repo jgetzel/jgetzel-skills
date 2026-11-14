@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -96,6 +96,16 @@ assert.equal(closeOf({ pane: "p1", tab: "a", mark: "run" }, cTabs, "zsh", "npm r
 assert.equal(closeOf({ pane: "p2", tab: "b", mark: "asks" }, cTabs, "c", "").ask.title, "Close c?");
 assert.equal(closeOf({ pane: "p", tab: "b", mark: "prompt" }, [cTabs[1]], "zsh", "~").ask.detail, "It is the space's last tab: closing it closes the space.");
 assert.equal(closeOf({ pane: null, tab: "b", mark: "idle" }, cTabs, "h", ""), null);
+// A drag's drop (Part II.2): before or after a tab, as tab.move's 1-based index; null where nothing moves.
+const dTabs = [{ id: "c", index: 3 }, { id: "a", index: 1 }, { id: "b", index: 2 }, { id: "d", index: 4 }];
+assert.equal(dropAt(dTabs, "a", "c", true), 3); // a b c d -> b c a d
+assert.equal(dropAt(dTabs, "a", "c", false), 2); // -> b a c d
+assert.equal(dropAt(dTabs, "d", "a", false), 1); // -> d a b c
+assert.equal(dropAt(dTabs, "d", "b", true), 3); // -> a b d c
+assert.equal(dropAt(dTabs, "a", "b", false), null); // already there
+assert.equal(dropAt(dTabs, "c", "b", true), null);
+assert.equal(dropAt(dTabs, "a", "a", true), null);
+assert.equal(dropAt(dTabs, "a", "gone", true), null);
 const zsh = T("z", { argv: ["/bin/zsh"], program: sh, foreground: { argv: ["npm", "run", "dev"], cwd: "/h/w" } });
 assert.deepEqual(rowText(zsh, "run", null, "/h"), { name: "zsh", what: "npm run dev" });
 assert.deepEqual(rowText(zsh, "prompt", null, "/h"), { name: "zsh", what: "~/w" });
