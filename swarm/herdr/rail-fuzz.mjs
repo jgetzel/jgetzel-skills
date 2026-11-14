@@ -3,6 +3,7 @@
 // printed against a limit it must stay under.
 import assert from "node:assert/strict";
 import * as T from "./mods/rw-rail/tree.js";
+import * as A from "./mods/rw-rail/activity.js";
 
 let seed = Number(process.argv[2] ?? 180);
 const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -56,6 +57,13 @@ for (let i = 0; i < 2000; i++) {
   // a prompt's terminal window (II.6 tier 1) titles itself with them and hc's msg: bounded lines
   const pk = T.peekWindow("t1", pick(HOSTILE), pick(HOSTILE)).layout.children[0].content.props.peek;
   assert.ok(ok1(pk.who, 80) && ok1(pk.what, 160), JSON.stringify(pk).slice(0, 200));
+  // Activity (II.3g): hostile events and messages still make one bounded line per field
+  const ao = T.overOf({ tasks: junk(), agents: junk(), conflicts: junk(), events: Array.from({ length: 6 }, () => ({ id: junk(), ts: pick([1, 2, 3, junk()]),
+    agent: pick(HOSTILE), kind: pick(["block", "task-blocked", "spawn", "end", "pressure", "pressure-end", "push", "ci-red", "done", pick(HOSTILE)]),
+    data: pick(HOSTILE), path: pick(HOSTILE), branch: pick(HOSTILE), subject: pick(HOSTILE) })),
+    messages: [{ id: 1, ts: 1, frm: pick(HOSTILE), dest: pick(HOSTILE), body: pick(HOSTILE), kind: pick(HOSTILE), urgent: junk() }] });
+  for (const lg of [false, true]) for (const i of A.actItems(ao, lg)) for (const k of ["who", "text", "sub", "chip", "meta"])
+    if (i[k] != null) assert.ok(ok1(i[k], 400), `${k}: ${String(i[k]).slice(0, 100)}`);
   // Spawn (II.3j): a suggested name is a name the form takes; a hostile one gives no command or a plain one
   const nn = T.nextName(pick([pick(HOSTILE), "ll-comms", null]), [junk(), pick(HOSTILE), "ll-99999999999", "ll-3"]);
   assert.ok(ok1(nn, 60), nn);
