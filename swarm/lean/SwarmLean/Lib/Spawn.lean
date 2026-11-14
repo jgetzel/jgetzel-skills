@@ -105,7 +105,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   let undo (wt : Option (String × String)) : m Unit := do
     if let some (p, b) := wt then Workspaces.discardWs name p b a.attach.isNone
     let now ← Clock.now
-    Store.txn [.agent, .task] fun db => (unreserve db name r now, ())
+    Store.txn [.agent, .task, .lock] fun db => (unreserve db name r now, ())
   -- the role, the stay, the task line and the worktree: a failure leaves no worktree to discard
   let (task, wt) ← tryCatchThe Exit (do
     let now ← Clock.now

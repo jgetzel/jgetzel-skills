@@ -1,5 +1,6 @@
 import Lean
 import SwarmLean
+import SwarmLean.Proofs.Crash
 
 /-! check.sh's gate (board #109): every theorem of swarm-lean (and of the swarm/model files it builds, Glob.lean and
 Decide.lean, which run in the binary) rests on Lean's three axioms (propext, Classical.choice, Quot.sound) and nothing

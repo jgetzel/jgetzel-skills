@@ -181,6 +181,63 @@ def baseSha (b : String) : m (Option String) := do
 /-- `xs` without repeats, sorted. -/
 def uniqSorted (xs : List String) : List String := (xs.eraseDups.toArray.qsort (· < ·)).toList
 
+/-- The conflict tick's write (`conflictTick`): each candidate pair's key and conflicts from its git work (`work`,
+`ranges`), the notices, lock violations, and locks whose holder's work landed. -/
+def tickApply (wts : List (String × String)) (snaps : List (String × Snap))
+    (work : List (String × String × String × Option (Option (List (String × List (String × String)) × Bool))))
+    (ranges : List ((String × String × String) × String × String)) (t : Int) (db : Db) : Db :=
+  let wtOf (n : String) : String := (wts.lookup n).getD ""
+  let names := snaps.map (·.1)
+  let snapOf (n : String) : Snap := (snaps.lookup n).getD default
+  let tally (w : String) : Nat := (wts.filter (·.2 == w)).length
+  let setKey (db : Db) (a b key : String) : Db :=
+    { db with pairkeys := db.pairkeys.filter (fun r => !(r.a == a && r.b == b)) ++ [{ a, b, key := some key }] }
+  let (db, notes) := work.foldl (init := (db, ([] : List (String × List String)))) fun (db, notes) (a, b, key, r) =>
+    match r with
+    | none => ((setKey db a b key).log t (some a) "conflict-stale" (some b) none, notes)
+    | some none => (db.log t (some a) "conflict-error" (some b) none, notes)
+    | some (some (real, compat)) =>
+      let db := setKey db a b key
+      let had := (db.conflicts.filter fun c => c.a == a && c.b == b).map (·.path)
+      let db := { db with conflicts := db.conflicts.filter fun c => !(c.a == a && c.b == b && !real.any (·.1 == c.path)) }
+      let db := if compat then db.log t (some a) "conflict-compat" (some b) none else db
+      real.foldl (init := (db, notes)) fun (db, notes) (p, _) =>
+        if had.contains p then (db, notes) else
+        let db := { db with conflicts := db.conflicts ++ [({ a, b, path := p, since := some t } : Conflict)] }
+        let db := db.log t (some a) "conflict" (some p) (some b)
+        let (ha, hb) := ((ranges.lookup (a, b, p)).getD ("", ""))
+        let note (o mine theirs : String) : String :=
+          s!"Your uncommitted work conflicts with {o}'s ({Locks.taskOf db o}) in {p} (your lines {mine}, theirs {theirs}). Whoever lands first wins; the other rebases onto it. Message {o} only if the two changes can't both stand."
+        let add (notes : List (String × List String)) (n x : String) :=
+          if notes.any (·.1 == n) then notes.map fun (k, l) => if k == n then (k, l ++ [x]) else (k, l)
+          else notes ++ [(n, [x])]
+        (db, add (add notes a (note b ha hb)) b (note a hb ha))
+  let db := notes.foldl (init := db) fun db (n, l) => (Msgs.post db t "swarm" n ("\n".intercalate l) false (some "notice")).1
+  -- edits to another agent's lock, from the snapshot; only in trees one agent owns
+  let db := names.foldl (init := db) fun db n =>
+    if tally (wtOf n) > 1 then db else
+    (snapOf n).files.foldl (init := db) fun db p =>
+      match Locks.lockHolder db n p t with
+      | none => db
+      | some lk =>
+        if db.events.any fun e => e.kind == some "lock-violation" && e.agent == some n && e.path == some p then db else
+        let who := lk.agent.getD ""
+        let db := db.log t (some n) "lock-violation" (some p) (some who)
+        let db := (Msgs.post db t "swarm" n s!"{n} edited {p}, locked by {who}: violation. Revert it or ask {who}." false (some "system")).1
+        (Msgs.post db t "swarm" who s!"{n} edited your locked path {p}." false (some "system")).1
+  -- a lock is released once the holder's work on it lands (it matched, and no longer does)
+  let db := db.locks.foldl (init := db) fun db lk =>
+    match lk.agent.bind (fun n => snaps.lookup n) with
+    | none => db
+    | some s =>
+      let hit := s.files.any (Locks.covers · lk.path)
+      let seen := lk.seen.any (· != 0)
+      if hit && !seen then { db with locks := db.locks.map fun (l : Lock) => if l.path == lk.path then { l with seen := some 1 } else l }
+      else if !hit && seen then
+        ({ db with locks := db.locks.filter fun (l : Lock) => l.path != lk.path }).log t lk.agent "unlock" (some lk.path) (some "landed")
+      else db
+  db
+
 /-- The conflict tick (conflict.conflict_tick): snapshots each live agent's worktree (`wts`: agent and worktree,
 by name), trial-merges every pair working for one base whose changed files meet, notices both of a new real conflict,
 flags edits to a peer's lock, and releases a lock once its holder's work on it has landed. `baseFor` is
@@ -241,54 +298,6 @@ def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option Str
         for h in hs do l := l ++ [← lineRange (wtOf n) (snapOf n).commit p (side h)]
         return ", ".intercalate (uniqSorted l)
       ranges := ranges ++ [((a, b, p), ← rng a (·.1), ← rng b (·.2))]
-  let tally (w : String) : Nat := (wts.filter (·.2 == w)).length
-  Store.txn [.conflict, .pairkey, .task, .lock, .agent, .event] fun db =>
-    let setKey (db : Db) (a b key : String) : Db :=
-      { db with pairkeys := db.pairkeys.filter (fun r => !(r.a == a && r.b == b)) ++ [{ a, b, key := some key }] }
-    let (db, notes) := work.foldl (init := (db, ([] : List (String × List String)))) fun (db, notes) (a, b, key, r) =>
-      match r with
-      | none => ((setKey db a b key).log t (some a) "conflict-stale" (some b) none, notes)
-      | some none => (db.log t (some a) "conflict-error" (some b) none, notes)
-      | some (some (real, compat)) =>
-        let db := setKey db a b key
-        let had := (db.conflicts.filter fun c => c.a == a && c.b == b).map (·.path)
-        let db := { db with conflicts := db.conflicts.filter fun c => !(c.a == a && c.b == b && !real.any (·.1 == c.path)) }
-        let db := if compat then db.log t (some a) "conflict-compat" (some b) none else db
-        real.foldl (init := (db, notes)) fun (db, notes) (p, _) =>
-          if had.contains p then (db, notes) else
-          let db := { db with conflicts := db.conflicts ++ [({ a, b, path := p, since := some t } : Conflict)] }
-          let db := db.log t (some a) "conflict" (some p) (some b)
-          let (ha, hb) := ((ranges.lookup (a, b, p)).getD ("", ""))
-          let note (o mine theirs : String) : String :=
-            s!"Your uncommitted work conflicts with {o}'s ({Locks.taskOf db o}) in {p} (your lines {mine}, theirs {theirs}). Whoever lands first wins; the other rebases onto it. Message {o} only if the two changes can't both stand."
-          let add (notes : List (String × List String)) (n x : String) :=
-            if notes.any (·.1 == n) then notes.map fun (k, l) => if k == n then (k, l ++ [x]) else (k, l)
-            else notes ++ [(n, [x])]
-          (db, add (add notes a (note b ha hb)) b (note a hb ha))
-    let db := notes.foldl (init := db) fun db (n, l) => (Msgs.post db t "swarm" n ("\n".intercalate l) false (some "notice")).1
-    -- edits to another agent's lock, from the snapshot; only in trees one agent owns
-    let db := names.foldl (init := db) fun db n =>
-      if tally (wtOf n) > 1 then db else
-      (snapOf n).files.foldl (init := db) fun db p =>
-        match Locks.lockHolder db n p t with
-        | none => db
-        | some lk =>
-          if db.events.any fun e => e.kind == some "lock-violation" && e.agent == some n && e.path == some p then db else
-          let who := lk.agent.getD ""
-          let db := db.log t (some n) "lock-violation" (some p) (some who)
-          let db := (Msgs.post db t "swarm" n s!"{n} edited {p}, locked by {who}: violation. Revert it or ask {who}." false (some "system")).1
-          (Msgs.post db t "swarm" who s!"{n} edited your locked path {p}." false (some "system")).1
-    -- a lock is released once the holder's work on it lands (it matched, and no longer does)
-    let db := db.locks.foldl (init := db) fun db lk =>
-      match lk.agent.bind (fun n => snaps.lookup n) with
-      | none => db
-      | some s =>
-        let hit := s.files.any (Locks.covers · lk.path)
-        let seen := lk.seen.any (· != 0)
-        if hit && !seen then { db with locks := db.locks.map fun (l : Lock) => if l.path == lk.path then { l with seen := some 1 } else l }
-        else if !hit && seen then
-          ({ db with locks := db.locks.filter fun (l : Lock) => l.path != lk.path }).log t lk.agent "unlock" (some lk.path) (some "landed")
-        else db
-    (db, ())
+  Store.txn [.conflict, .pairkey, .task, .lock, .agent, .event] fun db => (tickApply wts snaps work ranges t db, ())
 
 end SwarmLean.Conflict

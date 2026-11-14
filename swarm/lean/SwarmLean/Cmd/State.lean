@@ -365,7 +365,9 @@ def state (a : Parsed) : m UInt32 := do
   let sentA (x : Agent) : Bool := full || x.ended.isNone || me == some x.name || endedPage.contains x.name
   let wts ← if lanes then Workspaces.wtMap db else pure []
   let mut seen : Agents.Seen := []
-  let mut reads : Option (Option (List Agents.Term) × (String → Lifecycle.Reads m)) := none
+  -- the reads' inputs, once read: hc's terminals, the main worktree, the agents' and every worktree, the pool
+  let mut reads : Option (Option (List Agents.Term) × Option String × List (String × String) × List (String × String) ×
+    List Task) := none
   let mut agsA : Array (Json × Bool × String) := #[]
   let byName := fun (l : List Agent) => l.mergeSort (·.name ≤ ·.name)
   for x in byName (db.agents.filter fun x => x.ended.isNone && sentA x) ++ byName (db.agents.filter fun x => x.ended.isSome && sentA x) do
@@ -407,17 +409,17 @@ def state (a : Parsed) : m UInt32 := do
       let evs := ((aev.filter shown).reverse.take 5)
       l := l ++ [("events", .arr (evs.map (eventJson · false false)).toArray)]
     if live && x.status == some "idle" && (lanes || me == some x.name) then  -- watchd's verdict and why (REDESIGN.md §2)
-      let (byT, rf) ← match reads with
+      let (byT, main, wm, all, pool) ← match reads with
         | some r => pure r
         | none => do
           let byT ← Agents.hcTerminals
           let main ← Workspaces.main none
           let wm ← if lanes then pure wts else Workspaces.wtMap db
           let all ← Workspaces.worktrees
-          let pool := Queue.staffing db
-          pure (byT, fun n => Lifecycle.reads db main wm all n pool)
-      reads := some (byT, rf)
-      l := l ++ [("fate", ← fateJson db x t (rf x.name) byT (me == some x.name))]
+          pure (byT, main, wm, all, Queue.staffing db)
+      reads := some (byT, main, wm, all, pool)
+      let f := Lifecycle.reads (m := m) db main wm all x.name pool
+      l := l ++ [("fate", ← fateJson db x t f byT (me == some x.name))]
     if full || me == some x.name then  -- the detail pane's messages
       let ms := (msgBy.getD x.name #[]).toList.reverse.take 5
       l := l ++ [("messages", .arr (ms.map (msgJson · false)).toArray)]

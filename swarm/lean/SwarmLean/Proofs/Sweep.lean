@@ -119,6 +119,7 @@ theorem Ext.nt [Inhabited α] {x : RecM M α} (h : Ext x) : NoThrow x := fun s =
 theorem Grows.go [Inhabited α] {x : RecM M α} {L : List (M.World × Call)} {s : Rec M} (hx : Ext x) (h : Grows L s.log) :
     Grows L (Rec.go x s).2.log := h.trans (hx s).2
 
+set_option maxHeartbeats 1000000 in
 theorem landedRef1_nt : NoThrow (Lifecycle.landedRef1 cwd ref b : RecM M Bool) := noThrow_of (by
   mvcgen [Lifecycle.landedRef1, Lifecycle.run, Lifecycle.code, Proc.output])
 

@@ -51,7 +51,7 @@ section
 variable {anc : Bool} {P Q R S T : Prop}
 
 /-- The sweep's start: no agents, nothing run. -/
-def tr0 : Rec (Tr anc P Q R S T) := ⟨(), {}, []⟩
+def tr0 : Rec (Tr anc P Q R S T) := ⟨(), {}, [], []⟩
 
 /-- what `Lifecycle.landed /x [main] /m` runs on `Tr` -/
 def trLog (anc : Bool) : List ((Tr anc P Q R S T).World × Call) :=

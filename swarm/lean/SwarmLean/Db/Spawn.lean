@@ -57,10 +57,12 @@ where
                                            first_claimed_at := t.first_claimed_at.orElse fun _ => some now }
     pure (db.log now (some name) "claim" none (some s!"#{d tid} {r.title.getD ""}"), r)
 
-/-- A launch that failed: ends the row, and reopens the task `r` it reserved if the new agent still holds it
+/-- A launch that failed: ends the row and drops its locks, as every end does (a launch that failed late may have run
+the agent long enough to take one), and reopens the task `r` it reserved if the new agent still holds it
 (tasks.unreserve). -/
 def unreserve (db : Db) (name : String) (r : Option Task) (now : Int) : Db :=
   let db := db.setAgent name fun a => if a.hc.isNone then { a with ended := some now } else a
+  let db := if (live db).any (·.name == name) then db else { db with locks := db.locks.filter (·.agent != some name) }
   match r with
   | none => db
   | some r => db.set r.id fun t =>
