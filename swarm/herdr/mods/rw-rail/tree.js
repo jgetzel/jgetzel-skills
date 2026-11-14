@@ -342,14 +342,14 @@ export function rowText(t, mark, tabName, home) {
 }
 
 // What a row or header says of its mark: "asks you", or how long the mark has held (`at`, ms; "" when unknown).
+// No time on working rows (the mark spins) and none under 5 minutes on done or idle ones (round 4, proposal 5).
 export function since(mark, at, now) {
-  const ago = at ? dur(now - at) : "";
+  const ago = at ? dur(now - at) : "", long = at && now - at >= 300000;
   switch (mark) {
     case "asks": return "asks you";
     case "hung": return "hung";
-    case "working": return ago;
-    case "done": return ago && `done ${ago}`;
-    case "idle": return ago && `idle ${ago}`;
+    case "done": return at ? (long ? `done ${ago}` : "done") : "";
+    case "idle": return long ? `idle ${ago}` : "";
   }
   return "";
 }
