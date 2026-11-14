@@ -26,7 +26,7 @@ export default class PaneHeader extends View {
     const term = p.terminal ? terminals().find((x) => x.address === p.terminal) : null;
     const m = term ? markOf(term, false) : null;
     const tab = spaces().flatMap((s) => s.tabs).find((x) => x.id === p.tab);
-    const { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: p.mod === "rw-swarm" ? "Swarm" : p.title, what: "" };
+    const { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: p.mod === "rw-swarm" ? "Swarm" : p.mod === "rw-question" ? "Needs you" : p.title, what: "" };
     const st = m && since(m, shared("rw-rail.changed")?.[p.terminal]?.at, Date.now());
     const state = m === "working" ? `working ${st}`.trim() : st;
     return h_flex().id(`pane-head-${p.pane}`).size_full().px(14).gap(8).items_center().bg(t.surface).text_size(13)

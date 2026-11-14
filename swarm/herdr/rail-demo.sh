@@ -103,13 +103,18 @@ sleep 2 # the helpers start and report
 n=0; while [ -n "$sw" ] && [ $n -lt 30 ] && [ "$(sqlite3 -cmd ".timeout 9000" "$db" "select count(*) from agent")" -lt "$sw" ]; do
   sleep 1; n=$((n + 1)) # every swarm agent has recorded its terminal
 done
-# The swarm tab's sections: context sizes, messages and main's CI.
+# The swarm tab's sections: context sizes, messages and main's CI; ll-97's question card: lease, files, a compaction.
 [ "$sw" != 5 ] || sqlite3 -cmd ".timeout 9000" "$db" "update agent set ctx_tokens = case name when 'll-97' then 221000 when 'll-110' then 51000
   when 'll-111' then 61000 when 'll-107' then 121000 else 82000 end;
   insert into msg(ts, frm, dest, body, kind) values($((now - 6780)), 'll-97', 'll-comms', 'Walker and step solver now close every CLI group but State and Watchd.', 'dm'),
   ($((now - 3240)), 'swarm', 'll-97', 'Context is about 330k tokens: commit, note the task, then compact.', 'system'),
   ($((now - 120)), 'll-comms', 'll-107', 'The verdict is already clear. Stop after the round now running, write up, and close #142.', 'dm');
-  insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, '08cc4a8', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean')"
+  insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, '08cc4a8', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean');
+  update task set lease_until = $((now + 5280)), first_claimed_at = $((now - 15360)) where id = 133;
+  update agent set status = 'idle', last_active = $((now - 360)), snap = '{\"files\":[\"swarm/lean/SwarmLean/Proofs/Crash.lean\",
+    \"swarm/lean/SwarmLean/Proofs/Watchd.lean\",\"swarm/lean/SwarmLean/Db/Spawn.lean\",\"swarm/lean/SwarmLean/Lib/Spawn.lean\",
+    \"swarm/lean/SwarmLean/Lib/Conflict.lean\",\"swarm/lean/SwarmLean/Cmd/State.lean\"]}' where name = 'll-97';
+  insert into event(ts, agent, kind, data) values($((now - 9000)), 'll-97', 'compact', '')"
 opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")
 # With a swarm, this computer's other spaces fold (shot.sh's demo and notes too), as on the rail board.
 [ -z "$sw" ] || folds="$folds $(herdr-app ls | jq -r '.. | objects | select(.name? == "demo" or .name? == "notes" or .name? == "high-perf-lean") | .id? // empty' | grep -v / || :)"

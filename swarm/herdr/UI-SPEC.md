@@ -178,6 +178,15 @@ and a context card (task, why watchd keeps it, context size, files, PR).
   question pane's side), closed when answered.
 - Buildable: mod `rw-question`. Unchecked: how the split behaves when the
   agent's tab already has splits.
+- Built in slice 8: clicking an agent that asks (its rail row, or Open its terminal in the swarm tab) splits
+  `rw-question` (props `{folder, machine, agent}`) down from the agent's pane and swaps the two, so the question is
+  above; once per tab. Splits are halves and a pane can't be sized, so the context sits in the same pane under the
+  question as a row of cards (task: lease, base, worked, PR; why it is still here: watchd's checks, given only for an
+  idle agent; context with the 325k and 400k marks, the last compaction and the cache; the files it edits) rather than
+  a column beside the terminal, which would leave the terminal a quarter of the tab. Send answer runs `swarm task
+  unblock N --answer`; Let the communicator decide posts the question to the communicator, and the question stays.
+  Every `rw-question` pane in the agent's tab closes once its task is no longer blocked, answered here or anywhere.
+  The cards' buttons (Open task, Release, Message, Nudge, End agent) are left out.
 
 ### Large swarm (screen 4)
 

@@ -225,3 +225,15 @@ export function boardRows(s) {
   });
   return rows.sort((x, y) => x.rank - y.rank || x.k.id - y.k.id);
 }
+
+// An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the
+// agent's pane `pane`, once per tab; then that pane has focus. Splits only go right or down, so it splits down and swaps
+// the two once the new pane has its place (`later`: a timer; swap goes by geometry). `ps`: panes().
+export function openAsk(run, ps, pane, props, later) {
+  const tab = ps.find((p) => p.pane === pane)?.tab;
+  if (tab && !ps.some((p) => p.tab === tab && p.mod === "rw-question")) {
+    run("pane.split", { pane, direction: "down", mod: "rw-question", props });
+    later(() => { run("pane.focus", { pane }); run("pane.swap", { direction: "down" }); });
+  }
+  run("pane.focus", { pane });
+}
