@@ -4,9 +4,9 @@
 // rail's (shared "rw-rail.swarms": each space folder's, and those `swarm state --view swarms` lists with no space).
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, exec, theme, run, appHome, shared, settings, layout, openOverlay } from "herdr";
-import { addrOf, agentRows, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, settings, layout, openOverlay } from "herdr";
+import { addrOf, agentRows, answerBox, boxFor, promptButtons, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -27,6 +27,9 @@ export default class AllSwarms extends View {
   init(_props, cx) {
     this.over = {}; // key -> the swarm's `state --view overview`
     this.mem = null; // this computer's { used, total } in kB
+    this.boxes = new Map(); this.saying = null; // prompt boxes read per terminal, the "say what" field's button (II.6c)
+    this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
+    this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
     // A round reads every swarm's overview, one at a time; the next waits at least twice as long as it took (50 swarms
     // of 500 agents take minutes).
     cx.timer.every(POLL, (cx) => { if (allShown(layout()) && Date.now() >= (this.next ?? 0)) this.refresh(cx); });
@@ -69,6 +72,20 @@ export default class AllSwarms extends View {
     const hc = s.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, w.on);
     return { addr, msg: addr ? line(terminals().find((x) => x.address === addr)?.report?.msg, 300) : "" };
   }
+  // Tier 2 (II.6c): the box's options as buttons, only on a full parse; a click re-reads and else shows the terminal.
+  promptBtns(t, pr, name, i, cx) {
+    const box = pr.addr ? boxFor(this.boxes, hc, pr.addr, pr.msg, cx) : null, show = () => openOverlay(peekWindow(pr.addr, name, pr.msg || "stopped at a prompt"));
+    return promptButtons(box).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
+      if (b.say) { this.saying = { addr: pr.addr, box, b, name, show }; this.sayIn.set_value(""); cx.notify(); cx.timer.after(50, () => this.sayIn.focus()); }
+      else answerBox(this.boxes, hc, pr.addr, box, b, null, cx, show);
+    }, k === 0 && !b.say));
+  }
+  sendSay(cx) {
+    const w = this.saying, text = this.sayIn.value().trim();
+    if (!w || !text) return;
+    this.saying = null;
+    answerBox(this.boxes, hc, w.addr, w.box, w.b, text, cx, w.show);
+  }
   openSpace(w) {
     const sp = spaces(), ids = new Set(sp.map((x) => x.id)), s = sp.find((x) => sumFor([w], x, ids));
     showAll(run, false);
@@ -87,7 +104,7 @@ export default class AllSwarms extends View {
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
 
-  needs(t, ws) {
+  needs(t, ws, cx) {
     const asks = ws.flatMap(({ w, s }) => asksOf(s).map((n) => ({ ...n, w, s })));
     if (!asks.length) return null;
     const more = asks.length - NEEDS;
@@ -104,10 +121,15 @@ export default class AllSwarms extends View {
             .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
             .child(div().truncate().text_color(t.dim).child(n.ago != null ? `· ${dur(n.ago * 1000)}` : "")))
           .child(div().text_size(13.5).line_height("19px").whitespace_normal().text_color(t.foreground).child(text))
-          .child(h_flex().gap(8).items_center()
+          .child(h_flex().gap(8).items_center().flex_wrap()
             .when(n.kind === "question", (el) => el.child(this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)))
+            .children(pr ? this.promptBtns(t, pr, n.agent, i, cx) : [])
             .child(pr ? this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))
-              : this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))));
+              : this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))))
+          .when(Boolean(pr?.addr) && this.saying?.addr === pr?.addr, (el) => el.child(h_flex().gap(8).items_center()
+            .child(div().id(`say-in-${i}`).flex_1().min_w(160).h(28).px(10).flex().items_center().rounded(8).border(1).border_color(t.border).bg(t.background)
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.sayIn).h_full().text_size(12.5).text_color(t.foreground)))
+            .child(this.btn(t, `say-go-${i}`, "Send", (cx) => this.sendSay(cx), true)).child(this.btn(t, `say-x-${i}`, "Cancel", (cx) => { this.saying = null; cx.notify(); }))));
       })))
       .when(more > 0, (el) => el.child(div().text_size(12.5).text_color(t.blocked).child(`${more} more`)));
   }
@@ -184,7 +206,7 @@ export default class AllSwarms extends View {
         .child(div().text_size(16).font_semibold().text_color(t.foreground).child("All swarms"))
         .child(div().text_size(12).text_color(t.dim).child(`${sums.length} ${sums.length === 1 ? "swarm" : "swarms"} · ${n} ${n === 1 ? "agent" : "agents"}`)))
       .when(!ws.length, (el) => el.child(div().px(4).text_color(t.dim).child(sums.length ? "Reading the swarms…" : "No swarm runs")))
-      .children([this.needs(t, ws)].filter(Boolean))
+      .children([this.needs(t, ws, cx)].filter(Boolean))
       .child(h_flex().flex_none().gap(10).items_start().flex_wrap().children(ws.map(({ w, s }, i) => this.column(t, w, s, i))))
       .children([this.memory(t, sums)].filter(Boolean)));
   }

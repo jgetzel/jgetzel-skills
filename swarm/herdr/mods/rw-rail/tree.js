@@ -155,6 +155,100 @@ export function memOf(s) {
   const next = here.filter((j) => j.agent_ && j.peak_kb != null && j.peak_kb > (j.top_kb ?? 0)).sort((x, y) => y.peak_kb - x.peak_kb)[0] ?? null;
   return { here, away: run.filter((j) => j.machine), swarm_kb, next: next && { agent: next.agent, key: keyOf(next.command), peak_kb: next.peak_kb } };
 }
+// ---- prompts, tier 2 (II.6c) ---------------------------------------------------------------------------------------
+// A Claude Code prompt box at the foot of `hc read` (shapes: swarm/herdr/fixtures/prompts): a permission box {kind:
+// "permission", title, about, detail, ask, options, cursor} or a one-question, one-choice AskUserQuestion {kind:
+// "question", title, ask, options, cursor}; options [{n, text}] numbered 1..N with the cursor on one. null unless every
+// part is where the fixtures put it (a multi-select or several questions: null, tier 1).
+const OPT = /^\s*(❯\s*)?(\d{1,2})\.\s+(.+)$/, SOLID = /^\s*─{8,}\s*$/, DASH = /^\s*╌{8,}\s*$/;
+export function parsePrompt(screen) {
+  const ls = String(screen ?? "").split("\n").slice(-400).map((l) => l.replace(/\s+$/, "")).filter(Boolean); // the boxes space their parts
+  let i = ls.length - 1;
+  const take = (to) => { const o = []; while (i >= to && OPT.test(ls[i])) { const m = OPT.exec(ls[i]); o.unshift({ n: Number(m[2]), text: line(m[3], 300), cur: Boolean(m[1]) }); i--; } return o; };
+  const whole = (o) => o.length >= 2 && o.every((x, k) => x.n === k + 1) && o.filter((x) => x.cur).length === 1;
+  const done = (box, o) => ({ ...box, options: o.map(({ n, text }) => ({ n, text })), cursor: o.find((x) => x.cur).n });
+  if (/^\s*Enter to select\b/.test(ls[i] ?? "")) { // a question
+    i--;
+    if (!/^\s*(❯\s*)?\d{1,2}\.\s+Chat about this$/.test(ls[i] ?? "") || !SOLID.test(ls[i - 1] ?? "")) return null;
+    i -= 2;
+    const o = [];
+    while (i >= 0) { // options, each with description lines under it
+      if (OPT.test(ls[i])) { const m = OPT.exec(ls[i]); o.unshift({ n: Number(m[2]), text: line(m[3], 300), cur: Boolean(m[1]) }); i--; continue; }
+      if (/^\s{4,}\S/.test(ls[i]) && OPT.test(ls[i - 1] ?? "") || /^\s{4,}\S/.test(ls[i]) && /^\s{4,}\S/.test(ls[i - 1] ?? "")) { i--; continue; }
+      break;
+    }
+    const chat = /\d+/.exec(ls[ls.length - 2])?.[0];
+    if (!whole(o) || Number(chat) !== o.length + 1 || o.some((x) => /^\[[ x✓]\]/.test(x.text))) return null;
+    const ask = ls[i]?.trim(), tab = ls[i - 1]?.trim() ?? "";
+    if (!ask || !/^☐ \S/.test(tab) || /[←→]/.test(tab) || !SOLID.test(ls[i - 2] ?? "")) return null;
+    return done({ kind: "question", title: line(tab.slice(2), 120), ask: line(ask, 300) }, o);
+  }
+  if (/^\s*Esc to cancel\b/.test(ls[i] ?? "")) i--; // a permission box (Fetch's has no footer)
+  const o = take(0);
+  if (!whole(o)) return null;
+  const ask = ls[i]?.trim();
+  if (!ask?.endsWith("?") || !DASH.test(ls[i - 1] ?? "")) return null;
+  let j = i - 2;
+  const detail = [];
+  while (j >= 0 && !DASH.test(ls[j])) detail.unshift(ls[j--].trim());
+  if (j < 0 || !detail.length) return null;
+  const head = [];
+  for (j--; j >= 0 && !SOLID.test(ls[j]); j--) head.unshift(ls[j].trim());
+  const hs = head.filter((h) => h && !/^Tip:/.test(h));
+  if (j < 0 || !hs.length) return null;
+  return done({ kind: "permission", title: line(hs[0], 120), about: line(hs.slice(1).join(" "), 300), detail: para(detail.join("\n"), 2000), ask: line(ask, 300) }, o);
+}
+// The buttons a box gets: each option (Chat about this left to the terminal), the short label, and whether it takes
+// text: "Type something" types the answer, a No offers "No, and say what…" (sent after the key).
+export function promptButtons(box) {
+  if (!box) return [];
+  const short = (t) => line((box.kind === "permission" ? t.replace(/\s*\([^)]*\)/g, "") : t).replace(/\s+·\s+.*$/, ""), 60);
+  const out = [];
+  for (const o of box.options) {
+    if (/^Type something\.?$/.test(o.text)) { out.push({ n: o.n, label: "Type an answer…", say: true, type: true }); continue; }
+    const say = /^No, and tell Claude/i.test(o.text);
+    out.push({ n: o.n, label: say ? "No, and say what…" : short(o.text), say });
+    if (/^No$/.test(o.text) && !box.options.some((x) => /^No, and tell Claude/i.test(x.text))) out.push({ n: o.n, label: "No, and say what…", say: true });
+  }
+  return out;
+}
+const sameBox = (a, b) => Boolean(a && b) && a.kind === b.kind && a.ask === b.ask && a.detail === b.detail
+  && a.options.length === b.options.length && a.options.every((o, k) => o.text === b.options[k].text);
+// Answers a box with a button (promptButtons): reads the terminal again and presses the keys only if its options are
+// unchanged (else false: show the terminal instead); with text, sends it after the key ("Type something" is a field
+// the cursor moves into: no Enter before the text). `hc`: herdr's, `wait(ms)`: a timer.
+export async function answerPrompt(hc, addr, box, b, text, wait) {
+  const r = await hc(["read", addr]), now = r?.code === 0 ? parsePrompt(r.stdout) : null;
+  if (!sameBox(now, box) || !now.options.some((o) => o.n === b.n) || (b.say && !text)) return false;
+  const d = b.n - now.cursor, keys = [...Array(Math.abs(d)).fill(d > 0 ? "down" : "up"), ...(b.type ? [] : ["enter"])];
+  if (keys.length && (await hc(["keys", addr, ...keys]))?.code) return false;
+  if (text) { await wait(500); await hc(["send", "--force", addr, text]); }
+  return true;
+}
+// A prompt row's box, read once per hc msg into `boxes` (a Map per view); null until read or unless a full match.
+export function boxFor(boxes, hc, addr, msg, cx) {
+  const c = boxes.get(addr);
+  if (c?.msg === msg) return c.box;
+  boxes.set(addr, { msg, box: null });
+  if (boxes.size > 100) boxes.delete(boxes.keys().next().value);
+  cx.spawn(async (cx) => {
+    let box = null;
+    try { const r = await hc(["read", addr]); box = r?.code === 0 ? parsePrompt(r.stdout) : null; } catch {}
+    const e = boxes.get(addr);
+    if (e?.msg === msg) { e.box = box; cx.notify(); }
+  });
+  return null;
+}
+// A button's click: answerPrompt, then `fallback()` (Show terminal) when the box changed or a key failed.
+export function answerBox(boxes, hc, addr, box, b, text, cx, fallback) {
+  cx.spawn(async (cx) => {
+    let ok = false;
+    try { ok = await answerPrompt(hc, addr, box, b, text, (ms) => cx.sleep(ms)); } catch {}
+    boxes.delete(addr);
+    if (!ok) fallback();
+    cx.notify();
+  });
+}
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 
 // When a folder's swarm is read again, in ms: a live swarm at least every 5 s and never more often than 3× as long as
