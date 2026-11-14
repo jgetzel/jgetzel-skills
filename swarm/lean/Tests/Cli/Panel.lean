@@ -309,6 +309,11 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
   eq (ids (← st t ["--view", "agents", "--task", "4"])) [1, 2, 4]
   unless (names (← st t ["--view", "agents"])).contains "e" do fail "the agents view left out an ended agent"
   eq (ids (← st t)) [1, 2, 3, 4]
+  -- II.3l: --before pages back, tasks by number, ended agents by when they ended
+  eq (ids (← st t ["--view", "board", "--before", "2"])) [1, 4]
+  t.agent "f" [("ended", .int 5)]
+  eq ((names (← st t ["--view", "agents", "--before", "5"])).filter (· != "w")) ["e"]
+  eq ((names (← st t ["--view", "agents"])).filter (· != "w")) ["e", "f"]
 
 -- UI-SPEC.md slice 5: --view summary is task counts, the live agents in five fields and what needs the human
 def test_state_summary (t : T) : IO Unit := do
