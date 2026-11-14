@@ -12,7 +12,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
-  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt } from "./tree.js";
+  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -47,6 +47,7 @@ export default class Rail extends View {
     cx.timer.every(5000, (cx) => this.swarms(cx));
     this.nudged = new Set(); // hung agents nudged from the toast ("<machine>:<db>:<name>"), until they aren't hung
     this.listed = null; // `hc machine ls --json`'s machines, null until read
+    this.ent = new Entering(); this.marks = new Map(); // motion (II.4a): what just came; address -> {kind, prev, at} for the marks' cross-fade
     this.said = {}; // machine -> what is under way there, or what its last action failed with
     this.menu = null; // the machine whose menu is open
     this.removing = null; // the machine whose menu asks to confirm its removal
@@ -164,7 +165,9 @@ export default class Rail extends View {
     const btn = (id, label, border, action) => div().id(id).flex_none().px(10).py(4).rounded(8).text_size(12.5).cursor_pointer()
       .when(border, (el) => el.border(1).border_color(t.blocked + "66").text_color(t.foreground)).when(!border, (el) => el.text_color(t.muted))
       .hover((s) => s.bg(t.hover)).on_click(action).child(label);
+    const e = this.anim && this.ent.enter(`toast:${k}`);
     return v_flex().id("hung-toast").flex_none().mx(10).mb(4).px(12).py(10).gap(6).rounded(10).border(1).border_color(t.blocked + "66")
+      .when(this.anim, (el) => el.relative().top(e ? 8 : 0).opacity(e ? 0 : 1).transition("top", 160).transition("opacity", 160))
       .bg(t.blocked + "14").text_size(12.5)
       .child(div().font_medium().text_color(t.blocked).child(`${a.name} is hung`))
       .child(div().line_height(1.4).whitespace_normal().text_color(t.foreground)
@@ -198,7 +201,7 @@ export default class Rail extends View {
     const g = (kb) => Math.round(kb / 1048576);
     return v_flex().flex_none().px(20).pt(8).pb(10).gap(6).text_size(11.5).text_color(t.dim)
       .child(div().truncate().child(`${m ?? "This computer"} · ${g(l.used)} of ${g(l.total)} G in use`))
-      .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(t.dim).w(`${Math.round((100 * l.used) / l.total)}%`)));
+      .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(t.dim).w(`${Math.round((100 * l.used) / l.total)}%`).when(this.anim, (el) => el.transition("width", 300))));
   }
 
   // hc reconnects a machine by itself once it answers again; Retry only reads its state now.
@@ -399,9 +402,13 @@ export default class Rail extends View {
       .child(div().flex_1().min_w(0).h(22).px(6).flex().items_center().rounded(6).border(1).border_color(t.ring ?? t.accent).bg(t.background)
         .cursor_text().child(Input.new(this.tabInput).h_full().text_size(12.5).text_color(t.foreground)));
     const closes = plain && Boolean(r.pane), x = closes && this.hotRow === r.t.address;
-    const el = h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
+    const e = this.anim && this.ent.enter(`row:${r.t.address}`); // a new row grows in (II.4a)
+    const el = h_flex().id(`row-${r.t.address}`).h(e ? 0 : ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
-      .when(on, (el) => el.bg(t.raised))
+      .when(this.anim, (el) => el.relative().overflow_hidden().opacity(e ? 0 : 1).transition("height", 160).transition("opacity", 160)
+        // the shown row's highlight, a layer that fades between rows (a slide needs every row's place, which flex keeps)
+        .child(div().id(`hl-${r.t.address}`).absolute().inset_0().rounded(7).bg(t.raised).opacity(on ? 1 : 0).transition("opacity", 140)))
+      .when(on && !this.anim, (el) => el.bg(t.raised))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       // A double click's second focuses the field; a drop isn't a click.
       .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) this.open(r, cx); })
@@ -429,10 +436,26 @@ export default class Rail extends View {
       .child(x ? h_flex().id(`close-${r.t.address}`).size(16).mx(-3.5).flex_none().items_center().justify_center().rounded(5)
         .text_size(13).text_color(t.dim).hover((s) => s.bg(t.input).text_color(t.foreground))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : mark(t, r.mark));
+        .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : this.markOf(t, r.t.address, r.mark, now));
+    if (x && this.anim) this.ent.enter(`mk:${r.t.address}:${r.mark}`); // the x stands in for the mark: it stays seen
     // Kept through a drag with nothing in it: swapping the wrapper out mid-press stops the moves reaching other rows.
     return card && this.menuFor !== r.t.address ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el)
       .content(this.drag?.live ? div() : this.card(t, r, name, sideText)) : el;
+  }
+
+  // A row's mark (II.4a): cross-fades from the one before (two stacked, opacity 200 ms); a new "asks" pulses its first
+  // minute. Without animations, the mark alone.
+  markOf(t, address, kind, now) {
+    if (!this.anim) return mark(t, kind);
+    let m = this.marks.get(address);
+    if (!m || m.kind !== kind) this.marks.set(address, m = { kind, prev: m?.kind ?? null, at: now });
+    const fading = m.prev && m.prev !== kind && now - m.at < 220;
+    if (fading) this.fadeAt = Math.min(this.fadeAt ?? Infinity, m.at + 230);
+    const asks = kind === "asks" && now - (this.changed[address]?.at ?? 0) < 60000;
+    const one = (k, on) => h_flex().id(`mk-${address}-${k}`).absolute().inset_0().items_center().justify_center()
+      .opacity(on && !this.ent.enter(`mk:${address}:${k}`) ? 1 : 0).transition("opacity", 200)
+      .child(on && asks ? mark(t, k).loop("opacity", { from: 1, to: 0.3, period: 1000 }) : mark(t, k));
+    return div().relative().size(10).flex_none().when(Boolean(fading), (el) => el.child(one(m.prev, false))).child(one(kind, true));
   }
 
   counts(t, rows) {
@@ -610,7 +633,17 @@ export default class Rail extends View {
       .child(div().text_size(11.5).text_color(n ? t.blocked : t.dim).child(`${sums.length} running${n ? ` · ${n} ${n === 1 ? "needs" : "need"} you` : ""}`));
   }
 
+  // Draws, then once more where something just came or a mark still fades (II.4a).
   render(cx) {
+    this.anim = animOn(shared("rw.animations"));
+    const el = this.draw(cx);
+    if (!this.anim) return el;
+    for (const a of this.marks.keys()) if (!this.ent.now.has(`row:${a}`)) this.marks.delete(a);
+    const fresh = this.ent.end(), at = this.fadeAt; this.fadeAt = null;
+    if (fresh || at) cx.timer.after(fresh ? 20 : Math.max(20, at - Date.now()), (cx) => cx.notify());
+    return el;
+  }
+  draw(cx) {
     const t = theme();
     const now = Date.now();
     this.home = home();

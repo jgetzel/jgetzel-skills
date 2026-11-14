@@ -313,6 +313,20 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
   assert.equal(spawnArgs("a", { task: "1,2" }), null);
 }
+// Motion (II.4a): nothing enters on the first render; a key enters the first frame it is drawn after, then not; one
+// not drawn for a frame enters again.
+{
+  const { Entering, animOn } = await import("./mods/rw-rail/tree.js");
+  assert.equal(animOn(undefined), true); assert.equal(animOn(null), true); assert.equal(animOn(false), false);
+  const e = new Entering();
+  assert.equal(e.enter("a"), false); assert.equal(e.end(), false);
+  assert.deepEqual([e.enter("a"), e.enter("b")], [false, true]); assert.equal(e.end(), true);
+  assert.deepEqual([e.enter("a"), e.enter("b")], [false, false]); assert.equal(e.end(), false);
+  e.enter("a"); e.end();
+  assert.equal(e.enter("b"), true);
+  const f = new Entering(); f.end(); // a first render with nothing drawn: still the first
+  assert.equal(f.enter("a"), false);
+}
 // Rules and limits (II.3k): the card's line, the defaults before the CLI sent them, and the form's command.
 {
   const { ctxOf, limitsLine, limitArgs } = await import("./mods/rw-rail/tree.js");
