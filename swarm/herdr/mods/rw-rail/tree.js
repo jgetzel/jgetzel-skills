@@ -70,7 +70,7 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
-  claim_ctx: Nx, done_ctx: Nx });
+  claim_ctx: Nx, done_ctx: Nx, done_at: Nx });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
   rules: Px, // II.3k
@@ -286,6 +286,25 @@ export function hookFor(hooks, exec, db, name, msg, opts, cx) {
   return null;
 }
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
+
+// The context a done task spent: done_ctx past claim_ctx (an agent compacted meanwhile: its done_ctx), or null.
+export const spentOf = (k) => (Number.isFinite(k?.done_ctx) ? Math.max(0, k.done_ctx - (Number.isFinite(k.claim_ctx) && k.claim_ctx <= k.done_ctx ? k.claim_ctx : 0)) : null);
+// History (II.3l): the done tasks and ended agents of `day` ("today", "yesterday" or "all", local days) out of the pages
+// read, tasks by `sort` ("finished", "longest" or "context"), agents newest first with how many tasks each finished,
+// and the medians History's first card shows.
+export function historyOf(tasks, agents, { day = "today", sort = "finished", now = Date.now() } = {}) {
+  const d = new Date(now); d.setHours(0, 0, 0, 0);
+  const y = new Date(d); y.setDate(y.getDate() - 1);
+  const [from, to] = day === "today" ? [d / 1000, Infinity] : day === "yesterday" ? [y / 1000, d / 1000] : [-Infinity, Infinity];
+  const inDay = (ts) => day === "all" || (Number.isFinite(ts) && ts >= from && ts < to);
+  const done = (Array.isArray(tasks) ? tasks : []).filter((k) => k?.state === "done");
+  const by = { finished: (k) => k.done_at ?? 0, longest: (k) => k.work_s ?? -1, context: (k) => spentOf(k) ?? -1 }[sort] ?? ((k) => k.done_at ?? 0);
+  const ts = done.filter((k) => inDay(k.done_at)).sort((a, b) => by(b) - by(a) || b.id - a.id);
+  const n = new Map(); for (const k of done) if (k.owner) n.set(k.owner, (n.get(k.owner) ?? 0) + 1);
+  const as = (Array.isArray(agents) ? agents : []).filter((a) => a?.name && Number.isFinite(a.ended) && inDay(a.ended))
+    .sort((a, b) => b.ended - a.ended).map((a) => ({ ...a, done: n.get(a.name) ?? 0 }));
+  return { tasks: ts, agents: as, work: median(ts.map((k) => k.work_s)), ctx: median(ts.map(spentOf)) };
+}
 
 // When a folder's swarm is read again, in ms: a live swarm at least every 5 s and never more often than 3× as long as
 // its read took; a folder with no swarm every 30 s; a read that failed `fails` times in a row 5 s doubling, up to 5 min.

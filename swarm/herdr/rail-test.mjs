@@ -328,6 +328,26 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(limitArgs(o.limits, { nudge: "300", compact: "0", stayers: false }), ["limits", "--compact-stayers=off"]);
   for (const bad of ["", "3k", "-1", "1e3", "1234567", "3 0"]) assert.equal(limitArgs(null, { nudge: bad, compact: "400" }), null);
 }
+// History (II.3l): a day's done tasks and ended agents, sorts, the tasks each agent finished, the medians.
+{
+  const { historyOf, spentOf } = await import("./mods/rw-rail/tree.js");
+  const now = new Date(2026, 10, 14, 12).getTime(), at = (dd, h) => new Date(2026, 10, dd, h).getTime() / 1000;
+  const o = overOf({ tasks: [
+    { id: 1, state: "done", owner: "a", done_at: at(14, 9), work_s: 600, claim_ctx: 100000, done_ctx: 150000, claims: 1 },
+    { id: 2, state: "done", owner: "a", done_at: at(14, 11), work_s: 3600, claim_ctx: 300000, done_ctx: 40000 }, // compacted meanwhile
+    { id: 3, state: "done", owner: "b", done_at: at(13, 22), work_s: 60 },
+    { id: 4, state: "dropped", done_at: at(14, 10) }, { id: 5, state: "open" }],
+    agents: [{ name: "a", ended: at(14, 11) }, { name: "b", ended: at(13, 23), branch: "b/3", model: "opus" }, { name: "c" }] });
+  assert.equal(spentOf(o.tasks[0]), 50000); assert.equal(spentOf(o.tasks[1]), 40000); assert.equal(spentOf(o.tasks[2]), null);
+  const d = historyOf(o.tasks, o.agents, { now });
+  assert.deepEqual(d.tasks.map((k) => k.id), [2, 1]); assert.deepEqual(d.agents.map((a) => [a.name, a.done]), [["a", 2]]);
+  assert.equal(d.work, 600); assert.equal(d.ctx, 40000);
+  assert.deepEqual(historyOf(o.tasks, o.agents, { now, sort: "context" }).tasks.map((k) => k.id), [1, 2]);
+  const y = historyOf(o.tasks, o.agents, { now, day: "yesterday" });
+  assert.deepEqual([y.tasks.map((k) => k.id), y.agents.map((a) => a.name), y.ctx], [[3], ["b"], null]);
+  assert.deepEqual(historyOf(o.tasks, o.agents, { now, day: "all", sort: "longest" }).tasks.map((k) => k.id), [2, 1, 3]);
+  assert.deepEqual(historyOf(null, "x", { now }), { tasks: [], agents: [], work: null, ctx: null });
+}
 // Activity (II.3g): the old panel's summary (fan-out, folds, episodes, asks) and log, the filters and the search.
 {
   const { actItems, actShown, tailOf } = await import("./mods/rw-rail/activity.js");
