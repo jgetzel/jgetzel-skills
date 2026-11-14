@@ -61,17 +61,17 @@ theorem Chain.git {s0 s : Rec M} {args : List String} {cwd : Option String} (h :
 
 theorem Chain.db {s0 s : Rec M} {d : Db} (h : Chain s0 s) : Chain s0 { s with db := d } := h
 
-theorem Chain.mk_self {s0 s : Rec M} {d : Db} (h : Chain s0 s) : Chain s0 ⟨s.w, d, s.log⟩ := h
+theorem Chain.mk_self {s0 s : Rec M} {d : Db} {cs : List Db} (h : Chain s0 s) : Chain s0 ⟨s.w, d, s.log, cs⟩ := h
 
 /-- A state vcgen spells out: a command read after `⟨w, _, L⟩`. -/
-theorem Chain.mkCmd {s0 : Rec M} {w : M.World} {d : Db} {L : List (M.World × Call)} {argv : List String}
-    {cwd : Option String} (h : Chain s0 ⟨w, d, L⟩) (hc : GitRead argv ∨ ToolRead argv) :
-    Chain s0 ⟨M.after w argv cwd, d, L ++ [(w, .cmd argv cwd)]⟩ := Chain.cmd (s := ⟨w, d, L⟩) h hc
+theorem Chain.mkCmd {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db} {L : List (M.World × Call)} {argv : List String}
+    {cwd : Option String} (h : Chain s0 ⟨w, d, L, cs⟩) (hc : GitRead argv ∨ ToolRead argv) :
+    Chain s0 ⟨M.after w argv cwd, d, L ++ [(w, .cmd argv cwd)], cs⟩ := Chain.cmd (s := ⟨w, d, L, cs⟩) h hc
 
 /-- A state vcgen spells out: a git read after `⟨w, _, L⟩`. -/
-theorem Chain.mkGit {s0 : Rec M} {w : M.World} {d : Db} {L : List (M.World × Call)} {args : List String}
-    {cwd : Option String} (h : Chain s0 ⟨w, d, L⟩) : Chain s0 ⟨w, d, L ++ [(w, .git args cwd)]⟩ :=
-  Chain.git (s := ⟨w, d, L⟩) h
+theorem Chain.mkGit {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db} {L : List (M.World × Call)} {args : List String}
+    {cwd : Option String} (h : Chain s0 ⟨w, d, L, cs⟩) : Chain s0 ⟨w, d, L ++ [(w, .git args cwd)], cs⟩ :=
+  Chain.git (s := ⟨w, d, L, cs⟩) h
 
 /-- `s'` is `s` and then reads `l` (the shape vcgen leaves a state in). -/
 theorem Chain.ext {s0 s s' : Rec M} {l : List (M.World × Call)} (h : Chain s0 s) (hl : s'.log = s.log ++ l)
@@ -234,7 +234,7 @@ theorem Chain.same (hg : GitReadsKeep M) (ht : ToolsKeep M) {s s' : Rec M} (h : 
       | git => exact sameRepo_refl _
       | cmd argv cwd => exact this.elim (hg _ _ _) (ht _ _ _)
       | eff => cases this
-    exact sameRepo_trans h1 (ih (s := ⟨nxt s.w e.2, s.db, s.log⟩) hs fun e he => hk e (List.mem_cons_of_mem _ he))
+    exact sameRepo_trans h1 (ih (s := ⟨nxt s.w e.2, s.db, s.log, s.commits⟩) hs fun e he => hk e (List.mem_cons_of_mem _ he))
 
 theorem getElem?_prefix {l l' : List α} {i : Nat} {e : α} (h : l[i]? = some e) (hl : l <+: l') : l'[i]? = some e := by
   obtain ⟨t, rfl⟩ := hl
@@ -281,26 +281,26 @@ theorem Kept.chain (hg : GitReadsKeep M) (ht : ToolsKeep M) {s0 s s' : Rec M} (h
   obtain ⟨l, e, -⟩ := hc
   exact h.mono (by rw [e]; exact List.prefix_append _ _) (fun c => (hs.2.2.2.2 c).2) (fun x => ((hs.2.1 x).1).2)
 
-theorem Kept.mk_self {s0 s : Rec M} {d : Db} (h : Kept s0 s) : Kept s0 ⟨s.w, d, s.log⟩ := h
+theorem Kept.mk_self {s0 s : Rec M} {d : Db} {cs : List Db} (h : Kept s0 s) : Kept s0 ⟨s.w, d, s.log, cs⟩ := h
 
 theorem Kept.go (hg : GitReadsKeep M) (ht : ToolsKeep M) {x : RecM M α} {s0 s : Rec M} (hx : KExt x) (h : Kept s0 s) :
     Kept s0 (Rec.go x s).2 := h.chain hg ht (hx s)
 
-theorem Kept.mkCmd (hg : GitReadsKeep M) (ht : ToolsKeep M) {s0 : Rec M} {w : M.World} {d : Db}
-    {L : List (M.World × Call)} {argv : List String} {cwd : Option String} (h : Kept s0 ⟨w, d, L⟩)
-    (hc : GitRead argv ∨ ToolRead argv) : Kept s0 ⟨M.after w argv cwd, d, L ++ [(w, .cmd argv cwd)]⟩ :=
+theorem Kept.mkCmd (hg : GitReadsKeep M) (ht : ToolsKeep M) {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db}
+    {L : List (M.World × Call)} {argv : List String} {cwd : Option String} (h : Kept s0 ⟨w, d, L, cs⟩)
+    (hc : GitRead argv ∨ ToolRead argv) : Kept s0 ⟨M.after w argv cwd, d, L ++ [(w, .cmd argv cwd)], cs⟩ :=
   h.chain hg ht (Chain.mkCmd (Chain.refl _) hc)
 
-theorem Kept.mkGit (hg : GitReadsKeep M) (ht : ToolsKeep M) {s0 : Rec M} {w : M.World} {d : Db}
-    {L : List (M.World × Call)} {args : List String} {cwd : Option String} (h : Kept s0 ⟨w, d, L⟩) :
-    Kept s0 ⟨w, d, L ++ [(w, .git args cwd)]⟩ :=
+theorem Kept.mkGit (hg : GitReadsKeep M) (ht : ToolsKeep M) {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db}
+    {L : List (M.World × Call)} {args : List String} {cwd : Option String} (h : Kept s0 ⟨w, d, L, cs⟩) :
+    Kept s0 ⟨w, d, L ++ [(w, .git args cwd)], cs⟩ :=
   h.chain hg ht (Chain.mkGit (Chain.refl _))
 
 /-- `worktree remove`: what it leaves unreachable is `Lost`, the worktree it takes away `Gone`. -/
-theorem Kept.mkRm (hwr : WtRemove M) {s0 : Rec M} {w : M.World} {d : Db} {L : List (M.World × Call)} {m x : String}
-    (h : Kept s0 ⟨w, d, L⟩) :
+theorem Kept.mkRm (hwr : WtRemove M) {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db} {L : List (M.World × Call)} {m x : String}
+    (h : Kept s0 ⟨w, d, L, cs⟩) :
     Kept s0 ⟨M.after w ["git", "-C", m, "worktree", "remove", x] none, d,
-      L ++ [(w, .cmd ["git", "-C", m, "worktree", "remove", x] none)]⟩ := by
+      L ++ [(w, .cmd ["git", "-C", m, "worktree", "remove", x] none)], cs⟩ := by
   obtain ⟨hp, hR, hT⟩ := h
   have hw := hwr w m x
   have hpre : L <+: L ++ [(w, .cmd ["git", "-C", m, "worktree", "remove", x] none)] := List.prefix_append _ _
@@ -322,16 +322,16 @@ theorem Kept.mkRm (hwr : WtRemove M) {s0 : Rec M} {w : M.World} {d : Db} {L : Li
     · exact .inr (h.mono hpre)
 
 /-- `branch -d` keeps every commit and worktree. -/
-theorem Kept.mkBranchD (hbd : BranchD M) {s0 : Rec M} {w : M.World} {d : Db} {L : List (M.World × Call)} {m b : String}
-    (h : Kept s0 ⟨w, d, L⟩) :
-    Kept s0 ⟨M.after w ["git", "-C", m, "branch", "-d", b] none, d, L ++ [(w, .cmd ["git", "-C", m, "branch", "-d", b] none)]⟩ :=
+theorem Kept.mkBranchD (hbd : BranchD M) {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db} {L : List (M.World × Call)} {m b : String}
+    (h : Kept s0 ⟨w, d, L, cs⟩) :
+    Kept s0 ⟨M.after w ["git", "-C", m, "branch", "-d", b] none, d, L ++ [(w, .cmd ["git", "-C", m, "branch", "-d", b] none)], cs⟩ :=
   h.mono (List.prefix_append _ _) (hbd w m b).1 (fun x => ((hbd w m b).2 x).2)
 
 /-- `update-ref -d refs/heads/b k`: what it leaves unreachable is below `k`, `Lost` when `k` is (`hk`). -/
-theorem Kept.mkDelRef (hdr : DelRef M) {s0 : Rec M} {w : M.World} {d : Db} {L : List (M.World × Call)} {m b k : String}
-    (h : Kept s0 ⟨w, d, L⟩) (hk : ∀ c, M.Anc c k → Lost s0.log.length c L) :
+theorem Kept.mkDelRef (hdr : DelRef M) {s0 : Rec M} {w : M.World} {d : Db} {cs : List Db} {L : List (M.World × Call)} {m b k : String}
+    (h : Kept s0 ⟨w, d, L, cs⟩) (hk : ∀ c, M.Anc c k → Lost s0.log.length c L) :
     Kept s0 ⟨M.after w ["git", "-C", m, "update-ref", "-d", "refs/heads/" ++ b, k] none, d,
-      L ++ [(w, .cmd ["git", "-C", m, "update-ref", "-d", "refs/heads/" ++ b, k] none)]⟩ := by
+      L ++ [(w, .cmd ["git", "-C", m, "update-ref", "-d", "refs/heads/" ++ b, k] none)], cs⟩ := by
   obtain ⟨hp, hR, hT⟩ := h
   have hw := hdr w m b k
   have hpre := List.prefix_append L [(w, Call.cmd ["git", "-C", m, "update-ref", "-d", "refs/heads/" ++ b, k] none)]
@@ -367,11 +367,11 @@ theorem deleteBranch_kept (hbd : BranchD M) (hdr : DelRef M) {s0 s : Rec M} (h :
 /-- The branch delete's guard: the HEAD the sweep read of `x` (on `w`), before reads only and then `worktree remove x`
 (and the remote clean), is what that remove left unreachable: anything below it is `Lost`. -/
 theorem tie_lost (hg : GitReadsKeep M) (ht : ToolsKeep M) (hrp : RevParseHead M) {s0 : Rec M} {w wT : M.World}
-    {d dT : Db} {L LT : List (M.World × Call)} {m x k : String}
+    {d dT : Db} {cs csT : List Db} {L LT : List (M.World × Call)} {m x k : String}
     (hk : py ((M.git w ["-C", x, "rev-parse", "HEAD"] none).map strip) = some k)
-    (hch : Chain ⟨w, d, L⟩ ⟨wT, dT, LT⟩) (hT : Kept s0 ⟨wT, dT, LT⟩) : ∀ c, M.Anc c k → Lost s0.log.length c
+    (hch : Chain ⟨w, d, L, cs⟩ ⟨wT, dT, LT, csT⟩) (hT : Kept s0 ⟨wT, dT, LT, csT⟩) : ∀ c, M.Anc c k → Lost s0.log.length c
       (Rec.go (Run.cleanRemote x) ⟨M.after wT ["git", "-C", m, "worktree", "remove", x] none, dT,
-        LT ++ [(wT, .cmd ["git", "-C", m, "worktree", "remove", x] none)]⟩).2.log := by
+        LT ++ [(wT, .cmd ["git", "-C", m, "worktree", "remove", x] none)], csT⟩).2.log := by
   intro c hc'
   have hh : M.head w x = some k := by
     cases ho : M.git w ["-C", x, "rev-parse", "HEAD"] none with
@@ -389,6 +389,7 @@ set_option hygiene false in
 holds of. -/
 macro "kept1" : tactic => `(tactic| (
   repeat (any_goals (first | with_reducible assumption | with_reducible exact Kept.refl _ |
+    (with_reducible apply Kept.mk_self; with_reducible exact Kept.refl _) |
     with_reducible apply Kept.mkRm hwr | (with_reducible refine Kept.mkCmd hg ht ?_ ?keepcall; case keepcall => keepcalls) |
     with_reducible apply Kept.mkGit hg ht |
     (with_reducible apply Kept.mk_self; first | with_reducible assumption | (with_reducible apply Kept.go hg ht; kexts)) |

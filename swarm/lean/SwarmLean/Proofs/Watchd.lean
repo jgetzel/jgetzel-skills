@@ -767,7 +767,7 @@ theorem unreserve_spec (db : Db) (name : String) (r : Task) (now : Int) :
     (∀ a ∈ (Spawn.unreserve db name (some r) now).agents, a.name = name → a.hc = none → a.ended = some now) := by
   refine ⟨?_, ?_, ?_⟩
   · intro t ht hi ho
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map] at ht
+    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self] at ht
     obtain ⟨u, -, rfl⟩ := ht
     by_cases h1 : (u.id : Int) = r.id
     · by_cases h2 : (u.owner == some name && decide (u.state = .claimed)) = true
@@ -777,10 +777,10 @@ theorem unreserve_spec (db : Db) (name : String) (r : Task) (now : Int) :
         exact h2 ho
     · simp_all
   · intro t ht hi ho hs
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map]
+    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self]
     exact ⟨t, ht, by simp [hi, ho, hs]⟩
   · intro a ha hn hh
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map] at ha
+    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self] at ha
     obtain ⟨b, -, rfl⟩ := ha
     by_cases e : b.name = name <;> by_cases hb : b.hc = none <;> simp_all
 

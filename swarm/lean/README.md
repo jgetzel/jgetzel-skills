@@ -148,6 +148,51 @@ passes (their commands were read, not proved, to include no git write). Two fixe
 again after `landed`, so a commit made between the two reads was deleted with the branch, judged by the older HEAD;
 and `Run.cleanRemote` took `.cache/swarm-run/../..` for a job's copy (`runDirOk` now refuses `..`).
 
+**Crash safety** (`Proofs/Crash.lean`, board #133). `RecM` also records the db each transaction commits. Every
+command group the CLI dispatches (`tasks_keeps` … `watchd_keeps`, all of them in `groups_keep`) and one watchd pass
+(`pass_keeps`), run on any machine from a db where the cross-area invariant `XInv` holds, leave a db where it holds,
+and so does the db after each transaction they commit on the way (`Keeps`). A process stopped at any point between
+its steps (killed, or the machine gone) leaves the db it found or the one its last commit left (SQLite's atomic commit,
+`AllOrNothing`), so the db it leaves keeps the invariant (`stopped_keeps`); a transaction in part is never seen. Each
+theorem is proved by unfolding the command's own code down to its transactions and calls (`keeps_walk`) and closing each
+transaction with a lemma for its step (`X.<step>`), from any db that keeps the invariant: with other processes' commits
+in between too. A `repeat` loop is assumed to keep it (`LoopsKeep`, in the groups that have one: Msgs, Ci, Run, State,
+Watchd and the pass); `loop_ends` proves that for every run of a loop that ends. Lean defines a loop only as a least
+fixed point, and gives one that never ends an arbitrary value, so nothing can be proved of that run; its commits are
+those of the turns before the stop, each of which keeps the invariant. Recovery: a dead agent's claim lapses and reap
+reopens it (`claim_lapses`), its locks lapse and reap drops them (`lock_lapses`), and its row is ended once hc no longer
+lists its terminal (`gone_ends`). A spawn that reserved an agent and died before the launch leaves an idle, unbound row
+(`reserveAgent_row`) whose claim reap does not keep (`idle_unkept`), and lifecycle's verdict on it, idle 2 min and
+holding nothing, is to end it (`unlaunched_ends`).
+
+Each multi-step command, the gaps between its steps, and what covers a stop in each (between two transactions with
+nothing else in between is always `*_keeps` with `stopped_keeps`):
+
+| Command | Gap: stopped after | Covered by |
+|---|---|---|
+| any | a transaction | `*_keeps`, `pass_keeps`, `stopped_keeps`: the invariant holds |
+| `spawn` | reserve (row live, idle, unbound; task claimed) | `reserveAgent_row`, `idle_unkept` + `claim_lapses`: the claim is reopened; `unlaunched_ends`: the row is ended |
+| `spawn` | `git worktree add`, before its workspace row | not proved (liveness of the sweep): a fresh worktree at its base is clean and landed, so the sweep removes it once unused 30 min (`sweepGate_W1` proves only that it is safe to) |
+| `spawn` | launch, before the `hc` address is recorded | not proved: the agent's first fenced write binds its row (`Agents.touch`) |
+| `spawn` (failed launch) | `unreserve`, before `discardWs` | as the worktree gap above; `unreserve` itself drops the ended row's locks (finding F4, fixed) |
+| `end`, lifecycle's end | the end's transaction, before `hc kill`/`hc rm`/the cgroup kill | **finding F1**: nothing recovers it |
+| watchd sweep | `git worktree remove`, before the branch delete | **finding F2**: the branch is left |
+| watchd sweep | inside `git worktree remove` | **finding F3**: a half-removed worktree is never pruned |
+| watchd reap | one reap transaction, before the next | the next pass judges again from the db: each reap step checks the row it acts on (`claim_lapses`, `lock_lapses`, `gone_ends`) |
+| watchd `ci` check | `ciCheckStep` (event `ci-red`), before `ciNewRedTask` | **finding F5**: the red run never gets its task |
+| watchd conflict tick | a snapshot, before `tickApply` | the next tick redoes it: `tickApply` alone writes the pair keys |
+
+F1: `Lifecycle.endAgent` commits the end, then runs `hc kill`, `hc rm` and the cgroup kill. Stopped between, the row is
+ended but the terminal and its Claude run on; reap and lifecycle look only at live rows, and the orphan kill only at
+processes whose parent is init, which an hc terminal's is not. F2: the sweep removes the worktree, then deletes its
+branch; stopped between, the next sweep no longer lists the worktree and the branch stays (its work is landed, so
+nothing is lost). F3: a `git worktree remove` killed midway leaves the admin entry with its directory partly or wholly
+gone; the sweep skips a path that is not a directory and nothing runs `git worktree prune`. F5: `ciCheckStep` logs the
+`ci-red` event that keeps a second check from opening the task again, and `ciNewRedTask` opens it in a later
+transaction; stopped between, every later check finds the event and opens none. None is fixed here: in each the order
+is what guards against a concurrent run, so the fix is a decision (F4, `unreserve` keeping an ended row's locks, broke
+`XInv` and is fixed).
+
 ## What the proofs assume
 
 All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes as a hypothesis (none is an axiom).
@@ -156,6 +201,7 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | Assumption | About | Says | Taken by |
 |---|---|---|---|
 | `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`; since #137 a read-only `Store.txn` is one WAL read transaction, and a write reuses what that read computed only when `pragma data_version` shows no commit since) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
+| `AllOrNothing` | SQLite | a process stopped mid-run leaves the db it found or as one of its transactions committed it, never a transaction in part | `stopped_keeps` |
 | `SqlExec` | SQLite | each statement the store runs does what `Stmt.run` says: delete and update by key, insert with defaults that fails on a key a row has, `add column` with its default, the after migration | `write_back`, `store_load`, `runs_dels`, `runs_up`, `runs_ups`, `migrate_step`, `migrate_version`, `migrateAll_last` |
 | `SqlSelect` | SQLite | `select cs from t` returns each row's cells, in some order | `load_rows`, `store_load` |
 | `SqlTableInfo` | SQLite | `pragma table_info(t)` lists t's columns | `migrate_step`, `migrate_version`, `migrateAll_last`, `migrateAll_none` |

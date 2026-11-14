@@ -19,7 +19,7 @@ used:
   BEGIN IMMEDIATE transaction, as computed when `pragma data_version` says no other connection committed since (the
   state it holds is the one it read), else loaded and applied again. So `Atomic` also rests on a read transaction
   reading one committed state (WAL), placed in the order after the last write it saw, and on data_version
-  (sqlite_version);
+  (sqlite_version); and `AllOrNothing` (#133): a process stopped mid-run leaves the store as its last commit did;
 - the tools, through `Tools`: what a command line answers (`Proc.output`, `Git.git`), what `Sys.pidAlive`,
   `Sys.mtime`, `Clock.now` and `Machine.cwds` return, and what is true of the repo, the terminals, the processes and
   the PRs. Each assumption below says that one answer means one truth, as Env.lean's did of its `Tools`.
@@ -37,6 +37,12 @@ applied one after another in some order give those answers and `after` (sqlite_s
 sqlite_read, sqlite_commit, sqlite_rollback, sqlite_version). -/
 def Atomic (step : τ → Db → Db × α) (before after : Db) (ran : List (τ × α)) : Prop :=
   ∃ order : List (τ × α), order.Perm ran ∧ replay step before (order.map (·.1)) = (after, order)
+
+/-- SQLite's atomic commit (https://www.sqlite.org/atomiccommit.html), assumed of the real store and not proved: a
+process stopped at any point of a run (killed, or the machine gone) that found the store holding `before` and committed
+`commits` (the store as each of its transactions left it, in order) leaves it as `after`: as it found it or as one of
+those transactions left it, never one in part (sqlite_spec: sqlite_rollback, sqlite_commit). -/
+def AllOrNothing (before : Db) (commits : List Db) (after : Db) : Prop := after = before ∨ after ∈ commits
 
 /-! ### SQLite's tables
 
@@ -292,11 +298,13 @@ inductive Call
   | git (args : List String) (cwd : Option String)
   | eff (e : Eff)
 
-/-- The recording world's state: the machine now, the store, and every call so far with the machine it ran on. -/
+/-- The recording world's state: the machine now, the store, every call so far with the machine it ran on, and the
+store as each transaction so far committed it. -/
 structure Rec where
   w : M.World
   db : Db
   log : List (M.World × Call)
+  commits : List Db := []
 
 /-- The code run on machine `M`, recording its calls; an early exit keeps the state. -/
 abbrev RecM := ExceptT Exit (StateM (Rec M))
@@ -324,7 +332,7 @@ def ask (f : M.World → α) : RecM M α := modifyGet fun s => (f s.w, s)
 end Rec
 
 instance : Store (RecM M) where
-  txn _ f := modifyGet fun s => let (db, a) := f s.db; (a, { s with db })
+  txn _ f := modifyGet fun s => let (db, a) := f s.db; (a, { s with db, commits := s.commits ++ [db] })
 instance : Clock (RecM M) where
   now := Rec.ask M.now
   hhmm t := Rec.ask (M.hhmm · t)
