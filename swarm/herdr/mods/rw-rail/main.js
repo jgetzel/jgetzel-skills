@@ -1,23 +1,21 @@
 // The rework's rail (swarm/herdr/UI-SPEC.md, slice 1): spaces by machine, each with its agents and then its shells,
-// one row each (name, title or task, time, mark), sub-terminals under their parent on a thin line. A space folds to
-// one line of counts. Click a row to focus its terminal; click a space to show it, click the shown one to fold it.
+// one row each (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
+// their parent on a thin line. A space folds to one line of counts. Click a row to focus its terminal; click a space
+// to show it, click the shown one or any chevron to fold it.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, home } from "herdr";
-import { dur, rowsOf } from "./tree.js";
+import { AGENT, agentWhat, dur, rowsOf, stamp } from "./tree.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
-const ORDER = ["asks", "working", "done", "idle"]; // a folded space's counts
-const AGENT = new Set(ORDER);
-
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+const ORDER = ["asks", "working", "done", "idle"]; // a folded space's counts, then its shells
 const base = (p) => (p ?? "").replace(/\/+$/, "").split("/").pop().replace(/^-/, "");
 
 export default class Rail extends View {
   init(_props, cx) {
     try { this.folded = new Set(JSON.parse(localStorage.getItem("folded") ?? "[]")); } catch { this.folded = new Set(); }
-    // Each agent's mark and since when (ms), kept across restarts: terminals() leaves status_ms null.
+    // Each agent's mark, turn and since when (ms), kept across restarts: terminals() leaves status_ms null.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     cx.timer.every(30000, (cx) => cx.notify()); // the rows' times
   }
@@ -41,31 +39,18 @@ export default class Rail extends View {
     return box;
   }
 
-  // What a row says after its name: an agent's title (else its tab's name), a shell's front program (else its folder).
-  what(r, tabName) {
+  // What a row says after its name: for an agent see agentWhat, a shell's front program (else its folder).
+  what(r, name, tabName) {
     const { t } = r;
-    if (AGENT.has(r.mark)) {
-      const title = clean(t.title);
-      const telling = title && title !== t.program?.name && title.toLowerCase() !== t.program?.key && !/^[~/]/.test(title);
-      return telling ? title : tabName ?? "";
-    }
+    if (AGENT.has(r.mark)) return agentWhat(t, name, tabName);
     const fg = t.foreground;
     if (r.mark === "run") return fg?.argv?.length ? fg.argv.join(" ") : t.program?.name ?? "";
     const cwd = fg?.cwd ?? t.cwd ?? "";
     return this.home && cwd.startsWith(this.home) ? `~${cwd.slice(this.home.length)}` : cwd;
   }
 
-  // Stamps agents whose mark changed. Done and idle count as one: looking at a done agent makes it idle.
-  track(rows, now) {
-    let dirty = false;
-    for (const r of rows) {
-      if (!AGENT.has(r.mark)) continue;
-      const m = r.mark === "done" ? "idle" : r.mark;
-      if (this.changed[r.t.address]?.m === m) continue;
-      this.changed[r.t.address] = { m, at: r.t.status_ms ?? now };
-      dirty = true;
-    }
-    if (!dirty) return;
+  track(rows, now, at) {
+    if (!stamp(this.changed, rows, now, at)) return;
     const live = new Set(rows.map((r) => r.t.address));
     for (const k of Object.keys(this.changed)) if (!live.has(k) && now - this.changed[k].at > 30 * 86400000) delete this.changed[k];
     localStorage.setItem("changed", JSON.stringify(this.changed));
@@ -105,31 +90,39 @@ export default class Rail extends View {
       .child(div().flex_none().max_w(120).truncate().font_medium().text_color(shell ? t.muted : t.foreground)
         .when(shell, (el) => el.font_family(settings().font_family ?? "JetBrains Mono").text_size(12))
         .child(name))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(this.what(r, tabName)))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(this.what(r, name, tabName)))
       .when(Boolean(sideText), (el) => el.child(div().flex_none().text_size(11.5).text_color(r.mark === "asks" ? t.blocked : t.dim).child(sideText)))
       .child(this.mark(t, r.mark));
   }
 
   counts(t, rows) {
     const n = {};
-    for (const r of rows) if (AGENT.has(r.mark)) n[r.mark] = (n[r.mark] ?? 0) + 1;
-    return ORDER.filter((k) => n[k]).map((k) => h_flex().flex_none().gap(4).items_center().text_size(11.5)
-      .text_color(k === "asks" ? t.blocked : t.muted).child(this.mark(t, k)).child(String(n[k])));
+    for (const r of rows) { const k = AGENT.has(r.mark) ? r.mark : "shell"; n[k] = (n[k] ?? 0) + 1; }
+    const count = (k, icon) => h_flex().flex_none().gap(4).items_center().text_size(11.5)
+      .text_color(k === "asks" ? t.blocked : t.muted).child(icon).child(String(n[k]));
+    return [...ORDER.filter((k) => n[k]).map((k) => count(k, this.mark(t, k))),
+      ...(n.shell ? [count("shell", svg("mods/workspace-chrome/terminal.svg").size(11).flex_none().text_color(t.dim))] : [])];
   }
 
   space(t, s, rows, tabNames, shownTerm, now) {
     const folded = this.folded.has(s.id);
     const open = !folded && rows.length > 0;
     const tabs = s.tabs.length;
+    const stop = (_e, cx) => cx.stop_propagation();
     return v_flex().id(`space-${s.id}`).flex_none().rounded(9).when(s.active, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
-      .child(v_flex().id(`head-${s.id}`).px(10).pt(7).pb(6).cursor_pointer()
+      .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
         .when(!s.active, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
         .on_click((_e, cx) => (s.active ? this.fold(s.id, cx) : run("space.select", { id: s.id })))
-        .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(s.name))
-          .when(folded, (el) => el.children(this.counts(t, rows))))
-        .child(div().text_size(11.5).text_color(t.dim).child(`${tabs} ${tabs === 1 ? "tab" : "tabs"}`)))
-      .when(open, (el) => el.children(rows.map((r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now))));
+        .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
+          .hover((st) => st.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.fold(s.id, cx); })
+          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(12)))
+        .child(div().flex_1().min_w(0).truncate().text_size(14).font_bold().text_color(t.foreground).child(s.name))
+        .when(folded, (el) => el.child(h_flex().flex_none().gap(8).children(this.counts(t, rows))))
+        .when(!folded, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${tabs} ${tabs === 1 ? "tab" : "tabs"}`))))
+      // The space's rows hang on a guide line under its chevron.
+      .when(open, (el) => el.child(v_flex().ml(12).pl(2).border_l(1).border_color(t.border)
+        .children(rows.map((r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now)))));
   }
 
   render() {
@@ -144,7 +137,10 @@ export default class Rail extends View {
     const tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     const rowsBy = new Map(sp.map((s) => [s.id, rowsOf(s, ps, byAddr)]));
-    this.track([...rowsBy.values()].flat(), now);
+    // An agent alone in its tab: the tab's change time is the app's own, kept while the rail isn't shown.
+    const tabOf = new Map(sp.flatMap((s) => s.tabs).map((tab) => [tab.id, tab]));
+    const changedAt = new Map(ps.filter((p) => p.terminal && tabOf.get(p.tab)?.panes === 1).map((p) => [p.terminal, tabOf.get(p.tab).changed_at]));
+    this.track([...rowsBy.values()].flat(), now, (a) => changedAt.get(a) ?? null);
     setAgentOrder([...rowsBy.values()].flat().filter((r) => AGENT.has(r.mark) && r.pane).map((r) => r.t.address));
 
     // A heading per machine once a space or a machine isn't this computer; spaces() lists this computer's first.
@@ -153,13 +149,16 @@ export default class Rail extends View {
     const items = names.flatMap((m) => {
       const mine = sp.filter((s) => (s.machine ?? null) === m);
       if (m && !mine.length) return [];
-      const head = div().id(`machine-${m ?? "local"}`).h(26).flex_none().px(10).pt(8).text_size(11).text_color(t.dim)
-        .child(m ?? "This computer");
+      const head = h_flex().id(`machine-${m ?? "local"}`).flex_none().mt(m ? 14 : 0).mb(2).pt(m ? 12 : 4).px(8).gap(7)
+        .items_center().when(Boolean(m), (el) => el.border_t(1).border_color(t.border))
+        .text_size(12).font_semibold().text_color(t.foreground)
+        .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none().text_color(t.dim))
+        .child(div().flex_1().min_w(0).truncate().child(m ?? "This computer"));
       return [...(many ? [head] : []), ...mine.map((s) => this.space(t, s, rowsBy.get(s.id), tabNames, shownTerm, now))];
     });
 
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(div().h(31).flex_none().pl(20).pt(10).text_size(11.5).text_color(t.dim).child("Spaces"))
-      .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(2).overflow_y_scrollbar().children(items));
+      .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items));
   }
 }

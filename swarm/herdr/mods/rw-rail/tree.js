@@ -8,6 +8,33 @@ export function dur(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+export const AGENT = new Set(["asks", "working", "done", "idle"]);
+const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+const base = (p) => (p ?? "").replace(/\/+$/, "").split("/").pop().replace(/^-/, "");
+
+// What an agent's row says after its name: its title, its last report, its tab's name, its folder; the first that
+// isn't its name or its program's (a swarm agent titles itself with its name) or a path.
+export function agentWhat(t, name, tabName) {
+  const not = [name, t.program?.name, t.program?.key].filter(Boolean).map((s) => s.toLowerCase());
+  return [t.title, t.report?.msg, tabName, base(t.cwd)].map(clean).find((s) => s && !not.includes(s.toLowerCase()) && !/^[~/]/.test(s)) ?? "";
+}
+
+// Stamps since when each agent shows its mark, in `changed` (address -> {m, turn, at}); true if it changed any.
+// Done and idle count as one (looking at a done agent makes it idle); a new turn restamps, so a turn the rail didn't
+// see while it wasn't shown can't leave an old time. `at(address)` is the app's own time for that change, if any.
+export function stamp(changed, rows, now, at = () => null) {
+  let dirty = false;
+  for (const r of rows) {
+    if (!AGENT.has(r.mark)) continue;
+    const m = r.mark === "done" ? "idle" : r.mark, turn = r.t.turn ?? null;
+    const old = changed[r.t.address];
+    if (old?.m === m && old.turn === turn) continue;
+    changed[r.t.address] = { m, turn, at: at(r.t.address) ?? now };
+    dirty = true;
+  }
+  return dirty;
+}
+
 // The spec's mark for a terminal (its Marks table). A sub-agent's done reads as idle: it reports to its parent, and
 // nobody can look at a pane it doesn't have to clear it.
 export function markOf(t, nested) {
@@ -30,6 +57,7 @@ export function rowsOf(space, ps, byAddr) {
   const mine = ps.filter((p) => p.terminal && tabIndex.has(p.tab) && byAddr.has(p.terminal))
     .sort((a, b) => tabIndex.get(a.tab) - tabIndex.get(b.tab));
   const paneOf = new Map(mine.map((p) => [p.terminal, p.pane]));
+  const elsewhere = new Set(ps.filter((p) => p.terminal && !tabIndex.has(p.tab)).map((p) => p.terminal));
   const kids = new Map();
   for (const t of byAddr.values()) {
     const up = parentOf(t);
@@ -41,14 +69,15 @@ export function rowsOf(space, ps, byAddr) {
     if (seen.has(t.address)) return;
     seen.add(t.address);
     out.push({ t, pane: paneOf.get(t.address) ?? null, lines: lead, mark: markOf(t, lead.length > 0) });
-    const ks = (kids.get(t.address) ?? []).filter((k) => !seen.has(k.address));
+    const ks = (kids.get(t.address) ?? []).filter((k) => !seen.has(k.address) && !elsewhere.has(k.address));
     ks.forEach((k, i) => {
       const last = i === ks.length - 1;
       const pass = lead.map((l) => (l === "├" || l === "│" ? "│" : ""));
       walk(k, [...pass, last ? "└" : "├"]);
     });
   };
-  // A terminal whose parent is in this space hangs under it, pane or not.
+  // A terminal whose parent is in this space hangs under it, pane or not. One whose parent is gone, has no pane, or is
+  // in another space is a root in its own space; a child with a pane in another space shows there, not here.
   const roots = mine.map((p) => byAddr.get(p.terminal)).filter((t) => !(parentOf(t) && paneOf.has(parentOf(t))));
   for (const t of roots.filter((t) => t.status != null)) walk(t, []);
   for (const t of roots.filter((t) => t.status == null)) walk(t, []);

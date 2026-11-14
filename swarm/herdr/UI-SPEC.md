@@ -34,7 +34,7 @@ not tried.
 | Need | Source | Status |
 | --- | --- | --- |
 | Whole window from a layout (rail, bar, cards, no status bar) | layout nodes `block`, `row`, `column`, `stack`; root `"titlebar":"none"` with a `window_drag` block; `pane.radius/border/focus/gap` on the tab block | documented |
-| Every terminal with space, tab, parent, name, status | `terminals()` (the `hc ls --json` record: `labels["herdr.space"]`, `labels["herdr.tab"]`, `parent`, `name`, `title`, `cwd`), `agents()`, `panes()` | checked in slice 1; `status_ms` is null there, so `rw-rail` stamps change times itself as the shipped agents mod does |
+| Every terminal with space, tab, parent, name, status | `terminals()` (the `hc ls --json` record: `labels["herdr.space"]`, `labels["herdr.tab"]`, `parent`, `name`, `title`, `cwd`), `agents()`, `panes()` | checked in slice 1; `status_ms` is null there, so `rw-rail` stamps change times itself, restamping when `turn` changes (a turn it missed while not shown) and taking a one-pane tab's `changed_at` as the time |
 | Status words | `working`, `blocked`, `done`, `idle`. The core also has `error`, and `kind` (permission, question, auth) | documented |
 | "Done" clears when you look | the app does it; no mod call clears it | documented |
 | A shell's front program | `program` on the terminal follows what runs; `foreground {argv, cwd, name, pid}` in `hc schema` | checked in slice 1: `terminals()` carries `foreground` |
@@ -64,8 +64,9 @@ mark sits at the right end of the row or pill.
 | small dim dot | shell: at a prompt | `program` is a shell and status is not `working` |
 | small coral square | shell: last command failed | not buildable, see the last section |
 
-A folded space shows four counts: asks you, working, done, idle. It counts
-agents only. A swarm worker is never counted as done.
+A folded space shows four counts: asks you, working, done, idle, then its
+shells (a terminal glyph), so a fold of shells is never blank. A swarm worker
+is never counted as done. Its heading's chevron points right.
 
 ## Parts
 
@@ -73,8 +74,14 @@ agents only. A swarm worker is never counted as done.
 
 Spaces grouped by machine, this computer first. Under each space, its agents
 and then its shells, one row each: name, title or task, time, mark. A row
-whose terminal has a `parent` hangs under the parent on a thin line. A space
-folds to one line with counts. Clicking a row focuses that terminal.
+whose terminal has a `parent` in the same space hangs under the parent on a
+thin line; a parent that is gone, has no pane, or is in another space leaves
+it flat in its own space. A row never repeats its name: an agent whose title is
+its name shows its last report, its named tab, or its folder instead. A space's
+heading is bold with a fold chevron, its rows hang on a guide line under it,
+and spaces sit further apart than rows. Each machine's heading is a divider
+line with its icon. A space folds to one line with counts (the chevron or a
+click on the shown space). Clicking a row focuses that terminal.
 
 - Data: `spaces()`, `terminals()`, `agents()`, `machines()`. No swarm data for
   a plain space.

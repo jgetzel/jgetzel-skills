@@ -1,6 +1,6 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks) from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -39,4 +39,40 @@ assert.deepEqual(remote.map((r) => r.t.address), ["vps/t2", "vps/t3"]);
 assert.equal(markOf(T("x", { status: "error" }), false), "asks");
 assert.equal(markOf(T("x", { status: "done" }), false), "done");
 assert.deepEqual([dur(30e3), dur(31 * 60e3), dur(3 * 3600e3), dur(50 * 3600e3)], ["<1m", "31m", "3h", "2d"]);
+
+// Nesting (#168): a parent that is gone, has no pane, or sits in another space leaves its child a root here; a child
+// with a pane in another space shows there, not under its parent here.
+const nest = [
+  T("a1", { status: "done" }), // a communicator with a pane in space A
+  T("a2", { status: "done", parent: "a1" }), // its worker, own tab in space A: under a1
+  T("a3", { status: "working", parent: "gone" }), // parent finished: flat
+  T("w", { status: null }), // watchd: no pane anywhere
+  T("a4", { status: "working", parent: "w" }), // flat
+  T("b1", { status: "working", parent: "a1" }), // a1's worker with a pane in space B
+];
+const nBy = new Map(nest.map((t) => [t.address, t]));
+const nPs = [["a1", "A1"], ["a2", "A2"], ["a3", "A3"], ["a4", "A4"], ["b1", "B1"]].map(([terminal, tab]) => ({ pane: `p${terminal}`, tab, terminal }));
+const spA = { tabs: ["A1", "A2", "A3", "A4"].map((id, i) => ({ id, index: i + 1 })) };
+assert.deepEqual(rowsOf(spA, nPs, nBy).map((r) => [r.t.address, r.lines.join("")]), [["a1", ""], ["a2", "└"], ["a3", ""], ["a4", ""]]);
+assert.deepEqual(rowsOf({ tabs: [{ id: "B1", index: 1 }] }, nPs, nBy).map((r) => [r.t.address, r.lines.join("")]), [["b1", ""]]);
+
+// What a row says (#168): never its own name again.
+const claude = { key: "claude", name: "Claude Code", shell: false };
+const W = (o) => T("x", { program: claude, cwd: "/w/high-perf-lean-hpl-370", ...o });
+assert.equal(agentWhat(W({ title: "Fix login" }), "hpl-370", "hpl-370"), "Fix login");
+assert.equal(agentWhat(W({ title: "hpl-370", report: { msg: "waiting on CI" } }), "hpl-370", "hpl-370"), "waiting on CI");
+assert.equal(agentWhat(W({ title: "hpl-370" }), "hpl-370", "hpl-370"), "high-perf-lean-hpl-370");
+assert.equal(agentWhat(W({ title: "✳ Claude Code" }), "claude", "review"), "review");
+assert.equal(agentWhat(W({ title: "ll-97b", cwd: "/w/jgetzel-skills-ll-97" }), "ll-97b", undefined), "jgetzel-skills-ll-97");
+assert.equal(agentWhat(W({ title: "x", cwd: "/w/x" }), "x", undefined), "");
+
+// Times (#168): a turn the rail didn't see restamps; looking (done -> idle) doesn't; the app's time wins over now.
+const ch = { t1: { m: "idle", at: 1 } }; // as slice 1 stored it, no turn
+const R = (address, mark, turn) => ({ t: { address, turn }, mark });
+assert.equal(stamp(ch, [R("t1", "done", 267)], 500, () => 400), true);
+assert.deepEqual(ch.t1, { m: "idle", turn: 267, at: 400 });
+assert.equal(stamp(ch, [R("t1", "idle", 267)], 600), false);
+assert.equal(stamp(ch, [R("t1", "done", 268)], 700), true);
+assert.equal(ch.t1.at, 700);
+assert.equal(stamp(ch, [R("s", "prompt", 0)], 800), false);
 console.log("rail-test: ok");
