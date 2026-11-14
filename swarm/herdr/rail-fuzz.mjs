@@ -49,6 +49,9 @@ for (let i = 0; i < 2000; i++) {
     const c = T.closeOf({ pane: "p", tab: "a", mark: m }, [{ id: "a", panes: 1 }], name, what);
     assert.ok(ok1(c.ask.title, 90) && ok1(c.ask.detail, 300), JSON.stringify(c.ask).slice(0, 200));
   }
+  // a prompt's terminal window (II.6 tier 1) titles itself with them and hc's msg: bounded lines
+  const pk = T.peekWindow("t1", pick(HOSTILE), pick(HOSTILE)).layout.children[0].content.props.peek;
+  assert.ok(ok1(pk.who, 80) && ok1(pk.what, 160), JSON.stringify(pk).slice(0, 200));
 }
 
 // 2. The swarm CLI's JSON, malformed or hostile: the mods' readers never throw; types are as they expect.

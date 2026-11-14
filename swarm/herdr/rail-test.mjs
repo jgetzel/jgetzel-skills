@@ -254,4 +254,13 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(o.limits.queue_only, true);
   assert.deepEqual(needsOf(overOf({ active: true, watchd: { alive: true }, ci: { red_streak: 0 } })), []);
 }
+// A prompt's terminal in a window (II.6 tier 1): a title bar from rw-pane, then the terminal; one window per terminal.
+{
+  const { peekWindow, addrOf } = await import("./mods/rw-rail/tree.js");
+  const w = peekWindow("box/t4", "ll-5", "approve Bash: ls\n/etc");
+  assert.equal(w.kind, "window"); assert.equal(w.key, "peek-box/t4");
+  assert.deepEqual(w.layout.children.map((c) => c.content.mod ?? c.content.terminal), ["rw-pane", "box/t4"]);
+  assert.deepEqual(w.layout.children[0].content.props.peek, { address: "box/t4", who: "ll-5", what: "approve Bash: ls /etc" });
+  assert.equal(addrOf("t4", "box"), "box/t4"); assert.equal(addrOf("t4", null), "t4"); assert.equal(addrOf("box/t4", "box"), "box/t4");
+}
 console.log("rail-test: ok");

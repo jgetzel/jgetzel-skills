@@ -5,8 +5,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, exec, theme, run, appHome, shared, settings, layout } from "herdr";
-import { agentRows, allShown, asksOf, boardRows, dur, memoryOf, openAsk, overOf, showAll, sumFor, tagOf } from "./tree.js";
+import { spaces, panes, terminals, exec, theme, run, appHome, shared, settings, layout, openOverlay } from "herdr";
+import { addrOf, agentRows, allShown, asksOf, boardRows, dur, line, memoryOf, openAsk, overOf, peekWindow, showAll, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -60,9 +60,14 @@ export default class AllSwarms extends View {
     const hc = s.agents?.find((a) => a.name === name)?.hc;
     if (!hc) return;
     showAll(run, false);
-    const addr = w.on && !hc.includes("/") ? `${w.on}/${hc}` : hc, ps = panes(), p = ps.find((x) => x.terminal === addr);
+    const addr = addrOf(hc, w.on), ps = panes(), p = ps.find((x) => x.terminal === addr);
     if (p && ask) openAsk(run, ps, p.pane, { folder: w.folder, machine: w.on ?? null, agent: name }, (f) => cx.timer.after(300, f));
     else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
+  }
+  // An agent at a prompt: what hc says it asks, and its terminal in a window (II.6 tier 1).
+  promptOf(w, s, name) {
+    const hc = s.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, w.on);
+    return { addr, msg: addr ? line(terminals().find((x) => x.address === addr)?.report?.msg, 300) : "" };
   }
   openSpace(w) {
     const sp = spaces(), ids = new Set(sp.map((x) => x.id)), s = sp.find((x) => sumFor([w], x, ids));
@@ -92,7 +97,8 @@ export default class AllSwarms extends View {
         .child(div().font_normal().child(`${asks.length}, across ${ws.length === 2 ? "both swarms" : `${ws.length} swarms`}`)))
       .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
         const title = n.kind === "question" ? `${n.agent} asks about #${n.task.id}` : n.kind === "prompt" ? `${n.agent} stopped at a prompt` : `${n.agent} is hung`;
-        const text = n.kind === "question" ? one(n.task.question) || n.task.title : n.kind === "prompt" ? "Open its terminal and answer." : "watchd keeps it, but it has done nothing for a long time.";
+        const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent) : null;
+        const text = n.kind === "question" ? one(n.task.question) || n.task.title : pr ? pr.msg || "Answer it in its terminal." : "watchd keeps it, but it has done nothing for a long time.";
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, tagOf(n.s.comms)))
             .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
@@ -100,7 +106,8 @@ export default class AllSwarms extends View {
           .child(div().text_size(13.5).line_height("19px").whitespace_normal().text_color(t.foreground).child(text))
           .child(h_flex().gap(8).items_center()
             .when(n.kind === "question", (el) => el.child(this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)))
-            .child(this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))));
+            .child(pr ? this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))
+              : this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))));
       })))
       .when(more > 0, (el) => el.child(div().text_size(12.5).text_color(t.blocked).child(`${more} more`)));
   }

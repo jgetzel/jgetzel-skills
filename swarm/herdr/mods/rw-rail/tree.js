@@ -495,7 +495,17 @@ export function showSwarm(run, setShared, view) {
   setShared("rw-swarm.view", { section: "overview", ...view });
   run("layout.select", { stack: "view", child: "swarm" });
 }
-export const tagOf = (comms) => (comms ?? "").replace(/-?comms\d*$/, "");
+// A prompt's terminal, live, in a window over the layout (II.6 tier 1): rw-pane's title bar to drag it by, then the
+// terminal, where the user types the answer. One window per terminal (`key`); opening it again brings it back.
+export const peekWindow = (address, who, what) => ({
+  kind: "window", key: `peek-${address}`, width: 760, height: 480,
+  layout: { type: "column", children: [
+    { type: "block", size: { px: 38 }, content: { mod: "rw-pane", props: { peek: { address, who: line(who, 80), what: line(what, 160) } } } },
+    { type: "block", content: { terminal: address } }] },
+});
+// A swarm agent's terminal address: its hc terminal, on its swarm's machine.
+export const addrOf = (hc, on) => (on && !hc.includes("/") ? `${on}/${hc}` : hc);
+export const tagOf = (comms) =>(comms ?? "").replace(/-?comms\d*$/, "");
 // What asks you across swarms: their summaries' needs that are an agent's (questions, prompts, hung).
 export const asksIn = (sums) => sums.flatMap((s) => (s.needs ?? []).filter((n) => ["question", "prompt", "hung"].includes(n.kind)));
 // This computer's memory in use (kB) split by swarm, then everything else: the swarms' process trees can't exceed it.

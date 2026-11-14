@@ -8,7 +8,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared } from "herdr";
-import { SECTIONS, allShown, ciWord, line, looked, needsYou, questionsOf, rowText, showAll, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
+import { SECTIONS, allShown, ciWord, line, looked, needsYou, peekWindow, questionsOf, rowText, showAll, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -40,7 +40,7 @@ export default class Bar extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
   }
 
-  // The Needs you popup: one row per agent, focusing it on click.
+  // The Needs you popup: one row per agent, focusing it on click; a prompt's row also shows its terminal in a window.
   list(t) {
     const all = terminals();
     const ps = panes();
@@ -49,8 +49,8 @@ export default class Bar extends View {
     const paneOf = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, p]));
     const asks = needsYou(all);
     const qs = questionsOf(sumsOf(), new Set(asks.map((x) => x.address)));
-    const all_ = [...asks.map((term) => ({ address: term.address, ...rowText(term, "asks", null, home()) })), ...qs];
-    const items = all_.slice(0, NEEDS).map(({ address, name, what }, i) => {
+    const all_ = [...asks.map((term) => ({ address: term.address, peek: line(term.report?.msg, 300), ...rowText(term, "asks", null, home()) })), ...qs];
+    const items = all_.slice(0, NEEDS).map(({ address, name, what, peek }, i) => {
       const p = paneOf.get(address), s = p && spaceOf.get(p.tab);
       return h_flex().id(`needs-${i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
         .cursor_pointer().hover((st) => st.bg(t.hover))
@@ -63,6 +63,10 @@ export default class Bar extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
         .when(Boolean(s), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(11.5).text_color(t.muted)
           .child(line(s.machine ? `${s.machine} · ${s.name}` : s.name, 80))))
+        .when(peek != null, (el) => el.child(div().id(`needs-peek-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6)
+          .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); openOverlay(peekWindow(address, name, peek || what)); })
+          .child("Show terminal")))
         .child(mark(t, "asks"));
     });
     return v_flex().size_full().p(6).gap(2).bg(t.popover).text_color(t.foreground)
@@ -105,7 +109,7 @@ export default class Bar extends View {
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 380, height: Math.min(420, 52 + 34 * needs), props: { needs: true } }))
+        .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 460, height: Math.min(420, 52 + 34 * needs), props: { needs: true } }))
         .child(mark(t, "asks", 8)).child(`Needs you ${needs}`)))
       .when(Boolean(w?.buttons), (el) => el
         .child(this.button(t, "minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
