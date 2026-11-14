@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks) and rw-bar's pills and Needs you list from
 // made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -91,4 +91,7 @@ const zsh = T("z", { argv: ["/bin/zsh"], program: sh, foreground: { argv: ["npm"
 assert.deepEqual(rowText(zsh, "run", null, "/h"), { name: "zsh", what: "npm run dev" });
 assert.deepEqual(rowText(zsh, "prompt", null, "/h"), { name: "zsh", what: "~/w" });
 assert.deepEqual(rowText(T("c", { name: "ll-1", title: "fix it", program: { key: "claude" } }), "working", null, "/h"), { name: "ll-1", what: "fix it" });
+// The collapsed rail's tiles: two letters, and one mark per kind, worst first.
+assert.deepEqual(["nixos", "linn-studio", "jk_ledger", "Mother Wants My Skin", "x"].map(abbrev), ["ni", "ls", "jk", "MW", "x"]);
+assert.deepEqual(rollOf(rows), ["asks", "working", "idle"]);
 console.log("rail-test: ok");
