@@ -257,6 +257,22 @@ export function tabGroups(rows) {
   return out;
 }
 
+// Closing a plain rail row (Part II.1): its tab when the tab has one pane, else that pane; null for a row with no pane.
+// `ask` (the confirm dialog's title and detail) when an agent works or asks, a program is in front of a shell, or the tab
+// is its space's last (closing it closes the space); else it closes at once. `tabs`: the row's space's tabs.
+export function closeOf(r, tabs, name, what) {
+  const tab = r.pane && tabs.find((x) => x.id === r.tab);
+  if (!tab) return null;
+  const whole = (tab.panes ?? 1) <= 1;
+  const command = whole ? { name: "tab.close", args: { id: tab.id, confirmed: true } } : { name: "pane.close", args: { pane: r.pane } };
+  const why = r.mark === "working" ? "It is working." : r.mark === "asks" ? "It is asking you something."
+    : r.mark === "run" ? `${what || "A program"} is running in it.` : null;
+  const last = whole && tabs.length === 1;
+  if (!why && !last) return { command, ask: null };
+  const end = last ? "It is the space's last tab: closing it closes the space." : `Closing the ${whole ? "tab" : "pane"} ends it.`;
+  return { command, ask: { title: `Close ${line(what ? `${name} · ${what}` : name, 80)}?`, detail: why ? `${why} ${end}` : end } };
+}
+
 // A collapsed rail's tile: two letters for a space (the first two words' initials, else its first two letters) and its
 // agents' marks, one per kind, worst first.
 export function abbrev(name) {

@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -85,6 +85,17 @@ assert.deepEqual(needsYou(needs).map((t) => t.address), ["t4", "t8"]);
 const gs = tabGroups([...rows, { t: { address: "z" }, pane: "pz", tab: null, lines: [] }]);
 assert.deepEqual(gs.map((g) => [g.tab, g.rows.map((r) => r.t.address), g.split]),
   [["a", ["t1", "t7"], true], ["b", ["t2", "t3", "t4", "t5"], false], [null, ["z"], false]]);
+// Closing a plain row (Part II.1): the tab when it has one pane, else the pane; asks for a working or asking agent, a
+// program in front, or the space's last tab; never for a row with no pane.
+const cTabs = [{ id: "a", panes: 2 }, { id: "b", panes: 1 }];
+assert.deepEqual(closeOf({ pane: "p1", tab: "a", mark: "prompt" }, cTabs, "zsh", "~/w"), { command: { name: "pane.close", args: { pane: "p1" } }, ask: null });
+assert.deepEqual(closeOf({ pane: "p2", tab: "b", mark: "idle" }, cTabs, "claude", "x"), { command: { name: "tab.close", args: { id: "b", confirmed: true } }, ask: null });
+assert.equal(closeOf({ pane: "p2", tab: "b", mark: "working" }, cTabs, "claude", "fix it").ask.detail, "It is working. Closing the tab ends it.");
+assert.equal(closeOf({ pane: "p2", tab: "b", mark: "working" }, cTabs, "claude", "fix it").ask.title, "Close claude · fix it?");
+assert.equal(closeOf({ pane: "p1", tab: "a", mark: "run" }, cTabs, "zsh", "npm run dev").ask.detail, "npm run dev is running in it. Closing the pane ends it.");
+assert.equal(closeOf({ pane: "p2", tab: "b", mark: "asks" }, cTabs, "c", "").ask.title, "Close c?");
+assert.equal(closeOf({ pane: "p", tab: "b", mark: "prompt" }, [cTabs[1]], "zsh", "~").ask.detail, "It is the space's last tab: closing it closes the space.");
+assert.equal(closeOf({ pane: null, tab: "b", mark: "idle" }, cTabs, "h", ""), null);
 const zsh = T("z", { argv: ["/bin/zsh"], program: sh, foreground: { argv: ["npm", "run", "dev"], cwd: "/h/w" } });
 assert.deepEqual(rowText(zsh, "run", null, "/h"), { name: "zsh", what: "npm run dev" });
 assert.deepEqual(rowText(zsh, "prompt", null, "/h"), { name: "zsh", what: "~/w" });
