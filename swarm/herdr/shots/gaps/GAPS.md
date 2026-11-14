@@ -40,6 +40,10 @@ spd0e95763252278e75c9ff76af50e675c, and `hc ls --label herdr.space=<that>` lists
 workers, so the data arrives and the space matches. high-perf-lean's summary (active, space spe73459...) runs fine by
 hand but is absent from the shared list. One difference from rail-demo: live workers' terminals have
 `parent` = the communicator's terminal, so they are kids of its tree, not trees of their own.
+Cause (#175): the live spaces' `folder`s are rotated one space along (jgetzel-skills has /home/jgetzel, high-perf-lean
+has the jgetzel-skills repo), so the rail keyed jgetzel-skills' summary to high-perf-lean's space and then dropped it
+there (its `space` is another space). The rail, bar and All swarms now find a space's swarm by the summary's `space`
+first, and each swarm agent heads its own tree. rail-demo.sh starts workers from the communicator's terminal.
 
 ## 3. Old Swarm side panel still in the layout -> task C (part needs the user)
 Built `panel-live.png`; canvas has no side panel (`swarmtab-canvas.png`).
