@@ -1,18 +1,19 @@
 #!/bin/sh
 # Made-up spaces, agents and shells for screenshots of the rework rail (rw-rail), then the rework layout. Run inside
 # shot.sh's sandbox, never in the person's window:
-#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24]' out.png
+#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24] [--vps]' out.png
 # Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one
 # gets it as its parent. --fold folds jk_ledger, nixos and linn-studio (shells only). --swarm N adds a space,
 # jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24: its D) that register their own
 # terminals in its board, and shows it. A second hc session on this machine stands in for another machine, "desktop";
-# it stops once shot.sh removes the sandbox.
+# it stops once shot.sh removes the sandbox. --vps adds a third, "vps", with a space whose agent asks; it is unreachable
+# while $HERDR_APP_HOME/vps.down exists and its hc is stopped (HC_SESSION=${HC_SESSION}v hc server stop).
 set -eu
 [ -n "${HERDR_APP_HOME:-}" ] && case $HERDR_APP_HOME in /tmp/hs.*) ;; *) false ;; esac ||
   { echo "rail-demo.sh: only inside shot.sh's sandbox" >&2; exit 2; }
-fold= sw=
+fold= sw= vps=
 while [ $# -gt 0 ]; do
-  case $1 in --fold) fold=1; shift ;; --swarm) sw=$2; shift 2 ;; *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;; esac
+  case $1 in --fold) fold=1; shift ;; --swarm) sw=$2; shift 2 ;; --vps) vps=1; shift ;; *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;; esac
 done
 D=$(dirname "$HERDR_APP_HOME")
 do_() { herdr-app do "$@"; }
@@ -99,6 +100,17 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do # until the window has connected to it
 done
 do_ tab.new --space "$dn" --argv '["sh","-c","exec sleep 1d"]' >/dev/null
 do_ space.new --machine desktop --name jk_ledger --folder /tmp >/dev/null
+if [ -n "$vps" ]; then
+  printf '%s\n' '#!/bin/sh' '[ -e "$HERDR_APP_HOME/vps.down" ] && exit 255' 'for a; do last=$a; done' 'exec sh -c "$last"' >"$D/w/via.sh"
+  chmod +x "$D/w/via.sh"
+  hc machine add --via "$D/w/via.sh" --name vps --session "${HC_SESSION}v" >/dev/null
+  (while [ -d "$HERDR_APP_HOME" ]; do sleep 2; done; HC_SESSION=${HC_SESSION}v hc server stop
+    rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/herdr-core/${HC_SESSION}v") >/dev/null 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    vn=$(do_ space.new --machine vps --name ledger --folder /tmp --argv "$(agent blocked 'deploy to prod?')" 2>/dev/null | id space) || :
+    case $vn in vps/*) break ;; esac; sleep 1
+  done
+fi
 sleep 2 # the helpers start and report
 n=0; while [ -n "$sw" ] && [ $n -lt 30 ] && [ "$(sqlite3 -cmd ".timeout 9000" "$db" "select count(*) from agent")" -lt "$sw" ]; do
   sleep 1; n=$((n + 1)) # every swarm agent has recorded its terminal

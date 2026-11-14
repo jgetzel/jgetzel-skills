@@ -259,3 +259,14 @@ export function openAsk(run, ps, pane, props, later) {
   }
   run("pane.focus", { pane });
 }
+
+// The rail's machines (slice 10): this computer, then each machine that has spaces, with its state from
+// `hc machine ls --json` (`listed`; null until read) and whether it is hidden (`hidden`: names). `known`: machines()' names.
+export function machinesOf(sp, known, listed, hidden) {
+  const names = [null, ...new Set([...known, ...(listed ?? []).map((m) => m.name), ...sp.map((s) => s.machine)].filter(Boolean))];
+  return names.map((name) => {
+    const m = name ? (listed ?? []).find((x) => x.name === name) : null;
+    return { name, state: name ? m?.state ?? null : "connected", since: m?.since_ms ?? null, hidden: Boolean(name) && hidden.includes(name),
+      spaces: sp.filter((s) => (s.machine ?? null) === name) };
+  }).filter((m) => !m.name || m.spaces.length);
+}
