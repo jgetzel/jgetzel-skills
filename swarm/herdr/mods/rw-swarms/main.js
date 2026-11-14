@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, exec, theme, run, appHome, shared, settings, layout } from "herdr";
-import { agentRows, allShown, asksOf, boardRows, dur, memoryOf, openAsk, showAll, tagOf } from "./tree.js";
+import { agentRows, allShown, asksOf, boardRows, dur, memoryOf, openAsk, showAll, sumFor, tagOf } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -57,7 +57,7 @@ export default class AllSwarms extends View {
     else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
   }
   openSpace(w) {
-    const s = spaces().find((x) => x.folder === w.folder && (x.machine ?? null) === (w.on ?? null));
+    const sp = spaces(), ids = new Set(sp.map((x) => x.id)), s = sp.find((x) => sumFor([w], x, ids));
     showAll(run, false);
     if (s) run("space.select", { id: s.id });
   }

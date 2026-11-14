@@ -2,13 +2,14 @@
 # Made-up spaces, agents and shells for screenshots of the rework rail (rw-rail), then the rework layout. Run inside
 # shot.sh's sandbox, never in the person's window:
 #   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24 [--two]] [--vps]' out.png
-# Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one
-# gets it as its parent. --fold folds jk_ledger, nixos and linn-studio (shells only). --swarm N adds a space,
-# jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24: its D) that register their own
-# terminals in its board, and shows it. A second hc session on this machine stands in for another machine, "desktop";
-# it stops once shot.sh removes the sandbox. --vps adds a third, "vps", with a space whose agent asks; it is unreachable
-# while $HERDR_APP_HOME/vps.down exists and its hc is stopped (HC_SESSION=${HC_SESSION}v hc server stop). --two makes
-# high-perf-lean a second swarm, hpl, with 5 agents, one of them asking (the All swarms view).
+# Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one gets
+# it as its parent, as does a swarm worker from its communicator's. --fold folds jk_ledger, nixos and linn-studio
+# (shells only). --swarm N adds a space, jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24:
+# its D) that register their own terminals in its board, and shows it. A second hc session on this machine stands in for
+# another machine, "desktop"; it stops once shot.sh removes the sandbox. --vps adds a third, "vps", with a space whose
+# agent asks; it is unreachable while $HERDR_APP_HOME/vps.down exists and its hc is stopped (HC_SESSION=${HC_SESSION}v
+# hc server stop). --two makes high-perf-lean a second swarm, hpl, with 5 agents, one of them asking (the All swarms
+# view).
 set -eu
 [ -n "${HERDR_APP_HOME:-}" ] && case $HERDR_APP_HOME in /tmp/hs.*) ;; *) false ;; esac ||
   { echo "rail-demo.sh: only inside shot.sh's sandbox" >&2; exit 2; }
@@ -66,23 +67,27 @@ EOF
     jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
   }
   task() { sqlite3 -cmd ".timeout 9000" "$db" "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''))"; }
-  skills=$(do_ space.new --name jgetzel-skills --folder "$repo" --argv "$(swagent ll-comms idle 120 '' done ll-comms)" | id space)
+  # wtab <space> <communicator's terminal> <argv>: a worker as `swarm spawn` starts one, from the communicator's terminal
+  # (so that is its parent), opting into the space; Herdr gives it a tab there.
+  wtab() { hc run --bg --json --parent "$2" --label "herdr.space=$1" -- sh -c "$(echo "$3" | jq -r '.[2]')" >/dev/null; }
+  made=$(do_ space.new --name jgetzel-skills --folder "$repo" --argv "$(swagent ll-comms idle 120 '' done ll-comms)")
+  skills=$(echo "$made" | id space) llc=$(echo "$made" | id terminal)
   if [ "$sw" = 5 ]; then
-    tab "$skills" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Lean proofs: crash safety between any two steps' blocked ll-97 'Spawn.unreserve ends the row but keeps its locks. Fix it in this PR, or as its own task?'
-    tab "$skills" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' claimed ll-110
-    tab "$skills" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' claimed ll-111
-    tab "$skills" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' claimed ll-107
+    wtab "$skills" "$llc" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Lean proofs: crash safety between any two steps' blocked ll-97 'Spawn.unreserve ends the row but keeps its locks. Fix it in this PR, or as its own task?'
+    wtab "$skills" "$llc" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' claimed ll-110
+    wtab "$skills" "$llc" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' claimed ll-111
+    wtab "$skills" "$llc" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' claimed ll-107
     task 150 'Collapsed rail' open; task 151 'Settings' open
     folds="$nix $linn"
   else
-    tab "$skills" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' blocked ll-203 'Keep the old panel?'
-    tab "$skills" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' blocked ll-205 'Which machine is the vps?'
-    tab "$skills" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' claimed ll-209
+    wtab "$skills" "$llc" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' blocked ll-203 'Keep the old panel?'
+    wtab "$skills" "$llc" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' blocked ll-205 'Which machine is the vps?'
+    wtab "$skills" "$llc" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' claimed ll-209
     sqlite3 -cmd ".timeout 9000" "$db" "insert into event(ts, agent, kind, data) values($((now - 60)), 'll-209', 'stay-hung', '')"
     i=210; while [ $i -le 223 ]; do # 14 working, ll-211 among them (you opened it)
-      tab "$skills" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
+      wtab "$skills" "$llc" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
     done
-    for i in 224 225 226 227 228 229; do tab "$skills" "$(swagent ll-$i idle 1800 '' done ll-$i)"; done
+    for i in 224 225 226 227 228 229; do wtab "$skills" "$llc" "$(swagent ll-$i idle 1800 '' done ll-$i)"; done
     sqlite3 -cmd ".timeout 9000" "$db" "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state) select 2000 + i, 'Later '||i, 'open' from n"
     folds="$jk $nix $linn"
   fi
@@ -93,11 +98,12 @@ EOF
     (cd "$hrepo" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed && env -u SWARM_DB SWARM_NAME=human "$D/swarm" limits --min 8 --max 8) >/dev/null 2>&1
     db=$hrepo/.git/swarm/swarm.db
     sqlite3 -cmd ".timeout 9000" "$db" "delete from task; insert or replace into meta(k, v) values('comms', 'hpl-comms')"
-    hpl=$(do_ space.new --name high-perf-lean --folder "$hrepo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)" | id space)
-    tab "$hpl" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' blocked hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
-    tab "$hpl" "$(swagent hpl-3 working 0 '' working hpl-3)"; task 41 'Arena allocator for Expr' claimed hpl-3
-    tab "$hpl" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' claimed hpl-6
-    tab "$hpl" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' claimed hpl-7
+    made=$(do_ space.new --name high-perf-lean --folder "$hrepo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)")
+    hpl=$(echo "$made" | id space) hplc=$(echo "$made" | id terminal)
+    wtab "$hpl" "$hplc" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' blocked hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
+    wtab "$hpl" "$hplc" "$(swagent hpl-3 working 0 '' working hpl-3)"; task 41 'Arena allocator for Expr' claimed hpl-3
+    wtab "$hpl" "$hplc" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' claimed hpl-6
+    wtab "$hpl" "$hplc" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' claimed hpl-7
     task 49 'Inline small closures in the compiler pass' open; task 50 'Bench: instantiateMVars on deep terms' open
     sqlite3 -cmd ".timeout 9000" "$db" "insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
     db=$lldb
