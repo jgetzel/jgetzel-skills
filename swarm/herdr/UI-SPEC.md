@@ -390,8 +390,9 @@ in the order at the end.
 
 ## II.2 Tabs live in the rail
 
-- Decided: no pills. rw-bar draws, after the space, the shown tab's name, title and mark as text; Needs you and the
-  palette button stay; the bar stays as title bar and drag region. With the swarm view shown it draws the sections
+- Decided: no pills. rw-bar draws the space, then nothing until Needs you and the palette button: the shown tab is
+  named by its selected rail row and its pane header, so the bar does not repeat it (round 3). The bar stays as title
+  bar and drag region. With the swarm view shown it draws the sections
   (II.3); with All swarms, the name only. `PILLS`, the edge pills, the "N more" pill and the pill drag go.
 - Rail: a + on a space's heading on hover and a New tab row at the end of the shown space, both opening the shipped
   `new-menu` (`tab.new {space, argv}`); the Calendar row at the foot between Settings and Add machine; a split tab's
@@ -401,6 +402,7 @@ in the order at the end.
 - Drag to reorder inside a space: `tab.move {id, index}`; the drag is built from press, move (4 px threshold) and
   release, as the shipped `spaces` mod does for spaces; a drop line, rows parting, Escape cancels; a tab moves whole
   and nothing lands inside a bracket; swarm agents and sub-terminals don't drag.
+- Round 3: cross-space moves stay out; the drag is animated (II.4: rows part, the dropped row springs).
 - Not possible: moving a tab to another space (no command; relabelling its terminals with `hc label` is untried and
   would lose splits and mod panes) and dragging a row into another tab as a split (no command moves a pane).
 - Sizes: the rail is 268 px on all three screens (resizable to 480).
@@ -420,7 +422,8 @@ While it shows, rw-bar draws the sections (Overview, Agents, Board, Activity, La
 bar's swarm nav left open in Part I. Task and agent detail are pages inside the view with a back button that names
 where you came from (a section, or the tab you were on); any task number or agent name in any rw-* mod opens them
 (`shared("rw-swarm.page")` plus `layout.select`). Sizes: cards in two columns under 1900 px of view width (MacBook,
-Framework), three from there (desktop); pages and the Activity list stop at 1100 px.
+Framework), three from there (desktop), where Overview's third column adds the latest activity and the landing queue; pages
+and the Activity list stop at 1100 px.
 
 - Overview: Needs you with every `needs[]` kind (question with answer field, prompt per II.6, hung with Nudge, `ci`
   with Open run and `gh run rerun --failed`, watchd not running with Restart, `memory`); the Away banner and the
