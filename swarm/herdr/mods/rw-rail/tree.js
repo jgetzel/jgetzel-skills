@@ -62,6 +62,12 @@ export function stamp(changed, rows, now, at = () => null) {
   return dirty;
 }
 
+// terminals() with the app's status: the core keeps "done" after you look at the agent; agents() turns it idle then.
+export function looked(ts, ags) {
+  const seen = new Set(ags.filter((a) => a.status !== "done").map((a) => a.address));
+  return ts.map((t) => (t.status === "done" && seen.has(t.address) ? { ...t, status: "idle" } : t));
+}
+
 // The spec's mark for a terminal (its Marks table). A sub-agent's done reads as idle: it reports to its parent, and
 // nobody can look at a pane it doesn't have to clear it.
 export function markOf(t, nested) {

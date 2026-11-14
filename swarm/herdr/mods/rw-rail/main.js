@@ -8,8 +8,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
-import { AGENT, abbrev, dur, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
+import { AGENT, abbrev, dur, looked, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -391,7 +391,7 @@ export default class Rail extends View {
     const t = theme();
     const now = Date.now();
     this.home = home();
-    const all = terminals();
+    const all = looked(terminals(), agents());
     const byAddr = new Map(all.filter((x) => x.state === "live").map((x) => [x.address, x]));
     const ps = panes();
     const sp = spaces();
