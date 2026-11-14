@@ -289,4 +289,16 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(o.task.body, "# T\nbody"); assert.equal(o.task.events.length, 1); assert.equal(o.task.messages[0].dest, "all");
   assert.equal(overOf({ active: true, task: "no" }).task, null);
 }
+// The Board's queue (II.3e): in order, why each isn't next, and the moves.
+{
+  const { queueRows, moveArgs } = await import("./mods/rw-rail/tree.js");
+  const o = overOf({ tasks: [{ id: 1, state: "done" }, { id: 2, qpos: 3, state: "open" }, { id: 3, qpos: 1, state: "open", deps: [1, 4] },
+    { id: 4, qpos: 2, state: "claimed", owner: "a" }, { id: 5, qpos: 4, state: "open", hold: "go" }, { id: 6, qpos: 5, state: "open" }, { id: 7, qpos: 6, state: "done" }] });
+  const q = queueRows(o);
+  assert.deepEqual(q.map((r) => [r.k.id, r.why]), [[3, "waits on #4"], [4, "a has it"], [2, "next"], [5, "held: go"], [6, "ready"]]);
+  assert.deepEqual(moveArgs(q, 2, "front"), ["queue", "add", "2", "--front"]);
+  assert.deepEqual(moveArgs(q, 2, "up"), ["queue", "add", "2", "--before", "4"]);
+  assert.deepEqual(moveArgs(q, 2, "down"), ["queue", "add", "2", "--after", "5"]);
+  assert.equal(moveArgs(q, 0, "up"), null); assert.equal(moveArgs(q, 4, "down"), null); assert.equal(moveArgs(q, 9, "up"), null);
+}
 console.log("rail-test: ok");
