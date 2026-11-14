@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -71,6 +71,7 @@ export default class SwarmTab extends View {
     this.nudgeIn = InputState.new({ placeholder: "325" }); this.compactIn = InputState.new({ placeholder: "400" });
     this.limitsEdit = null;
     this.ended = null; // the ended agents, read when you open their line
+    this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
     cx.timer.every(POLL, (cx) => { if (this.due()) this.refresh(cx); });
@@ -984,6 +985,69 @@ export default class SwarmTab extends View {
     });
   }
 
+  // ---- the History section (II.3l) ----------------------------------------------------------------------------------
+  // The done tasks from `--view board` and the ended agents from `--view agents`, newest page first; "Older…" reads the
+  // page before the oldest read (`--before`).
+  loadHistory(cx, more) {
+    const h = this.hist;
+    if (this.histLoading || (h ? !more : more)) return;
+    const { cwd, on } = this.where();
+    this.histLoading = true; if (more) cx.notify(); // from render (the first page) a notify would throw
+    cx.spawn(async (cx) => {
+      const read = async (view, before) => {
+        const r = await swarm(cwd, on, ["state", "--json", "--view", view, ...(before != null ? [`--before=${before}`] : [])]);
+        if (r.code !== 0) throw new Error(r.stderr || `swarm exited ${r.code}`);
+        return overOf(JSON.parse(r.stdout)) ?? { tasks: [], agents: [] };
+      };
+      try {
+        const next = h ? { ...h } : { tasks: [], agents: [], tMore: false, aMore: false };
+        if (!more || more === "tasks") {
+          const lo = more ? Math.min(...h.tasks.map((k) => k.id)) : null;
+          const ks = (await read("board", lo)).tasks.filter((k) => k.state === "done" && (lo == null || k.id < lo));
+          next.tasks = [...(more ? h.tasks : []), ...ks]; next.tMore = ks.length >= 80; // the CLI's page
+        }
+        if (!more || more === "agents") {
+          const lo = more ? Math.min(...h.agents.map((a) => a.ended)) : null;
+          const as = (await read("agents", lo)).agents.filter((a) => Number.isFinite(a.ended) && (lo == null || a.ended < lo));
+          next.agents = [...(more ? h.agents : []), ...as]; next.aMore = as.length >= 60;
+        }
+        if (this.where().cwd === cwd) this.hist = next;
+      } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, "") || "swarm state failed"; if (!h) this.hist = { tasks: [], agents: [] }; }
+      this.histLoading = false; cx.notify();
+    });
+  }
+  historyView(t, s, cx) {
+    if (cx && !this.hist) this.loadHistory(cx);
+    const h = this.hist;
+    if (!h) return this.card(t, "h-wait").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("Reading the history…"));
+    const v = historyOf(h.tasks, h.agents, { day: this.histDay, sort: this.histSort }), day = this.histDay;
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const when = (sec) => { const d = new Date(sec * 1000); return d.toDateString() === new Date().toDateString() ? hhmm(sec) : `${d.getDate()} ${MON[d.getMonth()]} ${hhmm(sec)}`; };
+    const row = (id, kids, go) => h_flex().id(id).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
+      .cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go()).children(kids);
+    const dim = (x) => div().flex_none().max_w(320).truncate().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(6).text_size(12.5).text_color(t.dim).child(x);
+    const older = (id, what, label) => div().id(id).mx(16).mt(6).text_size(12).text_color(this.histLoading ? t.border : t.muted).cursor_pointer()
+      .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => this.loadHistory(cx, what)).child(label);
+    const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`, empty = { today: "today", yesterday: "yesterday", all: "in the pages read" }[day];
+    const top = this.card(t, "h-top").pb(12).child(this.head(t, "History", null, this.seg(t, "h-day", [["today", "Today"], ["yesterday", "Yesterday"], ["all", "All read"]], day, (x) => { this.histDay = x; })))
+      .child(h_flex().px(16).gap(8).flex_wrap().child(this.chip(t, `${plural(v.tasks.length, "task")} done`)).child(this.chip(t, `${plural(v.agents.length, "agent")} ended`))
+        .when(v.work != null, (el) => el.child(this.chip(t, `median task ${dur(v.work * 1000)}`))).when(v.ctx != null, (el) => el.child(this.chip(t, `median ${kilo(v.ctx)} context`))));
+    const tasks = this.card(t, "h-tasks").pb(8).child(this.head(t, "Tasks", null, this.seg(t, "h-sort", [["finished", "Finished"], ["longest", "Longest"], ["context", "Most context"]], this.histSort, (x) => { this.histSort = x; })))
+      .children(v.tasks.length ? v.tasks.slice(0, 200).map((k) => row(`h-t-${k.id}`, [div().flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`),
+        div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? ""),
+        dim([k.owner, day !== "today" && k.done_at ? when(k.done_at) : null, k.work_s != null ? dur(k.work_s * 1000) : null, spentOf(k) != null ? kilo(spentOf(k)) : null,
+          k.claims ? plural(k.claims, "claim") : null].filter(Boolean).join(" · "))], () => this.openTask(k.id)))
+        : [none(`No task finished ${empty}`)])
+      .when(Boolean(h.tMore), (el) => el.child(older("h-t-more", "tasks", `Older tasks… (${h.tasks.length} of ${s.counts?.done ?? "?"} read)`)));
+    const agents = this.card(t, "h-agents").pb(8).child(this.head(t, "Agents", `${s.counts?.ended ?? "?"} ended · ${h.agents.length} read`))
+      .children(v.agents.length ? v.agents.slice(0, 200).map((a) => row(`h-a-${a.name}`, [mark(t, "idle"), div().flex_none().w(96).truncate().font_medium().text_color(t.foreground).child(a.name),
+        div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child([a.branch, a.model].filter(Boolean).join(" · ")),
+        dim(`ended ${when(a.ended)} · ${plural(a.done, "task")}`)], () => this.openAgent(a.name)))
+        : [none(`No agent ended ${empty}`)])
+      .when(Boolean(h.aMore), (el) => el.child(older("h-a-more", "agents", "Older agents…")));
+    return v_flex().gap(10).child(top).child(tasks).child(agents);
+  }
+
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
   // `task add`, then queue and hold as the form says; its id is in "task #N".
   addFull(cx) {
@@ -1206,7 +1270,7 @@ export default class SwarmTab extends View {
       : section === "activity" ? page(this.activityView(t, s))
       : section === "landing" ? page(this.landingView(t, s, cx))
       : section === "system" ? page(this.systemView(t, s))
-      : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));
+      : page(this.historyView(t, s, cx));
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
       .when(Boolean(s.away), (el) => el.child(this.awayBanner(t, s)))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
@@ -1219,7 +1283,7 @@ export default class SwarmTab extends View {
     // The view's swarm changed (another swarm's heading): read the new one at once.
     if (props()?.view) {
       const k = JSON.stringify(this.where());
-      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.sys = null; this.refresh(cx); this.refreshPrs(cx); }
+      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.sys = null; this.hist = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)

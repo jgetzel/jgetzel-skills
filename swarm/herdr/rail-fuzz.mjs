@@ -96,6 +96,10 @@ for (let i = 0; i < 2000; i++) {
   assert.ok(ok1(nn, 60), nn);
   const sa = T.spawnArgs(pick(HOSTILE), { task: pick(HOSTILE) });
   assert.ok(sa === null || (sa.at(-2) === "--" && /^[A-Za-z0-9][\w.-]*$/.test(sa.at(-1))), JSON.stringify(sa));
+  // History (II.3l): never throws on junk pages; only done tasks and agents with an end
+  const ho = T.overOf({ tasks: [junk(), { id: 1, state: "done", done_at: junk(), work_s: junk(), claim_ctx: junk(), done_ctx: junk() }, junk()], agents: [junk(), { name: pick(HOSTILE), ended: junk() }] });
+  const hv = T.historyOf(rnd() < 0.2 ? junk() : ho?.tasks, rnd() < 0.2 ? junk() : ho?.agents, { day: pick(["today", "yesterday", "all", pick(HOSTILE)]), sort: pick(["finished", "longest", "context", pick(HOSTILE)]) });
+  assert.ok(hv.tasks.every((k) => k.state === "done") && hv.agents.every((a) => Number.isFinite(a.ended)) && [hv.work, hv.ctx].every((x) => x === null || Number.isFinite(x)), JSON.stringify(hv).slice(0, 200));
   // Rules and limits (II.3k): one bounded line; the command only whole numbers and on/off
   const lo = T.overOf({ limits: { ctx_nudge: junk(), ctx_compact: junk(), compact_stayers: junk() }, rules: junk() })?.limits;
   assert.ok(ok1(T.limitsLine(lo), 120), T.limitsLine(lo));
