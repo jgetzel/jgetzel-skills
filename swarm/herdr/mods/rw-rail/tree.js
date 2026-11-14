@@ -33,6 +33,18 @@ export function rowText(t, mark, tabName, home) {
   return { name, what: home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd };
 }
 
+// What a row or header says of its mark: "asks you", or how long the mark has held (`at`, ms; "" when unknown).
+export function since(mark, at, now) {
+  const ago = at ? dur(now - at) : "";
+  switch (mark) {
+    case "asks": return "asks you";
+    case "working": return ago;
+    case "done": return ago && `done ${ago}`;
+    case "idle": return ago && `idle ${ago}`;
+  }
+  return "";
+}
+
 // Stamps since when each agent shows its mark, in `changed` (address -> {m, turn, at}); true if it changed any.
 // Done and idle count as one (looking at a done agent makes it idle); a new turn restamps, so a turn the rail didn't
 // see while it wasn't shown can't leave an old time. `at(address)` is the app's own time for that change, if any.

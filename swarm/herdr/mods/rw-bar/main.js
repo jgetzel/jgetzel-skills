@@ -6,6 +6,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home } from "herdr";
 import { markOf, needsYou, pillOf, rowText } from "./tree.js";
+import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
@@ -13,19 +14,6 @@ const stop = (_e, cx) => cx.stop_propagation();
 export default class Bar extends View {
   init() {
     this.pressed = null;
-  }
-
-  mark(t, kind, size = 9) {
-    const box = h_flex().size(size).flex_none().items_center().justify_center();
-    switch (kind) {
-      case "working": return svg("mods/workspace-chrome/spinner.svg").size(size + 1).flex_none().text_color(t.working).spin(900);
-      case "done": return box.rounded(size).bg(t.done);
-      case "asks": return box.rounded(2).bg(t.blocked);
-      case "idle": return box.rounded(size).border(2).border_color(t.idle ?? t.dim);
-      case "run": return box.child(div().size(5).rounded(3).bg(t.foreground));
-      case "prompt": return box.child(div().size(5).rounded(3).bg(t.dim));
-    }
-    return box;
   }
 
   // The palette key as bound (as workspace-status shows it).
@@ -39,10 +27,10 @@ export default class Bar extends View {
 
   pill(t, space, tab, i, ps, byAddr) {
     const term = pillOf(tab, ps, byAddr);
-    const mark = term ? markOf(term, false) : null;
-    let { name, what } = term ? rowText(term, mark, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
+    const m = term ? markOf(term, false) : null;
+    let { name, what } = term ? rowText(term, m, null, home()) : { name: ps.find((p) => p.tab === tab.id)?.title ?? tab.name, what: "" };
     if (tab.named) name = tab.name;
-    if (mark === "asks") what = "asks";
+    if (m === "asks") what = "asks";
     if (what === name) what = "";
     return h_flex().id(`tab-${tab.id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
       .bg(tab.active ? t.selected : t.raised).text_color(tab.active ? t.foreground : t.muted)
@@ -56,8 +44,8 @@ export default class Bar extends View {
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
       .child(div().max_w(140).truncate().font_medium().child(tab.zoomed ? `${name} Z` : name))
-      .when(Boolean(what), (el) => el.child(div().max_w(180).truncate().font_normal().text_color(mark === "asks" ? t.blocked : tab.active ? t.muted : t.dim).child(what)))
-      .when(Boolean(mark), (el) => el.child(this.mark(t, mark)));
+      .when(Boolean(what), (el) => el.child(div().max_w(180).truncate().font_normal().text_color(m === "asks" ? t.blocked : tab.active ? t.muted : t.dim).child(what)))
+      .when(Boolean(m), (el) => el.child(mark(t, m)));
   }
 
   button(t, id, label, action) {
@@ -85,7 +73,7 @@ export default class Bar extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
         .when(Boolean(s), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(11.5).text_color(t.muted)
           .child(s.machine ? `${s.machine} · ${s.name}` : s.name)))
-        .child(this.mark(t, "asks"));
+        .child(mark(t, "asks"));
     });
     return v_flex().size_full().p(6).gap(2).bg(t.popover).text_color(t.foreground)
       .child(div().px(10).pt(4).pb(6).text_size(11.5).text_color(t.dim).child("Needs you"))
@@ -120,7 +108,7 @@ export default class Bar extends View {
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
         .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 380, height: Math.min(420, 52 + 34 * needs), props: { needs: true } }))
-        .child(this.mark(t, "asks", 8)).child(`Needs you ${needs}`)))
+        .child(mark(t, "asks", 8)).child(`Needs you ${needs}`)))
       .child(h_flex().id("palette").h(30).px(12).flex_none().items_center().rounded(9).border(1).border_color(t.border)
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_mouse_down("left", stop).on_click(() => run("app.palette")).child(this.hint()))

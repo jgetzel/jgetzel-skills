@@ -5,8 +5,9 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, home, exec } from "herdr";
-import { AGENT, dur, rowText, rowsOf, stamp } from "./tree.js";
+import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, setShared, home, exec } from "herdr";
+import { AGENT, rowText, rowsOf, since, stamp } from "./tree.js";
+import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "working", "done", "idle"]; // a folded space's counts, then its shells
@@ -56,36 +57,12 @@ export default class Rail extends View {
     cx.notify();
   }
 
-  mark(t, kind, size = 9) {
-    const box = h_flex().size(size).flex_none().items_center().justify_center();
-    switch (kind) {
-      case "working": return svg("mods/workspace-chrome/spinner.svg").size(size + 1).flex_none().text_color(t.working).spin(900);
-      case "done": return box.rounded(size).bg(t.done);
-      case "asks": return box.rounded(2).bg(t.blocked);
-      case "idle": return box.rounded(size).border(2).border_color(t.idle ?? t.dim);
-      case "run": return box.child(div().size(5).rounded(3).bg(t.foreground));
-      case "prompt": return box.child(div().size(5).rounded(3).bg(t.dim));
-    }
-    return box;
-  }
-
   track(rows, now, at) {
     if (!stamp(this.changed, rows, now, at)) return;
     const live = new Set(rows.map((r) => r.t.address));
     for (const k of Object.keys(this.changed)) if (!live.has(k) && now - this.changed[k].at > 30 * 86400000) delete this.changed[k];
     localStorage.setItem("changed", JSON.stringify(this.changed));
-  }
-
-  side(r, now) {
-    const at = this.changed[r.t.address]?.at;
-    const ago = at ? dur(now - at) : "";
-    switch (r.mark) {
-      case "asks": return "asks you";
-      case "working": return ago;
-      case "done": return ago && `done ${ago}`;
-      case "idle": return ago && `idle ${ago}`;
-    }
-    return "";
+    setShared("rw-rail.changed", this.changed); // rw-pane's headers say the same times
   }
 
   tree(t, lines) {
@@ -98,7 +75,7 @@ export default class Rail extends View {
   row(t, r, tabName, on, now) {
     const shell = !AGENT.has(r.mark);
     const { name, what } = rowText(r.t, r.mark, tabName, this.home);
-    const sideText = this.side(r, now);
+    const sideText = since(r.mark, this.changed[r.t.address]?.at, now);
     return h_flex().id(`row-${r.t.address}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
       .when(on, (el) => el.bg(t.raised))
@@ -110,7 +87,7 @@ export default class Rail extends View {
         .child(name))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
       .when(Boolean(sideText), (el) => el.child(div().flex_none().text_size(11.5).text_color(r.mark === "asks" ? t.blocked : t.dim).child(sideText)))
-      .child(this.mark(t, r.mark));
+      .child(mark(t, r.mark));
   }
 
   counts(t, rows) {
@@ -118,7 +95,7 @@ export default class Rail extends View {
     for (const r of rows) { const k = AGENT.has(r.mark) ? r.mark : "shell"; n[k] = (n[k] ?? 0) + 1; }
     const count = (k, icon) => h_flex().flex_none().gap(4).items_center().text_size(11.5)
       .text_color(k === "asks" ? t.blocked : t.muted).child(icon).child(String(n[k]));
-    return [...ORDER.filter((k) => n[k]).map((k) => count(k, this.mark(t, k))),
+    return [...ORDER.filter((k) => n[k]).map((k) => count(k, mark(t, k))),
       ...(n.shell ? [count("shell", svg("mods/workspace-chrome/terminal.svg").size(11).flex_none().text_color(t.dim))] : [])];
   }
 
