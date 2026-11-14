@@ -156,7 +156,8 @@ its steps (killed, or the machine gone) leaves the db it found or the one its la
 `AllOrNothing`), so the db it leaves keeps the invariant (`stopped_keeps`); a transaction in part is never seen. Each
 theorem is proved by unfolding the command's own code down to its transactions and calls (`keeps_walk`) and closing each
 transaction with a lemma for its step (`X.<step>`), from any db that keeps the invariant: with other processes' commits
-in between too. A `repeat` loop is assumed to keep it (`LoopsKeep`, in the groups that have one: Msgs, Ci, Run, State,
+in between too. A function with its own theorem under the name `K.<function>` (watchd's reap, lifecycle and pass) is
+applied where it is called rather than walked again: one proof holding the whole pass needed more memory than CI has. A `repeat` loop is assumed to keep it (`LoopsKeep`, in the groups that have one: Msgs, Ci, Run, State,
 Watchd and the pass); `loop_ends` proves that for every run of a loop that ends. Lean defines a loop only as a least
 fixed point, and gives one that never ends an arbitrary value, so nothing can be proved of that run; its commits are
 those of the turns before the stop, each of which keeps the invariant. Recovery: a dead agent's claim lapses and reap
@@ -175,23 +176,23 @@ nothing else in between is always `*_keeps` with `stopped_keeps`):
 | `spawn` | `git worktree add`, before its workspace row | not proved (liveness of the sweep): a fresh worktree at its base is clean and landed, so the sweep removes it once unused 30 min (`sweepGate_W1` proves only that it is safe to) |
 | `spawn` | launch, before the `hc` address is recorded | not proved: the agent's first fenced write binds its row (`Agents.touch`) |
 | `spawn` (failed launch) | `unreserve`, before `discardWs` | as the worktree gap above; `unreserve` itself drops the ended row's locks (finding F4, fixed) |
-| `end`, lifecycle's end | the end's transaction, before `hc kill`/`hc rm`/the cgroup kill | **finding F1**: nothing recovers it |
-| watchd sweep | `git worktree remove`, before the branch delete | **finding F2**: the branch is left |
-| watchd sweep | inside `git worktree remove` | **finding F3**: a half-removed worktree is never pruned |
+| `end`, lifecycle's end | the end's transaction, before `hc kill`/`hc rm`/the cgroup kill | F1, fixed: reap kills the terminal of an ended row that hc still lists and no live row is bound to (the cgroup's leftovers stay) |
+| watchd sweep | `git worktree remove`, before the branch delete | F2, fixed: the branch sweep after each sweep runs `branch -d` on ended agents' branches (`sweepBranches_kept`, a step of `no_work_lost`'s run); a squash-landed one, which only `update-ref -d` deleted, stays |
+| watchd sweep | inside `git worktree remove` | **finding F3**, open: a half-removed worktree is never pruned (`git worktree prune` would drop any vanished worktree's HEAD, breaking `no_work_lost`) |
 | watchd reap | one reap transaction, before the next | the next pass judges again from the db: each reap step checks the row it acts on (`claim_lapses`, `lock_lapses`, `gone_ends`) |
-| watchd `ci` check | `ciCheckStep` (event `ci-red`), before `ciNewRedTask` | **finding F5**: the red run never gets its task |
+| watchd `ci` check | the first transaction, before the git and gh reads | F5, fixed: a new red run's `ci-red` event and its task commit together after the reads (`ciCheckApply`); the first transaction (`ciCheckFirst`) leaves it alone |
 | watchd conflict tick | a snapshot, before `tickApply` | the next tick redoes it: `tickApply` alone writes the pair keys |
 
-F1: `Lifecycle.endAgent` commits the end, then runs `hc kill`, `hc rm` and the cgroup kill. Stopped between, the row is
-ended but the terminal and its Claude run on; reap and lifecycle look only at live rows, and the orphan kill only at
-processes whose parent is init, which an hc terminal's is not. F2: the sweep removes the worktree, then deletes its
-branch; stopped between, the next sweep no longer lists the worktree and the branch stays (its work is landed, so
-nothing is lost). F3: a `git worktree remove` killed midway leaves the admin entry with its directory partly or wholly
-gone; the sweep skips a path that is not a directory and nothing runs `git worktree prune`. F5: `ciCheckStep` logs the
-`ci-red` event that keeps a second check from opening the task again, and `ciNewRedTask` opens it in a later
-transaction; stopped between, every later check finds the event and opens none. None is fixed here: in each the order
-is what guards against a concurrent run, so the fix is a decision (F4, `unreserve` keeping an ended row's locks, broke
-`XInv` and is fixed).
+F1: `Lifecycle.endAgent` commits the end, then runs `hc kill`, `hc rm` and the cgroup kill; killing first would kill an
+agent that woke after the end's check, so reap kills an ended row's terminal instead. F2: the sweep removes the
+worktree, then deletes its branch; stopped between, the next sweep no longer lists the worktree, so the branch sweep
+(`Watchd.sweepBranches`) deletes ended agents' merged branches with `branch -d`, which git refuses for an unmerged or
+checked-out one. F3: a `git worktree remove` killed midway leaves the admin entry with its directory partly or wholly
+gone; the sweep skips a path that is not a directory. `git worktree prune` would also drop the admin entry, and so the
+HEAD, of a worktree whose directory vanished with commits nothing else reaches, so it is left (nothing is lost, only
+the entry stays). F5: `ciCheckStep` logs the `ci-red` event that keeps a second check from opening the task again; it
+and the task now commit in one transaction, after the reads, and a check that finds another outcome by then commits
+nothing. F4, `unreserve` keeping an ended row's locks, broke `XInv` and is fixed.
 
 ## What the proofs assume
 
