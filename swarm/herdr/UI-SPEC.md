@@ -229,6 +229,11 @@ the foot of the rail with Show. This computer has no menu.
   Settings does; add opens the shipped dialog with `mod.open machine-add`.
 - Hide is ours: a list in `shared()`, read by the rail and the bar.
 - Buildable: part of `rw-rail`.
+- Built in slice 10: the heading's menu is a `Popover`; Remove asks in it. State comes from `hc machine ls --json` every
+  15 s. Retry reads it again at once: hc reconnects by itself once the machine answers, and has no command to make it
+  try. Log in again runs `hc machine login` in a terminal shown with `terminal.peek` (it needs one to ask a password).
+  Hidden machines are in `shared("rw-rail.hidden")`; the bar doesn't read it, since Needs you still counts them and
+  nothing else in the bar is per machine. Add a machine stays at the foot, where workspace-chrome already has it.
 
 ### Settings (canvas: settings board)
 

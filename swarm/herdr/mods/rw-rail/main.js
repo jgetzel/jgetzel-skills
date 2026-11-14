@@ -2,17 +2,20 @@
 // one row each (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
 // their parent on a thin line. A space folds to one line of counts. Click a row to focus its terminal; click a space
 // to show it, click the shown one or any chevron to fold it. A space whose folder has a live swarm shows it as a block
-// first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7).
+// first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7). Each machine's
+// heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
+// `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, HoverCard } from "gpui-base";
-import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, layout, appHome } from "herdr";
-import { AGENT, abbrev, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
+import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
+import { AGENT, abbrev, dur, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "hung", "working", "done", "idle"]; // a folded space's counts, then its shells
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
+const HIDDEN = "rw-rail.hidden"; // the names of the machines hidden from the rail (shared() persists it)
 const NARROW = 160; // a sidebar narrower than this shows tiles (as workspace-chrome goes by width)
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 const swarm = (cwd, on, args) => on
@@ -32,6 +35,15 @@ export default class Rail extends View {
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
     cx.timer.every(5000, (cx) => this.swarms(cx));
+    this.listed = null; // `hc machine ls --json`'s machines, null until read
+    this.said = {}; // machine -> what is under way there, or what its last action failed with
+    this.menu = null; // the machine whose menu is open
+    this.removing = null; // the machine whose menu asks to confirm its removal
+    this.renaming = null; // the machine whose heading is a field
+    this.name = InputState.new({});
+    this.name.on("submit", (_e, cx) => this.rename(cx));
+    this.refreshMachines(cx);
+    cx.timer.every(15000, (cx) => this.refreshMachines(cx));
   }
 
   // Each space folder's swarm, one `swarm state --view summary` per folder.
@@ -113,6 +125,133 @@ export default class Rail extends View {
     return v_flex().flex_none().px(20).pt(8).pb(10).gap(6).text_size(11.5).text_color(t.dim)
       .child(div().truncate().child(`${m ?? "This computer"} · ${g(l.used)} of ${g(l.total)} G in use`))
       .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(t.dim).w(`${Math.round((100 * l.used) / l.total)}%`)));
+  }
+
+  // hc reconnects a machine by itself once it answers again; Retry only reads its state now.
+  refreshMachines(cx) {
+    cx.spawn(async (cx) => {
+      try { const r = await hc(["machine", "ls", "--json"]); if (r.code === 0) this.listed = JSON.parse(r.stdout).machines ?? []; } catch {}
+      cx.notify();
+    });
+  }
+
+  // `hc machine <args> --json` for machine `m`: `doing` meanwhile, the error after.
+  machineDo(m, doing, args, cx, then = null) {
+    this.menu = null;
+    this.removing = null;
+    this.said[m] = doing;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let error = null;
+      try {
+        const r = await hc(["machine", ...args, "--json"]);
+        if (r.code !== 0) {
+          try { error = JSON.parse(r.stdout || r.stderr).error?.message; } catch {}
+          error ||= (r.stderr || r.stdout || "it failed").trim();
+        }
+      } catch (e) { error = String(e.message ?? e); }
+      if (error) this.said[m] = `Couldn't: ${error}`; else { delete this.said[m]; then?.(); }
+      this.refreshMachines(cx);
+      cx.notify();
+    });
+  }
+
+  rename(cx) {
+    const m = this.renaming, to = this.name.value().trim();
+    this.renaming = null;
+    if (m && to && to !== m) this.machineDo(m, "Renaming…", ["rename", m, to], cx);
+    else cx.notify();
+  }
+
+  // Logging in may ask a password or code, so it runs in a terminal shown over the tab, as machine-add does; the
+  // terminal stays until Enter so what hc said can be read.
+  login(m, cx) {
+    this.menu = null;
+    cx.spawn(async (cx) => {
+      let address = null;
+      try {
+        const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `login-${m.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`.slice(0, 32), "--", "sh", "-c",
+          'hc machine login "$1"; printf "\\nPress Enter to close. "; read _', "sh", m]);
+        if (r.code === 0) address = JSON.parse(r.stdout).address;
+      } catch {}
+      if (address) run("terminal.peek", { terminal: address });
+      else this.said[m] = `Couldn't open a terminal for it. Run hc machine login ${m} in one.`;
+      cx.notify();
+    });
+  }
+
+  hide(m, on) {
+    const h = shared(HIDDEN) ?? [];
+    setShared(HIDDEN, on ? [...h.filter((x) => x !== m), m] : h.filter((x) => x !== m));
+  }
+
+  note(t, id, text) {
+    return div().id(id).flex_none().px(10).text_size(11.5).line_height(1.4).text_color(t.dim).child(text);
+  }
+
+  act(t, id, label, action) {
+    return div().id(id).flex_none().px(8).py(1).rounded(6).border(1).border_color(t.border).text_size(11.5).font_normal()
+      .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(action).child(label);
+  }
+
+  // A machine's menu, and in its place the question before removing it.
+  menuOf(t, mc) {
+    const m = mc.name;
+    const item = (id, text, action, red = false) => div().id(`${id}-${m}`).px(10).py(6).rounded(6).text_size(12.5)
+      .font_normal().text_color(red ? t.blocked : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(action).child(text);
+    const n = mc.spaces.length, k = terminals().filter((x) => x.address.startsWith(`${m}/`)).length;
+    const content = this.removing === m
+      ? v_flex().w(270).p(14).gap(10).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg().text_size(12.5)
+        .font_normal().text_color(t.foreground)
+        .child(div().text_size(14).font_semibold().child(`Remove ${m}?`))
+        .child(div().line_height(1.5).text_color(t.muted).child(`Herdr forgets this machine and its ${n} ${n === 1 ? "space leaves" : "spaces leave"
+          } the window. ${k === 1 ? "The terminal" : `The ${k} terminals`} running there keep${k === 1 ? "s" : ""} running. Add it again to get them back.`))
+        .child(h_flex().gap(8).justify_end()
+          .child(div().id(`remove-no-${m}`).px(12).py(5).rounded(8).border(1).border_color(t.border).cursor_pointer()
+            .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.removing = null; this.menu = null; cx.notify(); }).child("Cancel"))
+          .child(div().id(`remove-yes-${m}`).px(12).py(5).rounded(8).bg(t.blocked).text_color(t.background).font_semibold().cursor_pointer()
+            .on_click((_e, cx) => this.machineDo(m, "Removing…", ["rm", m], cx, () => this.hide(m, false))).child(`Remove ${m}`)))
+      : v_flex().w(190).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+        .child(item("rename", "Rename", (_e, cx) => {
+          this.menu = null; this.renaming = m; this.name.set_value(m); this.name.focus(); cx.notify();
+        }))
+        .child(item("hide", "Hide from the rail", (_e, cx) => { this.menu = null; this.hide(m, true); cx.notify(); }))
+        .child(item("update", "Update Herdr there", (_e, cx) => this.machineDo(m, "Updating Herdr there…", ["update", m], cx)))
+        .child(item("login", "Log in again", (_e, cx) => this.login(m, cx)))
+        .child(div().h(1).mx(4).my(3).bg(t.border))
+        .child(item("remove", "Remove…", (_e, cx) => { this.removing = m; cx.notify(); }, true));
+    return Popover.new(`menu-${m}`).anchor("top_right").open(this.menu === m)
+      .on_open_change((open, cx) => { this.menu = open ? m : null; if (!open) this.removing = null; cx.notify(); })
+      .trigger(h_flex().id(`menu-button-${m}`).size(22).flex_none().items_center().justify_center().rounded(6).text_color(t.dim)
+        .when(this.menu === m, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .child(svg("mods/rw-rail/dots.svg").size(14)))
+      .content(content);
+  }
+
+  // A machine's heading, as a field while it is renamed, then a line for its state or what its last action said.
+  heading(t, mc, now) {
+    const m = mc.name, off = mc.state === "unreachable";
+    const head = h_flex().id(`machine-${m ?? "local"}`).h(m ? 39 : 27).flex_none().mt(m ? 14 : 0).mb(2).pt(m ? 12 : 4).px(8).gap(7)
+      .items_center().when(Boolean(m), (el) => el.border_t(1).border_color(t.border))
+      .text_size(12).font_semibold().text_color(off ? t.blocked : t.foreground)
+      .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none().text_color(off ? t.blocked : t.dim));
+    if (m && this.renaming === m) return [
+      head.child(div().id(`rename-${m}`).flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.accent)
+        .bg(t.background).font_normal().cursor_text()
+        .on_key_down((e, cx) => { if (e.key === "escape") { this.renaming = null; cx.stop_propagation(); cx.notify(); } })
+        .child(Input.new(this.name).h_full().text_size(12).text_color(t.foreground))),
+      this.note(t, `rename-note-${m}`, "Enter to save · Esc to cancel")];
+    const state = m && mc.state && !["connected", "unreachable"].includes(mc.state) ? mc.state.replace(/_/g, " ") : null;
+    const at = mc.since && new Date(mc.since).toDateString() === new Date(now).toDateString()
+      ? ` since ${new Date(mc.since).toTimeString().slice(0, 5)}` : mc.since ? ` for ${dur(now - mc.since)}` : "";
+    return [
+      head.child(div().flex_1().min_w(0).truncate().child(m ?? "This computer"))
+        .when(off, (el) => el.child(mark(t, "hung")).child(this.act(t, `retry-${m}`, "Retry", (_e, cx) => this.refreshMachines(cx))))
+        .when(Boolean(state), (el) => el.child(div().flex_none().text_size(11.5).font_normal().text_color(t.dim).child(state)))
+        .when(mc.state === "needs_login", (el) => el.child(this.act(t, `login-${m}`, "Log in", (_e, cx) => this.login(m, cx))))
+        .when(Boolean(m), (el) => el.child(this.menuOf(t, mc))),
+      ...(off ? [this.note(t, `off-${m}`, `Can't reach it${at}. Its terminals keep running there.`)] : []),
+      ...(m && this.said[m] ? [this.note(t, `said-${m}`, this.said[m])] : [])];
   }
 
   fold(id, cx) {
@@ -284,23 +423,32 @@ export default class Rail extends View {
     setAgentOrder([...rowsBy.values()].flat().filter((r) => AGENT.has(r.mark) && r.pane).map((r) => r.t.address));
 
     // A heading per machine once a space or a machine isn't this computer; spaces() lists this computer's first.
-    const names = [null, ...new Set([...machines().map((m) => m.name), ...sp.map((s) => s.machine)].filter(Boolean))];
-    const many = names.length > 1;
+    const ms = machinesOf(sp, machines().map((m) => m.name), this.listed, shared(HIDDEN) ?? []);
+    const many = ms.length > 1;
     const narrow = (find(layout(), "sidebar")?.size?.px ?? Infinity) < NARROW;
-    const items = names.flatMap((m) => {
-      const mine = sp.filter((s) => (s.machine ?? null) === m);
-      if (m && !mine.length) return [];
+    // An unreachable machine's spaces: dimmed, without rows or marks (their state is unknown).
+    const dim = (el) => div().flex_none().opacity(0.45).child(el);
+    const items = ms.filter((mc) => !mc.hidden).flatMap((mc) => {
+      const off = mc.state === "unreachable";
       if (narrow) {
-        const line = div().id(`machine-${m}`).w(32).h(1).flex_none().bg(t.border);
-        return [...(m ? [line] : []), ...mine.map((s) => this.tile(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, swBy.get(s.id)))];
+        const line = div().id(`machine-${mc.name}`).w(32).h(1).flex_none().bg(t.border);
+        return [...(mc.name ? [line] : []), ...mc.spaces.map((s) => off ? dim(this.tile(t, s, [], tabNames, shownTerm, now, null))
+          : this.tile(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, swBy.get(s.id)))];
       }
-      const head = h_flex().id(`machine-${m ?? "local"}`).flex_none().mt(m ? 14 : 0).mb(2).pt(m ? 12 : 4).px(8).gap(7)
-        .items_center().when(Boolean(m), (el) => el.border_t(1).border_color(t.border))
-        .text_size(12).font_semibold().text_color(t.foreground)
-        .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none().text_color(t.dim))
-        .child(div().flex_1().min_w(0).truncate().child(m ?? "This computer"));
-      return [...(many ? [head] : []), ...mine.map((s) => this.space(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, false, swBy.get(s.id)))];
+      return [...(many ? this.heading(t, mc, now) : []), ...mc.spaces.map((s) => off ? dim(this.space(t, s, [], tabNames, shownTerm, now))
+        : this.space(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, false, swBy.get(s.id)))];
     });
+    // Hidden machines, one line each with how many agents there ask you.
+    const hidden = ms.filter((mc) => mc.hidden);
+    const asks = (mc) => mc.spaces.reduce((n, s) => n + rowsBy.get(s.id).filter((r) => r.mark === "asks").length, 0);
+    if (!narrow && hidden.length) items.push(
+      div().id("hidden-head").flex_none().mt(14).px(10).text_size(11.5).font_semibold().text_color(t.muted).child("Hidden"),
+      ...hidden.map((mc) => h_flex().id(`hidden-${mc.name}`).h(28).flex_none().px(10).gap(8).items_center().text_size(12.5).text_color(t.muted)
+        .child(div().flex_1().min_w(0).truncate().font_medium().child(mc.name))
+        .when(asks(mc) > 0, (el) => el.child(h_flex().flex_none().gap(4).items_center().text_size(11.5).text_color(t.blocked)
+          .child(mark(t, "asks")).child(String(asks(mc)))))
+        .child(this.act(t, `show-${mc.name}`, "Show", () => this.hide(mc.name, false)))),
+      this.note(t, "hidden-note", "Hidden: its spaces leave the rail and its terminals keep running. An agent that asks you there still counts in Needs you."));
 
     if (narrow) return v_flex().size_full().min_h(0).pt(10).gap(14).items_center().bg(t.chrome).text_size(13)
       .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
