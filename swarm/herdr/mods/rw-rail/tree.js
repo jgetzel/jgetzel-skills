@@ -459,12 +459,20 @@ export function rowsOf(space, ps, byAddr, own = new Set()) {
 export const needsYou = (all) => all.filter((t) => t.state === "live" && !t.program?.shell && (t.status === "blocked" || t.status === "error"));
 
 // The questions swarm agents wait on you for (tasks blocked on you), from the rail's summaries (shared
-// "rw-rail.swarms"), less those whose terminal needsYou already counts: [{address, name, what}].
+// "rw-rail.swarms"), less those whose terminal needsYou already counts: [{address, name, what, task, folder, on}].
 export function questionsOf(swarms, counted) {
   return (swarms ?? []).flatMap((j) => (j.needs ?? []).filter((n) => n.kind === "question").map((n) => {
     const hc = (j.agents ?? []).find((a) => a.name === n.agent)?.hc;
     const address = hc ? (j.on && !hc.includes("/") ? `${j.on}/${hc}` : hc) : null;
-    return { address, name: n.agent ?? "", what: line(n.question) || n.title || `#${n.task}` };
+    return { address, name: n.agent ?? "", what: line(n.question) || n.title || `#${n.task}`, task: n.task ?? null, folder: j.folder ?? null, on: j.on ?? null };
+  })).filter((q) => !q.address || !counted.has(q.address));
+}
+// Hung swarm agents (round 4, proposal 1: a Needs you row with Nudge), less those already `counted`:
+// [{address, name, what, hung: true, folder, on}].
+export function hungOf(swarms, counted) {
+  return (swarms ?? []).flatMap((j) => (j.agents ?? []).filter((a) => a.hung).map((a) => {
+    const address = a.hc ? (j.on && !a.hc.includes("/") ? `${j.on}/${a.hc}` : a.hc) : null;
+    return { address, name: a.name ?? "", what: `hung${a.task ? ` · holds #${a.task.id}` : ""}`, hung: true, folder: j.folder ?? null, on: j.on ?? null };
   })).filter((q) => !q.address || !counted.has(q.address));
 }
 

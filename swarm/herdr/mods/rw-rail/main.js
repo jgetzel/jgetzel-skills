@@ -6,12 +6,12 @@
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 // Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
-// A hung swarm agent is a toast at the rail's foot (canvas, Attention): what it holds, Nudge and Open.
+// A hung swarm agent is a row in the bar's Needs you (round 4, proposal 1), not a card here.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, asksIn, dur, line, looked, machinesOf, nudgeArgs, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
+import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 
@@ -45,7 +45,6 @@ export default class Rail extends View {
     this.asked = new Map(); // tab id -> when the rail last asked to put it away or bring it back
     this.mids = new Map(); // machine name -> a number for its elements' ids (a name is never part of one)
     cx.timer.every(5000, (cx) => this.swarms(cx));
-    this.nudged = new Set(); // hung agents nudged from the toast ("<machine>:<db>:<name>"), until they aren't hung
     this.listed = null; // `hc machine ls --json`'s machines, null until read
     this.ent = new Entering(); this.marks = new Map(); // motion (II.4a): what just came; address -> {kind, prev, at} for the marks' cross-fade
     this.said = {}; // machine -> what is under way there, or what its last action failed with
@@ -158,33 +157,6 @@ export default class Rail extends View {
       this.load[on ?? ""] = v;
       cx.notify();
     });
-  }
-
-  // The first hung swarm agent you haven't nudged: "<agent> is hung", what it holds, Nudge and Open.
-  hung(t, sums, ps) {
-    const key = (j, a) => `${j.on ?? ""}:${j.db}:${a.name}`;
-    const all = sums.flatMap((j) => (j.agents ?? []).filter((a) => a.hung).map((a) => ({ j, a, k: key(j, a) })));
-    for (const k of this.nudged) if (!all.some((h) => h.k === k)) this.nudged.delete(k);
-    const h = all.find((x) => !this.nudged.has(x.k));
-    if (!h) return null;
-    const { j, a, k } = h, address = a.hc && (j.on && !a.hc.includes("/") ? `${j.on}/${a.hc}` : a.hc);
-    const btn = (id, label, border, action) => div().id(id).flex_none().px(10).py(4).rounded(8).text_size(12.5).cursor_pointer()
-      .when(border, (el) => el.border(1).border_color(t.blocked + "66").text_color(t.foreground)).when(!border, (el) => el.text_color(t.muted))
-      .hover((s) => s.bg(t.hover)).on_click(action).child(label);
-    const e = this.anim && this.ent.enter(`toast:${k}`);
-    return v_flex().id("hung-toast").flex_none().mx(10).mb(4).px(12).py(10).gap(6).rounded(10).border(1).border_color(t.blocked + "66")
-      .when(this.anim, (el) => el.relative().top(e ? 8 : 0).opacity(e ? 0 : 1).transition("top", 160).transition("opacity", 160))
-      .bg(t.blocked + "14").text_size(12.5)
-      .child(div().font_medium().text_color(t.blocked).child(`${a.name} is hung`))
-      .child(div().line_height(1.4).whitespace_normal().text_color(t.foreground)
-        .child(`No answer to the liveness check. ${a.task ? `It holds #${a.task.id}.` : "It holds no task."}`))
-      .child(h_flex().gap(8)
-        .child(btn("hung-nudge", "Nudge", true, (_e, cx) => {
-          this.nudged.add(k); cx.notify();
-          swarm(j.folder, j.on, nudgeArgs(a.name)).catch(() => {});
-        }))
-        .when(Boolean(address), (el) => el.child(btn("hung-open", "Open", false, (_e, cx) =>
-          this.open({ t: { address }, pane: ps.find((p) => p.terminal === address)?.pane ?? null }, cx)))));
   }
 
   // What failed (a swarm that stopped answering, a space that couldn't be drawn), in one line.
@@ -771,6 +743,6 @@ export default class Rail extends View {
       .child(h_flex().h(31).flex_none().pl(20).pr(14).pt(6).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().child("Spaces")).child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))
       .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items))
-      .children([this.hung(t, sums, ps), this.trouble(t, [...broken, ...this.failed.values()]), this.foot(t, sp)].filter(Boolean));
+      .children([this.trouble(t, [...broken, ...this.failed.values()]), this.foot(t, sp)].filter(Boolean));
   }
 }

@@ -4,14 +4,16 @@
 // space has a swarm, Side and Full (II.7): the swarm view in the side panel or full width; keys rw-bar.side and
 // rw-bar.full do the same. The
 // tabs live in the rail only: the shown tab is named by its rail row and its pane header. With All swarms shown it names
-// that view. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm agents
-// wait on (slice 6), from the rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}}
-// it is a swarm agent's menu from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal).
+// that view. Opened as a popup with props {needs: true} it is that list, under the bar. Needs you also lists the
+// questions swarm agents wait on (slice 6), each with an answer field, and hung agents with Nudge (round 4), from the
+// rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}} it is a swarm agent's menu
+// from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal). Keys: rw-bar.side,
+// rw-bar.full, rw-bar.needs (opens the list).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
-import { SECTIONS, animOn, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
+import { SECTIONS, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
 import { mark, hoverLayer } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -29,6 +31,7 @@ export default class Bar extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "side") toggleSide(run, layout()); else if (c === "full") toggleFull(run, setShared, shared, layout(), this.spaceSum());
+        else if (c === "needs") this.openNeeds();
         cx.notify();
       }
     });
@@ -36,6 +39,14 @@ export default class Bar extends View {
       this.boxes = new Map(); this.saying = null;
       this.sayIn = InputState.new({ placeholder: "Your answer, or what it should do instead" });
       this.sayIn.on("submit", (_e, cx) => this.sendSay(cx));
+      // an answer field per question asked as the list opens (round 4, proposal 4); one asked later answers from its terminal
+      this.answers = new Map(); this.sent = new Map();
+      for (const q of questionsOf(sumsOf(), new Set())) {
+        if (q.task == null || !q.folder) continue;
+        const st = InputState.new({ placeholder: `Answer ${line(q.name, 40)}…` });
+        st.on("submit", (_e, cx) => this.answerQ(cx, q));
+        this.answers.set(`${q.on ?? ""}:${q.folder}:${q.task}`, st);
+      }
     }
     if (!props()?.agentMenu) return;
     this.step = null; // null: the items; "message"; "end"; "refused" (this.why); "force"
@@ -128,6 +139,11 @@ export default class Bar extends View {
       .child(on ? "✓ Away" : "Away");
   }
 
+  // Under the bar, its right edge at the button's (proposal 4), sized to its list: prompts grow by their buttons.
+  openNeeds() {
+    openOverlay({ mod: "rw-bar", kind: "popup", width: 460, props: { needs: true },
+      at: { x: Math.max(0, (this.barW ?? 1200) - 10 - (window()?.buttons ? 3 * 40 : 0) - 460), y: 56 } });
+  }
   spaceSum() {
     const sp = spaces(), space = sp.find((s) => s.active);
     return space ? sumFor(sumsOf(), space, new Set(sp.map((s) => s.id))) : null;
@@ -146,6 +162,25 @@ export default class Bar extends View {
   button(t, id, label, action) {
     return div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
+  }
+
+  // A question answered from the list: `swarm task unblock` in its swarm's folder; the row says how it went.
+  answerQ(cx, q) {
+    const k = `${q.on ?? ""}:${q.folder}:${q.task}`, text = this.answers.get(k)?.value().trim();
+    if (!text || this.sent.get(k) === "Sending…") return;
+    this.sent.set(k, "Sending…"); cx.notify();
+    cx.spawn(async (cx) => {
+      let r = null;
+      try { r = await swarm(q.folder, q.on, answerArgs(q.task, text)); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
+      this.sent.set(k, r.code === 0 ? "Sent" : line(r.stderr || r.stdout, 200).replace(/^swarm: /, "") || `swarm exited ${r.code}`);
+      cx.notify();
+    });
+  }
+  nudge(cx, q) {
+    const k = `hung:${q.address}`;
+    this.sent.set(k, "Nudging…"); cx.notify();
+    swarm(q.folder, q.on, nudgeArgs(q.name)).then((r) => { this.sent.set(k, r.code === 0 ? "Nudged" : "Nudge failed"); cx.notify(); })
+      .catch(() => { this.sent.set(k, "Nudge failed"); cx.notify(); });
   }
 
   sendSay(cx) {
@@ -180,10 +215,11 @@ export default class Bar extends View {
     const sp = spaces();
     const spaceOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s])));
     const paneOf = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, p]));
-    const asks = needsYou(all);
-    const qs = questionsOf(sumsOf(), new Set(asks.map((x) => x.address)));
-    const all_ = [...asks.map((term) => ({ address: term.address, peek: line(term.report?.msg, 300), ...rowText(term, "asks", null, home()) })), ...qs];
-    const items = all_.slice(0, NEEDS).map(({ address, name, what, peek }, i) => {
+    const asks = needsYou(all), counted = new Set(asks.map((x) => x.address));
+    const qs = questionsOf(sumsOf(), counted), hung = hungOf(sumsOf(), counted);
+    const all_ = [...asks.map((term) => ({ address: term.address, peek: line(term.report?.msg, 300), ...rowText(term, "asks", null, home()) })), ...qs, ...hung];
+    const items = all_.slice(0, NEEDS).map((q, i) => {
+      const { address, name, what, peek } = q;
       const p = paneOf.get(address), s = p && spaceOf.get(p.tab), show = () => openOverlay(peekWindow(address, name, peek || what));
       const row = h_flex().id(`needs-${i}`).h(32).px(10).gap(8).flex_none().items_center().rounded(7).text_size(12.5)
         .cursor_pointer().hover((st) => st.bg(t.hover))
@@ -200,8 +236,20 @@ export default class Bar extends View {
           .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); show(); })
           .child("Show terminal")))
-        .child(mark(t, "asks"));
-      const more = peek != null && address && cx ? this.promptLine(t, address, peek, show, i, cx) : null;
+        .when(Boolean(q.hung), (el) => el.child(div().id(`needs-nudge-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6)
+          .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.nudge(cx, q); })
+          .child(this.sent.get(`hung:${address}`) ?? "Nudge")))
+        .child(mark(t, q.hung ? "hung" : "asks"));
+      const k = q.task != null ? `${q.on ?? ""}:${q.folder}:${q.task}` : null, st = k && this.answers.get(k), said = k && this.sent.get(k);
+      const more = peek != null && address && cx ? this.promptLine(t, address, peek, show, i, cx)
+        : st ? h_flex().pl(10).pb(6).gap(6).items_center()
+          .child(div().flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.background)
+            .on_mouse_down("left", stop).child(Input.new(st).h_full().text_size(12.5).text_color(t.foreground)))
+          .child(div().id(`needs-send-${i}`).flex_none().h(26).px(10).flex().items_center().rounded(6).text_size(12).font_semibold()
+            .bg(t.foreground).text_color(t.background).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.answerQ(cx, q); }).child("Send"))
+          .when(Boolean(said), (el) => el.child(div().flex_none().max_w(140).truncate().text_size(11.5).text_color(said === "Sent" || said === "Sending…" ? t.dim : t.blocked).child(said)))
+        : null;
       return more ? v_flex().id(`needs-w-${i}`).flex_none().child(row).child(more) : row;
     });
     return v_flex().id("needs-list").w_full().max_h(480).overflow_y_scrollbar().p(6).gap(2).bg(t.popover).text_color(t.foreground)
@@ -226,7 +274,7 @@ export default class Bar extends View {
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
     const asks = needsYou([...byAddr.values()]);
     const sums = sumsOf();
-    const needs = asks.length + questionsOf(sums, new Set(asks.map((x) => x.address))).length;
+    const counted = new Set(asks.map((x) => x.address)), needs = asks.length + questionsOf(sums, counted).length + hungOf(sums, counted).length;
     // Needs you pulses twice when its count rises (II.4d)
     const now = Date.now(), PULSE = 700;
     if (needs > (this.needsWas ?? needs) && animOn(shared("rw.animations"))) { this.pulseTill = now + 2 * PULSE; cx.timer.after(2 * PULSE + 20, (cx) => cx.notify()); }
@@ -246,7 +294,8 @@ export default class Bar extends View {
       : line(space?.name, 80);
     const sub = all ? `${sums.length} running` : v ? line(`Swarm ${tagOf(vsum?.comms)}${ci ? " · main" : ""}`, 120)
       : line([space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · "), 120);
-    return h_flex().size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
+    return h_flex().id("bar").size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
+      .on_size_change((sz, cx) => { if (sz.width !== this.barW) { this.barW = sz.width; cx.notify(); } })
       .child(v_flex().w(mac ? Math.max(60, left - 64) : left).flex_none().min_w(0)
         .child(div().truncate().text_size(14).font_semibold().text_color(t.foreground).child(name))
         .child(h_flex().min_w(0).gap(4).text_size(11.5).text_color(t.dim).child(div().truncate().child(sub))
@@ -258,7 +307,7 @@ export default class Bar extends View {
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 460, props: { needs: true } }) /* sized to its list: prompts grow by their buttons */)
+        .on_click(() => this.openNeeds())
         .when(now < (this.pulseTill ?? 0), (el) => el.loop("opacity", { from: 1, to: 0.35, period: PULSE }))
         .child(mark(t, "asks", 8)).child(`Needs you ${needs}`)))
       .when(Boolean(w?.buttons), (el) => el

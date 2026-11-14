@@ -115,7 +115,7 @@ const s0 = T.sumOf(sw);
 assert.deepEqual(s0.agents.map((a) => [a.name, a.hc]), [["c", "t1"], ["5", "7"], ["w", "t2"], ["q x", null]]); // unique by name, then by terminal
 assert.equal(s0.counts.open, null);
 assert.equal(s0.space, "9");
-assert.deepEqual(T.questionsOf([s0], new Set()), [{ address: "t2", name: "w", what: "a b" }]);
+assert.deepEqual(T.questionsOf([s0], new Set()), [{ address: "t2", name: "w", what: "a b", task: null, folder: null, on: null }]);
 assert.equal(T.sumOf("garbage"), null);
 assert.equal(T.sumOf([1]), null);
 assert.deepEqual(T.swarmsOf({ swarms: [null, { db: "/d", folder: "rel" }, { db: "/d", folder: "/w" }, { db: 3, folder: "/x" }] }), [{ db: "/d", folder: "/w" }, { db: "3", folder: "/x" }]);
