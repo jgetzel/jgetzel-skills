@@ -282,8 +282,14 @@ In swarm-lean, since the CLI is being ported there.
 2. A list of the swarms on this machine, with repo folder, tag and db path.
    State is per repo today and nothing lists them, so this needs a small
    registry that watchd writes when it starts and clears when it ends.
+   Built in slice 12: `swarm state --json --view swarms` (from any folder) gives `swarms` [{`db`, `folder`, `tag`,
+   `comms`, `pid`, `started`}], by folder. Each is a file in `$XDG_STATE_HOME/swarm/swarms` that a watchd (not
+   `--once`) writes when it starts and removes when it exits. A watchd that died without exiting is dropped from the
+   list, and its file goes, once its pid is gone.
 3. Memory per swarm: the sum over its agents' process trees. Today there is
    only `running[].rss_kb` per command and the machine-wide note.
+   Built in slice 12: `rss_kb` in `--view summary`, the live agents' process trees on this machine counted from
+   their claude process (as the System view's holders), so the rail's poll of each swarm's summary carries it.
 
 `swarm who` records context for watchd, so the UI must not poll it.
 
