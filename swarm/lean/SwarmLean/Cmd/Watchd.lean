@@ -158,8 +158,9 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
         if (ev "ctx-continue").all (· < t0) then
           let now ← Clock.now
           Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
-          if let some why ← Hook.stopBlock a.name (Lean.Json.mkObj []) then
-            if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+          -- a stayer or the communicator has no verdict (a declared wait): still tell it to carry on
+          let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
+          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
           continue
     let k := a.ctx_tokens.getD 0
     let force := too || !stays

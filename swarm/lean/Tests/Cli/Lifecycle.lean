@@ -881,6 +881,17 @@ def test_watchd_continues_after_compaction (t : T) : IO Unit := do
   eq (← sends) 1
   has ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).head! "#1"
 
+-- a stayer has no stop verdict but still gets the continue line after its compaction
+def test_watchd_continues_stayer_after_compaction (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["stay", "reviews"] { hc := some "h1" }
+  t.setHc [json% {"address": "h1", "status": "done"}, json% {"address": "hc0", "status": "done"}]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'a', 'compact')" []
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  tick; tick
+  eq ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done. Carry on")).length 1
+
 -- ---- task deps ----
 def test_after_dependency (t : T) : IO Unit := do
   t.agent "a"
@@ -1092,6 +1103,7 @@ def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
   ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
   ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),
+  ("test_watchd_continues_stayer_after_compaction", test_watchd_continues_stayer_after_compaction),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),
   ("test_lock_prefix_and_overlap", test_lock_prefix_and_overlap),
