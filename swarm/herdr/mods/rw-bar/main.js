@@ -186,16 +186,27 @@ export default class Bar extends View {
       .when(all_.length > NEEDS, (el) => el.child(div().px(10).py(6).text_size(12.5).text_color(t.dim).child(`${all_.length - NEEDS} more`)));
   }
 
+  // A popup's content fades in and rises 6 px (II.4d): drawn first at its start, then at its place.
+  rise(el, cx) {
+    if (!animOn(shared("rw.animations"))) return el;
+    const first = !this.risen;
+    if (first) { this.risen = true; cx.timer.after(20, (cx) => cx.notify()); }
+    return el.relative().top(first ? 6 : 0).opacity(first ? 0 : 1).transition("top", 120).transition("opacity", 120);
+  }
   render(cx) {
     const t = theme();
-    if (props()?.needs) return this.list(t, cx);
-    if (props()?.agentMenu) return this.menu(t, props().agentMenu);
+    if (props()?.needs) return this.rise(this.list(t, cx), cx);
+    if (props()?.agentMenu) return this.rise(this.menu(t, props().agentMenu), cx);
     const sp = spaces();
     const space = sp.find((s) => s.active);
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
     const asks = needsYou([...byAddr.values()]);
     const sums = sumsOf();
     const needs = asks.length + questionsOf(sums, new Set(asks.map((x) => x.address))).length;
+    // Needs you pulses twice when its count rises (II.4d)
+    const now = Date.now(), PULSE = 700;
+    if (needs > (this.needsWas ?? needs) && animOn(shared("rw.animations"))) { this.pulseTill = now + 2 * PULSE; cx.timer.after(2 * PULSE + 20, (cx) => cx.notify()); }
+    this.needsWas = needs;
     const w = window();
     const sidebar = find(layout(), "sidebar");
     const left = Math.max(120, (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 268) - 32); // the label sits over the rail
@@ -223,6 +234,7 @@ export default class Bar extends View {
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
         .on_click(() => openOverlay({ mod: "rw-bar", kind: "popup", width: 460, props: { needs: true } }) /* sized to its list: prompts grow by their buttons */)
+        .when(now < (this.pulseTill ?? 0), (el) => el.loop("opacity", { from: 1, to: 0.35, period: PULSE }))
         .child(mark(t, "asks", 8)).child(`Needs you ${needs}`)))
       .when(Boolean(w?.buttons), (el) => el
         .child(this.button(t, "minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
