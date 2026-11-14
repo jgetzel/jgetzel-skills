@@ -47,13 +47,15 @@ def test_install_main_path (t : T) : IO Unit := do
   eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
     "\"size\":{\"px\":52},\"window_drag\":true,\"content\":{\"mod\":\"rw-bar\"}},{\"id\":\"body\",\"children\":[" ++
     "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++
-    panel.replace "{\"tab\":\"active\"}" ("{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
+    panel.replace "{\"id\":\"main\",\"content\":{\"tab\":\"active\"}}" ("{\"id\":\"view\",\"type\":\"stack\",\"active\":\"main\"," ++
+      "\"children\":[{\"id\":\"main\",\"content\":{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
       "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"accent\"},\"lone\":true," ++
-      "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}") ++ "]}]}")
+      "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}}," ++
+      "{\"id\":\"all-swarms\",\"type\":\"block\",\"content\":{\"mod\":\"rw-swarms\"}}]}") ++ "]}]}")
     |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
   -- The other rw mods' tree.js and marks.js are links to rw-rail's in the checkout, and files in the copies.
-  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js", "rw-settings/tree.js"] do
+  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js", "rw-settings/tree.js", "rw-swarms/tree.js", "rw-swarms/marks.js"] do
     unless (← System.FilePath.symlinkMetadata (h ++ "/mods/" ++ f)).type == .file do fail s!"no {f} copy"
   has ((← slurp (h ++ "/mods/rw-settings/app.js")).getD "") "export default class Settings extends View {}\n\nexport { SECTIONS };"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")

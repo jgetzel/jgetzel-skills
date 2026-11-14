@@ -1,19 +1,20 @@
 #!/bin/sh
 # Made-up spaces, agents and shells for screenshots of the rework rail (rw-rail), then the rework layout. Run inside
 # shot.sh's sandbox, never in the person's window:
-#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24] [--vps]' out.png
+#   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--fold] [--swarm 5|24 [--two]] [--vps]' out.png
 # Agents are shells that print a status report (OSC 7501) and a title, then wait; a helper started from inside one
 # gets it as its parent. --fold folds jk_ledger, nixos and linn-studio (shells only). --swarm N adds a space,
 # jgetzel-skills, whose repo has a swarm of N agents (5: the rail board's C, 24: its D) that register their own
 # terminals in its board, and shows it. A second hc session on this machine stands in for another machine, "desktop";
 # it stops once shot.sh removes the sandbox. --vps adds a third, "vps", with a space whose agent asks; it is unreachable
-# while $HERDR_APP_HOME/vps.down exists and its hc is stopped (HC_SESSION=${HC_SESSION}v hc server stop).
+# while $HERDR_APP_HOME/vps.down exists and its hc is stopped (HC_SESSION=${HC_SESSION}v hc server stop). --two makes
+# high-perf-lean a second swarm, hpl, with 5 agents, one of them asking (the All swarms view).
 set -eu
 [ -n "${HERDR_APP_HOME:-}" ] && case $HERDR_APP_HOME in /tmp/hs.*) ;; *) false ;; esac ||
   { echo "rail-demo.sh: only inside shot.sh's sandbox" >&2; exit 2; }
-fold= sw= vps=
+fold= sw= vps= two=
 while [ $# -gt 0 ]; do
-  case $1 in --fold) fold=1; shift ;; --swarm) sw=$2; shift 2 ;; --vps) vps=1; shift ;; *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;; esac
+  case $1 in --fold) fold=1; shift ;; --swarm) sw=$2; shift 2 ;; --vps) vps=1; shift ;; --two) two=1; shift ;; *) echo "rail-demo.sh: unknown $1" >&2; exit 2 ;; esac
 done
 D=$(dirname "$HERDR_APP_HOME")
 do_() { herdr-app do "$@"; }
@@ -42,7 +43,7 @@ tab "$jk" "$(agent idle 'review PR 88')"
 tab "$jk" '["python3","-m","http.server","8731"]'
 tab "$jk" '["zsh"]'
 # A swarm: agents title themselves with their name, so the row shows their folder instead.
-do_ space.new --name high-perf-lean --folder "$(dir high-perf-lean)" --argv "$(agent done hpl-comms3 \
+[ -n "$two" ] || do_ space.new --name high-perf-lean --folder "$(dir high-perf-lean)" --argv "$(agent done hpl-comms3 \
   'hpl-370|done|hpl-370' 'hpl-371|working|hpl-371')" >/dev/null
 # A space with no terminal: its only tab is a mod pane.
 docs=$(do_ space.new --name notes --folder "$(dir notes)")
@@ -57,7 +58,7 @@ if [ -n "$sw" ]; then
   db=$repo/.git/swarm/swarm.db now=$(date +%s)
   sqlite3 -cmd ".timeout 9000" "$db" "delete from task; insert or replace into meta(k, v) values('comms', 'll-comms')"
   cat >"$D/w/reg.sh" <<'EOF'
-sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, hc, status, last_active, started, stay) values('$2', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''))"
+sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, hc, status, last_active, started, stay, claude_pid) values('$2', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''), $PPID)"
 EOF
   # swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers, then as agent()
   swagent() {
@@ -87,6 +88,21 @@ EOF
   fi
   tab "$skills" "$(agent working 'read the watchd log')"
   tab "$skills" '["zsh"]'
+  if [ -n "$two" ]; then # hpl: swagent and task write to $db as they run
+    lldb=$db hrepo=$(dir high-perf-lean); git -C "$hrepo" init -q
+    (cd "$hrepo" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed && env -u SWARM_DB SWARM_NAME=human "$D/swarm" limits --min 8 --max 8) >/dev/null 2>&1
+    db=$hrepo/.git/swarm/swarm.db
+    sqlite3 -cmd ".timeout 9000" "$db" "delete from task; insert or replace into meta(k, v) values('comms', 'hpl-comms')"
+    hpl=$(do_ space.new --name high-perf-lean --folder "$hrepo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)" | id space)
+    tab "$hpl" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' blocked hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
+    tab "$hpl" "$(swagent hpl-3 working 0 '' working hpl-3)"; task 41 'Arena allocator for Expr' claimed hpl-3
+    tab "$hpl" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' claimed hpl-6
+    tab "$hpl" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' claimed hpl-7
+    task 49 'Inline small closures in the compiler pass' open; task 50 'Bench: instantiateMVars on deep terms' open
+    sqlite3 -cmd ".timeout 9000" "$db" "insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
+    db=$lldb
+    sqlite3 -cmd ".timeout 9000" "$DEMO_DB" "delete from agent" # shot.sh's demo space holds a copy of a real board: not a third swarm
+  fi
 fi
 
 # "desktop": spaces named like this computer's, with shells.

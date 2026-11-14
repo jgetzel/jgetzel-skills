@@ -216,6 +216,15 @@ column per swarm, Needs you merged, memory split by swarm.
 - A tab cannot belong to no space. The view is a child of a layout `stack`
   beside the tab area, shown with `layout.select`.
 - Needs two new CLI outputs below: the list of swarms and memory per swarm.
+- Built in slice 13: `rw-swarms`, the "all-swarms" child of a `view` stack that holds the tab area (`main`). The rail's
+  swarms are each space folder's plus those `state --view swarms` lists with no space on this computer; past one, the
+  All swarms row heads the rail (how many run, how many of their agents ask you) and shows the view. The view reads
+  each swarm's `--view overview` every 5 s while shown: Needs you across swarms (Answer opens the question above the
+  agent, slice 8), a column per swarm (tag, folder, main's CI, Communicator, Open space, its agents, board counts, the
+  next 3 tasks, the staffing line), and this computer's memory in use split by swarm (`rss_kb`) and everything else.
+  Any click that shows a tab (the rail, a pill, Needs you, the view's own buttons) or a change of the shown tab puts the
+  tabs back. Not drawn: the bar's swarm nav in place of the pills, and "hpl-4's bench would take it to 92 G" (nothing
+  says what a task will need); the collapsed rail has no All swarms tile.
 
 ### Machines (canvas: machines board)
 

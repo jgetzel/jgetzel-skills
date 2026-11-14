@@ -7,7 +7,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
-import { looked, markOf, needsYou, pillOf, questionsOf, rowText } from "./tree.js";
+import { allShown, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -47,6 +47,7 @@ export default class Bar extends View {
         const from = this.pressed; this.pressed = null;
         if (from !== null && from !== i) run("tab.move", { id: space.tabs[from].id, index: i + 1 });
         else run("tab.select", { id: tab.id });
+        if (allShown(layout())) showAll(run, false); // the All swarms view (slice 13) gives way to the tabs
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
       .when(Boolean(sw), (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(tab.active ? t.foreground : t.muted)))
@@ -75,6 +76,7 @@ export default class Bar extends View {
         .cursor_pointer().hover((st) => st.bg(t.hover))
         .on_click(() => {
           closeOverlay(props().overlay);
+          if (allShown(layout())) showAll(run, false);
           if (p) run("pane.focus", { pane: p.pane }); else if (address) run("terminal.peek", { terminal: address });
         })
         .child(div().flex_none().max_w(110).truncate().font_medium().text_color(t.foreground).child(name))

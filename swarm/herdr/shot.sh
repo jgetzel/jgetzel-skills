@@ -46,6 +46,8 @@ done
 
 D=$(mktemp -d /tmp/hs.XXXXXX)
 H=$D/h S=hs$$ xpid= hpid=
+# The swarms on this machine (`swarm state --view swarms`) and hc's state: the sandbox's own, not the person's.
+[ -n "$fx" ] || export XDG_STATE_HOME=$D/state
 # Herdr and hc must not find the person's window, terminal or core through the environment.
 unset HC_TERMINAL_SOCKET HC_TERMINAL_ID HC_SCOPE WAYLAND_DISPLAY SWARM_DB
 export HERDR_APP_HOME=$H HC_SESSION=$S
