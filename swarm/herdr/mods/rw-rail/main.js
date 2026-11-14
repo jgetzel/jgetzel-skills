@@ -541,6 +541,7 @@ export default class Rail extends View {
   tabOf(t, s, g, draw) {
     if (!g.tab) return g.rows.map(draw);
     const d = this.drag?.live && this.drag.space === s.id ? this.target() : null, name = g.split && this.tabName.get(g.tab);
+    const part = Boolean(d) && this.anim && d.tab !== g.tab;
     return [v_flex().id(`tab-${g.tab}`).relative().flex_none()
       .when(g.split, (el) => el.ml(6).pl(2).border_l(2).border_color(t.input))
       .when(d?.tab === g.tab, (el) => el.rounded(8).bg(t.selected).shadow_lg().ml(g.split ? 20 : 14))
@@ -549,10 +550,13 @@ export default class Rail extends View {
         if (h) this.overTab = { space: s.id, tab: g.tab }; else if (this.overTab?.tab === g.tab) this.overTab = null;
         if (this.drag?.live) cx.notify();
       })
+      // II.4d: the rows part where the tab will land (height, 120 ms); the line sits in the gap
       .when(d?.over === g.tab, (el) => el.child(div().absolute().left(4).right(4).h(2).rounded(1).bg(t.working)
-        .when(d.after, (l) => l.bottom(-1)).when(!d.after, (l) => l.top(-1))))
+        .when(d.after, (l) => l.bottom(part ? 4 : -1)).when(!d.after, (l) => l.top(part ? 4 : -1))))
+      .when(part, (el) => el.child(div().id(`gap-a-${g.tab}`).flex_none().h(d.over === g.tab && !d.after ? 10 : 0).transition("height", 120)))
       .when(Boolean(name), (el) => el.child(div().h(18).flex_none().px(8).truncate().text_size(11.5).text_color(t.dim).child(line(name, 80))))
-      .children(g.rows.map(draw))];
+      .children(g.rows.map(draw))
+      .when(part, (el) => el.child(div().id(`gap-b-${g.tab}`).flex_none().h(d.over === g.tab && d.after ? 10 : 0).transition("height", 120)))];
   }
 
   // `fly`: the collapsed rail's hover card, always open and not marked as shown. `sw`: the space's swarm (swarmOf).
