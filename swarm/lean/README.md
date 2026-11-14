@@ -84,7 +84,9 @@ exactly when another agent's live lock covers the path.
 
 **Agents and watchd** (`Proofs/Watchd.lean`). watchd's `keeps` is the model's `Decide.keepsL` itself. For any answers
 the world's reads give: lifecycle's verdict and every check it records are `Decide.fateRec`'s; it ends or reuses only
-an agent idle 2 min with no stay, claim or lock, whose unlanded and job reads came back empty; a stayer is kept, and
+an agent idle 2 min with no stay, claim or lock, whose unlanded and job reads came back empty; it reuses one only under
+`swarm limits --reuse-below` (0, the default, is off) with an offer of related tasks (`Db/Reuse.lean`: each offered task
+is in the staffing order, related to the agent's last done task and for its model, at most five); a stayer is kept, and
 `swarm end` refuses it; `swarm end` refuses exactly when `Decide.endWhyL` does. An end without `--force` that went
 through found the agent live, idle on the terminal judged, staying for nothing and holding nothing, and it changes no
 task and no lock. Reap reopens only a task still claimed by the owner it judged with a lapsed lease, drops only a lock

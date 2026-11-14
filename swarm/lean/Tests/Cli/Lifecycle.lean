@@ -33,6 +33,13 @@ def idle (t : T) (name : String) (kw : List (String × Val) := []) : IO Unit := 
   t.agent name (o.filter (fun (k, _) => !kw.any (·.1 == k)) ++ kw)
 def ended (t : T) (name : String) : IO Bool :=
   return (← t.q1 "select ended from agent where name=?" [.text name]).f "ended" != .null
+/-- Reuse on below 50k, and `n` (sonnet) finished a task labelled x: task #1 (board #186). -/
+def finished (t : T) (n : String) : IO Unit := do
+  t.sw_ "comms" ["limits", "--reuse-below", "50000"]
+  t.q_ "update agent set model='sonnet' where name=?" [.text n]
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','done',?,'sha','x',1)" [.text n]
+def offers (t : T) (n : String) : IO Nat :=
+  return (← t.q "select 1 x from msg where dest=? and body like '%Related tasks%'" [.text n]).size
 def branches (t : T) : IO String := t.git t.repo ["branch", "--list", "w2"]
 def commitWip (t : T) (name : String) : IO Unit := do
   t.write "b" name "wip"
@@ -448,7 +455,7 @@ def test_end_agent_keeps_worktree_a_live_peer_uses (t : T) : IO Unit := do
   ok (← exists_ t.wt)
 
 def test_idle_owner_past_lease_loses_claim (t : T) : IO Unit := do
-  idle t "e" [("wt", t.wt)]
+  idle t "e" [("wt", t.wt), ("stay", "reviews")]  -- else, its claim gone and nothing offered, it is ended
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
   t.q_ "update task set lease_until=1"
   commsTick t
@@ -608,7 +615,7 @@ def test_claim_holder_with_sleep_loop_spared (t : T) : IO Unit := do
   ok (!(← ended t "e"))
 
 def test_high_context_agent_retakes_only_its_reaped_task (t : T) : IO Unit := do
-  idle t "e" [("wt", t.wt)]
+  idle t "e" [("wt", t.wt), ("stay", "reviews")]
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "add", "u"]; t.sw_ "e" ["task", "claim", "1"]
   t.q_ "update task set lease_until=1"
   commsTick t
@@ -636,40 +643,105 @@ def test_prompt_blocked_owner_past_lease_keeps_claim (t : T) : IO Unit := do
   eq ((← t.q1 "select state from task").f "state") "claimed"
 
 def test_comms_never_digested_or_ended_reusable_digested (t : T) : IO Unit := do
-  idle t "comms"; idle t "r"
-  t.sw_ "comms" ["task", "add", "t"]
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "t", "--label", "x"]
   commsTick t
   ok (!(← ended t "comms")); ok (!(← ended t "r"))
-  has (← t.sw "r" ["read"]).stdout "1 open task"
-  hasnt (← t.sw "comms" ["read"]).stdout "open task"
+  has (← t.sw "r" ["read"]).stdout "Related tasks are startable: #2 t."
+  hasnt (← t.sw "comms" ["read"]).stdout "Related tasks"
 
 def test_digest_edge_triggered (t : T) : IO Unit := do
-  idle t "comms"; idle t "r"
-  let digests : IO Nat := return (← t.q "select 1 x from msg where dest='r' and body like '%open task%'").size
-  t.sw_ "comms" ["task", "add", "t1"]
-  commsTick t; eq (← digests) 1
-  t.q_ "update event set ts=ts-5000"; t.q_ "update agent set last_active=last_active-5000"
-  commsTick t; eq (← digests) 1  -- unchanged pool, 900 s later: silent
-  t.sw_ "comms" ["task", "add", "t2"]
-  commsTick t; eq (← digests) 2  -- a new id
-  t.sw_ "comms" ["task", "claim", "2"]; t.sw_ "comms" ["task", "block", "2", "q"]
-  t.sw_ "comms" ["task", "add", "t3", "--after", "2"]  -- waits on a blocked task: not startable
-  commsTick t; eq (← digests) 2
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "t1", "--label", "x"]
+  commsTick t; eq (← offers t "r") 1
+  t.q_ "update event set ts=ts-100"; t.q_ "update agent set last_active=last_active-5000"
+  commsTick t; eq (← offers t "r") 1  -- unchanged offer, 100 s later: silent
+  t.sw_ "comms" ["task", "add", "t2", "--label", "x"]
+  commsTick t; eq (← offers t "r") 2  -- a new id
+  t.sw_ "comms" ["task", "claim", "3"]; t.sw_ "comms" ["task", "block", "3", "q"]
+  t.sw_ "comms" ["task", "add", "t3", "--after", "3", "--label", "x"]  -- waits on a blocked task: not startable
+  commsTick t; eq (← offers t "r") 2
+
+-- Reuse is off by default: a small idle agent with a related task is ended, offered nothing (board #186).
+def test_reuse_off_by_default (t : T) : IO Unit := do
+  idle t "comms"; idle t "r" [("model", "sonnet")]
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','done','r','sha','x',1)"
+  t.sw_ "comms" ["task", "add", "t", "--label", "x"]
+  commsTick t
+  ok (← ended t "r"); eq (← offers t "r") 0
+
+-- The offer: lineage (filed while holding the finished task, or waiting on it) and a shared label; startable, for
+-- the agent's model, at most five, in staffing order; with queue-only on, only queued ones (board #186).
+def test_offer_lineage_labels_model (t : T) : IO Unit := do
+  t.fakes
+  idle t "comms"; idle t "r" [("model", "sonnet")]
+  t.sw_ "comms" ["limits", "--reuse-below", "50000"]
+  t.sw_ "r" ["task", "add", "mine"]; t.sw_ "r" ["task", "claim", "1"]
+  t.sw_ "r" ["task", "add", "filed", "--label", "y"]                      -- #2: lineage
+  t.sw_ "comms" ["task", "add", "waits", "--after", "1"]                 -- #3: waits on #1
+  t.sw_ "comms" ["task", "add", "other"]                                 -- #4: unrelated
+  t.sw_ "comms" ["task", "add", "opus", "--after", "1", "--model", "opus"]  -- #5: another model
+  t.sw_ "comms" ["task", "label", "1", "z"]
+  t.sw_ "comms" ["task", "add", "same", "--label", "z,w"]                -- #6: shares z
+  for i in [7, 8, 9] do t.sw_ "comms" ["task", "add", s!"z{i}", "--label", "z"]  -- #7-#9
+  t.sw_ "r" ["task", "done", "1", "--evidence", "sha"]
+  t.q_ "update agent set status='idle', last_active=? where name='r'" [.int (← old)]
+  let st ← state t
+  let t2 := (tasksOf st).find? (·.f "id" == toJson 2)
+  eq ((t2.map (·.f "parents")).getD .null) (json% [1])
+  eq ((t2.map (·.f "labels")).getD .null) (json% ["y"])
+  commsTick t
+  ok (!(← ended t "r"))
+  let m := (← t.q1 "select body from msg where dest='r' and body like '%Related tasks%'").f "body"
+  let ids := ((← t.q1 "select data from event where kind='digest' and agent='r'").f "data")
+  eq ids "2,3,6,7,8"  -- five, board order; not #4 (unrelated) or #5 (opus)
+  has (m.s?.getD "") "#2 filed; #3 waits; #6 same"
+  -- auto-spawn does not staff an offered task while the offer is out
+  t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "3", "--min-free-mem", "0"]
+  eq ((← t.q1 "select state from task where id=2").f "state") "open"
+
+def test_offer_queue_only (t : T) : IO Unit := do
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "a", "--label", "x"]; t.sw_ "comms" ["task", "add", "b", "--label", "x"]
+  t.sw_ "comms" ["limits", "--queue-only", "on"]; t.sw_ "comms" ["queue", "add", "3"]
+  commsTick t
+  eq ((← t.q1 "select data from event where kind='digest' and agent='r'").f "data") "3"
+
+-- An offer unanswered for OFFER_TTL counts as declined: the agent is ended and the task staffed fresh.
+def test_offer_times_out (t : T) : IO Unit := do
+  t.fakes
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "t1", "--label", "x"]
+  commsTick t
+  ok (!(← ended t "r")); eq (← offers t "r") 1
+  t.q_ "update event set ts=ts-400 where kind='digest'"
+  commsTick t
+  ok (← ended t "r") "an offer past its TTL still keeps r"
+  t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
+  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
+
+def test_task_labels (t : T) : IO Unit := do
+  t.sw_ "a" ["task", "add", "t", "--label", "ui, herdr,ui"]
+  eq ((← t.q1 "select labels from task where id=1").f "labels") "ui,herdr"
+  has (← t.sw "a" ["task", "label", "1", "cli", "ui"]).stdout "#1 labels: cli, ui"
+  has (← t.sw "a" ["task", "show", "1"]).stdout "labels: cli, ui"
+  has (← t.sw "a" ["task", "label", "1"]).stdout "#1 labels: none"
+  eq ((← t.q1 "select labels from task where id=1").f "labels") Json.null
 
 -- A reusable agent that has read a digest naming every startable task and is idle again had its chance: it is
 -- ended, not kept as a reason to spawn no one. Else a task that reopens after the agent was told of it waits for good
 -- (swarm/model: l_after, L1).
 def test_reusable_agent_told_and_idle_again_is_ended (t : T) : IO Unit := do
   t.fakes
-  idle t "comms"; idle t "r"
-  t.sw_ "comms" ["task", "add", "t1"]
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "t1", "--label", "x"]
   commsTick t
-  has (← t.sw "r" ["read"]).stdout "1 open task"  -- r wakes, reads it, and stops without taking #1
+  has (← t.sw "r" ["read"]).stdout "#2 t1"  -- r wakes, reads it, and stops without taking #2: it declines
   t.q_ "update agent set status='idle', last_active=? where name='r'" [.int (← old)]
   commsTick t
-  ok (← ended t "r") "r, told of #1 and idle again, still holds the slot"
+  ok (← ended t "r") "r, offered #2 and idle again, still holds the slot"
   t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
-  eq ((← t.q1 "select state from task where id=1").f "state") "claimed"  -- the freed slot is filled for #1
+  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"  -- the freed slot is filled for #2
 
 -- An idle agent whose waiter exited (swarm wait timed out) never reads a digest: it is ended, not kept as a reason to
 -- spawn no one (swarm/model: l_after_waiter, L1 and L3).
@@ -693,7 +765,8 @@ def test_task_done_says_what_next (t : T) : IO Unit := do
   t.agent "a" [("ctx_tokens", 20000)]
   for x in ["x", "y", "z"] do t.sw_ "a" ["task", "add", x]
   t.sw_ "a" ["task", "claim", "1"]
-  has (← t.sw "a" ["task", "done", "1", "--evidence", "e"]).stdout "take the next task"
+  t.sw_ "a" ["limits", "--reuse-below", "50000"]
+  has (← t.sw "a" ["task", "done", "1", "--evidence", "e"]).stdout "watchd offers you related startable tasks"
   t.q_ "update agent set ctx_tokens=120000"
   t.sw_ "a" ["task", "claim", "2"]
   has (← t.sw "a" ["task", "done", "2", "--evidence", "e"]).stdout "go idle"
@@ -1147,6 +1220,11 @@ def tests : List Case := [
   ("test_prompt_blocked_owner_past_lease_keeps_claim", test_prompt_blocked_owner_past_lease_keeps_claim),
   ("test_comms_never_digested_or_ended_reusable_digested", test_comms_never_digested_or_ended_reusable_digested),
   ("test_digest_edge_triggered", test_digest_edge_triggered),
+  ("test_reuse_off_by_default", test_reuse_off_by_default),
+  ("test_offer_lineage_labels_model", test_offer_lineage_labels_model),
+  ("test_offer_queue_only", test_offer_queue_only),
+  ("test_offer_times_out", test_offer_times_out),
+  ("test_task_labels", test_task_labels),
   ("test_reusable_agent_told_and_idle_again_is_ended", test_reusable_agent_told_and_idle_again_is_ended),
   ("test_reusable_agent_with_dead_waiter_is_ended", test_reusable_agent_with_dead_waiter_is_ended),
   ("test_big_context_finished_even_with_open_tasks", test_big_context_finished_even_with_open_tasks),

@@ -1,6 +1,7 @@
 import SwarmLean.Cmd
 import SwarmLean.Cmd.TasksHelp
 import SwarmLean.Db.Queue
+import SwarmLean.Db.Reuse
 import SwarmLean.Lib.Machine
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
@@ -23,7 +24,7 @@ def taskSpec : Spec :=
     .mk "add" helpTaskAdd [{ name := "title" }]
       [opt "--body" (some ""), opt "--body-file", opt "--after" none (some idList), opt "--model",
        { opt "--effort" with choices := EFFORTS }, { aliases := ["-p", "--priority"], target := "priority", conv := some prio },
-       opt "--base"] [["body", "body_file"]] [] none,
+       opt "--base", opt "--label"] [["body", "body_file"]] [] none,
     .mk "priority" helpTaskPriority [idArg, { name := "priority", conv := some prio }] [] [] [] none,
     .mk "after" helpTaskAfter [idArg, { name := "deps", minArgs := 0, conv := some idList }] [] [] [] none,
     .mk "claim" helpTaskClaim [idArg] [leaseOpt, flag "--force"] [] [] none,
@@ -36,6 +37,7 @@ def taskSpec : Spec :=
     .mk "edit" helpTaskEdit [idArg]
       [opt "--title", opt "--body", opt "--body-file", opt "--append", opt "--model",
        { opt "--effort" with choices := EFFORTS }, flag "--urgent"] [["body", "body_file", "append"]] [] none,
+    .mk "label" helpTaskLabel [idArg, { name := "labels", minArgs := 0, maxArgs := 1000000 }] [] [] [] none,
     .mk "drop" helpTaskDrop [idArg] [] [] [] none,
     .mk "hold" helpTaskHold [idArg] [{ opt "--why" with minCount := 1 }] [] [] none,
     .mk "unhold" helpTaskUnhold [idArg] [] [] [] none])
@@ -79,6 +81,8 @@ def showText (db : Db) (r : Task) : m String := do
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
   if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
   if let some h := r.hold then s := s ++ "\nheld: " ++ h
+  if !(labelsOf r).isEmpty then s := s ++ "\nlabels: " ++ ", ".intercalate (labelsOf r)
+  if !(parentsOf r).isEmpty then s := s ++ s!"\nfiled by {r.created_by.getD "-"} while holding {idsText (parentsOf r)}"
   if let some k := pyI tm.claim_ctx then s := s ++ s!", ctx {fdiv k 1000}k at claim"
   if let some k := pyI tm.done_ctx then s := s ++ s!" -> {fdiv k 1000}k at done"
   if let some ma := pyI tm.merged_at then
@@ -100,7 +104,8 @@ def task (a : Parsed) : m UInt32 := do
         | none => die s!"can't read {p}"
       | none => pure ((a.str "body").getD "")
     let n ← step [.task] (add c { title := (a.str "title").getD "", body, deps := (a.ids "after").getD [],
-                                    model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority" })
+                                    model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority",
+                                    labels := a.str "label" })
     out s!"task #{d n}"
   | "claim" =>
     let r ← step [.task, .agent, .cursor, .event, .«meta»] (claim { c with force := a.flag "force" } id ((a.str "lease").getD "2h"))
@@ -133,7 +138,9 @@ def task (a : Parsed) : m UInt32 := do
       match stay with
       | some s => out s!"context ~{k}k: you stay for '{s}'. `swarm stay --end` when that is over."
       | none =>
-        if k * 1000 < SMALL_CTX && n > 0 then out s!"context ~{k}k: take the next task (swarm board)."
+        let below ← Store.txn [.«meta»] fun db => (db, Reuse.reuseBelow db)
+        if k * 1000 < below && n > 0 then
+          out s!"context ~{k}k: go idle. Once your work lands watchd offers you related startable tasks, if any; else it ends you."
         else out s!"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work."
   | "block" =>
     let away ← step [.task, .«meta»] (block c id ((a.str "question").getD ""))
@@ -155,6 +162,10 @@ def task (a : Parsed) : m UInt32 := do
     let fs := " ".intercalate fields
     if st = .claimed && (hasSub fs "model" || hasSub fs "effort") then
       out "model/effort change the row only: they apply at the next spawn/claim"
+  | "label" =>
+    discard <| step [.task, .agent] (edit c id { labels := some (",".intercalate (a.strs "labels")) })
+    let db ← Store.txn [.task] fun db => (db, db)
+    out s!"#{d id} labels: {match (db.find id).map labelsOf with | some l@(_ :: _) => ", ".intercalate l | _ => "none"}"
   | "drop" =>
     let ws ← step [.task, .«meta»] (Queue.drop c id)
     out s!"dropped #{d id}"

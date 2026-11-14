@@ -95,7 +95,7 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
   let reuse := v == some "reuse"
   if has "context" on then on := setKey (setKey on "context" reuse) "waiter" reuse  -- they keep it only together
   if v.isSome && v != some "unclean" then last := none  -- a verdict past every keeping check: none of them holds
-  let pool := Queue.staffing db
+  let pool := Reuse.candidates db x.name x.model "sonnet" (Queue.staffing db)
   let (w, u) := Lifecycle.waking db x.name
   if has "unread" on then on := setKey on "unread" (reuse && w > 0)
   let mut detail : List (String × String) := []
@@ -157,19 +157,20 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
   if has "context" on then
     let ctx := x.ctx_tokens.getD 0
     let k := fdiv ctx 1000
-    detail := detail ++ [("context", if ctx ≥ Agents.SMALL_CTX then s!"{k}k: too big to be given another task"
+    detail := detail ++ [("context", if f.below == 0 then s!"{k}k: reuse is off (`swarm limits --reuse-below`)"
+      else if ctx.toNat ≥ f.below then s!"{k}k: too big to be offered another task (reuse below {f.below / 1000}k)"
       else match pool.head? with
-        | none => s!"{k}k: small enough, but no task is ready"
-        | some p => if f.passedOver then s!"{k}k: small enough, but it passed over the ready tasks"
-          else s!"{k}k: small enough for another task; #{p.id} is ready")]
-    short := short ++ [("context", match pool.head? with | some p => s!"#{p.id} is ready" | none => "a task is ready")]
+        | none => s!"{k}k: small enough, but no related task is startable"
+        | some p => if f.passedOver then s!"{k}k: small enough, but it declined the offer"
+          else s!"{k}k: small enough; offered #{p.id}{if pool.length > 1 then s!" and {pool.length - 1} more" else ""}")]
+    short := short ++ [("context", match pool.head? with | some p => s!"offered #{p.id}" | none => "offered a task")]
   let checks := CHECKS.filterMap fun k => (on.lookup k).map fun o =>
     Json.mkObj [("label", .str (label k)), ("on", .bool o), ("detail", .str ((detail.lookup k).getD ""))]
   let held := CHECKS.filterMap fun k => if on.lookup k == some true && k != "waiter" && k != "unread" then List.lookup k short else none
   let verdict := v.getD "kept"
   let sc := (short.lookup "context").getD "nil"
   return Json.mkObj [("verdict", .str verdict),
-    ("says", .str (if verdict == "end" then "watchd ends it at its next tick" else if verdict == "reuse" then "Kept for reuse: " ++ sc
+    ("says", .str (if verdict == "end" then "watchd ends it at its next tick" else if verdict == "reuse" then "Kept for an offer: " ++ sc
       else "Kept: " ++ " and ".intercalate held)),
     ("short", if verdict == "end" then .str "ending" else if verdict == "reuse" then .str sc
       else N (last.bind (List.lookup · short))),
@@ -227,6 +228,7 @@ def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Statu
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
     ("qpos", NI r.qpos), ("hold", N r.hold),
+    ("labels", .arr ((Tasks.labelsOf r).map .str).toArray), ("parents", .arr ((Tasks.parentsOf r).map Json.int).toArray),
     ("lease_left", NI lease), ("waiting", .bool !undone.isEmpty), ("undone", .arr (undone.map Json.int).toArray),
     ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
     ("queue_wait_s", NI tm.queue_wait_s), ("work_s", NI tm.work_s), ("total_s", NI tm.total_s),
@@ -478,7 +480,8 @@ def state (a : Parsed) : m UInt32 := do
           let all ← Workspaces.worktrees
           pure (byT, main, wm, all, Queue.staffing db)
       reads := some (byT, main, wm, all, pool)
-      let f := Lifecycle.reads (m := m) db main wm all x.name pool
+      -- shortcut: watchd's --model is not stored; "sonnet" stands for it, as when watchd runs without one
+      let f := Lifecycle.reads (m := m) db main wm all x.name (Reuse.candidates db x.name x.model "sonnet" pool)
       l := l ++ [("fate", ← fateJson db x t f byT (me == some x.name))]
     if full || me == some x.name then  -- the detail pane's messages
       let ms := (msgBy.getD x.name #[]).toList.reverse.take 5
@@ -515,7 +518,8 @@ def state (a : Parsed) : m UInt32 := do
       ("queue_only", some (.bool (Queue.queueOnly db))),
       -- the compaction limits (`swarm limits --ctx-nudge/--ctx-compact/--compact-stayers`): the view's Rules and limits card
       ("ctx_nudge", some (Json.int (SwarmLean.Compact.nudgeAt db))), ("ctx_compact", some (Json.int (SwarmLean.Compact.compactAt db))),
-      ("compact_stayers", some (.bool (SwarmLean.Compact.stayersToo db)))]),
+      ("compact_stayers", some (.bool (SwarmLean.Compact.stayersToo db))),
+      ("reuse_below", some (Json.int (Reuse.reuseBelow db)))]),
     ("rules", N (metaV "rules")),  -- `swarm rules show`: what every agent's brief starts with
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     -- every task by state, and the ended agents but the communicator: what the trimmed lists leave out

@@ -39,6 +39,9 @@ structure Term where
   status : String := "idle"
   deriving Repr, Inhabited, DecidableEq
 
+/-- agents.SMALL_CTX: the model's context threshold (`fateRow`'s `big`) -/
+def smallCtx : Nat := 40000
+
 /-- fate's reads, `f` in the Lua: `ours` is `f.ours(x.cwd)`, `alive` is `f.alive(a.waiter)` -/
 structure Facts where
   ours : Bool
@@ -49,14 +52,13 @@ structure Facts where
   pool : Nat
   passedOver : Bool
   alive : Bool
+  /-- the reuse threshold, `swarm limits --reuse-below` (board #186); 0 is off -/
+  below : Nat := smallCtx
   deriving Repr, Inhabited, DecidableEq
 
 /-- the Lua's nil, "unclean", "reuse", "end" -/
 inductive Verdict where | keep | unclean | reuse | end_
   deriving DecidableEq, Repr, Inhabited
-
-/-- agents.SMALL_CTX -/
-def smallCtx : Nat := 40000
 
 /-- watchd.fate(a, t, x, has_terms, f) -/
 def fateL (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) : Verdict :=
@@ -65,7 +67,7 @@ def fateL (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Facts) :
       || f.claims || f.locks then .keep
   else if f.unlanded then .unclean
   else if f.job then .keep
-  else if decide (a.ctx.getD 0 < smallCtx) && decide (f.pool > 0) && !f.passedOver && a.waiter.isSome && f.alive then .reuse
+  else if decide (a.ctx.getD 0 < f.below) && decide (f.pool > 0) && !f.passedOver && a.waiter.isSome && f.alive then .reuse
   else .end_
 
 /-- a msg row's columns the waiter reads -/
@@ -138,7 +140,7 @@ def modelFate (c : Cfg) (s : State) (a : Nat) : Verdict :=
   else if reusable c s a then .reuse else .end_
 
 theorem fate_core (g : Agent) (t : Int) (h1 h2 h3 j : Bool) (pl u : List Nat) :
-    fateL (fateRow g t) t none false ⟨true, h1, h2, h3, j, pl.length, pl.all g.told.contains && u.isEmpty, true⟩ =
+    fateL (fateRow g t) t none false ⟨true, h1, h2, h3, j, pl.length, pl.all g.told.contains && u.isEmpty, true, smallCtx⟩ =
       if !(g.st == .idle && g.aged && !g.stay && !h1 && !h2) then .keep else if h3 then .unclean else if j then .keep
       else if !g.big && !pl.isEmpty && !(pl.all g.told.contains && u.isEmpty) && g.waiter then .reuse else .end_ := by
   have h120 : t - (t - 120) = 120 := by omega
@@ -229,7 +231,7 @@ def Check.val (a : ARow) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Fact
   | .lock => f.locks
   | .unlanded => f.unlanded
   | .job => f.job
-  | .context => decide (a.ctx.getD 0 < smallCtx) && decide (f.pool > 0) && !f.passedOver
+  | .context => decide (a.ctx.getD 0 < f.below) && decide (f.pool > 0) && !f.passedOver
   | .waiter => a.waiter.isSome && f.alive
 
 /-- every check, in the order fate makes them -/

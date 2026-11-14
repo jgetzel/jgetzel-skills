@@ -21,7 +21,7 @@ def ended (t : T) (name : String) : IO Bool :=
 def stay (t : T) (name : String) : IO Json :=
   return (← t.q1 "select stay from agent where name=?" [.text name]).f "stay"
 def digested (t : T) (name : String) : IO Nat :=
-  return (← t.q "select 1 x from msg where dest=? and body like '%open task%'" [.text name]).size
+  return (← t.q "select 1 x from msg where dest=? and body like '%Related tasks%'" [.text name]).size
 /-- The pid of a process that has exited. -/
 def deadPid : IO Int := do
   let r ← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }
