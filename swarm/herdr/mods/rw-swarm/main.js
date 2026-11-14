@@ -11,8 +11,8 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, showAll, sumFor, swarmShown } from "./tree.js";
-import { mark } from "./marks.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, sumFor, swarmShown } from "./tree.js";
+import { mark, hoverLayer } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -71,6 +71,7 @@ export default class SwarmTab extends View {
     this.nudgeIn = InputState.new({ placeholder: "325" }); this.compactIn = InputState.new({ placeholder: "400" });
     this.limitsEdit = null;
     this.ended = null; // the ended agents, read when you open their line
+    this.ent = new Entering(); this.hovKey = null; // motion (II.4c): what just came, the row under the pointer
     this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -239,6 +240,12 @@ export default class SwarmTab extends View {
   }
 
   // ---- parts --------------------------------------------------------------------------------
+  // A row's hover (II.4b): the fading layer with Animations on, else the instant style.
+  hov(t, el, key, r = 6) {
+    if (!this.anim) return el.hover((st) => st.bg(t.hover));
+    return el.relative().child(hoverLayer(t, `hv-${key}`, this.hovKey === key, r))
+      .on_hover((h, cx) => { if (h) this.hovKey = key; else if (this.hovKey === key) this.hovKey = null; else return; cx.notify(); });
+  }
   card(t, id, red) {
     return v_flex().id(id).flex_none().min_w(0).rounded(12).border(1).border_color(red ? t.blocked + "88" : t.border).bg(red ? t.blocked + "14" : t.surface);
   }
@@ -308,14 +315,14 @@ export default class SwarmTab extends View {
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
-      .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
+      .text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `agent-${r.a.name}`, 0)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
       .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
       .child(mark(t, r.mark))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
       .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.state))
       .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
         .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
-          .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`))))
+          .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`).when(this.anim, (el) => el.transition("width", 300)))))
       .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
         .child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
     const group = ([m, label]) => {
@@ -332,7 +339,7 @@ export default class SwarmTab extends View {
       .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map((r) => row(r, "comms"))] : rows.map(row))
       .when(big && !rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("No agent matches")))
       .when(ended > 0, (el) => el.child(h_flex().id("ended").mx(6).mt(4).px(10).h(34).gap(8).items_center().border_t(1).border_color(t.border)
-        .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.showEnded(cx))
+        .text_size(12.5).text_color(t.dim).cursor_pointer().when(true, (el) => this.hov(t, el, "ended", 0)).on_click((_e, cx) => this.showEnded(cx))
         .child(div().flex_1().child(`${ended} ended`)).child(div().text_color(t.accent).child(this.ended ? "Hide ended" : "Show ended"))))
       .when(Boolean(this.ended), (el) => el.children(this.ended.length ? this.ended.map((a, i) => h_flex().id(`ended-${i}`).h(28).mx(6).px(10)
         .gap(12).items_center().min_w(0).text_size(12).text_color(t.dim)
@@ -359,10 +366,10 @@ export default class SwarmTab extends View {
     return this.card(t, "board").pb(10)
       .child(this.head(t, "Board", `${done} of ${total} done${c.dropped ? ` · ${c.dropped} dropped` : ""}`,
         h_flex().flex_none().gap(10).child(link("done", "Done")).child(link("dropped", "Dropped"))))
-      .child(div().mx(16).mb(6).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(t.ansi2).w(`${total ? (100 * done) / total : 0}%`)))
+      .child(div().mx(16).mb(6).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(t.ansi2).w(`${total ? (100 * done) / total : 0}%`).when(this.anim, (el) => el.transition("width", 300))))
       .when(Boolean(past), (el) => el.children(!this.pastTasks ? [div().px(16).py(4).text_size(12).text_color(t.dim).child("Reading…")]
         : past.length ? past.slice(0, SHOWN * 2).map((k) => h_flex().id(`past-${k.id}`).h(30).mx(6).px(10).gap(12).items_center().min_w(0).text_size(12.5)
-          .when(Boolean(props()?.view), (el) => el.rounded(7).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openTask(k.id)))
+          .when(Boolean(props()?.view), (el) => el.rounded(7).cursor_pointer().when(true, (el) => this.hov(t, el, `past-${k.id}`, 7)).on_click(() => this.openTask(k.id)))
           .child(div().w(40).flex_none().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`#${k.id}`))
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(k.title))
           .child(div().flex_none().max_w(160).truncate().text_color(t.dim).child(k.owner ?? this.past)))
@@ -374,7 +381,7 @@ export default class SwarmTab extends View {
       .when(!past && big, (el) => el.child(div().px(16).pt(4).pb(2).text_size(11.5).font_semibold().text_color(t.muted)
         .child(q ? "Tasks that match" : "Next to be staffed")))
       .children((past ? [] : shown).map(({ k, state, tone: tn }) => h_flex().id(`task-${k.id}`).h(30).mx(6).px(10).gap(12).items_center().min_w(0).text_size(12.5)
-        .when(Boolean(props()?.view), (el) => el.rounded(7).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openTask(k.id)))
+        .when(Boolean(props()?.view), (el) => el.rounded(7).cursor_pointer().when(true, (el) => this.hov(t, el, `task-${k.id}`, 7)).on_click(() => this.openTask(k.id)))
         .child(div().w(40).flex_none().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`#${k.id}`))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title))
         .child(div().flex_none().max_w(160).truncate().text_color(tone[tn]).child(side(k, state)))))
@@ -499,7 +506,7 @@ export default class SwarmTab extends View {
         .child(this.link(t, "agents-all", "All ›", "agents"))))
       .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t)))
       .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
-        .border_color(t.border).text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
+        .border_color(t.border).text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `few-${r.a.name}`, 0)).on_click((_e, cx) => this.openAgent(r.a.name, cx))
         .child(mark(t, r.mark)).child(div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
         .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
@@ -515,7 +522,7 @@ export default class SwarmTab extends View {
       .sort((x, y) => (x.k.qpos ?? 1e9) - (y.k.qpos ?? 1e9) || (x.k.priority ?? -1) - (y.k.priority ?? -1) || x.k.id - y.k.id)[0];
     return this.card(t, "board-few").px(16).pb(12)
       .child(this.head(t, `Board · ${done} of ${total} done`, null, this.link(t, "board-all", "Board ›", "board")).px(0))
-      .child(div().h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(t.working).w(`${total ? (100 * done) / total : 0}%`)))
+      .child(div().h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(t.working).w(`${total ? (100 * done) / total : 0}%`).when(this.anim, (el) => el.transition("width", 300))))
       .child(h_flex().mt(8).gap(6).flex_wrap()
         .when(n("blocked") > 0, (el) => el.child(this.chip(t, `${n("blocked")} waits on you`, t.blocked)))
         .child(this.chip(t, `${n("muted")} in progress`, t.working)).child(this.chip(t, `${n("foreground")} ready`))
@@ -788,7 +795,7 @@ export default class SwarmTab extends View {
       const text = `${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
       const el = h_flex().id(`act-${i.key}`).px(10).py(6).gap(10).items_start().min_w(0).rounded(6)
         .when(tail === "needs you", (el) => el.bg(t.blocked + "14"))
-        .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go()))
+        .when(Boolean(go), (el) => el.cursor_pointer().when(true, (el) => this.hov(t, el, `act-${i.key}`, 6)).on_click(() => go()))
         .child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child(hhmm(i.ts)))
         .child(div().w(110).flex_none().truncate().text_size(12).font_medium().text_color(t.muted).child(i.who))
         .when(log, (el) => el.child(div().w(96).flex_none().truncate().text_size(11.5).text_color(t.dim).child(i.raw ?? "")))
@@ -836,7 +843,7 @@ export default class SwarmTab extends View {
     const agents = s.agents ?? [], land = this.land, prs = this.prs;
     const owner = (branch) => agents.find((a) => a.branch === branch)?.name ?? agents.find((a) => branch?.startsWith(`${a.name}/`))?.name ?? null;
     const row = (id, kids, go) => h_flex().id(id).h(34).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
-      .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go())).children(kids);
+      .when(Boolean(go), (el) => el.cursor_pointer().when(true, (el) => this.hov(t, el, id, 6)).on_click(() => go())).children(kids);
     const dim = (x) => div().flex_none().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(4).text_size(12.5).text_color(t.dim).child(x);
     const prChip = (n) => this.chip(t, `#${n}`, t.ansi4);
     // open pull requests: agent, checks, review
@@ -891,7 +898,7 @@ export default class SwarmTab extends View {
     if (!s.running) return this.card(t, "sys-wait").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("Reading the system…"));
     const now = s.now ?? Date.now() / 1000, gb = (kb) => `${(kb / 1048576).toFixed(kb >= 10485760 ? 0 : 1)} G`, ago = (sec) => dur(Math.max(0, sec) * 1000);
     const row = (id, kids, go) => h_flex().id(id).min_h(30).py(4).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
-      .when(Boolean(go), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go())).children(kids);
+      .when(Boolean(go), (el) => el.cursor_pointer().when(true, (el) => this.hov(t, el, id, 6)).on_click(() => go())).children(kids);
     const txt = (x, c, mono) => div().flex_1().min_w(0).truncate().text_color(c ?? t.muted).when(Boolean(mono), (el) => el.font_family(settings().font_family ?? "JetBrains Mono").text_size(12)).child(x);
     const dim = (x) => div().flex_none().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(6).text_size(12.5).text_color(t.dim).child(x);
     const names = new Set((s.agents ?? []).map((a) => a.name));
@@ -913,9 +920,9 @@ export default class SwarmTab extends View {
         h_flex().px(16).pb(8).gap(8).items_center().flex_wrap().text_size(12.5).child(div().text_color(t.foreground).child(`${gb(m.avail_kb ?? 0)} free of ${gb(m.total_kb)}`))
           .when(m.psi?.memory != null, (el) => el.child(this.chip(t, `memory pressure ${m.psi.memory}%`, m.psi.memory > 0 ? t.ansi3 : null)))
           .when(m.psi?.cpu != null, (el) => el.child(this.chip(t, `cpu ${m.psi.cpu}%`))).when(mm.swarm_kb >= 1048576, (el) => el.child(this.chip(t, `swarm ${gb(mm.swarm_kb)}`))),
-        div().mx(16).mb(8).h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(m.high ? t.blocked : t.working).w(`${Math.round(100 * (1 - (m.avail_kb ?? 0) / m.total_kb))}%`)),
+        div().mx(16).mb(8).h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(m.high ? t.blocked : t.working).w(`${Math.round(100 * (1 - (m.avail_kb ?? 0) / m.total_kb))}%`).when(this.anim, (el) => el.transition("width", 300))),
         ...mm.here.slice(0, 12).map((j, i) => row(`s-h-${i}`, [div().flex_none().w(110).truncate().font_medium().text_color(j.agent_ ? t.foreground : t.dim).child(j.agent_ ? j.agent : "other sessions"),
-          div().flex_none().w(56).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(j.agent_ ? t.ansi4 : t.dim).w(`${Math.max(3, (100 * (j.rss_kb ?? 0)) / most)}%`)),
+          div().flex_none().w(56).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(j.agent_ ? t.ansi4 : t.dim).w(`${Math.max(3, (100 * (j.rss_kb ?? 0)) / most)}%`).when(this.anim, (el) => el.transition("width", 300))),
           div().flex_none().w(52).text_right().child(gb(j.rss_kb ?? 0)),
           txt(j.command ? `${j.command} · ${gb(j.top_kb ?? 0)} · ${ago(j.elapsed_s ?? 0)}` : "its session only", t.dim, Boolean(j.command)),
           ...(j.peak_kb != null && j.peak_kb > (j.top_kb ?? 0) ? [this.chip(t, `peaks at ${gb(j.peak_kb)}`, t.working)] : [])], j.agent_ ? () => this.openAgent(j.agent) : null)),
@@ -1024,7 +1031,7 @@ export default class SwarmTab extends View {
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const when = (sec) => { const d = new Date(sec * 1000); return d.toDateString() === new Date().toDateString() ? hhmm(sec) : `${d.getDate()} ${MON[d.getMonth()]} ${hhmm(sec)}`; };
     const row = (id, kids, go) => h_flex().id(id).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
-      .cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => go()).children(kids);
+      .cursor_pointer().when(true, (el) => this.hov(t, el, id, 6)).on_click(() => go()).children(kids);
     const dim = (x) => div().flex_none().max_w(320).truncate().text_size(12).text_color(t.dim).child(x), none = (x) => div().px(16).pb(6).text_size(12.5).text_color(t.dim).child(x);
     const older = (id, what, label) => div().id(id).mx(16).mt(6).text_size(12).text_color(this.histLoading ? t.border : t.muted).cursor_pointer()
       .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => this.loadHistory(cx, what)).child(label);
@@ -1087,7 +1094,7 @@ export default class SwarmTab extends View {
         .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, args); }))
       .when(!args, (el) => el.text_color(t.border)).child(ch);
     const trow = (id, k, kids) => h_flex().id(id).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5)
-      .rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openTask(k.id))
+      .rounded(6).cursor_pointer().when(true, (el) => this.hov(t, el, id, 6)).on_click(() => this.openTask(k.id))
       .child(div().flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? "")).children(kids);
     const qOnly = Boolean(s.limits?.queue_only);
@@ -1271,14 +1278,34 @@ export default class SwarmTab extends View {
       : section === "landing" ? page(this.landingView(t, s, cx))
       : section === "system" ? page(this.systemView(t, s))
       : page(this.historyView(t, s, cx));
+    // II.4c: a section's content fades in (120 ms); a page pushes in from the right 24 px with a fade (160 ms), and Back
+    // brings the section in from the left.
+    const key = v.page?.agent ? `agent:${v.page.agent}` : Number.isInteger(v.page?.task) ? `task:${v.page.task}` : section;
+    const isPage = key !== section, back = !isPage && this.keyWas && this.keyWas !== section && /^(agent|task):/.test(this.keyWas);
+    const e = this.anim && this.ent.enter(`body:${key}`), from = isPage ? 24 : back ? -24 : 0;
+    this.keyWas = key;
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
       .when(Boolean(s.away), (el) => el.child(this.awayBanner(t, s)))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
       .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
-      .child(body);
+      .child(v_flex().id(`body-${key}`).w_full().flex_none().gap(10).child(body)
+        .when(this.anim, (el) => el.relative().left(e ? from : 0).opacity(e ? 0 : 1)
+          .transition("left", isPage || back ? 160 : 120).transition("opacity", isPage || back ? 160 : 120)));
   }
 
   render(cx) {
+    this.anim = animOn(shared("rw.animations"));
+    const el = this.draw(cx);
+    if (this.anim && this.ent.end()) cx.timer.after(20, (cx) => cx.notify());
+    return el;
+  }
+  // While a swarm is first read (II.4c): placeholder rows that pulse; without animations, the words.
+  reading(t) {
+    if (this.error || !this.anim) return div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…");
+    const bar = (w) => div().h(12).rounded(5).bg(t.hover).w(w).loop("opacity", { from: 1, to: 0.35, period: 1400 });
+    return v_flex().id("reading").w(560).gap(12).child(bar("100%")).child(bar("72%")).child(bar("86%")).child(bar("54%"));
+  }
+  draw(cx) {
     const t = theme(), s = this.s;
     // The view's swarm changed (another swarm's heading): read the new one at once.
     if (props()?.view) {
@@ -1288,7 +1315,7 @@ export default class SwarmTab extends View {
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } });
-      if (!this.s) return root.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
+      if (!this.s) return root.items_center().justify_center().child(this.reading(t));
       return root.child(this.view(t, this.s, cx));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
