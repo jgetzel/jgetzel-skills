@@ -1,13 +1,14 @@
 // The rework's pane header (swarm/herdr/UI-SPEC.md, slice 3), on every pane card: name, title, state, mark, then split
 // and close. Props from the app: { pane, terminal }. Click: focus the pane. The state's time is rw-rail's (shared).
 // A swarm agent's header reads its name and task; the communicator's "Communicator", its channel line and the Away
-// switch. The swarm tab's and Needs you's panes draw their cards on the ground: their header is empty ground.
+// switch; a swarm agent's name opens its page in the swarm view (II.3d). The swarm tab's and Needs you's panes draw
+// their cards on the ground: their header is empty ground.
 // With props { peek: { address, who, what } } it is the title bar of a prompt's terminal window (II.6 tier 1, peekWindow).
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, terminals, agents, spaces, props, run, theme, shared, home, exec, appHome, closeOverlay, layout } from "herdr";
-import { agentAt, line, looked, markOf, rowText, showAll, since, sumFor, viewShown } from "./tree.js";
+import { panes, terminals, agents, spaces, props, run, theme, shared, setShared, home, exec, appHome, closeOverlay, layout } from "herdr";
+import { agentAt, line, looked, markOf, rowText, showAll, showSwarm, since, sumFor, viewShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -84,7 +85,10 @@ export default class PaneHeader extends View {
     const state = m === "working" ? `working ${st}`.trim() : st;
     return h_flex().id(`pane-head-${p.pane}`).size_full().px(14).gap(8).items_center().bg(t.surface).text_size(13)
       .on_click(() => run("pane.focus", { pane: p.pane }))
-      .child(div().flex_none().max_w(200).truncate().font_semibold().text_color(t.foreground).child(name))
+      .child(div().id(`ph-name-${p.pane}`).flex_none().max_w(200).truncate().font_semibold().text_color(t.foreground)
+        .when(Boolean(a), (el) => el.cursor_pointer().hover((s) => s.underline()).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { cx.stop_propagation(); showSwarm(run, setShared, { folder: sum.folder, machine: sum.on ?? null, page: { agent: a.name, back: "tab" } }); }))
+        .child(name))
       .when(Boolean(what) && what !== name, (el) => el.child(div().flex_shrink_1().min_w(0).truncate().text_color(t.muted).child(what)))
       .when(Boolean(state), (el) => el.child(div().flex_none().text_color(m === "asks" ? t.blocked : t.dim).child(`· ${state}`)))
       .when(Boolean(m), (el) => el.child(mark(t, m)))

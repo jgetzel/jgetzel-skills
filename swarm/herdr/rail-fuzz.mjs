@@ -49,6 +49,10 @@ for (let i = 0; i < 2000; i++) {
     const c = T.closeOf({ pane: "p", tab: "a", mark: m }, [{ id: "a", panes: 1 }], name, what);
     assert.ok(ok1(c.ask.title, 90) && ok1(c.ask.detail, 300), JSON.stringify(c.ask).slice(0, 200));
   }
+  // an agent's event in its page's Latest (II.3d): one bounded line
+  const ev = T.overOf({ agents: [{ name: "a", events: [{ kind: pick(["push", "claim", "done", "end", pick(HOSTILE)]), ts: 1,
+    data: `${pick(HOSTILE)}${pick(HOSTILE)}`, branch: pick(HOSTILE), subject: pick(HOSTILE), path: pick(HOSTILE) }] }] }).agents[0].events[0];
+  assert.ok(ok1(T.evText(ev), 300), T.evText(ev).slice(0, 200));
   // a prompt's terminal window (II.6 tier 1) titles itself with them and hc's msg: bounded lines
   const pk = T.peekWindow("t1", pick(HOSTILE), pick(HOSTILE)).layout.children[0].content.props.peek;
   assert.ok(ok1(pk.who, 80) && ok1(pk.what, 160), JSON.stringify(pk).slice(0, 200));
@@ -74,7 +78,7 @@ const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }],
 assert.deepEqual([ov.agents.length, ov.tasks.length, ov.messages, ov.limits, ov.tasks[0].title], [1, 1, [], null, null]);
 for (let i = 0; i < 3000; i++) {
   const j = rnd() < 0.5 ? junk() : { ...junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk(), ci: junk(),
-    watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk() };
+    watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk(), locks: junk() };
   const s = T.sumOf(j), o = T.overOf(j);
   if (s) {
     for (const a of s.agents) assert.ok(typeof a.name === "string" && (a.hc === null || typeof a.hc === "string"));
@@ -87,6 +91,12 @@ for (let i = 0; i < 3000; i++) {
     T.asksOf(o); T.agentRows(o); T.boardRows(o);
     for (const n of T.needsOf(o)) assert.ok(["watchd", "ci", "question", "prompt", "hung", "memory"].includes(n.kind));
     for (const r of o.ci?.runs ?? []) assert.ok(r.url === null || r.url.startsWith("https://"));
+    // the agent page (II.3d): its messages, events and locks are lists of objects, each event one bounded line
+    for (const l of o.locks) assert.ok(l && typeof l === "object" && (l.path === null || typeof l.path === "string"));
+    for (const a of o.agents) {
+      assert.ok(Array.isArray(a.messages) && Array.isArray(a.events));
+      for (const e of a.events) assert.ok(ok1(T.evText(e), 600), T.evText(e).slice(0, 100));
+    }
   }
 }
 
