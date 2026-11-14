@@ -335,6 +335,8 @@ def test_state_summary (t : T) : IO Unit := do
   eq (toJson needs) (json% [{"kind": "question", "task": 2, "agent": "q", "question": "which?", "title": "two"},
     {"kind": "prompt", "agent": "p"}, {"kind": "hung", "agent": "s"},
     {"kind": "ci", "run": 7, "url": "u", "created": "2026-11-08T10:00:00Z"}])
+  eq (s.f "ci") (json% {"status": "completed", "conclusion": "failure"})
+  eq (s.f "away") (json% false)
   for k in ["tasks", "events", "messages", "machine", "watchd"] do
     if s.f k != .null then fail s!"summary sent {k}"
   unless ((s.f "rss_kb").getInt?.toOption.getD 0) > 0 do fail s!"summary rss_kb {s.f "rss_kb"}"

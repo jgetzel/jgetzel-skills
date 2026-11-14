@@ -153,6 +153,11 @@ export const FOLD = 8; // past this many agents, a swarm's working and idle work
 // A swarm agent's terminal address: the summary's `hc` is on the swarm's machine `on`.
 const addrOn = (hc, on) => (on && !hc.includes("/") ? `${on}/${hc}` : hc);
 export const swarmAddrs = (sum, on) => new Set((sum?.agents ?? []).filter((a) => a.hc).map((a) => addrOn(a.hc, on)));
+// The summary's agent whose terminal is `address` (a rail summary carries its machine as `on`), or null.
+export const agentAt = (sum, address) => (sum?.agents ?? []).find((a) => a.hc && addrOn(a.hc, sum.on) === address) ?? null;
+// main's CI word from a run {status, conclusion}: green, red (or the conclusion), checks run; null for no run.
+export const ciWord = (r) => (!r ? null : r.status !== "completed" ? "checks run" : r.conclusion === "success" ? "green"
+  : r.conclusion === "failure" ? "red" : r.conclusion ?? "?");
 // Space s's swarm among the rail's summaries (shared "rw-rail.swarms"): the one whose communicator's space it is, else
 // one run in its folder whose space isn't another of `ids` (spaces()' ids). A space's folder can be wrong (#175).
 export function sumFor(sums, s, ids) {

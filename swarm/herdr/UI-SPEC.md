@@ -126,6 +126,11 @@ Each pane is a rounded card with a header: name, title, state, mark.
   "coming" in the guide.
 - Built in slice 3: the `main` block's pane look (radius 12, gap 10, surface, accent focus, `lone`) with a 38 px
   `rw-pane` header. The header's time is rw-rail's stamp, which the rail shares as `shared("rw-rail.changed")`.
+- Look D (board #177): a swarm agent's header reads its name and task; the communicator's "Communicator  ll-comms ·
+  your channel to the swarm" with the Away switch at its right. The swarm tab's and Needs you's panes draw cards on
+  the ground: their header is empty ground. The pane look is one for every pane, so their frame's border stays; the
+  pills read a swarm agent's name and "Communicator"; the bar's subtitle for a swarm's space is "This computer · main
+  green" from the summary's `ci`; a hung swarm agent is a toast at the rail's foot with what it holds, Nudge and Open.
 
 ### Swarm block in the rail (rail board C and D, screens 2 to 4)
 
@@ -166,7 +171,9 @@ answer field, the agent table, the board, staffing, messages, landing.
   a minute. Needs you lists questions with an answer field, agents stopped at a prompt and hung agents, each with Open
   its terminal. Board shows the tasks left (8, then a count), staffing (auto-spawn, max) and New task. Messages are
   the latest three. The Done and Dropped links, the Activity link and Landing's files-not-on-main line are left out:
-  the rework has no screen for them yet.
+  the rework has no screen for them yet. Look D (board #177): Done and Dropped links in the board's heading list the
+  newest of those tasks in the board's place (`--view board`, read on click); the Away switch moved to the communicator's
+  pane header and stays here only while the communicator has no pane in the window.
 
 ### An agent needs you (screen 3)
 
@@ -287,7 +294,8 @@ In swarm-lean, since the CLI is being ported there.
    the human. No ended agents, events or messages.
    Built in slice 5: `counts`, `agents` (`name`, `hc`, `status`, `task` {id, title}, `idle_s`, `hung`), `space` (meta's Herdr space), `needs` (kinds
    `question`, `prompt`, `hung`, `ci`, `memory`, as the swarm panel's Needs you), `comms`, `active`. `idle_s` is the
-   hook's `last_active`, not hc's lookup, so it stays one db read.
+   hook's `last_active`, not hc's lookup, so it stays one db read. Look D (board #177) adds `ci` (the latest run on the
+   base, {`status`, `conclusion`}, or null) and `away` (true while the user is away).
 2. A list of the swarms on this machine, with repo folder, tag and db path.
    State is per repo today and nothing lists them, so this needs a small
    registry that watchd writes when it starts and clears when it ends.
