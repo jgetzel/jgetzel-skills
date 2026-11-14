@@ -22,6 +22,18 @@ personal mods, and we change the swarm CLI. Nothing here edits the app.
   3 s while shown and something is due, 30 s while a folder watch is quiet,
   10 s for another machine.
 
+## How to check
+
+Shoot the rework in shot.sh's sandbox with the real preset, never the person's window:
+`swarm/herdr/shot.sh --rework real out.png` (`--before CMD` then clicks or reads in it). Real is about the user's
+window: ten spaces and 15 agents on this computer, two swarms made as `swarm spawn` makes them (a joined
+communicator, a watchd terminal with no pane, workers that are children of the communicator, of watchd or of an ended
+terminal, one asking, one hung, four ended), the spaces' folders off as in the user's window, a second machine with
+spaces of the same names and an unreachable third. `--rework large` is the same with a swarm of 24 live and 110
+ended; `--rework small` and rail-demo.sh's flags are the first demo, kept for the older shots. Compare the shot with
+the canvas board for what you changed. Shots: `shots/real-preset.png`, `shots/large-preset.png`;
+`shots/real-preset-pre175.png` is real on the commit before #175's fix, with no swarm block, as the user saw it.
+
 ## Where the facts come from
 
 Checked on 2026-11-13 by reading the app's guide (`~/.config/herdr-app/AGENTS.md`),
