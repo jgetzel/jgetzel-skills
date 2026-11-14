@@ -69,7 +69,8 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, urgent: Bx }), 200) }); // --agent: its own messages
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
-  claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx });
+  claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
+  claim_ctx: Nx, done_ctx: Nx });
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: Ax, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx }),
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
@@ -451,6 +452,28 @@ export function boardRows(s) {
     return { k, state, tone, rank: { blocked: 0, muted: 1, foreground: 2, dim: 3 }[tone] };
   });
   return rows.sort((x, y) => x.rank - y.rank || x.k.id - y.k.id);
+}
+
+// The queue (II.3e), in order: each task with why it isn't staffed next ("next" for the first that can start).
+export function queueRows(s) {
+  const tasks = s.tasks ?? [], undone = new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
+  let first = true;
+  return tasks.filter((k) => k.qpos != null && undone.has(k.id)).sort((x, y) => x.qpos - y.qpos).map((k) => {
+    const after = (k.deps ?? []).filter((d) => undone.has(d));
+    const why = k.state === "blocked" ? "waits on you" : k.state === "claimed" ? `${k.owner ?? "someone"} has it` : k.hold ? `held: ${k.hold}`
+      : after.length ? `waits on ${after.map((d) => `#${d}`).join(", ")}` : first ? "next" : "ready";
+    if (why === "next") first = false;
+    return { k, why };
+  });
+}
+// Moving a queued task (II.3e): to the front, one up, one down; null when it can't go that way.
+export function moveArgs(q, i, how) {
+  const id = String(q[i]?.k.id);
+  if (!q[i]) return null;
+  if (how === "front") return i > 0 ? ["queue", "add", id, "--front"] : null;
+  if (how === "up") return i > 0 ? ["queue", "add", id, "--before", String(q[i - 1].k.id)] : null;
+  if (how === "down") return i < q.length - 1 ? ["queue", "add", id, "--after", String(q[i + 1].k.id)] : null;
+  return null;
 }
 
 // An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the

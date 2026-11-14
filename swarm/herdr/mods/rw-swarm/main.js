@@ -11,7 +11,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
-import { FOLD, SECTIONS, addrOf, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, queueRows, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, showAll, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -47,6 +47,12 @@ export default class SwarmTab extends View {
     this.holdWhy.on("submit", (_e, cx) => this.hold(cx));
     this.afterIn = InputState.new({ placeholder: "Task numbers, e.g. 3, 5" });
     this.afterIn.on("submit", (_e, cx) => this.after(cx));
+    // the Board's new-task form and its done list's filter (II.3e)
+    this.newBody = TextareaState.new({ placeholder: "Description (markdown)", rows: 3 });
+    this.newAfter = InputState.new({ placeholder: "After #…" });
+    this.pastFilter = InputState.new({ placeholder: "Filter" });
+    this.pastFilter.on("change", (_e, cx) => cx.notify());
+    this.form = { p: 2, model: null, effort: null, queue: false, hold: false };
     this.ended = null; // the ended agents, read when you open their line
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -608,6 +614,108 @@ export default class SwarmTab extends View {
         .children(list.length ? list : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Nothing yet")]));
   }
 
+  // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
+  // `task add`, then queue and hold as the form says; its id is in "task #N".
+  addFull(cx) {
+    const title = this.title.value().trim(), body = this.newBody.value().trim(), after = this.newAfter.value().replace(/[#\s]/g, ""), f = this.form;
+    if (!title || this.busy || !/^(\d+(,\d+)*)?$/.test(after)) return;
+    const { cwd, on } = this.where();
+    this.busy = true; this.flash = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await swarm(cwd, on, ["task", "add", ...(body ? [`--body=${body}`] : []), ...(after ? [`--after=${after}`] : []), `--priority=${f.p}`,
+          ...(f.model ? [`--model=${f.model}`] : []), ...(f.effort ? [`--effort=${f.effort}`] : []), "--", title]);
+        if (r.code !== 0) throw new Error(r.stderr || r.stdout);
+        const id = /task #(\d+)/.exec(r.stdout)?.[1];
+        if (id && f.queue) await swarm(cwd, on, ["queue", "add", id]);
+        if (id && f.hold) await swarm(cwd, on, ["task", "hold", "--why=waits for your go", id]);
+        this.title.set_value(""); this.newBody.set_value(""); this.newAfter.set_value(""); this.form = { ...f, queue: false, hold: false };
+      } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, "") || "task add failed"; }
+      this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
+    });
+  }
+  // `--view board`'s newest done and dropped, read once the Board shows.
+  loadPast(cx) {
+    if (this.pastTasks || this.pastLoading) return;
+    const { cwd, on } = this.where();
+    this.pastLoading = true;
+    cx.spawn(async (cx) => {
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]); if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? []; }
+      catch {}
+      this.pastLoading = false; cx.notify();
+    });
+  }
+  boardView(t, s, cx) {
+    if (cx) this.loadPast(cx);
+    const q = queueRows(s), rows = boardRows(s), queued = new Set(q.map((r) => r.k.id)), wide = (this.width ?? 0) >= 1100;
+    const icon = (id, ch, args) => div().id(id).w(20).h(20).flex().items_center().justify_center().rounded(5).text_size(12)
+      .when(Boolean(args), (el) => el.text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, args); }))
+      .when(!args, (el) => el.text_color(t.border)).child(ch);
+    const trow = (id, k, kids) => h_flex().id(id).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5)
+      .rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openTask(k.id))
+      .child(div().flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? "")).children(kids);
+    const qOnly = Boolean(s.limits?.queue_only);
+    const queue = this.card(t, "b-queue").pb(8)
+      .child(this.head(t, `Queue · ${q.length}`, "staffed first, in this order", h_flex().id("b-qonly").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
+        .on_click((_e, cx) => this.act(cx, ["limits", "--queue-only", qOnly ? "off" : "on"]))
+        .child(div().size(13).rounded(3).border(1).border_color(qOnly ? t.working : t.border).bg(qOnly ? t.working : t.background)).child("Queue only")))
+      .children(q.length ? q.map((r, i) => trow(`bq-${r.k.id}`, r.k, [
+        this.chip(t, line(r.why, 60), r.why === "next" ? t.ansi2 : r.why === "waits on you" ? t.blocked : t.muted),
+        h_flex().flex_none().gap(2).child(icon(`bq-f-${r.k.id}`, "⤒", moveArgs(q, i, "front"))).child(icon(`bq-u-${r.k.id}`, "↑", moveArgs(q, i, "up")))
+          .child(icon(`bq-d-${r.k.id}`, "↓", moveArgs(q, i, "down"))).child(icon(`bq-x-${r.k.id}`, "✕", ["queue", "rm", String(r.k.id)]))]))
+        : [div().px(16).pb(4).text_size(12.5).text_color(t.dim).child("Nothing queued: auto-spawn staffs by priority")]);
+    const agentOf = (n) => s.agents?.find((a) => a.name === n);
+    const group = (id, title, list, kids, note) => list.length ? this.card(t, id).pb(8).child(this.head(t, `${title} · ${list.length}`, note))
+      .children(list.map((r) => trow(`${id}-${r.k.id}`, r.k, kids(r)))) : null;
+    const prio = (k) => (k.priority != null ? [this.chip(t, `P${k.priority}`)] : []);
+    const plus = (k) => (queued.has(k.id) ? [] : [div().id(`bqa-${k.id}`).flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, ["queue", "add", String(k.id)]); }).child("+ Queue")]);
+    const by = (tn) => rows.filter((r) => r.tone === tn), waiting = by("dim");
+    const left = [queue,
+      group("b-you", "Waiting on you", by("blocked"), (r) => [div().flex_none().text_size(12).text_color(t.blocked).child(`${r.k.owner ?? ""}${r.k.blocked_s ? ` · ${dur(r.k.blocked_s * 1000)}` : ""}`)]),
+      group("b-prog", "In progress", by("muted"), (r) => [...prio(r.k), div().flex_none().max_w(200).truncate().text_size(12).text_color(agentOf(r.k.owner)?.stay_sign === "hung" ? t.blocked : t.dim)
+        .child(`${r.k.owner ?? ""}${r.k.lease_left != null ? ` · ${r.k.lease_left > 0 ? `lease ${dur(r.k.lease_left * 1000)}` : "lease expired"}` : ""}`)]),
+      group("b-ready", "Ready", by("foreground"), (r) => [...prio(r.k), ...plus(r.k)]),
+      this.showWaiting ? group("b-wait", "Waiting on other tasks or held", waiting, (r) => [div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child(r.k.hold ? `held: ${r.k.hold}` : r.state), ...plus(r.k)]) : null,
+      waiting.length && !this.showWaiting ? div().id("b-wait-show").px(4).text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { this.showWaiting = true; cx.notify(); }).child(`${waiting.length} waiting on other tasks or held ›`) : null].filter(Boolean);
+    const f = this.form, seg = (id, opts, v, set) => h_flex().flex_none().gap(2).children(opts.map(([val, label]) => div().id(`${id}-${label}`).px(7).h(24).flex().items_center()
+      .rounded(6).text_size(12).cursor_pointer().bg(v === val ? t.selected : t.background).text_color(v === val ? t.foreground : t.muted).border(1).border_color(t.border)
+      .on_click((_e, cx) => { set(val); cx.notify(); }).child(label)));
+    const tick = (id, label, on, flip) => h_flex().id(id).gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { flip(); cx.notify(); })
+      .child(div().size(13).rounded(3).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)).child(label);
+    const form = this.card(t, "b-new").px(16).pb(12).gap(8).child(this.head(t, "New task", "Enter adds").px(0))
+      .child(this.field(t, "b-title", this.title))
+      .child(div().px(10).py(6).rounded(9).border(1).border_color(t.border).bg(t.background).child(Textarea.new(this.newBody).h(64).text_size(12.5)))
+      .child(h_flex().gap(8).items_center().flex_wrap().child(div().w(120).child(this.field(t, "b-after", this.newAfter)))
+        .child(seg("b-p", [[0, "P0"], [1, "P1"], [2, "P2"], [3, "P3"]], f.p, (v) => { f.p = v; }))
+        .child(seg("b-m", [[null, "model"], ["opus", "opus"], ["sonnet", "sonnet"], ["haiku", "haiku"]], f.model, (v) => { f.model = v; }))
+        .child(seg("b-e", [[null, "effort"], ["low", "low"], ["medium", "med"], ["high", "high"], ["xhigh", "xhigh"]], f.effort, (v) => { f.effort = v; })))
+      .child(h_flex().gap(14).items_center().child(tick("b-q", "Add to queue", f.queue, () => { f.queue = !f.queue; }))
+        .child(tick("b-h", "Hold", f.hold, () => { f.hold = !f.hold; })).child(div().flex_1())
+        .child(this.btn(t, "b-add", this.busy ? "Adding…" : "Add task", (cx) => this.addFull(cx), true)));
+    const which = this.pastKind ?? "done", pq = this.pastFilter.value().trim().toLowerCase();
+    const past = (this.pastTasks ?? []).filter((k) => k.state === which && (!pq || `#${k.id} ${k.title} ${k.owner ?? ""}`.toLowerCase().includes(pq))).sort((x, y) => y.id - x.id);
+    const nDone = (this.pastTasks ?? []).filter((k) => k.state === "done").length, nDrop = (this.pastTasks ?? []).filter((k) => k.state === "dropped").length;
+    const ptab = (id, label) => div().id(`bp-${id}`).cursor_pointer().text_color(which === id ? t.foreground : t.dim).hover((st) => st.text_color(t.foreground))
+      .on_click((_e, cx) => { this.pastKind = id; cx.notify(); }).child(label);
+    const done = this.card(t, "b-done").pb(8)
+      .child(h_flex().px(16).pt(12).pb(8).gap(12).items_center().text_size(13).child(ptab("done", `Done · ${s.counts?.done ?? nDone}`)).child(ptab("dropped", `Dropped · ${s.counts?.dropped ?? nDrop}`))
+        .child(div().flex_1()).child(div().w(160).child(this.field(t, "b-pf", this.pastFilter))))
+      .children(!this.pastTasks ? [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Reading…")]
+        : past.length ? past.slice(0, 40).map((k) => trow(`bd-${k.id}`, k, [
+          ...(k.pr != null ? [this.chip(t, `PR #${k.pr}`, t.accent)] : []),
+          div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child([k.owner, k.work_s != null ? dur(k.work_s * 1000) : null,
+            k.done_ctx != null ? kilo(Math.max(0, k.done_ctx - (k.claim_ctx ?? 0))) : null].filter(Boolean).join(" · "))]))
+        : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child(`Nothing ${which}`)])
+      .when(past.length > 40, (el) => el.child(div().px(16).pt(4).text_size(12).text_color(t.dim).child(`${past.length - 40} more: filter to find one`)));
+    const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
+    return wide ? h_flex().w_full().max_w(1500).items_start().gap(10).child(col("b-left", left)).child(col("b-right", [form, done]))
+      : v_flex().w_full().gap(10).children([...left, form, done]);
+  }
+
   // ---- the task page (II.3c) ---------------------------------------------------------------------------------------
   openTask(id) { setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), page: { task: id } }); }
   taskLink(t, id, label) {
@@ -720,13 +828,13 @@ export default class SwarmTab extends View {
         .children(list.length ? list : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child(x ? "Nothing yet" : "…")]));
   }
 
-  view(t, s) {
+  view(t, s, cx) {
     const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", cols = (this.width ?? 0) >= 1900 ? 3 : 2;
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
     const body = v.page?.agent ? page(this.agentPage(t, s, v.page)) : Number.isInteger(v.page?.task) ? page(this.taskPage(t, s, v.page))
       : section === "overview" ? this.overview(t, s, cols)
       : section === "agents" ? page(this.agents(t, s))
-      : section === "board" ? page(this.board(t, s))
+      : section === "board" ? this.boardView(t, s, cx)
       : section === "activity" ? page(this.messages(t, s))
       : section === "landing" ? page(this.landing(t, s))
       : section === "system" ? page(this.machineCard(t, s))
@@ -742,13 +850,13 @@ export default class SwarmTab extends View {
     // The view's swarm changed (another swarm's heading): read the new one at once.
     if (props()?.view) {
       const k = JSON.stringify(this.where());
-      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.refresh(cx); this.refreshPrs(cx); }
+      if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } });
       if (!this.s) return root.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
-      return root.child(this.view(t, this.s));
+      return root.child(this.view(t, this.s, cx));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
