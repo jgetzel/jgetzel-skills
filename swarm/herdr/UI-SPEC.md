@@ -110,6 +110,9 @@ bar; machine load is at the foot of the rail.
 - Buildable: mod `rw-bar`, layout root `"titlebar":"none"`. On Linux the mod
   draws the window buttons itself (`window().buttons`).
 - Reordering pills by drag has to be built by hand, as the shipped tabs mod does.
+- Built in slice 2. Swarm tasks blocked on the human join the count with the swarm block (slice 6), which reads the
+  summary view. `window().buttons` is false in shot.sh's sandbox (Xvfb has no window manager), so its shot forces the
+  buttons on.
 
 ### Panes as cards (screen 1)
 
@@ -269,7 +272,7 @@ Each is one PR and usable on its own once the layout is switched to.
 
 ## Still unchecked
 
-- Everything marked unchecked above; of the mods here only `rw-rail` has been run.
+- Everything marked unchecked above; of the mods here only `rw-rail` and `rw-bar` have been run.
 - Cost of `exec` polling for several swarms at once.
 - Whether `layout.switch` back and forth keeps each layout's pane state; the
   guide says switching starts the layout's mods fresh.

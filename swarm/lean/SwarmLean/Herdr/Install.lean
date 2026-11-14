@@ -10,8 +10,9 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-  mods/rw-rail          <- copy of swarm/herdr/mods/rw-rail, the rework's rail (swarm/herdr/UI-SPEC.md)
-  layouts/rework.json   <- jgetzel.json with rw-rail in place of the spaces and agents lists
+  mods/rw-rail, rw-bar  <- copies of swarm/herdr/mods/rw-*, the rework's rail and title bar (swarm/herdr/UI-SPEC.md)
+  layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists and no
+                           brand block, tab bar or status bar
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
 
@@ -178,13 +179,26 @@ partial def edit (j : Json) : Json := Id.run do
   if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map edit))
   return j
 
-/-- The rework layout: the jgetzel layout with one rw-rail block in place of the sidebar's spaces and agents lists. -/
-partial def rework (j : Json) : Json := Id.run do
+/-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, and no
+brand block, tab bar or status bar (rw-bar replaces them). -/
+partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
   let mut j := j
-  if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map rework))
+  if let some (.arr cs) := Json.field j "children" then
+    let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
+    j := j.setObjVal! "children" (.arr (keep.map reworkBody))
   return j
+
+/-- The rework layout (swarm/herdr/UI-SPEC.md): rw-bar across the top, then the jgetzel layout's row as `body`. -/
+def rework (lay : Json) : Json :=
+  let bar := Json.mkObj [("id", "bar"), ("type", "block"), ("size", Json.mkObj [("px", 52)]), ("window_drag", true),
+    ("content", Json.mkObj [("mod", "rw-bar")])]
+  let body := match reworkBody lay with
+    | .obj kv => Json.obj (["titlebar", "traffic_lights", "terminal_padding"].foldl (·.erase ·) kv) |>.setObjVal! "id" "body"
+    | j => j
+  (lay.setObjVal! "type" "column").setObjVal! "children" (.arr #[bar, body]) |> fun j =>
+    match j with | .obj kv => .obj (kv.erase "divider") | j => j
 
 def exists_ (p : String) (follow := true) : IO Bool := do
   try
@@ -280,20 +294,23 @@ def main : IO UInt32 := do
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
-  -- A copy, like the calendar's: hot reload and svg() don't follow a symlinked mod dir.
+  -- Copies, like the calendar's: hot reload and svg() don't follow a symlinked mod dir. rw-bar's tree.js is a link to
+  -- rw-rail's (mods can't import across mod folders), copied as a file.
   let rail := mods ++ "/rw-rail"
-  if ← exists_ rail false then discard <| run ["rm", "-rf", rail]
-  IO.FS.createDirAll rail
-  for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/rw-rail") do
-    if !e.fileName.startsWith "." then copy e.path.toString rail
-  IO.println s!"wrote {rail}"
+  let bar := mods ++ "/rw-bar"
+  for m in [rail, bar] do
+    if ← exists_ m false then discard <| run ["rm", "-rf", m]
+    IO.FS.createDirAll m
+    for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/" ++ basename m) do
+      if !e.fileName.startsWith "." then copy e.path.toString m
+    IO.println s!"wrote {m}"
   let out := home ++ "/layouts/rework.json"
   IO.FS.writeFile (out ++ ".tmp") (Json.encode (rework lay))
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
   if version.isSome then
-    for m in [tabs, agents, cal, rail] do
+    for m in [tabs, agents, cal, rail, bar] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 

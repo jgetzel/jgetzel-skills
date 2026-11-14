@@ -1,6 +1,7 @@
-// node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks) from made-up Herdr data.
+// node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks) and rw-bar's pills and Needs you list from
+// made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -75,4 +76,19 @@ assert.equal(stamp(ch, [R("t1", "idle", 267)], 600), false);
 assert.equal(stamp(ch, [R("t1", "done", 268)], 700), true);
 assert.equal(ch.t1.at, 700);
 assert.equal(stamp(ch, [R("s", "prompt", 0)], 800), false);
+
+// rw-bar: Needs you counts blocked and error agents, on any machine and with or without a pane; never a shell or an
+// ended terminal.
+const needs = [...terms, T("s1", { status: "blocked", program: sh }), T("t9", { status: "blocked", state: "finished" })];
+assert.deepEqual(needsYou(needs).map((t) => t.address), ["t4", "t8"]);
+// A pill speaks for the agent whose status is its tab's, else its first agent, else its first terminal.
+const tabPs = [{ tab: "x", terminal: "t1" }, { tab: "x", terminal: "t2" }, { tab: "x", terminal: "t5" }, { tab: "x", terminal: null }];
+assert.equal(pillOf({ id: "x", status: "working" }, tabPs, byAddr).address, "t2");
+assert.equal(pillOf({ id: "x", status: null }, tabPs, byAddr).address, "t2");
+assert.equal(pillOf({ id: "x", status: null }, [tabPs[0]], byAddr).address, "t1");
+assert.equal(pillOf({ id: "y", status: null }, tabPs, byAddr), null);
+const zsh = T("z", { argv: ["/bin/zsh"], program: sh, foreground: { argv: ["npm", "run", "dev"], cwd: "/h/w" } });
+assert.deepEqual(rowText(zsh, "run", null, "/h"), { name: "zsh", what: "npm run dev" });
+assert.deepEqual(rowText(zsh, "prompt", null, "/h"), { name: "zsh", what: "~/w" });
+assert.deepEqual(rowText(T("c", { name: "ll-1", title: "fix it", program: { key: "claude" } }), "working", null, "/h"), { name: "ll-1", what: "fix it" });
 console.log("rail-test: ok");

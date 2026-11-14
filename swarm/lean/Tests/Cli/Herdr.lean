@@ -34,15 +34,20 @@ def test_install_main_path (t : T) : IO Unit := do
   for (_, rep) in Herdr.Install.tabsPatch do has tabs rep
   let agents := (← slurp (h ++ "/mods/jgetzel-agents/main.js")).getD ""
   for (_, rep) in Herdr.Install.agentsPatch do has agents rep
-  let layout (lists : String) := Json.parse ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"jgetzel-tabs\"}}," ++
-    lists ++ ",{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
+  let panel := ",{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
     "\"children\":[{\"id\":\"panel-body\",\"children\":[{\"id\":\"files\"},{\"id\":\"swarm\",\"type\":\"block\"," ++
-    "\"content\":{\"mod\":\"swarm\"}},{\"id\":\"calendar\",\"type\":\"block\",\"content\":{\"mod\":\"calendar\"}}]}]}]}") |>.toOption.get!
+    "\"content\":{\"mod\":\"swarm\"}},{\"id\":\"calendar\",\"type\":\"block\",\"content\":{\"mod\":\"calendar\"}}]}]}"
+  let layout (lists : String) := Json.parse ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"jgetzel-tabs\"}}," ++
+    lists ++ panel ++ "]}") |>.toOption.get!
   let some lay := Json.decode ((← slurp (h ++ "/layouts/jgetzel.json")).getD "") | fail "layout is not JSON"
   eq lay (layout "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"jgetzel-agents\"}}]}")
   let some rw := Json.decode ((← slurp (h ++ "/layouts/rework.json")).getD "") | fail "rework layout is not JSON"
-  eq rw (layout "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}")
+  eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
+    "\"size\":{\"px\":52},\"window_drag\":true,\"content\":{\"mod\":\"rw-bar\"}},{\"id\":\"body\",\"children\":[" ++
+    "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++ panel ++ "]}]}") |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
+  -- rw-bar's tree.js is a link to rw-rail's in the checkout, and a file in the copy.
+  unless (← System.FilePath.symlinkMetadata (h ++ "/mods/rw-bar/tree.js")).type == .file do fail "no rw-bar copy"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")
   eq (← IO.FS.realPath (h ++ "/mods/swarm")).toString (← IO.FS.realPath ((← swarmDir) ++ "/herdr/mods/swarm")).toString
   unless ← System.FilePath.pathExists (h ++ "/mods/calendar/feed.js") do fail "no calendar copy"
