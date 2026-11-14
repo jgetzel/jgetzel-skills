@@ -240,4 +240,18 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(overOf({ away: null }).away, false);
   assert.equal(sumOf({ away: { since: 1 }, brand_new: true }).brand_new, true);
 }
+// The swarm view's Needs you (Part II.3): watchd down, red main with its fixer, the asks, low memory; in that order.
+{
+  const { needsOf } = await import("./mods/rw-rail/tree.js");
+  const o = overOf({ active: true, watchd: { alive: false }, machine: { high: true, line: "machine: 2/94G" },
+    ci: { red_streak: 2, runs: [{ id: 9, status: "in_progress" }, { id: 8, status: "completed", conclusion: "failure", url: "javascript:x" }] },
+    tasks: [{ id: 1, state: "claimed", title: "main red: fix it", owner: "ll-2" }, { id: 2, state: "blocked", owner: "ll-3", title: "q", question: "?" }],
+    agents: [{ name: "ll-4", status: "idle", stay_sign: "hung" }], limits: { queue_only: true } });
+  const n = needsOf(o);
+  assert.deepEqual(n.map((x) => x.kind), ["watchd", "ci", "question", "hung", "memory"]);
+  assert.equal(n[1].run.id, 8); assert.equal(n[1].run.url, null); assert.equal(n[1].reds, 2); assert.equal(n[1].fixer.id, 1);
+  assert.equal(n[4].line, "2/94G");
+  assert.equal(o.limits.queue_only, true);
+  assert.deepEqual(needsOf(overOf({ active: true, watchd: { alive: true }, ci: { red_streak: 0 } })), []);
+}
 console.log("rail-test: ok");

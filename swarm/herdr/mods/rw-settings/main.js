@@ -5,7 +5,7 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, theme, shared, setShared, terminals, panes, spaces, props, openOverlay, updates, layout, window, appHome } from "herdr";
+import { run, theme, shared, setShared, terminals, panes, spaces, props, openOverlay, updates, layout, window, appHome, keys } from "herdr";
 import Settings, { SECTIONS } from "./app.js";
 import { needsYou, colorsOf, line } from "./tree.js";
 
@@ -138,6 +138,14 @@ export default class RwSettings extends Settings {
         core ? "Change" : "Default", this.coreInput, core));
   }
 
+  // The palette key as bound (as workspace-status shows it).
+  hint() {
+    const mod = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
+    const b = keys().find((k) => k.section === "global" && k.action === "app.palette");
+    const parts = b && b.keys.endsWith("--") ? [...b.keys.slice(0, -2).split("-"), "-"] : b?.keys.split("-");
+    return parts ? parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("") : "Commands";
+  }
+
   footer(t) {
     const narrow = (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
     const root = layout(), panel = find(root, "panel");
@@ -149,7 +157,11 @@ export default class RwSettings extends Settings {
       .when(!narrow, (el) => el.child(label));
     return v_flex().size_full().bg(t.chrome).px(8).pt(4).pb(8).text_size(13)
       .child(row("settings", "settings", "Settings", false, () => openOverlay({ mod: "rw-settings", kind: "dialog", width: 860, height: 620 }))
-        .when(Boolean(updates().app.ready), (el) => el.child(div().size(6).rounded_full().bg(t.accent))))
+        .when(Boolean(updates().app.ready), (el) => el.child(div().size(6).rounded_full().bg(t.accent)))
+        // The palette's key, quietly (the user asked it off the bar); it opens the palette.
+        .when(!narrow, (el) => el.child(div().flex_1()).child(div().id("palette").px(6).rounded(6).text_size(11).text_color(t.dim)
+          .hover((s) => s.bg(t.input).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); run("app.palette"); }).child(this.hint()))))
       // The calendar panel's toggle (Part II.2), pressed while it shows; "calendar.opened" tells the panel to animate in.
       .when(cal, (el) => el.child(row("calendar", "mods/calendar/calendar.svg", "Calendar", false, () => {
         if (calOn) return run("layout.hide", { id: "panel" });
