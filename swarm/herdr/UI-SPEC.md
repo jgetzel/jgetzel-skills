@@ -199,6 +199,14 @@ count; opening it lists them read-only.
   brings it back when shown or when its agent needs you, which is the wanted
   behaviour.
 - Buildable. Unchecked: `tab.settle` on 20 tabs at once.
+- Built in slice 9: past 8 workers (the rail block's fold) the swarm tab groups the agents under a filter that also
+  narrows the board, adds model and PR columns, and shows the board as counts and the next 5 tasks in auto-spawn's
+  order (queue, priority, id; not main-red first). The ended line counts every ended agent; opening it reads
+  `state --view agents`, which sends the newest 60. Not drawn: the ended line's "landed / ended by you" split and
+  "today" (no field says how an agent ended), Pause, and Landing's counts. The rail puts away (`tab.settle`) each tab
+  that holds only folding workers unless it is shown; showing one counts its agent as opened. It brings back a put-away
+  tab whose worker asks or is hung, since Herdr does so only for a terminal's own prompt. The bar draws the put-away
+  tabs as one "N more" pill where the last of them sits; it shows the swarm tab. 19 tabs settle at once in the shot.
 
 ### Two swarms (screen 5)
 
