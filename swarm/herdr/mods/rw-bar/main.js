@@ -6,8 +6,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
-import { markOf, needsYou, pillOf, questionsOf, rowText } from "./tree.js";
+import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
+import { looked, markOf, needsYou, pillOf, questionsOf, rowText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -94,7 +94,7 @@ export default class Bar extends View {
     const sp = spaces();
     const space = sp.find((s) => s.active);
     const ps = panes();
-    const byAddr = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
+    const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
     const asks = needsYou([...byAddr.values()]);
     const needs = asks.length + questionsOf(shared("rw-rail.swarms"), new Set(asks.map((x) => x.address))).length;
     const w = window();

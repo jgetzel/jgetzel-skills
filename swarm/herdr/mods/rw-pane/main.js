@@ -3,8 +3,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, terminals, spaces, props, run, theme, shared, home } from "herdr";
-import { markOf, rowText, since } from "./tree.js";
+import { panes, terminals, agents, spaces, props, run, theme, shared, home } from "herdr";
+import { looked, markOf, rowText, since } from "./tree.js";
 import { mark } from "./marks.js";
 
 export default class PaneHeader extends View {
@@ -23,7 +23,7 @@ export default class PaneHeader extends View {
     const t = theme();
     const p = panes().find((x) => x.pane === props()?.pane);
     if (!p) return div();
-    const term = p.terminal ? terminals().find((x) => x.address === p.terminal) : null;
+    const term = p.terminal ? looked(terminals(), agents()).find((x) => x.address === p.terminal) : null;
     const m = term ? markOf(term, false) : null;
     const tab = spaces().flatMap((s) => s.tabs).find((x) => x.id === p.tab);
     const { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: p.mod === "rw-swarm" ? "Swarm" : p.mod === "rw-question" ? "Needs you" : p.title, what: "" };
