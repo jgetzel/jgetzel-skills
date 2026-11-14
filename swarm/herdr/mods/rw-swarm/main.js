@@ -10,8 +10,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout } from "herdr";
-import { FOLD, answerArgs, asksOf, agentRows, boardRows, dur, line, needsOf, nudgeArgs, openAsk, overOf, prsOf, sumFor, swarmShown } from "./tree.js";
+import { spaces, panes, terminals, exec, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay } from "herdr";
+import { FOLD, addrOf, answerArgs, asksOf, agentRows, boardRows, dur, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, sumFor, swarmShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -154,10 +154,20 @@ export default class SwarmTab extends View {
   focus(name, cx) {
     const hc = this.s?.agents?.find((a) => a.name === name)?.hc, { cwd, on } = this.where();
     if (!hc) return;
-    const addr = on && !hc.includes("/") ? `${on}/${hc}` : hc, ps = panes(), p = ps.find((x) => x.terminal === addr);
+    const addr = addrOf(hc, on), ps = panes(), p = ps.find((x) => x.terminal === addr);
     const asks = asksOf(this.s).some((n) => n.kind === "question" && n.agent === name);
     if (p && asks && cx) openAsk(run, ps, p.pane, { folder: cwd, machine: on, agent: name }, (f) => cx.timer.after(300, f));
     else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
+  }
+
+  // An agent at a prompt: what hc says it asks ("approve Bash: …"), and its terminal in a window (II.6 tier 1).
+  promptOf(name) {
+    const hc = this.s?.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, this.where().on);
+    return { addr, msg: addr ? line(terminals().find((x) => x.address === addr)?.report?.msg, 300) : "" };
+  }
+  peek(name) {
+    const { addr, msg } = this.promptOf(name);
+    if (addr) openOverlay(peekWindow(addr, name, msg || "stopped at a prompt"));
   }
 
   // ---- parts --------------------------------------------------------------------------------
@@ -202,7 +212,7 @@ export default class SwarmTab extends View {
       .children(asks.map((n, i) => {
         const ago = n.ago != null ? ` · ${dur(n.ago * 1000)} ago` : "";
         const title = n.kind === "question" ? `${n.agent} asks about #${n.task.id}` : n.kind === "prompt" ? `${n.agent} stopped at a prompt` : `${n.agent} is hung`;
-        const text = n.kind === "question" ? one(n.task.question) || n.task.title : n.kind === "prompt" ? "Open its terminal and answer." : "watchd keeps it, but it has done nothing for a long time.";
+        const text = n.kind === "question" ? one(n.task.question) || n.task.title : n.kind === "prompt" ? this.promptOf(n.agent).msg || "Answer it in its terminal." : "watchd keeps it, but it has done nothing for a long time.";
         const st = n.kind === "question" ? this.answers.get(n.task.id) : null;
         return v_flex().id(`need-${i}`).gap(6).min_w(0).when(i > 0, (el) => el.pt(10).border_t(1).border_color(t.blocked + "33"))
           .child(h_flex().gap(4).min_w(0).text_size(12.5).child(div().flex_none().font_medium().text_color(t.foreground).child(title))
@@ -211,7 +221,8 @@ export default class SwarmTab extends View {
           .child(h_flex().gap(8).items_center().flex_wrap()
             .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true))
               .child(this.btn(t, `send-${i}`, "Send answer", (cx) => this.answer(cx, n.task), true)))
-            .child(this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))));
+            .child(n.kind === "prompt" ? this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))
+              : this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))));
       }));
   }
 
@@ -371,14 +382,14 @@ export default class SwarmTab extends View {
     const item = (n, i) => {
       const ago = n.ago != null ? `${dur(n.ago * 1000)}` : "";
       const [m, title, text] = n.kind === "question" ? ["asks", `${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
-        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, "Open its terminal and answer."]
+        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, this.promptOf(n.agent).msg || "Answer it in its terminal."]
         : n.kind === "hung" ? ["hung", `${n.agent} is hung`, `No answer to the liveness check${(() => { const a = s.agents.find((x) => x.name === n.agent); return a?.task ? ` · holds #${a.task.id}` : ""; })()}`]
         : n.kind === "ci" ? ["asks", "main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
         : n.kind === "watchd" ? ["asks", "watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
         : ["asks", "The machine is short on memory", n.line];
       const st = n.kind === "question" ? this.answers.get(n.task.id) : null;
       const acts = n.kind === "question" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
-        : n.kind === "prompt" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
+        : n.kind === "prompt" ? [this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))]
         : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(cx, nudgeArgs(n.agent))), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
         : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []),
           this.twice(t, `rerun-${n.run.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(n.run.id), "--failed"]))]
