@@ -2,11 +2,12 @@
 // title, mark at the end), a Needs you button with its list, the palette button and, where the system draws none, the
 // window buttons. Opened as a popup with props {needs: true} it is that list. Needs you also lists the questions swarm
 // agents wait on (slice 6), from the rail's summaries. Tabs put away (tab.settle; the rail puts away a large swarm's
-// workers you haven't opened, slice 9) are one "N more" pill, which shows the swarm tab.
+// workers you haven't opened, slice 9) are one "N more" pill, which shows the swarm tab. The calendar button toggles the
+// layout's panel on the calendar (as herdr-mods/calendar/feed.js does), pressed while it shows.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared } from "herdr";
+import { spaces, panes, terminals, agents, run, openOverlay, closeOverlay, theme, window, layout, keys, props, home, shared, setShared } from "herdr";
 import { agentAt, allShown, ciWord, looked, markOf, needsYou, pillOf, questionsOf, rowText, showAll, sumFor } from "./tree.js";
 import { mark } from "./marks.js";
 
@@ -61,6 +62,19 @@ export default class Bar extends View {
   button(t, id, label, action) {
     return div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
+  }
+
+  // The calendar panel's toggle; "calendar.opened" tells the panel to animate in.
+  calendar(t) {
+    const root = layout(), panel = find(root, "panel"), on = Boolean(panel && !panel.hidden && find(root, "panel-body")?.active === "calendar");
+    return h_flex().id("cal-toggle").h(30).w(34).flex_none().items_center().justify_center().rounded(9).border(1).border_color(t.border)
+      .cursor_pointer().when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", stop).on_click(() => {
+        if (on) return run("layout.hide", { id: "panel" });
+        setShared("calendar.opened", Date.now());
+        run("layout.select", { stack: "panel-body", child: "calendar" }); run("layout.show", { id: "panel" });
+      })
+      .child(svg("mods/calendar/calendar.svg").size(15).text_color(on ? t.foreground : t.dim));
   }
 
   // The Needs you popup: one row per agent, focusing it on click.
@@ -135,6 +149,7 @@ export default class Bar extends View {
       .child(h_flex().id("palette").h(30).px(12).flex_none().items_center().rounded(9).border(1).border_color(t.border)
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_mouse_down("left", stop).on_click(() => run("app.palette")).child(this.hint()))
+      .when(Boolean(find(layout(), "calendar")), (el) => el.child(this.calendar(t)))
       .when(Boolean(w?.buttons), (el) => el
         .child(this.button(t, "minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(this.button(t, "maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))

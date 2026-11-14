@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, theme, shared, setShared, props, openOverlay, closeOverlay, notify, settings, window } from "herdr";
+import { exec, theme, shared, setShared, props, openOverlay, closeOverlay, notify, settings, window, run } from "herdr";
 
 // Events are fetched by the jgetzel-tabs mod into shared "calendar"; this panel only shows them.
 const pad = (n) => String(n).padStart(2, "0");
@@ -259,7 +259,9 @@ export default class Calendar extends View {
         .child(div().text_size(10.5).text_color(t.dim).child(loading ? "Refreshing…" : cal.updated ? `Updated ${ampm(cal.updated)}` : ""))
         .child(div().id("cal-refresh").size(24).flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(() => setShared("calendar.refresh", Date.now()))
-          .child(icon("refresh", 13, t.dim).when(Boolean(loading), (el) => el.spin(900)))))
+          .child(icon("refresh", 13, t.dim).when(Boolean(loading), (el) => el.spin(900))))
+        .child(div().id("cal-close").size(24).flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(() => run("layout.hide", { id: "panel" })).child("✕")))
       .child(this.strip(of(today), t, now))
       .when(Boolean(cal.error), (el) => el.child(div().px(14).py(8).text_size(11).text_color(t.ansi1).border_b(1).border_color(t.border).child(cal.error)))
       .child(v_flex().id("cal-list").flex_1().min_h(0).overflow_y_scrollbar().px(6).pb(10)
