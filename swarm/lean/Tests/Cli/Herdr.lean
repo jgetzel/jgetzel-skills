@@ -52,7 +52,7 @@ def test_install_main_path (t : T) : IO Unit := do
     |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
   -- The other rw mods' tree.js and marks.js are links to rw-rail's in the checkout, and files in the copies.
-  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js"] do
+  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js", "rw-swarm/tree.js", "rw-swarm/marks.js", "rw-question/tree.js"] do
     unless (← System.FilePath.symlinkMetadata (h ++ "/mods/" ++ f)).type == .file do fail s!"no {f} copy"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")
   eq (← IO.FS.realPath (h ++ "/mods/swarm")).toString (← IO.FS.realPath ((← swarmDir) ++ "/herdr/mods/swarm")).toString

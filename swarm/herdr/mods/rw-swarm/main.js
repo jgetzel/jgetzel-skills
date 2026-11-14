@@ -5,7 +5,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, exec, theme, run, appHome, props, settings, watchFolder, window } from "herdr";
-import { asksOf, agentRows, boardRows, dur } from "./tree.js";
+import { asksOf, agentRows, boardRows, dur, openAsk } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -96,12 +96,14 @@ export default class SwarmTab extends View {
     const text = this.title.value().trim();
     if (text && !this.busy) this.act(cx, ["task", "add", "--", text], () => { this.title.set_value(""); this.adding = false; });
   }
-  // An agent's terminal: its pane here, else a peek.
-  focus(name) {
-    const hc = this.s?.agents?.find((a) => a.name === name)?.hc, { on } = this.where();
+  // An agent's terminal: its pane here, with its question above it when it asks (slice 8), else a peek.
+  focus(name, cx) {
+    const hc = this.s?.agents?.find((a) => a.name === name)?.hc, { cwd, on } = this.where();
     if (!hc) return;
-    const addr = on && !hc.includes("/") ? `${on}/${hc}` : hc, p = panes().find((x) => x.terminal === addr);
-    if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
+    const addr = on && !hc.includes("/") ? `${on}/${hc}` : hc, ps = panes(), p = ps.find((x) => x.terminal === addr);
+    const asks = asksOf(this.s).some((n) => n.kind === "question" && n.agent === name);
+    if (p && asks && cx) openAsk(run, ps, p.pane, { folder: cwd, machine: on, agent: name }, (f) => cx.timer.after(300, f));
+    else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
   }
 
   // ---- parts --------------------------------------------------------------------------------
@@ -155,7 +157,7 @@ export default class SwarmTab extends View {
           .child(h_flex().gap(8).items_center().flex_wrap()
             .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true))
               .child(this.btn(t, `send-${i}`, "Send answer", (cx) => this.answer(cx, n.task), true)))
-            .child(this.btn(t, `term-${i}`, "Open its terminal", () => this.focus(n.agent))));
+            .child(this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))));
       }));
   }
 
@@ -165,7 +167,7 @@ export default class SwarmTab extends View {
     return this.card(t, "agents").pb(6)
       .child(this.head(t, "Agents", `${n} running${rows.some((r) => r.comms) ? ", the communicator" : ""}${ended ? ` · ${ended} ended` : ""}`))
       .children(rows.map((r) => h_flex().id(`agent-${r.a.name}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
-        .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.focus(r.a.name))
+        .text_size(12.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.focus(r.a.name, cx))
         .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(mark(t, r.mark))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))

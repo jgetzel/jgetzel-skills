@@ -7,7 +7,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard } from "gpui-base";
 import { spaces, panes, terminals, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, layout, appHome } from "herdr";
-import { AGENT, abbrev, rollOf, rowText, rowsOf, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { AGENT, abbrev, openAsk, rollOf, rowText, rowsOf, since, stamp, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -55,8 +55,10 @@ export default class Rail extends View {
     });
   }
 
+  // `r.ask`: the agent's question (slice 8), shown above its pane.
   open(r, cx) {
-    if (r.pane) run("pane.focus", { pane: r.pane }); else run("terminal.peek", { terminal: r.t.address });
+    if (r.pane && r.ask) openAsk(run, panes(), r.pane, r.ask, (f) => cx.timer.after(300, f));
+    else if (r.pane) run("pane.focus", { pane: r.pane }); else run("terminal.peek", { terminal: r.t.address });
     if (!this.opened.has(r.t.address)) {
       this.opened.add(r.t.address);
       localStorage.setItem("opened", JSON.stringify([...this.opened].slice(-200)));
@@ -177,7 +179,9 @@ export default class Rail extends View {
         .child(mark(t, it.fold))];
       const opened = sw.big && !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && this.opened.has(it.r.t.address);
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
-      return [it.r, ...it.kids].map((r, i) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text));
+      const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
+      const root = asks ? { ...it.r, ask: { folder: s.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
+      return [root, ...it.kids].map((r, i) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, i ? null : text));
     });
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
       .text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover))

@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, pillOf, rowText, abbrev, rollOf, swarmOf, swarmText, questionsOf, asksOf, agentRows, boardRows, openAsk } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -141,4 +141,13 @@ assert.deepEqual(agentRows(ov).map((r) => [r.a.name, r.mark, r.task, r.state]), 
   ["c", "idle", "The communicator", "stays: the user's channel"]]);
 assert.deepEqual(asksOf(ov).map((n) => [n.kind, n.agent]), [["question", "q"], ["hung", "h"]]);
 assert.deepEqual(boardRows(ov).map((r) => [r.k.id, r.state]), [[3, "waiting on you"], [2, "w2"], [4, "i"], [6, "ready"], [5, "after #3"], [7, "held"]]);
+
+// An agent needs you (slice 8): the question splits above the agent's pane once per tab, and the agent's pane is focused.
+const calls = [], later = [], log = (c, a) => calls.push([c, a.pane ?? a.direction]);
+const qPs = [{ pane: "p1", tab: "T" }, { pane: "p2", tab: "U" }, { pane: "m", tab: "U", mod: "rw-question" }];
+openAsk(log, qPs, "p1", { agent: "q" }, (f) => later.push(f));
+later.forEach((f) => f());
+assert.deepEqual(calls, [["pane.split", "p1"], ["pane.focus", "p1"], ["pane.focus", "p1"], ["pane.swap", "down"]]);
+calls.length = 0; openAsk(log, qPs, "p2", {}, () => assert.fail("no split"));
+assert.deepEqual(calls, [["pane.focus", "p2"]]);
 console.log("rail-test: ok");
