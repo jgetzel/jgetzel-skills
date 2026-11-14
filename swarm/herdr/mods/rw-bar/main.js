@@ -9,8 +9,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome } from "herdr";
-import { SECTIONS, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
-import { mark } from "./marks.js";
+import { SECTIONS, animOn, allShown, answerBox, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sumFor, swarmShown, tagOf, viewShown } from "./tree.js";
+import { mark, hoverLayer } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
@@ -91,11 +91,13 @@ export default class Bar extends View {
     const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
     const agents = (sum?.agents ?? []).filter((a) => a.name !== sum.comms).length;
     const sys = (sum?.needs ?? []).some((n) => ["watchd", "ci", "memory"].includes(n.kind));
-    const at = v.section ?? "overview";
+    const at = v.section ?? "overview", anim = animOn(shared("rw.animations"));
     return h_flex().id("sections").flex_none().min_w(0).p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
       .children(SECTIONS.map(([id, label]) => h_flex().id(`section-${id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
         .text_color(at === id ? t.foreground : t.muted).when(at === id, (el) => el.bg(t.selected))
-        .when(at !== id, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+        .when(at !== id && !anim, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+        .when(at !== id && anim, (el) => el.cursor_pointer().relative().child(hoverLayer(t, `hv-section-${id}`, this.hovSec === id, 9))
+          .on_hover((h, cx) => { if (h) this.hovSec = id; else if (this.hovSec === id) this.hovSec = null; cx.notify(); }))
         .on_mouse_down("left", stop).on_click(() => setShared("rw-swarm.view", { ...v, section: id, page: null }))
         .when(id === "overview", (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(at === id ? t.foreground : t.muted)))
         .child(label)
