@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -168,7 +168,10 @@ assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
 // rw-bar: a swarm question counts unless its agent's terminal already does.
 const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
   { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
-assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three" }]);
+assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three", task: 3, folder: null, on: null }]);
+// a hung agent is a Needs you row (round 4, proposal 1)
+assert.deepEqual(hungOf([{ folder: "/w", on: "vps", agents: [A("h", "t5", { hung: true, task: { id: 4 } }), A("i", "t6")] }], new Set()),
+  [{ address: "vps/t5", name: "h", what: "hung · holds #4", hung: true, folder: "/w", on: "vps" }]);
 
 // The swarm tab (slice 7): who asks first and the communicator last, each with its task's title; the board's undone
 // tasks, blocked, claimed, ready, then waiting.
