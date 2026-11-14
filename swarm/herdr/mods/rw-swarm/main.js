@@ -15,7 +15,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
 import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
-import { mark, hoverLayer } from "./marks.js";
+import { mark, hoverLayer, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -267,9 +267,11 @@ export default class SwarmTab extends View {
       .when(Boolean(right), (el) => el.child(right));
   }
   btn(t, id, label, onClick, solid) {
-    return div().id(id).flex_none().h(30).px(14).flex().items_center().rounded(9).text_size(12.5).cursor_pointer()
-      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold().hover((s) => s.opacity(0.9)))
-      .when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+    return look(div().id(id).flex_none().h(30).px(14).flex().items_center().rounded(9).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+  }
+  small(t, id, label, onClick) { // a 24 px outlined button, in a row
+    return look(div().id(id).flex_none().h(24).px(9).flex().items_center().rounded(7).text_size(12).cursor_pointer(), t)
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
   field(t, id, st, red) {
@@ -321,7 +323,7 @@ export default class SwarmTab extends View {
     const all = agentRows(s), ended = s.counts?.ended ?? 0, n = all.filter((r) => !r.comms).length, big = n > FOLD;
     const q = big ? this.filter.value().trim().toLowerCase() : "";
     const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
-    const color = (r) => (r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim);
+    const color = (r) => (r.hot === "blocked" ? t.blocked : t.dim); // amber is only working (proposal 2)
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
     const side = Boolean(props()?.side), shown = side ? this.shownAgent(s) : null;
@@ -332,7 +334,8 @@ export default class SwarmTab extends View {
       .child(mark(t, r.mark))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
       .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.a.name === shown ? `shown · ${r.state}` : r.state))
-      .child(v_flex().w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(kilo(r.a.ctx_tokens))
+      .child(v_flex().id(`ctx-${r.a.name}`).w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(r.a.ctx_tokens ? kilo(r.a.ctx_tokens) : "–")
+        .tooltip(r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
         .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
           .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`).when(this.anim, (el) => el.transition("width", 300)))))
       .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
@@ -346,13 +349,17 @@ export default class SwarmTab extends View {
           .child(`${g.length - ROWS} more: filter to find one`)] : [])] : [];
     };
     const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter)) : null;
+    // the columns named (proposal 7): the context column is the one bare number
+    const cols = h_flex().id("agent-cols").mx(6).px(10).pb(4).gap(12).items_center().text_size(11).text_color(t.dim)
+      .child(div().w(72).flex_none().child("Agent")).child(div().w(9).flex_none()).child(div().flex_1().child("Task")).child(div().flex_none().child("State"))
+      .child(div().w(64).flex_none().child("Context")).when(big, (el) => el.child(div().w(52).flex_none().child("Model")).child(div().w(48).flex_none().child("PR")));
     return this.card(t, "agents").pb(6)
-      .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
+      .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter)).child(cols)
       .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map((r) => row(r, "comms"))] : rows.map(row))
       .when(big && !rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("No agent matches")))
       .when(ended > 0, (el) => el.child(h_flex().id("ended").mx(6).mt(4).px(10).h(34).gap(8).items_center().border_t(1).border_color(t.border)
-        .text_size(12.5).text_color(t.dim).cursor_pointer().when(true, (el) => this.hov(t, el, "ended", 0)).on_click((_e, cx) => this.showEnded(cx))
-        .child(div().flex_1().child(`${ended} ended`)).child(div().text_color(t.accent).child(this.ended ? "Hide ended" : "Show ended"))))
+        .text_size(12.5).text_color(t.dim)
+        .child(div().flex_1().child(`${ended} ended`)).child(this.small(t, "ended-show", this.ended ? "Hide ended" : "Show ended", (cx) => this.showEnded(cx)))))
       .when(Boolean(this.ended), (el) => el.children(this.ended.length ? this.ended.map((a, i) => h_flex().id(`ended-${i}`).h(28).mx(6).px(10)
         .gap(12).items_center().min_w(0).text_size(12).text_color(t.dim)
         .child(div().w(72).flex_none().truncate().text_color(t.muted).child(a.name))
@@ -524,7 +531,7 @@ export default class SwarmTab extends View {
         .child(mark(t, r.mark)).child(side ? this.nameLink(t, r.a.name, 72) : div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
         .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.a.name === shown ? "shown · " : ""}${kilo(r.a.ctx_tokens)}`))))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.a.name === shown ? "shown · " : ""}${r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} ctx` : ""}`))))
       .when(rows.length > 6, (el) => el.child(div().px(16).pt(6).text_size(12).text_color(t.dim).child(`${rows.length - 6} more`)));
   }
 
@@ -632,7 +639,7 @@ export default class SwarmTab extends View {
         pill(`to-${i}`, line(n, 40), this.to === n, () => { this.to = n; this.picking = false; })))))
       .child(h_flex().gap(8).items_center().child(this.field(t, "say-msg", this.swarmMsg))
         .child(div().id("say-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
-          .border_color(this.swarmUrgent ? t.blocked : t.border).text_color(this.swarmUrgent ? t.blocked : t.muted)
+          .border_color(this.swarmUrgent ? t.foreground : t.input).bg(this.swarmUrgent ? t.selected : t.background).text_color(this.swarmUrgent ? t.foreground : t.muted)
           .on_click((_e, cx) => { this.swarmUrgent = !this.swarmUrgent; cx.notify(); }).child("Urgent"))
         .child(this.btn(t, "say-send", "Send", (cx) => this.post(cx), true)));
   }
@@ -779,7 +786,7 @@ export default class SwarmTab extends View {
       .when(!ended, (el) => el.child(h_flex().gap(8).items_center()
         .child(this.field(t, "a-msg", this.message(t, name)))
         .child(div().id("a-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
-          .border_color(this.urgent ? t.blocked : t.border).text_color(this.urgent ? t.blocked : t.muted)
+          .border_color(this.urgent ? t.foreground : t.input).bg(this.urgent ? t.selected : t.background).text_color(this.urgent ? t.foreground : t.muted)
           .on_click((_e, cx) => { this.urgent = !this.urgent; cx.notify(); }).child("Urgent"))
         .child(this.btn(t, "a-send", "Send", (cx) => this.send(cx, name), true))))
       .when(!ended && Boolean(SIGNS[a.stay_sign]), (el) => el.child(this.card(t, "a-sign", a.stay_sign === "hung").px(16).py(10)
@@ -1167,12 +1174,11 @@ export default class SwarmTab extends View {
     const group = (id, title, list, kids, note) => list.length ? this.card(t, id).pb(8).child(this.head(t, `${title} · ${list.length}`, note))
       .children(list.map((r) => trow(`${id}-${r.k.id}`, r.k, kids(r)))) : null;
     const prio = (k) => (k.priority != null ? [this.chip(t, `P${k.priority}`)] : []);
-    const plus = (k) => (queued.has(k.id) ? [] : [div().id(`bqa-${k.id}`).flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
-      .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, ["queue", "add", String(k.id)]); }).child("+ Queue")]);
+    const plus = (k) => (queued.has(k.id) ? [] : [this.small(t, `bqa-${k.id}`, "+ Queue", (cx) => this.act(cx, ["queue", "add", String(k.id)]))]);
     const by = (tn) => rows.filter((r) => r.tone === tn), waiting = by("dim");
     const left = [queue,
-      group("b-you", "Waiting on you", by("blocked"), (r) => [div().flex_none().text_size(12).text_color(t.blocked).child(`${r.k.owner ?? ""}${r.k.blocked_s ? ` · ${dur(r.k.blocked_s * 1000)}` : ""}`)]),
-      group("b-prog", "In progress", by("muted"), (r) => [...prio(r.k), div().flex_none().max_w(200).truncate().text_size(12).text_color(agentOf(r.k.owner)?.stay_sign === "hung" ? t.blocked : t.dim)
+      group("b-you", "Waiting on you", by("blocked"), (r) => [div().flex_none().text_size(12).text_color(t.dim).child(`${r.k.owner ?? ""}${r.k.blocked_s ? ` · ${dur(r.k.blocked_s * 1000)}` : ""}`)]),
+      group("b-prog", "In progress", by("muted"), (r) => [...prio(r.k), div().flex_none().max_w(200).truncate().text_size(12).text_color(t.dim)
         .child(`${r.k.owner ?? ""}${r.k.lease_left != null ? ` · ${r.k.lease_left > 0 ? `lease ${dur(r.k.lease_left * 1000)}` : "lease expired"}` : ""}`)]),
       group("b-ready", "Ready", by("foreground"), (r) => [...prio(r.k), ...plus(r.k)]),
       this.showWaiting ? group("b-wait", "Waiting on other tasks or held", waiting, (r) => [div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child(r.k.hold ? `held: ${r.k.hold}` : r.state), ...plus(r.k)]) : null,

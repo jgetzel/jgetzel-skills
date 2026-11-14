@@ -8,13 +8,13 @@
 // questions swarm agents wait on (slice 6), each with an answer field, and hung agents with Nudge (round 4), from the
 // rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}} it is a swarm agent's menu
 // from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal). Keys: rw-bar.side,
-// rw-bar.full, rw-bar.needs (opens the list).
+// rw-bar.full, rw-bar.needs (opens the list), rw-bar.<section> (rw-bar.board: that section).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
 import { SECTIONS, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
-import { mark, hoverLayer } from "./marks.js";
+import { mark, hoverLayer, look } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
@@ -32,6 +32,10 @@ export default class Bar extends View {
         const c = await nextCommand();
         if (c === "side") toggleSide(run, layout()); else if (c === "full") toggleFull(run, setShared, shared, layout(), this.spaceSum());
         else if (c === "needs") this.openNeeds();
+        else if (SECTIONS.some(([id]) => id === c)) { // a section, in the view that shows, else full width
+          setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), section: c, page: null });
+          if (!sideShown(layout()) && !swarmShown(layout())) toggleFull(run, setShared, shared, layout(), this.spaceSum());
+        }
         cx.notify();
       }
     });
@@ -76,9 +80,7 @@ export default class Bar extends View {
     const name = line(m.name, 60), close = () => closeOverlay(props().overlay);
     const item = (id, text, act, red) => div().id(id).px(10).py(6).rounded(6).text_size(12.5).cursor_pointer()
       .text_color(red ? t.blocked : t.foreground).hover((s) => s.bg(t.hover)).on_click((_e, cx) => act(cx)).child(text);
-    const btn = (id, text, act, solid) => div().id(id).flex_none().px(12).py(5).rounded(8).text_size(12.5).cursor_pointer()
-      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold())
-      .when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+    const btn = (id, text, act, solid) => look(div().id(id).flex_none().px(12).py(5).rounded(8).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
       .on_click((_e, cx) => { if (!this.busy) act(cx); }).child(text);
     const ask = (title, body, ...btns) => v_flex().p(12).gap(8).text_size(12.5)
       .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child(title))
@@ -193,8 +195,7 @@ export default class Bar extends View {
   promptLine(t, address, msg, show, i, cx) {
     const box = boxFor(this.boxes, hc, address, msg, cx), bs = promptButtons(box);
     if (!bs.length) return null;
-    const b_ = (id, label, solid, f) => div().id(id).flex_none().h(24).px(8).flex().items_center().rounded(6).text_size(12)
-      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold()).when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((st) => st.bg(t.hover)))
+    const b_ = (id, label, solid, f) => look(div().id(id).flex_none().h(24).px(8).flex().items_center().rounded(6).text_size(12), t, solid ? "solid" : "outline")
       .on_click((_e, cx) => { cx.stop_propagation(); f(cx); }).child(label);
     const saying = this.saying?.address === address;
     return v_flex().pl(10).pb(6).gap(6)
@@ -232,12 +233,10 @@ export default class Bar extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(what))
         .when(Boolean(s), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(11.5).text_color(t.muted)
           .child(line(s.machine ? `${s.machine} · ${s.name}` : s.name, 80))))
-        .when(peek != null, (el) => el.child(div().id(`needs-peek-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6)
-          .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
+        .when(peek != null, (el) => el.child(look(div().id(`needs-peek-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6).text_size(12), t)
           .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); show(); })
           .child("Show terminal")))
-        .when(Boolean(q.hung), (el) => el.child(div().id(`needs-nudge-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6)
-          .border(1).border_color(t.border).text_size(12).text_color(t.foreground).hover((st) => st.bg(t.hover))
+        .when(Boolean(q.hung), (el) => el.child(look(div().id(`needs-nudge-${i}`).flex_none().h(24).px(8).flex().items_center().rounded(6).text_size(12), t)
           .on_click((_e, cx) => { cx.stop_propagation(); this.nudge(cx, q); })
           .child(this.sent.get(`hung:${address}`) ?? "Nudge")))
         .child(mark(t, q.hung ? "hung" : "asks"));
@@ -246,8 +245,7 @@ export default class Bar extends View {
         : st ? h_flex().pl(10).pb(6).gap(6).items_center()
           .child(div().flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.background)
             .on_mouse_down("left", stop).child(Input.new(st).h_full().text_size(12.5).text_color(t.foreground)))
-          .child(div().id(`needs-send-${i}`).flex_none().h(26).px(10).flex().items_center().rounded(6).text_size(12).font_semibold()
-            .bg(t.foreground).text_color(t.background).cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.answerQ(cx, q); }).child("Send"))
+          .child(look(div().id(`needs-send-${i}`).flex_none().h(26).px(10).flex().items_center().rounded(6).text_size(12).cursor_pointer(), t, "solid").on_click((_e, cx) => { cx.stop_propagation(); this.answerQ(cx, q); }).child("Send"))
           .when(Boolean(said), (el) => el.child(div().flex_none().max_w(140).truncate().text_size(11.5).text_color(said === "Sent" || said === "Sending…" ? t.dim : t.blocked).child(said)))
         : null;
       return more ? v_flex().id(`needs-w-${i}`).flex_none().child(row).child(more) : row;

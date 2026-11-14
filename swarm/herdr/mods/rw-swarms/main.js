@@ -7,7 +7,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window } from "herdr";
 import { SECTIONS, addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, boardRows, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, overOf, peekWindow, showAll, showSwarm, sumFor, tagOf } from "./tree.js";
-import { mark } from "./marks.js";
+import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 const swarm = (cwd, on, args) => on
@@ -113,9 +113,7 @@ export default class AllSwarms extends View {
       .font_family(settings().font_family ?? "JetBrains Mono").child(tag || "?");
   }
   btn(t, id, label, onClick, solid) {
-    return div().id(id).flex_none().h(28).px(10).flex().items_center().rounded(8).text_size(12.5).cursor_pointer()
-      .when(solid, (el) => el.bg(t.blocked).text_color(t.background).font_semibold().hover((s) => s.opacity(0.9)))
-      .when(!solid, (el) => el.border(1).border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+    return look(div().id(id).flex_none().h(28).px(10).flex().items_center().rounded(8).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
 
@@ -180,7 +178,7 @@ export default class AllSwarms extends View {
         .child(div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
         .child(mark(t, r.mark))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
-        .child(div().flex_none().max_w(170).truncate().text_color(r.hot === "blocked" ? t.blocked : r.hot === "amber" ? t.working : t.dim).child(r.state))))
+        .child(div().flex_none().max_w(170).truncate().text_color(r.hot === "blocked" ? t.blocked : t.dim).child(r.state))))
       .when(ags.length > AGENTS, (el) => el.child(div().id(`agents-more-${i}`).h(30).px(10).flex().items_center().border_t(1).border_color(t.border)
         .text_size(12.5).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openSpace(w))
         .child(`${ags.length - AGENTS} more in its space`)))
