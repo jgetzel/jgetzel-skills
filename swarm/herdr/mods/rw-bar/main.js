@@ -99,6 +99,17 @@ export default class Bar extends View {
         .when(id === "system" && sys, (el) => el.child(mark(t, "asks", 8)))));
   }
 
+  // The swarm view's Away (II.3f): `swarm away` / `--back`; it shows what was asked until the rail's summary agrees.
+  away(t, sum) {
+    const on = this.asked ?? Boolean(sum.away);
+    if (this.asked === Boolean(sum.away)) this.asked = null;
+    return h_flex().id("away").h(30).px(12).gap(8).flex_none().items_center().rounded(9).border(1).text_size(13).cursor_pointer()
+      .border_color(on ? t.working : t.border).text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.working + "1c"))
+      .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
+      .on_click((_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"]).catch(() => {}); })
+      .child(on ? "✓ Away" : "Away");
+  }
+
   button(t, id, label, action) {
     return div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
@@ -171,6 +182,7 @@ export default class Bar extends View {
           .when(Boolean(ci), (el) => el.child(div().flex_none().text_color(ci === "green" ? t.ansi2 : ci === "checks run" ? t.working : t.blocked).child(ci)))))
       .when(Boolean(v), (el) => el.child(this.sections(t, v, vsum)))
       .child(div().flex_1())
+      .when(Boolean(v && vsum), (el) => el.child(this.away(t, vsum)))
       .when(needs > 0, (el) => el.child(h_flex().id("needs").h(30).px(12).gap(8).flex_none().items_center().rounded(9)
         .border(1).border_color(t.blocked).text_size(13).font_medium().text_color(t.blocked).cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)

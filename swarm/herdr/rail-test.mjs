@@ -233,11 +233,13 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 // The CLI's away is {since, note}, not true; a field the views don't list yet still arrives (scalars only).
 {
   const o = overOf({ away: { since: 5, note: "lunch" }, comms: "c", new_field: "x", nested: { a: 1 }, agents: [{ name: "a", extra: 3 }] });
-  assert.equal(o.away, true);
+  assert.deepEqual(o.away, { since: 5, note: "lunch" }); // the Away banner's (II.3f)
+  assert.deepEqual(overOf({ away: true }).away, { since: null, note: null });
   assert.equal(o.new_field, "x");
   assert.equal("nested" in o, false);
   assert.equal(o.agents[0].extra, 3);
-  assert.equal(overOf({ away: null }).away, false);
+  assert.equal(overOf({ away: null }).away, null);
+  assert.equal(sumOf({ away: { since: 1 } }).away, true);
   assert.equal(sumOf({ away: { since: 1 }, brand_new: true }).brand_new, true);
 }
 // The swarm view's Needs you (Part II.3): watchd down, red main with its fixer, the asks, low memory; in that order.
@@ -300,5 +302,11 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(moveArgs(q, 2, "up"), ["queue", "add", "2", "--before", "4"]);
   assert.deepEqual(moveArgs(q, 2, "down"), ["queue", "add", "2", "--after", "5"]);
   assert.equal(moveArgs(q, 0, "up"), null); assert.equal(moveArgs(q, 4, "down"), null); assert.equal(moveArgs(q, 9, "up"), null);
+}
+// The away digest (II.3f): `back` with its lists bounded and typed.
+{
+  const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",
+    ci: { conclusion: "success", sha: "abc" }, ended: [{ name: "a", why: "landed" }], hung: ["b", 7, null] } });
+  assert.deepEqual([o.back.questions.length, o.back.done[0].id, o.back.merged, o.back.ci.sha, o.back.ended[0].why, o.back.hung], [1, 5, [], "abc", "landed", ["b", "7"]]);
 }
 console.log("rail-test: ok");

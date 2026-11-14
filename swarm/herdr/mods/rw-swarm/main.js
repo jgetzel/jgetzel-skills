@@ -511,7 +511,7 @@ export default class SwarmTab extends View {
 
   overview(t, s, cols) {
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    const c1 = [this.allNeeds(t, s)], c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
+    const c1 = [this.allNeeds(t, s), this.digest(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s)];
     if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
       .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
     return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", [...c2, ...c3]));
@@ -612,6 +612,40 @@ export default class SwarmTab extends View {
         .child(h_flex().px(16).pt(12).pb(8).gap(12).items_center().text_size(13)
           .child(tabBtn("latest", "Latest")).child(tabBtn("messages", `Messages ${msgs.length}`)).child(tabBtn("finished", `Finished ${done.length}`)))
         .children(list.length ? list : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Nothing yet")]));
+  }
+
+  // ---- Away (II.3f) ---------------------------------------------------------------------------------------------------
+  // Away: questions wait here and nobody pings you; I'm back ends it.
+  awayBanner(t, s) {
+    const a = s.away, waiting = (s.tasks ?? []).filter((k) => k.state === "blocked").length;
+    return h_flex().id("away-banner").flex_none().px(16).py(8).gap(10).items_center().min_w(0).rounded(10).border(1).border_color(t.ring ?? t.border)
+      .bg(t.working + "14").text_size(12.5)
+      .child(div().flex_1().min_w(0).whitespace_normal().text_color(t.foreground)
+        .child(`Away${a.since ? ` since ${hhmm(a.since)}` : ""}${a.note ? ` (${line(a.note, 80)})` : ""}. Questions wait here and nobody pings you${waiting ? `; ${waiting} waiting now` : ""}.`))
+      .child(this.btn(t, "away-back", "I'm back", (cx) => this.act(cx, ["away", "--back"])));
+  }
+  // `swarm away --back`'s digest, until dismissed (shared with the old panel's key) or the next away.
+  digest(t, s) {
+    const g = s.back, key = `swarm.back:${s.db}`;
+    if (!g || s.away || shared(key) === g.back) return null;
+    const word = g.ci && ({ success: "green", failure: "red" }[g.ci.conclusion] ?? g.ci.conclusion ?? g.ci.status ?? "?");
+    const kv = (k, v) => h_flex().gap(10).items_start().min_w(0).py(3).text_size(12.5)
+      .child(div().w(88).flex_none().text_color(t.dim).child(k)).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(v));
+    const rows = [
+      g.questions.length ? kv("Questions", v_flex().gap(4).children(g.questions.slice(0, 8).map((q) => div().id(`back-q-${q.id}`).cursor_pointer()
+        .hover((st) => st.text_color(t.foreground)).on_click(() => this.openTask(q.id)).child(`#${q.id} ${q.owner ?? ""}: ${one(q.question) || q.title}`)))) : null,
+      g.done.length ? kv("Finished", g.done.slice(0, 20).map((k) => `#${k.id} ${k.title ?? ""}`).join(" · ")) : null,
+      g.merged.length ? kv("Merged", g.merged.slice(0, 20).map((k) => `PR #${k.pr ?? "?"} (#${k.id})`).join(" · ")) : null,
+      kv("main CI", g.ci ? h_flex().gap(6).items_center().child(div().text_color(word === "green" ? t.ansi2 : word === "red" ? t.blocked : t.working).child(word))
+        .child(div().text_color(t.dim).child((g.ci.sha ?? "").slice(0, 7))) : "no run seen"),
+      g.ended.length ? kv("Ended", g.ended.slice(0, 20).map((a) => `${a.name}${a.why ? ` (${a.why})` : ""}`).join(" · ")) : null,
+      g.hung.length ? kv("Hung", div().text_color(t.blocked).child(g.hung.slice(0, 20).join(" · "))) : null,
+    ].filter(Boolean);
+    return this.card(t, "digest").pb(10)
+      .child(this.head(t, "While you were away", `${hhmm(g.since)} – ${hhmm(g.back)}${g.note ? ` · "${line(g.note, 60)}"` : ""}`,
+        div().id("digest-x").flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+          .on_click((_e, cx) => { setShared(key, g.back); cx.notify(); }).child("Dismiss")))
+      .child(v_flex().px(16).children(rows));
   }
 
   // ---- the Board section (II.3e) ------------------------------------------------------------------------------------
@@ -840,6 +874,7 @@ export default class SwarmTab extends View {
       : section === "system" ? page(this.machineCard(t, s))
       : page(this.card(t, "history").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("History needs the CLI's paging; it comes in a later step.")));
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
+      .when(Boolean(s.away), (el) => el.child(this.awayBanner(t, s)))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
       .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
       .child(body);
