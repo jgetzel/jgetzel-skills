@@ -23,7 +23,8 @@ def test_install_main_path (t : T) : IO Unit := do
   put (h ++ "/mods/tabs/main.js") (anchors Herdr.Install.tabsPatch)
   put (h ++ "/mods/agents/main.js") (anchors Herdr.Install.agentsPatch)
   put (h ++ "/layouts/main.json") ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"tabs\"}}," ++
-    "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"agents\"}}]},{\"id\":\"panel\",\"max\":400,\"size\":{\"px\":300}," ++
+    "{\"id\":\"sidebar-lists\",\"children\":[{\"id\":\"agents\",\"content\":{\"mod\":\"agents\"}}]},{\"id\":\"main\",\"content\":{\"tab\":\"active\"}}," ++
+    "{\"id\":\"panel\",\"max\":400,\"size\":{\"px\":300}," ++
     "\"children\":[{\"id\":\"panel-body\",\"children\":[{\"id\":\"files\"},{\"id\":\"swarm\"}]}]}]}")
   let fb ← t.fake "herdr-app" "#!/bin/sh\nexit 1\n"
   let r ← t.exec [← herdrMods, "install"]
@@ -34,7 +35,7 @@ def test_install_main_path (t : T) : IO Unit := do
   for (_, rep) in Herdr.Install.tabsPatch do has tabs rep
   let agents := (← slurp (h ++ "/mods/jgetzel-agents/main.js")).getD ""
   for (_, rep) in Herdr.Install.agentsPatch do has agents rep
-  let panel := ",{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
+  let panel := ",{\"id\":\"main\",\"content\":{\"tab\":\"active\"}},{\"id\":\"panel\",\"size\":{\"weight\":1}," ++
     "\"children\":[{\"id\":\"panel-body\",\"children\":[{\"id\":\"files\"},{\"id\":\"swarm\",\"type\":\"block\"," ++
     "\"content\":{\"mod\":\"swarm\"}},{\"id\":\"calendar\",\"type\":\"block\",\"content\":{\"mod\":\"calendar\"}}]}]}"
   let layout (lists : String) := Json.parse ("{\"id\":\"root\",\"children\":[{\"id\":\"tabs\",\"content\":{\"mod\":\"jgetzel-tabs\"}}," ++
@@ -44,10 +45,15 @@ def test_install_main_path (t : T) : IO Unit := do
   let some rw := Json.decode ((← slurp (h ++ "/layouts/rework.json")).getD "") | fail "rework layout is not JSON"
   eq rw (Json.parse ("{\"id\":\"root\",\"type\":\"column\",\"children\":[{\"id\":\"bar\",\"type\":\"block\"," ++
     "\"size\":{\"px\":52},\"window_drag\":true,\"content\":{\"mod\":\"rw-bar\"}},{\"id\":\"body\",\"children\":[" ++
-    "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++ panel ++ "]}]}") |>.toOption.get!)
+    "{\"id\":\"rail\",\"type\":\"block\",\"content\":{\"mod\":\"rw-rail\"}}" ++
+    panel.replace "{\"tab\":\"active\"}" ("{\"tab\":\"active\",\"pane\":{\"gap\":10,\"radius\":12,\"background\":\"surface\"," ++
+      "\"border\":{\"width\":1,\"color\":\"border\"},\"focus\":{\"width\":1,\"color\":\"accent\"},\"lone\":true," ++
+      "\"header\":{\"content\":{\"mod\":\"rw-pane\"},\"height\":38,\"position\":\"top\",\"reveal\":\"always\"}}}") ++ "]}]}")
+    |>.toOption.get!)
   unless ← System.FilePath.pathExists (h ++ "/mods/rw-rail/tree.js") do fail "no rw-rail copy"
-  -- rw-bar's tree.js is a link to rw-rail's in the checkout, and a file in the copy.
-  unless (← System.FilePath.symlinkMetadata (h ++ "/mods/rw-bar/tree.js")).type == .file do fail "no rw-bar copy"
+  -- rw-bar's and rw-pane's tree.js and marks.js are links to rw-rail's in the checkout, and files in the copies.
+  for f in ["rw-bar/tree.js", "rw-bar/marks.js", "rw-pane/tree.js", "rw-pane/marks.js"] do
+    unless (← System.FilePath.symlinkMetadata (h ++ "/mods/" ++ f)).type == .file do fail s!"no {f} copy"
   let here ← IO.FS.realPath ((← swarmDir) ++ "/../herdr-mods")
   eq (← IO.FS.realPath (h ++ "/mods/swarm")).toString (← IO.FS.realPath ((← swarmDir) ++ "/herdr/mods/swarm")).toString
   unless ← System.FilePath.pathExists (h ++ "/mods/calendar/feed.js") do fail "no calendar copy"

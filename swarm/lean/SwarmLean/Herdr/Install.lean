@@ -10,9 +10,10 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-  mods/rw-rail, rw-bar  <- copies of swarm/herdr/mods/rw-*, the rework's rail and title bar (swarm/herdr/UI-SPEC.md)
-  layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists and no
-                           brand block, tab bar or status bar
+  mods/rw-rail, rw-bar, rw-pane <- copies of swarm/herdr/mods/rw-*, the rework's rail, title bar and pane header
+                           (swarm/herdr/UI-SPEC.md)
+  layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, panes
+                           as cards with rw-pane headers, and no brand block, tab bar or status bar
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
 
@@ -179,11 +180,18 @@ partial def edit (j : Json) : Json := Id.run do
   if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map edit))
   return j
 
-/-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, and no
-brand block, tab bar or status bar (rw-bar replaces them). -/
+/-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, panes as
+cards with rw-pane headers, and no brand block, tab bar or status bar (rw-bar replaces them). -/
 partial def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
+  -- Panes as cards with rw-pane's header (UI-SPEC.md, "Panes as cards").
+  if Json.fstr j "id" == some "main" then
+    let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
+    return j.setObjVal! "content" (Json.mkObj [("tab", "active"), ("pane", Json.mkObj [("gap", 10), ("radius", 12),
+      ("background", "surface"), ("border", line "border"), ("focus", line "accent"), ("lone", true),
+      ("header", Json.mkObj [("content", Json.mkObj [("mod", "rw-pane")]), ("height", 38), ("position", "top"),
+        ("reveal", "always")])])])
   let mut j := j
   if let some (.arr cs) := Json.field j "children" then
     let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
@@ -294,11 +302,12 @@ def main : IO UInt32 := do
   IO.FS.rename (out ++ ".tmp") out
   IO.println s!"wrote {out}"
 
-  -- Copies, like the calendar's: hot reload and svg() don't follow a symlinked mod dir. rw-bar's tree.js is a link to
-  -- rw-rail's (mods can't import across mod folders), copied as a file.
+  -- Copies, like the calendar's: hot reload and svg() don't follow a symlinked mod dir. rw-bar's and rw-pane's tree.js and
+  -- marks.js are links to rw-rail's (mods can't import across mod folders), copied as files.
   let rail := mods ++ "/rw-rail"
   let bar := mods ++ "/rw-bar"
-  for m in [rail, bar] do
+  let pane := mods ++ "/rw-pane"
+  for m in [rail, bar, pane] do
     if ← exists_ m false then discard <| run ["rm", "-rf", m]
     IO.FS.createDirAll m
     for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/" ++ basename m) do
@@ -310,7 +319,7 @@ def main : IO UInt32 := do
   IO.println s!"wrote {out}"
 
   if version.isSome then
-    for m in [tabs, agents, cal, rail, bar] do
+    for m in [tabs, agents, cal, rail, bar, pane] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 

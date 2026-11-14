@@ -122,6 +122,8 @@ Each pane is a rounded card with a header: name, title, state, mark.
   `rw-pane`. One header height for the whole layout.
 - Limit: only the layout root's look applies today; a block's own look is
   "coming" in the guide.
+- Built in slice 3: the `main` block's pane look (radius 12, gap 10, surface, accent focus, `lone`) with a 38 px
+  `rw-pane` header. The header's time is rw-rail's stamp, which the rail shares as `shared("rw-rail.changed")`.
 
 ### Swarm block in the rail (rail board C and D, screens 2 to 4)
 
@@ -272,7 +274,7 @@ Each is one PR and usable on its own once the layout is switched to.
 
 ## Still unchecked
 
-- Everything marked unchecked above; of the mods here only `rw-rail` and `rw-bar` have been run.
+- Everything marked unchecked above; of the mods here only `rw-rail`, `rw-bar` and `rw-pane` have been run.
 - Cost of `exec` polling for several swarms at once.
 - Whether `layout.switch` back and forth keeps each layout's pane state; the
   guide says switching starts the layout's mods fresh.
