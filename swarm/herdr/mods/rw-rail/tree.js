@@ -287,3 +287,17 @@ export function colorsOf(text, names) {
   if (bad) return { wrong: names.includes(bad[0]) ? `${bad[0]}: write a color as #rrggbb.` : `${bad[0]} is not a theme color.` };
   return { value: v };
 }
+
+// The All swarms view (slice 13): a child of the rework layout's "view" stack, beside the tab area.
+const findId = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? findId(c, id), null));
+export const allShown = (lay) => findId(lay, "view")?.active === "all-swarms";
+export const showAll = (run, on) => run("layout.select", { stack: "view", child: on ? "all-swarms" : "main" });
+export const tagOf = (comms) => (comms ?? "").replace(/-?comms\d*$/, "");
+// What asks you across swarms: their summaries' needs that are an agent's (questions, prompts, hung).
+export const asksIn = (sums) => sums.flatMap((s) => (s.needs ?? []).filter((n) => ["question", "prompt", "hung"].includes(n.kind)));
+// This computer's memory in use (kB) split by swarm, then everything else: the swarms' process trees can't exceed it.
+export function memoryOf(sums, used) {
+  const parts = sums.filter((s) => !s.on).map((s) => ({ tag: tagOf(s.comms), kb: s.rss_kb ?? 0 }));
+  const mine = parts.reduce((n, p) => n + p.kb, 0);
+  return { parts, other: Math.max(0, used - mine) };
+}

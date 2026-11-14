@@ -5,11 +5,12 @@
 // first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm tab (slice 7). Each machine's
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
+// Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome } from "herdr";
-import { AGENT, abbrev, dur, looked, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, since, stamp, swarmOf, swarmText } from "./tree.js";
+import { AGENT, abbrev, allShown, asksIn, dur, looked, machinesOf, openAsk, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, swarmOf, swarmText } from "./tree.js";
 import { mark } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
@@ -46,7 +47,7 @@ export default class Rail extends View {
     cx.timer.every(15000, (cx) => this.refreshMachines(cx));
   }
 
-  // Each space folder's swarm, one `swarm state --view summary` per folder.
+  // Each space folder's swarm, one `swarm state --view summary` per folder, then this computer's swarms with no space.
   swarms(cx) {
     if (this.reading) return;
     this.reading = true;
@@ -60,6 +61,16 @@ export default class Rail extends View {
           if (j?.active && Array.isArray(j.agents)) { sums[where(s)] = j; mine.push({ ...j, on: s.machine ?? null, folder: s.folder }); }
         } catch {}
       }
+      try {
+        const r = await swarm(home(), null, ["state", "--json", "--view", "swarms"]);
+        const seen = new Set(mine.filter((m) => !m.on).map((m) => m.db));
+        for (const w of r.code === 0 ? JSON.parse(r.stdout).swarms ?? [] : []) {
+          if (seen.has(w.db)) continue;
+          const q = await swarm(w.folder, null, ["state", "--json", "--view", "summary"]);
+          const j = q.code === 0 ? JSON.parse(q.stdout) : null;
+          if (j?.active && Array.isArray(j.agents)) mine.push({ ...j, on: null, folder: w.folder });
+        }
+      } catch {}
       this.reading = false;
       this.sums = sums;
       setShared("rw-rail.swarms", mine); // rw-bar's Needs you counts their questions
@@ -69,6 +80,7 @@ export default class Rail extends View {
 
   // `r.ask`: the agent's question (slice 8), shown above its pane.
   open(r, cx) {
+    if (allShown(layout())) showAll(run, false);
     if (r.pane && r.ask) openAsk(run, panes(), r.pane, r.ask, (f) => cx.timer.after(300, f));
     else if (r.pane) run("pane.focus", { pane: r.pane }); else run("terminal.peek", { terminal: r.t.address });
     if (this.remember(r.t.address)) cx?.notify();
@@ -83,6 +95,7 @@ export default class Rail extends View {
   // The swarm tab (slice 7): the overview, mod rw-swarm, split beside the communicator's terminal, on the left, and that
   // tab moved first; one already open is focused. With no communicator pane here the overview is a tab of its own.
   openSwarm(s, sw, cx) {
+    if (allShown(layout())) showAll(run, false);
     const ps = panes(), props = { folder: s.folder, machine: s.machine ?? null };
     const comms = sw.block.find((it) => it.comms)?.r.pane, tab = comms && ps.find((p) => p.pane === comms)?.tab;
     const have = ps.find((p) => p.mod === "rw-swarm" && (tab ? p.tab === tab : s.tabs.some((x) => x.id === p.tab)));
@@ -344,7 +357,7 @@ export default class Rail extends View {
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
         .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
-        .on_click((_e, cx) => (s.active && !fly ? this.fold(s.id, cx) : run("space.select", { id: s.id })))
+        .on_click((_e, cx) => { if (allShown(layout())) showAll(run, false); else if (s.active && !fly) return this.fold(s.id, cx); run("space.select", { id: s.id }); })
         .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
           .hover((st) => st.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.fold(s.id, cx); })
@@ -387,6 +400,17 @@ export default class Rail extends View {
         .child(this.space(t, s, rows, tabNames, shownTerm, now, true, sw)));
   }
 
+  // The All swarms row: how many run and how many of their agents ask you; it shows the view, or the tabs again.
+  allRow(t, sums, shown) {
+    const n = asksIn(sums).length;
+    return v_flex().id("all-swarms").flex_none().mx(10).mt(6).px(10).py(8).gap(2).rounded(9).cursor_pointer()
+      .when(shown, (el) => el.bg(t.selected)).when(!shown, (el) => el.hover((st) => st.bg(t.hover)))
+      .on_click(() => showAll(run, !shown))
+      .child(h_flex().gap(8).items_center().text_size(13).font_medium().text_color(t.foreground)
+        .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.foreground)).child("All swarms"))
+      .child(div().text_size(11.5).text_color(n ? t.blocked : t.dim).child(`${sums.length} running${n ? ` · ${n} ${n === 1 ? "needs" : "need"} you` : ""}`));
+  }
+
   render(cx) {
     const t = theme();
     const now = Date.now();
@@ -397,6 +421,11 @@ export default class Rail extends View {
     const sp = spaces();
     if (!((sp.find((s) => s.active)?.machine ?? "") in this.load)) this.poll(cx); // a machine not read yet
     const shownTerm = focused()?.terminal ?? null;
+    // The All swarms view gives way to the tabs once another tab is shown (a pill, a key, a click elsewhere).
+    const shownAll = allShown(layout()), tab = focused()?.tab ?? null;
+    if (shownAll && this.viewTab !== undefined && tab !== this.viewTab) showAll(run, false);
+    this.viewTab = shownAll ? (this.viewTab === undefined ? tab : this.viewTab) : undefined;
+    const sums = shared("rw-rail.swarms") ?? [];
     const tabName = new Map(sp.flatMap((s) => s.tabs).filter((tab) => tab.named).map((tab) => [tab.id, tab.name]));
     const tabNames = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, tabName.get(p.tab)]));
     if (!this.started) { this.started = true; this.swarms(cx); }
@@ -454,6 +483,7 @@ export default class Rail extends View {
       .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
       .child(v_flex().id("rail-tiles").flex_1().min_h(0).w_full().pb(12).gap(14).items_center().overflow_y_scrollbar().children(items));
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+      .when(sums.length > 1 || shownAll, (el) => el.child(this.allRow(t, sums, shownAll)))
       .child(h_flex().h(31).flex_none().pl(20).pr(14).pt(6).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().child("Spaces")).child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))
       .child(v_flex().id("rail-list").flex_1().min_h(0).px(10).pb(12).gap(8).overflow_y_scrollbar().children(items))

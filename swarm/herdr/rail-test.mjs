@@ -176,4 +176,16 @@ assert.ok(colorsOf('{"accent":"red"}', ["accent"]).wrong && colorsOf('{"nope":"#
 const lk = looked([{ address: "t1", status: "done" }, { address: "t2", status: "done" }, { address: "t3", status: "done" }, { address: "t4", status: "working" }],
   [{ address: "t1", status: "idle" }, { address: "t2", status: "done" }, { address: "t4", status: "working" }]);
 assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
+
+{ // the All swarms view's memory split and what asks you across swarms
+  const { memoryOf, asksIn, tagOf, allShown } = await import("./mods/rw-rail/tree.js");
+  const sums = [{ comms: "ll-comms", rss_kb: 100, needs: [{ kind: "question" }, { kind: "ci" }] },
+    { comms: "hpl-comms2", rss_kb: 50, needs: [{ kind: "hung" }] }, { comms: "far-comms", on: "vps", rss_kb: 999, needs: [] }];
+  assert.deepEqual(memoryOf(sums, 400), { parts: [{ tag: "ll", kb: 100 }, { tag: "hpl", kb: 50 }], other: 250 });
+  assert.equal(memoryOf(sums, 120).other, 0);
+  assert.equal(asksIn(sums).length, 2);
+  assert.equal(tagOf("hpl-comms2"), "hpl");
+  assert.equal(allShown({ id: "root", children: [{ id: "view", active: "all-swarms" }] }), true);
+  assert.equal(allShown({ id: "root", children: [{ id: "view", active: "main" }] }), false);
+}
 console.log("rail-test: ok");

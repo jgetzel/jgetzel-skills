@@ -10,11 +10,12 @@ the herdr-mods/herdr-mods launcher).
   mods/jgetzel-agents   <- Herdr's shipped agents mod listing each agent once (generated likewise)
   layouts/jgetzel.json  <- Herdr's shipped main layout with jgetzel-tabs, jgetzel-agents, "swarm" and "calendar"
                            children in the side panel, and that panel at half the work area
-  mods/rw-rail, rw-bar, rw-pane, rw-swarm, rw-question, rw-settings <- copies of swarm/herdr/mods/rw-*, the rework's
-                           rail, title bar, pane header, swarm overview, agent question and settings (swarm/herdr/UI-SPEC.md);
+  mods/rw-rail, rw-bar, rw-pane, rw-swarm, rw-question, rw-settings, rw-swarms <- copies of swarm/herdr/mods/rw-*, the
+                           rework's rail, title bar, pane header, swarm overview, agent question, settings and All swarms
+                           view (swarm/herdr/UI-SPEC.md);
                            rw-settings/app.js is the app's Settings screen (frame/settings/main.js), which it extends
   layouts/rework.json   <- rw-bar over jgetzel.json's row, with rw-rail in place of the spaces and agents lists, rw-settings
-                           at the rail's foot, panes as cards with rw-pane headers, and no brand block, tab bar or status
+                           at the rail's foot, panes as cards with rw-pane headers in a stack with rw-swarms, and no brand block, tab bar or status
                            bar
 Switch to it once with: herdr-app do layout.switch --name jgetzel (or --name rework; ctrl-shift-l cycles)
 Calendar config (calendar.json): see Events.lean. Run it as: herdr-mods/herdr-mods install (install.sh does). -/
@@ -193,10 +194,14 @@ partial def reworkBody (j : Json) : Json := Id.run do
   -- Panes as cards with rw-pane's header (UI-SPEC.md, "Panes as cards").
   if Json.fstr j "id" == some "main" then
     let line (c : String) := Json.mkObj [("width", 1), ("color", Json.str c)]
-    return j.setObjVal! "content" (Json.mkObj [("tab", "active"), ("pane", Json.mkObj [("gap", 10), ("radius", 12),
+    let main := j.setObjVal! "content" (Json.mkObj [("tab", "active"), ("pane", Json.mkObj [("gap", 10), ("radius", 12),
       ("background", "surface"), ("border", line "border"), ("focus", line "accent"), ("lone", true),
       ("header", Json.mkObj [("content", Json.mkObj [("mod", "rw-pane")]), ("height", 38), ("position", "top"),
         ("reveal", "always")])])])
+    -- The All swarms view (UI-SPEC.md, "Two swarms"): a tab can't belong to no space, so it is the tab area's sibling in
+    -- a stack, which the rail shows with layout.select.
+    let all := Json.mkObj [("id", "all-swarms"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-swarms")])]
+    return Json.mkObj [("id", "view"), ("type", "stack"), ("active", "main"), ("children", .arr #[main, all])]
   let mut j := j
   if let some (.arr cs) := Json.field j "children" then
     let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
@@ -320,7 +325,8 @@ def main : IO UInt32 := do
   let over := mods ++ "/rw-swarm"
   let ask := mods ++ "/rw-question"
   let sets := mods ++ "/rw-settings"
-  for m in [rail, bar, pane, over, ask, sets] do
+  let alls := mods ++ "/rw-swarms"
+  for m in [rail, bar, pane, over, ask, sets, alls] do
     if ← exists_ m false then discard <| run ["rm", "-rf", m]
     IO.FS.createDirAll m
     for e in ← System.FilePath.readDir (here ++ "/../swarm/herdr/mods/" ++ basename m) do
@@ -333,7 +339,7 @@ def main : IO UInt32 := do
   IO.println s!"wrote {out}"
 
   if version.isSome then
-    for m in [tabs, agents, cal, rail, bar, pane, over, ask, sets] do
+    for m in [tabs, agents, cal, rail, bar, pane, over, ask, sets, alls] do
       let o ← IO.Process.output { cmd := "herdr-app", args := #["check", m] }
       if o.exitCode != 0 then die s!"install: herdr-app check {m} failed: {strip (if o.stderr != "" then o.stderr else o.stdout)}"
 
