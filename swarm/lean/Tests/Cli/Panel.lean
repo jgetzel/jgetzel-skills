@@ -314,7 +314,8 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
 def test_state_summary (t : T) : IO Unit := do
   let n ← now t
   t.agent "comms" [("status", "idle"), ("last_active", .int (n - 100))]
-  t.agent "w" [("status", "working"), ("last_active", .int n)]
+  -- its claude is this test's process: the summary's rss_kb is its tree
+  t.agent "w" [("status", "working"), ("last_active", .int n), ("claude_pid", .int (← IO.Process.getPID).toNat)]
   t.agent "p" [("status", "blocked")]                                         -- stopped at a prompt
   t.agent "q" [("status", "working"), ("last_active", .int 0)]               -- asks about #2; never active: idle 0
   t.agent "s" [("status", "idle"), ("stay", "reviews"), ("last_active", .int (n - 50))]  -- hung
@@ -336,8 +337,26 @@ def test_state_summary (t : T) : IO Unit := do
     {"kind": "ci", "run": 7, "url": "u", "created": "2026-11-08T10:00:00Z"}])
   for k in ["tasks", "events", "messages", "machine", "watchd"] do
     if s.f k != .null then fail s!"summary sent {k}"
+  unless ((s.f "rss_kb").getInt?.toOption.getD 0) > 0 do fail s!"summary rss_kb {s.f "rss_kb"}"
+
+-- UI-SPEC.md slice 12: a running watchd registers its swarm; --view swarms lists those whose watchd lives
+def test_state_swarms (t : T) : IO Unit := do
+  restartHc t
+  let dir := t.d ++ "/.state/swarm/swarms"
+  let (c, pid) ← firstWatchd t ["--interval", "1", "--comms", "ll-comms", "--max-agents", "0"]
+  until_ "the watchd's tick" 10 do return (← mval t "watchd_up") == Json.str s!"{pid} -"
+  put (dir ++ "/dead.json") "{\"db\": \"/x/swarm.db\", \"folder\": \"/x\", \"pid\": 999999999}"
+  let s ← st t ["--view", "swarms"]
+  let sws := match s.f "swarms" with | .arr a => a.toList | _ => []
+  eq (sws.map fun j => (j.f "db", j.f "tag", j.f "comms", j.f "pid")) [(Json.str t.db, json% "ll", json% "ll-comms", Json.num pid.toNat!)]
+  unless (((sws.headD .null).f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {(sws.headD .null).f "folder"}"
+  if (← slurp (dir ++ "/dead.json")).isSome then fail "a dead watchd's file stayed"
+  discard <| t.exec ["kill", "-KILL", pid]  -- no exit of its own: its file stays, and the list drops it
+  discard c.wait
+  eq ((← st t ["--view", "swarms"]).f "swarms") (json% [])
 
 def tests : List Case := [
+  ("test_state_swarms", test_state_swarms),
   ("test_state_sends_what_the_view_lists", test_state_sends_what_the_view_lists),
   ("test_state_summary", test_state_summary),
   ("test_fate_is_the_ticks_verdict", test_fate_is_the_ticks_verdict),

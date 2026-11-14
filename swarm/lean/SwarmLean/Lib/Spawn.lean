@@ -19,6 +19,32 @@ def dbPath : m String := do
   | some dir => if strip dir != "" then return joinPath (joinPath (strip dir) "swarm") "swarm.db" else die "not in a git repo and SWARM_DB is unset"
   | none => die "not in a git repo and SWARM_DB is unset"
 
+/-- The swarms on this machine (UI-SPEC.md, "New swarm CLI output" 2): one file per db, written by its running watchd,
+in $XDG_STATE_HOME (else ~/.local/state)/swarm/swarms. -/
+def registryDir : m String := do
+  let x ← match ← env "XDG_STATE_HOME" with | some x => pure x | none => pure (((← env "HOME").getD "") ++ "/.local/state")
+  return x ++ "/swarm/swarms"
+
+/-- Db `p`'s registry file: its path with `/` as `%`. -/
+def registryFile (p : String) : m String := return s!"{← registryDir}/{p.replace "/" "%"}.json"
+
+/-- The swarm's tag: its communicator's name without `-comms` (as the rail draws it). -/
+def tagOf (comms : String) : String :=
+  let c := (comms.toList.reverse.dropWhile Char.isDigit).reverse
+  let c := if String.ofList c |>.endsWith "comms" then c.take (c.length - 5) else c
+  String.ofList (c.reverse.dropWhile (· == '-')).reverse
+
+/-- Each registered swarm whose watchd still runs, by folder; a dead watchd's file goes. -/
+def registered : m (List Lean.Json) := do
+  let dir ← registryDir
+  let mut out : List Lean.Json := []
+  for f in ((← Fs.list dir).getD []).filter (·.endsWith ".json") do
+    let path := dir ++ "/" ++ f
+    let some j := (← Fs.read path).bind Json.decode | continue
+    if ← match Json.fint j "pid" with | some p => Sys.pidAlive p | none => pure false then out := out ++ [j]
+    else discard <| Sys.remove path
+  return out.mergeSort fun x y => (Json.fstr x "folder").getD "" ≤ (Json.fstr y "folder").getD ""
+
 /-- The swarm/ directory (the launcher's SWARM_HERE): $SWARM_HERE, else the one above this binary. -/
 def swarmHere : m (Option String) := do
   if let some h ← env "SWARM_HERE" then return some h

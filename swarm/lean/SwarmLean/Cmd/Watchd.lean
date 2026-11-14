@@ -400,7 +400,18 @@ def watchd (a : Parsed) : m UInt32 := do
   let num (k dflt : String) : Float := (parseFloat (strip ((a.str k).getD dflt))).getD 0
   let opts : Opts := { minFreeGib := num "min_free_mem" "4", model := a.str "model", effort := a.str "effort",
                        interval := (a.int "interval").getD 30, once, blockerIdle := num "blocker_idle" "25" }
-  if let some why ← loop mine comms repo opts then die s!"watchd (pid {← Sys.getpid}){why}; exiting"
+  -- the registry (`swarm state --view swarms`): this swarm while this watchd runs; a takeover rewrites it
+  let pid ← Sys.getpid
+  let reg ← Spawn.registryFile (← Spawn.dbPath)
+  if !once then
+    let folder := (← git ["rev-parse", "--show-toplevel"]).getD (← Env.cwd)
+    discard <| Sys.mkdirp (← Spawn.registryDir)
+    discard <| Fs.write reg (Json.encode (Lean.Json.mkObj [("db", .str (← Spawn.dbPath)), ("folder", .str folder),
+      ("tag", match comms with | some c => .str (Spawn.tagOf c) | none => .null), ("comms", match comms with | some c => .str c | none => .null),
+      ("pid", Json.int pid), ("started", Json.int now)]))
+  let why ← loop mine comms repo opts
+  if ((← Fs.read reg).bind Json.decode).bind (Json.fint · "pid") == some pid then discard <| Sys.remove reg
+  if let some why := why then die s!"watchd (pid {pid}){why}; exiting"
   return 0
 
 /-- The group. -/

@@ -14,7 +14,7 @@ namespace SwarmLean.Cmd.State
 open Args
 
 /-- The panel views (state.VIEWS' keys, sorted). -/
-def VIEWS : List String := ["activity", "agents", "board", "overview", "summary", "system"]
+def VIEWS : List String := ["activity", "agents", "board", "overview", "summary", "swarms", "system"]
 
 /-- The `state` parser. -/
 def stateSpec : Spec := .mk "state" helpState []
@@ -357,6 +357,8 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
   let ci := db.cis.mergeSort fun x y => x.created.getD "" ≥ y.created.getD ""
   let fin := ci.filter fun r => r.status == some "completed" && r.conclusion.any (· != "cancelled")
   let mach ← Machine.mem
+  -- memory per swarm ("New swarm CLI output" 3): the live agents' process trees on this machine, from their claude
+  let rss := ((Machine.holders db.agents (← Machine.procs)).filter (·.agent != "other session")).foldl (· + ·.kb) 0
   let needs := asks.map (fun r => need "question" [("task", some (Json.int r.id)), ("agent", r.owner.map .str),
       ("question", r.question.map .str), ("title", r.title.map .str)]) ++
     (live.filter fun x => x.status == some "blocked" && !asks.any (·.owner == some x.name)).map
@@ -370,15 +372,18 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
       | some (av, tot, psi) => if Machine.pressureHigh av tot psi then [need "memory" [("line", some (.str (Machine.line av tot psi)))]] else []
       | none => [])
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
-    ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))),
+    ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))), ("rss_kb", Json.int rss),
     ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray)]
 
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
-  let p ← Spawn.dbPath
   let t ← Clock.now
+  if a.str "view" == some "swarms" then  -- before the db: it lists every repo's
+    Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("swarms", .arr (← Spawn.registered).toArray)]))
+    return 0
+  let p ← Spawn.dbPath
   if (← Sys.kind p true) == .none then
     Env.out (Json.encode (Json.mkObj [("active", .bool false), ("db", .str p), ("now", Json.int t)]))
     return 0
