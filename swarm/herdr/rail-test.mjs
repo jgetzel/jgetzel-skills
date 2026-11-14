@@ -404,6 +404,26 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   h = fake(fx("bash-permission"));
   assert.equal(await answerPrompt(h.hc, "t1", bash, { n: 4, say: true }, "", wait), false); assert.equal(h.calls.length, 1);
 }
+// The hook route (II.6d): the PermissionRequest records as plain text, and reading one once per msg.
+{
+  const { hookText, hookFor } = await import("./mods/rw-rail/tree.js");
+  const { readFileSync } = await import("node:fs");
+  const recs = readFileSync(new URL("./fixtures/prompts/hooks.jsonl", import.meta.url), "utf8").trim().split("\n").filter((l) => l.includes('"PermissionRequest"'));
+  assert.deepEqual(recs.map(hookText), ["$ ls /etc/hostname /etc/os-release", "Which color do you prefer?: Red (warm) · Blue (cool) · Green (calm)",
+    "Which pizza toppings do you want? (any of): Cheese · Mushroom · Olive\nWhich size do you want?: Small · Large",
+    "Write /home/jgetzel/Downloads/ll127-spike-test.txt · 1 line, 1 KB\nhello", "Fetch https://example.com"]);
+  const big = hookText(JSON.stringify({ tool_name: "Write", tool_input: { file_path: "/a", content: Array.from({ length: 900 }, (_, i) => `l${i}`).join("\n") } }));
+  assert.equal(big.split("\n").length, 5); assert.ok(big.startsWith("Write /a · 900 lines, 5 KB"));
+  for (const bad of ["", "{", "[]", '{"tool_name":"Bash"}', '{"tool_name":1,"tool_input":{}}', '{"tool_name":"X","tool_input":[1]}']) assert.equal(hookText(bad), null);
+  assert.equal(hookText('{"tool_name":"Glob","tool_input":{"pattern":"*","path":"/"}}'), "Glob: pattern, path");
+  const hooks = new Map(), reads = [], cx = { spawn: (f) => f({ notify: () => {} }) };
+  const exec = async (cmd, args) => { reads.push(args[0]); return { code: 0, stdout: recs[0] }; };
+  assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "ll-1", "m1", {}, cx), null); await new Promise((r) => setTimeout(r, 0));
+  assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "ll-1", "m1", {}, cx), "$ ls /etc/hostname /etc/os-release");
+  assert.deepEqual(reads, ["/r/.git/swarm/prompts/ll-1.json"]);
+  assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "../x", "m1", {}, cx), null); assert.equal(hookFor(hooks, exec, null, "ll-1", "m1", {}, cx), null);
+  assert.equal(reads.length, 1);
+}
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
   const o = overOf({ back: { since: 1, back: 2, note: "x", questions: [{ id: 3, question: "q?" }, 4], done: [{ id: 5, title: "t" }], merged: "no",

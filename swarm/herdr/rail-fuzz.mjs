@@ -86,6 +86,11 @@ for (let i = 0; i < 2000; i++) {
       for (const x of T.promptButtons(b)) assert.ok(ok1(x.label, 60), x.label);
     }
   }
+  // The hook route (II.6d): any record is null or bounded plain text
+  const hr = T.hookText(rnd() < 0.5 ? pick(HOSTILE) : JSON.stringify({ tool_name: pick(["Bash", "Write", "AskUserQuestion", "WebFetch", pick(HOSTILE)]),
+    tool_input: rnd() < 0.3 ? junk() : { command: pick(HOSTILE), content: pick(HOSTILE), file_path: pick(HOSTILE), url: pick(HOSTILE),
+      questions: [{ question: pick(HOSTILE), multiSelect: junk(), options: [{ label: pick(HOSTILE) }, junk()] }, junk()] } }));
+  assert.ok(hr === null || (typeof hr === "string" && hr.length <= 1200 && hr.split("\n").every((l) => ok1(l, 1200))), String(hr).slice(0, 200));
   // Spawn (II.3j): a suggested name is a name the form takes; a hostile one gives no command or a plain one
   const nn = T.nextName(pick([pick(HOSTILE), "ll-comms", null]), [junk(), pick(HOSTILE), "ll-99999999999", "ll-3"]);
   assert.ok(ok1(nn, 60), nn);
