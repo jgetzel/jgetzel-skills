@@ -46,11 +46,13 @@ sample() {
     total_kb=${mm% *}; avail_kb=${mm#* }
   fi
 }
-# shortcut: a holder that dies between mkdir and writing lock/pid leaves the lock stuck; upgrade with a lock mtime check
+# only a lock over a minute old with no live pid is broken: a younger one may have been taken just after the pid read
 lock() {
   until mkdir \"$d/lock\" 2>/dev/null; do
     p=$(cat \"$d/lock/pid\" 2>/dev/null)
-    if [ -n \"$p\" ] && ! kill -0 \"$p\" 2>/dev/null; then rm -rf \"$d/lock\"; fi
+    if [ -n \"$(find \"$d/lock\" -prune -mmin +1 2>/dev/null)\" ] && { [ -z \"$p\" ] || ! kill -0 \"$p\" 2>/dev/null; }; then
+      rm -rf \"$d/lock\"
+    fi
     sleep 0.1
   done
   echo $$ > \"$d/lock/pid\"

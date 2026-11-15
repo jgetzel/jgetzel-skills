@@ -19,11 +19,13 @@ def try_ (t : T) (st id cores : String) (holder := "t") : IO String :=
 def test_script_50_parallel_grant_exactly_4 (t : T) : IO Unit := do
   let st := t.d ++ "/s1"
   discard <| scr t st ["cap", "8", "-"]
-  let ps ← (List.range 50).mapM fun k => IO.asTask (try_ t st s!"c{k}" "2")
-  let mut ok := 0
-  for p in ps do
-    if (← IO.ofExcept p.get).startsWith "ok" then ok := ok + 1
-  eq ok 4
+  -- one sh starts the 50: as many Lean tasks each spawning, a CI runner's worker could fork no more (ENOMEM)
+  let out := t.d ++ "/s1-answers"
+  mkdir out
+  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do sh -c \"$1\" sh try c$k 2 1024 t w cmd >\"$2/$k\" & k=$((k + 1)); done; wait",
+    "sh", Compute.SCRIPT, out] { env := [("XDG_STATE_HOME", some st)] }
+  let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
+  eq (rs.filter (·.startsWith "ok")).length 4 s!"grants; answers {rs.eraseDups}"
   eq ((splitlines (← scr t st ["ls"]).stdout).filter (·.startsWith "c ")).length 4
 
 def test_script_dead_claims_are_not_counted (t : T) : IO Unit := do
@@ -35,6 +37,18 @@ def test_script_dead_claims_are_not_counted (t : T) : IO Unit := do
   eq (← try_ t st "n" "8") "ok 8"
   eq (← exists_ (st ++ "/swarm-compute/claims/a")) false
   eq (← exists_ (st ++ "/swarm-compute/claims/b")) false
+
+def test_script_an_old_lock_without_a_live_holder_is_broken (t : T) : IO Unit := do
+  let st := t.d ++ "/s5"
+  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
+  mkdir (st ++ "/swarm-compute/lock")
+  put (st ++ "/swarm-compute/lock/pid") s!"{dead}\n"
+  discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
+  eq (← try_ t st "a" "1") "ok 1"
+  -- one whose holder died before writing its pid
+  mkdir (st ++ "/swarm-compute/lock")
+  discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
+  eq (← try_ t st "b" "1") "ok 1"
 
 def test_script_older_ticket_holds_back_younger (t : T) : IO Unit := do
   let st := t.d ++ "/s3"
@@ -209,6 +223,7 @@ def test_run_claim_is_gone_after_a_killed_job (t : T) : IO Unit := do
 
 def tests : List Case := [
   ("test_script_50_parallel_grant_exactly_4", test_script_50_parallel_grant_exactly_4),
+  ("test_script_an_old_lock_without_a_live_holder_is_broken", test_script_an_old_lock_without_a_live_holder_is_broken),
   ("test_script_dead_claims_are_not_counted", test_script_dead_claims_are_not_counted),
   ("test_script_older_ticket_holds_back_younger", test_script_older_ticket_holds_back_younger),
   ("test_script_never_off_and_all", test_script_never_off_and_all),
