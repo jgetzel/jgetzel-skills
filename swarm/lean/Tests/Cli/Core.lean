@@ -281,6 +281,10 @@ def test_compact_types_into_own_terminal (t : T) : IO Unit := do
   let c := (← t.calls "hc").getLastD ""
   has c "[] send h1 /compact Keep what swarm agent a needs"; has c "task #1 (the thing)"; has c "the plan"
   has c (← t.cwdOf "a")
+  -- its worktree, not the checkout it was spawned from
+  t.q_ s!"update agent set wt='{t.wt}' where name='a'"
+  t.sw_ "a" ["compact"] { hc := some "h1" }
+  has ((← t.calls "hc").getLastD "") s!"worktree {t.wt}, branch w2"
   -- a long keep goes by file: the typed line stays short (board #145)
   t.sw_ "a" ["compact", "--keep", "".pushn 'k' 2500] { hc := some "h1" }
   let l := (← t.calls "hc").getLastD ""

@@ -141,7 +141,7 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
 /-- Context compaction (board #136): each live agent holding work (a task, a stay, the communicator's role) gets
 `Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. -/
 def compactPass (terms : List Term) (comms : String) : m Unit := do
-  let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
+  let db ← Store.txn [.agent, .task, .event, .«meta», .workspace] fun db => (db, db)
   let (nAt, cAt, too) := (Compact.nudgeAt db, Compact.compactAt db, Compact.stayersToo db)
   for a in Agents.live db do
     let some h := py a.hc | continue
