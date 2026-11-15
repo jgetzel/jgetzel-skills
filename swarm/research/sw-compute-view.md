@@ -76,9 +76,11 @@ vps             disconnected
 
 ## Checking it
 
-The screenshot sandbox (shot.sh `--rework real`, board #179) gets a ledger of its own for "desktop": rail-demo.sh
-starts it with `SWARM_COMPUTE_DIR` (a test hook of the script: the ledger's directory) and a made-up `/proc/stat`
-and `/proc/meminfo` (16 cores, 64 G) through `SWARM_COMPUTE_STAT` and `SWARM_COMPUTE_MEM`. `compute-demo.sh none |
-claims | off` writes claims and a waiter into the two ledgers (holder `t`, an hour), or turns desktop off. Shots: no
-claims, claims and a waiter, a machine off; then the controls clicked in the sandbox and `swarm compute` printed
-before and after.
+The screenshot sandbox (shot.sh `--rework real`, board #179) gives "desktop" a ledger and a reading of its own:
+rail-demo.sh starts it with `SWARM_COMPUTE_DIR` (a test hook of the script: the ledger's directory) and a made-up
+`/proc/stat` and `/proc/meminfo` through `SWARM_COMPUTE_STAT` and `SWARM_COMPUTE_MEM`: 16 cores of which 15 are busy
+(a counter that advances while the sandbox lives), 64 G with 40 G available. This computer keeps its real reading.
+`compute-demo.sh none | claims | off` empties the two ledgers, or writes two claims here and three on desktop under a
+cap of 14 cores with two waiters (one held back by unclaimed use, one by the cap; holder `t`, an hour), and for `off`
+turns desktop off. Shots in swarm/herdr/shots/compute-*.png; the controls were clicked with xdotool in the sandbox and
+`swarm compute` printed before and after each.

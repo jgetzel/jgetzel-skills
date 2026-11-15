@@ -141,7 +141,7 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 
 - Enforcement (cgroup quotas), §1.
 - Priorities, fairness between swarms, preemption: the point at which a scheduler daemon or Nomad is the answer.
-- The machine note and the Herdr panels showing claims.
+- The machine note. (The Herdr panels showing claims: research/sw-compute-view.md, board #189.)
 - A proof. Admission is decided by the script, so "claims never exceed the cap" is tested (§5), not proved.
 - What the job actually used against what it claimed, in the footer.
 - The auto-spawner reading `wait_s`.

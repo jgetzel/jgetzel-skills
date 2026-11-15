@@ -250,7 +250,7 @@ def run (a : Parsed) : m UInt32 := do
   let script := "; ".intercalate [
     s!"mkdir -p {metaD} && cd \"$HOME/{src}\" || exit 255",
     -- the claim's holder becomes this shell; the claim goes when it exits
-    s!"f=\"$\{XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute/claims/{claimId}\"; trap 'rm -f \"$f\"' EXIT",
+    s!"f=\"$\{SWARM_COMPUTE_DIR:-$\{XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}/claims/{claimId}\"; trap 'rm -f \"$f\"' EXIT",
     s!"if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$$ /\" \"$f\" > \"$\{f%/*}/.h$$\" && mv \"$\{f%/*}/.h$$\" \"$f\"; fi",
     "[ -d .git ] || git init -q",
     s!"git add -A && git write-tree > {metaD}/tree",

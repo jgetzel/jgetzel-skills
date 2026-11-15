@@ -26,7 +26,7 @@ def DARWIN_MEM_AWK : String :=
 
 /-- The script's first half: the ledger's place, the machine's reading (`sample`), the lock and the cleaning. -/
 def SCRIPT_A : String := "
-d=\"${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute\"
+d=\"${SWARM_COMPUTE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}\"
 op=$1; shift
 trap 'exit 1' INT TERM HUP
 mkdir -p \"$d/claims\" \"$d/queue\" || exit 1

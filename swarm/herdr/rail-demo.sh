@@ -240,9 +240,15 @@ if [ -n "$sw" ]; then
   fi
 fi
 
-# "desktop": spaces named like this computer's, with shells.
-ds=${HC_SESSION}d
-hc machine add --via 'sh -c' --name desktop --session "$ds" >/dev/null
+# "desktop": spaces named like this computer's, with shells. Its compute ledger and reading are its own (compute-demo.sh
+# fills the ledger): 16 cores, 15 of them busy (a counter that advances while the sandbox lives), 64 G, 40 G available.
+ds=${HC_SESSION}d dk=$D/w/desktop
+mkdir -p "$dk"
+printf 'MemTotal: 67108864 kB\nMemAvailable: 41943040 kB\n' >"$dk/meminfo"
+(u=0 i=0; while [ -d "$HERDR_APP_HOME" ]; do u=$((u + 15)) i=$((i + 1))
+  { echo "cpu  $u 0 0 $i 0 0 0 0 0 0"; for c in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo "cpu$c 0 0 0 0 0 0 0 0 0 0"; done; } >"$dk/stat.new"
+  mv "$dk/stat.new" "$dk/stat"; sleep 0.1; done) >/dev/null 2>&1 &
+hc machine add --via "env SWARM_COMPUTE_DIR=$dk/compute SWARM_COMPUTE_STAT=$dk/stat SWARM_COMPUTE_MEM=$dk/meminfo sh -c" --name desktop --session "$ds" >/dev/null
 (while [ -d "$HERDR_APP_HOME" ]; do sleep 2; done; HC_SESSION=$ds hc server stop
   rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/herdr-core/$ds") >/dev/null 2>&1 &
 for _ in 1 2 3 4 5 6 7 8 9 10; do # until the window has connected to it
