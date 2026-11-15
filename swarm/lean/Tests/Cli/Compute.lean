@@ -120,6 +120,12 @@ def test_run_sized_from_history (t : T) : IO Unit := do
   | .error _ => fail "cost.record exited"
   let r ← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES $SWARM_MEM_KB"]
   has r.stdout "5 5000000"
+  -- a `swarm run` row's cpu_s is a %CPU sample: it never raises the cores
+  let big : SwarmLean.Cost.Rec := { ts := 2, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 5000, peak_kb := 1, source := "run" }
+  match ← ((SwarmLean.Cost.record big : App Bool).run.run { conn := ← IO.mkRef none }) with
+  | .ok _ => pure ()
+  | .error _ => fail "cost.record exited"
+  has (← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES"]).stdout "5\n"
   has r.stderr "from the history"
 
 def test_run_routes_to_the_second_machine_when_the_first_is_full (t : T) : IO Unit := do
@@ -132,6 +138,25 @@ def test_run_routes_to_the_second_machine_when_the_first_is_full (t : T) : IO Un
   has r.stdout " p\n"  -- the holder became the job's shell
   eq (← claimsHere t) 1  -- the filler only
   eq (splitlines (← t.exec ["ls", home ++ "/.local/state/swarm-compute/claims"]).stdout).length 0
+
+def test_run_a_machine_gone_is_retried (t : T) : IO Unit := do
+  discard <| fakeRemote t
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"machines": ["laptop"]}}).compress
+  put (t.d ++ "/exec.fail") ""
+  -- the first round: here is off and laptop does not answer, no wait: 255
+  discard <| t.sw "b" ["compute", "off", "here"]
+  eq (← t.sw "b" ["run", "--", "true"] { ok := false }).code 255
+  discard <| t.sw "b" ["compute", "on", "here"]
+  -- a later round: here never fits, laptop is gone: it keeps waiting, and runs on laptop when that answers
+  fill t "8"
+  discard <| bg t "b" ["--", "echo ran"]
+  until_ (return (← slurp (t.d ++ "/e")).any (subIn · "waiting for room"))
+  discard <| t.sw "b" ["compute", "cap", "here", "--cores", "1"]
+  IO.sleep 1000
+  eq (← slurp (t.d ++ "/rc")) (none : Option String)
+  IO.FS.removeFile (t.d ++ "/exec.fail")
+  until_ (do return (subIn ((← slurp (t.d ++ "/o")).getD "") "on laptop"))
 
 def test_run_waits_and_runs_when_a_claim_is_dropped (t : T) : IO Unit := do
   fill t "8"
@@ -185,6 +210,7 @@ def tests : List Case := [
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),
   ("test_run_routes_to_the_second_machine_when_the_first_is_full", test_run_routes_to_the_second_machine_when_the_first_is_full),
+  ("test_run_a_machine_gone_is_retried", test_run_a_machine_gone_is_retried),
   ("test_run_waits_and_runs_when_a_claim_is_dropped", test_run_waits_and_runs_when_a_claim_is_dropped),
   ("test_run_nothing_can_fit_is_255", test_run_nothing_can_fit_is_255),
   ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job)]

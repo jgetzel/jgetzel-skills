@@ -24,7 +24,7 @@ do the sync, wait, sizing and recording).
   cores. A claim is granted when it fits under **both** the ledger and the measurement:
 
   ```
-  outside    = max(0, round(busy - claimed_cores) - 1)       # use nobody claimed; 1 core of noise ignored
+  outside    = max(0, round(busy - claimed_cores) - max(1, ncpu/8))   # use nobody claimed; max(1, ncpu/8) cores of noise ignored
   free_cores = min(cap_cores - claimed_cores, ncpu - claimed_cores - outside)
   free_mem   = min(cap_mem - claimed_mem, available_mem)
   grant iff cores <= free_cores and mem_kb <= free_mem and no older live ticket on this machine
@@ -32,6 +32,8 @@ do the sync, wait, sizing and recording).
 
   The ledger covers jobs that just started and have not ramped up; the measurement covers the user's own work and
   agents that run a build outside `swarm run`.
+- The noise floor is an eighth of the machine (at least 1 core), so a dozen idle agents do not block a head-of-queue
+  request for good.
 - `busy` is cores in use now, not the load average (which lags a minute after a big job ends): Linux, two reads of
   `/proc/stat`'s first line 0.5 s apart, `ncpu * Δnon-idle / Δtotal`; macOS, the sum of `ps -A -o %cpu` over 100.
   Sampled before the lock is taken. `available_mem`: `MemAvailable`, or macOS free + inactive + speculative +
@@ -67,13 +69,15 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 ```
 
 1. **Size.** `--cores` and `--mem` when given. Else from the cmd-cost rows for this repo and command key on any
-   machine: cores = the largest `cpu_s / wall_s`, rounded up, at least 1; memory = the largest `peak_kb` × 1.25. With
-   no history, 2 cores and 2 GiB. One stderr line says what was claimed and from what.
+   machine: cores = 2, or the largest `cpu_s / wall_s` rounded up over rows with `cpu_s > 0` and `source != 'run'`
+   (those rows hold a %CPU sample, and many rows have no CPU reading), whichever is more, so history only raises the
+   default; memory = the largest `peak_kb` × 1.25 over every row. With no history, 2 cores and 2 GiB. One stderr line says what was claimed and from what.
 2. **Candidates.** `--on m`: only `m`. Else this machine, then `.claude/swarm.json` `run.machines` in order (a list
    of `hc machine ls` names; absent: this machine only, as before). A machine not `connected` is skipped.
 3. **Claim.** `try` on each candidate in order; the first `ok` wins and `drop` runs on the others. If none: one stderr
-   line with each machine's free cores and memory, then again every 5 s, silently. When every candidate says `never`
-   or `off`, or none is connected: a message naming each, exit 255. There is no timeout; the agent runs this in the
+   line with each machine's free cores and memory, then again every 5 s, silently, every machine each round (one that
+   did not answer is tried again). Exit 255 with a message naming each when the first round has no `wait` answer, or
+   when in a later round every candidate answered `never` or `off`; a round where a machine did not answer keeps waiting. There is no timeout; the agent runs this in the
    background and can kill it.
 4. **Run.** Here: holder `p<swarm run's pid>`, `drop` after the command. On another machine: holder `t`, then the
    sync, then the job script rewrites the holder to `p$$` as its first step and removes the claim in an exit trap.
@@ -118,6 +122,20 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 - `brief.md`: heavy work goes through `swarm run` (`--cores`, `--mem`); it waits for room and may run elsewhere.
 - `SKILL.md`: `run.machines`, `swarm compute`, the caps. `research/sw-remote-jobs.md` §5 "Picking a machine" points here.
 - `OpsHelp.lean`: `run`'s and `compute`'s help.
+
+## 6a. As built, where it differs from the above
+
+- Test hooks: the script reads `SWARM_COMPUTE_STAT` and `SWARM_COMPUTE_MEM` (files standing for `/proc/stat` and
+  `/proc/meminfo`), `swarm run` reads `SWARM_COMPUTE_POLL_MS` (default 5000).
+- The script's `cap` takes `=` for a field to keep; only `try` and `ls` take the lock and clean.
+- 5. A machine that does not answer counts as no room for the decision above, and is tried again each round.
+- 6. The sizing key is the user's command (not the prefixed one); `--mem` is decimal GiB; the stderr line says
+  `from the history`, `no history: the default` or `as asked`.
+- 7. A job's wall time starts after the claim; the claim comes before the job id and `job-start`, so a waiting job has
+  no event; the footer shows `waited NmSSs` from 1 s.
+- 8. `swarm compute` ages use the controller's clock against the machine's claim start; a machine that is `off` with
+  nothing on it renders as `name: off`.
+- 9. `run.set` is still applied to remote jobs only; `{cores}` in `run.prefix` applies to both.
 
 ## 7. Not in this step
 

@@ -5,11 +5,13 @@ import SwarmLean.Lib.Compute
 open SwarmLean Compute
 
 #guard size [] == none
-#guard size [(0, 5, 5)] == none
--- 4 cores for 100 s of wall (400 CPU-s): 4; the largest ratio and the largest peak win; peak × 1.25
-#guard size [(100, 400, 1000000), (60, 61, 2000000)] == some (4, 2500000)
-#guard size [(100, 50, 0)] == some (1, DEFAULT_MEM_KB)
-#guard size [(100, 101, 1000)] == some (2, 1250)
+#guard size [(0, 5, 5, "swarm")] == none
+-- cores: the default, raised by the largest cpu_s/wall_s of a row with cpu_s > 0 that is not source run; peak × 1.25 from every row
+#guard size [(100, 400, 1000000, "swarm"), (60, 61, 2000000, "swarm")] == some (4, 2500000)
+#guard size [(100, 0, 0, "swarm")] == some (2, DEFAULT_MEM_KB)
+#guard size [(100, 101, 1000, "swarm")] == some (2, 1250)
+#guard size [(100, 900, 1000, "run")] == some (2, 1250)
+#guard size [(100, 900, 4000, "run"), (100, 0, 100, "swarm")] == some (2, 5000)
 
 #guard parseTry "ok 4" == .ok 4
 #guard parseTry "wait 2 1024 3" == .wait 2 1024 3

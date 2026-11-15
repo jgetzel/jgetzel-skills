@@ -106,7 +106,7 @@ try_() {
   done
   free=$(cat \"$d\"/claims/* 2>/dev/null | awk -v busy=\"$busy\" -v ncpu=\"$ncpu\" -v capc=\"$capc\" -v capm=\"$capm\" -v av=\"$avail_kb\" '
     {cc+=$1; cm+=$2}
-    END{o=int(busy-cc+0.5)-1; if(o<0)o=0
+    END{k=int(ncpu/8); if(k<1)k=1; o=int(busy-cc+0.5)-k; if(o<0)o=0
       a=capc-cc; b=ncpu-cc-o; fc=(a<b)?a:b
       x=capm-cm; fm=(x<av)?x:av
       print fc, fm}')
@@ -253,21 +253,23 @@ def Ls.json (l : Ls) : Json :=
     ("queue", .arr (l.queue.toArray.map fun q => Json.mkObj [("first", Json.int q.first), ("cores", Json.int q.cores),
       ("mem_kb", Json.int q.mem_kb), ("who", .str q.who)]))]
 
-/-- What a job claims, from its history rows (wall_s, cpu_s, peak_kb) on any machine: the largest `cpu_s / wall_s` rounded
-up (at least 1) and the largest peak × 1.25; none without a row that has a wall time. -/
-def size (rows : List (Int × Int × Int)) : Option (Int × Int) :=
+/-- What a job claims, from its history rows (wall_s, cpu_s, peak_kb, source) on any machine: cores are the default or the
+largest `cpu_s / wall_s` rounded up over rows with a CPU reading that `swarm run` did not itself record (`source` run holds
+a %CPU sample), whichever is more, so history only raises it; memory is the largest peak × 1.25 over every row; none
+without a row that has a wall time. -/
+def size (rows : List (Int × Int × Int × String)) : Option (Int × Int) :=
   let rs := rows.filter (·.1 > 0)
   if rs.isEmpty then none else
-  let cores := rs.foldl (fun a r => max a ((r.2.1 + r.1 - 1) / r.1)) 1
-  let peak := rs.foldl (fun a r => max a r.2.2) 0
+  let cores := rs.foldl (fun a r => if r.2.1 > 0 && r.2.2.2 != "run" then max a ((r.2.1 + r.1 - 1) / r.1) else a) DEFAULT_CORES
+  let peak := rs.foldl (fun a r => max a r.2.2.1) 0
   some (cores, if peak ≤ 0 then DEFAULT_MEM_KB else (peak * 5 + 3) / 4)
 
 /-- The cmd-cost rows (wall_s, cpu_s, peak_kb) of this repo's command `line`, from any machine. -/
-def history {m : Type → Type} [Monad m] [Env m] [Sys m] [Git m] (line : String) : m (List (Int × Int × Int)) := do
+def history {m : Type → Type} [Monad m] [Env m] [Sys m] [Git m] (line : String) : m (List (Int × Int × Int × String)) := do
   if !(← Cost.exists?) then return []
   let some repo ← Cost.repoName | return []
-  let rows := ((← Sys.sqlAt (← Cost.path) Cost.SCHEMA [("select wall_s,cpu_s,peak_kb from cmd where repo=? and key=?",
+  let rows := ((← Sys.sqlAt (← Cost.path) Cost.SCHEMA [("select wall_s,cpu_s,peak_kb,source from cmd where repo=? and key=?",
     [.text repo, .text (Cost.key line)])]).headD #[]).toList
-  return rows.map fun r => (Cost.vi (r.getD 0 .null), Cost.vi (r.getD 1 .null), Cost.vi (r.getD 2 .null))
+  return rows.map fun r => (Cost.vi (r.getD 0 .null), Cost.vi (r.getD 1 .null), Cost.vi (r.getD 2 .null), Cost.vs (r.getD 3 .null))
 
 end SwarmLean.Compute

@@ -121,21 +121,25 @@ def run (a : Parsed) : m UInt32 := do
   let claimId := s!"{sanitize who}-{← Sys.getpid}-{← Clock.now}"
   let tw ← Sys.nowF
   let mut won : Option (Option String × Int) := none
-  let mut dead : List (Option String) := []
+  let mut first := true
   let mut told := false
   let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
   repeat
     let mut seen : List (Option String × Try) := []
-    for c in usable.filter (!dead.contains ·) do
+    let mut gone := false
+    for c in usable do
       if won.isSome then break
       let holder ← if c.isNone then pure s!"p{← Sys.getpid}" else pure "t"
       let r := parseTry ((← Compute.sh c ["try", claimId, wantC, d wantM, holder, who, line]).getD "")
       match r with
       | .ok n => won := some (c, n)
-      | .gone => dead := dead ++ [c]
+      | .gone => gone := true
       | x => seen := seen ++ [(c, x)]
     if won.isSome then break
-    if !seen.any (fun (_, x) => match x with | .wait .. => true | _ => false) then
+    let anyWait := seen.any fun (_, x) => match x with | .wait .. => true | _ => false
+    let isFirst := first
+    first := false
+    if !anyWait && (isFirst || !gone) then
       for c in usable do Compute.release c claimId
       Env.err ("swarm: nothing can run this job: " ++ "; ".intercalate (cands.map fun c =>
         s!"{nameOf c}: " ++ match stateOf c, (seen.lookup c) with
