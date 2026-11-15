@@ -329,7 +329,7 @@ def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
         (say db now comms s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
 
 /-- Hung stayers: no live waiter, a waking message unread two ticks, and the liveness check and its answer; all state in
-events newer than the stayer's last_active, so any wake re-arms it (watchd.hung). -/
+events newer than the stayer's last_active, so any wake re-arms it (watchd.hung). None while it compacts. -/
 def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : m Unit := do
   let db ← Store.txn [.agent, .event, .msg, .cursor, .«meta»] fun db => (db, db)
   let envComms ← env "SWARM_COMMS"
@@ -342,6 +342,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
     let evs := db.events.filter fun e => e.agent == some n && e.ts.any (· ≥ last)
     let ev (kind : String) (data : Option String := none) : Option Event :=
       (evs.filter fun e => e.kind == some kind && (data.isNone || e.data == data)).getLast?
+    if Compact.compacting db.events n last t then continue  -- compactPass wakes it once the compaction ends
     let waits ← match a.waiter with | some w => Sys.pidAlive w | none => pure false
     if !waits then
       if (ev "stay-nowaiter").isNone then
