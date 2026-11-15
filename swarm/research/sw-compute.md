@@ -48,8 +48,9 @@ directly, on another machine through `hc exec --on <m> --timeout 20` (as `Run.re
 `sqlite3` or `flock` on the target; only `sh`, `awk`, `mkdir`, `find`, `ps`, `kill`, `date`, and `sysctl`/`vm_stat` on
 macOS.
 
-- Lock: `mkdir $d/lock`, the holder's pid in `lock/pid`; a waiter retries every 0.1 s and removes a lock whose pid is
-  dead. Released by a trap on exit.
+- Lock: `mkdir $d/lock`, the holder's pid in `lock/pid`; a waiter retries every 0.1 s and removes a lock over a minute
+  old whose pid is dead or unwritten (a younger one may have been taken just after the waiter read the pid). Released
+  by a trap on exit.
 - Every op first deletes dead claims and stale tickets.
 
 | Op | Does | Prints |
