@@ -1135,6 +1135,13 @@ theorem run_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (a 
   all_goals xstep
 
 set_option maxHeartbeats 20000000 in
+/-- Every `Compute` command keeps the cross-area invariant at every commit (`Cmd.Compute.group`). -/
+theorem compute_keeps (hM : ∀ w, M.now w ≤ t) (a : Args.Parsed) :
+    Keeps (XInv · t) ((Cmd.Compute.group (m := RecM M)).run a) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
 /-- Every `State` command keeps the cross-area invariant at every commit (`Cmd.State.group`). -/
 theorem state_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (a : Args.Parsed) :
     Keeps (XInv · t) ((Cmd.State.group (m := RecM M)).run a) := by
@@ -1188,7 +1195,7 @@ theorem groups_keep (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) :
     ∀ g ∈ Dispatch.groups (m := RecM M), ∀ a, Keeps (XInv · t) (g.run a) := by
   intro g hg a
   simp only [Dispatch.groups, List.mem_cons, List.not_mem_nil, or_false] at hg
-  rcases hg with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  rcases hg with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
   · exact tasks_keeps hM a
   · exact msgs_keeps hM hL a
   · exact locks_keeps hM a
@@ -1196,6 +1203,7 @@ theorem groups_keep (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) :
   · exact cost_keeps a
   · exact ci_keeps hM hL a
   · exact run_keeps hM hL a
+  · exact compute_keeps hM a
   · exact state_keeps hM hL a
   · exact hook_keeps hM a
   · exact watchd_keeps hM hL a

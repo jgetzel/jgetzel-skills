@@ -203,7 +203,9 @@ Added 2026-11-07, after the first live run (sr-* on this repo, jk_ledger next):
 
 6. **Information, not gates.** Contention is resolved by telling agents what
    is true at the moment they decide (a machine note, a conflict notice), not
-   by slots, queues or timers. `swarm heavy` is removed, and so is the heavy-word list.
+   by slots, queues or timers. `swarm heavy` is removed, and so is the heavy-word list. Since 2026-11-14 a job started
+   with `swarm run` is the exception: it claims sized cores and memory on a machine and waits for room
+   ([research/sw-compute.md](research/sw-compute.md)); a Bash command that is not `swarm run` is still never denied.
 7. **No time windows.** The 60-minute touch window is gone: a conflict is a merge that fails now, and a lock is freed when
    the holder's work lands.
 8. **The task body is the request.** Agents build every item it lists and
@@ -287,7 +289,9 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 - **Machine note** (`swarm machine`). The `PreToolUse` hook on Bash adds context only when the cmd-cost history
   (`swarm cost`) predicts a peak above half the memory available, or pressure is high and the command has history: what
   it took before, free memory, pressure, and memory held per agent and "other sessions" by measurement. Never a deny.
-  No word list decides anything.
+  No word list decides anything. A job started with `swarm run` does not depend on it: it is *claimed* (cores and
+  memory in a per-machine ledger, `swarm compute`), and waits or goes to another machine when there is no room. What
+  is still only information: every command not started through `swarm run`, and the note itself.
 - **`watchd` machine tick.** Edge-triggered `pressure` / `pressure-end`
   events and one `notice` to the three agents holding the most memory and to every stayer;
   `oom_score_adj` 500 on every process in an agent's tree except its claude process; kills of processes orphaned in an

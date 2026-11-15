@@ -266,11 +266,11 @@ case "$1 $2" in "machine ls") echo '@M'; exit 0;; esac
 case "$1" in
   ls) echo '{"terminals": []}';;
   run) while [ "$1" != sh ]; do shift; done
-    (cd @H && HOME=@H "$@" >/dev/null); echo $? > @D/rc; echo '{"address": "laptop/t1"}';;
+    (cd @H && env -u XDG_STATE_HOME HOME=@H "$@" >/dev/null); echo $? > @D/rc; echo '{"address": "laptop/t1"}';;
   wait) [ -e @D/lost ] && exit 3
     echo "{\"ended\": true, \"exit_code\": $(cat @D/rc)}";;
   get) if [ -f @D/get.$2 ]; then cat @D/get.$2; else echo '{"error": {"kind": "not_found", "message": "no terminal"}}'; exit 3; fi;;
-  exec) while [ "$1" != --timeout ]; do shift; done; shift 2; cd @H && HOME=@H "$@" 2>/dev/null;;
+  exec) [ -e @D/exec.fail ] && exit 1; while [ "$1" != --timeout ]; do shift; done; shift 2; cd @H && env -u XDG_STATE_HOME HOME=@H "$@" 2>/dev/null;;
 esac
 "#)
   discard <| t.fake "ssh" (sub r#"#!/bin/sh

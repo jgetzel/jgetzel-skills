@@ -6,6 +6,7 @@ import SwarmLean.Cmd.Agents
 import SwarmLean.Cmd.Cost
 import SwarmLean.Cmd.Ci
 import SwarmLean.Cmd.Run
+import SwarmLean.Cmd.Compute
 import SwarmLean.Cmd.State
 import SwarmLean.Cmd.Hook
 import SwarmLean.Cmd.Watchd
@@ -28,6 +29,7 @@ def groups : List (Group m) := [
   Cmd.Cost.group,
   Cmd.Ci.group,
   Cmd.Run.group,
+  Cmd.Compute.group,
   Cmd.State.group,
   Cmd.Hook.group,
   Cmd.Watchd.group
