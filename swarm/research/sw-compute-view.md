@@ -23,28 +23,46 @@ The panel runs `swarm compute --json` itself, on its own timer; `swarm state` do
 
 ## Layout
 
-One card, **Compute**, after "This computer" (memory) and before Locks. Its head: "Compute", note `claims through
-swarm run · read 12s ago`. Then a row per machine, this one first (named as the memory card names it), the others in
-`hc machine ls` order:
+The main thing shown: for each machine and each resource, how much is **claimed**, how much is **used without a
+claim** (the user's own work, CI, a build started outside `swarm run`) and how much is **free**, so a waiting job's
+reason can be read at a glance: the ledger is full, or unclaimed use takes the room.
+
+One card, **Compute**, after "This computer" (memory) and before Locks. Its head: "Compute", note `read 12s ago`;
+under it a legend of the four colours. Then a block per machine, this one first (named as the memory card names it),
+the others by name:
 
 ```
-This computer   [■■■□□] 6 of 20 cores   [■□□□□] 10.0 of 80 G   9.3 busy   cap 20 of 24     Cap…  Turn off
-    sr-3        4 cores   8.0 G   4m   nix build .#x
-    sr-5        2 cores   2.0 G   1m   cargo test
-    waiting  sr-7   12 cores   2.0 G   2m
-desktop         [□□□□□] 0 of 16 cores  [□□□□□] 0.0 of 64 G    0.0 busy   off              Cap…  Turn on
+This computer   off?                          9.3 busy of 24 cores           Cap…  Turn off
+  Cores   [■■■■■■▒▒▒░░░░░░░░    ]   6 claimed · 3 unclaimed · 11 free · cap 20 of 24
+  Memory  [■■■▒▒▒▒░░░░░░░░░░░░░]   10.0 claimed · ≈12.3 unclaimed · 57.7 free G
+    sr-3      4 cores   8.0 G   4m   nix build .#x
+    sr-5      2 cores   2.0 G   1m   cargo test
+    waiting   sr-7   12 cores   2.0 G   2m   cores: claims fill the cap
 vps             disconnected
 ```
 
-- The machine row: cores claimed against the cap (a 5 px meter as the memory card's and the text), memory claimed
-  against the memory cap, measured busy cores, and `cap N of M` when a cap is below what the machine has (cores or
-  memory). `off` is an amber chip; a machine `hc machine ls` does not show connected, or one that did not answer, is
-  one dim row saying so (`disconnected`, `unreachable`, …) with no meters and no controls.
-- Under it, its claims: who (opens that agent's page when it is in this swarm), cores, memory, age, the command in
-  the monospace font, truncated. Then its waiters, oldest first: a `waiting` chip, who, cores, memory, how long.
+- A stacked bar per resource over the machine's whole size: claimed (blue), unclaimed use (amber), free (green), and
+  the rest, above the cap, as the bare track. The text beside it gives the same numbers, and `cap N of M` where the
+  cap is below the machine's size.
+- **Cores**, as admission counts them (sw-compute.md §1): claimed `cc` is the ledger's sum; unclaimed is the script's
+  `outside` = `max(0, round(busy - cc) - max(1, ncpu/8))`, busy cores no claim explains past the noise allowance; free
+  is the script's `min(cap - cc, ncpu - cc - outside)`, floor 0. So claimed + unclaimed + free + above the cap is the
+  machine's cores, and free is what the next `try` is granted. The measured busy cores are on the machine's line.
+- **Memory**: the ledger knows what was claimed, not what claimed jobs use, so unclaimed use is an estimate, `max(0,
+  total - available - claimed)`, written `≈` and named an estimate in the legend. Free is admission's `min(cap -
+  claimed, available)`, floor 0. Claimed + unclaimed + free never exceeds the total (free is at most cap - claimed, and
+  with unclaimed above 0 claimed + unclaimed is what is in use).
+- `off` is an amber chip on the machine's line; a machine `hc machine ls` does not show connected, or one that did not
+  answer, is one dim line saying so (`disconnected`, `unreachable`, …) with no bars and no controls.
+- Under it, its claims, oldest first: who (opens that agent's page when it is in this swarm), cores, memory, age, the
+  command in the monospace font, truncated. Then its waiters, oldest first: a `waiting` chip, who, cores, memory, how
+  long, and why: for each resource it is short of, `claims fill the cap` (it asks for more than cap - claimed) or
+  `unclaimed use takes the room` (it would fit under the cap); if it is short of neither, `behind <older waiter>`, or
+  `fits: starts on its next try` for the oldest.
 - An `off` machine still lists its claims: running jobs finish.
-- With no claim and no waiter anywhere, one dim line under the rows: "No job claims cores now: `swarm run` claims them".
-- Narrow (the side view, one column): the row wraps, the buttons go to a second line.
+- With no claim and no waiter anywhere, one dim line under the machines: "No job claims cores now: `swarm run`
+  claims them".
+- Narrow (the side view, one column): a machine's line wraps, the bars' text goes under the bars.
 
 ## What a click does
 
