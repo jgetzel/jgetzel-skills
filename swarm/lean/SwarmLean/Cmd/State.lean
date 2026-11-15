@@ -14,7 +14,7 @@ namespace SwarmLean.Cmd.State
 open Args
 
 /-- The panel views (state.VIEWS' keys, sorted). -/
-def VIEWS : List String := ["activity", "agents", "board", "overview", "summary", "swarms", "system"]
+def VIEWS : List String := ["activity", "agents", "board", "graph", "overview", "summary", "swarms", "system"]
 
 /-- The `state` parser. -/
 def stateSpec : Spec := .mk "state" helpState []
@@ -413,14 +413,17 @@ def state (a : Parsed) : m UInt32 := do
   let lockBy := groupBy db.locks (·.agent.toList)
   -- what the view lists (no view: everything): open work and live agents always; the Board the newest 80 done and
   -- dropped (it shows 80), the Agents screen the newest 60 ended (it shows 60), an agent's screen its done tasks, a
-  -- task's screen it and its deps, the event feeds the tasks their events name; the rest only as `counts`
+  -- task's screen it and its deps, the event feeds the tasks their events name, the Graph every task with a dependency
+  -- or that is one (research/sw-graph-view.md); the rest only as `counts`
   let deep := view == some "activity"  -- the Activity tab folds and filters, so it reads further back
   let evShown := if wants view "events" then (db.events.filter shown).reverse.take (if deep then 300 else 60) else []
   -- `--before`: the next page back, the Board's tasks numbered below it, the Agents' ended before it (UI-SPEC II.3l)
   let before := a.int "before"
   let below (n : Int) : Bool := match before with | some b => decide (n < b) | none => true
   let newest (s : Status) : List Int := ((db.tasks.filter fun r => r.state = s && below r.id).reverse.take 80).map (·.id)
-  let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++
+  let edged : List Int := if view == some "graph" then
+      (db.tasks.filter fun r => !(Tasks.depsOf r).isEmpty).foldl (fun acc r => r.id :: Tasks.depsOf r ++ acc) [] else []
+  let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++ edged.eraseDups ++
     (match tid with | some i => i :: ((db.find i).map Tasks.depsOf).getD [] | none => []) ++
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
   let sent (r : Task) : Bool := full || !(r.state = .done || r.state = .dropped) || page.contains r.id ||

@@ -11,10 +11,10 @@
 // next tasks to staff. Ended agents are one line; opening it lists them, read-only. The board's Done and Dropped links
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, hoverLayer, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -106,10 +106,12 @@ export default class SwarmTab extends View {
   }
   // The page shown (II.3c/d): "agent:NAME" or "task:ID"; the view then reads `--view system --agent` / `--task`.
   // "activity" or "system" while that section shows: `--view activity` is overview with 300 events (II.3g), `--view
-  // system` adds memory holders, command cost, locks and memory episodes (II.3i).
+  // system` adds memory holders, command cost, locks and memory episodes (II.3i). "graph" while the Board's graph shows:
+  // `--view graph` is the tasks, with every task that has an edge (research/sw-graph-view.md).
   pageKey() {
     const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page;
-    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" || v?.section === "system" ? v.section : null;
+    return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" || v?.section === "system" ? v.section
+      : v?.section === "board" && v.board === "graph" ? "graph" : null;
   }
   refresh(cx) {
     const { cwd, on } = this.where(), who = this.pageKey();
@@ -117,7 +119,7 @@ export default class SwarmTab extends View {
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" || who === "system" ? ["--view", who] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
+        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" || who === "system" || who === "graph" ? ["--view", who] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
@@ -1251,7 +1253,22 @@ export default class SwarmTab extends View {
       this.pastLoading = false; cx.notify();
     });
   }
+  // The Board's head (#190): List | Graph, and with the graph its scope and Done too.
+  boardHead(t, v, g) {
+    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o }), graph = v.board === "graph", all = v.graph === "all";
+    return h_flex().id("b-head").flex_none().px(4).gap(10).items_center().flex_wrap()
+      .child(this.seg(t, "b-as", [["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
+      .when(graph, (el) => el.child(this.seg(t, "b-scope", [["queue", "Queue"], ["all", "All tasks"]], all ? "all" : "queue", (x) => set({ graph: x })))
+        .when(all, (el) => el.child(h_flex().id("b-donetoo").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
+          .on_click((_e, cx) => { set({ done: !v.done }); cx.notify(); })
+          .child(div().size(13).rounded(3).border(1).border_color(v.done ? t.working : t.border).bg(v.done ? t.working : t.background)).child("Done too")))
+        .child(div().flex_1())
+        .when(Boolean(g), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim)
+          .child(`${g.nodes.length + g.loose.length} tasks · ${g.edges.length} ${g.edges.length === 1 ? "edge" : "edges"}`))));
+  }
   boardView(t, s, cx) {
+    const v = shared("rw-swarm.view") ?? {};
+    if (v.board === "graph") return v_flex().w_full().max_w(1500).gap(10).child(this.boardHead(t, v, this.graphOf(s, v))).child(this.graphView(t, s, v));
     if (cx) this.loadPast(cx);
     const q = queueRows(s), rows = boardRows(s), queued = new Set(q.map((r) => r.k.id)), wide = (this.width ?? 0) >= 1100;
     const icon = (id, ch, args) => div().id(id).w(20).h(20).flex().items_center().justify_center().rounded(5).text_size(12)
@@ -1318,8 +1335,103 @@ export default class SwarmTab extends View {
         : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child(`Nothing ${which}`)])
       .when(past.length > 40, (el) => el.child(div().px(16).pt(4).text_size(12).text_color(t.dim).child(`${past.length - 40} more: filter to find one`)));
     const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    return wide ? h_flex().w_full().max_w(1500).items_start().gap(10).child(col("b-left", left)).child(col("b-right", [form, done]))
-      : v_flex().w_full().gap(10).children([...left, form, done]);
+    const head = this.boardHead(t, v, null);
+    return wide ? v_flex().w_full().max_w(1500).gap(10).child(head).child(h_flex().w_full().items_start().gap(10).child(col("b-left", left)).child(col("b-right", [form, done])))
+      : v_flex().w_full().gap(10).child(head).children([...left, form, done]);
+  }
+
+  // ---- the Board's graph (#190, research/sw-graph-view.md) ---------------------------------------------------------
+  // graphOf for the shown read and scope, laid out once per read: nodes placed left to right by layer (top to bottom
+  // under 700 px of width), each with its box {x, y, w, h}; the canvas's size.
+  graphOf(s, v) {
+    const scope = v.graph === "all" ? "all" : "queue", done = scope === "all" && Boolean(v.done), side = (this.width ?? 0) > 0 && this.width < 700;
+    const g0 = this.gFor === s && this.gScope === `${scope}:${done}` ? this.g : graphOf(s.tasks, scope, done);
+    // full width: nodes share the view's width between the layers, 232 to 340 px each
+    const W = side ? 176 : Math.max(232, Math.min(340, Math.floor(((this.width ?? 0) - 58 - 56 * (g0.layers - 1)) / Math.max(1, g0.layers)))), H = 50, h = 28, P = 16;
+    const key = `${scope}:${done}:${side}:${W}`;
+    if (this.gFor === s && this.gKey === key) return this.g;
+    const g = g0;
+    for (const n of g.nodes) {
+      const [x, y] = side ? [P + n.slot * (W + 12), P + n.layer * (H + 40)] : [P + n.layer * (W + 56), P + n.slot * (H + 14)];
+      n.box = n.fin ? { x, y: y + (H - h) / 2, w: W, h } : { x, y, w: W, h: H };
+    }
+    g.side = side; g.nodeW = W; g.w = Math.max(0, ...g.nodes.map((n) => n.box.x + n.box.w)) + P; g.h = Math.max(0, ...g.nodes.map((n) => n.box.y + n.box.h)) + P;
+    this.g = g; this.gFor = s; this.gKey = key; this.gScope = `${scope}:${done}`;
+    return g;
+  }
+  // A node's second line: what it is doing or waits on, in the Board's colours, and its place in the queue.
+  graphState(t, n, by) {
+    const k = n.k, undone = (k.deps ?? []).filter((d) => by.get(d)?.state !== "done");
+    return k.state === "blocked" ? [`waits on you${k.owner ? ` · ${k.owner}` : ""}`, t.blocked]
+      : k.state === "claimed" ? [`claimed${k.owner ? ` · ${k.owner}` : ""}`, t.muted]
+      : k.hold ? [`held: ${k.hold}`, t.dim] : undone.length ? [`after ${undone.map((d) => `#${d}`).join(", ")}`, t.dim]
+      : ["ready", t.ansi2 ?? t.working];
+  }
+  graphNode(t, n, by, small) {
+    const k = n.k, id = `gn-${k.id}`, [st, col] = n.fin ? [k.state, t.dim] : this.graphState(t, n, by), hot = this.gHot === k.id;
+    const q = n.q != null ? this.chip(t, n.next ? `Q${n.q} next` : `Q${n.q}`, n.next ? t.ansi2 : t.muted) : null;
+    const el = div().id(id).flex_none().relative().rounded(8).border(1).border_color(hot ? t.foreground : t.border).bg(t.surface).cursor_pointer()
+      .when(k.state === "dropped", (e) => e.border_dashed())
+      .on_hover((h, cx) => { if (h) this.gHot = k.id; else if (this.gHot === k.id) this.gHot = null; else return; cx.notify(); })
+      .on_click((_e, cx) => { cx.stop_propagation(); this.gHot = null; this.openTask(k.id); }); // the page replaces it: no hover-out comes
+    if (n.fin) return el.h(28).px(10).flex().items_center().gap(6).text_size(12).text_color(t.dim)
+      .child(div().flex_none().child(k.state === "done" ? "✓" : "✕")).child(div().flex_none().child(`#${k.id}`))
+      .child(div().flex_1().min_w(0).truncate().child(k.title ?? ""));
+    return el.when(!small, (e) => e.h(50)).py(small ? 6 : 0).pl(n.ready ? 13 : 10).pr(10).flex().flex_col().justify_center().gap(3)
+      .when(n.ready, (e) => e.child(div().absolute().left(0).top(0).bottom(0).w(3).rounded_l(8).bg(t.ansi2 ?? t.working)))
+      .child(h_flex().gap(6).min_w(0).text_size(12.5).child(div().flex_none().text_color(t.dim).child(`#${k.id}`))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? "")))
+      .child(h_flex().gap(6).min_w(0).text_size(12).child(div().flex_1().min_w(0).truncate().text_color(col).child(st)).children(q ? [q] : []));
+  }
+  // The edges, one layer under the nodes: a curve from a prerequisite to its dependant with an arrowhead; the muted
+  // colour while the prerequisite is not done, the border colour once it is, the foreground on the hovered node's.
+  graphEdges(t, g) {
+    const at = new Map(g.nodes.map((n) => [n.k.id, n.box])), groups = [[t.border, []], [t.muted, []], [t.foreground, []]];
+    for (const e of g.edges) {
+      const a = at.get(e.from), b = at.get(e.to);
+      if (a && b) groups[this.gHot === e.from || this.gHot === e.to ? 2 : e.met ? 0 : 1][1].push([a, b]);
+    }
+    const out = [];
+    for (const [col, es] of groups) {
+      if (!es.length) continue;
+      const line = PathBuilder.stroke(1.5), head = PathBuilder.fill(), headed = new Set(); // one head per node: two overlapping cancel out
+      for (const [a, b] of es) {
+        const first = !headed.has(b); headed.add(b);
+        if (g.side) { // top to bottom
+          const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y - 7, d = Math.max(14, (y2 - y1) / 2);
+          line.move_to(x1, y1).cubic_bezier_to(x2, y2, x1, y1 + d, x2, y2 - d);
+          if (first) head.add_polygon([[x2, b.y], [x2 - 4, y2], [x2 + 4, y2]], true);
+        } else {
+          const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x - 7, y2 = b.y + b.h / 2, d = Math.max(18, (x2 - x1) / 2);
+          line.move_to(x1, y1).cubic_bezier_to(x2, y2, x1 + d, y1, x2 - d, y2);
+          if (first) head.add_polygon([[b.x, y2], [x2, y2 - 4], [x2, y2 + 4]], true);
+        }
+      }
+      for (const p of [line, head]) out.push(globalThis.window.paint_path(p.build(), col).absolute().top(0).left(0).w(g.w).h(g.h));
+    }
+    return out;
+  }
+  graphView(t, s, v) {
+    const g = this.graphOf(s, v), by = new Map((s.tasks ?? []).map((k) => [k.id, k])), all = v.graph === "all";
+    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o });
+    const note = (text) => div().px(16).pb(12).text_size(12.5).text_color(t.dim).whitespace_normal().child(text);
+    const card = this.card(t, "g-card").pb(4);
+    if (!g.nodes.length && !g.loose.length) {
+      card.child(this.head(t, "Graph", all ? "every task not done, and what it waits on" : "the queue and what it waits on"));
+      return all ? card.child(note("Nothing left to do on this board")) : card.child(note("Nothing queued: auto-spawn staffs by priority"))
+        .child(div().px(16).pb(12).child(this.small(t, "g-to-all", "Show all tasks", () => set({ graph: "all" }))));
+    }
+    card.child(this.head(t, all ? "All tasks" : "Queue", all ? "every task not done, and the tasks they wait on" : "the queued tasks and what they wait on"));
+    if (g.nodes.length) {
+      const canvas = div().id("g-canvas").relative().flex_none().w(g.w).h(g.h).children(this.graphEdges(t, g))
+        .children(g.nodes.map((n) => this.graphNode(t, n, by).absolute().left(n.box.x).top(n.box.y).w(n.box.w)));
+      card.child(div().id("g-scroll").w_full().overflow_x_scrollbar().child(canvas));
+    } else card.child(note("No task here waits on another"));
+    const fin = g.nodes.filter((n) => n.fin && n.k.state === "done").length, left = Math.max(0, (s.counts?.done ?? 0) - fin);
+    if (all && left) card.child(note(`${left} done ${left === 1 ? "task" : "tasks"} ${v.done ? "with no dependencies are" : "are"} not drawn${v.done ? "" : ": Done too adds those with an edge"}; List › Done lists them all`));
+    const loose = g.loose.length ? this.card(t, "g-loose").pb(12).child(this.head(t, `No dependencies · ${g.loose.length}`, all ? "nothing they wait on, nothing waits on them" : "queued, waiting on nothing"))
+      .child(h_flex().px(16).gap(8).flex_wrap().children(g.loose.map((n) => this.graphNode(t, n, by, true).w(g.side ? 176 : 232)))) : null;
+    return v_flex().w_full().gap(10).child(card).children(loose ? [loose] : []);
   }
 
   // ---- the task page (II.3c) ---------------------------------------------------------------------------------------

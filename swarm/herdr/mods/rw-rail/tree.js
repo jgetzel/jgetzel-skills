@@ -687,6 +687,68 @@ export function queueRows(s) {
     return { k, why };
   });
 }
+// The Board's graph (research/sw-graph-view.md) from `--view graph`'s tasks. scope "queue": the queued tasks and every
+// not-done task they wait on, transitively; "all": every not-done task; either with the done or dropped tasks those
+// wait on (one hop), and with `done` (all only) every finished task that has an edge. Nodes {k, layer, slot, fin,
+// ready, q}: layer is the longest path from a root, slot the place in its layer after two barycentre sweeps; ready is
+// startable now (open, not held, every dep done); q the queue position (1-based), with next on the first that can
+// start. Edges {from, to, met} run prerequisite to dependant, met when the prerequisite is done. loose: the tasks in
+// scope with no edge, in the Board's order (queue order in "queue"); layers: the count.
+export function graphOf(tasks, scope, done) {
+  const by = new Map((tasks ?? []).filter((k) => Number.isInteger(k?.id)).map((k) => [k.id, k]));
+  const fin = (k) => k.state === "done" || k.state === "dropped";
+  const deps = (k) => [...new Set((k.deps ?? []).filter((d) => d !== k.id && by.has(d)))];
+  const ready = (k) => k.state === "open" && !k.hold && deps(k).every((d) => by.get(d).state === "done");
+  const queued = [...by.values()].filter((k) => k.qpos != null && !fin(k)).sort((x, y) => x.qpos - y.qpos);
+  const q = new Map(queued.map((k, i) => [k.id, i + 1]));
+  const next = queued.find(ready)?.id ?? null;
+  const ids = new Set();
+  if (scope === "queue") {
+    const walk = (k) => { if (ids.has(k.id)) return; ids.add(k.id); for (const d of deps(k)) if (!fin(by.get(d))) walk(by.get(d)); };
+    queued.forEach(walk);
+  } else for (const k of by.values()) if (!fin(k)) ids.add(k.id);
+  for (const id of [...ids]) for (const d of deps(by.get(id))) ids.add(d);
+  if (done && scope !== "queue") {
+    const named = new Set([...by.values()].flatMap(deps));
+    for (const k of by.values()) if (fin(k) && (deps(k).length || named.has(k.id))) ids.add(k.id);
+  }
+  const edges = [];
+  for (const id of ids) for (const d of deps(by.get(id))) if (ids.has(d) && (!fin(by.get(id)) || done)) edges.push({ from: d, to: id, met: by.get(d).state === "done" });
+  const touched = new Set(edges.flatMap((e) => [e.from, e.to]));
+  const rank = (k) => (k.state === "blocked" ? 0 : k.state === "claimed" ? 1 : k.hold ? 3 : 2);
+  const loose = [...ids].filter((id) => !touched.has(id)).map((id) => by.get(id))
+    .sort((x, y) => scope === "queue" ? (q.get(x.id) ?? 1e9) - (q.get(y.id) ?? 1e9) || x.id - y.id : rank(x) - rank(y) || x.id - y.id);
+  const preds = new Map(), succs = new Map();
+  for (const e of edges) { (preds.get(e.to) ?? preds.set(e.to, []).get(e.to)).push(e.from); (succs.get(e.from) ?? succs.set(e.from, []).get(e.from)).push(e.to); }
+  const layer = new Map(), seen = new Set();
+  const depth = (id) => {
+    if (layer.has(id)) return layer.get(id);
+    if (seen.has(id)) return 0; // a cycle: the CLI refuses them, so only a hand-edited db
+    seen.add(id);
+    const n = Math.max(-1, ...(preds.get(id) ?? []).map(depth)) + 1;
+    layer.set(id, n);
+    return n;
+  };
+  touched.forEach(depth);
+  const layers = [];
+  for (const id of [...touched].sort((x, y) => (q.get(x) ?? 1e9) - (q.get(y) ?? 1e9) || x - y)) (layers[layer.get(id)] ??= []).push(id);
+  for (let i = 0; i < layers.length; i++) layers[i] ??= []; // a cycle can leave a layer empty
+  const slot = new Map();
+  const place = () => layers.forEach((l) => l.forEach((id, i) => slot.set(id, i)));
+  const sweep = (l, nb) => {
+    const key = new Map(l.map((id, i) => { const ns = (nb.get(id) ?? []).filter((n) => slot.has(n)); return [id, ns.length ? ns.reduce((a, n) => a + slot.get(n), 0) / ns.length : i]; }));
+    l.sort((x, y) => key.get(x) - key.get(y));
+  };
+  place();
+  for (let r = 0; r < 2; r++) {
+    for (let i = 1; i < layers.length; i++) { sweep(layers[i], preds); place(); }
+    for (let i = layers.length - 2; i >= 0; i--) { sweep(layers[i], succs); place(); }
+  }
+  const node = (k) => ({ k, fin: fin(k), ready: ready(k), q: q.get(k.id) ?? null, next: k.id === next });
+  return { nodes: [...touched].map((id) => ({ ...node(by.get(id)), layer: layer.get(id), slot: slot.get(id) })).sort((x, y) => x.layer - y.layer || x.slot - y.slot),
+    edges, loose: loose.map(node), layers: layers.length };
+}
+
 // Moving a queued task (II.3e): to the front, one up, one down; null when it can't go that way.
 export function moveArgs(q, i, how) {
   const id = String(q[i]?.k.id);
