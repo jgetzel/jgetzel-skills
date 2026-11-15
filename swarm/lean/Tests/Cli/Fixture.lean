@@ -366,6 +366,12 @@ def new : IO T := do
   -- the cmd-cost history is per user: never the real one
   IO.FS.createDirAll (d ++ "/.state")
   Shim.setenv "XDG_STATE_HOME" (d ++ "/.state")
+  -- the compute ledger reads a fixed idle 8-core, 16G machine, and `swarm run` polls fast
+  put (d ++ "/stat") ("cpu  0 0 0 800 0 0 0 0 0 0\n" ++ "".intercalate ((List.range 8).map fun i => s!"cpu{i} 0 0 0 100 0 0 0 0 0 0\n"))
+  put (d ++ "/meminfo") "MemTotal:       16777216 kB\nMemAvailable:   16777216 kB\n"
+  Shim.setenv "SWARM_COMPUTE_STAT" (d ++ "/stat")
+  Shim.setenv "SWARM_COMPUTE_MEM" (d ++ "/meminfo")
+  Shim.setenv "SWARM_COMPUTE_POLL_MS" "200"
   let t : T := { d, repo := d ++ "/repo", wt := d ++ "/wt", db := d ++ "/swarm.db",
                  cwds := ← IO.mkRef [("a", d ++ "/repo"), ("b", d ++ "/wt")], fakebinR := ← IO.mkRef none,
                  launchR := ← IO.mkRef none, cleanups := ← IO.mkRef #[] }

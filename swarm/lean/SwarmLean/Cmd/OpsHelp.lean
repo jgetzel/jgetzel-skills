@@ -12,7 +12,11 @@ def helpCost : String :=
 
 /-- `swarm run -h`. -/
 def helpRun : String :=
-  "Usage: swarm run [-h] [--on <on>] [--env NAME[=VAL]]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --on <on>             an hc machine (`hc machine ls`); default: here\n   --env NAME[=VAL]      also pass this variable (repeatable)"
+  "Usage: swarm run [-h] [--on <on>] [--cores <cores>] [--mem <mem>]\n       [--env NAME[=VAL]]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --on <on>             an hc machine (`hc machine ls`); default: here, then run.machines in .claude/swarm.json\n   --cores <cores>       cores to claim, or `all` the cap (default: from `swarm cost` history, else 2)\n   --mem <mem>           GiB to claim (default: the history's peak plus a quarter, else 2)\n   --env NAME[=VAL]      also pass this variable (repeatable)\n\nClaims the cores and memory on a machine (waiting for room, in order), runs the command there and releases them.\nThe job gets SWARM_CORES, SWARM_MEM_KB, MAKEFLAGS=-j<cores>, CARGO_BUILD_JOBS and NIX_BUILD_CORES."
+
+/-- `swarm compute -h`. -/
+def helpCompute : String :=
+  "Usage: swarm compute [-h] [--json] [--cores <cores>] [--mem <mem>]\n       [<words>] ...\n\nArguments:\n   words                 cap <machine|here>, off <machine|here> or on <machine|here>; none: the claims on every machine\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json\n   --cores <cores>       cap: cores `swarm run` may claim, N or all\n   --mem <mem>           cap: GiB `swarm run` may claim, or all"
 
 /-- `swarm state -h`. -/
 def helpState : String :=

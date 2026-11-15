@@ -28,7 +28,11 @@ with subagents.
 5. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
 6. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
    knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
-   `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys.
+   `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys. `run.machines` (a list of `hc machine ls` names) is where
+   `swarm run` tries after this machine when it has no room. Every `swarm run` claims cores and memory in a ledger on
+   the machine it runs on; `swarm compute` shows the claims, `swarm compute cap <machine|here> [--cores N|all]
+   [--mem G|all]` lowers what jobs may take (reserving cores for yourself), `swarm compute off|on <machine|here>` stops
+   and resumes new claims. `swarm/research/sw-compute.md` has the rules.
 
 ## 1. Start
 

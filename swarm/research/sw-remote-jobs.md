@@ -191,8 +191,8 @@ the copy and brings back what it wrote. The example repo's would be:
   or `laptop: disconnected since 07:40`.
 - The hook treats `swarm run` as heavy (today `NOT_HEAVY` skips any command
   starting with `swarm`) and shows the note before the job starts.
-- No automatic machine choice, fallback, queue, slot or hold (DESIGN
-  decision 6). The agent reads the note and picks.
+- Superseded by [sw-compute.md](sw-compute.md): `swarm run` claims sized cores and memory, tries this machine and
+  then `run.machines`, and waits for room. The note stays information for everything not started with `swarm run`.
 
 ### Recording
 
