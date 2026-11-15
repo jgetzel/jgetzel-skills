@@ -40,12 +40,15 @@ A **List | Graph** switch at the head of the Board section, not an eighth sectio
 - **Layers by depth, left to right.** A node's layer is one past its deepest prerequisite among the drawn nodes
   (longest path), so prerequisites stand left of what waits on them and each column is "can start once the column
   left of it is done". Left to right because titles are wide and depth is short (≤ 4 on every board so far): four
-  layers of 232 px fit the full view at 1512 px. In the side view (under 700 px of the view's width) the layers run
-  top to bottom instead and nodes are 176 px, so a chain scrolls down, as everything else there does.
+  layers of 232 px fit the full view at 1512 px, and nodes widen to share the view's width (232 to 340 px). In the
+  side view (under 700 px of the view's width) the layers run top to bottom instead and nodes are 176 px, so a chain
+  scrolls down, as everything else there does; a layer of three or more scrolls sideways inside the card.
 - **Order inside a layer:** by queue position, then id; then two barycentre sweeps (a node moves to the mean slot of
   its neighbours in the layer before, then after) so a diamond's two arms sit side by side and edges rarely cross.
-- **Edges** go from a prerequisite's right side to its dependant's left side as a cubic curve with an arrowhead,
-  drawn with `window.paint_path` on one layer under the nodes. An unmet edge (prerequisite not done) is the muted
+- **Edges** go from a prerequisite's right side to its dependant's left side (bottom to top in the side view) as a
+  cubic curve with an arrowhead, drawn with `window.paint_path` on one layer under the nodes (one arrowhead per node:
+  two identical polygons in one fill path cancel out). An edge that skips a layer may pass behind a node of the layer
+  between; at these sizes (depth ≤ 4) that has not been worth routing round. An unmet edge (prerequisite not done) is the muted
   colour; a met one (prerequisite done) is the border colour, so the reader sees which lines still hold work back.
 - **Large boards.** Done tasks do not swamp it: a done task is drawn only as the prerequisite of a drawn open task
   (one hop: its own prerequisites are not followed), as a short one-line node with a ✓, since that is what tells the
@@ -75,7 +78,7 @@ Two lines, 232 x 50 px (176 in the side view), the Board's card look (surface, 1
   owner** coral (blocked: it waits on the user); **held: why** dim; **after #3, #5** dim (the prerequisites not done);
   then the queue position `Q2` at the right, `Q1 next` for the queue's next.
 - A done prerequisite: one line, 28 px, `✓ #153 title`, dim. Dropped: the same with a dashed border and `dropped`.
-- The task the hover is on lifts its border to the foreground colour.
+- The node under the pointer lifts its border and its edges to the foreground colour.
 
 ## A click
 
@@ -90,8 +93,8 @@ and the queue order. Missing: the done prerequisites themselves (overview sends 
 done dep is an id with no title), and for Done too, the done tasks with edges.
 
 A new view, **`--view graph`**: the header and the tasks, nothing else (no lanes, messages or events), the tasks
-being every not-done task plus every task that has a dependency or is one. On this board that is 6 open and 46 with
-an edge. While the graph shows, the view polls it in place of overview, at the same rate (`pageKey` "graph", as
+being every not-done task plus every task that has a dependency or is one. On this board that is 4 open and 98 with
+an edge, about 100 of its 190 rows. While the graph shows, the view polls it in place of overview, at the same rate (`pageKey` "graph", as
 Activity and System do). The panel then picks a scope from it; the layout is computed when a read arrives, not per
 frame.
 
@@ -100,4 +103,5 @@ frame.
 `swarm/herdr/graph-demo.sh` inside shot.sh's sandbox, after `--rework real`, gives the ll swarm's board a chain (a
 done task, then three open tasks after it), a diamond (one task after two, both after a third), three tasks with no
 edges and a queue of four, then opens Board › Graph. Shots of both scopes, the side view, and a click on a node
-opening the task page go in swarm/herdr/shots/graph-*.png.
+opening the task page go in swarm/herdr/shots/graph-*.png: `graph-queue`, `graph-all`, `graph-done-too`,
+`graph-click-opens-task` (a click on #188; its Back returns to the graph) and `graph-side` (the side view, top to bottom).

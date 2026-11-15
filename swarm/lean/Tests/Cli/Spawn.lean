@@ -566,7 +566,7 @@ def test_state_json_view (t : T) : IO Unit := do
   let head := ["active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci", "counts"]
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
   let views : List (String × List String) := [("board", []), ("activity", ["messages", "events"]),
-    ("system", ["events", "locks", "running", "costly", "cost_top"]), ("overview", ["messages", "events"]), ("agents", [])]
+    ("system", ["events", "locks", "running", "costly", "cost_top"]), ("overview", ["messages", "events"]), ("agents", []), ("graph", [])]
   for (view, extra) in views do
     let s ← stj t ["--view", view]
     let want := (head ++ extra ++ ["view"]).filter fun k => !((k == "comms" || k == "db") && s.f k == .null)
@@ -576,6 +576,11 @@ def test_state_json_view (t : T) : IO Unit := do
     eq (a.f "events" != .null) (view == "overview" || view == "agents" || view == "system") view  -- live lanes
     eq (b.f "events") Json.null  -- ended and not asked for
   eq ((nth ((← stj t ["--view", "board"]).f "tasks") 1).f "title") "t"
+  -- the Graph (research/sw-graph-view.md): open tasks and every task with an edge, not a done task with none
+  t.q_ "insert into task(id, title, state, deps) values (50, 'old', 'done', null), (51, 'next', 'open', '50'), (52, 'lone', 'done', null)"
+  let ids := fun (s : Json) => (elems (s.f "tasks")).map (·.f "id")
+  eq (ids (← stj t ["--view", "graph"])) [json% 1, json% 50, json% 51] "graph"
+  eq (ids (← stj t ["--view", "overview"])) [json% 1, json% 51] "overview"
   let ag := (← stj t ["--view", "agents", "--agent", "b"]).f "agents"
   let a := nth ag 1; let b := nth ag 2
   eq (Json.arr #[(nth (b.f "messages") 1).f "body", a.f "branch"]) (json% ["hi", "w2"])  -- w2: read from the worktree's HEAD

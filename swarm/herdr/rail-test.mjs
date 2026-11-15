@@ -528,4 +528,26 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal(computeOf({ "-x": { ncpu: 1 } }, 0)[0].ctl, false);
   for (const bad of ["0", "-4", "1e3", "4G", "--x"]) assert.equal(capArgs("here", w, { cores: "20", mem: bad }), null);
 }
+{ // the Board's graph (research/sw-graph-view.md): a chain, a diamond, loose tasks, a done task with no edge
+  const { graphOf } = await import("./mods/rw-rail/tree.js");
+  const K = (id, state, o = {}) => ({ id, state, title: `t${id}`, deps: [], ...o });
+  const ks = [K(1, "done"), K(2, "claimed", { deps: [1], owner: "a" }), K(3, "open", { deps: [2] }), K(4, "open", { deps: [3], qpos: 3 }),
+    K(12, "done"), K(10, "open", { deps: [12] }), K(11, "blocked", { deps: [12], owner: "b" }), K(13, "open", { deps: [11, 10], qpos: 1 }),
+    K(20, "open", { qpos: 2 }), K(21, "claimed", { owner: "c" }), K(22, "open", { hold: "go" }), K(30, "done"), K(31, "done", { deps: [30] }), K(40, "dropped"), K(41, "open", { deps: [40] })];
+  const g = graphOf(ks, "all", false), at = (g2) => Object.fromEntries(g2.nodes.map((n) => [n.k.id, [n.layer, n.slot]]));
+  assert.deepEqual(at(g), { 1: [0, 0], 12: [0, 1], 40: [0, 2], 2: [1, 0], 10: [1, 1], 11: [1, 2], 41: [1, 3], 3: [2, 0], 13: [2, 1], 4: [3, 0] });
+  assert.deepEqual(g.loose.map((n) => n.k.id), [21, 20, 22]); // claimed, ready, held; 30 and 31 are done
+  assert.deepEqual(g.edges.filter((e) => e.to === 13).map((e) => [e.from, e.met]), [[11, false], [10, false]]);
+  assert.deepEqual(g.edges.find((e) => e.to === 41).met, false); // a dropped dep holds it back
+  const n = (id) => g.nodes.find((x) => x.k.id === id) ?? g.loose.find((x) => x.k.id === id);
+  assert.deepEqual([10, 3, 41, 22, 20].map((id) => n(id).ready), [true, false, false, false, true]);
+  assert.deepEqual([13, 20, 4].map((id) => [n(id).q, n(id).next]), [[1, false], [2, true], [3, false]]); // 13 waits: 20 is next
+  const qg = graphOf(ks, "queue", false);
+  assert.deepEqual(qg.nodes.map((x) => x.k.id).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13]);
+  assert.deepEqual(qg.loose.map((x) => x.k.id), [20]);
+  assert.deepEqual(Object.keys(at(graphOf(ks, "all", true))).map(Number).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13, 30, 31, 40, 41]);
+  assert.deepEqual(graphOf(ks, "queue", true).nodes.length, 8); // Done too is All's
+  assert.deepEqual(graphOf([K(5, "open", { deps: [6] }), K(6, "open", { deps: [5] })], "all", false).layers > 0, true); // a cycle ends
+  assert.deepEqual(graphOf(null, "all", false), { nodes: [], edges: [], loose: [], layers: 0 });
+}
 console.log("rail-test: ok");

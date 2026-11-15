@@ -432,7 +432,8 @@ and the Activity list stop at 1100 px.
   communicator, `all`, or one agent, with Urgent); Spawn (`swarm spawn`); the machine line.
 - Board: the queue (`qpos`) with "next", why-not, move (`queue add --front/--before/--after`), remove (`queue rm`) and
   add (`queue add`); the four groups; done and dropped (`--view board`) with `work_s` and `done_ctx - claim_ctx`;
-  the new-task form with body, after, priority, model, effort, queue, hold.
+  the new-task form with body, after, priority, model, effort, queue, hold. A List | Graph switch at its head shows the
+  tasks as a dependency graph, the queue's or all of them (`--view graph`, #190: research/sw-graph-view.md).
 - Task page (`--task ID`): all the old task screen had, plus `task edit`, `task after`, queue add, `merge_to_green_s`.
 - Agent page (`--agent NAME`): all the old agent screen had, plus Compact (`swarm compact`) and its locks.
 - Activity (`--view activity`): the old screen, plus a search field.
