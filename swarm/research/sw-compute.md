@@ -126,7 +126,7 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 ## 6a. As built, where it differs from the above
 
 - Test hooks: the script reads `SWARM_COMPUTE_STAT` and `SWARM_COMPUTE_MEM` (files standing for `/proc/stat` and
-  `/proc/meminfo`), `swarm run` reads `SWARM_COMPUTE_POLL_MS` (default 5000).
+  `/proc/meminfo`) and `SWARM_COMPUTE_DIR` (the ledger's directory; the screenshot sandbox's "desktop"), `swarm run` reads `SWARM_COMPUTE_POLL_MS` (default 5000).
 - The script's `cap` takes `=` for a field to keep; only `try` and `ls` take the lock and clean.
 - 5. A machine that does not answer counts as no room for the decision above, and is tried again each round.
 - 6. The sizing key is the user's command (not the prefixed one); `--mem` is decimal GiB; the stderr line says
@@ -141,7 +141,7 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 
 - Enforcement (cgroup quotas), §1.
 - Priorities, fairness between swarms, preemption: the point at which a scheduler daemon or Nomad is the answer.
-- The machine note and the Herdr panels showing claims.
+- The machine note. (The Herdr panels showing claims: research/sw-compute-view.md, board #189.)
 - A proof. Admission is decided by the script, so "claims never exceed the cap" is tested (§5), not proved.
 - What the job actually used against what it claimed, in the footer.
 - The auto-spawner reading `wait_s`.

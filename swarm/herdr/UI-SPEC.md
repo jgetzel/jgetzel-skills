@@ -439,7 +439,8 @@ and the Activity list stop at 1100 px.
 - Landing: open PRs (`gh pr list`, with agent, checks, review); main's CI runs with re-run; landed today with
   `merge_to_green_s`; branches not on main.
 - System (`--view system`): watchd with Restart, machine and pressure, memory by agent, remote jobs, command cost,
-  locks (with `since`, `lease_until`), conflicts, memory episodes, refused spawns; rules and limits (needs CLI).
+  locks (with `since`, `lease_until`), conflicts, memory episodes, refused spawns; rules and limits (needs CLI);
+  compute claims per machine with caps and off/on (`swarm compute --json`, its own 30 s read: research/sw-compute-view.md).
 - History: done tasks with time and context spent, ended agents (needs CLI paging past the newest 80 / 60).
 - Bench forecast: "what a task will need" is not knowable. Buildable: a running command's past peak (`running[]`
   matched to `cost_top[]`), shown as "peaks at N G" and added to the machine line.

@@ -492,4 +492,40 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     ci: { conclusion: "success", sha: "abc" }, ended: [{ name: "a", why: "landed" }], hung: ["b", 7, null] } });
   assert.deepEqual([o.back.questions.length, o.back.done[0].id, o.back.merged, o.back.ci.sha, o.back.ended[0].why, o.back.hung], [1, 5, [], "abc", "landed", ["b", "7"]]);
 }
+// Compute claims (#189): here first, ages, the oldest claim and waiter first, an unanswered machine; the Cap form's command.
+{
+  const { computeOf, capFields, capArgs } = await import("./mods/rw-rail/tree.js");
+  const ms = computeOf({ desktop: { ncpu: 16, busy: 0, total_kb: 67108864, avail_kb: 60000000, cap_cores: 8, cap_mem_kb: 67108864, off: true, claims: [], queue: [] },
+    here: { ncpu: 24, busy: 9.3, total_kb: 98128824, avail_kb: 85000000, cap_cores: 20, cap_mem_kb: 83886080, off: false,
+      claims: [{ cores: 2, mem_kb: 2097152, holder: "p1", start: 940, who: "sr-5", cmd: "cargo test" }, { cores: 4, mem_kb: 8388608, holder: "t9", start: 760, who: "sr-3", cmd: "nix build .#x" }],
+      queue: [{ first: 880, cores: 12, mem_kb: 2097152, who: "sr-7" }] }, vps: { state: "unreachable" }, mini: { state: "disconnected" } }, 1000);
+  assert.deepEqual(ms.map((m) => [m.key, m.state]), [["here", "connected"], ["desktop", "connected"], ["vps", "unreachable"], ["mini", "disconnected"]]);
+  assert.deepEqual([ms[0].split.cores.sum, ms[0].split.mem.sum, ms[0].claims.map((c) => [c.who, c.age_s]), ms[0].queue[0].age_s], [6, 10485760, [["sr-3", 240], ["sr-5", 60]], 120]);
+  assert.equal(ms[1].off, true);
+  // here: 6 of cap 20 claimed, busy 9.3 → outside round(3.3) - 3 = 0; free min(20 - 6, 24 - 6 - 0) = 14; 4 above the cap
+  assert.deepEqual(ms[0].split.cores, { claimed: 6, unclaimed: 0, free: 14, size: 24, cap: 20, sum: 6 });
+  // memory: in use 98128824 - 85000000 = 13128824, less 10485760 claimed: 2643064 unclaimed; free min(cap - claimed, available)
+  assert.deepEqual(ms[0].split.mem, { claimed: 10485760, unclaimed: 2643064, free: 73400320, size: 98128824, cap: 83886080, sum: 10485760 });
+  assert.equal(ms[0].queue[0].why, "fits: starts on its next try");
+  const busy = computeOf({ here: { ncpu: 16, busy: 14.6, total_kb: 100, avail_kb: 10, cap_cores: 16, cap_mem_kb: 100, claims: [{ cores: 4, mem_kb: 20, start: 0 }],
+    queue: [{ first: 1, cores: 8, mem_kb: 50, who: "a" }, { first: 2, cores: 1, mem_kb: 1, who: "b" }, { first: 3, cores: 13, mem_kb: 85, who: "c" }] } }, 10)[0];
+  // outside round(10.6) - 2 = 9; free min(12, 16 - 4 - 9) = 3; memory unclaimed 100 - 10 - 20 = 70, free min(80, 10) = 10
+  assert.deepEqual([busy.split.cores.unclaimed, busy.split.cores.free, busy.split.mem.unclaimed, busy.split.mem.free], [9, 3, 70, 10]);
+  assert.deepEqual(busy.queue.map((q) => q.why), ["cores: unclaimed use takes the room · memory: unclaimed use takes the room", "behind a",
+    "cores: claims fill the cap · memory: claims fill the cap"]);
+  const full = computeOf({ here: { ncpu: 8, busy: 9, total_kb: 100, avail_kb: 90, cap_cores: 4, cap_mem_kb: 100, claims: [{ cores: 6, mem_kb: 1, start: 0 }], queue: [] } }, 0)[0];
+  const sc = full.split.cores; assert.ok(sc.claimed + sc.unclaimed + sc.free <= sc.size && sc.free === 0, JSON.stringify(sc));
+  assert.deepEqual(computeOf(null, 0), []); assert.deepEqual(computeOf([1], 0), []);
+  assert.deepEqual(capFields(ms[0]), { cores: "20", mem: "80" });
+  assert.deepEqual(capFields(ms[1]), { cores: "8", mem: "all" });
+  const w = capFields(ms[0]);
+  assert.deepEqual(capArgs("here", w, { cores: " 20 ", mem: "80" }), []);
+  assert.deepEqual(capArgs("here", w, { cores: "12", mem: "80" }), ["compute", "cap", "here", "--cores", "12"]);
+  assert.deepEqual(capArgs("desktop", capFields(ms[1]), { cores: "", mem: "40.5" }), ["compute", "cap", "desktop", "--cores", "all", "--mem", "40.5"]);
+  assert.deepEqual(capArgs("desktop", capFields(ms[1]), { cores: "8", mem: "ALL" }), []);
+  for (const bad of ["0", "-1", "2.5", "1e3", "x", "--help"]) assert.equal(capArgs("here", w, { cores: bad, mem: "80" }), null);
+  assert.equal(capArgs("--json", w, { cores: "4", mem: "80" }), null);
+  assert.equal(computeOf({ "-x": { ncpu: 1 } }, 0)[0].ctl, false);
+  for (const bad of ["0", "-4", "1e3", "4G", "--x"]) assert.equal(capArgs("here", w, { cores: "20", mem: bad }), null);
+}
 console.log("rail-test: ok");

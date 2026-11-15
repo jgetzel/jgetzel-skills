@@ -63,6 +63,12 @@ def test_script_never_off_and_all (t : T) : IO Unit := do
   discard <| scr t st ["cap", "=", "2048"]
   eq (strip (← scr t st ["ls"]).stdout |> splitlines |>.head!) "8 0.00 16777216 16777216 4 2048 0"
 
+def test_script_compute_dir_overrides_the_ledger (t : T) : IO Unit := do
+  let st := t.d ++ "/s5"
+  discard <| t.exec ["sh", "-c", Compute.SCRIPT, "sh", "cap", "3", "-"] { env := [("XDG_STATE_HOME", some st), ("SWARM_COMPUTE_DIR", some (st ++ "/other"))] }
+  eq (strip (← readF [st, "other", "cap"])) "3 -"
+  eq (← exists_ (st ++ "/swarm-compute/cap")) false
+
 def test_script_arithmetic_of_the_awk_programs (t : T) : IO Unit := do
   let busy ← t.exec ["awk", "-v", "n=4", Compute.BUSY_AWK] { input := some "cpu 100 0 100 800 0 0 0 0 0 0\ncpu 300 0 200 1000 0 0 0 0 0 0\n" }
   eq busy.stdout "2.40"
@@ -206,6 +212,7 @@ def tests : List Case := [
   ("test_script_dead_claims_are_not_counted", test_script_dead_claims_are_not_counted),
   ("test_script_older_ticket_holds_back_younger", test_script_older_ticket_holds_back_younger),
   ("test_script_never_off_and_all", test_script_never_off_and_all),
+  ("test_script_compute_dir_overrides_the_ledger", test_script_compute_dir_overrides_the_ledger),
   ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs),
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),

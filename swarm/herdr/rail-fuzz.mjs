@@ -76,6 +76,16 @@ for (let i = 0; i < 2000; i++) {
   const so = T.overOf({ agents: junk(), running: [{ agent: pick(HOSTILE), command: pick(HOSTILE), rss_kb: junk(), top_kb: junk(), machine: pick([null, pick(HOSTILE)]) }],
     cost_top: [{ key: pick(HOSTILE), peak_kb: junk() }, junk()] });
   const sm = T.memOf(so); assert.ok(sm.next === null || Number.isFinite(sm.next.peak_kb));
+  // Compute (#189): hostile `swarm compute --json` gives bounded names, finite numbers, and no row lost
+  const cj = rnd() < 0.5 ? junk() : { here: { ncpu: 4, claims: [{ who: pick(HOSTILE), cmd: pick(HOSTILE), cores: junk(), start: junk() }, junk()], queue: [junk()] }, [pick(HOSTILE)]: junk() };
+  for (const m of T.computeOf(cj, Date.now() / 1000)) {
+    assert.ok(ok1(m.name, 60) && ok1(m.state, 40), m.name);
+    for (const r of m.split ? [m.split.cores, m.split.mem] : []) assert.ok(r.claimed >= 0 && r.unclaimed >= 0 && r.free >= 0 && r.claimed + r.unclaimed + r.free <= Math.max(0, r.size) + 1e-6, JSON.stringify(r));
+    for (const q of m.queue ?? []) assert.ok(ok1(q.why, 200), q.why);
+    for (const c of m.claims ?? []) assert.ok(ok1(c.who, 60) && ok1(c.cmd, 200) && Number.isFinite(c.cores) && Number.isFinite(c.age_s), JSON.stringify(c));
+    const ca = m.claims ? T.capArgs(m.key, T.capFields(m), { cores: pick(HOSTILE), mem: pick(HOSTILE) }) : null;
+    assert.ok(ca === null || ca.length === 0 || (m.ctl && ca.every((x) => typeof x === "string" && !x.startsWith("-") || /^--(cores|mem)$/.test(x))), JSON.stringify(ca));
+  }
   // Prompts (II.6c): a mangled fixture or a hostile screen parses to null or to bounded parts with whole numbering
   const fxs = PROMPTS[Math.floor(rnd() * PROMPTS.length)].split("\n");
   const cut = fxs.map((l) => (rnd() < 0.08 ? pick(HOSTILE) : rnd() < 0.04 ? "" : l)).filter(() => rnd() > 0.03);

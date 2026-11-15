@@ -14,7 +14,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
+import { FOLD, SECTIONS, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, hoverLayer, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -73,6 +73,10 @@ export default class SwarmTab extends View {
     this.rulesIn = TextareaState.new({ placeholder: "Added to every new agent's brief", rows: 6 });
     this.nudgeIn = InputState.new({ placeholder: "325" }); this.compactIn = InputState.new({ placeholder: "400" });
     this.limitsEdit = null;
+    // System's Compute card (#189): the last `swarm compute --json` ({j, at, took, on, err}), its Cap form ({key, was}) and fields
+    this.comp = null; this.capEdit = null; this.compFlash = null;
+    this.capCores = InputState.new({ placeholder: "all" }); this.capMem = InputState.new({ placeholder: "all" });
+    this.capCores.on("submit", (_e, cx) => this.saveCap(cx)); this.capMem.on("submit", (_e, cx) => this.saveCap(cx));
     this.ended = null; // the ended agents, read when you open their line
     this.ent = new Entering(); this.hovKey = null; // motion (II.4c): what just came, the row under the pointer
     this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
@@ -958,7 +962,7 @@ export default class SwarmTab extends View {
   // ---- the System section (II.3i) -----------------------------------------------------------------------------------
   // The old System screen: watchd, the machine with memory by agent and other machines' jobs, locks, conflicts and memory
   // episodes, command cost, refused spawns; new: lock age and expiry, and each running command's past peak.
-  systemView(t, s) {
+  systemView(t, s, cx) {
     if (!s.running) return this.card(t, "sys-wait").px(16).py(12).child(div().text_size(12.5).text_color(t.dim).child("Reading the system…"));
     const now = s.now ?? Date.now() / 1000, gb = (kb) => `${(kb / 1048576).toFixed(kb >= 10485760 ? 0 : 1)} G`, ago = (sec) => dur(Math.max(0, sec) * 1000);
     const row = (id, kids, go) => h_flex().id(id).min_h(30).py(4).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5).rounded(6)
@@ -1011,7 +1015,104 @@ export default class SwarmTab extends View {
         ...tops.map((r, i) => row(`s-t-${i}`, [txt(r.key, t.foreground, true), dim(`×${r.n ?? 0} · longest ${mins(r.wall_s)} · peak ${gb(r.peak_kb ?? 0)}`)])),
         ...(costly.length ? [div().px(16).pt(8).pb(2).text_size(12).text_color(t.dim).child("Latest")] : []),
         ...costly.slice(0, 6).map((e, i) => row(`s-r-${i}`, [dim(hhmm(e.ts)), txt(`${e.agent ?? "?"} · ${e.cmd ?? ""}`), dim(gb(e.peak_kb ?? 0))]))]);
-    return v_flex().gap(10).child(wCard).child(mCard).child(lCard).child(cCard).child(this.rulesCard(t, s));
+    return v_flex().gap(10).child(wCard).child(mCard).child(this.computeCard(t, s, cx)).child(lCard).child(cCard).child(this.rulesCard(t, s));
+  }
+  // Compute (#189, research/sw-compute-view.md): per machine and resource what is claimed, used with no claim and free,
+  // its claims and its waiters with why they wait; Cap… and Turn off/on run `swarm compute cap|off|on`.
+  computeCard(t, s, cx) {
+    if (cx) this.loadComp(cx);
+    const { on } = this.where(), c = this.comp?.on === on ? this.comp : null, ms = c?.j ? computeOf(c.j, Date.now() / 1000) : null;
+    const names = new Set((s.agents ?? []).map((a) => a.name)), mono = settings().font_family ?? "JetBrains Mono";
+    const g1 = (kb) => (kb / 1048576).toFixed(kb >= 104857600 ? 0 : 1), ago = (sec) => dur(Math.max(0, sec) * 1000), cores = (n) => `${n} core${n === 1 ? "" : "s"}`;
+    const COL = { claimed: t.ansi4, unclaimed: t.ansi3, free: t.ansi2 + "99" };
+    const dim = (x, w) => div().flex_none().when(Boolean(w), (el) => el.w(w)).truncate().text_size(12).text_color(t.dim).child(x);
+    const swatch = (k, label) => h_flex().gap(5).items_center().child(div().size(8).rounded(2).bg(k ? COL[k] : t.border)).child(label);
+    const bar = (id, r) => h_flex().id(id).flex_none().w(180).h(8).rounded(4).bg(t.border).overflow_hidden()
+      .children(["claimed", "unclaimed", "free"].filter((k) => r[k] > 0).map((k) => div().flex_none().h_full().bg(COL[k])
+        .w(`${(100 * r[k]) / Math.max(1, r.size)}%`).when(this.anim, (el) => el.transition("width", 300))));
+    const res = (id, label, r, text, tip, off) => h_flex().id(id).px(16).py(3).gap(10).items_center().flex_wrap().min_w(0).text_size(12.5)
+      .child(div().flex_none().w(56).text_color(t.muted).child(label)).child(bar(`${id}-bar`, r).when(Boolean(off), (el) => el.opacity(0.45)))
+      .child(div().flex_1().min_w(220).truncate().text_color(t.foreground).child(text)).tooltip(tip); // narrow: the text wraps under the bar
+    const row = (id, kids, go) => h_flex().id(id).min_h(26).py(2).ml(30).mr(6).px(10).gap(10).items_center().flex_wrap().min_w(0).text_size(12.5).rounded(6)
+      .when(Boolean(go), (el) => this.hov(t, el.cursor_pointer(), id, 6).on_click(() => go())).children(kids);
+    const machine = (m, i) => {
+      const label = m.key === "here" ? (on ? line(on, 60) : "This computer") : m.name, id = `cm-${i}`;
+      const head = h_flex().px(16).pt(i ? 12 : 4).pb(4).gap(8).items_center().min_w(0).flex_wrap().border_t(i ? 1 : 0).border_color(t.border)
+        .child(div().flex_none().max_w(220).truncate().text_size(12.5).font_semibold().text_color(m.split ? t.foreground : t.dim).child(label));
+      if (!m.split) return v_flex().child(head.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(m.state)));
+      const k = m.split.cores, x = m.split.mem, editing = this.capEdit?.key === m.key;
+      head.when(m.off, (el) => el.child(this.chip(t, "off: takes no new claims", t.ansi3)))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(`${m.busy.toFixed(1)} busy of ${cores(m.ncpu)} · ${g1(m.avail_kb)} of ${g1(m.total_kb)} G available`))
+        .when(m.ctl && !editing, (el) => el.child(this.small(t, `${id}-cap`, "Cap…", (cx) => {
+          const was = capFields(m); this.capCores.set_value(was.cores); this.capMem.set_value(was.mem); this.capEdit = { key: m.key, was }; this.compFlash = null; cx.notify();
+        })).child(this.small(t, `${id}-off`, m.off ? "Turn on" : "Turn off", (cx) => this.compAct(cx, ["compute", m.off ? "on" : "off", m.key]))));
+      const capNote = (r, unit) => (r.cap < r.size ? ` · cap ${unit(r.cap)} of ${unit(r.size)}` : "");
+      const kids = [head,
+        res(`${id}-c`, "Cores", k, `${k.sum} claimed · ${k.unclaimed} unclaimed · ${k.free} free${capNote(k, String)}`,
+          "Unclaimed: busy cores no claim explains, past an eighth of the machine (at least 1) of noise, as admission counts them", m.off),
+        res(`${id}-m`, "Memory", x, `${g1(x.sum)} claimed · ≈${g1(x.unclaimed)} unclaimed · ${g1(x.free)} free G${capNote(x, (v) => `${g1(v)} G`)}`,
+          "Unclaimed memory is an estimate: in use (total less available) less what is claimed; jobs may use more or less than they claimed", m.off)];
+      if (editing) kids.push(h_flex().px(16).py(6).ml(66).gap(8).items_center().flex_wrap().text_size(12.5).text_color(t.muted)
+        .child("Cores").child(div().w(70).flex_none().child(this.field(t, `${id}-capc`, this.capCores).min_w(0))).child(dim(`of ${m.ncpu}`))
+        .child(div().pl(8).child("Memory")).child(div().w(80).flex_none().child(this.field(t, `${id}-capm`, this.capMem).min_w(0))).child(dim(`G of ${g1(m.total_kb)}`))
+        .child(this.btn(t, `${id}-save`, "Save", (cx) => this.saveCap(cx), true))
+        .child(this.btn(t, `${id}-cancel`, "Cancel", (cx) => { this.capEdit = null; this.compFlash = null; cx.notify(); })));
+      const who = (q) => div().flex_none().w(96).truncate().font_medium().text_color(t.foreground).child(q.who || "?");
+      for (const [j, q] of m.claims.entries()) kids.push(row(`${id}-k-${j}`, [who(q), dim(cores(q.cores), 56), dim(`${g1(q.mem_kb)} G`, 48), dim(ago(q.age_s), 36),
+        div().flex_1().min_w(140).truncate().font_family(mono).text_size(12).text_color(t.muted).child(q.cmd)], names.has(q.who) ? () => this.openAgent(q.who) : null));
+      for (const [j, q] of m.queue.entries()) kids.push(row(`${id}-q-${j}`, [who(q), dim(cores(q.cores), 56), dim(`${g1(q.mem_kb)} G`, 48), dim(ago(q.age_s), 36),
+        h_flex().flex_1().min_w(220).gap(8).items_center().child(this.chip(t, "waiting", t.ansi3)).child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.foreground).child(q.why))], names.has(q.who) ? () => this.openAgent(q.who) : null));
+      return v_flex().pb(4).children(kids);
+    };
+    const note = c ? `read ${ago((Date.now() - c.at) / 1000)} ago${this.compLoading ? " · reading…" : ""}` : "reading…", flash = this.compFlash ?? c?.err;
+    const card = this.card(t, "s-compute").pb(8).child(this.head(t, "Compute", note,
+      flash ? div().flex_none().max_w(420).truncate().text_size(12).text_color(t.blocked).child(flash) : null))
+      .child(h_flex().px(16).pb(8).gap(14).flex_wrap().text_size(11.5).text_color(t.dim)
+        .child(swatch("claimed", "claimed")).child(swatch("unclaimed", "used with no claim (memory: an estimate)")).child(swatch("free", "free")).child(swatch(null, "above the cap")));
+    if (!ms) return card.child(div().px(16).pb(6).text_size(12.5).text_color(t.dim).child(c?.err ? "Could not read the machines" : "Reading the machines…"));
+    return card.children(ms.map(machine))
+      .when(!ms.some((m) => m.claims?.length || m.queue?.length), (el) => el.child(div().px(16).pt(6).pb(4).text_size(12.5).text_color(t.dim).child("No job claims cores now: swarm run claims them")));
+  }
+  // Compute reads `swarm compute --json` while System shows: on opening it, every 30 s and never more often than 3× a read
+  // takes, and after a control; a read samples each machine 0.5 s and makes one hc exec per other machine.
+  loadComp(cx, force) {
+    const { cwd, on } = this.where(), c = this.comp;
+    if (this.compLoading) { if (force) this.compAgain = true; return; }
+    if (!cwd || (!force && c?.on === on && Date.now() - c.at < Math.max(QUIET_POLL, 3 * (c.took ?? 0)))) return;
+    this.compLoading = true;
+    const t0 = Date.now();
+    cx.spawn(async (cx) => {
+      let j = null, err = null;
+      try {
+        const r = await swarm(cwd, on, ["compute", "--json"]);
+        if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm compute exited ${r.code}`);
+        j = JSON.parse(r.stdout);
+      } catch (e) { err = line(e?.message ?? e, 300).replace(/^swarm: /, ""); }
+      if (this.where().on === on) this.comp = { j: j ?? (this.comp?.on === on ? this.comp.j : null), at: Date.now(), took: Date.now() - t0, on, err };
+      this.compLoading = false;
+      if (this.compAgain) { this.compAgain = false; this.loadComp(cx, true); }
+      cx.notify();
+    });
+  }
+  compAct(cx, args, ok) {
+    if (this.compBusy) return;
+    const { cwd, on } = this.where();
+    this.compBusy = true; this.compFlash = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await swarm(cwd, on, args);
+        if (r.code === 0) ok?.(); else this.compFlash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
+      } catch (e) { this.compFlash = line(e?.message ?? e, 300); }
+      this.compBusy = false; this.loadComp(cx, true); cx.notify();
+    });
+  }
+  saveCap(cx) {
+    const e = this.capEdit;
+    if (!e || this.compBusy) return;
+    const a = capArgs(e.key, e.was, { cores: this.capCores.value(), mem: this.capMem.value() });
+    if (!a) { this.compFlash = "Cores: a whole number or all; memory: a size in G or all"; cx.notify(); return; }
+    if (!a.length) { this.capEdit = null; cx.notify(); return; }
+    this.compAct(cx, a, () => { this.capEdit = null; });
   }
   // Rules and limits (II.3k): the context limits and the rules added to every new brief; Edit… opens a form.
   rulesCard(t, s) {
@@ -1342,7 +1443,7 @@ export default class SwarmTab extends View {
       : section === "board" ? this.boardView(t, s, cx)
       : section === "activity" ? page(this.activityView(t, s))
       : section === "landing" ? page(this.landingView(t, s, cx))
-      : section === "system" ? page(this.systemView(t, s))
+      : section === "system" ? page(this.systemView(t, s, cx))
       : page(this.historyView(t, s, cx));
     // II.4c: a section's content fades in (120 ms); a page pushes in from the right 24 px with a fade (160 ms), and Back
     // brings the section in from the left.

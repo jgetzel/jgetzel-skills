@@ -735,6 +735,66 @@ export function limitArgs(l, { nudge, compact, stayers }) {
   return a.length ? ["limits", ...a] : [];
 }
 
+// Compute claims (board #189, research/sw-compute-view.md): `swarm compute --json` as rows, this machine ("here")
+// first, then the others in the order printed; a machine that did not answer or is not connected has only `state`.
+// Claims oldest first, each with its age; waiters oldest first.
+export function computeOf(j, now) {
+  if (!j || typeof j !== "object" || Array.isArray(j)) return [];
+  const n = (x) => (Number.isFinite(x) ? Math.max(0, x) : 0), arr = (x) => (Array.isArray(x) ? x.filter((y) => y && typeof y === "object") : []);
+  const names = Object.keys(j).filter((k) => k !== "here"), keys = "here" in j ? ["here", ...names] : names;
+  return keys.slice(0, 64).map((k) => {
+    const m = j[k] && typeof j[k] === "object" ? j[k] : {}, name = line(k, 60), ctl = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(k); // ctl: a name the CLI takes as an argument
+    if (!Number.isFinite(m.ncpu)) return { key: k, name, ctl: false, state: line(m.state, 40) || "unreachable" };
+    const claims = arr(m.claims).map((c) => ({ who: line(c.who, 60), cores: n(c.cores), mem_kb: n(c.mem_kb), age_s: Math.max(0, n(now) - n(c.start)), cmd: line(c.cmd, 200) }))
+      .sort((a, b) => b.age_s - a.age_s);
+    const queue = arr(m.queue).map((q) => ({ who: line(q.who, 60), cores: n(q.cores), mem_kb: n(q.mem_kb), age_s: Math.max(0, n(now) - n(q.first)) }))
+      .sort((a, b) => b.age_s - a.age_s);
+    const r = { key: k, name, ctl, state: "connected", ncpu: n(m.ncpu), busy: n(m.busy), total_kb: n(m.total_kb), avail_kb: n(m.avail_kb),
+      cap_cores: n(m.cap_cores), cap_mem_kb: n(m.cap_mem_kb), off: m.off === true, claims, queue };
+    r.split = splitOf(r);
+    queue.forEach((q, i) => { q.why = whyOf(r, i); });
+    return r;
+  });
+}
+// A machine's cores and memory as admission counts them (sw-compute.md §1): claimed, used with no claim, free, out of
+// `size`, with the cap. Cores' unclaimed is the script's `outside` (busy past the claims, less max(1, ncpu/8) of noise);
+// memory's is an estimate, in use minus claimed. claimed + unclaimed + free <= size; the rest is above the cap.
+export function splitOf(m) {
+  const cc = m.claims.reduce((a, c) => a + c.cores, 0), cm = m.claims.reduce((a, c) => a + c.mem_kb, 0), z = (x) => Math.max(0, x);
+  const out = z(Math.round(m.busy - cc) - Math.max(1, Math.floor(m.ncpu / 8)));
+  const fc = z(Math.min(m.cap_cores - cc, m.ncpu - cc - out)), fm = z(Math.min(m.cap_mem_kb - cm, m.avail_kb));
+  // clamped so the bar never runs past the machine: a ledger over a cap lowered since, a reading of a full machine
+  const cl = (x, room) => Math.min(x, z(room));
+  const cores = { claimed: cl(cc, m.ncpu), unclaimed: cl(out, m.ncpu - cc), free: cl(fc, m.ncpu - cc - out), size: m.ncpu, cap: m.cap_cores, sum: cc };
+  const mu = z(m.total_kb - m.avail_kb - cm);
+  const mem = { claimed: cl(cm, m.total_kb), unclaimed: cl(mu, m.total_kb - cm), free: cl(fm, m.total_kb - cm - mu), size: m.total_kb, cap: m.cap_mem_kb, sum: cm };
+  return { cores, mem };
+}
+// Why the machine's waiter `i` (oldest first) waits: per resource it is short of, the claims fill the cap or unclaimed
+// use takes the room; short of neither, an older waiter goes first, or it starts on its next try.
+export function whyOf(m, i) {
+  const q = m.queue[i], { cores, mem } = m.split ?? splitOf(m), why = [];
+  if (m.off) return "the machine is off";
+  if (q.cores > cores.free) why.push(`cores: ${q.cores > cores.cap - cores.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
+  if (q.mem_kb > mem.free) why.push(`memory: ${q.mem_kb > mem.cap - mem.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
+  if (why.length) return why.join(" · ");
+  return i > 0 ? `behind ${m.queue[0].who}` : "fits: starts on its next try";
+}
+// The Cap form's starting values: the machine's caps, "all" where the cap is all it has.
+export function capFields(m) {
+  return { cores: m.cap_cores >= m.ncpu ? "all" : String(m.cap_cores), mem: m.cap_mem_kb >= m.total_kb ? "all" : String(Math.round(m.cap_mem_kb / 104857.6) / 10) };
+}
+// The Cap form's command: `--cores` and `--mem` for the fields changed from `was` (capFields); [] when none changed;
+// null for a value that is not a whole count of cores, a size in G, or all (empty is all).
+export function capArgs(key, was, { cores, mem }) {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(key)) return null;
+  const c = String(cores ?? "").trim().toLowerCase() || "all", g = String(mem ?? "").trim().toLowerCase() || "all";
+  if (c !== "all" && !(/^\d{1,5}$/.test(c) && +c >= 1)) return null;
+  if (g !== "all" && !(/^\d{1,6}(\.\d{1,3})?$/.test(g) && +g > 0)) return null;
+  const a = [...(c !== was.cores ? ["--cores", c === "all" ? c : String(+c)] : []), ...(g !== was.mem ? ["--mem", g] : [])];
+  return a.length ? ["compute", "cap", key, ...a] : [];
+}
+
 // An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the
 // agent's pane `pane`, once per tab; then that pane has focus. Splits only go right or down, so it splits down and swaps
 // the two once the new pane has its place (`later`: a timer; swap goes by geometry). `ps`: panes().
