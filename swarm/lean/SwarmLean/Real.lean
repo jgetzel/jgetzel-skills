@@ -67,6 +67,9 @@ def connect : IO Conn := do
     catch e =>
       if i ≥ 500 || !hasSub (toString e) "database is locked" then throw e
       IO.sleep 20
+  -- per connection: at sqlite's default (full) every commit fsyncs the WAL while it holds the write lock, and on a busy
+  -- disk that took seconds, so the others ran out their busy timeout; a power cut may now lose the last commits
+  discard <| c.query "pragma synchronous=normal"
   c.script schema
   -- each migration checked again inside the transaction: another connect may have run it
   let has : IO (String → List String) := do
