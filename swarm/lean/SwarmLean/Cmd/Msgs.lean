@@ -81,15 +81,18 @@ def read : m UInt32 := do
   Env.out (← if rows.isEmpty then pure "no unread messages" else fmtMsgs rows)
   return 0
 
-/-- `Store.txn ts f`, tried again a second later while the db is busy ("database is locked": busy_timeout ran out),
-for about an hour: a waiter that exits on a busy db is read as broken (board #137). -/
-def txnBusy [Guard m] (ts : List Table) (f : Db → Db × α) : m α := do
+/-- `x`, tried again a second later while the db is busy ("database is locked": busy_timeout ran out), for about an
+hour: a waiter that exits on a busy db is read as broken (board #137). -/
+def retryBusy [Guard m] (x : m α) : m α := do
   for _ in [0:300] do
-    match ← Guard.guard (Store.txn ts f) with
+    match ← Guard.guard x with
     | .ok a => return a
     | .error e => if !hasSub e "database is locked" then die e
     Sys.sleep 1000
-  Store.txn ts f
+  x
+
+/-- `Store.txn ts f` under `retryBusy`. -/
+def txnBusy [Guard m] (ts : List Table) (f : Db → Db × α) : m α := retryBusy (Store.txn ts f)
 
 /-- `swarm wait [--me N] [--timeout S] [--poll S]` (msgs.cmd_wait): 2 after a delivery to stderr, 3 when fenced, 0 on
 a timeout or when superseded or working. -/
@@ -122,7 +125,7 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
     if (← wakes rows (pure cold : m Bool)).isSome then
       let t ← Clock.now
       txnBusy [] fun db => (db.log t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}"), ())
-      Env.err (← deliver n)
+      Env.err (← retryBusy (deliver n))  -- a failed delivery rolls back: nothing is marked read
       throw (Exit.mk 2)
     Sys.sleep pollMs
   return 0

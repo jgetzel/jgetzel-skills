@@ -232,6 +232,8 @@ once while another connection holds it (board #137). -/
 def sqlite_version (t : T) : IO Unit := do
   let a ← setup t
   let b ← connect
+  -- no fsync of the WAL under the write lock: a commit's wait on a busy disk held every other writer
+  eq (toString (repr (← b.query "pragma synchronous"))) (toString (repr (#[#[Sqlite.Val.int 1]] : Array (Array Sqlite.Val)))) "connect: synchronous=normal"
   let v ← inTxn a "begin" (dataVersion a)
   sqliteTxn a [.«meta»] fun db => (setI db "tx" 1, ())
   eq ((← inTxn a "begin immediate" (dataVersion a)) == v) true "sqlite_version: unchanged by this connection's commits"
