@@ -152,11 +152,14 @@ def typeLine (hc text : String) : m (Option String) := do
   let o ← Sys.exec ["hc", "send", hc, text] { env := [("HC_TERMINAL_ID", none)] }
   return if o.code == 0 then none else some (strip (o.stderr ++ o.stdout))
 
-/-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136). -/
+/-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136); `db` holds the
+agent, task and workspace tables. -/
 def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
   let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
     (·.id ≤ ·.id)).head?
-  let br ← match a.cwd with
+  -- an agent's cwd is the checkout it was spawned from; its worktree is what it must find again
+  let dir := ((← Workspaces.wtMap db).lookup a.name).orElse fun _ => a.cwd
+  let br ← match dir with
     | some c => pure ((← Proc.output ["git", "-C", c, "branch", "--show-current"] none []).bind fun o =>
         if o.code == 0 then some (strip o.stdout) else none)
     | none => pure none
@@ -169,13 +172,13 @@ def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
         discard <| Sys.mkdirp sd
         pure (some (if ← Fs.write f e then s!"Keep: read {f} first." else (e.take Compact.maxKeep).toString))
     | none => pure none
-  return Compact.line a.name (task.map fun r => ((r.id : Int), r.title.getD "")) a.cwd br extra
+  return Compact.line a.name (task.map fun r => ((r.id : Int), r.title.getD "")) dir br extra
 
 /-- `swarm compact [--keep <text>]`: types `/compact <what to keep>` into the agent's own terminal; Claude Code runs it
 when the turn ends (board #136). -/
 def compact (a : Parsed) : m UInt32 := do
   let some me ← env "SWARM_NAME" | die "swarm compact: SWARM_NAME is not set"
-  let (row, db) ← Store.txn [.agent, .task] fun db => (db, (db.agent me, db))
+  let (row, db) ← Store.txn [.agent, .task, .workspace] fun db => (db, (db.agent me, db))
   let some r := row.filter (·.ended.isNone) | die s!"{me} is not a live agent"
   let some hc := py r.hc | die s!"{me} has no terminal"
   if let some e ← typeLine hc (← compactLine db r (a.str "keep")) then die s!"hc send {hc} failed: {e}"
