@@ -13,14 +13,18 @@ def hplBin : IO FilePath := do
 module_facet hplO (mod : Module) : FilePath := do
   let exe ← hplBin
   let oleanJob ← mod.leanArts.fetch
+  let setupJob ← mod.setup.fetch
   let cFile := mod.pkg.irDir / "hpl" / (mod.name.toString ++ ".c")
   let refused := mod.pkg.irDir / "hpl" / (mod.name.toString ++ ".refused")
-  let cJob ← oleanJob.mapM fun _ => do
+  -- not `mod.setupFile`: Lake writes that only when it runs `lean`, not when its artifact cache serves the .olean
+  let setupFile := cFile.withExtension "setup.json"
+  let cJob ← (oleanJob.zipWith (fun _ s => s) setupJob).mapM fun setup => do
     addTrace (← computeTrace (TextFilePath.mk mod.leanFile)); addTrace (← computeTrace exe)
     buildFileUnlessUpToDate' cFile do
       IO.FS.createDirAll cFile.parent.get!
+      IO.FS.writeFile setupFile (Lean.toJson setup).pretty
       proc { cmd := exe.toString, env := #[("LEAN_PATH", some (← getWorkspace).augmentedLeanPath.toString)]
-             args := #[mod.leanFile.toString, "-o", cFile.toString, "--setup", mod.setupFile.toString, "--all",
+             args := #[mod.leanFile.toString, "-o", cFile.toString, "--setup", setupFile.toString, "--all",
                "--refused", refused.toString] }
     return cFile
   buildLeanO (mod.irDir / "hpl" / (mod.name.toString ++ ".o")) cJob mod.weakLeancArgs
