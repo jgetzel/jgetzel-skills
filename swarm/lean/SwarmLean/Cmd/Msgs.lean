@@ -37,7 +37,8 @@ variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m
 
 /-- The delivery groups `post` reports, in order. -/
 def KEYS : List String :=
-  ["drains at its next tool round", "wakes", "held, cold (reads it when it next wakes)", "no live waiter"]
+  ["drains at its next tool round", "wakes", "held, cold (reads it when it next wakes)", "no live waiter",
+    "compacting (watchd wakes it when that ends)"]
 
 /-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post). -/
 def post (a : Parsed) : m UInt32 := do
@@ -51,8 +52,9 @@ def post (a : Parsed) : m UInt32 := do
     | die s!"unknown agent '{to}'; `swarm who` lists them"
   let (here, gone) ← splitAgents db
   let toIt (x : Agent) : Bool := x.name != frm && (to == "@all" || x.name == to)
-  let mut g : Array (List String) := #[[], [], [], []]
+  let mut g : Array (List String) := #[[], [], [], [], []]
   let mut seen : Seen := []
+  let mut evs : Option (List Event) := none
   for x in here.filter toIt do
     let mut k := 0
     if x.status != some "working" then
@@ -60,6 +62,10 @@ def post (a : Parsed) : m UInt32 := do
       seen := s
       let up ← match x.waiter with | some w => Sys.pidAlive w | none => pure false
       k := if cr.isSome && !urgent then 2 else if up then 1 else 3
+      if k == 3 then  -- the events only for a recipient no waiter wakes
+        let e ← match evs with | some e => pure e | none => Store.txn [.event] fun db => (db, db.events)
+        evs := some e
+        if Compact.compacting e x.name (x.last_active.getD 0) (← Clock.now) then k := 4
     g := g.modify k (· ++ [x.name])
   let mut parts := (KEYS.zip g.toList).filterMap fun (k, ns) => if ns.isEmpty then none else some (", ".intercalate ns ++ ": " ++ k)
   let dead := (gone.filter toIt).map (·.name)

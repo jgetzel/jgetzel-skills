@@ -150,6 +150,29 @@ def test_hung_waiterless_reported_once (t : T) : IO Unit := do
   eq (← t.q "select 1 x from msg where dest='comms' and body like 'g stays for%can''t be woken%'").size 1
   eq (← evs t "stay-check") 0
 
+-- board #191: a compaction the swarm asked for kills the waiter and no Stop follows it; no report until watchd's
+-- continue line went out (or the hold ran out), and `post` says it is compacting
+def test_hung_not_while_compacting (t : T) : IO Unit := do
+  let dead ← deadPid
+  let nw : IO Nat := return (← t.q "select 1 x from msg where dest='comms' and body like 'g stays for%can''t be woken%'").size
+  idle t "comms"; idle t "g" [("stay", "compacting, then #7"), ("waiter", .int dead), ("last_active", .int ((← now) - 60))]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 70, 'g', 'compact-asked')" []
+  comms_tick t
+  eq (← nw) 0
+  has (← t.sw "comms" ["post", "g", "hi"]).stdout "g: compacting (watchd wakes it when that ends)"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'g', 'compact')" []
+  comms_tick t
+  eq (← nw) 0  -- ended, the continue line not yet sent
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'g', 'ctx-continue')" []
+  comms_tick t
+  eq (← nw) 1
+  has (← t.sw "comms" ["post", "g", "hi"]).stdout "g: no live waiter"
+  -- a compaction asked long ago no longer holds the report
+  idle t "h" [("stay", "reviews"), ("waiter", .int dead), ("last_active", .int ((← now) - 60))]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 700, 'h', 'ctx-compact')" []
+  comms_tick t
+  eq (← t.q "select 1 x from msg where dest='comms' and body like 'h stays for%can''t be woken%'").size 1
+
 def test_hung_unread_message_reported_once (t : T) : IO Unit := do
   idle t "comms"; idle t "r" [("stay", "reviews"), ("last_active", .int ((← now) - 60))]
   t.sw_ "comms" ["post", "r", "PR 5 is ready"]
@@ -215,6 +238,7 @@ def tests : List Case := [
   ("test_quiet_notice_once_per_edge", test_quiet_notice_once_per_edge),
   ("test_quiet_cold_or_waiterless_stayer_not_woken", test_quiet_cold_or_waiterless_stayer_not_woken),
   ("test_hung_waiterless_reported_once", test_hung_waiterless_reported_once),
+  ("test_hung_not_while_compacting", test_hung_not_while_compacting),
   ("test_hung_unread_message_reported_once", test_hung_unread_message_reported_once),
   ("test_hung_notice_not_reported", test_hung_notice_not_reported),
   ("test_liveness_check_hung_and_answered", test_liveness_check_hung_and_answered),

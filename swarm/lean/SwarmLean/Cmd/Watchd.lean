@@ -155,7 +155,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
     let ev (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.bind (·.ts)
     if Compact.Term.ofHc x.status == .idle then
       if let some t0 := ev "compact" then
-        if (ev "ctx-continue").all (· < t0) then
+        if (ev "ctx-continue").all (· < t0) && a.last_active.getD 0 ≤ t0 then
           let now ← Clock.now
           Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
           -- a stayer or the communicator has no verdict (a declared wait): still tell it to carry on

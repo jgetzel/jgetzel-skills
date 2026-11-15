@@ -96,6 +96,20 @@ def line (name : String) (task : Option (Int × String)) (cwd branch : Option St
   let x := match extra with | some e => if e != "" then " " ++ e else "" | none => ""
   oneLine s!"/compact Keep what swarm agent {name} needs to go on{t}: what is done, what is next, decisions made and why, open questions and promises to peers{w}{b}.{x}"
 
+/-- How long after it was asked a compaction counts as running (`compacting`). -/
+def COMPACT_HOLD : Int := 600
+
+/-- Agent `n` is in a compaction the swarm asked for (`compact-asked`, `ctx-compact`) at `t`, `last` its last_active:
+asked under COMPACT_HOLD ago, no `ctx-continue` since, and no turn after its `compact` event. The waiter dies in the
+compaction and no Stop follows it, so until watchd's continue line nothing can wake it, and that is no hang (board #191). -/
+def compacting (evs : List Event) (n : String) (last t : Int) : Bool :=
+  let mine := evs.filter (·.agent == some n)
+  match (mine.filter fun e => e.kind == some "compact-asked" || e.kind == some "ctx-compact").getLast? with
+  | none => false
+  | some a =>
+    t - a.ts.getD 0 < COMPACT_HOLD &&
+      !mine.any (fun e => e.id > a.id && (e.kind == some "ctx-continue" || (e.kind == some "compact" && e.ts.getD 0 < last)))
+
 /-- The nudge at the first threshold; `force`: say watchd compacts at the second. -/
 def nudgeText (k cAt : Int) (task : Option Int) (force : Bool) : String :=
   let id := match task with | some i => toString i | none => "<id>"

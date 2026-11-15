@@ -113,7 +113,7 @@ see and, failing those, asks:
 |---|---|---|
 | Terminal gone | edge | `reap` ends it (today) |
 | hc reports a prompt or any status but idle/working | edge | tells the communicator (today's blocked notice) |
-| Idle with no live waiter: no message can wake it | edge | tells the communicator once: "sr-7 stays for '<text>' but has no waiter and can't be woken." A poke would not arrive. |
+| Idle with no live waiter: no message can wake it | edge | tells the communicator once: "sr-7 stays for '<text>' but has no waiter and can't be woken." A poke would not arrive. Not during a compaction the swarm asked for (board #191): the waiter dies in it and no Stop follows, and watchd's continue line wakes it after. |
 | A message to it is unread two ticks after it was posted, and it is still idle | edge | tells the communicator once: "sr-7 did not wake on a message." This fires exactly when someone needs the stayer. |
 | None of the above, idle 50 min | **periodic** | the liveness check below |
 
