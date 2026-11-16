@@ -36,7 +36,7 @@ with subagents.
    temporary one; `reserve … 0` lifts it; claims wait for the rest and a larger one waits without holding back smaller
    ones), `swarm compute off|on <machine|here>` stops and resumes new claims. `--cores all` claims the whole machine
    alone, for a benchmark. The same commands are `claim …` (`claim run -- <cmd>` claims and runs any command without a
-   swarm). `swarm/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
+   swarm). `claim/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
 
 ## 1. Start
 

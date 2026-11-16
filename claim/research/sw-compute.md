@@ -127,7 +127,7 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 - `DESIGN.md`: decision 6 and "Resources by information, not gates" say what is now claimed and what is still only
   information.
 - `brief.md`: heavy work goes through `swarm run` (`--cores`, `--mem`); it waits for room and may run elsewhere.
-- `SKILL.md`: `run.machines`, `swarm compute`, the caps. `research/sw-remote-jobs.md` §5 "Picking a machine" points here.
+- `swarm/SKILL.md`: `run.machines`, `swarm compute`, the caps. `swarm/research/sw-remote-jobs.md` §5 "Picking a machine" points here.
 - `OpsHelp.lean`: `run`'s and `compute`'s help.
 
 ## 6a. As built, where it differs from the above
@@ -149,7 +149,7 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 - Enforcement (cgroup quotas), §1.
 - Fairness between swarms, preemption: the point at which a scheduler daemon or Nomad is the answer. Backfill is in, still
   with no daemon (sw-compute-backfill.md §2), and jobs run at the lowest CPU and I/O priority (§4 there).
-- The machine note. (The Herdr panels showing claims: research/sw-compute-view.md, board #189.)
+- The machine note. (The Herdr panels showing claims: swarm/research/sw-compute-view.md, board #189.)
 - A proof. Admission is decided by the script, so "claims never exceed the cap" is tested (§5), not proved; the model
   and the theorems, and how the script is tied to them, are sw-compute-backfill.md §6-§7.
 - What the job actually used against what it claimed, in the footer.

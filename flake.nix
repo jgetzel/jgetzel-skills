@@ -39,8 +39,7 @@
       };
     in {
       # sqlite: the library and header swarm/lean links (its lakefile builds this output)
-      # luajit: lua-lean's reference interpreter (lua-lean/lua-lean, its CI), not in default
-      packages = forAll (pkgs: { default = env pkgs; claim = claim pkgs; luajit = pkgs.luajit; sqlite = sqlite pkgs; swarm-lean = swarm-lean pkgs; });
+      packages = forAll (pkgs: { default = env pkgs; claim = claim pkgs; sqlite = sqlite pkgs; swarm-lean = swarm-lean pkgs; });
       devShells = forAll (pkgs: { default = pkgs.mkShell { packages = [ (env pkgs) ]; }; });
     };
 }
