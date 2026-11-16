@@ -16,9 +16,11 @@ exe=${SWARM_EXE:-swarm-lean}; unset SWARM_EXE
 for ref in "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
   bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/$exe
   [ -x "$bin" ] || continue
-  # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds
+  # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds; the claim
+  # tool's library (../claim), which swarm-lean is built from
   new=$(cd "$here" && find lean/Main.lean lean/lakefile.lean lean/lean-toolchain lean/SwarmLean lean/c \
     model/SwarmModel/Glob.lean model/SwarmModel/Model.lean model/SwarmModel/PrWatch.lean model/SwarmModel/Decide.lean \
+    ../claim/Claims.lean ../claim/Claims ../claim/lakefile.lean ../claim/lean-toolchain \
     -newer "$ref" 2>/dev/null | head -n 1)
   [ -z "$new" ] && exec "$bin" "$@"
   # both stale: run the newer one (a leftover lake build must not shadow a later nix build)

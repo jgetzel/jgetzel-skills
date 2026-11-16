@@ -1,8 +1,11 @@
 #!/bin/sh
 # Builds swarm-lean and its proofs, refuses an open proof or an axiom beyond Lean's three (Audit.lean), and on the stock binary and
 # the hpl one (when ../../../high-perf-lean has an hpl binary, or $HPL is set) runs swarm-tests (the Lean suite) and
-# test-claim.sh; and harness-retro's test (test-harness-retro.sh).
+# test-claim.sh; and harness-retro's test (test-harness-retro.sh). The claim tool's own gate (../../claim/check.sh) runs first.
 cd "$(dirname "$0")" || exit 1
+# the claim tool's own gate (../../claim: its proofs' axioms and claim-tests) first, and both toolchains the same
+../../claim/check.sh || exit 1
+cmp -s lean-toolchain ../../claim/lean-toolchain || { echo "swarm/lean/lean-toolchain differs from claim/lean-toolchain" >&2; exit 1; }
 if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build || exit 1
