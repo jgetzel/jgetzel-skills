@@ -168,7 +168,8 @@ The estimates:
 Inside `try`, after `clean`, with `fc`, `fm` as today but over the reserve-aware limit (§3):
 
 ```
-held(t)    = sized t:     t.cores > lim_cores or t.mem > lim_mem           # the reservation keeps it out
+held(t)    = sized t:     t.cores > fc + Σ cores or t.mem > fm + Σ mem     # it would not fit with every live claim ended:
+                                       # = min(lim_c, ncpu - outside)   = min(lim_m, available + Σ mem)
              exclusive t: reserve != 0 0, or outside > 0, or a cap below the machine     (§2.4)
 ahead      = live tickets t != me, not held, (t.first, t.id) < (my first, my id)     # ids compared bytewise (LC_ALL=C)
 head       = the least of `ahead` by (first, id)
@@ -189,11 +190,22 @@ grant iff  fits now and ( ahead is empty or (my est is known and shadow is known
 - **A running claim without an estimate never ends, in the model**, rather than "makes the head's start unknown". The
   head's shadow is then none only if it needs that claim's room, and a claim it does not need does not stop backfill.
   This is sound for the theorem (§6, `backfill_no_delay`): the shadow counts only room that estimates promise.
-- **Shadow none forbids backfill.** That covers unknown claims the head needs and unclaimed use (`outside`, low
-  `MemAvailable`) the ledger cannot promise to free. An exclusive head is held in the cases its shadow would be none for
-  a reason other than claims (§2.4), so it never stops backfill that way.
+- **Held: what claims ending cannot fix blocks no one.** A ticket that would not fit even with every live claim ended
+  is held: the reservation, a cap, unclaimed use (`outside`) or low `MemAvailable` keeps it out, and nothing the
+  ledger promises changes that. Its shadow would be none, and "shadow none, nothing backfills" would block every job
+  behind it indefinitely. Found on the desktop on 2026-11-15: 12 free cores and 23 GiB available; the oldest ticket
+  asked 8 cores and 30 GiB, more than the 23 + 4 GiB it could have with every claim ended, and a 3-core 12 GiB request
+  behind it waited 3 hours. Now that ticket is held and the request runs (the `desktop` cases, §7 and §8).
+- **Shadow none forbids backfill.** With `held` as above a head's shadow is none only through a live claim without an
+  estimate whose room the head needs: the head would fit once claims end, but one of them never ends in the model.
+  That case stays conservative: nothing backfills past it (§6.2 5 proves this is the only way).
+- **A held ticket becomes a head again** as soon as it would fit with every claim ended (unclaimed use drops, memory
+  comes back, the reservation is lifted): `held` is decided on every `try` from that moment's reading, and it may flip
+  back. It is then an ordinary head, and its shadow is computed from the claims live then, including those granted
+  while it was held, which it did not protect: they got in ahead of it. From then on backfill protects it as any head.
 - Only the head is protected. A younger request may pass an older non-head waiter; that waiter is protected once it
-  is the head. Held tickets are neither ahead nor head, and a held sized request cannot fit (`cores > lim >= fc`).
+  is the head. Held tickets are neither ahead nor head, and a held sized request cannot fit
+  (`cores > fc + Σ cores >= fc`, likewise memory).
 - Model assumptions, stated in the docs: measured unclaimed use stays as it is; memory a claim frees becomes
   available; estimates are what jobs take. None of these is checked; the theorems are about the estimates.
 
@@ -224,8 +236,9 @@ For benchmarks (hpl-comms' cross-language runs): no other job, and the user off 
   below the machine says part of it is not for jobs; the user lifts it (`claim cap here --cores all --mem all`) to
   run a benchmark. `swarm run`'s 255 message says so.
 - `--mem` with `--cores all` is refused by both CLIs (the memory is all that is available).
-- **Held, so it blocks no one**: while the reservation is not `0 0`, `outside > 0`, or the cap is below the machine
-  (lowered after it queued), an exclusive ticket is held: neither ahead of anyone nor head. Otherwise only claims
+- **Held, so it blocks no one** (the exclusive case of §2.2's `held`): while the reservation is not `0 0`,
+  `outside > 0`, or the cap is below the machine (lowered after it queued), an exclusive ticket is held: neither ahead
+  of anyone nor head. Otherwise only claims
   stand in its way, and it is an ordinary head whose shadow is the first event by which every claim has ended by its
   estimate (none if a claim has no estimate: then nothing backfills past it, as for any head that needs an unknown
   claim). It may flip between held and not as the user works; it runs when the machine is quiet and empty.
@@ -271,7 +284,9 @@ here: 8 of 16 cores claimed (cap 20 of 24, 4 reserved, 9.3 busy), 10.0 of 72.0G 
 
 `N of L` is claimed of `lim` (today: of the cap; the same when nothing is reserved and the cap is at most the
 machine). `, N reserved` / `N.NG reserved, ` only when non-zero. `of ~10m` when the claim has an estimate. A held
-exclusive waiter names each reason: `reserved`, `unclaimed use`, `cap below the machine`.
+sized waiter says `held by the reservation` when it is over `lim`, else `held by unclaimed use` (cores or memory in
+use outside the claims). A held exclusive waiter names each reason: `reserved`, `unclaimed use`, `cap below the
+machine`.
 
 ### 3.2 `--json`, the fields a desktop plugin reads
 
@@ -417,8 +432,9 @@ def whole (m : Machine) : Bool := capC m ≥ m.ncpu && capM m ≥ m.total
 /-- Nothing but claims keeps an exclusive job off: no reservation, no unclaimed use past the noise floor. -/
 def quiet (m : Machine) : Bool := m.res == (0, 0) && outside m == 0
 
+/-- Held: it would not fit even with every live claim ended (§2.2). -/
 def held (m : Machine) (t : Ticket) : Bool := match t.cores with
-  | some c => c > limC m || t.mem > limM m
+  | some c => c > freeC m + cc m || t.mem > freeM m + cm m
   | none => !whole m || !quiet m
 
 /-- (first, id) order; String's `<` is bytewise on these ids, as LC_ALL=C. The one place the queue order is set. -/
@@ -519,9 +535,12 @@ Must:
    `decide m r = .never a b ↔ m.off = false ∧ tooBig m r = true ∧ a = capC m ∧ b = capM m`.
 3. `grant_within` (the existing invariant, with backfill, the reservation and exclusive claims):
    `WF m r → decide m r = .ok c g → cc m + c ≤ limC m ∧ cc m + c + outside m ≤ m.ncpu ∧ cm m + g ≤ limM m ∧ g ≤ m.avail`;
-   with `lim_bounds`, `cc (grant m r) ≤ capC m`. (For an exclusive grant `limC m = m.ncpu` and `limM m = m.total`.)
+   with `lim_bounds`, `cc (grant m r) ≤ capC m` (`grant_within_cap`). (For an exclusive grant `limC m = m.ncpu` and
+   `limM m = m.total`.)
 4. `no_history_no_backfill`: `r.est = none → decide m r = .ok c g → aheadOf m r = []`.
-5. `unknown_shadow_no_backfill`: `head m r = some h → shadow m h = none → ∀ c g, decide m r ≠ .ok c g`.
+5. `unknown_shadow_no_backfill`: `head m r = some h → shadow m h = none → (∃ c ∈ m.claims, c.est = none) ∧
+   ∀ c g, decide m r ≠ .ok c g`: a head's start is unknown only through a claim without an estimate (the generalised
+   `held` makes every other cause held), and then nothing backfills.
 6. `backfill_no_delay`: a grant past a head, sized or exclusive, does not move the head's estimated start later.
    `WF m r → head m r = some h → decide m r = .ok c g → ∃ s s', shadow m h = some s ∧ shadow (grant m r) h = some s' ∧ s' ≤ s`.
    (`≤`, not `=`: in the model a new claim explains measured busy cores, so `outside` can only shrink.)
@@ -530,14 +549,19 @@ Must:
    Given `WF m r`, `head0 m h`, `shadow m h = some s`, and a later state `m'` with: the same `ncpu total cap res`,
    `m'.off = false`, `s ≤ m'.now`; `m'.claims` a sublist of `m.claims.filter (fun c => ¬ (endOf m c).any (· ≤ s))`
    (estimates held, and every claim granted in between, a backfill, ended by `s` by 6's condition);
-   `outside m' ≤ outside m`; `m'.avail ≥ m.avail + (released m s).2`; `head0 m' h`. Then for any `e`,
+   `outside m' ≤ outside m`; `m'.avail ≥ m.avail + (released m s).2`; `h ∈ m'.tickets` before every other ticket of
+   `m'` that is not held; the ticket names of `m'` distinct (`(m'.tickets.map (·.id)).Nodup`, as `WF`). Then for any `e`,
    `decide m' ⟨h.id, h.cores, h.mem, e⟩ = .ok (take m' ⟨h.id, h.cores, h.mem, e⟩).1 (take m' …).2`.
-   (For an exclusive head the filter is empty, so `m'` has no claim, and `held m h = false` gives `quiet`.) The trace
+   (For an exclusive head the filter is empty, so `m'` has no claim, and `held m h = false` gives `quiet`.) That `h`
+   is not held in `m'` follows from the rest (it has the room it had at `s`), so it is not assumed; `s ≤ m'.now` is
+   not needed by the model either. The trace
    form, "finitely many arrivals → the head is eventually granted", follows from 6 and 7 informally; it is not asked.
 8. Held tickets block no one:
    - `held_not_ahead`: `held m t = true → t ∉ aheadOf m r`, hence `head m r ≠ some t`.
    - `excl_waiting_blocks_none`: `t.cores = none → (m.res ≠ (0, 0) ∨ 0 < outside m ∨ whole m = false) →
      t ∉ aheadOf m r` (the exclusive case of the above, stated in its terms).
+   - `sized_waiting_blocks_none`: `t.cores = some k → (freeC m + cc m < k ∨ freeM m + cm m < t.mem) →
+     t ∉ aheadOf m r` (the sized case: it would not fit with every claim ended).
 9. Exclusive claims:
    - `excl_grant`: `r.cores = none → decide m r = .ok c g → m.claims = [] ∧ m.res = (0, 0) ∧ outside m = 0 ∧
      c = m.ncpu ∧ g = m.avail ∧ whole m = true`.
@@ -547,7 +571,8 @@ Must:
 10. Reserve and cap arithmetic:
     - `lim_bounds`: `0 ≤ cap → 0 ≤ size → 0 ≤ lim cap size res ∧ lim cap size res ≤ size ∧ lim cap size res ≤ cap`;
       hence `0 ≤ limC m ≤ m.ncpu` and `limC m ≤ capC m` under `WF` (likewise memory).
-    - `lim_zero`: `lim cap size 0 = min cap size`.
+    - `lim_zero`: `0 ≤ size → lim cap size 0 = min cap size` (false for a negative size, where `lim` clamps the
+      reservation to it).
     - `lim_antitone`: `res ≤ res' → lim cap size res' ≤ lim cap size res`.
     - `reserve_restores`: `f.res = (0, 0) → setReserve (setReserve f c g) 0 0 = f`.
     - `reserve_keeps_cap`: `(setReserve f c g).cap = f.cap`; `cap_keeps_reserve`: `(setCap f c g).res = f.res`.
@@ -557,9 +582,20 @@ Must:
 Stretch:
 
 12. `shadow_some`: every claim has an estimate and a sized head fits an emptied ledger
-    (`c ≤ freeC m + cc m ∧ h.mem ≤ freeM m + cm m`) → `shadow m h ≠ none`. Says when 7 applies.
+    (`c ≤ freeC m + cc m ∧ h.mem ≤ freeM m + cm m`) → `shadow m h ≠ none`. Says when 7 applies. With the generalised
+    `held` that is `unheld_shadow_some`: `held m h = false → (∀ c ∈ m.claims, c.est.isSome) → shadow m h ≠ none`.
 13. `after_ledger`: `after` is the ledger the script leaves (the claim count rises by one exactly on `ok`, a ticket
     exists for `r.id` exactly on `wait`), stated over `after`; the differential test checks the files.
+
+### 6.3 What the proof pass changed
+
+All of 1-13 are proved in `claim/Claims/Proofs.lean` (the `script_*` of 11 through `ScriptAdmits`). Against the text
+above as first written:
+
+- `held` was generalised (§2.2) after the desktop case; 5, 7, 8 and 12 are restated for it as above.
+- 7 as first written was false: without distinct ticket names in `m'`, another ticket under `h`'s id sets the
+  request's `first` and an older ticket can be ahead. It now takes them (the script's queue is a directory, so they are).
+- `lim_zero` was false for a negative size; it takes `0 ≤ size` (`WF` gives it for `ncpu` and `total`).
 
 And of the history, in swarm (a `#guard`-checked pure function, proved if cheap): `estimate` is `none` iff there is no
 `run` row with `wall_s > 0`, it is one of those walls, and with fewer than 10 such rows it is the largest.
@@ -567,7 +603,7 @@ And of the history, in swarm (a `#guard`-checked pure function, proved if cheap)
 ## 7. Tying the script to the model
 
 Without this the theorems are about a function the binary never runs. Two tests, both required, in a `claims_spec`
-group of `claim-tests` (`claim/Tests/Spec.lean`), and one assumption in `claim/Claims/Assumptions.lean`:
+group of `claim-tests` (`claim/ClaimTests/Spec.lean`), and one assumption in `claim/Claims/Assumptions.lean`:
 
 ```lean
 /-- The shipped script's admission, assumed and tested, not proved: on a machine and ledger that read as `m`
@@ -590,14 +626,19 @@ def ScriptAdmits (run : Admit.Machine → Admit.Req → Admit.Answer) : Prop :=
   with a non-empty `aheadOf`), backfill refusals (fits, ahead, not granted), held sized tickets, held exclusive
   tickets, exclusive grants, backfill grants past an exclusive head, `never`, `off`; it fails if any count is under
   20: a generator that drifted away from a region would otherwise pass silently. A mismatch prints the case as Lean
-  and as the awk command line.
+  and as the awk command line. As built, to keep every count over 20: half the machines are calm (no cap, no
+  reservation, idle, all memory available), sized tickets and requests ask at most `ncpu` cores and half the memory,
+  claims at most `min 6 ncpu` cores and 3 MiB starting `now-60..now`, an exclusive request finds an empty ledger in
+  one case of two, and one case in four is a backfill scene (a calm machine whose claims all have estimates, an older
+  head of `ncpu` cores or exclusive, a one-core request with an estimate of 1-60 s). One more count: sized tickets held
+  by unclaimed use alone (within `lim`). The first case is the desktop's (§2.2), which must be `ok 3 <12 GiB>`.
 - **`script_try`**: 60 of those cases through the whole script against a scratch `SWARM_COMPUTE_DIR`: the test writes
   `cap`, `reserve`, `off`, each claim as a file with holder `t<now+100000>` (live, as `clean` reads it) and `~est`
   when it has one, each ticket as a fresh file (`all 0` for an exclusive one), a stat file with `ncpu` cpu lines, a
   meminfo file, and runs `try` with `SWARM_COMPUTE_NOW`, `SWARM_COMPUTE_BUSY` (the hundredths as `%.2f`),
   `SWARM_COMPUTE_STAT`, `SWARM_COMPUTE_MEM`. It checks the answer and the files left against `Admit.after`: claims as
   `(cores, mem, start, est)` multisets, tickets as `(id, first, cores, mem)`. At least 10 of the 60 are exclusive
-  requests. This ties `caps()` (reserve, clamping, `limc`), `all`, the claim line's `~` field and the ticket rewrite,
+  requests (as built: the first 45 cases and the next 15 exclusive ones). This ties `caps()` (reserve, clamping, `limc`), `all`, the claim line's `~` field and the ticket rewrite,
   which the awk test does not see.
 - Not tied, and said so in the assumption's doc: the `mkdir` lock serialising tries (the 50-parallel test covers it),
   `clean`'s liveness reading, and the measurement (`/proc/stat`, `vm_stat`).
@@ -618,6 +659,10 @@ If the test and the model disagree, the model is the spec: fix the script, unles
   of 8, `never`; an exclusive head behind a 6-core claim ending in 90 s lets a 2-core est-50 request through and holds
   an est-200 one; with `res = (1, 0)`, or `busy` past the noise floor, the exclusive ticket is held and a younger
   2-core request **without** an estimate is granted; with an `ncpu`-core claim live, a 1-core request waits.
+- The desktop (§2.2): 24 cores, 23 of 64 GiB available, two 4-core 2 GiB claims (one without an estimate) and 4
+  cores of unclaimed use; the 8-core 30 GiB head is held and the 3-core 12 GiB request is `ok`; with 26 GiB available
+  the head is an ordinary one again, its start unknown, and a request with an estimate waits. Rendered, it is `held by
+  unclaimed use`.
 
 `claim/Tests/Script.lean` (the script, a scratch dir; the `try_` helper gains the `-` estimate):
 - Backfill through the script: the same example with files, then the 2-core claim's line has `~50`.
@@ -674,7 +719,7 @@ swarm's `Tests/Compute.lean` and `Tests/Cost.lean`:
   `claim -h` and each subcommand's `-h` are the tool's docs besides this file.
 - `research/sw-compute-view.md` and `herdr/mods/rw-rail/tree.js`: `splitOf` uses `limit_cores ?? cap_cores` (and
   memory) where it uses the cap for free room, so the panel's free matches admission under a reservation; `whyOf`
-  says `held by the reservation` for a held sized waiter and the exclusive reasons (§3.1) for a held exclusive one, and
+  says `held by the reservation` for a held sized waiter over the limit, `held by unclaimed use` for one within it, and the exclusive reasons (§3.1) for a held exclusive one, and
   `waits for an empty machine` for an exclusive one that is not held. The panel's reserve control is not in this step.
 
 ## 10. Not in this step
