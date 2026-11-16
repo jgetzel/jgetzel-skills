@@ -10,7 +10,7 @@ lean_lib Claims
 /-- The `#guard`s of the ledger's pure parts, checked when this builds. -/
 @[default_target]
 lean_lib ClaimTests where
-  roots := #[`ClaimTests.Harness, `ClaimTests.Ledger, `ClaimTests.Script, `ClaimTests.Cli]
+  roots := #[`ClaimTests.Harness, `ClaimTests.Ledger, `ClaimTests.Script, `ClaimTests.Cli, `ClaimTests.Spec]
 
 @[default_target]
 lean_exe claim where

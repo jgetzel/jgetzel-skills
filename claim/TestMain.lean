@@ -1,6 +1,7 @@
 import ClaimTests.Script
 import ClaimTests.Cli
 import ClaimTests.Ledger
+import ClaimTests.Spec
 
 /-! claim-tests: `claim-tests [pattern]` runs every test whose spec or name contains the pattern, one after another, each
 in a fresh scratch dir; `--list` prints `spec name` per test (check.sh ties an assumption's tag to a case). -/
@@ -9,7 +10,7 @@ open Claims Claims.Tests
 
 /-- Every test: the spec (a group), the name and the body. -/
 def all : List (String × String × (T → IO Unit)) :=
-  [("script_spec", Script.tests), ("cli_spec", Cli.tests)].flatMap fun (s, cs) => cs.map fun (n, f) => (s, n, f)
+  [("script_spec", Script.tests), ("cli_spec", Cli.tests), ("claims_spec", Spec.tests)].flatMap fun (s, cs) => cs.map fun (n, f) => (s, n, f)
 
 def main (args : List String) : IO UInt32 := do
   if args == ["--list"] then
