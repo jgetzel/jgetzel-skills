@@ -18,4 +18,4 @@ open SwarmLean Cost
 #guard (recordSql { ts := 0, machine := "h", repo := "r", agent := "a", cmd := "x", source := "run", wall_s := 5, peak_kb := 0 }).map (·.length) == some 1
 #guard (recordSql { ts := 0, machine := "h", repo := "r", agent := "a", cmd := "x", source := "swarm", wall_s := 5, peak_kb := 0 }).isNone
 -- the key is the user's command when it is given
-#guard (recordSql { ts := 0, machine := "h", repo := "r", agent := "a", cmd := "env A=1 make all", key := some "make all", source := "run", wall_s := 1, peak_kb := 0 }).map (·.head!.2.get! 6) == some (.text "make all")
+#guard (recordSql { ts := 0, machine := "h", repo := "r", agent := "a", cmd := "env A=1 make all", key := some "make all", source := "run", wall_s := 1, peak_kb := 0 }).map (fun st => st.head!.2[6]!) == some (Sqlite.Val.text "make all")

@@ -14,7 +14,7 @@ open SwarmLean Compute
 #guard size [(100, 900, 4000, "run"), (100, 0, 100, "swarm")] == some (2, 5000)
 
 /-- `run` rows of these walls. -/
-def runs (ws : List Int) : List (Int × Int × Int × String) := ws.map fun w => (w, 0, 0, "run")
+def runs (ws : List Nat) : List (Int × Int × Int × String) := ws.map (fun (w : Nat) => ((w : Int), (0 : Int), (0 : Int), "run"))
 -- the estimate: the nearest-rank 90th percentile of the `run` rows with a wall time; none without one
 #guard estimate [] == none
 #guard estimate [(0, 0, 0, "run")] == none
