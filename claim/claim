@@ -1,0 +1,26 @@
+#!/bin/sh
+# The claim tool: runs the binary built by build.sh. A binary older than its sources still runs, with one stderr line
+# saying how to rebuild; with no binary, it says how to build one.
+p=$0
+while [ -L "$p" ]; do
+  l=$(readlink "$p")
+  case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
+done
+here=$(cd -P "$(dirname "$p")" && pwd)
+hint="$here/build.sh"
+stale=
+# lake's binary (build.sh touches it), then nix's out-link (its own mtime: find -newer does not follow it)
+for ref in "$here/.lake/build/bin/claim" "$here/.lake/nix"; do
+  bin=$ref; [ "$ref" = "$here/.lake/nix" ] && bin=$ref/bin/claim
+  [ -x "$bin" ] || continue
+  new=$(cd "$here" && find Main.lean Claims.lean Claims lakefile.lean lean-toolchain -newer "$ref" 2>/dev/null | head -n 1)
+  [ -z "$new" ] && exec "$bin" "$@"
+  # both stale: run the newer one (a leftover lake build must not shadow a later nix build)
+  if [ -z "$stale" ] || [ -n "$(find "$ref" -newer "$sref" 2>/dev/null)" ]; then stale=$bin why=$new sref=$ref; fi
+done
+if [ -n "$stale" ]; then
+  echo "claim: older than $why; rebuild it with $hint" >&2
+  exec "$stale" "$@"
+fi
+echo "claim: not built; build it with $hint" >&2
+exit 127
