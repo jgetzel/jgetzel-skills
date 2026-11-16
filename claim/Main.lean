@@ -65,7 +65,7 @@ def runCmd (args : List String) : IO UInt32 := do
   let id := s!"{String.map (fun c => if c.isAlphanum || c == '.' || c == '_' || c == '-' then c else '_') who}-{pid}-{← host.now}"
   let line := " ".intercalate cmd
   let ask : Ask := {
-    prog := "claim", capHint := "claim cap`/`on", cands := [none], usable := [none], stateOf := fun _ => "connected",
+    prog := "claim", capCmd := "claim", cands := [none], usable := [none], stateOf := fun _ => "connected",
     id := id, cores := cores, mem_kb := mem_kb, est := est, who := who, cmd := line, pid := pid, pollMs := poll }
   let some (_, got, gotMem) ← acquire host ask | return 255
   let cs := toString got

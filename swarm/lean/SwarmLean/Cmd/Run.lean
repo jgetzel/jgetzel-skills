@@ -134,7 +134,7 @@ def run (a : Parsed) : m UInt32 := do
   let tw ← Sys.nowF
   let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
   let ask : Claims.Ask := {
-    prog := "swarm", capHint := "swarm compute cap`/`on", cands, usable, stateOf, id := claimId, cores := wantC,
+    prog := "swarm", capCmd := "swarm compute", cands, usable, stateOf, id := claimId, cores := wantC,
     mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
   let some (chosen, gotCores, gotMem) ← Claims.acquire host ask | throw (Exit.mk 255)
   let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
@@ -167,7 +167,8 @@ def run (a : Parsed) : m UInt32 := do
     logEv "job-end" (obj [("machine", on.map .str), ("exit", some (match code with | .n c => Json.int c | .lost => .str "lost")),
       ("s", some (Json.int s)), ("wait_s", some (Json.int waitS)), ("sync_s", sync.map Lean.toJson), ("back_s", back.map Lean.toJson), ("tree", tree.map .str)])
     -- every job is a row, filed under the user's command (sw-compute-backfill.md §2.1)
-    try recordJob who on jid full (Cost.key line) repo s catch _ => pure ()
+    -- the repo name `history` reads (unsanitised, from the common dir), not the sanitised run dir's
+    try recordJob who on jid full (Cost.key line) ((← Cost.repoName).getD repo) s catch _ => pure ()
     let lines := splitlines ((← Fs.read logf).getD "")
     let tail := lines.drop (lines.length - JOB_TAIL)
     if !tail.isEmpty then Env.out ("\n".intercalate tail)

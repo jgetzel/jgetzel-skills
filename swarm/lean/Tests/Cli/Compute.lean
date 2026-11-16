@@ -187,7 +187,7 @@ def test_run_all_is_the_whole_machine (t : T) : IO Unit := do
   -- under a cap below the machine it is refused, and the message says so
   discard <| t.sw "b" ["compute", "cap", "here", "--cores", "4"]
   let r ← t.sw "b" ["run", "--cores", "all", "--", "true"] { ok := false }
-  eq r.code 255; has r.stderr "needs the whole machine, and the cap is lower (4 cores"
+  eq r.code 255; has r.stderr "here: the cap (4 cores, 16.0G) is below the whole machine. Ask for a count of cores, or lift the cap: `swarm compute cap <machine> --cores all --mem all`."
 
 def test_run_lowest_priority (t : T) : IO Unit := do
   has (← t.sw "b" ["run", "--", "echo nice=$(nice)"]).stdout "nice=19"

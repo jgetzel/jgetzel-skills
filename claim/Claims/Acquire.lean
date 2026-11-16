@@ -6,10 +6,10 @@ fit. -/
 namespace Claims
 
 /-- What the loop needs of its caller. `cands` are the machines asked for (none: here), `usable` those of them that are
-connected; `stateOf` says why one is not. `prog` prefixes the messages and `capHint` names the command that changes a cap. -/
+connected; `stateOf` says why one is not. `prog` prefixes the messages and `capCmd` is the command whose `cap` and `on` change a machine's limits. -/
 structure Ask where
   prog : String
-  capHint : String
+  capCmd : String
   cands : List (Option String)
   usable : List (Option String)
   stateOf : Option String → String
@@ -52,11 +52,13 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
       h.err (s!"{a.prog}: nothing can run this job: " ++ "; ".intercalate (a.cands.map fun c =>
         s!"{nameOf c}: " ++ match a.stateOf c, (seen.lookup c) with
           | "connected", some (.never x y) =>
-            if a.cores == "all" then s!"needs the whole machine, and the cap is lower ({x} cores, {gi y}G)"
+            if a.cores == "all" then s!"the cap ({x} cores, {gi y}G) is below the whole machine"
             else s!"needs more than the cap ({x} cores, {gi y}G)"
           | "connected", some .off => "off"
           | "connected", _ => "unreachable"
-          | s, _ => s) ++ s!". Lower --cores/--mem, or `{a.capHint}`.")
+          | s, _ => s) ++
+        (if a.cores == "all" then s!". Ask for a count of cores, or lift the cap: `{a.capCmd} cap <machine> --cores all --mem all`."
+         else s!". Lower --cores/--mem, or `{a.capCmd} cap`/`on`."))
       return none
     if !told then
       told := true
