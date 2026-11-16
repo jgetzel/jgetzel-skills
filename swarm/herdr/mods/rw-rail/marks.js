@@ -24,8 +24,3 @@ export function look(el, t, kind = "outline") {
   if (kind === "link") return el.text_color(t.muted).hover((s) => s.text_color(t.foreground));
   return el.border(1).border_color(t.input).bg(t.background).text_color(t.foreground).hover((s) => s.bg(t.hover));
 }
-
-// A hover highlight as a layer behind an element's content (UI-SPEC II.4b): it fades in over 90 ms and out over 140.
-// The element is relative() and keeps `on` from its on_hover; the layer is its first child.
-export const hoverLayer = (t, id, on, radius = 7) => div().id(id).absolute().inset_0().rounded(radius).bg(t.hover)
-  .opacity(on ? 1 : 0).transition("opacity", on ? 90 : 140);

@@ -14,7 +14,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
 import { SECTIONS, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
-import { mark, hoverLayer, look } from "./marks.js";
+import { mark, look } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
@@ -119,9 +119,8 @@ export default class Bar extends View {
         .text_color(at === id ? t.foreground : t.muted).when(at === id && !anim, (el) => el.bg(t.selected))
         // the selected section's highlight fades between sections (II.4c; a slide needs each section's x)
         .when(anim, (el) => el.relative().child(div().id(`sel-${id}`).absolute().inset_0().rounded(9).bg(t.selected).opacity(at === id ? 1 : 0).transition("opacity", 140)))
-        .when(at !== id && !anim, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
-        .when(at !== id && anim, (el) => el.cursor_pointer().relative().child(hoverLayer(t, `hv-section-${id}`, this.hovSec === id, 9))
-          .on_hover((h, cx) => { if (h) this.hovSec = id; else if (this.hovSec === id) this.hovSec = null; cx.notify(); }))
+        // native hover: a script hover rendered the whole bar for each section the pointer crossed
+        .when(at !== id, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
         .on_mouse_down("left", stop).on_click(() => setShared("rw-swarm.view", { ...v, section: id, page: null }))
         .when(id === "overview", (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(at === id ? t.foreground : t.muted)))
         .child(label)

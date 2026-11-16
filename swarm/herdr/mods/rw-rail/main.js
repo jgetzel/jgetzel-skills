@@ -10,10 +10,10 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay } from "herdr";
+import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
-import { mark, hoverLayer, look } from "./marks.js";
+import { mark, look } from "./marks.js";
 
 const ROW = 24; // fixed, so the tree lines of stacked rows meet
 const ORDER = ["asks", "hung", "working", "done", "idle"]; // a folded space's counts, then its shells
@@ -29,6 +29,7 @@ const base = (p) => line(p.replace(/\/+$/, "").replace(/.*\//, ""), 60);
 const ROWS = 40; // a space's rows drawn before a "N more" line that shows the rest
 const SPACES = 60; // a machine's spaces drawn (the shown one always among them) before a "N more spaces" line
 const CHANGED = 5000; // agents' since-when times kept (the live ones always): the oldest of the rest go first
+const QUIET = 30000; // a watched swarm db that hasn't changed is read again this often (its times and watchd still move), as rw-swarm
 
 export default class Rail extends View {
   init(_props, cx) {
@@ -42,6 +43,7 @@ export default class Rail extends View {
     this.all = new Set(); // spaces whose big swarm shows every worker
     this.more = new Set(); // spaces showing all their rows, machines ("" here) all their spaces
     this.sums = new Map(); this.polls = new Map(); this.failed = new Map(); // per folder key (where()): summary, next read, why it failed
+    this.watched = new Map(); // per folder key of a local swarm: { dir, dirty, at }, its db folder watched
     this.asked = new Map(); // tab id -> when the rail last asked to put it away or bring it back
     this.mids = new Map(); // machine name -> a number for its elements' ids (a name is never part of one)
     cx.timer.every(5000, (cx) => this.swarms(cx));
@@ -78,8 +80,10 @@ export default class Rail extends View {
     const at = [...new Map(spaces().filter((s) => s.folder).map((s) => [where(s), { folder: s.folder, on: s.machine ?? null }])).entries()];
     cx.spawn(async (cx) => {
       const read = async (key, folder, on) => {
-        const p = this.polls.get(key);
+        const p = this.polls.get(key), w = this.watched.get(key);
         if (p && Date.now() < p.next) return;
+        if (w && !w.dirty && Date.now() - w.at < QUIET) return; // a watched db that hasn't changed: its summary hasn't
+        if (w) { w.dirty = false; w.at = Date.now(); }
         const t1 = Date.now();
         let j = null, err = null;
         try {
@@ -92,7 +96,8 @@ export default class Rail extends View {
         if (err && this.sums.has(key)) this.failed.set(key, `${base(folder)}${on ? ` on ${on}` : ""}: ${err}`);
         if (err) return;
         this.failed.delete(key);
-        if (j.active) this.sums.set(key, { ...j, on, folder }); else this.sums.delete(key);
+        if (j.active) this.sums.set(key, { ...j, on, folder }); else { this.sums.delete(key); this.watched.delete(key); }
+        if (j.active && !on && j.db) this.watch(key, j.db.replace(/\/[^/]*$/, ""));
       };
       const keys = new Set(at.map(([k]) => k));
       for (const [key, { folder, on }] of at) await read(key, folder, on);
@@ -106,13 +111,26 @@ export default class Rail extends View {
           await read(key, w.folder, null);
         }
       } catch {}
-      for (const m of [this.sums, this.polls, this.failed]) for (const k of m.keys()) if (!keys.has(k)) m.delete(k);
+      for (const m of [this.sums, this.polls, this.failed, this.watched]) for (const k of m.keys()) if (!keys.has(k)) m.delete(k);
       this.reading = false;
       this.round = Date.now() + Math.max(5000, 2 * (Date.now() - t0));
-      const mine = [...this.sums.values()], js = JSON.stringify(mine);
+      const mine = [...this.sums.values()], js = JSON.stringify(mine), fails = JSON.stringify([...this.failed]);
       if (js !== this.sharedJs) { this.sharedJs = js; setShared("rw-rail.swarms", mine); } // rw-bar's Needs you counts their questions
+      else if (fails === this.failsJs) return; // nothing to draw again
+      this.failsJs = fails;
       cx.notify();
     });
+  }
+
+  // As rw-swarm: a local swarm's db folder changing marks its summary stale; our own reads touch only the -shm index.
+  watch(key, dir) {
+    if (this.watched.get(key)?.dir === dir) return;
+    const w = { dir, dirty: false, at: Date.now() };
+    this.watched.set(key, w);
+    (async () => {
+      try { while (this.watched.get(key) === w) if ((await watchFolder(dir)).some((p) => !p.endsWith("-shm"))) w.dirty = true; }
+      catch { if (this.watched.get(key) === w) this.watched.delete(key); }
+    })();
   }
 
   // `r.ask`: the agent's question (slice 8), shown above its pane.
@@ -155,7 +173,10 @@ export default class Rail extends View {
         if (r.code === 0 && total > 0 && avail >= 0) v = { used: total - avail, total };
       } catch {}
       this.loading = false;
+      const was = this.load[on ?? ""];
       this.load[on ?? ""] = v;
+      const drawn = (l) => l ? `${Math.round(l.used / 1048576)} ${Math.round(l.total / 1048576)} ${Math.round((100 * l.used) / l.total)}` : "";
+      if (was !== undefined && drawn(was) === drawn(v)) return; // the foot would draw the same
       cx.notify();
     });
   }
@@ -188,7 +209,11 @@ export default class Rail extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]), ms = r.code === 0 ? JSON.parse(r.stdout)?.machines : null;
-        if (Array.isArray(ms)) this.listed = ms.filter((x) => typeof x?.name === "string").slice(0, 200);
+        if (Array.isArray(ms)) {
+          const listed = ms.filter((x) => typeof x?.name === "string").slice(0, 200), js = JSON.stringify(listed);
+          if (js === this.listedJs) return; // the same machines in the same states
+          this.listedJs = js; this.listed = listed;
+        }
       } catch {}
       cx.notify();
     });
@@ -262,6 +287,11 @@ export default class Rail extends View {
   // A machine's menu, and in its place the question before removing it.
   menuOf(t, mc) {
     const m = mc.name, n = this.mid(m), shown = line(m, 60);
+    const button = h_flex().id(`menu-button-${n}`).size(22).flex_none().items_center().justify_center().rounded(6).text_color(t.dim)
+      .when(this.menu === m, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(svg("mods/rw-rail/dots.svg").size(14));
+    // A Popover only while open: one in the view keeps every spinner in the rail rebuilding the whole rail as it turns.
+    if (this.menu !== m) return button.on_click((_e, cx) => { this.menu = m; this.removing = null; cx.notify(); });
     const item = (id, text, action, red = false) => div().id(`${id}-${n}`).px(10).py(6).rounded(6).text_size(12.5)
       .font_normal().text_color(red ? t.blocked : t.foreground).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(action).child(text);
     // terminals() costs ~0.1 ms a terminal: read only while the removal question shows
@@ -286,12 +316,9 @@ export default class Rail extends View {
         .child(item("login", "Log in again", (_e, cx) => this.login(m, cx)))
         .child(div().h(1).mx(4).my(3).bg(t.border))
         .child(item("remove", "Remove…", (_e, cx) => { this.removing = m; cx.notify(); }, true));
-    return Popover.new(`menu-${n}`).anchor("top_right").open(this.menu === m)
+    return Popover.new(`menu-${n}`).anchor("top_right").open(true)
       .on_open_change((open, cx) => { this.menu = open ? m : null; if (!open) this.removing = null; cx.notify(); })
-      .trigger(h_flex().id(`menu-button-${n}`).size(22).flex_none().items_center().justify_center().rounded(6).text_color(t.dim)
-        .when(this.menu === m, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .child(svg("mods/rw-rail/dots.svg").size(14)))
-      .content(content);
+      .trigger(button).content(content);
   }
 
   // A machine's heading, as a field while it is renamed, then a line for its state or what its last action said.
@@ -318,6 +345,22 @@ export default class Rail extends View {
         .when(Boolean(m), (el) => el.child(this.menuOf(t, mc))),
       ...(off ? [this.note(t, `off-${n}`, `Can't reach it${at}. Its terminals keep running there.`)] : []),
       ...(m && this.said[m] ? [this.note(t, `said-${n}`, this.said[m])] : [])];
+  }
+
+  // What hover shows (`field`: hotRow the x, hot + New tab, hovHead Side), applied 80 ms after the pointer settles: each
+  // change is a render of the whole rail, and a pointer crossing the rail would otherwise render it once a row.
+  settle(field, on, key, cx) {
+    this.want ??= {};
+    if (on) this.want[field] = key; else if ((this.want[field] ?? this[field]) === key) this.want[field] = null;
+    if (this.settling) return;
+    this.settling = true;
+    cx.timer.after(80, (cx) => {
+      this.settling = false;
+      let changed = false;
+      for (const [f, v] of Object.entries(this.want)) if (this[f] !== v) { this[f] = v; changed = true; }
+      this.want = {};
+      if (changed) cx.notify();
+    });
   }
 
   fold(id, cx) {
@@ -356,16 +399,14 @@ export default class Rail extends View {
     else run(c.command.name, c.command.args);
   }
 
-  // The full title, folder, branch and state of a row, resting on it (Part II.2).
-  card(t, r, name, sideText) {
+  // The full title, folder, branch and state of a row, resting on it (Part II.2). A tooltip, not a HoverCard: a HoverCard
+  // per row built its card every render and kept the rail's spinners off Herdr's cheap path (each turn rebuilt the rail).
+  card(r, name, sideText) {
     const p = r.pane && this.paneBy.get(r.pane), cwd = p?.cwd ?? r.t.cwd;
     const state = { working: "working", asks: "asks you", hung: "hung", done: "done", idle: "idle", run: "a program in front", prompt: "at a prompt" }[r.mark];
     const where = [cwd && line(this.home && cwd.startsWith(this.home) ? `~${cwd.slice(this.home.length)}` : cwd, 120), p?.branch && line(p.branch, 60),
       sideText?.startsWith(state) ? sideText : [state, r.mark === "run" || r.mark === "prompt" ? null : sideText].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
-    return v_flex().ml(30).w(300).px(10).py(8).gap(2).overflow_hidden().rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
-      .text_size(12.5).whitespace_normal()
-      .child(div().text_color(t.muted).child(line(r.t.title, 200) || name))
-      .child(div().text_color(t.dim).child(where));
+    return `${line(r.t.title, 200) || name}\n${where}`;
   }
 
   // `text`: a swarm row's own what and side (swarmText); a swarm row has no x and no rename (`plain` false); the
@@ -382,14 +423,13 @@ export default class Rail extends View {
         .cursor_text().child(Input.new(this.tabInput).h_full().text_size(12.5).text_color(t.foreground)));
     const closes = plain && Boolean(r.pane), x = closes && this.hotRow === r.t.address;
     const e = this.anim && this.ent.enter(`row:${r.t.address}`); // a new row grows in (II.4a)
+    // Highlights are the row's own background, hover native: a fading layer per row cost two elements a row and a
+    // render of the whole rail per row the pointer crossed.
     const el = h_flex().id(`row-${r.t.address}`).h(e ? 0 : ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
-      .when(this.anim, (el) => el.relative().overflow_hidden().opacity(e ? 0 : 1).transition("height", 160).transition("opacity", 160)
-        .child(hoverLayer(t, `hv-${r.t.address}`, !on && this.hov === r.t.address))
-        // the shown row's highlight, a layer that fades between rows (a slide needs every row's place, which flex keeps)
-        .child(div().id(`hl-${r.t.address}`).absolute().inset_0().rounded(7).bg(t.raised).opacity(on ? 1 : 0).transition("opacity", 140)))
-      .when(on && !this.anim, (el) => el.bg(t.raised))
-      .when(!on && !this.anim, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(this.anim, (el) => el.overflow_hidden().opacity(e ? 0 : 1).transition("height", 160).transition("opacity", 160))
+      .when(on, (el) => el.bg(t.raised))
+      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       // A double click's second focuses the field; a drop isn't a click.
       .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) this.open(r, cx); })
       // Press: a drag of its tab may start (not a sub-terminal's). Double click: rename its tab in place.
@@ -400,12 +440,11 @@ export default class Rail extends View {
         this.tabInput.set_value(this.tabName.get(r.tab) ?? name); cx.notify();
         cx.timer.after(50, () => this.tabInput.focus()); // once the field is drawn
       }))
-      // Hover: the x in place of the mark (closes), the hover layer (II.4b), and a menu's card making way until it leaves.
-      .when(closes || this.anim || Boolean(menu), (el) => el.on_hover((h, cx) => {
-        const a = r.t.address, was = [this.hotRow, this.hov, this.menuFor];
-        if (h) { if (closes) this.hotRow = a; this.hov = a; }
-        else { if (this.hotRow === a) this.hotRow = null; if (this.hov === a) this.hov = null; if (this.menuFor === a) this.menuFor = null; }
-        if (was[0] !== this.hotRow || was[2] !== this.menuFor || (this.anim && was[1] !== this.hov)) cx.notify();
+      // Hover: the x in place of the mark (closes), and a menu's card making way until it leaves.
+      .when(closes || Boolean(menu), (el) => el.on_hover((h, cx) => {
+        const a = r.t.address;
+        if (closes) this.settle("hotRow", h, a, cx);
+        if (!h && this.menuFor === a) { this.menuFor = null; cx.notify(); }
       }))
       .when(closes, (el) => el.on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }))
       // Right click: its menu; the row's hover card makes way until the pointer leaves the row.
@@ -422,9 +461,7 @@ export default class Rail extends View {
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); this.close(r, name, what); }).child("×") : this.markOf(t, r.t.address, r.mark, now));
     if (x && this.anim) this.ent.enter(`mk:${r.t.address}:${r.mark}`); // the x stands in for the mark: it stays seen
-    // Kept through a drag with nothing in it: swapping the wrapper out mid-press stops the moves reaching other rows.
-    return card && this.menuFor !== r.t.address ? HoverCard.new(`card-${r.t.address}`).anchor("top_left").open_delay(600).trigger(el)
-      .content(this.drag?.live ? div() : this.card(t, r, name, sideText)) : el;
+    return card && this.menuFor !== r.t.address && !this.drag?.live ? el.tooltip(this.card(r, name, sideText)) : el;
   }
 
   // A row's mark (II.4a): cross-fades from the one before (two stacked, opacity 200 ms); a new "asks" pulses its first
@@ -433,12 +470,16 @@ export default class Rail extends View {
     if (!this.anim) return mark(t, kind);
     let m = this.marks.get(address);
     if (!m || m.kind !== kind) this.marks.set(address, m = { kind, prev: m?.kind ?? null, at: now });
-    const fading = m.prev && m.prev !== kind && now - m.at < 220;
-    if (fading) this.fadeAt = Math.min(this.fadeAt ?? Infinity, m.at + 230);
+    // Stacked layers only for the 230 ms a mark fades in or out, then one render more draws it as one box: a row's
+    // elements are its cost on every frame.
+    const settling = now - m.at < 230, fading = m.prev && m.prev !== kind && settling;
+    if (settling) this.fadeAt = Math.min(this.fadeAt ?? Infinity, m.at + 230);
     const asks = kind === "asks" && now - (this.changed[address]?.at ?? 0) < 60000;
+    const own = (k, on) => on && asks ? mark(t, k).loop("opacity", { from: 1, to: 0.3, period: 1000 }) : mark(t, k);
+    const entering = this.ent.enter(`mk:${address}:${kind}`);
+    if (!settling && !entering) return h_flex().size(10).flex_none().items_center().justify_center().child(own(kind, true));
     const one = (k, on) => h_flex().id(`mk-${address}-${k}`).absolute().inset_0().items_center().justify_center()
-      .opacity(on && !this.ent.enter(`mk:${address}:${k}`) ? 1 : 0).transition("opacity", 200)
-      .child(on && asks ? mark(t, k).loop("opacity", { from: 1, to: 0.3, period: 1000 }) : mark(t, k));
+      .opacity(on && !entering ? 1 : 0).transition("opacity", 200).child(own(k, on));
     return div().relative().size(10).flex_none().when(Boolean(fading), (el) => el.child(one(m.prev, false))).child(one(kind, true));
   }
 
@@ -482,7 +523,7 @@ export default class Rail extends View {
       .child(h_flex().id(`swarm-head-${s.id}`).mx(4).px(6).pt(3).pb(5).gap(7).items_center().rounded(7).text_size(11.5).text_color(t.muted)
         .when(this.swarmOn === sum.folder, (el) => el.bg(t.raised).text_color(t.foreground))
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click(() => this.openSwarm(s, sw))
-        .on_hover((h, cx) => { if (h) this.hovHead = s.id; else if (this.hovHead === s.id) this.hovHead = null; else return; cx.notify(); })
+        .on_hover((h, cx) => this.settle("hovHead", h, s.id, cx))
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(`Swarm${tag ? ` ${tag}` : ""} · ${n} ${n === 1 ? "agent" : "agents"} · ${left} left`))
         .when(this.hovHead === s.id, (el) => el.child(h_flex().id(`swarm-side-${s.id}`).flex_none().h(18).px(6).gap(4).items_center().rounded(5)
@@ -555,9 +596,8 @@ export default class Rail extends View {
     return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().rounded(9).when(s.active && !fly, (el) => el.bg(t.selected)).when(open, (el) => el.pb(6))
       .when(away, (el) => el.opacity(0.45))
       .child(h_flex().id(`head-${s.id}`).h(32).pl(4).pr(10).gap(4).items_center().cursor_pointer()
-        .when((!s.active || fly) && !this.anim, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
-        .when((!s.active || fly) && this.anim, (el) => el.relative().child(hoverLayer(t, `hv-head-${fly ? "f" : ""}${s.id}`, this.hot === s.id, 9)))
-        .on_hover((on, cx) => { if (on) this.hot = s.id; else if (this.hot === s.id) this.hot = null; cx.notify(); })
+        .when(!s.active || fly, (el) => el.rounded(9).hover((st) => st.bg(t.hover)))
+        .when(!fly, (el) => el.on_hover((on, cx) => this.settle("hot", on, s.id, cx)))
         .on_click((_e, cx) => { if (viewShown(layout())) showAll(run, false); else if (s.active && !fly) return this.fold(s.id, cx); run("space.select", { id: s.id }); })
         .child(h_flex().id(`fold-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
           .hover((st) => st.bg(t.hover).text_color(t.foreground))
@@ -649,9 +689,13 @@ export default class Rail extends View {
     const el = this.draw(cx);
     if (!this.anim) return el;
     for (const a of this.marks.keys()) if (!this.ent.now.has(`row:${a}`)) this.marks.delete(a);
-    for (const [k, g] of this.ghosts) if (Date.now() - g.at > 400) this.ghosts.delete(k); // its list wasn't drawn (folded)
-    const fresh = this.ent.end() || this.ghosts.size > 0, at = this.fadeAt; this.fadeAt = null; // a leaving row draws until it is gone
-    if (fresh || at) cx.timer.after(fresh ? 20 : Math.max(20, at - Date.now()), (cx) => cx.notify());
+    const now = Date.now();
+    for (const [k, g] of this.ghosts) if (now - g.at > 400) this.ghosts.delete(k); // its list wasn't drawn (folded)
+    // Once more 20 ms after something came or a row began to leave (its transition's start), and once when a leaving row
+    // is gone or a mark has settled: not every 20 ms in between, each a render of the whole rail.
+    const gs = [...this.ghosts.values()], soon = this.ent.end() || gs.some((g) => g.n === 1);
+    const at = Math.min(soon ? now + 20 : Infinity, ...gs.map((g) => g.at + 210), this.fadeAt ?? Infinity); this.fadeAt = null;
+    if (at < Infinity) cx.timer.after(Math.max(20, at - now), (cx) => cx.notify());
     return el;
   }
   draw(cx) {
