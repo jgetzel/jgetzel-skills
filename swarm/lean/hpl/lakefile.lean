@@ -4,6 +4,9 @@ open Lake DSL System
 /-- The swarm-lean sources (`..`) built with hpl's C for every module (`--all`); the stock build is `..` itself. -/
 package «swarm-lean-hpl»
 
+/-- The claim tool (../../../claim), built stock in its own claim/.lake. -/
+require claim from ".." / ".." / ".." / "claim"
+
 /-- The hpl binary: $HPL, else the one built in ../high-perf-lean beside this repo. -/
 def hplBin : IO FilePath := do
   return (← IO.getEnv "HPL").getD (← IO.FS.realPath (__dir__ / "../../../../high-perf-lean/.lake/build/bin/hpl")).toString

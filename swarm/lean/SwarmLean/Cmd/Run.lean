@@ -3,6 +3,8 @@ import SwarmLean.Cmd.OpsHelp
 import SwarmLean.Lib.Run
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Compute
+import Claims.Acquire
+import Claims.Machines
 
 /-! `swarm run [--on M] [--env X]... cmd…` (run.cmd_run): a build or test here, or on another hc machine against a copy
 of this worktree, recorded as a job. -/
@@ -10,6 +12,7 @@ of this worktree, recorded as a job. -/
 namespace SwarmLean.Cmd.Run
 open Args _root_.SwarmLean.Run _root_.SwarmLean.Compute
 open Lean (Json)
+open Claims (gi)
 
 /-- The `run` parser; the command (everything from the first positional or `--` on) is split off first (`split`). -/
 def spec : Spec :=
@@ -108,7 +111,7 @@ def run (a : Parsed) : m UInt32 := do
   Env.err s!"swarm: claiming {wantC} cores, {gi wantM}G ({if coresArg.isSome && memFlag.isSome then "as asked" else from_})"
   let machines := ((Json.field cfg "machines").map Json.items |>.getD []).filterMap Json.str?
   let cands : List (Option String) := match a.str "on" with | some x => [some x] | none => none :: machines.map some
-  let ms0 ← hcMachines
+  let ms0 ← Claims.hcMachines host
   let stateOf (c : Option String) : String := match c with
     | none => "connected"
     | some n => (ms0.lookup n).bind (Json.fstr · "state") |>.getD "not in `hc machine ls`"
@@ -117,51 +120,17 @@ def run (a : Parsed) : m UInt32 := do
     if !usable.contains (some mach) then
       Env.err s!"swarm: machine {mach} is {stateOf (some mach)}; the job never ran. Pick another (see the machine note)."
       throw (Exit.mk 255)
-  let nameOf (c : Option String) := c.getD "here"
   let claimId := s!"{sanitize who}-{← Sys.getpid}-{← Clock.now}"
   let tw ← Sys.nowF
-  let mut won : Option (Option String × Int) := none
-  let mut first := true
-  let mut told := false
   let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
-  repeat
-    let mut seen : List (Option String × Try) := []
-    let mut gone := false
-    for c in usable do
-      if won.isSome then break
-      let holder ← if c.isNone then pure s!"p{← Sys.getpid}" else pure "t"
-      let r := parseTry ((← Compute.sh c ["try", claimId, wantC, d wantM, holder, who, line]).getD "")
-      match r with
-      | .ok n => won := some (c, n)
-      | .gone => gone := true
-      | x => seen := seen ++ [(c, x)]
-    if won.isSome then break
-    let anyWait := seen.any fun (_, x) => match x with | .wait .. => true | _ => false
-    let isFirst := first
-    first := false
-    if !anyWait && (isFirst || !gone) then
-      for c in usable do Compute.release c claimId
-      Env.err ("swarm: nothing can run this job: " ++ "; ".intercalate (cands.map fun c =>
-        s!"{nameOf c}: " ++ match stateOf c, (seen.lookup c) with
-          | "connected", some (.never a b) => s!"needs more than the cap ({a} cores, {gi b}G)"
-          | "connected", some .off => "off"
-          | "connected", _ => "unreachable"
-          | s, _ => s) ++ ". Lower --cores/--mem, or `swarm compute cap`/`on`.")
-      throw (Exit.mk 255)
-    if !told then
-      told := true
-      Env.err ("swarm: waiting for room: " ++ "; ".intercalate (seen.map fun (c, x) => s!"{nameOf c}: " ++ match x with
-        | .wait fc fm ah => s!"{fc} cores, {gi fm}G free, {ah} ahead"
-        | _ => "no room"))
-    Sys.sleep poll.toNat
-  let some (chosen, gotCores) := won | die "no claim"
-  for c in usable do if c != chosen then Compute.release c claimId
+  let ask : Claims.Ask := {
+    prog := "swarm", capHint := "swarm compute cap`/`on", cands, usable, stateOf, id := claimId, cores := wantC,
+    mem_kb := wantM, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
+  let some (chosen, gotCores) ← Claims.acquire host ask | throw (Exit.mk 255)
   let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
-  let release : m Unit := if chosen.isNone then Compute.release chosen claimId else pure ()
+  let release : m Unit := if chosen.isNone then Claims.release host chosen claimId else pure ()
   let cs := d gotCores
-  let jenv := jenv0 ++ ([("SWARM_CORES", cs), ("SWARM_MEM_KB", d wantM), ("MAKEFLAGS", "-j" ++ cs), ("CARGO_BUILD_JOBS", cs),
-    ("NIX_BUILD_CORES", cs), ("NIX_CONFIG", (match ← Env.var "NIX_CONFIG" with | some x => x ++ "\n" | none => "") ++
-      s!"cores = {cs}\nmax-jobs = 1")].filter fun (k, _) => !(jenv0.any (·.1 == k)))
+  let jenv := jenv0 ++ (Claims.jobEnv cs wantM (← Env.var "NIX_CONFIG")).filter fun (k, _) => !(jenv0.any (·.1 == k))
   let sub (x : String) := x.replace "{cores}" cs
   let full := match Json.fstr cfg "prefix" with
     | some p => sub p ++ " " ++ (if argv.length == 1 then "sh -c " ++ shquote line else line)
@@ -206,11 +175,11 @@ def run (a : Parsed) : m UInt32 := do
     let tree ← treeOf top
     let r ← Sys.exec ["sh", "-c", full] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
     finish (.n r.code.toNat) tree none none [] none
-  let ms ← hcMachines
+  let ms ← Claims.hcMachines host
   let mc := ms.lookup mach
   if mc.bind (Json.fstr · "state") != some "connected" then
     Env.err s!"swarm: machine {mach} is {match mc with | some x => (Json.fstr x "state").getD "nil" | none => "not in `hc machine ls`"}; the job never ran. Pick another (see the machine note)."
-    Compute.release on claimId
+    Claims.release host on claimId
     throw (Exit.mk 255)
   let sshv ← sshCmd
   let ssh := shjoin sshv
@@ -230,7 +199,7 @@ def run (a : Parsed) : m UInt32 := do
   if mk.code != 0 then
     let last := splitlines (strip mk.stderr)
     Env.err s!"swarm: sync to {mach} failed (mkdir exit {mk.code}: {last.getLastD "?"}); the job never ran."
-    Compute.release on claimId
+    Claims.release host on claimId
     throw (Exit.mk 255)
   let rs ← Sys.exec ["rsync", "-rlpD", "--checksum", "--delete", "--exclude=.git", "--filter=:- .gitignore",
     "-e", ssh, top ++ "/", tgt ++ ":" ++ src ++ "/"] {}
@@ -238,7 +207,7 @@ def run (a : Parsed) : m UInt32 := do
   if rs.code != 0 then
     let last := splitlines (strip rs.stderr)
     Env.err s!"swarm: sync to {mach} failed (rsync exit {rs.code}: {last.getLastD "?"}); the job never ran."
-    Compute.release on claimId
+    Claims.release host on claimId
     throw (Exit.mk 255)
   let exports := ((jenv.map fun (k, v) => k ++ "=" ++ shquote v).mergeSort (· ≤ ·))
   let setO : List (String × String) := match Json.field cfg "set" with
@@ -264,7 +233,7 @@ def run (a : Parsed) : m UInt32 := do
   let o := (← Proc.output hcrun none []).bind fun r => if r.code == 0 then Json.decode r.stdout else none
   let some addr := o.bind (Json.fstr · "address") | do
     Env.err s!"swarm: `hc run --on {mach}` failed; the job never ran."
-    Compute.release on claimId
+    Claims.release host on claimId
     throw (Exit.mk 255)
   logEv "job-start" (obj (rec0 ++ [("dir", some (.str dir)), ("hc", some (.str addr))]))
   let mut w : Option Json := none
