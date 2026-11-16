@@ -46,7 +46,8 @@ vps             disconnected
   cap is below the machine's size.
 - **Cores**, as admission counts them (sw-compute.md §1): claimed `cc` is the ledger's sum; unclaimed is the script's
   `outside` = `max(0, round(busy - cc) - max(1, ncpu/8))`, busy cores no claim explains past the noise allowance; free
-  is the script's `min(cap - cc, ncpu - cc - outside)`, floor 0. So claimed + unclaimed + free + above the cap is the
+  is the script's `min(lim - cc, ncpu - cc - outside)`, floor 0, with `lim` the cap less the user's reservation
+  (`limit_cores` of `swarm compute --json`, the cap where an older swarm gives none). So claimed + unclaimed + free + above the cap is the
   machine's cores, and free is what the next `try` is granted. The measured busy cores are on the machine's line.
 - **Memory**: the ledger knows what was claimed, not what claimed jobs use, so unclaimed use is an estimate, `max(0,
   total - available - claimed)`, written `≈` and named an estimate in the legend. Free is admission's `min(cap -
@@ -58,7 +59,10 @@ vps             disconnected
   command in the monospace font, truncated. Then its waiters, oldest first: a `waiting` chip, who, cores, memory, how
   long, and why: for each resource it is short of, `claims fill the cap` (it asks for more than cap - claimed) or
   `unclaimed use takes the room` (it would fit under the cap); if it is short of neither, `behind <older waiter>`, or
-  `fits: starts on its next try` for the oldest.
+  `fits: starts on its next try` for the oldest. A waiter the reservation holds out says `held by the reservation`, one that unclaimed use holds out
+  (it would not fit even with every claim ended) `held by unclaimed use`; a
+  `--cores all` one says `held: reserved, unclaimed use, cap below the machine` (the reasons that apply) or, when only
+  claims stand in its way, `waits for an empty machine`. The panel has no reserve control yet.
 - An `off` machine still lists its claims: running jobs finish.
 - With no claim and no waiter anywhere, one dim line under the machines: "No job claims cores now: `swarm run`
   claims them".

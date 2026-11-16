@@ -809,10 +809,13 @@ export function computeOf(j, now) {
     if (!Number.isFinite(m.ncpu)) return { key: k, name, ctl: false, state: line(m.state, 40) || "unreachable" };
     const claims = arr(m.claims).map((c) => ({ who: line(c.who, 60), cores: n(c.cores), mem_kb: n(c.mem_kb), age_s: Math.max(0, n(now) - n(c.start)), cmd: line(c.cmd, 200) }))
       .sort((a, b) => b.age_s - a.age_s);
-    const queue = arr(m.queue).map((q) => ({ who: line(q.who, 60), cores: n(q.cores), mem_kb: n(q.mem_kb), age_s: Math.max(0, n(now) - n(q.first)) }))
+    const queue = arr(m.queue).map((q) => ({ who: line(q.who, 60), cores: n(q.cores), mem_kb: n(q.mem_kb), age_s: Math.max(0, n(now) - n(q.first)), exclusive: q.exclusive === true, held: q.held === true }))
       .sort((a, b) => b.age_s - a.age_s);
     const r = { key: k, name, ctl, state: "connected", ncpu: n(m.ncpu), busy: n(m.busy), total_kb: n(m.total_kb), avail_kb: n(m.avail_kb),
-      cap_cores: n(m.cap_cores), cap_mem_kb: n(m.cap_mem_kb), off: m.off === true, claims, queue };
+      cap_cores: n(m.cap_cores), cap_mem_kb: n(m.cap_mem_kb), off: m.off === true, claims, queue,
+      // the user's reservation and the room jobs may take of the cap (sw-compute-backfill.md §3.2); an older swarm has neither
+      reserve_cores: n(m.reserve_cores), reserve_mem_kb: n(m.reserve_mem_kb),
+      limit_cores: Number.isFinite(m.limit_cores) ? n(m.limit_cores) : n(m.cap_cores), limit_mem_kb: Number.isFinite(m.limit_mem_kb) ? n(m.limit_mem_kb) : n(m.cap_mem_kb) };
     r.split = splitOf(r);
     queue.forEach((q, i) => { q.why = whyOf(r, i); });
     return r;
@@ -820,23 +823,36 @@ export function computeOf(j, now) {
 }
 // A machine's cores and memory as admission counts them (sw-compute.md §1): claimed, used with no claim, free, out of
 // `size`, with the cap. Cores' unclaimed is the script's `outside` (busy past the claims, less max(1, ncpu/8) of noise);
-// memory's is an estimate, in use minus claimed. claimed + unclaimed + free <= size; the rest is above the cap.
+// memory's is an estimate, in use minus claimed. claimed + unclaimed + free <= size; the rest is above the cap or reserved.
+// The room jobs may take is `limit_*` (the cap less the user's reservation, as admission has it), the cap where an older
+// swarm gave none.
 export function splitOf(m) {
   const cc = m.claims.reduce((a, c) => a + c.cores, 0), cm = m.claims.reduce((a, c) => a + c.mem_kb, 0), z = (x) => Math.max(0, x);
   const out = z(Math.round(m.busy - cc) - Math.max(1, Math.floor(m.ncpu / 8)));
-  const fc = z(Math.min(m.cap_cores - cc, m.ncpu - cc - out)), fm = z(Math.min(m.cap_mem_kb - cm, m.avail_kb));
+  const lc = m.limit_cores ?? m.cap_cores, lm = m.limit_mem_kb ?? m.cap_mem_kb;
+  const fc = z(Math.min(lc - cc, m.ncpu - cc - out)), fm = z(Math.min(lm - cm, m.avail_kb));
   // clamped so the bar never runs past the machine: a ledger over a cap lowered since, a reading of a full machine
   const cl = (x, room) => Math.min(x, z(room));
-  const cores = { claimed: cl(cc, m.ncpu), unclaimed: cl(out, m.ncpu - cc), free: cl(fc, m.ncpu - cc - out), size: m.ncpu, cap: m.cap_cores, sum: cc };
+  const cores = { claimed: cl(cc, m.ncpu), unclaimed: cl(out, m.ncpu - cc), free: cl(fc, m.ncpu - cc - out), size: m.ncpu, cap: lc, sum: cc };
   const mu = z(m.total_kb - m.avail_kb - cm);
-  const mem = { claimed: cl(cm, m.total_kb), unclaimed: cl(mu, m.total_kb - cm), free: cl(fm, m.total_kb - cm - mu), size: m.total_kb, cap: m.cap_mem_kb, sum: cm };
+  const mem = { claimed: cl(cm, m.total_kb), unclaimed: cl(mu, m.total_kb - cm), free: cl(fm, m.total_kb - cm - mu), size: m.total_kb, cap: lm, sum: cm };
   return { cores, mem };
 }
-// Why the machine's waiter `i` (oldest first) waits: per resource it is short of, the claims fill the cap or unclaimed
-// use takes the room; short of neither, an older waiter goes first, or it starts on its next try.
+// Why the machine's waiter `i` (oldest first) waits: held by the reservation or by unclaimed use (a sized one that would
+// not fit with every claim ended), an exclusive one for the reasons the CLI names or for an empty machine when nothing
+// holds it but claims; per resource it is short of, the claims fill the cap or unclaimed use takes the room; short of
+// neither, an older waiter goes first, or it starts on its next try.
 export function whyOf(m, i) {
   const q = m.queue[i], { cores, mem } = m.split ?? splitOf(m), why = [];
   if (m.off) return "the machine is off";
+  if (q.exclusive) {
+    if (!q.held) return "waits for an empty machine";
+    const rs = [m.reserve_cores > 0 || m.reserve_mem_kb > 0 ? "reserved" : "", cores.unclaimed > 0 ? "unclaimed use" : "",
+      m.cap_cores < m.ncpu || m.cap_mem_kb < m.total_kb ? "cap below the machine" : ""].filter(Boolean);
+    return rs.length ? `held: ${rs.join(", ")}` : "held";
+  }
+  // held (sw-compute-backfill.md §2.2): it would not fit with every claim ended; over the limit it is the reservation
+  if (q.held) return q.cores > cores.cap || q.mem_kb > mem.cap ? "held by the reservation" : "held by unclaimed use";
   if (q.cores > cores.free) why.push(`cores: ${q.cores > cores.cap - cores.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
   if (q.mem_kb > mem.free) why.push(`memory: ${q.mem_kb > mem.cap - mem.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
   if (why.length) return why.join(" · ");

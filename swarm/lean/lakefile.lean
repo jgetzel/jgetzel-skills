@@ -3,6 +3,9 @@ open Lake DSL System
 
 package «swarm-lean»
 
+/-- The compute claims tool (../../claim): the ledger, its script and the claim loop; it builds in its own claim/.lake. -/
+require claim from ".." / ".." / "claim"
+
 /-- The sqlite library and header: $SWARM_SQLITE (a prefix with lib/ and include/), else the repo flake's `sqlite`
 output, built into .lake/sqlite (a GC root). -/
 def sqlitePrefix : IO FilePath := do

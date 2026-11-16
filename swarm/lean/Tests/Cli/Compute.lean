@@ -1,7 +1,7 @@
 import Tests.Cli.WatchdRun
-import SwarmLean.Lib.Compute
+import Claims.Ledger
 
-/-! sw-compute.md §5: the ledger's script against a scratch XDG_STATE_HOME, and `swarm run` / `swarm compute` over it (the
+/-! sw-compute.md §5: `swarm run` / `swarm compute` over the ledger (the script's own cases are claim/Tests/Script.lean's; the
 fixture's machine is an idle 8-core, 16G one; the fake hc's `laptop` has its own home and so its own ledger). -/
 
 namespace SwarmLean.Tests.Cli.Compute
@@ -10,84 +10,29 @@ open Lean (Json toJson)
 
 /-- The script's op against the ledger under `st`. -/
 def scr (t : T) (st : String) (args : List String) : IO R :=
-  t.exec (["sh", "-c", Compute.SCRIPT, "sh"] ++ args) { env := [("XDG_STATE_HOME", some st)] }
+  t.exec (["sh", "-c", Claims.SCRIPT, "sh"] ++ args) { env := [("XDG_STATE_HOME", some st)] }
 
-/-- `try` of `cores` and 1 MiB as holder `holder`, its one-line answer. -/
+/-- `try` of `cores` and 1 MiB, no estimate, as holder `holder`, its one-line answer. -/
 def try_ (t : T) (st id cores : String) (holder := "t") : IO String :=
-  return strip (← scr t st ["try", id, cores, "1024", holder, "w", "cmd"]).stdout
+  return strip (← scr t st ["try", id, cores, "1024", "-", holder, "w", "cmd"]).stdout
 
-def test_script_50_parallel_grant_exactly_4 (t : T) : IO Unit := do
-  let st := t.d ++ "/s1"
-  discard <| scr t st ["cap", "8", "-"]
-  -- one sh starts the 50: as many Lean tasks each spawning, a CI runner's worker could fork no more (ENOMEM)
-  let out := t.d ++ "/s1-answers"
-  mkdir out
-  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do sh -c \"$1\" sh try c$k 2 1024 t w cmd >\"$2/$k\" & k=$((k + 1)); done; wait",
-    "sh", Compute.SCRIPT, out] { env := [("XDG_STATE_HOME", some st)] }
-  let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
-  eq (rs.filter (·.startsWith "ok")).length 4 s!"grants; answers {rs.eraseDups}"
-  eq ((splitlines (← scr t st ["ls"]).stdout).filter (·.startsWith "c ")).length 4
+/-- Runs an App action. -/
+def app (act : App α) : IO α := do
+  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  | .ok a => pure a
+  | .error e => fail s!"exit {e.code}"
 
-def test_script_dead_claims_are_not_counted (t : T) : IO Unit := do
-  let st := t.d ++ "/s2"
-  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
-  mkdir (st ++ "/swarm-compute/claims")
-  put (st ++ "/swarm-compute/claims/a") s!"8 1024 p{dead} 1 w x\n"
-  put (st ++ "/swarm-compute/claims/b") "8 1024 t1 1 w x\n"
-  eq (← try_ t st "n" "8") "ok 8"
-  eq (← exists_ (st ++ "/swarm-compute/claims/a")) false
-  eq (← exists_ (st ++ "/swarm-compute/claims/b")) false
+/-- Records `run` rows of these walls for `cmd` in the history. -/
+def recordRuns (cmd : String) (ws : List Int) (source := "run") : IO Unit := do
+  for w in ws do
+    discard <| app (SwarmLean.Cost.record { ts := 1, machine := "elsewhere", repo := "repo", agent := "a", source, cmd, wall_s := w, peak_kb := 0 } : App Bool)
 
-def test_script_an_old_lock_without_a_live_holder_is_broken (t : T) : IO Unit := do
-  let st := t.d ++ "/s5"
-  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
-  mkdir (st ++ "/swarm-compute/lock")
-  put (st ++ "/swarm-compute/lock/pid") s!"{dead}\n"
-  discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
-  eq (← try_ t st "a" "1") "ok 1"
-  -- one whose holder died before writing its pid
-  mkdir (st ++ "/swarm-compute/lock")
-  discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
-  eq (← try_ t st "b" "1") "ok 1"
-
-def test_script_older_ticket_holds_back_younger (t : T) : IO Unit := do
-  let st := t.d ++ "/s3"
-  mkdir (st ++ "/swarm-compute/queue")
-  put (st ++ "/swarm-compute/queue/old") s!"{(← now t) - 5} 8 1024 w\n"
-  has (← try_ t st "young" "1") "wait 8 16777216 1"
-  eq (← try_ t st "old" "8") "ok 8"
-  -- the old one is served; the young one's ticket stays until it is granted or dropped
-  eq (← try_ t st "young" "1") "wait 0 16776192 0"
-  discard <| scr t st ["drop", "old"]
-  eq (← try_ t st "young" "1") "ok 1"
-  eq (← exists_ (st ++ "/swarm-compute/queue/young")) false
-
-def test_script_never_off_and_all (t : T) : IO Unit := do
-  let st := t.d ++ "/s4"
-  discard <| scr t st ["cap", "4", "-"]
-  eq (← try_ t st "big" "5") "never 4 16777216"
-  discard <| scr t st ["off"]
-  eq (← try_ t st "x" "1") "off"
-  discard <| scr t st ["on"]
-  eq (← try_ t st "one" "2") "ok 2"
-  has (← try_ t st "every" "all") "wait"
-  discard <| scr t st ["drop", "one"]
-  eq (← try_ t st "every" "all") "ok 4"
-  -- `=` keeps a field of the cap
-  discard <| scr t st ["cap", "=", "2048"]
-  eq (strip (← scr t st ["ls"]).stdout |> splitlines |>.head!) "8 0.00 16777216 16777216 4 2048 0"
-
-def test_script_compute_dir_overrides_the_ledger (t : T) : IO Unit := do
-  let st := t.d ++ "/s5"
-  discard <| t.exec ["sh", "-c", Compute.SCRIPT, "sh", "cap", "3", "-"] { env := [("XDG_STATE_HOME", some st), ("SWARM_COMPUTE_DIR", some (st ++ "/other"))] }
-  eq (strip (← readF [st, "other", "cap"])) "3 -"
-  eq (← exists_ (st ++ "/swarm-compute/cap")) false
-
-def test_script_arithmetic_of_the_awk_programs (t : T) : IO Unit := do
-  let busy ← t.exec ["awk", "-v", "n=4", Compute.BUSY_AWK] { input := some "cpu 100 0 100 800 0 0 0 0 0 0\ncpu 300 0 200 1000 0 0 0 0 0 0\n" }
-  eq busy.stdout "2.40"
-  let vm := "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               12345.\nPages active:                            200000.\nPages inactive:                          100000.\nPages speculative:                         5000.\nPages throttled:                              0.\nPages wired down:                         80000.\nPages purgeable:                           2655.\n"
-  eq (strip (← t.exec ["awk", Compute.DARWIN_MEM_AWK] { input := some vm }).stdout) (toString (120000 * 16))
+/-- The history's rows (key, source, wall_s, machine) of a key. -/
+def costRows (key : String) : IO (List (String × String × Int × String)) := do
+  let h ← Sqlite.Conn.open (← app SwarmLean.Cost.path) true
+  let rs ← h.query s!"select key,source,wall_s,machine from cmd where key='{key}' order by id"
+  return rs.toList.map fun r => (SwarmLean.Cost.vs (r.getD 0 .null), SwarmLean.Cost.vs (r.getD 1 .null),
+    SwarmLean.Cost.vi (r.getD 2 .null), SwarmLean.Cost.vs (r.getD 3 .null))
 
 /-- The state dir `swarm run` and the script share in these tests. -/
 def state (t : T) : String := t.d ++ "/.state"
@@ -221,20 +166,73 @@ def test_run_claim_is_gone_after_a_killed_job (t : T) : IO Unit := do
   discard <| t.exec ["kill", "-9", j]
   eq (← claimsHere t) 0
 
+def test_run_estimate_into_the_claim (t : T) : IO Unit := do
+  -- 12 `run` rows of 1..12 s: the 90th percentile is 11; a `swarm` row of 1000 s in the window does not count
+  let cmd := "cat $XDG_STATE_HOME/swarm-compute/claims/*"
+  recordRuns cmd ((List.range' 1 12).map Int.ofNat)
+  recordRuns cmd [1000] "swarm"
+  let r ← t.sw "b" ["run", "--", cmd]
+  has r.stdout " ~11 "
+  has r.stderr ", ~11s ("
+  -- no history, no estimate
+  let r ← t.sw "b" ["run", "--", "cut -d' ' -f5 $XDG_STATE_HOME/swarm-compute/claims/*"]
+  eq (strip r.stdout |> splitlines |>.head!) "b"
+  hasnt r.stderr ", ~"
+
+def test_run_all_is_the_whole_machine (t : T) : IO Unit := do
+  let r ← t.sw "b" ["run", "--cores", "all", "--", "echo $SWARM_CORES $SWARM_MEM_KB"]
+  has r.stdout "8 16777216"
+  has r.stderr "claiming the whole machine"
+  eq (← t.sw "b" ["run", "--cores", "all", "--mem", "1", "--", "true"] { ok := false }).code 1
+  -- under a cap below the machine it is refused, and the message says so
+  discard <| t.sw "b" ["compute", "cap", "here", "--cores", "4"]
+  let r ← t.sw "b" ["run", "--cores", "all", "--", "true"] { ok := false }
+  eq r.code 255; has r.stderr "here: the cap (4 cores, 16.0G) is below the whole machine. Ask for a count of cores, or lift the cap: `swarm compute cap <machine> --cores all --mem all`."
+
+def test_run_lowest_priority (t : T) : IO Unit := do
+  has (← t.sw "b" ["run", "--", "echo nice=$(nice)"]).stdout "nice=19"
+  if (← t.exec ["ionice", "-c3", "true"]).code == 0 then
+    has (← t.sw "b" ["run", "--", "ionice -p $$"]).stdout "idle"
+  discard <| fakeRemote t
+  has (← t.sw "b" ["run", "--on", "laptop", "--", "echo nice=$(nice)"]).stdout "nice=19"
+
+def test_run_records_every_job (t : T) : IO Unit := do
+  discard <| t.sw "b" ["run", "--", "true"]
+  let rows ← costRows "true"
+  eq rows.length 1
+  let (k, src, w, _) := rows.head!
+  eq k "true"; eq src "run"; eq (decide (w < 60)) true
+  -- a remote job with a prefix is filed under the user's command
+  discard <| fakeRemote t
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"prefix": "env X=1"}}).compress
+  discard <| t.sw "b" ["run", "--on", "laptop", "--", "echo hi"]
+  let rows ← costRows "echo hi"
+  eq rows.length 1
+  eq (rows.head!.2.1) "run"
+
+def test_compute_reserve_and_the_one_machine_view (t : T) : IO Unit := do
+  discard <| t.sw "b" ["compute", "reserve", "here", "3"]
+  let j ← parse (← t.sw "b" ["compute", "--json", "here"]).stdout
+  eq ((j.f "here").f "reserve_cores") (3 : Int); eq ((j.f "here").f "limit_cores") (5 : Int)
+  has (← t.sw "b" ["compute", "here"]).stdout "0 of 5 cores claimed (cap 8 of 8, 3 reserved, 0.0 busy)"
+  has (← t.sw "b" ["compute"]).stdout "3 reserved"
+  discard <| t.sw "b" ["compute", "reserve", "here", "0"]
+  hasnt (← t.sw "b" ["compute", "here"]).stdout "reserved"
+  eq (← t.sw "b" ["compute", "reserve", "here", "x"] { ok := false }).code 1
+
 def tests : List Case := [
-  ("test_script_50_parallel_grant_exactly_4", test_script_50_parallel_grant_exactly_4),
-  ("test_script_an_old_lock_without_a_live_holder_is_broken", test_script_an_old_lock_without_a_live_holder_is_broken),
-  ("test_script_dead_claims_are_not_counted", test_script_dead_claims_are_not_counted),
-  ("test_script_older_ticket_holds_back_younger", test_script_older_ticket_holds_back_younger),
-  ("test_script_never_off_and_all", test_script_never_off_and_all),
-  ("test_script_compute_dir_overrides_the_ledger", test_script_compute_dir_overrides_the_ledger),
-  ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs),
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),
   ("test_run_routes_to_the_second_machine_when_the_first_is_full", test_run_routes_to_the_second_machine_when_the_first_is_full),
   ("test_run_a_machine_gone_is_retried", test_run_a_machine_gone_is_retried),
   ("test_run_waits_and_runs_when_a_claim_is_dropped", test_run_waits_and_runs_when_a_claim_is_dropped),
   ("test_run_nothing_can_fit_is_255", test_run_nothing_can_fit_is_255),
-  ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job)]
+  ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job),
+  ("test_run_estimate_into_the_claim", test_run_estimate_into_the_claim),
+  ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
+  ("test_run_lowest_priority", test_run_lowest_priority),
+  ("test_run_records_every_job", test_run_records_every_job),
+  ("test_compute_reserve_and_the_one_machine_view", test_compute_reserve_and_the_one_machine_view)]
 
 end SwarmLean.Tests.Cli.Compute

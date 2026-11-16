@@ -1,6 +1,14 @@
 {"version": "1.3.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "claim",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../../../claim",
+   "copy": false,
+   "configFile": "lakefile.lean"}],
  "name": "«swarm-lean-hpl»",
  "lakeDir": ".lake",
  "fixedToolchain": false}

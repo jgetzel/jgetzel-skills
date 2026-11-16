@@ -2,7 +2,7 @@ import Tests.Cli.Fixture
 import SwarmLean.Lib.Cost
 
 /-! cost_spec.lua's asserts that need the world (its pure ones are Tests/Cost.lean's and Tests/CostTick.lean's): the
-history's pruning, machine.cgroup's read of a faked /proc and cgroup tree, `cost --top`, and cost only measuring. -/
+history's lack of pruning, machine.cgroup's read of a faked /proc and cgroup tree, `cost --top`, and cost only measuring. -/
 
 namespace SwarmLean.Tests.Spec.Cost
 open SwarmLean SwarmLean.Tests.Cli
@@ -14,14 +14,17 @@ def app (act : App α) : IO α := do
   | .ok a => pure a
   | .error e => fail s!"exit {e.code}"
 
--- pruning keeps 20 per (machine, repo, key)
-def test_pruning_keeps_20 (_ : T) : IO Unit := do
+-- nothing is pruned: 25 rows of one key all stay, and a `swarm run` row of 5 s is kept where a `swarm` one is not
+def test_no_pruning (_ : T) : IO Unit := do
   for i in [1:26] do
     discard <| app (Cost.record { ts := 0, machine := "h", repo := "repo", agent := "a", cmd := "make test",
                                   wall_s := 61 + i, peak_kb := 1 })
+  eq (← app (Cost.record { ts := 0, machine := "h", repo := "repo", agent := "a", cmd := "make test", wall_s := 5, peak_kb := 1 })) false
+  eq (← app (Cost.record { ts := 0, machine := "h", repo := "repo", agent := "a", source := "run", cmd := "make test", wall_s := 5, peak_kb := 1 })) true
   let h ← Sqlite.Conn.open (← app Cost.path) true
-  eq ((← h.query "select count(*) n from cmd where key='make test'")[0]![0]! == .int 20) true
-  eq ((← h.query "select min(wall_s) m from cmd where key='make test'")[0]![0]! == .int 67) true
+  eq ((← h.query "select count(*) n from cmd where key='make test'")[0]![0]! == .int 26) true
+  eq ((← h.query "select min(wall_s) m from cmd where key='make test'")[0]![0]! == .int 5) true
+  eq ((← h.query "select count(*) n from sqlite_master where name='cmd_rk'")[0]![0]! == .int 1) true
 
 -- a cgroup per agent: machine.cgroup reads the agent's scope from /proc/<pid>/cgroup, its memory.peak and cpu.stat
 def test_cgroup_read (t : T) : IO Unit := do
@@ -43,7 +46,7 @@ def test_cost_only_measures (_ : T) : IO Unit := do
   hasnt src "oom_score_adj"; hasnt src "SIGTERM"; hasnt src "signal"
 
 def tests : List Case := [
-  ("test_pruning_keeps_20", test_pruning_keeps_20),
+  ("test_no_pruning", test_no_pruning),
   ("test_cgroup_read", test_cgroup_read),
   ("test_cost_top", test_cost_top),
   ("test_cost_only_measures", test_cost_only_measures)]

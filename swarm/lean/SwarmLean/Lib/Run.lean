@@ -3,6 +3,8 @@ import SwarmLean.Lib.Json
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Re
 import SwarmLean.Db
+import SwarmLean.Lib.Compute
+import Claims.Machines
 
 /-! run.lua's helpers: hc machines, live jobs, the remote probe and its readings (watchd's remote_tick), a landed
 worktree's remote dirs (clean_remote), the job's environment. `swarm run` itself is Cmd/Run.lean. -/
@@ -21,14 +23,6 @@ def LOST_FOR : Int := 3600
 
 /-- An object of the fields that are set: a Lua table's nil fields are absent from cjson's output. -/
 def obj (l : List (String × Option Json)) : Json := Json.mkObj (l.filterMap fun (k, v) => v.map (k, ·))
-
-/-- `{name: machine}` from `hc machine ls --json`, [] without hc (run.hc_machines). -/
-def hcMachines [Proc m] : m (List (String × Json)) := do
-  let txt := match ← Proc.output ["hc", "machine", "ls", "--json"] none [] with
-    | some o => if o.code == 0 then o.stdout else "{}"
-    | none => "{}"
-  let ms := ((Json.decode txt).bind (Json.field · "machines")).map Json.items |>.getD []
-  return (ms.filterMap fun x => (Json.fstr x "name").map (·, x)).reverse
 
 /-- A job-start event with no job-end: its record, start, agent and id (the event's path). -/
 structure Job where
@@ -162,7 +156,7 @@ def jobReadings [Sys m] (t : Int) (txt : String) (mine : List (Job × String)) (
 lost an hour get a job-end. Only a watchd started from a Herdr terminal probes. -/
 def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit := do
   if (← env "HC_TERMINAL_ID").isNone then return
-  let ms ← hcMachines
+  let ms ← Claims.hcMachines Compute.host
   let db ← Store.txn [.«meta», .event] fun db => (db, db)
   let old := ((db.getMeta "machines").bind (·.v) |>.bind Json.decode).getD (Json.mkObj [])
   let jobs := liveJobs db t
