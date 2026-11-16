@@ -25,6 +25,8 @@ def eq [BEq α] [Repr α] (got want : α) (msg := "not equal") : IO Unit :=
 
 def has (s sub : String) : IO Unit := unless subIn s sub do fail s!"missing {sub.quote}\n  in {s.quote}"
 
+def hasnt (s sub : String) : IO Unit := if subIn s sub then fail s!"unexpected {sub.quote}\n  in {s.quote}" else pure ()
+
 def put (p text : String) : IO Unit := IO.FS.writeFile p text
 
 def mkdir (p : String) : IO Unit := IO.FS.createDirAll p
@@ -55,8 +57,8 @@ def exec (t : T) (argv : List String) (env : List (String × Option String) := [
   return { stdout := out, stderr := err, code := (← child.wait).toNat }
 
 /-- The script's op against the ledger under `st` (XDG_STATE_HOME). -/
-def scr (t : T) (st : String) (args : List String) : IO R :=
-  t.exec (["sh", "-c", SCRIPT, "sh"] ++ args) [("XDG_STATE_HOME", some st)]
+def scr (t : T) (st : String) (args : List String) (env : List (String × Option String) := []) : IO R :=
+  t.exec (["sh", "-c", SCRIPT, "sh"] ++ args) ([("XDG_STATE_HOME", some st)] ++ env)
 
 /-- A fresh test dir. -/
 def new : IO T := do

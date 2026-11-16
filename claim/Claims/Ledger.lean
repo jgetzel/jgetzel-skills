@@ -1,6 +1,7 @@
 import Lean.Data.Json
 import Claims.Util
 import Claims.Host
+import Claims.Admit
 
 /-! sw-compute.md: sized claims on a machine's cores and memory. The ledger is a directory of files per machine and user,
 kept by one `sh` script (`SCRIPT`) that runs here or through `hc exec`; this file holds the script, how it is run, and
@@ -19,6 +20,67 @@ def DARWIN_MEM_AWK : String :=
   "/page size of/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/)ps=$i} " ++
   "/^Pages (free|inactive|speculative|purgeable):/{gsub(/\\./,\"\",$NF); n+=$NF} END{print int(n*ps/1024)}"
 
+/-- The admission decision (sw-compute-backfill.md §2.2-§2.4, §5), `Admit.decide` in awk; run as `LC_ALL=C awk -v … ADMIT_AWK`.
+Variables: now ncpu total busy avail capc capm resc resm limc limm off id first cores mem est (`busy` decimal, `cores` a number
+or `all`, `est` a number or `-`, `resc resm` the file's values unclamped, `first` the requester's ticket's first or `now`).
+Input: `c <claim line>` per live claim, `q <id> <ticket line>` per live ticket (the requester's own is skipped). Output, one
+line: `off` | `never <capc> <capm>` | `ok <cores> <mem_kb>` | `wait <max(0,fc)> <max(0,fm)> <ahead>`. Ids compare as strings. -/
+def ADMIT_AWK : String :=
+"function mx(a, b) { return a > b ? a : b }
+function mn(a, b) { return a < b ? a : b }
+function before(f1, i1, f2, i2) { return f1 < f2 || (f1 == f2 && (i1 \"\") < (i2 \"\")) }
+function endof(i) { return mx(now + 0, cs[i] + ce[i]) }
+function held(j) { return tx[j] ? (!whole || !quiet) : (tc[j] > limc + 0 || tm[j] > limm + 0) }
+function fits(j, tau,  i, rc, rm) {
+  if (tx[j]) { for (i = 1; i <= nc; i++) if (!he[i] || endof(i) > tau) return 0; return 1 }
+  for (i = 1; i <= nc; i++) if (he[i] && endof(i) <= tau) { rc += cc_[i]; rm += cm_[i] }
+  return tc[j] <= fc + rc && tm[j] <= fm + rm
+}
+$1 == \"c\" { nc++; cc_[nc] = $2 + 0; cm_[nc] = $3 + 0; cs[nc] = $5 + 0
+  if ($6 ~ /^~[0-9]+$/) { he[nc] = 1; ce[nc] = substr($6, 2) + 0 } else he[nc] = 0 }
+$1 == \"q\" && ($2 \"\") != (id \"\") { nt++; tid[nt] = $2; tf[nt] = $3 + 0; tx[nt] = ($4 == \"all\"); tc[nt] = $4 + 0; tm[nt] = $5 + 0 }
+END {
+  if (off + 0) { print \"off\"; exit }
+  whole = (capc + 0 >= ncpu + 0 && capm + 0 >= total + 0)
+  excl = (cores == \"all\")
+  if (excl ? !whole : (cores + 0 > capc + 0 || mem + 0 > capm + 0)) { printf \"never %.0f %.0f\\n\", capc, capm; exit }
+  for (i = 1; i <= nc; i++) { sc += cc_[i]; sm += cm_[i] }
+  k = int(ncpu / 8); if (k < 1) k = 1
+  out = int(busy - sc + 0.5) - k; if (out < 0) out = 0
+  fc = mn(limc - sc, ncpu - sc - out); fm = mn(limm - sm, avail)
+  quiet = (resc + 0 == 0 && resm + 0 == 0 && out == 0)
+  ahead = 0; h = 0
+  for (j = 1; j <= nt; j++)
+    if (!held(j) && before(tf[j], tid[j], first + 0, id)) {
+      ahead++
+      if (!h || before(tf[j], tid[j], tf[h], tid[h])) h = j
+    }
+  bf = 0
+  if (h && est != \"-\") {
+    best = \"\"
+    for (e = 0; e <= nc; e++) {
+      if (e > 0 && !he[e]) continue
+      tau = e ? endof(e) : now + 0
+      if ((best == \"\" || tau < best) && fits(h, tau)) best = tau
+    }
+    bf = (best != \"\" && now + est <= best)
+  }
+  if (excl ? (nc == 0 && quiet) : (cores + 0 <= fc && mem + 0 <= fm)) fit = 1; else fit = 0
+  if (fit && (ahead == 0 || bf)) { if (excl) printf \"ok %.0f %.0f\\n\", ncpu, avail; else printf \"ok %.0f %.0f\\n\", cores, mem }
+  else printf \"wait %.0f %.0f %d\\n\", mx(0, fc), mx(0, fm), ahead
+}"
+
+/-- The command `cmd` as `sh -c` runs it, at the lowest CPU priority and, where `ionice` works, idle I/O (§4). The exit code is
+the command's. -/
+def lowPrioWith (tail : String) : String :=
+  s!"if ionice -c3 true 2>/dev/null; then exec ionice -c3 nice -n 19 {tail}; else exec nice -n 19 {tail}; fi"
+
+/-- `sh -c (lowPrio cmd)` runs the shell command `cmd` at the lowest priority. -/
+def lowPrio (cmd : String) : String := lowPrioWith ("sh -c " ++ shquote cmd)
+
+/-- The same for an argv: `sh -c LOWPRIO_ARGV sh cmd args…`. -/
+def LOWPRIO_ARGV : String := lowPrioWith "\"$@\""
+
 /-- The script's first half: the ledger's place, the machine's reading (`sample`), the lock and the cleaning. -/
 def SCRIPT_A : String := "
 d=\"${SWARM_COMPUTE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}\"
@@ -35,8 +97,10 @@ sample() {
   else
     st=${SWARM_COMPUTE_STAT:-/proc/stat}
     ncpu=$(grep -c '^cpu[0-9]' \"$st\")
-    a=$(head -n 1 \"$st\"); sleep 0.5; b=$(head -n 1 \"$st\")
-    busy=$(printf '%s\\n%s\\n' \"$a\" \"$b\" | awk -v n=\"$ncpu\" '" ++ BUSY_AWK ++ "')
+    if [ -n \"$SWARM_COMPUTE_BUSY\" ]; then busy=$SWARM_COMPUTE_BUSY; else
+      a=$(head -n 1 \"$st\"); sleep 0.5; b=$(head -n 1 \"$st\")
+      busy=$(printf '%s\\n%s\\n' \"$a\" \"$b\" | awk -v n=\"$ncpu\" '" ++ BUSY_AWK ++ "')
+    fi
     mm=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print t+0, a+0}' \"${SWARM_COMPUTE_MEM:-/proc/meminfo}\")
     total_kb=${mm% *}; avail_kb=${mm#* }
   fi
@@ -52,7 +116,7 @@ lock() {
   done
   echo $$ > \"$d/lock/pid\"
   trap 'rm -rf \"$d/lock\"' EXIT
-  now=$(date +%s)
+  now=${SWARM_COMPUTE_NOW:-$(date +%s)}
 }
 clean() {
   for f in \"$d\"/claims/*; do
@@ -73,49 +137,48 @@ caps() {
     if num \"$cc\"; then capc=$cc; fi
     if num \"$cm\"; then capm=$cm; fi
   fi
+  resc=0; resm=0
+  if [ -f \"$d/reserve\" ]; then
+    read -r rcv rmv < \"$d/reserve\"
+    if num \"$rcv\"; then resc=$rcv; fi
+    if num \"$rmv\"; then resm=$rmv; fi
+  fi
+  # the room sized jobs may take: the cap, less the reservation clamped to the machine (Admit.lim)
+  limc=$((ncpu - (resc < ncpu ? resc : ncpu))); if [ \"$limc\" -gt \"$capc\" ]; then limc=$capc; fi
+  limm=$((total_kb - (resm < total_kb ? resm : total_kb))); if [ \"$limm\" -gt \"$capm\" ]; then limm=$capm; fi
 }
 "
 
 /-- The script's second half: the ops. -/
 def SCRIPT_B : String := "
 try_() {
-  id=$1; cores=$2; mem=$3; holder=$4; who=$5; cmd=$6
+  id=$1; cores=$2; mem=$3; est=$4; holder=$5; who=$6; cmd=$7
   okid \"$id\"
   cmd=$(printf %s \"$cmd\" | tr '\\n\\t' '  ' | cut -c1-200)
   who=$(printf %s \"$who\" | tr -c 'A-Za-z0-9._:-' '_')
+  if [ \"$cores\" = all ]; then mem=0; elif ! num \"$cores\" || [ \"$cores\" -lt 1 ]; then echo 'bad size' >&2; exit 2; fi
+  if ! num \"$mem\" || { [ \"$est\" != - ] && ! num \"$est\"; }; then echo 'bad size' >&2; exit 2; fi
   sample; lock; clean; caps
   if [ \"$holder\" = t ]; then holder=t$((now + 900)); fi
-  if [ \"$cores\" = all ]; then cores=$capc; fi
-  if ! num \"$cores\" || ! num \"$mem\"; then echo 'bad size' >&2; exit 2; fi
-  if [ -e \"$d/off\" ]; then rm -f \"$d/queue/$id\"; echo off; return; fi
-  if [ \"$cores\" -gt \"$capc\" ] || [ \"$mem\" -gt \"$capm\" ]; then rm -f \"$d/queue/$id\"; echo \"never $capc $capm\"; return; fi
   first=$now
   if [ -f \"$d/queue/$id\" ]; then read -r first _ < \"$d/queue/$id\"; fi
-  ahead=0
-  for f in \"$d\"/queue/*; do
-    [ -f \"$f\" ] || continue
-    o=${f##*/}
-    [ \"$o\" = \"$id\" ] && continue
-    read -r of _ < \"$f\"
-    if [ \"$of\" -lt \"$first\" ] || { [ \"$of\" -eq \"$first\" ] && [ \"$(printf '%s\\n%s\\n' \"$o\" \"$id\" | sort | head -n 1)\" = \"$o\" ]; }; then
-      ahead=$((ahead + 1))
-    fi
-  done
-  free=$(cat \"$d\"/claims/* 2>/dev/null | awk -v busy=\"$busy\" -v ncpu=\"$ncpu\" -v capc=\"$capc\" -v capm=\"$capm\" -v av=\"$avail_kb\" '
-    {cc+=$1; cm+=$2}
-    END{k=int(ncpu/8); if(k<1)k=1; o=int(busy-cc+0.5)-k; if(o<0)o=0
-      a=capc-cc; b=ncpu-cc-o; fc=(a<b)?a:b
-      x=capm-cm; fm=(x<av)?x:av
-      print fc, fm}')
-  fc=${free% *}; fm=${free#* }
-  if [ \"$cores\" -le \"$fc\" ] && [ \"$mem\" -le \"$fm\" ] && [ \"$ahead\" -eq 0 ]; then
-    printf '%s %s %s %s %s %s\\n' \"$cores\" \"$mem\" \"$holder\" \"$now\" \"$who\" \"$cmd\" > \"$d/claims/.$id\" && mv \"$d/claims/.$id\" \"$d/claims/$id\"
-    rm -f \"$d/queue/$id\"
-    echo \"ok $cores\"
-  else
-    if [ -f \"$d/queue/$id\" ]; then touch \"$d/queue/$id\"; else echo \"$now $cores $mem $who\" > \"$d/queue/$id\"; fi
-    echo \"wait $((fc > 0 ? fc : 0)) $((fm > 0 ? fm : 0)) $ahead\"
-  fi
+  offv=0; if [ -e \"$d/off\" ]; then offv=1; fi
+  dec=$({ for f in \"$d\"/claims/*; do if [ -f \"$f\" ]; then printf 'c '; cat \"$f\"; fi; done
+          for f in \"$d\"/queue/*; do if [ -f \"$f\" ]; then printf 'q %s ' \"${f##*/}\"; cat \"$f\"; fi; done; } |
+    LC_ALL=C awk -v now=\"$now\" -v ncpu=\"$ncpu\" -v total=\"$total_kb\" -v busy=\"$busy\" -v avail=\"$avail_kb\" -v capc=\"$capc\" -v capm=\"$capm\" \\
+      -v resc=\"$resc\" -v resm=\"$resm\" -v limc=\"$limc\" -v limm=\"$limm\" -v off=\"$offv\" -v id=\"$id\" -v first=\"$first\" \\
+      -v cores=\"$cores\" -v mem=\"$mem\" -v est=\"$est\" '" ++ ADMIT_AWK ++ "')
+  case $dec in
+    ok*)
+      set -- $dec
+      if [ \"$est\" = - ]; then e=; else e=\"~$est \"; fi
+      printf '%s %s %s %s %s%s %s\\n' \"$2\" \"$3\" \"$holder\" \"$now\" \"$e\" \"$who\" \"$cmd\" > \"$d/claims/.$id\" && mv \"$d/claims/.$id\" \"$d/claims/$id\"
+      rm -f \"$d/queue/$id\";;
+    wait*)
+      if [ \"$cores\" = all ]; then echo \"$first all 0 $who\" > \"$d/queue/$id\"; else echo \"$first $cores $mem $who\" > \"$d/queue/$id\"; fi;;
+    *) rm -f \"$d/queue/$id\";;
+  esac
+  echo \"$dec\"
 }
 case $op in
   try) try_ \"$@\";;
@@ -123,7 +186,9 @@ case $op in
   ls)
     sample; lock; clean; caps
     offv=0; if [ -e \"$d/off\" ]; then offv=1; fi
-    echo \"$ncpu $busy $total_kb $avail_kb $capc $capm $offv\"
+    rcv=$resc; if [ \"$rcv\" -gt \"$ncpu\" ]; then rcv=$ncpu; fi
+    rmv=$resm; if [ \"$rmv\" -gt \"$total_kb\" ]; then rmv=$total_kb; fi
+    echo \"$ncpu $busy $total_kb $avail_kb $capc $capm $offv $rcv $rmv\"
     for f in \"$d\"/claims/*; do if [ -f \"$f\" ]; then printf 'c '; cat \"$f\"; fi; done
     for f in \"$d\"/queue/*; do if [ -f \"$f\" ]; then printf 'q '; cat \"$f\"; fi; done;;
   cap)
@@ -135,6 +200,10 @@ case $op in
     if [ \"$nm\" = = ]; then nm=$om; fi
     for v in \"$nc\" \"$nm\"; do if [ \"$v\" != - ] && ! num \"$v\"; then echo 'bad cap' >&2; exit 2; fi; done
     echo \"$nc $nm\" > \"$d/cap.tmp.$$\" && mv \"$d/cap.tmp.$$\" \"$d/cap\";;
+  reserve)
+    for v in \"$1\" \"$2\"; do if ! num \"$v\"; then echo 'bad reserve' >&2; exit 2; fi; done
+    if [ \"$1\" -eq 0 ] && [ \"$2\" -eq 0 ]; then rm -f \"$d/reserve\"
+    else echo \"$1 $2\" > \"$d/reserve.tmp.$$\" && mv \"$d/reserve.tmp.$$\" \"$d/reserve\"; fi;;
   off) : > \"$d/off\";;
   on) rm -f \"$d/off\";;
   *) echo \"unknown op: $op\" >&2; exit 2;;
@@ -146,7 +215,8 @@ def SCRIPT : String := SCRIPT_A ++ SCRIPT_B
 
 /-- What `try` answered. -/
 inductive Try
-  | ok (cores : Int)
+  /-- granted: the cores and memory the claim holds (an exclusive claim's are the script's) -/
+  | ok (cores mem_kb : Int)
   | wait (cores mem_kb : Int) (ahead : Int)
   | never (cap_cores cap_mem_kb : Int)
   | off
@@ -157,7 +227,9 @@ inductive Try
 /-- The script's `try` line. -/
 def parseTry (s : String) : Try :=
   match words s with
-  | ["ok", c] => (parseInt c).elim .gone .ok
+  | ["ok", c, g] => match parseInt c, parseInt g with
+    | some c, some g => .ok c g
+    | _, _ => .gone
   | ["wait", a, b, c] => match parseInt a, parseInt b, parseInt c with
     | some a, some b, some c => .wait a b c
     | _, _, _ => .gone
@@ -187,14 +259,16 @@ structure Claim where
   mem_kb : Int
   holder : String
   start : Int
+  /-- the estimate (s) the request carried, none for a claim without one -/
+  est : Option Int := none
   who : String
   cmd : String
   deriving BEq, Repr
 
-/-- A ticket row of `ls`. -/
+/-- A ticket row of `ls`; `cores` none: an exclusive (`all`) request. -/
 structure Ticket where
   first : Int
-  cores : Int
+  cores : Option Int
   mem_kb : Int
   who : String
   deriving BEq, Repr
@@ -208,22 +282,56 @@ structure Ls where
   cap_cores : Int
   cap_mem_kb : Int
   off : Bool
+  /-- the reservation, clamped to the machine -/
+  res_cores : Int := 0
+  res_mem_kb : Int := 0
   claims : List Claim := []
   queue : List Ticket := []
 
 /-- The script's `ls` output. -/
 def parseLs (s : String) : Option Ls := do
   let ls := splitlines s
-  let [a, b, c, d, e, f, g] := words (← ls.head?) | none
+  let [a, b, c, d, e, f, g, h, i] := words (← ls.head?) | none
   let mut r : Ls := { ncpu := ← parseInt a, busy := ← parseFloat b, total_kb := ← parseInt c, avail_kb := ← parseInt d,
-                      cap_cores := ← parseInt e, cap_mem_kb := ← parseInt f, off := (← parseInt g) != 0 }
+                      cap_cores := ← parseInt e, cap_mem_kb := ← parseInt f, off := (← parseInt g) != 0,
+                      res_cores := ← parseInt h, res_mem_kb := ← parseInt i }
   for l in ls.tail do
     match words l with
-    | "c" :: x :: y :: h :: z :: w :: cmd =>
-      r := { r with claims := r.claims ++ [{ cores := ← parseInt x, mem_kb := ← parseInt y, holder := h, start := ← parseInt z, who := w, cmd := " ".intercalate cmd }] }
-    | ["q", x, y, z, w] => r := { r with queue := r.queue ++ [{ first := ← parseInt x, cores := ← parseInt y, mem_kb := ← parseInt z, who := w }] }
+    | "c" :: x :: y :: h :: z :: rest =>
+      let (est, rest) ← match rest with
+        | e :: tl => if e.startsWith "~" then pure (some (← parseInt (e.drop 1).toString), tl) else pure (none, rest)
+        | [] => none
+      let w :: cmd := rest | none
+      r := { r with claims := r.claims ++ [{ cores := ← parseInt x, mem_kb := ← parseInt y, holder := h, start := ← parseInt z, est,
+                                              who := w, cmd := " ".intercalate cmd }] }
+    | ["q", x, y, z, w] =>
+      let cores ← if y == "all" then pure none else (parseInt y).map some
+      r := { r with queue := r.queue ++ [{ first := ← parseInt x, cores, mem_kb := ← parseInt z, who := w }] }
     | _ => pure ()
   return r
+
+/-- The model's machine for an `ls` (tickets named by their place) at `now`. -/
+def Ls.model (l : Ls) (now : Int) : Admit.Machine where
+  ncpu := l.ncpu
+  total := l.total_kb
+  busy := (l.busy * 100).round.toInt64.toInt
+  avail := l.avail_kb
+  cap := (some l.cap_cores, some l.cap_mem_kb)
+  res := (l.res_cores, l.res_mem_kb)
+  off := l.off
+  now
+  claims := l.claims.map fun c => ⟨c.cores, c.mem_kb, c.start, c.est⟩
+  tickets := (l.queue.zip (List.range l.queue.length)).map fun (q, i) => ⟨toString i, q.first, q.cores, q.mem_kb⟩
+
+/-- Why a waiting ticket is held (the model's `held`), in words: none when it is not held. -/
+def Ls.whyHeld (l : Ls) (now : Int) (q : Ticket) : List String :=
+  let m := l.model now
+  match q.cores with
+  | some c => if c > Admit.limC m || q.mem_kb > Admit.limM m then ["held by the reservation"] else []
+  | none =>
+    let rs := (if m.res != (0, 0) then ["reserved"] else []) ++ (if Admit.outside m > 0 then ["unclaimed use"] else []) ++
+      (if Admit.whole m then [] else ["cap below the machine"])
+    if rs.isEmpty then [] else ["held: " ++ ", ".intercalate rs]
 
 /-- KiB as GiB, one decimal, no unit. -/
 def gi (kb : Int) : String := fixed (Float.ofInt kb / 1048576) 1
@@ -231,15 +339,20 @@ def gi (kb : Int) : String := fixed (Float.ofInt kb / 1048576) 1
 /-- A span of seconds as `45s`, `4m` or `2h`. -/
 def span (s : Int) : String := let s := max 0 s; if s < 60 then s!"{s}s" else if s < 3600 then s!"{s / 60}m" else s!"{s / 3600}h"
 
-/-- `swarm compute`'s lines for a machine (sw-compute.md §4). -/
+/-- `swarm compute`'s lines for a machine (sw-compute.md §4, sw-compute-backfill.md §3.1). -/
 def render (name : String) (l : Ls) (now : Int) : List String :=
   let cc := (l.claims.map (·.cores)).sum
   let cm := (l.claims.map (·.mem_kb)).sum
+  let m := l.model now
+  let resC := if l.res_cores > 0 then s!"{l.res_cores} reserved, " else ""
+  let resM := if l.res_mem_kb > 0 then s!"{gi l.res_mem_kb}G reserved, " else ""
   if l.off && l.claims.isEmpty && l.queue.isEmpty then [s!"{name}: off"] else
-  [s!"{name}: {if l.off then "off, " else ""}{cc} of {l.cap_cores} cores claimed (cap {l.cap_cores} of {l.ncpu}, {fixed l.busy 1} busy), " ++
-    s!"{gi cm} of {gi l.cap_mem_kb}G claimed ({gi l.avail_kb}G available)"] ++
-  l.claims.map (fun c => s!"  {c.who}   {c.cores} cores  {gi c.mem_kb}G  {span (now - c.start)}  {c.cmd}") ++
-  l.queue.map fun q => s!"  waiting: {q.who} {q.cores} cores {gi q.mem_kb}G {span (now - q.first)}"
+  [s!"{name}: {if l.off then "off, " else ""}{cc} of {Admit.limC m} cores claimed (cap {l.cap_cores} of {l.ncpu}, {resC}{fixed l.busy 1} busy), " ++
+    s!"{gi cm} of {gi (Admit.limM m)}G claimed ({resM}{gi l.avail_kb}G available)"] ++
+  l.claims.map (fun c => s!"  {c.who}   {c.cores} cores  {gi c.mem_kb}G  {span (now - c.start)}{c.est.elim "" fun e => s!" of ~{span e}"}  {c.cmd}") ++
+  l.queue.map fun q =>
+    s!"  waiting: {q.who} {q.cores.elim "whole machine" fun c => s!"{c} cores {gi q.mem_kb}G"} {span (now - q.first)}" ++
+      (match l.whyHeld now q with | [] => "" | w => ", " ++ ", ".intercalate w)
 
 /-- An integer as JSON. -/
 def jint (i : Int) : Json := .num (Lean.JsonNumber.fromInt i)
@@ -248,14 +361,17 @@ def jint (i : Int) : Json := .num (Lean.JsonNumber.fromInt i)
 def jfloat (f : Float) : Json :=
   if f == f.floor && f.abs < 1e15 then jint f.toInt64.toInt else Lean.toJson f
 
-/-- A machine's `ls` as JSON. -/
-def Ls.json (l : Ls) : Json :=
+/-- A machine's `ls` as JSON (sw-compute-backfill.md §3.2); `now` is for `held`. -/
+def Ls.json (l : Ls) (now : Int) : Json :=
+  let m := l.model now
   Json.mkObj [("ncpu", jint l.ncpu), ("busy", jfloat l.busy), ("total_kb", jint l.total_kb), ("avail_kb", jint l.avail_kb),
     ("cap_cores", jint l.cap_cores), ("cap_mem_kb", jint l.cap_mem_kb), ("off", .bool l.off),
+    ("reserve_cores", jint l.res_cores), ("reserve_mem_kb", jint l.res_mem_kb),
+    ("limit_cores", jint (Admit.limC m)), ("limit_mem_kb", jint (Admit.limM m)),
     ("claims", .arr (l.claims.toArray.map fun c => Json.mkObj [("cores", jint c.cores), ("mem_kb", jint c.mem_kb),
-      ("holder", .str c.holder), ("start", jint c.start), ("who", .str c.who), ("cmd", .str c.cmd)])),
-    ("queue", .arr (l.queue.toArray.map fun q => Json.mkObj [("first", jint q.first), ("cores", jint q.cores),
-      ("mem_kb", jint q.mem_kb), ("who", .str q.who)]))]
-
+      ("holder", .str c.holder), ("start", jint c.start), ("est_s", c.est.elim .null jint), ("who", .str c.who), ("cmd", .str c.cmd)])),
+    ("queue", .arr (l.queue.toArray.map fun q => Json.mkObj [("first", jint q.first), ("cores", jint (q.cores.getD l.ncpu)),
+      ("mem_kb", jint q.mem_kb), ("who", .str q.who), ("exclusive", .bool q.cores.isNone),
+      ("held", .bool !(l.whyHeld now q).isEmpty)]))]
 
 end Claims

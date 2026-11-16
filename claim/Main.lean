@@ -32,12 +32,12 @@ def split (valued : List String) : List String → List String × List (String �
     else if x.startsWith "--" then .error s!"unknown option {x}"
     else split valued rest (x :: p, f)
 
-/-- `claim run [--cores N|all] [--mem G] [--who NAME] -- cmd…`. -/
+/-- `claim run [--cores N|all] [--mem G] [--est S] [--who NAME] -- cmd…`. -/
 def runCmd (args : List String) : IO UInt32 := do
   let (opts, cmd) := (args.takeWhile (· != "--"), (args.dropWhile (· != "--")).drop 1)
   let die (e : String) : IO UInt32 := do IO.eprintln s!"claim: {e}"; return 1
-  if cmd.isEmpty then return ← die "usage: claim run [--cores N|all] [--mem G] [--who NAME] -- <cmd…>"
-  let (pos, fl) ← match split ["--cores", "--mem", "--who"] opts ([], []) with
+  if cmd.isEmpty then return ← die "usage: claim run [--cores N|all] [--mem G] [--est S] [--who NAME] -- <cmd…>"
+  let (pos, fl) ← match split ["--cores", "--mem", "--est", "--who"] opts ([], []) with
     | .ok r => pure r
     | .error e => return ← die e
   unless pos.isEmpty do return ← die s!"unexpected {pos.head!} before --"
@@ -47,11 +47,17 @@ def runCmd (args : List String) : IO UInt32 := do
       | some n => if n ≥ 1 then pure (toString n) else return ← die s!"--cores: not a count: {c}"
       | none => return ← die s!"--cores: not a count: {c}"
     | _ => pure "2"
+  if cores == "all" && (fl.lookup "--mem").isSome then return ← die "--mem: not with --cores all (the available memory is claimed)"
+  let est ← match fl.lookup "--est" with
+    | some (some s) => match parseInt s with
+      | some n => if n ≥ 1 then pure (some n) else return ← die s!"--est: not a number of seconds: {s}"
+      | none => return ← die s!"--est: not a number of seconds: {s}"
+    | _ => pure none
   let mem_kb ← match fl.lookup "--mem" with
     | some (some g) => match parseFloat g with
       | some x => if x > 0 then pure (Int.ofNat (x * 1048576).floor.toUInt64.toNat) else return ← die s!"--mem: not a size in G: {g}"
       | none => return ← die s!"--mem: not a size in G: {g}"
-    | _ => pure 2097152
+    | _ => pure (if cores == "all" then 0 else 2097152)
   let user := (← IO.getEnv "USER").getD "human"
   let who := match fl.lookup "--who" with | some (some w) => w | _ => user
   let pid := (← IO.Process.getPID).toNat
@@ -60,12 +66,12 @@ def runCmd (args : List String) : IO UInt32 := do
   let line := " ".intercalate cmd
   let ask : Ask := {
     prog := "claim", capHint := "claim cap`/`on", cands := [none], usable := [none], stateOf := fun _ => "connected",
-    id := id, cores := cores, mem_kb := mem_kb, who := who, cmd := line, pid := pid, pollMs := poll }
-  let some (_, got) ← acquire host ask | return 255
+    id := id, cores := cores, mem_kb := mem_kb, est := est, who := who, cmd := line, pid := pid, pollMs := poll }
+  let some (_, got, gotMem) ← acquire host ask | return 255
   let cs := toString got
-  let env := (jobEnv cs mem_kb (← IO.getEnv "NIX_CONFIG")).map fun (k, v) => (k, some v)
+  let env := (jobEnv cs gotMem (← IO.getEnv "NIX_CONFIG")).map fun (k, v) => (k, some v)
   let rc ← try
-      let child ← IO.Process.spawn { cmd := cmd.head!, args := cmd.tail.toArray, env := env.toArray }
+      let child ← IO.Process.spawn { cmd := "sh", args := (#["-c", LOWPRIO_ARGV, "sh"] ++ cmd.toArray), env := env.toArray }
       pure (← child.wait)
     catch e => IO.eprintln s!"claim: {e}"; pure 127
   release host none id

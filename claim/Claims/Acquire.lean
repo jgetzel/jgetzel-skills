@@ -14,20 +14,22 @@ structure Ask where
   usable : List (Option String)
   stateOf : Option String → String
   id : String
-  /-- a count or `all` -/
+  /-- a count or `all` (the whole machine, alone; `mem_kb` is then ignored) -/
   cores : String
   mem_kb : Int
+  /-- the expected wall time (s): what lets the request start before an older waiter (§2.2) -/
+  est : Option Int := none
   who : String
   cmd : String
   /-- this process's pid, the holder of a claim here -/
   pid : Int
   pollMs : Nat
 
-/-- Claims on one of `a.usable` and waits for room: the machine and the cores granted, or none (after saying why) when
-nothing can ever run it. The claims on the machines not chosen are released. -/
-def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Option String × Int)) := do
+/-- Claims on one of `a.usable` and waits for room: the machine, the cores and the memory granted, or none (after saying why)
+when nothing can ever run it. The claims on the machines not chosen are released. -/
+def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Option String × Int × Int)) := do
   let nameOf (c : Option String) := c.getD "here"
-  let mut won : Option (Option String × Int) := none
+  let mut won : Option (Option String × Int × Int) := none
   let mut first := true
   let mut told := false
   repeat
@@ -36,9 +38,9 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
     for c in a.usable do
       if won.isSome then break
       let holder := if c.isNone then s!"p{a.pid}" else "t"
-      let r := parseTry ((← call h c ["try", a.id, a.cores, toString a.mem_kb, holder, a.who, a.cmd]).getD "")
+      let r := parseTry ((← call h c ["try", a.id, a.cores, toString a.mem_kb, (a.est.elim "-" toString), holder, a.who, a.cmd]).getD "")
       match r with
-      | .ok n => won := some (c, n)
+      | .ok n g => won := some (c, n, g)
       | .gone => gone := true
       | x => seen := seen ++ [(c, x)]
     if won.isSome then break
@@ -49,7 +51,9 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
       for c in a.usable do release h c a.id
       h.err (s!"{a.prog}: nothing can run this job: " ++ "; ".intercalate (a.cands.map fun c =>
         s!"{nameOf c}: " ++ match a.stateOf c, (seen.lookup c) with
-          | "connected", some (.never x y) => s!"needs more than the cap ({x} cores, {gi y}G)"
+          | "connected", some (.never x y) =>
+            if a.cores == "all" then s!"needs the whole machine, and the cap is lower ({x} cores, {gi y}G)"
+            else s!"needs more than the cap ({x} cores, {gi y}G)"
           | "connected", some .off => "off"
           | "connected", _ => "unreachable"
           | s, _ => s) ++ s!". Lower --cores/--mem, or `{a.capHint}`.")
@@ -60,9 +64,9 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
         | .wait fc fm ah => s!"{fc} cores, {gi fm}G free, {ah} ahead"
         | _ => "no room"))
     h.sleep a.pollMs
-  let some (chosen, got) := won | return none
+  let some (chosen, got, mem) := won | return none
   for c in a.usable do if c != chosen then release h c a.id
-  return some (chosen, got)
+  return some (chosen, got, mem)
 
 /-- The environment of a job that holds `cs` cores and `mem_kb`, on top of `nixConfig` (NIX_CONFIG as it is). -/
 def jobEnv (cs : String) (mem_kb : Int) (nixConfig : Option String) : List (String × String) :=

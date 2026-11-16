@@ -12,9 +12,27 @@ open Lean (Json toJson)
 def scr (t : T) (st : String) (args : List String) : IO R :=
   t.exec (["sh", "-c", Claims.SCRIPT, "sh"] ++ args) { env := [("XDG_STATE_HOME", some st)] }
 
-/-- `try` of `cores` and 1 MiB as holder `holder`, its one-line answer. -/
+/-- `try` of `cores` and 1 MiB, no estimate, as holder `holder`, its one-line answer. -/
 def try_ (t : T) (st id cores : String) (holder := "t") : IO String :=
-  return strip (← scr t st ["try", id, cores, "1024", holder, "w", "cmd"]).stdout
+  return strip (← scr t st ["try", id, cores, "1024", "-", holder, "w", "cmd"]).stdout
+
+/-- Runs an App action. -/
+def app (act : App α) : IO α := do
+  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  | .ok a => pure a
+  | .error e => fail s!"exit {e.code}"
+
+/-- Records `run` rows of these walls for `cmd` in the history. -/
+def recordRuns (cmd : String) (ws : List Int) (source := "run") : IO Unit := do
+  for w in ws do
+    discard <| app (SwarmLean.Cost.record { ts := 1, machine := "elsewhere", repo := "repo", agent := "a", source, cmd, wall_s := w, peak_kb := 0 } : App Bool)
+
+/-- The history's rows (key, source, wall_s, machine) of a key. -/
+def costRows (key : String) : IO (List (String × String × Int × String)) := do
+  let h ← Sqlite.Conn.open (← app SwarmLean.Cost.path) true
+  let rs ← h.query s!"select key,source,wall_s,machine from cmd where key='{key}' order by id"
+  return rs.toList.map fun r => (SwarmLean.Cost.vs (r.getD 0 .null), SwarmLean.Cost.vs (r.getD 1 .null),
+    SwarmLean.Cost.vi (r.getD 2 .null), SwarmLean.Cost.vs (r.getD 3 .null))
 
 /-- The state dir `swarm run` and the script share in these tests. -/
 def state (t : T) : String := t.d ++ "/.state"
@@ -148,6 +166,61 @@ def test_run_claim_is_gone_after_a_killed_job (t : T) : IO Unit := do
   discard <| t.exec ["kill", "-9", j]
   eq (← claimsHere t) 0
 
+def test_run_estimate_into_the_claim (t : T) : IO Unit := do
+  -- 12 `run` rows of 1..12 s: the 90th percentile is 11; a `swarm` row of 1000 s in the window does not count
+  let cmd := "cat $XDG_STATE_HOME/swarm-compute/claims/*"
+  recordRuns cmd ((List.range' 1 12).map Int.ofNat)
+  recordRuns cmd [1000] "swarm"
+  let r ← t.sw "b" ["run", "--", cmd]
+  has r.stdout " ~11 "
+  has r.stderr ", ~11s ("
+  -- no history, no estimate
+  let r ← t.sw "b" ["run", "--", "cut -d' ' -f5 $XDG_STATE_HOME/swarm-compute/claims/*"]
+  eq (strip r.stdout |> splitlines |>.head!) "b"
+  hasnt r.stderr ", ~"
+
+def test_run_all_is_the_whole_machine (t : T) : IO Unit := do
+  let r ← t.sw "b" ["run", "--cores", "all", "--", "echo $SWARM_CORES $SWARM_MEM_KB"]
+  has r.stdout "8 16777216"
+  has r.stderr "claiming the whole machine"
+  eq (← t.sw "b" ["run", "--cores", "all", "--mem", "1", "--", "true"] { ok := false }).code 1
+  -- under a cap below the machine it is refused, and the message says so
+  discard <| t.sw "b" ["compute", "cap", "here", "--cores", "4"]
+  let r ← t.sw "b" ["run", "--cores", "all", "--", "true"] { ok := false }
+  eq r.code 255; has r.stderr "needs the whole machine, and the cap is lower (4 cores"
+
+def test_run_lowest_priority (t : T) : IO Unit := do
+  has (← t.sw "b" ["run", "--", "echo nice=$(nice)"]).stdout "nice=19"
+  if (← t.exec ["ionice", "-c3", "true"]).code == 0 then
+    has (← t.sw "b" ["run", "--", "ionice -p $$"]).stdout "idle"
+  discard <| fakeRemote t
+  has (← t.sw "b" ["run", "--on", "laptop", "--", "echo nice=$(nice)"]).stdout "nice=19"
+
+def test_run_records_every_job (t : T) : IO Unit := do
+  discard <| t.sw "b" ["run", "--", "true"]
+  let rows ← costRows "true"
+  eq rows.length 1
+  let (k, src, w, _) := rows.head!
+  eq k "true"; eq src "run"; eq (decide (w < 60)) true
+  -- a remote job with a prefix is filed under the user's command
+  discard <| fakeRemote t
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"prefix": "env X=1"}}).compress
+  discard <| t.sw "b" ["run", "--on", "laptop", "--", "echo hi"]
+  let rows ← costRows "echo hi"
+  eq rows.length 1
+  eq (rows.head!.2.1) "run"
+
+def test_compute_reserve_and_the_one_machine_view (t : T) : IO Unit := do
+  discard <| t.sw "b" ["compute", "reserve", "here", "3"]
+  let j ← parse (← t.sw "b" ["compute", "--json", "here"]).stdout
+  eq ((j.f "here").f "reserve_cores") (3 : Int); eq ((j.f "here").f "limit_cores") (5 : Int)
+  has (← t.sw "b" ["compute", "here"]).stdout "0 of 5 cores claimed (cap 8 of 8, 3 reserved, 0.0 busy)"
+  has (← t.sw "b" ["compute"]).stdout "3 reserved"
+  discard <| t.sw "b" ["compute", "reserve", "here", "0"]
+  hasnt (← t.sw "b" ["compute", "here"]).stdout "reserved"
+  eq (← t.sw "b" ["compute", "reserve", "here", "x"] { ok := false }).code 1
+
 def tests : List Case := [
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),
@@ -155,6 +228,11 @@ def tests : List Case := [
   ("test_run_a_machine_gone_is_retried", test_run_a_machine_gone_is_retried),
   ("test_run_waits_and_runs_when_a_claim_is_dropped", test_run_waits_and_runs_when_a_claim_is_dropped),
   ("test_run_nothing_can_fit_is_255", test_run_nothing_can_fit_is_255),
-  ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job)]
+  ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job),
+  ("test_run_estimate_into_the_claim", test_run_estimate_into_the_claim),
+  ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
+  ("test_run_lowest_priority", test_run_lowest_priority),
+  ("test_run_records_every_job", test_run_records_every_job),
+  ("test_compute_reserve_and_the_one_machine_view", test_compute_reserve_and_the_one_machine_view)]
 
 end SwarmLean.Tests.Cli.Compute
