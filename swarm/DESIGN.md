@@ -205,9 +205,9 @@ Added 2026-11-07, after the first live run (sr-* on this repo, jk_ledger next):
    is true at the moment they decide (a machine note, a conflict notice), not
    by slots, queues or timers. `swarm heavy` is removed, and so is the heavy-word list. Since 2026-11-14 a job started
    with `swarm run` is the exception: it claims sized cores and memory on a machine and waits for room
-   ([research/sw-compute.md](research/sw-compute.md)); a Bash command that is not `swarm run` is still never denied.
+   ([claim/research/sw-compute.md](../claim/research/sw-compute.md)); a Bash command that is not `swarm run` is still never denied.
    A claim may start past a waiting older one when its history says it ends before that one can start
-   ([research/sw-compute-backfill.md](research/sw-compute-backfill.md)); `--cores all` claims the whole machine alone,
+   ([claim/research/sw-compute-backfill.md](../claim/research/sw-compute-backfill.md)); `--cores all` claims the whole machine alone,
    for a benchmark; the user's reservation (`swarm compute reserve`) keeps part of a machine off the jobs for now; jobs
    run at the lowest CPU and I/O priority (not `nix build`'s daemon builds).
 7. **No time windows.** The 60-minute touch window is gone: a conflict is a merge that fails now, and a lock is freed when

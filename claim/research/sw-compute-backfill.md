@@ -699,7 +699,7 @@ swarm's `Tests/Compute.lean` and `Tests/Cost.lean`:
 - `recordSql` keeps a 5 s `run` row and drops a 5 s `swarm` row; 25 rows of one key all stay (no pruning; the
   pruning cases change accordingly).
 
-`herdr/rail-test.mjs`: `splitOf` with `limit_cores`/`limit_mem_kb`; `whyOf` of a held and an exclusive waiter.
+`swarm/herdr/rail-test.mjs`: `splitOf` with `limit_cores`/`limit_mem_kb`; `whyOf` of a held and an exclusive waiter.
 
 ## 9. Docs and other places to change
 
@@ -709,7 +709,7 @@ swarm's `Tests/Compute.lean` and `Tests/Cost.lean`:
   history says they end before it can start; `--cores all` is exclusive; the user's reservation; jobs at the lowest
   priority, `nix build`'s daemon not included. "What's built": compute claims are the `claim` tool, which swarm uses;
   it knows nothing of swarms.
-- `SKILL.md` item 6: `claim` (and `swarm compute`) `reserve <machine|here> <cores> [--mem G]`, `reserve … 0` lifts it;
+- `swarm/SKILL.md` item 6: `claim` (and `swarm compute`) `reserve <machine|here> <cores> [--mem G]`, `reserve … 0` lifts it;
   cap is the standing limit, reserve the temporary one; `--cores all` for a benchmark that needs the machine alone.
 - `brief.md` heavy work: jobs run at the lowest priority; a job with history may start before older waiters when it
   will end before they can start (nothing to do); `--cores all` only for a benchmark.
@@ -717,7 +717,7 @@ swarm's `Tests/Compute.lean` and `Tests/Cost.lean`:
   estimate; `swarm cost` and the note include short jobs.
 - `OpsHelp.lean`: `helpRun` (the estimate, `all`, the priority), `helpCompute` (`reserve`, a machine argument).
   `claim -h` and each subcommand's `-h` are the tool's docs besides this file.
-- `research/sw-compute-view.md` and `herdr/mods/rw-rail/tree.js`: `splitOf` uses `limit_cores ?? cap_cores` (and
+- `swarm/research/sw-compute-view.md` and `swarm/herdr/mods/rw-rail/tree.js`: `splitOf` uses `limit_cores ?? cap_cores` (and
   memory) where it uses the cap for free room, so the panel's free matches admission under a reservation; `whyOf`
   says `held by the reservation` for a held sized waiter over the limit, `held by unclaimed use` for one within it, and the exclusive reasons (§3.1) for a held exclusive one, and
   `waits for an empty machine` for an exclusive one that is not held. The panel's reserve control is not in this step.
