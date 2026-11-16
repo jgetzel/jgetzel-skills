@@ -10,9 +10,9 @@ open Sqlite (Val)
 
 variable {m : Type → Type} [Monad m]
 
-/-- Rows kept per (machine, repo, key). -/
-def KEEP : Nat := 20
-/-- A command is recorded when it ran this long (s)... -/
+/-- The newest rows of a command that `Compute.history`, `Cost.predict` and `swarm cost` read; every row is kept. -/
+def WINDOW : Nat := 50
+/-- A command of a source but `run` is recorded when it ran this long (s)... -/
 def MIN_WALL : Int := 60
 /-- ... or peaked this high (KiB). -/
 def MIN_PEAK_KB : Int := 1048576
@@ -22,6 +22,7 @@ def SCHEMA : String := "
 create table if not exists cmd(id integer primary key, ts int, machine text, repo text, agent text, source text,
   cmd text, key text, wall_s int, cpu_s int, peak_kb int, exact int);
 create index if not exists cmd_key on cmd(machine, repo, key, id);
+create index if not exists cmd_rk on cmd(repo, key, id);
 "
 
 /-- The history file: $XDG_STATE_HOME (else ~/.local/state)/cmd-cost/history.db. -/
@@ -183,16 +184,13 @@ structure Rec where
   peak_kb : Int
   exact : Int := 0
 
-/-- cost.record's statements: none when the command was short and small; else the insert and the pruning. -/
+/-- cost.record's statement: none when the command was short and small and not a `swarm run` job (those are all kept). -/
 def recordSql (r : Rec) : Option (List (String × List Val)) :=
-  if !(r.wall_s ≥ MIN_WALL || r.peak_kb ≥ MIN_PEAK_KB) then none else
+  if !(r.source == "run" || r.wall_s ≥ MIN_WALL || r.peak_kb ≥ MIN_PEAK_KB) then none else
   let k := r.key.getD (key r.cmd)
   some [("insert into cmd(ts,machine,repo,agent,source,cmd,key,wall_s,cpu_s,peak_kb,exact) values(?,?,?,?,?,?,?,?,?,?,?)",
       [.int r.ts, .text r.machine, .text r.repo, .text r.agent, .text r.source, .text r.cmd, .text k, .int r.wall_s,
-       .int r.cpu_s, .int r.peak_kb, .int r.exact]),
-    ("delete from cmd where machine=? and repo=? and key=? and id not in (select id from cmd where machine=? and repo=? " ++
-      "and key=? order by id desc limit ?)", [.text r.machine, .text r.repo, .text k, .text r.machine, .text r.repo, .text k,
-      .int KEEP])]
+       .int r.cpu_s, .int r.peak_kb, .int r.exact])]
 
 /-- Writes a row to the history (cost.record); false when it was too cheap to keep. -/
 def record [Env m] [Sys m] (r : Rec) : m Bool := do
@@ -221,8 +219,8 @@ def predict [Env m] [Sys m] [Git m] (cmd : String) (cwd : Option String) : m (Op
   if !(← exists?) then return none
   let some repo ← repoName cwd | return none
   let k := key cmd
-  let rows := ((← Sys.sqlAt (← path) SCHEMA [("select wall_s,peak_kb from cmd where machine=? and repo=? and key=?",
-    [.text (← Sys.hostname), .text repo, .text k])]).headD #[]).toList
+  let rows := ((← Sys.sqlAt (← path) SCHEMA [("select wall_s,peak_kb from cmd where machine=? and repo=? and key=? order by id desc limit ?",
+    [.text (← Sys.hostname), .text repo, .text k, .int WINDOW])]).headD #[]).toList
   if rows.isEmpty then return none
   return some { n := rows.length, wall_s := median (rows.map fun r => vi (r.getD 0 .null)),
                 peak_kb := median (rows.map fun r => vi (r.getD 1 .null)), key := k }

@@ -12,3 +12,17 @@ open SwarmLean Compute
 #guard size [(100, 101, 1000, "swarm")] == some (2, 1250)
 #guard size [(100, 900, 1000, "run")] == some (2, 1250)
 #guard size [(100, 900, 4000, "run"), (100, 0, 100, "swarm")] == some (2, 5000)
+
+/-- `run` rows of these walls. -/
+def runs (ws : List Int) : List (Int × Int × Int × String) := ws.map fun w => (w, 0, 0, "run")
+-- the estimate: the nearest-rank 90th percentile of the `run` rows with a wall time; none without one
+#guard estimate [] == none
+#guard estimate [(0, 0, 0, "run")] == none
+#guard estimate [(100, 5, 5, "swarm"), (900, 0, 0, "repo")] == none
+#guard estimate (runs (List.range' 1 10)) == some 9
+#guard estimate (runs (List.range' 1 4)) == some 4
+#guard estimate (runs (List.range' 1 50)) == some 45
+#guard estimate (runs [7]) == some 7
+#guard estimate (runs [3, 1000, 2]) == some 1000
+-- unsorted, with a zero wall and a `swarm` row of 1000 s that do not count
+#guard estimate (runs (List.range' 1 12).reverse ++ [(1000, 0, 0, "swarm"), (0, 0, 0, "run")]) == some 11

@@ -39,8 +39,8 @@ def cost (a : Parsed) : m UInt32 := do
   let ws := a.strs "words"
   if ws.isEmpty then die "swarm cost \"<command>\" or swarm cost --top"
   let k := key (" ".intercalate ws)
-  let rows := ((← Sys.sqlAt p SCHEMA [("select wall_s,cpu_s,peak_kb from cmd where machine=? and repo=? and key=?",
-    [.text host, match repo with | some r => .text r | none => .null, .text k])]).headD #[]).toList
+  let rows := ((← Sys.sqlAt p SCHEMA [("select wall_s,cpu_s,peak_kb from cmd where machine=? and repo=? and key=? order by id desc limit ?",
+    [.text host, match repo with | some r => .text r | none => .null, .text k, .int WINDOW])]).headD #[]).toList
   out ((summaryOf k (rows.map fun r => (vi (r.getD 0 .null), vi (r.getD 1 .null), vi (r.getD 2 .null)))).getD
     s!"no history for `{k}` here")
   return 0

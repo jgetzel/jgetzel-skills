@@ -33,12 +33,19 @@ def size (rows : List (Int × Int × Int × String)) : Option (Int × Int) :=
   let peak := rs.foldl (fun a r => max a r.2.2.1) 0
   some (cores, if peak ≤ 0 then DEFAULT_MEM_KB else (peak * 5 + 3) / 4)
 
-/-- The cmd-cost rows (wall_s, cpu_s, peak_kb) of this repo's command `line`, from any machine. -/
+/-- A request's expected wall time (s): the nearest-rank 90th percentile (the ⌈0.9 n⌉-th, 1-based, of the walls sorted
+ascending) of the `run` rows with a wall time; none without such a row. With under 10 rows that is the largest. -/
+def estimate (rows : List (Int × Int × Int × String)) : Option Int :=
+  let w := (rows.filter fun r => r.2.2.2 == "run" && r.1 > 0).map (·.1) |>.mergeSort (· ≤ ·)
+  if w.isEmpty then none else w[(9 * w.length + 9) / 10 - 1]?
+
+/-- The newest cmd-cost rows (wall_s, cpu_s, peak_kb, source) of this repo's command `line`, from any machine: the window
+(`Cost.WINDOW`) `size` and `estimate` read. -/
 def history {m : Type → Type} [Monad m] [Env m] [Sys m] [Git m] (line : String) : m (List (Int × Int × Int × String)) := do
   if !(← Cost.exists?) then return []
   let some repo ← Cost.repoName | return []
-  let rows := ((← Sys.sqlAt (← Cost.path) Cost.SCHEMA [("select wall_s,cpu_s,peak_kb,source from cmd where repo=? and key=?",
-    [.text repo, .text (Cost.key line)])]).headD #[]).toList
+  let rows := ((← Sys.sqlAt (← Cost.path) Cost.SCHEMA [("select wall_s,cpu_s,peak_kb,source from cmd where repo=? and key=? order by id desc limit ?",
+    [.text repo, .text (Cost.key line), .int Cost.WINDOW])]).headD #[]).toList
   return rows.map fun r => (Cost.vi (r.getD 0 .null), Cost.vi (r.getD 1 .null), Cost.vi (r.getD 2 .null), Cost.vs (r.getD 3 .null))
 
 end SwarmLean.Compute
