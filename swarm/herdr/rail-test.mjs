@@ -515,6 +515,14 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     "cores: claims fill the cap · memory: claims fill the cap"]);
   const full = computeOf({ here: { ncpu: 8, busy: 9, total_kb: 100, avail_kb: 90, cap_cores: 4, cap_mem_kb: 100, claims: [{ cores: 6, mem_kb: 1, start: 0 }], queue: [] } }, 0)[0];
   const sc = full.split.cores; assert.ok(sc.claimed + sc.unclaimed + sc.free <= sc.size && sc.free === 0, JSON.stringify(sc));
+  // a reservation (sw-compute-backfill.md §3): free is of limit_*, not the cap; a held sized waiter and an exclusive one say why
+  const res = computeOf({ here: { ncpu: 24, busy: 0, total_kb: 100, avail_kb: 100, cap_cores: 20, cap_mem_kb: 100, reserve_cores: 6, reserve_mem_kb: 0, limit_cores: 18, limit_mem_kb: 100,
+    claims: [{ cores: 4, mem_kb: 1, start: 0 }], queue: [{ first: 1, cores: 19, mem_kb: 1, who: "big", held: true, exclusive: false },
+      { first: 2, cores: 24, mem_kb: 0, who: "bench", held: true, exclusive: true }, { first: 3, cores: 24, mem_kb: 0, who: "alone", held: false, exclusive: true }] } }, 10)[0];
+  assert.deepEqual([res.reserve_cores, res.limit_cores, res.split.cores.free, res.split.cores.cap], [6, 18, 14, 18]);
+  assert.deepEqual(res.queue.map((q) => q.why), ["held by the reservation", "held: reserved, cap below the machine", "waits for an empty machine"]);
+  // without limit_* (an older swarm) the cap stands in
+  assert.equal(computeOf({ here: { ncpu: 8, busy: 0, total_kb: 100, avail_kb: 100, cap_cores: 4, cap_mem_kb: 100, claims: [], queue: [] } }, 0)[0].split.cores.free, 4);
   assert.deepEqual(computeOf(null, 0), []); assert.deepEqual(computeOf([1], 0), []);
   assert.deepEqual(capFields(ms[0]), { cores: "20", mem: "80" });
   assert.deepEqual(capFields(ms[1]), { cores: "8", mem: "all" });

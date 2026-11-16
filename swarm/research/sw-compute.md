@@ -1,5 +1,9 @@
 # sw-compute: sized claims on cores and memory, across machines and swarms
 
+> The code is the `claim` tool (`claim/`, a Lake package of its own; `swarm compute` is `claim`). Backfill past a waiting
+> head, `--cores all`, the user's reservation, jobs at the lowest priority and the admission model changed §1's grant
+> rule and §2's ops: [sw-compute-backfill.md](sw-compute-backfill.md).
+
 Decided with the user 2026-11-14. Replaces DESIGN decision 6's "no slots, no queues" for jobs started through
 `swarm run`; "never deny a Bash command" stays. `swarm heavy` failed because it counted jobs (two or three slots)
 instead of sizing them. Here every job claims a number of cores and an amount of memory.
@@ -28,6 +32,7 @@ do the sync, wait, sizing and recording).
   free_cores = min(cap_cores - claimed_cores, ncpu - claimed_cores - outside)
   free_mem   = min(cap_mem - claimed_mem, available_mem)
   grant iff cores <= free_cores and mem_kb <= free_mem and no older live ticket on this machine
+           (now: or the request's estimated end is no later than the oldest waiter's estimated start: sw-compute-backfill.md §2.2)
   ```
 
   The ledger covers jobs that just started and have not ramped up; the measurement covers the user's own work and
@@ -55,13 +60,14 @@ macOS.
 
 | Op | Does | Prints |
 |---|---|---|
-| `try <id> <cores\|all> <mem_kb> <holder> <who> <cmd>` | admission (§1); writes the claim and removes the ticket, or writes/touches the ticket | `ok <cores>`, `wait <free_cores> <free_mem_kb> <ahead>`, `never <cap_cores> <cap_mem_kb>` (larger than the cap), or `off` |
+| `try <id> <cores\|all> <mem_kb> <est_s\|-> <holder> <who> <cmd>` | admission (§1, with backfill, sw-compute-backfill.md §2-§5); writes the claim and removes the ticket, or rewrites the ticket | `ok <cores> <mem_kb>`, `wait <free_cores> <free_mem_kb> <ahead>`, `never <cap_cores> <cap_mem_kb>` (larger than the cap), or `off` |
 | `drop <id>` | removes the claim and the ticket | |
-| `ls` | | `ncpu busy total_kb avail_kb cap_cores cap_mem_kb off`, then `c <claim line>` and `q <ticket line>` rows |
+| `ls` | | `ncpu busy total_kb avail_kb cap_cores cap_mem_kb off reserve_cores reserve_mem_kb`, then `c <claim line>` and `q <ticket line>` rows |
 | `cap <cores\|-> <mem_kb\|->` | writes `cap` | |
+| `reserve <cores> <mem_kb>` | writes `reserve` (`0 0` removes it): the user's reservation | |
 | `off`, `on` | makes or removes `off` | |
 
-`all` is the cap. `<holder>` is `p<pid>` or `t`, which the script turns into `t<now + 900>`.
+`all` is the whole machine, alone (sw-compute-backfill.md §2.4); it was the cap. `<holder>` is `p<pid>` or `t`, which the script turns into `t<now + 900>`.
 
 ## 3. `swarm run`
 
@@ -141,8 +147,10 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 ## 7. Not in this step
 
 - Enforcement (cgroup quotas), §1.
-- Priorities, fairness between swarms, preemption: the point at which a scheduler daemon or Nomad is the answer.
+- Fairness between swarms, preemption: the point at which a scheduler daemon or Nomad is the answer. Backfill is in, still
+  with no daemon (sw-compute-backfill.md §2), and jobs run at the lowest CPU and I/O priority (§4 there).
 - The machine note. (The Herdr panels showing claims: research/sw-compute-view.md, board #189.)
-- A proof. Admission is decided by the script, so "claims never exceed the cap" is tested (§5), not proved.
+- A proof. Admission is decided by the script, so "claims never exceed the cap" is tested (§5), not proved; the model
+  and the theorems, and how the script is tied to them, are sw-compute-backfill.md §6-§7.
 - What the job actually used against what it claimed, in the footer.
 - The auto-spawner reading `wait_s`.
