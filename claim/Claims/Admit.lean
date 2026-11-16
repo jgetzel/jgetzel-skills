@@ -60,8 +60,12 @@ def whole (m : Machine) : Bool := capC m ≥ m.ncpu && capM m ≥ m.total
 /-- Nothing but claims keeps an exclusive job off: no reservation, no unclaimed use past the noise floor. -/
 def quiet (m : Machine) : Bool := m.res == (0, 0) && outside m == 0
 
+/-- Held: it would not fit even with every live claim ended, so it is neither ahead of anyone nor head (§2.2). A sized
+ticket: past `freeC m + cc m = min (limC m) (ncpu - outside m)` or `freeM m + cm m = min (limM m) (avail + cm m)`, so the
+reservation, a cap, unclaimed use or memory keeps it out. An exclusive one: the reservation, unclaimed use or a cap below
+the machine (§2.4). -/
 def held (m : Machine) (t : Ticket) : Bool := match t.cores with
-  | some c => c > limC m || t.mem > limM m
+  | some c => c > freeC m + cc m || t.mem > freeM m + cm m
   | none => !whole m || !quiet m
 
 /-- (first, id) order; String's `<` is bytewise on these ids, as LC_ALL=C. The one place the queue order is set. -/

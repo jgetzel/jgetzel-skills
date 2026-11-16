@@ -59,7 +59,8 @@ vps             disconnected
   command in the monospace font, truncated. Then its waiters, oldest first: a `waiting` chip, who, cores, memory, how
   long, and why: for each resource it is short of, `claims fill the cap` (it asks for more than cap - claimed) or
   `unclaimed use takes the room` (it would fit under the cap); if it is short of neither, `behind <older waiter>`, or
-  `fits: starts on its next try` for the oldest. A waiter the reservation holds out says `held by the reservation`; a
+  `fits: starts on its next try` for the oldest. A waiter the reservation holds out says `held by the reservation`, one that unclaimed use holds out
+  (it would not fit even with every claim ended) `held by unclaimed use`; a
   `--cores all` one says `held: reserved, unclaimed use, cap below the machine` (the reasons that apply) or, when only
   claims stand in its way, `waits for an empty machine`. The panel has no reserve control yet.
 - An `off` machine still lists its claims: running jobs finish.

@@ -521,6 +521,9 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
       { first: 2, cores: 24, mem_kb: 0, who: "bench", held: true, exclusive: true }, { first: 3, cores: 24, mem_kb: 0, who: "alone", held: false, exclusive: true }] } }, 10)[0];
   assert.deepEqual([res.reserve_cores, res.limit_cores, res.split.cores.free, res.split.cores.cap], [6, 18, 14, 18]);
   assert.deepEqual(res.queue.map((q) => q.why), ["held by the reservation", "held: reserved, cap below the machine", "waits for an empty machine"]);
+  // held within the limit: unclaimed use keeps it out
+  assert.equal(computeOf({ here: { ncpu: 24, busy: 15, total_kb: 64, avail_kb: 23, cap_cores: 24, cap_mem_kb: 64, limit_cores: 24, limit_mem_kb: 64,
+    claims: [{ cores: 8, mem_kb: 4, start: 0 }], queue: [{ first: 1, cores: 8, mem_kb: 30, who: "old", held: true, exclusive: false }] } }, 10)[0].queue[0].why, "held by unclaimed use");
   // without limit_* (an older swarm) the cap stands in
   assert.equal(computeOf({ here: { ncpu: 8, busy: 0, total_kb: 100, avail_kb: 100, cap_cores: 4, cap_mem_kb: 100, claims: [], queue: [] } }, 0)[0].split.cores.free, 4);
   assert.deepEqual(computeOf(null, 0), []); assert.deepEqual(computeOf([1], 0), []);

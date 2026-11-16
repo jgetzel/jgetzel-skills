@@ -116,3 +116,23 @@ open Claims.Admit in
 #guard ((after ex (req (some 2) (some 50))).claims.map (·.est)) == [some 90, some 50]
 open Claims.Admit in
 #guard ((after ex (req (some 2) (some 200))).tickets.map (·.id)) == ["h", "r"]
+
+-- the desktop (2026-11-15): 12 free cores, 23 GiB available. The oldest ticket asks 8 cores and 30 GiB, more than it could
+-- have with every claim ended (23 + 4 GiB), so it is held, and the 3-core 12 GiB request behind it runs
+open Claims.Admit in
+def desk : Machine :=
+  { ncpu := 24, total := 67108864, busy := 1500, avail := 24117248, cap := (none, none), res := (0, 0), off := false,
+    now := 1000000, claims := [⟨4, 2097152, 999400, some 1200⟩, ⟨4, 2097152, 999940, none⟩],
+    tickets := [⟨"old", 989140, some 8, 31457280⟩, ⟨"young", 989200, some 3, 12582912⟩] }
+open Claims.Admit in
+#guard held desk ⟨"old", 989140, some 8, 31457280⟩ && (freeC desk, freeM desk) == (12, 24117248)
+open Claims.Admit in
+#guard (decide desk ⟨"young", some 3, 12582912, none⟩).line == "ok 3 12582912"
+-- once 26 GiB are available it would fit with every claim ended: an ordinary head again, whose start the claim without an
+-- estimate leaves unknown, so nothing passes it
+open Claims.Admit in
+#guard !held { desk with avail := 27262976 } ⟨"old", 989140, some 8, 31457280⟩ &&
+  (decide { desk with avail := 27262976 } ⟨"young", some 3, 12582912, some 60⟩).line == "wait 12 27262976 1"
+-- the rendering says why: unclaimed use, not the reservation
+#guard ((parseLs "24 15.00 67108864 24117248 24 67108864 0 0 0\nc 4 2097152 t9999999 999400 ~1200 a x\nc 4 2097152 t9999999 999940 b y\nq 989140 8 31457280 old\n").map
+  (render "desktop" · 1000000 |>.getLast!)) == some "  waiting: old 8 cores 30.0G 3h, held by unclaimed use"

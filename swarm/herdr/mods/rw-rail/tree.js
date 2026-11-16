@@ -838,10 +838,10 @@ export function splitOf(m) {
   const mem = { claimed: cl(cm, m.total_kb), unclaimed: cl(mu, m.total_kb - cm), free: cl(fm, m.total_kb - cm - mu), size: m.total_kb, cap: lm, sum: cm };
   return { cores, mem };
 }
-// Why the machine's waiter `i` (oldest first) waits: held by the reservation (a sized one over the room left, an
-// exclusive one for the reasons the CLI names, or for an empty machine when nothing holds it but claims); per resource it
-// is short of, the claims fill the cap or unclaimed use takes the room; short of neither, an older waiter goes first, or
-// it starts on its next try.
+// Why the machine's waiter `i` (oldest first) waits: held by the reservation or by unclaimed use (a sized one that would
+// not fit with every claim ended), an exclusive one for the reasons the CLI names or for an empty machine when nothing
+// holds it but claims; per resource it is short of, the claims fill the cap or unclaimed use takes the room; short of
+// neither, an older waiter goes first, or it starts on its next try.
 export function whyOf(m, i) {
   const q = m.queue[i], { cores, mem } = m.split ?? splitOf(m), why = [];
   if (m.off) return "the machine is off";
@@ -851,7 +851,8 @@ export function whyOf(m, i) {
       m.cap_cores < m.ncpu || m.cap_mem_kb < m.total_kb ? "cap below the machine" : ""].filter(Boolean);
     return rs.length ? `held: ${rs.join(", ")}` : "held";
   }
-  if (q.held) return "held by the reservation";
+  // held (sw-compute-backfill.md §2.2): it would not fit with every claim ended; over the limit it is the reservation
+  if (q.held) return q.cores > cores.cap || q.mem_kb > mem.cap ? "held by the reservation" : "held by unclaimed use";
   if (q.cores > cores.free) why.push(`cores: ${q.cores > cores.cap - cores.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
   if (q.mem_kb > mem.free) why.push(`memory: ${q.mem_kb > mem.cap - mem.sum ? "claims fill the cap" : "unclaimed use takes the room"}`);
   if (why.length) return why.join(" · ");

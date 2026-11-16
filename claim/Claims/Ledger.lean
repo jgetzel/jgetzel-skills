@@ -30,7 +30,7 @@ def ADMIT_AWK : String :=
 function mn(a, b) { return a < b ? a : b }
 function before(f1, i1, f2, i2) { return f1 < f2 || (f1 == f2 && (i1 \"\") < (i2 \"\")) }
 function endof(i) { return mx(now + 0, cs[i] + ce[i]) }
-function held(j) { return tx[j] ? (!whole || !quiet) : (tc[j] > limc + 0 || tm[j] > limm + 0) }
+function held(j) { return tx[j] ? (!whole || !quiet) : (tc[j] > fc + sc || tm[j] > fm + sm) }
 function fits(j, tau,  i, rc, rm) {
   if (tx[j]) { for (i = 1; i <= nc; i++) if (!he[i] || endof(i) > tau) return 0; return 1 }
   for (i = 1; i <= nc; i++) if (he[i] && endof(i) <= tau) { rc += cc_[i]; rm += cm_[i] }
@@ -327,7 +327,9 @@ def Ls.model (l : Ls) (now : Int) : Admit.Machine where
 def Ls.whyHeld (l : Ls) (now : Int) (q : Ticket) : List String :=
   let m := l.model now
   match q.cores with
-  | some c => if c > Admit.limC m || q.mem_kb > Admit.limM m then ["held by the reservation"] else []
+  | some c =>
+    if !Admit.held m ⟨"", q.first, q.cores, q.mem_kb⟩ then []
+    else if c > Admit.limC m || q.mem_kb > Admit.limM m then ["held by the reservation"] else ["held by unclaimed use"]
   | none =>
     let rs := (if m.res != (0, 0) then ["reserved"] else []) ++ (if Admit.outside m > 0 then ["unclaimed use"] else []) ++
       (if Admit.whole m then [] else ["cap below the machine"])
