@@ -7,6 +7,7 @@ lean=$here/../swarm/lean
 for ref in "$lean/.lake/build/bin/harness-retro" "$lean/.lake/nix"; do
   bin=$ref; [ "$ref" = "$lean/.lake/nix" ] && bin=$ref/bin/harness-retro
   [ -x "$bin" ] || continue
+  [ -e "$ref.stamp" ] && ref=$ref.stamp  # as swarm/swarm: BSD find -newer follows the nix link
   [ "$tool" = probe-guard ] || [ -z "$(cd "$lean" && find HarnessRetro HarnessRetroMain.lean SwarmLean -newer "$ref" 2>/dev/null | head -n 1)" ] ||
     echo "$tool: harness-retro is older than its sources; rebuild it with swarm/lean/build.sh" >&2
   exec "$bin" "$tool" "$@"

@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window } from "herdr";
-import { SECTIONS, addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, boardRows, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, overOf, peekWindow, showAll, showSwarm, sumFor, tagOf } from "./tree.js";
+import { SECTIONS, addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, boardRows, dur, line, machineMem, memoryOf, needsOf, nudgeArgs, openAsk, overOf, peekWindow, showAll, showSwarm, sumFor, tagOf } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -49,12 +49,7 @@ export default class AllSwarms extends View {
           if (s) over[key(w)] = s; else if (this.over[key(w)]) over[key(w)] = this.over[key(w)]; // a read that fails keeps the last
         } catch { if (this.over[key(w)]) over[key(w)] = this.over[key(w)]; }
       }
-      try {
-        const r = await exec("cat", ["/proc/meminfo"], {});
-        const kb = (k) => Number(r.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
-        const total = kb("MemTotal"), avail = kb("MemAvailable");
-        this.mem = r.code === 0 && total > 0 && avail >= 0 ? { used: total - avail, total } : null;
-      } catch { this.mem = null; }
+      this.mem = await machineMem(exec, null);
       this.over = over; this.loading = false; this.next = Date.now() + Math.max(POLL, 2 * (Date.now() - t0)); cx.notify();
     });
   }

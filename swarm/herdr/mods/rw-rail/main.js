@@ -11,7 +11,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
+import { AGENT, abbrev, machineMem, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark, look } from "./marks.js";
 
@@ -37,7 +37,7 @@ export default class Rail extends View {
     // Each agent's mark, turn and since when (ms), kept across restarts: terminals() leaves status_ms null.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     cx.timer.every(30000, (cx) => { this.save(); cx.notify(); }); // the rows' times
-    this.load = {}; // machine ("" here) -> { used, total } in kB, or null where /proc/meminfo can't be read
+    this.load = {}; // machine ("" here) -> { used, total } in kB, or null where it can't be read
     cx.timer.every(10000, (cx) => this.poll(cx));
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
@@ -165,13 +165,7 @@ export default class Rail extends View {
     if (this.loading) return;
     this.loading = true;
     cx.spawn(async (cx) => {
-      let v = null;
-      try {
-        const r = await exec("cat", ["/proc/meminfo"], { on });
-        const kb = (k) => Number(r.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
-        const total = kb("MemTotal"), avail = kb("MemAvailable");
-        if (r.code === 0 && total > 0 && avail >= 0) v = { used: total - avail, total };
-      } catch {}
+      const v = await machineMem(exec, on);
       this.loading = false;
       const was = this.load[on ?? ""];
       this.load[on ?? ""] = v;
