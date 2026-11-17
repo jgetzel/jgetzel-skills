@@ -354,6 +354,14 @@ export function since(mark, at, now) {
   return "";
 }
 
+// A pane header's state after its name: `since`'s words, "working" before them on a working terminal; the communicator's
+// header gives no time (its row is the user's channel), so a working communicator reads "working" alone.
+export function headState(mark, comms, at, now) {
+  if (!mark) return "";
+  const st = comms ? "" : since(mark, at, now);
+  return mark === "working" ? `working ${st}`.trim() : st;
+}
+
 // Stamps since when each agent shows its mark, in `changed` (address -> {m, turn, at}); true if it changed any.
 // Done and idle count as one (looking at a done agent makes it idle); a new turn restamps, so a turn the rail didn't
 // see while it wasn't shown can't leave an old time. `at(address)` is the app's own time for that change, if any.
@@ -1059,6 +1067,18 @@ export const addrOf = (hc, on) => (on && !hc.includes("/") ? `${on}/${hc}` : hc)
 export const tagOf = (comms) =>(comms ?? "").replace(/-?comms\d*$/, "");
 // What asks you across swarms: their summaries' needs that are an agent's (questions, prompts, hung).
 export const asksIn = (sums) => sums.flatMap((s) => (s.needs ?? []).filter((n) => ["question", "prompt", "hung"].includes(n.kind)));
+// A machine's memory as /proc/meminfo's two lines: Linux's file, or on macOS (no /proc) the same from sysctl and
+// vm_stat, counting free, inactive, speculative and purgeable pages as available, as `swarm` does (Machine.darwinMem).
+const MEMINFO = `if [ -r /proc/meminfo ]; then cat /proc/meminfo; else t=$(sysctl -n hw.memsize) && vm_stat | awk -v t="$t" '/page size of/{for(i=1;i<NF;i++)if($i=="of")p=$(i+1)} /^Pages (free|inactive|speculative|purgeable):/{n+=$NF} END{printf "MemTotal: %d kB\\nMemAvailable: %d kB\\n",t/1024,n*(p?p:4096)/1024}'; fi`;
+// { used, total } in kB on machine `on` (null: here), or null where it can't be read.
+export async function machineMem(exec, on) {
+  try {
+    const r = await exec("sh", ["-c", MEMINFO], { on });
+    const kb = (k) => Number(r.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
+    const total = kb("MemTotal"), avail = kb("MemAvailable");
+    return r.code === 0 && total > 0 && avail >= 0 ? { used: total - avail, total } : null;
+  } catch { return null; }
+}
 // This computer's memory in use (kB) split by swarm, then everything else: the swarms' process trees can't exceed it.
 export function memoryOf(sums, used) {
   const parts = sums.filter((s) => !s.on).map((s) => ({ tag: tagOf(s.comms), kb: s.rss_kb ?? 0 }));

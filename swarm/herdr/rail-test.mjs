@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf, headState } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -38,6 +38,13 @@ assert.deepEqual(rows.map((r) => [r.t.address, r.lines.join(""), r.mark, r.pane,
 const remote = rowsOf({ tabs: [{ id: "r", index: 1 }] }, [{ pane: "pr", tab: "r", terminal: "vps/t2" }], byAddr);
 assert.deepEqual(remote.map((r) => r.t.address), ["vps/t2", "vps/t3"]);
 assert.equal(markOf(T("x", { status: "error" }), false), "asks");
+// rw-pane's header state: the communicator's working header read "working false" (its time was `false`, not "")
+assert.equal(headState("working", true, 1, 400001), "working");
+assert.equal(headState("working", false, 1, 400001), "working");
+assert.equal(headState("idle", true, 1, 400001), "");
+assert.equal(headState("idle", false, 1, 400001), "idle 6m");
+assert.equal(headState("asks", false, null, 5), "asks you");
+assert.equal(headState(null, false, 1, 5), "");
 assert.equal(markOf(T("x", { status: "done" }), false), "done");
 assert.deepEqual([dur(30e3), dur(31 * 60e3), dur(3 * 3600e3), dur(50 * 3600e3)], ["<1m", "31m", "3h", "2d"]);
 

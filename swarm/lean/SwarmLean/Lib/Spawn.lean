@@ -3,6 +3,7 @@ import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Ci
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
+import SwarmLean.DbPath
 
 /-! watchd.lua's spawn: the reservation, the agent's worktree, its brief and settings, launch.sh, and undoing all of
 it when the launch fails (cmd_spawn, launch_agent). -/
@@ -12,15 +13,36 @@ open Agents
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
-/-- The db file (db.dbpath): $SWARM_DB, else swarm/swarm.db in the repo's git common dir. -/
+/-- The labels hc keeps on terminal `addr`: its Herdr space and the db it is the communicator of (agents.hc_info). -/
+def hcLabels (addr : String) : m (Option String × Option String) := do
+  let o ← Proc.output ["hc", "get", addr] none []
+  let j := match o with | some o => if o.code == 0 then (Lean.Json.parse o.stdout).toOption else none | none => none
+  let l := (j.bind fun j => (j.getObjVal? "labels").toOption).getD .null
+  return ((l.getObjValAs? String "herdr.space").toOption, (l.getObjValAs? String "swarm.comms").toOption)
+
+/-- The db file, or none (`DbPath.choose`): $SWARM_DB, else the repo's git common dir, else the db this terminal is the
+communicator of (its `swarm.comms` label), if that db is there. -/
+def dbPath? : m (Option String) := do
+  let envDb ← env "SWARM_DB"
+  if (py envDb).isSome then return DbPath.choose envDb none none
+  let git ← Git.git ["rev-parse", "--path-format=absolute", "--git-common-dir"] none
+  if (py (git.map strip)).isSome then return DbPath.choose none git none
+  let some h ← env "HC_TERMINAL_ID" | return none
+  let label := (← hcLabels h).2
+  let label ← match label with
+    | some p => pure (if (← Sys.kind p true) != .none then some p else none)
+    | none => pure none
+  return DbPath.choose none none label
+
+/-- The db file (db.dbpath): `dbPath?`, else die as the store's connect does (Real.dbPath, which names the swarms
+under the cwd). -/
 def dbPath : m String := do
-  if let some p ← env "SWARM_DB" then return p
-  match ← Git.git ["rev-parse", "--path-format=absolute", "--git-common-dir"] none with
-  | some dir => if strip dir != "" then return joinPath (joinPath (strip dir) "swarm") "swarm.db" else die "not in a git repo and SWARM_DB is unset"
+  match ← dbPath? with
+  | some p => return p
   | none => die "not in a git repo and SWARM_DB is unset"
 
-/-- The swarms on this machine (UI-SPEC.md, "New swarm CLI output" 2): one file per db, written by its running watchd,
-in $XDG_STATE_HOME (else ~/.local/state)/swarm/swarms. -/
+/-- The swarms on this machine (UI-SPEC.md, "New swarm CLI output" 2): one file per db, written by its watchd and by
+each join and spawn, in $XDG_STATE_HOME (else ~/.local/state)/swarm/swarms. -/
 def registryDir : m String := do
   let x ← match ← env "XDG_STATE_HOME" with | some x => pure x | none => pure (((← env "HOME").getD "") ++ "/.local/state")
   return x ++ "/swarm/swarms"
@@ -28,21 +50,67 @@ def registryDir : m String := do
 /-- Db `p`'s registry file: its path with `/` as `%`. -/
 def registryFile (p : String) : m String := return s!"{← registryDir}/{p.replace "/" "%"}.json"
 
+/-- The folder a swarm's commands run from: the repo of a default db (`DbPath.repoOf`), else the cwd's repo, else the
+cwd. -/
+def folderOf (db : String) : m String := do
+  if let some f := DbPath.repoOf db then return f
+  return (py ((← Git.git ["rev-parse", "--show-toplevel"] none).map strip)).getD (← Env.cwd)
+
 /-- The swarm's tag: its communicator's name without `-comms` (as the rail draws it). -/
 def tagOf (comms : String) : String :=
   let c := (comms.toList.reverse.dropWhile Char.isDigit).reverse
   let c := if String.ofList c |>.endsWith "comms" then c.take (c.length - 5) else c
   String.ofList (c.reverse.dropWhile (· == '-')).reverse
 
-/-- Each registered swarm whose watchd still runs, by folder; a dead watchd's file goes. -/
+/-- A registry entry's terminals: those of the agents that joined or were spawned into it. -/
+def regTerms (j : Lean.Json) : List String := ((Json.field j "terms").map Json.items |>.getD []).filterMap Json.str?
+
+/-- Registers this db's swarm (`registered`): `pid` a starting watchd's (none keeps the entry's), `term` a terminal
+that joined or was spawned into it, added to the entry's live ones (all kept when hc does not answer). -/
+def register (comms term : Option String) (pid : Option Int) : m Unit := do
+  let db ← dbPath
+  let reg ← registryFile db
+  let old := (← Fs.read reg).bind Json.decode
+  let up := ((← hcTerminals).map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none)
+  let mut terms := (old.map regTerms).getD [] |>.filter fun t => up.all (·.contains t)
+  if let some t := term then if !terms.contains t then terms := terms ++ [t]
+  let comms := comms.orElse fun _ => old.bind (Json.fstr · "comms")
+  let now ← Clock.now
+  let pid' := pid.orElse fun _ => old.bind (Json.fint · "pid")
+  let started := if pid.isSome then now else (old.bind (Json.fint · "started")).getD now
+  discard <| Sys.mkdirp (← registryDir)
+  discard <| Fs.write reg (Json.encode (Lean.Json.mkObj [("db", .str db), ("folder", .str (← folderOf db)),
+    ("tag", match comms with | some c => .str (tagOf c) | none => .null), ("comms", match comms with | some c => .str c | none => .null),
+    ("pid", match pid' with | some p => Json.int p | none => .null), ("started", Json.int started),
+    ("terms", .arr (terms.map Lean.Json.str).toArray)]))
+
+/-- An exiting watchd `pid`'s end of its registration: the entry keeps its terminals with no pid, or goes with none. -/
+def unregisterPid (pid : Int) : m Unit := do
+  let reg ← registryFile (← dbPath)
+  let some j := (← Fs.read reg).bind Json.decode | return
+  if Json.fint j "pid" != some pid then return
+  if (regTerms j).isEmpty then discard <| Sys.remove reg
+  else discard <| Fs.write reg (Json.encode (j.setObjVal! "pid" .null))
+
+/-- Each registered swarm whose watchd runs (`watchd` true) or, with none, that a live terminal joined or was spawned
+into (`watchd` false), by folder. An entry with neither goes; one hc can't judge (it does not answer) stays unlisted. -/
 def registered : m (List Lean.Json) := do
   let dir ← registryDir
   let mut out : List Lean.Json := []
+  let mut up : Option (Option (List String)) := none  -- hc ls, read once and only if needed
   for f in ((← Fs.list dir).getD []).filter (·.endsWith ".json") do
     let path := dir ++ "/" ++ f
     let some j := (← Fs.read path).bind Json.decode | continue
-    if ← match Json.fint j "pid" with | some p => Sys.pidAlive p | none => pure false then out := out ++ [j]
-    else discard <| Sys.remove path
+    if ← match Json.fint j "pid" with | some p => Sys.pidAlive p | none => pure false then
+      out := out ++ [j.setObjVal! "watchd" (.bool true)]; continue
+    let ts := regTerms j
+    if ts.isEmpty then discard <| Sys.remove path; continue
+    if up.isNone then up := some ((← hcTerminals).map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none)
+    match up.join with
+    | none => pure ()
+    | some live =>
+      if ts.any live.contains then out := out ++ [(j.setObjVal! "pid" .null).setObjVal! "watchd" (.bool false)]
+      else discard <| Sys.remove path
   return out.mergeSort fun x y => (Json.fstr x "folder").getD "" ≤ (Json.fstr y "folder").getD ""
 
 /-- The swarm/ directory (the launcher's SWARM_HERE): $SWARM_HERE, else the one above this binary. -/
@@ -202,6 +270,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   Store.txn [.agent] fun db =>
     let db := db.setAgent name fun x => if x.hc.isNone then { x with hc := some addr } else x
     (db.log now (some spawner) "spawn" none (some name), ())
+  if addr != "" then register none (some addr) none
   Env.out s!"spawned {name} at {strip out}"
   Env.out (← Machine.note)
   return .ok none

@@ -750,6 +750,20 @@ theorem X.Agents.endStay {me n now} (h : XInv db t) : XInv (Agents.endStay db me
     · exact h
     · exact X.Db.log (X.Db.setAgent (fun _ => rfl) (fun _ => rfl) h)
 
+theorem X.Agents.recordSpace {sp} (h : XInv db t) : XInv (Agents.recordSpace db sp) t := by
+  unfold SwarmLean.Agents.recordSpace
+  split
+  · split
+    · exact h
+    · exact X.Db.setMeta h
+  · exact h
+
+theorem X.Agents.nameComms {c now} (h : XInv db t) : XInv (Agents.nameComms db c now) t := by
+  unfold SwarmLean.Agents.nameComms; dsimp only
+  split
+  · exact X.Db.log (X.Db.setAgent (fun _ => rfl) (fun _ => rfl) (X.Db.setMeta h))
+  · exact X.Db.setMeta h
+
 theorem X.Agents.setLimits {ec me mn mx now} (h : XInv db t) : XInv (Agents.setLimits db ec me mn mx now).1 t := by
   have hg : ∀ a b, XInv (Agents.setLimits.go db me mn mx now a b).1 t := fun a b => by
     unfold SwarmLean.Agents.setLimits.go; dsimp only

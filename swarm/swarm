@@ -16,6 +16,8 @@ exe=${SWARM_EXE:-swarm-lean}; unset SWARM_EXE
 for ref in "$here/lean/.lake/build/bin/$exe" "$here/lean/.lake/nix"; do
   bin=$ref; [ "$ref" = "$here/lean/.lake/nix" ] && bin=$ref/bin/$exe
   [ -x "$bin" ] || continue
+  # the nix link is dated by build.sh's stamp: BSD find -newer follows the link into the store (mtime 0), GNU's does not
+  [ -e "$ref.stamp" ] && ref=$ref.stamp
   # the exe's sources: lean/ but its tests, audit and hpl build; the model files the lakefile's SwarmModelGlob builds; the claim
   # tool's library (../claim), which swarm-lean is built from
   new=$(cd "$here" && find lean/Main.lean lean/lakefile.lean lean/lean-toolchain lean/SwarmLean lean/c \

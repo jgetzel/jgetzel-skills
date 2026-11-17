@@ -8,7 +8,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, terminals, agents, spaces, props, run, theme, shared, setShared, home, exec, appHome, closeOverlay, layout } from "herdr";
-import { agentAt, line, looked, markOf, rowText, showAll, showSwarm, since, sumFor, viewShown } from "./tree.js";
+import { agentAt, headState, line, looked, markOf, rowText, showAll, showSwarm, sumFor, viewShown } from "./tree.js";
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -81,8 +81,7 @@ export default class PaneHeader extends View {
     const a = term && agentAt(sum, term.address), comms = a && a.name === sum.comms;
     if (comms) { name = "Communicator"; what = `${a.name} · your channel to the swarm`; }
     else if (a) { name = a.name; what = a.task ? `#${a.task.id} ${a.task.title}` : what; }
-    const st = m && !comms && since(m, shared("rw-rail.changed")?.[p.terminal]?.at, Date.now());
-    const state = m === "working" ? `working ${st}`.trim() : st;
+    const state = headState(m, comms, shared("rw-rail.changed")?.[p.terminal]?.at, Date.now());
     return h_flex().id(`pane-head-${p.pane}`).size_full().px(14).gap(8).items_center().bg(t.surface).text_size(13)
       .on_click(() => run("pane.focus", { pane: p.pane }))
       .child(div().id(`ph-name-${p.pane}`).flex_none().max_w(200).truncate().font_semibold().text_color(t.foreground)

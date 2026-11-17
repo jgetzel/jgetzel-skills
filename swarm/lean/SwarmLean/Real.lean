@@ -1,5 +1,7 @@
 import SwarmLean.World
 import SwarmLean.Db.Plan
+import SwarmLean.DbPath
+import Lean.Data.Json
 import Std.Data.HashMap
 
 /-! The real world: the instances of the interfaces on IO, and the SQLite store on the Lua CLI's database. -/
@@ -41,13 +43,46 @@ def tableCols (c : Conn) (t : String) : IO (List String) := do
   let rows ← c.query s!"pragma table_info({t})"
   return rows.toList.filterMap fun r => match r[1]? with | some (Val.text n) => some n | _ => none
 
-/-- The db file (db.dbpath): $SWARM_DB, else swarm/swarm.db in the repo's git common dir. -/
+/-- The db this terminal ($HC_TERMINAL_ID) is the communicator of: its hc label `swarm.comms`, if that db exists. -/
+def labelDb : IO (Option String) := do
+  let some h ← IO.getEnv "HC_TERMINAL_ID" | return none
+  if h == "" then return none
+  let r ← try IO.Process.output { cmd := "hc", args := #["get", h] } catch _ => return none
+  if r.exitCode ≠ 0 then return none
+  let some j := (Lean.Json.parse r.stdout).toOption | return none
+  let some p := ((j.getObjVal? "labels").toOption.bind fun l => (l.getObjValAs? String "swarm.comms").toOption) | return none
+  return if p != "" && (← (p : System.FilePath).pathExists) then some p else none
+
+/-- `DbPath.candidates` read from the disk: the registry's entries and the repos right below `cwd` with a default db. -/
+def noDbCandidates (cwd : String) : IO (List (String × String)) := do
+  let state ← match ← IO.getEnv "XDG_STATE_HOME" with
+    | some x => if x != "" then pure x else pure (((← IO.getEnv "HOME").getD "") ++ "/.local/state")
+    | none => pure (((← IO.getEnv "HOME").getD "") ++ "/.local/state")
+  let ls (dir : String) : IO (List IO.FS.DirEntry) := do
+    try return (← System.FilePath.readDir dir).toList.mergeSort (·.fileName ≤ ·.fileName) catch _ => return []
+  let mut reg := []
+  for e in ← ls (state ++ "/swarm/swarms") do
+    let some j := (Lean.Json.parse ((← try IO.FS.readFile e.path catch _ => pure ""))).toOption | continue
+    if let (.ok f, .ok d) := (j.getObjValAs? String "folder", j.getObjValAs? String "db") then reg := reg ++ [(f, d)]
+  let mut repos := []
+  for e in ← ls cwd do
+    let p := e.path.toString ++ "/.git/swarm/swarm.db"
+    if ← (p : System.FilePath).pathExists then repos := repos ++ [(e.path.toString, p)]
+  return DbPath.candidates cwd reg repos
+
+/-- The db file: `DbPath.choose` of $SWARM_DB, the repo's git common dir and this terminal's label; with none, an
+error naming the swarms under the cwd (`DbPath.noDbText`). -/
 def dbPath : IO String := do
-  if let some p ← IO.getEnv "SWARM_DB" then if p ≠ "" then return p
-  let r ← IO.Process.output { cmd := "git", args := #["rev-parse", "--path-format=absolute", "--git-common-dir"] }
-  let d := strip r.stdout
-  if r.exitCode ≠ 0 || d.isEmpty then throw <| IO.userError "not in a git repo and SWARM_DB is unset"
-  return d ++ "/swarm/swarm.db"
+  let envDb ← IO.getEnv "SWARM_DB"
+  let git ← if (envDb.filter (· ≠ "")).isSome then pure none else do
+    let r ← IO.Process.output { cmd := "git", args := #["rev-parse", "--path-format=absolute", "--git-common-dir"] }
+    pure (if r.exitCode == 0 then some r.stdout else none)
+  let label ← if (envDb.filter (· ≠ "")).isSome || ((git.map strip).filter (· ≠ "")).isSome then pure none else labelDb
+  match DbPath.choose envDb git label with
+  | some p => return p
+  | none =>
+    let cwd := (← IO.currentDir).toString
+    throw <| IO.userError (DbPath.noDbText cwd (← noDbCandidates cwd))
 
 /-- Runs the statements in order. -/
 def runStmts (c : Conn) (p : List Stmt) : IO Unit := do

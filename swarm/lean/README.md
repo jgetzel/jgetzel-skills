@@ -26,6 +26,7 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `SwarmLean/Db/*.lean` | each Lua module's pure steps, `… → Db → Db × Except String α` |
 | `SwarmLean/Store.lean`, `World.lean`, `Sys.lean` | the interfaces (`Store`, `Clock`, `Env`, `Fs`, `Proc`, `Git`, `Sys`) |
 | `SwarmLean/Real.lean`, `Sqlite.lean`, `c/shim.c` | the real world: the SQLite store, IO |
+| `SwarmLean/DbPath.lean` | which db a command opens (`$SWARM_DB`, the repo, this terminal's communicator label) and what it says with none |
 | `SwarmLean/Args.lean`, `Cmd/*.lean`, `Dispatch.lean`, `Main.lean` | argparse's grammar, the command groups, main |
 | `SwarmLean/Herdr/*.lean` | the second executable, herdr-mods: the Herdr panels' installer and calendar feed (was Lua; `../../herdr-mods/herdr-mods` runs it through `../swarm` with `SWARM_EXE=herdr-mods`) |
 | `SwarmLean/Assumptions.lean` | every assumption the proofs make about the world: `Atomic`, and the tools' (`Tools`) |
@@ -106,6 +107,13 @@ reaches a claimed task with a clock past its lease, the claim does not last (`cl
 reap reaches a row whose terminal is gone, the row does not stay live and bound to it (`gone_ends`, L4's reap half).
 `swarm stay --end A` changes A's stay alone (St4, `endStay_frame`); `swarm away` and `--back` change no task, lock,
 agent or cursor (A1, `away_keeps`, `back_keeps`), and a second one is refused and changes nothing (A4).
+
+**The swarm's space** (`Proofs/Space.lean`). The Herdr space a swarm's panel finds it by (meta space, which swarm/model's
+Comms.lean takes as given) is recorded whichever comes first of the communicator's `swarm join` and the watchd start that
+names it: join, then the start (SKILL.md's order: `join_then_start`), or the start, then join (`start_then_join`), each
+leaves the space of the communicator's terminal, for any answer hc gives of a terminal. A recorded space is never
+replaced (`recordSpace_keeps`); join's `bind` changes no meta (`bind_metas`); the start before this fix, which only named
+the communicator, left no space after a join that came first (`nameComms_after_join`).
 
 **Workspace GC and the end, on a machine** (`Proofs/Sweep.lean`, `Proofs/Trust.lean`, board #115). `RecM` runs the code
 on a machine (`Tools`) and records each command with the machine it ran on. Every `git worktree remove` the sweep runs

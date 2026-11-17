@@ -13,6 +13,8 @@ stale=
 for ref in "$here/.lake/build/bin/claim" "$here/.lake/nix"; do
   bin=$ref; [ "$ref" = "$here/.lake/nix" ] && bin=$ref/bin/claim
   [ -x "$bin" ] || continue
+  # the nix link is dated by build.sh's stamp: BSD find -newer follows the link into the store (mtime 0), GNU's does not
+  [ -e "$ref.stamp" ] && ref=$ref.stamp
   new=$(cd "$here" && find Main.lean Claims.lean Claims lakefile.lean lean-toolchain -newer "$ref" 2>/dev/null | head -n 1)
   [ -z "$new" ] && exec "$bin" "$@"
   # both stale: run the newer one (a leftover lake build must not shadow a later nix build)

@@ -55,11 +55,21 @@ def unfence (name : String) : Except Fence α → m α
   | .error f => do die (← fenceText name f)
 
 /-- The labels hc keeps on a terminal: its Herdr space and the db it is the communicator of (agents.hc_info). -/
-def hcInfo (addr : String) : m (Option String × Option String) := do
-  let o ← Proc.output ["hc", "get", addr] none []
-  let j := match o with | some o => if o.code == 0 then (Lean.Json.parse o.stdout).toOption else none | none => none
-  let l := (j.bind fun j => (j.getObjVal? "labels").toOption).getD .null
-  return ((l.getObjValAs? String "herdr.space").toOption, (l.getObjValAs? String "swarm.comms").toOption)
+def hcInfo (addr : String) : m (Option String × Option String) := Spawn.hcLabels addr
+
+/-- Terminal `h` is this swarm's communicator's: its `swarm.comms` label names this db, and its Herdr space is the
+swarm's unless the swarm has one (`recordSpace`). -/
+def markComms (h : String) : m Unit := do
+  discard <| Proc.output ["hc", "label", h, "swarm.comms=" ++ (← Spawn.dbPath)] none []
+  let space := (← hcInfo h).1
+  Store.txn [.«meta»] fun db => (recordSpace db space, ())
+
+/-- watchd's start, after it named communicator `c`: `c`'s terminal is marked as join marks it (`startSpace`), unless
+another swarm's communicator holds that terminal. -/
+def markCommsRow (c : String) : m Unit := do
+  let some h ← Store.txn [.agent] fun db => (db, commsTerm db c) | return
+  let lab := (← hcInfo h).2
+  if lab.all (· == (← Spawn.dbPath)) then markComms h
 
 /-- Binds `name` to terminal `hc` (agents.bind): a live binding elsewhere moves only with `takeover`. -/
 def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) : m Unit := do
@@ -92,16 +102,12 @@ def join (a : Parsed) : m UInt32 := do
       if c != (← Spawn.dbPath) && !a.flag "takeover" then
         die s!"this terminal is the communicator of another swarm ({c}). `swarm join --takeover` takes it for this one."
   bindAgent n (some (← Env.cwd)) here (a.str "model") (a.flag "takeover")
-  let mut space := none
-  if let (true, some h) := (isC, here) then
-    discard <| Proc.output ["hc", "label", h, "swarm.comms=" ++ (← Spawn.dbPath)] none []
-    space := (← hcInfo h).1
+  -- the communicator's terminal (joinSpace); one that joined before anything named it is marked by watchd's start
+  if let (true, some h) := (isC, here) then markComms h
   let now ← Clock.now
-  Store.txn [.«meta»] fun db =>
-    let db := match space with
-      | some sp => if (db.getMeta "space").isSome then db else db.setMeta "space" (some sp)
-      | none => db
-    (db.log now (some n) "join" none none, ())
+  Store.txn [.«meta»] fun db => (db.log now (some n) "join" none none, ())
+  -- the registry lists this swarm while this terminal lives, watchd or not
+  if here.isSome then Spawn.register (if isC then some n else none) here none
   return 0
 
 /-- `swarm leave [name]` (agents.cmd_leave). -/
@@ -311,9 +317,9 @@ def endCmd (a : Parsed) : m UInt32 := do
   Env.out s!"{n} ended"
   return 0
 
-/-- `swarm machine` (machine.cmd_machine). -/
+/-- `swarm machine` (machine.cmd_machine): outside a swarm (no db), the machine alone. -/
 def machineCmd : m UInt32 := do
-  Env.out (← Machine.note)
+  Env.out (← Machine.note (withDb := (← Spawn.dbPath?).isSome))
   return 0
 
 /-- The group. -/

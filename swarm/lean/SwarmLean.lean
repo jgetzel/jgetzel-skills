@@ -14,3 +14,4 @@ import SwarmLean.Proofs.Migrate
 import SwarmLean.Proofs.Queue
 import SwarmLean.Proofs.Crash
 import SwarmLean.Proofs.Keep
+import SwarmLean.Proofs.Space
