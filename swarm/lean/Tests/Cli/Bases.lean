@@ -204,7 +204,40 @@ def test_hook_denies_checking_out_a_base_and_watchd_flags_one (t : T) : IO Unit 
   commsTick t
   has ((← t.q1 "select count(*) n, group_concat(body) b from msg where dest='t-9'").f "b") "has formal checked out"
 
+-- ---- swarm pr merge-when-green: the merge names the head whose checks were seen green ----
+/-- A fake gh: `pr view` answers view.<n> for its n-th call (the last one repeats), `pr merge` succeeds; calls go to gh.log. -/
+def fakeGhViews (t : T) (views : List String) : IO Unit := do
+  let D := shquote t.d
+  for (v, i) in views.zip (List.range views.length) do put s!"{t.d}/view.{i}" v
+  discard <| t.fake "gh" (s!"#!/bin/sh\necho \"$*\" >> {D}/gh.log\n[ \"$1 $2\" = 'pr view' ] || exit 0\n" ++
+    s!"n=$(cat {D}/n 2>/dev/null || echo 0)\n[ -f {D}/view.$n ] && echo $((n+1)) > {D}/n || n=$((n-1))\ncat {D}/view.$n\n")
+
+def prView (state mergeable sha conclusion : String) : String :=
+  (json% {"state": $state, "mergeable": $mergeable, "headRefOid": $sha,
+    "statusCheckRollup": [{"status": "COMPLETED", "conclusion": $conclusion}]}).compress
+
+def test_pr_merge_when_green_names_the_green_head (t : T) : IO Unit := do
+  let old := "1111111111111111111111111111111111111111"
+  let new := "2222222222222222222222222222222222222222"
+  -- the head moves after the green read: that merge still carries the old sha, the next poll merges the new head
+  fakeGhViews t [prView "OPEN" "MERGEABLE" old "SUCCESS", prView "OPEN" "MERGEABLE" new "SUCCESS", prView "OPEN" "MERGEABLE" new "SUCCESS",
+    prView "MERGED" "UNKNOWN" new "SUCCESS"]
+  let r ← t.sw "a" ["pr", "merge-when-green", "7", "--every", "0"]
+  eq r.code 0
+  has r.stdout "#7 merged"; has r.stdout "ALL MERGED"
+  let merges := (← t.calls "gh").filter (·.startsWith "pr merge")
+  eq merges ["pr merge 7 --squash --match-head-commit " ++ old, "pr merge 7 --squash --match-head-commit " ++ new]
+
+def test_pr_merge_when_green_waits_on_pending_and_failed (t : T) : IO Unit := do
+  fakeGhViews t [prView "OPEN" "MERGEABLE" "abcdef0123" "FAILURE"]
+  let r ← t.sw "a" ["pr", "merge-when-green", "7", "--every", "0", "--polls", "2"] { ok := false }
+  eq r.code 1
+  has r.stdout "#7 waiting: OPEN MERGEABLE abcdef0 notgreen"; has r.stdout "gave up after 2h: 7"
+  eq ((← t.calls "gh").filter (·.startsWith "pr merge")).length 0
+
 def tests : List Case := [
+  ("test_pr_merge_when_green_names_the_green_head", test_pr_merge_when_green_names_the_green_head),
+  ("test_pr_merge_when_green_waits_on_pending_and_failed", test_pr_merge_when_green_waits_on_pending_and_failed),
   ("test_base_for_task_then_repo_then_main", test_base_for_task_then_repo_then_main),
   ("test_task_add_base_stored_and_shown", test_task_add_base_stored_and_shown),
   ("test_ref_prefers_the_remote_branch", test_ref_prefers_the_remote_branch),

@@ -201,8 +201,8 @@ only wakes you up for nothing.
   newer push is normal.
 - Merge failures (HTTP 500, mergeable UNKNOWN): check
   https://www.githubstatus.com/api/v2/summary.json, then run
-  `~/.claude/skills/orchestrate/merge-retry.sh <pr>...` in the background — it
-  only merges a PR whose *current* head is green and MERGEABLE.
+  `swarm pr merge-when-green <pr>...` in the background — it merges a PR
+  only when its head is green and MERGEABLE, and pins the merge to that head's sha.
 - Verify things you hand off or push (e.g. a repo split) against origin/main
   right before acting — other merges may have landed since they were prepared.
 
