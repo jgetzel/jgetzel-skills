@@ -37,7 +37,7 @@ def FLOWS : List String := ["none", "post-merge", "pr-gated", "promoted"]
 def FLOW_LINE : String → Option String
   | "none" => some "CI here (`ci.flow` none): there is no CI; land on green local checks."
   | "post-merge" => some ("CI here (`ci.flow` post-merge, or unset): land on green local checks and don't wait for CI; a red run " ++
-      "on the base becomes one `main red: …` task, done by watchd on the next green run.")
+      "on the base becomes one `main red: …` task; `swarm task done` with your fix's sha releases you, watchd closes it on the next green run.")
   | "pr-gated" => some ("CI here (`ci.flow` pr-gated): the PR's checks gate the merge. `swarm stay \"CI on PR #N, then merge\"` and " ++
       "stop; watchd wakes you when they finish: merge on green, fix and push on red.")
   | "promoted" => some ("CI here (`ci.flow` promoted): land on the dev base your task names, as post-merge: green local checks, " ++
@@ -303,7 +303,7 @@ def ciCheckStep (now : Int) (db : Db) : Db × Option NewRed :=
         let n := (t.title.getD "").toList.drop (Tasks.RED_TASK ++ "run ").length |>.takeWhile Char.isDigit
         let n := if (t.title.getD "").startsWith (Tasks.RED_TASK ++ "run ") && !n.isEmpty then (String.ofList n).toNat? else none
         if n.any (red.id < ·) then db else
-        let db := db.set t.id fun x => { x with state := .done, evidence := some s!"green run {d red.id} at {short red.sha}", lease_until := none, done_at := some now }
+        let db := db.set t.id fun x => { x with state := .done, evidence := some s!"green run {d red.id} at {short red.sha}", lease_until := none, hold := none, done_at := some now }
         let db := db.log now (some "swarm") "done" none (some s!"#{d t.id} green run {d red.id}")
         match t.owner with
         | some o => (Msgs.post db now "swarm" o s!"main is green (run {d red.id}): #{d t.id} is done; stop fixing it." false (some "system")).1
@@ -316,7 +316,9 @@ def ciCheckStep (now : Int) (db : Db) : Db × Option NewRed :=
       match openRed with
       | t :: _ =>
         let add := s!"\nLater red: run {d red.id} at {short red.sha}" ++ (match failed with | some f => s!" ({f})" | none => "")
-        (db.set t.id fun x => { x with body := x.body.map (· ++ add) }, none)
+        let fixedAt := ((db.events.filter fun e => e.kind == some "red-fixed" && (e.data.getD "").startsWith s!"#{d t.id} ").filterMap (·.ts)).foldl max 0
+        let reopen := hasSub (t.hold.getD "") "awaiting a green run" && ts (red.created.getD "") > fixedAt
+        (db.set t.id fun x => { x with body := x.body.map (· ++ add), hold := if reopen then none else x.hold }, none)
       | [] => (db, some { red, green := runs.find? (·.conclusion == some "success") })
 
 /-- ci_check's second step: the red task with the commits' authors and the failed log's tail, and the posts. -/
@@ -326,7 +328,7 @@ def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String)
   let about := s!"main CI is red (run {d red.id} {red.url.getD "None"}), commits {rng}, authors: {if names.isEmpty then "none" else ", ".intercalate names}."
   let title := Tasks.RED_TASK ++ "run " ++ d red.id ++ (match failed with | some f => s!" ({f})" | none => "")
   let tid := db.taskNext
-  let db := { db with tasks := db.tasks ++ [({ id := tid, title := some title, body := some (about ++ " Fix forward on main; watchd marks this done on the next green run.\n" ++ tail), created_by := some "swarm", created_at := some now } : Task)], taskNext := db.taskNext + 1 }
+  let db := { db with tasks := db.tasks ++ [({ id := tid, title := some title, body := some (about ++ " Fix forward on main. When your fix is on main, `swarm task done " ++ d tid ++ " --evidence <sha>` releases you; watchd closes the task on the next green run.\n" ++ tail), created_by := some "swarm", created_at := some now } : Task)], taskNext := db.taskNext + 1 }
   let db := db.log now (some "swarm") "task-add" none (some s!"#{d tid} {title}")
   let live := (Agents.live db).map (·.name)
   let msg := s!"{about} Task #{d tid} is its one fix: `swarm task claim {d tid}` if your commit broke it, then fix forward; if someone holds it, leave it to them."

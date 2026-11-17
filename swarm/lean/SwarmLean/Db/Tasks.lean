@@ -341,7 +341,7 @@ def renew (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
       if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
       else (db.set id ({ · with lease_until := some (c.now + l) }), .ok (c.now + l))
 
-/-- What `task done` says after: a red task stays claimed, else the context line's parts. -/
+/-- What `task done` says after: a red task is released and held for a green run, else the context line's parts. -/
 inductive DoneOut
   | red
   | done (k : Int) (stay : Option String) (poolSize : Nat)
@@ -354,7 +354,9 @@ def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except Strin
     if strip evidence == "" then
       (db, .error "--evidence is empty: give the sha, PR or command output that shows the work is done")
     else if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
-    else if (r.title.getD "").startsWith RED_TASK then (db.set id ({ · with evidence := some evidence }), .ok .red)
+    else if (r.title.getD "").startsWith RED_TASK then
+      let db := db.set id fun t => { reopenF t with evidence := some evidence, hold := some (strip evidence ++ " awaiting a green run") }
+      (db.log c.now (some c.me) "red-fixed" none (some s!"#{d id} {evidence}"), .ok .red)
     else
       let dctx := (db.agent c.me).bind (·.ctx_tokens)
       let db := db.set id fun t => { t with state := .done, evidence := some evidence, lease_until := none,

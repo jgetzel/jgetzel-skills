@@ -85,7 +85,8 @@ with subagents.
    `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it
    is on its base, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
-   first, told to any live author (else to you), done on the next green run.
+   first, told to any live author (else to you). When your fix is on main, `swarm task done <id> --evidence <sha>`
+   releases you and holds the task; watchd closes it on the next green run (a newer red run reopens it).
    It also polls, once a minute while a live agent holds a claim, the PRs from task branches (`<agent>/<task>`):
    a merged PR closes its task with the merge sha and tells the owner, in every flow.
    The swarm enforces no CI flow; a repo names its own in `.claude/swarm.json` `{"ci": {"flow": "…"}}`:
