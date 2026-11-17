@@ -354,6 +354,14 @@ export function since(mark, at, now) {
   return "";
 }
 
+// A pane header's state after its name: `since`'s words, "working" before them on a working terminal; the communicator's
+// header gives no time (its row is the user's channel), so a working communicator reads "working" alone.
+export function headState(mark, comms, at, now) {
+  if (!mark) return "";
+  const st = comms ? "" : since(mark, at, now);
+  return mark === "working" ? `working ${st}`.trim() : st;
+}
+
 // Stamps since when each agent shows its mark, in `changed` (address -> {m, turn, at}); true if it changed any.
 // Done and idle count as one (looking at a done agent makes it idle); a new turn restamps, so a turn the rail didn't
 // see while it wasn't shown can't leave an old time. `at(address)` is the app's own time for that change, if any.
