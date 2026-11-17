@@ -409,6 +409,20 @@ def test_session_turns_keep_cache_warm (t : T) : IO Unit := do
   ok (seqIn who "comms idle " "idle=1m cache=warm" && !seqIn who "comms idle " "cache=warm COLD") who
   ok (seqIn who "nohc idle " "cache=cold COLD-GUARDED") who
 
+-- a session in one long turn: its last status change is two hours old, but hc says it is working, so it is warm and a
+-- non-urgent message wakes its waiter (hpl-comms after 55 min of one turn: every message was held as cold)
+def test_working_session_is_warm (t : T) : IO Unit := do
+  t.agent "a"
+  let now ← now
+  discard <| t.fake "hc" ("#!/bin/sh\necho '{\"status_ms\": " ++ toString ((now - 7200) * 1000) ++
+    ", \"status\": {\"app\": \"claude-code\", \"state\": \"working\"}}'\n")
+  t.agent "comms" [("hc", "t1"), ("status", "idle"), ("ctx_tokens", 258000), ("last_active", .int (now - 5 * 86400)),
+    ("compacted_at", 0)]
+  t.sw_ "a" ["post", "comms", "landed"]
+  let w ← t.sw "comms" ["wait", "--timeout", "3", "--poll", "0.2"] { ok := false, hc := some "t1" }
+  eq w.code 2
+  has w.stderr "landed"
+
 def test_wait_fenced_join_rebinds_dead_hc (t : T) : IO Unit := do
   t.agent "a"
   let now ← now
@@ -717,6 +731,7 @@ def tests : List Case := [
   ("test_rules_appended_to_spawn", test_rules_appended_to_spawn),
   ("test_cold_cache_cheap_cases_and_cold", test_cold_cache_cheap_cases_and_cold),
   ("test_session_turns_keep_cache_warm", test_session_turns_keep_cache_warm),
+  ("test_working_session_is_warm", test_working_session_is_warm),
   ("test_wait_fenced_join_rebinds_dead_hc", test_wait_fenced_join_rebinds_dead_hc),
   ("test_urgent_override", test_urgent_override),
   ("test_wait_wakes_warm_idle", test_wait_wakes_warm_idle),
