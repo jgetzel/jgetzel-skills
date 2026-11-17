@@ -397,7 +397,7 @@ in the order at the end.
 - Rail: a + on a space's heading on hover and a New tab row at the end of the shown space, both opening the shipped
   `new-menu` (`tab.new {space, argv}`); the Calendar row at the foot between Settings and Add machine; a split tab's
   rows joined by a bracket, with the tab's name over it when named; double click renames in place
-  (`tab.rename {id, name}`); a `HoverCard` with the full title, folder, branch and state. A large swarm's put-away
+  (`tab.rename {id, name}`); a tooltip with the full title, folder, branch and state (not a `HoverCard`: see Cost). A large swarm's put-away
   workers are the block's "N working / N idle" rows only.
 - Drag to reorder inside a space: `tab.move {id, index}`; the drag is built from press, move (4 px threshold) and
   release, as the shipped `spaces` mod does for spaces; a drop line, rows parting, Escape cancels; a tab moves whole
@@ -463,8 +463,7 @@ II.3m All swarms links into the sections and shows the same needs.
   scale or rotation of a box. Nothing of the app's own animates: terminals and the tab's content, the app's dialogs,
   toasts, palette, layout show/hide and stack switches, pane splits. A floating block's `peek` drawer slides (read).
   Hover styles apply in one step; a hover highlight as an opacity layer is read, not tested (no pointer in the sandbox).
-- Spec, all from those five properties: hover as a highlight layer fading in 90 ms and out 140 ms (read, not seen
-  working: the pointer test did not reach the test mod; fall back to instant hover); the rail's selected-row and the
+- Spec, all from those five properties: hover instant, the element's own style (see Cost); the rail's selected-row and the
   bar's selected-section highlight slide (`top`/`left` and size, 140 ms); rows coming and going (`height` and
   `opacity`, 160 ms); drag: rows part (`height`, 120 ms), the dropped row springs; pages push in from the right
   24 px (`left`, `opacity`, 160 ms) and back; popups and menus fade in and rise 6 px (120 ms; mount at 0, then set
@@ -472,6 +471,14 @@ II.3m All swarms links into the sections and shows the same needs.
   pulses twice when its count rises (`loop`); marks cross-fade on a state change (two stacked, `opacity`, 200 ms);
   meters slide (`width`, 300 ms); rail collapse (`width`, 180 ms); placeholder rows pulse while a swarm is first read.
   "Animations" in rw-settings, on by default; off leaves only the working spinner.
+- Cost (measured 2026-11-16, Herdr's HERDR_APP_BENCH in shot.sh's sandbox): any change a mod's view makes rebuilds and
+  repaints the whole view, so motion is paid per view, not per element. A `.loop` or `.frames` wakes its whole view
+  about 30 times a second (the new "asks" pulse: its minute only). A `.spin` is drawn by Herdr over the view, cheaply,
+  unless the view holds a `HoverCard`, `Popover`, `Popup` or `Select`, or a hover/active/focus style that changes
+  opacity: then each turn rebuilds the view (the rail at 13% of a core idle). So: tooltips for hover text, a Popover
+  built only while open, highlights as native `.hover(bg)` (a script `on_hover` + `notify` renders the view once per
+  row the pointer crosses), what hover reveals (the x, + New tab, Side) applied once the pointer settles (80 ms),
+  stacked layers only while they fade, and a poll that draws again only when what it read changed.
 - Slices: II.4a the setting and the rail. II.4b hover, after a pointer check. II.4c swarm view. II.4d popups, menus,
   toast, drag.
 

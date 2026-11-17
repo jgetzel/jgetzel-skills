@@ -12,10 +12,10 @@
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
-import { v_flex, h_flex, HoverCard, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
+import { v_flex, h_flex, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
 import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
-import { mark, hoverLayer, look } from "./marks.js";
+import { mark, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -78,13 +78,16 @@ export default class SwarmTab extends View {
     this.capCores = InputState.new({ placeholder: "all" }); this.capMem = InputState.new({ placeholder: "all" });
     this.capCores.on("submit", (_e, cx) => this.saveCap(cx)); this.capMem.on("submit", (_e, cx) => this.saveCap(cx));
     this.ended = null; // the ended agents, read when you open their line
-    this.ent = new Entering(); this.hovKey = null; // motion (II.4c): what just came, the row under the pointer
+    this.ent = new Entering(); // motion (II.4c): what just came
     this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
-    cx.timer.every(POLL, (cx) => { if (this.due()) this.refresh(cx); });
-    cx.timer.every(PR_POLL, (cx) => this.refreshPrs(cx));
+    cx.timer.every(POLL, (cx) => {
+      if (this.due()) this.refresh(cx);
+      if (!this.hidden() && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx); // gh only while it shows
+    });
   }
+  hidden() { return props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout())); }
 
   where() {
     const p = props() ?? {}, s = spaces().find((x) => x.active), v = p.view ? shared("rw-swarm.view") ?? {} : null;
@@ -99,7 +102,7 @@ export default class SwarmTab extends View {
     return p.folder ? { cwd: p.folder, on: p.machine ?? null } : { cwd: s?.folder, on: s?.machine ?? null };
   }
   due() {
-    if (props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout()))) return false; // the view reads only while it shows
+    if (this.hidden()) return false; // the view reads only while it shows
     const age = Date.now() - (this.at ?? 0), { on } = this.where();
     // never more often than 3× as long as a read takes (500 agents' overview takes seconds)
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
@@ -153,6 +156,7 @@ export default class SwarmTab extends View {
   refreshPrs(cx) {
     const { cwd, on } = this.where();
     if (!cwd) return;
+    this.prsAt = Date.now();
     cx.spawn(async (cx) => {
       try {
         const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "50", "--json", "number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url"], { cwd, on });
@@ -256,11 +260,9 @@ export default class SwarmTab extends View {
   }
 
   // ---- parts --------------------------------------------------------------------------------
-  // A row's hover (II.4b): the fading layer with Animations on, else the instant style.
-  hov(t, el, key, r = 6) {
-    if (!this.anim) return el.hover((st) => st.bg(t.hover));
-    return el.relative().child(hoverLayer(t, `hv-${key}`, this.hovKey === key, r))
-      .on_hover((h, cx) => { if (h) this.hovKey = key; else if (this.hovKey === key) this.hovKey = null; else return; cx.notify(); });
+  // A row's hover (II.4b), native: a fading layer needed a render of the whole view for each row the pointer crossed.
+  hov(t, el, _key, _r) {
+    return el.hover((st) => st.bg(t.hover));
   }
   card(t, id, red) {
     return v_flex().id(id).flex_none().min_w(0).rounded(12).border(1).border_color(red ? t.blocked + "88" : t.border).bg(red ? t.blocked + "14" : t.surface);
@@ -700,10 +702,13 @@ export default class SwarmTab extends View {
     const v = shared("rw-swarm.view") ?? {}, at = v.section ?? "overview", c = s?.counts ?? {};
     const n = { agents: (s?.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length, board: (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) };
     const label = SECTIONS.find(([id]) => id === at)?.[1] ?? "Overview";
-    return Popover.new("side-sections").anchor("top_left").open(Boolean(this.menuOpen))
+    const button = h_flex().id("side-section").flex_none().h(24).px(9).gap(6).items_center().rounded(7).border(1).border_color(t.border).text_size(12)
+      .text_color(t.foreground).cursor_pointer().when(Boolean(this.menuOpen), (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover)).child(`${label} ▾`);
+    // A Popover only while open: one in the view keeps its spinners rebuilding the whole view as they turn.
+    if (!this.menuOpen) return button.on_click((_e, cx) => { this.menuOpen = true; cx.notify(); });
+    return Popover.new("side-sections").anchor("top_left").open(true)
       .on_open_change((open, cx) => { this.menuOpen = open; cx.notify(); })
-      .trigger(h_flex().id("side-section").flex_none().h(24).px(9).gap(6).items_center().rounded(7).border(1).border_color(t.border).text_size(12)
-        .text_color(t.foreground).cursor_pointer().when(Boolean(this.menuOpen), (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover)).child(`${label} ▾`))
+      .trigger(button)
       .content(v_flex().w(200).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .children(SECTIONS.map(([id, text]) => h_flex().id(`side-sec-${id}`).h(28).px(9).gap(8).items_center().rounded(6).text_size(12.5).cursor_pointer()
           .text_color(id === at ? t.foreground : t.muted).when(id === at, (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover))
@@ -873,10 +878,8 @@ export default class SwarmTab extends View {
           .text_color(c ?? (i.kind === "msg" || i.kind === "all" || i.kind === "urgent" ? t.foreground : t.muted)).child(text))
         .when(!log && Boolean(i.meta), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(i.meta)))
         .when(Boolean(tail), (el) => el.child(this.chip(t, tail, c ?? (tail.startsWith("PR") ? t.ansi4 : null))));
-      if (!(i.full?.length > 1)) return el;
-      return HoverCard.new(`act-tip-${i.key}`).anchor("top_left").open_delay(400).trigger(el)
-        .content(v_flex().max_w(560).px(10).py(8).gap(2).rounded(8).bg(t.surface).border(1).border_color(t.border).text_size(11.5)
-          .children(i.full.map((x) => div().whitespace_normal().text_color(t.muted).child(x))));
+      // a tooltip, not a HoverCard: a HoverCard in the view keeps its spinners rebuilding the whole view as they turn
+      return i.full?.length > 1 ? el.tooltip(i.full.join("\n")) : el;
     };
     const kids = [];
     let hour = null;
