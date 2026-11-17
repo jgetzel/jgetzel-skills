@@ -105,12 +105,24 @@ sample() {
     total_kb=${mm% *}; avail_kb=${mm#* }
   fi
 }
-# only a lock over a minute old with no live pid is broken: a younger one may have been taken just after the pid read
+# a lock over a minute old with no live pid: a younger one may have been taken just after the pid read
+stale() {
+  p=$(cat \"$d/$1/pid\" 2>/dev/null)
+  [ -n \"$(find \"$d/$1\" -prune -mmin +1 2>/dev/null)\" ] && { [ -z \"$p\" ] || ! kill -0 \"$p\" 2>/dev/null; }
+}
+# a stale lock is broken only by the one holding $d/break, which re-checks the lock first: a waiter that judged it stale
+# earlier cannot delete a lock taken since. A stale break (its breaker died) is removed on the same test; that removal is
+# unguarded, so the one case left is a breaker and a holder both crashing and two waiters then clearing the break at once:
+# one can delete the other's fresh break, and two breakers may run together (a minute-old window, never seen to matter)
 lock() {
   until mkdir \"$d/lock\" 2>/dev/null; do
-    p=$(cat \"$d/lock/pid\" 2>/dev/null)
-    if [ -n \"$(find \"$d/lock\" -prune -mmin +1 2>/dev/null)\" ] && { [ -z \"$p\" ] || ! kill -0 \"$p\" 2>/dev/null; }; then
-      rm -rf \"$d/lock\"
+    if stale lock; then
+      if mkdir \"$d/break\" 2>/dev/null; then
+        trap 'rm -rf \"$d/break\"' EXIT
+        echo $$ > \"$d/break/pid\"
+        if stale lock; then rm -rf \"$d/lock\"; fi
+        rm -rf \"$d/break\"; trap - EXIT
+      elif stale break; then rm -rf \"$d/break\"; fi
     fi
     sleep 0.1
   done

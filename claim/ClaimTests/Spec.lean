@@ -1,11 +1,14 @@
 import ClaimTests.Harness
+import ClaimTests.Script
 import Claims.Admit
 
 /-! sw-compute-backfill.md §7, the `claims_spec` group: the shipped script against the model `Claims.Admit`, the cases
 of the assumption `ScriptAdmits` (Claims/Assumptions.lean). `admit_awk` runs `ADMIT_AWK` alone on 2000 generated cases,
-`script_try` runs `try` whole on 60 of them against a scratch ledger; both start with the desktop's case. -/
+`script_try` runs `try` whole on 60 of them against a scratch ledger; both start with the desktop's case.
+`lock_exclusive` is the 50 claims at once against a stale lock, for `LockExclusive`. -/
 
 namespace Claims.Tests.Spec
+open Claims.Tests.Script
 open Claims Claims.Admit Claims.Tests
 
 /-- A fixed-seed LCG (Knuth's MMIX constants): the same cases on every run. -/
@@ -209,6 +212,7 @@ def test_script_try (t : T) : IO Unit := do
     unless got == rows (Admit.after m r) do
       fail s!"try left {repr got}, the model {repr (rows (Admit.after m r))}\n  case {showCase m r}"
 
-def tests : List Case := [("admit_awk", test_admit_awk), ("script_try", test_script_try)]
+def tests : List Case := [("admit_awk", test_admit_awk), ("script_try", test_script_try),
+  ("lock_exclusive", Script.test_script_50_stale_lock_one_winner)]
 
 end Claims.Tests.Spec

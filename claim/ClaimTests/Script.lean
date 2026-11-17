@@ -31,6 +31,22 @@ def test_script_50_parallel_grant_exactly_4 (t : T) : IO Unit := do
   eq (rs.filter (·.startsWith "ok")).length 4 s!"grants; answers {rs.eraseDups}"
   eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 4
 
+/-- A stale lock (dead pid, a year 2020 mtime) and 50 `--cores all` claims at once: one wins. -/
+def test_script_50_stale_lock_one_winner (t : T) : IO Unit := do
+  let st := t.d ++ "/s6"
+  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
+  mkdir (led st ++ "/lock")
+  put (led st ++ "/lock/pid") s!"{dead}\n"
+  discard <| t.exec ["touch", "-t", "202001010000", led st ++ "/lock"]
+  let out := t.d ++ "/s6-answers"
+  mkdir out
+  -- each waits on `go`, so all 50 meet the stale lock together
+  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do (while [ ! -e \"$2/go\" ]; do :; done; sh -c \"$1\" sh try c$k all 1024 - t w cmd >\"$2/$k\") & k=$((k + 1)); done; sleep 1; : > \"$2/go\"; wait",
+    "sh", SCRIPT, out] [("XDG_STATE_HOME", some st)]
+  let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
+  eq (rs.filter (·.startsWith "ok")).length 1 s!"grants; answers {rs.eraseDups}"
+  eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 1
+
 def test_script_dead_claims_are_not_counted (t : T) : IO Unit := do
   let st := t.d ++ "/s2"
   let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
