@@ -70,7 +70,7 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
 const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
-  claim_ctx: Nx, done_ctx: Nx, done_at: Nx });
+  claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20) });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
   rules: Px, // II.3k
@@ -687,6 +687,58 @@ export function queueRows(s) {
     return { k, why };
   });
 }
+// A model as the side view's chip reads it: opus, sonnet, fable or haiku for any id naming one, anything else as written.
+export const modelWord = (m) => (typeof m === "string" && m ? (m.toLowerCase().match(/opus|sonnet|fable|haiku/)?.[0] ?? m) : null);
+const undoneIds = (tasks) => new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
+// The tasks auto-spawn would start, in its order (Watchd.autoSpawn over Queue.staffing): open, no undone dep, not held;
+// a `main red:` task first, then the queue by position, then (queue-only off) the rest by priority (none first) and id.
+// shortcut: no "stop pending" test (the CLI does not send it), so a task waiting to read a stop may show as startable.
+export function staffOf(s) {
+  const tasks = s.tasks ?? [], undone = undoneIds(tasks), red = (k) => (k.title ?? "").startsWith("main red: ");
+  const pool = tasks.filter((k) => k.state === "open" && !k.hold && !(k.deps ?? []).some((d) => undone.has(d)))
+    .sort((x, y) => (red(y) - red(x)) || ((x.priority ?? -1) - (y.priority ?? -1)) || x.id - y.id);
+  return [...pool.filter((k) => red(k)), ...pool.filter((k) => !red(k) && k.qpos != null).sort((x, y) => x.qpos - y.qpos),
+    ...(s.limits?.queue_only ? [] : pool.filter((k) => !red(k) && k.qpos == null))];
+}
+// The live agents auto-spawn counts: everyone but the communicator.
+export const liveOf = (s) => (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms);
+// Next up: `rows` is staffOf with `starts` true for the first `cut` (auto-spawn's number less the live agents, at
+// least 0); `text` is the cut line, saying what + would start when none do.
+export function nextUp(s, narrow = false) {
+  const rows = staffOf(s).map((k, i) => ({ k, n: i + 1 })), min = s.limits?.min ?? 0, live = liveOf(s).length, cut = Math.max(0, min - live);
+  for (const r of rows) r.starts = r.n <= cut;
+  const to = min > 0 ? `auto-spawn ${min}` : "auto-spawn off", first = rows[cut]?.k;
+  const c = Math.min(cut, rows.length);
+  const text = c > 0 ? (narrow ? `${to}: ${c} start` : `${to}, ${live} live: the ${c} above start${c === 1 ? "s" : ""} next`)
+    : `${to}, ${live} live: none start${first && !narrow ? (min >= live ? ` · + starts #${first.id}` : ` · raise it to ${live + 1} to start #${first.id}`) : ""}`;
+  return { rows, cut, text };
+}
+// Open tasks per label, most first: [[label, n]].
+export function labelCounts(tasks) {
+  const undone = undoneIds(tasks ?? []), n = new Map();
+  for (const k of tasks ?? []) if (undone.has(k.id)) for (const l of k.labels ?? []) n.set(l, (n.get(l) ?? 0) + 1);
+  return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+}
+// Open tasks per model word, most first: [[word, n]] (a task with no model is not counted).
+export function modelCounts(tasks) {
+  const undone = undoneIds(tasks ?? []), n = new Map();
+  for (const k of tasks ?? []) { const w = undone.has(k.id) && modelWord(k.model); if (w) n.set(w, (n.get(w) ?? 0) + 1); }
+  return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+}
+// The side Queue under a filter ({models, labels}, several of each at once: AND): being worked on (claimed or blocked,
+// blocked first), Next (nextUp's rows, `starts` kept), Waiting (the rest: held, behind a dep, or unqueued under
+// queue-only). `of`: the open tasks, `shown`: the rows under the filter.
+export function queueSplit(s, f = {}) {
+  const tasks = s.tasks ?? [], undone = undoneIds(tasks), models = f.models ?? [], labels = f.labels ?? [];
+  const pass = (k) => (!models.length || models.every((m) => modelWord(k.model) === m)) && labels.every((l) => (k.labels ?? []).includes(l));
+  const up = nextUp(s), next = up.rows.filter((r) => pass(r.k)), inNext = new Set(up.rows.map((r) => r.k.id));
+  const doing = tasks.filter((k) => (k.state === "claimed" || k.state === "blocked") && pass(k)).sort((x, y) => (x.state === "blocked" ? 0 : 1) - (y.state === "blocked" ? 0 : 1) || x.id - y.id);
+  const waiting = tasks.filter((k) => k.state === "open" && !inNext.has(k.id) && pass(k)).map((k) => {
+    const after = (k.deps ?? []).filter((d) => undone.has(d));
+    return { k, why: k.hold ? `held: ${k.hold}` : after.length ? `waits on ${after.map((d) => `#${d}`).join(", ")}` : "not queued" };
+  }).sort((x, y) => x.k.id - y.k.id);
+  return { doing, next, waiting, cut: up.cut, text: up.text, of: undone.size, shown: doing.length + next.length + waiting.length };
+}
 // The Board's graph (research/sw-graph-view.md) from `--view graph`'s tasks. scope "queue": the queued tasks and every
 // not-done task they wait on, transitively; "all": every not-done task; either with the done or dropped tasks those
 // wait on (one hop), and with `done` (all only) every finished task that has an edge. Nodes {k, layer, slot, fin,
@@ -885,7 +937,7 @@ export function openAsk(run, ps, pane, props, later) {
   run("pane.focus", { pane });
 }
 
-// The rail's machines (slice 10): this computer, then each machine that has spaces, with its state from
+// The rail's machines (slice 10): this computer, then each machine Herdr knows (with its spaces, if any), with its state from
 // `hc machine ls --json` (`listed`; null until read) and whether it is hidden (`hidden`: names). `known`: machines()' names.
 export function machinesOf(sp, known, listed, hidden) {
   const names = [null, ...new Set([...known, ...(listed ?? []).map((m) => m.name), ...sp.map((s) => s.machine)].filter(Boolean))];
@@ -893,7 +945,7 @@ export function machinesOf(sp, known, listed, hidden) {
     const m = name ? (listed ?? []).find((x) => x.name === name) : null;
     return { name, state: name ? m?.state ?? null : "connected", since: m?.since_ms ?? null, hidden: Boolean(name) && hidden.includes(name),
       spaces: sp.filter((s) => (s.machine ?? null) === name) };
-  }).filter((m) => !m.name || m.spaces.length);
+  }); // a connected machine with no space open here stays: its heading is how to open one
 }
 
 // rw-settings' colors as typed: a JSON object of theme color names to #rrggbb, or empty for none. {value} or {wrong}.

@@ -247,7 +247,7 @@ column per swarm, Needs you merged, memory split by swarm.
 
 ### Machines (canvas: machines board)
 
-A heading per machine in the rail with a menu: rename, hide, update, log in
+A connected machine always has its heading, even with no space open in this window (then one line, "No spaces open here · New space", `space.new {machine}`). A heading per machine in the rail with a menu: rename, hide, update, log in
 again, remove. Rename happens in place. An unreachable machine keeps its
 spaces, dimmed, without marks, with Retry. A hidden machine is one line at
 the foot of the rail with Show. This computer has no menu.
@@ -538,10 +538,25 @@ The user, after using the build: "there's no way to pull up a side view of my sw
   uses the view's lookup (`where()` with `view`). Not tested: the narrow section menu and pages (drawn, not built).
 - Layout: `panel-body` holds `calendar` and `swarm-side` (rw-swarm, props `{view: true, side: true}`). The view reads
   while it shows: `due()` also passes when `panel` is not hidden and `panel-body`'s active child is `swarm-side`.
-- Narrow layout: default 420 px on every screen, 360 to 720. Cards in one column under 700 px of the view's own width
-  (then two, three from 1900). Order: Needs you (answers in place), Agents, Board, Latest; a "Message <communicator>"
-  line pinned at the foot. Head: the swarm's name, the section as a menu (the seven sections), Expand, Close. Task
-  and agent pages open inside the panel with the same back button.
+- Narrow layout: default 420 px on every screen, 360 to 720; one column under 700 px of the view's own width. It is no
+  longer the Overview cards in one column (round 5, design B, `BSide` on the canvas "Swarm layout options", page "B · full
+  design"). Top to bottom: the head (swarm name, Away, Expand, Close; the section menu is gone); the staffing bar, on
+  every tab ("N working · M idle", Auto-spawn and Max with − / +; the number changes at once, in the accent colour until
+  `swarm limits` answers, a refusal puts it back and the CLI's text shows in the flash line); the tabs Now, Queue,
+  Agents, More (Now's red count is what needs you, Queue's the tasks left, Agents' the live agents; under 380 px only
+  Now's count stays); the tab; the "Message <communicator>" line at the foot.
+  - Now: Needs you (answered in place), Working (a row per live agent: mark, name, task or why idle, its task's model,
+    context), Next up (the tasks auto-spawn starts, in its order, up to 7, with a cut line after auto-spawn's number
+    less the live agents; each has #id, title, P0, model, two labels and a dim Spawn now; open tasks per label below,
+    a click filters the Queue).
+  - Queue: model and label chips with counts, several at once (AND), "Showing x of y · Clear"; Being worked on, Next
+    (numbered, the cut line), Waiting (held, behind a dep, or unqueued under queue-only). Done and Dropped open History.
+  - Agents: the agents list with a model chip and context bar, Spawn… (the spawn form) and the ended link.
+  - More: Activity, Landing, System, History, each a row with a line of what it holds; a click opens today's section as
+    a page with a "‹ More" back row. Expand maps More to Overview.
+  - The order and cut are `staffOf` and `nextUp` in rw-rail/tree.js: Watchd.autoSpawn's `Queue.staffing` (a `main red:`
+    task, the queue by position, then, unless queue-only, the rest by priority with none first, then id; never a held
+    task or one behind an open dep); the live count leaves out the communicator.
 - Open and close: Side and Full in rw-bar whenever the shown space has a swarm (each a toggle; never both open; both
   keep `shared("rw-swarm.view")`'s section and page). The rail's swarm heading: click is full width as today, a Side
   button on hover. Expand: panel to full width. Side while full width shows: back to the tab with the panel open.
@@ -553,7 +568,7 @@ The user, after using the build: "there's no way to pull up a side view of my sw
   name). A space with another swarm: the panel follows it. A space with no swarm: the panel keeps the last swarm.
 - Slices: II.7a the panel hosts the view (layout, reading, one column, head with Expand and Close, Side and Full in
   the bar, the two commands). II.7b the section menu, pages in the panel, the "shown" mark, row click focuses the
-  tab, the message line, the heading's Side button.
+  tab, the message line, the heading's Side button. II.7c (round 5): tabs, the staffing bar, Now, Queue, Agents, More.
 
 ## Proposals after the build (round 4, accepted by the user: all ten)
 

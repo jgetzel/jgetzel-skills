@@ -222,7 +222,7 @@ assert.deepEqual([bs.big, bs.put.length, bs.put.includes("w2"), bs.hot], [false,
 const mSp = [{ id: "a", machine: null }, { id: "b", machine: "desktop" }, { id: "c", machine: "vps" }, { id: "d", machine: "desktop" }];
 const mOut = machinesOf(mSp, [null, "desktop", "empty"], [{ name: "vps", state: "unreachable", since_ms: 5 }, { name: "empty", state: "connected" }], ["vps"]);
 assert.deepEqual(mOut.map((m) => [m.name, m.state, m.since, m.hidden, m.spaces.map((s) => s.id)]),
-  [[null, "connected", null, false, ["a"]], ["desktop", null, null, false, ["b", "d"]], ["vps", "unreachable", 5, true, ["c"]]]);
+  [[null, "connected", null, false, ["a"]], ["desktop", null, null, false, ["b", "d"]], ["empty", "connected", null, false, []], ["vps", "unreachable", 5, true, ["c"]]]);
 // rw-settings' colors (slice 11): theme color names to #rrggbb; empty is none.
 assert.deepEqual(colorsOf(" ", ["accent"]), { value: null });
 assert.deepEqual(colorsOf('{"accent":"#FF8800"}', ["accent"]), { value: { accent: "#FF8800" } });
@@ -325,6 +325,41 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(spawnArgs("a", {}), ["spawn", "--", "a"]);
   for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
   assert.equal(spawnArgs("a", { task: "1,2" }), null);
+}
+// The side view (B): model words, the order and cut auto-spawn staffs by (Watchd.autoSpawn over Queue.staffing), counts.
+{
+  const { modelWord, staffOf, nextUp, labelCounts, modelCounts, queueSplit } = await import("./mods/rw-rail/tree.js");
+  assert.deepEqual(["claude-opus-5-5", "opus", "claude-fable-5-2", "Sonnet", "gpt-9", "", null].map(modelWord), ["opus", "opus", "fable", "sonnet", "gpt-9", null, null]);
+  const o = overOf({ comms: "x-comms", limits: { min: 3, max: 9 },
+    agents: [{ name: "x-comms", status: "working" }, { name: "x-1", status: "working" }, { name: "x-2", status: "idle" }, { name: "x-3", status: "ended" }],
+    tasks: [{ id: 1, state: "done" }, { id: 2, state: "open", priority: 2, model: "claude-opus-5-5", labels: ["bug", "real2"] },
+      { id: 3, state: "open", qpos: 2 }, { id: 4, state: "open", qpos: 1, model: "sonnet", labels: ["bug"] }, { id: 5, state: "open", priority: 0 },
+      { id: 6, state: "open" }, { id: 7, state: "open", qpos: 3, hold: "wait" }, { id: 8, state: "open", deps: [9] }, { id: 9, state: "claimed", owner: "x-1", model: "opus" },
+      { id: 10, state: "open", deps: [1] }, { id: 11, state: "open", priority: 1, title: "main red: ci" }, { id: 12, state: "blocked", owner: "x-2" }] });
+  // red first, then the queue by position, then the rest: no priority (6, 10), then P0, P2; held, dep-waiting and claimed are out
+  assert.deepEqual(staffOf(o).map((k) => k.id), [11, 4, 3, 6, 10, 5, 2]);
+  assert.deepEqual(staffOf({ ...o, limits: { ...o.limits, queue_only: true } }).map((k) => k.id), [11, 4, 3]);
+  // min 3, two live (the communicator and the ended one do not count): the first row starts
+  let u = nextUp(o);
+  assert.equal(u.cut, 1); assert.deepEqual(u.rows.map((r) => r.starts), [true, false, false, false, false, false, false]);
+  assert.equal(u.text, "auto-spawn 3, 2 live: the 1 above starts next");
+  u = nextUp({ ...o, limits: { min: 6 } }); assert.equal(u.cut, 4); assert.equal(u.text, "auto-spawn 6, 2 live: the 4 above start next");
+  assert.equal(nextUp({ ...o, limits: { min: 6 } }, true).text, "auto-spawn 6: 4 start");
+  assert.equal(nextUp({ ...o, limits: { min: 2 } }, true).text, "auto-spawn 2, 2 live: none start");
+  u = nextUp({ ...o, limits: { min: 2 } }); assert.equal(u.cut, 0); assert.equal(u.text, "auto-spawn 2, 2 live: none start · + starts #11");
+  assert.equal(nextUp({ ...o, limits: {} }).text, "auto-spawn off, 2 live: none start · raise it to 3 to start #11");
+  assert.equal(nextUp({ tasks: [], limits: { min: 1 } }).text, "auto-spawn 1, 0 live: none start");
+  // label and model counts are of the open tasks only; most first, ties by name
+  assert.deepEqual(labelCounts(o.tasks), [["bug", 2], ["real2", 1]]);
+  assert.deepEqual(modelCounts(o.tasks), [["opus", 2], ["sonnet", 1]]);
+  // the Queue: sections, and a filter that is all of its chips
+  let q = queueSplit(o);
+  assert.deepEqual([q.doing.map((k) => k.id), q.next.map((r) => r.k.id), q.waiting.map((r) => [r.k.id, r.why])],
+    [[12, 9], [11, 4, 3, 6, 10, 5, 2], [[7, "held: wait"], [8, "waits on #9"]]]);
+  assert.equal(q.of, 11);
+  q = queueSplit(o, { models: ["opus"], labels: ["bug"] }); assert.deepEqual([q.next.map((r) => r.k.id), q.shown], [[2], 1]);
+  q = queueSplit(o, { labels: ["bug"] }); assert.deepEqual(q.next.map((r) => [r.k.id, r.starts]), [[4, false], [2, false]]);
+  assert.deepEqual(queueSplit({ ...o, limits: { queue_only: true } }).waiting.map((r) => [r.k.id, r.why]).slice(-1), [[10, "not queued"]]);
 }
 // Motion (II.4a): nothing enters on the first render; a key enters the first frame it is drawn after, then not; one
 // not drawn for a frame enters again.

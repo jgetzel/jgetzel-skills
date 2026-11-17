@@ -12,9 +12,9 @@
 // list those tasks in its place. The Away switch is in the communicator's pane header, here only when it has no pane.
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
-import { v_flex, h_flex, Popover, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -35,7 +35,7 @@ const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "
 
 export default class SwarmTab extends View {
   init(_props, cx) {
-    this.s = null; this.prs = null; this.error = null; this.flash = null; this.answers = new Map(); this.adding = false;
+    this.s = null; this.prs = null; this.error = null; this.flash = null; this.answers = new Map(); this.adding = false; this.qf = { models: [], labels: [] }; this.pend = null;
     this.title = InputState.new({ placeholder: "Title of the new task" });
     this.title.on("submit", (_e, cx) => this.addTask(cx));
     this.filter = InputState.new({ placeholder: "Filter agents and tasks" });
@@ -112,9 +112,9 @@ export default class SwarmTab extends View {
   // system` adds memory holders, command cost, locks and memory episodes (II.3i). "graph" while the Board's graph shows:
   // `--view graph` is the tasks, with every task that has an edge (research/sw-graph-view.md).
   pageKey() {
-    const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page;
+    const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page, side = Boolean(props()?.side);
     return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" || v?.section === "system" ? v.section
-      : v?.section === "board" && v.board === "graph" ? "graph" : null;
+      : v?.section === "board" && v.board === "graph" && !side ? "graph" : null;
   }
   refresh(cx) {
     const { cwd, on } = this.where(), who = this.pageKey();
@@ -128,6 +128,7 @@ export default class SwarmTab extends View {
         if (!s) throw new Error("swarm state printed no overview");
         if (this.where().cwd !== cwd || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
+        if (this.pend && this.at >= (this.actDone ?? 0)) this.pend = null;
         if (props()?.side && s.comms !== this.sideFor) { // the side view's message line names its communicator
           this.sideFor = s.comms; this.sideMsg = InputState.new({ placeholder: `Message ${line(s.comms ?? "the swarm", 40)}…` });
           this.sideMsg.on("submit", (_e, cx) => this.sidePost(cx));
@@ -173,9 +174,9 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, args);
-        if (r.code === 0) ok?.(); else this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
-      } catch (e) { this.flash = line(e?.message ?? e, 300); }
-      this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
+        if (r.code === 0) ok?.(); else { this.pend = null; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+      } catch (e) { this.pend = null; this.flash = line(e?.message ?? e, 300); }
+      this.actDone = Date.now(); this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
     });
   }
   answer(cx, k) {
@@ -346,6 +347,7 @@ export default class SwarmTab extends View {
         .tooltip(r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
         .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
           .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`).when(this.anim, (el) => el.transition("width", 300)))))
+      .when(side && !big, (el) => el.child(this.modelChip(t, modelWord(r.a.model)) ?? div().w(1)))
       .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
         .child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
     const group = ([m, label]) => {
@@ -356,13 +358,15 @@ export default class SwarmTab extends View {
         ...(g.length > ROWS ? [div().id(`group-more-${m}`).mx(6).px(10).py(6).text_size(12).text_color(t.dim)
           .child(`${g.length - ROWS} more: filter to find one`)] : [])] : [];
     };
-    const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter)) : null;
+    const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter))
+      : side ? this.small(t, "spawn-open", "Spawn…", (cx) => { this.openSpawn(s); cx.notify(); }) : null;
     // the columns named (proposal 7): the context column is the one bare number
     const cols = h_flex().id("agent-cols").mx(6).px(10).pb(4).gap(12).items_center().text_size(11).text_color(t.dim)
       .child(div().w(72).flex_none().child("Agent")).child(div().w(9).flex_none()).child(div().flex_1().child("Task")).child(div().flex_none().child("State"))
       .child(div().w(64).flex_none().child("Context")).when(big, (el) => el.child(div().w(52).flex_none().child("Model")).child(div().w(48).flex_none().child("PR")));
     return this.card(t, "agents").pb(6)
-      .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter)).child(cols)
+      .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
+      .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t))).child(cols)
       .children(big ? [...GROUPS.flatMap(group), ...rows.filter((r) => r.comms).map((r) => row(r, "comms"))] : rows.map(row))
       .when(big && !rows.length, (el) => el.child(div().px(16).py(6).text_size(12.5).text_color(t.dim).child("No agent matches")))
       .when(ended > 0, (el) => el.child(h_flex().id("ended").mx(6).mt(4).px(10).h(34).gap(8).items_center().border_t(1).border_color(t.border)
@@ -698,22 +702,158 @@ export default class SwarmTab extends View {
     return div().id(`name-${name}`).w(w).flex_none().truncate().font_medium().text_color(t.foreground).cursor_pointer().hover((st) => st.underline())
       .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(name); }).child(name);
   }
-  sectionMenu(t, s) {
-    const v = shared("rw-swarm.view") ?? {}, at = v.section ?? "overview", c = s?.counts ?? {};
-    const n = { agents: (s?.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length, board: (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) };
-    const label = SECTIONS.find(([id]) => id === at)?.[1] ?? "Overview";
-    const button = h_flex().id("side-section").flex_none().h(24).px(9).gap(6).items_center().rounded(7).border(1).border_color(t.border).text_size(12)
-      .text_color(t.foreground).cursor_pointer().when(Boolean(this.menuOpen), (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover)).child(`${label} ▾`);
-    // A Popover only while open: one in the view keeps its spinners rebuilding the whole view as they turn.
-    if (!this.menuOpen) return button.on_click((_e, cx) => { this.menuOpen = true; cx.notify(); });
-    return Popover.new("side-sections").anchor("top_left").open(true)
-      .on_open_change((open, cx) => { this.menuOpen = open; cx.notify(); })
-      .trigger(button)
-      .content(v_flex().w(200).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
-        .children(SECTIONS.map(([id, text]) => h_flex().id(`side-sec-${id}`).h(28).px(9).gap(8).items_center().rounded(6).text_size(12.5).cursor_pointer()
-          .text_color(id === at ? t.foreground : t.muted).when(id === at, (el) => el.bg(t.selected)).hover((st) => st.bg(t.hover))
-          .on_click((_e, cx) => { this.menuOpen = false; this.go(id); cx.notify(); })
-          .child(div().flex_1().child(text)).when(n[id] > 0, (el) => el.child(div().text_color(t.dim).child(String(n[id])))))));
+  // The section the side view's tab names; "more" and the pages it opens are the fourth tab.
+  secLabel() {
+    const sec = shared("rw-swarm.view")?.section ?? "overview";
+    if (props()?.side) return { overview: "Now", board: "Queue", agents: "Agents" }[sec] ?? "More";
+    return SECTIONS.find(([id]) => id === sec)?.[1] ?? "Overview";
+  }
+  // A model as a word in a chip; the word carries the meaning, the colour comes from the theme.
+  modelChip(t, word) {
+    if (!word) return null;
+    const c = { opus: t.ansi4, fable: t.ansi5, sonnet: t.muted, haiku: t.dim }[word] ?? t.muted;
+    return div().flex_none().px(6).rounded(4).border(1).border_color(c + "66").text_size(11).text_color(c).child(word);
+  }
+  labelChip(t, text) { return div().flex_none().px(6).rounded(4).bg(t.border).text_size(11).text_color(t.muted).child(text); }
+  // The staffing bar under the head, on every tab: who works, and auto-spawn and max with the number moving at once.
+  staffBar(t, s) {
+    const l = s.limits ?? {}, live = liveOf(s), working = live.filter((a) => a.status === "working").length, p = this.pend ?? {};
+    const step = (k, label) => {
+      const v = p[k] ?? l[k], b = (id, ch, n) => div().id(`${k}-${id}`).w(24).h(22).flex().items_center().justify_center().rounded(5).text_color(t.foreground).cursor_pointer()
+        .hover((st) => st.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.pend = { ...this.pend, [k]: n }; this.act(cx, ["limits", `--${k}`, String(n)]); })
+        .child(ch);
+      return h_flex().flex_none().gap(6).items_center().child(div().text_color(t.muted).child(label))
+        .child(h_flex().items_center().rounded(6).border(1).border_color(p[k] != null ? t.working + "88" : t.border)
+          .child(b("dn", "−", Math.max(0, (v ?? 0) - 1)))
+          .child(div().px(3).font_semibold().text_color(p[k] != null ? t.working : t.foreground).child(v == null ? "–" : String(v)))
+          .child(b("up", "+", (v ?? 0) + 1)));
+    };
+    return h_flex().id("staff-bar").flex_none().mx(12).px(12).py(7).gap(8).items_center().flex_wrap().rounded(10).bg(t.surface).text_size(12.5)
+      .child(div().flex_none().child(h_flex().gap(4).child(div().text_color(t.working).child(`${working} working`)).child(div().text_color(t.dim).child(`· ${live.length - working} idle`))))
+      .child(div().flex_1()).child(step("min", "Auto-spawn")).child(step("max", "Max"));
+  }
+  // Now · Queue · Agents · More, with their counts: Now's is the red one, and under 380 px it is the only one.
+  sideTabs(t, s) {
+    const sec = shared("rw-swarm.view")?.section ?? "overview", c = s.counts ?? {}, narrow = (this.width ?? 0) < 380;
+    const at = { overview: 0, board: 1, agents: 2 }[sec] ?? 3, needs = needsOf(s).length;
+    const tabs = [["overview", "Now", needs, t.blocked], ["board", "Queue", (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), t.dim], ["agents", "Agents", liveOf(s).length, t.dim], ["more", "More", 0, t.dim]];
+    return h_flex().id("side-tabs").flex_none().mx(12).p(3).gap(2).rounded(9).border(1).border_color(t.border).bg(t.surface)
+      .children(tabs.map(([id, label, n, color], i) => h_flex().id(`side-tab-${id}`).flex_1().min_w(0).h(28).gap(5).items_center().justify_center().rounded(7).text_size(12.5).cursor_pointer()
+        .bg(i === at ? t.selected : t.surface).text_color(i === at ? t.foreground : t.muted).hover((st) => st.bg(i === at ? t.selected : t.hover))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.go(id); }).child(label)
+        .when(n > 0 && (!narrow || i === 0), (el) => el.child(div().text_size(11.5).text_color(color).child(String(n))))));
+  }
+  sideBody(t, s, section, cx) {
+    const page = (el) => v_flex().w_full().gap(10).child(el);
+    if (section === "overview") return this.sideNow(t, s, cx);
+    if (section === "board") return this.sideQueue(t, s);
+    if (section === "agents") return page(this.agents(t, s));
+    if (section === "more") return this.sideMore(t, s);
+    const el = section === "activity" ? this.activityView(t, s) : section === "landing" ? this.landingView(t, s, cx) : section === "system" ? this.systemView(t, s, cx) : this.historyView(t, s, cx);
+    return v_flex().w_full().gap(10).child(h_flex().child(this.btn(t, "more-back", "‹ More", () => this.go("more")))).child(el);
+  }
+  // A task of Next up or the Queue: id, title, its chips and `right`; a click opens its page. Past the cut it is dim.
+  taskRow(t, k, { n, starts = true, right, spawn, labels = 2 }) {
+    const row = h_flex().id(`sq-${k.id}`).px(8).py(6).gap(6).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover))
+      .on_click(() => this.openTask(k.id)).when(n != null, (el) => el.child(div().w(22).flex_none().text_size(11.5).text_color(t.dim).child(String(n))))
+      .child(div().w(42).flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`))
+      .child(v_flex().flex_1().min_w(0).gap(3).child(div().truncate().text_color(starts ? t.foreground : t.muted).child(k.title ?? ""))
+        .child(h_flex().gap(5).items_center().min_w(0)
+          .when(k.priority === 0, (el) => el.child(div().flex_none().px(5).rounded(4).border(1).border_color(t.blocked).text_size(11).text_color(t.blocked).child("P0")))
+          .child(this.modelChip(t, modelWord(k.model)) ?? div())
+          .children((k.labels ?? []).slice(0, labels).map((l) => this.labelChip(t, l)))
+          .when(k.priority > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`P${k.priority}`)))));
+    return row.when(Boolean(right), (el) => el.child(right)).when(Boolean(spawn), (el) => el.child(spawn));
+  }
+  cutLine(t, text, id) {
+    const rule = () => div().flex_1().h(1).bg(t.working + "55");
+    return h_flex().id(id).mx(8).my(4).gap(8).items_center().text_size(11.5).text_color(t.working).child(rule()).child(div().min_w(0).truncate().child(text)).child(rule());
+  }
+  // `rows` (nextUp's) with the cut line before the first that does not start; none starting puts it first.
+  withCut(t, rows, text, mk) {
+    const out = []; let put = false;
+    for (const r of rows) { if (!put && !r.starts) { out.push(this.cutLine(t, text, "cut")); put = true; } out.push(mk(r)); }
+    if (!put && rows.length) out.push(this.cutLine(t, text, "cut"));
+    return out;
+  }
+  spawnNow(t, s, k) {
+    return div().id(`spawn-${k.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border(1).border_color(t.border).text_size(12).text_color(t.dim).cursor_pointer()
+      .hover((st) => st.text_color(t.foreground).border_color(t.muted)).tooltip(`Spawn an agent on #${k.id}${k.model ? ` (${k.model})` : ""}`)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        const args = spawnArgs(nextName(s.comms, [...(s.agents ?? []), ...(this.ended ?? [])].map((a) => a.name)), { model: k.model, task: k.id });
+        if (args) this.act(cx, args);
+      }).child("Spawn now");
+  }
+  // Now: what needs you, who works, what starts next (II.7).
+  sideNow(t, s, cx) {
+    const narrow = (this.width ?? 0) < 380, shown = this.shownAgent(s), up = nextUp(s, narrow), labels = labelCounts(s.tasks);
+    const work = agentRows(s).filter((r) => !r.comms), c = ctxOf(s.limits);
+    const kind = (r) => (r.mark === "working" ? r.task : r.a.task && r.mark !== "idle" ? `${r.state} · ${r.task}` : r.state);
+    const agentRow = (r) => this.sideRow(h_flex().id(`now-${r.a.name}`).px(6).py(5).gap(8).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)), t, r.a, s, r.a.name === shown)
+      .child(mark(t, r.mark)).child(this.nameLink(t, r.a.name, 72))
+      .child(div().flex_1().min_w(0).truncate().text_color(r.hot === "blocked" ? t.blocked : t.muted).child(kind(r)))
+      .child(this.modelChip(t, modelWord(s.tasks?.find((k) => k.id === r.a.task?.id)?.model ?? r.a.model)) ?? div())
+      .child(div().w(32).flex_none().text_size(11.5).text_color(r.a.ctx_tokens >= (c.compact || c.nudge || 400000) ? t.blocked : t.dim).child(r.a.ctx_tokens ? kilo(r.a.ctx_tokens) : ""));
+    const note = narrow ? null : div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child("in the order auto-spawn starts them");
+    return v_flex().w_full().gap(10)
+      .child(this.allNeeds(t, s, cx))
+      .child(v_flex().id("now-working").gap(1).child(div().px(6).pb(4).text_size(12).text_color(t.dim).child("Working"))
+        .children(work.map(agentRow)).when(!work.length, (el) => el.child(div().px(6).text_size(12.5).text_color(t.dim).child("No agent is running"))))
+      .child(this.card(t, "now-next").p(6)
+        .child(h_flex().px(8).pt(2).pb(8).gap(8).items_baseline().child(div().flex_none().text_color(t.foreground).child("Next up")).child(note ?? div().flex_1())
+          .child(this.link(t, "next-queue", "Queue ›", "board")))
+        .children(this.withCut(t, up.rows.slice(0, 7), up.text, (r) => this.taskRow(t, r.k, { starts: r.starts, labels: narrow ? 1 : 2, spawn: narrow ? null : this.spawnNow(t, s, r.k) })))
+        .when(!up.rows.length, (el) => el.child(div().px(8).py(4).text_size(12.5).text_color(t.dim).child("Nothing to start")))
+        .when(!narrow && labels.length > 0, (el) => el.child(h_flex().id("by-label").mt(6).px(8).pt(8).gap(5).flex_wrap().items_center().border_t(1).border_color(t.border)
+          .child(div().mr(2).text_size(11.5).text_color(t.dim).child("Open by label"))
+          .children(labels.slice(0, 6).map(([l, n]) => div().id(`by-${l}`).px(6).rounded(4).bg(t.border).text_size(11).text_color(t.muted).cursor_pointer()
+            .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.qf = { models: [], labels: [l] }; this.go("board"); }).child(`${l} ${n}`))
+          .concat(labels.length > 6 ? [div().text_size(11).text_color(t.dim).child(`+${labels.length - 6}`)] : [])))));
+  }
+  // Queue: filter chips, then being worked on, next (numbered, with the cut) and waiting.
+  sideQueue(t, s) {
+    const f = this.qf, narrow = (this.width ?? 0) < 380, q = queueSplit(s, f), c = s.counts ?? {}, CAP = 30;
+    const flip = (key, v) => { const a = f[key]; this.qf = { ...f, [key]: a.includes(v) ? a.filter((x) => x !== v) : [...a, v] }; };
+    const chip = (id, text, on, tone, click) => div().id(id).flex_none().px(8).py(1).rounded(10).border(1).text_size(11.5).cursor_pointer()
+      .border_color(on ? tone + "99" : t.border).bg(on ? tone + "22" : t.background).text_color(on ? tone : t.muted).hover((st) => st.text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); click(); cx.notify(); }).child(on ? `${text} ✓` : text);
+    const hue = (m) => ({ opus: t.ansi4, fable: t.ansi5 }[m] ?? t.muted), total = q.of;
+    const labels = labelCounts(s.tasks), top = labels.filter(([l], i) => i < 10 || f.labels.includes(l));
+    const on = f.models.length + f.labels.length > 0;
+    const head = (text) => div().px(8).pt(8).pb(4).text_size(11.5).text_color(t.dim).child(text);
+    const doing = q.doing.slice(0, CAP).map((k) => this.taskRow(t, k, { right: div().flex_none().max_w(150).truncate().text_size(11.5).text_color(k.state === "blocked" ? t.blocked : t.muted)
+      .child(k.state === "blocked" ? `${k.owner ?? ""} · asks you` : k.owner ?? "claimed") }));
+    const next = this.withCut(t, q.next.slice(0, CAP), q.text, (r) => this.taskRow(t, r.k, { n: r.n, starts: r.starts, right: div().flex_none().text_size(11.5).text_color(t.dim).child("ready") }));
+    const wait = q.waiting.slice(0, 15).map((r) => this.taskRow(t, r.k, { starts: false, right: div().flex_none().max_w(130).truncate().text_size(11.5).text_color(t.dim).child(line(r.why, 40)) }));
+    const more = (n, id) => n > 0 ? [div().id(id).px(8).py(4).text_size(12).text_color(t.dim).child(`${n} more`)] : [];
+    return v_flex().w_full().gap(10)
+      .child(v_flex().gap(6)
+        .child(h_flex().gap(5).flex_wrap().items_center().child(chip("qf-all", `All ${total}`, false, t.muted, () => { this.qf = { models: [], labels: [] }; }))
+          .children(modelCounts(s.tasks).map(([m, n]) => chip(`qf-m-${m}`, `${m} ${n}`, f.models.includes(m), hue(m), () => flip("models", m)))))
+        .child(h_flex().gap(5).flex_wrap().items_center().children(top.map(([l, n]) => chip(`qf-l-${l}`, `${l} ${n}`, f.labels.includes(l), t.foreground, () => flip("labels", l)))))
+        .when(on, (el) => el.child(h_flex().gap(6).px(2).text_size(11.5).text_color(t.dim).child(`Showing ${q.shown} of ${total}: ${[...f.models, ...f.labels].join(", ")} ·`)
+          .child(div().id("qf-clear").text_color(t.working).cursor_pointer().hover((st) => st.underline())
+            .on_click((_e, cx) => { cx.stop_propagation(); this.qf = { models: [], labels: [] }; cx.notify(); }).child("Clear")))))
+      .child(this.card(t, "sq").p(6).gap(1)
+        .when(doing.length > 0, (el) => el.child(head("Being worked on")).children(doing).children(more(q.doing.length - CAP, "sq-more-d")))
+        .when(next.length > 0, (el) => el.child(head("Next, in the order auto-spawn starts them")).children(next).children(more(q.next.length - CAP, "sq-more-n")))
+        .when(wait.length > 0, (el) => el.child(head("Waiting")).children(wait).children(more(q.waiting.length - 15, "sq-more-w")))
+        .when(!q.shown, (el) => el.child(div().px(8).py(6).text_size(12.5).text_color(t.dim).child(on ? "Nothing matches" : "Nothing left on the board"))))
+      .child(h_flex().gap(14).px(6).text_size(12).text_color(t.dim)
+        .child(this.link(t, "sq-done", `Done ${c.done ?? 0} ›`, "history")).child(this.link(t, "sq-dropped", `Dropped ${c.dropped ?? 0} ›`, "history")));
+  }
+  // More: Activity, Landing, System and History, each with a line of what is in it.
+  sideMore(t, s) {
+    const m = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts)[0], c = s.counts ?? {}, mm = s.machine, g = (kb) => Math.round(kb / 1048576);
+    const run = (s.ci?.runs ?? []).find((r) => r.status === "completed" && r.conclusion !== "cancelled"), open = (this.prs ?? []).filter((p) => p.state === "OPEN").length;
+    const rows = [["activity", "Activity", m ? `${hhmm(m.ts)} ${m.frm}${m.dest ? ` to ${m.dest}` : ""}: ${one(m.body)}` : "No messages yet"],
+      ["landing", "Landing", [run ? (run.conclusion === "success" ? "main green" : run.status !== "completed" ? "checks run" : "main red") : null, this.prs ? `${open} PR${open === 1 ? "" : "s"} open` : null].filter(Boolean).join(" · ") || "main's CI and PRs"],
+      ["system", "System", mm?.total_kb ? `This computer ${g(mm.total_kb - (mm.avail_kb ?? 0))} of ${g(mm.total_kb)} G in use` : line(mm?.line?.replace(/^machine: /, "")) || "memory, commands, compute"],
+      ["history", "History", `${c.done ?? 0} done, ${c.dropped ?? 0} dropped, ${c.ended ?? 0} agents ended`]];
+    return this.card(t, "side-more").p(6).gap(1).children(rows.map(([id, name, text]) => h_flex().id(`more-${id}`).p(10).gap(10).items_center().rounded(6).cursor_pointer()
+      .hover((st) => st.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.go(id); })
+      .child(div().w(80).flex_none().font_medium().child(name)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(text)).child(div().text_color(t.dim).child("›"))));
   }
   messageLine(t) {
     if (!this.sideMsg) return null;
@@ -746,7 +886,7 @@ export default class SwarmTab extends View {
   }
   agentPage(t, s, pg) {
     const name = pg.agent, a = s.agents?.find((x) => x.name === name), { on } = this.where();
-    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : SECTIONS.find(([id]) => id === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
+    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : this.secLabel();
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(line(name, 80)));
     if (!a) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading ? "Reading…" : `No agent ${line(name, 80)} in this swarm`));
@@ -1453,7 +1593,7 @@ export default class SwarmTab extends View {
   }
   taskPage(t, s, pg) {
     const id = pg.task, k = s.tasks?.find((x) => x.id === id), x = s.task?.id === id ? s.task : null;
-    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : SECTIONS.find(([i]) => i === (shared("rw-swarm.view")?.section ?? "overview"))?.[1] ?? "Overview";
+    const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : this.secLabel();
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_medium().text_color(t.foreground).child(`Task #${id}`));
     if (!k) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading || !x ? "Reading…" : `No task #${id} on this board`));
@@ -1550,9 +1690,11 @@ export default class SwarmTab extends View {
   }
 
   view(t, s, cx) {
-    const v = shared("rw-swarm.view") ?? {}, section = v.section ?? "overview", w = this.width ?? 0, cols = w >= 1900 ? 3 : w && w < 700 ? 1 : 2;
+    const v = shared("rw-swarm.view") ?? {}, side = Boolean(props()?.side), w = this.width ?? 0, cols = w >= 1900 ? 3 : w && w < 700 ? 1 : 2;
+    const section = !side && v.section === "more" ? "overview" : v.section ?? "overview";
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
     const body = v.page?.agent ? page(this.agentPage(t, s, v.page)) : Number.isInteger(v.page?.task) ? page(this.taskPage(t, s, v.page))
+      : side ? this.sideBody(t, s, section, cx)
       : section === "overview" ? this.overview(t, s, cols, cx)
       : section === "agents" ? page(this.agents(t, s))
       : section === "board" ? this.boardView(t, s, cx)
@@ -1590,9 +1732,14 @@ export default class SwarmTab extends View {
       .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.foreground))
       .child(div().flex_none().max_w(170).truncate().text_size(13).font_semibold().text_color(t.foreground)
         .child(tag ? `Swarm ${tag}` : line(cwd?.replace(/\/+$/, "").replace(/.*\//, "") ?? "Swarm", 60)))
-      .when(Boolean(this.s), (el) => el.child(this.sectionMenu(t, this.s))).child(div().flex_1())
+      .child(div().flex_1())
+      .when(Boolean(this.s), (el) => { const away = Boolean(this.s.away); return el.child(h_flex().id("away").flex_none().gap(6).items_center().cursor_pointer().text_size(12.5).text_color(away ? t.foreground : t.muted)
+        .on_click((_e, cx) => this.act(cx, away ? ["away", "--back"] : ["away"]))
+        .child(div().size(14).rounded(4).border(1).border_color(away ? t.working : t.border).bg(away ? t.working : t.background)
+          .flex().items_center().justify_center().text_size(10).text_color(t.background).child(away ? "✓" : "")).child("Away")); })
       .when(Boolean(cwd), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
-        showSide(run, false); showSwarm(run, setShared, { ...(shared("rw-swarm.view") ?? {}), folder: cwd, machine: on });
+        const v = shared("rw-swarm.view") ?? {};
+        showSide(run, false); showSwarm(run, setShared, { ...v, section: v.section === "more" ? "overview" : v.section, folder: cwd, machine: on });
       })))
       .child(icon("side-close", "mods/pane/close.svg", () => showSide(run, false)));
   }
@@ -1615,7 +1762,8 @@ export default class SwarmTab extends View {
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
       if (props().side && !this.where().cwd) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
-      return root.child(this.view(t, this.s, cx)).when(Boolean(props().side), (el) => el.children([this.messageLine(t)].filter(Boolean)));
+      return root.when(Boolean(props().side), (el) => el.child(this.staffBar(t, this.s)).child(this.sideTabs(t, this.s)))
+        .child(this.view(t, this.s, cx)).when(Boolean(props().side), (el) => el.children([this.messageLine(t)].filter(Boolean)));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
