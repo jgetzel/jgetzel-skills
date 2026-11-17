@@ -123,8 +123,8 @@ with base (conflict.onto). -/
 def onto (wt base commit : String) : m (Option String) := do
   let some mb ← git ["-C", wt, "merge-base", base, commit] | return none
   if mb == "" then return none
-  let some o ← Proc.output ["git", "-C", wt, "merge-tree", "--write-tree", "--no-messages", s!"--merge-base={mb}", base,
-    commit] none [] | return none
+  let some o ← Git.out ["-C", wt, "merge-tree", "--write-tree", "--no-messages", s!"--merge-base={mb}", "--end-of-options", base,
+    commit] none | return none
   if o.code != 0 then return none
   return (o.stdout.split Char.isWhitespace).find? (· != "") |>.map (·.toString)
 
@@ -136,8 +136,8 @@ def lines (s : String) : List String :=
 /-- Merges two trees that are each one agent's own changes on `base`: none if git failed; else each conflicted path
 with its real hunks' (ours, theirs) texts, and whether some conflict was line-only (conflict.trial_merge). -/
 def trialMerge (cwd base ca cb : String) : m (Option (List (String × List (String × String)) × Bool)) := do
-  let some o ← Proc.output ["git", "-c", "merge.conflictStyle=diff3", s!"--attr-source={base}", "merge-tree",
-    "--write-tree", "--name-only", "--no-messages", s!"--merge-base={base}", ca, cb] (some cwd) [] | return none
+  let some o ← Git.out ["-c", "merge.conflictStyle=diff3", s!"--attr-source={base}", "merge-tree",
+    "--write-tree", "--name-only", "--no-messages", s!"--merge-base={base}", "--end-of-options", ca, cb] (some cwd) | return none
   if o.code != 1 then return if o.code == 0 then some ([], false) else none
   let ls := lines o.stdout
   let tree := ls.headD ""
@@ -146,7 +146,7 @@ def trialMerge (cwd base ca cb : String) : m (Option (List (String × List (Stri
   let mut compat := false
   for f in files do
     -- not UTF-8 (binary): no hunks, so it counts as real
-    let text := (← git ["show", s!"{tree}:{f}"] (some cwd)).getD ""
+    let text := (← git ["show", "--end-of-options", s!"{tree}:{f}"] (some cwd)).getD ""
     let hs := hunks text
     let bad := hs.filterMap fun (ours, base, theirs) => if realHunk base ours theirs then some (ours, theirs) else none
     -- no diff3 hunks: a rename or file/directory conflict, which counts as real

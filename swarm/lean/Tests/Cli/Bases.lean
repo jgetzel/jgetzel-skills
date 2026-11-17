@@ -235,6 +235,18 @@ def test_pr_merge_when_green_waits_on_pending_and_failed (t : T) : IO Unit := do
   has r.stdout "#7 waiting: OPEN MERGEABLE abcdef0 notgreen"; has r.stdout "gave up after 2h: 7"
   eq ((← t.calls "gh").filter (·.startsWith "pr merge")).length 0
 
+-- a bad base in swarm.json is warned about, not silently replaced by main
+def test_bad_swarm_json_base_warns (t : T) : IO Unit := do
+  t.fakes
+  claudeDir t
+  put (t.repo ++ "/.claude/swarm.json") "{\"base\": \"--upload-pack=x\"}"
+  let r ← t.sw "a" ["task", "add", "do it"]
+  has r.stderr "swarm.json base '--upload-pack=x' is not a valid git ref; using main"
+  let r ← t.sw "a" ["task", "add", "other", "--base", "main"]
+  eq (subIn r.stderr "swarm.json") false "an explicit --base does not read the config"
+  let r ← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
+  has r.stderr "swarm.json base '--upload-pack=x' is not a valid git ref; using main"
+
 def tests : List Case := [
   ("test_pr_merge_when_green_names_the_green_head", test_pr_merge_when_green_names_the_green_head),
   ("test_pr_merge_when_green_waits_on_pending_and_failed", test_pr_merge_when_green_waits_on_pending_and_failed),
@@ -247,6 +259,7 @@ def tests : List Case := [
   ("test_sweep_removes_work_landed_on_a_task_base", test_sweep_removes_work_landed_on_a_task_base),
   ("test_conflict_only_between_agents_on_the_same_base", test_conflict_only_between_agents_on_the_same_base),
   ("test_ci_polls_only_a_base_with_a_remote", test_ci_polls_only_a_base_with_a_remote),
+  ("test_bad_swarm_json_base_warns", test_bad_swarm_json_base_warns),
   ("test_spawn_task_makes_and_records_the_worktree", test_spawn_task_makes_and_records_the_worktree),
   ("test_spawn_attach_links_read_only", test_spawn_attach_links_read_only),
   ("test_owned_wts_reads_the_table_not_names", test_owned_wts_reads_the_table_not_names),

@@ -118,6 +118,54 @@ def splitlines (s : String) : List String :=
   let l := s.splitOn "\n"
   if s.endsWith "\n" then l.dropLast else l
 
+/-- A ref name git accepts, so one that cannot be read as an option (git check-ref-format's rules, without `--allow-onelevel`). -/
+structure GitRef where private mk ::
+  val : String
+deriving Repr
+
+namespace GitRef
+
+private def badChar (c : Char) : Bool := c.toNat < 32 || c.toNat == 127 || " ~^:?*[\\".contains c
+
+private def okPart (p : String) : Bool := p != "" && !p.startsWith "." && !p.endsWith ".lock"
+
+/-- `s` as a ref: non-empty, no leading `-`, `..`, `@{`, control or space or `~^:?*[\` characters, no empty component or one
+starting `.` or ending `.lock`, no trailing `.`, not `@`. -/
+def parse? (s : String) : Option GitRef :=
+  if s != "" && !s.startsWith "-" && !hasSub s ".." && !hasSub s "@{" && !s.toList.any badChar && !s.endsWith "."
+      && s != "@" && (s.splitOn "/").all okPart then some ⟨s⟩ else none
+
+end GitRef
+
+#guard (GitRef.parse? "main").isSome
+#guard (GitRef.parse? "feature/x-1").isSome
+#guard (GitRef.parse? "origin/main").isSome
+#guard (GitRef.parse? "v1.2").isSome
+#guard (GitRef.parse? "@x").isSome
+#guard (GitRef.parse? "").isNone
+#guard (GitRef.parse? "-x").isNone
+#guard (GitRef.parse? "--upload-pack=x").isNone
+#guard (GitRef.parse? "a..b").isNone
+#guard (GitRef.parse? "a@{1}").isNone
+#guard (GitRef.parse? "a b").isNone
+#guard (GitRef.parse? "a\tb").isNone
+#guard (GitRef.parse? "a~1").isNone
+#guard (GitRef.parse? "a^").isNone
+#guard (GitRef.parse? "a:b").isNone
+#guard (GitRef.parse? "a?").isNone
+#guard (GitRef.parse? "a*").isNone
+#guard (GitRef.parse? "a[").isNone
+#guard (GitRef.parse? "a\\b").isNone
+#guard (GitRef.parse? ".a").isNone
+#guard (GitRef.parse? "a/.b").isNone
+#guard (GitRef.parse? "a.lock").isNone
+#guard (GitRef.parse? "a.lock/b").isNone
+#guard (GitRef.parse? "a/").isNone
+#guard (GitRef.parse? "/a").isNone
+#guard (GitRef.parse? "a//b").isNone
+#guard (GitRef.parse? "a.").isNone
+#guard (GitRef.parse? "@").isNone
+
 /-- util.shquote: as is when only `[%w@%%+=:,./_-]`, else single-quoted. -/
 def shquote (s : String) : String :=
   if s != "" && s.toList.all (fun c => c.isAlphanum || "@%+=:,./_-".contains c) then s

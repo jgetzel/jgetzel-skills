@@ -79,9 +79,9 @@ def create (name : String) (task : Task) (cwd : Option String) (start : Option S
   let mut path := joinPath (dirname main) (basename main ++ "-" ++ name)
   if (← Sys.kind path true) != .none then path := path ++ "-" ++ d task.id  -- a predecessor's worktree is still there
   let mut branch := s!"{name}/{task.id}"
-  if (← Git.git ["rev-parse", "--verify", "-q", "refs/heads/" ++ branch] (some main)).isSome then
+  if (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", "refs/heads/" ++ branch] (some main)).isSome then
     branch := branch ++ "-" ++ d (← Clock.now)
-  let o ← Proc.output ["git", "-C", main, "worktree", "add", "-q", path, "-b", branch, from_] none []
+  let o ← Git.out ["-C", main, "worktree", "add", "-q", "-b", branch, "--end-of-options", path, from_] none
   match o with
   | some o => if o.code != 0 then die ("git worktree add failed: " ++ strip o.stderr)
   | none => die "git worktree add failed: "
@@ -95,8 +95,8 @@ def discardWs (name path branch : String) (created : Bool) : m Unit := do
   Store.txn [.workspace] fun db => ({ db with workspaces := db.workspaces.filter fun w => !(w.agent == name && w.path == path) }, ())
   if created then
     if let some main ← main (some path) then
-      discard <| Proc.output ["git", "-C", main, "worktree", "remove", "--force", path] none []
-      discard <| Proc.output ["git", "-C", main, "branch", "-D", branch] none []
+      discard <| Git.out ["-C", main, "worktree", "remove", "--force", "--end-of-options", path] none
+      discard <| Git.out ["-C", main, "branch", "-D", "--end-of-options", branch] none
 
 /-- Links `name` read-only to a recorded workspace: path, branch, base (workspaces.attach). -/
 def attach (name path : String) : m (String × Option String × Option String) := do

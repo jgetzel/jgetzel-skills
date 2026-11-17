@@ -2,6 +2,7 @@ import SwarmLean.Cmd
 import SwarmLean.Cmd.TasksHelp
 import SwarmLean.Db.Queue
 import SwarmLean.Db.Reuse
+import SwarmLean.Lib.Bases
 import SwarmLean.Lib.Machine
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
@@ -54,7 +55,7 @@ def rulesSpec : Spec :=
 /-- The `board` parser. -/
 def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all"] [] [] none
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m]
 
 /-- The command's world: the agent, the time, the terminal, the communicator by env. -/
 def ctx : m Tasks.Ctx := do
@@ -103,6 +104,9 @@ def task (a : Parsed) : m UInt32 := do
         | some t => pure t
         | none => die s!"can't read {p}"
       | none => pure ((a.str "body").getD "")
+    match a.str "base" with
+    | some b => if b != "" && (GitRef.parse? b).isNone then die s!"--base {b}: not a valid git ref name"
+    | none => Bases.warnBadConfig ["base"] (some (← Env.cwd))
     let n ← step [.task] (add c { title := (a.str "title").getD "", body, deps := (a.ids "after").getD [],
                                     model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority",
                                     labels := a.str "label" })

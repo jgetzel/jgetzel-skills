@@ -166,7 +166,7 @@ def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
   -- an agent's cwd is the checkout it was spawned from; its worktree is what it must find again
   let dir := ((← Workspaces.wtMap db).lookup a.name).orElse fun _ => a.cwd
   let br ← match dir with
-    | some c => pure ((← Proc.output ["git", "-C", c, "branch", "--show-current"] none []).bind fun o =>
+    | some c => pure ((← Git.out ["-C", c, "branch", "--show-current"] none).bind fun o =>
         if o.code == 0 then some (strip o.stdout) else none)
     | none => pure none
   -- Claude Code turns a long paste (over ~800 chars) into an attachment, so a long keep note goes by file
