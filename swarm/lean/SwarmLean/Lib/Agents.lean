@@ -54,7 +54,8 @@ def kilo : Except String Lean.Json → Int
   | .ok (.str t) => fdiv ((parseInt t).getD 0) 1000
   | _ => 0
 
-/-- The later of last_active and the hc session's last status change, asked of hc at most every 30 s
+/-- The later of last_active and the hc session's last status change, or now while hc reports it working (one long turn
+changes status once, so its last change can be an hour old while it works), asked of hc at most every 30 s
 (agents.session_active). -/
 def sessionActive [Monad m] [Proc m] (seen : Seen) (a : Agent) (t : Int) : m (Int × Seen) := do
   let last := a.last_active.getD 0
@@ -68,7 +69,9 @@ def sessionActive [Monad m] [Proc m] (seen : Seen) (a : Agent) (t : Int) : m (In
   | none =>
     let out ← Proc.output ["hc", "get", hc, "--json"] none []
     let txt := match out with | some o => if o.code == 0 then o.stdout else "{}" | none => "{}"
-    let s := match Lean.Json.parse txt with | .ok j => kilo (j.getObjVal? "status_ms") | .error _ => 0
+    let s := match Lean.Json.parse txt with
+      | .ok j => if (j.getObjValD "status").getObjValD "state" == .str "working" then t else kilo (j.getObjVal? "status_ms")
+      | .error _ => 0
     return (max last s, (hc, t, s) :: seen.filter (·.1 != hc))
 
 /-- None if waking agent row `a` is cheap at `t`, else why it is a cold wake (agents.cold_reason). -/
