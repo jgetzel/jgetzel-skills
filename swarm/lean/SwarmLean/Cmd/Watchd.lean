@@ -364,7 +364,7 @@ def restart (over : List String := []) : m UInt32 := do
   if let some s := seen then  -- it took the record but never ticked: stop it and give the record back
     let alive ← recAlive s
     -- shortcut: SIGTERM through kill(1); Sys has no signal call
-    if alive then discard <| Proc.output ["kill", "-TERM", (words s).headD ""] none []
+    if alive then discard <| Proc.output ["kill", "-TERM", (words s).headD ""] none []  -- kill-site: the watchd it displaced
     if let some o := old then
       Store.txn [.«meta»] fun db => (if (db.getMeta "watchd").bind (·.v) == some s then db.setMeta "watchd" (some o) else db, ())
     fail s!"the new watchd ({s}) {if alive then "did not finish a tick" else "died before its first tick"}"

@@ -629,6 +629,23 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
 
 -- ---------- machine ----------
 
+/-- Whether `scope` (a cgroup path) is the swarm-agent scope of agent `name`: `swarm-agent-<name>-<pid>.scope`
+(relaunch/launch.sh). -/
+def ownsScope (name scope : String) : Bool :=
+  let b := (scope.splitOn "/").getLast!.toList
+  let pre := ("swarm-agent-" ++ name ++ "-").toList
+  let r := b.drop pre.length
+  b.take pre.length == pre && r.length > 6 && r.drop (r.length - 6) == ".scope".toList &&
+    (r.take (r.length - 6)).all Char.isDigit
+
+/-- The processes to end: those reparented to init in the scope of an ended agent that no live agent runs in.
+`scope p` is the swarm-agent scope `p` runs in. A process in no agent's scope is never one, whatever its cwd. -/
+def orphanVictims (procs : List Machine.Ps) (scope : Machine.Ps → Option String) (agents : List Agent) : List Machine.Ps :=
+  procs.filter fun p => p.ppid == 1 && match scope p with
+    | none => false
+    | some s => agents.any (fun a => a.ended.isSome && ownsScope a.name s) &&
+        !agents.any (fun a => a.ended.isNone && ownsScope a.name s)
+
 /-- Edge-triggered pressure notice, oom bias for the processes in agents' trees, orphan kills, and the cmd-cost tick
 (watchd.machine_tick); the cost tick's memory before and after. -/
 def machineTick [Guard m] (cost : Cost.TickMem) : m Cost.TickMem := do
@@ -666,32 +683,32 @@ def machineTick [Guard m] (cost : Cost.TickMem) : m Cost.TickMem := do
   else if was && !high then
     let now ← Clock.now
     Store.txn [] fun db => (db.log now none "pressure-end" none none, ())
-  -- orphans: processes reparented to init whose cwd is in an ended agent's worktree and no live agent's
-  let mut order : List (Option String) := []
-  let mut tops : List (Option String × List Agent) := []
-  for r in db.agents.filter (·.cwd.isSome) do
-    let c := r.cwd.getD ""
-    -- shortcut: a cwd outside git (the Lua raises on that key) groups with the missing dirs, under no repo
-    let k ← if (← Sys.kind c true) == .dir then git ["rev-parse", "--show-toplevel"] (some c) else pure none
-    if !order.contains k then order := order ++ [k]; tops := tops ++ [(k, [])]
-    tops := tops.map fun (k', l) => if k' == k then (k', l ++ [r]) else (k', l)
-  let liveTops := order.filter fun k => ((tops.lookup k).getD []).any (·.ended.isNone)
-  let mut cw : Option (List (Int × String)) := none
-  for h in procs do
-    if h.ppid != 1 then continue
-    if cw.isNone then cw := some ((← Machine.cwds).getD [])
-    let some l := (cw.getD []).lookup h.pid | continue
-    let cwd ← real l
-    for k in order do
-      let some kk := py k | continue
-      if liveTops.contains k || !inside cwd kk then continue
-      let kill := h.pid :: (procs.filter (·.ppid == h.pid)).map (·.pid)
-      -- shortcut: SIGTERM through kill(1); Sys has no signal call
-      discard <| Proc.output (["kill", "-TERM"] ++ kill.map d) none []
-      let first := (((tops.lookup k).getD []).head?.map (·.name)).getD ""
+  -- orphans: processes reparented to init that run in an ended agent's scope (macOS has none: they are only noted)
+  if (← Machine.osName) == "Linux" then
+    let mut sc : List (Int × String) := []
+    for h in procs do
+      if h.ppid != 1 then continue
+      if let some s := Machine.scopeOf ((← Fs.read s!"{root}/{d h.pid}/cgroup").getD "") then sc := sc ++ [(h.pid, s)]
+    for h in orphanVictims procs (fun p => sc.lookup p.pid) db.agents do
+      discard <| Proc.output ["kill", "-TERM", d h.pid] none []  -- kill-site: the orphan sweep, victims only; SIGTERM through kill(1), Sys has no signal call
+      let who := (sc.lookup h.pid).bind fun s => (db.agents.find? fun a => a.ended.isSome && ownsScope a.name s).map (·.name)
       let now ← Clock.now
-      Store.txn [] fun db => (db.log now (some first) "orphan-kill" none (some s!"{d h.pid} {cut (Machine.procCmd h) 60} {fdiv h.rss_kb 1024}M"), ())
-      break
+      Store.txn [] fun db => (db.log now who "orphan-kill" none (some s!"{d h.pid} {cut (Machine.procCmd h) 60} {fdiv h.rss_kb 1024}M"), ())
+  else
+    let ended := (db.agents.filter fun a => a.ended.isSome).filterMap (·.cwd)
+    let live := (db.agents.filter fun a => a.ended.isNone).filterMap (·.cwd)
+    let seen := db.events.filterMap fun e => if e.kind == some "orphan-seen" then e.data else none
+    let mut cw : Option (List (Int × String)) := none
+    for h in procs do
+      if h.ppid != 1 then continue
+      if cw.isNone then cw := some ((← Machine.cwds).getD [])
+      let some l := (cw.getD []).lookup h.pid | continue
+      let cwd ← real l
+      if !ended.any (inside cwd) || live.any (inside cwd) then continue
+      let what := s!"{d h.pid} {cut (Machine.procCmd h) 60} {fdiv h.rss_kb 1024}M"
+      if seen.contains what then continue
+      let now ← Clock.now
+      Store.txn [] fun db => (db.log now none "orphan-seen" none (some what), ())
   return cost
 
 end SwarmLean.Watchd
