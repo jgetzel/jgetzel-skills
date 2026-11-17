@@ -13,7 +13,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
-import { SECTIONS, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
+import { SECTIONS, TABS, tabOf, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -108,36 +108,34 @@ export default class Bar extends View {
         .child(item("a-end", "End agent…", (cx) => { this.step = "end"; cx.notify(); }, true)));
   }
 
-  // The swarm view's sections (Part II.3), with a count where one helps: agents running, tasks left.
+  // The swarm view's four tabs, as the side view's: Now (red count of what needs you), Queue (tasks left), Agents (live), More.
   sections(t, v, sum) {
     const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
-    const agents = (sum?.agents ?? []).filter((a) => a.name !== sum.comms).length;
-    const sys = (sum?.needs ?? []).some((n) => ["watchd", "ci", "memory"].includes(n.kind));
-    const at = v.section ?? "overview", anim = animOn(shared("rw.animations"));
+    const agents = (sum?.agents ?? []).filter((a) => a.name !== sum.comms).length, needs = (sum?.needs ?? []).length;
+    const at = tabOf(v.section ?? "overview"), anim = animOn(shared("rw.animations")), n = { overview: [needs, t.blocked], board: [left, t.dim], agents: [agents, t.dim], more: [0, t.dim] };
     return h_flex().id("sections").flex_none().min_w(0).p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
-      .children(SECTIONS.map(([id, label]) => h_flex().id(`section-${id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
+      .children(TABS.map(([id, label]) => h_flex().id(`section-${id}`).h(30).px(12).gap(8).flex_none().items_center().rounded(9).text_size(13)
         .text_color(at === id ? t.foreground : t.muted).when(at === id && !anim, (el) => el.bg(t.selected))
         // the selected section's highlight fades between sections (II.4c; a slide needs each section's x)
         .when(anim, (el) => el.relative().child(div().id(`sel-${id}`).absolute().inset_0().rounded(9).bg(t.selected).opacity(at === id ? 1 : 0).transition("opacity", 140)))
         // native hover: a script hover rendered the whole bar for each section the pointer crossed
         .when(at !== id, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
-        .on_mouse_down("left", stop).on_click(() => setShared("rw-swarm.view", { ...v, section: id, page: null }))
-        .when(id === "overview", (el) => el.child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(at === id ? t.foreground : t.muted)))
+        .on_mouse_down("left", stop).on_click(() => setShared("rw-swarm.view", { ...v, section: id === "more" ? "activity" : id, page: null }))
         .child(label)
-        .when(id === "agents" && agents > 0, (el) => el.child(div().text_color(t.dim).child(String(agents))))
-        .when(id === "board" && left > 0, (el) => el.child(div().text_color(t.dim).child(String(left))))
-        .when(id === "system" && sys, (el) => el.child(mark(t, "asks", 8)))));
+        .when(n[id][0] > 0, (el) => el.child(div().text_color(n[id][1]).child(String(n[id][0]))))));
   }
 
   // The swarm view's Away (II.3f): `swarm away` / `--back`; it shows what was asked until the rail's summary agrees.
   away(t, sum) {
     const on = this.asked ?? Boolean(sum.away);
     if (this.asked === Boolean(sum.away)) this.asked = null;
-    return h_flex().id("away").h(30).px(12).gap(8).flex_none().items_center().rounded(9).border(1).text_size(13).cursor_pointer()
-      .border_color(on ? t.working : t.border).text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.working + "1c"))
-      .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
-      .on_click((_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"]).catch(() => {}); })
-      .child(on ? "✓ Away" : "Away");
+    const go = (_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"]).catch(() => {}); };
+    const since = sum.away?.since ? new Date(sum.away.since * 1000).toTimeString().slice(0, 5) : "";
+    const btn = (id, label, f) => div().id(id).h(30).px(10).flex().items_center().rounded(8).text_size(13).cursor_pointer().text_color(t.dim)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(f).child(label);
+    return on ? h_flex().id("away").h(34).flex_none().gap(6).items_center().pl(12).rounded(9).border(1).border_color(t.working + "88").text_size(13).text_color(t.foreground)
+        .child(since ? `Away since ${since}` : "Away").child(btn("away-back", "I'm back", go))
+      : btn("away", "Away", go);
   }
 
   // Under the bar, its right edge at the button's (proposal 4), sized to its list: prompts grow by their buttons.

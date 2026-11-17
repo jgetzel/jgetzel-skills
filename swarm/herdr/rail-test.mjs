@@ -596,4 +596,25 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(graphOf([K(5, "open", { deps: [6] }), K(6, "open", { deps: [5] })], "all", false).layers > 0, true); // a cycle ends
   assert.deepEqual(graphOf(null, "all", false), { nodes: [], edges: [], loose: [], layers: 0 });
 }
+
+{ // round 3: the shared parts' pure logic
+  const { plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips } = await import("./mods/rw-rail/tree.js");
+  const K = (id, state, o = {}) => ({ id, state, title: `t${id}`, ...o });
+  assert.equal(plain("## **Fix** the _slow_ `lake build`: see [#12](http://x/12) and snake_case_name, 2*3*4"), "Fix the slow lake build: see #12 and snake_case_name, 2*3*4");
+  assert.equal(plain("> quoted\n# Head"), "quoted\nHead"); assert.equal(plain(null), "");
+  assert.deepEqual(["overview", "board", "agents", "more", "history", "activity"].map(tabOf), ["overview", "board", "agents", "more", "more", "more"]);
+  assert.deepEqual([0, 1, 2, null].map((priority) => prioWord({ priority })), ["P0", "P1", null, null]);
+  assert.equal(staffWords({ comms: "c", agents: [{ name: "c", status: "working" }, { name: "a", status: "working" }, { name: "b", status: "idle" }, { name: "e", status: "ended" }] }), "1 working, 1 idle");
+  assert.equal(heldWhy({ tasks: [K(1, "done")] }).action, "new"); // nothing left: add one
+  assert.equal(heldWhy({ tasks: [K(1, "open")] }), null); // one can start
+  let h = heldWhy({ tasks: [K(179, "claimed", { owner: "ll-124" }), K(1, "open", { deps: [179] }), K(2, "open", { deps: [179] })] });
+  assert.deepEqual([h.text, h.action, h.id], ["Nothing can start: 2 wait on #179, which ll-124 holds.", "task", 179]);
+  h = heldWhy({ tasks: [K(1, "open", { hold: "x" }), K(2, "open")], limits: { queue_only: true } });
+  assert.equal(h.text, "Nothing can start: 1 held, 1 not queued (queue only is on)."); assert.equal(h.action, null);
+  assert.equal(heldWhy({ tasks: [K(1, "claimed")] }).text, "Everything left is being worked on.");
+  const ps = [K(1, "done"), K(3, "done", { owner: "bo" }), K(2, "dropped"), K(4, "open")];
+  assert.deepEqual(pastOf(ps, "done").map((k) => k.id), [3, 1]); assert.deepEqual(pastOf(ps, "done", "BO").map((k) => k.id), [3]); assert.deepEqual(pastOf(ps, "dropped").map((k) => k.id), [2]);
+  const ls = [["a", 5], ["b", 4], ["c", 3], ["d", 2]];
+  assert.deepEqual(fitChips(ls, ["d"], 2), { top: [["a", 5], ["b", 4], ["d", 2]], more: 1 });
+}
 console.log("rail-test: ok");

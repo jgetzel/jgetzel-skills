@@ -2,7 +2,7 @@
 // closed, routine noise left to the log; a post fanned out to N agents is one row, a memory-pressure episode is one
 // row, and runs of spawns, ends, adds and drops fold into one. Log: every event and message, its raw kind, nothing
 // folded. Input is `state --json --view activity` through overOf.
-import { line } from "./tree.js";
+import { line, plain } from "./tree.js";
 
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -134,7 +134,7 @@ export function actItems(s, log) {
     if (!log && !KIND[kind].show) continue;
     const g = `${m.frm}|${m.ts}|${m.body}`;
     if (groups.has(g)) { groups.get(g).dests.push(m.dest); continue; }
-    const it = { key: `m${m.id ?? items.length}`, ts: m.ts ?? 0, who: m.frm ?? "?", kind, raw: m.kind ?? "", dests: [m.dest], ...(log ? { text: one(m.body) } : shortUrls(one(m.body))) };
+    const it = { key: `m${m.id ?? items.length}`, ts: m.ts ?? 0, who: m.frm ?? "?", kind, raw: m.kind ?? "", dests: [m.dest], ...(log ? { text: plain(one(m.body)), body: m.body } : shortUrls(plain(one(m.body)))) };
     groups.set(g, it); items.push(it);
   }
   for (const m of items) { const n = m.dests.length; m.meta = `to ${n > 1 ? `${n} agents` : m.dests[0] === "all" ? "everyone" : m.dests[0] ?? "?"}`; delete m.dests; }

@@ -725,6 +725,44 @@ export function modelCounts(tasks) {
   for (const k of tasks ?? []) { const w = undone.has(k.id) && modelWord(k.model); if (w) n.set(w, (n.get(w) ?? 0) + 1); }
   return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
 }
+// Markdown as a one-line preview reads it: links keep their text, and heading, quote, bold, italic and code markers go.
+export const plain = (x) => String(x ?? "").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/^[ \t]{0,3}(#{1,6}[ \t]+|>[ \t]?)/gm, "")
+  .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2").replace(/(^|[^\w*])([*_])(?=\S)([^*_\n]+?)(?<=\S)\2(?![\w*])/g, "$1$3").replace(/`+([^`\n]*)`+/g, "$1");
+// The view's four tabs (both views), and the four More holds; More's sections count under the More tab.
+export const TABS = [["overview", "Now"], ["board", "Queue"], ["agents", "Agents"], ["more", "More"]];
+export const MORE = [["activity", "Activity"], ["landing", "Landing"], ["system", "System"], ["history", "History"]];
+export const tabOf = (section) => (TABS.some(([id]) => id === section) ? section : "more");
+// P0 and P1 are drawn; P2 is the default and says nothing.
+export const prioWord = (k) => (k?.priority === 0 || k?.priority === 1 ? `P${k.priority}` : null);
+// "2 working, 2 idle": the live agents other than the communicator.
+export function staffWords(s) {
+  const live = liveOf(s), w = live.filter((a) => a.status === "working").length;
+  return `${w} working, ${live.length - w} idle`;
+}
+// Why Next up has nothing to start, in words, with the one thing that changes it: {text, action: "new" | "task", id}.
+// null while something can start.
+export function heldWhy(s) {
+  const tasks = s.tasks ?? [], undone = undoneIds(tasks), open = tasks.filter((k) => k.state === "open");
+  if (!undone.size) return { text: "The board has no open tasks. Add one here, or ask the communicator to plan the next batch.", action: "new" };
+  if (staffOf(s).length) return null;
+  const held = open.filter((k) => k.hold).length, dep = new Map();
+  for (const k of open) if (!k.hold) for (const d of k.deps ?? []) if (undone.has(d)) dep.set(d, (dep.get(d) ?? 0) + 1);
+  const waits = open.filter((k) => !k.hold && (k.deps ?? []).some((d) => undone.has(d))).length;
+  const top = [...dep].sort((x, y) => y[1] - x[1] || x[0] - y[0])[0], by = top && tasks.find((k) => k.id === top[0]);
+  const unq = s.limits?.queue_only ? open.filter((k) => !k.hold && k.qpos == null && !(k.deps ?? []).some((d) => undone.has(d))).length : 0;
+  const parts = [waits && `${waits} wait on ${top ? `#${top[0]}${by?.owner ? `, which ${by.owner} holds` : ""}` : "other tasks"}`, held && `${held} held`, unq && `${unq} not queued (queue only is on)`].filter(Boolean);
+  return { text: parts.length ? `Nothing can start: ${parts.join(", ")}.` : "Everything left is being worked on.", action: top ? "task" : null, id: top?.[0] };
+}
+// The Done or Dropped tasks the Queue lists, newest first, under the filter text.
+export function pastOf(tasks, which, q = "") {
+  const w = q.trim().toLowerCase();
+  return (tasks ?? []).filter((k) => k.state === which && (!w || `#${k.id} ${k.title} ${k.owner ?? ""}`.toLowerCase().includes(w))).sort((x, y) => y.id - x.id);
+}
+// Chips that fit on one line: the first `max` plus any picked; `more` is what is left out.
+export function fitChips(items, picked, max) {
+  const top = items.filter(([l], i) => i < max || picked.includes(l));
+  return { top, more: items.length - top.length };
+}
 // The side Queue under a filter ({models, labels}, several of each at once: AND): being worked on (claimed or blocked,
 // blocked first), Next (nextUp's rows, `starts` kept), Waiting (the rest: held, behind a dep, or unqueued under
 // queue-only). `of`: the open tasks, `shown`: the rows under the filter.

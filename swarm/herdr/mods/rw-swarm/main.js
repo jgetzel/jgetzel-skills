@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
 import { mark, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -30,6 +30,9 @@ const GROUPS = [["asks", "Ask you"], ["hung", "Hung"], ["working", "Working"], [
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const ROWS = 50; // a large swarm's agents drawn per group; the filter finds the rest
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+// A markdown text in full (a task's description, a question, a message); `id` names it, so it is read once.
+const md = (id, text) => div().min_w(0).text_size(12.5).child(TextView.markdown(id, String(text ?? "")));
+const hash = (x) => { let h = 0; for (const c of String(x)) h = (h * 31 + c.charCodeAt(0)) | 0; return (h >>> 0).toString(36); };
 const hhmm = (sec) => { const d = new Date((sec ?? 0) * 1000); return sec ? d.toTimeString().slice(0, 5) : ""; };
 const openUrl = (url) => url && exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]); // prsOf: https only
 
@@ -55,9 +58,8 @@ export default class SwarmTab extends View {
     this.pastFilter = InputState.new({ placeholder: "Filter" });
     this.pastFilter.on("change", (_e, cx) => cx.notify());
     this.form = { p: 2, model: null, effort: null, queue: false, hold: false };
-    // Overview's Message the swarm and Spawn (II.3j)
-    this.swarmMsg = InputState.new({ placeholder: "Write a message…" });
-    this.swarmMsg.on("submit", (_e, cx) => this.post(cx));
+    // the message line's recipient ("comms" or "all"), urgent flag and Spawn (II.3j)
+    this.to = "comms"; this.urgent = false; this.qwhich = "open";
     this.spawnName = InputState.new({ placeholder: "Name" });
     this.spawnName.on("submit", (_e, cx) => this.spawnAgent(cx));
     this.spawnTask = InputState.new({ placeholder: "Task #" });
@@ -129,9 +131,9 @@ export default class SwarmTab extends View {
         if (this.where().cwd !== cwd || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
         if (this.pend && this.at >= (this.actDone ?? 0)) this.pend = null;
-        if (props()?.side && s.comms !== this.sideFor) { // the side view's message line names its communicator
-          this.sideFor = s.comms; this.sideMsg = InputState.new({ placeholder: `Message ${line(s.comms ?? "the swarm", 40)}…` });
-          this.sideMsg.on("submit", (_e, cx) => this.sidePost(cx));
+        if (props()?.view && s.comms !== this.sideFor) { // the message line names its communicator
+          this.sideFor = s.comms; this.sayMsg = InputState.new({ placeholder: `Message ${line(s.comms ?? "the swarm", 40)}…` });
+          this.sayMsg.on("submit", (_e, cx) => this.post(cx));
         }
         this.acts = who === "activity" ? [actItems(s, false), actItems(s, true)] : null; // built here: a render that builds them is cut short
         const blocked = new Set(s.tasks.filter((k) => k.state === "blocked").map((k) => k.id));
@@ -174,8 +176,8 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, args);
-        if (r.code === 0) ok?.(); else { this.pend = null; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
-      } catch (e) { this.pend = null; this.flash = line(e?.message ?? e, 300); }
+        if (r.code === 0) ok?.(); else { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+      } catch (e) { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(e?.message ?? e, 300); }
       this.actDone = Date.now(); this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
     });
   }
@@ -335,7 +337,7 @@ export default class SwarmTab extends View {
     const color = (r) => (r.hot === "blocked" ? t.blocked : t.dim); // amber is only working (proposal 2)
     const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
-    const side = Boolean(props()?.side), shown = side ? this.shownAgent(s) : null;
+    const side = Boolean(props()?.view), shown = side ? this.shownAgent(s) : null;
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
       .text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `agent-${r.a.name}`, 0))
       .when(side, (el) => this.sideRow(el, t, r.a, s, r.a.name === shown)).when(!side, (el) => el.on_click((_e, cx) => this.openAgent(r.a.name, cx)))
@@ -347,9 +349,8 @@ export default class SwarmTab extends View {
         .tooltip(r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
         .child(div().h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(r.a.ctx_tokens >= full ? t.blocked : t.muted)
           .w(`${Math.min(100, Math.round((100 * (r.a.ctx_tokens ?? 0)) / full))}%`).when(this.anim, (el) => el.transition("width", 300)))))
-      .when(side && !big, (el) => el.child(this.modelChip(t, modelWord(r.a.model)) ?? div().w(1)))
-      .when(big, (el) => el.child(div().w(52).flex_none().truncate().text_size(11.5).text_color(t.dim).child(r.a.model ?? ""))
-        .child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
+      .child(div().w(60).flex_none().flex().children([this.modelChip(t, modelWord(r.a.model))].filter(Boolean)))
+      .when(big, (el) => el.child(div().w(48).flex_none().truncate().text_size(11.5).text_color(t.muted).child(pr(r) ? `#${pr(r)}` : "")));
     const group = ([m, label]) => {
       const g = rows.filter((r) => !r.comms && r.mark === m);
       return g.length ? [h_flex().id(`group-${m}`).mx(6).px(10).pt(10).pb(5).gap(8).items_center().text_size(11.5).font_semibold()
@@ -358,12 +359,12 @@ export default class SwarmTab extends View {
         ...(g.length > ROWS ? [div().id(`group-more-${m}`).mx(6).px(10).py(6).text_size(12).text_color(t.dim)
           .child(`${g.length - ROWS} more: filter to find one`)] : [])] : [];
     };
-    const filter = big ? h_flex().w(240).flex_none().child(this.field(t, "filter", this.filter))
-      : side ? this.small(t, "spawn-open", "Spawn…", (cx) => { this.openSpawn(s); cx.notify(); }) : null;
+    const filter = h_flex().gap(8).items_center().when(big, (el) => el.child(div().w(240).flex_none().child(this.field(t, "filter", this.filter))))
+      .when(side, (el) => el.child(this.quiet(t, "spawn-open", "Spawn…", (cx) => { this.openSpawn(s); cx.notify(); })));
     // the columns named (proposal 7): the context column is the one bare number
     const cols = h_flex().id("agent-cols").mx(6).px(10).pb(4).gap(12).items_center().text_size(11).text_color(t.dim)
       .child(div().w(72).flex_none().child("Agent")).child(div().w(9).flex_none()).child(div().flex_1().child("Task")).child(div().flex_none().child("State"))
-      .child(div().w(64).flex_none().child("Context")).when(big, (el) => el.child(div().w(52).flex_none().child("Model")).child(div().w(48).flex_none().child("PR")));
+      .child(div().w(64).flex_none().child("Context")).child(div().w(60).flex_none().child("Model")).when(big, (el) => el.child(div().w(48).flex_none().child("PR")));
     return this.card(t, "agents").pb(6)
       .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
       .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t))).child(cols)
@@ -513,7 +514,8 @@ export default class SwarmTab extends View {
         .child(h_flex().gap(8).min_w(0).items_center().text_size(12.5).child(mark(t, m))
           .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
           .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(ago)))
-        .child(v_flex().pl(17).text_size(13).line_height("19px").text_color(t.muted).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
+        .child(n.kind === "question" ? div().pl(17).child(md(`nq-${n.task.id}-${hash(n.task.question)}`, n.task.question || n.task.title))
+          : v_flex().pl(17).text_size(13).line_height("19px").text_color(t.muted).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
         .child(h_flex().pl(17).gap(8).items_center().flex_wrap()
           .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true)).child(this.btn(t, `send-${i}`, "Send", (cx) => this.answer(cx, n.task), true)))
           .children(acts))
@@ -528,70 +530,18 @@ export default class SwarmTab extends View {
       .when(ns.length > 20, (el) => el.child(div().text_size(12).text_color(t.dim).child(`${ns.length - 20} more`)));
   }
 
-  // The agents in short: the first few, each with its state, its keep-or-end word and stay sign, and its context.
-  fewAgents(t, s) {
-    const rows = agentRows(s), n = rows.filter((r) => !r.comms).length, SIGNS = { hung: "hung", nowaiter: "no waiter", unwoken: "not waking" };
-    const side = Boolean(props()?.side), shown = side ? this.shownAgent(s) : null;
-    return this.card(t, "agents").pb(8)
-      .child(this.head(t, `Agents · ${n}`, null, h_flex().gap(12).child(div().id("spawn-open").flex_none().text_size(12).text_color(t.dim).cursor_pointer()
-        .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.openSpawn(s); cx.notify(); }).child("Spawn…"))
-        .child(this.link(t, "agents-all", "All ›", "agents"))))
-      .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t)))
-      .children(rows.slice(0, 6).map((r, i) => h_flex().id(`few-${i}`).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1)
-        .border_color(t.border).text_size(12.5).cursor_pointer().when(true, (el) => this.hov(t, el, `few-${r.a.name}`, 0))
-        .when(side, (el) => this.sideRow(el, t, r.a, s, r.a.name === shown)).when(!side, (el) => el.on_click((_e, cx) => this.openAgent(r.a.name, cx)))
-        .child(mark(t, r.mark)).child(side ? this.nameLink(t, r.a.name, 72) : div().flex_none().w(72).truncate().font_medium().text_color(t.foreground).child(r.a.name))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.mark === "idle" && !r.comms && r.a.fate?.short ? `${r.state}: ${r.a.fate.short}` : r.task))
-        .when(Boolean(SIGNS[r.a.stay_sign]), (el) => el.child(this.chip(t, SIGNS[r.a.stay_sign], t.blocked)))
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.a.name === shown ? "shown · " : ""}${r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} ctx` : ""}`))))
-      .when(rows.length > 6, (el) => el.child(div().px(16).pt(6).text_size(12).text_color(t.dim).child(`${rows.length - 6} more`)));
-  }
-
-  // The board in short: done of all, the groups as counts, and the next task to staff.
-  fewBoard(t, s) {
-    const rows = boardRows(s), c = s.counts ?? {}, done = c.done ?? 0, total = done + (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
-    const n = (tn) => rows.filter((r) => r.tone === tn).length;
-    const next = rows.filter((r) => r.tone === "foreground")
-      .sort((x, y) => (x.k.qpos ?? 1e9) - (y.k.qpos ?? 1e9) || (x.k.priority ?? -1) - (y.k.priority ?? -1) || x.k.id - y.k.id)[0];
-    return this.card(t, "board-few").px(16).pb(12)
-      .child(this.head(t, `Board · ${done} of ${total} done`, null, this.link(t, "board-all", "Board ›", "board")).px(0))
-      .child(div().h(5).rounded(3).bg(t.border).child(div().h(5).rounded(3).bg(t.working).w(`${total ? (100 * done) / total : 0}%`).when(this.anim, (el) => el.transition("width", 300))))
-      .child(h_flex().mt(8).gap(6).flex_wrap()
-        .when(n("blocked") > 0, (el) => el.child(this.chip(t, `${n("blocked")} waits on you`, t.blocked)))
-        .child(this.chip(t, `${n("muted")} in progress`, t.working)).child(this.chip(t, `${n("foreground")} ready`))
-        .child(this.chip(t, `${n("dim")} waiting or held`, t.dim)))
-      .when(Boolean(next), (el) => el.child(h_flex().mt(8).gap(10).items_center().min_w(0).text_size(12.5)
-        .child(div().flex_none().text_color(t.dim).child("next")).child(this.taskLink(t, next.k.id, `#${next.k.id}`))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(next.k.title))
-        .when(next.k.priority != null, (el) => el.child(this.chip(t, `P${next.k.priority}`)))));
-  }
-
-  // Staffing: auto-spawn and max, Pause (auto-spawn to 0, the number kept for Resume) and Queue only.
-  staffing(t, s) {
-    const l = s.limits ?? {}, key = `rw-swarm.paused:${s.db}`, kept = shared(key);
-    const tick = h_flex().id("queue-only").flex_none().gap(6).items_center().cursor_pointer().text_size(12).text_color(l.queue_only ? t.foreground : t.muted)
-      .on_click((_e, cx) => this.act(cx, ["limits", "--queue-only", l.queue_only ? "off" : "on"]))
-      .child(div().size(14).rounded(4).border(1).border_color(l.queue_only ? t.working : t.border).bg(l.queue_only ? t.working : t.background)
-        .flex().items_center().justify_center().text_size(10).text_color(t.background).child(l.queue_only ? "✓" : "")).child("Queue only");
-    return this.card(t, "staffing").px(16).pb(12)
-      .child(this.head(t, "Staffing", `${(s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length} running`).px(0))
-      .child(h_flex().gap(12).items_center().flex_wrap()
-        .child(this.stepper(t, "min", "Auto-spawn to", l.min, (cx, n) => this.act(cx, ["limits", "--min", String(n)])))
-        .child(this.stepper(t, "max", "Max", l.max, (cx, n) => this.act(cx, ["limits", "--max", String(n)])))
-        .child(l.min > 0 ? this.btn(t, "pause", "Pause", (cx) => { setShared(key, l.min); this.act(cx, ["limits", "--min", "0"]); })
-          : this.btn(t, "resume", "Resume", (cx) => { setShared(key, null); this.act(cx, ["limits", "--min", String(kept || 1)]); }))
-        .child(tick))
-      .when(Boolean(l.held), (el) => el.child(div().mt(8).text_size(12).text_color(t.working).whitespace_normal().child(l.held.replace(/^auto-spawn holding: /, "Holding: "))));
-  }
-
   // The machine line: memory in use, the swarm's share, and the running command that will peak highest (II.3i).
   machineCard(t, s, cx) {
     if (cx && !s.running) this.loadSys(cx);
     const m = s.machine, { on } = this.where(), g = (kb) => Math.round(kb / 1048576), mm = memOf(s.running ? s : this.sys ?? s);
     const used = m?.total_kb ? `${g(m.total_kb - (m.avail_kb ?? 0))} of ${g(m.total_kb)} G in use` : line(m?.line?.replace(/^machine: /, "")) || "not read";
+    const pct = m?.total_kb ? Math.round((100 * (m.total_kb - (m.avail_kb ?? 0))) / m.total_kb) : 0;
     return this.card(t, "machine").px(16).pb(12)
-      .child(this.head(t, on ? line(on, 60) : "This computer", null, this.link(t, "system-all", "System ›", "system")).px(0))
-      .child(h_flex().gap(8).items_center().flex_wrap().child(div().text_size(12.5).text_color(m?.high ? t.blocked : t.muted).child(used))
+      .child(this.head(t, "Machines", null, this.link(t, "system-all", "System ›", "system")).px(0))
+      .child(h_flex().gap(12).items_center().child(div().w(110).flex_none().truncate().child(on ? line(on, 60) : "This computer"))
+        .child(div().flex_1().h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(m?.high ? t.blocked : t.muted).w(`${pct}%`)))
+        .child(div().flex_none().text_size(11.5).text_color(m?.high ? t.blocked : t.dim).child(used)))
+      .child(h_flex().mt(6).gap(8).items_center().flex_wrap()
         .when(mm.swarm_kb >= 1048576, (el) => el.child(this.chip(t, `swarm ${g(mm.swarm_kb)} G`)))
         .when(Boolean(mm.next), (el) => el.child(this.chip(t, `${line(mm.next.agent, 40)}'s ${line(mm.next.key, 60)} peaks at ${g(mm.next.peak_kb)} G`, t.working))));
   }
@@ -607,54 +557,11 @@ export default class SwarmTab extends View {
     });
   }
 
-  // The latest messages, newest first.
-  latest(t, s) {
-    const ms = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts).slice(0, 5);
-    return this.card(t, "latest").pb(10)
-      .child(this.head(t, "Latest", null, this.link(t, "activity-all", "Activity ›", "activity")))
-      .children(ms.map((m, i) => h_flex().id(`latest-${i}`).h(28).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5)
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(new Date(m.ts * 1000).toTimeString().slice(0, 5)))
-        .child(div().flex_none().max_w(90).truncate().font_medium().text_color(t.foreground).child(m.frm))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${m.dest ? `to ${m.dest}: ` : ""}${one(m.body)}`))))
-      .when(!ms.length, (el) => el.child(div().px(16).text_size(12.5).text_color(t.dim).child("No messages yet")));
-  }
-
-  overview(t, s, cols, cx) {
-    const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    if (cols === 1) return col("c1", [this.allNeeds(t, s, cx), this.digest(t, s), this.fewAgents(t, s), this.fewBoard(t, s), this.latest(t, s)].filter(Boolean)); // the side view (II.7)
-    const c1 = [this.allNeeds(t, s, cx), this.digest(t, s), this.messageCard(t, s)].filter(Boolean), c2 = [this.fewAgents(t, s), this.fewBoard(t, s)], c3 = [this.staffing(t, s), this.machineCard(t, s, cx)];
-    if (cols === 3) return h_flex().items_start().gap(10).child(col("c1", c1)).child(col("c2", c2))
-      .child(col("c3", [...c3, this.latest(t, s), this.landing(t, s)]));
-    // laptops: Latest under Message the swarm, where the left column ended (round 4, proposal 6)
-    return h_flex().items_start().gap(10).child(col("c1", [...c1, this.latest(t, s)])).child(col("c2", [...c2, ...c3]));
-  }
-
   // ---- Message the swarm and Spawn (II.3j) --------------------------------------------------------------------------
-  // `swarm post` to the communicator, everyone ("all") or one agent.
+  // `swarm post` to the communicator or everyone.
   post(cx) {
-    const text = this.swarmMsg.value().trim(), to = this.to === "comms" ? this.s?.comms : this.to;
-    if (text && to && !this.busy) this.act(cx, ["post", ...(this.swarmUrgent ? ["--urgent"] : []), "--", to, text], () => { this.swarmMsg.set_value(""); this.swarmUrgent = false; });
-  }
-  messageCard(t, s) {
-    const live = (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).map((a) => a.name);
-    if (!(this.to === "all" || (this.to === "comms" && s.comms) || live.includes(this.to))) this.to = s.comms ? "comms" : "all";
-    const agent = this.to !== "comms" && this.to !== "all";
-    const pill = (id, label, on, f) => div().id(id).flex_none().max_w(160).truncate().h(26).px(10).flex().items_center().rounded(8).border(1).text_size(12).cursor_pointer()
-      .border_color(on ? t.working : t.border).bg(on ? t.working + "22" : t.background).text_color(on ? t.foreground : t.muted)
-      .on_click((_e, cx) => { cx.stop_propagation(); f(); cx.notify(); }).child(label);
-    return this.card(t, "say").px(16).pb(12).gap(8)
-      .child(this.head(t, "Message the swarm", null).px(0))
-      .child(h_flex().gap(6).items_center().flex_wrap().child(div().text_size(12).text_color(t.dim).child("To"))
-        .when(Boolean(s.comms), (el) => el.child(pill("to-comms", "Communicator", this.to === "comms", () => { this.to = "comms"; this.picking = false; })))
-        .child(pill("to-all", "Everyone", this.to === "all", () => { this.to = "all"; this.picking = false; }))
-        .when(live.length > 0, (el) => el.child(pill("to-one", `${agent ? line(this.to, 40) : "An agent"} ▾`, agent, () => { this.picking = !this.picking; }))))
-      .when(Boolean(this.picking), (el) => el.child(h_flex().gap(6).flex_wrap().children(live.slice(0, 40).map((n, i) =>
-        pill(`to-${i}`, line(n, 40), this.to === n, () => { this.to = n; this.picking = false; })))))
-      .child(h_flex().gap(8).items_center().child(this.field(t, "say-msg", this.swarmMsg))
-        .child(div().id("say-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
-          .border_color(this.swarmUrgent ? t.foreground : t.input).bg(this.swarmUrgent ? t.selected : t.background).text_color(this.swarmUrgent ? t.foreground : t.muted)
-          .on_click((_e, cx) => { this.swarmUrgent = !this.swarmUrgent; cx.notify(); }).child("Urgent"))
-        .child(this.btn(t, "say-send", "Send", (cx) => this.post(cx), true)));
+    const text = this.sayMsg?.value().trim(), to = this.to === "all" ? "all" : this.s?.comms ?? "all";
+    if (text && !this.busy) this.act(cx, ["post", ...(this.urgent ? ["--urgent"] : []), "--", to, text], () => { this.sayMsg.set_value(""); this.urgent = false; });
   }
   // shortcut: names come from the overview's agents, so a newer ended one can collide; spawn refuses and says so.
   openSpawn(s) {
@@ -681,17 +588,13 @@ export default class SwarmTab extends View {
         .child(this.btn(t, "sp-go", this.busy ? "Spawning…" : "Spawn", (cx) => this.spawnAgent(cx), true)));
   }
 
-  // ---- the side view (II.7) ----
-  sidePost(cx) {
-    const text = this.sideMsg?.value().trim(), to = this.s?.comms ?? "all";
-    if (text && !this.busy) this.act(cx, ["post", "--", to, text], () => this.sideMsg.set_value(""));
-  }
-  // The agent whose terminal has the focus, if it is one of this swarm's.
+  // ---- the parts both views are laid out from (II.3, II.7) ----
+  // The shown space's agent: the one whose terminal has the focus, if it is one of this swarm's.
   shownAgent(s) {
     const f = focused()?.terminal, { on } = this.where();
     return f ? (s.agents ?? []).find((a) => a.hc && addrOf(a.hc, on) === f)?.name ?? null : null;
   }
-  // A row of the side view's agents: a click shows its terminal, its name opens its page, a right click its menu.
+  // A row of agents: a click shows its terminal, its name opens its page, a right click its menu.
   sideRow(el, t, a, s, shown) {
     const { cwd, on } = this.where();
     return el.when(shown, (el) => el.bg(t.selected).rounded(7)).on_click((_e, cx) => this.focus(a.name, cx))
@@ -702,11 +605,9 @@ export default class SwarmTab extends View {
     return div().id(`name-${name}`).w(w).flex_none().truncate().font_medium().text_color(t.foreground).cursor_pointer().hover((st) => st.underline())
       .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(name); }).child(name);
   }
-  // The section the side view's tab names; "more" and the pages it opens are the fourth tab.
+  // The tab a page came from: Now, Queue, Agents or More.
   secLabel() {
-    const sec = shared("rw-swarm.view")?.section ?? "overview";
-    if (props()?.side) return { overview: "Now", board: "Queue", agents: "Agents" }[sec] ?? "More";
-    return SECTIONS.find(([id]) => id === sec)?.[1] ?? "Overview";
+    return TABS.find(([id]) => id === tabOf(shared("rw-swarm.view")?.section ?? "overview"))[1];
   }
   // A model as a word in a chip; the word carries the meaning, the colour comes from the theme.
   modelChip(t, word) {
@@ -715,33 +616,75 @@ export default class SwarmTab extends View {
     return div().flex_none().px(6).rounded(4).border(1).border_color(c + "66").text_size(11).text_color(c).child(word);
   }
   labelChip(t, text) { return div().flex_none().px(6).rounded(4).bg(t.border).text_size(11).text_color(t.muted).child(text); }
-  // The staffing bar under the head, on every tab: who works, and auto-spawn and max with the number moving at once.
-  staffBar(t, s) {
-    const l = s.limits ?? {}, live = liveOf(s), working = live.filter((a) => a.status === "working").length, p = this.pend ?? {};
+  prioChip(t, k) {
+    const p = prioWord(k), c = p === "P0" ? t.blocked : t.working;
+    return p ? div().flex_none().px(5).rounded(4).border(1).border_color(c + (p === "P0" ? "" : "88")).text_size(11).text_color(c).child(p) : null;
+  }
+  // A quiet text button in a row: dim, full contrast under the pointer (native hover).
+  quiet(t, id, label, onClick, tip) {
+    const el = div().id(id).flex_none().h(28).px(8).flex().items_center().rounded(6).text_size(12).text_color(t.dim).cursor_pointer()
+      .hover((st) => st.text_color(t.foreground).bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+    return tip ? el.tooltip(tip) : el;
+  }
+  // What is empty and why, with the one thing that changes it.
+  emptyLine(t, text, action, red) {
+    return h_flex().px(8).py(6).gap(10).items_center().min_w(0)
+      .child(div().flex_1().min_w(0).whitespace_normal().text_size(12.5).text_color(red ? t.blocked : t.muted).child(text))
+      .when(Boolean(action), (el) => el.child(this.btn(t, action.id, action.label, action.on)));
+  }
+  // A first read: still bars, no pulse.
+  skeleton(t, rows) {
+    const bar = (w) => div().h(12).rounded(5).bg(t.hover).w(w);
+    return this.card(t, "skeleton").w_full().p(14).gap(14).children(Array.from({ length: rows }, (_, i) =>
+      v_flex().id(`sk-${i}`).gap(7).child(bar(["90%", "75%", "85%", "70%"][i % 4])).child(bar(["45%", "40%", "50%", "35%"][i % 4]))));
+  }
+  queueOnly(t, s) {
+    const on = Boolean(s.limits?.queue_only);
+    return h_flex().id("queue-only").flex_none().h(32).gap(6).items_center().cursor_pointer().text_size(12).text_color(on ? t.foreground : t.muted)
+      .tooltip("On: auto-spawn starts only queued tasks")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, ["limits", "--queue-only", on ? "off" : "on"]); })
+      .child(div().size(14).rounded(4).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)
+        .flex().items_center().justify_center().text_size(10).text_color(t.background).child(on ? "✓" : "")).child("Queue only");
+  }
+  // The staffing bar under the head (side) or the tabs (full): who works, why auto-spawn holds, Auto-spawn and Max with the
+  // number moving at once, Resume while it is halted, and in the full view Queue only.
+  staffBar(t, s, wide) {
+    const l = s.limits ?? {}, p = this.pend ?? {}, key = `rw-swarm.paused:${s.db}`, [working, idle] = staffWords(s).split(", ");
     const step = (k, label) => {
-      const v = p[k] ?? l[k], b = (id, ch, n) => div().id(`${k}-${id}`).w(24).h(22).flex().items_center().justify_center().rounded(5).text_color(t.foreground).cursor_pointer()
-        .hover((st) => st.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.pend = { ...this.pend, [k]: n }; this.act(cx, ["limits", `--${k}`, String(n)]); })
-        .child(ch);
-      return h_flex().flex_none().gap(6).items_center().child(div().text_color(t.muted).child(label))
-        .child(h_flex().items_center().rounded(6).border(1).border_color(p[k] != null ? t.working + "88" : t.border)
+      const v = p[k] ?? l[k], b = (id, ch, n) => div().id(`${k}-${id}`).w(32).h(32).flex().items_center().justify_center().rounded(6).text_color(t.foreground).cursor_pointer()
+        .hover((st) => st.bg(t.hover)).on_click((_e, cx) => {
+          cx.stop_propagation();
+          if (k === "min" && n === 0 && v) setShared(key, v); // Resume brings it back
+          this.pend = { ...this.pend, [k]: n }; this.act(cx, ["limits", `--${k}`, String(n)]);
+        }).child(ch);
+      return h_flex().flex_none().gap(8).items_center().child(div().text_color(t.muted).child(label))
+        .child(h_flex().items_center().rounded(7).border(1).border_color(p[k] != null ? t.working + "88" : t.border)
           .child(b("dn", "−", Math.max(0, (v ?? 0) - 1)))
-          .child(div().px(3).font_semibold().text_color(p[k] != null ? t.working : t.foreground).child(v == null ? "–" : String(v)))
+          .child(div().min_w(24).flex().justify_center().font_semibold().text_color(p[k] != null ? t.working : t.foreground).child(v == null ? "–" : String(v)))
           .child(b("up", "+", (v ?? 0) + 1)));
     };
-    return h_flex().id("staff-bar").flex_none().mx(12).px(12).py(7).gap(8).items_center().flex_wrap().rounded(10).bg(t.surface).text_size(12.5)
-      .child(div().flex_none().child(h_flex().gap(4).child(div().text_color(t.working).child(`${working} working`)).child(div().text_color(t.dim).child(`· ${live.length - working} idle`))))
-      .child(div().flex_1()).child(step("min", "Auto-spawn")).child(step("max", "Max"));
+    const counts = h_flex().flex_none().child(div().text_color(t.working).child(working)).child(div().text_color(t.muted).child(`, ${idle}`));
+    const held = l.held ? (wide ? l.held.replace(/^auto-spawn/, "Auto-spawn") : l.held.replace(/^auto-spawn /, "")) : "";
+    const heldEl = div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(held);
+    const halted = (l.min ?? 0) === 0 && p.min == null && (s.counts?.open ?? 0) > 0;
+    const resume = halted ? this.btn(t, "resume", "Resume", (cx) => { const k = shared(key) || 1; setShared(key, null); this.pend = { ...this.pend, min: k }; this.act(cx, ["limits", "--min", String(k)]); }) : null;
+    const flash = this.flash && this.flashIn === "bar" ? div().min_w(0).whitespace_normal().text_size(11.5).text_color(t.blocked).child(this.flash) : null;
+    const bar = (wide ? h_flex() : v_flex()).id("staff-bar").flex_none().mx(12).px(14).py(8).rounded(10).bg(t.surface).text_size(12.5);
+    return wide ? bar.gap(18).items_center().flex_wrap().child(counts).child(heldEl).children([resume, step("min", "Auto-spawn"), step("max", "Max"), this.queueOnly(t, s), flash].filter(Boolean))
+      : bar.gap(6).child(h_flex().gap(10).items_center().min_w(0).child(counts).child(heldEl).children([resume].filter(Boolean)))
+        .child(h_flex().gap(10).items_center().child(step("min", "Auto-spawn")).child(div().flex_1()).child(step("max", "Max")))
+        .children([flash].filter(Boolean));
   }
-  // Now · Queue · Agents · More, with their counts: Now's is the red one, and under 380 px it is the only one.
+  // Now · Queue · Agents · More, with their counts (the full view's are in the top bar): Now's is the red one, and under 380 px it is the only one.
   sideTabs(t, s) {
     const sec = shared("rw-swarm.view")?.section ?? "overview", c = s.counts ?? {}, narrow = (this.width ?? 0) < 380;
-    const at = { overview: 0, board: 1, agents: 2 }[sec] ?? 3, needs = needsOf(s).length;
-    const tabs = [["overview", "Now", needs, t.blocked], ["board", "Queue", (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), t.dim], ["agents", "Agents", liveOf(s).length, t.dim], ["more", "More", 0, t.dim]];
+    const at = TABS.findIndex(([id]) => id === tabOf(sec)), needs = needsOf(s).length;
+    const n = { overview: [needs, t.blocked], board: [(c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), t.dim], agents: [liveOf(s).length, t.dim], more: [0, t.dim] };
     return h_flex().id("side-tabs").flex_none().mx(12).p(3).gap(2).rounded(9).border(1).border_color(t.border).bg(t.surface)
-      .children(tabs.map(([id, label, n, color], i) => h_flex().id(`side-tab-${id}`).flex_1().min_w(0).h(28).gap(5).items_center().justify_center().rounded(7).text_size(12.5).cursor_pointer()
+      .children(TABS.map(([id, label], i) => h_flex().id(`side-tab-${id}`).flex_1().min_w(0).h(28).gap(5).items_center().justify_center().rounded(7).text_size(12.5).cursor_pointer()
         .bg(i === at ? t.selected : t.surface).text_color(i === at ? t.foreground : t.muted).hover((st) => st.bg(i === at ? t.selected : t.hover))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.go(id); }).child(label)
-        .when(n > 0 && (!narrow || i === 0), (el) => el.child(div().text_size(11.5).text_color(color).child(String(n))))));
+        .on_click((_e, cx) => { cx.stop_propagation(); this.go(id === "more" ? "more" : id); }).child(label)
+        .when(n[id][0] > 0 && (!narrow || i === 0), (el) => el.child(div().text_size(11.5).text_color(n[id][1]).child(String(n[id][0]))))));
   }
   sideBody(t, s, section, cx) {
     const page = (el) => v_flex().w_full().gap(10).child(el);
@@ -753,17 +696,20 @@ export default class SwarmTab extends View {
     return v_flex().w_full().gap(10).child(h_flex().child(this.btn(t, "more-back", "‹ More", () => this.go("more")))).child(el);
   }
   // A task of Next up or the Queue: id, title, its chips and `right`; a click opens its page. Past the cut it is dim.
-  taskRow(t, k, { n, starts = true, right, spawn, labels = 2 }) {
-    const row = h_flex().id(`sq-${k.id}`).px(8).py(6).gap(6).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover))
-      .on_click(() => this.openTask(k.id)).when(n != null, (el) => el.child(div().w(22).flex_none().text_size(11.5).text_color(t.dim).child(String(n))))
-      .child(div().w(42).flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`))
-      .child(v_flex().flex_1().min_w(0).gap(3).child(div().truncate().text_color(starts ? t.foreground : t.muted).child(k.title ?? ""))
-        .child(h_flex().gap(5).items_center().min_w(0)
-          .when(k.priority === 0, (el) => el.child(div().flex_none().px(5).rounded(4).border(1).border_color(t.blocked).text_size(11).text_color(t.blocked).child("P0")))
-          .child(this.modelChip(t, modelWord(k.model)) ?? div())
-          .children((k.labels ?? []).slice(0, labels).map((l) => this.labelChip(t, l)))
-          .when(k.priority > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`P${k.priority}`)))));
-    return row.when(Boolean(right), (el) => el.child(right)).when(Boolean(spawn), (el) => el.child(spawn));
+  // `wide` lays it out as one line of columns (n, id, title, labels, model, who or why when `who`, the action slot).
+  taskRow(t, k, { n, starts = true, right, spawn, labels = 2, wide, who }) {
+    const tone = starts ? t.foreground : t.muted, model = this.modelChip(t, modelWord(k.model)), prio = this.prioChip(t, k);
+    const row = h_flex().id(`sq-${k.id}`).px(wide ? 14 : 8).py(wide ? 4 : 6).gap(wide ? 12 : 6).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover))
+      .on_click(() => this.openTask(k.id)).when(wide || n != null, (el) => el.child(div().w(22).flex_none().text_size(11.5).text_color(t.dim).child(n == null ? "" : String(n))))
+      .child(div().w(wide ? 48 : 42).flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`));
+    if (wide) return row.child(h_flex().flex_1().min_w(0).gap(8).items_center().child(div().min_w(0).truncate().text_color(tone).child(plain(k.title ?? ""))).children([prio].filter(Boolean)))
+      .child(h_flex().w(170).flex_none().gap(5).overflow_hidden().children((k.labels ?? []).slice(0, 3).map((l) => this.labelChip(t, l))))
+      .child(div().w(60).flex_none().flex().children([model].filter(Boolean)))
+      .when(Boolean(who), (el) => el.child(div().w(190).flex_none().flex().min_w(0).child(right ?? div())))
+      .child(div().w(104).flex_none().flex().justify_end().children([spawn].filter(Boolean)));
+    return row.child(v_flex().flex_1().min_w(0).gap(3).child(div().truncate().text_color(tone).child(plain(k.title ?? "")))
+        .child(h_flex().gap(5).items_center().min_w(0).children([prio, model].filter(Boolean)).children((k.labels ?? []).slice(0, labels).map((l) => this.labelChip(t, l)))))
+      .when(Boolean(right), (el) => el.child(right)).when(Boolean(spawn), (el) => el.child(spawn));
   }
   cutLine(t, text, id) {
     const rule = () => div().flex_1().h(1).bg(t.working + "55");
@@ -777,69 +723,113 @@ export default class SwarmTab extends View {
     return out;
   }
   spawnNow(t, s, k) {
-    return div().id(`spawn-${k.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border(1).border_color(t.border).text_size(12).text_color(t.dim).cursor_pointer()
-      .hover((st) => st.text_color(t.foreground).border_color(t.muted)).tooltip(`Spawn an agent on #${k.id}${k.model ? ` (${k.model})` : ""}`)
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        const args = spawnArgs(nextName(s.comms, [...(s.agents ?? []), ...(this.ended ?? [])].map((a) => a.name)), { model: k.model, task: k.id });
-        if (args) this.act(cx, args);
-      }).child("Spawn now");
+    return this.quiet(t, `spawn-${k.id}`, "Spawn now", (cx) => {
+      const args = spawnArgs(nextName(s.comms, [...(s.agents ?? []), ...(this.ended ?? [])].map((a) => a.name)), { model: k.model, task: k.id });
+      if (args) this.act(cx, args);
+    }, `Spawn an agent on #${k.id}${k.model ? ` (${k.model})` : ""}`);
   }
-  // Now: what needs you, who works, what starts next (II.7).
+  // An agent of Working: mark, name, task over its state words, model, context (a bar when wide).
+  agentRow(t, r, s, wide, shown) {
+    const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000, n = r.a.ctx_tokens, hot = n >= full;
+    const tone = r.hot === "blocked" ? t.blocked : r.mark === "working" ? t.working : t.dim;
+    const model = this.modelChip(t, modelWord(s.tasks?.find((k) => k.id === r.a.task?.id)?.model ?? r.a.model));
+    const ctx = wide ? v_flex().id(`ctx-${r.a.name}`).w(64).flex_none().items_end().gap(3).text_size(11.5).text_color(hot ? t.blocked : t.dim).child(n ? kilo(n) : "")
+        .tooltip(n ? `${kilo(n)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
+        .child(div().w(64).h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(hot ? t.blocked : t.muted).w(`${Math.min(100, Math.round((100 * (n ?? 0)) / full))}%`)))
+      : div().w(34).flex_none().text_size(11.5).text_color(hot ? t.blocked : t.dim).child(n ? kilo(n) : "");
+    return this.sideRow(h_flex().id(`now-${r.a.name}`).px(wide ? 14 : 6).py(5).gap(wide ? 12 : 8).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)), t, r.a, s, shown)
+      .child(mark(t, r.mark)).child(this.nameLink(t, r.a.name, wide ? 80 : 68))
+      .child(v_flex().flex_1().min_w(0).child(div().truncate().text_color(t.muted).child(r.task)).child(div().truncate().text_size(11.5).text_color(tone).child(r.state)))
+      .children([model].filter(Boolean)).child(ctx);
+  }
+  // Working: a row per live agent; it is not drawn at zero (the staffing bar says 0 working).
+  workingCard(t, s, wide) {
+    const work = agentRows(s).filter((r) => !r.comms), shown = this.shownAgent(s);
+    if (!work.length && !this.spawning) return null;
+    return this.card(t, "now-working").p(6)
+      .child(h_flex().px(8).pt(2).pb(4).gap(8).items_center().child(div().flex_none().text_color(t.foreground).font_medium().child("Working")).child(div().flex_1())
+        .when(wide, (el) => el.child(this.quiet(t, "spawn-open", "Spawn…", (cx) => { this.openSpawn(s); cx.notify(); }))))
+      .when(Boolean(this.spawning), (el) => el.child(this.spawnForm(t)))
+      .children(work.map((r) => this.agentRow(t, r, s, wide, r.a.name === shown)));
+  }
+  // Next up: startable tasks in auto-spawn's order with the cut line; when none start, why.
+  nextCard(t, s, wide) {
+    const narrow = (this.width ?? 0) < 380, up = nextUp(s, narrow), why = heldWhy(s), labels = labelCounts(s.tasks), N = wide ? 10 : 7;
+    const act = !why ? null : why.action === "new" ? { id: "ne-new", label: "New task", on: (cx) => { this.newOpen = true; this.qwhich = "open"; this.go("board"); cx.notify(); } }
+      : why.action === "task" ? { id: "ne-show", label: `Show #${why.id}`, on: () => this.openTask(why.id) } : null;
+    const rows = this.withCut(t, up.rows.slice(0, N), up.text, (r) => this.taskRow(t, r.k, { wide, starts: r.starts, labels: narrow ? 1 : 2, spawn: narrow ? null : this.spawnNow(t, s, r.k) }));
+    const strip = labels.length && !wide && !narrow ? fitChips(labels, [], 4) : null;
+    return this.card(t, "now-next").p(6)
+      .child(h_flex().px(8).pt(2).pb(8).gap(8).items_center().child(div().flex_none().font_medium().text_color(t.foreground).child("Next up"))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(wide || !narrow ? "in the order auto-spawn starts them" : ""))
+        .when(!wide, (el) => el.child(this.queueOnly(t, s))).child(this.link(t, "next-queue", "Queue ›", "board")))
+      .when(Boolean(this.error), (el) => el.child(this.emptyLine(t, `Couldn't read the board. swarm state said: ${this.error}. The last good reading stays below until a read succeeds.`,
+        { id: "read-again", label: "Read again", on: (cx) => { this.loading = false; this.refresh(cx); } }, true)))
+      .children(rows)
+      .when(!up.rows.length && Boolean(why) && why.action !== "new", (el) => el.child(this.cutLine(t, up.text, "cut")))
+      .when(!up.rows.length && Boolean(why), (el) => el.child(this.emptyLine(t, why.text, act)))
+      .when(Boolean(strip), (el) => el.child(h_flex().id("by-label").mt(6).px(8).pt(8).gap(6).items_center().overflow_hidden().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim)
+        .children(strip.top.map(([l, n], i) => div().id(`by-${l}`).flex_none().cursor_pointer().hover((st) => st.text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.qf = { models: [], labels: [l] }; this.go("board"); }).child(i < strip.top.length - 1 || strip.more > 0 ? `${l} ${n},` : `${l} ${n}`))
+        .concat(strip.more > 0 ? [div().flex_none().child(`and ${strip.more} more labels`)] : []))));
+  }
+  // Now (side): what needs you, who works, what starts next.
   sideNow(t, s, cx) {
-    const narrow = (this.width ?? 0) < 380, shown = this.shownAgent(s), up = nextUp(s, narrow), labels = labelCounts(s.tasks);
-    const work = agentRows(s).filter((r) => !r.comms), c = ctxOf(s.limits);
-    const kind = (r) => (r.mark === "working" ? r.task : r.a.task && r.mark !== "idle" ? `${r.state} · ${r.task}` : r.state);
-    const agentRow = (r) => this.sideRow(h_flex().id(`now-${r.a.name}`).px(6).py(5).gap(8).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)), t, r.a, s, r.a.name === shown)
-      .child(mark(t, r.mark)).child(this.nameLink(t, r.a.name, 72))
-      .child(div().flex_1().min_w(0).truncate().text_color(r.hot === "blocked" ? t.blocked : t.muted).child(kind(r)))
-      .child(this.modelChip(t, modelWord(s.tasks?.find((k) => k.id === r.a.task?.id)?.model ?? r.a.model)) ?? div())
-      .child(div().w(32).flex_none().text_size(11.5).text_color(r.a.ctx_tokens >= (c.compact || c.nudge || 400000) ? t.blocked : t.dim).child(r.a.ctx_tokens ? kilo(r.a.ctx_tokens) : ""));
-    const note = narrow ? null : div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child("in the order auto-spawn starts them");
-    return v_flex().w_full().gap(10)
-      .child(this.allNeeds(t, s, cx))
-      .child(v_flex().id("now-working").gap(1).child(div().px(6).pb(4).text_size(12).text_color(t.dim).child("Working"))
-        .children(work.map(agentRow)).when(!work.length, (el) => el.child(div().px(6).text_size(12.5).text_color(t.dim).child("No agent is running"))))
-      .child(this.card(t, "now-next").p(6)
-        .child(h_flex().px(8).pt(2).pb(8).gap(8).items_baseline().child(div().flex_none().text_color(t.foreground).child("Next up")).child(note ?? div().flex_1())
-          .child(this.link(t, "next-queue", "Queue ›", "board")))
-        .children(this.withCut(t, up.rows.slice(0, 7), up.text, (r) => this.taskRow(t, r.k, { starts: r.starts, labels: narrow ? 1 : 2, spawn: narrow ? null : this.spawnNow(t, s, r.k) })))
-        .when(!up.rows.length, (el) => el.child(div().px(8).py(4).text_size(12.5).text_color(t.dim).child("Nothing to start")))
-        .when(!narrow && labels.length > 0, (el) => el.child(h_flex().id("by-label").mt(6).px(8).pt(8).gap(5).flex_wrap().items_center().border_t(1).border_color(t.border)
-          .child(div().mr(2).text_size(11.5).text_color(t.dim).child("Open by label"))
-          .children(labels.slice(0, 6).map(([l, n]) => div().id(`by-${l}`).px(6).rounded(4).bg(t.border).text_size(11).text_color(t.muted).cursor_pointer()
-            .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.qf = { models: [], labels: [l] }; this.go("board"); }).child(`${l} ${n}`))
-          .concat(labels.length > 6 ? [div().text_size(11).text_color(t.dim).child(`+${labels.length - 6}`)] : [])))));
+    return v_flex().w_full().gap(10).child(this.allNeeds(t, s, cx)).children([this.workingCard(t, s, false), this.nextCard(t, s, false)].filter(Boolean));
   }
-  // Queue: filter chips, then being worked on, next (numbered, with the cut) and waiting.
-  sideQueue(t, s) {
-    const f = this.qf, narrow = (this.width ?? 0) < 380, q = queueSplit(s, f), c = s.counts ?? {}, CAP = 30;
-    const flip = (key, v) => { const a = f[key]; this.qf = { ...f, [key]: a.includes(v) ? a.filter((x) => x !== v) : [...a, v] }; };
-    const chip = (id, text, on, tone, click) => div().id(id).flex_none().px(8).py(1).rounded(10).border(1).text_size(11.5).cursor_pointer()
+  // The full view's Now: needs you and the queue on the left, who works and the machines on the right; one column when narrow.
+  fullNow(t, s, cx) {
+    const two = (this.width ?? 0) >= 900, col = (id, kids) => v_flex().id(id).min_w(0).gap(10).children(kids.filter(Boolean));
+    const left = col("c1", [this.allNeeds(t, s, cx), this.nextCard(t, s, true)]), right = col("c2", [this.workingCard(t, s, true), this.machineCard(t, s, cx)]);
+    return two ? h_flex().w_full().items_start().gap(12).child(left.w("59%")).child(right.flex_1()) : v_flex().w_full().gap(10).child(left).child(right);
+  }
+  // Model chips and label chips with counts (several pick together: AND), one line and then "n more", and the Showing line.
+  filterRow(t, s, wide) {
+    const f = this.qf, flip = (key, v) => { const a = f[key]; this.qf = { ...f, [key]: a.includes(v) ? a.filter((x) => x !== v) : [...a, v] }; };
+    const chip = (id, text, on, tone, click) => div().id(id).flex_none().px(8).py(2).rounded(10).border(1).text_size(11.5).cursor_pointer()
       .border_color(on ? tone + "99" : t.border).bg(on ? tone + "22" : t.background).text_color(on ? tone : t.muted).hover((st) => st.text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); click(); cx.notify(); }).child(on ? `${text} ✓` : text);
-    const hue = (m) => ({ opus: t.ansi4, fable: t.ansi5 }[m] ?? t.muted), total = q.of;
-    const labels = labelCounts(s.tasks), top = labels.filter(([l], i) => i < 10 || f.labels.includes(l));
-    const on = f.models.length + f.labels.length > 0;
-    const head = (text) => div().px(8).pt(8).pb(4).text_size(11.5).text_color(t.dim).child(text);
-    const doing = q.doing.slice(0, CAP).map((k) => this.taskRow(t, k, { right: div().flex_none().max_w(150).truncate().text_size(11.5).text_color(k.state === "blocked" ? t.blocked : t.muted)
-      .child(k.state === "blocked" ? `${k.owner ?? ""} · asks you` : k.owner ?? "claimed") }));
-    const next = this.withCut(t, q.next.slice(0, CAP), q.text, (r) => this.taskRow(t, r.k, { n: r.n, starts: r.starts, right: div().flex_none().text_size(11.5).text_color(t.dim).child("ready") }));
-    const wait = q.waiting.slice(0, 15).map((r) => this.taskRow(t, r.k, { starts: false, right: div().flex_none().max_w(130).truncate().text_size(11.5).text_color(t.dim).child(line(r.why, 40)) }));
+    const hue = (m) => ({ opus: t.ansi4, fable: t.ansi5 }[m] ?? t.muted), q = queueSplit(this.s, f), on = f.models.length + f.labels.length > 0;
+    const fit = fitChips(labelCounts(s.tasks), f.labels, this.allLabels ? 999 : wide ? 8 : 4);
+    return v_flex().gap(6)
+      .child(h_flex().gap(5).items_center().overflow_hidden()
+        .children(modelCounts(s.tasks).map(([m, n]) => chip(`qf-m-${m}`, `${m} ${n}`, f.models.includes(m), hue(m), () => flip("models", m))))
+        .children(fit.top.map(([l, n]) => chip(`qf-l-${l}`, `${l} ${n}`, f.labels.includes(l), t.foreground, () => flip("labels", l))))
+        .when(fit.more > 0, (el) => el.child(chip("qf-more", `${fit.more} more`, false, t.muted, () => { this.allLabels = true; }))))
+      .when(on, (el) => el.child(h_flex().gap(6).px(2).items_center().text_size(11.5).text_color(t.dim).child(`Showing ${q.shown} of ${q.of}: ${[...f.models, ...f.labels].join(", ")}`)
+        .child(this.quiet(t, "qf-clear", "Clear", () => { this.qf = { models: [], labels: [] }; this.allLabels = false; }))));
+  }
+  // The open queue as groups of rows: being worked on, next with the cut line, waiting. `wide` adds who or why and the actions.
+  queueList(t, s, wide, cx) {
+    const q = queueSplit(s, this.qf), CAP = 30, ql = queueRows(s);
+    const head = (text, n) => h_flex().px(wide ? 14 : 8).pt(10).pb(4).gap(8).text_size(11.5).text_color(t.dim).child(text).child(String(n));
     const more = (n, id) => n > 0 ? [div().id(id).px(8).py(4).text_size(12).text_color(t.dim).child(`${n} more`)] : [];
-    return v_flex().w_full().gap(10)
-      .child(v_flex().gap(6)
-        .child(h_flex().gap(5).flex_wrap().items_center().child(chip("qf-all", `All ${total}`, false, t.muted, () => { this.qf = { models: [], labels: [] }; }))
-          .children(modelCounts(s.tasks).map(([m, n]) => chip(`qf-m-${m}`, `${m} ${n}`, f.models.includes(m), hue(m), () => flip("models", m)))))
-        .child(h_flex().gap(5).flex_wrap().items_center().children(top.map(([l, n]) => chip(`qf-l-${l}`, `${l} ${n}`, f.labels.includes(l), t.foreground, () => flip("labels", l)))))
-        .when(on, (el) => el.child(h_flex().gap(6).px(2).text_size(11.5).text_color(t.dim).child(`Showing ${q.shown} of ${total}: ${[...f.models, ...f.labels].join(", ")} ·`)
-          .child(div().id("qf-clear").text_color(t.working).cursor_pointer().hover((st) => st.underline())
-            .on_click((_e, cx) => { cx.stop_propagation(); this.qf = { models: [], labels: [] }; cx.notify(); }).child("Clear")))))
-      .child(this.card(t, "sq").p(6).gap(1)
-        .when(doing.length > 0, (el) => el.child(head("Being worked on")).children(doing).children(more(q.doing.length - CAP, "sq-more-d")))
-        .when(next.length > 0, (el) => el.child(head("Next, in the order auto-spawn starts them")).children(next).children(more(q.next.length - CAP, "sq-more-n")))
-        .when(wait.length > 0, (el) => el.child(head("Waiting")).children(wait).children(more(q.waiting.length - 15, "sq-more-w")))
-        .when(!q.shown, (el) => el.child(div().px(8).py(6).text_size(12.5).text_color(t.dim).child(on ? "Nothing matches" : "Nothing left on the board"))))
+    const dim = (text) => div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(line(text, 40));
+    const icon = (id, ch, args) => div().id(id).w(20).h(20).flex().items_center().justify_center().rounded(5).text_size(12).text_color(t.dim).cursor_pointer()
+      .hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, args); }).child(ch);
+    const doing = q.doing.slice(0, CAP).map((k) => this.taskRow(t, k, { wide, who: wide,
+      right: div().min_w(0).truncate().text_size(11.5).text_color(k.state === "blocked" ? t.blocked : t.muted).child(k.state === "blocked" ? `${k.owner ?? ""} asks you` : k.owner ?? "claimed"),
+      spawn: wide && k.owner ? this.quiet(t, `open-${k.id}`, "Open terminal", (cx) => this.focus(k.owner, cx)) : null }));
+    const next = this.withCut(t, q.next.slice(0, CAP), q.text, (r) => {
+      const i = ql.findIndex((x) => x.k.id === r.k.id), mv = (d) => moveArgs(ql, i, d);
+      return this.taskRow(t, r.k, { n: r.n, wide, who: wide, starts: r.starts,
+        right: wide ? h_flex().min_w(0).gap(4).items_center().child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child("ready"))
+          .children(i >= 0 && ql.length > 1 ? [icon(`qm-f-${r.k.id}`, "⤒", mv("front")), icon(`qm-u-${r.k.id}`, "↑", mv("up")), icon(`qm-d-${r.k.id}`, "↓", mv("down"))].filter((_, j) => mv(["front", "up", "down"][j])) : [])
+          : div().text_size(11.5).text_color(t.dim).child("ready"),
+        spawn: wide ? this.spawnNow(t, s, r.k) : null });
+    });
+    const wait = q.waiting.slice(0, 15).map((r) => this.taskRow(t, r.k, { wide, who: wide, starts: false, right: dim(r.why),
+      spawn: wide ? (r.k.qpos != null ? this.quiet(t, `unq-${r.k.id}`, "Unqueue", (cx) => this.act(cx, ["queue", "rm", String(r.k.id)]))
+        : this.quiet(t, `addq-${r.k.id}`, "+ Queue", (cx) => this.act(cx, ["queue", "add", String(r.k.id)]))) : null }));
+    return [...(doing.length ? [head("Being worked on", q.doing.length), ...doing, ...more(q.doing.length - CAP, "sq-more-d")] : []),
+      ...(next.length ? [head("Next, in the order auto-spawn starts them", q.next.length), ...next, ...more(q.next.length - CAP, "sq-more-n")] : []),
+      ...(wait.length ? [head("Waiting", q.waiting.length), ...wait, ...more(q.waiting.length - 15, "sq-more-w")] : []),
+      ...(!q.shown ? [this.emptyLine(t, this.qf.models.length + this.qf.labels.length ? "Nothing matches" : "Nothing left on the board")] : [])];
+  }
+  sideQueue(t, s) {
+    const c = s.counts ?? {};
+    return v_flex().w_full().gap(10).child(this.filterRow(t, s, false))
+      .child(this.card(t, "sq").p(6).gap(1).children(this.queueList(t, s, false)))
       .child(h_flex().gap(14).px(6).text_size(12).text_color(t.dim)
         .child(this.link(t, "sq-done", `Done ${c.done ?? 0} ›`, "history")).child(this.link(t, "sq-dropped", `Dropped ${c.dropped ?? 0} ›`, "history")));
   }
@@ -847,18 +837,30 @@ export default class SwarmTab extends View {
   sideMore(t, s) {
     const m = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts)[0], c = s.counts ?? {}, mm = s.machine, g = (kb) => Math.round(kb / 1048576);
     const run = (s.ci?.runs ?? []).find((r) => r.status === "completed" && r.conclusion !== "cancelled"), open = (this.prs ?? []).filter((p) => p.state === "OPEN").length;
-    const rows = [["activity", "Activity", m ? `${hhmm(m.ts)} ${m.frm}${m.dest ? ` to ${m.dest}` : ""}: ${one(m.body)}` : "No messages yet"],
-      ["landing", "Landing", [run ? (run.conclusion === "success" ? "main green" : run.status !== "completed" ? "checks run" : "main red") : null, this.prs ? `${open} PR${open === 1 ? "" : "s"} open` : null].filter(Boolean).join(" · ") || "main's CI and PRs"],
+    const rows = [["activity", "Activity", m ? `${hhmm(m.ts)} ${m.frm}${m.dest ? ` to ${m.dest}` : ""}: ${plain(one(m.body))}` : "No messages yet"],
+      ["landing", "Landing", [run ? (run.conclusion === "success" ? "main green" : run.status !== "completed" ? "checks run" : "main red") : null, this.prs ? `${open} PR${open === 1 ? "" : "s"} open` : null].filter(Boolean).join(", ") || "main's CI and PRs"],
       ["system", "System", mm?.total_kb ? `This computer ${g(mm.total_kb - (mm.avail_kb ?? 0))} of ${g(mm.total_kb)} G in use` : line(mm?.line?.replace(/^machine: /, "")) || "memory, commands, compute"],
       ["history", "History", `${c.done ?? 0} done, ${c.dropped ?? 0} dropped, ${c.ended ?? 0} agents ended`]];
     return this.card(t, "side-more").p(6).gap(1).children(rows.map(([id, name, text]) => h_flex().id(`more-${id}`).p(10).gap(10).items_center().rounded(6).cursor_pointer()
       .hover((st) => st.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.go(id); })
       .child(div().w(80).flex_none().font_medium().child(name)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(text)).child(div().text_color(t.dim).child("›"))));
   }
-  messageLine(t) {
-    if (!this.sideMsg) return null;
-    return h_flex().id("side-say").flex_none().px(12).pt(8).pb(12).gap(8).items_center().border_t(1).border_color(t.border)
-      .child(this.field(t, "side-msg", this.sideMsg).min_w(0)).child(this.btn(t, "side-send", "Send", (cx) => this.sidePost(cx)));
+  // The message line at the foot of both views: to the communicator or everyone (an agent is messaged from its own page).
+  messageLine(t, s, wide) {
+    if (!this.sayMsg) return null;
+    if (!s.comms) this.to = "all";
+    const opts = s.comms ? [["comms", wide ? "Communicator" : "Comms"], ["all", wide ? "Everyone" : "All"]] : [["all", "Everyone"]];
+    return h_flex().id("say").flex_none().px(wide ? 16 : 12).pt(8).pb(wide ? 14 : 12).gap(8).items_center().border_t(1).border_color(t.border)
+      .child(this.seg(t, "to", opts, this.to, (v) => { this.to = v; }))
+      .child(this.field(t, "say-msg", this.sayMsg).min_w(0))
+      .when(wide, (el) => el.child(div().id("say-urgent").flex_none().h(30).px(10).flex().items_center().rounded(9).border(1).text_size(12.5).cursor_pointer()
+        .border_color(this.urgent ? t.foreground : t.input).bg(this.urgent ? t.selected : t.background).text_color(this.urgent ? t.foreground : t.muted)
+        .on_click((_e, cx) => { this.urgent = !this.urgent; cx.notify(); }).child("Urgent")))
+      .child(this.btn(t, "say-send", "Send", (cx) => this.post(cx)));
+  }
+  // Now · Queue's second row: More's four sections.
+  moreTabs(t, section) {
+    return h_flex().id("more-tabs").flex_none().child(this.seg(t, "more-t", MORE.map(([id, label]) => [id, label]), section, (v) => this.go(v)));
   }
 
   // ---- the agent page (II.3d) ----------------------------------------------------------------------------------------
@@ -918,7 +920,7 @@ export default class SwarmTab extends View {
     const list = tab === "messages" ? msgs.slice(0, 30).map((x, i) => v_flex().id(`am-${i}`).px(16).py(6).gap(2).border_t(1).border_color(t.border)
         .child(h_flex().gap(8).text_size(11.5).text_color(t.dim).child(hhmm(x.ts))
           .child(x.frm === name ? `to ${x.dest === "all" ? "everyone" : x.dest}` : `from ${x.frm}`).when(x.urgent, (el) => el.child(this.chip(t, "urgent", t.blocked))))
-        .child(div().text_size(12.5).line_height("18px").whitespace_normal().text_color(t.foreground).child(one(x.body))))
+        .child(md(`am-${name}-${x.ts}-${i}`, x.body)))
       : tab === "finished" ? done.slice(0, 30).map((k, i) => h_flex().id(`ad-${i}`).h(30).px(16).gap(10).items_center().border_t(1).border_color(t.border).text_size(12.5)
         .child(div().flex_none().text_color(t.dim).child(`#${k.id}`)).child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? ""))
         .when(k.pr != null, (el) => el.child(this.chip(t, `PR #${k.pr}`, t.accent))))
@@ -958,40 +960,6 @@ export default class SwarmTab extends View {
         .children(list.length ? list : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Nothing yet")]));
   }
 
-  // ---- Away (II.3f) ---------------------------------------------------------------------------------------------------
-  // Away: questions wait here and nobody pings you; I'm back ends it.
-  awayBanner(t, s) {
-    const a = s.away, waiting = (s.tasks ?? []).filter((k) => k.state === "blocked").length;
-    return h_flex().id("away-banner").flex_none().px(16).py(8).gap(10).items_center().min_w(0).rounded(10).border(1).border_color(t.ring ?? t.border)
-      .bg(t.working + "14").text_size(12.5)
-      .child(div().flex_1().min_w(0).whitespace_normal().text_color(t.foreground)
-        .child(`Away${a.since ? ` since ${hhmm(a.since)}` : ""}${a.note ? ` (${line(a.note, 80)})` : ""}. Questions wait here and nobody pings you${waiting ? `; ${waiting} waiting now` : ""}.`))
-      .child(this.btn(t, "away-back", "I'm back", (cx) => this.act(cx, ["away", "--back"])));
-  }
-  // `swarm away --back`'s digest, until dismissed (shared with the old panel's key) or the next away.
-  digest(t, s) {
-    const g = s.back, key = `swarm.back:${s.db}`;
-    if (!g || s.away || shared(key) === g.back) return null;
-    const word = g.ci && ({ success: "green", failure: "red" }[g.ci.conclusion] ?? g.ci.conclusion ?? g.ci.status ?? "?");
-    const kv = (k, v) => h_flex().gap(10).items_start().min_w(0).py(3).text_size(12.5)
-      .child(div().w(88).flex_none().text_color(t.dim).child(k)).child(div().flex_1().min_w(0).whitespace_normal().text_color(t.muted).child(v));
-    const rows = [
-      g.questions.length ? kv("Questions", v_flex().gap(4).children(g.questions.slice(0, 8).map((q) => div().id(`back-q-${q.id}`).cursor_pointer()
-        .hover((st) => st.text_color(t.foreground)).on_click(() => this.openTask(q.id)).child(`#${q.id} ${q.owner ?? ""}: ${one(q.question) || q.title}`)))) : null,
-      g.done.length ? kv("Finished", g.done.slice(0, 20).map((k) => `#${k.id} ${k.title ?? ""}`).join(" · ")) : null,
-      g.merged.length ? kv("Merged", g.merged.slice(0, 20).map((k) => `PR #${k.pr ?? "?"} (#${k.id})`).join(" · ")) : null,
-      kv("main CI", g.ci ? h_flex().gap(6).items_center().child(div().text_color(word === "green" ? t.ansi2 : word === "red" ? t.blocked : t.working).child(word))
-        .child(div().text_color(t.dim).child((g.ci.sha ?? "").slice(0, 7))) : "no run seen"),
-      g.ended.length ? kv("Ended", g.ended.slice(0, 20).map((a) => `${a.name}${a.why ? ` (${a.why})` : ""}`).join(" · ")) : null,
-      g.hung.length ? kv("Hung", div().text_color(t.blocked).child(g.hung.slice(0, 20).join(" · "))) : null,
-    ].filter(Boolean);
-    return this.card(t, "digest").pb(10)
-      .child(this.head(t, "While you were away", `${hhmm(g.since)} – ${hhmm(g.back)}${g.note ? ` · "${line(g.note, 60)}"` : ""}`,
-        div().id("digest-x").flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
-          .on_click((_e, cx) => { setShared(key, g.back); cx.notify(); }).child("Dismiss")))
-      .child(v_flex().px(16).children(rows));
-  }
-
   // ---- the Activity section (II.3g) ---------------------------------------------------------------------------------
   // The old panel's Activity: Summary or Full log, the filters, a search; a row opens its task or agent page.
   activityView(t, s) {
@@ -1005,7 +973,9 @@ export default class SwarmTab extends View {
     const shown = all ? actShown(all, f, this.actQ.value()) : [], names = new Set((s.agents ?? []).map((a) => a.name));
     const MAX = 150; // shortcut: 150 rows; the old panel's 200 overran Herdr's render deadline. Upgrade: a virtual list.
     const color = (i, tail) => (tail === "needs you" ? t.blocked : tail === "unresolved" || tail === "ongoing" ? t.ansi3 : null);
+    let mds = 0; // the log's messages in full, as markdown: the first 40 (a TextView per row is dear)
     const row = (i) => {
+      const full = log && Boolean(i.body) && mds < 40 && (i.kind === "msg" || i.kind === "all" || i.kind === "urgent") && ++mds > 0;
       const tail = log ? null : tailOf(i), c = color(i, tail), go = i.task != null ? () => this.openTask(i.task) : names.has(i.who) ? () => this.openAgent(i.who) : null;
       const text = `${i.text}${i.sub ? ` — ${i.sub}` : ""}`;
       const el = h_flex().id(`act-${i.key}`).px(10).py(6).gap(10).items_start().min_w(0).rounded(6)
@@ -1014,8 +984,8 @@ export default class SwarmTab extends View {
         .child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child(hhmm(i.ts)))
         .child(div().w(110).flex_none().truncate().text_size(12).font_medium().text_color(t.muted).child(i.who))
         .when(log, (el) => el.child(div().w(96).flex_none().truncate().text_size(11.5).text_color(t.dim).child(i.raw ?? "")))
-        .child(div().flex_1().min_w(0).text_size(12.5).line_height("18px").when(log, (el) => el.truncate()).when(!log, (el) => el.whitespace_normal())
-          .text_color(c ?? (i.kind === "msg" || i.kind === "all" || i.kind === "urgent" ? t.foreground : t.muted)).child(text))
+        .child(div().flex_1().min_w(0).text_size(12.5).line_height("18px").when(log && !full, (el) => el.truncate()).when(!log, (el) => el.whitespace_normal())
+          .text_color(c ?? (i.kind === "msg" || i.kind === "all" || i.kind === "urgent" ? t.foreground : t.muted)).child(full ? md(`act-${i.key}`, i.body) : text))
         .when(!log && Boolean(i.meta), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(i.meta)))
         .when(Boolean(tail), (el) => el.child(this.chip(t, tail, c ?? (tail.startsWith("PR") ? t.ansi4 : null))));
       // a tooltip, not a HoverCard: a HoverCard in the view keeps its spinners rebuilding the whole view as they turn
@@ -1396,65 +1366,31 @@ export default class SwarmTab extends View {
       this.pastLoading = false; cx.notify();
     });
   }
-  // The Board's head (#190): List | Graph, and with the graph its scope and Done too.
-  boardHead(t, v, g) {
-    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o }), graph = v.board === "graph", all = v.graph === "all";
+  // The Queue's head: Open, Done or Dropped; List or Graph (with the graph's scope); New task.
+  queueHead(t, s, v, g) {
+    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o }), graph = v.board === "graph", all = v.graph === "all", c = s.counts ?? {};
+    const left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), past = this.qwhich !== "open";
     return h_flex().id("b-head").flex_none().px(4).gap(10).items_center().flex_wrap()
+      .when(!graph, (el) => el.child(this.seg(t, "q-which", [["open", `Open ${left}`], ["done", `Done ${c.done ?? 0}`], ["dropped", `Dropped ${c.dropped ?? 0}`]], this.qwhich, (x) => { this.qwhich = x; })))
       .child(this.seg(t, "b-as", [["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
       .when(graph, (el) => el.child(this.seg(t, "b-scope", [["queue", "Queue"], ["all", "All tasks"]], all ? "all" : "queue", (x) => set({ graph: x })))
         .when(all, (el) => el.child(h_flex().id("b-donetoo").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
           .on_click((_e, cx) => { set({ done: !v.done }); cx.notify(); })
-          .child(div().size(13).rounded(3).border(1).border_color(v.done ? t.working : t.border).bg(v.done ? t.working : t.background)).child("Done too")))
-        .child(div().flex_1())
-        .when(Boolean(g), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim)
-          .child(`${g.nodes.length + g.loose.length} tasks · ${g.edges.length} ${g.edges.length === 1 ? "edge" : "edges"}`))));
+          .child(div().size(13).rounded(3).border(1).border_color(v.done ? t.working : t.border).bg(v.done ? t.working : t.background)).child("Done too"))))
+      .child(div().flex_1())
+      .when(Boolean(g), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(`${g.nodes.length + g.loose.length} tasks, ${g.edges.length} ${g.edges.length === 1 ? "edge" : "edges"}`)))
+      .when(!graph && past, (el) => el.child(div().w(160).flex_none().child(this.field(t, "b-pf", this.pastFilter))))
+      .when(!graph, (el) => el.child(this.btn(t, "b-new-open", "New task", (cx) => { this.newOpen = !this.newOpen; cx.notify(); if (this.newOpen) cx.timer.after(50, () => this.title.focus()); })));
   }
-  boardView(t, s, cx) {
-    const v = shared("rw-swarm.view") ?? {};
-    if (v.board === "graph") return v_flex().w_full().max_w(1500).gap(10).child(this.boardHead(t, v, this.graphOf(s, v))).child(this.graphView(t, s, v));
-    if (cx) this.loadPast(cx);
-    const q = queueRows(s), rows = boardRows(s), queued = new Set(q.map((r) => r.k.id)), wide = (this.width ?? 0) >= 1100;
-    const icon = (id, ch, args) => div().id(id).w(20).h(20).flex().items_center().justify_center().rounded(5).text_size(12)
-      .when(Boolean(args), (el) => el.text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.act(cx, args); }))
-      .when(!args, (el) => el.text_color(t.border)).child(ch);
-    const trow = (id, k, kids) => h_flex().id(id).h(32).mx(6).px(10).gap(10).items_center().min_w(0).border_t(1).border_color(t.border).text_size(12.5)
-      .rounded(6).cursor_pointer().when(true, (el) => this.hov(t, el, id, 6)).on_click(() => this.openTask(k.id))
-      .child(div().flex_none().text_size(12).text_color(t.dim).child(`#${k.id}`))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title ?? "")).children(kids);
-    const qOnly = Boolean(s.limits?.queue_only);
-    const queue = this.card(t, "b-queue").pb(8)
-      .child(this.head(t, `Queue · ${q.length}`, "staffed first, in this order", h_flex().id("b-qonly").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
-        .on_click((_e, cx) => this.act(cx, ["limits", "--queue-only", qOnly ? "off" : "on"]))
-        .child(div().size(13).rounded(3).border(1).border_color(qOnly ? t.working : t.border).bg(qOnly ? t.working : t.background)).child("Queue only")))
-      .children(q.length ? q.map((r, i) => trow(`bq-${r.k.id}`, r.k, [
-        this.chip(t, line(r.why, 60), r.why === "next" ? t.ansi2 : r.why === "waits on you" ? t.blocked : t.muted),
-        h_flex().flex_none().gap(2).child(icon(`bq-f-${r.k.id}`, "⤒", moveArgs(q, i, "front"))).child(icon(`bq-u-${r.k.id}`, "↑", moveArgs(q, i, "up")))
-          .child(icon(`bq-d-${r.k.id}`, "↓", moveArgs(q, i, "down"))).child(icon(`bq-x-${r.k.id}`, "✕", ["queue", "rm", String(r.k.id)]))]))
-        : [div().px(16).pb(4).text_size(12.5).text_color(t.dim).child("Nothing queued: auto-spawn staffs by priority")]);
-    const agentOf = (n) => s.agents?.find((a) => a.name === n);
-    const group = (id, title, list, kids, note) => list.length ? this.card(t, id).pb(8).child(this.head(t, `${title} · ${list.length}`, note))
-      .children(list.map((r) => trow(`${id}-${r.k.id}`, r.k, kids(r)))) : null;
-    const prio = (k) => (k.priority != null ? [this.chip(t, `P${k.priority}`)] : []);
-    const plus = (k) => (queued.has(k.id) ? [] : [this.small(t, `bqa-${k.id}`, "+ Queue", (cx) => this.act(cx, ["queue", "add", String(k.id)]))]);
-    const by = (tn) => rows.filter((r) => r.tone === tn), waiting = by("dim");
-    const left = [queue,
-      group("b-you", "Waiting on you", by("blocked"), (r) => [div().flex_none().text_size(12).text_color(t.dim).child(`${r.k.owner ?? ""}${r.k.blocked_s ? ` · ${dur(r.k.blocked_s * 1000)}` : ""}`)]),
-      group("b-prog", "In progress", by("muted"), (r) => [...prio(r.k), div().flex_none().max_w(200).truncate().text_size(12).text_color(t.dim)
-        .child(`${r.k.owner ?? ""}${r.k.lease_left != null ? ` · ${r.k.lease_left > 0 ? `lease ${dur(r.k.lease_left * 1000)}` : "lease expired"}` : ""}`)]),
-      group("b-ready", "Ready", by("foreground"), (r) => [...prio(r.k), ...plus(r.k)]),
-      this.showWaiting ? group("b-wait", "Waiting on other tasks or held", waiting, (r) => [div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child(r.k.hold ? `held: ${r.k.hold}` : r.state), ...plus(r.k)]) : null,
-      waiting.length && !this.showWaiting ? div().id("b-wait-show").px(4).text_size(12).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
-        .on_click((_e, cx) => { this.showWaiting = true; cx.notify(); }).child(`${waiting.length} waiting on other tasks or held ›`) : null].filter(Boolean);
+  // New task (round 4, proposal 8): opens from the head's button.
+  newForm(t) {
     const f = this.form, seg = (...a) => this.seg(t, ...a);
     const tick = (id, label, on, flip) => h_flex().id(id).gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer().on_click((_e, cx) => { flip(); cx.notify(); })
       .child(div().size(13).rounded(3).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)).child(label);
-    // the form opens from a button (round 4, proposal 8): closed, the Done list sits under the button
-    const form = !this.newOpen ? h_flex().id("b-new-row").flex_none().justify_end().child(this.btn(t, "b-new-open", "New task", (cx) => { this.newOpen = true; cx.notify(); cx.timer.after(50, () => this.title.focus()); }))
-      : this.card(t, "b-new").px(16).pb(12).gap(8).child(this.head(t, "New task", "Enter adds", div().id("b-new-x").text_size(12).text_color(t.dim).cursor_pointer()
+    return this.card(t, "b-new").px(16).pb(12).gap(8).w_full().child(this.head(t, "New task", "Enter adds", div().id("b-new-x").text_size(12).text_color(t.dim).cursor_pointer()
         .hover((st) => st.text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.newOpen = false; cx.notify(); }).child("Close")).px(0))
       .child(this.field(t, "b-title", this.title))
-      .child(div().px(10).py(6).rounded(9).border(1).border_color(t.border).bg(t.background).child(Textarea.new(this.newBody).h(64).text_size(12.5)))
+      .child(this.writePreview("new", this.newBody, 64, t))
       .child(h_flex().gap(8).items_center().flex_wrap().child(div().w(120).child(this.field(t, "b-after", this.newAfter)))
         .child(seg("b-p", [[0, "P0"], [1, "P1"], [2, "P2"], [3, "P3"]], f.p, (v) => { f.p = v; }))
         .child(seg("b-m", [[null, "model"], ["opus", "opus"], ["sonnet", "sonnet"], ["haiku", "haiku"]], f.model, (v) => { f.model = v; }))
@@ -1462,25 +1398,38 @@ export default class SwarmTab extends View {
       .child(h_flex().gap(14).items_center().child(tick("b-q", "Add to queue", f.queue, () => { f.queue = !f.queue; }))
         .child(tick("b-h", "Hold", f.hold, () => { f.hold = !f.hold; })).child(div().flex_1())
         .child(this.btn(t, "b-add", this.busy ? "Adding…" : "Add task", (cx) => this.addFull(cx), true)));
-    const which = this.pastKind ?? "done", pq = this.pastFilter.value().trim().toLowerCase();
-    const past = (this.pastTasks ?? []).filter((k) => k.state === which && (!pq || `#${k.id} ${k.title} ${k.owner ?? ""}`.toLowerCase().includes(pq))).sort((x, y) => y.id - x.id);
-    const nDone = (this.pastTasks ?? []).filter((k) => k.state === "done").length, nDrop = (this.pastTasks ?? []).filter((k) => k.state === "dropped").length;
-    const ptab = (id, label) => div().id(`bp-${id}`).cursor_pointer().text_color(which === id ? t.foreground : t.dim).hover((st) => st.text_color(t.foreground))
-      .on_click((_e, cx) => { this.pastKind = id; cx.notify(); }).child(label);
-    const done = this.card(t, "b-done").pb(8)
-      .child(h_flex().px(16).pt(12).pb(8).gap(12).items_center().text_size(13).child(ptab("done", `Done · ${s.counts?.done ?? nDone}`)).child(ptab("dropped", `Dropped · ${s.counts?.dropped ?? nDrop}`))
-        .child(div().flex_1()).child(div().w(160).child(this.field(t, "b-pf", this.pastFilter))))
-      .children(!this.pastTasks ? [div().px(16).py(6).text_size(12.5).text_color(t.dim).child("Reading…")]
-        : past.length ? past.slice(0, 40).map((k) => trow(`bd-${k.id}`, k, [
-          ...(k.pr != null ? [this.chip(t, `PR #${k.pr}`, t.accent)] : []),
-          div().flex_none().max_w(220).truncate().text_size(12).text_color(t.dim).child([k.owner, k.work_s != null ? dur(k.work_s * 1000) : null,
-            k.done_ctx != null ? kilo(Math.max(0, k.done_ctx - (k.claim_ctx ?? 0))) : null].filter(Boolean).join(" · "))]))
-        : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child(`Nothing ${which}`)])
-      .when(past.length > 40, (el) => el.child(div().px(16).pt(4).text_size(12).text_color(t.dim).child(`${past.length - 40} more: filter to find one`)));
-    const col = (id, kids) => v_flex().id(id).flex_1().min_w(0).gap(10).children(kids);
-    const head = this.boardHead(t, v, null);
-    return wide ? v_flex().w_full().max_w(1500).gap(10).child(head).child(h_flex().w_full().items_start().gap(10).child(col("b-left", left)).child(col("b-right", [form, done])))
-      : v_flex().w_full().gap(10).child(head).children([...left, form, done]);
+  }
+  // A markdown field: Write is the textarea, Preview its text drawn as markdown.
+  writePreview(id, st, rows, t) {
+    const on = Boolean(this.prev?.[id]), text = st.value();
+    return v_flex().gap(4).child(this.seg(t, `wp-${id}`, [[false, "Write"], [true, "Preview"]], on, (v) => { this.prev = { ...this.prev, [id]: v }; }))
+      .child(div().px(10).py(6).rounded(9).border(1).border_color(t.border).bg(t.background)
+        .child(!on ? Textarea.new(st).h(rows).text_size(12.5) : text.trim() ? div().min_h(rows).child(md(`prev-${id}-${hash(text)}`, text)) : div().min_h(rows).text_size(12.5).text_color(t.dim).child("Nothing to preview")));
+  }
+  // The columns of the Queue's table, named.
+  tableHead(t, who) {
+    const h = (w, text) => div().w(w).flex_none().child(text);
+    return h_flex().id("q-th").px(14).pb(4).gap(12).items_center().text_size(11).text_color(t.dim).child(h(22, "")).child(h(48, "Task")).child(div().flex_1().child(""))
+      .child(h(170, "Labels")).child(h(60, "Model")).when(who, (el) => el.child(h(190, "Who or why"))).child(h(104, ""));
+  }
+  // The Queue (full view): Open, Done or Dropped as one switch; filters; one table.
+  fullQueue(t, s, cx) {
+    const v = shared("rw-swarm.view") ?? {};
+    if (v.board === "graph") return v_flex().w_full().max_w(1500).gap(10).child(this.queueHead(t, s, v, this.graphOf(s, v))).child(this.graphView(t, s, v));
+    const open = this.qwhich === "open";
+    if (!open && cx) this.loadPast(cx);
+    const past = pastOf(this.pastTasks, this.qwhich, this.pastFilter.value());
+    const rows = past.slice(0, 40).map((k) => this.taskRow(t, k, { wide: true, who: true,
+      right: div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child([k.owner, k.work_s != null ? dur(k.work_s * 1000) : null, k.done_ctx != null ? kilo(Math.max(0, k.done_ctx - (k.claim_ctx ?? 0))) : null].filter(Boolean).join(", ")),
+      spawn: k.pr != null ? this.chip(t, `PR #${k.pr}`, t.accent) : null }));
+    return v_flex().w_full().gap(10).child(this.queueHead(t, s, v, null))
+      .when(this.newOpen, (el) => el.child(this.newForm(t)))
+      .when(open, (el) => el.child(this.filterRow(t, s, true)))
+      .child(this.card(t, "q-table").w_full().p(6).gap(1).child(this.tableHead(t, true))
+        .children(open ? this.queueList(t, s, true, cx)
+          : !this.pastTasks ? [this.emptyLine(t, "Reading…")]
+          : [...rows, ...(past.length > 40 ? [div().px(14).py(4).text_size(12).text_color(t.dim).child(`${past.length - 40} more: filter to find one`)]
+            : !past.length ? [this.emptyLine(t, `Nothing ${this.qwhich}`)] : [])]));
   }
 
   // ---- the Board's graph (#190, research/sw-graph-view.md) ---------------------------------------------------------
@@ -1639,7 +1588,7 @@ export default class SwarmTab extends View {
         .when(k.pr != null, (el) => el.child(small("t-pr", `PR #${k.pr}`, (cx) => this.run(cx, "gh", ["pr", "view", String(k.pr), "--web"]))))
         .when(Boolean(k.ci_conclusion), (el) => el.child(this.chip(t, `CI ${k.ci_conclusion}`, k.ci_conclusion === "success" ? t.ansi2 : t.blocked)))
         .when(k.merge_to_green_s != null, (el) => el.child(`merged to green in ${hm(k.merge_to_green_s)}`))
-        .child(div().whitespace_normal().child(one(k.evidence)))] : null,
+        .child(div().flex_1().min_w(0).child(md(`ev-${k.id}-${hash(k.evidence)}`, k.evidence)))] : null,
       k.created_by || k.created_at ? ["Added", div().child([k.created_by ?? "?", k.created_at ? new Date(k.created_at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : null].filter(Boolean).join(" · "))] : null,
     ].filter(Boolean);
     const says = { "task-add": "added it", claim: "claimed it", spawn: "was started for it", done: "finished it", unblock: "was unblocked", release: "gave it back",
@@ -1649,7 +1598,7 @@ export default class SwarmTab extends View {
       .on_click((_e, cx) => { this.taskTab = id; cx.notify(); }).child(text);
     const list = tab === "messages" ? msgs.slice(0, 40).map((m, i) => v_flex().id(`tm-${i}`).px(16).py(6).gap(2).border_t(1).border_color(t.border)
         .child(h_flex().gap(8).text_size(11.5).text_color(t.dim).child(hhmm(m.ts)).child(`${m.frm} → ${m.dest === "all" ? "everyone" : m.dest}`))
-        .child(div().text_size(12.5).line_height("18px").whitespace_normal().text_color(t.foreground).child(one(m.body))))
+        .child(md(`tm-${k.id}-${m.ts}-${i}`, m.body)))
       : evs.slice(0, 40).map((e, i) => h_flex().id(`te-${i}`).h(30).px(16).gap(10).items_center().border_t(1).border_color(t.border).text_size(12.5)
         .child(div().w(40).flex_none().text_size(11.5).text_color(t.dim).child(hhmm(e.ts))).child(div().flex_none().text_color(t.foreground).child(e.agent ?? "swarm"))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(says[e.kind] ?? (e.kind === "block" ? `asked: ${one(e.data).replace(/^#\d+\s*/, "")}` : e.kind ?? ""))));
@@ -1667,15 +1616,15 @@ export default class SwarmTab extends View {
         .when(open, (el) => el.child(this.twice(t, `drop-${k.id}`, "Drop…", "Drop it for good", (cx) => this.act(cx, ["task", "drop", sid])))))
       .when(k.state === "blocked", (el) => el.child(this.card(t, "t-q", true).px(16).py(12).gap(8)
         .child(div().text_size(12).font_semibold().text_color(t.blocked).child(`${line(k.owner, 60)} asks`))
-        .child(div().text_size(13.5).line_height("19px").whitespace_normal().text_color(t.foreground).child(k.question ?? ""))
+        .child(md(`tq-${k.id}-${hash(k.question)}`, k.question))
         .when(Boolean(st), (el) => el.child(h_flex().gap(8).child(this.field(t, "t-answer", st, true)).child(this.btn(t, "t-send", "Send", (cx) => this.answer(cx, k), true))))))
       .when(Boolean(k.answer), (el) => el.child(this.card(t, "t-a").px(16).py(10).gap(4)
-        .child(div().text_size(12).font_semibold().text_color(t.muted).child("Answered")).child(div().text_size(12.5).whitespace_normal().child(k.answer))))
+        .child(div().text_size(12).font_semibold().text_color(t.muted).child("Answered")).child(md(`ta-${k.id}-${hash(k.answer)}`, k.answer))))
       .child(this.card(t, "t-facts").px(16).py(10).children(facts.map(([key, v]) => kv(key, v))))
       .child(this.editing === "edit"
         ? this.card(t, "t-edit-form").px(16).py(12).gap(8)
           .child(div().h(30).px(10).flex().items_center().rounded(9).border(1).border_color(t.border).bg(t.background).child(Input.new(this.editTitle).h_full().text_size(12.5)))
-          .child(div().px(10).py(6).rounded(9).border(1).border_color(t.border).bg(t.background).child(Textarea.new(this.editBody).h(160).text_size(12.5)))
+          .child(this.writePreview("edit", this.editBody, 160, t))
           .child(h_flex().gap(8).justify_end().child(this.btn(t, "t-edit-no", "Cancel", (cx) => { this.editing = null; cx.notify(); }))
             .child(this.btn(t, "t-edit-go", "Save", (cx) => {
               const title = this.editTitle.value().trim(), body = this.editBody.value();
@@ -1690,18 +1639,16 @@ export default class SwarmTab extends View {
   }
 
   view(t, s, cx) {
-    const v = shared("rw-swarm.view") ?? {}, side = Boolean(props()?.side), w = this.width ?? 0, cols = w >= 1900 ? 3 : w && w < 700 ? 1 : 2;
-    const section = !side && v.section === "more" ? "overview" : v.section ?? "overview";
+    const v = shared("rw-swarm.view") ?? {}, side = Boolean(props()?.side), w = this.width ?? 0;
+    const section = !side && v.section === "more" ? "activity" : v.section ?? "overview"; // the full view's More opens on Activity
     const page = (el) => v_flex().w_full().max_w(1100).gap(10).child(el);
     const body = v.page?.agent ? page(this.agentPage(t, s, v.page)) : Number.isInteger(v.page?.task) ? page(this.taskPage(t, s, v.page))
       : side ? this.sideBody(t, s, section, cx)
-      : section === "overview" ? this.overview(t, s, cols, cx)
+      : section === "overview" ? this.fullNow(t, s, cx)
       : section === "agents" ? page(this.agents(t, s))
-      : section === "board" ? this.boardView(t, s, cx)
-      : section === "activity" ? page(this.activityView(t, s))
-      : section === "landing" ? page(this.landingView(t, s, cx))
-      : section === "system" ? page(this.systemView(t, s, cx))
-      : page(this.historyView(t, s, cx));
+      : section === "board" ? this.fullQueue(t, s, cx)
+      : v_flex().w_full().gap(10).child(this.moreTabs(t, section)).child(page(section === "activity" ? this.activityView(t, s) : section === "landing" ? this.landingView(t, s, cx)
+        : section === "system" ? this.systemView(t, s, cx) : this.historyView(t, s, cx)));
     // II.4c: a section's content fades in (120 ms); a page pushes in from the right 24 px with a fade (160 ms), and Back
     // brings the section in from the left.
     const key = v.page?.agent ? `agent:${v.page.agent}` : Number.isInteger(v.page?.task) ? `task:${v.page.task}` : section;
@@ -1709,9 +1656,8 @@ export default class SwarmTab extends View {
     const e = this.anim && this.ent.enter(`body:${key}`), from = isPage ? 24 : back ? -24 : 0;
     this.keyWas = key;
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
-      .when(Boolean(s.away), (el) => el.child(this.awayBanner(t, s)))
-      .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
-      .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
+      .when(Boolean(this.flash) && this.flashIn !== "bar", (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.error) && (section !== "overview" || Boolean(v.page)), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
       .child(v_flex().id(`body-${key}`).w_full().flex_none().gap(10).child(body)
         .when(this.anim, (el) => el.relative().left(e ? from : 0).opacity(e ? 0 : 1)
           .transition("left", isPage || back ? 160 : 120).transition("opacity", isPage || back ? 160 : 120)));
@@ -1733,21 +1679,25 @@ export default class SwarmTab extends View {
       .child(div().flex_none().max_w(170).truncate().text_size(13).font_semibold().text_color(t.foreground)
         .child(tag ? `Swarm ${tag}` : line(cwd?.replace(/\/+$/, "").replace(/.*\//, "") ?? "Swarm", 60)))
       .child(div().flex_1())
-      .when(Boolean(this.s), (el) => { const away = Boolean(this.s.away); return el.child(h_flex().id("away").flex_none().gap(6).items_center().cursor_pointer().text_size(12.5).text_color(away ? t.foreground : t.muted)
-        .on_click((_e, cx) => this.act(cx, away ? ["away", "--back"] : ["away"]))
-        .child(div().size(14).rounded(4).border(1).border_color(away ? t.working : t.border).bg(away ? t.working : t.background)
-          .flex().items_center().justify_center().text_size(10).text_color(t.background).child(away ? "✓" : "")).child("Away")); })
+      .when(Boolean(this.s), (el) => el.child(this.awayControl(t, this.s)))
       .when(Boolean(cwd), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
         const v = shared("rw-swarm.view") ?? {};
         showSide(run, false); showSwarm(run, setShared, { ...v, section: v.section === "more" ? "overview" : v.section, folder: cwd, machine: on });
       })))
       .child(icon("side-close", "mods/pane/close.svg", () => showSide(run, false)));
   }
-  // While a swarm is first read (II.4c): placeholder rows that pulse; without animations, the words.
+  // The head's one Away control: "Away", or while away "Away since 14:13" with I'm back.
+  awayControl(t, s) {
+    const a = s.away;
+    return a ? h_flex().id("away").flex_none().gap(8).items_center().pl(10).rounded(8).border(1).border_color(t.working + "88").text_size(12).text_color(t.foreground)
+      .child(a.since ? `Away since ${hhmm(a.since)}` : "Away").child(this.quiet(t, "away-back", "I'm back", (cx) => this.act(cx, ["away", "--back"]), "Questions come back to the communicator"))
+      : this.quiet(t, "away", "Away", (cx) => this.act(cx, ["away"]), "Questions wait here and nobody pings you");
+  }
+  // While a swarm is first read: still bars, no pulse; an error says what and offers another read.
   reading(t) {
-    if (this.error || !this.anim) return div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…");
-    const bar = (w) => div().h(12).rounded(5).bg(t.hover).w(w).loop("opacity", { from: 1, to: 0.35, period: 1400 });
-    return v_flex().id("reading").w(560).gap(12).child(bar("100%")).child(bar("72%")).child(bar("86%")).child(bar("54%"));
+    if (!this.error) return v_flex().id("reading").w(560).max_w("100%").child(this.skeleton(t, 4));
+    return v_flex().w(560).max_w("100%").child(this.card(t, "read-err").p(6).child(this.emptyLine(t, `Couldn't read the swarm. swarm state said: ${this.error}`,
+      { id: "read-again", label: "Read again", on: (cx) => { this.loading = false; this.refresh(cx); } }, true)));
   }
   draw(cx) {
     const t = theme(), s = this.s;
@@ -1762,8 +1712,9 @@ export default class SwarmTab extends View {
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
       if (props().side && !this.where().cwd) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
-      return root.when(Boolean(props().side), (el) => el.child(this.staffBar(t, this.s)).child(this.sideTabs(t, this.s)))
-        .child(this.view(t, this.s, cx)).when(Boolean(props().side), (el) => el.children([this.messageLine(t)].filter(Boolean)));
+      const side = Boolean(props().side);
+      return root.child(this.staffBar(t, this.s, !side).mt(side ? 0 : 4)).when(side, (el) => el.child(this.sideTabs(t, this.s)))
+        .child(this.view(t, this.s, cx)).children([this.messageLine(t, this.s, !side)].filter(Boolean));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));
