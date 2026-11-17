@@ -851,7 +851,7 @@ theorem hungStep_hung {db : Db} {n sig : String} {t : Int} (h : (Watchd.hungStep
 
 /-! ## The orphan sweep ends only what an ended agent left in its own scope -/
 
-/-- Every victim runs in the scope of an ended agent, and no live agent runs in that scope. -/
+/-- Every victim runs in a swarm-agent or swarm-job scope of an ended agent, and no live agent owns that scope. -/
 theorem orphanVictims_owned {procs : List Machine.Ps} {scope : Machine.Ps → Option String} {agents : List Agent} {p : Machine.Ps}
     (h : p ∈ Watchd.orphanVictims procs scope agents) :
     ∃ a ∈ agents, a.ended.isSome ∧ ∃ s, scope p = some s ∧ Watchd.ownsScope a.name s = true ∧

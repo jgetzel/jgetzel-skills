@@ -56,6 +56,7 @@ def mac : Option (Int × Int × Psi) := darwinMem "34359738368" (some vm) "2" "{
 
 -- beyond the spec: the cgroup scope, a job's command, an owner's command
 #guard scopeOf "0::/user.slice/app.slice/swarm-agent-ll-1.scope\n" == some "/user.slice/app.slice/swarm-agent-ll-1.scope"
+#guard scopeOf "0::/user.slice/app.slice/swarm-job-ll-j12.scope\n" == some "/user.slice/app.slice/swarm-job-ll-j12.scope"
 #guard scopeOf "0::/user.slice/x.scope\n" == none
 #guard jobCmd "/bin/zsh -c source /h/snap.sh && eval 'make '\\''x'\\''' < /dev/null && pwd" == "make 'x'"
 #guard procCmd (at_ (parsePs "1 0 1 00:01 00:00 /usr/bin/node /x/tsc --watch") 1) == "tsc --watch"

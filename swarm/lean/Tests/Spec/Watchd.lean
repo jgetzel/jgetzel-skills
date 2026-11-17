@@ -254,6 +254,8 @@ def end_agent_kills_its_cgroup_scope (t : T) : IO Unit := do
   let h ← hooks t [("SWARM_PROC", t.d ++ "/proc"), ("SWARM_CGROUP", t.d ++ "/cg")]
   let scope := t.d ++ "/cg/u/swarm-agent-e-1.scope"
   IO.FS.createDirAll (t.d ++ "/proc/77"); IO.FS.createDirAll scope
+  let job := t.d ++ "/cg/u/swarm-job-e-j4.scope"; IO.FS.createDirAll job  -- the agent's job scope, a sibling
+  let other := t.d ++ "/cg/u/swarm-job-f-j4.scope"; IO.FS.createDirAll other
   put (t.d ++ "/proc/77/cgroup") "0::/u/swarm-agent-e-1.scope\n"
   put (scope ++ "/memory.peak") "1048576\n"
   t.q_ "insert into agent(name,cwd,status,last_active,started,claude_pid) values('e',?,'idle',1,1,77)" [.text t.repo]
@@ -261,6 +263,8 @@ def end_agent_kills_its_cgroup_scope (t : T) : IO Unit := do
   discard <| run h (Lifecycle.endAgent row false none)
   unless (← t.q1 "select ended from agent where name='e'").f "ended" != Json.null do fail "e not ended"
   eq (← slurp (scope ++ "/cgroup.kill")) "1"
+  eq (← slurp (job ++ "/cgroup.kill")) "1"
+  eq (← (other ++ "/cgroup.kill" : System.FilePath).pathExists) false
 
 /-- The launch script (SWARM_LAUNCH) faked: each call's argv logged, `onLaunch n` run on the nth, stdout `hc<n>`. -/
 def fakeLaunch (h : Hooks) (launch : String) (onLaunch : Nat → IO Unit := fun _ => pure ()) :
