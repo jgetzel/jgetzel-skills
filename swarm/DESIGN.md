@@ -243,7 +243,8 @@ The Herdr panels' installer and calendar feed are swarm/lean's executable herdr-
 ### Store
 
 `$SWARM_DB`, default `<git common dir>/swarm/swarm.db`, shared by every
-worktree of the repo. Tables: `agent`, `msg` (`kind` includes `notice`),
+worktree of the repo; outside a repo, the db the terminal is the communicator of (its hc label `swarm.comms`), else
+none, and the command names the swarms below the folder. Tables: `agent`, `msg` (`kind` includes `notice`),
 `cursor`, `task` (with `after` and `model`), `lock`, `conflict`, `pairkey`
 and an append-only `event` log for `swarm watch` and `swarm-retro`.
 

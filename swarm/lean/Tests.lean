@@ -9,5 +9,6 @@ import Tests.CiWatch
 import Tests.Run
 import Tests.Hook
 import Tests.Foundation
+import Tests.DbPath
 import Tests.Tasks
 import Tests.Compute

@@ -49,11 +49,19 @@ lean_exe «harness-retro» where
   root := `HarnessRetroMain
   moreLinkArgs := run_io sqliteLink
 
+/-- The C headers' include flags on macOS: elan's leanc has no libc headers there, so the SDK's (`xcrun`); none
+elsewhere, or with no SDK. -/
+def sdkInclude : IO (Array String) := do
+  unless System.Platform.isOSX do return #[]
+  let r ← IO.Process.output { cmd := "xcrun", args := #["--show-sdk-path"] }
+  let sdk := r.stdout.trimAscii.toString
+  return if r.exitCode == 0 && !sdk.isEmpty then #["-isystem", s!"{sdk}/usr/include"] else #[]
+
 /-- The C shim (c/shim.c), compiled against Lean's and sqlite's headers. -/
 target shim.o pkg : FilePath := do
   let src ← inputTextFile (pkg.dir / "c" / "shim.c")
   let inc := (← sqlitePrefix) / "include"
-  buildO (pkg.buildDir / "c" / "shim.o") src #["-I", inc.toString] #["-fPIC", "-O2"] (← getLeanc)
+  buildO (pkg.buildDir / "c" / "shim.o") src (#["-I", inc.toString] ++ (← sdkInclude)) #["-fPIC", "-O2"] (← getLeanc)
 
 extern_lib libswarmshim pkg := do
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "swarmshim") #[← shim.o.fetch]

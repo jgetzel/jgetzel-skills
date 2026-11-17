@@ -52,8 +52,10 @@ def test_claim_run_nothing_fits_is_255 (t : T) : IO Unit := do
   has r.stderr "nothing can run this job"; has r.stderr "needs more than the cap (8 cores"
 
 def test_claim_run_at_the_lowest_priority_and_with_its_claim (t : T) : IO Unit := do
-  let r ← claim t ["run", "--cores", "2", "--", "sh", "-c", "echo $SWARM_CORES nice=$(nice)"]
-  eq r.stdout "2 nice=19\n"; eq r.code 0
+  let r ← claim t ["run", "--cores", "2", "--", "sh", "-c", "echo $SWARM_CORES nice=$(ps -o nice= -p $$ | tr -d ' ')"]  -- `nice` alone prints nothing on macOS
+  -- the lowest priority: 19 on Linux, 20 on macOS when the caller is niced already (`swarm run -- ./check.sh`)
+  unless r.stdout == "2 nice=19\n" || r.stdout == "2 nice=20\n" do fail s!"not the lowest priority: {r.stdout.quote}"
+  eq r.code 0
   eq ((splitlines (← claim t ["op", "here", "ls"]).stdout).filter (·.startsWith "c ")).length 0
   -- where ionice works the job's I/O class is idle
   if (← t.exec ["ionice", "-c3", "true"]).code == 0 then

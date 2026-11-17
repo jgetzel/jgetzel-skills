@@ -393,15 +393,14 @@ def watchd (a : Parsed) : m UInt32 := do
     let db := db.setMeta "watchd" (some mine)
     let db := if once then db else db.setMeta "watchd_run" (some run)  -- what --restart starts again
     match comms with  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
-    | some c =>
-      let db := db.setMeta "comms" (some c)
-      if (db.agent c).any fun x => x.ended.isNone && x.stay.isNone then
-        ((db.setAgent c ({ · with stay := some "the user's channel" })).log now (some c) "stay" none (some "the user's channel"), none)
-      else (db, none)
+    | some c => (nameComms db c now, none)
     | none => (db, none)
   if let some o := refused then
     let ws := words o
     die s!"watchd already runs (pid {ws.headD ""}, terminal {(ws[1]?).getD ""}); `swarm watchd --takeover` replaces it."
+  -- a communicator that joined before anything named it (SKILL.md's order: join, then watchd) gets its terminal's
+  -- labels and the swarm's space now (startSpace)
+  if let some c := comms then Cmd.Agents.markCommsRow c
   -- the auto-spawn number: --max-agents writes it; else the first watchd sets it to the roster the human launched
   let envComms ← env "SWARM_COMMS"
   Store.txn [.agent, .«meta»] fun db =>
@@ -413,17 +412,12 @@ def watchd (a : Parsed) : m UInt32 := do
   let num (k dflt : String) : Float := (parseFloat (strip ((a.str k).getD dflt))).getD 0
   let opts : Opts := { minFreeGib := num "min_free_mem" "4", model := a.str "model", effort := a.str "effort",
                        interval := (a.int "interval").getD 30, once, blockerIdle := num "blocker_idle" "25" }
-  -- the registry (`swarm state --view swarms`): this swarm while this watchd runs; a takeover rewrites it
+  -- the registry (`swarm state --view swarms`): this swarm while this watchd runs or a terminal that joined it lives; a
+  -- takeover rewrites it
   let pid ← Sys.getpid
-  let reg ← Spawn.registryFile (← Spawn.dbPath)
-  if !once then
-    let folder := (← git ["rev-parse", "--show-toplevel"]).getD (← Env.cwd)
-    discard <| Sys.mkdirp (← Spawn.registryDir)
-    discard <| Fs.write reg (Json.encode (Lean.Json.mkObj [("db", .str (← Spawn.dbPath)), ("folder", .str folder),
-      ("tag", match comms with | some c => .str (Spawn.tagOf c) | none => .null), ("comms", match comms with | some c => .str c | none => .null),
-      ("pid", Json.int pid), ("started", Json.int now)]))
+  if !once then Spawn.register comms none (some pid)
   let why ← loop mine comms repo opts
-  if ((← Fs.read reg).bind Json.decode).bind (Json.fint · "pid") == some pid then discard <| Sys.remove reg
+  Spawn.unregisterPid pid
   if let some why := why then die s!"watchd (pid {pid}){why}; exiting"
   return 0
 

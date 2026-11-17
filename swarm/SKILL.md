@@ -20,6 +20,10 @@ with subagents.
    rules; nothing here overrides them.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
+   From a folder that holds several repos (a Herdr space over `~/code`, say), join with the repo's db:
+   `SWARM_DB=<repo>/.git/swarm/swarm.db swarm join` (with neither, every command but `machine`, `cost`, `compute`
+   and `state --view swarms` stops and names the swarms below the folder). Your terminal's `swarm.comms` label then
+   finds the db from any folder, and the swarm's Herdr space is your terminal's, whether join or `watchd` comes first.
    The communicator is not a `SendMessage` address: agents' blocked notices and posts wait in your inbox until your next `swarm wait` delivers them.
 4. The CLI is swarm-lean (`lean/`, Lean 4). Build it once per checkout, and again after a pull that changes
    `lean/`: `~/.claude/skills/swarm/lean/build.sh` (lake from elan, else the repo flake through nix; `install.sh`

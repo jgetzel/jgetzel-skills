@@ -329,11 +329,12 @@ def remoteLines [Monad m] [Clock m] (metas : List Meta) (events : List Event) (t
   return out
 
 /-- Up to six lines: the machine, memory per owner (its largest process), then the other machines
-(machine.machine_note); `ps` is read unless given. -/
-def note [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] (ps : Option (List Ps) := none) : m String := do
+(machine.machine_note); `ps` is read unless given. Without `withDb` (no swarm here) no agent owns a process. -/
+def note [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] (ps : Option (List Ps) := none) (withDb : Bool := true) :
+    m String := do
   let mm ← mem
   let ps ← match ps with | some p => pure p | none => procs
-  let (agents, metas) ← Store.txn [.agent, .«meta»] fun db => (db, (db.agents, db.metas))
+  let (agents, metas) ← if withDb then Store.txn [.agent, .«meta»] fun db => (db, (db.agents, db.metas)) else pure ([], [])
   let hs := holders agents ps
   let events ← if metas.any (·.k == "machines") then Store.txn [.event] fun db => (db, db.events) else pure []
   let gib (k : Int) : String := fixed (Float.ofInt k / 1048576) 1

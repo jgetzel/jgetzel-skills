@@ -196,7 +196,7 @@ def sw (t : T) (who : String) (args : List String) (o : Opts := {}) : IO R := do
   let path := match ← t.fakebin with | some fb => s!"{fb}:{bp}" | none => bp
   let mut env : List (String × Option String) :=
     [("SWARM_DB", some t.db), ("SWARM_NAME", some who), ("HC_TERMINAL_ID", o.hc), ("PATH", some path),
-     ("XDG_DATA_HOME", some (← xdg))]
+     ("XDG_DATA_HOME", some (← xdg)), ("SWARM_HERE", none)]  -- the launcher's (`swarm run -- ./check.sh`) names another checkout
   if let some l ← t.launchR.get then env := env ++ [("SWARM_LAUNCH", some l)]
   for (k, v) in o.env do env := (env.filter (·.1 ≠ k)) ++ [(k, v)]
   -- a faked /proc is Linux's layout; macOS reads sysctl, vm_stat and lsof instead

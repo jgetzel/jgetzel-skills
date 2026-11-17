@@ -96,7 +96,8 @@ mkdir -p \"$d/claims\" \"$d/queue\" || exit 1
 num() { case $1 in ''|*[!0-9]*) return 1;; esac; }
 okid() { case $1 in ''|*[!A-Za-z0-9._-]*) echo 'bad id' >&2; exit 2;; esac; }
 sample() {
-  if [ \"$(uname)\" = Darwin ]; then
+  # a faked machine (SWARM_COMPUTE_STAT, SWARM_COMPUTE_MEM: Linux's files) is read on macOS too
+  if [ \"$(uname)\" = Darwin ] && [ -z \"$SWARM_COMPUTE_STAT$SWARM_COMPUTE_MEM\" ]; then
     ncpu=$(sysctl -n hw.ncpu); total_kb=$(( $(sysctl -n hw.memsize) / 1024 ))
     busy=$(ps -A -o %cpu | awk 'NR>1{s+=$1} END{printf(\"%.2f\", s/100)}')
     avail_kb=$(vm_stat | awk '" ++ DARWIN_MEM_AWK ++ "')

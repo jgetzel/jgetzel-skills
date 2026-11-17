@@ -66,7 +66,7 @@ def claimsHere (t : T) : IO Nat := do
 
 def test_run_env_and_claim_released (t : T) : IO Unit := do
   let cmd := "echo cores=$SWARM_CORES mem=$SWARM_MEM_KB mk=$MAKEFLAGS cargo=$CARGO_BUILD_JOBS nix=$NIX_BUILD_CORES; " ++
-    "echo \"$NIX_CONFIG\" | tr '\\n' '|'; echo; echo claims=$(ls \"$XDG_STATE_HOME/swarm-compute/claims\" | wc -l)"
+    "echo \"$NIX_CONFIG\" | tr '\\n' '|'; echo; echo claims=$(ls \"$XDG_STATE_HOME/swarm-compute/claims\" | wc -l | tr -d ' ')"
   let r ← t.sw "b" ["run", "--cores", "3", "--mem", "1.5", "--", cmd]
   has r.stdout "cores=3 mem=1572864 mk=-j3 cargo=3 nix=3"
   has r.stdout "cores = 3|max-jobs = 1|"
@@ -189,12 +189,18 @@ def test_run_all_is_the_whole_machine (t : T) : IO Unit := do
   let r ← t.sw "b" ["run", "--cores", "all", "--", "true"] { ok := false }
   eq r.code 255; has r.stderr "here: the cap (4 cores, 16.0G) is below the whole machine. Ask for a count of cores, or lift the cap: `swarm compute cap <machine> --cores all --mem all`."
 
+/-- The job's niceness is the lowest: 19, or 20 on macOS when the suite runs niced already (`swarm run -- ./check.sh`);
+`nice` alone prints nothing on macOS, so `ps` reads it. -/
+def lowest (out : String) : IO Unit :=
+  unless hasSub out "nice=19\n" || hasSub out "nice=20\n" do fail s!"not the lowest priority: {out.quote}"
+
 def test_run_lowest_priority (t : T) : IO Unit := do
-  has (← t.sw "b" ["run", "--", "echo nice=$(nice)"]).stdout "nice=19"
+  let probe := "echo nice=$(ps -o nice= -p $$ | tr -d ' ')"
+  lowest (← t.sw "b" ["run", "--", probe]).stdout
   if (← t.exec ["ionice", "-c3", "true"]).code == 0 then
     has (← t.sw "b" ["run", "--", "ionice -p $$"]).stdout "idle"
   discard <| fakeRemote t
-  has (← t.sw "b" ["run", "--on", "laptop", "--", "echo nice=$(nice)"]).stdout "nice=19"
+  lowest (← t.sw "b" ["run", "--on", "laptop", "--", probe]).stdout
 
 /-- A fake `systemd-run` logging its argv to sd.log; its `true` probe fails where sd.fail exists; else it runs what follows `--`. -/
 def fakeSystemdRun (t : T) : IO Unit := do

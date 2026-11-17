@@ -84,8 +84,9 @@ inductive Code | n (c : Int) | lost
 def run (a : Parsed) : m UInt32 := do
   let argv := a.strs "argv"
   if argv.isEmpty then die "usage: swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- <cmd…>"
-  let some top0 ← git ["rev-parse", "--show-toplevel"] | die "not in a git repo"
-  if top0 == "" then die "not in a git repo"
+  let noRepo := "not in a git repo: swarm run snapshots the repo it runs in; `claim run -- <cmd>` claims and runs a command anywhere"
+  let some top0 ← git ["rev-parse", "--show-toplevel"] | die noRepo
+  if top0 == "" then die noRepo
   let top := (← Sys.realpath top0).getD top0
   let common := (← git ["rev-parse", "--path-format=absolute", "--git-common-dir"]).getD ""
   let repo := sanitize (if common.endsWith "/.git" then basename (dirname common) else basename top)

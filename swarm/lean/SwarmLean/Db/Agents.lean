@@ -119,6 +119,36 @@ def bind (db : Db) (name : String) (cwd hc model : Option String) (r : Binding) 
     | none => db
   (db, .ok ())
 
+/-- Meta space set to `sp` unless the swarm has one: the swarm's Herdr space is its communicator terminal's (join, and
+watchd's start when the communicator joined before anything named it). -/
+def recordSpace (db : Db) (sp : Option String) : Db :=
+  match sp with
+  | some s => if (db.getMeta "space").isSome then db else db.setMeta "space" (some s)
+  | none => db
+
+/-- The terminal communicator `c`'s live row is bound to, if any. -/
+def commsTerm (db : Db) (c : String) : Option String :=
+  match db.agent c with
+  | some a => if a.ended.isNone then match a.hc with | some h => if h != "" then some h else none | none => none else none
+  | none => none
+
+/-- join's record of the space after its bind: the joiner's terminal's space `sp`, if the joiner is the communicator. -/
+def joinSpace (db : Db) (envComms : Option String) (n : String) (sp : Option String) : Db :=
+  if isComms db envComms (some n) then recordSpace db sp else db
+
+/-- watchd's start names `c` the communicator (meta comms), a stayer when its row is live and stays for nothing. -/
+def nameComms (db : Db) (c : String) (now : Int) : Db :=
+  let db := db.setMeta "comms" (some c)
+  if (db.agent c).any fun x => x.ended.isNone && x.stay.isNone then
+    (db.setAgent c ({ · with stay := some "the user's channel" })).log now (some c) "stay" none (some "the user's channel")
+  else db
+
+/-- watchd's start, its communicator part: names `c`, then records the space of `c`'s terminal (`spOf`: what hc says of
+it, none for a terminal another swarm's communicator holds) unless the swarm has one. -/
+def startSpace (db : Db) (c : String) (now : Int) (spOf : String → Option String) : Db :=
+  let db := nameComms db c now
+  recordSpace db ((commsTerm db c).bind spOf)
+
 /-- What an agent holds goes when it ends: its stay, claims, locks, conflicts and pair keys (agents._release). -/
 def release (db : Db) (name : String) : Db :=
   let db := db.setAgent name ({ · with stay := none })
