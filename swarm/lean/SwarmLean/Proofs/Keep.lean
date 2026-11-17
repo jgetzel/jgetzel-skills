@@ -423,8 +423,9 @@ macro "sweep_kept_vcs" : tactic => `(tactic| (
 set_option maxHeartbeats 1000000 in
 /-- The sweep keeps every commit and worktree but what it removed: from where it starts to where it ends, `Kept`. -/
 theorem sweep_kept (hg : GitReadsKeep M) (ht : ToolsKeep M) (hwr : WtRemove M) (hbd : BranchD M) (hdr : DelRef M)
-    (hrp : RevParseHead M) (s0 : Rec M) (comms : Option String) (dry : Bool) (nl : List String) :
-    ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweep comms dry nl : RecM M _) ⦃⇓ _ s => ⌜Kept s0 s⌝⦄ := by
+    (hrp : RevParseHead M) (s0 : Rec M) (comms : Option String) (dry : Bool) (nl : List String)
+    (dir : Option String) :
+    ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweep comms dry nl dir : RecM M _) ⦃⇓ _ s => ⌜Kept s0 s⌝⦄ := by
   cases comms <;> sweep_kept_vcs
 
 /-! ## Any run of sweeps, branch sweeps and ends -/
@@ -494,13 +495,13 @@ theorem sweepBranches_kept (hg : GitReadsKeep M) (ht : ToolsKeep M) (hbd : Branc
 /-- One step of watchd or the CLI that touches worktrees or branches: a sweep (watchd's, or `--dry-run`), the branch
 sweep after it, or ending an agent (`swarm end`, lifecycle's end, hung's). -/
 inductive Step
-  | sweep (comms : Option String) (dry : Bool) (notLanded : List String)
+  | sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String)
   | branches (main : String) (ended prot : List String)
   | stop (a : Agent) (force : Bool) (by_ : Option String)
 
 /-- What a step runs. -/
 def Step.run : Step → RecM M Unit
-  | .sweep comms dry nl => discard (Watchd.sweep comms dry nl)
+  | .sweep comms dry nl dir => discard (Watchd.sweep comms dry nl dir)
   | .branches main ended prot => Watchd.sweepBranches main ended prot
   | .stop a force by_ => discard (Lifecycle.endAgent a force by_)
 
@@ -528,9 +529,9 @@ theorem go_discard {x : RecM M α} {s : Rec M} {a : α} (h : (Rec.go x s).1 = .o
 theorem step_inv (H : NoLossTools M) (st : Step) {s0 s1 : Rec M} (h : RunInv s0 s1) :
     (∃ u, (Rec.go (st.run (M := M)) s1).1 = .ok u) ∧ RunInv s0 (Rec.go (st.run (M := M)) s1).2 := by
   cases st with
-  | sweep comms dry nl =>
-    obtain ⟨a, ha, hk⟩ := post_of' (sweep_kept H.gitReads H.tools H.wtRemove H.branchD H.delRef H.revParse s1 comms dry nl)
-    obtain ⟨a', ha', hw⟩ := post_of' (sweep_W1 (M := M) s1 comms dry nl)
+  | sweep comms dry nl dir =>
+    obtain ⟨a, ha, hk⟩ := post_of' (sweep_kept H.gitReads H.tools H.wtRemove H.branchD H.delRef H.revParse s1 comms dry nl dir)
+    obtain ⟨a', ha', hw⟩ := post_of' (sweep_W1 (M := M) s1 comms dry nl dir)
     simp only [Step.run, go_discard ha]
     exact ⟨⟨(), by simp⟩, h.1.trans hk, h.2.join hk.1 hw⟩
   | branches main ended prot =>

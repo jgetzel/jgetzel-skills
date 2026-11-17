@@ -439,6 +439,7 @@ macro "good" : tactic => `(tactic| (
 
 theorem not_or4 {a b c d : Bool} (h : ¬((a || b || c) || d) = true) : a = false ∧ c = false ∧ d = false := by
   cases a <;> cases b <;> cases c <;> cases d <;> simp_all
+theorem not_or_left {x o : Bool} (h : ¬((x || o) = true)) : ¬(x = true) := fun hx => h (by simp [hx])
 theorem not_or3 {a b c : Bool} (h : ¬((a || b) || c) = true) : a = false ∧ b = false ∧ c = false := by
   cases a <;> cases b <;> cases c <;> simp_all
 
@@ -448,15 +449,15 @@ calls logged since, and `landed`'s answer from `Sl` and the log it left. -/
 theorem gate_intro {s0 : Rec M} {c : String} {cur : String × Option String} {L : List (M.World × Call)}
     {f : String × Option String → RecM M (String × Option String)} {S1 : Rec M} {pref suff : List (String × Option String)}
     {g : String → RecM M String} {S2 : Rec M} {rest : List String} {k : Bool}
-    {Sc : Rec M} {cw : List (Int × String)} {h : Int × String → RecM M String}
+    {Sc : Rec M} {cw : List (Int × String)} {h : Int × String → RecM M String} {o : Bool}
     {s Sl Sp Sb : Rec M} {Lst : List (M.World × Call)}
     (hc : (lsLines s0.w).head? = some c)
     (hl : Rec.val ((Watchd.wtLines (lsLines s0.w).tail).mapM f) S1 = pref ++ cur :: suff)
     (hcw : Rec.val Machine.cwds Sc = some cw)
-    (hcont : ¬((cur.1 == realW (M.after s0.w lsArgv none) (c.drop 9).toString || k ||
+    (hcont0 : ¬(((cur.1 == realW (M.after s0.w lsArgv none) (c.drop 9).toString || k ||
       (Rec.val ((((Agents.live s0.db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM g) S2 ++
         rest).any fun y => Watchd.inside y cur.1) ||
-      (Rec.val (cw.mapM h) (Rec.go Machine.cwds Sc).2).any fun y => Watchd.inside y cur.1) = true)
+      (Rec.val (cw.mapM h) (Rec.go Machine.cwds Sc).2).any fun y => Watchd.inside y cur.1) || o) = true)
     (hpre : (Rec.go (cw.mapM h) (Rec.go Machine.cwds Sc).2).2.log <+: s.log)
     (hidle : ¬((decide (M.now (Rec.go (cw.mapM h) (Rec.go Machine.cwds Sc).2).2.w -
           lastAt s.w cur.1 (M.git s.w ["-C", cur.1, "rev-parse", "--absolute-git-dir"] none) < Watchd.SWEEP_IDLE) ||
@@ -478,7 +479,7 @@ theorem gate_intro {s0 : Rec M} {c : String} {cur : String × Option String} {L 
       (some (realW (M.after s0.w lsArgv none) (c.drop 9).toString))) Sb)
       (some (realW (M.after s0.w lsArgv none) (c.drop 9).toString))) Sl).2.log L) :
     Gate s0 (realW (M.after s0.w lsArgv none) (c.drop 9).toString) cur.1 L := by
-  obtain ⟨hm, hu, hp⟩ := not_or4 hcont
+  obtain ⟨hm, hu, hp⟩ := not_or4 (not_or_left hcont0)
   obtain ⟨ht, hn, hs⟩ := not_or3 hidle
   have hsL : s.log <+: L := (List.prefix_append _ _).trans hgit.prefix
   have hE : (Rec.go (cw.mapM h) (Rec.go Machine.cwds Sc).2).2 = (Rec.go Machine.cwds Sc).2 := (mapM_reads hh cw).go _
@@ -539,7 +540,7 @@ macro "gate" : tactic => `(tactic| (
   case hc => assumption
   case hl => assumption
   case hcw => assumption
-  case hcont => assumption
+  case hcont0 => assumption
   case hpre => assumption
   case hidle => assumption
   case hland => assumption
@@ -586,8 +587,9 @@ macro "sweep_vcs" : tactic => `(tactic| (
 
 set_option maxHeartbeats 1000000 in
 /-- W1 on the code: every `git worktree remove` the sweep runs passed `Gate` on the calls before it. -/
-theorem sweep_W1 (s0 : Rec M) (comms : Option String) (dry : Bool) (nl : List String) :
-    ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweep comms dry nl : RecM M _) ⦃⇓ _ s => ⌜GoodFrom s0.log.length (Gate s0) s.log⌝⦄ := by
+theorem sweep_W1 (s0 : Rec M) (comms : Option String) (dry : Bool) (nl : List String)
+    (dir : Option String) :
+    ⦃fun s => ⌜s = s0⌝⦄ (Watchd.sweep comms dry nl dir : RecM M _) ⦃⇓ _ s => ⌜GoodFrom s0.log.length (Gate s0) s.log⌝⦄ := by
   cases comms <;> sweep_vcs
 
 /-! ## On the machines the checks read -/
