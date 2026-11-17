@@ -482,12 +482,13 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
         | none => db
       (db, .ok (fields, r.state))
 
-/-- `task drop`: the open tasks that wait on it. -/
+/-- `task drop`: the open tasks that wait on it; a done task is refused. -/
 def drop (c : Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if (r.state = .claimed || r.state = .blocked) && r.owner != some c.me && !inCharge db c.comms c.me then
+    if r.state = .done then (db, .error s!"#{d id} is done; a done task can't be dropped")
+    else if (r.state = .claimed || r.state = .blocked) && r.owner != some c.me && !inCharge db c.comms c.me then
       (db, .error s!"#{d id} is {r.state.text} by {r.owner.getD "nil"}; only it or the communicator can drop it")
     else
       let db := db.set id fun t => { t with state := .dropped, owner := none, lease_until := none, dropped_at := some c.now }
