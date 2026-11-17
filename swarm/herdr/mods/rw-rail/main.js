@@ -775,7 +775,9 @@ export default class Rail extends View {
         return [...(mc.name ? [rule] : []), ...shown.map((s) => off ? dim(this.tile(t, s, [], tabNames, shownTerm, now, null))
           : this.tile(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, swBy.get(s.id))), ...more];
       }
-      return [...(many ? this.heading(t, mc, now) : []), ...shown.map((s) => off ? dim(this.space(t, s, [], tabNames, shownTerm, now))
+      const none = many && mc.name && !mc.spaces.length && !off ? [h_flex().id(`nospace-${this.mid(mc.name)}`).h(26).flex_none().px(10).gap(6).items_center().text_size(12).text_color(t.dim)
+        .child("No spaces open here ·").child(this.act(t, `newspace-${this.mid(mc.name)}`, "New space", () => run("space.new", { machine: mc.name })))] : [];
+      return [...(many ? this.heading(t, mc, now) : []), ...none, ...shown.map((s) => off ? dim(this.space(t, s, [], tabNames, shownTerm, now))
         : this.space(t, s, rowsBy.get(s.id), tabNames, shownTerm, now, false, swBy.get(s.id))), ...more];
     });
     // Hidden machines, one line each with how many agents there ask you.
