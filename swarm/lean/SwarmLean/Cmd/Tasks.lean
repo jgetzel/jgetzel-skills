@@ -136,7 +136,7 @@ def task (a : Parsed) : m UInt32 := do
     out s!"renewed #{d id} until {← Clock.hhmm u}"
   | "done" =>
     match ← step [.task, .agent, .cursor, .«meta»] (Queue.done c id ((a.str "evidence").getD "")) with
-    | .red => out s!"#{d id} stays yours until a green run: watchd marks it done then, and you can go idle now."
+    | .red => out s!"#{d id} released: your fix is recorded, the task stays open and held until a green run closes it (a newer red run reopens it). Go idle."
     | .done k stay n =>
       out s!"done #{d id}"
       match stay with

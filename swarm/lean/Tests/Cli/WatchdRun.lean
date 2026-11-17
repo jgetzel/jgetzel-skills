@@ -232,30 +232,48 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   eq (← t.q "select 1 x from task where title like 'main red:%'").size 1
   eq (← t.q "select 1 x from msg where kind='system'").size 1
   has ((← t.q1 "select body from task where id=2").f "body") "Later red: run 10"
-  -- the fixer's done keeps its claim; a re-run of the reds leaves an older green on top: still open
+  -- the fixer's done releases the task and holds it, and the agent can stop; a re-run of the reds leaves an older green
+  -- on top: still open
   t.sw_ "a" ["task", "claim", "2"]
-  has (← t.sw "a" ["task", "done", "2", "--evidence", "abc"]).stdout "stays yours"
-  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
+  has (← t.sw "a" ["task", "done", "2", "--evidence", "abc"]).stdout "released"
+  let row ← t.q1 "select state,owner,hold from task where id=2"
+  eq (toJson [row.f "state", row.f "owner", row.f "hold"]) (json% ["open", null, "abc awaiting a green run"])
+  eq (← t.q "select 1 x from event where kind='red-fixed' and data='#2 abc'").size 1
+  eq (← t.sw "a" ["endable", "--why"] { ok := true }).stdout ""
   let rerun := runs.map fun r =>
     if r.f "conclusion" == Json.str "failure" then (r.setObjVal! "status" "in_progress").setObjVal! "conclusion" Json.null else r
   gh rerun; reset; go
-  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
-  -- green closes it, and tells its owner
-  let g := ((runs[0]!.setObjVal! "databaseId" (11 : Int)).setObjVal! "conclusion" "success").setObjVal! "createdAt"
-    "2026-11-08T10:20:00Z"
+  eq ((← t.q1 "select state from task where id=2").f "state") "open"
+  eq ((← t.q1 "select hold from task where id=2").f "hold") "abc awaiting a green run"
+  -- a red run from before the fix leaves the hold; one after it clears it
+  let old := (runs[0]!.setObjVal! "databaseId" (12 : Int)).setObjVal! "createdAt" "2026-11-08T10:12:00Z"
+  runs := #[old] ++ runs
+  gh runs; reset; go
+  has ((← t.q1 "select body from task where id=2").f "body") "Later red: run 12"
+  eq ((← t.q1 "select hold from task where id=2").f "hold") "abc awaiting a green run"
+  let newer := (runs[0]!.setObjVal! "databaseId" (13 : Int)).setObjVal! "createdAt" "2099-01-01T00:00:00Z"
+  runs := #[newer] ++ runs
+  gh runs; reset; go
+  has ((← t.q1 "select body from task where id=2").f "body") "Later red: run 13"
+  eq ((← t.q1 "select hold from task where id=2").f "hold") Json.null
+  -- fixed again: a green run closes the held, unowned task and clears its hold
+  t.sw_ "a" ["task", "claim", "2"]
+  t.sw_ "a" ["task", "done", "2", "--evidence", "def"]
+  eq ((← t.q1 "select hold from task where id=2").f "hold") "def awaiting a green run"
+  let g := ((runs[0]!.setObjVal! "databaseId" (14 : Int)).setObjVal! "conclusion" "success").setObjVal! "createdAt"
+    "2099-06-01T00:00:00Z"
   runs := #[g] ++ runs
   gh runs; reset; go
-  let d ← t.q1 "select state,evidence from task where id=2"
-  let want := s!"green run 11 at {red.take 7}"
-  eq (toJson [d.f "state", d.f "evidence"]) (json% ["done", $want])
-  has ((← t.q1 "select body from msg where dest='a' order by id desc limit 1").f "body") "is done; stop fixing it"
+  let d ← t.q1 "select state,evidence,hold from task where id=2"
+  let want := s!"green run 14 at {red.take 7}"
+  eq (toJson [d.f "state", d.f "evidence", d.f "hold"]) (json% ["done", $want, null])
   -- no live suspect: a new task, and comms hears of it
   t.q_ "update agent set ended=1 where name='a'"; t.q_ "delete from event where kind='ci-red'"
   runs := runs.extract 1 runs.size
   gh runs; reset; t.q_ "delete from ci"
   go
   let dests := (← t.q "select dest from msg where kind='system' order by id").map (·.f "dest")
-  eq dests (json% ["a", "a", "comms"])
+  eq dests (json% ["a", "comms"])
   eq (← t.q "select 1 x from task where title like 'main red:%' and state='open'").size 1
 
 -- ---- swarm run ----

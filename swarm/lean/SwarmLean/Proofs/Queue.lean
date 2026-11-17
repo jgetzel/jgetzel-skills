@@ -180,8 +180,9 @@ theorem done_qinv (c : Ctx) (i : Int) (e : String) (db : Db) (hi : Inv db) (hq :
   rcases done_tidy c i e db with h | h
   · unfold QInv; rw [h, tasksDone_places]; exact hq
   · rw [h]; apply tidy_qinv
-    rcases Board.done_spec c i e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+    rcases Board.done_spec c i e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩ | ⟨f, -, -, -, -, hf, ht, -, -⟩
     · rw [ht]; exact hi.1
+    · rw [ht, set_tasks_ids _ _ _ fun u => (hf u).1]; exact hi.1
     · rw [ht, set_tasks_ids _ _ _ fun u => (hf u).1]; exact hi.1
 
 theorem drop_qinv (c : Ctx) (i : Int) (db : Db) (hi : Inv db) (hq : QInv db) : QInv (Queue.drop c i db).1 := by
