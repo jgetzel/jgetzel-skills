@@ -122,9 +122,9 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
       let b := bs.headD "nil"
       let ls := splitlines (← Lifecycle.uncleanList held b)
       let commits := (ls.filter (·.startsWith "commit ")).length
-      let files := (ls.filter fun l => !l.startsWith "commit " && l != "").length
+      let files := (ls.filter fun l => !l.startsWith "commit " && !l.startsWith "base " && l != "").length
       let pr := ((db.tasks.filter fun r => r.owner == some x.name && r.pr.isSome).getLast?).bind (·.pr)
-      detail := detail ++ [("unlanded", s!"{held}: {files} uncommitted file{if files == 1 then "" else "s"}, {commits} commit{if commits == 1 then "" else "s"} not on {b}{match pr with | some p => s!" (PR #{p})" | none => ""}")]
+      detail := detail ++ [("unlanded", s!"{held}: {files} uncommitted file{if files == 1 then "" else "s"}, {commits} commit{if commits == 1 then "" else "s"} not on {b}{if ls.any (·.startsWith "base ") then " (no such ref there)" else ""}{match pr with | some p => s!" (PR #{p})" | none => ""}")]
       short := short ++ [("unlanded", if files > 0 then "uncommitted work" else "unlanded commits")]
     | none => detail := detail ++ [("unlanded", "all on its base")]
   if has "job" on then

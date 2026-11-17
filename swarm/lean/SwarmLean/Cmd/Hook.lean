@@ -99,6 +99,10 @@ def preTool (name cwd : String) (tool : Option String) (ti : Json) (here : Optio
       let why := match lk.reason with | some r => if r != "" then s!" ({r})" else "" | none => ""
       emit "PreToolUse" none (some s!"{path} is locked by {who} since {← Clock.hhmm (lk.since.getD 0)}{why}. Ask it with `swarm post {who} ...`.")
       return
+    -- a file of another repo (one the task builds on) is not this agent's worktree: lifecycle would judge it by this
+    -- repo's bases and keep the agent forever
+    let here ← Workspaces.main none
+    if here.isSome && (← Workspaces.main (some top)) != here then return
     let shared ← Store.txn [.agent, .task, .event] fun db =>
       let db := db.setAgent name ({ · with wt := some top })
       match db.agents.find? fun a => a.wt == some top && a.name != name && a.ended.isNone with

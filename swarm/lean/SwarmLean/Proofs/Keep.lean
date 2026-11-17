@@ -565,22 +565,30 @@ branch sweeps and ends from any state `s0`, every commit reachable before (from 
 is the HEAD, or below the HEAD, of a worktree `x` that a `worktree remove` in the run took away, on the machine it ran
 on, after `x` passed the sweep's `Gate` (which found it landed: `sweepGate_W1`); and every worktree there before is
 there after, unless a `worktree remove` in the run took it away when it had nothing uncommitted, after it passed
-`Gate`. -/
+`Gate`; and no worktree remove of the run took away a repo that is not one of `m`'s linked worktrees (another repo an
+agent worked in, with no remote, say), nor one any live agent records as its `wt` or `cwd`: `Gate`'s `listed` and
+`unused`. -/
 theorem no_work_lost (hg : GitReadsKeep M) (ht : ToolsKeep M) (hwr : WtRemove M) (hbd : BranchD M) (hdr : DelRef M)
     (hrp : RevParseHead M) (hk : HcKillEnds M) (hr : HcRmKeeps M) (hc : CgroupKillKeeps M) (s0 : Rec M) (steps : List Step) :
     let s := (Rec.go (steps.forM (Step.run (M := M))) s0).2
-    (∀ c, M.Reach s0.w c → M.Reach s.w c ∨ ∃ i w m x k, s.log[i]? = some (w, .cmd (rmArgv m x) none) ∧
+    ((∀ c, M.Reach s0.w c → M.Reach s.w c ∨ ∃ i w m x k, s.log[i]? = some (w, .cmd (rmArgv m x) none) ∧
       GateAny m x (s.log.take i) ∧ M.head w x = some k ∧ M.Anc c k) ∧
     ∀ x, M.There s0.w x → M.There s.w x ∨ ∃ i w m, s.log[i]? = some (w, .cmd (rmArgv m x) none) ∧
-      GateAny m x (s.log.take i) ∧ ¬ M.Dirty w x := by
+      GateAny m x (s.log.take i) ∧ ¬ M.Dirty w x) ∧
+    ∀ i w m x, s0.log.length ≤ i → s.log[i]? = some (w, .cmd (rmArgv m x) none) → ∃ sk : Rec M, x ≠ m ∧
+      (∃ e ∈ Watchd.wtLines (lsLines sk.w).tail, ∃ w' : M.World, x = realW w' e.1) ∧
+      ∃ w' : M.World, ∀ p ∈ ((Agents.live sk.db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != ""),
+        Watchd.inside (realW w' p) x = false := by
   intro s
   obtain ⟨-, ⟨-, hR, hT⟩, hG⟩ := run_inv ⟨hg, ht, hwr, hbd, hdr, hrp, hk, hr, hc⟩ steps (s := s0) ⟨Kept.refl _, GoodFrom.base _ _⟩
-  refine ⟨fun c hc => ?_, fun x hx => ?_⟩
+  refine ⟨⟨fun c hc => ?_, fun x hx => ?_⟩, fun i w m x hi he => ?_⟩
   · rcases hR c hc with h | ⟨i, w, m, x, k, hi, he, hh, ha⟩
     · exact .inl h
     · exact .inr ⟨i, w, m, x, k, he, hG i w m x hi he, hh, ha⟩
   · rcases hT x hx with h | ⟨i, w, m, hi, he, hd⟩
     · exact .inl h
     · exact .inr ⟨i, w, m, he, hG i w m x hi he, hd⟩
+  · obtain ⟨sk, g⟩ := hG i w m x hi he
+    exact ⟨sk, g.notMain, g.listed, g.unused⟩
 
 end SwarmLean.SweepProofs

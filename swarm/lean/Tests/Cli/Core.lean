@@ -393,6 +393,18 @@ def test_merge_origin_main_is_silent (t : T) : IO Unit := do
   t.tick
   has (((← t.notices "c")[0]!).f "body") "conflicts with b's"
 
+-- an edit in another repo (one the task builds on) does not make it the agent's worktree
+def test_edit_in_another_repo_not_its_worktree (t : T) : IO Unit := do
+  t.agent "a"
+  let ext := t.d ++ "/ext"
+  IO.FS.createDirAll ext
+  discard <| t.git ext ["init", "-q"]
+  discard <| t.hook "a" "pre-tool" (Json.mkObj [("tool_name", "Edit"),
+    ("tool_input", Json.mkObj [("file_path", ext ++ "/x.txt")])])
+  eq ((← t.q1 "select wt from agent where name='a'").f "wt") Json.null
+  discard <| t.edit "a" "a.txt"
+  eq (((← t.q1 "select wt from agent where name='a'").f "wt") != Json.null) true "an edit in its own repo records it"
+
 def test_shared_tree_notice_once (t : T) : IO Unit := do
   t.setCwd "c" t.repo
   t.agent "a"; t.agent "c"
@@ -474,6 +486,7 @@ def tests : List Case := [
   ("test_same_token_episode", test_same_token_episode),
   ("test_fresh_worktree_off_origin_main_is_silent", test_fresh_worktree_off_origin_main_is_silent),
   ("test_merge_origin_main_is_silent", test_merge_origin_main_is_silent),
+  ("test_edit_in_another_repo_not_its_worktree", test_edit_in_another_repo_not_its_worktree),
   ("test_shared_tree_notice_once", test_shared_tree_notice_once),
   ("test_role_set_change_print_and_logged", test_role_set_change_print_and_logged),
   ("test_role_same_text_names_peer_and_survives_takeover", test_role_same_text_names_peer_and_survives_takeover),
