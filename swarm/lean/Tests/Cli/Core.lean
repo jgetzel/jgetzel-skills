@@ -227,6 +227,13 @@ def test_drop_claimed_only_by_owner_or_comms (t : T) : IO Unit := do
   eq (← t.q "select state from task order by id")
     (json% [{"state": "dropped"}, {"state": "dropped"}, {"state": "dropped"}])
 
+def test_drop_refuses_done (t : T) : IO Unit := do
+  t.sw_ "a" ["task", "add", "t0"]
+  t.sw_ "a" ["task", "claim", "1"]
+  t.sw_ "a" ["task", "done", "1", "--evidence", "sha"]
+  has (← t.sw "a" ["task", "drop", "1"] { ok := false }).stderr "#1 is done; a done task can't be dropped"
+  eq (← t.q "select state from task") (json% [{"state": "done"}])
+
 -- ---- messages ----
 def test_cursor (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
@@ -454,6 +461,7 @@ def tests : List Case := [
   ("test_concurrent_lock_waits_not_double_writes", test_concurrent_lock_waits_not_double_writes),
   ("test_wait_outlasts_a_busy_db", test_wait_outlasts_a_busy_db),
   ("test_drop_claimed_only_by_owner_or_comms", test_drop_claimed_only_by_owner_or_comms),
+  ("test_drop_refuses_done", test_drop_refuses_done),
   ("test_cursor", test_cursor),
   ("test_post_delivery_in_post_tool", test_post_delivery_in_post_tool),
   ("test_ctx_recorded_and_claim_refusal", test_ctx_recorded_and_claim_refusal),
