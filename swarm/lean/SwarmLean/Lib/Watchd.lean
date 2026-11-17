@@ -485,6 +485,12 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
     let model := Reuse.modelOf ((py opts.model).getD "sonnet") task
     let sa : Spawn.Args := { name := name, model := model, effort := (py task.effort).orElse (fun _ => py opts.effort),
                              taskId := some (task.id : Int), top := some (Queue.staffHead skip) }
+    let now ← Clock.now
+    -- a bad ref in swarm.json: one event per value, not one per spawn
+    for (k, v) in ← Bases.badConfig none do
+      Store.txn [.event] fun db =>
+        if db.events.any fun e => e.kind == some "config-base" && e.path == some v then (db, ())
+        else (db.log now none "config-base" (some v) (some (Bases.badConfigText k v)), ())
     let r ← tryCatchThe Exit (do return some (← Spawn.spawnE sa)) fun _ => pure none
     let now ← Clock.now
     match r with

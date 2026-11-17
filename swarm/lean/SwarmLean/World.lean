@@ -54,6 +54,11 @@ class Git (m : Type → Type) where
   /-- `git <args>` in `cwd`: its stdout when it exits 0, else none (proc.git). -/
   git : List String → Option String → m (Option String)
 
+/-- `git <args>` in `cwd` with its exit code and output, for the callers that need more than `Git.git`'s stdout; the only
+other place `git` is put in front of an argv. A ref or path operand goes after `--end-of-options`. -/
+def Git.out {m : Type → Type} [Proc m] (args : List String) (cwd : Option String) : m (Option ProcOut) :=
+  Proc.output ("git" :: args) cwd []
+
 /-- How a command ends early: its exit code, its message already written. -/
 structure Exit where
   code : UInt32

@@ -180,6 +180,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
         task := task ++ s!"\n\nYou are attached READ-ONLY to {path} (branch {br.getD "nil"}): read and run, never edit or commit there. Make your own worktree for changes."
       | none =>
         let row ← Store.txn [.task] fun db => (db, a.taskId.bind db.find)
+        Bases.warnBadConfig ["base", "spawn.base"] none
         let (path, br, base) ← Workspaces.create name (row.getD { id := 0 }) none a.base
         wt := some (path, br)
         task := task ++ s!"\n\nYour worktree: {path} (branch {br}, base {base}). Work only there. Never check out {base}: land by a fast-forward of it from this branch (`git push . HEAD:{base}`, or a PR for a remote base)."

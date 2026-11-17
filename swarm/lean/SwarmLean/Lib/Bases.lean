@@ -14,13 +14,31 @@ def uniq (l : List String) : List String := l.foldl (fun r x => if r.contains x 
 def default (cwd : Option String) : m String := do
   let some top := (← Git.git ["rev-parse", "--show-toplevel"] cwd).map strip | return "main"
   let txt := (← Fs.read s!"{top}/.claude/swarm.json").getD ""
-  return ((Json.decode txt).bind (Json.fstr · "base")).filter (· ≠ "") |>.getD "main"
+  return ((Json.decode txt).bind (Json.fstr · "base")).filter (fun b => b ≠ "" && (GitRef.parse? b).isSome) |>.getD "main"
 
 /-- `.claude/swarm.json`'s `spawn.base`: the ref new worktrees start from, if set. -/
 def spawnBase (cwd : Option String) : m (Option String) := do
   let some top := (← Git.git ["rev-parse", "--show-toplevel"] cwd).map strip | return none
   let txt := (← Fs.read s!"{top}/.claude/swarm.json").getD ""
-  return ((Json.decode txt).bind (Json.field · "spawn")).bind (Json.fstr · "base") |>.filter (· ≠ "")
+  return ((Json.decode txt).bind (Json.field · "spawn")).bind (Json.fstr · "base") |>.filter (fun b => b ≠ "" && (GitRef.parse? b).isSome)
+
+/-- The `.claude/swarm.json` refs (`base`, `spawn.base`) that are set but not valid git refs, as (key, value). -/
+def badConfig (cwd : Option String) : m (List (String × String)) := do
+  let some top := (← Git.git ["rev-parse", "--show-toplevel"] cwd).map strip | return []
+  let j := Json.decode ((← Fs.read s!"{top}/.claude/swarm.json").getD "")
+  let bad (v : Option String) : Bool := v.any fun b => b ≠ "" && (GitRef.parse? b).isNone
+  let b := j.bind (Json.fstr · "base")
+  let s := (j.bind (Json.field · "spawn")).bind (Json.fstr · "base")
+  return (if bad b then [("base", b.getD "")] else []) ++ (if bad s then [("spawn.base", s.getD "")] else [])
+
+/-- The warning for a bad `.claude/swarm.json` ref `v` under `key`: what it falls back to. -/
+def badConfigText (key v : String) : String :=
+  s!"swarm.json {key} '{v}' is not a valid git ref; using {if key == "base" then "main" else "the task's base"}"
+
+/-- Warns on stderr of each of `keys` that `.claude/swarm.json` sets to a bad ref. -/
+def warnBadConfig [Env m] (keys : List String) (cwd : Option String) : m Unit := do
+  for (k, v) in ← badConfig cwd do
+    if keys.contains k then Env.err ("swarm: " ++ badConfigText k v)
 
 /-- A task's base: its own, else the default (bases.base_for). -/
 def baseFor (base : Option String) (cwd : Option String) : m String := do
@@ -30,20 +48,21 @@ def baseFor (base : Option String) (cwd : Option String) : m String := do
 
 /-- `origin/<b>` when origin has it (bases.remote_ref). -/
 def remoteRef (b : String) (cwd : Option String) : m (Option String) := do
-  return (← Git.git ["rev-parse", "--verify", "-q", s!"refs/remotes/origin/{b}"] cwd).map fun _ => s!"origin/{b}"
+  return (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", s!"refs/remotes/origin/{b}"] cwd).map fun _ => s!"origin/{b}"
 
 /-- The ref git compares against: `origin/<b>` when origin has it, else `<b>` (bases.ref). -/
 def ref (b : String) (cwd : Option String) : m String := return (← remoteRef b cwd).getD b
 
 /-- Brings origin's `<b>` up to date; a base with no remote branch fails quietly (bases.fetch). -/
 def fetch [Proc m] (b : String) (cwd : Option String) : m Unit := do
-  if strip ((← Git.git ["remote", "get-url", "origin"] cwd).getD "") != "" then
-    discard <| Proc.output ["git", "fetch", "-q", "origin", b] cwd []
+  if (GitRef.parse? b).isSome && strip ((← Git.git ["remote", "get-url", "origin"] cwd).getD "") != "" then
+    discard <| Git.out ["fetch", "-q", "--end-of-options", "origin", b] cwd
 
 /-- A spawn start ref `r` (fetching `origin/<b>` first): `r` itself when git has it, else none. -/
 def startRef [Proc m] (r : String) (cwd : Option String) : m (Option String) := do
+  if (GitRef.parse? r).isNone then return none
   if r.startsWith "origin/" then fetch (r.drop 7).toString cwd
-  return (← Git.git ["rev-parse", "--verify", "-q", r ++ "^{commit}"] cwd).map fun _ => r
+  return (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", r ++ "^{commit}"] cwd).map fun _ => r
 
 /-- The bases an agent's work must be on: those of the tasks it owns, else the default (bases.of_agent). -/
 def ofAgent (owned : List (Option String)) (cwd : Option String) : m (List String) := do

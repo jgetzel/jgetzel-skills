@@ -34,7 +34,7 @@ variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m
 def ci (a : Parsed) : m UInt32 := do
   let cwd ← Env.cwd
   let arg := (a.str "sha").getD "HEAD"
-  let sha := ((← Git.git ["rev-parse", arg] (some cwd)).map strip).getD arg
+  let sha := ((← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", arg] (some cwd)).map strip).getD arg
   let timeout := (a.int "timeout").getD 3600
   let poll := numVal (a.str "poll") 10
   let deadline := (← Clock.now) + timeout
@@ -54,7 +54,7 @@ def ci (a : Parsed) : m UInt32 := do
       Env.err s!"{short sha}: still pending after {d timeout}s"
       return 124
     if (← Clock.now) - fetched ≥ 60 then
-      discard <| Proc.output ["git", "fetch", "-q", "origin"] (some cwd) []
+      discard <| Git.out ["fetch", "-q", "origin"] (some cwd)
       fetched ← Clock.now
     Sys.sleep (poll * 1000).toUInt64.toNat
   let (state, r) := res

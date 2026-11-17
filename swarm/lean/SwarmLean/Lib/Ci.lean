@@ -364,7 +364,7 @@ def ciCheck (repo comms : Option String) : m Unit := do
   let rng := match r.green with
     | some g => s!"{g.sha.getD ""}..{r.red.sha.getD ""}"
     | none => s!"-20 {r.red.sha.getD ""}"
-  let log := match ← Proc.output (["git", "log", "--format=%B%x1e"] ++ words rng) repo [] with
+  let log := match ← Git.out (["log", "--format=%B%x1e", "--end-of-options"] ++ words rng) repo with
     | some o => if o.code == 0 then o.stdout else ""
     | none => ""
   let lines := match ← Proc.output ["gh", "run", "view", d r.red.id, "--log-failed"] repo [] with

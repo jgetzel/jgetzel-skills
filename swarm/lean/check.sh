@@ -7,6 +7,8 @@ cd "$(dirname "$0")" || exit 1
 ../../claim/check.sh || exit 1
 cmp -s lean-toolchain ../../claim/lean-toolchain || { echo "swarm/lean/lean-toolchain differs from claim/lean-toolchain" >&2; exit 1; }
 if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+# git runs only through Git.git / Git.out (World.lean: they put `--end-of-options` before ref operands), never a raw argv
+if grep -rn 'Proc\.output (\?\["git"' SwarmLean Main.lean | grep -v '^SwarmLean/World.lean:'; then echo "a raw Proc.output [\"git\" outside World.lean" >&2; exit 1; fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build || exit 1
 # Audit.lean prints every theorem's axioms and the theorems taking each assumption, and fails on any axiom but Lean's three
