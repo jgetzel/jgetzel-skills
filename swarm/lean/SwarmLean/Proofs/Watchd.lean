@@ -864,7 +864,7 @@ theorem orphanVictims_owned {procs : List Machine.Ps} {scope : Machine.Ps → Op
   | some s =>
     simp only [hs, Bool.and_eq_true, Bool.not_eq_true', List.any_eq_true, List.any_eq_false, Bool.and_eq_false_iff,
       decide_eq_true_eq] at h
-    obtain ⟨_, ⟨a, ha, hb⟩, hn⟩ := h
+    obtain ⟨⟨a, ha, hb⟩, hn⟩ := h
     refine ⟨a, ha, ?_, s, rfl, ?_, ?_⟩
     · exact hb.1
     · exact hb.2
