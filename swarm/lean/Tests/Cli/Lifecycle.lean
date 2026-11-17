@@ -212,6 +212,22 @@ def test_sweep (t : T) : IO Unit := do
   eq ((← t.q1 "select count(*) n from event where kind='sweep'").f "n") 1
   has ((← t.q1 "select body from msg where kind='notice'").f "body") "swept 1"
 
+def test_worktrees_prune (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  let prune (extra : List String) : IO R := t.sw "a" (["worktrees", "prune", "--dir", t.d] ++ extra) (swp pr)
+  squash t
+  commitWip t "after.txt"  -- a commit made after the squash-merge
+  oldWt t t.wt
+  has (← prune []).stdout "keep (work not in the base)"
+  has (← prune ["--apply"]).stdout "keep (work not in the base)"
+  ok (← exists_ t.wt) "unpushed work after the squash is kept"
+  discard <| t.git t.wt ["reset", "-q", "--hard", "HEAD~1"]
+  oldWt t t.wt
+  has (← prune []).stdout "would remove"
+  ok (← exists_ t.wt) "a dry run removes nothing"
+  has (← prune ["--apply"]).stdout "removed"
+  ok (!(← exists_ t.wt)); eq (← branches t) ""
+
 def test_sweep_caches_not_landed (t : T) : IO Unit := do
   commitWip t "u.txt"
   oldWt t t.wt
@@ -1197,6 +1213,7 @@ def tests : List Case := [
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),
   ("test_sweep", test_sweep),
+  ("test_worktrees_prune", test_worktrees_prune),
   ("test_sweep_caches_not_landed", test_sweep_caches_not_landed),
   ("test_landed_agent_ended_and_cleaned", test_landed_agent_ended_and_cleaned),
   ("test_sweep_keeps_a_checked_out_base", test_sweep_keeps_a_checked_out_base),

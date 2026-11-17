@@ -181,8 +181,8 @@ def wtLines (ls : List String) : List (String × Option String) :=
 
 /-- Workspace GC: removes clean, landed worktrees (and their local branch) that no live agent or process uses; `dry`
 only lists them. The worktrees and swept sizes (MB), and the "not landed" cache (worktree, HEAD and the bases' shas)
-grown (watchd.sweep_worktrees, NOT_LANDED). -/
-def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
+grown (watchd.sweep_worktrees, NOT_LANDED). With `dir` (a realpath), only the worktrees inside it are looked at. -/
+def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String := none) :
     m (List (String × Option String × Int) × List String) := do
   let lines := splitlines ((← Lifecycle.run ["git", "worktree", "list", "--porcelain"]).getD "")
   let some first := lines.head? | return ([], notLanded)
@@ -200,7 +200,8 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
   let mut freed : Int := 0
   let mut cache := notLanded
   for (wt, br) in wts do
-    if wt == main || (← Sys.kind wt true) != .dir || used.any (inside · wt) || pcwd.any (inside · wt) then continue
+    if wt == main || (← Sys.kind wt true) != .dir || used.any (inside · wt) || pcwd.any (inside · wt) ||
+        !(dir.all (inside wt)) then continue
     let gd ← git ["-C", wt, "rev-parse", "--absolute-git-dir"]
     let last := max (max 0 ((← Sys.mtime wt).getD 0)) ((← Sys.mtime (joinPath (joinPath ((py gd).getD wt) "logs") "HEAD")).getD 0)
     -- no index.lock: an agent committing in wt meanwhile must not fail (#127)
@@ -230,6 +231,38 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) :
       let now ← Clock.now
       Store.txn [] fun db => (say db now c s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ())
   return (out, cache)
+
+/-- Why the sweep keeps each worktree of the repo that lies inside `dir` (a realpath), as it reads them now; "landed" for one
+it would remove. Reads only; what `sweep` does is its own checks. -/
+def keepReasons (dir : String) : m (List (String × Option String × String)) := do
+  let lines := splitlines ((← Lifecycle.run ["git", "worktree", "list", "--porcelain"]).getD "")
+  let some first := lines.head? | return []
+  let main ← real (first.drop 9).toString
+  let db ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
+  let prot ← Workspaces.protectedOf db (some main)
+  let bs ← Bases.refs prot (some main)
+  let used := (← (((Agents.live db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM real) ++
+    (Workspaces.wtMapOf db (← Workspaces.worktrees)).map (·.2)
+  let pcwd ← (← Machine.cwds).getD [] |>.mapM fun (_, l) => real l
+  let t ← Clock.now
+  let mut out := []
+  for (p, br) in wtLines lines.tail do
+    let wt ← real p
+    if wt == main || !inside wt dir then continue
+    let why ← do
+      if (← Sys.kind wt true) != .dir then pure "not a directory"
+      else if used.any (inside · wt) then pure "a live agent's"
+      else if pcwd.any (inside · wt) then pure "a process is in it"
+      else
+        let gd ← git ["-C", wt, "rev-parse", "--absolute-git-dir"]
+        let last := max (max 0 ((← Sys.mtime wt).getD 0)) ((← Sys.mtime (joinPath (joinPath ((py gd).getD wt) "logs") "HEAD")).getD 0)
+        let st ← Lifecycle.run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]
+        if st.isNone then pure "status unreadable"
+        else if strip (st.getD "") != "" then pure "dirty"
+        else if t - last < SWEEP_IDLE then pure "touched recently"
+        else if (← Lifecycle.landed wt bs (some main)) then pure "landed" else pure "work not in the base"
+    out := out ++ [(wt, br, why)]
+  return out
 
 /-- A branch the sweep leaves to `sweepBranches`: an ended agent's (`<name>/…`), not a protected base nor master. -/
 def leftBranch (ended prot : List String) (b : String) : Bool :=
@@ -540,7 +573,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let main ← Workspaces.main none
   let prot ← Workspaces.protectedOf db0 main
   for b in prot do Bases.fetch b main
-  let (_, notLanded) ← sweep (some comms) false notLanded
+  let (_, notLanded) ← sweep (some comms) false notLanded none
   if let some mn := main then sweepBranches mn ((db0.agents.filter (·.ended.isSome)).map (·.name)) prot
   let db ← Store.txn [.agent, .task, .workspace, .event] fun db => (db, db)
   for (n, path, base) in ← Workspaces.baseOut db all do  -- a base checked out in an agent's worktree: once per agent and base

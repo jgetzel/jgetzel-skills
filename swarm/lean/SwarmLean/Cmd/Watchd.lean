@@ -23,6 +23,19 @@ def watchdSpec : Spec :=
      opt "--blocker-idle" none (some Cmd.Msgs.num), opt "--model",
      { opt "--effort" with choices := ["low", "medium", "high", "xhigh", "max"] }] [] [] none
 
+/-- `swarm worktrees -h`. -/
+def helpWorktrees : String :=
+  "Usage: swarm worktrees [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   prune"
+
+/-- `swarm worktrees prune -h`. -/
+def helpWorktreesPrune : String :=
+  "Usage: swarm worktrees prune [-h] [--apply] [--dir <dir>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --apply               remove them (default: only list what would go)\n   --dir <dir>           the worktrees under it (default: .worktrees of the main checkout)\n\nRemoves the worktrees whose work is in a base: the sweep's gate and removal, agent-owned or not."
+
+/-- The `worktrees` parser. -/
+def worktreesSpec : Spec :=
+  .mk "worktrees" helpWorktrees [] [] [] (cmdTarget := some "act") (cmds :=
+    [.mk "prune" helpWorktreesPrune [] [flag "--apply", opt "--dir"] [] [] none])
+
 /-- What watchd keeps between ticks: the sweep's "not landed" cache, the last tick error told, the cost tick's memory. -/
 structure St where
   notLanded : List String := []
@@ -361,7 +374,7 @@ def restart (over : List String := []) : m UInt32 := do
 /-- `swarm watchd [...]` (watchd.cmd_watchd). -/
 def watchd (a : Parsed) : m UInt32 := do
   if a.flag "dry_run" then
-    for (wt, br, mb) in (← sweep none true []).1 do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
+    for (wt, br, mb) in (← sweep none true [] none).1 do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
     return 0
   if a.flag "restart" then return ← restart (given a)
   let repo ← if a.flag "ci" then git ["rev-parse", "--show-toplevel"] else pure none
@@ -414,9 +427,23 @@ def watchd (a : Parsed) : m UInt32 := do
   if let some why := why then die s!"watchd (pid {pid}){why}; exiting"
   return 0
 
+/-- `swarm worktrees prune [--apply] [--dir <dir>]`: the sweep's gate and removal on every worktree under `dir`
+(default `.worktrees` of the main checkout), whether or not an agent owns it; a dry run unless `--apply`. -/
+def prune (a : Parsed) : m UInt32 := do
+  let some main ← Workspaces.main none | die "not in a git repository"
+  let dir ← real ((a.str "dir").getD (main ++ "/.worktrees"))
+  let go := a.flag "apply"
+  let reasons ← keepReasons dir
+  let (gone, _) ← sweep none (!go) [] (some dir)
+  for (wt, br, why) in reasons do
+    let b := br.getD "None"
+    if gone.any (·.1 == wt) then Env.out s!"{if go then "removed" else "would remove"}: {wt} [{b}]"
+    else Env.out s!"keep ({if why == "landed" then "git would not remove it" else why}): {wt} [{b}]"
+  return 0
+
 /-- The group. -/
 def group : Group m where
-  specs := [("watchd", watchdSpec)]
-  run a := watchd a
+  specs := [("watchd", watchdSpec), ("worktrees", worktreesSpec)]
+  run a := if a.cmd == "worktrees" then prune a else watchd a
 
 end SwarmLean.Cmd.Watchd

@@ -233,8 +233,8 @@ Short updates when something merges or needs the user; lead with decisions.
 
 ## 8. End of wave
 
-1. `~/.claude/skills/orchestrate/prune-worktrees.sh` — removes clean worktrees
-   whose PR is merged (dry run by default; `--apply` to act).
+1. `swarm worktrees prune [--apply]` — removes the worktrees under `.worktrees/` whose work is in a base
+   (the swarm sweep's gate: landed, clean, idle; a dry run unless `--apply`).
 2. Suggest the user run `/harness-retro` (user-invoked only).
 3. Next wave, or hand off: launch a fresh orchestrator agent with this skill
    plus a state summary (what merged, open PRs, decisions, open questions).
