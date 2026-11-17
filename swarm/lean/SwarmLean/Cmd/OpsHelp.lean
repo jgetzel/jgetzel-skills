@@ -10,6 +10,14 @@ def helpCi : String :=
 def helpCost : String :=
   "Usage: swarm cost [-h] [--top] [--repo <repo>] [--all-repos]\n       [<words>] ...\n\nArguments:\n   words\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --top\n   --repo <repo>\n   --all-repos"
 
+/-- `swarm pr -h`. -/
+def helpPr : String :=
+  "Usage: swarm pr [-h] <command> ...\n\nCommands:\n   merge-when-green      squash-merge PRs once their checks are green\n\nOptions:\n   -h, --help            Show this help message and exit."
+
+/-- `swarm pr merge-when-green -h`. -/
+def helpPrMergeWhenGreen : String :=
+  "Usage: swarm pr merge-when-green [-h] [--every <every>] [--polls <polls>] <prs> ...\n\nArguments:\n   prs\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --every <every>       seconds between polls (default 180)\n   --polls <polls>       polls before giving up (default 40: 2 h)\n\nSquash-merges each PR whose head has all checks COMPLETED with SUCCESS or SKIPPED and is MERGEABLE, passing that head's sha\nto --match-head-commit, so a later push is not merged untested. Exits 0 when all are merged, else 1 with what is left."
+
 /-- `swarm run -h`. -/
 def helpRun : String :=
   "Usage: swarm run [-h] [--on <on>] [--cores <cores>] [--mem <mem>]\n       [--env NAME[=VAL]]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --on <on>             an hc machine (`hc machine ls`); default: here, then run.machines in .claude/swarm.json\n   --cores <cores>       cores to claim (default: from `swarm cost` history, else 2), or `all`: the whole machine, alone\n                         (waits for no other claim, no reservation and no unclaimed use; not with --mem)\n   --mem <mem>           GiB to claim (default: the history's peak plus a quarter, else 2)\n   --env NAME[=VAL]      also pass this variable (repeatable)\n\nClaims the cores and memory on a machine (waiting for room, in order), runs the command there at the lowest CPU and I/O\npriority and releases them. A command with history carries its 90th-percentile wall time (`~5m`), which lets it start\nbefore an older waiter that cannot start sooner; one without waits its turn.\nThe job gets SWARM_CORES, SWARM_MEM_KB, MAKEFLAGS=-j<cores>, CARGO_BUILD_JOBS and NIX_BUILD_CORES."
