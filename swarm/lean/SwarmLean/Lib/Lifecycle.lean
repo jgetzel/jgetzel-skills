@@ -309,7 +309,12 @@ def endAgent [Store m] [Clock m] [Env m] (a : Agent) (force : Bool) (by_ : Optio
   if let some h := py a.hc then
     discard <| Proc.output ["hc", "kill", h] none []
     discard <| Proc.output ["hc", "rm", h] none []
-  if let some c := cg then discard <| Fs.write (c.dir ++ "/cgroup.kill") "1"  -- whatever the agent left in its scope
+  if let some c := cg then
+    discard <| Fs.write (c.dir ++ "/cgroup.kill") "1"  -- whatever the agent left in its scope
+    let up := (c.dir.splitOn "/").dropLast  -- and in its jobs' scopes (`swarm run --mem`), siblings of it
+    let parent := "/".intercalate up
+    for e in ((← Fs.list parent).getD []).filter fun e => e.startsWith "swarm-job-" && Machine.ownsScope n e do
+      discard <| Fs.write (parent ++ "/" ++ e ++ "/cgroup.kill") "1"
   return true
 
 end SwarmLean.Lifecycle

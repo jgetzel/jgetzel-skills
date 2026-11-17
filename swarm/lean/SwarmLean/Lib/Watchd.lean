@@ -629,17 +629,11 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
 
 -- ---------- machine ----------
 
-/-- Whether `scope` (a cgroup path) is the swarm-agent scope of agent `name`: `swarm-agent-<name>-<pid>.scope`
-(relaunch/launch.sh). -/
-def ownsScope (name scope : String) : Bool :=
-  let b := (scope.splitOn "/").getLast!.toList
-  let pre := ("swarm-agent-" ++ name ++ "-").toList
-  let r := b.drop pre.length
-  b.take pre.length == pre && r.length > 6 && r.drop (r.length - 6) == ".scope".toList &&
-    (r.take (r.length - 6)).all Char.isDigit
+/-- Whether `scope` (a cgroup path) is the swarm-agent or swarm-job scope of agent `name` (`Machine.ownsScope`). -/
+def ownsScope (name scope : String) : Bool := Machine.ownsScope name scope
 
 /-- The processes to end: those reparented to init in the scope of an ended agent that no live agent runs in.
-`scope p` is the swarm-agent scope `p` runs in. A process in no agent's scope is never one, whatever its cwd. -/
+`scope p` is the swarm-agent or swarm-job scope `p` runs in. A process in no agent's scope is never one, whatever its cwd. -/
 def orphanVictims (procs : List Machine.Ps) (scope : Machine.Ps → Option String) (agents : List Agent) : List Machine.Ps :=
   procs.filter fun p => p.ppid == 1 && match scope p with
     | none => false

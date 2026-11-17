@@ -153,15 +153,28 @@ def parseLsof (txt : String) : List (Int × String) :=
 /-- The cgroup root (machine.CGROUP): $SWARM_CGROUP as set, else /sys/fs/cgroup. -/
 def cgroupRoot [Monad m] [Env m] : m String := return (← Env.var "SWARM_CGROUP").getD "/sys/fs/cgroup"
 
-/-- The scope path in a cgroup line's rest, as Lua's greedy `(/[^\n]*/swarm%-agent%-[^/\n]*%.scope)`. -/
+/-- The scope path in a cgroup line's rest, as Lua's greedy `(/[^\n]*/swarm%-agent%-[^/\n]*%.scope)`; a job's
+`swarm-job-` scope (`swarm run --mem`) counts too. -/
 def scopeAt (l : List Char) : Option String :=
   if l.head? != some '/' then none else
-  let pre := "/swarm-agent-".toList
-  let js := (List.range l.length).reverse.filter fun j => j ≥ 1 && (l.drop j).take pre.length == pre
+  let pres := ["/swarm-agent-".toList, "/swarm-job-".toList]
+  let js := (List.range l.length).reverse.filter fun j => j ≥ 1 && pres.any fun pre => (l.drop j).take pre.length == pre
   js.findSome? fun j =>
-    let run := (l.drop (j + pre.length)).takeWhile (· ≠ '/')
+    let plen := ((pres.find? fun pre => (l.drop j).take pre.length == pre).getD []).length
+    let run := (l.drop (j + plen)).takeWhile (· ≠ '/')
     let ks := (List.range (run.length + 1)).reverse.filter fun k => k ≥ 6 && (run.take k).drop (k - 6) == ".scope".toList
-    ks.head?.map fun k => String.ofList (l.take (j + pre.length + k))
+    ks.head?.map fun k => String.ofList (l.take (j + plen + k))
+
+/-- Whether `scope` (a cgroup path) is a scope of agent `name`: its `swarm-agent-<name>-<pid>.scope` (relaunch/launch.sh)
+or a job's `swarm-job-<name>-j<jid>.scope` (`swarm run --mem`). -/
+def ownsScope (name scope : String) : Bool :=
+  let b := (scope.splitOn "/").getLast!.toList
+  let named (pre : String) : Bool :=
+    let pre := pre.toList
+    let r := b.drop pre.length
+    b.take pre.length == pre && r.length > 6 && r.drop (r.length - 6) == ".scope".toList &&
+      (r.take (r.length - 6)).all Char.isDigit
+  named ("swarm-agent-" ++ name ++ "-") || named ("swarm-job-" ++ name ++ "-j")
 
 /-- Lua's `s:match("0::(/[^\n]*/swarm%-agent%-[^/\n]*%.scope)")`. -/
 def scopeOf (s : String) : Option String :=

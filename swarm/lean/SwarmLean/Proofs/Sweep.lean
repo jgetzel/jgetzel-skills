@@ -860,7 +860,10 @@ theorem endAgent_keepsGit (hk : HcKillEnds M) (hr : HcRmKeeps M) (hc : CgroupKil
     (force : Bool) (by_ : Option String) :
     ⦃fun s => ⌜M.SameRepo w0 s.w⌝⦄ (Lifecycle.endAgent a force by_ : RecM M Bool) ⦃⇓ _ s => ⌜M.SameRepo w0 s.w⌝⦄ := by
   mvcgen -trivial [Lifecycle.endAgent, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
-    Clock.now, Fs.write, Fs.read, Env.var, discard_eq]
+    Clock.now, Fs.write, Fs.read, Fs.list, Env.var, discard_eq]
+  case inv1 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
+  case inv2 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
+  all_goals (try exact ExceptConds.entails.refl _)
   all_goals (try mleave)
   all_goals (try simp only [withEnv_nil, List.map_nil] at *)
   all_goals (repeat (first | assumption | refine sameRepo_trans ?_ (hc _ _) | refine sameRepo_trans ?_ (hr _ _) |

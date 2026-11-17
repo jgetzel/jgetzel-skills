@@ -78,6 +78,12 @@ def lowPrioWith (tail : String) : String :=
 /-- `sh -c (lowPrio cmd)` runs the shell command `cmd` at the lowest priority. -/
 def lowPrio (cmd : String) : String := lowPrioWith ("sh -c " ++ shquote cmd)
 
+/-- `sh -c (memCap unit memKb cmd)` runs the shell command `cmd` in its own systemd user scope `unit` with
+`MemoryMax=memKb` KiB and no swap, where the machine has one; elsewhere it warns on stderr and runs `cmd` uncapped. -/
+def memCap (unit : String) (memKb : Int) (cmd : String) : String :=
+  s!"if systemd-run --user --scope --quiet true 2>/dev/null; then exec systemd-run --user --scope --quiet --collect --unit={unit} -p MemoryMax={memKb}K -p MemorySwapMax=0 -- sh -c {shquote cmd}; " ++
+  s!"else echo 'swarm: memory not capped here (no systemd user scope); --mem is a reservation only' >&2; exec sh -c {shquote cmd}; fi"
+
 /-- The same for an argv: `sh -c LOWPRIO_ARGV sh cmd args…`. -/
 def LOWPRIO_ARGV : String := lowPrioWith "\"$@\""
 

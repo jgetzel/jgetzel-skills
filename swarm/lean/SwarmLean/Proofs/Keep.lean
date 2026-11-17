@@ -467,7 +467,7 @@ theorem GoodFrom.join {n : Nat} {s1 : Rec M} {l : List (M.World × Call)}
 
 theorem endAgent_ext : Ext (Lifecycle.endAgent a force by_ : RecM M Bool) := ext_of fun L => by
   mvcgen -trivial [Lifecycle.endAgent, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
-    Clock.now, Fs.write, Fs.read, Env.var, discard_eq]
+    Clock.now, Fs.write, Fs.read, Fs.list, Env.var, discard_eq]
   ext_close L
 
 /-- The branch sweep (`branch -d` of an ended agent's branches) keeps every commit and worktree, and removes none. -/

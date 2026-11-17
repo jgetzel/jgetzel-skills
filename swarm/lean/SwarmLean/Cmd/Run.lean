@@ -148,6 +148,9 @@ def run (a : Parsed) : m UInt32 := do
   let jid ← Store.txn [.«meta»] fun db =>
     let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
     (db.setMeta "jobs" (some (d n)), d n)
+  -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>`; a defaulted one only a reservation
+  let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
+  let jobCmd := (memFlag.map fun kb => Claims.memCap unit kb).getD id (Claims.lowPrio full)
   let dbp := match ← env "SWARM_DB" with | some p => p | none => common ++ "/swarm/swarm.db"
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
@@ -179,12 +182,15 @@ def run (a : Parsed) : m UInt32 := do
       (match sync, back with | some x, some y => s!" (sync {fixed x 1}s, back {fixed y 1}s)" | _, _ => "") ++
       (match tree with | some t => ", tree " ++ (t.take 7).toString | none => "") ++ "; log: " ++ logf ++
       (if kept.isEmpty then "" else s!"\nkept your local edits; the job's versions of {", ".intercalate kept} are in {jobs}/kept/") ++
-      (match lost, hc with | true, some h => s!"\nthe terminal {h} may still be running: `hc wait {h}` later" | _, _ => ""))
+      (match lost, hc with | true, some h => s!"\nthe terminal {h} may still be running: `hc wait {h}` later" | _, _ => "") ++
+      (match memFlag, code with
+        | some kb, .n 137 => s!"\nkilled at its --mem cap ({gi kb} GiB)? Try a bigger --mem."
+        | _, _ => ""))
     return match code with | .lost => 255 | .n c => (c.toNat % 256).toUInt32
   let some mach := on | do
     logEv "job-start" (obj rec0)
     let tree ← treeOf top
-    let r ← Sys.exec ["sh", "-c", Claims.lowPrio full] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
+    let r ← Sys.exec ["sh", "-c", jobCmd] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
     finish (.n r.code.toNat) tree none none [] none
   let ms ← Claims.hcMachines host
   let mc := ms.lookup mach
@@ -234,7 +240,7 @@ def run (a : Parsed) : m UInt32 := do
     s!"if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$$ /\" \"$f\" > \"$\{f%/*}/.h$$\" && mv \"$\{f%/*}/.h$$\" \"$f\"; fi",
     "[ -d .git ] || git init -q",
     s!"git add -A && git write-tree > {metaD}/tree",
-    s!"\{ (cd {shquote rel} && {if exports.isEmpty then "" else "export " ++ " ".intercalate exports ++ " && "}{Claims.lowPrio full}); echo $? > {metaD}/rc; } 2>&1 | tee {metaD}/log",
+    s!"\{ (cd {shquote rel} && {if exports.isEmpty then "" else "export " ++ " ".intercalate exports ++ " && "}{jobCmd}); echo $? > {metaD}/rc; } 2>&1 | tee {metaD}/log",
     s!"git ls-files -z -m -o --exclude-standard > {metaD}/files",
     s!"exit \"$(cat {metaD}/rc 2>/dev/null || echo 255)\""]
   let name := String.ofList (((who ++ "-j" ++ jid).toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-').take 32)

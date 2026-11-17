@@ -196,6 +196,31 @@ def test_run_lowest_priority (t : T) : IO Unit := do
   discard <| fakeRemote t
   has (← t.sw "b" ["run", "--on", "laptop", "--", "echo nice=$(nice)"]).stdout "nice=19"
 
+/-- A fake `systemd-run` logging its argv to sd.log; its `true` probe fails where sd.fail exists; else it runs what follows `--`. -/
+def fakeSystemdRun (t : T) : IO Unit := do
+  let D := shquote t.d
+  discard <| t.fake "systemd-run" (s!"#!/bin/sh\necho \"$*\" >> {D}/sd.log\n" ++
+    s!"case \"$*\" in *' -- '*) ;; *) [ -f {D}/sd.fail ] && exit 1; exit 0;; esac\n" ++
+    "while [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\"\n")
+
+def test_run_explicit_mem_is_a_cap (t : T) : IO Unit := do
+  fakeSystemdRun t
+  let sd := t.d ++ "/sd.log"
+  let r ← t.sw "b" ["run", "--mem", "3", "--", "echo capped"]
+  has r.stdout "capped"
+  let log ← readF [sd]
+  has log "MemoryMax=3145728K"; has log "MemorySwapMax=0"; has log "--unit=swarm-job-b-j1"
+  -- a defaulted --mem only reserves
+  IO.FS.removeFile sd
+  has (← t.sw "b" ["run", "--", "echo free"]).stdout "free"
+  eq (← (sd : System.FilePath).pathExists) false
+  -- no systemd user scope: a warning, and the job runs uncapped
+  put (t.d ++ "/sd.fail") ""
+  let r ← t.sw "b" ["run", "--mem", "3", "--", "echo bare"]
+  has r.stdout "bare"
+  has r.stdout "swarm: memory not capped here (no systemd user scope); --mem is a reservation only"
+  hasnt (← readF [sd]) "MemoryMax"
+
 def test_run_records_every_job (t : T) : IO Unit := do
   discard <| t.sw "b" ["run", "--", "true"]
   let rows ← costRows "true"
@@ -232,6 +257,7 @@ def tests : List Case := [
   ("test_run_estimate_into_the_claim", test_run_estimate_into_the_claim),
   ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
   ("test_run_lowest_priority", test_run_lowest_priority),
+  ("test_run_explicit_mem_is_a_cap", test_run_explicit_mem_is_a_cap),
   ("test_run_records_every_job", test_run_records_every_job),
   ("test_compute_reserve_and_the_one_machine_view", test_compute_reserve_and_the_one_machine_view)]
 
