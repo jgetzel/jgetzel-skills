@@ -424,6 +424,49 @@ def test_recorded_worktree_on_its_base_ended (t : T) : IO Unit := do
   commsTick t
   ok (← ended t "e") "its HEAD is on formal"
 
+/-- A repo of its own, with no remote and one commit on main, under the test's directory. -/
+def extRepo (t : T) (name : String) : IO String := do
+  let p := t.d ++ "/" ++ name
+  mkdirp p
+  discard <| t.git p ["init", "-q", "-b", "main"]
+  put (p ++ "/x.txt") "x"
+  discard <| t.git p ["add", "."]
+  discard <| t.git p ["commit", "-qm", "x"]
+  return p
+
+-- an agent's worktree in another repo is judged in that repo: with no upstream its branch is its base, else its upstream
+def test_foreign_repo_landed_on_its_branch_or_upstream (t : T) : IO Unit := do
+  let ext ← extRepo t "ext"
+  idle t "e" [("wt", .text ext)]
+  put (ext ++ "/y.txt") "wip"
+  commsTick t
+  ok (!(← ended t "e")) "an uncommitted file in the other repo"
+  discard <| t.git ext ["add", "."]
+  discard <| t.git ext ["commit", "-qm", "y"]
+  commsTick t
+  ok (← ended t "e") "committed in a repo with no upstream"
+  ok (← exists_ (ext ++ "/y.txt")) "the other repo is left alone"
+  let cl := t.d ++ "/ext-clone"
+  discard <| t.git t.d ["clone", "-q", ext, cl]
+  put (cl ++ "/z.txt") "z"
+  discard <| t.git cl ["add", "."]
+  discard <| t.git cl ["commit", "-qm", "z"]
+  idle t "f" [("wt", .text cl)]
+  commsTick t
+  ok (!(← ended t "f")) "a commit not on its upstream"
+  discard <| t.git ext ["pull", "-q", "--ff-only", cl, "main"]
+  discard <| t.git cl ["fetch", "-q"]
+  commsTick t
+  ok (← ended t "f") "its commit is on its upstream"
+
+-- a base that is no ref in the worktree's repo is a reason endable and the Stop hook give, not an empty list
+def test_unresolvable_base_named (t : T) : IO Unit := do
+  idle t "e" [("wt", t.wt)]
+  t.q_ "insert into task(title,state,owner,base) values('x','done','e','nope')"
+  let r ← t.sw "a" ["endable", "e", "--why"] { ok := false }
+  eq r.code 1
+  has r.stdout "base nope does not resolve"
+
 def test_missing_worktree (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt)]
   rmtree t.wt  -- branch w2 still registered; its commits are on main
@@ -1228,6 +1271,8 @@ def tests : List Case := [
   ("test_agent_with_a_second_unlanded_worktree_not_ended", test_agent_with_a_second_unlanded_worktree_not_ended),
   ("test_recorded_agent_with_a_worktree_it_added_not_ended", test_recorded_agent_with_a_worktree_it_added_not_ended),
   ("test_recorded_worktree_on_its_base_ended", test_recorded_worktree_on_its_base_ended),
+  ("test_foreign_repo_landed_on_its_branch_or_upstream", test_foreign_repo_landed_on_its_branch_or_upstream),
+  ("test_unresolvable_base_named", test_unresolvable_base_named),
   ("test_missing_worktree", test_missing_worktree),
   ("test_missing_worktree_unlanded_branch_not_ended", test_missing_worktree_unlanded_branch_not_ended),
   ("test_missing_worktree_squash_merged_branch_ended", test_missing_worktree_squash_merged_branch_ended),

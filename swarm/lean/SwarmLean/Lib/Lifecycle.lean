@@ -65,6 +65,21 @@ def landed [Proc m] [Sys m] (wt : String) (bs : List String) (main : Option Stri
 
 variable [Git m] [Fs m] [Proc m] [Sys m]
 
+/-- For worktree `wt` of another repo than `main`'s (one a task reads or builds on): whether its work landed there,
+and the ref that says so, its upstream, or `HEAD` when it has none (its branch is its own base, so only uncommitted
+work is unlanded); none for a worktree of `main`'s repo, a gone one or one outside git. -/
+def foreignLanded (wt : String) (main : Option String) : m (Option (Bool × String)) := do
+  if (← Sys.kind wt true) == .none then return none
+  let wm ← Workspaces.main (some wt)
+  if wm.isNone || wm == main then return none
+  let up := py ((← Git.git ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"] (some wt)).map strip)
+  let b := up.getD "HEAD"
+  let some st ← run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"] | return some (false, b)
+  if strip st != "" then return some (false, b)
+  match up with
+  | none => return some (true, b)
+  | some u => return some (← landedRef wt "HEAD" [u], b)
+
 /-- A worktree `n` owns that holds work not on its tasks' bases, with those refs (watchd.unlanded); `wts` the live
 agents' worktrees, `all` every worktree, `db` the agent, task and workspace tables. -/
 def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (String × String)) :
@@ -72,18 +87,23 @@ def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (Stri
   let names ← Bases.ofAgent ((db.tasks.filter (·.owner == some n)).map (·.base)) main
   let own := (wts.lookup n).toList ++ Workspaces.ownedWts n all (some db) ++ Workspaces.ownedWts n all
   for w in own.eraseDups do
+    if let some (ok, b) ← foreignLanded w main then
+      if !ok then return some (w, [b])
+      continue
     let mut bs ← Bases.refs names main
     if let some b := ((db.workspaces.find? fun x => x.path == w && x.agent == n && x.ro == some 0).bind (·.base)) then
       bs := bs ++ [← Bases.ref b main]
     if !(← landed w bs main) then return some (w, bs)
   return none
 
-/-- What keeps worktree `wt` from landing on ref `b`: git status lines and `commit …` lines (watchd.unclean_list). -/
+/-- What keeps worktree `wt` from landing on ref `b`: git status lines, `commit …` lines, and a `base …` line when `b`
+is no commit in `wt`'s repo (watchd.unclean_list). -/
 def uncleanList (wt b : String) : m String := do
   if (← Sys.kind wt true) == .none then return s!"{wt} is gone; its branch holds commits not on {b}"
   let st := (splitlines ((← run ["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"]).getD "")).filter (· ≠ "")
   let lg := (splitlines ((← run ["git", "-C", wt, "log", "--oneline", b ++ "..HEAD"]).getD "")).filter (· ≠ "")
-  return "\n".intercalate (st ++ lg.map ("commit " ++ ·))
+  let nob := (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", b ++ "^{commit}"] (some wt)).isNone
+  return "\n".intercalate (st ++ lg.map ("commit " ++ ·) ++ (if nob then [s!"base {b} does not resolve in {wt}"] else []))
 
 /-- Job process `p` is just waiting: no descendant but sleep and shells, and little CPU (watchd.sleep_loop). -/
 def sleepLoop (p : Machine.Ps) (ps : List Machine.Ps) : Bool :=
@@ -249,7 +269,11 @@ def endableReasons [Clock m] (db : Db) (a : Agent) (f : Reads m) : m (List Reaso
   if let some (held, bs) ← f.unlanded then
     let ls := (splitlines (← uncleanList held (bs.headD "main"))).filter (· ≠ "")
     let commits := ls.filter (·.startsWith "commit ")
-    let dirty := ls.filter (!·.startsWith "commit ")
+    let nobase := ls.filter (·.startsWith "base ")
+    let dirty := ls.filter fun l => !l.startsWith "commit " && !l.startsWith "base "
+    if !nobase.isEmpty then
+      out := out ++ [⟨"nobase", "\n".intercalate nobase ++ ": whether its commits landed can't be told", false⟩]
+    if ls.isEmpty then out := out ++ [⟨"unlanded", s!"work in {held} not on {bs.headD "nil"}", false⟩]
     if !dirty.isEmpty then out := out ++ [⟨"dirty", s!"dirty worktree {held}:\n  " ++ "\n  ".intercalate (dirty.take 20), false⟩]
     if !commits.isEmpty then
       -- shortcut: "pushed" = HEAD is on some origin branch, no task note required; upgrade if WIP gets lost
