@@ -442,6 +442,126 @@ theorem after_ledger (m : Machine) (r : Req) :
   unfold after
   cases d : Admit.decide m r <;> simp [grant, List.mem_filter]
 
+/-! ### 13b. Concurrent tries, through `LockExclusive` -/
+
+/-- A request the script would take: a sized one of at least a core, no negative size or estimate. -/
+def ReqOK (r : Req) : Prop := (∀ x ∈ r.cores, 1 ≤ x) ∧ 0 ≤ r.mem ∧ ∀ e ∈ r.est, 0 ≤ e
+
+/-- A ledger any `ReqOK` request is well formed on. -/
+def Inv (m : Machine) : Prop := WF m ⟨"", none, 0, none⟩
+
+theorem wf_of {m : Machine} {r : Req} (hi : Inv m) (hr : ReqOK r) : WF m r := by
+  obtain ⟨a, b, c, d, e, f, g, h, i, j, k, l, -, -, -⟩ := hi
+  exact ⟨a, b, c, d, e, f, g, h, i, j, k, l, hr.1, hr.2.1, hr.2.2⟩
+
+theorem inv_after {m : Machine} {r : Req} (w : WF m r) : Inv (after m r) := by
+  have tn := take_nonneg w
+  obtain ⟨a, b, c, d, e, f, g, h, i, j, k, l, hk, hm, he⟩ := w
+  have key : ∀ (cl : List Claim) (ts : List Ticket), (∀ c ∈ cl, 0 ≤ c.cores ∧ 0 ≤ c.mem ∧ ∀ e ∈ c.est, 0 ≤ e) →
+      (∀ t ∈ ts, (∀ x ∈ t.cores, 0 ≤ x) ∧ 0 ≤ t.mem) → (ts.map (·.id)).Nodup →
+      Inv { m with claims := cl, tickets := ts } := fun cl ts hc ht hn =>
+    ⟨a, b, c, d, e, f, g, h, i, hc, ht, hn, by simp, by simp, by simp⟩
+  have filt : (∀ t ∈ m.tickets.filter (·.id != r.id), (∀ x ∈ t.cores, 0 ≤ x) ∧ 0 ≤ t.mem) :=
+    fun t ht => k t (List.mem_filter.mp ht).1
+  have filtn : ((m.tickets.filter (·.id != r.id)).map (·.id)).Nodup := by
+    exact l.sublist (List.filter_sublist.map _)
+  unfold after
+  cases hd : Admit.decide m r with
+  | ok c' g' =>
+    simp only [grant]
+    refine key _ _ ?_ ?_ ?_
+    · intro x hx
+      rcases List.mem_append.mp hx with hx | hx
+      · exact j x hx
+      · have : x = ⟨(take m r).1, (take m r).2, m.now, r.est⟩ := by simpa using hx
+        subst this; exact ⟨tn.1, tn.2, he⟩
+    · exact filt
+    · exact filtn
+  | wait x y z =>
+    simp only
+    refine key _ _ j ?_ ?_
+    · intro t ht
+      rcases List.mem_append.mp ht with ht | ht
+      · exact filt t ht
+      · have : t = ⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0⟩ := by simpa using ht
+        subst this
+        refine ⟨fun x hx => by have := hk x hx; omega, ?_⟩
+        show 0 ≤ (if r.cores.isSome then r.mem else 0)
+        split <;> omega
+    · rw [List.map_append]
+      simp only [List.map_cons, List.map_nil]
+      rw [List.nodup_append]
+      refine ⟨filtn, by simp, ?_⟩
+      intro u hu v hv; simp at hv; subst hv
+      simp only [List.mem_map, List.mem_filter] at hu
+      obtain ⟨t, ⟨-, ht⟩, rfl⟩ := hu
+      simpa using ht
+  | never x y => simp only; exact key _ _ j filt filtn
+  | off => simp only; exact key _ _ j filt filtn
+
+theorem cc_after_ge {m : Machine} {r : Req} (w : WF m r) : cc m ≤ cc (after m r) := by
+  have tn := take_nonneg w
+  unfold after
+  cases hd : Admit.decide m r <;> simp [grant, cc, List.sum_append] at * <;> omega
+
+/-- Over a batch of tries, at most one is granted an exclusive claim, and none is granted anything once a claim holds the
+whole machine. -/
+theorem tries_excl {rs : List Req} (hr : ∀ r ∈ rs, ReqOK r) :
+    ∀ {m : Machine}, Inv m → ∀ {fin ran}, tries m rs = (fin, ran) →
+      (ran.filter fun p => p.1.cores.isNone && (match p.2 with | .ok .. => true | _ => false)).length ≤ 1 ∧
+      (m.ncpu ≤ cc m → (ran.filter fun p => match p.2 with | .ok .. => true | _ => false).length = 0) := by
+  induction rs with
+  | nil => intro m _ fin ran h; simp only [tries, Prod.mk.injEq] at h; obtain ⟨-, h2⟩ := h; subst h2; simp
+  | cons r rs ih =>
+    intro m hi fin ran h
+    have w := wf_of hi (hr r (by simp))
+    have hi' := inv_after w
+    have ncpu_eq : (after m r).ncpu = m.ncpu := by
+      unfold after; cases Admit.decide m r <;> rfl
+    obtain ⟨l, hl⟩ : ∃ l, tries (after m r) rs = (fin, l) := ⟨(tries (after m r) rs).2, by
+      have := h; simp only [tries] at this; rw [Prod.ext_iff] at this ⊢; exact ⟨this.1, rfl⟩⟩
+    have hran : ran = (r, decide m r) :: l := by
+      simp only [tries, hl, Prod.mk.injEq] at h; exact h.2.symm
+    subst hran
+    obtain ⟨ih1, ih2⟩ := ih (fun x hx => hr x (List.mem_cons_of_mem _ hx)) hi' hl
+    have ge := cc_after_ge w
+    constructor
+    · cases hd : Admit.decide m r with
+      | ok c g =>
+        rcases hx : r.cores with _ | k
+        · have e := excl_grant hx hd
+          have hcc : (after m r).ncpu ≤ cc (after m r) := by
+            have : cc (after m r) = cc m + c := by
+              unfold after; rw [hd]; simp only; rw [(grant_sums m r).1]; simp only [take, hx]; omega
+            have := (cc_nil e.1).1; omega
+          have := ih2 hcc
+          have h0 := List.filter_eq_nil_iff.mp (List.length_eq_zero_iff.mp this)
+          have key : ∀ a ∈ l, (a.1.cores.isNone && match a.2 with | .ok .. => true | _ => false) = false := fun a ha => by
+            have := h0 a ha
+            cases hb : (match a.2 with | .ok .. => true | _ => false) <;> simp_all
+          rw [List.filter_cons, List.filter_eq_nil_iff.mpr (fun a ha => by simp [key a ha])]
+          simp [hx]
+        · simpa [List.filter_cons, hd, hx] using ih1
+      | _ => simpa [List.filter_cons, hd] using ih1
+    · intro hc
+      have hne := excl_alone w hc
+      have := ih2 (by omega)
+      simp only [List.filter_cons]
+      cases hd : Admit.decide m r with
+      | ok c g => exact absurd hd (hne c g)
+      | _ => simpa [hd] using this
+
+/-- The bug the break guard fixes: under `LockExclusive`, of any batch of concurrent tries at most one is granted an
+exclusive claim (`--cores all`). -/
+theorem lock_one_exclusive {m0 fin : Machine} {ran : List (Req × Answer)} (lk : LockExclusive m0 ran fin) (hi : Inv m0)
+    (hr : ∀ p ∈ ran, ReqOK p.1) :
+    (ran.filter fun p => p.1.cores.isNone && (match p.2 with | .ok .. => true | _ => false)).length ≤ 1 := by
+  obtain ⟨order, hp, ht⟩ := lk
+  rw [← (hp.filter _).length_eq]
+  exact (tries_excl (fun r hrr => by
+    obtain ⟨p, hp', rfl⟩ := List.mem_map.mp hrr
+    exact hr p (hp.subset hp')) hi ht).1
+
 /-! ### 7. The head runs by its shadow -/
 
 theorem before_asymm {a b : Int × String} (h : before a b = true) : before b a = false := by

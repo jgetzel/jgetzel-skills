@@ -126,6 +126,13 @@ def after (m : Machine) (r : Req) : Machine :=
   | .wait .. => { m with tickets := rest ++ [⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0⟩] }
   | _ => { m with tickets := rest }
 
+/-- Tries run one after another, each on the ledger the previous left: the final machine and each request with its answer. -/
+def tries : Machine → List Req → Machine × List (Req × Answer)
+  | m, [] => (m, [])
+  | m, r :: rs =>
+    let (m', l) := tries (after m r) rs
+    (m', (r, decide m r) :: l)
+
 /-- `h` is the machine's head: a live ticket, not held, before every other live ticket that is not held. -/
 def head0 (m : Machine) (h : Ticket) : Prop :=
   h ∈ m.tickets ∧ held m h = false ∧
