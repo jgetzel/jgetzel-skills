@@ -632,10 +632,10 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
 /-- Whether `scope` (a cgroup path) is the swarm-agent or swarm-job scope of agent `name` (`Machine.ownsScope`). -/
 def ownsScope (name scope : String) : Bool := Machine.ownsScope name scope
 
-/-- The processes to end: those reparented to init in the scope of an ended agent that no live agent runs in.
-`scope p` is the swarm-agent or swarm-job scope `p` runs in. A process in no agent's scope is never one, whatever its cwd. -/
+/-- The processes to end: those in the scope of an ended agent that no live agent runs in, whatever their parent
+(`systemd --user`, a subreaper, adopts orphans before init does). `scope p` is the swarm-agent or swarm-job scope `p` runs in. A process in no agent's scope is never one, whatever its cwd. -/
 def orphanVictims (procs : List Machine.Ps) (scope : Machine.Ps → Option String) (agents : List Agent) : List Machine.Ps :=
-  procs.filter fun p => p.ppid == 1 && match scope p with
+  procs.filter fun p => match scope p with
     | none => false
     | some s => agents.any (fun a => a.ended.isSome && ownsScope a.name s) &&
         !agents.any (fun a => a.ended.isNone && ownsScope a.name s)
@@ -677,11 +677,10 @@ def machineTick [Guard m] (cost : Cost.TickMem) : m Cost.TickMem := do
   else if was && !high then
     let now ← Clock.now
     Store.txn [] fun db => (db.log now none "pressure-end" none none, ())
-  -- orphans: processes reparented to init that run in an ended agent's scope (macOS has none: they are only noted)
+  -- orphans: what is left in an ended agent's scope, whoever adopted it (macOS has no scopes: orphans of init are only noted)
   if (← Machine.osName) == "Linux" then
     let mut sc : List (Int × String) := []
     for h in procs do
-      if h.ppid != 1 then continue
       if let some s := Machine.scopeOf ((← Fs.read s!"{root}/{d h.pid}/cgroup").getD "") then sc := sc ++ [(h.pid, s)]
     for h in orphanVictims procs (fun p => sc.lookup p.pid) db.agents do
       discard <| Proc.output ["kill", "-TERM", d h.pid] none []  -- kill-site: the orphan sweep, victims only; SIGTERM through kill(1), Sys has no signal call
