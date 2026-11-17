@@ -849,4 +849,27 @@ theorem hungStep_hung {db : Db} {n sig : String} {t : Int} (h : (Watchd.hungStep
     · simp only [hd, beq_self_eq_true, ite_true, decide_eq_true_eq] at h; exact ⟨e, he, hd, h⟩
     · simp [hd] at h
 
+/-! ## The orphan sweep ends only what an ended agent left in its own scope -/
+
+/-- Every victim runs in the scope of an ended agent, and no live agent runs in that scope. -/
+theorem orphanVictims_owned {procs : List Machine.Ps} {scope : Machine.Ps → Option String} {agents : List Agent} {p : Machine.Ps}
+    (h : p ∈ Watchd.orphanVictims procs scope agents) :
+    ∃ a ∈ agents, a.ended.isSome ∧ ∃ s, scope p = some s ∧ Watchd.ownsScope a.name s = true ∧
+      ∀ b ∈ agents, b.ended.isNone → Watchd.ownsScope b.name s = false := by
+  unfold Watchd.orphanVictims at h
+  rw [List.mem_filter] at h
+  obtain ⟨_, h⟩ := h
+  cases hs : scope p with
+  | none => simp [hs] at h
+  | some s =>
+    simp only [hs, Bool.and_eq_true, Bool.not_eq_true', List.any_eq_true, List.any_eq_false, Bool.and_eq_false_iff,
+      decide_eq_true_eq] at h
+    obtain ⟨_, ⟨a, ha, hb⟩, hn⟩ := h
+    refine ⟨a, ha, ?_, s, rfl, ?_, ?_⟩
+    · exact hb.1
+    · exact hb.2
+    · intro b hb' he
+      have := hn b hb'
+      simpa [he] using this
+
 end SwarmLean.WatchdProofs

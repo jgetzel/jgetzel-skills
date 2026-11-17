@@ -159,10 +159,16 @@ def test_pressure_edge_oom_and_orphans (t : T) : IO Unit := do
   addProc t pr 102 100 "cabal" ["cabal", "build"] { rssPages := 1000000 / 4 }
   -- b is ended; its worktree holds a build reparented to init
   t.q_ "update agent set ended=1 where name='b'"
-  addProc t pr 300 1 "ghc-9.10.3" ["ghc-9.10.3", "--make"] { rssPages := 3000000 / 4, cwd := some t.wt }
+  addProc t pr 300 1 "ghc-9.10.3" ["ghc-9.10.3", "--make"] { rssPages := 3000000 / 4, cwd := some t.wt }  -- in no agent's scope
+  addProc t pr 301 1 "ghc-9.10.3" ["ghc-9.10.3", "--make"] { rssPages := 3000000 / 4, cwd := some t.wt }  -- in b's scope
+  discard <| t.fake "kill" ("#!/bin/sh\necho \"$*\" >>" ++ t.d ++ "/kills\n")  -- no signal reaches the machine
+  put (pr ++ "/300/cgroup") "0::/user.slice/user-1000.slice/session-1.scope\n"
+  put (pr ++ "/301/cgroup") "0::/user.slice/app.slice/swarm-agent-b-4242.scope\n"
   discard <| swp t "a" pr ["watchd", "--once"]
   let ev := (← t.q "select kind from event where kind in ('pressure','pressure-end','orphan-kill') order by id").map (·.f "kind")
   eq ev (json% ["pressure", "orphan-kill"])
+  has ((← t.q1 "select data from event where kind='orphan-kill'").f "data") "301 "
+  eq (← readF [t.d, "kills"]) "-TERM 301\n"  -- only the one in b's scope
   let notes ← t.q "select dest,body from msg where kind='notice'"
   eq notes.size 1; eq ((notes[0]!).f "dest") "a"; has ((notes[0]!).f "body") "ghc-9.10.3"
   eq (← readF [pr, "102", "oom_score_adj"]) "500"
