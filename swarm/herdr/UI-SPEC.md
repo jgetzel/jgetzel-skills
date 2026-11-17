@@ -411,6 +411,36 @@ in the order at the end.
 
 ## II.3 Full swarm information
 
+**Round 3 (full view at parity with the side view; canvas page "Round 3 · full view parity").** The full view is the
+side view's parts at 1360 px, so the seven sections below are now four tabs in the top bar, the side view's: Now,
+Queue, Agents, More (More holds Activity, Landing, System and History as a second row of tabs; the pages below keep
+their content). Both views are laid out from the same functions in rw-swarm (`staffBar`, `taskRow`, `agentRow`,
+`nextCard`, `workingCard`, `filterRow`, `queueList`, `messageLine`, `emptyLine`, `skeleton`; the pure logic is
+`TABS`, `MORE`, `tabOf`, `prioWord`, `staffWords`, `heldWhy`, `pastOf`, `fitChips`, `plain` in rw-rail/tree.js).
+- Top bar: the four tabs with Now's red count, Queue's tasks left, Agents' live agents; one Away control (Away, and
+  while away "Away since 14:13" with I'm back; the Away banner is gone).
+- Under it, on every tab, the staffing bar: "2 working, 2 idle", why auto-spawn holds (`limits.held`), Auto-spawn and Max
+  steppers (32 px; the number moves at once in the accent until `swarm limits` answers; a refusal puts it back and the
+  CLI's words show in the bar), Queue only, Resume while auto-spawn is at 0 with tasks left.
+- Now: Needs you and Next up on the left (two columns at 900 px and over, else one), Working and Machines on the right;
+  Working is not drawn at zero. Next up's empty state gives the reason (`heldWhy`: no open tasks, or what waits on what,
+  held, not queued) and the one action that changes it. P0 and P1 show; P2 is the default and says nothing.
+- Queue: Open, Done, Dropped as one switch (Done and Dropped list in the table, newest first, with a filter; they no
+  longer open History); List or Graph; model and label chips with counts (AND, one line and "n more"); one table:
+  Being worked on, Next with the cut line, Waiting; each row's action is Spawn now, + Queue, Unqueue or Open terminal,
+  and a queued Next row keeps its reorder arrows. New task opens its form from the head.
+- Agents: today's table plus model chip and context bar; a row opens the agent's terminal, its name its page, a right
+  click its menu (as the side view); Spawn… and Show ended stay.
+- The message line at the foot of both views: Communicator or Everyone (an agent is messaged from its page), Urgent in
+  the full view.
+- States: loading is still bars (no pulse); an error is a row in Next up with the CLI's first line and Read again.
+- Markdown: a task's description, a question (task page and Needs you), the answer, the evidence and message bodies on
+  the task and agent pages render as markdown (`TextView.markdown`); Activity's full log does for its first 40 messages.
+  One-line previews (rows, Latest, Activity summary, Next up) are plain text with the markers stripped (`plain`). The
+  Edit and New task forms have a Write / Preview switch.
+- Not drawn: per-machine cores (claim status is not read by the mod); More's System page is today's, not the mockup's
+  Machines / Watchd / Main cards.
+
 Inventory (every item of `mods/swarm/main.js`, every field of `swarm state --json`'s seven views, every CLI command,
 against the rw-* mods): the old panel's Task, Agent, Activity and System screens and its queue are gone; Home lost the
 away digest, the CI / watchd / memory needs, Pause, Queue only, the stay signs and the idle reason. Two bugs:
@@ -550,7 +580,8 @@ The user, after using the build: "there's no way to pull up a side view of my sw
     less the live agents; each has #id, title, P0, model, two labels and a dim Spawn now; open tasks per label below,
     a click filters the Queue).
   - Queue: model and label chips with counts, several at once (AND), "Showing x of y · Clear"; Being worked on, Next
-    (numbered, the cut line), Waiting (held, behind a dep, or unqueued under queue-only). Done and Dropped open History.
+    (numbered, the cut line), Waiting (held, behind a dep, or unqueued under queue-only). Done and Dropped open History
+    (the full view lists them in its Queue; see II.3 round 3). Queue only sits on Next up's head; Away is one control in the head.
   - Agents: the agents list with a model chip and context bar, Spawn… (the spawn form) and the ended link.
   - More: Activity, Landing, System, History, each a row with a line of what it holds; a click opens today's section as
     a page with a "‹ More" back row. Expand maps More to Overview.
