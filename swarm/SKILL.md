@@ -50,8 +50,10 @@ with subagents.
    `swarm limits` prints both and the live count; change them only on the
    user's word, and watchd reads them on its next tick.
 1. Write the goal as tasks, each independently doable with a definition of
-   done: `swarm task add "<title>" --body "<done means …>"` (or `--body-file F`, `-` for stdin; the title is
-   one line, and over 100 chars it needs a body). Aim for tasks
+   done: `swarm task add "<title>" --body-file - <<'EOF'` … `EOF` (or `--body-file F`; the title is
+   one line, and over 100 chars it needs a body). The body is markdown, rendered on Herdr's task page: the goal in
+   a line, then `Done when:` and a `- ` list, `- ` items for steps and files, `Notes:` for background, backticks for
+   paths, commands and identifiers; never one long `--body "..."` paragraph. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
 2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
    running as a background Bash (`run_in_background`, never `&` or `disown`: a

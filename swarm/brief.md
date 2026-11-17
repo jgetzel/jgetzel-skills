@@ -15,7 +15,10 @@ your name is in `$SWARM_NAME`.
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
   on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work,
   `swarm task done <id> --evidence "<command output or sha>"` to finish. Add tasks for what you find
-  (`swarm task add "<title>" [--body <text>] [--after N] [--label a,b]`; `task edit` changes one); split a task that is too big.
+  (`swarm task add "<title>" [--body-file -] [--after N] [--label a,b]`; `task edit` changes one); split a task that is too big.
+  The body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list, `- `
+  items for steps and files, backticks for paths, commands and identifiers. Pass it with `--body-file -` and a
+  heredoc, never as one `--body "..."` paragraph.
   Can't finish it? `swarm task release <id>` (not `drop`, which kills the task), with `--after N` if it must wait
   for another. Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours and the answer may
   come back on the task.
