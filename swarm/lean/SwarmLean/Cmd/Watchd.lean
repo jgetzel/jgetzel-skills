@@ -196,6 +196,36 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
             "ctx-compact-failed" none (some (d k)), true)
     if done && s != s0 then Store.txn [.«meta»] fun db => (Compact.save db a.name s, ())
 
+/-- How old the communicator's oldest waking unread message is before watchd types into its terminal, and how
+often at most it does (`commsInbox`). -/
+def COMMS_NOWAITER : Int := 5 * 60
+def COMMS_NOWAITER_EVERY : Int := 15 * 60
+
+/-- The communicator's inbox backstop: it has no hooks, so its waiter is a background Bash it restarts itself. With none
+alive and a waking message unread COMMS_NOWAITER, one line typed into its terminal (event `comms-nowaiter`, data the
+newest such message's id); again only for a newer message and at most every COMMS_NOWAITER_EVERY. None while it
+compacts (compactPass sends its continue line). -/
+def commsInbox (t : Int) (comms : String) : m Unit := do
+  let db ← Store.txn [.agent, .event, .msg, .cursor] fun db => (db, db)
+  let some a := db.agent comms | return
+  if a.ended.isSome then return
+  let some h := py a.hc | return
+  if Compact.compacting db.events comms (a.last_active.getD 0) t then return
+  if ← (match a.waiter with | some w => Sys.pidAlive w | none => pure false) then return
+  let wake := (Msgs.unread db comms).filter fun r => r.kind != some "notice" || r.urgent.getD 0 != 0
+  let (some oldest, some newest) := (wake.head?, wake.getLast?) | return
+  let age := t - oldest.ts.getD t
+  if age < COMMS_NOWAITER then return
+  let last := (db.events.filter fun e => e.agent == some comms && e.kind == some "comms-nowaiter").getLast?
+  if last.any fun e => e.data == some (d newest.id) || t - e.ts.getD 0 < COMMS_NOWAITER_EVERY then return
+  let line := s!"swarm: your inbox has no waiter: {wake.length} unread message(s), the oldest {fdiv age 60} min old. " ++
+    "Run `swarm read`, then start `swarm wait --timeout 21000` again as a background Bash."
+  match ← Msgs.typeLine h line with
+  | some e => Env.err s!"comms inbox: hc send {h} failed: {e}"
+  | none =>
+    let now ← Clock.now
+    Store.txn [.event] fun db => (db.log now (some comms) "comms-nowaiter" none (some (d newest.id)), ())
+
 /-- Each blocked task's question told to comms once per block: a task-blocked event after its latest `task block`. -/
 def notices (comms : String) (away : Bool) : m Unit := do
   let db ← Store.txn [.task] fun db => (db, db)
@@ -242,6 +272,7 @@ def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option 
     | .error e => errs := errs ++ ["lifecycle: " ++ e]
     if let .error e ← Guard.guard (quiet t c) then errs := errs ++ ["quiet: " ++ e]
     if let .error e ← Guard.guard (hung t c terms opts.interval) then errs := errs ++ ["hung: " ++ e]
+    if let .error e ← Guard.guard (commsInbox t c) then errs := errs ++ ["comms inbox: " ++ e]
     if let .error e ← Guard.guard (blockers t c opts.blockerIdle) then errs := errs ++ ["blockers: " ++ e]
     if let some ts := terms then
       if let .error e ← Guard.guard (compactPass ts c) then errs := errs ++ ["compact: " ++ e]

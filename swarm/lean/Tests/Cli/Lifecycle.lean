@@ -1013,6 +1013,30 @@ def test_watchd_continues_after_compaction (t : T) : IO Unit := do
   eq (← sends) 1
   has ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).head! "#1"
 
+-- the communicator has no hooks: with no live waiter and a message unread 5 min, watchd types one line into its
+-- terminal; again only for a newer message and at most every 15 min; nothing while a waiter lives
+def test_watchd_types_into_waiterless_comms (t : T) : IO Unit := do
+  t.fakes
+  let dead : Int := (strip (← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }).stdout).toNat?.getD 0
+  t.agent "t-comms" [("hc", "hc0"), ("status", "idle"), ("waiter", .int dead)]
+  t.setHc [json% {"address": "hc0", "status": "done"}]
+  let tick : IO Unit := t.sw_ "human" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send hc0 swarm: your inbox has no waiter")).length
+  let post (x : String) : IO Unit := do t.sw_ "human" ["post", "t-comms", x]; t.q_ "update msg set ts = ts - 600 where body=?" [.text x]
+  t.sw_ "human" ["post", "t-comms", "landed #3"]
+  tick; eq (← sends) 0  -- fresh: it may be restarting its waiter
+  t.q_ "update msg set ts = ts - 600" []
+  tick; eq (← sends) 1
+  has ((← t.calls "hc").filter (·.startsWith "send hc0 swarm:")).head! "1 unread message(s), the oldest 10 min old"
+  tick; eq (← sends) 1  -- once per message
+  post "landed #4"
+  tick; eq (← sends) 1  -- newer, but within 15 min of the last line
+  t.q_ "update event set ts = ts - 1000 where kind='comms-nowaiter'" []
+  tick; eq (← sends) 2
+  t.q_ "update agent set waiter=? where name='t-comms'" [.int (← IO.Process.getPID).toNat]
+  post "landed #5"; t.q_ "update event set ts = ts - 1000 where kind='comms-nowaiter'" []
+  tick; eq (← sends) 2  -- a live waiter wakes it itself
+
 -- a stayer has no stop verdict but still gets the continue line after its compaction
 def test_watchd_continues_stayer_after_compaction (t : T) : IO Unit := do
   t.fakes
@@ -1246,6 +1270,7 @@ def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
   ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
   ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),
+  ("test_watchd_types_into_waiterless_comms", test_watchd_types_into_waiterless_comms),
   ("test_watchd_continues_stayer_after_compaction", test_watchd_continues_stayer_after_compaction),
   ("test_watchd_no_continue_after_a_turn", test_watchd_no_continue_after_a_turn),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),

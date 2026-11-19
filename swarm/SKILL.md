@@ -60,7 +60,7 @@ with subagents.
    detached waiter sends no notification and lingers): it is your inbox. Exit
    2 means messages (on stderr), 0 a timeout or a newer waiter (stderr says which, and what is unread: a
    non-urgent post waits while you are cold, an own post never wakes you): run `swarm read`, act, and start
-   it again. Exit 3 means this terminal doesn't hold your name (stderr says who
+   it again. With no live waiter and a message unread 5 min, watchd types a reminder into your terminal. Exit 3 means this terminal doesn't hold your name (stderr says who
    does): run `swarm join` (`--takeover` to move it here) before restarting it.
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
