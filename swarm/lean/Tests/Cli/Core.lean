@@ -212,7 +212,7 @@ def test_wait_outlasts_a_busy_db (t : T) : IO Unit := do
   unless (← child.tryWait).isNone do fail "wait did not wait out the held lock"
   discard <| peer.exec "commit"
   let err ← child.stderr.readToEnd
-  eq (json% [$((← child.wait).toNat), $err]) (json% [0, ""])
+  eq (json% [$((← child.wait).toNat), $err]) (json% [0, "swarm wait: timed out after 1s; nothing unread\n"])  -- no busy-db error
   unless (← t.q1 "select waiter from agent where name='a'").f "waiter" != .null do fail "wait did not record its pid"
 
 def test_drop_claimed_only_by_owner_or_comms (t : T) : IO Unit := do
