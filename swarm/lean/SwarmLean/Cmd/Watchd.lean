@@ -204,11 +204,13 @@ def COMMS_NOWAITER_EVERY : Int := 15 * 60
 /-- The communicator's inbox backstop: it has no hooks, so its waiter is a background Bash it restarts itself. With none
 alive and a waking message unread COMMS_NOWAITER, one line typed into its terminal (event `comms-nowaiter`, data the
 newest such message's id); again only for a newer message and at most every COMMS_NOWAITER_EVERY. None while it
-compacts (compactPass sends its continue line). -/
+compacts (compactPass sends its continue line), nor while no other agent lives: a swarm with none has nothing to
+coordinate, and the terminal may hold a session doing other work. -/
 def commsInbox (t : Int) (comms : String) : m Unit := do
   let db ← Store.txn [.agent, .event, .msg, .cursor] fun db => (db, db)
   let some a := db.agent comms | return
   if a.ended.isSome then return
+  if (Agents.live db).all (·.name == comms) then return
   let some h := py a.hc | return
   if Compact.compacting db.events comms (a.last_active.getD 0) t then return
   if ← (match a.waiter with | some w => Sys.pidAlive w | none => pure false) then return

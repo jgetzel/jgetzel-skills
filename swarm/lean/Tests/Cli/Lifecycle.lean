@@ -1019,10 +1019,16 @@ def test_watchd_types_into_waiterless_comms (t : T) : IO Unit := do
   t.fakes
   let dead : Int := (strip (← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }).stdout).toNat?.getD 0
   t.agent "t-comms" [("hc", "hc0"), ("status", "idle"), ("waiter", .int dead)]
-  t.setHc [json% {"address": "hc0", "status": "done"}]
+  t.setHc [json% {"address": "hc0", "status": "done"}, json% {"address": "h1", "status": "working"}]
   let tick : IO Unit := t.sw_ "human" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
   let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send hc0 swarm: your inbox has no waiter")).length
   let post (x : String) : IO Unit := do t.sw_ "human" ["post", "t-comms", x]; t.q_ "update msg set ts = ts - 600 where body=?" [.text x]
+  post "landed #2"
+  tick; eq (← sends) 0  -- no other agent: nothing to coordinate (the terminal may do other work now)
+  t.agent "a" [("hc", "h1")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  t.sw_ "t-comms" ["read"] { hc := some "hc0" }
+  t.q_ "update agent set waiter=? where name='t-comms'" [.int dead]
   t.sw_ "human" ["post", "t-comms", "landed #3"]
   tick; eq (← sends) 0  -- fresh: it may be restarting its waiter
   t.q_ "update msg set ts = ts - 600" []
