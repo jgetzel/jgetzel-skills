@@ -387,7 +387,9 @@ def test_cold_cache_cheap_cases_and_cold (t : T) : IO Unit := do
   eq ((← t.q1 "select path from event where kind='deny-cold'").f "path") "cold"
   eq (← sendmsg t "nobody-we-know") (json% {})  -- not a member
   has (← t.sw "a" ["post", "cold", "later"]).stdout "held, cold"  -- stored without a wake
-  eq (← t.sw "cold" ["wait", "--timeout", "2", "--poll", "0.2"] { ok := false }).code 0  -- non-urgent stays held
+  let w ← t.sw "cold" ["wait", "--timeout", "2", "--poll", "0.2"] { ok := false }
+  eq w.code 0  -- non-urgent stays held
+  has w.stderr "timed out after 2s; 1 message(s) held, cold: cold is idle 72 min"
 
 /-- A line holding `pre` and, later on it, `post` (Lua `pre [^\n]*post`). -/
 def seqIn (s pre post : String) : Bool := (splitlines s).any fun l =>
@@ -456,6 +458,8 @@ def test_wait_wakes_warm_idle (t : T) : IO Unit := do
   let w ← t.sw "b" ["wait", "--timeout", "3", "--poll", "0.2"] { ok := false }
   eq w.code 2
   has w.stderr "ping"
+  t.sw_ "b" ["post", "b", "to myself"]  -- one's own post never wakes one
+  has (← t.sw "b" ["wait", "--timeout", "1", "--poll", "0.2"] { ok := false }).stderr "timed out after 1s; nothing unread"
 
 def test_prompt_hook_delivers_and_stops_waiter (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"

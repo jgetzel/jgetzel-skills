@@ -101,7 +101,7 @@ def retryBusy [Guard m] (x : m α) : m α := do
 def txnBusy [Guard m] (ts : List Table) (f : Db → Db × α) : m α := retryBusy (Store.txn ts f)
 
 /-- `swarm wait [--me N] [--timeout S] [--poll S]` (msgs.cmd_wait): 2 after a delivery to stderr, 3 when fenced, 0 on
-a timeout or when superseded or working. -/
+a timeout or when superseded or working, with one stderr line saying which (and, on a timeout, what is unread). -/
 def wait [Guard m] (a : Parsed) : m UInt32 := do
   let n ← me
   let here ← env "HC_TERMINAL_ID"
@@ -116,10 +116,17 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
   let deadline := (← Clock.now) + (a.int "timeout").getD 21000
   let pollMs := ((parseFloat (strip ((a.str "poll").getD "1"))).getD 1 * 1000).toUInt64.toNat
   let mut seen : Seen := []
+  let mut left : List Msg := []  -- the last poll's unread rows
+  let mut held : Option String := none  -- why they were held as cold
   while (← Clock.now) < deadline do
     let (ag, rows) ← txnBusy [.agent, .msg, .cursor] fun db => (db, (db.agent n, unread db n))
-    let some ag := ag | return 0
-    if ag.waiter != some pid || ag.status == some "working" then return 0  -- superseded, or its hooks deliver
+    let some ag := ag | Env.err s!"swarm wait: {n} has no agent row; `swarm join`"; return 0
+    if ag.waiter != some pid then
+      Env.err s!"swarm wait: superseded: a newer waiter (pid {(ag.waiter.map toString).getD "none"}) owns {n}'s inbox"
+      return 0
+    if ag.status == some "working" then
+      Env.err s!"swarm wait: {n} is working; its hooks deliver"
+      return 0
     let urg (r : Msg) : Bool := r.urgent.getD 0 != 0
     let wake := rows.filter fun r => r.kind != some "notice" || urg r
     let urgent := wake.any urg
@@ -128,12 +135,20 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
       let (cr, s) ← coldReason seen ag (← Clock.now)
       seen := s
       cold := cr.isSome
+      held := cr
     if (← wakes rows (pure cold : m Bool)).isSome then
       let t ← Clock.now
       txnBusy [] fun db => (db.log t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}"), ())
       Env.err (← retryBusy (deliver n))  -- a failed delivery rolls back: nothing is marked read
       throw (Exit.mk 2)
+    left := rows
     Sys.sleep pollMs
+  let notes := (left.filter (·.kind == some "notice")).length
+  let msgs := left.length - notes
+  let what := if left.isEmpty then "nothing unread"
+    else ", ".intercalate ((if msgs > 0 then [s!"{msgs} message(s) held, cold: {held.getD "?"} `swarm read` takes them"] else []) ++
+      (if notes > 0 then [s!"{notes} notice(s) (notices don't wake)"] else []))
+  Env.err s!"swarm wait: timed out after {(a.int "timeout").getD 21000}s; {what}"
   return 0
 
 /-- `swarm nudge <agent>`: types one fixed line into a live agent's terminal (hc send) and logs it (agents.cmd_nudge). -/

@@ -58,7 +58,8 @@ with subagents.
 2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
    running as a background Bash (`run_in_background`, never `&` or `disown`: a
    detached waiter sends no notification and lingers): it is your inbox. Exit
-   2 means messages (on stderr), 0 a timeout: run `swarm read`, act, and start
+   2 means messages (on stderr), 0 a timeout or a newer waiter (stderr says which, and what is unread: a
+   non-urgent post waits while you are cold, an own post never wakes you): run `swarm read`, act, and start
    it again. Exit 3 means this terminal doesn't hold your name (stderr says who
    does): run `swarm join` (`--takeover` to move it here) before restarting it.
 3. Start the watcher, in the background:
