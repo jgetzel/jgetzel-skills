@@ -304,7 +304,7 @@ def running (db : Db) (t : Int) : m (List (String × Json)) := do
     let ts := j.ts.getD 0
     run := run ++ [obj [("agent", j.agent.map .str), ("command", some (.str (cut ((j.str "cmd").getD "") 120))),
       ("elapsed_s", some (Json.int (t - ts))), ("start", j.ts.map Json.int), ("rss_kb", some ((raw r "rss_kb").getD .null)),
-      ("cpu", some ((raw r "cpu").getD .null)), ("machine", some mach), ("job", j.id.map .str),
+      ("cpu", some ((raw r "cpu").getD .null)), ("machine", some mach), ("job", j.id.map .str), ("parent", (raw j.data "parent")),
       ("unreachable", some (.bool unreach)), ("lost", some (.bool (!unreach && isgone && g)))]]
   return [("costly", .arr rc.toArray), ("cost_top", .arr top.toArray), ("running", .arr run.toArray)]
 

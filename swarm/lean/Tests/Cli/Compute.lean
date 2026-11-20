@@ -270,6 +270,34 @@ def test_run_records_every_job (t : T) : IO Unit := do
   eq rows.length 1
   eq (rows.head!.2.1) "run"
 
+def test_job_record_is_a_job_of_its_own (t : T) : IO Unit := do
+  let lg := t.d ++ "/q.log"
+  put lg "timed\n"
+  let r ← t.sw "b" ["job", "record", "--who", "b", "--machine", "desk", "--cores", "8", "--start", "1000", "--wall", "100", "--cpu", "450",
+    "--peak-kb", "4000000", "--exit", "0", "--parent", "j5", "--log", lg, "--", "make timing"]
+  has r.stdout "recorded j1"
+  let st ← parse (((← t.q1 "select data from event where kind='job-start' and path='1'").f "data").s?.getD "")
+  eq (toJson [st.f "machine", st.f "parent", st.f "cores", st.f "cmd"]) (json% ["desk", 5, 8, "make timing"])
+  let en ← parse (((← t.q1 "select data from event where kind='job-end' and path='1'").f "data").s?.getD "")
+  eq (toJson [en.f "exit", en.f "s"]) (json% [0, 100])
+  eq (← costRows "make timing") [("make timing", "run", 100, "desk")]
+  let logp := (strip (← t.sw "b" ["job", "record", "--who", "b", "--wall", "1", "--exit", "lost", "--", "true"]).stdout)
+  has logp "recorded j2"
+  -- sizes the next run of the same key: 450 CPU s over 100 s is 5 cores, the peak plus a quarter
+  let r2 ← t.sw "b" ["run", "--", "make timing 2>/dev/null; echo $SWARM_CORES $SWARM_MEM_KB"]
+  has r2.stdout "5 5000000"
+  has r2.stderr "from the history"
+
+def test_nested_run_uses_the_parents_claim (t : T) : IO Unit := do
+  let cmd := s!"{← swarmBin} run -- 'echo inner cores=$SWARM_CORES claims='$(ls \"$XDG_STATE_HOME/swarm-compute/claims\" | wc -l) 2>&1"
+  let r ← t.sw "b" ["run", "--cores", "all", "--", cmd]
+  has r.stdout "inside job j1's claim"
+  has r.stdout "claims=1"
+  has r.stdout "job j2 exit 0"
+  let st ← parse (((← t.q1 "select data from event where kind='job-start' and path='2'").f "data").s?.getD "")
+  eq (st.f "parent") (json% 1)
+  eq (← claimsHere t) 0
+
 def test_compute_reserve_and_the_one_machine_view (t : T) : IO Unit := do
   discard <| t.sw "b" ["compute", "reserve", "here", "3"]
   let j ← parse (← t.sw "b" ["compute", "--json", "here"]).stdout
@@ -296,6 +324,8 @@ def tests : List Case := [
   ("test_run_explicit_mem_is_a_cap", test_run_explicit_mem_is_a_cap),
   ("test_run_records_the_local_jobs_own_use", test_run_records_the_local_jobs_own_use),
   ("test_run_records_every_job", test_run_records_every_job),
+  ("test_job_record_is_a_job_of_its_own", test_job_record_is_a_job_of_its_own),
+  ("test_nested_run_uses_the_parents_claim", test_nested_run_uses_the_parents_claim),
   ("test_compute_reserve_and_the_one_machine_view", test_compute_reserve_and_the_one_machine_view)]
 
 end SwarmLean.Tests.Cli.Compute

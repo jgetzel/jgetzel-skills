@@ -185,35 +185,46 @@ def run (a : Parsed) : m UInt32 := do
       | some x => if x > 0 then pure (some (Int.ofNat (x * 1048576).floor.toUInt64.toNat)) else die s!"--mem: not a size in G: {g}"
       | none => die s!"--mem: not a size in G: {g}"
   if coresArg == some "all" && memFlag.isSome then die "--mem: not with --cores all (the whole machine's available memory is claimed)"
-  let rows ← history line
-  let hist := Compute.size rows
-  let est := Compute.estimate rows
-  let (wantC, wantM) := (coresArg.getD (match hist with | some h => d h.1 | none => d DEFAULT_CORES),
-    if coresArg == some "all" then 0 else memFlag.getD (match hist with | some h => h.2 | none => DEFAULT_MEM_KB))
-  let from_ := match hist with | some _ => "from the history" | none => "no history: the default"
-  let what : String := if wantC == "all" then "the whole machine" else s!"{wantC} cores, {gi wantM}G"
-  let basis : String := if coresArg.isSome && (memFlag.isSome || wantC == "all") then "as asked" else from_
-  Env.err s!"swarm: claiming {what}{est.elim "" fun e => s!", ~{span e}"} ({basis})"
-  let machines := ((Json.field cfg "machines").map Json.items |>.getD []).filterMap Json.str?
-  let cands : List (Option String) := match a.str "on" with | some x => [some x] | none => none :: machines.map some
-  let ms0 ← Claims.hcMachines host
-  let stateOf (c : Option String) : String := match c with
-    | none => "connected"
-    | some n => (ms0.lookup n).bind (Json.fstr · "state") |>.getD "not in `hc machine ls`"
-  let usable := cands.filter fun c => stateOf c == "connected"
-  if let some mach := a.str "on" then
-    if !usable.contains (some mach) then
-      Env.err s!"swarm: machine {mach} is {stateOf (some mach)}; the job never ran. Pick another (see the machine note)."
-      throw (Exit.mk 255)
-  let claimId := s!"{sanitize who}-{← Sys.getpid}-{← Clock.now}"
-  let tw ← Sys.nowF
-  let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
-  let ask : Claims.Ask := {
-    prog := "swarm", capCmd := "swarm compute", cands, usable, stateOf, id := claimId, cores := wantC,
-    mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
-  let some (chosen, gotCores, gotMem) ← Claims.acquire host ask | throw (Exit.mk 255)
-  let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
-  let release : m Unit := if chosen.isNone then Claims.release host chosen claimId else pure ()
+  let parent ← env "SWARM_JOB_ID"
+  let hn ← Sys.hostname
+  -- inside a local job's claim (SWARM_JOB_ID, same machine, no --on): no claim of its own, the parent's cores
+  let nested := parent.isSome && (← env "SWARM_JOB_MACHINE") == some hn && (a.str "on").isNone
+  let (chosen, gotCores, gotMem, claimId, waitS) : Option String × Int × Int × String × Int ← if nested then do
+    let c := ((← env "SWARM_CORES").bind parseInt).getD DEFAULT_CORES
+    let mk := ((← env "SWARM_MEM_KB").bind parseInt).getD DEFAULT_MEM_KB
+    Env.err s!"swarm: inside job j{parent.getD ""}'s claim ({d c} cores); not claiming"
+    pure (none, c, mk, "", 0)
+  else do
+    let rows ← history line
+    let hist := Compute.size rows
+    let est := Compute.estimate rows
+    let (wantC, wantM) := (coresArg.getD (match hist with | some h => d h.1 | none => d DEFAULT_CORES),
+      if coresArg == some "all" then 0 else memFlag.getD (match hist with | some h => h.2 | none => DEFAULT_MEM_KB))
+    let from_ := match hist with | some _ => "from the history" | none => "no history: the default"
+    let what : String := if wantC == "all" then "the whole machine" else s!"{wantC} cores, {gi wantM}G"
+    let basis : String := if coresArg.isSome && (memFlag.isSome || wantC == "all") then "as asked" else from_
+    Env.err s!"swarm: claiming {what}{est.elim "" fun e => s!", ~{span e}"} ({basis})"
+    let machines := ((Json.field cfg "machines").map Json.items |>.getD []).filterMap Json.str?
+    let cands : List (Option String) := match a.str "on" with | some x => [some x] | none => none :: machines.map some
+    let ms0 ← Claims.hcMachines host
+    let stateOf (c : Option String) : String := match c with
+      | none => "connected"
+      | some n => (ms0.lookup n).bind (Json.fstr · "state") |>.getD "not in `hc machine ls`"
+    let usable := cands.filter fun c => stateOf c == "connected"
+    if let some mach := a.str "on" then
+      if !usable.contains (some mach) then
+        Env.err s!"swarm: machine {mach} is {stateOf (some mach)}; the job never ran. Pick another (see the machine note)."
+        throw (Exit.mk 255)
+    let claimId := s!"{sanitize who}-{← Sys.getpid}-{← Clock.now}"
+    let tw ← Sys.nowF
+    let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
+    let ask : Claims.Ask := {
+      prog := "swarm", capCmd := "swarm compute", cands, usable, stateOf, id := claimId, cores := wantC,
+      mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
+    let some (chosen, gotCores, gotMem) ← Claims.acquire host ask | throw (Exit.mk 255)
+    let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
+    pure (chosen, gotCores, gotMem, claimId, waitS)
+  let release : m Unit := if chosen.isNone && !nested then Claims.release host chosen claimId else pure ()
   let cs := d gotCores
   let jenv := jenv0 ++ (Claims.jobEnv cs gotMem (← Env.var "NIX_CONFIG")).filter fun (k, _) => !(jenv0.any (·.1 == k))
   let sub (x : String) := x.replace "{cores}" cs
@@ -223,6 +234,7 @@ def run (a : Parsed) : m UInt32 := do
   let jid ← Store.txn [.«meta»] fun db =>
     let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
     (db.setMeta "jobs" (some (d n)), d n)
+  let jenv := jenv.filter (fun (k, _) => k != "SWARM_JOB_ID" && k != "SWARM_JOB_MACHINE") ++ [("SWARM_JOB_ID", jid), ("SWARM_JOB_MACHINE", chosen.getD hn)]
   -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>` (a local job's with its pid after, a scope name is per machine); a defaulted one only a reservation
   let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
   let mkJob (fl : String) := (memFlag.map fun kb => Claims.memCap unit kb).getD id (Claims.lowPrio fl)
@@ -235,7 +247,8 @@ def run (a : Parsed) : m UInt32 := do
   let dir := s!"{RUN_DIR}/{repo}/{wtname}"
   let on := chosen
   let rec0 : List (String × Option Json) := [("machine", on.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t),
-    ("cmd", some (.str full)), ("pid", some (Json.int (← Sys.getpid))), ("cores", some (Json.int gotCores)), ("mem_kb", some (Json.int gotMem))]
+    ("cmd", some (.str full)), ("pid", some (Json.int (← Sys.getpid))), ("cores", some (Json.int gotCores)), ("mem_kb", some (Json.int gotMem)),
+    ("parent", (parent.bind parseInt).map Json.int)]
   let t0 ← Sys.nowF
   let logEv (kind : String) (data : Json) : m Unit := do
     let now ← Clock.now
@@ -375,9 +388,80 @@ def run (a : Parsed) : m UInt32 := do
   discard <| Proc.output ["hc", "rm", addr] none []
   finish code tree (some sync) (some ((← Sys.nowF) - tb)) kept (some addr)
 
-/-- The group: run. -/
+/-- `swarm job record …`'s parser. -/
+def jobSpec : Spec :=
+  .mk "job" helpJob [] [] [] (cmdTarget := some "act") (cmds := [
+    .mk "record" helpJobRecord []
+      [{ opt "--who" with minCount := 1 }, opt "--task" none (some int), opt "--parent", opt "--machine", opt "--cores" none (some int),
+       opt "--start" none (some int), { opt "--wall" with minCount := 1, conv := some int }, opt "--cpu" none (some int),
+       opt "--peak-kb" none (some int), { opt "--exit" with minCount := 1 }, opt "--log"] [] [] none])
+
+/-- The words after `job`: the options, and the command after the first `--`. -/
+def splitJob (args : List String) : List String × List String :=
+  match args.findIdx? (· == "--") with
+  | some i => (args.take i, args.drop (i + 1))
+  | none => (args, [])
+
+/-- A job id as typed (`12` or `j12`), its number. -/
+def jobNum (s : String) : Option Int := parseInt (if s.startsWith "j" then (s.drop 1).toString else s)
+
+/-- `swarm job record`: a job that ran elsewhere or inside another job's claim as a job of its own: its events, log and history row.
+Claims nothing, runs nothing. -/
+def jobRecord (a : Parsed) : m UInt32 := do
+  let argv := a.strs "argv"
+  if argv.isEmpty then die "usage: swarm job record --who <agent> --wall <s> --exit <code|lost> [options] -- <cmd…>"
+  let who := (a.str "who").getD "human"
+  let some wall := a.int "wall" | die "--wall: needed"
+  if wall < 0 then die "--wall: not a count of seconds"
+  let code : Code ← match a.str "exit" with
+    | some "lost" => pure .lost
+    | some c => match parseInt c with
+      | some n => pure (.n n)
+      | none => die s!"--exit: not a code or lost: {c}"
+    | none => die "--exit: needed"
+  let parent ← match a.str "parent" with
+    | none => pure ((← env "SWARM_JOB_ID").bind jobNum)
+    | some p => match jobNum p with
+      | some n => pure (some n)
+      | none => die s!"--parent: not a job id: {p}"
+  let some top0 ← git ["rev-parse", "--show-toplevel"] | die "not in a git repo"
+  if top0 == "" then die "not in a git repo"
+  let top := (← Sys.realpath top0).getD top0
+  let common := (← git ["rev-parse", "--path-format=absolute", "--git-common-dir"]).getD ""
+  let repo := sanitize (if common.endsWith "/.git" then basename (dirname common) else basename top)
+  let line := if argv.length == 1 then argv.head! else shjoin argv
+  let now ← Clock.now
+  let t1 := match a.int "start" with | some st => st + wall | none => now
+  let t0 := t1 - wall
+  let jid ← Store.txn [.«meta»] fun db =>
+    let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
+    (db.setMeta "jobs" (some (d n)), d n)
+  let dbp := match ← env "SWARM_DB" with | some p => p | none => common ++ "/swarm/swarm.db"
+  let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
+  discard <| Sys.mkdirp jobs
+  if let some lf := a.str "log" then discard <| Sys.exec ["cp", lf, jobs ++ "/log"] {}
+  let hn ← Sys.hostname
+  let mach := a.str "machine"
+  let task ← match a.int "task" with
+    | some t => pure (some t)
+    | none => Store.txn [.task] fun db => (db, ((db.tasks.filter fun t => t.owner == some who && (t.state = .claimed || t.state = .blocked)).head?.map (·.id)))
+  let start := obj [("machine", mach.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t), ("cmd", some (.str line)),
+    ("pid", some (Json.int (← Sys.getpid))), ("cores", (a.int "cores").map Json.int), ("parent", parent.map Json.int)]
+  let end_ := obj [("machine", mach.map .str), ("exit", some (match code with | .n c => Json.int c | .lost => .str "lost")),
+    ("s", some (Json.int wall)), ("wait_s", some (Json.int 0))]
+  Store.txn [] fun db =>
+    ((db.log t0 (some who) "job-start" (some jid) (some (Json.encode start))).log t1 (some who) "job-end" (some jid) (some (Json.encode end_)), ())
+  let repoNm := (← Cost.repoName).getD repo
+  let cpuS := (a.int "cpu").getD 0
+  let peak := (a.int "peak_kb").getD 0
+  let row : Cost.Rec := { ts := t1, machine := mach.getD hn, repo := repoNm, agent := who, source := "run", cmd := line, key := some (Cost.key line), wall_s := wall, cpu_s := cpuS, peak_kb := peak }
+  discard <| Cost.record row
+  Env.out s!"recorded j{jid}"
+  return 0
+
+/-- The group: run and job. -/
 def group : Group m where
-  specs := [("run", spec)]
-  run := run
+  specs := [("run", spec), ("job", jobSpec)]
+  run a := if a.cmd == "job" then jobRecord a else run a
 
 end SwarmLean.Cmd.Run
