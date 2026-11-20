@@ -23,6 +23,8 @@ def SWEEP_IDLE : Int := 1800
 def UNCLEAN_IDLE : Int := 1800
 /-- A stayer idle this long (s) is asked if it still stays. -/
 def LIVENESS_IDLE : Int := 50 * 60
+/-- A free-text stay (no `--until`) is asked what it waits for this idle long (s) after it was set, then each LIVENESS_IDLE. -/
+def LIVENESS_FREE : Int := 15 * 60
 /-- ...and is hung if its last_active has not moved this long (s) after. -/
 def LIVENESS_WAIT : Int := 5 * 60
 /-- A finished agent idle this long (s), held only by a sleep-loop job, is nudged once. -/
@@ -404,6 +406,27 @@ def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
         let db := say db now n "What are you waiting on? Can you continue without it/land without it?" true "system"
         (say db now comms s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
 
+/-- Ends `n`'s stay if its `--until` condition holds (board #195): the stay cleared, its claimed tasks' leases renewed
+2 h, and "Your wait is over: <cond> (<detail>)" sent. Whether it woke. -/
+def wakeStay (n : String) (t : Int) : m Bool := do
+  let now ← Clock.now
+  Store.txn [.agent, .task, .event, .msg, .cursor, .«meta», .ci] fun db =>
+    match (db.agent n).bind (·.stay) with
+    | none => (db, false)
+    | some s =>
+      match stayCondOf db n with
+      | (some c, since) =>
+        match stayMet db Ci.ts n c since t with
+        | none => (db, false)
+        | some detail =>
+          let db := db.setAgent n ({ · with stay := none })
+          let db := db.log now (some n) "stay-end" (some n) (some s)
+          let db := db.log now (some n) "stay-wake" (some c) (some detail)
+          let db := db.tasks.foldl (fun db r =>
+            if r.owner == some n && r.state == .claimed then db.set r.id ({ · with lease_until := some (now + 7200) }) else db) db
+          (say db now n s!"Your wait is over: {c} ({detail})" true "system", true)
+      | _ => (db, false)
+
 /-- Hung stayers: no live waiter, a waking message unread two ticks, and the liveness check and its answer; all state in
 events newer than the stayer's last_active, so any wake re-arms it (watchd.hung). None while it compacts. -/
 def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : m Unit := do
@@ -438,6 +461,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
           let db := db.log now (some n) "stay-nowaiter" none none
           (say db now comms s!"{n} stays for '{stay}' but has no waiter and can't be woken." false "system", ())
       continue
+    if (py a.stay).isSome && (← wakeStay n t) then continue
     for msg in Msgs.unread db n do
       if msg.dest == some n && msg.kind != some "notice" && msg.ts.getD 0 ≤ t - 2 * tick &&
           !(msg.body.getD "").startsWith "Liveness check:" && (ev "stay-unwoken" (some (d msg.id))).isNone then
@@ -454,15 +478,19 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
           let db := db.log now (some n) "stay-hung" none none
           (say db now comms (s!"{n} stays for '{stay}' and did not answer the liveness check (terminal {a.hc.getD "?"}, hc status " ++
             s!"{(x.bind (·.status)).getD "unknown"}). Unstick it with `swarm nudge {n}`, or end it.") true "system", ())
-    else if t - last ≥ LIVENESS_IDLE then
+    else if t - last ≥ (match stayCondOf db n with
+        | (some _, _) => LIVENESS_IDLE
+        | (none, since) => if (db.events.any fun e => e.agent == some n && e.kind == some "stay-check" && e.ts.any (· ≥ since))
+            then LIVENESS_IDLE else LIVENESS_FREE) then
       let (cr, s) ← coldReason seen a t  -- a cold wake resends the whole context
       seen := s
       if cr.isNone then
         let now ← Clock.now
         Store.txn [] fun db =>
           let db := db.log now (some n) "stay-check" none none
-          (say db now n (s!"Liveness check: you have stayed {fdiv (t - last) 60} min for '{stay}'. If that still holds, do nothing. " ++
-            "If it is over, `swarm stay --end`.") false "system", ())
+          (say db now n (s!"Liveness check: you have stayed {fdiv (t - last) 60} min for '{stay}'. What exactly are you waiting for? " ++
+            "If you can take any step now, take it and `swarm stay --end`. If you are blocked, set the stay again with the " ++
+            "condition (`swarm stay \"<why>\" --until <cond>`); that re-arms the check.") false "system", ())
 
 /-- Whether agent `n`'s job tree `sig` (`Lifecycle.jobTree`) is hung at `t`, and whether to log `sig` as its new
 `job-cpu` checkpoint: the first tree seen, or a changed one once the last is JOB_HUNG old. So at most one event per

@@ -193,17 +193,25 @@ def test_hung_notice_not_reported (t : T) : IO Unit := do
 
 def test_liveness_check_hung_and_answered (t : T) : IO Unit := do
   idle t "comms"
-  idle t "s" [("stay", "the plan"), ("last_active", .int ((← now) - 49 * 60))]
+  idle t "s" [("stay", "the plan"), ("last_active", .int ((← now) - 14 * 60))]
   comms_tick t
-  eq (← live t "s") 0  -- not before 50 minutes
-  t.q_ "update agent set last_active=? where name='s'" [.int ((← now) - 51 * 60)]
+  eq (← live t "s") 0  -- a free-text stay: not before 15 minutes
+  t.q_ "update agent set last_active=? where name='s'" [.int ((← now) - 16 * 60)]
   comms_tick t; comms_tick t
   eq (← live t "s") 1
+  let m := ((← t.q1 "select body from msg where dest='s' and body like 'Liveness check:%'").f "body").s?.getD ""
+  has m "What exactly are you waiting for?"
+  has m "If you can take any step now, take it and `swarm stay --end`"
+  has m "`swarm stay \"<why>\" --until <cond>`"
+  hasnt m "do nothing"
   -- answered: last_active moved, no stay-hung; a new check goes out 50 idle minutes later
   t.q_ "update agent set last_active=? where name='s'" [.int (← now)]
   comms_tick t
   eq (← evs t "stay-hung") 0
   t.q_ "update event set ts=ts-7200 where kind='stay-check'"  -- the answer came long ago; idle again for 51 min
+  t.q_ "update agent set last_active=? where name='s'" [.int ((← now) - 30 * 60)]
+  comms_tick t
+  eq (← live t "s") 1  -- after the first check each 50 minutes, not 15
   t.q_ "update agent set last_active=? where name='s'" [.int ((← now) - 51 * 60)]
   comms_tick t
   eq (← live t "s") 2
@@ -332,7 +340,109 @@ def test_spawn_stay (t : T) : IO Unit := do
   t.sw_ "a" ["spawn", "t-9", "--stay", "the plan", "--", "go"]
   eq (← stay t "t-9") "the plan"
 
+-- board #195: a stay with --until: set by the CLI, a backstop check at 50 min only, woken when the condition holds
+def test_stay_until_cli (t : T) : IO Unit := do
+  t.agent "e"
+  has (← t.sw "e" ["stay", "x", "--until", "soon"] { ok := false }).stderr "bad --until"
+  has (← t.sw "e" ["stay", "x", "--until", "time:25:00"] { ok := false }).stderr "bad --until"
+  has (← t.sw "e" ["stay", "x", "--until", "task:#7"]).stdout "until task:7"
+  eq ((← t.q1 "select path from event where kind='stay-until'").f "path") "task:7"
+  t.sw_ "e" ["stay", "y"]  -- a plain stay after it is free-text again
+  idle t "comms"
+  t.q_ "update agent set status='idle', last_active=?, waiter=? where name='e'"
+    [.int ((← now) - 16 * 60), .int (← IO.Process.getPID).toNat]
+  t.q_ "update event set ts=? where kind in ('stay','stay-until')" [.int ((← now) - 16 * 60)]
+  comms_tick t
+  eq (← live t "e") 1
+  t.sw_ "e" ["stay", "z", "--until", "ci"]
+  t.q_ "update event set ts=? where kind in ('stay','stay-until')" [.int ((← now) - 16 * 60)]
+  t.q_ "update agent set status='idle', last_active=? where name='e'" [.int ((← now) - 16 * 60)]
+  comms_tick t
+  eq (← live t "e") 1  -- a condition: no 15 min check
+  t.q_ "delete from event where kind='stay-check'" []
+  t.q_ "update agent set last_active=? where name='e'" [.int ((← now) - 51 * 60)]
+  comms_tick t
+  eq (← live t "e") 2  -- the backstop at 50
+
+/-- Agent `s` stays with condition `cond` set an hour... 30 min ago; it claims #5 with a short lease. -/
+def untilStay (t : T) (cond : String) : IO Unit := do
+  idle t "comms"; idle t "s" [("stay", "the wait"), ("last_active", .int ((← now) - 60))]
+  t.q_ "insert into event(ts, agent, kind, path, data) values (?, 's', 'stay-until', ?, 'the wait')" [.int ((← now) - 1800), .text cond]
+  t.q_ "insert into task(id, title, state, owner, lease_until) values (5, 't', 'claimed', 's', ?)" [.int ((← now) + 60)]
+def woke (t : T) : IO Nat :=
+  return (← t.q "select 1 x from msg where dest='s' and body like 'Your wait is over: %'").size
+def wokeBody (t : T) : IO String :=
+  return ((← t.q1 "select body from msg where dest='s' and body like 'Your wait is over: %'").f "body").s?.getD ""
+def assertWoke (t : T) (cond detail : String) : IO Unit := do
+  comms_tick t
+  eq (← woke t) 1
+  has (← wokeBody t) s!"Your wait is over: {cond} ({detail}"
+  eq (← stay t "s") Json.null
+  eq (← evs t "stay-wake") 1
+  unless ((← t.q1 "select lease_until from task where id=5").f "lease_until").getInt?.toOption.getD 0 > (← now) + 7000 do
+    fail "lease not renewed"
+  comms_tick t
+  eq (← woke t) 1  -- once
+def assertWaiting (t : T) : IO Unit := do
+  comms_tick t
+  eq (← woke t) 0
+  eq (← stay t "s") "the wait"
+
+def test_until_job (t : T) : IO Unit := do
+  untilStay t "job:j7"
+  assertWaiting t
+  t.q_ "insert into event(ts, agent, kind, path) values (?, 'x', 'job-end', 'j7')" [.int (← now)]
+  assertWoke t "job:j7" "job j7 ended"
+
+def test_until_task (t : T) : IO Unit := do
+  untilStay t "task:9"
+  t.q_ "insert into task(id, title, state) values (9, 'other', 'claimed')"
+  assertWaiting t
+  t.q_ "update task set state='open' where id=9"  -- open, but never released since the stay: still waiting
+  assertWaiting t
+  t.q_ "insert into event(ts, agent, kind, data) values (?, 'x', 'release', '#9 from x')" [.int (← now)]
+  assertWoke t "task:9" "#9 was released"
+
+def test_until_task_done (t : T) : IO Unit := do
+  untilStay t "task:9"
+  t.q_ "insert into task(id, title, state) values (9, 'other', 'claimed')"
+  assertWaiting t
+  t.q_ "update task set state='done' where id=9"
+  assertWoke t "task:9" "#9 is done"
+
+def test_until_msg (t : T) : IO Unit := do
+  untilStay t "msg:p"
+  idle t "q" [("stay", "x")]; idle t "p" [("stay", "x")]
+  t.sw_ "q" ["post", "s", "not him"]
+  assertWaiting t
+  t.sw_ "p" ["post", "s", "hello"]
+  assertWoke t "msg:p" "message #"
+
+def test_until_ci (t : T) : IO Unit := do
+  untilStay t "ci"
+  t.q_ "insert into ci(id, sha, status, conclusion, updated, workflow) values (1, 'abcdef0123', 'completed', 'success', ?, 'ci')"
+    [.text "2000-01-01T00:00:00Z"]
+  assertWaiting t  -- a result from before the stay is not the next one
+  t.q_ "insert into ci(id, sha, status, conclusion, updated, workflow) values (2, '0123456789', 'completed', 'failure', strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'ci')" []
+  assertWoke t "ci" "ci failure on 0123456"
+
+def hhmm (e : Int) : String :=
+  let m := (e % 86400) / 60
+  s!"{m / 60}:{if m % 60 < 10 then "0" else ""}{m % 60}"
+def test_until_time (t : T) : IO Unit := do
+  untilStay t s!"time:{hhmm ((← now) + 600)}"
+  assertWaiting t
+  t.q_ "update event set path=? where kind='stay-until'" [.text s!"time:{hhmm ((← now) - 120)}"]
+  assertWoke t s!"time:{hhmm ((← now) - 120)}" "it is past"
+
 def tests : List Case := [
+  ("test_stay_until_cli", test_stay_until_cli),
+  ("test_until_job", test_until_job),
+  ("test_until_task", test_until_task),
+  ("test_until_task_done", test_until_task_done),
+  ("test_until_msg", test_until_msg),
+  ("test_until_ci", test_until_ci),
+  ("test_until_time", test_until_time),
   ("test_stayer_not_ended_or_digested_until_end", test_stayer_not_ended_or_digested_until_end),
   ("test_stay_cut_and_empty_refused", test_stay_cut_and_empty_refused),
   ("test_stay_fenced_and_kept_by_takeover", test_stay_fenced_and_kept_by_takeover),
