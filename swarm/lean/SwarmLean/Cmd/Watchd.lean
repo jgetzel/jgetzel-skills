@@ -365,6 +365,7 @@ def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option 
   | .ok c => st := { st with cost := c }
   | .error e => errs := errs ++ ["machine: " ++ e]
   if let .error e ← Guard.guard (Run.remoteTick t) then errs := errs ++ ["remote: " ++ e]
+  if let .error e ← Guard.guard (Run.detachedTick t) then errs := errs ++ ["detached: " ++ e]
   if let some r := repo then
     if let .error e ← Guard.guard (Ci.ciPoll (some r)) then errs := errs ++ ["ci_poll: " ++ e]
     if let .error e ← Guard.guard (Ci.ciCheck (some r) comms) then errs := errs ++ ["ci_check: " ++ e]
