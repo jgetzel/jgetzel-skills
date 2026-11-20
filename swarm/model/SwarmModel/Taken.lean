@@ -374,6 +374,7 @@ theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = so
   case poll => obtain ⟨_, rfl⟩ := hs; exact ⟨_, pollOf_log c s⟩
   case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
   case stayCheck a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, false, .check, 0⟩], by simp [post]⟩
+  case leaseLate a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .check, 0⟩], by simp [post]⟩
   case releaseOther t => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, (s.tk t).owner.getD 0, true, .released, t⟩], by simp [post]⟩
   all_goals obtain ⟨_, rfl⟩ := hs
   all_goals ((repeat' split) <;> first
@@ -582,6 +583,13 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
       | skip
     exact unread_ext (ext_trans (s := s) (x := setAg s b _) (ext_frame (by simp) (by simp) _) (ext_post _ _ _)) h5
   case stayCheck b =>
+    obtain ⟨hg, rfl⟩ := hs
+    left; refine ready_of_fields hR' ?_ ?_ ?_ ?_ ?_
+    all_goals first
+      | (simp [agt_setAg]; split <;> simp_all; done)
+      | skip
+    exact unread_ext (ext_trans (s := s) (x := setAg s b _) (ext_frame (by simp) (by simp) _) (ext_post _ _ _)) h5
+  case leaseLate b =>
     obtain ⟨hg, rfl⟩ := hs
     left; refine ready_of_fields hR' ?_ ?_ ?_ ?_ ?_
     all_goals first

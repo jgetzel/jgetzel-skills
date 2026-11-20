@@ -101,10 +101,10 @@ def keepRow (c : Cfg) (a : Nat) (g : Agent) : Option ARow :=
 def liveOf (c : Cfg) (s : State) : Option (List String) :=
   if c.hcSees then some ((c.agents.filter fun a => !(s.agt a).dead).map toString) else none
 
-/-- reap's decision is the model's `keeps`, on the current Cfg (`release` idle, `bgKeeps`), except for an owner whose
-bound terminal hc no longer lists: the Lua reopens its task, the model keeps it until `reapGone` (`keeps_gap`). The
-model has no compaction: `compacting` is false -/
-theorem keeps_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .idle) (hb : c.bgKeeps = true)
+/-- reap's decision is the model's `keeps`, on the current Cfg (`release` idle, or #193's `lives`, and `bgKeeps`), except
+for an owner whose bound terminal hc no longer lists: the Lua reopens its task, the model keeps it until `reapGone`
+(`keeps_gap`). The model has no compaction: `compacting` is false -/
+theorem keeps_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .idle ∨ c.release = .lives) (hb : c.bgKeeps = true)
     (ha : a < c.nagents) (hd : ¬(c.hcSees = true ∧ c.unbound.contains a = false ∧ (s.agt a).dead = true)) :
     keepsL (keepRow c a (s.agt a)) (s.agt a).bg false (liveOf c s) = keeps c (s.agt a) := by
   have hlive : (s.agt a).dead = false → c.hcSees = true →
@@ -112,9 +112,40 @@ theorem keeps_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .idle) (h
     intro hd' _
     simp only [List.contains_iff_mem, List.mem_map, List.mem_filter, Cfg.agents, List.mem_range]
     exact ⟨a, ⟨ha, by simp [hd']⟩, rfl⟩
-  simp only [keeps, hr, hb, Bool.true_and, Bool.or_false, keepsL, keepRow, liveOf, Agent.live]
+  rcases hr with hr | hr <;>
+  simp only [keeps, hr, hb, Bool.true_and, Bool.or_false, keepsL, keepRow, liveOf, Agent.live] <;>
   cases hst : (s.agt a).st <;> cases hdd : (s.agt a).dead <;> cases hs : c.hcSees <;>
     cases hu : c.unbound.contains a <;> simp_all [statusOf, nz]
+
+/-- watchd.lives(o, hung, live_addrs) (board #193): a live owner row, bound to a terminal hc lists (or hc can't tell),
+not flagged hung (`hung`: a `stay-hung` event since its last_active) -/
+def livesL (o : Option ARow) (hung : Bool) (live : Option (List String)) : Bool :=
+  match o with
+  | none => false
+  | some o => o.ended.isNone && nz o.hc && !hung && live.all fun up => up.contains (o.hc.getD "")
+
+/-- reap's `lives` is the model's, on #193's reap, but for `keeps_gap`'s owner (bound, its terminal gone, hc answering),
+whose row the model has no dead terminal for (`liveOf` names slots by `toString`) -/
+theorem lives_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .lives) (ha : a < c.nagents)
+    (hd : ¬(c.hcSees = true ∧ c.unbound.contains a = false ∧ (s.agt a).dead = true)) :
+    livesL (keepRow c a (s.agt a)) (s.agt a).hung (liveOf c s) = lives c a (s.agt a) := by
+  have hlive : (s.agt a).dead = false → c.hcSees = true →
+      ((c.agents.filter fun b => !(s.agt b).dead).map toString).contains (toString a) = true := by
+    intro hd' _
+    simp only [List.contains_iff_mem, List.mem_map, List.mem_filter, Cfg.agents, List.mem_range]
+    exact ⟨a, ⟨ha, by simp [hd']⟩, rfl⟩
+  simp only [lives, hr, livesL, keepRow, liveOf, Agent.live]
+  cases hst : (s.agt a).st <;> cases hdd : (s.agt a).dead <;> cases hs : c.hcSees <;>
+    cases hu : c.unbound.contains a <;> cases hh : (s.agt a).hung <;> simp_all [statusOf, nz]
+  all_goals (rw [show (a.repr != "") = true from bne_iff_ne.mpr Nat.repr_ne_empty]; first | rfl | decide)
+
+/-- reap's whole decision (board #193): it leaves a lapsed claim to its owner when `keepsL` (its work) or `livesL` (it
+is live) says so; on the current Cfg that is the model's `keeps` or `lives`, but for `keeps_gap`'s owner -/
+theorem reap_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .lives) (hb : c.bgKeeps = true)
+    (ha : a < c.nagents) (hd : ¬(c.hcSees = true ∧ c.unbound.contains a = false ∧ (s.agt a).dead = true)) :
+    (keepsL (keepRow c a (s.agt a)) (s.agt a).bg false (liveOf c s) ||
+      livesL (keepRow c a (s.agt a)) (s.agt a).hung (liveOf c s)) = (keeps c (s.agt a) || lives c a (s.agt a)) := by
+  rw [keeps_lifted (.inr hr) hb ha hd, lives_lifted hr ha hd]
 
 /-- the gap: a working owner whose bound terminal is gone keeps its lapsed claim in the model, not in the Lua -/
 theorem keeps_gap : ∃ (c : Cfg) (s : State),

@@ -377,6 +377,8 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .endStay b, hs => exact step_gen (by simp) hl hs
   | .stayCheck b, hs => exact step_gen (by simp) hl hs
   | .stayHung b, hs => exact step_gen (by simp) hl hs
+  | .leaseLate b, hs => exact step_gen (by simp) hl hs
+  | .holdHung b, hs => exact step_gen (by simp) hl hs
   | .openPr b u, hs => exact step_gen (by simp) hl hs
   | .push b u, hs => exact step_gen (by simp) hl hs
   | .merge b u, hs => exact step_gen (by simp) hl hs

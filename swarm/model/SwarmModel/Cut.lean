@@ -92,7 +92,7 @@ def N1cut (c : Cfg) : Prop :=
   ∧ (∀ s k, Reachable c s → cutSweep c k s true = cutSweep c k s false)
 
 /-- N1, W1 and W2 of a cut tick, with the switches `N1_of` takes -/
-theorem N1cut_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (haw : c.allWts = true)
+theorem N1cut_of (c : Cfg) (hrel : c.release = .idle ∨ c.release = .lives) (hbk : c.bgKeeps = true) (haw : c.allWts = true)
     (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true) (hs : c.splitGC = true) : N1cut c := by
   refine ⟨fun s k a _ h => ?_, fun s k t o _ hst ho hl hbg => ?_, fun s k _ => ?_, fun s k _ => ?_⟩
   · have hz : (reapCut c k.reap s).agt a = s.agt a := agt_of_ag (reapCut_ag ..) a
@@ -101,7 +101,7 @@ theorem N1cut_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (
     have := lifecycleCut_keeps (finished_of_holds hbl haw hoa hp h) hl k.life
     simp only [keptBy, beq_iff_eq, tickCut_agt]
     rw [this, hz]
-  · have hk : keeps c (s.agt o) = true := by simp [keeps, hrel, hbk, hl, hbg]
+  · have hk : keeps c (s.agt o) = true := by rcases hrel with hrel | hrel <;> simp [keeps, hrel, hbk, hl, hbg]
     have hr : ∀ l : List Nat, (l.foldl (reapTask c) s).tk t = s.tk t := fun l =>
       (foldl_inv (reapTask c) (fun y : State => y.tk t = s.tk t ∧ y.ag = s.ag) l s ⟨rfl, rfl⟩
         (fun y u hy => ⟨by rw [reapTask_keeps (by rw [hy.1]; exact ho) (by rw [agt_of_ag hy.2]; exact hk), hy.1],
@@ -172,6 +172,6 @@ example : (run {} pre36).any (fun s => toldAfter (tickCut {} ⟨some 0, none, no
 
 /-- the instance the replay runs: N1, W1 and W2 of every cut tick, and no pass stops another -/
 theorem replay_cut : N1cut replay ∧ PassesIndep replay :=
-  ⟨N1cut_of _ rfl rfl rfl rfl rfl rfl rfl, passesIndep_of rfl⟩
+  ⟨N1cut_of _ (.inr rfl) rfl rfl rfl rfl rfl rfl, passesIndep_of rfl⟩
 
 end Swarm

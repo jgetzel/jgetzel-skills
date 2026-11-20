@@ -11,8 +11,9 @@ message ids positions in the log from 1. Any number of each. -/
 
 namespace Swarm
 
-/-- Which lapsed claims reap reopens: `ended` (624cf79), `notWorking` (b04cf08), `idle` (edffafc, now). -/
-inductive Release where | ended | notWorking | idle
+/-- Which lapsed claims reap reopens: `ended` (624cf79), `notWorking` (b04cf08), `idle` (edffafc), `lives` (board #193,
+now: `idle`'s, but an owner that `lives` keeps it too, idle or not, until it is flagged hung). -/
+inductive Release where | ended | notWorking | idle | lives
   deriving DecidableEq, Repr, Inhabited
 inductive TSt where | absent | opn | claimed | blocked | done | dropped
   deriving DecidableEq, Repr, Inhabited
@@ -75,7 +76,7 @@ structure Cfg where
   ntasks : Nat := 1
   /-- lock patterns agents may take -/
   patterns : List String := []
-  release : Release := .idle
+  release : Release := .lives
   /-- unblock --answer is stored on the task (PR #110) -/
   answerOnTask : Bool := true
   /-- claim, and the waiter's delivery, are a read then a write, as the Lua runs them -/
@@ -228,6 +229,9 @@ structure Agent where
   checked : Bool := false
   /-- and it did not answer: `stay-hung` logged in this idle stretch -/
   hung : Bool := false
+  /-- reap told it, idle, that its lease on a claim it keeps ended (`lease-late` to the holder since its last_active,
+  board #193) -/
+  leaseTold : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Lock where
@@ -441,13 +445,18 @@ def keeps (c : Cfg) (g : Agent) : Bool :=
   match c.release with
   | .ended => g.live
   | .notWorking => g.st == .working
-  | .idle => g.live && (g.st != .idle || (c.bgKeeps && g.bg))
-/-- reap of one task: reopened, and its owner told -/
+  | .idle | .lives => g.live && (g.st != .idle || (c.bgKeeps && g.bg))
+/-- watchd.lives (board #193): does the owner of a claim past its lease keep it for being live, idle or not? Under
+`lives` only: a live row bound to a terminal (`unbound` has none), not flagged hung, whose terminal hc lists or hc can't
+tell (a dead one with `hcSees`) -/
+def lives (c : Cfg) (a : Nat) (g : Agent) : Bool :=
+  c.release == .lives && g.live && !c.unbound.contains a && !g.hung && !(c.hcSees && g.dead)
+/-- reap of one task: reopened, and its owner told, unless its owner keeps it (`keeps`) or lives (`lives`) -/
 def reapTask (c : Cfg) (x : State) (t : Nat) : State :=
   let k := x.tk t
   match k.owner with
   | some o =>
-    if k.st == .claimed && !k.lease && !keeps c (x.agt o) then
+    if k.st == .claimed && !k.lease && !keeps c (x.agt o) && !lives c o (x.agt o) then
       post (setTask x t fun r => { r with st := .opn, owner := none, lease := false, reaped := some o }) ⟨none, o, false, .released, t⟩
     else x
   | none => x
@@ -674,7 +683,7 @@ def stop (c : Cfg) (s : State) (a : Nat) (big : Bool) : Option State :=
   when (busy s a && (s.agt a).reading == 0 && (big || holds s a || (pool c s).isEmpty))
     (setAg s a fun g =>
       { g with st := .idle, waiter := true, big := big, aged := false, cold := false, stale := false, nudged := false,
-               checked := false, hung := false })
+               checked := false, hung := false, leaseTold := false })
 
 -- the environment: time, the waiter, the human, hc
 def wake (c : Cfg) (s : State) (a : Nat) : Option State :=
@@ -802,6 +811,23 @@ def stayHung (c : Cfg) (s : State) (a : Nat) : Option State :=
   let g := s.agt a
   when (c.watchd && g.stay && g.st == .idle && g.waiter && g.checked && !g.hung)
     (setAg (tellC (logEv s (.hung a)) ⟨.hung, a, true, []⟩) a ({ · with hung := true }))
+/-- a has a claim past its lease -/
+def lapsedHeld (c : Cfg) (s : State) (a : Nat) : Bool :=
+  c.tasks.any fun t => (s.tk t).st == .claimed && (s.tk t).owner == some a && !(s.tk t).lease
+/-- reap's lease-late notice to the holder (board #193, `Watchd.leaseLate`): an idle owner of a lapsed claim reap keeps
+is told, urgent (it wakes a cold one too), once per idle stretch. Its notice to a working owner (not urgent) is not
+modelled -/
+def leaseLate (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (c.watchd && c.release == .lives && g.st == .idle && lapsedHeld c s a && (keeps c g || lives c a g) && !g.leaseTold)
+    (post (setAg s a ({ · with leaseTold := true })) ⟨none, a, true, .check, 0⟩)
+/-- watchd.hung's check of a holder (board #193): LIVENESS_WAIT after the notice, still idle, its claim still lapsed,
+no background job (it did not answer): `stay-hung` logged, so it no longer `lives` and reap reopens the claim. The
+code's line to the communicator at that reopen is not modelled -/
+def holdHung (c : Cfg) (s : State) (a : Nat) : Option State :=
+  let g := s.agt a
+  when (c.watchd && c.release == .lives && g.st == .idle && lapsedHeld c s a && g.leaseTold && !g.bg && !g.hung)
+    (setAg (logEv s (.hung a)) a ({ · with hung := true }))
 /-- the owner of `t` has not had its first turn -/
 def bootingOwner (s : State) (t : Nat) : Bool := match (s.tk t).owner with | some o => (s.agt o).boot | none => false
 def expire (c : Cfg) (s : State) (t : Nat) : Option State :=
@@ -966,6 +992,7 @@ inductive Action where
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
   | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat) | hnudge (a : Nat)
   | stay (a : Nat) (on : Bool) | endStay (a : Nat) | stayCheck (a : Nat) | stayHung (a : Nat)
+  | leaseLate (a : Nat) | holdHung (a : Nat)
   | waiterGone (a : Nat) | age (a : Nat) | cool (a : Nat) | expire (t : Nat) | expireLock (p : Nat) | leave (a : Nat)
   | hcPrompt (a : Nat) | hcClear (a : Nat) | die (a : Nat) | reapGone (a : Nat)
   | add (deps : List Nat) | after (t : Nat) (deps : List Nat) | unblock (t : Nat) | drop (t : Nat) | releaseOther (t : Nat)
@@ -984,6 +1011,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .git a op => gitCmd c s a op | .world w op => world s w op | .stale a => stale s a | .nudge a => nudge c s a
   | .hnudge a => hnudge c s a
   | .stay a on => stay s a on | .endStay a => endStay s a | .stayCheck a => stayCheck c s a | .stayHung a => stayHung c s a
+  | .leaseLate a => leaseLate c s a | .holdHung a => holdHung c s a
   | .waiterGone a => waiterGone s a | .age a => age s a | .cool a => cool s a | .expire t => expire c s t
   | .expireLock p => expireLock s p | .leave a => leave s a | .hcPrompt a => hcPrompt c s a
   | .hcClear a => hcClear s a | .die a => die s a | .reapGone a => reapGone c s a | .add deps => add s deps | .after t deps => after c s t deps

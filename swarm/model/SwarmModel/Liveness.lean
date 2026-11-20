@@ -22,21 +22,22 @@ theorem reapTask_tk_ne {c : Cfg} {x : State} {t u : Nat} (h : u ≠ t) : (reapTa
     · rfl
   · rfl
 theorem reapTask_fires {c : Cfg} {x : State} {t a : Nat} (hst : (x.tk t).st = .claimed) (ho : (x.tk t).owner = some a)
-    (hl : (x.tk t).lease = false) (hk : keeps c (x.agt a) = false) : (reapTask c x t).log.length = x.log.length + 1 := by
-  unfold reapTask; simp [ho, hst, hl, hk]
+    (hl : (x.tk t).lease = false) (hk : keeps c (x.agt a) = false) (hv : lives c a (x.agt a) = false) :
+    (reapTask c x t).log.length = x.log.length + 1 := by
+  unfold reapTask; simp [ho, hst, hl, hk, hv]
 
 theorem reap_fold_le (c : Cfg) : ∀ (l : List Nat) (x : State), x.log.length ≤ (l.foldl (reapTask c) x).log.length
   | [], _ => Nat.le_refl _
   | t :: ts, x => Nat.le_trans (reapTask_log_le c x t) (reap_fold_le c ts _)
 theorem reap_fold_lt {c : Cfg} {t a : Nat} : ∀ (l : List Nat) (x : State), t ∈ l → (x.tk t).st = .claimed →
-    (x.tk t).owner = some a → (x.tk t).lease = false → keeps c (x.agt a) = false →
+    (x.tk t).owner = some a → (x.tk t).lease = false → keeps c (x.agt a) = false → lives c a (x.agt a) = false →
     x.log.length < (l.foldl (reapTask c) x).log.length
-  | [], _, hm, _, _, _, _ => by cases hm
-  | u :: us, x, hm, hst, ho, hl, hk => by
+  | [], _, hm, _, _, _, _, _ => by cases hm
+  | u :: us, x, hm, hst, ho, hl, hk, hv => by
     simp only [List.foldl_cons]
     by_cases hu : t = u
     · subst hu
-      have := reapTask_fires hst ho hl hk
+      have := reapTask_fires hst ho hl hk hv
       have := reap_fold_le c us (reapTask c x t)
       omega
     · have hm' : t ∈ us := by
@@ -45,7 +46,7 @@ theorem reap_fold_lt {c : Cfg} {t a : Nat} : ∀ (l : List Nat) (x : State), t �
         · exact e
       have e := reapTask_tk_ne (c := c) (x := x) (t := u) (u := t) hu
       have := reap_fold_lt us (reapTask c x u) hm' (by rw [e]; exact hst) (by rw [e]; exact ho) (by rw [e]; exact hl)
-        (by rw [State.agt, reapTask_ag]; exact hk)
+        (by rw [State.agt, reapTask_ag]; exact hk) (by rw [State.agt, reapTask_ag]; exact hv)
       have := reapTask_log_le c x u
       omega
 
@@ -68,13 +69,14 @@ theorem lifecycle_log_le (c : Cfg) (x : State) : x.log.length ≤ (lifecycle c x
   · exact foldl_inv _ (fun y : State => x.log.length ≤ y.log.length) _ _ h3 (fun b t hb => by simpa using hb)
 
 /-- With PR #110 or #111: once the lease of a claim whose owner is idle has lapsed, watchd's tick does something
-(reap reopens the task and posts `released` to the owner). -/
+(reap reopens the task and posts `released` to the owner), unless the owner `lives` (board #193: then until it is hung). -/
 theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (hw : c.watchd = true) (ht : t ∈ c.tasks)
-    (hic : idleClaim s a t = true) (hl : (s.tk t).lease = false) (hbg : (s.agt a).bg = false) : tickOf c s ≠ s := by
+    (hic : idleClaim s a t = true) (hl : (s.tk t).lease = false) (hbg : (s.agt a).bg = false)
+    (hv : lives c a (s.agt a) = false) : tickOf c s ≠ s := by
   simp [idleClaim, ownsClaimed] at hic
   have hk : keeps c (s.agt a) = false := by
     cases hr : c.release <;> simp_all [keeps, Agent.live]
-  have h1 : s.log.length < (reapTasks c s).log.length := reap_fold_lt c.tasks s ht hic.1.1 hic.1.2 hl hk
+  have h1 : s.log.length < (reapTasks c s).log.length := reap_fold_lt c.tasks s ht hic.1.1 hic.1.2 hl hk hv
   have h2 := lifecycle_log_le c (reapLocks (reapTasks c s))
   rw [reapLocks_log] at h2
   intro e
@@ -82,8 +84,16 @@ theorem tick_reopens {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .en
     have := congrArg (·.log.length) e; simpa [tickS] using this
   omega
 
+/-- an idle owner of a lapsed claim holds a lapsed claim -/
+theorem lapsedHeld_of {c : Cfg} {s : State} {a t : Nat} (ht : t ∈ c.tasks) (h : idleClaim s a t = true)
+    (hl : (s.tk t).lease = false) : lapsedHeld c s a = true := by
+  simp only [idleClaim, ownsClaimed, Bool.and_eq_true, beq_iff_eq] at h
+  simp only [lapsedHeld, List.any_eq_true]
+  exact ⟨t, ht, by simp [h.1.1, h.1.2, hl]⟩
+
 /-- L2, the part that is proved. With PR #110 or #111, a state where an idle agent holds a claim is not stuck: the
-lease can lapse, or the tick is enabled. (The owner's terminal is alive: a dead one is L4's.) (That every fair run then reaches "done or open again" is not proved.) -/
+lease can lapse, or the tick is enabled, or (board #193, an owner that `lives`) reap's lease notice or watchd's hung
+check of it. (The owner's terminal is alive: a dead one is L4's.) (That every fair run then reaches "done or open again" is not proved.) -/
 theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release ≠ .ended) (hw : c.watchd = true) (ht : t ∈ c.tasks)
     (ha : a ∈ c.agents) (hnd : (s.agt a).dead = false)
     (hic : idleClaim s a t = true) : stuck c s = false := by
@@ -114,7 +124,17 @@ theorem idleClaim_not_stuck {c : Cfg} {s : State} {a t : Nat} (hfix : c.release 
           have h5 := this.2
           simp only [bootingOwner, hic'.1.2] at h5
           exact hb h5
-      exact tick_reopens hfix hw ht hic hl hbg h1
+      by_cases hv : lives c a (s.agt a) = true
+      · have hv' := hv
+        simp only [lives, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hv'
+        obtain ⟨⟨⟨⟨hrel, _⟩, _⟩, hhung⟩, _⟩ := hv'
+        have hlh := lapsedHeld_of ht hic hl
+        have h5 := hs (.leaseLate a) (by simp [fair, hrel, ha])
+        have h6 := hs (.holdHung a) (by simp [fair, hrel, ha])
+        cases hlt : (s.agt a).leaseTold
+        · simp [step, leaseLate, when, hw, hrel, hic'.2, hlh, hv, hlt] at h5
+        · simp [step, holdHung, when, hw, hrel, hic'.2, hlh, hlt, hbg, hhung] at h6
+      · exact tick_reopens hfix hw ht hic hl hbg (by simpa using hv) h1
 
 /-- L4, the part that is proved. If watchd runs, `hc ls` answers and the dead agent's row has an hc address, a row
 whose terminal is gone is never stuck: the reap of it is enabled. Every one of those three is needed (findings #14,

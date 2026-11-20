@@ -188,7 +188,7 @@ theorem active_spec (g : Agent) : active g = true ↔ (g.st = .working ∨ g.st 
 
 /-! The older forms of the two S1 statements about `believes`, which `Contract.lean` restates and proves from. -/
 
-theorem believes_held_of {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false) {s : State}
+theorem believes_held_of {c : Cfg} (hfix : c.release = .idle ∨ c.release = .lives) (hhr : c.humanRelease = false) {s : State}
     (h : Reachable c s) {a t : Nat} (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) :
     held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true) := by
   rcases (J_of_reachable hfix (Or.inl hhr) h).1 a t ht with hi | hd | hs
@@ -196,7 +196,7 @@ theorem believes_held_of {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRele
   · exact hd
   · have := hs.1.1; rw [stopTo_none hhr h] at this; cases this
 
-theorem believes_held_stop_of {c : Cfg} (hfix : c.release = .idle) (hsf : c.stopFirst = true) {s : State}
+theorem believes_held_stop_of {c : Cfg} (hfix : c.release = .idle ∨ c.release = .lives) (hsf : c.stopFirst = true) {s : State}
     (h : Reachable c s) {a t : Nat} (ha : active (s.agt a) = true) (ht : t ∈ (s.agt a).believes) :
     held (s.tk t) a = true ∨ (s.tk t).st = .dropped ∨ ((s.tk t).st = .done ∧ (s.tk t).merged = true) ∨
       ((s.tk t).st = .opn ∧ stopped s t = true) := by

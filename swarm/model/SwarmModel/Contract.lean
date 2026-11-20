@@ -51,8 +51,8 @@ theorem oneWorker_iff (s : State) : oneWorker s = true ↔ OneWorkerPerTask s :=
 
 /-- The fixes S1 needs. -/
 structure S1Fixes (c : Cfg) : Prop where
-  /-- reap reopens a lapsed claim only when its owner is idle -/
-  reap_takes_from_idle_only : c.release = .idle
+  /-- reap reopens a lapsed claim only when its owner is idle (`idle`; `lives`, board #193: and hung, gone or unbound) -/
+  reap_takes_from_idle_only : c.release = .idle ∨ c.release = .lives
   /-- the user cannot release a task another agent holds, or (board #53) no one may take the released task until its
   ex-owner has read the stop or stopped work; without either, `not_S1_humanRelease` is a run that breaks S1 -/
   user_release_stops_first : c.humanRelease = false ∨ c.stopFirst = true
@@ -262,8 +262,8 @@ structure LandedFixes (c : Cfg) : Prop where
 
 /-- The fixes N1 needs but the fence's, which a tick an error ends partway needs too. -/
 structure CutTickFixes (c : Cfg) : Prop extends W1Fixes c, LandedFixes c where
-  /-- reap reopens a lapsed claim only when its owner is idle -/
-  reap_takes_from_idle_only : c.release = .idle
+  /-- reap reopens a lapsed claim only when its owner is idle (`idle`; `lives`, board #193: and hung, gone or unbound) -/
+  reap_takes_from_idle_only : c.release = .idle ∨ c.release = .lives
   /-- reap keeps a lapsed claim whose idle owner has a background job running (PR #121) -/
   reap_keeps_claim_while_job_runs : c.bgKeeps = true
   /-- lifecycle keeps an idle agent while its background job runs (board #15) -/
@@ -336,8 +336,10 @@ structure L2Fixes (c : Cfg) : Prop where
   reap_does_not_end_owner : c.release ≠ .ended
 
 /-- L2: a claimed task whose owner is idle is eventually done or open again, or its owner back at work, while no agent
-starts a background job or dies. Its other conditions are not fixes: commands are modelled as one step each, and watchd
-runs. Env: none. -/
+starts a background job or dies. Under #193's reap (`release` is `lives`) an owner that `Lives` keeps the lapsed claim;
+reap's lease notice wakes it, or, unanswered, watchd flags it hung and the tick reopens the claim (both are watchd's,
+so `fair` takes them). Its other conditions are not fixes: commands are modelled as one step each, and watchd runs.
+Env: none. -/
 theorem idle_claim_ends {c : Cfg} (fixes : L2Fixes c) (commands_are_one_step : c.racy = false)
     (watchd_runs : c.watchd = true) {a t : Nat} (is_agent : a ∈ c.agents) (is_task : t ∈ c.tasks) (r : Run c)
     (fair : r.Fair) {n : Nat} (no_job_starts_or_death : ∀ k, n ≤ k → ∀ b, r.act k ≠ .bgStart b ∧ r.act k ≠ .die b)
@@ -346,6 +348,41 @@ theorem idle_claim_ends {c : Cfg} (fixes : L2Fixes c) (commands_are_one_step : c
   (idleClaim_leads_to commands_are_one_step fixes.reap_does_not_end_owner watchd_runs is_agent is_task r fair
     no_job_starts_or_death no_job_at_n alive_at_n ((idleClaim_iff ..).mpr idle_claim)).imp
     fun _ h => ⟨h.1, fun g => Bool.eq_false_iff.mp h.2 ((idleClaim_iff ..).mpr g)⟩
+
+/-- Agent `a` lives (board #193): reap runs as since #193 (`release` is `lives`), and `a`'s row is live, bound to a
+terminal (not `unbound`), not flagged hung, and not one whose terminal `hc ls` answered without. -/
+def Lives (c : Cfg) (s : State) (a : Nat) : Prop :=
+  c.release = .lives ∧ (s.agt a).live = true ∧ a ∉ c.unbound ∧ (s.agt a).hung = false ∧
+    ¬ (c.hcSees = true ∧ (s.agt a).dead = true)
+
+theorem lives_iff (c : Cfg) (s : State) (a : Nat) : lives c a (s.agt a) = true ↔ Lives c s a := by
+  simp only [lives, Lives, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true', Bool.and_eq_false_imp, List.contains_iff_mem]
+  cases c.hcSees <;> cases (s.agt a).dead <;> simp [and_assoc]
+
+/-- #193's reap: a claim stays with an owner that lives, idle or not, its lease lapsed or not: watchd's tick leaves the
+task with it. Env: none. -/
+theorem live_owner_keeps_claim {c : Cfg} {s : State} {t owner : Nat} (claimed : (s.tk t).st = .claimed)
+    (owns : (s.tk t).owner = some owner) (lives : Lives c s owner) : ((tickOf c s).tk t).owner = some owner :=
+  tick_keeps_live_owner claimed owns ((lives_iff ..).mpr lives)
+
+/-- What watchd's hung check of a holder does (board #193). -/
+structure HolderFlaggedHung (c : Cfg) (s s' : State) (a : Nat) : Prop where
+  /-- it flags only an idle owner of a claim past its lease, told by reap's lease notice, with no background job -/
+  only_idle_told_holder : (s.agt a).st = .idle ∧
+    (∃ t ∈ c.tasks, (s.tk t).st = .claimed ∧ (s.tk t).owner = some a ∧ (s.tk t).lease = false) ∧
+    (s.agt a).leaseTold = true ∧ (s.agt a).bg = false
+  /-- `stay-hung` is logged -/
+  logged : s'.evs = s.evs ++ [.hung a]
+  /-- and the owner no longer lives: only its work (`keeps`) can keep the lapsed claim from the next tick -/
+  no_longer_lives : ¬ Lives c s' a
+
+/-- A holder that leaves reap's lease notice unanswered is flagged hung (board #193). Env: none. -/
+theorem holder_flagged_hung {c : Cfg} {s s' : State} {a : Nat} (flags : step c s (.holdHung a) = some s') :
+    HolderFlaggedHung c s s' a := by
+  obtain ⟨_, h2, h3, h4, h5, h6, h7, _⟩ := holdHung_spec flags
+  simp only [lapsedHeld, List.any_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at h3
+  obtain ⟨t, ht, ⟨hst, ho⟩, hl⟩ := h3
+  exact ⟨⟨h2, ⟨t, ht, hst, ho, hl⟩, h4, h5⟩, h6, fun hv => by rw [← lives_iff, h7] at hv; cases hv⟩
 
 /-- Agent `a`'s row outlives its terminal: the terminal is gone, and the row still reads as live (so its claims and
 locks are still held). -/
