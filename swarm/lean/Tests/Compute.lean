@@ -10,8 +10,9 @@ open SwarmLean Compute
 #guard size [(100, 400, 1000000, "swarm"), (60, 61, 2000000, "swarm")] == some (4, 2500000)
 #guard size [(100, 0, 0, "swarm")] == some (2, DEFAULT_MEM_KB)
 #guard size [(100, 101, 1000, "swarm")] == some (2, 1250)
-#guard size [(100, 900, 1000, "run")] == some (2, 1250)
-#guard size [(100, 900, 4000, "run"), (100, 0, 100, "swarm")] == some (2, 5000)
+#guard size [(100, 900, 1000, "run")] == some (9, 1250)
+#guard size [(100, 0, 1000, "run")] == some (2, 1250)
+#guard size [(100, 900, 4000, "run"), (100, 0, 100, "swarm")] == some (9, 5000)
 
 /-- `run` rows of these walls. -/
 def runs (ws : List Nat) : List (Int × Int × Int × String) := ws.map (fun (w : Nat) => ((w : Int), (0 : Int), (0 : Int), "run"))

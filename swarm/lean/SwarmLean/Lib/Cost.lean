@@ -76,6 +76,46 @@ def dropAssign : List Char → Option (List Char)
     | _ => none
   | [] => none
 
+/-- The first word of `s` (after spaces) and what follows it. -/
+def nextWord (s : List Char) : Option (String × List Char) :=
+  let t := s.dropWhile isSpace
+  let w := t.takeWhile (!isSpace ·)
+  if w.isEmpty then none else some (String.ofList w, t.drop w.length)
+
+/-- `NAME=value` as one word. -/
+def isAssignWord (w : String) : Bool :=
+  match w.toList with
+  | c :: rest => (c.isAlpha || c == '_') && (match rest.dropWhile fun x => x.isAlphanum || x == '_' with | '=' :: _ => true | _ => false)
+  | [] => false
+
+/-- A leading `env`, `nice`, `ionice` or `timeout` wrapper stripped with its options (`argOpts` take the next word; `--`
+ends them; `env` also its assignments; `timeout` also its duration), when a command follows. -/
+def dropWrapper (name : String) (argOpts : List String) (s : List Char) : Option (List Char) := do
+  let (w, r) ← nextWord s
+  if w != name then none
+  let rec go (fuel : Nat) (r : List Char) (durLeft : Bool) : Option (List Char) :=
+    match fuel with
+    | 0 => some r
+    | f + 1 =>
+      match nextWord r with
+      | none => some r
+      | some (x, r') =>
+        if x == "--" then (if durLeft && name == "timeout" then (nextWord r').map (·.2) else some r')
+        else if argOpts.contains x then (nextWord r').bind fun (_, r'') => go f r'' durLeft
+        else if x.startsWith "-" && x.length > 1 then go f r' durLeft
+        else if name == "env" && isAssignWord x then go f r' durLeft
+        else if name == "timeout" && durLeft then go f r' false
+        else some r
+  let out := (← go s.length r (name == "timeout")).dropWhile isSpace
+  if out.isEmpty then none else some out
+
+/-- `env`, `nice`, `ionice` and `timeout` wrappers stripped. -/
+def dropWrappers (s : List Char) : Option (List Char) :=
+  (dropWrapper "env" ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"] s).orElse fun _ =>
+  (dropWrapper "nice" ["-n", "--adjustment"] s).orElse fun _ =>
+  (dropWrapper "ionice" ["-c", "-n", "-p", "-P", "-u", "--class", "--classdata"] s).orElse fun _ =>
+  dropWrapper "timeout" ["-s", "-k", "--kill-after"] s
+
 /-- `s:gsub("%s*|.*$", "")`: cut at the first `|`, with the spaces before it. -/
 def cutPipe (s : List Char) : List Char :=
   match s.findIdx? (· == '|') with
@@ -96,7 +136,7 @@ def cutRedir (s : List Char) : List Char :=
   | none => s
 
 /-- The command with a leading `cd … &&`, `swarm run … --`, environment assignments and trailing pipes and redirections
-stripped, cut to its first three words (cost.key). -/
+stripped, and `env`/`nice`/`ionice`/`timeout` wrappers with their options, cut to its first three words (cost.key). -/
 def key (cmd : String) : String :=
   let rec strip1 (fuel : Nat) (s : List Char) : List Char :=
     match fuel with
@@ -105,6 +145,7 @@ def key (cmd : String) : String :=
       let s' := (dropCd s).getD s
       let s' := (dropRun s').getD s'
       let s' := (dropAssign s').getD s'
+      let s' := (dropWrappers s').getD s'
       if s'.length == s.length then s else strip1 f s'
   let s := strip1 cmd.length (strip cmd).toList
   let s := String.ofList (cutRedir (cutPipe s))

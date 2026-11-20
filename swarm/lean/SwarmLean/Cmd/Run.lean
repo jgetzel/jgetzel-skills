@@ -112,16 +112,44 @@ def hashes (top : String) (files : List String) : m (List (String × String)) :=
   let r ← Sys.exec ["git", "-C", top, "hash-object", "--stdin-paths"] { input := some ("\n".intercalate names ++ "\n") }
   return names.zip (splitlines r.stdout)
 
-/-- A finished job as a history row, filed under the user's command (`key`): its wall time and, for a remote job, the last RSS
-and CPU watchd read on that machine (a local job's are 0: watchd measures the agent's command). -/
-def recordJob (who : String) (on : Option String) (jid cmd key repo : String) (s : Int) : m Unit := do
+/-- The script a measured job's scope runs: `$1` is the job's directory, holding `cmd` (the command line) and receiving
+`measure` (`<cpu s> <peak KiB>`, from the scope's own cgroup, read before the scope ends). -/
+def measureScript : String := String.intercalate "\n" [
+  "d=$1; sh -c \"$(cat \"$d/cmd\")\"; rc=$?",
+  "cg=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)",
+  "if [ -r \"$cg/cpu.stat\" ] && [ -r \"$cg/memory.peak\" ]; then",
+  "  u=$(sed -n 's/^usage_usec //p' \"$cg/cpu.stat\"); p=$(cat \"$cg/memory.peak\")",
+  "  case $u$p in ''|*[!0-9]*) ;; *) echo \"$(( (u + 999999) / 1000000 )) $(( (p + 1023) / 1024 ))\" > \"$d/measure\";; esac",
+  "fi",
+  "exit $rc"]
+
+/-- The same where there is no user scope: the children's rusage (CPU seconds, rounded up; peak KiB) of `$1/cmd`. -/
+def rusageScript : String :=
+  "import resource,subprocess,sys\nd=sys.argv[1]\nrc=subprocess.call(['sh','-c',open(d+'/cmd').read()])\nr=resource.getrusage(resource.RUSAGE_CHILDREN)\n" ++
+  "k=r.ru_maxrss//(1024 if sys.platform=='darwin' else 1)\nopen(d+'/measure','w').write('%d %d\\n'%(-(-int((r.ru_utime+r.ru_stime)*1000000)//1000000),k))\nsys.exit(rc if rc>=0 else 128-rc)"
+
+/-- `sh -c (measured unit memKb dir)` runs `dir/cmd` and writes `<cpu s> <peak KiB>` of it and its children to `dir/measure`: in its
+own systemd user scope (`MemoryMax` when `memKb` is given), reading the scope's cgroup (`cpu.stat`, `memory.peak`); elsewhere
+by rusage (python3), else not at all. The arguments carry no `$` (systemd-run reads `$$` in them). -/
+def measured (unit : String) (memKb : Option Int) (dir : String) : String :=
+  let cap := memKb.elim "" fun kb => s!"-p MemoryMax={kb}K -p MemorySwapMax=0 "
+  let warn := if memKb.isSome then "echo 'swarm: memory not capped here (no systemd user scope); --mem is a reservation only' >&2; " else ""
+  s!"if systemd-run --user --scope --quiet true 2>/dev/null; then exec systemd-run --user --scope --quiet --collect --unit={unit} {cap}-- sh {shquote (dir ++ "/measure.sh")} {shquote dir}; " ++
+  s!"else {warn}if command -v python3 >/dev/null 2>&1; then exec python3 -c {shquote rusageScript} {shquote dir}; else exec sh -c \"$(cat {shquote (dir ++ "/cmd")})\"; fi; fi"
+
+/-- A finished job as a history row, filed under the user's command (`key`): its wall time and its CPU seconds and peak memory,
+a local job's from `measured` (`mfile`; 0 when it could not be read), a remote job's the last RSS and %CPU watchd read on that
+machine (the %CPU over the wall time). -/
+def recordJob (who : String) (on : Option String) (jid cmd key repo : String) (s : Int) (mfile : String) : m Unit := do
   let (mach, cpu, rss) ← match on with
-    | none => pure (← Sys.hostname, 0, 0)
+    | none =>
+      let nums := (strip ((← Fs.read mfile).getD "")).splitOn " " |>.filterMap parseInt
+      pure (← Sys.hostname, nums.getD 0 0, nums.getD 1 0)
     | some mach =>
       let db ← Store.txn [.«meta»] fun db => (db, db)
       let ms := (db.getMeta "machines").bind (·.v) |>.bind Json.decode
       let last := ((ms.bind (Json.field · mach)).bind (Json.field · "jobs")).bind (Json.field · jid) |>.getD (Json.mkObj [])
-      pure (mach, (Json.fint last "cpu").getD 0, (Json.fint last "rss_kb").getD 0)
+      pure (mach, ((Json.fint last "cpu").getD 0 * s + 50) / 100, (Json.fint last "rss_kb").getD 0)
   discard <| Cost.record { ts := ← Clock.now, machine := mach, repo, agent := who, source := "run", cmd, key := some key, wall_s := s, cpu_s := cpu, peak_kb := rss }
 
 /-- The job's exit as the record and the message say it: a code, or lost. -/
@@ -195,7 +223,7 @@ def run (a : Parsed) : m UInt32 := do
   let jid ← Store.txn [.«meta»] fun db =>
     let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
     (db.setMeta "jobs" (some (d n)), d n)
-  -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>`; a defaulted one only a reservation
+  -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>` (a local job's with its pid after, a scope name is per machine); a defaulted one only a reservation
   let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
   let mkJob (fl : String) := (memFlag.map fun kb => Claims.memCap unit kb).getD id (Claims.lowPrio fl)
   let jobCmd := mkJob full
@@ -219,7 +247,7 @@ def run (a : Parsed) : m UInt32 := do
       ("s", some (Json.int s)), ("wait_s", some (Json.int waitS)), ("sync_s", sync.map Lean.toJson), ("back_s", back.map Lean.toJson), ("tree", tree.map .str)])
     -- every job is a row, filed under the user's command (sw-compute-backfill.md §2.1)
     -- the repo name `history` reads (unsanitised, from the common dir), not the sanitised run dir's
-    try recordJob who on jid full (Cost.key line) ((← Cost.repoName).getD repo) s catch _ => pure ()
+    try recordJob who on jid full (Cost.key line) ((← Cost.repoName).getD repo) s (jobs ++ "/measure") catch _ => pure ()
     let lines := splitlines ((← Fs.read logf).getD "")
     let tail := lines.drop (lines.length - JOB_TAIL)
     if !tail.isEmpty then Env.out ("\n".intercalate tail)
@@ -244,7 +272,9 @@ def run (a : Parsed) : m UInt32 := do
   let some mach := on | do
     logEv "job-start" (obj rec0)
     let tree ← treeOf top
-    let jobCmd := if devOn then mkJob (wrapFull (shquote top) (shquote (common ++ "/swarm/devshell"))) else jobCmd
+    discard <| Fs.write (jobs ++ "/cmd") (if devOn then wrapFull (shquote top) (shquote (common ++ "/swarm/devshell")) else full)
+    discard <| Fs.write (jobs ++ "/measure.sh") measureScript
+    let jobCmd := Claims.lowPrio (measured (unit ++ "-" ++ toString (← Sys.getpid)) memFlag jobs)
     let r ← Sys.exec ["sh", "-c", jobCmd] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
     finish (.n r.code.toNat) tree none none [] none
   let ms ← Claims.hcMachines host

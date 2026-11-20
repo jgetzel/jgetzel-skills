@@ -7,6 +7,14 @@ open SwarmLean Cost
 
 #guard key "cd /x/y && FOO=1 cargo test --release -p a 2>&1 | tail -5" == "cargo test --release"
 #guard key "swarm run --on laptop -- make all" == "make all"
+#guard key "env -u HPL_NIX_ENV tools/premerge.sh a b" == "tools/premerge.sh a b"
+#guard key "env -i A=1 -- make all" == "make all"
+#guard key "env --unset=X -C /tmp make all" == "make all"
+#guard key "cd /x && env A=1 B=2 nice -n 19 timeout 60 make all" == "make all"
+#guard key "timeout -s KILL 5m ionice -c3 cargo test -p a" == "cargo test -p"
+#guard key "ionice -c 3 nice -5 make" == "make"
+#guard key "env" == "env"
+#guard key "timeout 30" == "timeout 30"
 #guard key "nix build .#x > /tmp/o" == "nix build .#x"
 #guard shellCmd "zsh -c source s.sh && eval 'cd /a && it'\\''s' \\< /dev/null && pwd -P >| /tmp/x" == some "cd /a && it's"
 #guard summaryOf "cargo test --release" [(300, 600, 2 * 1048576), (360, 600, 4 * 1048576), (420, 600, 9 * 1048576)] ==
