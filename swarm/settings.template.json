@@ -27,6 +27,9 @@
     "PermissionRequest": [
       {"hooks": [{"type": "command", "command": "sh $(dirname {{SWARM}})/herdr/prompt-hook.sh record"}]}
     ],
+    "StopFailure": [
+      {"hooks": [{"type": "command", "command": "{{SWARM}} hook stop-failure"}]}
+    ],
     "Stop": [
       {"hooks": [
         {"type": "command", "command": "{{SWARM}} hook stop"},
