@@ -1086,6 +1086,41 @@ def test_compaction_not_resumed_resent_once (t : T) : IO Unit := do
   eq (← sends) 1
   eq (← t.q "select 1 x from msg where dest='t-comms' and body like 'a did not resume after its compaction (terminal h1)%'").size 1
 
+-- board #194: a turn ending on an API error with no Stop hook: logged, status idle, one continue line, comms told if no turn
+def test_api_error_resumed_once (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  let tr := t.d ++ "/api.jsonl"
+  put tr ((json% {"type": "assistant", "isApiErrorMessage": true, "message": {"content": [{"type": "text", "text": "API Error: Connection lost"}]}}).compress ++ "\n")
+  discard <| t.hook "a" "prompt" (json% {"transcript_path": $tr}) (hc := some "h1")
+  t.setHc [json% {"address": "h1", "status": "done"}, json% {"address": "hc0", "status": "done"}]
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send h1 Your last turn ended on an API error")).length
+  tick  -- hooks silent for under 2 min: nothing yet
+  eq (← sends) 0
+  t.q_ "update agent set last_active=strftime('%s','now') - 300 where name='a'" []
+  tick; tick
+  eq (← sends) 1
+  has ((← t.calls "hc").filter (·.startsWith "send h1 Your last turn")).head! "API Error: Connection lost"
+  has ((← t.calls "hc").filter (·.startsWith "send h1 Your last turn")).head! "task #1"
+  eq (← t.q "select 1 x from event where kind='api-error' and agent='a'").size 1
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like 'a did not resume%'").size 0
+  t.q_ "update event set ts=ts-400 where kind='api-resume'" []
+  tick; tick
+  eq (← sends) 1
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like 'a did not resume after an API error (terminal h1)%'").size 1
+
+-- the StopFailure hook logs api-error and sets idle
+def test_stop_failure_hook_logs_api_error (t : T) : IO Unit := do
+  t.agent "a"
+  let tr := t.d ++ "/sf.jsonl"
+  put tr ((json% {"type": "assistant", "isApiErrorMessage": true, "message": {"content": "rate limit"}}).compress ++ "\n")
+  discard <| t.hook "a" "prompt"
+  discard <| t.hook "a" "stop-failure" (json% {"transcript_path": $tr})
+  eq (← t.q "select 1 x from event where kind='api-error' and agent='a' and data='rate limit'").size 1
+  eq (← t.q "select 1 x from agent where name='a' and status='idle'").size 1
+
 -- a compaction the agent already had a turn after is not followed by a continue line (board #191)
 def test_watchd_no_continue_after_a_turn (t : T) : IO Unit := do
   t.fakes
@@ -1312,6 +1347,8 @@ def tests : List Case := [
   ("test_watchd_continues_stayer_after_compaction", test_watchd_continues_stayer_after_compaction),
   ("test_compaction_ends_stay", test_compaction_ends_stay),
   ("test_compaction_not_resumed_resent_once", test_compaction_not_resumed_resent_once),
+  ("test_api_error_resumed_once", test_api_error_resumed_once),
+  ("test_stop_failure_hook_logs_api_error", test_stop_failure_hook_logs_api_error),
   ("test_watchd_no_continue_after_a_turn", test_watchd_no_continue_after_a_turn),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),

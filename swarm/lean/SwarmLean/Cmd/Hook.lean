@@ -30,11 +30,11 @@ def CD : String := "(?:^|[;&|(]\\s*)cd\\s+([^\\s;&|)]+)"
 
 /-- `swarm hook -h`. -/
 def helpHook : String :=
-  "Usage: swarm hook [-h] {pre-tool,post-tool,prompt,stop,session}\n\nArguments:\n   {pre-tool,post-tool,prompt,stop,session}\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm hook [-h] {pre-tool,post-tool,prompt,stop,stop-failure,session}\n\nArguments:\n   {pre-tool,post-tool,prompt,stop,stop-failure,session}\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- The `hook` parser. -/
 def hookSpec : Spec :=
-  .mk "hook" helpHook [{ name := "event", choices := ["pre-tool", "post-tool", "prompt", "stop", "session"] }] [] [] [] none
+  .mk "hook" helpHook [{ name := "event", choices := ["pre-tool", "post-tool", "prompt", "stop", "stop-failure", "session"] }] [] [] [] none
 
 /-- A payload field that is a string. -/
 def str? (j : Json) (k : String) : Option String :=
@@ -199,6 +199,9 @@ def hook (ev : String) : m UInt32 := do
     return 0
   Store.txn [.agent, .event, .cursor] fun db => (Agents.touch db name (some cwd) here now, ())
   let transcript := str? p "transcript_path"
+  if let some tp := transcript then  -- watchd reads the transcript's end (api-error pass)
+    Store.txn [.«meta»] fun db =>
+      (if ((db.getMeta ("tr:" ++ name)).bind (·.v)) == some tp then db else db.setMeta ("tr:" ++ name) (some tp), ())
   match ev with
   | "pre-tool" => preTool name cwd tool ti here
   | "post-tool" =>
@@ -217,6 +220,10 @@ def hook (ev : String) : m UInt32 := do
       let db := setStatus db name here now "idle" fun a => match k with | some k => { a with ctx_tokens := some k } | none => a
       (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ())
     if let some why ← stopBlock name p then Env.out ("{\"decision\": \"block\", \"reason\": " ++ jstr why ++ "}")
+  | "stop-failure" =>  -- the turn ended on an API error: no Stop hook runs
+    let txt := (← errorText transcript).getD (tostr p "error")
+    Store.txn [.agent, .event] fun db =>
+      ((setStatus db name here now "idle").log now (some name) "api-error" none (some txt), ())
   | "session" =>
     let pid ← Machine.claudePid
     Store.txn [.agent, .event] fun db =>

@@ -226,6 +226,57 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
             "ctx-compact-failed" none (some (d k)), true)
     if done && s != s0 then Store.txn [.«meta»] fun db => (Compact.save db a.name s, ())
 
+/-- A terminal idle this long with the agent's hooks silent and its transcript ending on an API error: the stop hook never ran. -/
+def APIERR_IDLE : Int := 2 * 60
+
+/-- How long a continue line after an API error may go unanswered before the communicator is told. -/
+def APIERR_WAIT : Int := 5 * 60
+
+/-- A turn that ended on an API error (board #194). The StopFailure hook logs `api-error`; failing that, a row still
+"working" whose terminal hc shows idle/done, silent APIERR_IDLE, with a transcript ending on one gets it logged here and
+its status set idle. Per `api-error` event, once: the agent gets a continue line typed into its terminal (the
+communicator is only told); no turn APIERR_WAIT later, the communicator is told, once. A later turn re-arms it. -/
+def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
+  let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
+  for a in Agents.live db do
+    let some h := py a.hc | continue
+    let some x := terms.find? (·.address == some h) | continue
+    let idle := Compact.Term.ofHc x.status == .idle
+    let now ← Clock.now
+    let la := a.last_active.getD 0
+    if a.status == some "working" && idle && now - la ≥ APIERR_IDLE then
+      let tr := (db.getMeta ("tr:" ++ a.name)).bind (·.v)
+      if let some txt ← SwarmLean.Hook.errorText tr then
+        Store.txn [.agent, .event] fun db =>
+          ((db.setAgent a.name ({ · with status := some "idle" })).log now (some a.name) "api-error" none (some txt), ())
+    let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
+    let evs (kind : String) := db.events.filter fun e => e.agent == some a.name && e.kind == some kind
+    let la := ((db.agent a.name).bind (·.last_active)).getD 0
+    let some err := (evs "api-error").getLast? | continue
+    let et := err.ts.getD 0
+    if la > et then continue  -- a turn since: re-armed
+    if !idle then continue
+    let sent := (evs "api-resume").getLast?.filter (·.id > err.id)
+    match sent with
+    | none =>
+      let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
+        (·.id ≤ ·.id)).head?
+      let txt := err.data.getD ""
+      if a.name == comms then
+        Store.txn [.agent, .msg, .cursor, .event] fun db =>
+          ((say db now comms s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log now
+            (some a.name) "api-resume" none none, ())
+      else
+        let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
+          (match task with | some r => s!": task #{r.id}." | none => ".")
+        Store.txn [.event] fun db => (db.log now (some a.name) "api-resume" none none, ())
+        if let some e ← Msgs.typeLine h line then Env.err s!"api-error {a.name}: hc send {h} failed: {e}"
+    | some s =>
+      if now - s.ts.getD 0 ≥ APIERR_WAIT && a.name != comms && (evs "api-noresume").all (·.id < err.id) then
+        Store.txn [.agent, .msg, .cursor, .event] fun db =>
+          ((say db now comms s!"{a.name} did not resume after an API error (terminal {h})." false "system").log now
+            (some a.name) "api-noresume" none none, ())
+
 /-- How old the communicator's oldest waking unread message is before watchd types into its terminal, and how
 often at most it does (`commsInbox`). -/
 def COMMS_NOWAITER : Int := 5 * 60
@@ -308,6 +359,7 @@ def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option 
     if let .error e ← Guard.guard (blockers t c opts.blockerIdle) then errs := errs ++ ["blockers: " ++ e]
     if let some ts := terms then
       if let .error e ← Guard.guard (compactPass ts c) then errs := errs ++ ["compact: " ++ e]
+      if let .error e ← Guard.guard (apiErrorPass ts c) then errs := errs ++ ["api-error: " ++ e]
   match ← Guard.guard (machineTick st.cost) with
   | .ok c => st := { st with cost := c }
   | .error e => errs := errs ++ ["machine: " ++ e]

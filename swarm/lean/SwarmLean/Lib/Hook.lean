@@ -116,6 +116,23 @@ def errorTurn [Monad m] [Fs m] (path : Option String) : m Bool := do
       return j.getObjVal? "isApiErrorMessage" matches .ok (.bool true)
   return false
 
+/-- The text of the last assistant line when the turn ended on an API error, else none. A transcript's content is a
+string or a list of blocks with a `text`. -/
+def errorText [Monad m] [Fs m] (path : Option String) : m (Option String) := do
+  for l in ((← tailLines path).getD []).reverse do
+    let some j := (Lean.Json.parse l).toOption | continue
+    if j.getObjVal? "type" matches .ok (.str "assistant") then
+      unless j.getObjVal? "isApiErrorMessage" matches .ok (.bool true) do return none
+      let c := (j.getObjVal? "message").toOption.bind (·.getObjVal? "content" |>.toOption)
+      let blockText (b : Lean.Json) : Option String := match b.getObjVal? "text" with | .ok (.str s) => some s | _ => none
+      let txt : String := match c with
+        | some (.str s) => s
+        | some (.arr bs) => " ".intercalate (bs.toList.filterMap blockText)
+        | _ => ""
+      let txt := (txt.replace "\n" " ").trimAscii.toString
+      return some (if txt.length > 120 then (txt.take 120).toString ++ "…" else txt)
+  return none
+
 /-- agents.set_status: `status` and last_active (and `f`'s fields) on `name`'s row through touch; a status event
 when it changed. A fenced name is left as it is. -/
 def setStatus (db : Db) (name : String) (here : Option String) (now : Int) (status : String)
