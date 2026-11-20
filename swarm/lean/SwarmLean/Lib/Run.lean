@@ -3,6 +3,8 @@ import SwarmLean.Lib.Json
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Re
 import SwarmLean.Db
+import SwarmLean.Db.Msgs
+import SwarmLean.Db.Notes
 import SwarmLean.Lib.Compute
 import Claims.Machines
 
@@ -190,6 +192,36 @@ def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit :
     let db := lost.foldl (fun db j => db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
       ("exit", some (.str "lost")), ("s", some (Json.int (t - j.ts)))])))) db
     (db.setMeta "machines" (some (Json.encode (Json.mkObj out))), ())
+
+/-- A detached job's end line (board #205): a message to its submitter; if that agent has ended, a note on the job's task;
+with neither, to the communicator. -/
+def postEnd [Env m] [Store m] [Clock m] (who : String) (task : Option Int) (body : String) : m Unit := do
+  let envComms ← env "SWARM_COMMS"
+  let now ← Clock.now
+  Store.txn [.agent, .task, .«meta», .msg, .event] fun db =>
+    let names := (Agents.live db).map (·.name)
+    if names.contains who then ((Msgs.post db now "swarm" who body).1, ())
+    else match task with
+    | some t => ((Notes.post db now "swarm" t body false (names.contains ·) (Agents.commsOf db envComms)).1, ())
+    | none => match Agents.commsOf db envComms with
+      | some c => ((Msgs.post db now "swarm" c body).1, ())
+      | none => (db, ())
+
+/-- watchd: a detached job whose process is gone with no job-end ends as lost, and its submitter is told (board #205). -/
+def detachedTick [Env m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit := do
+  let db ← Store.txn [.event] fun db => (db, db)
+  for j in liveJobs db t do
+    if Json.field j.data "detached" != some (.bool true) then continue
+    let some p := (Json.field j.data "pid").bind Json.int? | continue
+    if ← Sys.pidAlive p then continue
+    let now ← Clock.now
+    let fresh ← Store.txn [.event] fun db =>
+      if (db.events.any fun e => e.kind == some "job-end" && e.path == j.id) then (db, false)
+      else (db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
+        ("exit", some (.str "lost")), ("s", some (Json.int (now - j.ts)))]))), true)
+    if fresh then
+      let jid := j.id.getD "?"
+      postEnd (j.agent.getD "human") ((Json.field j.data "task").bind Json.int?) s!"job j{jid} lost on {(j.s "machine").getD "this machine"}: its process died; log: see jobs/{jid}/log beside the swarm db"
 
 /-- A job's copy, `RUN_DIR/<repo>/<worktree>`, with no `..` that would climb out of it. -/
 def runDirOk (dir : String) : Bool :=

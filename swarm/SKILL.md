@@ -44,7 +44,11 @@ with subagents.
    [--peak-kb K] --exit <code|lost> [--log FILE] -- <cmd…>` records a job that ran elsewhere or inside another job's claim
    (a batch runner's items): job events, log and `swarm cost` row of its own, so the next `swarm run` of the command is sized
    from it; it claims and runs nothing. The same commands are `claim …` (`claim run -- <cmd>` claims and runs any command without a
-   swarm). `claim/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
+   swarm). `swarm run --detach -- <cmd>` returns once the job is claimed and started ("job jN started on …"); the rest runs in a
+   background process (a `swarm-job-<agent>-j<N>` systemd user unit where there is a user manager, else `setsid nohup`) that holds
+   the claim, and at the end posts the end line (plus the log's tail when the exit is not 0) to the submitter, else to '#<task>',
+   else to the communicator. A background process killed ends the job as lost (watchd's next tick). `swarm stay --until job:N` waits.
+   `claim/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
 
 ## 1. Start
 

@@ -185,6 +185,61 @@ def test_run_claim_is_gone_after_a_killed_job (t : T) : IO Unit := do
   discard <| t.exec ["kill", "-9", j]
   eq (← claimsHere t) 0
 
+/-- The env of a detached run: no user manager, so a plain setsid child. -/
+def det : Opts := { env := [("SWARM_DETACH_NO_SYSTEMD", some "1")] }
+
+def test_run_detach_returns_before_the_job_ends_and_posts_the_end_line (t : T) : IO Unit := do
+  t.agent "b"
+  let t0 ← IO.monoMsNow
+  let r ← t.sw "b" ["run", "--detach", "--cores", "1", "--", "sleep 3; echo boom; exit 3"] det
+  has r.stdout "started on this machine (1 cores, no estimate); you get its end line as a message."
+  has r.stdout "swarm stay --until job:"
+  unless (← IO.monoMsNow) - t0 < 2500 do fail "detach waited for the job"
+  eq (← t.q "select 1 from event where kind='job-end'").size 0
+  until_ (do return (← t.q "select 1 from msg where dest='b' and frm='swarm'").size > 0)
+  let m ← t.q1 "select body from msg where dest='b' and frm='swarm'"
+  has ((m.f "body").s?.getD "") "boom"
+  has ((m.f "body").s?.getD "") "exit 3 on this machine"
+  eq (← claimsHere t) 0
+  let st ← parse (((← t.q1 "select data from event where kind='job-start'").f "data").s?.getD "")
+  eq (st.f "detached") (Lean.Json.bool true)
+
+def test_run_detach_a_success_posts_only_the_end_line (t : T) : IO Unit := do
+  t.agent "b"
+  discard <| t.sw "b" ["run", "--detach", "--", "echo fine"] det
+  until_ (do return (← t.q "select 1 from msg where dest='b' and frm='swarm'").size > 0)
+  let b := ((← t.q1 "select body from msg where dest='b' and frm='swarm'").f "body").s?.getD ""
+  has b "exit 0 on this machine"; hasnt b "fine\n"
+
+def test_run_detach_ended_submitter_gets_it_on_the_task (t : T) : IO Unit := do
+  t.agent "b"
+  t.sw_ "b" ["task", "add", "x"]; t.sw_ "b" ["task", "claim", "1"]
+  discard <| t.sw "b" ["run", "--detach", "--", "sleep 2"] det
+  t.q_ "update agent set ended=1, status='ended' where name='b'" []
+  until_ (do return (← t.q "select 1 from event where kind='task-note'").size > 0)
+  has (((← t.q1 "select data from event where kind='task-note'").f "data").s?.getD "") "job j"
+
+def test_run_detach_with_no_one_to_tell_goes_to_comms (t : T) : IO Unit := do
+  t.agent "b"; t.agent "c"
+  t.q_ "insert or replace into meta(k, v) values ('comms', 'c')" []
+  discard <| t.sw "b" ["run", "--detach", "--", "sleep 2"] det
+  t.q_ "update agent set ended=1, status='ended' where name='b'" []
+  until_ (do return (← t.q "select 1 from msg where dest='c' and frm='swarm'").size > 0)
+
+def test_run_detach_a_killed_process_is_lost (t : T) : IO Unit := do
+  t.agent "b"
+  discard <| t.sw "b" ["run", "--detach", "--", s!"echo $$ > {t.d}/job; exec sleep 60"] det
+  until_ (exists_ (t.d ++ "/job"))
+  eq (← claimsHere t) 1
+  let st ← parse (((← t.q1 "select data from event where kind='job-start'").f "data").s?.getD "")
+  discard <| t.exec ["kill", "-9", (st.f "pid").compress]
+  discard <| t.exec ["kill", "-9", strip (← readF [t.d, "job"])]
+  eq (← claimsHere t) 0
+  t.tick
+  let e ← parse (((← t.q1 "select data from event where kind='job-end'").f "data").s?.getD "")
+  eq (e.f "exit") (toJson "lost")
+  has (((← t.q1 "select body from msg where dest='b' and frm='swarm'").f "body").s?.getD "") "lost"
+
 def test_run_estimate_into_the_claim (t : T) : IO Unit := do
   -- 12 `run` rows of 1..12 s: the 90th percentile is 11; a `swarm` row of 1000 s in the window does not count
   let cmd := "cat $XDG_STATE_HOME/swarm-compute/claims/*"
@@ -326,6 +381,11 @@ def tests : List Case := [
   ("test_run_waits_and_runs_when_a_claim_is_dropped", test_run_waits_and_runs_when_a_claim_is_dropped),
   ("test_run_nothing_can_fit_is_255", test_run_nothing_can_fit_is_255),
   ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job),
+  ("test_run_detach_returns_before_the_job_ends_and_posts_the_end_line", test_run_detach_returns_before_the_job_ends_and_posts_the_end_line),
+  ("test_run_detach_a_success_posts_only_the_end_line", test_run_detach_a_success_posts_only_the_end_line),
+  ("test_run_detach_ended_submitter_gets_it_on_the_task", test_run_detach_ended_submitter_gets_it_on_the_task),
+  ("test_run_detach_with_no_one_to_tell_goes_to_comms", test_run_detach_with_no_one_to_tell_goes_to_comms),
+  ("test_run_detach_a_killed_process_is_lost", test_run_detach_a_killed_process_is_lost),
   ("test_run_estimate_into_the_claim", test_run_estimate_into_the_claim),
   ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
   ("test_run_lowest_priority", test_run_lowest_priority),

@@ -16,7 +16,7 @@ open Claims (gi span)
 
 /-- The `run` parser; the command (everything from the first positional or `--` on) is split off first (`split`). -/
 def spec : Spec :=
-  .mk "run" helpRun [] [flag "--no-devshell", opt "--on", opt "--cores", opt "--mem", { opt "--env" with maxCount := 1000000 }] [] [] none
+  .mk "run" helpRun [] [flag "--no-devshell", flag "--detach", opt "--on", opt "--cores", opt "--mem", { opt "--env" with maxCount := 1000000 }] [] [] none
 
 /-- main.lua's split_run on the words after `run`: the options, and the command (`--` dropped). -/
 def split (args : List String) : List String × List String :=
@@ -24,7 +24,7 @@ def split (args : List String) : List String × List String :=
     match fuel, args[i]? with
     | f + 1, some x =>
       if x == "--on" || x == "--env" || x == "--cores" || x == "--mem" then go (i + 2) f
-      else if x.startsWith "--on=" || x.startsWith "--env=" || x.startsWith "--cores=" || x.startsWith "--mem=" || x == "--no-devshell" || x == "-h" || x == "--help" then go (i + 1) f
+      else if x.startsWith "--on=" || x.startsWith "--env=" || x.startsWith "--cores=" || x.startsWith "--mem=" || x == "--no-devshell" || x == "--detach" || x == "-h" || x == "--help" then go (i + 1) f
       else i
     | _, _ => i
   let i := go 0 (args.length + 1)
@@ -158,7 +158,7 @@ inductive Code | n (c : Int) | lost
 /-- `swarm run …`. -/
 def run (a : Parsed) : m UInt32 := do
   let argv := a.strs "argv"
-  if argv.isEmpty then die "usage: swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- <cmd…>"
+  if argv.isEmpty then die "usage: swarm run [--detach] [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- <cmd…>"
   let some top0 ← git ["rev-parse", "--show-toplevel"] | die "not in a git repo"
   if top0 == "" then die "not in a git repo"
   let top := (← Sys.realpath top0).getD top0
@@ -189,11 +189,16 @@ def run (a : Parsed) : m UInt32 := do
   let hn ← Sys.hostname
   -- inside a local job's claim (SWARM_JOB_ID, same machine, no --on): no claim of its own, the parent's cores
   let nested := parent.isSome && (← env "SWARM_JOB_MACHINE") == some hn && (a.str "on").isNone
-  let (chosen, gotCores, gotMem, claimId, waitS) : Option String × Int × Int × String × Int ← if nested then do
+  let resume : Option Json := (← env "SWARM_RUN_RESUME").bind Json.decode
+  let detached := resume.isSome
+  let (chosen, gotCores, gotMem, claimId, waitS, estF) : Option String × Int × Int × String × Int × Option Int ← if let some rj := resume then
+    pure ((Json.fstr rj "machine"), (Json.fint rj "cores").getD DEFAULT_CORES, (Json.fint rj "mem").getD DEFAULT_MEM_KB,
+      (Json.fstr rj "claim").getD "", (Json.fint rj "wait").getD 0, none)
+  else if nested then do
     let c := ((← env "SWARM_CORES").bind parseInt).getD DEFAULT_CORES
     let mk := ((← env "SWARM_MEM_KB").bind parseInt).getD DEFAULT_MEM_KB
     Env.err s!"swarm: inside job j{parent.getD ""}'s claim ({d c} cores); not claiming"
-    pure (none, c, mk, "", 0)
+    pure (none, c, mk, "", 0, none)
   else do
     let rows ← history line
     let hist := Compute.size rows
@@ -223,7 +228,7 @@ def run (a : Parsed) : m UInt32 := do
       mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
     let some (chosen, gotCores, gotMem) ← Claims.acquire host ask | throw (Exit.mk 255)
     let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
-    pure (chosen, gotCores, gotMem, claimId, waitS)
+    pure (chosen, gotCores, gotMem, claimId, waitS, est)
   let release : m Unit := if chosen.isNone && !nested then Claims.release host chosen claimId else pure ()
   let cs := d gotCores
   let jenv := jenv0 ++ (Claims.jobEnv cs gotMem (← Env.var "NIX_CONFIG")).filter fun (k, _) => !(jenv0.any (·.1 == k))
@@ -231,9 +236,11 @@ def run (a : Parsed) : m UInt32 := do
   let full := match Json.fstr cfg "prefix" with
     | some p => sub p ++ " " ++ (if argv.length == 1 then "sh -c " ++ shquote line else line)
     | none => line
-  let jid ← Store.txn [.«meta»] fun db =>
-    let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
-    (db.setMeta "jobs" (some (d n)), d n)
+  let jid ← match resume.bind (Json.fstr · "jid") with
+    | some j => pure j
+    | none => Store.txn [.«meta»] fun db =>
+      let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
+      (db.setMeta "jobs" (some (d n)), d n)
   let jenv := jenv.filter (fun (k, _) => k != "SWARM_JOB_ID" && k != "SWARM_JOB_MACHINE") ++ [("SWARM_JOB_ID", jid), ("SWARM_JOB_MACHINE", chosen.getD hn)]
   -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>` (a local job's with its pid after, a scope name is per machine); a defaulted one only a reservation
   let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
@@ -248,7 +255,38 @@ def run (a : Parsed) : m UInt32 := do
   let on := chosen
   let rec0 : List (String × Option Json) := [("machine", on.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t),
     ("cmd", some (.str full)), ("pid", some (Json.int (← Sys.getpid))), ("cores", some (Json.int gotCores)), ("mem_kb", some (Json.int gotMem)),
-    ("parent", (parent.bind parseInt).map Json.int)]
+    ("parent", (parent.bind parseInt).map Json.int), ("detached", if detached then some (.bool true) else none)]
+  if a.flag "detach" && !detached then
+    -- the claim is ours and the job id allocated: the rest of the run goes on in a background process (board #205)
+    let exe := (← Sys.readlink "/proc/self/exe").getD "swarm"
+    let cargs := ["run"] ++ (if a.flag "no_devshell" then ["--no-devshell"] else []) ++ ((a.str "on").elim [] (["--on", ·])) ++
+      ((a.str "cores").elim [] (["--cores", ·])) ++ ((a.str "mem").elim [] (["--mem", ·])) ++ ((a.strs "env").flatMap (["--env", ·])) ++ ["--"] ++ argv
+    let rj := Json.encode (obj [("claim", some (.str claimId)), ("machine", chosen.map .str), ("cores", some (Json.int gotCores)),
+      ("mem", some (Json.int gotMem)), ("wait", some (Json.int waitS)), ("jid", some (.str jid))])
+    let out := jobs ++ "/out"
+    let ready := jobs ++ "/ready"
+    discard <| Sys.remove ready
+    let names := (← Sys.environ).map (·.1) |>.filter fun k => k != "SWARM_RUN_RESUME" && !k.isEmpty && !(k.get 0).isDigit &&
+      k.all fun c => c.isAlphanum || c == '_'
+    let sd := ["systemd-run", "--user", "--collect", "--quiet", "--unit=" ++ unit, "--working-directory=" ++ cwd,
+      "-p", "StandardOutput=file:" ++ out, "-p", "StandardError=file:" ++ out, "--setenv=SWARM_RUN_RESUME"] ++ names.map ("--setenv=" ++ ·) ++ [exe] ++ cargs
+    let script := "if [ -z \"${SWARM_DETACH_NO_SYSTEMD:-}\" ] && " ++ shjoin sd ++ " 2>/dev/null; then :; else cd " ++ shquote cwd ++
+      " && setsid nohup " ++ shjoin (exe :: cargs) ++ " >" ++ shquote out ++ " 2>&1 </dev/null & fi"
+    discard <| Sys.exec ["sh", "-c", script] { env := [("SWARM_RUN_RESUME", some rj)], stdoutFile := some "/dev/null", merge := true }
+    let mut up := false
+    for _ in [0:300] do
+      if (← Sys.kind ready false) == .file then up := true; break
+      Sys.sleep 100
+    if !up then
+      Env.err s!"swarm: the background run of j{jid} did not start in 30s; see {out}"
+      throw (Exit.mk 255)
+    Env.out s!"job j{jid} started on {chosen.getD "this machine"} ({d gotCores} cores, {estF.elim "no estimate" fun e => "~" ++ span e}); you get its end line as a message. `swarm stay --until job:{jid}` waits for it."
+    return 0
+  if detached && chosen.isNone && !nested then
+    -- the claim's holder becomes this process: it drops when this dies
+    discard <| Sys.exec ["sh", "-c", "f=\"${SWARM_COMPUTE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}/claims/$2\"; " ++
+      "if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$1 /\" \"$f\" > \"${f%/*}/.h$1\" && mv \"${f%/*}/.h$1\" \"$f\"; fi", "sh", toString (← Sys.getpid), claimId] {}
+  if detached then discard <| Fs.write (jobs ++ "/ready") "1"
   let t0 ← Sys.nowF
   let logEv (kind : String) (data : Json) : m Unit := do
     let now ← Clock.now
@@ -263,10 +301,9 @@ def run (a : Parsed) : m UInt32 := do
     try recordJob who on jid full (Cost.key line) ((← Cost.repoName).getD repo) s (jobs ++ "/measure") catch _ => pure ()
     let lines := splitlines ((← Fs.read logf).getD "")
     let tail := lines.drop (lines.length - JOB_TAIL)
-    if !tail.isEmpty then Env.out ("\n".intercalate tail)
     let lost := match code with | .lost => true | _ => false
     let sec := s % 60
-    Env.out (s!"job j{jid} {match code with | .n c => "exit " ++ d c | .lost => "lost"} on {on.getD "this machine"}, {fdiv s 60}m{if sec < 10 then "0" else ""}{sec}s" ++
+    let endLine := (s!"job j{jid} {match code with | .n c => "exit " ++ d c | .lost => "lost"} on {on.getD "this machine"}, {fdiv s 60}m{if sec < 10 then "0" else ""}{sec}s" ++
       (if waitS > 0 then s!", waited {waitS / 60}m{if waitS % 60 < 10 then "0" else ""}{waitS % 60}s" else "") ++
       (match sync, back with | some x, some y => s!" (sync {fixed x 1}s, back {fixed y 1}s)" | _, _ => "") ++
       (match tree with | some t => ", tree " ++ (t.take 7).toString | none => "") ++ "; log: " ++ logf ++
@@ -275,6 +312,11 @@ def run (a : Parsed) : m UInt32 := do
       (match memFlag, code with
         | some kb, .n 137 => s!"\nkilled at its --mem cap ({gi kb} GiB)? Try a bigger --mem."
         | _, _ => ""))
+    if !tail.isEmpty then Env.out ("\n".intercalate tail)
+    Env.out endLine
+    if detached then
+      let ok := match code with | .n 0 => true | _ => false
+      postEnd who task ((if ok || tail.isEmpty then "" else "\n".intercalate tail ++ "\n") ++ endLine)
     return match code with | .lost => 255 | .n c => (c.toNat % 256).toUInt32
   -- the dev shell (devshellScript): the line goes through it unless opted out, a nix line, or no flake.nix
   let devOn := !a.flag "no_devshell" && (Json.field cfg "devshell") != some (.bool false) && !startsNix line &&
