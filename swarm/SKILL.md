@@ -38,7 +38,12 @@ with subagents.
    limit), `swarm compute reserve <machine|here> <cores> [--mem G]` keeps that much of the machine for yourself now (the
    temporary one; `reserve … 0` lifts it; claims wait for the rest and a larger one waits without holding back smaller
    ones), `swarm compute off|on <machine|here>` stops and resumes new claims. `--cores all` claims the whole machine
-   alone, for a benchmark. The same commands are `claim …` (`claim run -- <cmd>` claims and runs any command without a
+   alone, for a benchmark. A job gets SWARM_JOB_ID and SWARM_JOB_MACHINE; a `swarm run` started inside a local job (same machine, no
+   `--on`) claims nothing: it runs inside the parent's claim with its SWARM_CORES, recorded as a child job ("j14 in j12" in the
+   jobs line). `swarm job record --who <agent> [--task N] [--parent jN] [--machine M] [--cores C] [--start T] --wall S [--cpu S]
+   [--peak-kb K] --exit <code|lost> [--log FILE] -- <cmd…>` records a job that ran elsewhere or inside another job's claim
+   (a batch runner's items): job events, log and `swarm cost` row of its own, so the next `swarm run` of the command is sized
+   from it; it claims and runs nothing. The same commands are `claim …` (`claim run -- <cmd>` claims and runs any command without a
    swarm). `claim/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
 
 ## 1. Start

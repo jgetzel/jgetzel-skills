@@ -318,6 +318,7 @@ def remoteLines [Monad m] [Clock m] (metas : List Meta) (events : List Event) (t
         | .ok jm@(.obj _) => (j.id.map fun i => (jm.getObjVal? i).toOption).join
         | _ => none
       s!"{j.agent.getD "nil"} {cut ((j.str "cmd").getD "") 24} {ago now (j.ts.getD 0)}" ++
+        (match jnum j.data "parent", j.id with | some p, some i => s!" (j{i} in j{p.floor.toInt64.toInt})" | _, _ => "") ++
         (match rd.bind (jnum · "rss_kb") with | some k => s!" {fixed (k / 1048576) 1}G" | none => "")
     if jstr mj "state" != some "connected" then
       let since := match jnum mj "since" with | some s => s | none => (jnum mj "ts").getD 0
