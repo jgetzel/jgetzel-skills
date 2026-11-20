@@ -120,9 +120,9 @@ def test_away_hc_prompt_not_urgent (t : T) : IO Unit := do
   t.agent "a" [("hc", "h1"), ("status", "working")]
   t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
   t.sw_ "human" ["away"]
-  tick t
+  let r ← t.sw "a" ["watchd", "--once", "--comms", "c", "--max-agents", "0"]
   let m ← t.q "select body, urgent from msg where dest='c' and frm='swarm'"
-  eq m.size 1
+  unless m.size == 1 do fail s!"want 1 message to c, got {m.size}: {m.toList.map (·.compress)}\nwatchd stderr: {r.stderr}"
   has ((m[0]!).f "body") "a prompt or question needs the human"; eq ((m[0]!).f "urgent") 0
 
 def test_back_digest (t : T) : IO Unit := do
