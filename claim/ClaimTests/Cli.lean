@@ -129,7 +129,11 @@ def test_claim_queue_shows_beside_the_claims (t : T) : IO Unit := do
   hcWith t
   eq (← claim t ["queue", "add", "here", "--id", "tq-1", "--who", "hpl-1", "--est", "1200", "--ttl", "600", "--owner", "timing-queue", "--", "timing", "run"]).code 0
   let x ← claim t ["here"]
-  has x.stdout "  queued: hpl-1 timing run (owner timing-queue) ~20m, since 0s"
+  -- `since <n>s`: the clock may pass a second between the add and the show
+  let pre := "  queued: hpl-1 timing run (owner timing-queue) ~20m, since "
+  let some l := (splitlines x.stdout).find? (·.startsWith pre) | fail s!"missing {pre.quote}\n  in {x.stdout.quote}"
+  let since := (l.drop pre.length).toString.toList
+  unless since.length ≥ 2 && since.getLast? == some 's' && since.dropLast.all Char.isDigit do fail s!"since: {l.quote}"
   let j ← claim t ["--json", "here"]
   has j.stdout "\"queued\":[{"; has j.stdout "\"owner\":\"timing-queue\""; has j.stdout "\"est_s\":1200"
   -- the claim ledger is untouched
