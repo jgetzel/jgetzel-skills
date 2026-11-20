@@ -855,18 +855,22 @@ theorem sameRepo_trans {a b c : M.World} (h1 : M.SameRepo a b) (h2 : M.SameRepo 
     fun cwd x b => (h2.2.2.1 cwd x b).trans (h1.2.2.1 cwd x b), fun x => (h2.2.2.2.1 x).trans (h1.2.2.2.1 x),
     fun x => (h2.2.2.2.2 x).trans (h1.2.2.2.2 x)⟩
 
+set_option maxHeartbeats 4000000 in
 /-- W2 on a machine: ending an agent (its row, its terminal, its cgroup scope) changes no worktree, branch or commit. -/
-theorem endAgent_keepsGit (hk : HcKillEnds M) (hr : HcRmKeeps M) (hc : CgroupKillKeeps M) (w0 : M.World) (a : Agent)
+theorem endAgent_keepsGit (ht : ToolsKeep M) (hk : HcKillEnds M) (hr : HcRmKeeps M) (hc : CgroupKillKeeps M) (w0 : M.World) (a : Agent)
     (force : Bool) (by_ : Option String) :
     ⦃fun s => ⌜M.SameRepo w0 s.w⌝⦄ (Lifecycle.endAgent a force by_ : RecM M Bool) ⦃⇓ _ s => ⌜M.SameRepo w0 s.w⌝⦄ := by
-  mvcgen -trivial [Lifecycle.endAgent, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
+  mvcgen -trivial [Lifecycle.endAgent, Run.remoteTerms, Run.killTerm, Run.markLost, List.flatMap_cons, List.flatMap_nil, List.append_nil, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
     Clock.now, Fs.write, Fs.read, Fs.list, Env.var, discard_eq]
   case inv1 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
   case inv2 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
+  case inv3 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
+  case inv4 => exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝
+  all_goals (try exact ⇓⟨_, _⟩ s => ⌜M.SameRepo w0 s.w⌝)
   all_goals (try exact ExceptConds.entails.refl _)
   all_goals (try mleave)
   all_goals (try simp only [withEnv_nil, List.map_nil] at *)
-  all_goals (repeat (first | assumption | refine sameRepo_trans ?_ (hc _ _) | refine sameRepo_trans ?_ (hr _ _) |
+  all_goals (repeat (first | assumption | refine sameRepo_trans ?_ (hc _ _) | refine sameRepo_trans ?_ (hr _ _) | refine sameRepo_trans ?_ (ht _ _ _ trivial) |
     refine sameRepo_trans ?_ (hk _ _).2))
 
 end SwarmLean.SweepProofs

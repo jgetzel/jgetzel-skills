@@ -454,12 +454,14 @@ def GitRead : List String → Prop
 def GitReadsKeep : Prop := ∀ w argv cwd, GitRead argv → M.SameRepo w (M.after w argv cwd)
 
 /-- The other commands the sweep runs: `du` of a worktree, `gh pr list`, `lsof` (macOS's cwds), and `hc exec … rm -rf`
-of a job's copy (`Run.runDirOk`: under `~/.cache/swarm-run`, no `..`) on the machine it ran on (Run.cleanRemote). -/
+of a job's copy (`Run.runDirOk`: under `~/.cache/swarm-run`, no `..`) on the machine it ran on (Run.cleanRemote), and
+`hc ls --json --label k=v` (the terminals of an agent's remote jobs, `Lifecycle.endAgent`). -/
 def ToolRead : List String → Prop
   | ["du", "-sk", _] => True
   | "gh" :: "pr" :: "list" :: _ => True
   | ["lsof", "-a", "-d", "cwd", "-Fpn"] => True
   | ["hc", "exec", "--on", _, "--timeout", "120", "rm", "-rf", d] => Run.runDirOk d = true
+  | ["hc", "ls", "--json", "--label", _] => True
   | _ => False
 
 /-- du, gh, lsof, hc: the sweep's other commands leave the repo as it was (it is not under a job's copy)

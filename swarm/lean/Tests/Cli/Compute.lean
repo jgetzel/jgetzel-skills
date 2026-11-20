@@ -77,6 +77,10 @@ def test_run_env_and_claim_released (t : T) : IO Unit := do
   eq (toJson [st.f "cores", st.f "mem_kb"]) (json% [3, 1572864])
   -- no flags, no history: the default
   has (← t.sw "b" ["run", "--", "echo $SWARM_CORES"]).stdout "2\n"
+  -- the job reads /dev/null, not the caller's stdin (board #212)
+  let r ← t.sw "b" ["run", "--", "cat; echo eof"] { stdin := some "ignored\n" }
+  has r.stdout "eof"
+  if (r.stdout.splitOn "ignored").length > 1 then fail "the job read its caller's stdin"
 
 def test_run_sized_from_history (t : T) : IO Unit := do
   let rec_ : SwarmLean.Cost.Rec := { ts := 1, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 450, peak_kb := 4000000 }

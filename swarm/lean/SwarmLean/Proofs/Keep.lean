@@ -466,7 +466,7 @@ theorem GoodFrom.join {n : Nat} {s1 : Rec M} {l : List (M.World × Call)}
   · exact ⟨s1, h2 i w m x (Nat.le_of_not_lt hl) he⟩
 
 theorem endAgent_ext : Ext (Lifecycle.endAgent a force by_ : RecM M Bool) := ext_of fun L => by
-  mvcgen -trivial [Lifecycle.endAgent, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
+  mvcgen -trivial [Lifecycle.endAgent, Run.remoteTerms, Run.killTerm, Run.markLost, Machine.cgroup, Machine.procRoot, Machine.cgroupRoot, Proc.output, Store.txn,
     Clock.now, Fs.write, Fs.read, Fs.list, Env.var, discard_eq]
   ext_close L
 
@@ -542,7 +542,7 @@ theorem step_inv (H : NoLossTools M) (st : Step) {s0 s1 : Rec M} (h : RunInv s0 
   | stop a force by_ =>
     have he := endAgent_ext (M := M) (a := a) (force := force) (by_ := by_) s1
     obtain ⟨_, -, hs⟩ := post_of' (P := fun _ s => M.SameRepo s1.w s.w) (s0 := s1)
-      (fun s hs => endAgent_keepsGit H.hcKill H.hcRm H.cgroupKill s1.w a force by_ s (hs ▸ sameRepo_refl _))
+      (fun s hs => endAgent_keepsGit H.tools H.hcKill H.hcRm H.cgroupKill s1.w a force by_ s (hs ▸ sameRepo_refl _))
     simp only [Step.run, go_discard he.1]
     refine ⟨⟨(), by simp⟩, h.1.mono he.2.prefix (fun c => (hs.2.2.2.2 c).2) (fun x => ((hs.2.1 x).1).2), ?_⟩
     obtain ⟨l, e, hl⟩ := he.2

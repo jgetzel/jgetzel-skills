@@ -58,7 +58,7 @@ instance : Fs TM where
 
 instance : Proc TM where
   output argv cwd env := do
-    if argv.head? == some "hc" then return none
+    if argv.head? == some "hc" then return (← (← (← read).proc.get) argv).getD none  -- never the real hc
     match ← (← (← read).proc.get) argv with
     | some r => pure r
     | none => (Proc.output argv cwd env : App _)
@@ -266,6 +266,51 @@ def end_agent_kills_its_cgroup_scope (t : T) : IO Unit := do
   eq (← slurp (job ++ "/cgroup.kill")) "1"
   eq (← (other ++ "/cgroup.kill" : System.FilePath).pathExists) false
 
+/-- hc faked: each call's argv logged, `hc ls` of `ls`'s labels answering `terms`, every other `hc` exit 0 with no output. -/
+def fakeHc (h : Hooks) (ls : List String) (terms : String) : IO (IO.Ref (Array (List String))) := do
+  let calls ← IO.mkRef #[]
+  h.proc.set fun argv => do
+    if argv.head? != some "hc" then return none
+    calls.modify (·.push argv)
+    return some (some { code := 0, stdout := if argv == ls then terms else "", stderr := "" })
+  return calls
+
+/-- board #212: ending an agent kills and removes its job terminals on other machines (not its own terminal or a local one) and
+gives each of its jobs without a job-end one, lost. -/
+def end_agent_kills_its_remote_job_terminals (t : T) : IO Unit := do
+  setup t
+  let h ← hooks t
+  let calls ← fakeHc h ["hc", "ls", "--json", "--label", "swarm-agent=e"]
+    "{\"terminals\":[{\"address\":\"desktop/t9\",\"state\":\"live\"},{\"address\":\"t5\",\"state\":\"live\"}]}"
+  t.q_ "insert into agent(name,cwd,status,last_active,started) values('e',?,'idle',1,1)" [.text t.repo]
+  let ts ← now
+  t.q_ "insert into event(ts,agent,kind,path,data) values(?,'e','job-start','7','{\"machine\":\"desktop\",\"hc\":\"desktop/t9\"}')" [.int ts]
+  let row ← agentRow h "e"
+  discard <| run h (Lifecycle.endAgent row false none)
+  let cs := (← calls.get).toList
+  unless cs.contains ["hc", "kill", "desktop/t9"] && cs.contains ["hc", "rm", "desktop/t9"] do fail s!"not killed and removed: {cs}"
+  if cs.contains ["hc", "kill", "t5"] then fail "a local terminal killed"
+  let en := ((← t.q1 "select data from event where kind='job-end' and path='7'").f "data").s?.getD ""
+  unless (en.splitOn "\"lost\"").length > 1 && (en.splitOn "agent ended").length > 1 do fail s!"no lost job-end: {en}"
+
+/-- board #212: watchd's sweep ends a remote job whose `swarm run` pid is dead (terminal killed, job-end lost) and leaves one with a
+live pid alone. -/
+def gone_tick_ends_a_job_whose_submitter_is_gone (t : T) : IO Unit := do
+  setup t
+  let h ← hooks t [("HC_TERMINAL_ID", "t1")]
+  let calls ← fakeHc h ["hc", "ls", "--json"] "{\"terminals\":[]}"
+  let ts ← now
+  let live := (← IO.Process.getPID)
+  for (id, pid) in [("1", 2000000000), ("2", live.toNat)] do
+    t.q_ s!"insert into event(ts,agent,kind,path,data) values(?,'e','job-start','{id}','{"{"}\"machine\":\"desktop\",\"hc\":\"desktop/t{id}\",\"pid\":{pid},\"claim\":\"c{id}\"{"}"}')" [.int ts]
+  run h (SwarmLean.Run.goneTick ts none false)
+  let cs := (← calls.get).toList
+  unless cs.contains ["hc", "kill", "desktop/t1"] do fail s!"dead submitter's terminal not killed: {cs}"
+  if cs.contains ["hc", "kill", "desktop/t2"] then fail "a live submitter's job killed"
+  let en := ((← t.q1 "select data from event where kind='job-end' and path='1'").f "data").s?.getD ""
+  unless (en.splitOn "submitter gone").length > 1 do fail s!"no lost job-end: {en}"
+  eq ((← t.q1 "select count(*) as n from event where kind='job-end'").f "n") (Json.num 1)
+
 /-- The launch script (SWARM_LAUNCH) faked: each call's argv logged, `onLaunch n` run on the nth, stdout `hc<n>`. -/
 def fakeLaunch (h : Hooks) (launch : String) (onLaunch : Nat → IO Unit := fun _ => pure ()) :
     IO (IO.Ref (Array (List String))) := do
@@ -390,6 +435,8 @@ def tests : List Case := [
   ("end_agent_rechecks_a_claim_since", end_agent_rechecks_a_claim_since),
   ("end_agent_rechecks_stay", end_agent_rechecks_stay),
   ("end_agent_kills_its_cgroup_scope", end_agent_kills_its_cgroup_scope),
+  ("end_agent_kills_its_remote_job_terminals", end_agent_kills_its_remote_job_terminals),
+  ("gone_tick_ends_a_job_whose_submitter_is_gone", gone_tick_ends_a_job_whose_submitter_is_gone),
   ("auto_spawn_loses_the_race_for_a_task", auto_spawn_loses_the_race_for_a_task),
   ("board91_a_task_freed_during_a_launch_is_staffed_first", board91_a_task_freed_during_a_launch_is_staffed_first),
   ("board91_a_task_freed_before_the_reserve_is_staffed_first", board91_a_task_freed_before_the_reserve_is_staffed_first),

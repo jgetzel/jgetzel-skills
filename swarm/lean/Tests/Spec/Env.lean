@@ -290,7 +290,8 @@ def tools_keep (t : T) : IO Unit := do
   put s!"{t.wt}/untracked" "x\n"
   let before ← durable t
   let lsof := (← t.exec ["sh", "-c", "command -v lsof"]).code == 0
-  for argv in [["du", "-sk", t.wt], ["gh", "pr", "list", "--head", "w", "--state", "merged", "--json", "number,headRefOid"]] ++
+  for argv in [["du", "-sk", t.wt], ["gh", "pr", "list", "--head", "w", "--state", "merged", "--json", "number,headRefOid"],
+      ["hc", "ls", "--json", "--label", "swarm-agent=e"]] ++
       (if lsof then [["lsof", "-a", "-d", "cwd", "-Fpn"]] else []) do
     discard <| t.exec argv { cwd := some t.wt }
     eq (← durable t) before s!"tools_keep: {argv} leaves the repo"

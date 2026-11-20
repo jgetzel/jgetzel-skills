@@ -1,5 +1,6 @@
 import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Machine
+import SwarmLean.Lib.Run
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.Msgs
 import SwarmLean.Db.Queue
@@ -316,6 +317,13 @@ def endAgent [Store m] [Clock m] [Env m] (a : Agent) (force : Bool) (by_ : Optio
   if let some h := py a.hc then
     discard <| Proc.output ["hc", "kill", h] none []
     discard <| Proc.output ["hc", "rm", h] none []
+  let remote ← Run.remoteTerms ["swarm-agent=" ++ n]  -- its jobs on other machines
+  for h in remote do Run.killTerm h
+  if !remote.isEmpty then
+    let now ← Clock.now
+    let db ← Store.txn [.event] fun db => (db, db)
+    for j in Run.liveJobs db now do
+      if j.agent == some n && (j.s "hc").any remote.contains then discard <| Run.markLost "agent ended" j
   if let some c := cg then
     discard <| Fs.write (c.dir ++ "/cgroup.kill") "1"  -- whatever the agent left in its scope
     let up := (c.dir.splitOn "/").dropLast  -- and in its jobs' scopes (`swarm run --mem`), siblings of it
