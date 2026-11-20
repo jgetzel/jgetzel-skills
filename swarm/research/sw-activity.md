@@ -72,7 +72,7 @@ S = shown in Summary, L = Full log only. Message kinds come from `msg.kind`/`urg
 | tasks | release | undo | Released | A task went back to the board. No. | | S |
 | tasks | drop | x | Dropped | A task was taken off the board. No. | | S |
 | tasks | reap | clock | Taken back | The swarm took back a quiet holder's task or lock. | warn | S |
-| tasks | lease-late | clock | Lease late | An idle agent holds a task past its lease; the comms was told. | | L |
+| tasks | lease-late | clock | Lease late | An agent holds a task past its lease; it was told to renew, the comms only if it goes idle again without renewing. | | L |
 | tasks | task-after | link | Order set | A task waits for others first. | | L |
 | tasks | startable | info | Startable | Older swarms only. | | L |
 | code | push | arrow-up | Pushed | An agent pushed a branch. No. | | S |

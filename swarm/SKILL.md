@@ -78,9 +78,10 @@ with subagents.
    holding a claim that open tasks wait on (`--after`, transitively) is asked once per idle stretch what it waits on, and
    comms is told; while either
    holds it, the board says so: `auto-spawn holding: …`; the model is the task's
-   `--model`, else `watchd --model`, else sonnet), reports live
-   agents past their task lease without taking the claim, and tells you when an
-   agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
+   `--model`, else `watchd --model`, else sonnet), keeps a live agent's claim past its lease (through a compaction and
+   an idle turn; the agent is told to renew, you only if it goes idle again without renewing) and reopens it only when
+   the agent ends, its terminal is gone, or it is hung: it left that notice or a stayer's liveness check unanswered 5 min
+   (`#N reopened: <agent> is hung`), and tells you when an agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
    poller: a base's push runs once a minute into the board (bases with a remote only), which agents read with
    `swarm ci <sha>` instead of `gh run watch` (several push workflows on main?
    `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it

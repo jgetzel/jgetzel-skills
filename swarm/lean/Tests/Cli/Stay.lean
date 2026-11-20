@@ -214,6 +214,110 @@ def test_liveness_check_hung_and_answered (t : T) : IO Unit := do
   eq (← t.q "select 1 x from msg where dest='comms' and urgent=1 and body like 's stays for%liveness check%swarm nudge s`%'").size 1
   eq (← live t "s") 2
 
+-- board #193: a live holder keeps its lapsed claim; it is told first, the communicator only after its next idle
+/-- Agent `name` joined on hc terminal `h` (hc lists it), idle an hour, with a live waiter; it adds and claims #1, whose
+lease has lapsed. -/
+def holder (t : T) (name h : String) : IO Unit := do
+  t.fakes
+  t.sw_ name ["join"] { hc := some h }
+  t.setHc [json% {"address": $(h)}]
+  t.q_ "update agent set status='idle', last_active=?, waiter=? where name=?"
+    [.int ((← now) - 3600), .int (← IO.Process.getPID).toNat, .text name]
+  t.sw_ name ["task", "add", "t1"] { hc := some h }; t.sw_ name ["task", "claim", "1"] { hc := some h }
+  t.q_ "update task set lease_until=?" [.int ((← now) - 60)]
+  t.q_ "update agent set last_active=? where name=?" [.int ((← now) - 3600), .text name]
+def taskState (t : T) : IO Json := return (← t.q1 "select state from task where id=1").f "state"
+def leaseMsgs (t : T) (dest pat : String) : IO Nat :=
+  return (← t.q "select 1 x from msg where dest=? and body like ?" [.text dest, .text pat]).size
+
+def test_compacting_holder_keeps_claim (t : T) : IO Unit := do
+  idle t "comms"; holder t "e" "t1"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 10, 'e', 'compact-asked')" []
+  comms_tick t
+  eq (← taskState t) "claimed"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'compact')" []
+  comms_tick t
+  eq (← taskState t) "claimed"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'ctx-continue')" []
+  comms_tick t
+  eq (← taskState t) "claimed"
+  t.q_ "update agent set status='working', last_active=? where name='e'" [.int (← now)]
+  comms_tick t
+  t.q_ "update agent set status='idle' where name='e'"
+  comms_tick t
+  eq (← taskState t) "claimed"
+  eq (← evs t "reap") 0
+
+-- an owner with no terminal does not live (`Watchd.lives`): only the compaction keeps its lapsed claim
+def test_compacting_unbound_owner_keeps_claim_until_continue (t : T) : IO Unit := do
+  idle t "comms"; idle t "e"
+  t.sw_ "e" ["task", "add", "t1"]; t.sw_ "e" ["task", "claim", "1"]
+  t.q_ "update task set lease_until=?" [.int ((← now) - 60)]
+  t.q_ "update agent set status='idle', last_active=? where name='e'" [.int ((← now) - 30)]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 10, 'e', 'compact-asked')" []
+  comms_tick t
+  eq (← taskState t) "claimed"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'compact')" []
+  comms_tick t
+  eq (← taskState t) "claimed"
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'ctx-continue')" []
+  comms_tick t
+  eq (← taskState t) "open"
+
+-- a cold holder (a big context, idle past the prompt cache) is woken by an urgent notice; one with a job is not hung
+def test_cold_holder_woken_urgent (t : T) : IO Unit := do
+  idle t "comms"; holder t "e" "t1"
+  t.q_ "update agent set ctx_tokens=300000 where name='e'"
+  comms_tick t
+  eq (← t.q "select 1 x from msg where dest='e' and urgent=1 and body like 'Your lease on #1 ended%'").size 1
+
+def test_live_idle_holder_keeps_claim_and_is_told (t : T) : IO Unit := do
+  idle t "comms"; holder t "e" "t1"
+  comms_tick t
+  eq (← taskState t) "claimed"
+  eq (← leaseMsgs t "e" "Your lease on #1 ended at %; `swarm task renew 1`%") 1
+  eq (← leaseMsgs t "comms" "%past its lease%") 0  -- not before the holder's next idle
+  comms_tick t
+  eq (← leaseMsgs t "e" "Your lease on #1 ended%") 1  -- once per lease
+  -- it woke, did not renew, and is idle again: the communicator is told, once
+  t.q_ "update agent set last_active=? where name='e'" [.int ((← now) + 5)]
+  comms_tick t; comms_tick t
+  eq (← taskState t) "claimed"
+  eq (← leaseMsgs t "comms" "e has held #1 past its lease%did not renew%") 1
+  eq (← evs t "stay-hung") 0
+
+def test_hung_holder_claim_reopens (t : T) : IO Unit := do
+  idle t "comms"; holder t "e" "t1"
+  comms_tick t
+  eq (← taskState t) "claimed"
+  -- the notice went unanswered LIVENESS_WAIT: hung, and the next reap reopens it
+  t.q_ "update event set ts=ts-400 where kind='lease-late'"
+  comms_tick t
+  eq (← evs t "stay-hung") 1
+  comms_tick t
+  eq (← taskState t) "open"
+  eq (← leaseMsgs t "comms" "#1 reopened: e is hung%") 1
+  -- a stayer flagged hung by its own liveness check loses its lapsed claim too
+  t.sw_ "e" ["task", "claim", "1"] { hc := some "t1" }
+  t.q_ "update task set lease_until=?" [.int ((← now) - 60)]
+  t.q_ "update agent set status='idle', stay='reviews', last_active=? where name='e'" [.int ((← now) - 60)]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'stay-hung')" []
+  comms_tick t
+  eq (← taskState t) "open"
+
+def test_ended_holder_claim_released (t : T) : IO Unit := do
+  idle t "comms"; holder t "e" "t1"
+  t.sw_ "e" ["leave"] { hc := some "t1" }
+  eq (← taskState t) "open"
+  -- a holder whose terminal hc no longer lists is reaped as gone, its claim released
+  t.sw_ "f" ["join"] { hc := some "t2" }
+  t.setHc [json% {"address": "t1"}]
+  t.sw_ "f" ["task", "claim", "1"] { hc := some "t2" }
+  t.q_ "update task set lease_until=?" [.int ((← now) - 60)]
+  comms_tick t
+  unless ← ended t "f" do fail "f not ended"
+  eq (← taskState t) "open"
+
 def test_communicator_never_checked (t : T) : IO Unit := do
   idle t "comms" [("stay", "the user's channel"), ("last_active", .int ((← now) - 80 * 60))]
   comms_tick t
@@ -242,6 +346,12 @@ def tests : List Case := [
   ("test_hung_unread_message_reported_once", test_hung_unread_message_reported_once),
   ("test_hung_notice_not_reported", test_hung_notice_not_reported),
   ("test_liveness_check_hung_and_answered", test_liveness_check_hung_and_answered),
+  ("test_compacting_holder_keeps_claim", test_compacting_holder_keeps_claim),
+  ("test_compacting_unbound_owner_keeps_claim_until_continue", test_compacting_unbound_owner_keeps_claim_until_continue),
+  ("test_cold_holder_woken_urgent", test_cold_holder_woken_urgent),
+  ("test_live_idle_holder_keeps_claim_and_is_told", test_live_idle_holder_keeps_claim_and_is_told),
+  ("test_hung_holder_claim_reopens", test_hung_holder_claim_reopens),
+  ("test_ended_holder_claim_released", test_ended_holder_claim_released),
   ("test_communicator_never_checked", test_communicator_never_checked),
   ("test_spawn_stay", test_spawn_stay)]
 

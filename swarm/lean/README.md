@@ -82,7 +82,10 @@ different agents that hold at a time `t` share no file (S3), with processes at o
 exactly when the agent has not ended, the lease parses and no live lock of another agent overlaps. The edit hook denies
 exactly when another agent's live lock covers the path.
 
-**Agents and watchd** (`Proofs/Watchd.lean`). watchd's `keeps` is the model's `Decide.keepsL` itself. For any answers
+**Agents and watchd** (`Proofs/Watchd.lean`). watchd's `keeps` is the model's `Decide.keepsL` itself (`keeps_iff`; a
+compacting owner keeps, `keeps_compacting`). Reap also leaves a lapsed claim to an owner that `lives` (board #193:
+not ended, bound to a terminal hc lists, not hung; `lives_iff`, `lives_hung`, `Crash.unbound_unlived`); the model
+has no such rule, so its L2 (`idle_claim_ends`) no longer describes reap: a live, unhung idle holder keeps its claim. For any answers
 the world's reads give: lifecycle's verdict and every check it records are `Decide.fateRec`'s; it ends or reuses only
 an agent idle 2 min with no stay, claim or lock, whose unlanded and job reads came back empty; it reuses one only under
 `swarm limits --reuse-below` (0, the default, is off) with an offer of related tasks (`Db/Reuse.lean`: each offered task

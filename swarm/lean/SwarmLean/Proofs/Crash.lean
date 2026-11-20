@@ -673,6 +673,8 @@ theorem X.Lifecycle.endStep {n hc f b now} (h : XInv db t) : XInv (Lifecycle.end
   step_xinv (.end_ n hc f b now) (nolock nofun) h
 theorem X.Watchd.reapTask {r t' now} (h : XInv db t) : XInv (Watchd.reapTask r t' now db).1 t :=
   step_xinv (.reapTask r t' now) (nolock nofun) h
+theorem X.Watchd.leaseLate {r o t' hm c q} (h : XInv db t) : XInv (Watchd.leaseLate r o t' hm c q db) t := by
+  unfold SwarmLean.Watchd.leaseLate; xstep
 theorem X.Watchd.reapLock {l t' now} (h : XInv db t) : XInv (Watchd.reapLock l t' now db).1 t :=
   step_xinv (.reapLock l t' now) (nolock nofun) h
 theorem X.Watchd.reapGone {n hh t'} (h : XInv db t) : XInv (Watchd.reapGone n hh t' db).1 t :=
@@ -1287,14 +1289,20 @@ theorem lock_lapses (db : Db) (r : Nat → XCmd) (n : Nat) {p : String} {a : Opt
   · exact ⟨m, hm, hc⟩
 
 open WatchdProofs in
-/-- An idle row (as `reserveAgent` leaves one) never keeps a lapsed claim without a background job: reap reopens the
-task a spawn reserved and never launched once its lease is past (`claim_lapses`). -/
+/-- An idle row (as `reserveAgent` leaves one) never keeps a lapsed claim without a background job or a compaction,
+and an unbound one never lives: reap reopens the task a spawn reserved and never launched once its lease is past
+(`claim_lapses`). -/
 theorem idle_unkept {a : Agent} (hs : a.status = some "idle") (live : Option (List String)) :
-    Watchd.keeps (some a) false live = false := by
-  cases h : Watchd.keeps (some a) false live
+    Watchd.keeps (some a) false false live = false := by
+  cases h : Watchd.keeps (some a) false false live
   · rfl
-  · obtain ⟨b, hb, -, hb2, -⟩ := (keeps_iff _ _ _).1 h
+  · obtain ⟨b, hb, -, hb2, -⟩ := (keeps_iff _ _ _ _).1 h
     cases hb; simp_all
+
+/-- An unbound row (`reserveAgent` leaves one: no terminal) never keeps a lapsed claim for being live. -/
+theorem unbound_unlived {a : Agent} (hc : py a.hc = none) (hung : Bool) (live : Option (List String)) :
+    Watchd.lives (some a) hung live = false := by
+  simp [Watchd.lives, hc]
 
 /-- A row with no terminal, staying for nothing and idle 2 min, holding no claim, lock, unlanded work or job, with no
 waiter (a spawn that reserved it and died before the launch): lifecycle's verdict is to end it. -/

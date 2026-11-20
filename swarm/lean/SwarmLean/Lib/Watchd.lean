@@ -38,11 +38,23 @@ def SPAWN_FAILS : Nat := 5
 /-- The owner row's columns `Decide.keepsL` reads: a NULL status is no status ("" is not "idle"). -/
 def keepRow (a : Agent) : Swarm.Decide.ARow := { ended := a.ended.map Int.toNat, status := a.status.getD "", hc := a.hc }
 
-/-- Whether owner row `o` keeps a claim past its lease (watchd.keeps): the model's `Decide.keepsL`, proved to be its
-`keeps` (`keeps_lifted`). Live, and working, prompt-blocked or running a background job (`bg`), unless hc no longer
-lists its bound terminal (`live`: the live addresses, none when hc can't tell). -/
-def keeps (o : Option Agent) (bg : Bool) (live : Option (List String)) : Bool :=
-  Swarm.Decide.keepsL (o.map keepRow) bg live
+/-- Whether owner row `o` keeps a claim past its lease for the work it is doing (watchd.keeps): the model's
+`Decide.keepsL`, proved to be its `keeps` (`keeps_lifted`). Live, and working, prompt-blocked, running a background
+job (`bg`) or in a compaction the swarm asked for (`compacting`), unless hc no longer lists its bound terminal (`live`:
+the live addresses, none when hc can't tell). -/
+def keeps (o : Option Agent) (bg compacting : Bool) (live : Option (List String)) : Bool :=
+  Swarm.Decide.keepsL (o.map keepRow) bg compacting live
+
+/-- Agent `a` is flagged hung: a `stay-hung` event since its last_active (it did not answer a liveness check). -/
+def hungNow (evs : List Event) (a : Agent) : Bool :=
+  evs.any fun e => e.agent == some a.name && e.kind == some "stay-hung" && e.ts.any (· ≥ a.last_active.getD 0)
+
+/-- Whether owner row `o` keeps a claim past its lease for being live (board #193), idle or not: not ended, bound to a
+terminal hc still lists (or hc can't tell), and not flagged hung. An unbound row (a spawn that never launched) does not. -/
+def lives (o : Option Agent) (hung : Bool) (live : Option (List String)) : Bool :=
+  match o with
+  | none => false
+  | some a => a.ended.isNone && (py a.hc).isSome && !hung && live.all fun up => up.contains (a.hc.getD "")
 
 /-- `p` is `wt` or under it (watchd.inside). -/
 def inside (p wt : String) : Bool := p == wt || p.startsWith (wt ++ "/")
@@ -69,6 +81,34 @@ def lastEvent (db : Db) (kinds : List String) : Option String :=
 def say (db : Db) (now : Int) (dest body : String) (urgent : Bool) (kind : String) : Db :=
   (Msgs.post db now "swarm" dest body urgent (some kind)).1
 
+/-- The `lease-late` event of task `id` with `data` (`holder`: its owner told; `comms`: the communicator) in the last
+LEASE before `t`. -/
+def leaseLateEv (db : Db) (id : Nat) (data : String) (t : Int) : Option Event :=
+  (db.events.filter fun e => e.kind == some "lease-late" && e.path == some (d id) && e.data == some data &&
+    e.ts.any (· > t - Tasks.LEASE)).getLast?
+
+/-- Reap's notices of lapsed claim `r` its live owner `o` keeps (board #193), each once per LEASE: the owner first (a
+message that wakes it, urgent when it is idle so a cold one wakes too; `hhmm` the lease's end); then the communicator, if the owner has been active since it was told
+and is idle again without a renew (`quiet`: not while it compacts). -/
+def leaseLate (r : Task) (o : Option Agent) (t : Int) (hhmm : String) (comms : Option String) (quiet : Bool) (db : Db) :
+    Db :=
+  let own := r.owner.getD "nil"
+  match leaseLateEv db r.id "holder" t with
+  | none =>
+    let db := db.log t r.owner "lease-late" (some (d r.id)) (some "holder")
+    say db t own (s!"Your lease on #{d r.id} ended at {hhmm}; `swarm task renew {d r.id}` (it is kept while you are " ++
+      "live, but renew on long work).") (o.any (·.status == some "idle")) "system"
+  | some h =>
+    match comms, o with
+    | some c, some a =>
+      if !quiet && a.status == some "idle" && a.last_active.any (· > h.ts.getD 0) &&
+          (leaseLateEv db r.id "comms" t).isNone then
+        let db := db.log t r.owner "lease-late" (some (d r.id)) (some "comms")
+        say db t c (s!"{own} has held #{d r.id} past its lease (idle {ago t (a.last_active.getD 0)}) and did not renew " ++
+          "it when told.") false "notice"
+      else db
+    | _, _ => db
+
 -- ---------- reap ----------
 
 /-- Reap's reopen of lapsed claim `r` (read before): only if the task is still claimed by the same owner with its lease
@@ -79,8 +119,9 @@ def reapTask (r : Task) (t now : Int) (db : Db) : Db × Bool :=
     if x.owner == r.owner && x.owner.isSome && x.state = .claimed && x.lease_until.any (· < t) then
       let db := db.set r.id fun x => { x with state := .open, owner := none, lease_until := none }
       let own := r.owner.getD "nil"
-      let db := say db now own (s!"released #{d r.id} ({r.title.getD "nil"}): lease expired while idle; renew on long work. " ++
-        s!"`swarm task claim {d r.id}` to take it back.") false "system"
+      let db := say db now own (s!"released #{d r.id} ({r.title.getD "nil"}): its lease ended and watchd did not see you " ++
+        s!"live (ended, no terminal, or no answer to the liveness check). `swarm task claim {d r.id}` to take it back.")
+        false "system"
       (db.log now r.owner "reap" none (some s!"task #{d r.id} lease expired"), true)
     else (db, false)
   | none => (db, false)
@@ -111,11 +152,12 @@ def git (args : List String) (cwd : Option String := none) : m (Option String) :
 /-- A path's realpath, the path itself when it has none. -/
 def real (p : String) : m String := Workspaces.real p
 
-/-- Reopens expired task leases (a lapsed claim whose owner keeps it is told to the communicator instead), drops
-expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
+/-- Reopens expired task leases whose owner neither keeps them for its work nor lives (`keeps`, `lives`): a kept one
+is told to its owner, then maybe the communicator (`leaseLate`); a hung owner's reopened one is told to the
+communicator. Drops expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
 none skips both) (watchd.reap). -/
 def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (List String) := do
-  let db ← Store.txn [.task, .agent] fun db => (db, db)
+  let db ← Store.txn [.task, .agent, .event] fun db => (db, db)
   let mut out := []
   let mut bg : Option (List (String × Machine.Ps)) := none
   for r in db.tasks.filter fun r => r.state = .claimed && r.lease_until.any (· < t) do
@@ -125,21 +167,22 @@ def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (Li
     let hasBg := match o, bg with
       | some a, some b => (b.lookup a.name).isSome
       | _, _ => false
-    if keeps o hasBg live then
-      -- a working, prompt-blocked or background-waiting owner past its lease: its work is live: tell comms, keep it
-      if let some c := comms then
-        let idle := ago t ((o.bind (·.last_active)).getD 0)
-        let own := r.owner.getD "nil"
-        Store.txn [.event] fun db =>
-          if db.events.any fun e => e.kind == some "lease-late" && e.path == some (d r.id) && e.ts.any (· > t - Tasks.LEASE) then
-            (db, ())
-          else
-            let db := db.log t r.owner "lease-late" (some (d r.id)) none
-            (say db t c s!"{own} has held #{d r.id} past its lease (idle {idle})." false "notice", ())
+    let comp := o.any fun a => Compact.compacting db.events a.name (a.last_active.getD 0) t
+    let hung := o.any (hungNow db.events)
+    if keeps o hasBg comp live || lives o hung live then
+      -- its owner is live (working, blocked, waiting on a job, compacting, or idle and not hung): keep it, tell them
+      let hm ← Clock.hhmm (r.lease_until.getD t)
+      Store.txn [.event] fun db => (leaseLate r o t hm comms comp db, ())
     else
       let now ← Clock.now
       let done ← Store.txn [.task] (reapTask r t now)
-      if done then out := out ++ [s!"task #{d r.id}"]
+      if done then
+        out := out ++ [s!"task #{d r.id}"]
+        if hung then
+          if let some c := comms then
+            let own := r.owner.getD "nil"
+            Store.txn [] fun db => (say db now c (s!"#{d r.id} reopened: {own} is hung (no answer to the liveness " ++
+              s!"check). `swarm nudge {own}`, or end it.") false "system", ())
   let locks ← Store.txn [.lock] fun db => (db, db.locks.filter (·.lease_until.any (· < t)))
   for l in locks do
     let now ← Clock.now
@@ -364,18 +407,29 @@ def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
 /-- Hung stayers: no live waiter, a waking message unread two ticks, and the liveness check and its answer; all state in
 events newer than the stayer's last_active, so any wake re-arms it (watchd.hung). None while it compacts. -/
 def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : m Unit := do
-  let db ← Store.txn [.agent, .event, .msg, .cursor, .«meta»] fun db => (db, db)
+  let db ← Store.txn [.agent, .event, .msg, .cursor, .«meta», .task] fun db => (db, db)
   let envComms ← env "SWARM_COMMS"
   let mut seen : Seen := []
   for a in Agents.live db do
     let n := a.name
     let last := a.last_active.getD 0
-    let some stay := py a.stay | continue
     if n == comms || isComms db envComms (some n) || a.status != some "idle" then continue
     let evs := db.events.filter fun e => e.agent == some n && e.ts.any (· ≥ last)
     let ev (kind : String) (data : Option String := none) : Option Event :=
       (evs.filter fun e => e.kind == some kind && (data.isNone || e.data == data)).getLast?
     if Compact.compacting db.events n last t then continue  -- compactPass wakes it once the compaction ends
+    -- a holder told its lease ended (`leaseLate`, urgent when idle), idle since and still holding the lapsed claim
+    -- LIVENESS_WAIT later with no background job, did not answer: hung, and reap reopens the claim and tells comms
+    -- (board #193)
+    let told := db.tasks.filter fun r => r.owner == some n && r.state = .claimed && r.lease_until.any (· < t) &&
+      evs.any fun e => e.kind == some "lease-late" && e.data == some "holder" && e.path == some (d r.id) &&
+        e.ts.any fun s => s > last && t - s ≥ LIVENESS_WAIT
+    if let some r := told.head? then
+      if (ev "stay-hung").isNone && ((Machine.bgAgents db.agents (← Machine.procs)).lookup n).isNone then
+        let now ← Clock.now
+        Store.txn [] fun db => (db.log now (some n) "stay-hung" none (some s!"#{d r.id}"), ())
+        continue
+    let some stay := py a.stay | continue
     let waits ← match a.waiter with | some w => Sys.pidAlive w | none => pure false
     if !waits then
       if (ev "stay-nowaiter").isNone then

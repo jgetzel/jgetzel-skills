@@ -1285,7 +1285,7 @@ const KIND = Object.fromEntries(Object.entries({
   release: ["undo", "tasks", "Released", "An agent gave a task back to the board for another agent. Nothing for you to do.", "", 1],
   drop: ["x", "tasks", "Dropped", "A task was taken off the board for good. Nothing for you to do.", "", 1],
   reap: ["clock", "tasks", "Taken back", "The swarm took back a task or lock whose holder went quiet, so another agent can pick it up.", "warn", 1],
-  "lease-late": ["clock", "tasks", "Lease late", "An agent has held a task past its lease while idle. The comms was told.", "", 0],
+  "lease-late": ["clock", "tasks", "Lease late", "An agent's lease on a task ran out while it still holds it. It was told to renew; the comms is told only if it goes idle again without renewing.", "", 0],
   "task-priority": ["link", "tasks", "Priority set", "A task's priority was changed. Nothing for you to do.", "", 0],
   "task-after": ["link", "tasks", "Order set", "A task was set to wait for other tasks to finish first.", "", 0],
   queue: ["link", "tasks", "Queued", "A task was put in the staffing queue, or moved in it: auto-spawn staffs the queue first, in its order.", "", 1],

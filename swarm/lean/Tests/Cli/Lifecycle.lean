@@ -513,6 +513,7 @@ def test_end_agent_keeps_worktree_a_live_peer_uses (t : T) : IO Unit := do
   ok (← ended t "e")
   ok (← exists_ t.wt)
 
+-- an owner with no terminal (hc can't show it live: board #193) loses its lapsed claim when idle
 def test_idle_owner_past_lease_loses_claim (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt), ("stay", "reviews")]  -- else, its claim gone and nothing offered, it is ended
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
@@ -520,7 +521,7 @@ def test_idle_owner_past_lease_loses_claim (t : T) : IO Unit := do
   commsTick t
   ok (!(← ended t "e"))
   eq ((← t.q1 "select state from task").f "state") "open"
-  has (← t.sw "e" ["read"]).stdout "lease expired while idle"
+  has (← t.sw "e" ["read"]).stdout "its lease ended and watchd did not see you live"
 
 def test_idle_owner_with_background_job_keeps_claim (t : T) : IO Unit := do
   let pr ← fakeProc t
@@ -689,9 +690,10 @@ def test_working_owner_past_lease_keeps_claim (t : T) : IO Unit := do
   t.q_ "update task set lease_until=1"
   commsTick t
   eq ((← t.q1 "select state from task").f "state") "claimed"
-  has (← t.sw "comms" ["read"]).stdout "past its lease"
+  eq ((← t.q1 "select count(*) n from msg where dest='e' and body like 'Your lease on #1 ended%'").f "n") 1  -- the holder first (board #193)
   commsTick t
-  eq ((← t.q1 "select count(*) n from msg where dest='comms'").f "n") 1  -- once per lease period
+  eq ((← t.q1 "select count(*) n from msg where dest='e' and body like 'Your lease on #1 ended%'").f "n") 1  -- once per lease period
+  eq ((← t.q1 "select count(*) n from msg where dest='comms'").f "n") 0  -- comms only after its next idle
 
 def test_prompt_blocked_owner_past_lease_keeps_claim (t : T) : IO Unit := do
   t.fakes

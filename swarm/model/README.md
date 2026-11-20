@@ -838,7 +838,11 @@ together only on a reuse verdict (display, from the same values).
 What the lift found, each now a board task: reap's keep test reads the owner's terminal and the model's doesn't
 (`keeps_gap`, #46): a working or prompt-blocked owner whose bound terminal hc no longer lists has its lapsed claim
 reopened as a lease reap (a released message, `reaped_from` set) before the same reap ends it, where the model keeps the
-claim until `reapGone` releases it with no message; `keeps_lifted` takes the case's absence as a hypothesis. The model's
+claim until `reapGone` releases it with no message; `keeps_lifted` takes the case's absence as a hypothesis. Since
+board #193 `keepsL` also keeps a compacting owner's claim (the model has no compaction: `keeps_lifted` reads it as
+false), and the code's reap keeps the lapsed claim of any live, bound, unhung owner (`Watchd.lives` in ../lean), idle
+or not, which the model's `keeps` does not: L2 (`idle_claim_ends`) and the reap halves of S1 and N1 are proved of
+the model's reap, not of that one. The model's
 one `big` bit is two thresholds in the Lua (#47): CTX_WARN (350k) for `task claim`'s fence, SMALL_CTX (40k) for
 lifecycle's reuse and the cold rule, so an agent between the two (claims freely, never reused) is not modelled;
 `fate_lifted` reads `big` as the second. Still to lift: `tasks.dep_path` against `reaches` (#45, a DFS with a seen set
