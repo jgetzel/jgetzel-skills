@@ -672,6 +672,23 @@ theorem X.Msgs.post {now f d b u k} (h : XInv db t) : XInv (Msgs.post db now f d
 theorem X.Watchd.say {now d b u k} (h : XInv db t) : XInv (Watchd.say db now d b u k) t := X.Msgs.post h
 theorem X.Msgs.take {n} (h : XInv db t) : XInv (Msgs.take n id db).1 t := step_xinv (.read n) (nolock nofun) h
 theorem X.Msgs.deliverStep {n b} (h : XInv db t) : XInv (Msgs.deliverStep n b db).1 t := step_xinv (.deliver n b) (nolock nofun) h
+/-- board #202: a note to a task, and the take of its held notes at a claim or spawn -/
+theorem X.Notes.post {now frm id text u here comms} (h : XInv db t) :
+    XInv (Notes.post db now frm id text u here comms).1 t := by
+  unfold SwarmLean.Notes.post
+  split
+  · exact h
+  · dsimp only
+    refine xinv_of_xgrow (xgrow_log (xgrow_refl _) ..) ?_
+    split
+    · exact X.Msgs.post h
+    · exact h
+theorem X.Notes.takeHeld {who now id} (h : XInv db t) : XInv (Notes.takeHeld who now id db).1 t := by
+  unfold SwarmLean.Notes.takeHeld
+  dsimp only
+  split
+  · exact X.Msgs.take h
+  · exact xinv_of_xgrow (xgrow_log (xgrow_refl _) ..) (X.Msgs.take h)
 theorem X.Lifecycle.endStep {n hc f b now} (h : XInv db t) : XInv (Lifecycle.endStep n hc f b now db).1 t :=
   step_xinv (.end_ n hc f b now) (nolock nofun) h
 theorem X.Watchd.reapTask {r t' now} (h : XInv db t) : XInv (Watchd.reapTask r t' now db).1 t :=

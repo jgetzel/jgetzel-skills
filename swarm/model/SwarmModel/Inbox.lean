@@ -117,7 +117,7 @@ theorem sp_digest (x : State) (a : Nat) (pl : List Nat) :
 theorem claimed_stop (s : State) (a t u : Nat) :
     ((claimed s a t).tk u).stopTo = (s.tk u).stopTo ∧ ((claimed s a t).tk u).stopMsg = (s.tk u).stopMsg := by
   unfold claimed
-  rcases tk_setTask_or s t u (fun k => { k with st := .claimed, owner := some a, lease := true, reaped := if k.reaped == some a then k.reaped else none })
+  rcases tk_setTask_or s t u (fun k => { k with st := .claimed, owner := some a, lease := true, noted := false, reaped := if k.reaped == some a then k.reaped else none })
     with e | ⟨_, e⟩ <;> rw [e] <;> exact ⟨rfl, rfl⟩
 theorem sp_spawnFor (c : Cfg) (pl : List Nat) (x : State) (t : Nat) : SP x (spawnFor c pl x t) := by
   unfold spawnFor; split
@@ -490,6 +490,14 @@ theorem ii_setTask {c : Cfg} {s : State} {t : Nat} {f : Task → Task} (h : InbI
 theorem ii_post {c : Cfg} {s : State} {m : Msg} (h : InbInv c s) : InbInv c (post s m) :=
   ⟨h.1, h.2.1, fun a => inb_mono (by simp) (fun _ hi => addressed_post hi) rfl rfl rfl (Or.inl rfl) (h.2.2 a)⟩
 
+/-- board #202: a held note given at a claim, and a note posted to a task -/
+theorem ii_noteOf {c : Cfg} {s : State} {a t : Nat} (h : InbInv c s) : InbInv c (noteOf s a t) := by
+  rcases noteOf_cases s a t with e | ⟨_, e⟩ | e | e <;> rw [e]
+  · exact h
+  · exact ii_post h
+  · exact ii_setTask h
+  · exact ii_frame (tellC_ag ..) (tellC_log ..) (tellC_cursor ..) (tellC_start ..) (tellC_seen ..) h
+
 /-- Showing ids to a. With PR #115 they are in order, past the cursor, and skip nothing addressed to a. -/
 theorem ii_showAll {c : Cfg} {s : State} {a : Nat} {ids : List Nat} (h1 : ∀ j ∈ ids, j ≤ s.log.length)
     (h2 : c.deliverCas = true → ids.Pairwise (· < ·) ∧
@@ -540,6 +548,11 @@ theorem ii_showAll {c : Cfg} {s : State} {a : Nat} {ids : List Nat} (h1 : ∀ j 
 theorem ii_deliver {c : Cfg} {s : State} {a : Nat} (h : InbInv c s) : InbInv c (deliver s a) :=
   ii_showAll (fun j hj => (mem_unread.mp hj).2.1) (fun _ => ⟨unread_pairwise s a, fun j hj =>
     ⟨(mem_unread.mp hj).1, fun i hi hij had => mem_unread.mpr ⟨hi, by have := (mem_unread.mp hj).2.1; omega, had⟩⟩⟩) h
+
+theorem ii_giveNotes {c : Cfg} {s : State} {a t : Nat} {n : Bool} (h : InbInv c s) : InbInv c (giveNotes s a t n) := by
+  unfold giveNotes; split
+  · exact ii_post h
+  · exact h
 
 theorem ii_wakeRead {c : Cfg} {s : State} {a : Nat} (h : InbInv c s) :
     InbInv c (setAg s a fun g => { g with snap := unread s a }) := by
@@ -629,6 +642,8 @@ macro "ii_tac" : tactic => `(tactic|
     | with_reducible apply ii_post
     | with_reducible apply ii_deliver
     | with_reducible apply ii_takes
+    | with_reducible apply ii_giveNotes
+    | with_reducible apply ii_noteOf
     | with_reducible apply ii_endAgent
     | assumption))
 
@@ -683,8 +698,9 @@ theorem inbInv_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : InbInv c
   case claimWrite a =>
     obtain ⟨_, rfl⟩ := hstep
     split
-    · exact ii_setAg (fun _ => Or.inl rfl) (ii_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading)
-        rfl rfl rfl rfl rfl (ii_takes (ii_setTask hs)))
+    · exact ii_setAg (fun _ => Or.inl rfl) (ii_frame (s := takes c (giveNotes (claimed s a (s.agt a).reading) a
+          (s.agt a).reading (s.tk (s.agt a).reading).noted) a (s.agt a).reading)
+        rfl rfl rfl rfl rfl (ii_takes (ii_giveNotes (ii_setTask hs))))
     · exact ii_setAg (fun _ => Or.inl rfl) hs
   case hcClear a => obtain ⟨_, rfl⟩ := hstep; exact ii_setAg (fun _ => Or.inl rfl) (ii_deliver (ii_frame (s := s) rfl rfl rfl rfl rfl hs))
   all_goals
@@ -704,5 +720,29 @@ theorem inboxExact_of_reachable {c : Cfg} (hfix : c.deliverCas = true) {s : Stat
   cases had : addressed s a i
   · simp
   · simpa using p4 i (by omega) (by omega) had
+
+/-- board #202: a claim of a task that holds a note (`swarm post '#t'` while nobody held it) clears the note and posts
+it to the claimer, unread until its next delivery (the PostToolUse hook that ends the claim's tool call) shows it -/
+theorem claim_posts_note {c : Cfg} {s s' : State} {a t : Nat} (hR : Reachable c s) (hn : (s.tk t).noted = true)
+    (h : step c s (.claim a t) = some s') :
+    (s'.tk t).noted = false ∧ s'.msg (s.log.length + 1) = ⟨none, a, false, .note, t⟩ ∧ s.log.length + 1 ∈ unread s' a := by
+  simp only [step, claim, when_eq_some] at h
+  obtain ⟨hg, rfl⟩ := h
+  have hopn : (s.tk t).st = .opn := by
+    simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq] at hg; exact hg.1.2.1.1
+  have hne : (s.tk t).st ≠ .absent := by rw [hopn]; decide
+  have hcur : s.cur a ≤ s.log.length := ((inbInv_of_reachable hR).2.2 a).1
+  rw [hn]
+  have hm : (takes c (giveNotes (claimed s a t) a t true) a t).msg (s.log.length + 1) = ⟨none, a, false, .note, t⟩ := by
+    rw [msg_congr (takes_log ..)]
+    have := msg_post_new (claimed s a t) ⟨none, a, false, .note, t⟩
+    simpa [giveNotes] using this
+  refine ⟨?_, hm, ?_⟩
+  · have e : (takes c (giveNotes (claimed s a t) a t true) a t).tk t = (claimed s a t).tk t := by simp [State.tk]
+    rw [e]; unfold claimed; rw [tk_setTask_self hne]
+  · rw [mem_unread]
+    have hc : (takes c (giveNotes (claimed s a t) a t true) a t).cur a = s.cur a := by simp [State.cur]
+    refine ⟨by omega, by simp [giveNotes, post], ?_⟩
+    simp [addressed, hm]
 
 end Swarm

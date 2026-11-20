@@ -30,7 +30,9 @@ your name is in `$SWARM_NAME`.
   a discovery that changes someone's work, or a request to the peer whose
   role covers it ("PR #12 is ready" to the reviewer). Status belongs on the board.
   A message to a cold agent is stored and read when it next wakes; add
-  `--urgent` only when it can't wait.
+  `--urgent` only when it can't wait. A result for a task (a job's end, a review, a bench) goes to
+  `swarm post '#N' "<text>"`, not to an agent who may end: its live owner gets it now, else its next
+  `task claim` prints it; on a done task, whoever did it, else the communicator. `task show N` lists them.
 - **Own worktree, conflict notices.** Edit in your own worktree. A notice that
   your uncommitted work conflicts with a peer's means whoever lands first
   wins and the other rebases; message the peer only if both changes can't

@@ -4,6 +4,8 @@ import SwarmLean.Db.Queue
 import SwarmLean.Db.Reuse
 import SwarmLean.Lib.Bases
 import SwarmLean.Lib.Machine
+import SwarmLean.Lib.Msgs
+import SwarmLean.Db.Notes
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
 
@@ -30,7 +32,7 @@ def taskSpec : Spec :=
     .mk "after" helpTaskAfter [idArg, { name := "deps", minArgs := 0, conv := some idList }] [] [] [] none,
     .mk "claim" helpTaskClaim [idArg] [leaseOpt, flag "--force"] [] [] none,
     .mk "renew" helpTaskRenew [idArg] [leaseOpt] [] [] none,
-    .mk "show" helpTaskShow [idArg] [] [] [] none,
+    .mk "show" helpTaskShow [idArg] [flag "--json"] [] [] none,
     .mk "done" helpTaskDone [idArg] [{ opt "--evidence" with minCount := 1 }] [] [] none,
     .mk "land" helpTaskLand [idArg] [{ opt "--sha" with minCount := 1 }, opt "--lander"] [] [] none,
     .mk "unland" helpTaskUnland [idArg] [{ opt "--why" with minCount := 1 }] [] [] none,
@@ -100,6 +102,11 @@ def showText (db : Db) (r : Task) : m String := do
         (data.drop (2 + ds.length)).toString else data
       s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {data}"
   if r.state = .landing then s := s ++ "\n" ++ (← landingLine r)
+  for n in Notes.notes db r.id do
+    let to := match n.to with
+      | some t => if n.held then " (held)" else if t == Notes.box r.id then " (given at claim)" else s!" (to {t})"
+      | none => ""
+    s := s ++ s!"\nnote {← Clock.hhmm n.ts} {n.frm}{to}: {((n.text.splitOn "\n").headD "")}"
   s := s ++ "\npriority: P" ++ d (r.priority.getD DEFAULT_PRIORITY)
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
   if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
@@ -113,6 +120,16 @@ def showText (db : Db) (r : Task) : m String := do
     if let some g := tm.merge_to_green_s then s := s ++ s!", green {fdiv g 60}m after merge"
   return s ++ depLines db r ++ "\n" ++ (py r.body).getD "(no body)" ++
     (match py r.answer with | some a => "\nAnswer to the block: " ++ a | none => "")
+
+/-- `task show --json`: the row's fields and its notes, oldest first (board #202). -/
+def showJson (db : Db) (r : Task) : Lean.Json :=
+  let j {α} [Lean.ToJson α] (x : α) : Lean.Json := Lean.toJson x
+  let note (n : Notes.Note) : Lean.Json := Lean.Json.mkObj [("ts", j n.ts), ("from", j n.frm), ("text", j n.text),
+    ("to", j n.to), ("held", j n.held)]
+  Lean.Json.mkObj [("id", j r.id), ("title", j r.title), ("state", j r.state.text), ("owner", j r.owner),
+    ("priority", j (r.priority.getD DEFAULT_PRIORITY)), ("base", j r.base), ("labels", j (labelsOf r)),
+    ("deps", j (depsOf r)), ("hold", j r.hold), ("evidence", j r.evidence), ("body", j (py r.body)),
+    ("notes", Lean.Json.arr ((Notes.notes db r.id).map note).toArray)]
 
 /-- `swarm task …`. -/
 def task (a : Parsed) : m UInt32 := do
@@ -134,8 +151,14 @@ def task (a : Parsed) : m UInt32 := do
                                     labels := a.str "label" })
     out s!"task #{d n}"
   | "claim" =>
-    let r ← step [.task, .agent, .cursor, .event, .«meta»] (claim { c with force := a.flag "force" } id ((a.str "lease").getD "2h"))
+    -- the claim and the take of its held notes in one transaction: a note posted after it goes to the new owner
+    let (r, notes) ← step [.task, .agent, .cursor, .event, .«meta», .msg] fun db =>
+      let cl := claim { c with force := a.flag "force" } id ((a.str "lease").getD "2h") db
+      match cl.2 with
+      | .ok r => ((Notes.takeHeld c.me c.now id cl.1).1, .ok (r, (Notes.takeHeld c.me c.now id cl.1).2))
+      | .error e => (cl.1, .error e)
     out s!"claimed #{d id} until {← Clock.hhmm r.«until»}"
+    if !notes.isEmpty then out s!"notes left on #{d id} for its next owner:\n{← Msgs.fmtMsgs notes}"
     if let some (avail, total, psi) ← Machine.mem then
       if Machine.pressureHigh avail total psi then
         out (← Machine.note)
@@ -144,7 +167,7 @@ def task (a : Parsed) : m UInt32 := do
   | "show" =>
     let db ← Store.txn [.task, .event] fun db => (db, db)
     let some r := db.find id | die s!"no task #{d id}"
-    out (← showText db r)
+    out (← if a.flag "json" then pure (showJson db r).compress else showText db r)
   | "after" =>
     let deps := (a.ids "deps").getD []
     step [.task] (after c id deps)

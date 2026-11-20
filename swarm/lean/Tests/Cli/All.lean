@@ -6,6 +6,7 @@ import Tests.Cli.Core
 import Tests.Cli.Herdr
 import Tests.Cli.Land
 import Tests.Cli.Lifecycle
+import Tests.Cli.Notes
 import Tests.Cli.Panel
 import Tests.Cli.Queue
 import Tests.Cli.Scale
@@ -35,6 +36,7 @@ def specs : List (String × List Case) := [
   ("herdr_mods_spec", Herdr.tests),
   ("cli_land_spec", Land.tests),
   ("cli_lifecycle_spec", Lifecycle.tests),
+  ("cli_notes_spec", Notes.tests),
   ("cli_panel_spec", Panel.tests),
   ("cli_queue_spec", Queue.tests),
   ("cli_scale_spec", Scale.tests),

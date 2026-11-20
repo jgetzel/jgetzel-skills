@@ -20,7 +20,7 @@ def helpTaskAfter : String :=
 
 /-- `swarm task claim -h`. -/
 def helpTaskClaim : String :=
-  "Usage: swarm task claim [-h] [--lease <lease>] [--force] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h\n   --force               claim a held task (the communicator or the user only)"
+  "Usage: swarm task claim [-h] [--lease <lease>] [--force] <id>\n\nprints the body, and the notes held for the task's next owner (`swarm post '#<id>'`)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h\n   --force               claim a held task (the communicator or the user only)"
 
 /-- `swarm task hold -h`. -/
 def helpTaskHold : String :=
@@ -40,7 +40,7 @@ def helpTaskRenew : String :=
 
 /-- `swarm task show -h`. -/
 def helpTaskShow : String :=
-  "Usage: swarm task show [-h] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm task show [-h] [--json] <id>\n\nthe task, its edits and its notes (`swarm post '#<id>'`)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json                the row and its notes as JSON"
 
 /-- `swarm task done -h`. -/
 def helpTaskDone : String :=

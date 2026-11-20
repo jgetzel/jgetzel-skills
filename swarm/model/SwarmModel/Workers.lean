@@ -74,6 +74,11 @@ theorem pfx_spawnFor {c : Cfg} {pl : List Nat} {s : State} {t : Nat} (hopn : (s.
     · exact hp
   · exact hp
 
+theorem pfx_noteOf {s : State} {a t : Nat} (hp : Pfx s) : Pfx (noteOf s a t) := by
+  rcases noteOf_task s a t with e | e
+  · exact pfx_task e hp
+  · exact pfx_task (s := setTask s t ({ · with noted := true })) e (pfx_setTask_st (fun _ => rfl) hp)
+
 theorem tk_setTask_at {s : State} {t : Nat} {f : Task → Task} (h0 : t ≠ 0) (hl : t - 1 < s.task.length) :
     (setTask s t f).tk t = f (s.tk t) := by
   simp only [setTask, State.tk, h0, ite_false]; rw [getD_modify]; simp [hl]
@@ -95,6 +100,8 @@ macro "pf_tac" : tactic => `(tactic|
     | ((with_reducible refine pfx_task (post_task ..) ?_))
     | ((with_reducible refine pfx_task (deliver_task ..) ?_))
     | ((with_reducible refine pfx_task (takes_task ..) ?_))
+    | ((with_reducible refine pfx_task (giveNotes_task ..) ?_))
+    | with_reducible apply pfx_noteOf
     | with_reducible apply pfx_endAgent
     | ((with_reducible refine pfx_setTask_st (fun _ => rfl) ?_))
     | ((with_reducible refine pfx_task (logEv_task ..) ?_))
@@ -606,10 +613,15 @@ theorem fc_owns {c : Cfg} {s : State} {a : Nat} (h : firstClaimed c s a ≠ 0) :
   | some t => simpa [ownsClaimed] using List.find?_some hf
 theorem own_unique {s : State} {a t : Nat} (h : (s.tk t).owner = some a) : ∀ b, held (s.tk t) b = true → b = a := by
   intro b hb; simp [held, h] at hb; exact hb.1.symm
-theorem J_claim {c : Cfg} {s : State} {a t : Nat} (hopn : (s.tk t).st = .opn) (hst : stopped s t = false) (h : J s) :
-    J (takes c (claimed s a t) a t) := by
-  refine J_takes ?_ (J_setTask (fun b hd => ?_) (fun b _ hs hi => absurd (not_HS_of_stopped hst hs hi) id) h)
-  · unfold claimed; rw [tk_setTask_self (by rw [hopn]; simp)]; simp [held]
+/-- board #202: the held note given at a claim, and a note posted to a task, back every belief that was -/
+theorem J_giveNotes {s : State} {a t : Nat} {n : Bool} (h : J s) : J (giveNotes s a t n) := by
+  unfold giveNotes; split
+  · exact J_post h
+  · exact h
+theorem J_claim {c : Cfg} {s : State} {a t : Nat} {n : Bool} (hopn : (s.tk t).st = .opn) (hst : stopped s t = false) (h : J s) :
+    J (takes c (giveNotes (claimed s a t) a t n) a t) := by
+  refine J_takes ?_ (J_giveNotes (J_setTask (fun b hd => ?_) (fun b _ hs hi => absurd (not_HS_of_stopped hst hs hi) id) h))
+  · rw [giveNotes_tk]; unfold claimed; rw [tk_setTask_self (by rw [hopn]; simp)]; simp [held]
   · rcases hd with e | e | e
     · simp [held, hopn] at e
     · rw [hopn] at e; cases e
@@ -674,6 +686,12 @@ theorem HD_prK {c : Cfg} {s : State} {k : Task} {b : Nat}
   · exact Or.inr (Or.inr ⟨h1, rfl⟩)
   · exact Or.inr (Or.inr ⟨rfl, rfl⟩)
   · exact h
+theorem J_noteOf {s : State} {a t : Nat} (h : J s) : J (noteOf s a t) := by
+  rcases noteOf_cases s a t with e | ⟨_, e⟩ | e | e <;> rw [e]
+  · exact h
+  · exact J_post h
+  · exact J_setTask_keep (fun _ => ⟨rfl, rfl, rfl, rfl, rfl⟩) h
+  · exact J_frame (s := s) rfl rfl rfl rfl h
 theorem J_pollOf {c : Cfg} {s : State} (h : J s) : J (pollOf c s) := by
   have hlog := pollOf_log c s
   refine J_of h (fun _ _ ht => ht) (fun b t _ hi => ⟨hi.1, ?_⟩) (fun b t _ _ hd => Or.inr (Or.inl ?_))
@@ -724,7 +742,8 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle ∨ c.release = .live
     split
     · rename_i hc; simp only [Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hc
       exact J_setAg_same (fun _ => rfl) (fun _ => rfl)
-        (J_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading) rfl rfl rfl rfl (J_claim hc.1.1 hc.2 hs))
+        (J_frame (s := takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a
+          (s.agt a).reading) rfl rfl rfl rfl (J_claim hc.1.1 hc.2 hs))
     · exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case renew a t =>
     obtain ⟨hg, rfl⟩ := hstep; simp [ownsClaimed] at hg
@@ -750,6 +769,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle ∨ c.release = .live
   case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
   case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact J_frame (s := s) rfl rfl rfl rfl hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hstep; exact J_post hs
+  case noteTo a t => obtain ⟨_, rfl⟩ := hstep; exact J_noteOf hs
   case readAll a => obtain ⟨_, rfl⟩ := hstep; exact J_deliver hs
   case stop a big =>
     obtain ⟨hg, rfl⟩ := hstep; simp [busy] at hg

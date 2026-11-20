@@ -129,7 +129,7 @@ theorem keep {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy = 
     · rw [hst] at e1; cases e1
     · exact absurd rfl hnd
     · simp [hst, hown, hidle, hb, hl, hans, hw, hd]
-  all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
+  all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, noteTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
     hcPrompt, hcClear, unblock, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, hbf, bgEnd, bgStall, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, leaseLate, holdHung,
     openPr, push, merge, finish, ciRun] at hs)

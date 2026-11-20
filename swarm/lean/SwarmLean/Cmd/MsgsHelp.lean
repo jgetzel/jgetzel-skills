@@ -4,7 +4,7 @@ namespace SwarmLean.Cmd.Msgs
 
 /-- `swarm post -h`. -/
 def helpPost : String :=
-  "Usage: swarm post [-h] [--urgent] <to> <text> [<text>] ...\n\nArguments:\n   to\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --urgent"
+  "Usage: swarm post [-h] [--urgent] <to> <text> [<text>] ...\n\nArguments:\n   to                    an agent, @all, or '#<N>' (task:<N>): a note on task N for whoever holds it. A result\n                         for a task goes to '#N', not to an agent who may end: its live owner gets it now, else\n                         its next `task claim` prints it; on a done task, whoever did it, else the communicator\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --urgent"
 
 /-- `swarm read -h`. -/
 def helpRead : String :=

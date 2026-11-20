@@ -336,10 +336,24 @@ theorem tl_of_reachable {c : Cfg} {s : State} (h : Reachable c s) : s.task.lengt
     split at hstep
     · rw [when_eq_some] at hstep; obtain ⟨_, rfl⟩ := hstep; simp [setTask_len, hs]
     · cases hstep
+  case noteTo a t =>
+    obtain ⟨_, rfl⟩ := hstep
+    rcases noteOf_task s a t with e | e <;> rw [e] <;> simp [setTask_len, hs]
   all_goals (obtain ⟨_, rfl⟩ := hstep)
   all_goals (try split)
   all_goals (simp [setTask_len, unbelieve, awake, claimed, endAgent, releaseAll, hs])
 
+/-- board #202: a held note given at a claim, a note posted to a task -/
+theorem l3_giveNotes {s : State} {a t : Nat} {n : Bool} (h : L3I s) : L3I (giveNotes s a t n) := by
+  unfold giveNotes; split
+  · exact l3_post h
+  · exact h
+theorem l3_noteOf {s : State} {a t : Nat} (h : L3I s) : L3I (noteOf s a t) := by
+  rcases noteOf_cases s a t with e | ⟨_, e⟩ | e | e <;> rw [e]
+  · exact h
+  · exact l3_post h
+  · exact l3_setTask h (fun o ho => ⟨ho, rfl, rfl, fun hb => ((h.1 o hb).2.2 t ho).2.1⟩) id
+  · exact h
 theorem l3_claim {c : Cfg} {s : State} {a u : Nat} (hao : c.answerOnTask = true) (h : L3I s)
     (hw : (s.agt a).st = .working) (hopn : (s.tk u).st = .opn) : L3I (takes c (claimed s a u) a u) := by
   have hnb := nb_of_st h (by rw [hw]; decide)
@@ -772,6 +786,7 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case unlock a p => obtain ⟨_, rfl⟩ := hstep; exact hs
   case expireLock p => obtain ⟨_, rfl⟩ := hstep; exact hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hstep; exact l3_post hs
+  case noteTo a u => obtain ⟨_, rfl⟩ := hstep; exact l3_noteOf hs
   case nudge a => obtain ⟨_, rfl⟩ := hstep; exact l3_post (ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl))
   case stay a on => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
   case endStay a => obtain ⟨_, rfl⟩ := hstep; exact ag_trivial hs (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
@@ -864,7 +879,8 @@ theorem l3_step {c : Cfg} (hr : c.racy = false) (hbf : c.bootFirst = true) (hao 
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [working, busy, claimable, startable, Bool.and_eq_true, beq_iff_eq] at hg
-    exact l3_claim hao hs hg.1.1.2.1 hg.1.2.1.1
+    rw [takes_giveNotes]
+    exact l3_giveNotes (l3_claim hao hs hg.1.1.2.1 hg.1.2.1.1)
   case unblock t =>
     split at hstep
     · rename_i o ho
@@ -922,8 +938,9 @@ theorem owner_keep {c : Cfg} (hr : c.racy = false) {s s' : State} {act : Action}
   case claim a u =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq] at hg
-    rw [takes_tk] at h2; unfold claimed at h2
+    rw [takes_tk, giveNotes_tk] at h2; unfold claimed at h2
     exact ow_of h1 h2 (ow_setTask (fun _ h => by simp [held, hg.1.2.1.1] at h) h1 h2)
+  case noteTo a u => obtain ⟨_, rfl⟩ := hstep; exact ow_of h1 h2 (by simp)
   case hcPrompt a =>
     obtain ⟨_, rfl⟩ := hstep
     have h1' : held ((setAg (tellC (hcLog s (firstClaimed c s a)) ⟨.blocked, firstClaimed c s a, urgentNow c s, []⟩) a

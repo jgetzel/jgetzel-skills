@@ -19,7 +19,7 @@ def DEFAULT_PRIORITY : Int := 2
 def TITLE_MAX : Nat := 100
 /-- The event kinds about a task (tasks.TASK_KINDS). -/
 def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit",
-  "queue", "unqueue", "hold", "unhold", "task-land", "task-unland"]
+  "queue", "unqueue", "hold", "unhold", "task-land", "task-unland", "task-note", "task-notes-given"]
 /-- The task id an event is about: data `#<id>` or `auto #<id>`, then the end or a space (tasks.event_task). -/
 def eventTask (e : Event) : Option Nat :=
   let s := e.data.getD ""

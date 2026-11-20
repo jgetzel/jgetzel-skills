@@ -5,6 +5,7 @@ import SwarmLean.Lib.Agents
 import SwarmLean.Sys
 import SwarmLean.Db.Compact
 import SwarmLean.Lib.Spawn
+import SwarmLean.Db.Notes
 
 /-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait), `swarm nudge` (agents.cmd_nudge) and
 `swarm compact` (board #136). -/
@@ -40,12 +41,25 @@ def KEYS : List String :=
   ["drains at its next tool round", "wakes", "held, cold (reads it when it next wakes)", "no live waiter",
     "compacting (watchd wakes it when that ends)"]
 
-/-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post). -/
+/-- `swarm post '#N' <text>… [--urgent]` (board #202): a note on task N, sent to its live owner, held for its next
+owner, or for a done task to whoever did it, else the communicator; the poster is told which. -/
+def postTask (frm : String) (id : Int) (body : String) (urgent : Bool) : m UInt32 := do
+  let db0 ← Store.txn [.agent] fun db => (db, db)
+  let here := (← splitAgents db0).1.map (·.name)
+  let envComms ← env "SWARM_COMMS"
+  let now ← Clock.now
+  let to ← orDie (← Store.txn [.task, .agent, .«meta», .msg, .event] fun db =>
+    Notes.post db now frm id body urgent (here.contains ·) (commsOf db envComms))
+  Env.out s!"posted to #{d id}: {to.text id}"
+  return 0
+
+/-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post); `#N` or `task:N` is a note to a task (`postTask`). -/
 def post (a : Parsed) : m UInt32 := do
   let frm ← me
   let to := (a.str "to").getD ""
   let urgent := a.flag "urgent"
   let body := " ".intercalate (a.strs "text")
+  if let some id := Notes.target? to then return ← postTask frm id body urgent
   let now ← Clock.now
   let some db ← Store.txn [.agent, .«meta»] (fun db =>
       if to != "@all" && (db.agent to).isNone then (db, none) else let db := (_root_.SwarmLean.Msgs.post db now frm to body urgent).1; (db, some db))

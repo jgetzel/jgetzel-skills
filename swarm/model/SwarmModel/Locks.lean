@@ -38,6 +38,8 @@ theorem liveL_showAll {l : List Agent} {s : State} (a : Nat) (ids : List Nat) (h
   | cons i is ih => exact ih (liveL_showMsg a i h)
 theorem liveL_deliver {l : List Agent} {s : State} (a : Nat) (h : LiveL l s.ag) : LiveL l (deliver s a).ag :=
   liveL_showAll _ _ h
+theorem liveL_giveNotes {l : List Agent} {s : State} (a t : Nat) (n : Bool) (h : LiveL l s.ag) :
+    LiveL l (giveNotes s a t n).ag := by rw [giveNotes_ag]; exact h
 theorem liveL_takes {l : List Agent} {c : Cfg} {s : State} (a t : Nat) (h : LiveL l s.ag) : LiveL l (takes c s a t).ag := by
   unfold takes; simp only []; split <;> exact liveL_modify _ h (by intro g hg; simpa [Agent.live] using hg)
 
@@ -177,6 +179,8 @@ macro "live_tac" : tactic => `(tactic|
     | with_reducible apply liveL_deliver
     | with_reducible apply liveL_showAll
     | with_reducible apply liveL_takes
+    | with_reducible apply liveL_giveNotes
+    | rw [noteOf_ag]
     | ((with_reducible refine liveL_modify _ ?_ ?hf); case hf => (intro g hg; first | rfl | simp_all [Agent.live]))))
 
 theorem lkInv_of_reachable {c : Cfg} (hfix : c.lockOverlap = true) (hforms : c.lockForms = true) {s : State} (h : Reachable c s) :
