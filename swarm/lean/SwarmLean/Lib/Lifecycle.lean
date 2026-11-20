@@ -85,6 +85,9 @@ agents' worktrees, `all` every worktree, `db` the agent, task and workspace tabl
 def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (String × String)) :
     m (Option (String × List String)) := do
   let names ← Bases.ofAgent ((db.tasks.filter (·.owner == some n)).map (·.base)) main
+  -- the commits n handed to a lander (`task land`, board #200) count as landed: the lander lands them
+  let handed := (db.tasks.filter fun t => t.owner == some n && t.state = .landing).filterMap fun t =>
+    t.land_sha.filter fun s => (GitRef.parse? s).isSome
   let own := (wts.lookup n).toList ++ Workspaces.ownedWts n all (some db) ++ Workspaces.ownedWts n all
   for w in own.eraseDups do
     if let some (ok, b) ← foreignLanded w main then
@@ -93,7 +96,7 @@ def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (Stri
     let mut bs ← Bases.refs names main
     if let some b := ((db.workspaces.find? fun x => x.path == w && x.agent == n && x.ro == some 0).bind (·.base)) then
       bs := bs ++ [← Bases.ref b main]
-    if !(← landed w bs main) then return some (w, bs)
+    if !(← landed w (handed ++ bs) main) then return some (w, bs)
   return none
 
 /-- What keeps worktree `wt` from landing on ref `b`: git status lines, `commit …` lines, and a `base …` line when `b`

@@ -434,6 +434,18 @@ theorem step_frame (c : Cmd) (db : Db) : (c.step db).1.locks = db.locks ∧ Grow
           split
           · exact ⟨e2.1.trans e1.1, grows_refl (e2.2.trans e1.2)⟩
           · exact ⟨e2.1.trans e1.1, grows_refl (e2.2.trans e1.2)⟩
+  | land c i s l =>
+    show (Tasks.land c i s l db).1.locks = db.locks ∧ Grows db (Tasks.land c i s l db).1
+    unfold Tasks.land
+    dsimp only
+    repeat' split
+    all_goals exact ⟨rfl, grows_refl rfl⟩
+  | unland c i w =>
+    show (Tasks.unland c i w db).1.locks = db.locks ∧ Grows db (Tasks.unland c i w db).1
+    unfold Tasks.unland
+    dsimp only
+    repeat' split
+    all_goals exact ⟨rfl, grows_refl rfl⟩
   | board => exact ⟨rfl, grows_refl rfl⟩
 
 /-! Any order of transactions. -/

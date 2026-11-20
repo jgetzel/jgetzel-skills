@@ -664,6 +664,9 @@ theorem X.Tasks.release {c i a} (h : XInv db t) : XInv (Tasks.release c i a db).
   step_xinv (.task (.release c i a)) (nolock nofun) h
 theorem X.Tasks.edit {c i a} (h : XInv db t) : XInv (Tasks.edit c i a db).1 t := step_xinv (.task (.edit c i a)) (nolock nofun) h
 theorem X.Tasks.drop {c i} (h : XInv db t) : XInv (Tasks.drop c i db).1 t := step_xinv (.task (.drop c i)) (nolock nofun) h
+theorem X.Tasks.land {c i s l} (h : XInv db t) : XInv (Tasks.land c i s l db).1 t := step_xinv (.task (.land c i s l)) (nolock nofun) h
+theorem X.Tasks.unland {c i w} (h : XInv db t) : XInv (Tasks.unland c i w db).1 t :=
+  step_xinv (.task (.unland c i w)) (nolock nofun) h
 theorem X.Msgs.post {now f d b u k} (h : XInv db t) : XInv (Msgs.post db now f d b u k).1 t :=
   step_xinv (.post now f d b u k) (nolock nofun) h
 theorem X.Watchd.say {now d b u k} (h : XInv db t) : XInv (Watchd.say db now d b u k) t := X.Msgs.post h
@@ -675,6 +678,8 @@ theorem X.Watchd.reapTask {r t' now} (h : XInv db t) : XInv (Watchd.reapTask r t
   step_xinv (.reapTask r t' now) (nolock nofun) h
 theorem X.Watchd.leaseLate {r o t' hm c q} (h : XInv db t) : XInv (Watchd.leaseLate r o t' hm c q db) t := by
   unfold SwarmLean.Watchd.leaseLate; xstep
+theorem X.Watchd.landingLate1 {r t' c} (h : XInv db t) : XInv (Watchd.landingLate1 r t' c db) t := by
+  unfold SwarmLean.Watchd.landingLate1; xstep
 theorem X.Watchd.reapLock {l t' now} (h : XInv db t) : XInv (Watchd.reapLock l t' now db).1 t :=
   step_xinv (.reapLock l t' now) (nolock nofun) h
 theorem X.Watchd.reapGone {n hh t'} (h : XInv db t) : XInv (Watchd.reapGone n hh t' db).1 t :=

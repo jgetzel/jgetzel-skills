@@ -28,7 +28,7 @@ def queued (db : Db) : List Task := (db.tasks.filter (·.qpos.isSome)).mergeSort
 def queueOf (db : Db) : List Int := (queued db).map fun t => (t.id : Int)
 
 /-- On the board: open, claimed or blocked. -/
-def onBoard (t : Task) : Bool := t.state = .open || t.state = .claimed || t.state = .blocked
+def onBoard (t : Task) : Bool := t.state = .open || t.state = .claimed || t.state = .blocked || t.state = .landing
 
 /-- Takes the tasks that left the board (done, dropped) out of the queue and closes the gaps. -/
 def tidy (db : Db) : Db := setQueue db ((queueOf db).filter fun i => (db.find i).any onBoard)
@@ -140,6 +140,7 @@ def whyNot (db : Db) (t : Task) : Option String :=
   if let some h := t.hold then some s!"held: {h}"
   else if t.state = .claimed then some s!"claimed by {(py t.owner).getD "-"}"
   else if t.state = .blocked then some s!"blocked by {(py t.owner).getD "-"}"
+  else if t.state = .landing then some s!"landing by {(py t.lander).getD "a lander"}"
   else if (pool db).any (·.id == t.id) then none
   else match undone db t with
     | [] => if stopPending db t then some s!"waits for {t.stop_to.getD "nil"} to read its stop" else some t.state.text
@@ -149,6 +150,7 @@ def whyNot (db : Db) (t : Task) : Option String :=
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
   match Tasks.done c id evidence db with
   | (db', .ok (.done k st _)) => let db' := tidy db'; (db', .ok (.done k st (staffing db').length))
+  | (db', .ok (.landed o)) => (tidy db', .ok (.landed o))
   | r => r
 
 /-- `task drop`, and the task leaves the queue. -/

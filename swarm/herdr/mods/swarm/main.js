@@ -474,8 +474,8 @@ export default class Swarm extends View {
       .when(i > 0, el => el.border_t(1).border_color(t.border))
       .child(div().w(76).flex_none().text_color(t.dim).child(label)).child(div().flex_1().min_w(0).child(el))));
   }
-  taskColor(t, k) { return { blocked: t.blocked, claimed: t.working, done: t.ansi2, dropped: t.dim }[k.state] ?? (k.waiting ? t.dim : t.muted); }
-  taskWord(k) { return { blocked: "waiting on you", claimed: "in progress", open: k.hold ? "held" : k.waiting ? "waiting" : "ready" }[k.state] ?? k.state; }
+  taskColor(t, k) { return { blocked: t.blocked, claimed: t.working, landing: t.ansi4, done: t.ansi2, dropped: t.dim }[k.state] ?? (k.waiting ? t.dim : t.muted); }
+  taskWord(k) { return { blocked: "waiting on you", claimed: "in progress", landing: "landing", open: k.hold ? "held" : k.waiting ? "waiting" : "ready" }[k.state] ?? k.state; }
   // Priority P0 (urgent) to P3 (someday), 2 when the row has none: the board's order is priority, then id.
   prio(k) { return k.priority ?? 2; }
   prioChip(t, k) { return this.chip(t, `P${this.prio(k)}`, [t.blocked, t.ansi3, null, t.dim][this.prio(k)], this.prio(k) < 2).tooltip("Priority: lower is picked first"); }
@@ -484,12 +484,15 @@ export default class Swarm extends View {
   whyNot(k) {
     const after = this.undone(k);
     return k.hold ? `held: ${one(k.hold)}` : k.state === "claimed" ? `claimed by ${k.owner ?? "-"}` : k.state === "blocked" ? `blocked by ${k.owner ?? "-"}`
+      : k.state === "landing" ? this.landingWord(k)
       : after.length ? `waits on ${after.map(x => `#${x}`).join(" ")}` : null;
   }
+  // A landing task (board #200): handed to a lander at a commit, closed by its `task done` or `task unland`.
+  landingWord(k) { return `landing ${(k.land_sha ?? "").slice(0, 7)} by ${k.lander ?? "a lander"}`; }
   heldChip(t, k) { return this.chip(t, "held", t.ansi3, true).tooltip(`Never staffed or claimed until unheld: ${one(k.hold)}`); }
   taskRow(t, k, i) {
     const e = k.state === "done" ? evidence(k.evidence) : null, after = this.undone(k);
-    const right = k.state === "blocked" ? "waiting on you" : k.state === "open" ? (k.hold ? one(k.hold) : after.length ? `after ${after.map(x => `#${x}`).join(" ")}` : "ready") : k.owner ?? "";
+    const right = k.state === "blocked" ? "waiting on you" : k.state === "landing" ? `by ${k.lander ?? "a lander"}` : k.state === "open" ? (k.hold ? one(k.hold) : after.length ? `after ${after.map(x => `#${x}`).join(" ")}` : "ready") : k.owner ?? "";
     return this.row(t, `task-${k.id}`, i, cx => this.push({ s: "task", id: k.id }, cx))
       .child(this.dot(this.taskColor(t, k), 7))
       .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
@@ -627,9 +630,9 @@ export default class Swarm extends View {
   // ---- Home: what needs you, who is running and on what, what is left ---------------------------
   home(t, d) {
     const s = this.s, two = this.width >= 760;
-    const rank = k => k.state === "blocked" ? 0 : k.state === "claimed" ? 1 : k.waiting ? 3 : 2;
-    const left = s.tasks.filter(k => ["blocked", "claimed", "open"].includes(k.state)).sort((a, b) => rank(a) - rank(b) || this.prio(a) - this.prio(b) || a.id - b.id);
-    const shown = left.slice(0, 7), nd = d.count("done"), ndrop = d.count("dropped"), total = ["open", "claimed", "blocked", "done"].reduce((n, st) => n + d.count(st), 0);
+    const rank = k => k.state === "blocked" ? 0 : k.state === "claimed" || k.state === "landing" ? 1 : k.waiting ? 3 : 2;
+    const left = s.tasks.filter(k => ["blocked", "claimed", "landing", "open"].includes(k.state)).sort((a, b) => rank(a) - rank(b) || this.prio(a) - this.prio(b) || a.id - b.id);
+    const shown = left.slice(0, 7), nd = d.count("done"), ndrop = d.count("dropped"), total = ["open", "claimed", "blocked", "landing", "done"].reduce((n, st) => n + d.count(st), 0);
     const agents = v_flex().min_w(0)
       .child(this.title(t, "Agents", s.limits?.max != null ? `${d.live.length} of ${s.limits.max}` : d.live.length,
         this.more(t, "all-agents", d.nEnded ? `All, ${d.nEnded} ended ›` : "All ›", cx => this.push({ s: "agents" }, cx))))
@@ -669,7 +672,7 @@ export default class Swarm extends View {
     const q = s.tasks.filter(k => k.qpos != null).sort((a, b) => a.qpos - b.qpos), head = q.find(k => k.state === "open" && !this.whyNot(k));
     const queue = f === "active" && q.length > 0 && v_flex().child(this.title(t, "Queue", `${q.length} · staffed first, in this order`))
       .child(this.group(t, "g-queue").children(q.map((k, i) => this.queueRow(t, q, i, head))));
-    const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
+    const sets = (f === "active" ? [["Waiting on you", by("blocked")], ["In progress", by("claimed")], ["Landing", by("landing")], ["Ready", open.filter(k => !k.waiting)], ["Waiting on other tasks", open.filter(k => k.waiting)]]
       : [[f === "done" ? "Done" : "Dropped", by(f).reverse(), "newest first", d.count(f)]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
     const form = this.adding ? this.group(t, "new-task").px(12).py(10).gap(8)
@@ -684,7 +687,7 @@ export default class Swarm extends View {
       : h_flex().child(this.btn(t, "nt-open", "+ New task", cx => { this.adding = true; this.in.title.focus(); cx.notify(); })).child(div().flex_1());
     return v_flex().gap(10)
       .child(form)
-      .child(this.seg(t, "bf", [["active", "Active", q.length + by("blocked").length + by("claimed").length + open.length], ["done", "Done", d.count("done")], ["dropped", "Dropped", d.count("dropped")]], f,
+      .child(this.seg(t, "bf", [["active", "Active", q.length + by("blocked").length + by("claimed").length + by("landing").length + open.length], ["done", "Done", d.count("done")], ["dropped", "Dropped", d.count("dropped")]], f,
         (id, cx) => { this.r.f = id; this.landed(cx); }))
       .when(Boolean(queue), el => el.child(queue))
       .children(sets.map(([label, ks, note, n]) => v_flex().child(this.title(t, label, note ? `${n ?? ks.length} · ${note}` : ks.length))
@@ -710,6 +713,8 @@ export default class Swarm extends View {
       k.state === "open" || live ? ["Priority", this.seg(t, "t-prio", [0, 1, 2, 3].map(n => [n, `P${n}`]), this.prio(k),
         (n, cx) => n !== this.prio(k) && this.act(cx, ["task", "priority", String(k.id), String(n)]))] : null,
       ["Added", h_flex().gap(8).child(k.created_by ?? "?").when(Boolean(k.created_at), el => el.child(dim(hhmm(k.created_at))))],
+      k.state === "landing" ? ["Landing", h_flex().gap(8).items_center().child(this.mono(div().child((k.land_sha ?? "").slice(0, 12))))
+        .child(`by ${k.lander ?? "a lander"}`).when(Boolean(k.landing_at), el => el.child(dim(`since ${hhmm(k.landing_at)}`)))] : null,
       k.qpos != null ? ["Queue", `${k.qpos} of ${s.tasks.filter(y => y.qpos != null).length}: staffed ahead of priority`] : null,
       k.state === "open" || live ? ["Hold", k.hold ? h_flex().gap(8).items_center().min_w(0).child(div().flex_1().min_w(0).line_height("17px").whitespace_normal().text_color(t.ansi3).child(one(k.hold)))
           .child(this.btn(t, "t-unhold", "Unhold", cx => this.act(cx, ["task", "unhold", String(k.id)])))
@@ -1202,7 +1207,7 @@ export default class Swarm extends View {
   // you, More's dot is a System problem. At 340px and below the counts go and the labels stay.
   navBar(t, d) {
     const s = this.s, r = this.r, cur = r.s === "task" ? "board" : r.s === "agent" ? "agents" : r.s;
-    const need = this.needs(t, d).length, left = d.count("blocked") + d.count("claimed") + d.count("open"), tiny = this.width <= 340;
+    const need = this.needs(t, d).length, left = d.count("blocked") + d.count("claimed") + d.count("landing") + d.count("open"), tiny = this.width <= 340;
     const alert = d.reds > 0 || d.watchdDead || s.watchd?.stale || s.conflicts.length > 0 || s.pressure.some(p => !p.end) || s.machine?.high;
     const items = [["home", "Home", need || null, true], ["agents", "Agents", d.live.length], ["board", "Board", left], ["more", "More", alert ? "" : null, true]];
     const w = (this.width - 2 - 32 - 6) / 4, at = Math.max(0, items.findIndex(i => i[0] === cur));

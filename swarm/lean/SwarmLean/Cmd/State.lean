@@ -227,7 +227,7 @@ def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Statu
     ("dropped_at", NI tm.dropped_at), ("pr", NI tm.pr), ("merged_at", NI tm.merged_at), ("ci_conclusion", N tm.ci_conclusion),
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
-    ("qpos", NI r.qpos), ("hold", N r.hold),
+    ("qpos", NI r.qpos), ("hold", N r.hold), ("land_sha", N r.land_sha), ("lander", N r.lander), ("landing_at", NI r.landing_at),
     ("labels", .arr ((Tasks.labelsOf r).map .str).toArray), ("parents", .arr ((Tasks.parentsOf r).map Json.int).toArray),
     ("lease_left", NI lease), ("waiting", .bool !undone.isEmpty), ("undone", .arr (undone.map Json.int).toArray),
     ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
@@ -376,7 +376,7 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
       | none => [])
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
     ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))), ("rss_kb", Json.int rss),
-    ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped"].map fun k =>
+    ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
     -- the bar's "main green" and the communicator's Away switch
@@ -526,7 +526,7 @@ def state (a : Parsed) : m UInt32 := do
     ("rules", N (metaV "rules")),  -- `swarm rules show`: what every agent's brief starts with
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     -- every task by state, and the ended agents but the communicator: what the trimmed lists leave out
-    ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped"].map fun k =>
+    ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length)) ++
       [("ended", Json.int (db.agents.filter fun x => x.ended.isSome && some x.name != cv).length)])),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>

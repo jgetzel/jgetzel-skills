@@ -303,7 +303,7 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
     | _ => []
   let o ← st t ["--view", "overview"]  -- its event feed names #2
   eq (ids o) [2, 4]
-  eq (o.f "counts") (json% {"open": 1, "claimed": 0, "blocked": 0, "done": 2, "dropped": 1, "ended": 1})
+  eq (o.f "counts") (json% {"open": 1, "claimed": 0, "blocked": 0, "done": 2, "dropped": 1, "landing": 0, "ended": 1})
   eq ((nth (o.f "tasks") 1).f "undone") (json% [])
   if (names o).contains "e" then fail "overview sent an ended agent"
   eq (ids (← st t ["--view", "board"])) [1, 2, 3, 4]
@@ -331,7 +331,7 @@ def test_state_summary (t : T) : IO Unit := do
   t.q_ "insert into event(ts, agent, kind, data) values (?, 's', 'stay-hung', ''), (?, 'w', 'claim', '#1')" [.int (n - 10), .int (n - 10)]
   t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(7,'x','completed','failure','u','2026-11-08T10:00:00Z')"
   let s ← st t ["--view", "summary"]
-  eq (s.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 1, "done": 1, "dropped": 0})
+  eq (s.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 1, "done": 1, "dropped": 0, "landing": 0})
   let ags := match s.f "agents" with | .arr a => a.toList | _ => []
   eq (ags.map (·.f "name")) [json% "comms", json% "p", json% "q", json% "s", json% "w"]
   eq (byName s "q") (json% {"name": "q", "hc": null, "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})

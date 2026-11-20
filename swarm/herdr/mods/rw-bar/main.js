@@ -110,7 +110,7 @@ export default class Bar extends View {
 
   // The swarm view's four tabs, as the side view's: Now (red count of what needs you), Queue (tasks left), Agents (live), More.
   sections(t, v, sum) {
-    const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0);
+    const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) + (c.landing ?? 0);
     const agents = (sum?.agents ?? []).filter((a) => a.name !== sum.comms).length, needs = (sum?.needs ?? []).length;
     const at = tabOf(v.section ?? "overview"), anim = animOn(shared("rw.animations")), n = { overview: [needs, t.blocked], board: [left, t.dim], agents: [agents, t.dim], more: [0, t.dim] };
     return h_flex().id("sections").flex_none().min_w(0).p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)
