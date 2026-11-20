@@ -3,7 +3,8 @@ import SwarmLean.Lib.Agents
 import SwarmLean.Proofs
 
 /-! Messages (board #104): S4 about the real steps. Db/Msgs.lean's `post`, `take` (what `swarm read` runs) and
-`deliverStep` (the hooks' and the waiter's delivery), in any order with any other transaction that only adds messages
+`deliverStep` (the hooks' and the waiter's delivery) and `typedStep` (watchd's, typed into the communicator's terminal,
+board #210), in any order with any other transaction that only adds messages
 and new agents' cursors, show each message to its addressee exactly once, in order, and move its cursor past nothing
 they didn't show. -/
 
@@ -40,6 +41,7 @@ inductive MCmd
   | post (now : Int) (frm dest body : String) (urgent : Bool) (kind : Option String)
   | read (n : String)
   | deliver (n : String) (budget : Nat)
+  | typed (n : String) (i : Nat)
   | other (f : Db → Db) (h : ∀ db, MInv db → Grows db (f db))
 
 /-- A transaction's effect and the messages it showed: the CLI's own step functions. -/
@@ -47,11 +49,12 @@ def MCmd.step : MCmd → Db → Db × List Msg
   | .post now f d b u k, db => ((Msgs.post db now f d b u k).1, [])
   | .read n, db => ((take n id db).1, (take n id db).2.2)
   | .deliver n b, db => ((deliverStep n b db).1, (deliverStep n b db).2.1)
+  | .typed n i, db => ((typedStep n i db).1, (typedStep n i db).2.2)
   | .other f _, db => (f db, [])
 
 /-- Whom a transaction delivers to. -/
 def MCmd.to : MCmd → Option String
-  | .read n | .deliver n _ => some n
+  | .read n | .deliver n _ | .typed n _ => some n
   | _ => none
 
 /-- What the deliveries to `n` among `t` showed, in order. -/
@@ -317,6 +320,8 @@ theorem fits_go_prefix (budget size : Nat) (rows : List Msg) : fits.go budget si
 /-- deliver's pick keeps a prefix of the unread rows: the rest stay unread. -/
 theorem fits_prefix (budget : Nat) (rows : List Msg) : fits budget rows <+: rows := fits_go_prefix budget 120 rows
 
+theorem upTo_prefix (i : Nat) (rows : List Msg) : upTo i rows <+: rows := List.takeWhile_prefix _
+
 theorem last_max {fit : List Msg} {l : Msg} (hf : (fit.map (·.id)).Pairwise (· < ·)) (hl : fit.getLast? = some l)
     {x : Msg} (hx : x ∈ fit) : x.id ≤ l.id := by
   obtain ⟨init, e⟩ : ∃ init, fit = init ++ [l] := by
@@ -429,6 +434,7 @@ theorem step_inv (c : MCmd) {db : Db} (h : MInv db) : MInv (c.step db).1 := by
   | post now f d b u k => exact grows_inv (grows_post ..) h
   | read n => exact take_inv (fun _ => List.prefix_refl _) h
   | deliver n b => exact (deliverStep_eq n b db).1 ▸ take_inv (fits_prefix b) h
+  | typed n i => exact take_inv (upTo_prefix i) h
   | other f hf => exact grows_inv (hf db h) h
 
 theorem run_inv (db : Db) (cs : List MCmd) (h : MInv db) : MInv (run db cs) := by
@@ -480,6 +486,13 @@ theorem step_window (c : MCmd) {db : Db} {n : String} (h : MInv db) (hn : (db.cu
     · subst e; simp only [ite_true]
       exact ⟨(take_window (fits_prefix b) h hc0).1, (take_window (fits_prefix b) h hc0).2, take_isSome hn⟩
     · obtain ⟨e1, e2⟩ := take_other (pick := fits b) (db := db) e c0
+      simp only [e, ite_false, List.append_nil]; rw [e1, e2]; exact ⟨rfl, Int.le_refl _, take_isSome hn⟩
+  | typed m i =>
+    simp only [MCmd.to, MCmd.step, Option.some.injEq, typedStep]
+    by_cases e : m = n
+    · subst e; simp only [ite_true]
+      exact ⟨(take_window (upTo_prefix i) h hc0).1, (take_window (upTo_prefix i) h hc0).2, take_isSome hn⟩
+    · obtain ⟨e1, e2⟩ := take_other (pick := upTo i) (db := db) e c0
       simp only [e, ite_false, List.append_nil]; rw [e1, e2]; exact ⟨rfl, Int.le_refl _, take_isSome hn⟩
 
 theorem trace_cons (db : Db) (c : MCmd) (cs : List MCmd) :

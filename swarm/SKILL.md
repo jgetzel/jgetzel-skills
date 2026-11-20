@@ -67,13 +67,15 @@ with subagents.
    a line, then `Done when:` and a `- ` list, `- ` items for steps and files, `Notes:` for background, backticks for
    paths, commands and identifiers; never one long `--body "..."` paragraph. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
-2. Be wakeable. You have no hooks, so keep `swarm wait --timeout 21000`
-   running as a background Bash (`run_in_background`, never `&` or `disown`: a
-   detached waiter sends no notification and lingers): it is your inbox. Exit
-   2 means messages (on stderr), 0 a timeout or a newer waiter (stderr says which, and what is unread: a
-   non-urgent post waits while you are cold, an own post never wakes you): run `swarm read`, act, and start
-   it again. With no live waiter and a message unread 5 min, watchd types a reminder into your terminal. Exit 3 means this terminal doesn't hold your name (stderr says who
-   does): run `swarm join` (`--takeover` to move it here) before restarting it.
+2. Be wakeable. You have no hooks and need no waiter: watchd (step 3) types your new messages into your
+   terminal within a tick (about 20 s after the oldest, so a burst comes as one block, as `swarm read` prints it
+   under the "data from peers" head; past 40 lines the first ones and "N more: `swarm read`") and marks them
+   read once typed. It types only while your terminal is idle or mid-turn (Claude Code queues it to the turn's
+   end), never into a permission prompt or question, nor while you compact; while no other agent lives, only
+   urgent ones. Notices ride along and never trigger it. A waiter still wins while it lives: `swarm wait
+   --timeout 21000` as a background Bash (`run_in_background`, never `&` or `disown`) exits 2 on messages (on
+   stderr), 0 on a timeout or a newer waiter (stderr says which and what is unread), 3 when this terminal doesn't
+   hold your name (stderr says who does: `swarm join`, `--takeover` to move it here).
 3. Start the watcher, in the background:
    `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
    One watchd per repo: a second is refused while the first lives, naming it;

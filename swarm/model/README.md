@@ -137,7 +137,8 @@ what it leaves. It is not a `step`: runs, and the liveness proved of them, are o
   is `main`: a base like `formal` goes too. The base is `main` everywhere: `nbases > 1` is the swarm that lands elsewhere.
 - **The communicator's inbox and the user's away flag** (board #47): what watchd and the CLI send the communicator
   (`cbox`: a block's notice, `swarm away`'s line, `--back`'s message; its other messages are outside the model) and how
-  far it has read (`ccur`, moved by `commsRead`: a hook or `swarm read`); `away` (meta away, since a point of `evs`), and
+  far it has read (`ccur`, moved by `commsRead`: a hook, `swarm read`, or watchd typing it into its terminal, board
+  #210); `away` (meta away, since a point of `evs`), and
   `digest` (meta away_digest). `evs` is the event log the digest reads (`task block`, task-blocked, done, an agent's
   end). The tick's last part is the notice loop (`notices`): a blocked task whose latest question wasn't told is told
   (urgent unless away) and marked told; `hcPrompt` sends its own "is blocked" notice and marks the task told.

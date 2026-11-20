@@ -488,7 +488,10 @@ def test_post_to_comms_has_no_sendmessage_nudge (t : T) : IO Unit := do
   t.q_ "insert or replace into meta(k,v) values('comms','x-comms')"
   let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
   hasnt out "nudge by SendMessage"
-  has out "held"
+  has out "watchd types it into the communicator's terminal"
+  t.q_ "update agent set last_active=? where name='x-comms'" [.int ((← now) - 4000)]  -- cold: still typed in
+  let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
+  hasnt out "held, cold"; has out "watchd types it into the communicator's terminal"
   t.agent "b" [("status", "idle"), ("last_active", .int (← now))]
   has (← t.sw "a" ["post", "b", "hi"]).stdout "nudge by SendMessage"
 

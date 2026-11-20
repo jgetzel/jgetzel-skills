@@ -954,7 +954,8 @@ def back (c : Cfg) (s : State) : Option State :=
   let g := digestOf c s (s.away.getD 0)
   when s.away.isSome
     { s with away := none, digest := some g, cbox := if c.backTells then s.cbox ++ [⟨.back, 0, true, g.qs⟩] else s.cbox }
-/-- the communicator reads its inbox (a hook, `swarm read`, or its waiter woken) -/
+/-- the communicator reads its inbox (a hook, `swarm read`, its waiter woken, or watchd typing it into its terminal:
+board #210) -/
 def commsRead (s : State) : Option State := when (s.ccur < s.cbox.length) { s with ccur := s.cbox.length }
 /-- watchd --once -/
 def tick (c : Cfg) (s : State) : Option State := when (c.watchd && tickOf c s != s) (tickOf c s)
