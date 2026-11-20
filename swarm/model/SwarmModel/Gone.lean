@@ -29,6 +29,8 @@ theorem rz_takes {c : Cfg} {s : State} {a t : Nat} (h : Rz s) : Rz (takes c s a 
   rw [e]; exact h b
 theorem rz_setTask {s : State} {t : Nat} {f : Task → Task} (h : Rz s) : Rz (setTask s t f) := rz_frame (by simp) h
 theorem rz_post {s : State} {m : Msg} (h : Rz s) : Rz (post s m) := rz_frame (by simp) h
+theorem rz_giveNotes {s : State} {a t : Nat} {n : Bool} (h : Rz s) : Rz (giveNotes s a t n) := rz_frame (by simp) h
+theorem rz_noteOf {s : State} {a t : Nat} (h : Rz s) : Rz (noteOf s a t) := rz_frame (by simp) h
 
 theorem rz_endAgent {s : State} {a : Nat} (h : Rz s) : Rz (endAgent s a) := fun b => by
   rw [endAgent_agt]; split
@@ -60,6 +62,8 @@ macro "rz_tac" : tactic => `(tactic|
     | with_reducible assumption
     | (with_reducible apply rz_deliver)
     | (with_reducible apply rz_takes)
+    | (with_reducible apply rz_giveNotes)
+    | (with_reducible apply rz_noteOf)
     | (with_reducible apply rz_setTask)
     | (with_reducible apply rz_post)
     | (with_reducible apply rz_showAll)

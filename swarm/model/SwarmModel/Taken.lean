@@ -77,7 +77,7 @@ theorem spawn_keep {c : Cfg} {pl : List Nat} {t : Nat} : ∀ {suf : List Nat}, t
 theorem claimed_not_opn (s : State) (a t : Nat) : ((claimed s a t).tk t).st ≠ .opn := by
   unfold claimed
   by_cases h : (s.tk t).st = .absent
-  · rcases tk_setTask_or s t t (fun k => { k with st := .claimed, owner := some a, lease := true, reaped := if k.reaped == some a then k.reaped else none }) with e | ⟨_, e⟩
+  · rcases tk_setTask_or s t t (fun k => { k with st := .claimed, owner := some a, lease := true, noted := false, reaped := if k.reaped == some a then k.reaped else none }) with e | ⟨_, e⟩
     · rw [e, h]; decide
     · rw [e]; simp
   · rw [tk_setTask_self h]; simp
@@ -247,6 +247,9 @@ theorem deliver_cur_ne (s : State) {a b : Nat} (hb : b ≠ a) : (deliver s b).cu
   unfold deliver; rw [showAll_cur]; simp [Ne.symm hb]
 
 theorem ext_deliver_ne (s : State) {a b : Nat} (hb : b ≠ a) : Ext s (deliver s b) a := ⟨⟨[], by simp⟩, deliver_cur_ne s hb⟩
+theorem ext_giveNotes (s : State) (b t : Nat) (n : Bool) (a : Nat) : Ext s (giveNotes s b t n) a :=
+  ⟨giveNotes_log s b t n, by simp [State.cur]⟩
+theorem ext_noteOf (s : State) (b t a : Nat) : Ext s (noteOf s b t) a := ⟨noteOf_log s b t, by simp [State.cur]⟩
 
 theorem unread_deliver_self {s : State} {a : Nat} (hlen : a < s.cursor.length) : unread (deliver s a) a = [] := by
   apply List.eq_nil_iff_forall_not_mem.mpr
@@ -371,6 +374,14 @@ theorem step_log {c : Cfg} {s s' : State} {act : Action} (hs : step c s act = so
       rw [when_eq_some] at hs; obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, o, false, .answer, t⟩], by simp [post]⟩
     · cases hs
   case postTo a b u => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨some a, b, u, .dm, 0⟩], by simp [post]⟩
+  case noteTo a t => obtain ⟨_, rfl⟩ := hs; exact noteOf_log s a t
+  case claim a t =>
+    obtain ⟨_, rfl⟩ := hs; obtain ⟨e, he⟩ := giveNotes_log (claimed s a t) a t (s.tk t).noted; exact ⟨e, by simp [he]⟩
+  case claimWrite a =>
+    obtain ⟨_, rfl⟩ := hs; split
+    · obtain ⟨e, he⟩ := giveNotes_log (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted
+      exact ⟨e, by simp [he]⟩
+    · exact ⟨[], by simp⟩
   case poll => obtain ⟨_, rfl⟩ := hs; exact ⟨_, pollOf_log c s⟩
   case nudge a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, true, .nudge, 0⟩], by simp [post]⟩
   case stayCheck a => obtain ⟨_, rfl⟩ := hs; exact ⟨[⟨none, a, false, .check, 0⟩], by simp [post]⟩
@@ -627,6 +638,15 @@ theorem ready_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
       · exact ready_takes (ready_setAg_ne hb (ready_deliver_ne hb hR'))
       · exact ready_setAg_ne hb (ready_deliver_ne hb hR')
   case world w op => obtain ⟨hg, rfl⟩ := hs; exact Or.inl hR'
+  case claim b t₀ =>
+    obtain ⟨hg, rfl⟩ := hs
+    left; refine ready_of_fields hR' (by simp) (by simp) (by simp) (by simp) ?_
+    exact unread_ext (ext_trans (ext_trans (ext_frame (x := claimed s b t₀) (by simp) (by simp) a)
+      (ext_giveNotes _ b t₀ (s.tk t₀).noted a))
+      (ext_frame (x := takes c (giveNotes (claimed s b t₀) b t₀ (s.tk t₀).noted) b t₀) (by simp) (by simp) a)) h5
+  case noteTo b t₀ =>
+    obtain ⟨hg, rfl⟩ := hs
+    left; exact ready_of_fields hR' (by simp) (by simp) (by simp) (by simp) (unread_ext (ext_noteOf s b t₀ a) h5)
   case git b op =>
     obtain ⟨hg, rfl⟩ := hs
     have hb : b ≠ a := by rintro rfl; simp_all [working, busy]
@@ -815,12 +835,17 @@ theorem grow_step {c : Cfg} {s s' : State} {act : Action} (hl : s.ag.length ≤ 
     split
     · refine grow_nw (fun h => ?_) (by simp [State.cur])
       rw [agt_setAg] at h
-      have e : ∀ g : Agent, active ((takes c (claimed s a (s.agt a).reading) a (s.agt a).reading).agt o) = active (s.agt o) :=
+      have e : ∀ g : Agent, active ((takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading
+          (s.tk (s.agt a).reading).noted) a (s.agt a).reading).agt o) = active (s.agt o) :=
         fun _ => by simp [active]
       split at h
       · rename_i hh; obtain ⟨rfl, _⟩ := hh; rw [← e default]; simpa [active, State.agt] using h
       · rw [← e default]; simpa [active, State.agt] using h
     · exact grow_nw (fun h => by rw [agt_setAg] at h; split at h <;> simp_all [active]) (by simp [State.cur])
+  case claim a t =>
+    obtain ⟨_, rfl⟩ := hs
+    exact grow_nw (fun h => by simpa [active] using h) (by simp [State.cur])
+  case noteTo a t => obtain ⟨_, rfl⟩ := hs; exact grow_nw (fun h => by simpa [active] using h) (by simp [State.cur])
   case hcPrompt a =>
     obtain ⟨hg, rfl⟩ := hs
     refine grow_nw (fun h => ?_) (by simp [State.cur])
@@ -892,7 +917,8 @@ theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act �
   case claimWrite a =>
     obtain ⟨_, rfl⟩ := hs
     split
-    · rw [setAg_tk, show ∀ (x : State) e, ({ x with early := e } : State).tk t = x.tk t from fun _ _ => rfl, takes_tk]
+    · rw [setAg_tk, show ∀ (x : State) e, ({ x with early := e } : State).tk t = x.tk t from fun _ _ => rfl, takes_tk,
+        giveNotes_tk]
       exact claimed_stop ..
     · rw [setAg_tk]; exact ⟨rfl, rfl⟩
   case leave a =>
@@ -903,7 +929,8 @@ theorem stop_kept {c : Cfg} {s s' : State} {act : Action} {t : Nat} (hn : act �
     obtain ⟨_, rfl⟩ := hs; rw [endAgent_tk]; split <;> simp
   all_goals (obtain ⟨hg, rfl⟩ := hs)
   all_goals (try split)
-  all_goals (try simp only [unbelieve, awake, claimed, post_tk, setAg_tk, deliver_tk, takes_tk, unbelieve_tk, awake_tk])
+  all_goals (try simp only [unbelieve, awake, claimed, post_tk, setAg_tk, deliver_tk, takes_tk, unbelieve_tk, awake_tk,
+    giveNotes_tk, noteOf_tk_stopTo, noteOf_tk_stopMsg])
   all_goals first
     | exact ⟨rfl, rfl⟩
     | exact setTask_stop _ _ t _ (fun _ => ⟨rfl, rfl⟩)
@@ -1181,12 +1208,17 @@ theorem i1_tickCut {c : Cfg} {s : State} (h : I1 c s) (k : Cut) : I1 c (tickCut 
 theorem i1_setTask {c : Cfg} {s : State} {t : Nat} {f : Task → Task} (h : I1 c s) : I1 c (setTask s t f) :=
   i1_frame (by simp) (by simp) h
 theorem i1_post {c : Cfg} {s : State} {m : Msg} (h : I1 c s) : I1 c (post s m) := i1_frame (by simp) (by simp) h
+theorem i1_giveNotes {c : Cfg} {s : State} {a t : Nat} {n : Bool} (h : I1 c s) : I1 c (giveNotes s a t n) :=
+  i1_frame (by simp) (by simp) h
+theorem i1_noteOf {c : Cfg} {s : State} {a t : Nat} (h : I1 c s) : I1 c (noteOf s a t) := i1_frame (by simp) (by simp) h
 
 macro "i1_tac" : tactic => `(tactic|
   repeat (first
     | with_reducible assumption
     | (with_reducible apply i1_deliver)
     | (with_reducible apply i1_takes)
+    | (with_reducible apply i1_giveNotes)
+    | (with_reducible apply i1_noteOf)
     | (with_reducible apply i1_setTask)
     | (with_reducible apply i1_post)
     | (refine i1_setAg ?_ ?_ <;> first | (intro hh hh2; simp_all [busy]; done) | skip)
@@ -1207,8 +1239,10 @@ theorem i1_step {c : Cfg} {s s' : State} {act : Action} (hI : I1 c s) (hs : step
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split
-    · have hI' : I1 c { takes c (claimed s a (s.agt a).reading) a (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
-        i1_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading) rfl rfl (i1_takes (i1_setTask hI))
+    · have hI' : I1 c { takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a
+          (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
+        i1_frame (s := takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a
+          (s.agt a).reading) rfl rfl (i1_takes (i1_giveNotes (i1_setTask hI)))
       exact i1_setAg' (fun hh => hI'.2.2 a (by simpa using hh)) hI'
     · i1_tac
   all_goals (obtain ⟨hg, rfl⟩ := hs)
@@ -1238,6 +1272,8 @@ theorem d_setAg {s : State} {a : Nat} {f : Agent → Agent} (hf : (s.agt a).dead
     Dd (setAg s a f) := d_setAg' (hf (h a)) h
 
 theorem d_deliver {s : State} {a : Nat} (h : Dd s) : Dd (deliver s a) := fun b => by simp only [deliver_dead]; exact h b
+theorem d_giveNotes {s : State} {a t : Nat} {n : Bool} (h : Dd s) : Dd (giveNotes s a t n) := d_frame (by simp) h
+theorem d_noteOf {s : State} {a t : Nat} (h : Dd s) : Dd (noteOf s a t) := d_frame (by simp) h
 theorem d_takes {c : Cfg} {s : State} {a t : Nat} (h : Dd s) : Dd (takes c s a t) := fun b => by simp only [takes_dead]; exact h b
 theorem d_showAll {s : State} {a : Nat} {ids : List Nat} (h : Dd s) : Dd (showAll s a ids) := fun b => by
   obtain ⟨bl, e⟩ := showAll_agt a ids b s
@@ -1271,6 +1307,8 @@ macro "d_tac" : tactic => `(tactic|
     | with_reducible assumption
     | (with_reducible apply d_deliver)
     | (with_reducible apply d_takes)
+    | (with_reducible apply d_giveNotes)
+    | (with_reducible apply d_noteOf)
     | (with_reducible apply d_setTask)
     | (with_reducible apply d_post)
     | (with_reducible apply d_showAll)
@@ -1292,8 +1330,10 @@ theorem d_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .die
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split
-    · have hI' : Dd { takes c (claimed s a (s.agt a).reading) a (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
-        d_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading) rfl (d_takes (d_setTask hI))
+    · have hI' : Dd { takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a
+          (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
+        d_frame (s := takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a
+          (s.agt a).reading) rfl (d_takes (d_giveNotes (d_setTask hI)))
       exact d_setAg' (by simpa using hI' a) hI'
     · d_tac
   all_goals (obtain ⟨hg, rfl⟩ := hs)

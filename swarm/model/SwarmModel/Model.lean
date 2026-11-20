@@ -21,7 +21,7 @@ inductive ASt where | unborn | working | idle | blocked | ended
   deriving DecidableEq, Repr, Inhabited
 /-- `check`: watchd's liveness check of a stayer; `merged`: watchd's poll marked the task done, its PR merged (reading it
 drops the belief, as `released`); `checks`: the poll told the owner its PR's checks finished (board #28) -/
-inductive Kind where | dm | answer | released | digest | nudge | check | merged | checks
+inductive Kind where | dm | answer | released | digest | nudge | check | merged | checks | note
   deriving DecidableEq, Repr, Inhabited
 /-- the events agents.digest reads (the Lua's event rows, and task.done_at, agent.ended): `task block` of t
 (`block`), t's question told to the communicator, or an hc prompt's (`task-blocked`, hc's or not), t done, slot a ended,
@@ -44,8 +44,8 @@ structure Pr where
   told : Bool := false
   deriving DecidableEq, Repr, Inhabited
 /-- what the communicator is told: a block (of task t; 0: an hc prompt with no claimed task), the user away, the user
-back (the questions that wait), a stayer hung (`task` is its slot) -/
-inductive NKind where | blocked | away | back | hung
+back (the questions that wait), a stayer hung (`task` is its slot), a note to a done task whose doer has ended (board #202) -/
+inductive NKind where | blocked | away | back | hung | note
   deriving DecidableEq, Repr, Inhabited
 structure Note where
   kind : NKind
@@ -179,6 +179,8 @@ structure Task where
   pr : Pr := {}
   /-- task.merged_at is set: watchd recorded its PR's merge (ci.pr_watch, ci.pr_ci) -/
   merged : Bool := false
+  /-- a note to it (`swarm post '#t'`, board #202) waits for its next owner: unread messages to `#t` -/
+  noted : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure Agent where
@@ -430,8 +432,16 @@ def deliver (s : State) (a : Nat) : State := showAll s a (unread s a)
 def takes (c : Cfg) (s : State) (a t : Nat) : State :=
   let s1 := setAg s a fun g => { g with believes := t :: g.believes }
   if c.answerOnTask && (s1.tk t).answer then { s1 with pend := s1.pend.filter (· != t) } else s1
+/-- the notes held on t (`n`: some were) given to a, its new owner (board #202): one message to a, which the delivery
+that ends the claim's tool call shows, as the claim's output does. A plain post: the claim moves no cursor of a's (the CLI
+reads the `#t` box, not a's inbox), and `claimWrite` has no empty-inbox guard to show it alone -/
+def giveNotes (s : State) (a t : Nat) (n : Bool) : State :=
+  if n then post s ⟨none, a, false, .note, t⟩ else s
+/-- t claimed by a; its held notes are a's now (`claim` shows them with `giveNotes`; a spawned agent's brief carries
+them) -/
 def claimed (s : State) (a t : Nat) : State :=
-  setTask s t fun k => { k with st := .claimed, owner := some a, lease := true, reaped := if k.reaped == some a then k.reaped else none }
+  setTask s t fun k =>
+    { k with st := .claimed, owner := some a, lease := true, noted := false, reaped := if k.reaped == some a then k.reaped else none }
 /-- the 350k fence on `task claim`: a big agent may take only what reap took from it -/
 def fenced (c : Cfg) (s : State) (a t : Nat) : Bool := (s.agt a).big && !(c.retake && (s.tk t).reaped == some a)
 /-- agents._release: every claim and lock of a -/
@@ -632,7 +642,7 @@ def awake (s : State) (a : Nat) : State :=
 /-- swarm task claim: refuses while a dependency isn't done, then writes `where state='open'`; and (board #53) refuses a
 stopped task, in the write's transaction -/
 def claim (c : Cfg) (s : State) (a t : Nat) : Option State :=
-  when (!c.racy && working s a && claimable s t && !fenced c s a t) (takes c (claimed s a t) a t)
+  when (!c.racy && working s a && claimable s t && !fenced c s a t) (takes c (giveNotes (claimed s a t) a t (s.tk t).noted) a t)
 /-- the same, as two steps: the dependency read, then the write -/
 def claimRead (c : Cfg) (s : State) (a t : Nat) : Option State :=
   when (c.racy && working s a && (s.agt a).reading == 0 && startable s t && !fenced c s a t) (setAg s a ({ · with reading := t }))
@@ -640,7 +650,7 @@ def claimWrite (c : Cfg) (s : State) (a : Nat) : Option State :=
   let t := (s.agt a).reading
   when (c.racy && t > 0) <|
     if (s.tk t).st == .opn && (depsDone s t || !c.claimChecksDeps) && !stopped s t then
-      setAg { takes c (claimed s a t) a t with early := s.early || !depsDone s t } a ({ · with reading := 0 })
+      setAg { takes c (giveNotes (claimed s a t) a t (s.tk t).noted) a t with early := s.early || !depsDone s t } a ({ · with reading := 0 })
     else setAg s a ({ · with reading := 0 })
 /-- the agent starts a background job, or it ends -/
 def bgStart (s : State) (a : Nat) : Option State := when (busy s a && !(s.agt a).bg) (setAg s a ({ · with bg := true }))
@@ -674,6 +684,22 @@ def unlock (s : State) (a p : Nat) : Option State :=
   when (working s a && (s.lock.getD p default).holder == some a) { s with lock := s.lock.set p ⟨none, false⟩ }
 def postTo (s : State) (a b : Nat) (urgent : Bool) : Option State :=
   when (working s a && b != a && (s.agt b).st != .unborn) (post s ⟨some a, b, urgent, .dm, 0⟩)
+/-- `swarm post '#t'` (board #202): a's note on task t goes to its owner while it holds t and is live; for a done or dropped
+task, to whoever did it while live, else to the communicator; else it is held on t (`noted`) for t's next owner, whose
+claim shows it (`giveNotes`). On a's own task it is only recorded. -/
+def noteOf (s : State) (a t : Nat) : State :=
+  let k := s.tk t
+  let held := setTask s t ({ · with noted := true })
+  let toC := tellC s ⟨.note, t, false, []⟩
+  match k.st with
+  | .claimed | .blocked => match k.owner with
+    | some o => if o == a then s else if (s.agt o).live then post s ⟨some a, o, false, .note, t⟩ else held
+    | none => held
+  | .done | .dropped => match k.owner with
+    | some o => if o != a && (s.agt o).live then post s ⟨some a, o, false, .note, t⟩ else toC
+    | none => toC
+  | _ => held
+def noteTo (s : State) (a t : Nat) : Option State := when (working s a && (s.tk t).st != .absent) (noteOf s a t)
 /-- swarm read, or a hook (prompt, post-tool): all unread, marked read -/
 def readAll (s : State) (a : Nat) : Option State :=
   when (busy s a && !(unread s a).isEmpty) (deliver s a)
@@ -988,7 +1014,7 @@ inductive Action where
   | bgStart (a : Nat) | bgEnd (a : Nat) | bgStall (a : Nat)
   | claim (a t : Nat) | claimRead (a t : Nat) | claimWrite (a : Nat) | renew (a t : Nat) | release (a t : Nat)
   | block (a t : Nat) | done (a t : Nat) (ev : Bool) | dropOwn (a t : Nat) | lock (a p : Nat) | unlock (a p : Nat)
-  | postTo (a b : Nat) (urgent : Bool) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
+  | postTo (a b : Nat) (urgent : Bool) | noteTo (a t : Nat) | readAll (a : Nat) | stop (a : Nat) (big : Bool)
   | wake (a : Nat) | wakeRead (a : Nat) | wakeWrite (a : Nat) | prompt (a : Nat) | boot (a : Nat)
   | git (a : Nat) (op : GitOp) | world (w : Nat) (op : WOp) | stale (a : Nat) | nudge (a : Nat) | hnudge (a : Nat)
   | stay (a : Nat) (on : Bool) | endStay (a : Nat) | stayCheck (a : Nat) | stayHung (a : Nat)
@@ -1005,7 +1031,7 @@ def step (c : Cfg) (s : State) : Action → Option State
   | .claim a t => claim c s a t | .claimRead a t => claimRead c s a t | .claimWrite a => claimWrite c s a
   | .renew a t => renew s a t | .release a t => release s a t | .block a t => block s a t
   | .done a t ev => done c s a t ev | .dropOwn a t => dropOwn s a t | .lock a p => lock c s a p
-  | .unlock a p => unlock s a p | .postTo a b u => postTo s a b u | .readAll a => readAll s a
+  | .unlock a p => unlock s a p | .postTo a b u => postTo s a b u | .noteTo a t => noteTo s a t | .readAll a => readAll s a
   | .stop a big => stop c s a big | .wake a => wake c s a | .wakeRead a => wakeRead c s a
   | .wakeWrite a => wakeWrite c s a | .prompt a => prompt s a | .boot a => boot c s a
   | .git a op => gitCmd c s a op | .world w op => world s w op | .stale a => stale s a | .nudge a => nudge c s a

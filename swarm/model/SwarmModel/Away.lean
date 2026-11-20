@@ -183,6 +183,10 @@ theorem side_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = so
     · exact ⟨[_], rfl, by simp⟩
     · exact ⟨[], by simp, by simp⟩
   case commsRead => obtain ⟨_, rfl⟩ := h; exact ⟨Or.inr ⟨rfl, rfl⟩, Or.inl rfl, [], by simp, by simp⟩
+  case noteTo a t =>
+    obtain ⟨_, rfl⟩ := h
+    obtain ⟨ns, hc, hk⟩ := noteOf_cbox s a t
+    exact ⟨Or.inl (by simp), Or.inl (by simp), ns, hc, fun n hn hb => by rw [hk n hn] at hb; cases hb⟩
   case unblock t =>
     split at h
     · rw [when_eq_some] at h; obtain ⟨_, rfl⟩ := h; exact ⟨Or.inl (by simp), Or.inl (by simp), [], by simp, by simp⟩

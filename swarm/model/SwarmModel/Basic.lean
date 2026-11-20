@@ -10,7 +10,7 @@ theorem when_eq_some {b : Bool} {x s' : State} : when b x = some s' ↔ b = true
 /-- turn `step c s act = some s'` into the action's guard and `s' = ..`, one goal per action -/
 macro "open_step" h:ident : tactic => `(tactic|
   (cases ‹Action› <;>
-   simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, readAll,
+   simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, noteTo, readAll,
      stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf, hcPrompt,
      hcClear, die, reapGone, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, leaseLate, holdHung, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, tick, openPr, push, merge, finish, ciRun, poll, when_eq_some] at $h:ident))
 
@@ -122,6 +122,11 @@ theorem doneHasEvidence_of_reachable {c : Cfg} (hfix : c.evidenceRequired = true
   case endOther a f => obtain ⟨_, rfl⟩ := hstep; exact evL_endAgent _ (by simpa using hs)
   case hcClear a => obtain ⟨_, rfl⟩ := hstep; simp; exact evL_map hs (by intro k hk; dsimp only; split <;> simp_all)
   case done a t ev => obtain ⟨hg, rfl⟩ := hstep; simp; exact evL_setTask _ hs (by intro k hk; simp_all)
+  case noteTo a t =>
+    obtain ⟨_, rfl⟩ := hstep
+    rcases noteOf_task s a t with e | e <;> rw [e]
+    · exact hs
+    · exact evL_setTask _ hs (by intro k hk; simp_all)
   case poll =>
     obtain ⟨_, rfl⟩ := hstep; rw [pollOf_task]
     exact evL_map hs fun k hk => by rcases prK_cases c s k with h | ⟨_, h⟩ | ⟨_, _, h⟩ | ⟨_, _, h⟩ <;> rw [h] <;> simp_all

@@ -145,6 +145,120 @@ theorem hcLog_ex (s : State) (t : Nat) : ∃ e', hcLog s t = { s with evs := e' 
 @[simp] theorem takes_seen (c : Cfg) (s : State) (a t : Nat) : (takes c s a t).seen = s.seen := by frame takes
 @[simp] theorem takes_early (c : Cfg) (s : State) (a t : Nat) : (takes c s a t).early = s.early := by frame takes
 
+-- board #202: `giveNotes` changes the log only, `noteOf` the task, log and the communicator's inbox
+theorem giveNotes_ex (s : State) (a t : Nat) (n : Bool) : ∃ lg, giveNotes s a t n = { s with log := lg } := by
+  unfold giveNotes; split
+  · exact ⟨_, rfl⟩
+  · exact ⟨s.log, rfl⟩
+theorem giveNotes_cases (s : State) (a t : Nat) (n : Bool) : giveNotes s a t n = s ∨
+    giveNotes s a t n = post s ⟨none, a, false, .note, t⟩ := by
+  unfold giveNotes; split
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+@[simp] theorem giveNotes_task (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).task = s.task := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_ag (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).ag = s.ag := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_lock (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).lock = s.lock := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_cursor (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).cursor = s.cursor := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_start (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).start = s.start := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_seen (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).seen = s.seen := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_pend (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).pend = s.pend := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_early (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).early = s.early := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_git (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).git = s.git := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_evs (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).evs = s.evs := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_away (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).away = s.away := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_cbox (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).cbox = s.cbox := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_ccur (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).ccur = s.ccur := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_digest (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).digest = s.digest := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_run (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).run = s.run := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_ci (s : State) (a t : Nat) (n : Bool) : (giveNotes s a t n).ci = s.ci := by
+  obtain ⟨_, h⟩ := giveNotes_ex s a t n; rw [h]
+@[simp] theorem giveNotes_tk (s : State) (a t : Nat) (n : Bool) (u : Nat) : (giveNotes s a t n).tk u = s.tk u := by
+  simp [State.tk]
+@[simp] theorem giveNotes_agt (s : State) (a t : Nat) (n : Bool) (b : Nat) : (giveNotes s a t n).agt b = s.agt b := by
+  simp [State.agt]
+theorem takes_giveNotes (c : Cfg) (s : State) (a t : Nat) (n : Bool) (b u : Nat) :
+    takes c (giveNotes s a t n) b u = giveNotes (takes c s b u) a t n := by
+  cases n
+  · rfl
+  · show takes c (post s _) b u = post (takes c s b u) _
+    unfold takes; simp only [setAg, post, State.tk]
+    split <;> split <;> first | rfl | (exfalso; simp_all)
+theorem giveNotes_log (s : State) (a t : Nat) (n : Bool) : ∃ e, (giveNotes s a t n).log = s.log ++ e := by
+  rcases giveNotes_cases s a t n with e | e <;> rw [e]
+  · exact ⟨[], by simp⟩
+  · exact ⟨[⟨none, a, false, .note, t⟩], by simp [post]⟩
+theorem noteOf_ex (s : State) (a t : Nat) : ∃ tk lg cb, noteOf s a t = { s with task := tk, log := lg, cbox := cb } := by
+  unfold noteOf; simp only []
+  (repeat' split) <;> first | exact ⟨_, _, _, rfl⟩ | (unfold setTask; split <;> exact ⟨_, _, _, rfl⟩)
+@[simp] theorem noteOf_ag (s : State) (a t : Nat) : (noteOf s a t).ag = s.ag := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_lock (s : State) (a t : Nat) : (noteOf s a t).lock = s.lock := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_cursor (s : State) (a t : Nat) : (noteOf s a t).cursor = s.cursor := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_start (s : State) (a t : Nat) : (noteOf s a t).start = s.start := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_seen (s : State) (a t : Nat) : (noteOf s a t).seen = s.seen := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_pend (s : State) (a t : Nat) : (noteOf s a t).pend = s.pend := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_early (s : State) (a t : Nat) : (noteOf s a t).early = s.early := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_git (s : State) (a t : Nat) : (noteOf s a t).git = s.git := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_evs (s : State) (a t : Nat) : (noteOf s a t).evs = s.evs := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_away (s : State) (a t : Nat) : (noteOf s a t).away = s.away := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_ccur (s : State) (a t : Nat) : (noteOf s a t).ccur = s.ccur := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_digest (s : State) (a t : Nat) : (noteOf s a t).digest = s.digest := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_run (s : State) (a t : Nat) : (noteOf s a t).run = s.run := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+@[simp] theorem noteOf_ci (s : State) (a t : Nat) : (noteOf s a t).ci = s.ci := by
+  obtain ⟨_, _, _, h⟩ := noteOf_ex s a t; rw [h]
+theorem noteOf_cases (s : State) (a t : Nat) : noteOf s a t = s ∨ (∃ o, noteOf s a t = post s ⟨some a, o, false, .note, t⟩) ∨
+    noteOf s a t = setTask s t ({ · with noted := true }) ∨ noteOf s a t = tellC s ⟨.note, t, false, []⟩ := by
+  unfold noteOf; simp only []
+  (repeat' split) <;>
+    first | (left; rfl) | (right; left; exact ⟨_, rfl⟩) | (right; right; left; rfl) | (right; right; right; rfl)
+
+theorem noteOf_log (s : State) (a t : Nat) : ∃ e, (noteOf s a t).log = s.log ++ e := by
+  rcases noteOf_cases s a t with e | ⟨o, e⟩ | e | e <;> rw [e]
+  · exact ⟨[], by simp⟩
+  · exact ⟨[⟨some a, o, false, .note, t⟩], by simp [post]⟩
+  · exact ⟨[], by simp⟩
+  · exact ⟨[], by simp⟩
+theorem noteOf_cbox (s : State) (a t : Nat) : ∃ ns, (noteOf s a t).cbox = s.cbox ++ ns ∧ ∀ n ∈ ns, n.kind = .note := by
+  rcases noteOf_cases s a t with e | ⟨_, e⟩ | e | e <;> rw [e]
+  · exact ⟨[], by simp, by simp⟩
+  · exact ⟨[], by simp [post], by simp⟩
+  · exact ⟨[], by unfold setTask; split <;> simp, by simp⟩
+  · exact ⟨[⟨.note, t, false, []⟩], rfl, by simp⟩
+theorem noteOf_task (s : State) (a t : Nat) :
+    (noteOf s a t).task = s.task ∨ (noteOf s a t).task = (setTask s t ({ · with noted := true })).task := by
+  rcases noteOf_cases s a t with e | ⟨_, e⟩ | e | e <;> rw [e]
+  · exact Or.inl rfl
+  · exact Or.inl rfl
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
 @[simp] theorem claimed_ag (s : State) (a t : Nat) : (claimed s a t).ag = s.ag := by frame claimed
 @[simp] theorem claimed_lock (s : State) (a t : Nat) : (claimed s a t).lock = s.lock := by frame claimed
 @[simp] theorem claimed_log (s : State) (a t : Nat) : (claimed s a t).log = s.log := by frame claimed

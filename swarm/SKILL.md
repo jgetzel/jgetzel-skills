@@ -150,6 +150,10 @@ with subagents.
 - **You hear two things:** messages addressed to you (questions for the human)
   and `watchd`'s blocked notices. Relay them to the user and answer agents on
   the user's word.
+- **A result for a task goes to the task**, not to an agent who may end: `swarm post '#N' "<text>"`
+  (also `task:N`) reaches N's live owner, else is held and printed by the next `task claim N` (or a spawn's
+  brief); on a done task it goes to whoever did it, else to you. `task show N` lists the notes. Tell external
+  tools (a timing queue, CI glue) to post a job's end line to its task, and to you only for a job with no task.
 - **Answer a blocked task** with `swarm task unblock <id> --answer "<text>"`; it DMs the owner.
 - **Landing.** An agent may hand a task whose branch passed its checks to a lander: `swarm task land <id> --sha <sha>
   [--lander <name>]` makes it landing (`#N landing <sha> by <lander> since HH:MM` on the board): not claimable, not

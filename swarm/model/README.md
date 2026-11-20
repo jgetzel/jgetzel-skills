@@ -41,7 +41,7 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Basic.lean` | induction over reachable states; S2 and S5 |
 | `SwarmModel/Glob.lean` | locks.lua's lock patterns lifted (`tokens`, `one`, `meet`, `covers`, `overlaps`), the glob semantics `gm`, and what they are: `covers_iff`, `overlaps_iff` (board #26) |
 | `SwarmModel/Locks.lean` | S3, and `noSharedFile_of_reachable`: S3 as files |
-| `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
+| `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick; board #202: `claim_posts_note`, a note held on a task (`noteTo`) is posted to its next claimer |
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2; #30, #31, P1-P2, stalls), and the same runs with the fix on |
 | `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck` (under #193's reap the lease notice or the hung check is enabled), `deadLive_not_stuck` |

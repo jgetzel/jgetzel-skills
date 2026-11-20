@@ -79,6 +79,39 @@ theorem takes_agt (c : Cfg) (s : State) (a t b : Nat) : ∃ bl, (takes c s a t).
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
 @[simp] theorem takes_dead (c : Cfg) (s : State) (a t b : Nat) : ((takes c s a t).agt b).dead = (s.agt b).dead := by
   obtain ⟨bl, e⟩ := takes_agt c s a t b; rw [e]
+-- board #202: a note posted to a task changes its `noted` only
+@[simp] theorem noteOf_agt (s : State) (a t b : Nat) : (noteOf s a t).agt b = s.agt b := agt_of_ag (noteOf_ag ..) b
+theorem noteOf_tk (s : State) (a t u : Nat) : ∃ n, (noteOf s a t).tk u = { s.tk u with noted := n } := by
+  rcases noteOf_task s a t with e | e
+  · exact ⟨_, by rw [tk_of_task e]⟩
+  · rw [tk_of_task e]
+    rcases tk_setTask_or s t u ({ · with noted := true }) with e2 | ⟨_, e2⟩ <;> rw [e2]
+    · exact ⟨_, rfl⟩
+    · exact ⟨_, rfl⟩
+@[simp] theorem noteOf_tk_st (s : State) (a t u : Nat) : ((noteOf s a t).tk u).st = (s.tk u).st := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_owner (s : State) (a t u : Nat) : ((noteOf s a t).tk u).owner = (s.tk u).owner := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_deps (s : State) (a t u : Nat) : ((noteOf s a t).tk u).deps = (s.tk u).deps := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_lease (s : State) (a t u : Nat) : ((noteOf s a t).tk u).lease = (s.tk u).lease := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_ev (s : State) (a t u : Nat) : ((noteOf s a t).tk u).ev = (s.tk u).ev := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_answer (s : State) (a t u : Nat) : ((noteOf s a t).tk u).answer = (s.tk u).answer := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_hcq (s : State) (a t u : Nat) : ((noteOf s a t).tk u).hcq = (s.tk u).hcq := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_reaped (s : State) (a t u : Nat) : ((noteOf s a t).tk u).reaped = (s.tk u).reaped := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_stopTo (s : State) (a t u : Nat) : ((noteOf s a t).tk u).stopTo = (s.tk u).stopTo := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_stopMsg (s : State) (a t u : Nat) : ((noteOf s a t).tk u).stopMsg = (s.tk u).stopMsg := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_pr (s : State) (a t u : Nat) : ((noteOf s a t).tk u).pr = (s.tk u).pr := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
+@[simp] theorem noteOf_tk_merged (s : State) (a t u : Nat) : ((noteOf s a t).tk u).merged = (s.tk u).merged := by
+  obtain ⟨_, e⟩ := noteOf_tk s a t u; rw [e]
 @[simp] theorem agt_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci b) :
     (State.mk task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci).agt b = ag.getD b default := rfl
 @[simp] theorem tk_mk (task ag lock log cursor start seen pend early git evs away cbox ccur digest run ci t) :
@@ -205,7 +238,7 @@ theorem persist {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.racy
     obtain ⟨_, rfl⟩ := hs
     refine ⟨fun h => by simpa using h, fun h => ?_, fun h => by simpa using h, fun h => by simpa using h, fun h => by simpa using h⟩
     rw [pollOf_tk]; rcases prK_cases c s (s.tk t) with e | ⟨_, e⟩ | ⟨_, _, e⟩ | ⟨_, _, e⟩ <;> rw [e] <;> simp [h]
-  all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
+  all_goals (simp [step, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, noteTo,
     readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock,
     hcPrompt, add, after, drop, releaseOther, endOther, awayOn, back, commsRead, when, hr, bgEnd, bgStall, gitCmd, world, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, leaseLate, holdHung] at hs hn)
   all_goals (try obtain ⟨hc, rfl⟩ := hs)

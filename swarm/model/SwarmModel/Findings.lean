@@ -499,4 +499,12 @@ theorem not_P2 : ¬ P2 cfg31 := not_P2_of (by decide : stall cfg31 pre31 .poll (
 open PrW in
 example : (prun {} (pre31 ++ [.poll])).any (fun w => (w.tk 0).st == .done && (w.agt 0).urgent) = true := by decide +kernel
 
+-- board #202: a note to an open task is held on it; its claimer gets it as a message, which it must read before its
+-- next command (`done` is refused until then), and reading it shows it once
+example : (run {} [.add [], .noteTo 0 1]).any (fun s => (s.tk 1).noted && s.log.isEmpty) = true := by decide +kernel
+example : (run {} [.add [], .noteTo 0 1, .claim 1 1]).any (fun s =>
+    !(s.tk 1).noted && unread s 1 == [1] && (step {} s (.done 1 1 true)).isNone) = true := by decide +kernel
+example : (run {} [.add [], .noteTo 0 1, .claim 1 1, .readAll 1, .noteTo 0 1]).any (fun s =>
+    inboxExact s && s.seen.getD 1 [] == [1] && unread s 1 == [2] && (s.msg 2).kind == .note) = true := by decide +kernel
+
 end Swarm

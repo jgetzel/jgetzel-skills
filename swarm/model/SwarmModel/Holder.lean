@@ -71,6 +71,13 @@ theorem gk_takes {c : Cfg} {s x : State} {a b t : Nat} (h : Gk s x a) : Gk s (ta
   obtain ⟨⟨⟨e, pe⟩, q⟩, h2⟩ := h
   refine ⟨⟨⟨e, by simpa using pe⟩, by simpa [State.cur] using q⟩, ?_⟩
   unfold Agent.live at h2 ⊢; simp only [takes_st]; exact h2
+theorem gk_giveNotes {s x : State} {a b t : Nat} {n : Bool} (h : Gk s x a) : Gk s (giveNotes x b t n) a := by
+  unfold giveNotes; split
+  · exact gk_post h
+  · exact h
+theorem gk_noteOf {s x : State} {a b t : Nat} (h : Gk s x a) : Gk s (noteOf x b t) a := by
+  obtain ⟨h1, h2⟩ := h
+  exact ⟨ext_trans h1 (ext_noteOf x b t a), by simpa using h2⟩
 theorem gk_setAg {s x : State} {a b : Nat} {f : Agent → Agent} (hf : ∀ g, g.live = true → (f g).live = true) (h : Gk s x a) :
     Gk s (setAg x b f) a := by
   obtain ⟨⟨⟨e, pe⟩, q⟩, h2⟩ := h
@@ -86,6 +93,8 @@ macro "gk_tac" : tactic => `(tactic|
   repeat (first
     | with_reducible assumption
     | (with_reducible apply gk_takes)
+    | (with_reducible apply gk_giveNotes)
+    | (with_reducible apply gk_noteOf)
     | (with_reducible apply gk_setTask)
     | (with_reducible apply gk_post)
     | (refine gk_setAg ?_ ?_ <;> first | (intro g hg; simp_all [Agent.live]; done) | skip)
@@ -117,8 +126,8 @@ theorem step_gen {c : Cfg} {s s' : State} {a : Nat} {act : Action}
   case claimWrite b =>
     obtain ⟨hg, rfl⟩ := hs
     split
-    · have hI' : Gk s { takes c (claimed s b (s.agt b).reading) b (s.agt b).reading with early := s.early || !depsDone s (s.agt b).reading } a :=
-        gk_frame (x := takes c (claimed s b (s.agt b).reading) b (s.agt b).reading) rfl rfl rfl (gk_takes (gk_setTask h0))
+    · have hI' : Gk s { takes c (giveNotes (claimed s b (s.agt b).reading) b (s.agt b).reading (s.tk (s.agt b).reading).noted) b (s.agt b).reading with early := s.early || !depsDone s (s.agt b).reading } a :=
+        gk_frame (x := takes c (giveNotes (claimed s b (s.agt b).reading) b (s.agt b).reading (s.tk (s.agt b).reading).noted) b (s.agt b).reading) rfl rfl rfl (gk_takes (gk_giveNotes (gk_setTask h0)))
       exact gk_setAg (fun g hg => by simp_all [Agent.live]) hI'
     · gk_tac
   all_goals (obtain ⟨hg, rfl⟩ := hs)
@@ -351,6 +360,7 @@ theorem gk_of_step {c : Cfg} {s s' : State} {a t : Nat} {act : Action} (hr : c.r
   | .lock b u, hs => exact step_gen (by simp) hl hs
   | .unlock b u, hs => exact step_gen (by simp) hl hs
   | .postTo b u v, hs => exact step_gen (by simp) hl hs
+  | .noteTo b u, hs => exact step_gen (by simp) hl hs
   | .stop b u, hs => exact step_gen (by simp) hl hs
   | .wakeRead b, hs => exact step_gen (by simp) hl hs
   | .git b op, hs => exact step_gen (by simp) hl hs
@@ -410,6 +420,8 @@ theorem bf_showAll {s : State} {a : Nat} {ids : List Nat} (h : Bf s) : Bf (showA
   rw [e]; exact h b
 theorem bf_setTask {s : State} {t : Nat} {f : Task → Task} (h : Bf s) : Bf (setTask s t f) := bf_frame (by simp) h
 theorem bf_post {s : State} {m : Msg} (h : Bf s) : Bf (post s m) := bf_frame (by simp) h
+theorem bf_giveNotes {s : State} {a t : Nat} {n : Bool} (h : Bf s) : Bf (giveNotes s a t n) := bf_frame (by simp) h
+theorem bf_noteOf {s : State} {a t : Nat} (h : Bf s) : Bf (noteOf s a t) := bf_frame (by simp) h
 
 theorem bf_endAgent {s : State} {a : Nat} (h : Bf s) : Bf (endAgent s a) := fun b => by
   rw [endAgent_agt]; split
@@ -437,6 +449,8 @@ macro "bf_tac" : tactic => `(tactic|
     | with_reducible assumption
     | (with_reducible apply bf_deliver)
     | (with_reducible apply bf_takes)
+    | (with_reducible apply bf_giveNotes)
+    | (with_reducible apply bf_noteOf)
     | (with_reducible apply bf_setTask)
     | (with_reducible apply bf_post)
     | (with_reducible apply bf_showAll)
@@ -458,8 +472,8 @@ theorem bf_step {c : Cfg} {s s' : State} {act : Action} (hq : ∀ b, act ≠ .bg
   case claimWrite a =>
     obtain ⟨hg, rfl⟩ := hs
     split
-    · have hI' : Bf { takes c (claimed s a (s.agt a).reading) a (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
-        bf_frame (s := takes c (claimed s a (s.agt a).reading) a (s.agt a).reading) rfl (bf_takes (bf_setTask hI))
+    · have hI' : Bf { takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a (s.agt a).reading with early := s.early || !depsDone s (s.agt a).reading } :=
+        bf_frame (s := takes c (giveNotes (claimed s a (s.agt a).reading) a (s.agt a).reading (s.tk (s.agt a).reading).noted) a (s.agt a).reading) rfl (bf_takes (bf_giveNotes (bf_setTask hI)))
       exact bf_setAg' (by simpa using hI' a) hI'
     · bf_tac
   all_goals (obtain ⟨hg, rfl⟩ := hs)

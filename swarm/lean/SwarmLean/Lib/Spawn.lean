@@ -3,6 +3,8 @@ import SwarmLean.Lib.Agents
 import SwarmLean.Lib.Ci
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
+import SwarmLean.Lib.Msgs
+import SwarmLean.Db.Notes
 
 /-! watchd.lua's spawn: the reservation, the agent's worktree, its brief and settings, launch.sh, and undoing all of
 it when the launch fails (cmd_spawn, launch_agent). -/
@@ -146,14 +148,15 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   let envComms ← env "SWARM_COMMS"
   let cwd ← Env.cwd
   let now ← Clock.now
+  -- with a task: its held notes (board #202), read here for the brief and marked given once the launch succeeds
   let r ← match a.taskId with
     | none => Store.txn [.agent, .«meta», .cursor] fun db =>
         let (db, e) := reserve db envComms name cwd (some a.model) now
-        (db, e.map fun () => none)
-    | some tid => Store.txn [.agent, .«meta», .cursor, .task] fun db =>
+        (db, e.map fun () => (none, []))
+    | some tid => Store.txn [.agent, .«meta», .cursor, .task, .msg] fun db =>
         let (db, e) := reserveTask db envComms name cwd tid (some a.model) now a.top
-        (db, e.map some)
-  let r ← match r with
+        (db, e.map fun r => (some r, Notes.held db tid))
+  let (r, notes) ← match r with
     | .ok r => pure r
     | .error e =>
       if let .refused _ := e then Store.txn [] fun db => (db.log now (some spawner) "spawn-refused" none (some name), ())
@@ -170,8 +173,10 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
     let mut task := task
     let mut wt : Option (String × String) := none
     if let (some tid, some r) := (a.taskId, r) then
+      let held ← Msgs.fmtMsgs notes
       task := s!"Board task #{d tid}: {r.title.getD ""}. It is claimed for you; `swarm task show {d tid}` prints it." ++
-        (match py r.body with | some b => "\n\n" ++ b | none => "") ++ (if task != "" then "\n\n" ++ task else "")
+        (match py r.body with | some b => "\n\n" ++ b | none => "") ++ (if task != "" then "\n\n" ++ task else "") ++
+        (if notes.isEmpty then "" else s!"\n\nNotes left on #{d tid} for its next owner:\n{held}")
     if a.taskId.isSome || a.attach.isSome then
       match a.attach with
       | some at_ =>
@@ -202,6 +207,13 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   Store.txn [.agent] fun db =>
     let db := db.setAgent name fun x => if x.hc.isNone then { x with hc := some addr } else x
     (db.log now (some spawner) "spawn" none (some name), ())
+  if let some tid := a.taskId then
+    -- the brief showed `notes`; a held note it missed (none: the task is the new agent's since the reservation) is sent
+    let last := notes.foldl (fun x n => max x n.id) 0
+    Store.txn [.msg, .cursor, .event] fun db =>
+      let (db, ns) := Notes.takeHeld name now tid db
+      ((ns.filter (·.id > last)).foldl (fun db n =>
+        (Msgs.post db now (n.frm.getD "") name s!"[#{d tid}] {n.body.getD ""}" (n.urgent.getD 0 != 0)).1) db, ())
   Env.out s!"spawned {name} at {strip out}"
   Env.out (← Machine.note)
   return .ok none

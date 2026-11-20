@@ -167,7 +167,7 @@ theorem git_step {c : Cfg} {s s' : State} {act : Action} (h : step c s act = som
     s'.git = s.git ∨ (∃ a op, act = .git a op) ∨ (∃ w op, act = .world w op) ∨ act = .tick := by
   cases act <;> first
     | (right; left; exact ⟨_, _, rfl⟩) | (right; right; left; exact ⟨_, _, rfl⟩) | (right; right; right; rfl)
-    | (left; simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo,
+    | (left; simp only [step, bgStart, bgEnd, bgStall, claim, claimRead, claimWrite, renew, release, block, done, dropOwn, lock, unlock, postTo, noteTo,
         readAll, stop, wake, wakeRead, wakeWrite, prompt, boot, waiterGone, age, cool, expire, expireLock, leave, leaveIf,
         hcPrompt, hcClear, die, reapGone, add, after, unblock, drop, releaseOther, endOther, awayOn, back, commsRead, stale, nudge, hnudge, stay, endStay, stayCheck, stayHung, leaseLate, holdHung, openPr, push, merge, finish, ciRun, poll, when] at h
        (repeat' split at h) <;> first | (simp only [Option.some.injEq] at h; subst h; simp; done) | simp at h)
