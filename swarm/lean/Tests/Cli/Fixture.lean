@@ -372,6 +372,8 @@ def new : IO T := do
   Shim.setenv "SWARM_COMPUTE_STAT" (d ++ "/stat")
   Shim.setenv "SWARM_COMPUTE_MEM" (d ++ "/meminfo")
   Shim.setenv "SWARM_COMPUTE_POLL_MS" "200"
+  -- the calling agent's session: the communicator's commands would record its transcript's context (board #206)
+  Shim.setenv "CLAUDE_CODE_SESSION_ID" ""
   let t : T := { d, repo := d ++ "/repo", wt := d ++ "/wt", db := d ++ "/swarm.db",
                  cwds := ← IO.mkRef [("a", d ++ "/repo"), ("b", d ++ "/wt")], fakebinR := ← IO.mkRef none,
                  launchR := ← IO.mkRef none, cleanups := ← IO.mkRef #[] }
