@@ -14,7 +14,7 @@ your name is in `$SWARM_NAME`.
   A compaction ends your stay (watchd says so in its continue line): `swarm stay` again if it still holds.
 - **The board.** Run `swarm board` first. Looking for work, take the first startable entry of `swarm queue`, else
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
-  on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work,
+  on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work (watchd keeps a live holder's lapsed claim, and tells you when it lapses),
   `swarm task done <id> --evidence "<command output or sha>"` to finish. Add tasks for what you find
   (`swarm task add "<title>" [--body-file -] [--after N] [--label a,b]`; `task edit` changes one); split a task that is too big.
   The body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list, `- `

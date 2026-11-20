@@ -146,7 +146,7 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   Lua kept in module tables between ticks (NOT_LANDED, LAST_TICK_ERR, cost's memory) is `Cmd.Watchd.St`, threaded
   through the loop. auto_spawn calls `Spawn.spawnE`, which returns a refused or lost reservation and a failed launch's
   reason (launch_err) instead of exiting; `spawn` is it with the old exits. `keeps` is the model's
-  `Decide.keepsL` on the owner row's columns, so `keeps_lifted` is about the code that runs (the lakefiles build
+  `Decide.keepsL` on the owner row's columns (and whether it compacts, board #193), so `keeps_lifted` is about the code that runs (the lakefiles build
   Decide.lean and what it imports from ../model, as they build Glob.lean). fate and end_why were ported before
   (Lifecycle, #100/#113) as monadic reads made only when needed; #106 ties them to `Decide.fateRec`/`endWhyL`
   (`Proofs/Watchd.lean`: `fateHeard_rec`, `endWhy_lifted`, stated with `Sat`, a postcondition that holds whatever each

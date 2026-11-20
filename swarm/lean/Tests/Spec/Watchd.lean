@@ -348,7 +348,7 @@ def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   t.q_ "insert into task(title,state,owner,question) values('q','blocked','x','which way?')"
   let armed ← IO.mkRef true
   h.before.set fun ts => do
-    if (← armed.get) && ts == [.task, .agent] then armed.set false; throw (IO.userError "boom")
+    if (← armed.get) && ts == [.task, .agent, .event] then armed.set false; throw (IO.userError "boom")
   let err ← tick h
   has (err.getD "") "reap: boom"
   exists_ t "select 1 from msg where dest='t-comms' and body like '%is blocked on #1%'"

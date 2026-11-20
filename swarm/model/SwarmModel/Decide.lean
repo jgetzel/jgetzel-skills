@@ -26,11 +26,13 @@ def nz : Option String → Bool
   | some s => s != ""
   | none => false
 
-/-- watchd.keeps(o, bg, live_addrs): `live` is the live addresses, `none` when hc can't tell -/
-def keepsL (o : Option ARow) (bg : Bool) (live : Option (List String)) : Bool :=
+/-- watchd.keeps(o, bg, compacting, live_addrs): `compacting` is the owner in a compaction the swarm asked for (board
+#193: its turn ends and it goes idle before the compaction runs); `live` is the live addresses, `none` when hc can't
+tell -/
+def keepsL (o : Option ARow) (bg compacting : Bool) (live : Option (List String)) : Bool :=
   match o with
   | none => false
-  | some o => o.ended.isNone && (o.status != "idle" || bg)
+  | some o => o.ended.isNone && (o.status != "idle" || bg || compacting)
       && !(live.isSome && nz o.hc && !(live.getD []).contains (o.hc.getD ""))
 
 /-- an hc terminal as lifecycle reads it -/
@@ -100,22 +102,23 @@ def liveOf (c : Cfg) (s : State) : Option (List String) :=
   if c.hcSees then some ((c.agents.filter fun a => !(s.agt a).dead).map toString) else none
 
 /-- reap's decision is the model's `keeps`, on the current Cfg (`release` idle, `bgKeeps`), except for an owner whose
-bound terminal hc no longer lists: the Lua reopens its task, the model keeps it until `reapGone` (`keeps_gap`) -/
+bound terminal hc no longer lists: the Lua reopens its task, the model keeps it until `reapGone` (`keeps_gap`). The
+model has no compaction: `compacting` is false -/
 theorem keeps_lifted {c : Cfg} {s : State} {a : Nat} (hr : c.release = .idle) (hb : c.bgKeeps = true)
     (ha : a < c.nagents) (hd : ¬(c.hcSees = true ∧ c.unbound.contains a = false ∧ (s.agt a).dead = true)) :
-    keepsL (keepRow c a (s.agt a)) (s.agt a).bg (liveOf c s) = keeps c (s.agt a) := by
+    keepsL (keepRow c a (s.agt a)) (s.agt a).bg false (liveOf c s) = keeps c (s.agt a) := by
   have hlive : (s.agt a).dead = false → c.hcSees = true →
       ((c.agents.filter fun b => !(s.agt b).dead).map toString).contains (toString a) = true := by
     intro hd' _
     simp only [List.contains_iff_mem, List.mem_map, List.mem_filter, Cfg.agents, List.mem_range]
     exact ⟨a, ⟨ha, by simp [hd']⟩, rfl⟩
-  simp only [keeps, hr, hb, Bool.true_and, keepsL, keepRow, liveOf, Agent.live]
+  simp only [keeps, hr, hb, Bool.true_and, Bool.or_false, keepsL, keepRow, liveOf, Agent.live]
   cases hst : (s.agt a).st <;> cases hdd : (s.agt a).dead <;> cases hs : c.hcSees <;>
     cases hu : c.unbound.contains a <;> simp_all [statusOf, nz]
 
 /-- the gap: a working owner whose bound terminal is gone keeps its lapsed claim in the model, not in the Lua -/
 theorem keeps_gap : ∃ (c : Cfg) (s : State),
-    keepsL (keepRow c 0 (s.agt 0)) (s.agt 0).bg (liveOf c s) = false ∧ keeps c (s.agt 0) = true :=
+    keepsL (keepRow c 0 (s.agt 0)) (s.agt 0).bg false (liveOf c s) = false ∧ keeps c (s.agt 0) = true :=
   ⟨{}, { (default : State) with ag := [{ (default : Agent) with st := .working, dead := true }] }, by decide, by decide⟩
 
 /-- slot a's row as lifecycle reads it at time t, with no hc terminals (as the replay): `aged` is idle 2 min, `big` a

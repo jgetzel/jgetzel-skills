@@ -408,13 +408,13 @@ theorem endWhy_stayer {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) 
 /-! ## Reap's decision: `Watchd.keeps` -/
 
 /-- `Decide.keeps_lifted` is about the code that runs: watchd's `keeps` is `Decide.keepsL` on the owner row. -/
-theorem keeps_eq (o : Option Agent) (bg : Bool) (live : Option (List String)) :
-    Watchd.keeps o bg live = Decide.keepsL (o.map Watchd.keepRow) bg live := rfl
+theorem keeps_eq (o : Option Agent) (bg cp : Bool) (live : Option (List String)) :
+    Watchd.keeps o bg cp live = Decide.keepsL (o.map Watchd.keepRow) bg cp live := rfl
 
-/-- What keeps a lapsed claim, on the Lean row: a live owner, working, prompt-blocked or running a background job,
-unless hc answered and no longer lists its bound terminal. -/
-theorem keeps_iff (o : Option Agent) (bg : Bool) (live : Option (List String)) :
-    Watchd.keeps o bg live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some "idle" ∨ bg = true) ∧
+/-- What keeps a lapsed claim for its work, on the Lean row: a live owner, working, prompt-blocked, running a
+background job or compacting, unless hc answered and no longer lists its bound terminal. -/
+theorem keeps_iff (o : Option Agent) (bg cp : Bool) (live : Option (List String)) :
+    Watchd.keeps o bg cp live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some "idle" ∨ bg = true ∨ cp = true) ∧
       ¬ (live.isSome = true ∧ (py a.hc).isSome = true ∧ (live.getD []).contains (a.hc.getD "") = false) := by
   cases o with
   | none => simp [keeps_eq, Decide.keepsL]
@@ -426,19 +426,46 @@ theorem keeps_iff (o : Option Agent) (bg : Bool) (live : Option (List String)) :
     simp only [keeps_eq, Option.map_some, Decide.keepsL, Watchd.keepRow, Bool.and_eq_true, Bool.or_eq_true,
       Bool.not_eq_true', Option.isNone_iff_eq_none, Option.map_eq_none_iff, hs, ← py_isSome]
     constructor
-    · rintro ⟨⟨h1, h2⟩, h3⟩; exact ⟨a, rfl, h1, h2, by simp_all⟩
-    · rintro ⟨_, ⟨⟩, h1, h2, h3⟩; exact ⟨⟨h1, h2⟩, by simp_all⟩
+    · rintro ⟨⟨h1, h2⟩, h3⟩; exact ⟨a, rfl, h1, or_assoc.1 h2, by simp_all⟩
+    · rintro ⟨_, ⟨⟩, h1, h2, h3⟩; exact ⟨⟨h1, or_assoc.2 h2⟩, by simp_all⟩
 
 /-- N1 (2), reap never reopens a claim whose live owner's job runs: such an owner keeps it, unless hc answered without
 its bound terminal (then its job died with the terminal: the row is reaped as gone). -/
-theorem keeps_bg {a : Agent} {live : Option (List String)} (he : a.ended = none)
+theorem keeps_bg {a : Agent} {cp : Bool} {live : Option (List String)} (he : a.ended = none)
     (hl : ∀ up, live = some up → (py a.hc).isSome = true → up.contains (a.hc.getD "") = true) :
-    Watchd.keeps (some a) true live = true := by
-  refine (keeps_iff _ _ _).2 ⟨a, rfl, he, .inr rfl, ?_⟩
+    Watchd.keeps (some a) true cp live = true := by
+  refine (keeps_iff _ _ _ _).2 ⟨a, rfl, he, .inr (.inl rfl), ?_⟩
   rintro ⟨h1, h2, h3⟩
   cases live with
   | none => simp at h1
   | some up => simp_all
+
+/-- Board #193: reap never reopens a claim whose live owner is in a compaction the swarm asked for (its turn ended and
+it reads as idle), unless hc answered without its bound terminal. -/
+theorem keeps_compacting {a : Agent} {bg : Bool} {live : Option (List String)} (he : a.ended = none)
+    (hl : ∀ up, live = some up → (py a.hc).isSome = true → up.contains (a.hc.getD "") = true) :
+    Watchd.keeps (some a) bg true live = true := by
+  refine (keeps_iff _ _ _ _).2 ⟨a, rfl, he, .inr (.inr rfl), ?_⟩
+  rintro ⟨h1, h2, h3⟩
+  cases live with
+  | none => simp at h1
+  | some up => simp_all
+
+/-- Board #193: what keeps a lapsed claim for its owner being live: not ended, bound to a terminal, not hung, and hc
+lists that terminal or can't tell. -/
+theorem lives_iff (o : Option Agent) (hung : Bool) (live : Option (List String)) :
+    Watchd.lives o hung live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (py a.hc).isSome = true ∧ hung = false ∧
+      ∀ up, live = some up → up.contains (a.hc.getD "") = true := by
+  cases o with
+  | none => simp [Watchd.lives]
+  | some a =>
+    cases live with
+    | none => simp [Watchd.lives, Option.isNone_iff_eq_none, and_assoc]
+    | some up => simp [Watchd.lives, Option.isNone_iff_eq_none, and_assoc]
+
+/-- A hung owner never lives: only `keeps` (its work) can keep its lapsed claim. -/
+theorem lives_hung (o : Option Agent) (live : Option (List String)) : Watchd.lives o true live = false := by
+  cases o <;> simp [Watchd.lives]
 
 /-! ## watchd's poll of a PR: `Ci.prAct` is `Decide.prActL` -/
 
