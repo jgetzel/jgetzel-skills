@@ -125,7 +125,30 @@ def test_claim_run_all_is_exclusive_and_refuses_mem (t : T) : IO Unit := do
   until_ (exists_ (t.d ++ "/rc"))
   eq (strip (← readF [t.d, "o"])) "alone"
 
+def test_claim_queue_shows_beside_the_claims (t : T) : IO Unit := do
+  hcWith t
+  eq (← claim t ["queue", "add", "here", "--id", "tq-1", "--who", "hpl-1", "--est", "1200", "--ttl", "600", "--owner", "timing-queue", "--", "timing", "run"]).code 0
+  let x ← claim t ["here"]
+  has x.stdout "  queued: hpl-1 timing run (owner timing-queue) ~20m, since 0s"
+  let j ← claim t ["--json", "here"]
+  has j.stdout "\"queued\":[{"; has j.stdout "\"owner\":\"timing-queue\""; has j.stdout "\"est_s\":1200"
+  -- the claim ledger is untouched
+  has x.stdout "0 of 8 cores claimed"
+  eq (← claim t ["queue", "add", "here", "--id", "tq-2", "--who", "w", "--pid", toString (← IO.Process.getPID), "--", "c"]).code 0
+  eq (← claim t ["queue", "rm", "here", "tq-1"]).code 0
+  hasnt (← claim t ["here"]).stdout "timing run"; has (← claim t ["here"]).stdout "queued: w c "
+  eq (← claim t ["queue", "rm", "here", "tq-2"]).code 0
+  has (← claim t ["--json", "here"]).stdout "\"queued\":[]"
+  -- arguments
+  eq (← claim t ["queue", "add", "here", "--who", "w", "--", "c"]).code 1
+  eq (← claim t ["queue", "add", "here", "--id", "a", "--", "c"]).code 1
+  eq (← claim t ["queue", "add", "here", "--id", "a", "--who", "w"]).code 1
+  eq (← claim t ["queue", "add", "here", "--id", "a", "--who", "w", "--ttl", "0", "--", "c"]).code 1
+  eq (← claim t ["queue", "add", "laptop", "--id", "a", "--who", "w", "--pid", "1", "--", "c"]).code 1
+  eq (← claim t ["queue", "add", "nowhere", "--id", "a", "--who", "w", "--", "c"]).code 1
+
 def tests : List Case := [
+  ("test_claim_queue_shows_beside_the_claims", test_claim_queue_shows_beside_the_claims),
   ("test_claim_help", test_claim_help),
   ("test_claim_show_and_op_outside_a_repo", test_claim_show_and_op_outside_a_repo),
   ("test_claim_cap_off_on", test_claim_cap_off_on),
