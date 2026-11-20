@@ -357,6 +357,7 @@ def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option 
     if let .error e ← Guard.guard (hung t c terms opts.interval) then errs := errs ++ ["hung: " ++ e]
     if let .error e ← Guard.guard (commsInbox t c) then errs := errs ++ ["comms inbox: " ++ e]
     if let .error e ← Guard.guard (blockers t c opts.blockerIdle) then errs := errs ++ ["blockers: " ++ e]
+    if let .error e ← Guard.guard (landingLate t c) then errs := errs ++ ["landing-late: " ++ e]
     if let some ts := terms then
       if let .error e ← Guard.guard (compactPass ts c) then errs := errs ++ ["compact: " ++ e]
       if let .error e ← Guard.guard (apiErrorPass ts c) then errs := errs ++ ["api-error: " ++ e]

@@ -146,6 +146,12 @@ with subagents.
   and `watchd`'s blocked notices. Relay them to the user and answer agents on
   the user's word.
 - **Answer a blocked task** with `swarm task unblock <id> --answer "<text>"`; it DMs the owner.
+- **Landing.** An agent may hand a task whose branch passed its checks to a lander: `swarm task land <id> --sha <sha>
+  [--lander <name>]` makes it landing (`#N landing <sha> by <lander> since HH:MM` on the board): not claimable, not
+  the owner's to hold (it may take the next task or end), its `--after` dependants still waiting. Its lander (the one
+  named, any agent whose role says lander, or you) closes it: `swarm task done <id> --evidence <sha>` once that sha is
+  on the task's base (git checks), or `swarm task unland <id> --why "<text>"`: open again at P1 (unless lower), the
+  reason appended to its body, the former owner and you told. A landing task with neither for 2 h is told to you once.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.

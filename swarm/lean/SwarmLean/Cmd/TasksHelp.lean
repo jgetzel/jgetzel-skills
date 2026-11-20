@@ -4,7 +4,7 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   hold\n   unhold"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   land\n   unland\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   hold\n   unhold"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
@@ -44,7 +44,15 @@ def helpTaskShow : String :=
 
 /-- `swarm task done -h`. -/
 def helpTaskDone : String :=
-  "Usage: swarm task done [-h] --evidence <evidence> <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --evidence <evidence>"
+  "Usage: swarm task done [-h] --evidence <evidence> <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --evidence <evidence>\n                         a landing task's: a commit on the task's base (its lander closes it)"
+
+/-- `swarm task land -h`. -/
+def helpTaskLand : String :=
+  "Usage: swarm task land [-h] --sha <sha> [--lander <lander>] <id>\n\nYour claimed task's work passed its checks at <sha>: hand it to a lander. The task is landing: no longer yours\n(take the next task or go idle) and not claimable; its --after dependants wait until it is done. Its lander, an\nagent with role lander or the communicator closes it with `task done --evidence <sha on its base>` or `task unland`.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --sha <sha>           the commit that passed its checks\n   --lander <lander>     the agent to land it (told now); default: any lander"
+
+/-- `swarm task unland -h`. -/
+def helpTaskUnland : String :=
+  "Usage: swarm task unland [-h] --why <why> <id>\n\nA lander gives a landing task back: open again at P1 (unless already lower), with why appended to its body;\nits former owner, if live, and the communicator are told.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why <why>           why it did not land"
 
 /-- `swarm task block -h`. -/
 def helpTaskBlock : String :=
@@ -84,7 +92,7 @@ def helpRulesSet : String :=
 
 /-- `swarm board -h`. -/
 def helpBoard : String :=
-  "Usage: swarm board [-h] [--all]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --all"
+  "Usage: swarm board [-h] [--all] [--json]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --all\n   --json                the Board's snapshot, as `swarm state --json --view board` prints it"
 
 /-- `swarm  -h`. -/
 def helpRoot : String :=

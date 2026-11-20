@@ -32,6 +32,8 @@ def taskSpec : Spec :=
     .mk "renew" helpTaskRenew [idArg] [leaseOpt] [] [] none,
     .mk "show" helpTaskShow [idArg] [] [] [] none,
     .mk "done" helpTaskDone [idArg] [{ opt "--evidence" with minCount := 1 }] [] [] none,
+    .mk "land" helpTaskLand [idArg] [{ opt "--sha" with minCount := 1 }, opt "--lander"] [] [] none,
+    .mk "unland" helpTaskUnland [idArg] [{ opt "--why" with minCount := 1 }] [] [] none,
     .mk "block" helpTaskBlock [idArg, { name := "question" }] [] [] [] none,
     .mk "unblock" helpTaskUnblock [idArg] [opt "--answer" (some "")] [] [] none,
     .mk "release" helpTaskRelease [idArg] [opt "--after" none (some idList)] [] [] none,
@@ -53,7 +55,7 @@ def rulesSpec : Spec :=
     [.mk "show" helpRulesShow [] [] [] [] none, .mk "set" helpRulesSet [{ name := "text", maxArgs := 1000000 }] [] [] [] none])
 
 /-- The `board` parser. -/
-def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all"] [] [] none
+def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all", flag "--json"] [] [] none
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m]
 
@@ -63,6 +65,25 @@ def ctx : m Tasks.Ctx := do
 
 /-- Runs a task step in one transaction over `ts`, dying with its error. -/
 def step (ts : List Table) (f : Db → Db × Except String α) : m α := do orDie (← Store.txn ts f)
+
+/-- Evidence `e` (its first word) names a commit on base `b` (the task's, else the default): local or origin's, fetched
+first (board #200). -/
+def evidenceOnBase (e : String) (base : Option String) : m Bool := do
+  let cwd := some (← Env.cwd)
+  let some w := (words e).head? | return false
+  let some sha := (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", w ++ "^{commit}"] cwd).map strip
+    | return false
+  let b ← Bases.baseFor base cwd
+  let anc (r : String) : m Bool := return (← Git.git ["merge-base", "--is-ancestor", sha, r] cwd).isSome
+  if (GitRef.parse? b).isSome && (← anc b) then return true
+  Bases.fetch b cwd
+  match ← Bases.remoteRef b cwd with
+  | some r => anc r
+  | none => return false
+
+/-- A landing task's line: `#N landing <sha> by <lander> since HH:MM (from <owner>)`. -/
+def landingLine (r : Task) : m String := do
+  return s!"{landingText r.id r} since {← Clock.hhmm (r.landing_at.getD 0)}{match py r.owner with | some o => " (from " ++ o ++ ")" | none => ""}"
 
 /-- `task show`'s text (tasks.lua's show branch). -/
 def showText (db : Db) (r : Task) : m String := do
@@ -78,6 +99,7 @@ def showText (db : Db) (r : Task) : m String := do
       let data := if data.startsWith "#" && !ds.isEmpty && ((data.drop (1 + ds.length)).startsWith " ") then
         (data.drop (2 + ds.length)).toString else data
       s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {data}"
+  if r.state = .landing then s := s ++ "\n" ++ (← landingLine r)
   s := s ++ "\npriority: P" ++ d (r.priority.getD DEFAULT_PRIORITY)
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
   if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
@@ -135,7 +157,13 @@ def task (a : Parsed) : m UInt32 := do
     let u ← step [.task] (renew c id ((a.str "lease").getD "2h"))
     out s!"renewed #{d id} until {← Clock.hhmm u}"
   | "done" =>
-    match ← step [.task, .agent, .cursor, .«meta»] (Queue.done c id ((a.str "evidence").getD "")) with
+    let ev := (a.str "evidence").getD ""
+    let r0 ← Store.txn [.task] fun db => (db, db.find id)
+    let onBase ← match r0 with
+      | some r => if r.state = .landing then evidenceOnBase ev r.base else pure false
+      | none => pure false
+    match ← step [.task, .agent, .cursor, .«meta»] (Queue.done { c with onBase } id ev) with
+    | .landed o => out s!"done #{d id}: landed{match py o with | some o => ", handed over by " ++ o | none => ""}"
     | .red => out s!"#{d id} released: your fix is recorded, the task stays open and held until a green run closes it (a newer red run reopens it). Go idle."
     | .done k stay n =>
       out s!"done #{d id}"
@@ -146,6 +174,20 @@ def task (a : Parsed) : m UInt32 := do
         if k * 1000 < below && n > 0 then
           out s!"context ~{k}k: go idle. Once your work lands watchd offers you related startable tasks, if any; else it ends you."
         else out s!"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work."
+  | "land" =>
+    let given := (a.str "sha").getD ""
+    let sha ← match (words given).head? with
+      | some w => match ← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", w ++ "^{commit}"] (some (← Env.cwd)) with
+        | some s => pure (strip s)
+        | none => die s!"--sha {given}: no such commit here"
+      | none => pure ""
+    step [.task, .agent] (land c id sha (a.str "lander"))
+    let db ← Store.txn [.task] fun db => (db, db)
+    if let some r := db.find id then out (← landingLine r)
+    out s!"it is no longer yours: take the next task or go idle. Its lander closes it: `swarm task done {d id} --evidence <sha on its base>`, or `swarm task unland {d id} --why \"…\"`."
+  | "unland" =>
+    let u ← step [.task, .agent, .«meta»] (unland c id ((a.str "why").getD ""))
+    out s!"unlanded #{d id}: open again at P{d u.priority}{match py u.owner with | some o => ", " ++ o ++ " and the communicator told" | none => ""}"
   | "block" =>
     let away ← step [.task, .«meta»] (block c id ((a.str "question").getD ""))
     out s!"blocked #{d id}; {if away then "the user is away: park this and take work that doesn't need the answer." else "watchd tells the communicator."} It stays yours until `swarm task unblock`."
@@ -171,7 +213,7 @@ def task (a : Parsed) : m UInt32 := do
     let db ← Store.txn [.task] fun db => (db, db)
     out s!"#{d id} labels: {match (db.find id).map labelsOf with | some l@(_ :: _) => ", ".intercalate l | _ => "none"}"
   | "drop" =>
-    let ws ← step [.task, .«meta»] (Queue.drop c id)
+    let ws ← step [.task, .agent, .«meta»] (Queue.drop c id)
     out s!"dropped #{d id}"
     for w in ws do out s!"#{d w.id} waits on #{d id}: drop it too, or `swarm task after {d w.id} …`"
   | "hold" =>
@@ -193,7 +235,7 @@ def board (a : Parsed) : m UInt32 := do
   let role (o : Option String) : Option String :=
     o.bind fun n => (db.agents.find? fun x => x.name == n && x.ended.isNone).bind (·.role)
   let red (t : Task) : Nat := if redKey t == 1 && t.state ≠ .done then 1 else 0
-  let rows := (db.tasks.filter fun t => all || t.state = .open || t.state = .claimed || t.state = .blocked).mergeSort
+  let rows := (db.tasks.filter fun t => all || Queue.onBoard t).mergeSort
     (boardLe red)
   out (limitsLine db (← env "SWARM_COMMS"))
   if let some h := db.getMeta "spawn_held" then out (h.v.getD "nil")
@@ -202,6 +244,8 @@ def board (a : Parsed) : m UInt32 := do
     let pr := s!"  [P{d (r.priority.getD DEFAULT_PRIORITY)}]"
     if r.state = .blocked then
       out s!"#{d r.id} blocked by {who}: {r.question.getD "None"}  {r.title.getD ""}{pr}"
+    else if r.state = .landing then
+      out s!"{← landingLine r}  {r.title.getD ""}{pr}"
     else
       let lease := if r.state = .claimed then
         let left := r.lease_until.getD 0 - now

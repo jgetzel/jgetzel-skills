@@ -73,13 +73,16 @@ theorem tcmd_grows (c : TCmd) (db : Db) (h0 : 0 < db.msgNext) : Inbox.Grows db (
     | (unfold Tasks.renew; repeat' split) | (unfold Tasks.done; repeat' split)
     | (unfold Tasks.block; repeat' split) | (unfold Tasks.unblock; dsimp only; repeat' split)
     | (unfold Tasks.edit; dsimp only; repeat' split)
-    | (unfold Tasks.drop; repeat' split) | skip
+    | (unfold Tasks.drop; repeat' split)
+    | (unfold Tasks.land; dsimp only; repeat' split) | (unfold Tasks.unland; dsimp only; repeat' split) | skip
   all_goals first
     | exact Inbox.grows_refl _
     | exact Inbox.grows_of_eq rfl rfl rfl
     | exact Inbox.grows_trans (Inbox.grows_of_eq rfl rfl rfl) (Inbox.grows_post _ _ _ _ _ _ _)
     | exact Inbox.grows_trans (Inbox.grows_trans (Inbox.grows_of_eq rfl rfl rfl) (Inbox.grows_post _ _ _ _ _ _ _))
         (Inbox.grows_of_eq rfl rfl rfl)
+    | exact Inbox.grows_trans (Inbox.grows_trans (Inbox.grows_of_eq rfl rfl rfl) (Inbox.grows_post _ _ _ _ _ _ _))
+        (Inbox.grows_post _ _ _ _ _ _ _)
     | exact Inbox.grows_trans (Inbox.grows_touch _ _ _ _ _ h0) (Inbox.grows_of_eq rfl rfl rfl)
     | exact Inbox.grows_touch _ _ _ _ _ h0
     | (have hs := setDeps_same ‹Tasks.setDeps _ _ _ = .ok _›
@@ -100,7 +103,8 @@ theorem tcmd_frame (c : TCmd) (db : Db) : (c.step db).1.locks = db.locks ∧ Loc
     | (unfold Tasks.renew; repeat' split) | (unfold Tasks.done; repeat' split)
     | (unfold Tasks.block; repeat' split) | (unfold Tasks.unblock; dsimp only; repeat' split)
     | (unfold Tasks.edit; dsimp only; repeat' split)
-    | (unfold Tasks.drop; repeat' split) | skip
+    | (unfold Tasks.drop; repeat' split)
+    | (unfold Tasks.land; dsimp only; repeat' split) | (unfold Tasks.unland; dsimp only; repeat' split) | skip
   all_goals first
     | exact ⟨rfl, Locks.grows_refl rfl⟩
     | exact Locks.grows_refl rfl
@@ -201,6 +205,8 @@ def toT : Cmd → TCmd
   | .add c a => .add c a
   | .claim c i l => .claim c i l
   | .release c i af => .release c i af
+  | .land c i s l => .land c i s l
+  | .unland c i w => .unland c i w
   | .board => .board
 
 theorem toT_step (c : Cmd) (db : Db) : (c.step db).1 = ((toT c).step db).1 := by cases c <;> rfl

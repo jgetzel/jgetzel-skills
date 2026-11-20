@@ -67,7 +67,7 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   events: Lx(Ox({ kind: Tx, ts: Nx, data: Px, branch: Tx, subject: Tx, path: Tx }), 500), files: Lx(Tx, 500), cache: Tx, branch: Tx,
   worktree: Tx, ended: Nx, role: Tx, started: Nx, cold_at: Nx, cold_guarded: Bx,
   messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, urgent: Bx }), 200) }); // --agent: its own messages
-const task = Ox({ id: Nx, state: Tx, owner: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
+const task = Ox({ id: Nx, state: Tx, owner: Tx, lander: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
   claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20) });
@@ -669,6 +669,7 @@ export function boardRows(s) {
   const rows = tasks.filter((k) => undone.has(k.id)).map((k) => {
     const after = (k.deps ?? []).filter((d) => undone.has(d));
     const [state, tone] = k.state === "blocked" ? ["waiting on you", "blocked"] : k.state === "claimed" ? [k.owner ?? "claimed", "muted"]
+      : k.state === "landing" ? [`landing · ${k.lander ?? "a lander"}`, "muted"]
       : k.hold ? ["held", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"] : ["ready", "foreground"];
     return { k, state, tone, rank: { blocked: 0, muted: 1, foreground: 2, dim: 3 }[tone] };
   });
@@ -681,7 +682,8 @@ export function queueRows(s) {
   let first = true;
   return tasks.filter((k) => k.qpos != null && undone.has(k.id)).sort((x, y) => x.qpos - y.qpos).map((k) => {
     const after = (k.deps ?? []).filter((d) => undone.has(d));
-    const why = k.state === "blocked" ? "waits on you" : k.state === "claimed" ? `${k.owner ?? "someone"} has it` : k.hold ? `held: ${k.hold}`
+    const why = k.state === "blocked" ? "waits on you" : k.state === "claimed" ? `${k.owner ?? "someone"} has it`
+      : k.state === "landing" ? `landing by ${k.lander ?? "a lander"}` : k.hold ? `held: ${k.hold}`
       : after.length ? `waits on ${after.map((d) => `#${d}`).join(", ")}` : first ? "next" : "ready";
     if (why === "next") first = false;
     return { k, why };

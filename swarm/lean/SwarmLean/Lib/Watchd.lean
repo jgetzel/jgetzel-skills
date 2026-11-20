@@ -352,11 +352,11 @@ def unclean (a : Agent) (wt b : String) (t : Int) (comms : String) : m Unit := d
       (say db now comms (s!"{n} is idle {mins} min, kept only by its unclean worktree {wt} " ++
         s!"({if same then "nudged once, idle again and still unclean" else "no live waiter, so not nudged"}):\n{shown}") false "system", ())
 
-/-- On the edge into quiet (no task open, claimed or blocked, only stayers and comms live; re-armed by a task add or
+/-- On the edge into quiet (no task open, claimed, blocked or landing, only stayers and comms live; re-armed by a task add or
 claim): each wakeable stayer is asked once whether its stay is over, and comms gets one notice (watchd.quiet). -/
 def quiet (t : Int) (comms : String) : m Unit := do
   let db ← Store.txn [.task, .event, .agent, .«meta»] fun db => (db, db)
-  if db.tasks.any fun x => x.state = .open || x.state = .claimed || x.state = .blocked then return
+  if db.tasks.any fun x => x.state = .open || x.state = .claimed || x.state = .blocked || x.state = .landing then return
   let q := ((db.events.filter (·.kind == some "quiet")).getLast?.map (·.id)).getD 0
   if !db.events.any fun e => (e.kind == some "task-add" || e.kind == some "claim") && e.id > q then return
   let envComms ← env "SWARM_COMMS"
@@ -405,6 +405,28 @@ def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
         let db := db.log now (some n) "blocker-nudge" none (some (toString w))
         let db := say db now n "What are you waiting on? Can you continue without it/land without it?" true "system"
         (say db now comms s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
+
+/-- How long a landing task waits for its lander before the communicator is told (board #200). -/
+def LANDING_LATE : Int := 7200
+
+/-- Landing task `r` (read before) handed over LANDING_LATE before `t` and still landing at the same commit: the
+communicator told, once per task and commit (a `landing-late` event marks it). -/
+def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
+  match db.find r.id with
+  | some x =>
+    if x.state = .landing && x.land_sha == r.land_sha && x.landing_at.any (· ≤ t - LANDING_LATE) &&
+        !db.events.any (fun e => e.kind == some "landing-late" && e.path == some (d r.id) && e.data == x.land_sha) then
+      let db := db.log t x.owner "landing-late" (some (d r.id)) x.land_sha
+      say db t comms (s!"{Tasks.landingText r.id x} has waited {fdiv (t - x.landing_at.getD t) 60} min with no " ++
+        s!"`task done` or `task unland`{match py x.owner with | some o => " (" ++ o ++ " handed it over)" | none => ""}.") false "notice"
+    else db
+  | none => db
+
+/-- The landing tasks no lander closed within LANDING_LATE, each told to the communicator once (`landingLate1`). -/
+def landingLate (t : Int) (comms : String) : m Unit := do
+  let db ← Store.txn [.task] fun db => (db, db)
+  for r in db.tasks.filter fun x => x.state = .landing && x.landing_at.any (· ≤ t - LANDING_LATE) do
+    Store.txn [.task, .event] fun db => (landingLate1 r t comms db, ())
 
 /-- Ends `n`'s stay if its `--until` condition holds (board #195): the stay cleared, its claimed tasks' leases renewed
 2 h, and "Your wait is over: <cond> (<detail>)" sent. Whether it woke. -/

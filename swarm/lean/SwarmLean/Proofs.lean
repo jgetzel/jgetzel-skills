@@ -12,6 +12,8 @@ inductive Cmd
   | add (c : Tasks.Ctx) (a : AddArgs)
   | claim (c : Tasks.Ctx) (i : Int) (lease : String)
   | release (c : Tasks.Ctx) (i : Int) (after : Option (List Int))
+  | land (c : Tasks.Ctx) (i : Int) (sha : String) (lander : Option String)
+  | unland (c : Tasks.Ctx) (i : Int) (why : String)
   | board
 
 /-- What a command answers. -/
@@ -19,6 +21,8 @@ inductive Result
   | added (r : Except String Nat)
   | claimed (r : Except String Claimed)
   | released (r : Except String (Option String))
+  | landed (r : Except String Unit)
+  | unlanded (r : Except String Unlanded)
   | board (tasks : List Task)
 
 /-- A command's whole effect on the db, and its answer: the CLI's own step functions. -/
@@ -26,6 +30,8 @@ def Cmd.step : Cmd → Db → Db × Result
   | .add c a, db => ((Tasks.add c a db).1, .added (Tasks.add c a db).2)
   | .claim c i l, db => ((Tasks.claim c i l db).1, .claimed (Tasks.claim c i l db).2)
   | .release c i af, db => ((Tasks.release c i af db).1, .released (Tasks.release c i af db).2)
+  | .land c i s l, db => ((Tasks.land c i s l db).1, .landed (Tasks.land c i s l db).2)
+  | .unland c i w, db => ((Tasks.unland c i w db).1, .unlanded (Tasks.unland c i w db).2)
   | .board, db => (db, .board db.tasks)
 
 /-- A task's owner fits its state: a claimed task has an owner, an open one has none. -/
@@ -50,9 +56,10 @@ def ClaimedOf (i : Int) : Cmd × Result → Bool
   | (.claim _ j _, .claimed (.ok _)) => j == i
   | _ => false
 
-/-- A successful release of task `i`. -/
+/-- A successful release of task `i`, or a successful unland of it (board #200: a lander gives it back, open). -/
 def ReleasedOf (i : Int) : Cmd × Result → Bool
   | (.release _ j _, .released (.ok _)) => j == i
+  | (.unland _ j _, .unlanded (.ok _)) => j == i
   | _ => false
 
 /-! Frame lemmas: what each part of a step leaves of the task table. -/
@@ -186,6 +193,48 @@ theorem release_spec (c : Tasks.Ctx) (i : Int) (af : Option (List Int)) (db : Db
         · refine ⟨by simp [n2], .inr ⟨g2 ∘ g1, fun u => ?_, by simp [e12], _, rfl⟩⟩
           simp [(hg2 _).1, (hg2 _).2.1, (hg2 _).2.2, (hg1 u).1, (hg1 u).2.1, (hg1 u).2.2]
 
+theorem land_spec (c : Tasks.Ctx) (i : Int) (s : String) (l : Option String) (db : Db) :
+    (Tasks.land c i s l db).1.taskNext = db.taskNext ∧
+    (((Tasks.land c i s l db).1.tasks = db.tasks ∧ ∀ x, (Tasks.land c i s l db).2 ≠ .ok x) ∨
+     (∃ r g, db.find i = some r ∧ r.state = .claimed ∧ r.owner = some c.me ∧
+        (∀ u, (g u).id = u.id ∧ (g u).state = .landing ∧ (g u).owner = u.owner) ∧
+        (Tasks.land c i s l db).1.tasks = (db.set i g).tasks ∧ ∃ x, (Tasks.land c i s l db).2 = .ok x)) := by
+  unfold Tasks.land
+  split
+  · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+  · rename_i r hr
+    split
+    · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+    · split
+      · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+      · split
+        · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+        · rename_i ho hs
+          dsimp only
+          repeat' split
+          all_goals exact ⟨rfl, .inr ⟨r, landF _ _ c.now, hr, by simpa using hs, by simpa using ho, fun _ => ⟨rfl, rfl, rfl⟩, rfl, _, rfl⟩⟩
+
+theorem unland_spec (c : Tasks.Ctx) (i : Int) (w : String) (db : Db) :
+    (Tasks.unland c i w db).1.taskNext = db.taskNext ∧
+    (((Tasks.unland c i w db).1.tasks = db.tasks ∧ ∀ x, (Tasks.unland c i w db).2 ≠ .ok x) ∨
+     (∃ r g, db.find i = some r ∧ r.state = .landing ∧
+        (∀ u, (g u).id = u.id ∧ (g u).state = .open ∧ (g u).owner = none) ∧
+        (Tasks.unland c i w db).1.tasks = (db.set i g).tasks ∧ ∃ x, (Tasks.unland c i w db).2 = .ok x)) := by
+  unfold Tasks.unland
+  split
+  · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+  · rename_i r hr
+    split
+    · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+    · rename_i hs
+      split
+      · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+      · split
+        · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
+        · dsimp only
+          repeat' split
+          all_goals exact ⟨rfl, .inr ⟨r, unlandF c.me _, hr, by simpa using hs, fun _ => ⟨rfl, rfl, rfl⟩, rfl, _, rfl⟩⟩
+
 /-! The invariant. -/
 
 theorem inv_empty : Inv {} := by simp [Inv]
@@ -242,6 +291,18 @@ theorem step_inv (c : Cmd) (db : Db) (h : Inv db) : Inv (c.step db).1 := by
     · exact inv_congr ht hn h
     · refine set_spec_inv (fun u => ⟨(hg u).1, ?_⟩) ht hn h
       unfold Task.Owned; rw [(hg u).2.1, (hg u).2.2]; exact ⟨fun e => (by cases e), fun _ => rfl⟩
+  | land c i s l =>
+    obtain ⟨hn, hs⟩ := land_spec c i s l db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
+    · exact inv_congr ht hn h
+    · refine set_spec_inv (fun u => ⟨(hg u).1, ?_⟩) ht hn h
+      unfold Task.Owned; rw [(hg u).2.1]; exact ⟨fun e => (by cases e), fun e => (by cases e)⟩
+  | unland c i w =>
+    obtain ⟨hn, hs⟩ := unland_spec c i w db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, -⟩
+    · exact inv_congr ht hn h
+    · refine set_spec_inv (fun u => ⟨(hg u).1, ?_⟩) ht hn h
+      unfold Task.Owned; rw [(hg u).2.1, (hg u).2.2]; exact ⟨fun e => (by cases e), fun _ => rfl⟩
   | board => exact h
 
 theorem replay_inv (db : Db) (cs : List Cmd) (h : Inv db) : Inv (replay Cmd.step db cs).1 := by
@@ -274,8 +335,8 @@ theorem one_owner (cs : List Cmd) (i : Int) (a b : String) (ha : Owns (run cs) i
 
 /-! One claim wins. -/
 
-/-- Task `i` is claimed in `db`. -/
-def Held (db : Db) (i : Int) : Prop := ∃ t, db.find i = some t ∧ t.state = .claimed
+/-- Task `i` is claimed in `db`, or landing: handed to a lander, which no claim takes (board #200). -/
+def Held (db : Db) (i : Int) : Prop := ∃ t, db.find i = some t ∧ (t.state = .claimed ∨ t.state = .landing)
 
 theorem find_set (db : Db) (i j : Int) (f : Task → Task) (hf : ∀ t, (f t).id = t.id) :
     (db.set j f).find i = (db.find i).map fun t => if (t.id : Int) = j then f t else t := by
@@ -297,12 +358,12 @@ theorem claimed_held (c : Tasks.Ctx) (i : Int) (l : String) (db : Db) (x : Claim
     (h : (Tasks.claim c i l db).2 = .ok x) : Held (Tasks.claim c i l db).1 i := by
   obtain ⟨-, ⟨-, hne⟩ | ⟨t, g, hf, -, hg, ht, -⟩⟩ := claim_spec c i l db
   · exact absurd h (hne x)
-  · refine ⟨g t, ?_, (hg t).2.1⟩
+  · refine ⟨g t, ?_, .inl (hg t).2.1⟩
     rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hf]
     simp [find_id hf]
 
-/-- From a db where task `i` is claimed, a command other than its successful release keeps it claimed and is not a
-successful claim of it. -/
+/-- From a db where task `i` is held (claimed or landing), a command other than its successful release keeps it held
+and is not a successful claim of it. -/
 theorem held_step (db : Db) (i : Int) (c : Cmd) (h : Held db i) (hr : ReleasedOf i (c, (c.step db).2) = false) :
     Held (c.step db).1 i ∧ ClaimedOf i (c, (c.step db).2) = false := by
   cases c with
@@ -325,7 +386,7 @@ theorem held_step (db : Db) (i : Int) (c : Cmd) (h : Held db i) (hr : ReleasedOf
         | error _ => rfl
         | ok x => exact absurd e (hne x)
     · have hij : j ≠ i := fun e => by
-        subst e; obtain ⟨u, hu, hs⟩ := h; rw [hf] at hu; cases hu; rw [hs] at ho; cases ho
+        subst e; obtain ⟨u, hu, hs⟩ := h; rw [hf] at hu; cases hu; rcases hs with hs | hs <;> rw [hs] at ho <;> cases ho
       refine ⟨(held_set (fun u => (hg u).1) hij ht h : Held (Tasks.claim c j l db).1 i), ?_⟩
       show ClaimedOf i (.claim c j l, .claimed (Tasks.claim c j l db).2) = false
       rw [hx]; simp [ClaimedOf, hij]
@@ -338,6 +399,30 @@ theorem held_step (db : Db) (i : Int) (c : Cmd) (h : Held db i) (hr : ReleasedOf
     · have hij : j ≠ i := fun e => by
         subst e
         have hs : ((Cmd.release c j af).step db).2 = .released (.ok x) := by simp only [Cmd.step, hx]
+        rw [hs] at hr; simp [ReleasedOf] at hr
+      exact held_set (fun u => (hg u).1) hij ht h
+  | land c j s l =>
+    refine ⟨?_, rfl⟩
+    show Held (Tasks.land c j s l db).1 i
+    obtain ⟨-, hs⟩ := land_spec c j s l db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
+    · obtain ⟨u, hu, hs⟩ := h; exact ⟨u, by rw [find_congr ht]; exact hu, hs⟩
+    · by_cases hij : j = i
+      · subst hij
+        obtain ⟨u, hu, -⟩ := h
+        refine ⟨g u, ?_, .inr (hg u).2.1⟩
+        rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hu]
+        simp [find_id hu]
+      · exact held_set (fun u => (hg u).1) hij ht h
+  | unland c j w =>
+    refine ⟨?_, rfl⟩
+    show Held (Tasks.unland c j w db).1 i
+    obtain ⟨-, hs⟩ := unland_spec c j w db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, x, hx⟩
+    · obtain ⟨u, hu, hs⟩ := h; exact ⟨u, by rw [find_congr ht]; exact hu, hs⟩
+    · have hij : j ≠ i := fun e => by
+        subst e
+        have hs : ((Cmd.unland c j w).step db).2 = .unlanded (.ok x) := by simp only [Cmd.step, hx]
         rw [hs] at hr; simp [ReleasedOf] at hr
       exact held_set (fun u => (hg u).1) hij ht h
   | board => exact ⟨h, rfl⟩
@@ -362,7 +447,7 @@ theorem claimed_step {db : Db} {cc : Tasks.Ctx} {i : Int} {l : String} {x : Clai
     (h : ((Cmd.claim cc i l).step db).2 = .claimed (.ok x)) : (Tasks.claim cc i l db).2 = .ok x := by
   simp only [Cmd.step, Result.claimed.injEq] at h; exact h
 
-/-- From a db where task `i` is claimed, a later successful claim of it comes after a successful release of it. -/
+/-- From a db where task `i` is held, a later successful claim of it comes after a successful release of it. -/
 theorem held_claimed (db : Db) (i : Int) (cs : List Cmd) (h : Held db i) (t2 t3 : List (Cmd × Result)) (b : Cmd × Result)
     (hb : ClaimedOf i b = true) (e : trace db cs = t2 ++ b :: t3) : ∃ x ∈ t2, ReleasedOf i x := by
   induction cs generalizing db t2 with
@@ -403,7 +488,7 @@ theorem claimed_once (db : Db) (cs : List Cmd) (i : Int) (a b : Cmd × Result) (
       simp only [List.cons_append, List.append_assoc, List.cons.injEq] at e
       exact ih _ t1 (by simpa using e.2)
 
-/-- From a db where task `i` is claimed, with no successful release of it, no command successfully claims it. -/
+/-- From a db where task `i` is held, with no successful release of it, no command successfully claims it. -/
 theorem claims_held (db : Db) (i : Int) (cs : List Cmd) (h : Held db i)
     (hr : ∀ x ∈ trace db cs, ReleasedOf i x = false) : (trace db cs).filter (ClaimedOf i) = [] := by
   induction cs generalizing db with

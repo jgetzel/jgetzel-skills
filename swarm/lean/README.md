@@ -59,7 +59,13 @@ from it. Each command's effect is stated (`after_spec` … `drop_spec`); the use
 another's task (H2) is always allowed on a claimed or blocked task, reopens it, records the stop and sends the ex-owner
 one urgent message, and changes nothing else. The board's order is a total preorder and `task board` and the pool are
 sorted by it; the pool is exactly the open tasks with no undone dependency and no stop pending; `task done` frees the
-tasks waiting on it and `release --after` makes the task wait (F1's board half).
+tasks waiting on it and `release --after` makes the task wait (F1's board half). Landing (board #200): `task land` and
+`task unland` are among the commands of every theorem above; a landing task counts as held for the one-claim theorems
+(`Held`: claimed or landing), an unland as a release (it reopens the task); no claim of a landing task succeeds
+(`claim_landing`), a task after one stays out of the pool (`landing_waits`), a landing task is closed only by its
+lander with evidence git found on its base (`done_landing`), the lander's close frees the tasks waiting on it as
+`task done` does (`landed_frees`), and `task land` hands over only its owner's claimed task
+(`land_ok`).
 
 **Queue and holds** (`Proofs/Queue.lean`, board #128). `queue add`, `queue rm`, and the renumbering that `task done`,
 `task drop` and watchd's done marks end with keep the queued tasks' places a permutation of 1..n (`QInv`) and change

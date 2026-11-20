@@ -21,6 +21,8 @@ inductive TCmd
   | release (c : Ctx) (i : Int) (after : Option (List Int))
   | edit (c : Ctx) (i : Int) (a : EditArgs)
   | drop (c : Ctx) (i : Int)
+  | land (c : Ctx) (i : Int) (sha : String) (lander : Option String)
+  | unland (c : Ctx) (i : Int) (why : String)
   | board
 
 /-- A command's effect on the db and whether it succeeded: the CLI's own step functions. -/
@@ -36,6 +38,8 @@ def TCmd.step : TCmd → Db → Db × Bool
   | .release c i af, db => ((Tasks.release c i af db).1, (Tasks.release c i af db).2.toBool)
   | .edit c i a, db => ((Tasks.edit c i a db).1, (Tasks.edit c i a db).2.toBool)
   | .drop c i, db => ((Tasks.drop c i db).1, (Tasks.drop c i db).2.toBool)
+  | .land c i s l, db => ((Tasks.land c i s l db).1, (Tasks.land c i s l db).2.toBool)
+  | .unland c i w, db => ((Tasks.unland c i w db).1, (Tasks.unland c i w db).2.toBool)
   | .board, db => (db, true)
 
 /-- The db after `cs` from `db`. -/
@@ -137,6 +141,13 @@ theorem done_spec (c : Ctx) (i : Int) (e : String) (db : Db) :
     · rename_i hs
       have ev : EvOk (some e) := ⟨e, rfl, by simpa using hs⟩
       split
+      · -- a landing task: its lander closes it
+        split
+        · exact .inl ⟨rfl, rfl⟩
+        · split
+          · exact .inl ⟨rfl, rfl⟩
+          · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro; exact ⟨rfl, rfl, ev, .inr rfl⟩
+      split
       · exact .inl ⟨rfl, rfl⟩
       · rename_i hm
         split
@@ -188,7 +199,9 @@ theorem drop_spec (c : Ctx) (i : Int) (db : Db) :
     · exact .inl ⟨rfl, rfl⟩
     · split
       · exact .inl ⟨rfl, rfl⟩
-      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
+      · split
+        · exact .inl ⟨rfl, rfl⟩
+        · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
 
 /-! The invariant, over every command. -/
 
@@ -236,8 +249,8 @@ theorem ok_of_open {v : Task} (h : v.state = .open) (ho : v.owner = none) : Task
   simp [TaskOk, Task.Owned, DoneEv, h, ho]
 
 /-- A task in a state other than open and claimed fits any owner and, unless done, needs no evidence. -/
-theorem ok_of_state {v : Task} (h : v.state = .blocked ∨ v.state = .dropped) : TaskOk v := by
-  rcases h with h | h <;> exact ⟨⟨fun e => (by rw [h] at e; cases e), fun e => (by rw [h] at e; cases e)⟩,
+theorem ok_of_state {v : Task} (h : v.state = .blocked ∨ v.state = .dropped ∨ v.state = .landing) : TaskOk v := by
+  rcases h with h | h | h <;> exact ⟨⟨fun e => (by rw [h] at e; cases e), fun e => (by rw [h] at e; cases e)⟩,
     fun e => (by rw [h] at e; cases e)⟩
 
 theorem keeps_step {db db' : Db} {i : Int}
@@ -300,7 +313,17 @@ theorem step_binv (c : TCmd) (db : Db) (h : BInv db) : BInv (c.step db).1 := by
   | drop c i =>
     rcases drop_spec c i db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
     · exact binv_same ht hn h
-    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_state (.inr (hf u).2.2)) ht hn h
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_state (.inr (.inl (hf u).2.2))) ht hn h
+  | land c i s l =>
+    obtain ⟨hn, hs⟩ := land_spec c i s l db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
+    · exact binv_same ht hn h
+    · exact binv_set (fun u => (hg u).1) (fun u _ _ _ => ok_of_state (.inr (.inr (hg u).2.1))) ht hn h
+  | unland c i w =>
+    obtain ⟨hn, hs⟩ := unland_spec c i w db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, -⟩
+    · exact binv_same ht hn h
+    · exact binv_set (fun u => (hg u).1) (fun u _ _ _ => ok_of_open (hg u).2.1 (hg u).2.2) ht hn h
   | board => exact h
 
 theorem binv_empty : BInv {} := ⟨inv_empty, by simp⟩
@@ -352,10 +375,12 @@ def ClaimedOf (i : Int) : TCmd × Bool → Bool
   | (.claim _ j _, true) => j == i
   | _ => false
 
-/-- A successful release of task `i`, or a successful done of it (a red task's done reopens it). -/
+/-- A successful release of task `i`, or a successful done of it (a red task's done reopens it), or a successful
+unland of it (its lander gives it back, open). -/
 def ReleasedOf (i : Int) : TCmd × Bool → Bool
   | (.release _ j _, true) => j == i
   | (.done _ j _, true) => j == i
+  | (.unland _ j _, true) => j == i
   | _ => false
 
 /-- Task `i` is on the board and not open. -/
@@ -387,6 +412,9 @@ theorem claimedOf_claim (i j : Int) (cc : Ctx) (l : String) (b : Bool) :
 
 theorem releasedOf_release (i j : Int) (cc : Ctx) (af : Option (List Int)) (b : Bool) :
     ReleasedOf i (.release cc j af, b) = (b && (j == i)) := by cases b <;> rfl
+
+theorem releasedOf_unland (i j : Int) (cc : Ctx) (w : String) (b : Bool) :
+    ReleasedOf i (.unland cc j w, b) = (b && (j == i)) := by cases b <;> rfl
 
 /-- From a db where task `i` is taken, a command other than its successful release keeps it taken and is not a
 successful claim of it. -/
@@ -471,6 +499,24 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     rcases drop_spec cc j db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hf u).1) (fun _ u _ => by rw [(hf u).2.2]; exact nofun) ht h
+  | land cc j s l =>
+    refine ⟨?_, rfl⟩
+    obtain ⟨-, hs⟩ := land_spec cc j s l db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
+    · exact taken_same ht h
+    · exact taken_set (fun u => (hg u).1) (fun _ u _ => by rw [(hg u).2.1]; exact nofun) ht h
+  | unland cc j w =>
+    show Taken (Tasks.unland cc j w db).1 i ∧ false = false
+    refine ⟨?_, rfl⟩
+    obtain ⟨-, hs⟩ := unland_spec cc j w db
+    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, x, hx⟩
+    · exact taken_same ht h
+    · have hij : j ≠ i := fun e => by
+        subst e
+        have : ReleasedOf j (.unland cc j w, (Tasks.unland cc j w db).2.toBool) = true := by
+          rw [releasedOf_unland, hx]; simp [Except.toBool]
+        exact absurd this (by rw [show ((TCmd.unland cc j w).step db).2 = (Tasks.unland cc j w db).2.toBool from rfl] at hr; simp [hr])
+      exact taken_set (fun u => (hg u).1) (fun e => absurd e hij) ht h
   | board => exact ⟨h, rfl⟩
 
 theorem trace_cons (db : Db) (c : TCmd) (cs : List TCmd) :
@@ -648,12 +694,19 @@ theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Op
   · cases hd
   rename_i h1
   split at hd
+  · split at hd
+    · cases hd
+    split at hd
+    · cases hd
+    cases hd
+  rename_i hl
+  split at hd
   · cases hd
   rename_i h2
   split at hd
   · cases hd
   rename_i h3
-  simp only [h1, h2, h3, Bool.false_eq_true, ↓reduceIte]
+  simp only [h1, hl, h2, h3, Bool.false_eq_true, ↓reduceIte]
   have hrc : r.state = .claimed := by simp [mine] at h2; exact h2.2
   have hne : (h.id : Int) ≠ x := fun e => by
     obtain rfl := find_unique hi.1 hr hm e; rw [ho] at hrc; cases hrc
@@ -672,6 +725,51 @@ theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Op
       · simp only [e, ↓reduceIte] at hyd hwy
         exact absurd (hw y hy hyd hwy) e
   · rw [stopPending_congr rfl rfl]; exact hs
+
+/-- F1 for a lander's close (board #200): a `task done` of landing task `x` puts in the pool an open task with no stop
+pending that waits on no task not done but `x`. -/
+theorem landed_frees {c : Ctx} {x : Int} {e : String} {db : Db} {o : Option String}
+    (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.landed o)) {h : Task} (hm : h ∈ db.tasks)
+    (ho : h.state = .open) (hs : stopPending db h = false)
+    (hw : ∀ y ∈ db.tasks, y.state ≠ .done → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 := by
+  unfold Tasks.done at hd ⊢
+  split at hd
+  · cases hd
+  rename_i r hr
+  split at hd
+  · cases hd
+  rename_i h1
+  split at hd
+  · rename_i hl
+    split at hd
+    · cases hd
+    rename_i h2
+    split at hd
+    · cases hd
+    rename_i h3
+    simp only [h1, hl, h2, h3, Bool.false_eq_true, ↓reduceIte]
+    have hne : (h.id : Int) ≠ x := fun e => by
+      obtain rfl := find_unique hi.1 hr hm e; rw [ho] at hl; cases hl
+    rw [mem_pool]
+    refine ⟨?_, ho, ?_, ?_⟩
+    · show h ∈ (db.set x _).tasks
+      simp only [Db.set, List.mem_map]
+      exact ⟨h, hm, by simp [hne]⟩
+    · cases hb : blockedByDeps _ h
+      · rfl
+      · obtain ⟨y', hy', hyd, hwy⟩ := (blockedByDeps_iff _ _).1 hb
+        simp only [Db.log, Db.set, List.mem_map] at hy'
+        obtain ⟨y, hy, rfl⟩ := hy'
+        by_cases e : (y.id : Int) = x
+        · simp [e] at hyd
+        · simp only [e, ↓reduceIte] at hyd hwy
+          exact absurd (hw y hy hyd hwy) e
+    · rw [stopPending_congr rfl rfl]; exact hs
+  · split at hd
+    · cases hd
+    split at hd
+    · cases hd
+    · simp at hd
 
 /-- F1, `release_waits`: a `task release` of `x` frees nothing: a task that waits on `x` is not in the pool after it. -/
 theorem release_waits {c : Ctx} {x : Int} {af : Option (List Int)} {db : Db} {o : Option String}
@@ -1048,6 +1146,62 @@ theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.state
   | block cc j q => exact block_done cc j q db i h
   | unblock cc j a => exact unblock_done cc j a db i h
   | drop cc j => exact drop_done cc j db i h
+  | land cc j s l =>
+    obtain ⟨-, hs⟩ := land_spec cc j s l db
+    rcases hs with ⟨ht, -⟩ | ⟨r, g, hr, hrs, -, hg, ht, -⟩
+    · exact done_same ht h
+    · exact done_set (i := i) (fun u => (hg u).1) (fun r' hr' => by rw [hr] at hr'; cases hr'; rw [hrs]; nofun) ht h
+  | unland cc j w =>
+    obtain ⟨-, hs⟩ := unland_spec cc j w db
+    rcases hs with ⟨ht, -⟩ | ⟨r, g, hr, hrs, hg, ht, -⟩
+    · exact done_same ht h
+    · exact done_set (i := i) (fun u => (hg u).1) (fun r' hr' => by rw [hr] at hr'; cases hr'; rw [hrs]; nofun) ht h
   | board => exact h
+
+/-! Landing (board #200). -/
+
+/-- A landing task is not claimable: `task claim` of it fails. -/
+theorem claim_landing {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} (hr : db.find i = some r)
+    (hs : r.state = .landing) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x := by
+  intro hx
+  obtain ⟨-, ⟨-, hne⟩ | ⟨t, -, hf, ho, -⟩⟩ := claim_spec c i l db
+  · exact hne x hx
+  · rw [hr] at hf; cases hf; rw [hs] at ho; cases ho
+
+/-- A landing task's dependants keep waiting: a task that waits on it is not in the pool. -/
+theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.state = .landing) (hw : WaitsOn h x) :
+    h ∉ pool db := by
+  intro hp
+  have hb := ((mem_pool _ _).1 hp).2.2.1
+  rw [(blockedByDeps_iff _ _).2 ⟨x, hx, by rw [hs]; nofun, hw⟩] at hb; cases hb
+
+/-- A landing task is closed only by its lander (the one named, an agent with role lander, or the communicator), and
+only with evidence git found on the task's base. -/
+theorem done_landing {c : Ctx} {i : Int} {e : String} {db : Db} {r : Task} {x : DoneOut} (hr : db.find i = some r)
+    (hs : r.state = .landing) (h : (Tasks.done c i e db).2 = .ok x) :
+    isLander db c.comms c.me r = true ∧ c.onBase = true ∧ x = .landed r.owner := by
+  unfold Tasks.done at h
+  rw [hr] at h
+  dsimp only at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · rename_i hl
+      split at h
+      · cases h
+      · rename_i ho
+        simp at h hl ho
+        exact ⟨hl, ho, h.symm⟩
+
+/-- `task land` hands over only its owner's claimed task, and leaves it landing with that owner. -/
+theorem land_ok {c : Ctx} {i : Int} {s : String} {l : Option String} {db : Db} (h : (Tasks.land c i s l db).2 = .ok ()) :
+    ∃ r, db.find i = some r ∧ r.state = .claimed ∧ r.owner = some c.me ∧
+      ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.state = .landing ∧ r'.owner = some c.me := by
+  obtain ⟨-, ⟨-, hne⟩ | ⟨r, g, hr, hs, ho, hg, ht, -⟩⟩ := land_spec c i s l db
+  · exact absurd h (hne ())
+  · refine ⟨r, hr, hs, ho, g r, ?_, (hg r).2.1, (hg r).2.2.trans ho⟩
+    rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hr]
+    simp [find_id hr]
 
 end SwarmLean.Board

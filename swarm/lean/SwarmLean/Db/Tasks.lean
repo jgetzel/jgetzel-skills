@@ -19,7 +19,7 @@ def DEFAULT_PRIORITY : Int := 2
 def TITLE_MAX : Nat := 100
 /-- The event kinds about a task (tasks.TASK_KINDS). -/
 def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit",
-  "queue", "unqueue", "hold", "unhold"]
+  "queue", "unqueue", "hold", "unhold", "task-land", "task-unland"]
 /-- The task id an event is about: data `#<id>` or `auto #<id>`, then the end or a space (tasks.event_task). -/
 def eventTask (e : Event) : Option Nat :=
   let s := e.data.getD ""
@@ -222,6 +222,8 @@ structure Ctx where
   cwd : Option String := none
   /-- `task claim --force`: the communicator claims a held task -/
   force : Bool := false
+  /-- `task done` of a landing task: its evidence names a commit on the task's base (checked with git first) -/
+  onBase : Bool := false
 
 /-- What `task add` was given. -/
 structure AddArgs where
@@ -341,10 +343,91 @@ def renew (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
       if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
       else (db.set id ({ · with lease_until := some (c.now + l) }), .ok (c.now + l))
 
-/-- What `task done` says after: a red task is released and held for a green run, else the context line's parts. -/
+/-- A task handed to `lander` at commit `sha` at time `now`: landing, its lease gone, its owner kept. -/
+def landF (sha : String) (lander : Option String) (now : Int) (t : Task) : Task :=
+  { t with state := .landing, lease_until := none, land_sha := some sha, lander, landing_at := some now }
+
+/-- `n` may close landing task `r` (board #200): the lander `task land` named, an agent whose role has the word
+lander, or the communicator (or the user). -/
+def isLander (db : Db) (comms : Option String) (n : String) (r : Task) : Bool :=
+  r.lander == some n || inCharge db comms n ||
+    ((db.agent n).bind (·.role)).any fun x => (words (x.map fun c => if c.isAlphanum then c.toLower else ' ')).contains "lander"
+
+/-- `#3 landing abc123 by l1`: a landing task's commit and lander. -/
+def landingText (id : Int) (r : Task) : String :=
+  s!"#{d id} landing {String.ofList ((r.land_sha.getD "-").toList.take 12)} by {(py r.lander).getD "a lander"}"
+
+/-- The refusal of a close by an agent that is not `r`'s lander. -/
+def notLander (id : Int) (r : Task) : String :=
+  s!"{landingText id r}; only its lander, an agent with role lander or the communicator closes it"
+
+/-- `task land` (board #200): the owner hands claimed task `id` at commit `sha` to a lander; it is landing, no
+longer the owner's to hold, and not claimable until `task done` or `task unland`. -/
+def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) (db : Db) : Db × Except String Unit :=
+  match db.find id with
+  | none => (db, .error s!"no task #{d id}")
+  | some r =>
+    if strip sha == "" then (db, .error "--sha is empty: give the commit that passed its checks")
+    else if r.owner != some c.me then
+      (db, .error s!"task #{d id} is not yours{match py r.owner with | some o => " (" ++ o ++ " owns it)" | none => ""}; only its owner hands it to a lander")
+    else if r.state ≠ .claimed then
+      (db, .error s!"task #{d id} is {r.state.text}; only a claimed task can be handed to a lander")
+    else
+      let lander := lander.bind fun l => py (some (strip l))
+      let db := db.set id (landF (strip sha) lander c.now)
+      let db := db.log c.now (some c.me) "task-land" none
+        (some s!"#{d id} {strip sha}{match lander with | some l => " by " ++ l | none => ""}")
+      let db := match lander with
+        | some l => if l != c.me && (db.agents.any fun x => x.name == l && x.ended.isNone) then
+            (Msgs.post db c.now c.me l s!"{c.me} handed you #{d id} at {strip sha} to land: `swarm task done {d id} --evidence <sha on its base>` once it is on its base, or `swarm task unland {d id} --why \"…\"`." false).1
+          else db
+        | none => db
+      (db, .ok ())
+
+/-- What `task unland` reopened: the former owner, and the task's new priority. -/
+structure Unlanded where
+  owner : Option String
+  priority : Int
+
+/-- A landing task its lander gave back: open, at P1 unless already lower, with why appended to its body. -/
+def unlandF (by_ why : String) (t : Task) : Task :=
+  { t with state := .open, owner := none, lease_until := none,
+           priority := some (match t.priority with | some p => if p ≤ 1 then p else 1 | none => 1),
+           body := some ((match py t.body with | some b => b ++ "\n\n" | none => "") ++
+             s!"Not landed ({String.ofList ((t.land_sha.getD "-").toList.take 12)}, by {by_}): {why}"),
+           land_sha := none, lander := none, landing_at := none }
+
+/-- `task unland` (board #200): the lander gives landing task `id` back as open, at P1 unless already lower, with the
+reason appended to its body; its former owner, if live, and the communicator are told. -/
+def unland (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String Unlanded :=
+  match db.find id with
+  | none => (db, .error s!"no task #{d id}")
+  | some r =>
+    if r.state ≠ .landing then (db, .error s!"task #{d id} is {r.state.text}; only a landing task can be unlanded")
+    else if !isLander db c.comms c.me r then (db, .error (notLander id r))
+    else if strip why == "" then (db, .error "--why is empty: say why it did not land")
+    else
+      let why := oneLine why
+      let db := db.set id (unlandF c.me why)
+      let p := (((db.find id).bind (·.priority)).getD 1)
+      let db := db.log c.now (some c.me) "task-unland" none (some s!"#{d id} {why}")
+      let text := s!"{c.me} could not land #{d id} ({String.ofList ((r.land_sha.getD "-").toList.take 12)}): {why}. It is open again at P{d p}."
+      let db := match py r.owner with
+        | some o => if o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone) then (Msgs.post db c.now c.me o text false).1 else db
+        | none => db
+      let db := match commsOf db c.comms with
+        | some k => if k != c.me && some k != r.owner then
+            (Msgs.post db c.now c.me k (text ++ match py r.owner with | some o => s!" ({o} handed it over.)" | none => "") false).1
+          else db
+        | none => db
+      (db, .ok ⟨r.owner, p⟩)
+
+/-- What `task done` says after: a red task is released and held for a green run; a landing task closed by its lander,
+with its former owner; else the context line's parts. -/
 inductive DoneOut
   | red
   | done (k : Int) (stay : Option String) (poolSize : Nat)
+  | landed (owner : Option String)
 
 /-- `task done`. -/
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
@@ -353,6 +436,14 @@ def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except Strin
   | some r =>
     if strip evidence == "" then
       (db, .error "--evidence is empty: give the sha, PR or command output that shows the work is done")
+    else if r.state = .landing then
+      if !isLander db c.comms c.me r then (db, .error (notLander id r))
+      else if !c.onBase then
+        (db, .error s!"--evidence {strip evidence}: not a commit on #{d id}'s base; land it first, then give the sha it landed as")
+      else
+        let db := db.set id fun t => { t with state := .done, evidence := some evidence, lease_until := none,
+                                              done_at := some c.now }
+        (db.log c.now (some c.me) "done" none (some s!"#{d id} {evidence}"), .ok (.landed r.owner))
     else if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
     else if (r.title.getD "").startsWith RED_TASK then
       let db := db.set id fun t => { reopenF t with evidence := some evidence, hold := some (strip evidence ++ " awaiting a green run") }
@@ -492,6 +583,7 @@ def drop (c : Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
     if r.state = .done then (db, .error s!"#{d id} is done; a done task can't be dropped")
     else if (r.state = .claimed || r.state = .blocked) && r.owner != some c.me && !inCharge db c.comms c.me then
       (db, .error s!"#{d id} is {r.state.text} by {r.owner.getD "nil"}; only it or the communicator can drop it")
+    else if r.state = .landing && !isLander db c.comms c.me r then (db, .error (notLander id r))
     else
       let db := db.set id fun t => { t with state := .dropped, owner := none, lease_until := none, dropped_at := some c.now }
       let db := db.log c.now (some c.me) "drop" none (some s!"#{d id}")
