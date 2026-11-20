@@ -37,7 +37,7 @@ with subagents.
    `swarm compute cap <machine|here> [--cores N|all] [--mem G|all]` lowers what jobs may take for good (the standing
    limit), `swarm compute reserve <machine|here> <cores> [--mem G]` keeps that much of the machine for yourself now (the
    temporary one; `reserve … 0` lifts it; claims wait for the rest and a larger one waits without holding back smaller
-   ones), `swarm compute off|on <machine|here>` stops and resumes new claims. `--cores all` claims the whole machine
+   ones), `swarm compute off|on <machine|here>` stops and resumes new claims. `swarm compute queue add <machine|here> --id ID --who W [--est S] [--ttl S|--pid P] -- <cmd…>` shows a waiting job under the machine ("queued: …"); display only, it holds no cores and no place in line, lapses after its ttl (default 900 s) unless added again, and `queue rm <machine|here> ID` removes it. `--cores all` claims the whole machine
    alone, for a benchmark. A job gets SWARM_JOB_ID and SWARM_JOB_MACHINE; a `swarm run` started inside a local job (same machine, no
    `--on`) claims nothing: it runs inside the parent's claim with its SWARM_CORES, recorded as a child job ("j14 in j12" in the
    jobs line). `swarm job record --who <agent> [--task N] [--parent jN] [--machine M] [--cores C] [--start T] --wall S [--cpu S]

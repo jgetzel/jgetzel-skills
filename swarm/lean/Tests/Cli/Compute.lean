@@ -308,7 +308,15 @@ def test_compute_reserve_and_the_one_machine_view (t : T) : IO Unit := do
   hasnt (← t.sw "b" ["compute", "here"]).stdout "reserved"
   eq (← t.sw "b" ["compute", "reserve", "here", "x"] { ok := false }).code 1
 
+def test_compute_queue_add_and_rm (t : T) : IO Unit := do
+  eq (← t.sw "b" ["compute", "queue", "add", "here", "--id", "tq-1", "--who", "hpl-1", "--est", "1200", "--ttl", "600", "--", "timing", "run"]).code 0
+  has (← t.sw "b" ["compute", "here"]).stdout "queued: hpl-1 timing run (owner "
+  has (← t.sw "b" ["compute", "--json", "here"]).stdout "\"queued\":[{"
+  eq (← t.sw "b" ["compute", "queue", "rm", "here", "tq-1"]).code 0
+  hasnt (← t.sw "b" ["compute", "here"]).stdout "queued"
+
 def tests : List Case := [
+  ("test_compute_queue_add_and_rm", test_compute_queue_add_and_rm),
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),
   ("test_run_routes_to_the_second_machine_when_the_first_is_full", test_run_routes_to_the_second_machine_when_the_first_is_full),

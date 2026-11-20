@@ -92,7 +92,7 @@ def SCRIPT_A : String := "
 d=\"${SWARM_COMPUTE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}\"
 op=$1; shift
 trap 'exit 1' INT TERM HUP
-mkdir -p \"$d/claims\" \"$d/queue\" || exit 1
+mkdir -p \"$d/claims\" \"$d/queue\" \"$d/notes\" || exit 1
 num() { case $1 in ''|*[!0-9]*) return 1;; esac; }
 okid() { case $1 in ''|*[!A-Za-z0-9._-]*) echo 'bad id' >&2; exit 2;; esac; }
 sample() {
@@ -147,6 +147,15 @@ clean() {
     esac
   done
   find \"$d/queue\" -type f -mmin +1 -exec rm -f {} +
+  for f in \"$d\"/notes/*; do
+    [ -f \"$f\" ] || continue
+    read -r h _ < \"$f\"
+    case $h in
+      p*) kill -0 \"${h#p}\" 2>/dev/null || rm -f \"$f\";;
+      t*) [ \"${h#t}\" -gt \"$now\" ] 2>/dev/null || rm -f \"$f\";;
+      *) rm -f \"$f\";;
+    esac
+  done
 }
 caps() {
   capc=$ncpu; capm=$total_kb
@@ -201,6 +210,21 @@ try_() {
 case $op in
   try) try_ \"$@\";;
   drop) okid \"$1\"; rm -f \"$d/claims/$1\" \"$d/queue/$1\";;
+  # a display-only note: holds no cores and no place in line; `qadd id owner who est ttl pid cmd` (est, pid: - for none)
+  qadd)
+    id=$1; owner=$2; who=$3; est=$4; ttl=$5; pid=$6; cmd=$7
+    okid \"$id\"
+    if ! num \"$ttl\" || [ \"$ttl\" -lt 1 ] || { [ \"$est\" != - ] && ! num \"$est\"; } || { [ \"$pid\" != - ] && ! num \"$pid\"; }; then echo 'bad size' >&2; exit 2; fi
+    cmd=$(printf %s \"$cmd\" | tr '\\n\\t' '  ' | cut -c1-200)
+    who=$(printf %s \"$who\" | tr -c 'A-Za-z0-9._:-' '_')
+    if [ \"$owner\" = - ]; then owner=${USER:-${LOGNAME:-human}}; fi
+    owner=$(printf %s \"$owner\" | tr -c 'A-Za-z0-9._:-' '_')
+    lock; clean
+    if [ \"$pid\" != - ]; then holder=p$pid; else holder=t$((now + ttl)); fi
+    since=$now
+    if [ -f \"$d/notes/$id\" ]; then read -r _ _ since _ < \"$d/notes/$id\"; fi
+    printf '%s %s %s %s %s %s\\n' \"$holder\" \"$est\" \"$since\" \"$who\" \"$owner\" \"$cmd\" > \"$d/notes/.$id\" && mv \"$d/notes/.$id\" \"$d/notes/$id\";;
+  qrm) okid \"$1\"; rm -f \"$d/notes/$1\";;
   ls)
     sample; lock; clean; caps
     offv=0; if [ -e \"$d/off\" ]; then offv=1; fi
@@ -208,7 +232,8 @@ case $op in
     rmv=$resm; if [ \"$rmv\" -gt \"$total_kb\" ]; then rmv=$total_kb; fi
     echo \"$ncpu $busy $total_kb $avail_kb $capc $capm $offv $rcv $rmv\"
     for f in \"$d\"/claims/*; do if [ -f \"$f\" ]; then printf 'c '; cat \"$f\"; fi; done
-    for f in \"$d\"/queue/*; do if [ -f \"$f\" ]; then printf 'q '; cat \"$f\"; fi; done;;
+    for f in \"$d\"/queue/*; do if [ -f \"$f\" ]; then printf 'q '; cat \"$f\"; fi; done
+    for f in \"$d\"/notes/*; do if [ -f \"$f\" ]; then printf 'n '; cat \"$f\"; fi; done;;
   cap)
     # `=` keeps that field as it is
     old='- -'; if [ -f \"$d/cap\" ]; then old=$(cat \"$d/cap\"); fi
@@ -283,6 +308,15 @@ structure Claim where
   cmd : String
   deriving BEq, Repr
 
+/-- A queued note row of `ls`: display only, it holds no cores and no place in line. `est` is seconds. -/
+structure Note where
+  since : Int
+  est : Option Int
+  who : String
+  owner : String
+  cmd : String
+  deriving BEq, Repr
+
 /-- A ticket row of `ls`; `cores` none: an exclusive (`all`) request. -/
 structure Ticket where
   first : Int
@@ -305,6 +339,7 @@ structure Ls where
   res_mem_kb : Int := 0
   claims : List Claim := []
   queue : List Ticket := []
+  notes : List Note := []
 
 /-- The script's `ls` output. -/
 def parseLs (s : String) : Option Ls := do
@@ -325,6 +360,9 @@ def parseLs (s : String) : Option Ls := do
     | ["q", x, y, z, w] =>
       let cores ← if y == "all" then pure none else (parseInt y).map some
       r := { r with queue := r.queue ++ [{ first := ← parseInt x, cores, mem_kb := ← parseInt z, who := w }] }
+    | "n" :: _ :: e :: s :: w :: o :: cmd =>
+      let est ← if e == "-" then pure none else (parseInt e).map some
+      r := { r with notes := r.notes ++ [{ since := ← parseInt s, est, who := w, owner := o, cmd := " ".intercalate cmd }] }
     | _ => pure ()
   return r
 
@@ -366,13 +404,15 @@ def render (name : String) (l : Ls) (now : Int) : List String :=
   let m := l.model now
   let resC := if l.res_cores > 0 then s!"{l.res_cores} reserved, " else ""
   let resM := if l.res_mem_kb > 0 then s!"{gi l.res_mem_kb}G reserved, " else ""
-  if l.off && l.claims.isEmpty && l.queue.isEmpty then [s!"{name}: off"] else
+  if l.off && l.claims.isEmpty && l.queue.isEmpty && l.notes.isEmpty then [s!"{name}: off"] else
   [s!"{name}: {if l.off then "off, " else ""}{cc} of {Admit.limC m} cores claimed (cap {l.cap_cores} of {l.ncpu}, {resC}{fixed l.busy 1} busy), " ++
     s!"{gi cm} of {gi (Admit.limM m)}G claimed ({resM}{gi l.avail_kb}G available)"] ++
   l.claims.map (fun c => s!"  {c.who}   {c.cores} cores  {gi c.mem_kb}G  {span (now - c.start)}{c.est.elim "" fun e => s!" of ~{span e}"}  {c.cmd}") ++
-  l.queue.map fun q =>
+  (l.queue.map fun q =>
     s!"  waiting: {q.who} {q.cores.elim "whole machine" fun c => s!"{c} cores {gi q.mem_kb}G"} {span (now - q.first)}" ++
-      (match l.whyHeld now q with | [] => "" | w => ", " ++ ", ".intercalate w)
+      (match l.whyHeld now q with | [] => "" | w => ", " ++ ", ".intercalate w)) ++
+  l.notes.map fun n =>
+    s!"  queued: {n.who} {n.cmd} (owner {n.owner}){n.est.elim "" fun e => s!" ~{span e}"}, since {span (now - n.since)}"
 
 /-- An integer as JSON. -/
 def jint (i : Int) : Json := .num (Lean.JsonNumber.fromInt i)
@@ -392,6 +432,8 @@ def Ls.json (l : Ls) (now : Int) : Json :=
       ("holder", .str c.holder), ("start", jint c.start), ("est_s", c.est.elim .null jint), ("who", .str c.who), ("cmd", .str c.cmd)])),
     ("queue", .arr (l.queue.toArray.map fun q => Json.mkObj [("first", jint q.first), ("cores", jint (q.cores.getD l.ncpu)),
       ("mem_kb", jint q.mem_kb), ("who", .str q.who), ("exclusive", .bool q.cores.isNone),
-      ("held", .bool !(l.whyHeld now q).isEmpty)]))]
+      ("held", .bool !(l.whyHeld now q).isEmpty)])),
+    ("queued", .arr (l.notes.toArray.map fun n => Json.mkObj [("since", jint n.since), ("est_s", n.est.elim .null jint),
+      ("who", .str n.who), ("owner", .str n.owner), ("cmd", .str n.cmd)]))]
 
 end Claims

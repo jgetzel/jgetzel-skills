@@ -191,7 +191,53 @@ def test_script_arithmetic_of_the_awk_programs (t : T) : IO Unit := do
   let vm := "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               12345.\nPages active:                            200000.\nPages inactive:                          100000.\nPages speculative:                         5000.\nPages throttled:                              0.\nPages wired down:                         80000.\nPages purgeable:                           2655.\n"
   eq (strip (← t.exec ["awk", DARWIN_MEM_AWK] (input := some vm)).stdout) (toString (120000 * 16))
 
+def notes (t : T) (st : String) (now : Int) : IO (List String) :=
+  return (splitlines (← t.scr st ["ls"] [("SWARM_COMPUTE_NOW", some (toString now))]).stdout).filter (·.startsWith "n ")
+
+def test_script_notes_add_renew_rm_and_lapse (t : T) : IO Unit := do
+  let st := t.d ++ "/n1"
+  let atT (k : Int) (args : List String) : IO R := t.scr st args [("SWARM_COMPUTE_NOW", some (toString k))]
+  eq (← atT 1000 ["qadd", "tq-1", "tq", "hpl-1", "1200", "600", "-", "timing run"]).code 0
+  eq (← notes t st 1000) ["n t1600 1200 1000 hpl-1 tq timing run"]
+  -- a renewal moves the expiry, keeps the first sight
+  eq (← atT 1300 ["qadd", "tq-1", "tq", "hpl-1", "1200", "600", "-", "timing run"]).code 0
+  eq (← notes t st 1300) ["n t1900 1200 1000 hpl-1 tq timing run"]
+  -- no estimate, the owner defaulting to the user
+  eq (← atT 1300 ["qadd", "b", "-", "x", "-", "100", "-", "c"]).code 0
+  eq ((← notes t st 1300).map (·.splitOn " " |>.drop 3 |>.take 1)) [["1300"], ["1000"]]
+  -- it holds no cores and no place in line
+  -- it lapses with its ttl, the renewed one later than the other
+  eq (← notes t st 1450).length 1
+  eq (← notes t st 1900).length 0
+  eq (← exists_ (led st ++ "/notes/tq-1")) false
+  -- rm, and bad arguments
+  discard <| atT 2000 ["qadd", "r", "o", "w", "-", "100", "-", "c"]
+  discard <| t.scr st ["qrm", "r"]
+  eq (← notes t st 2000).length 0
+  eq (← atT 2000 ["qadd", "../x", "o", "w", "-", "100", "-", "c"]).code 2
+  eq (← atT 2000 ["qadd", "r", "o", "w", "x", "100", "-", "c"]).code 2
+  eq (← atT 2000 ["qadd", "r", "o", "w", "-", "0", "-", "c"]).code 2
+  -- (real clock from here: it would sweep the fake-dated notes)
+  discard <| t.scr st ["qadd", "live", "o", "w", "-", "600", "-", "c"]
+  eq (← try_ t st "j" "8") "ok 8 1024"
+  eq (← lsRows t st "q") []
+  eq (← lsRows t st "n").length 1
+  discard <| t.scr st ["qrm", "live"]
+
+def test_script_a_note_with_a_pid_is_swept_when_it_is_gone (t : T) : IO Unit := do
+  let st := t.d ++ "/n2"
+  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
+  let live := strip (← t.exec ["sh", "-c", "echo $PPID"]).stdout
+  -- the long ttl does not matter with a pid
+  discard <| t.scr st ["qadd", "gone", "o", "w", "-", "1", dead, "c"]
+  discard <| t.scr st ["qadd", "here", "o", "w", "-", "1", live, "c"]
+  let rows := (splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "n ")
+  eq rows.length 1; has rows.head! s!"n p{live} "
+  eq (← exists_ (led st ++ "/notes/gone")) false
+
 def tests : List Case := [
+  ("test_script_notes_add_renew_rm_and_lapse", test_script_notes_add_renew_rm_and_lapse),
+  ("test_script_a_note_with_a_pid_is_swept_when_it_is_gone", test_script_a_note_with_a_pid_is_swept_when_it_is_gone),
   ("test_script_50_parallel_grant_exactly_4", test_script_50_parallel_grant_exactly_4),
   ("test_script_dead_claims_are_not_counted", test_script_dead_claims_are_not_counted),
   ("test_script_an_old_lock_without_a_live_holder_is_broken", test_script_an_old_lock_without_a_live_holder_is_broken),

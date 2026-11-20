@@ -88,6 +88,16 @@ def main (args : List String) : IO UInt32 := do
   | ["-h"] | ["--help"] | ["help"] => IO.println help; return 0
   | "op" :: mach :: op :: rest => opCmd mach (op :: rest)
   | "run" :: rest => runCmd rest
+  | "queue" :: rest =>
+    let (opts, cmd) := (rest.takeWhile (· != "--"), (rest.dropWhile (· != "--")).drop 1)
+    match split ["--id", "--who", "--est", "--ttl", "--pid", "--owner"] opts ([], []) with
+    | .error e => IO.eprintln s!"claim: {e}"; return 1
+    | .ok (pos, fl) =>
+      let g (k : String) := fl.lookup k |>.bind id
+      match ← compute host "claim" ("queue" :: pos) false none none
+          { id := g "--id", who := g "--who", est := g "--est", ttl := g "--ttl", pid := g "--pid", owner := g "--owner" } cmd with
+      | .ok () => return 0
+      | .error e => IO.eprintln s!"claim: {e}"; return 1
   | _ =>
     match split ["--cores", "--mem"] args ([], []) with
     | .error e => IO.eprintln s!"claim: {e}"; return 1

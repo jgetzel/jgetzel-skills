@@ -15,23 +15,37 @@ $XDG_STATE_HOME/swarm-compute, else ~/.local/state/swarm-compute)
   claim reserve <machine|here> <cores> [--mem G]   the part of the machine kept for you, now: claims wait for the rest;
                                                    states the whole reservation, so `reserve here 0` lifts it
   claim off|on <machine|here>                      refuses every claim / allows them again
+  claim queue add <machine|here> --id ID --who W [--est S] [--ttl S] [--pid P] [--owner O] -- <cmd…>
+                                                   shows a job as queued under the machine (display only: it holds no cores and
+                                                   no place in line); run again to renew. It lapses after --ttl seconds (default
+                                                   900), or, with --pid (here only), when that process is gone
+  claim queue rm <machine|here> ID                 removes it
   claim run [--cores N|all] [--mem G] [--est S] [--who NAME] -- <cmd…>
                                                    claims here (default 2 cores, 2G), waits, runs the command at the lowest
                                                    priority, drops the claim; exits with the command's code, 255 when nothing
                                                    can fit. --est S (seconds the job takes) lets it start before older waiters
                                                    that cannot start sooner. --cores all: the whole machine, alone (no --mem)
-  claim op <machine|here> <try|drop|ls|cap|reserve|off|on> <args…>
+  claim op <machine|here> <try|drop|ls|qadd|qrm|cap|reserve|off|on> <args…>
                                                    the ledger script's op, its output as is (exit 1: no answer, 2: bad args)
 
 A machine is `here` or one of `hc machine ls`; claims on others go through `hc exec`."
 
+/-- The options of `queue add`; the command comes apart from them. -/
+structure QOpts where
+  id : Option String := none
+  who : Option String := none
+  est : Option String := none
+  ttl : Option String := none
+  pid : Option String := none
+  owner : Option String := none
+
 /-- `<prog> …`: the show (`words` empty, or one machine), `cap <machine>` with `cores` and `mem` as given, `reserve <machine>
 <cores>` with `mem`, or `off|on <machine>`. An error is the message to die with. -/
 def compute {m : Type → Type} [Monad m] (h : Host m) (prog : String) (words : List String) (json : Bool)
-    (cores mem : Option String) : m (Except String Unit) := do
+    (cores mem : Option String) (q : QOpts := {}) (cmd : List String := []) : m (Except String Unit) := do
   -- `here` alone needs no `hc`
-  let ms ← if words.getLast? == some "here" then pure [] else hcMachines h
-  let usage : String := s!"{prog} [--json] [here|<machine>] | cap <machine|here> [--cores N|all] [--mem G|all] | reserve <machine|here> <cores> [--mem G] | off|on <machine|here>"
+  let ms ← if words.contains "here" then pure [] else hcMachines h
+  let usage : String := s!"{prog} [--json] [here|<machine>] | cap <machine|here> [--cores N|all] [--mem G|all] | reserve <machine|here> <cores> [--mem G] | off|on <machine|here> | queue add <machine|here> --id ID --who W [--est S] [--ttl S] [--pid P] [--owner O] -- <cmd…> | queue rm <machine|here> ID"
   let target (n : String) : Except String (Option String) :=
     if n == "here" then .ok none
     else if (ms.lookup n).isNone then .error s!"no machine {n} in `hc machine ls`" else .ok (some n)
@@ -79,6 +93,26 @@ def compute {m : Type → Type} [Monad m] (h : Host m) (prog : String) (words : 
       | none => pure "0"
       | some x => match gib "--mem" x with | .ok v => pure v | .error e => return .error e
     if (← call h t ["reserve", cs, mm]).isNone then return .error s!"{n}: no answer"
+    return .ok ()
+  | ["queue", "add", n] =>
+    let t ← match target n with | .ok t => pure t | .error e => return .error e
+    let some id := q.id | return .error "queue add: --id is required"
+    let some who := q.who | return .error "queue add: --who is required"
+    if cmd.isEmpty then return .error "queue add: the command is required after --"
+    let pos (what : String) (x : Option String) : Except String String := match x with
+      | none => .ok "-"
+      | some s => match parseInt s with
+        | some v => if v ≥ 1 then .ok (toString v) else .error s!"{what}: not a positive number: {s}"
+        | none => .error s!"{what}: not a positive number: {s}"
+    let est ← match pos "--est" q.est with | .ok v => pure v | .error e => return .error e
+    let ttl ← match pos "--ttl" (q.ttl.orElse fun _ => some "900") with | .ok v => pure v | .error e => return .error e
+    let pid ← match pos "--pid" q.pid with | .ok v => pure v | .error e => return .error e
+    if pid != "-" && t.isSome then return .error "queue add: --pid is for this machine only"
+    if (← call h t ["qadd", id, q.owner.getD "-", who, est, ttl, pid, " ".intercalate cmd]).isNone then return .error s!"{n}: no answer"
+    return .ok ()
+  | ["queue", "rm", n, id] =>
+    let t ← match target n with | .ok t => pure t | .error e => return .error e
+    if (← call h t ["qrm", id]).isNone then return .error s!"{n}: no answer"
     return .ok ()
   | [w, n] =>
     if w != "off" && w != "on" then return .error usage

@@ -68,13 +68,14 @@ def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
 /-- Parses and runs `w :: rest` with group `g`'s parser `spec`: exit 2 on a parse error, 0 after `-h`. -/
 def run (g : Group m) (spec : Spec) (rest : List String) : m UInt32 := do
   -- `run`'s command is split off before parsing (main.lua's split_run): the parse gets its options only
-  let (rest, argv) := if spec.name == "run" then Cmd.Run.split rest else if spec.name == "job" then Cmd.Run.splitJob rest else (rest, [])
+  let (rest, argv) := if spec.name == "run" then Cmd.Run.split rest else if spec.name == "job" then Cmd.Run.splitJob rest
+    else if spec.name == "compute" then (rest.takeWhile (· != "--"), (rest.dropWhile (· != "--")).drop 1) else (rest, [])
   -- `board --json`: the Board view's snapshot, as `state --json --view board` prints it (board #200)
   let (g, spec, rest) := if spec.name == "board" && rest.contains "--json" && !rest.contains "-h" && !rest.contains "--help" then
       (Cmd.State.group, Cmd.State.stateSpec, ["--json", "--view", "board"]) else (g, spec, rest)
   match parse spec "cmd" "" rest with
   | .error (.error msg) => Env.err s!"{USAGE}\nswarm: error: {msg}"; return 2
   | .error (.help h) => Env.out h; return 0
-  | .ok a => runParsed g (if spec.name == "run" || spec.name == "job" then ("argv", .ss argv) :: a else a)
+  | .ok a => runParsed g (if spec.name == "run" || spec.name == "job" || spec.name == "compute" then ("argv", .ss argv) :: a else a)
 
 end SwarmLean.Dispatch

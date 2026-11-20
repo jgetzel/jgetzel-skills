@@ -119,6 +119,10 @@ open Claims.Admit in
 
 -- the desktop (2026-11-15): 12 free cores, 23 GiB available. The oldest ticket asks 8 cores and 30 GiB, more than it could
 -- have with every claim ended (23 + 4 GiB), so it is held, and the 3-core 12 GiB request behind it runs
+-- a queued note is shown after the tickets, and moves nothing
+#guard ((parseLs "8 0.00 16777216 16777216 8 16777216 0 0 0\nq 989140 2 1024 w\nn t9999999 1200 999280 hpl-1414 timing-queue timing run\n").map
+  (render "desktop" · 1000000 |>.drop 1)) == some ["  waiting: w 2 cores 0.0G 3h", "  queued: hpl-1414 timing run (owner timing-queue) ~20m, since 12m"]
+
 open Claims.Admit in
 def desk : Machine :=
   { ncpu := 24, total := 67108864, busy := 1500, avail := 24117248, cap := (none, none), res := (0, 0), off := false,
