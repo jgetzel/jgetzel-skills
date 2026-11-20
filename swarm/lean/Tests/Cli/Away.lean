@@ -21,8 +21,8 @@ def parse (s : String) : IO Json := match Json.parse s with
 def state (t : T) (args : List String := []) : IO Json :=
   do parse (← t.sw "human" (["state", "--json"] ++ args)).stdout
 
-def msgsTo (t : T) (who : String) : IO (Array Json) :=
-  t.q "select frm, body, urgent from msg where dest=? order by id" [.text who]
+def msgsTo (t : T) (who : String) : IO (Array Json) :=  -- not the host's memory pressure notice (board #141)
+  t.q "select frm, body, urgent from msg where dest=? and body not like 'memory pressure:%' order by id" [.text who]
 
 /-- Index of the first occurrence of `sub` in `s`. -/
 def idx (s sub : String) : Nat := (s.splitOn sub).head!.length
@@ -121,7 +121,8 @@ def test_away_hc_prompt_not_urgent (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
   t.sw_ "human" ["away"]
   let r ← t.sw "a" ["watchd", "--once", "--comms", "c", "--max-agents", "0"]
-  let m ← t.q "select body, urgent from msg where dest='c' and frm='swarm'"
+  -- not the host's memory pressure notice (board #141)
+  let m ← t.q "select body, urgent from msg where dest='c' and frm='swarm' and body not like 'memory pressure:%'"
   unless m.size == 1 do fail s!"want 1 message to c, got {m.size}: {m.toList.map (·.compress)}\nwatchd stderr: {r.stderr}"
   has ((m[0]!).f "body") "a prompt or question needs the human"; eq ((m[0]!).f "urgent") 0
 
