@@ -44,13 +44,16 @@ example : let c : Cfg := { patterns := ["[!]a]", "b"], lockForms := false }
 example : violates { racy := true, deliverCas := false }
     [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = true := by decide +kernel
 
--- The same runs with the fix on: none ends in a violation (the theorems say no run does).
-example : violates {} [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1, .tick, .claim 0 1] oneWorker = false := by decide +kernel
+-- The same runs with the fix on: none ends in a violation (the theorems say no run does). #2's: reap keeps #1 with
+-- agent 1 at its prompt, so the tick changes nothing (and is not enabled), and agent 0's claim is refused.
+example : (run {} [.add [], .claim 1 1, .hcPrompt 1, .unblock 1, .expire 1]).any (fun s =>
+    ((tickOf {} s).tk 1).owner == some 1 && (step {} (tickOf {} s) (.claim 0 1)).isNone) = true := by decide +kernel
 example : violates { ntasks := 2, racy := true }
     [.add [], .add [], .claimRead 0 2, .after 2 [1], .claimWrite 0] noEarlyStart = false := by decide +kernel
-example : violates {} [.add [], .claim 0 1, .done 0 1 false] doneHasEvidence = false := by decide +kernel
+-- #5's and #6's last step is refused: `task done` without evidence, and agent 1's lock
+example : (run {} [.add [], .claim 0 1]).any (fun s => (step {} s (.done 0 1 false)).isNone) = true := by decide +kernel
 example : let c : Cfg := { patterns := ["m/*.lua", "m/a*", "m/"] }
-    violates c [.lock 0 0, .lock 1 1] (locksDisjoint c) = false := by decide +kernel
+    (run c [.lock 0 0]).any (fun s => (step c s (.lock 1 1)).isNone) = true := by decide +kernel
 example : violates { racy := true }
     [.stop 0 false, .postTo 1 0 false, .wakeRead 0, .prompt 0, .wakeWrite 0] inboxExact = false := by decide +kernel
 example : let c : Cfg := { patterns := ["m/?", "m/?/x"] }
@@ -74,7 +77,9 @@ def endedWithWork (s : State) : Bool := (List.range s.ag.length).any fun a =>
 def twoWts : List Action := [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.add 1), .git 0 (.edit 1), .git 0 (.edit 0),
   .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0, .tick]
 example : violates { nwts := 2, allWts := false } twoWts (!endedWithWork ·) = true := by decide +kernel
-example : violates { nwts := 2 } twoWts (!endedWithWork ·) = false := by decide +kernel
+-- with the fix the tick keeps agent 0, so it changes nothing (and is not enabled)
+example : (run { nwts := 2 } twoWts.dropLast).any (fun s => ((tickOf { nwts := 2 } s).agt 0).st != .ended) = true := by
+  decide +kernel
 -- a landed worktree does not keep the agent, and end_agent removes it and deletes its branch
 example : (run { nwts := 1 } [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0), .stop 0 false, .age 0,
     .tick]).any (fun s => (s.agt 0).st == .ended && !(s.git.wt 0).on && (s.git.tip 1).isNone) = true := by decide +kernel
@@ -169,10 +174,11 @@ example : violates { bgKeeps := false } [.add [], .claim 0 1, .bgStart 0, .stay 
 example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .leaseLate 0, .holdHung 0, .tick, .prompt 0,
     .claim 0 1]).isNone = true := by decide +kernel
 
--- The same runs with the fix on.
-example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide +kernel
-example : violates {} [.add [], .claim 0 1, .bgStart 0, .stay 0 true, .stop 0 false, .age 0, .stale 0, .stayCheck 0,
-    .stayHung 0, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide +kernel
+-- The same runs with the fix on: reap keeps #1 with agent 0, so the tick changes nothing (and is not enabled).
+example : (run {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1]).any
+    (fun s => ((tickOf {} s).tk 1).owner == some 0) = true := by decide +kernel
+example : (run {} [.add [], .claim 0 1, .bgStart 0, .stay 0 true, .stop 0 false, .age 0, .stale 0, .stayCheck 0,
+    .stayHung 0, .expire 1, .leave 1]).any (fun s => ((tickOf {} s).tk 1).owner == some 0) = true := by decide +kernel
 example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .leaseLate 0, .holdHung 0, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide +kernel
 -- #13, L5. Agent 0 is idle 30 min, kept only by an unclean worktree. Before PR #122 nothing is enabled, forever and
 -- silently; with it, `nudge` is (the urgent message wakes the waiter), once per idle stretch.
@@ -314,7 +320,9 @@ def cfgB1 : Cfg := { nwts := 1, nbases := 2, taskBase := [0, 1] }
 def preB1 : List Action := [.add [], .claim 0 1, .git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit 0), .git 0 (.land 0 0),
   .done 0 1 true, .stop 0 false, .age 0]
 example : (run cfgB1 (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = true := by decide +kernel
-example : (run { cfgB1 with perTaskBase := true } (preB1 ++ [.tick])).any (fun s => (s.agt 0).st == .ended) = false := by decide +kernel
+-- (the tick then changes nothing, and is not enabled)
+example : (run { cfgB1 with perTaskBase := true } preB1).any
+    (fun s => ((tickOf { cfgB1 with perTaskBase := true } s).agt 0).st != .ended) = true := by decide +kernel
 
 -- #21, W4. Agent 0 checks out `formal` in its worktree; agent 1's commit can no longer land on it (`git push . HEAD:formal`
 -- is refused while a worktree has it checked out). With `recordedWorkspaces` the checkout is refused.
