@@ -104,6 +104,25 @@ def test_run_routes_to_the_second_machine_when_the_first_is_full (t : T) : IO Un
   eq (← claimsHere t) 1  -- the filler only
   eq (splitlines (← t.exec ["ls", home ++ "/.local/state/swarm-compute/claims"]).stdout).length 0
 
+def test_run_places_on_the_machine_with_most_idle_cores (t : T) : IO Unit := do
+  discard <| fakeRemote t
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"machines": ["laptop"]}}).compress
+  -- here has 4 of its 8 cores claimed, laptop is idle: a 2-core job still fits here, but goes to laptop
+  fill t "4"
+  let r ← t.sw "b" ["run", "--cores", "2", "--", "cat $HOME/.local/state/swarm-compute/claims/* | cut -d' ' -f1,3 | tr -d 0-9"]
+  has r.stdout "on laptop"
+  has r.stderr "placing: here 4.0 idle, laptop 8.0 idle → laptop"
+
+def test_run_equal_idle_places_here (t : T) : IO Unit := do
+  discard <| fakeRemote t
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"machines": ["laptop"]}}).compress
+  let r ← t.sw "b" ["run", "--cores", "2", "--", "echo hi"]
+  has r.stderr "placing: here 8.0 idle, laptop 8.0 idle → here"
+  has r.stdout "hi"
+  hasnt r.stdout "on laptop"
+
 def test_run_a_machine_gone_is_retried (t : T) : IO Unit := do
   discard <| fakeRemote t
   mkdir (t.wt ++ "/.claude")
@@ -265,6 +284,8 @@ def tests : List Case := [
   ("test_run_env_and_claim_released", test_run_env_and_claim_released),
   ("test_run_sized_from_history", test_run_sized_from_history),
   ("test_run_routes_to_the_second_machine_when_the_first_is_full", test_run_routes_to_the_second_machine_when_the_first_is_full),
+  ("test_run_places_on_the_machine_with_most_idle_cores", test_run_places_on_the_machine_with_most_idle_cores),
+  ("test_run_equal_idle_places_here", test_run_equal_idle_places_here),
   ("test_run_a_machine_gone_is_retried", test_run_a_machine_gone_is_retried),
   ("test_run_waits_and_runs_when_a_claim_is_dropped", test_run_waits_and_runs_when_a_claim_is_dropped),
   ("test_run_nothing_can_fit_is_255", test_run_nothing_can_fit_is_255),
