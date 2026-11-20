@@ -212,6 +212,19 @@ def test_sweep (t : T) : IO Unit := do
   eq ((← t.q1 "select count(*) n from event where kind='sweep'").f "n") 1
   has ((← t.q1 "select body from msg where kind='notice'").f "body") "swept 1"
 
+-- board #211: the sweep removes a detached worktree only once its HEAD is on the base
+def test_sweep_detached (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  discard <| t.git t.wt ["checkout", "-q", "--detach"]
+  commitWip t "u.txt"
+  oldWt t t.wt
+  sweep; ok (← exists_ t.wt) "a commit on its detached HEAD, not on main"
+  discard <| t.git t.wt ["reset", "-q", "--hard", "main"]
+  oldWt t t.wt
+  sweep; ok (!(← exists_ t.wt)) "detached at the base: swept"
+  ok ((← branches t) != "") "no branch of its to delete: w2 stays"
+
 def test_worktrees_prune (t : T) : IO Unit := do
   let pr ← fakeProc t
   let prune (extra : List String) : IO R := t.sw "a" (["worktrees", "prune", "--dir", t.d] ++ extra) (swp pr)
@@ -1419,6 +1432,7 @@ def tests : List Case := [
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),
   ("test_sweep", test_sweep),
+  ("test_sweep_detached", test_sweep_detached),
   ("test_worktrees_prune", test_worktrees_prune),
   ("test_sweep_caches_not_landed", test_sweep_caches_not_landed),
   ("test_landed_agent_ended_and_cleaned", test_landed_agent_ended_and_cleaned),
