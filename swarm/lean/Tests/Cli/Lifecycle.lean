@@ -212,6 +212,19 @@ def test_sweep (t : T) : IO Unit := do
   eq ((← t.q1 "select count(*) n from event where kind='sweep'").f "n") 1
   has ((← t.q1 "select body from msg where kind='notice'").f "body") "swept 1"
 
+-- board #211: the sweep removes a detached worktree only once its HEAD is on the base
+def test_sweep_detached (t : T) : IO Unit := do
+  let pr ← fakeProc t
+  let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  discard <| t.git t.wt ["checkout", "-q", "--detach"]
+  commitWip t "u.txt"
+  oldWt t t.wt
+  sweep; ok (← exists_ t.wt) "a commit on its detached HEAD, not on main"
+  discard <| t.git t.wt ["reset", "-q", "--hard", "main"]
+  oldWt t t.wt
+  sweep; ok (!(← exists_ t.wt)) "detached at the base: swept"
+  ok ((← branches t) != "") "no branch of its to delete: w2 stays"
+
 def test_worktrees_prune (t : T) : IO Unit := do
   let pr ← fakeProc t
   let prune (extra : List String) : IO R := t.sw "a" (["worktrees", "prune", "--dir", t.d] ++ extra) (swp pr)
@@ -458,6 +471,65 @@ def test_foreign_repo_landed_on_its_branch_or_upstream (t : T) : IO Unit := do
   discard <| t.git cl ["fetch", "-q"]
   commsTick t
   ok (← ended t "f") "its commit is on its upstream"
+
+/-- `swarm state --json --agent n`'s fate of `n`. -/
+def fateOf (t : T) (n : String) : IO Json := do
+  let j := (Json.parse (← t.sw "a" ["state", "--json", "--agent", n]).stdout).toOption.getD .null
+  let a := match j.f "agents" with
+    | .arr a => (a.find? fun (x : Json) => (x.f "name").s? == some n).getD .null
+    | _ => .null
+  return a.f "fate"
+
+-- board #211: a terminal in a detached worktree of this repo is this repo's (a lander switched it to the base): at
+-- the base its agent is endable and ended; a commit of its own not on the base keeps it, as on a branch
+def test_detached_worktree_is_ours (t : T) : IO Unit := do
+  t.fakes
+  t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(t.wt)}]
+  discard <| t.git t.wt ["checkout", "-q", "--detach"]
+  idle t "e" [("wt", t.wt), ("hc", "t1")]
+  commitWip t "new.txt"
+  eq ((← fateOf t "e").f "verdict") "unclean"
+  eq (← t.sw "a" ["endable", "e"] { ok := false }).code 1
+  commsTick t
+  ok (!(← ended t "e")) "a commit on its detached HEAD, not on main"
+  discard <| t.git t.wt ["reset", "-q", "--hard", "main"]
+  eq ((← fateOf t "e").f "verdict") "end"
+  eq (← t.sw "a" ["endable", "e"] { ok := false }).code 0
+  commsTick t
+  ok (← ended t "e") "detached at the base: ended"
+  ok (← exists_ t.wt) "ending removes no worktree"
+
+-- board #211: with no `wt` on its row, a detached worktree it owns by record, or by its directory's name, still holds
+-- its work
+def test_detached_owned_worktree_unlanded_kept (t : T) : IO Unit := do
+  t.fakes
+  let byName := t.d ++ "/repo-f-2"
+  discard <| t.git t.repo ["worktree", "add", "-q", "--detach", byName]
+  t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(t.wt)}, json% {"address": "t2", "status": "idle", "cwd": $(byName)}]
+  discard <| t.git t.wt ["checkout", "-q", "--detach"]
+  idle t "e" [("hc", "t1")]
+  t.q_ "insert into workspace(path, branch, base, agent) values(?, 'w2', 'main', 'e')" [.text t.wt]
+  commitWip t "new.txt"
+  idle t "f" [("hc", "t2")]
+  put (byName ++ "/new.txt") "wip"
+  commsTick t
+  ok (!(← ended t "e")) "its recorded detached worktree holds a commit not on main"
+  ok (!(← ended t "f")) "its detached worktree named -f- holds an uncommitted file"
+  discard <| t.git t.wt ["reset", "-q", "--hard", "main"]
+  IO.FS.removeFile (byName ++ "/new.txt")
+  commsTick t
+  ok (← ended t "e") "its recorded worktree at the base"
+  ok (← ended t "f") "its named worktree at the base"
+
+-- a terminal in a repo that is not this one is still another swarm's
+def test_other_repo_terminal_kept (t : T) : IO Unit := do
+  t.fakes
+  let ext ← extRepo t "ext"
+  t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(ext)}]
+  idle t "e" [("wt", t.wt), ("hc", "t1")]
+  eq ((← fateOf t "e").f "says") "Kept: in another repo"
+  commsTick t
+  ok (!(← ended t "e"))
 
 -- a base that is no ref in the worktree's repo is a reason endable and the Stop hook give, not an empty list
 def test_unresolvable_base_named (t : T) : IO Unit := do
@@ -1360,6 +1432,7 @@ def tests : List Case := [
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),
   ("test_sweep", test_sweep),
+  ("test_sweep_detached", test_sweep_detached),
   ("test_worktrees_prune", test_worktrees_prune),
   ("test_sweep_caches_not_landed", test_sweep_caches_not_landed),
   ("test_landed_agent_ended_and_cleaned", test_landed_agent_ended_and_cleaned),
@@ -1376,6 +1449,9 @@ def tests : List Case := [
   ("test_recorded_agent_with_a_worktree_it_added_not_ended", test_recorded_agent_with_a_worktree_it_added_not_ended),
   ("test_recorded_worktree_on_its_base_ended", test_recorded_worktree_on_its_base_ended),
   ("test_foreign_repo_landed_on_its_branch_or_upstream", test_foreign_repo_landed_on_its_branch_or_upstream),
+  ("test_detached_worktree_is_ours", test_detached_worktree_is_ours),
+  ("test_detached_owned_worktree_unlanded_kept", test_detached_owned_worktree_unlanded_kept),
+  ("test_other_repo_terminal_kept", test_other_repo_terminal_kept),
   ("test_unresolvable_base_named", test_unresolvable_base_named),
   ("test_missing_worktree", test_missing_worktree),
   ("test_missing_worktree_unlanded_branch_not_ended", test_missing_worktree_unlanded_branch_not_ended),

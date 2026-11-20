@@ -673,6 +673,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
     m (List String) := do
   let db0 ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
   let all ← Workspaces.worktrees
+  let every ← Workspaces.every
   let wts := Workspaces.wtMapOf db0 all
   let main ← Workspaces.main none
   let prot ← Workspaces.protectedOf db0 main
@@ -696,7 +697,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let dflt := (py opts.model).getD "sonnet"
   for a in Agents.live db do
     let offer := Reuse.candidates db a.name a.model dflt pool
-    let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts all a.name offer
+    let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts every a.name offer
     -- an offer unanswered OFFER_TTL counts as declined
     let f := { f0 with job := pure ((Machine.bgAgents db.agents procs).lookup a.name),
                        passedOver := f0.passedOver || Reuse.expired db a.name (offer.map (·.id : Task → Int)) t }

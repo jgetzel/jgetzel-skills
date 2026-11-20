@@ -436,7 +436,7 @@ def state (a : Parsed) : m UInt32 := do
   let wts ← if lanes then Workspaces.wtMap db else pure []
   let mut seen : Agents.Seen := []
   -- the reads' inputs, once read: hc's terminals, the main worktree, the agents' and every worktree, the pool
-  let mut reads : Option (Option (List Agents.Term) × Option String × List (String × String) × List (String × String) ×
+  let mut reads : Option (Option (List Agents.Term) × Option String × List (String × String) × List (String × Option String) ×
     List Task) := none
   let mut agsA : Array (Json × Bool × String) := #[]
   let byName := fun (l : List Agent) => l.mergeSort (·.name ≤ ·.name)
@@ -480,7 +480,7 @@ def state (a : Parsed) : m UInt32 := do
           let byT ← Agents.hcTerminals
           let main ← Workspaces.main none
           let wm ← if lanes then pure wts else Workspaces.wtMap db
-          let all ← Workspaces.worktrees
+          let all ← Workspaces.every
           pure (byT, main, wm, all, Queue.staffing db)
       reads := some (byT, main, wm, all, pool)
       -- shortcut: watchd's --model is not stored; "sonnet" stands for it, as when watchd runs without one

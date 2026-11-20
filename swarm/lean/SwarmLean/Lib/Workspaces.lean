@@ -31,6 +31,16 @@ def worktrees [Git m] [Sys m] : m (List (String × String)) := do
       if let some c := cur then out := out ++ [(c, (l.drop 18).toString)]
   return out
 
+/-- Every worktree, a detached one too, as (resolved path, branch or none); `worktrees` lists only those on a branch. -/
+def every [Git m] [Sys m] : m (List (String × Option String)) := do
+  let mut out : Array (String × Option String) := #[]
+  for l in splitlines ((← Git.git ["worktree", "list", "--porcelain"] none).getD "") do
+    if l.startsWith "worktree " then
+      out := out.push (← real (l.drop 9).toString, none)
+    else if l.startsWith "branch refs/heads/" && !out.isEmpty then
+      out := out.modify (out.size - 1) fun (p, _) => (p, some (l.drop 18).toString)
+  return out.toList
+
 /-- The worktrees `name` owns that still exist; none when none was ever recorded for it (workspaces.owned). -/
 def owned (db : Db) (name : String) (wts : List (String × String)) : Option (List String) :=
   let rows := db.workspaces.filter fun w => w.agent == name && w.ro == some 0
