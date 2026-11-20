@@ -1054,6 +1054,38 @@ def test_watchd_continues_stayer_after_compaction (t : T) : IO Unit := do
   tick; tick
   eq ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done. Carry on")).length 1
 
+-- a compaction ends the stay set before it; a stay set after it stays
+def test_compaction_ends_stay (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "b" [("hc", "h2")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["stay", "reviews"] { hc := some "h1" }; t.sw_ "b" ["stay", "ci"] { hc := some "h2" }
+  t.setHc [json% {"address": "h1", "status": "done"}, json% {"address": "h2", "status": "done"}, json% {"address": "hc0", "status": "done"}]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'a', 'compact')" []
+  t.sw_ "b" ["stay", "ci2"] { hc := some "h2" }  -- b: stay set after... (no compact for b)
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'b', 'compact')" []
+  t.sw_ "b" ["stay", "ci3"] { hc := some "h2" }
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  tick
+  eq (← t.q "select 1 x from agent where name='a' and stay is null").size 1
+  eq (← t.q "select 1 x from agent where name='b' and stay='ci3'").size 1
+  eq (← t.q "select 1 x from event where kind='stay-end' and agent='a' and data='compaction' and path='reviews'").size 1
+  has ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).head! "Your stay 'reviews' ended with the compaction"
+
+-- a continue line with no turn after it in 5 min is sent once more and the communicator told, once
+def test_compaction_not_resumed_resent_once (t : T) : IO Unit := do
+  t.fakes
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
+  t.setHc [json% {"address": "h1", "status": "done"}, json% {"address": "hc0", "status": "done"}]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 400, 'a', 'compact')" []
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 350, 'a', 'ctx-continue')" []
+  t.q_ "update agent set last_active=strftime('%s','now') - 400 where name='a'" []
+  let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
+  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).length
+  tick; tick
+  eq (← sends) 1
+  eq (← t.q "select 1 x from msg where dest='t-comms' and body like 'a did not resume after its compaction (terminal h1)%'").size 1
+
 -- a compaction the agent already had a turn after is not followed by a continue line (board #191)
 def test_watchd_no_continue_after_a_turn (t : T) : IO Unit := do
   t.fakes
@@ -1278,6 +1310,8 @@ def tests : List Case := [
   ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),
   ("test_watchd_types_into_waiterless_comms", test_watchd_types_into_waiterless_comms),
   ("test_watchd_continues_stayer_after_compaction", test_watchd_continues_stayer_after_compaction),
+  ("test_compaction_ends_stay", test_compaction_ends_stay),
+  ("test_compaction_not_resumed_resent_once", test_compaction_not_resumed_resent_once),
   ("test_watchd_no_continue_after_a_turn", test_watchd_no_continue_after_a_turn),
   ("test_who_flags_stale_herdr_copies", test_who_flags_stale_herdr_copies),
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),

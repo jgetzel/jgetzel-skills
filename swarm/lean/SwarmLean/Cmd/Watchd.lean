@@ -151,6 +151,9 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
           (say db now c (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
         | none => (db, ())
 
+/-- How long a continue line may go unanswered (no turn) before it is sent once more. -/
+def RESUME_WAIT : Int := 5 * 60
+
 /-- Context compaction (board #136): each live agent holding work (a task, a stay, the communicator's role) gets
 `Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. -/
 def compactPass (terms : List Term) (comms : String) : m Unit := do
@@ -162,18 +165,45 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
     let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
       (·.id ≤ ·.id)).head?
     let stays := a.name == comms || a.stay.isSome
+    let ev (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.bind (·.ts)
+    let evId (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.map (·.id)
+    let idle := Compact.Term.ofHc x.status == .idle
+    -- a continue line nobody answered in RESUME_WAIT (no turn since): sent once more and the communicator told, once
+    if idle then
+      if let (some cid, some ct) := (evId "ctx-continue", ev "ctx-continue") then
+        let now ← Clock.now
+        if now - ct ≥ RESUME_WAIT && a.last_active.getD 0 ≤ ct && (evId "ctx-resent").all (· < cid) then
+          Store.txn [.agent, .msg, .cursor, .event] fun db =>
+            ((say db now comms s!"{a.name} did not resume after its compaction (terminal {h})." false "system").log now (some a.name)
+              "ctx-resent" none none, ())
+          let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
+          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+    -- a compaction ended (the hook's `compact` event, then the continue line or the agent's first turn) and the stay
+    -- was set before it: the stay ends
+    let mut stayNote := ""
+    if let (some s, some cid) := (a.stay, evId "compact") then
+      let ended := (db.events.any fun e => e.agent == some a.name && e.id > cid && (e.kind == some "stay" || e.kind == some "stay-end"))
+      let t0 := (ev "compact").getD 0
+      let willSend := idle && (evId "ctx-continue").all (· < cid) && a.last_active.getD 0 ≤ t0
+      let done := (evId "ctx-continue").any (· > cid) || a.last_active.getD 0 > t0 || willSend
+      if !ended && done then
+        let now ← Clock.now
+        Store.txn [.agent, .event] fun db =>
+          ((db.setAgent a.name ({ · with stay := none })).log now (some a.name) "stay-end" (some s) (some "compaction"), ())
+        stayNote := s!" Your stay '{s}' ended with the compaction; `swarm stay \"<why>\"` again if it still holds."
+        if !willSend then
+          Store.txn [.agent, .msg, .cursor] fun db => (say db now a.name stayNote.trimAscii.toString false "system", ())
     if !stays && task.isNone then continue  -- holds nothing: watchd ends it soon
     -- a compaction has ended (the hook logged "compact") and nothing woke the agent since: send it the stop hook's
     -- verdict as a prompt, once; a hook cannot start a turn itself
-    let ev (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.bind (·.ts)
-    if Compact.Term.ofHc x.status == .idle then
+    if idle then
       if let some t0 := ev "compact" then
         if (ev "ctx-continue").all (· < t0) && a.last_active.getD 0 ≤ t0 then
           let now ← Clock.now
           Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
           -- a stayer or the communicator has no verdict (a declared wait): still tell it to carry on
           let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
-          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why ++ stayNote) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
           continue
     let k := a.ctx_tokens.getD 0
     let force := too || !stays
