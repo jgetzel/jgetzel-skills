@@ -25,7 +25,7 @@ def leaveSpec : Spec := .mk "leave" helpLeave [maybe "name"] [] [] [] none
 /-- `swarm role`'s parser. -/
 def roleSpec : Spec := .mk "role" helpRole [many "text"] [] [] [] none
 /-- `swarm stay`'s parser. -/
-def staySpec : Spec := .mk "stay" helpStay [many "text"] [flag "--end"] [] [] none
+def staySpec : Spec := .mk "stay" helpStay [many "text"] [flag "--end", opt "--until"] [] [] none
 /-- `swarm limits`'s parser. -/
 def limitsSpec : Spec := .mk "limits" helpLimits []
   [opt "--min" none (some int), opt "--max" none (some int), { opt "--queue-only" with choices := ["on", "off"] },
@@ -151,11 +151,23 @@ def stayCmd (a : Parsed) : m UInt32 := do
     return 0
   let v := if isEnd then none else some (oneLine (" ".intercalate text))
   if v == some "" then die "say what you wait for: swarm stay \"<what>\""
+  let cond ← match a.str "until" with
+    | none => pure none
+    | some u => match stayCond u with
+      | some c => pure (some c)
+      | none => die s!"bad --until '{u}': one of job:<id>, task:<id>, msg:<agent>, ci, time:<HH:MM> (UTC)"
+  if isEnd && cond.isSome then die "--until goes with a stay, not --end"
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
-  unfence n (← Store.txn [.agent, .cursor, .event] (stay · n here v now))
+  unfence n (← Store.txn [.agent, .cursor, .event] fun db =>
+    let (db, r) := stay db n here v now
+    match r, cond with
+    | .ok _, some c => (db.log now (some n) "stay-until" (some c) v, r)
+    | _, _ => (db, r))
   Env.out (match v with
-    | some v => s!"you stay for '{v}'; watchd won't end you. `swarm stay --end` when it is over."
+    | some v => match cond with
+      | some c => s!"you stay for '{v}' until {c}; watchd wakes you then, and won't end you before. `swarm stay --end` if it is over sooner."
+      | none => s!"you stay for '{v}'; watchd won't end you. Name the wait, not the plan: with a condition, `swarm stay \"<why>\" --until <job:<id>|task:<id>|msg:<agent>|ci|time:HH:MM>`. `swarm stay --end` when it is over."
     | none => "stay ended: watchd ends you once you are idle, hold nothing and your work is on your task's base.")
   return 0
 

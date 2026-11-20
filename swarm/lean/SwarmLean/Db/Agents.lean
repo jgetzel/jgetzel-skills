@@ -170,6 +170,63 @@ def stay (db : Db) (name : String) (here : Option String) (v : Option String) (n
     let db := db.setAgent name ({ · with stay := v })
     (db.log now (some name) (if v.isSome then "stay" else "stay-end") none v, ())
 
+/-- A stay's wake condition (`swarm stay --until`): `job:<id>`, `task:<n>`, `msg:<agent>`, `ci` or `time:<HH:MM>` (UTC),
+normalised; none if it is none of those. -/
+def stayCond (s : String) : Option String :=
+  let s := strip s
+  let nat (x : String) : Bool := !x.isEmpty && x.all Char.isDigit
+  if s == "ci" then some s
+  else if s.startsWith "job:" then (let x := (s.drop 4).toString; if x.isEmpty || x.any Char.isWhitespace then none else some s)
+  else if s.startsWith "task:" then (let x := ((s.drop 5).toString.dropWhile (· == '#')).toString; if nat x then some s!"task:{x}" else none)
+  else if s.startsWith "msg:" then (let x := (s.drop 4).toString; if x.isEmpty || x.any Char.isWhitespace then none else some s)
+  else if s.startsWith "time:" then
+    match ((s.drop 5).toString.splitOn ":") with
+    | [h, m] => if nat h && nat m && h.length ≤ 2 && m.length == 2 && h.toNat! < 24 && m.toNat! < 60
+        then some s!"time:{h.toNat!}:{m}" else none
+    | _ => none
+  else none
+
+/-- The condition of `n`'s current stay and when it was set: its newest `stay-until` event if no plain `stay` came after
+it, else none and the `stay` event's time (0 if it has none). -/
+def stayCondOf (db : Db) (n : String) : Option String × Int :=
+  let mine := db.events.filter (·.agent == some n)
+  let st := (mine.filter (·.kind == some "stay")).getLast?
+  match (mine.filter (·.kind == some "stay-until")).getLast? with
+  | some u =>
+    if st.any (·.id > u.id) then (none, (st.bind (·.ts)).getD 0) else (u.path, u.ts.getD 0)
+  | none => (none, (st.bind (·.ts)).getD 0)
+
+/-- Whether stay condition `c`, set at `since`, holds (`ciTs` reads a CI run's ISO time) at `t` (the detail for the wake line). -/
+def stayMet (db : Db) (ciTs : String → Int) (n c : String) (since t : Int) : Option String :=
+  let late (e : Event) : Bool := e.ts.getD 0 ≥ since
+  if c == "ci" then
+    (db.cis.filter fun r => r.conclusion.isSome && (r.conclusion != some "") && r.updated.any fun u => ciTs u ≥ since).getLast?.map
+      fun r => s!"{(r.workflow.getD "")} {r.conclusion.getD ""} on {((r.sha.getD "?").take 7).toString}"
+  else if c.startsWith "job:" then
+    let id := (c.drop 4).toString
+    (db.events.filter fun e => e.kind == some "job-end" && e.path == some id).getLast?.map fun _ => s!"job {id} ended"
+  else if c.startsWith "task:" then
+    let id := (c.drop 5).toString
+    match id.toNat? >>= fun i => db.tasks.find? (·.id == i) with
+    | some r =>
+      if r.state == .done then some s!"#{id} is done"
+      else if r.state == .dropped then some s!"#{id} was dropped"
+      else if db.events.any (fun e => e.kind == some "release" && late e && ((e.data.getD "").splitOn " ").head? == some s!"#{id}") then
+        some s!"#{id} was released"
+      else none
+    | none => some s!"#{id} is gone"
+  else if c.startsWith "msg:" then
+    let f := (c.drop 4).toString
+    (db.msgs.filter fun m => m.frm == some f && (m.dest == some n || m.dest == some "@all") && m.ts.getD 0 ≥ since).getLast?.map
+      fun m => s!"message #{m.id} from {f}"
+  else if c.startsWith "time:" then
+    let p := (c.drop 5).toString.splitOn ":"
+    let secs : Int := ((p.getD 0 "0").toNat?.getD 0 * 3600 + (p.getD 1 "0").toNat?.getD 0 * 60 : Nat)
+    let cand := (since / 86400) * 86400 + secs
+    let target := if cand ≤ since then cand + 86400 else cand
+    if t ≥ target then some s!"it is past {(c.drop 5).toString} UTC" else none
+  else none
+
 /-- `swarm stay --end NAME` by `me` (in charge): clears a live agent's stay (agents.end_stay's transaction). -/
 def endStay (db : Db) (me n : String) (now : Int) : Db × Except String Unit :=
   match (live db).find? (·.name == n) with

@@ -9,8 +9,10 @@ your name is in `$SWARM_NAME`.
 - **Land work by the repo's rules.** Read CLAUDE.md and
   `.claude/orchestration.md`; skip anything about an orchestrator.
 - **Role.** `swarm role "<few words>"` when what you do changes (implementer, reviewer, planner, …). If your work
-  is not a task and you will sit idle between pieces of it, `swarm stay "<what you wait for>"` so watchd won't end
-  you, and `swarm stay --end` when it is over (a "Liveness check" message after 50 idle min asks the same).
+  is not a task and you will sit idle between pieces of it, `swarm stay "<what you wait for>" [--until <cond>]` so watchd won't end
+  you, and `swarm stay --end` when it is over. A stay names the wait, not the plan: `<cond>` is `job:<id>`, `task:<id>`,
+  `msg:<agent>`, `ci` or `time:<HH:MM>` (UTC), and watchd wakes you when it holds. Without it a "Liveness check" asks
+  after 15 idle min what exactly you wait for: take any step you can and `swarm stay --end`, else set the stay with `--until`.
   A compaction ends your stay (watchd says so in its continue line): `swarm stay` again if it still holds.
 - **The board.** Run `swarm board` first. Looking for work, take the first startable entry of `swarm queue`, else
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
@@ -56,7 +58,7 @@ your name is in `$SWARM_NAME`.
 - **Stop hook.** When you stop and something keeps watchd from ending you (`swarm endable --why`: claim, lock,
   dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue: finish
   and land; or drop (`swarm task release`, commit or delete the listed files; a pushed branch hands off commits);
-  or declare the wait (`swarm task block <id> "<q>"`, `swarm stay "<what>"`). A background job of your own lets the
+  or declare the wait (`swarm task block <id> "<q>"`, `swarm stay "<what>" --until <cond>`). A background job of your own lets the
   stop through. Wait on it by its completion notification or PID, never `pgrep -f <script name>` (peers run the same
   scripts) or a sleep loop.
 - **Unattended.** Nobody answers permission prompts. Run `rm -rf` as its own plain command, never inside `sh -c` or a

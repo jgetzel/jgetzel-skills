@@ -32,7 +32,7 @@ def helpRole : String :=
 
 /-- `swarm stay -h`. -/
 def helpStay : String :=
-  "Usage: swarm stay [-h] [--end] [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --end                 clear it: judged as any agent again; `--end NAME` clears NAME's (human or the communicator)"
+  "Usage: swarm stay [-h] [--end] [--until <until>] [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --until <until>       what ends the wait, and wakes you: job:<id> (a swarm run job ends), task:<id> (done or released), msg:<agent>, ci (the next CI result on the base), time:<HH:MM> (UTC). A stay names the wait, not the plan; without --until it is a free-text stay and gets a liveness check after 15 min\n   --end                 clear it: judged as any agent again; `--end NAME` clears NAME's (human or the communicator)"
 
 /-- `swarm limits -h`. -/
 def helpLimits : String :=

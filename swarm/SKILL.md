@@ -149,7 +149,7 @@ with subagents.
 - **Stop hook** (agents only; you have no hooks). When an agent stops and something keeps watchd from ending it (`swarm endable --why` lists it: claim,
   lock, dirty worktree, commits not on base), the hook blocks the stop and names it. Change state, don't argue:
   (a) finish and land; (b) drop: `swarm task release`, commit, ignore or delete the listed files (a pushed branch
-  counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>"`.
+  counts as handing off commits); (c) declare the wait: `swarm task block <id> "<q>"` or `swarm stay "<what>" [--until <cond>]` (a stay names the wait, not the plan; `--until` is `job:<id>`, `task:<id>`, `msg:<agent>`, `ci` or `time:<HH:MM>`, and watchd wakes the agent then; a free-text stay is asked what it waits for after 15 min, one with `--until` only after 50).
   A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
 - **Ending.** `watchd` ends agents (kills the terminal, nothing else) once they are idle with no claim, lock or
   stay and their work is on their task's base. `swarm end <agent> [--force]` does it by hand with the same checks.
