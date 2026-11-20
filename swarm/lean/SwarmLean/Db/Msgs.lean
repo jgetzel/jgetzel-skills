@@ -69,6 +69,32 @@ def deliverNote (hh : List String) (fit : List Msg) (more : Nat) : String :=
   let note := if more > 0 then note ++ s!"\n{more} more unread message(s), too long to show here: run `swarm read`." else note
   strip note
 
+/-- The rows up to id `i`: of rows sorted by id, a prefix. -/
+def upTo (i : Nat) (rows : List Msg) : List Msg := rows.takeWhile (·.id ≤ i)
+
+/-- watchd's delivery to the communicator once hc send typed its messages into its terminal (board #210): its unread
+rows up to `i`, the last id typed, marked read; none when a `swarm read` since has passed them. -/
+def typedStep (name : String) (i : Nat) (db : Db) : Db × List Msg × List Msg := take name (upTo i) db
+
+/-- Most lines watchd types into the communicator's terminal in one block. -/
+def TYPE_LINES : Nat := 40
+
+/-- watchd's pick for the communicator's terminal: the prefix of `rows` whose lines fit in `n`, never empty while
+`rows` isn't (a first row over `n` lines goes alone, whole). -/
+def linesFit (n : Nat) (rows : List Msg) : List Msg :=
+  let rec go (used : Nat) : List Msg → List Msg
+    | [] => []
+    | r :: rs =>
+      let k := ((fmtMsg "00:00" r).splitOn "\n").length
+      if used > 0 && used + k > n then [] else r :: go (used + k) rs
+  go 0 rows
+
+/-- The block watchd types into the communicator's terminal: `fit` as `swarm read` prints it under the peer head,
+each row's time formatted by `hh`, and how many more stay unread. -/
+def typedNote (hh : List String) (fit : List Msg) (more : Nat) : String :=
+  let note := PEER ++ "\n".intercalate ((hh.zip fit).map fun (h, r) => fmtMsg h r)
+  strip (if more > 0 then note ++ s!"\n{more} more: `swarm read`." else note)
+
 /-- Joins notes, dropping whole ones past `budget` with a pointer (msgs.capped). -/
 def capped (notes : List String) (budget : Nat := CTX_CAP) : String :=
   let rec go (size : Nat) (out : List String) : List String → List String

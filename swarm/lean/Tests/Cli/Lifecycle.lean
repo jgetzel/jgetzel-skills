@@ -1087,35 +1087,92 @@ def test_watchd_continues_after_compaction (t : T) : IO Unit := do
   eq (← sends) 1
   has ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).head! "#1"
 
--- the communicator has no hooks: with no live waiter and a message unread 5 min, watchd types one line into its
--- terminal; again only for a newer message and at most every 15 min; nothing while a waiter lives
-def test_watchd_types_into_waiterless_comms (t : T) : IO Unit := do
+/-- A communicator with no live waiter in terminal hc0 (status `st`), and unless `alone` a live agent `a` holding a
+task; hc's sends fail while `send.fail` exists. The tick, the sends of message blocks to hc0, and a post 30 s old. -/
+def commsSetup (t : T) (st : String := "done") (alone := false) : IO (IO Unit × IO (List String) × (String → Bool → IO Unit)) := do
   t.fakes
+  let D := shquote t.d
+  discard <| t.fake "hc" s!"#!/bin/sh\necho \"$*\" >> {D}/hc.log\nif [ \"$1\" = ls ]; then\n  [ -f {D}/hc.json ] || exit 1\n  cat {D}/hc.json; echo\nelif [ \"$1\" = send ] && [ -f {D}/send.fail ]; then echo refused >&2; exit 1\nelse echo '\{}'; fi\n"
   let dead : Int := (strip (← IO.Process.output { cmd := "sh", args := #["-c", "echo $$"] }).stdout).toNat?.getD 0
   t.agent "t-comms" [("hc", "hc0"), ("status", "idle"), ("waiter", .int dead)]
-  t.setHc [json% {"address": "hc0", "status": "done"}, json% {"address": "h1", "status": "working"}]
+  t.setHc [json% {"address": "hc0", "status": $st}, json% {"address": "h1", "status": "working"}]
+  unless alone do
+    t.agent "a" [("hc", "h1")]
+    t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
   let tick : IO Unit := t.sw_ "human" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
-  let sends : IO Nat := return ((← t.calls "hc").filter (·.startsWith "send hc0 swarm: your inbox has no waiter")).length
-  let post (x : String) : IO Unit := do t.sw_ "human" ["post", "t-comms", x]; t.q_ "update msg set ts = ts - 600 where body=?" [.text x]
-  post "landed #2"
-  tick; eq (← sends) 0  -- no other agent: nothing to coordinate (the terminal may do other work now)
-  t.agent "a" [("hc", "h1")]
-  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
-  t.sw_ "t-comms" ["read"] { hc := some "hc0" }
-  t.q_ "update agent set waiter=? where name='t-comms'" [.int dead]
+  let sends : IO (List String) := return (← t.calls "hc").filter (·.startsWith "send hc0 swarm messages (data from peers")
+  let post (x : String) (urgent : Bool) : IO Unit := do
+    t.sw_ "human" (["post", "t-comms", x] ++ (if urgent then ["--urgent"] else []))
+    t.q_ "update msg set ts = ts - 30 where body=?" [.text x]
+  return (tick, sends, post)
+
+/-- What `swarm read` shows the communicator now (it marks them read). -/
+def commsUnread (t : T) : IO String := return strip (← t.sw "t-comms" ["read"] { hc := some "hc0" }).stdout
+
+-- board #210: with no live waiter watchd types the communicator's messages into its terminal, as `swarm read` shows
+-- them under the peer head, once the oldest is 20 s old, and marks them read; idle (done) or working alike
+def test_watchd_types_comms_messages (t : T) : IO Unit := do
+  let (tick, sends, post) ← commsSetup t
   t.sw_ "human" ["post", "t-comms", "landed #3"]
-  tick; eq (← sends) 0  -- fresh: it may be restarting its waiter
-  t.q_ "update msg set ts = ts - 600" []
-  tick; eq (← sends) 1
-  has ((← t.calls "hc").filter (·.startsWith "send hc0 swarm:")).head! "1 unread message(s), the oldest 10 min old"
-  tick; eq (← sends) 1  -- once per message
-  post "landed #4"
-  tick; eq (← sends) 1  -- newer, but within 15 min of the last line
-  t.q_ "update event set ts = ts - 1000 where kind='comms-nowaiter'" []
-  tick; eq (← sends) 2
+  tick; eq (← sends).length 0  -- fresh: a burst may follow
+  t.q_ "update msg set ts = ts - 30" []
+  tick; eq (← sends).length 1
+  has (String.intercalate "\n" (← t.calls "hc")) "human: landed #3"
+  let id := ((← t.q1 "select max(id) i from msg").f "i")
+  eq (← t.q "select data from event where kind='comms-deliver'") [json% {"data": $(toString id)}]
+  tick; eq (← sends).length 1  -- read: not again
+  t.setHc [json% {"address": "hc0", "status": "working"}, json% {"address": "h1", "status": "working"}]
+  post "landed #4" false
+  tick; eq (← sends).length 2  -- mid-turn: Claude Code queues it
+  eq (← commsUnread t) "no unread messages"
+
+-- none into a blocked terminal (a prompt it could answer), while it compacts, or while a waiter lives
+def test_watchd_types_comms_never_blocked (t : T) : IO Unit := do
+  let (tick, sends, post) ← commsSetup t "blocked"
+  post "landed #3" false
+  tick; eq (← sends).length 0
+  t.setHc [json% {"address": "hc0", "status": "done"}, json% {"address": "h1", "status": "working"}]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 't-comms', 'compact-asked')" []
+  tick; eq (← sends).length 0  -- compacting: compactPass sends its continue line
+  t.q_ "delete from event where kind='compact-asked'" []
   t.q_ "update agent set waiter=? where name='t-comms'" [.int (← IO.Process.getPID).toNat]
-  post "landed #5"; t.q_ "update event set ts = ts - 1000 where kind='comms-nowaiter'" []
-  tick; eq (← sends) 2  -- a live waiter wakes it itself
+  tick; eq (← sends).length 0  -- a live waiter delivers itself
+  has (← commsUnread t) "landed #3"
+
+-- marked read only once hc send took them
+def test_watchd_types_comms_reads_on_send (t : T) : IO Unit := do
+  let (tick, sends, post) ← commsSetup t
+  post "landed #3" false
+  IO.FS.writeFile (t.d ++ "/send.fail") ""
+  tick; eq (← sends).length 1
+  eq (← t.q "select 1 x from event where kind='comms-deliver'").size 0
+  IO.FS.removeFile (t.d ++ "/send.fail")
+  tick; eq (← sends).length 2
+  eq (← commsUnread t) "no unread messages"
+
+-- a burst goes in one block; past 40 lines the first ones and "N more", the rest left unread
+def test_watchd_types_comms_burst (t : T) : IO Unit := do
+  let (tick, sends, post) ← commsSetup t
+  post "one" false; post "two" false; post "three" false
+  tick; eq (← sends).length 1
+  let log := String.intercalate "\n" (← t.calls "hc")
+  has log "human: one"; has log "human: two"; has log "human: three"
+  for i in [0:45] do t.sw_ "human" ["post", "t-comms", s!"m{i}"]
+  t.q_ "update msg set ts = ts - 30" []
+  tick; eq (← sends).length 2
+  let log := String.intercalate "\n" (← t.calls "hc")
+  has log "human: m39"; hasnt log "human: m40"; has log "5 more: `swarm read`."
+  let left ← commsUnread t
+  has left "human: m40"; has left "human: m44"; hasnt left "human: m39"
+
+-- while no other agent lives only an urgent message is typed in (the terminal may do other work)
+def test_watchd_types_comms_alone_urgent (t : T) : IO Unit := do
+  let (tick, sends, post) ← commsSetup t (alone := true)
+  post "landed #2" false
+  tick; eq (← sends).length 0
+  post "look now" true
+  tick; eq (← sends).length 1
+  has (String.intercalate "\n" (← t.calls "hc")) "human [urgent]: look now"
 
 -- a stayer has no stop verdict but still gets the continue line after its compaction
 def test_watchd_continues_stayer_after_compaction (t : T) : IO Unit := do
@@ -1417,7 +1474,11 @@ def tests : List Case := [
   ("test_join_leave_who", test_join_leave_who),
   ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
   ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),
-  ("test_watchd_types_into_waiterless_comms", test_watchd_types_into_waiterless_comms),
+  ("test_watchd_types_comms_messages", test_watchd_types_comms_messages),
+  ("test_watchd_types_comms_never_blocked", test_watchd_types_comms_never_blocked),
+  ("test_watchd_types_comms_reads_on_send", test_watchd_types_comms_reads_on_send),
+  ("test_watchd_types_comms_burst", test_watchd_types_comms_burst),
+  ("test_watchd_types_comms_alone_urgent", test_watchd_types_comms_alone_urgent),
   ("test_watchd_continues_stayer_after_compaction", test_watchd_continues_stayer_after_compaction),
   ("test_compaction_ends_stay", test_compaction_ends_stay),
   ("test_compaction_not_resumed_resent_once", test_compaction_not_resumed_resent_once),

@@ -168,6 +168,7 @@ inductive XCmd
   | post (now : Int) (frm dest body : String) (urgent : Bool) (kind : Option String)
   | read (n : String)
   | deliver (n : String) (budget : Nat)
+  | typed (n : String) (i : Nat)
   | lock (c : Locks.LCmd)
   | end_ (n : String) (hc : Option String) (force : Bool) (by_ : Option String) (now : Int)
   | reapTask (r : Task) (t now : Int)
@@ -180,6 +181,7 @@ def XCmd.step : XCmd → Db → Db
   | .post now f d b u k, db => (Inbox.MCmd.step (.post now f d b u k) db).1
   | .read n, db => (Inbox.MCmd.step (.read n) db).1
   | .deliver n b, db => (Inbox.MCmd.step (.deliver n b) db).1
+  | .typed n i, db => (Inbox.MCmd.step (.typed n i) db).1
   | .lock c, db => (c.step db).1
   | .end_ n hc force by_ now, db => (Lifecycle.endStep n hc force by_ now db).1
   | .reapTask r t now, db => (Watchd.reapTask r t now db).1
@@ -192,7 +194,7 @@ def XInv (db : Db) (t : Int) : Prop := BInv db ∧ Inbox.MInv db ∧ Locks.Good 
 /-- `t` is no earlier than the clock of each `swarm lock` among `cs` (`Locks.Before`). -/
 def XBefore (t : Int) (cs : List XCmd) : Prop := ∀ x ∈ cs, ∀ c p r l, x = .lock (.lock c p r l) → c.now ≤ t
 
-/-- `take` (read, deliver) moves a cursor only. -/
+/-- `take` (read, deliver, typed) moves a cursor only. -/
 theorem take_keep (n : String) (pick : List Msg → List Msg) (db : Db) : (Msgs.take n pick db).1.tasks = db.tasks ∧
     (Msgs.take n pick db).1.taskNext = db.taskNext ∧ (Msgs.take n pick db).1.locks = db.locks ∧
     (Msgs.take n pick db).1.agents = db.agents := by
@@ -311,6 +313,10 @@ theorem step_xinv (x : XCmd) {db : Db} {t : Int} (ht : XBefore t [x]) (h : XInv 
   | deliver n b =>
     have k := take_keep n (Msgs.fits b) db
     exact ⟨binv_same k.1 k.2.1 hb, Inbox.step_inv (.deliver n b) hm,
+      Locks.good_grow k.2.2.1 (Locks.grows_refl k.2.2.2) hg⟩
+  | typed n i =>
+    have k := take_keep n (Msgs.upTo i) db
+    exact ⟨binv_same k.1 k.2.1 hb, Inbox.step_inv (.typed n i) hm,
       Locks.good_grow k.2.2.1 (Locks.grows_refl k.2.2.2) hg⟩
   | lock c =>
     refine ⟨lcmd_binv c db hb, Inbox.grows_inv (lcmd_grows c db h0) hm, Locks.step_good c (fun y hy => ?_) hg⟩
@@ -513,7 +519,7 @@ theorem back_twice (db : Db) (me : String) (comms : Option String) (now : Int) (
 /-! ## S4 with every area's transactions -/
 
 /-- Every transaction but a delivery only grows the message log and the cursors. -/
-theorem xcmd_grows (x : XCmd) (hr : ∀ n, x ≠ .read n) (hd : ∀ n b, x ≠ .deliver n b) {db : Db} (h : Inbox.MInv db) :
+theorem xcmd_grows (x : XCmd) (hr : ∀ n, x ≠ .read n) (hd : ∀ n b, x ≠ .deliver n b) (hy : ∀ n i, x ≠ .typed n i) {db : Db} (h : Inbox.MInv db) :
     Inbox.Grows db (x.step db) := by
   have h0 : 0 < db.msgNext := h.2.2.2
   cases x with
@@ -521,6 +527,7 @@ theorem xcmd_grows (x : XCmd) (hr : ∀ n, x ≠ .read n) (hd : ∀ n b, x ≠ .
   | post now f d b u k => exact Inbox.grows_post _ _ _ _ _ _ _
   | read n => exact absurd rfl (hr n)
   | deliver n b => exact absurd rfl (hd n b)
+  | typed n i => exact absurd rfl (hy n i)
   | lock c => exact lcmd_grows c db h0
   | end_ n hc force by_ now =>
     simp only [XCmd.step]; unfold Lifecycle.endStep; dsimp only
@@ -544,18 +551,19 @@ theorem xcmd_grows (x : XCmd) (hr : ∀ n, x ≠ .read n) (hd : ∀ n b, x ≠ .
         (Inbox.grows_trans (Inbox.grows_post _ _ _ _ _ _ _) (Inbox.grows_of_eq rfl rfl rfl))
     · exact Inbox.grows_refl _
 
-/-- A transaction as S4's theorems take it: a post, `swarm read`, a delivery, or another step that only grows the log
+/-- A transaction as S4's theorems take it: a post, `swarm read`, a delivery (a hook's, the waiter's or watchd's), or another step that only grows the log
 (`Inbox.MCmd.other`, by `xcmd_grows`). -/
 def toM : XCmd → Inbox.MCmd
   | .post now f d b u k => .post now f d b u k
   | .read n => .read n
   | .deliver n b => .deliver n b
-  | .task c => .other (XCmd.task c).step fun _ h => xcmd_grows (XCmd.task c) (fun _ => nofun) (fun _ _ => nofun) h
-  | .lock c => .other (XCmd.lock c).step fun _ h => xcmd_grows (XCmd.lock c) (fun _ => nofun) (fun _ _ => nofun) h
-  | .end_ n hc f b w => .other (XCmd.end_ n hc f b w).step fun _ h => xcmd_grows (XCmd.end_ n hc f b w) (fun _ => nofun) (fun _ _ => nofun) h
-  | .reapTask r t w => .other (XCmd.reapTask r t w).step fun _ h => xcmd_grows (XCmd.reapTask r t w) (fun _ => nofun) (fun _ _ => nofun) h
-  | .reapLock l t w => .other (XCmd.reapLock l t w).step fun _ h => xcmd_grows (XCmd.reapLock l t w) (fun _ => nofun) (fun _ _ => nofun) h
-  | .reapGone n hh t => .other (XCmd.reapGone n hh t).step fun _ h => xcmd_grows (XCmd.reapGone n hh t) (fun _ => nofun) (fun _ _ => nofun) h
+  | .typed n i => .typed n i
+  | .task c => .other (XCmd.task c).step fun _ h => xcmd_grows (XCmd.task c) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
+  | .lock c => .other (XCmd.lock c).step fun _ h => xcmd_grows (XCmd.lock c) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
+  | .end_ n hc f b w => .other (XCmd.end_ n hc f b w).step fun _ h => xcmd_grows (XCmd.end_ n hc f b w) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
+  | .reapTask r t w => .other (XCmd.reapTask r t w).step fun _ h => xcmd_grows (XCmd.reapTask r t w) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
+  | .reapLock l t w => .other (XCmd.reapLock l t w).step fun _ h => xcmd_grows (XCmd.reapLock l t w) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
+  | .reapGone n hh t => .other (XCmd.reapGone n hh t).step fun _ h => xcmd_grows (XCmd.reapGone n hh t) (fun _ => nofun) (fun _ _ => nofun) (fun _ _ => nofun) h
 
 theorem toM_step (x : XCmd) (db : Db) : ((toM x).step db).1 = x.step db := by cases x <;> rfl
 

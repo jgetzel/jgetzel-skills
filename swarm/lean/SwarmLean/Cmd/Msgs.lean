@@ -69,13 +69,15 @@ def post (a : Parsed) : m UInt32 := do
   let mut g : Array (List String) := #[[], [], [], [], []]
   let mut seen : Seen := []
   let mut evs : Option (List Event) := none
+  let envComms ← env "SWARM_COMMS"
   for x in here.filter toIt do
     let mut k := 0
     if x.status != some "working" then
       let (cr, s) ← coldReason seen x (← Clock.now)
       seen := s
       let up ← match x.waiter with | some w => Sys.pidAlive w | none => pure false
-      k := if cr.isSome && !urgent then 2 else if up then 1 else 3
+      -- a communicator with no waiter is not held cold: watchd types it in (board #210)
+      k := if cr.isSome && !urgent && (up || !isComms db envComms (some x.name)) then 2 else if up then 1 else 3
       if k == 3 then  -- the events only for a recipient no waiter wakes
         let e ← match evs with | some e => pure e | none => Store.txn [.event] fun db => (db, db.events)
         evs := some e
@@ -86,10 +88,9 @@ def post (a : Parsed) : m UInt32 := do
   if !dead.isEmpty then
     parts := parts ++ [", ".intercalate dead ++ ": no terminal; can't be delivered now (stored; read after `swarm join --takeover`)"]
   Env.out ("posted. " ++ "; ".intercalate parts)
-  let envComms ← env "SWARM_COMMS"
   let (held, idle) := g[3]!.partition fun n => isComms db envComms (some n)
   if !held.isEmpty then
-    Env.out (", ".intercalate held ++ ": held; the communicator reads it when its inbox is next armed (no SendMessage nudge)")
+    Env.out (", ".intercalate held ++ ": no waiter; watchd types it into the communicator's terminal within a tick (while no other agent lives, only an urgent one)")
   if !idle.isEmpty then
     Env.out ("nudge by SendMessage (one line, `swarm read`): " ++ ", ".intercalate idle)
   return 0
