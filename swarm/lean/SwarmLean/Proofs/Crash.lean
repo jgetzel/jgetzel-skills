@@ -1159,6 +1159,29 @@ theorem pr_keeps (hM : ∀ w, M.now w ≤ t) (a : Args.Parsed) :
   all_goals xstep
 
 set_option maxHeartbeats 20000000 in
+/-- `run --detach`'s start keeps the cross-area invariant at every commit: its own theorem, which `run_keeps` applies
+(`K.<function>`), as `finishJob` and `runRemote`, so no one proof holds the whole of `run`. -/
+theorem K.SwarmLean.Cmd.Run.detachStart a argv claimId jid jobs unit cwd chosen gotCores gotMem waitS estF :
+    Keeps (M := M) (XInv · t) (Cmd.Run.detachStart a argv claimId jid jobs unit cwd chosen gotCores gotMem waitS estF) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
+/-- A job's end keeps the cross-area invariant at every commit (applied by `run_keeps` and `runRemote`'s lemma). -/
+theorem K.SwarmLean.Cmd.Run.finishJob (hM : ∀ w, M.now w ≤ t) ctx code tree sync back kept hc :
+    Keeps (M := M) (XInv · t) (Cmd.Run.finishJob ctx code tree sync back kept hc) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
+/-- A run on another machine keeps the cross-area invariant at every commit (applied by `run_keeps`). -/
+theorem K.SwarmLean.Cmd.Run.runRemote (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) ctx mach top cs unit dir rel
+    wtname cfg jenv devOn rec0 :
+    Keeps (M := M) (XInv · t) (Cmd.Run.runRemote ctx mach top cs unit dir rel wtname cfg jenv devOn rec0) := by
+  keeps_walk
+  all_goals xstep
+
+set_option maxHeartbeats 20000000 in
 /-- Every `Run` command keeps the cross-area invariant at every commit (`Cmd.Run.group`). -/
 theorem run_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (a : Args.Parsed) :
     Keeps (XInv · t) ((Cmd.Run.group (m := RecM M)).run a) := by
