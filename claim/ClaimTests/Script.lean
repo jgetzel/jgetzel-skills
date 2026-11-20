@@ -25,10 +25,11 @@ def test_script_50_parallel_grant_exactly_4 (t : T) : IO Unit := do
   -- one sh starts the 50: as many Lean tasks each spawning, a CI runner's worker could fork no more (ENOMEM)
   let out := t.d ++ "/s1-answers"
   mkdir out
-  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do sh -c \"$1\" sh try c$k 2 1024 - t w cmd >\"$2/$k\" & k=$((k + 1)); done; wait",
+  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do sh -c \"$1\" sh try c$k 2 1024 - t w cmd >\"$2/$k\" 2>\"$2/$k.err\" & k=$((k + 1)); done; wait",
     "sh", SCRIPT, out] [("XDG_STATE_HOME", some st)]
   let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
-  eq (rs.filter (·.startsWith "ok")).length 4 s!"grants; answers {rs.eraseDups}"
+  let errs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}.err").getD "")
+  eq (rs.filter (·.startsWith "ok")).length 4 s!"grants; answers {rs.eraseDups}; stderr {(errs.filter (· ≠ "")).eraseDups}"
   eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 4
 
 /-- A stale lock (dead pid, a year 2020 mtime) and 50 `--cores all` claims at once: one wins. -/
@@ -46,6 +47,20 @@ def test_script_50_stale_lock_one_winner (t : T) : IO Unit := do
   let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
   eq (rs.filter (·.startsWith "ok")).length 1 s!"grants; answers {rs.eraseDups}"
   eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 1
+
+/-- A reading left empty (a `date` or `awk` whose fork failed) ends the try with no answer, and the lock is freed. -/
+def test_script_a_failed_reading_grants_nothing (t : T) : IO Unit := do
+  let st := t.d ++ "/s7"
+  mkdir (t.d ++ "/nodate")
+  put (t.d ++ "/nodate/date") "#!/bin/sh\nexit 1\n"
+  discard <| t.exec ["chmod", "+x", t.d ++ "/nodate/date"]
+  let path := (← IO.getEnv "PATH").getD ""
+  let r ← t.scr st ["try", "a", "1", "1024", "-", "t", "w", "cmd"] [("PATH", some (t.d ++ "/nodate:" ++ path))]
+  eq r.code 1; eq r.stdout ""
+  let r ← t.scr st ["try", "b", "1", "1024", "-", "t", "w", "cmd"] [("SWARM_COMPUTE_BUSY", some "x")]
+  eq r.code 1; eq r.stdout ""
+  eq (← try_ t st "c" "1") "ok 1 1024"
+  eq ((← lsRows t st "c").map fun l => (words l).take 3) [["c", "1", "1024"]]
 
 def test_script_dead_claims_are_not_counted (t : T) : IO Unit := do
   let st := t.d ++ "/s2"
@@ -239,6 +254,7 @@ def tests : List Case := [
   ("test_script_notes_add_renew_rm_and_lapse", test_script_notes_add_renew_rm_and_lapse),
   ("test_script_a_note_with_a_pid_is_swept_when_it_is_gone", test_script_a_note_with_a_pid_is_swept_when_it_is_gone),
   ("test_script_50_parallel_grant_exactly_4", test_script_50_parallel_grant_exactly_4),
+  ("test_script_a_failed_reading_grants_nothing", test_script_a_failed_reading_grants_nothing),
   ("test_script_dead_claims_are_not_counted", test_script_dead_claims_are_not_counted),
   ("test_script_an_old_lock_without_a_live_holder_is_broken", test_script_an_old_lock_without_a_live_holder_is_broken),
   ("test_script_older_ticket_holds_back_younger", test_script_older_ticket_holds_back_younger),

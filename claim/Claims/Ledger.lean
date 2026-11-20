@@ -110,6 +110,9 @@ sample() {
     mm=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print t+0, a+0}' \"${SWARM_COMPUTE_MEM:-/proc/meminfo}\")
     total_kb=${mm% *}; avail_kb=${mm#* }
   fi
+  # a reading a failed fork left empty is no idle machine
+  num \"$ncpu\" && num \"$total_kb\" && num \"$avail_kb\" || exit 1
+  case $busy in ''|*[!0-9.-]*) exit 1;; esac
 }
 # a lock over a minute old with no live pid: a younger one may have been taken just after the pid read
 stale() {
@@ -135,6 +138,7 @@ lock() {
   echo $$ > \"$d/lock/pid\"
   trap 'rm -rf \"$d/lock\"' EXIT
   now=${SWARM_COMPUTE_NOW:-$(date +%s)}
+  num \"$now\" || exit 1
 }
 clean() {
   for f in \"$d\"/claims/*; do
@@ -190,8 +194,11 @@ try_() {
   first=$now
   if [ -f \"$d/queue/$id\" ]; then read -r first _ < \"$d/queue/$id\"; fi
   offv=0; if [ -e \"$d/off\" ]; then offv=1; fi
-  dec=$({ for f in \"$d\"/claims/*; do if [ -f \"$f\" ]; then printf 'c '; cat \"$f\"; fi; done
-          for f in \"$d\"/queue/*; do if [ -f \"$f\" ]; then printf 'q %s ' \"${f##*/}\"; cat \"$f\"; fi; done; } |
+  # the ledger read by builtins alone: a `cat` whose fork failed (a loaded machine) gave awk part of it, and a grant past the cap
+  in=; nl='\n'
+  for f in \"$d\"/claims/*; do if [ -f \"$f\" ] && read -r l < \"$f\"; then in=\"${in}c $l$nl\"; fi; done
+  for f in \"$d\"/queue/*; do if [ -f \"$f\" ] && read -r l < \"$f\"; then in=\"${in}q ${f##*/} $l$nl\"; fi; done
+  dec=$(printf %s \"$in\" |
     LC_ALL=C awk -v now=\"$now\" -v ncpu=\"$ncpu\" -v total=\"$total_kb\" -v busy=\"$busy\" -v avail=\"$avail_kb\" -v capc=\"$capc\" -v capm=\"$capm\" \\
       -v resc=\"$resc\" -v resm=\"$resm\" -v limc=\"$limc\" -v limm=\"$limm\" -v off=\"$offv\" -v id=\"$id\" -v first=\"$first\" \\
       -v cores=\"$cores\" -v mem=\"$mem\" -v est=\"$est\" '" ++ ADMIT_AWK ++ "')
@@ -199,10 +206,11 @@ try_() {
     ok*)
       set -- $dec
       if [ \"$est\" = - ]; then e=; else e=\"~$est \"; fi
-      printf '%s %s %s %s %s%s %s\\n' \"$2\" \"$3\" \"$holder\" \"$now\" \"$e\" \"$who\" \"$cmd\" > \"$d/claims/.$id\" && mv \"$d/claims/.$id\" \"$d/claims/$id\"
+      printf '%s %s %s %s %s%s %s\\n' \"$2\" \"$3\" \"$holder\" \"$now\" \"$e\" \"$who\" \"$cmd\" > \"$d/claims/.$id\" && mv \"$d/claims/.$id\" \"$d/claims/$id\" || exit 1
       rm -f \"$d/queue/$id\";;
     wait*)
       if [ \"$cores\" = all ]; then echo \"$first all 0 $who\" > \"$d/queue/$id\"; else echo \"$first $cores $mem $who\" > \"$d/queue/$id\"; fi;;
+    '') exit 1;;
     *) rm -f \"$d/queue/$id\";;
   esac
   echo \"$dec\"
