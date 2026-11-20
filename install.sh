@@ -13,7 +13,7 @@ for skill in */SKILL.md; do
   ln -sfn "$PWD/$name" "$dest/$name"
   echo "linked $name"
 done
-# The swarm CLI is swarm-lean (swarm/lean), built with elan's lake or else nix; build.sh also builds swarm-report, harness-retro and herdr-mods.
+# The swarm CLI is swarm-lean (swarm/lean), built by lake, from elan or else the repo flake through nix; build.sh also builds swarm-report, harness-retro and herdr-mods.
 swarm/lean/build.sh || echo "swarm: swarm-lean did not build; swarm/swarm says so until it does" >&2
 # The claim tool (compute claims for anything, swarm or not; built by the build above), linked where a shell, CI or a desktop
 # plugin finds it without a session's PATH.
