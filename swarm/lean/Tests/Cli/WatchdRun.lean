@@ -366,6 +366,34 @@ def test_run_local_records_job (t : T) : IO Unit := do
   let ks := (← t.q "select kind from event where kind like 'job-%' order by id").map (·.f "kind")
   eq ks (json% ["job-start", "job-end"])
 
+/-- A tree with a trivial flake (nixpkgs from the local registry's path) whose dev shell sets SWARM_DEVSHELL. -/
+def devFlake (t : T) : IO Bool := do
+  let sys := strip (← t.exec ["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"]).stdout
+  let np := strip (← t.exec ["nix", "eval", "--raw", "nixpkgs#path"]).stdout
+  if sys == "" || np == "" then return false
+  put (t.wt ++ "/flake.nix") ("{\n  inputs.nixpkgs.url = \"path:" ++ np ++ "\";\n  outputs = { self, nixpkgs }: {\n    devShells." ++ sys ++
+    ".default = nixpkgs.legacyPackages." ++ sys ++ ".mkShell { SWARM_DEVSHELL = \"yes\"; };\n  };\n}\n")
+  discard <| t.exec ["git", "-C", t.wt, "add", "-A"]
+  return true
+
+def test_run_enters_the_dev_shell (t : T) : IO Unit := do
+  if (← t.exec ["sh", "-c", "command -v nix"]).code != 0 then return  -- skipped: no nix
+  unless ← devFlake t do return
+  let cmd := "echo dev=$SWARM_DEVSHELL"
+  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=yes"
+  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=yes"  -- the cached profile
+  has (← t.sw "b" ["run", "--no-devshell", "--", cmd]).stdout "dev=\n"
+  mkdir (t.wt ++ "/.claude")
+  put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"devshell": false}}).compress
+  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=\n"
+  put (t.wt ++ "/.claude/swarm.json") "{}"
+  -- a shell that does not build ends the job with the hint
+  put (t.wt ++ "/flake.nix") "{ outputs = { self }: throw \"broken shell\"; }\n"
+  discard <| t.exec ["git", "-C", t.wt, "add", "-A"]
+  let r ← t.sw "b" ["run", "--", cmd] { ok := false }
+  eq r.code 1
+  has r.stdout "the dev shell did not build; --no-devshell runs without it"
+
 def test_run_note_state_and_cleanup (t : T) : IO Unit := do
   let home ← fakeRemote t
   let hclog := t.d ++ "/hc.log"
@@ -462,6 +490,7 @@ def tests : List Case := [
   ("test_run_remote_syncs_runs_and_brings_back", test_run_remote_syncs_runs_and_brings_back),
   ("test_run_never_ran_or_lost_is_255", test_run_never_ran_or_lost_is_255),
   ("test_run_local_records_job", test_run_local_records_job),
+  ("test_run_enters_the_dev_shell", test_run_enters_the_dev_shell),
   ("test_run_note_state_and_cleanup", test_run_note_state_and_cleanup),
   ("test_run_remote_job_telemetry", test_run_remote_job_telemetry)]
 
