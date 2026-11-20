@@ -11,6 +11,7 @@ your name is in `$SWARM_NAME`.
 - **Role.** `swarm role "<few words>"` when what you do changes (implementer, reviewer, planner, …). If your work
   is not a task and you will sit idle between pieces of it, `swarm stay "<what you wait for>"` so watchd won't end
   you, and `swarm stay --end` when it is over (a "Liveness check" message after 50 idle min asks the same).
+  A compaction ends your stay (watchd says so in its continue line): `swarm stay` again if it still holds.
 - **The board.** Run `swarm board` first. Looking for work, take the first startable entry of `swarm queue`, else
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
   on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work,
