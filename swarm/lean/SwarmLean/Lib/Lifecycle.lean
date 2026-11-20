@@ -81,13 +81,16 @@ def foreignLanded (wt : String) (main : Option String) : m (Option (Bool × Stri
   | some u => return some (← landedRef wt "HEAD" [u], b)
 
 /-- A worktree `n` owns that holds work not on its tasks' bases, with those refs (watchd.unlanded); `wts` the live
-agents' worktrees, `all` every worktree, `db` the agent, task and workspace tables. -/
-def unlanded (db : Db) (n : String) (main : Option String) (wts all : List (String × String)) :
-    m (Option (String × List String)) := do
+agents' worktrees, `all` every worktree (a detached one too, with no branch), `db` the agent, task and workspace
+tables. -/
+def unlanded (db : Db) (n : String) (main : Option String) (wts : List (String × String))
+    (all : List (String × Option String)) : m (Option (String × List String)) := do
   let names ← Bases.ofAgent ((db.tasks.filter (·.owner == some n)).map (·.base)) main
   -- the commits n handed to a lander (`task land`, board #200) count as landed: the lander lands them
   let handed := (db.tasks.filter fun t => t.owner == some n && t.state = .landing).filterMap fun t =>
     t.land_sha.filter fun s => (GitRef.parse? s).isSome
+  -- a detached worktree is owned by its record or its directory's name: no branch names an owner
+  let all := all.map fun (p, b) => (p, b.getD "")
   let own := (wts.lookup n).toList ++ Workspaces.ownedWts n all (some db) ++ Workspaces.ownedWts n all
   for w in own.eraseDups do
     if let some (ok, b) ← foreignLanded w main then
@@ -161,8 +164,9 @@ def waking (db : Db) (n : String) : Nat × Nat :=
   ((us.filter fun r => r.kind != some "notice" || r.urgent.getD 0 != 0).length, (us.filter (·.urgent.getD 0 != 0)).length)
 
 /-- The reads of agent `n` on `db` (agent, task, lock and workspace tables; `passedOver` also the event, msg and
-cursor tables); `pool` the tasks it would be offered. -/
-def reads (db : Db) (main : Option String) (wts all : List (String × String)) (n : String)
+cursor tables); `wts` the live agents' worktrees, `all` every worktree (`Workspaces.every`); `pool` the tasks it would
+be offered. -/
+def reads (db : Db) (main : Option String) (wts : List (String × String)) (all : List (String × Option String)) (n : String)
     (pool : List Task := []) : Reads m where
   claims := db.tasks.any fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)
   locks := db.locks.any (·.agent == some n)
@@ -180,7 +184,7 @@ def reads (db : Db) (main : Option String) (wts all : List (String × String)) (
 /-- The reads of agent `n` now: the db, the main worktree, the agents' and every worktree. -/
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
   let db ← Store.txn [.agent, .task, .lock, .workspace, .«meta»] fun db => (db, db)
-  return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.worktrees) n)
+  return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
 
 /-- What a fate run heard: each check made, in order, with whether it held; the unlanded worktree and its refs (once
 that check was made); the job's process (once that one was). -/
