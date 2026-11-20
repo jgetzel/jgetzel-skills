@@ -25,6 +25,21 @@ structure Ask where
   pid : Int
   pollMs : Nat
 
+/-- Real idle cores of a machine: `ncpu - max busy claimed`, at least 0. -/
+def idleCores (l : Ls) : Float :=
+  let cc : Int := l.claims.foldl (fun s c => s + c.cores) 0
+  let used := if l.busy > Float.ofInt cc then l.busy else Float.ofInt cc
+  let x := Float.ofInt l.ncpu - used
+  if x < 0 then 0 else x
+
+/-- `us` by real idle cores, most first; a tie keeps the order given (here first), a machine that did not answer goes last. -/
+def rankByIdle (xs : List (Option String × Option Float)) : List (Option String × Option Float) :=
+  xs.mergeSort fun a b => match a.2, b.2 with
+    | some x, some y => x >= y
+    | some _, none => true
+    | none, some _ => false
+    | none, none => true
+
 /-- Claims on one of `a.usable` and waits for room: the machine, the cores and the memory granted, or none (after saying why)
 when nothing can ever run it. The claims on the machines not chosen are released. -/
 def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Option String × Int × Int)) := do
@@ -32,10 +47,20 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
   let mut won : Option (Option String × Int × Int) := none
   let mut first := true
   let mut told := false
+  let mut order := a.usable
+  if a.usable.length > 1 then
+    let mut reads : List (Option String × Option Float) := []
+    for c in a.usable do
+      reads := reads ++ [(c, (parseLs ((← call h c ["ls"]).getD "")).map idleCores)]
+    let ranked := rankByIdle reads
+    order := ranked.map (·.1)
+    h.err (s!"{a.prog}: placing: " ++ ", ".intercalate (a.usable.map fun c =>
+      s!"{nameOf c} " ++ match ranked.lookup c with | some (some x) => s!"{fixed x 1} idle" | _ => "unreachable") ++
+      s!" → {nameOf (order.headD none)}")
   repeat
     let mut seen : List (Option String × Try) := []
     let mut gone := false
-    for c in a.usable do
+    for c in order do
       if won.isSome then break
       let holder := if c.isNone then s!"p{a.pid}" else "t"
       let r := parseTry ((← call h c ["try", a.id, a.cores, toString a.mem_kb, (a.est.elim "-" toString), holder, a.who, a.cmd]).getD "")
