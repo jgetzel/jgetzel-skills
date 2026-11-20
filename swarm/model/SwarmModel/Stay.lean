@@ -7,7 +7,8 @@ when it is not answered) are actions of `step`, so S1-S5, N1, W1-W4, L1-L4, H1, 
 Lifecycle keeps a stayer (`stayer_kept`, `tick_keeps_stayer`: fate's `stay`), and `swarm end` without `--force` refuses
 one (`endOther_stay`). The check goes to the stayer once per idle stretch; unanswered, the stayer's `stay-hung` is
 logged and the communicator told, urgent, once (`stayCheck_spec`, `stayHung_spec`). `--back`'s digest lists the agents
-hung since away and not ended since (`digest_hung`). -/
+hung since away and not ended since (`digest_hung`). A holder's (board #193) are actions of their own, `leaseLate` and
+`holdHung` (`leaseLate_spec`, `holdHung_spec`): reap's lease notice to an idle holder, and its hung flag. -/
 
 namespace Swarm
 
@@ -64,6 +65,28 @@ theorem stayHung_spec {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.stayHun
   obtain ⟨⟨⟨⟨⟨⟨_, h1⟩, h2⟩, _⟩, h4⟩, _⟩, rfl⟩ := h
   refine ⟨h1, h2, h4, rfl, rfl, ?_⟩
   simp [step, stayHung, when, agt_setAg, lt_of_idle h2]
+
+/-- reap's lease notice to a holder (board #193): to an idle owner of a lapsed claim reap keeps, not yet told in this idle
+stretch; one message to it, urgent, and it is told -/
+theorem leaseLate_spec {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.leaseLate a) = some s') :
+    c.release = .lives ∧ (s.agt a).st = .idle ∧ lapsedHeld c s a = true ∧
+    (keeps c (s.agt a) = true ∨ lives c a (s.agt a) = true) ∧ (s.agt a).leaseTold = false ∧
+    s'.log = s.log ++ [⟨none, a, true, .check, 0⟩] ∧ (s'.agt a).leaseTold = true := by
+  simp only [step, leaseLate, when_eq_some, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true', Bool.or_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨⟨_, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩, rfl⟩ := h
+  refine ⟨h1, h2, h3, h4, h5, by simp [post], ?_⟩
+  simp [post, lt_of_idle h2]
+
+/-- unanswered, the holder is hung (board #193): an idle owner of a lapsed claim, told, with no background job;
+`stay-hung` logged, so it no longer `lives` and the next tick reopens the claim; then not again in this idle stretch -/
+theorem holdHung_spec {c : Cfg} {s s' : State} {a : Nat} (h : step c s (.holdHung a) = some s') :
+    c.release = .lives ∧ (s.agt a).st = .idle ∧ lapsedHeld c s a = true ∧ (s.agt a).leaseTold = true ∧
+    (s.agt a).bg = false ∧ s'.evs = s.evs ++ [.hung a] ∧ lives c a (s'.agt a) = false ∧ step c s' (.holdHung a) = none := by
+  simp only [step, holdHung, when_eq_some, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at h
+  obtain ⟨⟨⟨⟨⟨⟨⟨_, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩, _⟩, rfl⟩ := h
+  refine ⟨h1, h2, h3, h4, h5, rfl, ?_, ?_⟩
+  · simp [lives, agt_setAg, lt_of_idle h2, logEv]
+  · simp [step, holdHung, when, agt_setAg, lt_of_idle h2, logEv]
 
 /-- the last of a's hung and ended events is a hung: a hung with no end of a after it -/
 theorem lastHung_iff (a : Nat) (L : List Ev) :

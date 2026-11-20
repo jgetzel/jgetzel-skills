@@ -71,12 +71,15 @@ theorem not_N1_fence {c : Cfg} {acts : List Action} {a t : Nat} (h : retakeBreak
     simp only [e, Option.any_some, Bool.and_eq_true, beq_iff_eq] at h
     rw [hN.2.2.1 s a t (reachable_of_run e) h.1] at h; cases h.2
 
-/-- #10: agent 0 claims #1, starts a long job and stops; the lease lapses, and with `bgKeeps` off reap reopens #1 and
-watchd spawns agent 1 onto it while the job runs -/
-def pre10 : List Action := [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1]
+/-- #10: agent 0 claims #1, starts a long job, stays and stops; it leaves the liveness check unanswered (hung), the lease
+lapses, and with `bgKeeps` off reap reopens #1 (a hung owner no longer `lives`) and watchd spawns agent 1 onto it while
+the job runs. Before #193's reap the job alone was enough: an idle owner kept nothing -/
+def pre10 : List Action := [.add [], .claim 0 1, .bgStart 0, .stay 0 true, .stop 0 false, .age 0, .stale 0, .stayCheck 0,
+  .stayHung 0, .expire 1, .leave 1]
 theorem not_N1_bgKeeps : ¬ N1 { bgKeeps := false } := not_N1_reap (by decide : reapBreaks { bgKeeps := false } pre10 1 0 = true)
-/-- #11: reap took #1 from agent 0, whose context is big; with `retake` off the fence refuses it the task it held -/
-def pre11 : List Action := [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick]
+/-- #11: reap took #1 from agent 0, whose context is big (it left the lease notice unanswered: hung); with `retake` off
+the fence refuses it the task it held -/
+def pre11 : List Action := [.add [], .claim 0 1, .stop 0 true, .expire 1, .leaseLate 0, .holdHung 0, .tick]
 theorem not_N1_retake : ¬ N1 { retake := false } := not_N1_fence (by decide : retakeBreaks { retake := false } pre11 0 1 = true)
 /-- #12: agent 0 owns two worktrees; wt_map picks the landed one, the other has an uncommitted file; with `allWts` off
 lifecycle ends it -/
@@ -173,9 +176,9 @@ theorem lifecycle_tk {c : Cfg} {z : State} {t o : Nat} (hst : (z.tk t).st = .cla
       · subst e; rw [spawnFor_not hpl]; exact hy
       · rw [spawnFor_tk_ne e]; exact hy)
 
-/-- N1 with every fix on: PR #121 (`bgKeeps`, `retake`, reap as `idle`), PR #123 (`allWts`), board #15 (`bgLives`,
+/-- N1 with every fix on: PR #121 (`bgKeeps`, `retake`, reap as `idle` or #193's `lives`), PR #123 (`allWts`), board #15 (`bgLives`,
 `ownAdded`), and sw-bases' per-task bases and split GC (`perTaskBase`, `splitGC`) -/
-theorem N1_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hret : c.retake = true) (haw : c.allWts = true)
+theorem N1_of (c : Cfg) (hrel : c.release = .idle ∨ c.release = .lives) (hbk : c.bgKeeps = true) (hret : c.retake = true) (haw : c.allWts = true)
     (hbl : c.bgLives = true) (hoa : c.ownAdded = true) (hp : c.perTaskBase = true) (hs : c.splitGC = true) : N1 c := by
   refine ⟨fun s a _ h => ?_, fun s t o _ hst ho hl hbg => ?_, fun s a t _ h => ?_, W1_of c hs⟩
   · have hz : (reapLocks (reapTasks c s)).agt a = s.agt a := agt_of_ag (by simp) a
@@ -186,7 +189,7 @@ theorem N1_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hre
     simp only [keptBy, beq_iff_eq]
     show { (lifecycle c (reapLocks (reapTasks c s))).agt a with told := [] } = _
     rw [this, hz]
-  · have hk : keeps c (s.agt o) = true := by simp [keeps, hrel, hbk, hl, hbg]
+  · have hk : keeps c (s.agt o) = true := by rcases hrel with hrel | hrel <;> simp [keeps, hrel, hbk, hl, hbg]
     have hr : (reapTasks c s).tk t = s.tk t := by
       unfold reapTasks
       exact (foldl_inv (reapTask c) (fun y : State => y.tk t = s.tk t ∧ y.ag = s.ag) c.tasks s ⟨rfl, rfl⟩
@@ -198,7 +201,27 @@ theorem N1_of (c : Cfg) (hrel : c.release = .idle) (hbk : c.bgKeeps = true) (hre
     rw [lifecycle_tk (by rw [hz]; exact hst) (by rw [hz]; exact ho), hz, ho]
   · simp [fenced, hret, h]
 
+theorem reapTask_lives {c : Cfg} {x : State} {t o u : Nat} (ho : (x.tk t).owner = some o) (hv : lives c o (x.agt o) = true) :
+    (reapTask c x u).tk t = x.tk t := by
+  by_cases hu : t = u
+  · subst hu; unfold reapTask; simp [ho, hv]
+  · exact reapTask_tk_ne hu
+
+/-- #193's reap: the tick leaves a claim, lapsed or not, with an owner that `lives` (live, bound to a terminal hc lists,
+not hung), idle or not -/
+theorem tick_keeps_live_owner {c : Cfg} {s : State} {t o : Nat} (hst : (s.tk t).st = .claimed) (ho : (s.tk t).owner = some o)
+    (hv : lives c o (s.agt o) = true) : ((tickOf c s).tk t).owner = some o := by
+  have hr : (reapTasks c s).tk t = s.tk t := by
+    unfold reapTasks
+    exact (foldl_inv (reapTask c) (fun y : State => y.tk t = s.tk t ∧ y.ag = s.ag) c.tasks s ⟨rfl, rfl⟩
+      (fun y u hy => ⟨by rw [reapTask_lives (by rw [hy.1]; exact ho) (by rw [agt_of_ag hy.2]; exact hv), hy.1],
+        by rw [reapTask_ag]; exact hy.2⟩)).1
+  have hz : (reapLocks (reapTasks c s)).tk t = s.tk t := by rw [tk_of_task (reapLocks_task _), hr]
+  obtain ⟨_, _, he⟩ := tickOf_ex c s; rw [he]
+  show ((lifecycle c (reapLocks (reapTasks c s))).tk t).owner = some o
+  rw [lifecycle_tk (by rw [hz]; exact hst) (by rw [hz]; exact ho), hz, ho]
+
 /-- N1 holds of the instance the replay runs -/
-theorem replay_N1 : N1 replay := N1_of _ rfl rfl rfl rfl rfl rfl rfl rfl
+theorem replay_N1 : N1 replay := N1_of _ (.inr rfl) rfl rfl rfl rfl rfl rfl rfl
 
 end Swarm

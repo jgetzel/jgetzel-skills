@@ -44,7 +44,7 @@ can say it aloud in one sentence, and the sentence is the docstring.
 5. **Bundle the switches about our code. Never bundle an assumption about anything else.**
    - A property's fixes (the `Cfg` switches that are our code before and after a fix) go in one structure named after
      the property, each field named for what the fixed code does and typed by the switch: `S1Fixes c`, with
-     `reap_takes_from_idle_only : c.release = .idle`. The theorem takes `(fixes : S1Fixes c)`.
+     `reap_takes_from_idle_only : c.release = .idle ∨ c.release = .lives`. The theorem takes `(fixes : S1Fixes c)`.
    - An assumption about an outside tool (`Env.lean`: git, hc, gh, sqlite, the kernel) stays its own named hypothesis
      in the statement: `(hc_ls_lists_the_live : HcLsLive t)`. This is board #68's rule; a bundle hides which
      assumption a result rests on, and `Audit.lean` prints them one by one.

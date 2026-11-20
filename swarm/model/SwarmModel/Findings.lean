@@ -80,11 +80,13 @@ example : (run { nwts := 1 } [.git 0 (.add 0), .git 0 (.edit 0), .git 0 (.commit
     .tick]).any (fun s => (s.agt 0).st == .ended && !(s.git.wt 0).on && (s.git.tip 1).isNone) = true := by decide +kernel
 
 -- ---------- liveness ----------
-/-- The actions fairness makes happen if they stay enabled: watchd ticks (and so the reap of a row whose terminal `hc ls` no longer lists), leases lapse, idle agents age, a spawned
+/-- The actions fairness makes happen if they stay enabled: watchd ticks (and so the reap of a row whose terminal `hc ls` no longer lists), reap's lease notice to an idle holder
+and watchd's hung check of it (#193's reap only), leases lapse, idle agents age, a spawned
 agent boots, a waiter with a message it wakes on wakes, an hc prompt is answered, a working agent reads its
 messages and takes work, a background job ends, and the second half of a split command follows the first. -/
 def fair (c : Cfg) (s : State) : List Action :=
-  .tick :: .poll :: c.tasks.map .expire ++ c.agents.map .reapGone ++ (c.agents.filter fun a => !(s.agt a).dead).flatMap fun a =>
+  .tick :: .poll :: c.tasks.map .expire ++ c.agents.map .reapGone ++
+    (if c.release == .lives then c.agents.flatMap fun a => [.leaseLate a, .holdHung a] else []) ++ (c.agents.filter fun a => !(s.agt a).dead).flatMap fun a =>
     [.age a, .bgEnd a, .nudge a, .boot a, .wake a, .wakeRead a, .wakeWrite a, .claimWrite a, .hcClear a, .readAll a]
       ++ c.tasks.map (.claim a) ++ c.tasks.map (.claimRead a)
 /-- no fair action is enabled: a fair run may stay in this state forever. A dead agent's own actions don't count:
@@ -103,8 +105,8 @@ example : stuckWith { nagents := 1, roster := 1, release := .ended }
 
 -- #3, L3. The unblock answer is only a DM to the owner, who is idle with a big context and cold, so a message
 -- that isn't urgent doesn't wake it. Reap reopens #1, the owner is ended, a new agent is spawned for #1: it never
--- gets the answer.
-example : stuckWith { nagents := 1, roster := 1, answerOnTask := false }
+-- gets the answer. Under the reap of its time (`idle`): under #193's the lease notice is urgent and wakes the owner.
+example : stuckWith { nagents := 1, roster := 1, answerOnTask := false, release := .idle }
     [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .tick, .boot 0, .expire 1]
     (!answered · 1) = true := by decide +kernel
 
@@ -139,8 +141,11 @@ example : stuckWith {} [.add [], .claim 0 1, .die 0, .expire 1] (deadLive · 0) 
 example : stuckWith { nagents := 1, roster := 1 }
     [.add [], .claim 0 1, .stop 0 false, .expire 1, .age 0] (idleClaim · 0 1) = false := by decide +kernel
 example : stuckWith { nagents := 1, roster := 1 }
-    [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .tick, .boot 0, .expire 1]
-    (!answered · 1) = false := by decide +kernel
+    [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .leaseLate 0, .holdHung 0, .tick,
+      .boot 0, .expire 1] (!answered · 1) = false := by decide +kernel
+example : (run { nagents := 1, roster := 1 }
+    [.add [], .claim 0 1, .block 0 1, .stop 0 true, .age 0, .cool 0, .unblock 1, .expire 1, .leaseLate 0, .holdHung 0, .tick,
+      .boot 0, .expire 1]).isSome = true := by decide +kernel
 example : stuckWith {} [.stop 0 false, .age 0, .add [], .tick, .wake 0, .claim 1 1, .block 1 1, .unblock 1, .stop 0 false,
     .age 0, .leave 1] (fun s => idleSlot {} s && !answered s 1) = false := by decide +kernel
 example : stuckWith {} [.add [], .claim 1 1, .block 1 1, .unblock 1, .stop 0 false, .age 0, .waiterGone 0, .leave 1, .tick]
@@ -152,16 +157,23 @@ def takenFromJob (s : State) : Bool := ((s.tk 1).owner == some 1 && (s.agt 0).bg
 
 -- #10, S1-like (work lost). Agent 0 claims #1, starts a long job and stops; the lease lapses; with `bgKeeps` off
 -- reap reopens #1 (its owner is idle) and, agent 1 having left, watchd spawns agent 1 onto it while 0's job runs.
-example : violates { bgKeeps := false } [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick]
-    (!takenFromJob ·) = true := by decide +kernel
+example : violates { bgKeeps := false, release := .idle } [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1,
+    .leave 1, .tick] (!takenFromJob ·) = true := by decide +kernel
+-- Under #193's reap a live idle owner keeps its claim, but a hung one does not: a stayer that left the liveness check
+-- unanswered mid-job.
+example : violates { bgKeeps := false } [.add [], .claim 0 1, .bgStart 0, .stay 0 true, .stop 0 false, .age 0, .stale 0,
+    .stayCheck 0, .stayHung 0, .expire 1, .leave 1, .tick] (!takenFromJob ·) = true := by decide +kernel
 
 -- #11. Reap took #1 from agent 0, whose context is big (the 350k fence): with `retake` off `task claim` refuses it
 -- the task it held, so the run cannot continue; with it on the claim goes through.
-example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isNone = true := by decide +kernel
+example : (run { retake := false } [.add [], .claim 0 1, .stop 0 true, .expire 1, .leaseLate 0, .holdHung 0, .tick, .prompt 0,
+    .claim 0 1]).isNone = true := by decide +kernel
 
 -- The same runs with the fix on.
 example : violates {} [.add [], .claim 0 1, .bgStart 0, .stop 0 false, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide +kernel
-example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide +kernel
+example : violates {} [.add [], .claim 0 1, .bgStart 0, .stay 0 true, .stop 0 false, .age 0, .stale 0, .stayCheck 0,
+    .stayHung 0, .expire 1, .leave 1, .tick] (!takenFromJob ·) = false := by decide +kernel
+example : (run {} [.add [], .claim 0 1, .stop 0 true, .expire 1, .leaseLate 0, .holdHung 0, .tick, .prompt 0, .claim 0 1]).isSome = true := by decide +kernel
 -- #13, L5. Agent 0 is idle 30 min, kept only by an unclean worktree. Before PR #122 nothing is enabled, forever and
 -- silently; with it, `nudge` is (the urgent message wakes the waiter), once per idle stretch.
 def keptByWt (s : State) : Bool := (s.agt 0).st == .idle && (s.agt 0).own.any fun (w, _) => owns s 0 w && !s.git.landed w
@@ -199,11 +211,15 @@ def periodic (c : Cfg) (pre cyc : List Action) (k : Nat) : Bool := periodicD c 2
 -- slot. It wakes, takes #2, and the same happens. The tick only runs after the lease lapsed, which fairness allows
 -- (a tick while agent 0 holds a live lease would spawn onto the other task). The pool is never empty and the slot is
 -- never filled, though each task is taken over and over: L1 holds for each task (`startable_leads_to`), not for the pool.
+-- Under #193's reap the tick reaps it once agent 0 left the lease notice unanswered (hung); the notices make 4 messages
+-- a period.
 example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
-    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .tick, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .tick, .wake 0]
+    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .leaseLate 0, .holdHung 0, .tick, .wake 0, .claim 0 2, .stop 0 false,
+      .age 0, .expire 2, .leaseLate 0, .holdHung 0, .tick, .wake 0]
     4 = true := by decide +kernel
-example : periodic { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], .leave 1]
-    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .tick, .wake 0, .claim 0 2, .stop 0 false, .age 0, .expire 2, .tick, .wake 0]
+example : periodicD { nagents := 2, roster := 2, ntasks := 2 } 4 [.add [], .add [], .leave 1]
+    [.claim 0 1, .stop 0 false, .age 0, .expire 1, .leaseLate 0, .holdHung 0, .tick, .wake 0, .claim 0 2, .stop 0 false,
+      .age 0, .expire 2, .leaseLate 0, .holdHung 0, .tick, .wake 0]
     2 = true := by decide +kernel
 
 -- the check bites: without the tick in the period, the tick is enabled and never taken
@@ -221,7 +237,8 @@ example : lassoOk { nagents := 2, roster := 2, ntasks := 2 } [.add [], .add [], 
 -- state of the run, so no `claim` is ever enabled: a fair run in which the answer is never read.
 -- The model has no time between a lease and a boot; the Lua gives a spawned agent a fresh lease that is long next to a
 -- boot, so this needs a hung launch each time. L3 holds only up to the first turn of a spawned agent; `bootFirst` (a boot beats a lease) is what closes it (`booting_reads`).
-def cfg17 : Cfg := { nagents := 2, roster := 2, ntasks := 1, bootFirst := false }
+-- Under the reap of its time (`idle`): under #193's an unhung booting owner keeps its claim.
+def cfg17 : Cfg := { nagents := 2, roster := 2, ntasks := 1, bootFirst := false, release := .idle }
 def pre17 : List Action := [.add [], .claim 0 1, .block 0 1, .stop 0 true, .unblock 1, .age 0, .cool 0, .stop 1 true, .expire 1, .tick]
 def cyc17 : List Action := [.age 1, .expire 1, .tick, .boot 0, .stop 0 true, .age 0, .expire 1, .tick, .boot 1, .stop 1 true]
 example : lassoP cfg17 (!answered · 1) pre17 cyc17 4 = true := by decide +kernel

@@ -465,7 +465,7 @@ variable {v : Option Nat}
   | none => rfl
   | some o =>
     dsimp only
-    by_cases hc : ((x.tk t).st == .claimed && !(x.tk t).lease && !keeps c (x.agt o)) = true
+    by_cases hc : ((x.tk t).st == .claimed && !(x.tk t).lease && !keeps c (x.agt o) && !lives c o (x.agt o)) = true
     · simp only [hc, ↓reduceIte, post_wa, setTask_wa]
     · simp only [hc, ↓reduceIte, Bool.false_eq_true]
 theorem foldl_wa {α : Type} (f : State → α → State) (hf : ∀ x a, f (withAway x v) a = withAway (f x a) v) :

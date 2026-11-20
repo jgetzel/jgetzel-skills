@@ -463,6 +463,20 @@ theorem lives_iff (o : Option Agent) (hung : Bool) (live : Option (List String))
     | none => simp [Watchd.lives, Option.isNone_iff_eq_none, and_assoc]
     | some up => simp [Watchd.lives, Option.isNone_iff_eq_none, and_assoc]
 
+/-- `Decide.lives_lifted` is about the code that runs: watchd's `lives` is `Decide.livesL` on the owner row, so reap's
+decision (`keeps o .. || lives o ..`) is `Decide.reap_lifted`'s. -/
+theorem lives_eq (o : Option Agent) (hung : Bool) (live : Option (List String)) :
+    Watchd.lives o hung live = Decide.livesL (o.map Watchd.keepRow) hung live := by
+  cases o with
+  | none => rfl
+  | some a =>
+    simp only [Watchd.lives, Decide.livesL, Option.map_some, Watchd.keepRow]
+    cases h : a.hc with
+    | none => simp [py, Decide.nz]
+    | some v =>
+      have hv' : (v != "") = !decide (v = "") := rfl
+      by_cases hv : v = "" <;> simp [py, Decide.nz, hv, hv']
+
 /-- A hung owner never lives: only `keeps` (its work) can keep its lapsed claim. -/
 theorem lives_hung (o : Option Agent) (live : Option (List String)) : Watchd.lives o true live = false := by
   cases o <;> simp [Watchd.lives]

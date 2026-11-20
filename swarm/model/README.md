@@ -44,12 +44,12 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Inbox.lean` | S4, and `tick_inv`: a property every part of watchd's tick keeps is kept by the tick |
 | `SwarmModel/Workers.lean` | S1 |
 | `SwarmModel/Findings.lean` | the counterexamples as runs (and findings #16 and #17, lassos; #18 to #21, W1-W4 on the current `Cfg`; #28, #29, Sp1-Sp2; #30, #31, P1-P2, stalls), and the same runs with the fix on |
-| `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck`, `deadLive_not_stuck` |
-| `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` |
+| `SwarmModel/Liveness.lean` | L2 and L4 in one state: `idleClaim_not_stuck` (under #193's reap the lease notice or the hung check is enabled), `deadLive_not_stuck` |
+| `SwarmModel/Fair.lean` | fair runs (`Run`, `Run.Fair`) and L2 over them: `idleClaim_leads_to` (with #193's reap: the notice, then the hung check, then the tick; `leaseLate_told`, `holdHung_hung`) |
 | `SwarmModel/Taken.lean` | L1 over fair runs: `startable_taken` (and `claimable_taken`, `ready_step`, `tick_ready`, `lifecycle_fills` it is built from); board #53's stop stays lifted once lifted (`stopped_step`, with `stop_kept`, `grow_step` and the invariant `SK`) |
 | `SwarmModel/Boot.lean` | L3, the reopened half: `booting_reads` (with `bootFirst`, a spawned holder reads the answer at its first turn) |
 | `SwarmModel/Workspaces.lean` | W1-W4 and B1 (sw-bases) as statements, refuted with the fix's switch off (`not_W1_branch`, `not_W1_proc`, `not_W2`, `not_W3_formal_wt`, `not_W3_formal_agent`, `not_W4`, `not_B1`) and proved with it on (`W1_of`, `W2_of`, `W3_of` over fair runs, `W4_of`, `B1_of`; `replay_W`: all five of `replay`); `forever_of_loopOk` makes a two-state loop a fair `Run` |
-| `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`) |
+| `SwarmModel/NoWorkLost.lean` | N1 (board #15) as a statement, refuted with each fix's switch off (`not_N1_bgKeeps`, `not_N1_retake`, `not_N1_allWts`, `not_N1_bgLives`, `not_N1_ownAdded`) and proved with them on (`N1_of`; `replay_N1`); board #193: the tick leaves a claim with an owner that `lives` (`tick_keeps_live_owner`) |
 | `SwarmModel/Comms.lean` | the communicator: several swarms (`World`, each swarm a `State`), hc terminals with a Herdr space, each swarm's communicator row, its watchd record (meta.watchd, a pid), meta.watchd_up and the watchd processes, and a `--restart` waiting for the one it started (`CCfg`, `cstep`, `CReachable`); C1 and `C1all` as statements; `tick_binds_none`; C1 proved with the fix on (`C1_of`, via `CInv`) and its liveness half over fair runs (`CRun`, `CRun.Fair`: `comms_replaced`). The refutations (`not_C1_shared`, `not_C1_dead`, `not_C1_space`, `not_C1all_fixed`) are in `Findings.lean` |
 | `SwarmModel/Restart.lean` | `swarm watchd --restart` (board #49): R1 (a), (b), (c) as statements (`R1a`, `R1b`, `CRun.FairWd`), the invariant `WdInv` (`wdinv_of_reachable`), `R1a_of`, `R1b_of` (with `waitUp`), `R1c_of` and `restart_ticks` over fair runs; the refutation without board #41's handover, `not_R1b` (finding #34), is in `Findings.lean` |
 | `SwarmModel/Spawn.lean` | spawn reservation and launch failure (board #16): `SWorld` (the `State` and auto-spawn's backoff, failures and halt), the tick whose launch fails, `rollbackAll`; Sp1-Sp3 (`Sp1_of`, `Sp2_of`, `Sp3_of`) |
@@ -68,14 +68,14 @@ covered two agents and at most three tasks and mostly didn't finish: *Results* c
 | `SwarmModel/Away.lean` | `swarm away` and `--back`, and the notice watchd sends the communicator for a block (board #47): Q1 (`Q1_of`; finding #35, `not_Q1`), A1 (`away_keeps`, `tick_keeps_blocked`, `back_questions`), A2 (`A2quiet_of`, `not_A2quiet`; `A2live_of` over `Run.CommsFair`, `not_A2live` on a fair run), A3 (`A3`, a frame theorem of the tick), A4 (`away_twice`, `back_twice`, `since_kept`, `back_digest`, `questions_sorted`, `digest_done`, `digest_ended`); `side_step`, what each step does to the communicator's side |
 | `SwarmModel/Nudge.lean` | `swarm nudge` as the action `hnudge` (board #50): N1' (`N1'_frame`, a frame theorem: the step is the state unchanged; `Env.Tools.N1'` with `hc send` as the hypothesis `HcSendTargets`), `hnudge_enabled`, `hnudge_reachable` |
 | `SwarmModel/Merged.lean` | PRs in the main model (board #80): P1 and P2 of `step` over fair runs (`poll_ends`, `P1_of`, `P2_of`, `main_P1`, `main_P2`) |
-| `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
+| `SwarmModel/Stay.lean` | stays and watchd's liveness check of a stayer as actions `stay`, `endStay`, `stayCheck`, `stayHung` (board #79): `stayer_kept`, `tick_keeps_stayer`, `endOther_stay`, `stay_spec`, `endStay_spec`, `endStay_enabled`, `stayCheck_spec`, `stayHung_spec`, `digest_hung`; a holder's (board #193): `leaseLate`, `holdHung`, `leaseLate_spec`, `holdHung_spec`; `swarm stay --end A` (board #48): `endStay_frame`, `holdsWork_stay`, `endStay_N1`, `finished_stayOff` |
 | `SwarmModel/Cut.lean` | a tick an error ends partway (board #84): `Cut`, `tickCut` (Model.lean) and `Reachable.cut`, so every invariant of reachable states holds of what a failed tick leaves; N1, W1 and W2 of a cut tick (`N1cut_of`), Q1 of one whose notice pass ran (`Q1cut`), a failed pass stops no other with `passGuard` (`passesIndep_of`) and stops them all without it (finding #36: `not_passesIndep`, `stuck36`, the run `pre36`) |
 | `SwarmModel/Contract.lean` | the spec: the theorems to build on downstream (board #25), restated over the model's types, each after the readable definitions it needs (board #86, `STYLE.md`): *Using these proofs downstream*, *What a reviewer reads and trusts* |
 | `SwarmModel/Checkers.lean` | each Bool checker the replay and the counterexamples run (`oneWorker`, `holdsWork`, `keptBy`, `deadLive`, `midTick`) is the readable Prop of `Contract.lean`: `oneWorker_spec`, …, with the Bool checkers `held`, `stopped`, `noEarlyStart`, `inboxExact`, `doneHasEvidence`, `gcOk`, `unlanded`, `endable`, `idleClaim` and `toldAfter` as well |
 | `STYLE.md` | how a statement of `Contract.lean` is written so a reviewer can read it |
 | `example/Client.lean` | a proof downstream, importing only `Contract.lean`: a toy client, and an assumption discharged for `Env.ideal` |
 | `SwarmModel/Iso.lean` | sqlite's isolation as the code uses it (board #33): the engine (`Eng`, `step`, `Reach`), `serializable`, `stmt_out`, `busyClean_of` and `not_busyClean_deferred`; db.connect's migration, `migrate_ok` and `not_migrate_ok`; `sqlLang`, Sql.lean's statements as the engine's |
-| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
+| `SwarmModel/Decide.lean` | the Lua's pure decisions lifted (board #27): watchd's `keeps` and `fate`, msgs' `wakes`, ci's `pr_act` (board #28), each proved the model's (`keeps_lifted`, `lives_lifted`, `reap_lifted` (board #193), `fate_lifted`, `fate_end`, `fate_reuse`, `wakes_lifted`, `prAct_lifted`), and the gap `keeps_gap`; H1 (board #46): `swarm end`'s check, `end_why` (`endWhyL`, `endWhy_lifted`, `endWhy_of_fate`); F1 (board #41): fate's recorder, what `state --json` reports (`fateRec`, `report_lifted`, `fateRec_vals`, `fateRec_all`, `fateRec_short`) |
 | `Audit.lean` | `check.sh`'s gate: fails on any axiom but Lean's three, or an environment hypothesis with no test tag; prints the environment hypotheses each theorem's statement names |
 | `SwarmModel/Sql.lean` | the SQL the Lua hands sqlite, as a semantics: values with storage classes and affinities, tables, `exec` of one statement on a connection (board #29) |
 | `check.sh` | builds the model, which checks every theorem and run, then runs `Audit.lean`; fails on `sorry`, `native_decide`, an `axiom` or `opaque`, or a hypothesis whose tag names no case in swarm-tests' env_spec or sqlite_spec (`../lean/Tests/Spec/`) |
@@ -94,7 +94,9 @@ what it leaves. It is not a `step`: runs, and the liveness proved of them, are o
   finish (`done --evidence`) and drop their own; the communicator adds (`--after`), changes dependencies
   (`task after`, cycles refused), unblocks with an answer, and drops any task.
 - **Leases** lapse as time passes (`expire`). Reap reopens a lapsed claim by the rule of the release being
-  modelled (`release`, below) and tells the owner.
+  modelled (`release`, below) and tells the owner. Since board #193 (`lives`) it leaves the claim to an owner that
+  `lives` (live, bound to a terminal hc lists, not flagged hung), idle or not; it tells an idle one its lease ended
+  (`leaseLate`, urgent), and watchd flags one that leaves that unanswered hung (`holdHung`), which it then reopens.
 - **watchd's lifecycle**: an idle agent past 2 minutes with no claim or lock is ended, unless its context is
   small and the pool has work: then it is *reusable*, and gets a digest message once per new pool id. With no
   reusable agent, watchd spawns into free slots (up to the roster), one per startable task, and the new agent's
@@ -150,7 +152,7 @@ Each fix the model found or confirmed is a switch of `Cfg`, so the model records
 
 | Switch | Before | After |
 |---|---|---|
-| `release` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (PR #110) reopens it unless the owner is working; `idle`: edffafc (PR #111) only when the owner is idle |
+| `release` | `ended`: 624cf79 keeps a lapsed claim while its owner is live | `notWorking`: b04cf08 (PR #110) reopens it unless the owner is working; `idle`: edffafc (PR #111) only when the owner is idle; `lives` (board #193, the default): only when the owner is idle and does not `lives` (hung, gone or unbound), after the lease notice and the hung check |
 | `answerOnTask` | the unblock answer is only a DM | PR #110 stores it on the task |
 | `claimChecksDeps` | `task claim`'s write checks only `state='open'` | PR #112 checks the dependencies in the write |
 | `evidenceRequired` | `done --evidence ""` is accepted | PR #113 refuses it |
@@ -222,7 +224,8 @@ reads its messages and takes work):
 - **L1** A startable task doesn't stay startable forever while a slot is free. Its negation in one state, for a task
   `t`: `startable s t ∧ slotFree c s`. (Of the pool, "some task is startable", `idleSlot`, it is false: finding #16.)
 - **L2** A claimed task whose owner is idle is eventually done or open again, unless its owner gets back to
-  work. `idleClaim`
+  work. `idleClaim`. Under #193's reap an idle owner that lives keeps the claim; reap's lease notice wakes it, or it
+  is flagged hung and the tick reopens the claim.
 - **L3** An unblock answer eventually reaches whoever holds the task, unless the task ends. `answered`. False in the
   model with `bootFirst := false`: a spawned agent is reaped before its first turn, over and over (finding #17).
   `bootFirst` (a boot beats a lease, as in the Lua: a fresh 2 h lease, a boot in seconds) is on by default
@@ -391,6 +394,13 @@ W1-W4, L1-L4, H1, H2 and A1-A4 above are proved with them in `step`. `idleFree` 
 - **St3** `--back`'s digest lists as hung exactly the slots whose agent hung since away and has not ended since
   (`digest_hung`: of the slot's hung and ended events since away, the last is a hung; agents.digest's `stay-hung`
   events after the away event's, of an agent row not ended, a slot's next agent being another row).
+- **St5** (board #193) The holder's check: `leaseLate a`, reap's lease notice (`Watchd.leaseLate`) to an idle owner of a
+  lapsed claim reap keeps, urgent, once per idle stretch (`Agent.leaseTold`, cleared by `stop`; `leaseLate_spec`), and
+  `holdHung a`, watchd.hung's check of it: still idle, the claim still lapsed, no background job, not hung, told: `Ev.hung
+  a` logged and `hung` set, so the owner no longer `lives` and the next tick reopens the claim (`holdHung_spec`,
+  `holder_flagged_hung`). They are watchd's and in `fair` (only under `lives`, so `fair` is unchanged for every earlier
+  `release`). Not modelled: the notice to a working owner (not urgent), its repeat once per LEASE rather than per idle
+  stretch, and reap's line to the communicator when it reopens a hung owner's claim.
 - **St4** (board #48) `swarm stay --end A` by the user or the communicator changes A's stay alone: every field of the
   state but the agents' as it was (tasks with their claims and leases, locks, the log and cursors, git, events, away,
   the communicator's inbox, the digest, CI), every other agent's row as it was, and A's but for the stay
@@ -423,7 +433,7 @@ No work lost (board #15, `NoWorkLost.lean`):
 
 N1 fails with any of five switches off, each a finding (#10 `bgKeeps`, #11 `retake`, #12 `allWts`, #26 `bgLives`, #27
 `ownAdded`; `not_N1_bgKeeps` and the rest) and holds with all of them on, for every instance (`N1_of`, which also takes
-`release = .idle`, `perTaskBase` and `splitGC`). No invariant is needed: with the fixes lifecycle calls no agent that holds
+`release` `idle` or `lives`, `perTaskBase` and `splitGC`). No invariant is needed: with the fixes lifecycle calls no agent that holds
 work finished (`finished_of_holds`), so it neither ends nor reuses it, and a spawn fills only a slot that isn't live
 (`lifecycle_keeps`); a claim reap keeps is still held, so lifecycle leaves the task alone (`lifecycle_tk`).
 
@@ -577,7 +587,7 @@ theorem that takes one.
 
 | Property | Theorem | Holds for every reachable state of every instance with | Quint + TLC, 2 agents |
 |---|---|---|---|
-| S1 | `oneWorker_of_reachable` | `release = .idle` (PR #111) | 883,023 states, 217 s |
+| S1 | `oneWorker_of_reachable` | `release` `idle` (PR #111) or `lives` (board #193) | 883,023 states, 217 s |
 | S2 | `noEarlyStart_of_reachable` | `claimChecksDeps` (PR #112) | stopped at 30 min, unfinished |
 | S3 | `locksDisjoint_of_reachable`, `noSharedFile_of_reachable` | `lockOverlap` (PR #114), `lockForms` (board #26) | 4.05M states, 577 s |
 | S4 | `inboxExact_of_reachable` | `deliverCas` (PR #115) | stopped at 30 min, unfinished |
@@ -613,7 +623,10 @@ every action of `fair` that is enabled at infinitely many steps happens at infin
 fairness; weak fairness is not enough for L1, see below). `idleClaim_leads_to`: in a fair run of an instance with
 `racy = false`, `release ≠ .ended` (PR #110 or #111), `watchd`, the agent and the task in the instance, no `bgStart` or `die` in the run, and the agent with no job and a live terminal at the start, a state where an
 idle agent holds a claim is followed by one where it doesn't: the lease lapses (`expire`), the tick reopens the task
-(`tick_reopens`) or the owner gets back to work. A slot a spawn refills is a new agent: it boots at once (the proof
+(`tick_reopens`) or the owner gets back to work. Under #193's reap (`lives`) an owner that lives keeps the claim until
+it is hung: reap's lease notice (`leaseLate`) is enabled until it is sent, then watchd's hung check (`holdHung`) until
+it is taken, both in `fair` under `lives`; a hung owner stays hung while it is idle, and the tick then reopens the
+task. Strong fairness is used here as for L1: the notice and the check need only be enabled infinitely often. A slot a spawn refills is a new agent: it boots at once (the proof
 shows `boot` happens), so it doesn't count. The proof is two persistence lemmas (`persist`, `tick_persist`: while an
 idle agent holds the claim, a lapsed lease stays lapsed and a booting agent keeps booting) and fairness of `boot`,
 `expire` and `tick`. `racy` is left out: the race splits are for S2 and S4.
@@ -701,14 +714,14 @@ Lua.
 |---|---|---|---|---|
 | 1 | L2 | `release := .ended` / `idleClaim_not_stuck` | An owner goes idle holding a claim and nothing wakes it; its lease lapses, but reap keeps a lapsed claim while the owner is live, so the task stays claimed forever (task #106, seen live for ~6 h). | b04cf08, PR #110 |
 | 2 | S1 | `release := .notWorking` / S1 | #1's first fix reopens a lapsed claim whenever the owner isn't working, including one stuck at an hc permission prompt; another agent claims it, the prompt is answered, and two agents work on the task. | edffafc, PR #111 |
-| 3 | L3 | `answerOnTask := false` / the run | An unblock answer is only a DM. An idle owner that is cold isn't woken by a non-urgent message, so the answer never reaches it; reap reopens the task, and the agent spawned for it can't read the answer either. | b04cf08, PR #110 |
+| 3 | L3 | `answerOnTask := false` / the run | An unblock answer is only a DM. An idle owner that is cold isn't woken by a non-urgent message, so the answer never reaches it; reap reopens the task, and the agent spawned for it can't read the answer either. Run under `release := .idle`: under #193's reap the urgent lease notice wakes the owner. | b04cf08, PR #110 |
 | 4 | S2 | `claimChecksDeps := false`, `racy` / S2 | `task claim` checks the dependencies, then a `task after` adds one that isn't done, then the claim's write (`where state='open'`) succeeds: a task starts before what it is after. | 58e9aa6, PR #112 |
 | 5 | S5 | `evidenceRequired := false` / S5 | `task done --evidence ""` is accepted. | 89fe2a2, PR #113 |
 | 6 | S3 | `lockOverlap := false` / S3 | `m/a*` and `m/*.lua` both match `m/a.lua`, but neither covers the other as a path, so both locks are granted. | cc63217, PR #114 |
 | 7 | S4 | `deliverCas := false`, `racy` / S4 | The waiter reads the unread list, a hook delivers it and moves the cursor, the waiter writes its cursor and shows the same message again. | 5cdcb42, PR #115 |
 | 8 | L1, L3 | `passedOver := false` / the run | A small-context idle agent was told of a task and went idle again without it; the task is open again with a free slot, and lifecycle keeps the agent reusable instead of spawning, so nobody takes the task or reads its answer. | 1ac83b1, PR #116 |
 | 9 | L1, L3 | `waiterAlive := false` / the run | The same with a waiter that exited: the agent never reads the digest, so it stays reusable and holds spawn back. | aeaf44f, PR #119 (board #113) |
-| 10 | N1 | `bgKeeps := false` / N1 (`not_N1_bgKeeps`) | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). | PR #121 (board #115) |
+| 10 | N1 | `bgKeeps := false` / N1 (`not_N1_bgKeeps`) | An agent claims a task, starts a long background job (CI wait, model check) and stops; the lease lapses, reap reopens the task as its owner is idle, and watchd spawns a fresh agent onto it while the job runs (seen on #107). Under #193's reap a live idle owner keeps the claim, but a stayer hung mid-job does not: `not_N1_bgKeeps`'s run is that one. | PR #121 (board #115) |
 | 11 | N1 | `retake := false` / N1 (`not_N1_retake`) | The task is reopened; its owner, whose context is past 350k, comes back and `task claim` refuses it, so only a fresh agent can take it. | PR #121 (board #115) |
 | 12 | N1 | `allWts := false` / N1 (`not_N1_allWts`) | An agent owns two worktrees; `wt_map` picks the landed one, the other holds work not on main, and lifecycle ends the agent mid-task. | PR #123 (board #116) |
 | 13 | stuck, silent | `uncleanNudge := false` / the run | An agent idle 30 min with an unclean worktree and nothing else holding it: no action is enabled, forever, and nobody is told. With the fix `nudge` is enabled and its urgent message wakes the waiter; a second nudge is refused until the agent has woken and stopped again. | PR #122 (board #114) |
@@ -716,9 +729,9 @@ Lua.
 Findings 10 to 12 refute N1 (`NoWorkLost.lean`), as do #26 and #27. #13 is a run only: no theorem says the nudge makes the agent clean (it can ignore it).
 | 14 | L4 | `watchd := false` / `deadLive_not_stuck` | An agent holding #1 loses its terminal. With no watchd nothing ends the row: `swarm who` and `swarm post` show it gone, but it stays live, keeps its claim, and a message to it is stored unread. | open: run watchd, or end the row by hand (`swarm leave` is the agent's own) |
 | 15 | L4 | `hcSees := false`, or `unbound := [0]` / `deadLive_not_stuck` | watchd runs but can't tell. The dead agent was working, so reap keeps its claim past the lease (`keeps`: the owner isn't idle) and #1 stays claimed forever. An unbound row is a communicator that joined from outside hc; `hc ls` failing makes `live_addrs` nil for every row. | open |
-| 16 | L1 (the pool) | `idleSlot` / `lassoOk`, `periodic` | Two tasks, a free slot, one agent. It takes #1, stops holding it, the lease lapses, the tick reaps it: the agent is idle with an unread `released`, so `reusable`, and lifecycle does not spawn into the free slot. It wakes, takes #2, and the same again. Every fair action enabled anywhere in the loop happens in it, and a startable task and a free slot are there at every state. L1 holds of each task (it is taken over and over), not of the pool. Evaluated for 4 periods; one more period changes only the log, the cursor and what was shown (`periodic`). **Not the real watchd**: the loop needs every tick to come after the lease lapsed (a tick while the agent holds a live lease would spawn onto the other task), and watchd ticks every 30 s against a 2 h lease; the model lets fairness delay a tick that long. | not a bug |
+| 16 | L1 (the pool) | `idleSlot` / `lassoOk`, `periodic` | Two tasks, a free slot, one agent. It takes #1, stops holding it, the lease lapses, the tick reaps it: the agent is idle with an unread `released`, so `reusable`, and lifecycle does not spawn into the free slot. It wakes, takes #2, and the same again (under #193's reap the agent first leaves the lease notice unanswered and is flagged hung, `leaseLate`, `holdHung`: four messages a period, `periodicD`). Every fair action enabled anywhere in the loop happens in it, and a startable task and a free slot are there at every state. L1 holds of each task (it is taken over and over), not of the pool. Evaluated for 4 periods; one more period changes only the log, the cursor and what was shown (`periodic`). **Not the real watchd**: the loop needs every tick to come after the lease lapsed (a tick while the agent holds a live lease would spawn onto the other task), and watchd ticks every 30 s against a 2 h lease; the model lets fairness delay a tick that long. | not a bug |
 
-| 17 | L3 | `!answered` / `lassoP`, `periodicD` | Two slots, one task. Agent 0 blocks #1, goes idle big and cold, and the answer to it is a DM it never reads. Reap reopens #1, the tick ends agent 0 and spawns a new agent into its slot for #1; the answer is stored on the task but only that agent's first turn (`boot`) reads it. Before it boots its lease lapses and the next tick reaps it and spawns into agent 1's slot; agent 0 now boots (it holds nothing), goes idle big, and the same happens the other way round. Every fair action enabled anywhere in the period happens in it (`boot` and `age` included), and #1 is never open at a state, so no `claim` is enabled: a fair run in which the answer is never read. Evaluated for 4 periods; one more changes only the log, the cursor, what was shown and where inboxes start (`periodicD`). With the period's agent booting before its lease lapses (`[.boot 0]`) the answer is read. **Not the real timing**: a spawned agent holds a fresh 2 h lease and boots in seconds, so the loop needs a launch that hangs for hours, every time; the model has no time between a lease and a boot. | `bootFirst`: a boot beats a lease (`booting_reads`); not a bug |
+| 17 | L3 | `!answered` / `lassoP`, `periodicD` | Two slots, one task. Agent 0 blocks #1, goes idle big and cold, and the answer to it is a DM it never reads. Reap reopens #1, the tick ends agent 0 and spawns a new agent into its slot for #1; the answer is stored on the task but only that agent's first turn (`boot`) reads it. Before it boots its lease lapses and the next tick reaps it and spawns into agent 1's slot; agent 0 now boots (it holds nothing), goes idle big, and the same happens the other way round. Every fair action enabled anywhere in the period happens in it (`boot` and `age` included), and #1 is never open at a state, so no `claim` is enabled: a fair run in which the answer is never read. Evaluated for 4 periods; one more changes only the log, the cursor, what was shown and where inboxes start (`periodicD`). With the period's agent booting before its lease lapses (`[.boot 0]`) the answer is read. **Not the real timing**: a spawned agent holds a fresh 2 h lease and boots in seconds, so the loop needs a launch that hangs for hours, every time; the model has no time between a lease and a boot. Run under `release := .idle` (`cfg17`): under #193's reap an unhung booting owner keeps its claim. | `bootFirst`: a boot beats a lease (`booting_reads`); not a bug |
 
 | # | Property | Switch off / what holds with it on | The counterexample | Fixed by |
 |---|---|---|---|---|
@@ -815,7 +828,8 @@ functions, unchanged in behaviour (the callers make the same reads, each only wh
 lifecycle's verdict on a live agent (kept, `unclean`, `reuse`, `end`; `f` holds its reads as callbacks); and
 `msgs.wakes(rows, cold)`, the waiter's. A read through a callback (`f.claims()`, `f.unlanded()`, `cold()`) is a `Bool` in
 Lean: what it returns is the SQL's or git's (rung 4, `Env.lean`). Proved: `keeps_lifted` (on the current `Cfg`, the
-row's `keeps` is the model's `keeps`), `fate_lifted` (with no hc terminals, as the replay, and `bgLives` on, the verdict is the
+row's `keeps` is the model's `keeps`), `lives_lifted` and `reap_lifted` (board #193: the row's `livesL`, `Watchd.lives` in
+../lean, is the model's `lives`, so reap's whole decision, `keepsL` or `livesL`, is the model's `keeps` or `lives`), `fate_lifted` (with no hc terminals, as the replay, and `bgLives` on, the verdict is the
 model's `idleFree`, `unlanded`, the background job, `reusable` in that order; `fate_end` and `fate_reuse`: `end` is `ends`, `reuse` is `reusable`),
 and `wakes_lifted` (the waiter wakes exactly when `wakes`: the model has no notices, which never wake). The view: a slot's
 status by its `ASt`, `aged` as idle 120 s, `big` as a context of SMALL_CTX (40k) or more, `waiter` as a live waiter pid
@@ -838,11 +852,9 @@ together only on a reuse verdict (display, from the same values).
 What the lift found, each now a board task: reap's keep test reads the owner's terminal and the model's doesn't
 (`keeps_gap`, #46): a working or prompt-blocked owner whose bound terminal hc no longer lists has its lapsed claim
 reopened as a lease reap (a released message, `reaped_from` set) before the same reap ends it, where the model keeps the
-claim until `reapGone` releases it with no message; `keeps_lifted` takes the case's absence as a hypothesis. Since
-board #193 `keepsL` also keeps a compacting owner's claim (the model has no compaction: `keeps_lifted` reads it as
-false), and the code's reap keeps the lapsed claim of any live, bound, unhung owner (`Watchd.lives` in ../lean), idle
-or not, which the model's `keeps` does not: L2 (`idle_claim_ends`) and the reap halves of S1 and N1 are proved of
-the model's reap, not of that one. The model's
+claim until `reapGone` releases it with no message; `keeps_lifted` and `reap_lifted` take the case's absence as a
+hypothesis. Since board #193 `keepsL` also keeps a compacting owner's claim (the model has no compaction:
+`keeps_lifted` reads it as false). The model's
 one `big` bit is two thresholds in the Lua (#47): CTX_WARN (350k) for `task claim`'s fence, SMALL_CTX (40k) for
 lifecycle's reuse and the cold rule, so an agent between the two (claims freely, never reused) is not modelled;
 `fate_lifted` reads `big` as the second. Still to lift: `tasks.dep_path` against `reaches` (#45, a DFS with a seen set

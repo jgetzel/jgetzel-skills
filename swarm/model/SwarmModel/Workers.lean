@@ -444,7 +444,7 @@ theorem J_giveup {s : State} {a t : Nat} {f : Task → Task} (hown : ∀ b, held
       rw [show (unbelieve (setTask s t f) a t).tk u = (setTask s t f).tk u by simp [unbelieve, State.tk], tk_setTask_ne hut]
 
 /-- reap under the fix: the owner of a reopened claim isn't at work, and is told -/
-theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle) (hcur : ∀ a, x.cur a ≤ x.log.length)
+theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle ∨ c.release = .lives) (hcur : ∀ a, x.cur a ≤ x.log.length)
     (h : J x) : J (reapTask c x t) := by
   unfold reapTask; simp only []
   split
@@ -452,9 +452,9 @@ theorem J_reapTask {c : Cfg} {x : State} {t : Nat} (hfix : c.release = .idle) (h
     split
     · rename_i hc
       simp only [Bool.and_eq_true, Bool.not_eq_true', beq_iff_eq] at hc
-      obtain ⟨⟨hst, _⟩, hk⟩ := hc
+      obtain ⟨⟨⟨hst, _⟩, hk⟩, _⟩ := hc
       have hna : active (x.agt o) = false := by
-        cases hs : (x.agt o).st <;> simp_all [keeps, Agent.live, active]
+        rcases hfix with hfix | hfix <;> cases hs : (x.agt o).st <;> simp_all [keeps, Agent.live, active]
       have e : ∀ (f : Task → Task) (m : Msg), post (setTask x t f) m = setTask (post x m) t f := by
         intro f m; unfold setTask; split <;> rfl
       rw [e]
@@ -581,7 +581,7 @@ theorem J_spawnFor {c : Cfg} {pl : List Nat} {x : State} {t : Nat} (hopn : (x.tk
     · exact h
   · exact h
 
-theorem J_tickOf {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c s) (h : J s) :
+theorem J_tickOf {c : Cfg} {s : State} (hfix : c.release = .idle ∨ c.release = .lives) (hi : InbInv c s) (h : J s) :
     InbInv c (tickOf c s) ∧ J (tickOf c s) :=
   tick_inv2 (fun x => InbInv c x ∧ J x)
     (fun x t hx => ⟨ii_reapTask hx.1, J_reapTask hfix (fun a => (hx.1.2.2 a).1) hx.2⟩)
@@ -589,7 +589,7 @@ theorem J_tickOf {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c
     (fun x a hx => ⟨ii_endAgent hx.1, J_endAgent hx.2⟩)
     (fun x a pl hx => ⟨ii_post (ii_setAg (fun _ => Or.inl rfl) hx.1), J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hx.2)⟩)
     (fun pl x t hx hopn hst => ⟨ii_spawnFor hx.1, J_spawnFor hopn hst hx.2⟩) ⟨hi, h⟩
-theorem J_tickCut {c : Cfg} {s : State} (hfix : c.release = .idle) (hi : InbInv c s) (h : J s) (k : Cut) :
+theorem J_tickCut {c : Cfg} {s : State} (hfix : c.release = .idle ∨ c.release = .lives) (hi : InbInv c s) (h : J s) (k : Cut) :
     InbInv c (tickCut c k s) ∧ J (tickCut c k s) :=
   tickCut_inv2 (fun x => InbInv c x ∧ J x)
     (fun x t hx => ⟨ii_reapTask hx.1, J_reapTask hfix (fun a => (hx.1.2.2 a).1) hx.2⟩)
@@ -687,7 +687,7 @@ theorem J_pollOf {c : Cfg} {s : State} (h : J s) : J (pollOf c s) := by
       have := hs.2; rcases prK_st c s (s.tk t) with e | ⟨e, _⟩ <;> simp_all
     exact HS_of hs.1 (by rw [pollOf_tk, o3]) (by rw [pollOf_tk, o4]) (by rw [pollOf_tk]; exact hst) ⟨_, hlog⟩ rfl
 
-theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
+theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle ∨ c.release = .lives) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
     (h : Reachable c s) :
     J s := by
   refine reachable_induct (P := J) ?_ ?_ (fun s k hr hs => (J_tickCut hfix (inbInv_of_reachable hr) hs k).2) h
@@ -712,6 +712,8 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
   case endStay a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (fun _ => rfl) (fun _ => rfl) hs
   case stayCheck a => obtain ⟨_, rfl⟩ := hstep; exact J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
   case stayHung a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (s := tellC (logEv s _) _) (fun _ => rfl) (fun _ => rfl) hs
+  case leaseLate a => obtain ⟨_, rfl⟩ := hstep; exact J_post (J_setAg_same (fun _ => rfl) (fun _ => rfl) hs)
+  case holdHung a => obtain ⟨_, rfl⟩ := hstep; exact J_setAg_same (s := logEv s _) (fun _ => rfl) (fun _ => rfl) hs
   case claim a t =>
     obtain ⟨hg, rfl⟩ := hstep
     simp only [claimable, startable, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hg
@@ -876,7 +878,7 @@ theorem J_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanReleas
 release of another's task) off or with its fix (`stopFirst`, board #53: no one takes the task while its ex-owner is at
 work and hasn't read the stop; without it the release breaks S1, `not_S1_humanRelease`), no task has two agents at work
 on it. -/
-theorem oneWorker_of_reachable {c : Cfg} (hfix : c.release = .idle) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
+theorem oneWorker_of_reachable {c : Cfg} (hfix : c.release = .idle ∨ c.release = .lives) (hhr : c.humanRelease = false ∨ c.stopFirst = true) {s : State}
     (h : Reachable c s) : oneWorker s = true := by
   have hJ := J_of_reachable hfix hhr h
   simp only [oneWorker, List.all_eq_true, List.mem_range, Bool.or_eq_true, beq_iff_eq]
