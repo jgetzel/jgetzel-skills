@@ -23,13 +23,12 @@ def host {m : Type → Type} [Monad m] [Proc m] [Sys m] [Clock m] [Env m] : Clai
   now := Clock.now
 
 /-- What a job claims, from its history rows (wall_s, cpu_s, peak_kb, source) on any machine: cores are the default or the
-largest `cpu_s / wall_s` rounded up over rows with a CPU reading that `swarm run` did not itself record (`source` run holds
-a %CPU sample), whichever is more, so history only raises it; memory is the largest peak × 1.25 over every row; none
+largest `cpu_s / wall_s` rounded up over rows with a CPU reading (0 is none), whichever is more, so history only raises it; memory is the largest peak × 1.25 over every row; none
 without a row that has a wall time. -/
 def size (rows : List (Int × Int × Int × String)) : Option (Int × Int) :=
   let rs := rows.filter (·.1 > 0)
   if rs.isEmpty then none else
-  let cores := rs.foldl (fun a r => if r.2.1 > 0 && r.2.2.2 != "run" then max a ((r.2.1 + r.1 - 1) / r.1) else a) DEFAULT_CORES
+  let cores := rs.foldl (fun a r => if r.2.1 > 0 then max a ((r.2.1 + r.1 - 1) / r.1) else a) DEFAULT_CORES
   let peak := rs.foldl (fun a r => max a r.2.2.1) 0
   some (cores, if peak ≤ 0 then DEFAULT_MEM_KB else (peak * 5 + 3) / 4)
 

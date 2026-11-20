@@ -85,12 +85,12 @@ def test_run_sized_from_history (t : T) : IO Unit := do
   | .error _ => fail "cost.record exited"
   let r ← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES $SWARM_MEM_KB"]
   has r.stdout "5 5000000"
-  -- a `swarm run` row's cpu_s is a %CPU sample: it never raises the cores
-  let big : SwarmLean.Cost.Rec := { ts := 2, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 5000, peak_kb := 1, source := "run" }
+  -- a `swarm run` row's cpu_s is the job's own CPU seconds: it raises the cores too (700 s over 100 s: 7)
+  let big : SwarmLean.Cost.Rec := { ts := 2, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 700, peak_kb := 1, source := "run" }
   match ← ((SwarmLean.Cost.record big : App Bool).run.run { conn := ← IO.mkRef none }) with
   | .ok _ => pure ()
   | .error _ => fail "cost.record exited"
-  has (← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES"]).stdout "5\n"
+  has (← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES"]).stdout "7\n"
   has r.stderr "from the history"
 
 def test_run_routes_to_the_second_machine_when_the_first_is_full (t : T) : IO Unit := do
@@ -213,13 +213,28 @@ def test_run_explicit_mem_is_a_cap (t : T) : IO Unit := do
   -- a defaulted --mem only reserves
   IO.FS.removeFile sd
   has (← t.sw "b" ["run", "--", "echo free"]).stdout "free"
-  eq (← (sd : System.FilePath).pathExists) false
+  hasnt (← readF [sd]) "MemoryMax"
   -- no systemd user scope: a warning, and the job runs uncapped
   put (t.d ++ "/sd.fail") ""
   let r ← t.sw "b" ["run", "--mem", "3", "--", "echo bare"]
   has r.stdout "bare"
   has r.stdout "swarm: memory not capped here (no systemd user scope); --mem is a reservation only"
   hasnt (← readF [sd]) "MemoryMax"
+
+/-- cpu_s and peak_kb of the newest row of `key`. -/
+def costUse (key : String) : IO (Int × Int) := do
+  let h ← Sqlite.Conn.open (← app SwarmLean.Cost.path) true
+  let rs ← h.query s!"select cpu_s,peak_kb from cmd where key='{key}' order by id desc limit 1"
+  let r := rs.toList.head!
+  return (SwarmLean.Cost.vi (r.getD 0 .null), SwarmLean.Cost.vi (r.getD 1 .null))
+
+def test_run_records_the_local_jobs_own_use (t : T) : IO Unit := do
+  fakeSystemdRun t
+  put (t.d ++ "/sd.fail") ""  -- no user scope: the rusage path
+  let r ← t.sw "b" ["run", "--", "echo spin; i=0; while [ $i -lt 30000 ]; do i=$((i+1)); done; exit 3"] { ok := false }
+  eq r.code 3
+  let (cpu, kb) ← costUse "echo spin; i=0;"
+  eq (decide (cpu ≥ 1)) true; eq (decide (kb > 0)) true
 
 def test_run_records_every_job (t : T) : IO Unit := do
   discard <| t.sw "b" ["run", "--", "true"]
@@ -258,6 +273,7 @@ def tests : List Case := [
   ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
   ("test_run_lowest_priority", test_run_lowest_priority),
   ("test_run_explicit_mem_is_a_cap", test_run_explicit_mem_is_a_cap),
+  ("test_run_records_the_local_jobs_own_use", test_run_records_the_local_jobs_own_use),
   ("test_run_records_every_job", test_run_records_every_job),
   ("test_compute_reserve_and_the_one_machine_view", test_compute_reserve_and_the_one_machine_view)]
 
