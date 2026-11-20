@@ -342,6 +342,7 @@ def test_run_remote_syncs_runs_and_brings_back (t : T) : IO Unit := do
   let hc ← readF [hclog]
   has hc "--label swarm-agent=b --label swarm-job=1 --label swarm-wt=repo/wt --label swarm-task=1"
   has hc "rm laptop/t1"
+  has hc "< /dev/null"  -- the job reads EOF, not the hc terminal (board #212)
   for j in arr ((← parse (← t.sw "b" ["state", "--json"]).stdout).f "running") do
     eq (j.f "machine") Json.null
 
@@ -456,9 +457,10 @@ def test_run_remote_job_telemetry (t : T) : IO Unit := do
     [.text (json% {"laptop": {"state": "connected", "ts": $n, "jobs": {"2": {"gone": $n3601}}}}).compress]
   for (id, hc, age) in [("1", "laptop/t9", 60), ("2", "laptop/t8", 9000), ("3", "laptop/t7", 30), ("4", "nas/t1", 30)] do
     let machine := (hc.splitOn "/").head!
+    let jp : Nat := if id == "2" || id == "3" then 999999999 else pid.toNat!
     t.q_ "insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)"
       [.int (n - age), "a", "job-start", .text id, .text (json% {"machine": $machine, "hc": $hc, "cmd": "cargo test",
-        "pid": 999999999}).compress]
+        "pid": $jp}).compress]
   t.sw_ "a" ["watchd", "--once"] { hc := some "t1", cwd := some t.repo }
   has (← readF [hclog]) "sh t7 t8 t9\n"  -- one exec carries the job terminals, named as the machine names them
   let ms ← parse (((← t.q1 "select v from meta where k='machines'").f "v").s?.getD "")
@@ -468,15 +470,16 @@ def test_run_remote_job_telemetry (t : T) : IO Unit := do
   let mut exits : Array Json := #[]
   for row in ← t.q "select data from event where kind='job-end'" do
     exits := exits.push ((← parse ((row.f "data").s?.getD "")).f "exit")
-  eq exits (json% ["lost"])  -- job 2: gone over an hour
+  eq exits (json% ["lost", "lost"])  -- job 2: gone over an hour; job 3: its submitter's pid is dead (board #212)
+  has (((← t.q1 "select data from event where kind='job-end' and path='3'").f "data").s?.getD "") "submitter gone"
+  has (← readF [hclog]) "kill laptop/t7"
   let ms := ms.setObjVal! "nas" (json% {"state": "disconnected", "ts": $n, "since": $n})
   t.q_ "update meta set v=? where k='machines'" [.text ms.compress]
   let running := (arr ((← parse (← t.sw "a" ["state", "--json"]).stdout).f "running")).filter (·.f "machine" != Json.null)
   let ids := (running.map fun j => (j.f "job").s?.getD "").qsort (· < ·)
-  eq ids (json% ["1", "3", "4"])
+  eq ids (json% ["1", "4"])
   let run (id : String) : Json := (running.find? fun j => (j.f "job").s? == some id).getD .null
-  eq (toJson [(run "1").f "lost", (run "1").f "rss_kb", (run "3").f "lost", (run "3").f "rss_kb"])
-    (toJson [Json.bool false, (js.f "1").f "rss_kb", Json.bool true, Json.null])
+  eq (toJson [(run "1").f "lost", (run "1").f "rss_kb"]) (toJson [Json.bool false, (js.f "1").f "rss_kb"])
   eq (toJson [(run "4").f "unreachable", (run "4").f "lost"]) (json% [true, false])
   has (← t.sw "a" ["machine"]).stdout " cargo test 1m 0.0G"
 

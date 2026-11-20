@@ -193,6 +193,29 @@ def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit :
       ("exit", some (.str "lost")), ("s", some (Json.int (t - j.ts)))])))) db
     (db.setMeta "machines" (some (Json.encode (Json.mkObj out))), ())
 
+/-- The remote terminals' addresses (`machine/tN`) in `hc ls --json`'s output. -/
+def remoteAddrs (o : Option ProcOut) : List String :=
+  match o.bind fun o => if o.code != 0 then none else (Json.decode o.stdout).bind (Json.field · "terminals") with
+  | some (.arr ts) => ts.toList.filterMap fun x => (Json.fstr x "address").filter (·.contains '/')
+  | _ => []
+
+/-- The remote terminals `hc ls` lists with every one of `labels` (`k=v`). -/
+def remoteTerms [Proc m] (labels : List String) : m (List String) := do
+  return remoteAddrs (← Proc.output (["hc", "ls", "--json"] ++ labels.flatMap (["--label", ·])) none [])
+
+/-- A job terminal ended and removed. -/
+def killTerm [Proc m] (h : String) : m Unit := do
+  discard <| Proc.output ["hc", "kill", h] none []
+  discard <| Proc.output ["hc", "rm", h] none []
+
+/-- `j`'s job-end as lost, with the reason, unless it has one; true when this wrote it. -/
+def markLost [Store m] [Clock m] (why : String) (j : Job) : m Bool := do
+  let now ← Clock.now
+  Store.txn [.event] fun db =>
+    if (db.events.any fun e => e.kind == some "job-end" && e.path == j.id) then (db, false)
+    else (db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
+      ("exit", some (.str "lost")), ("s", some (Json.int (now - j.ts))), ("why", some (.str why))]))), true)
+
 /-- A detached job's end line (board #205): a message to its submitter; if that agent has ended, a note on the job's task;
 with neither, to the communicator. -/
 def postEnd [Env m] [Store m] [Clock m] (who : String) (task : Option Int) (body : String) : m Unit := do
@@ -222,6 +245,64 @@ def detachedTick [Env m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit := do
     if fresh then
       let jid := j.id.getD "?"
       postEnd (j.agent.getD "human") ((Json.field j.data "task").bind Json.int?) s!"job j{jid} lost on {(j.s "machine").getD "this machine"}: its process died; log: see jobs/{jid}/log beside the swarm db"
+
+/-- A job nobody waits for, ended: its terminal killed, a job-end lost (`why`), its claim released; true when this wrote the job-end. -/
+def dropJob [Proc m] [Sys m] [Env m] [Store m] [Clock m] (why : String) (j : Job) : m Bool := do
+  if let some h := j.s "hc" then killTerm h
+  if let some mach := j.s "machine" then
+    if let some c := j.s "claim" then Claims.release Compute.host (some mach) c
+  markLost why j
+
+/-- A job terminal of this repo (`swarm-wt` under one of `repos`) whose agent is not live: its job id. -/
+def orphanTerm [Proc m] (repos : List String) (live : List String) (h : String) : m (Option String) := do
+  let some o ← Proc.output ["hc", "get", h, "--json"] none [] | return none
+  let some g := Json.decode o.stdout | return none
+  let some lab := Json.field g "labels" | return none
+  let some jid := Json.fstr lab "swarm-job" | return none
+  let some wt := Json.fstr lab "swarm-wt" | return none
+  let ag := (Json.fstr lab "swarm-agent").getD ""
+  if !(repos.any fun r => wt.startsWith (r ++ "/")) || ag == "" || ag == "human" || live.contains ag then return none
+  return some jid
+
+/-- watchd's sweep of remote jobs no one waits for (board #212): a job-start with no job-end whose `swarm run` pid is dead
+here has its terminal killed, a job-end lost, its claim released; comms is told once per sweep that kills anything.
+`terms`: also the repo's job terminals of an agent no longer live (from before job-start kept a pid; one with a live
+pid is left alone). -/
+def goneTick [Env m] [Sys m] [Proc m] [Store m] [Clock m] (t : Int) (comms : Option String) (terms : Bool) :
+    m Unit := do
+  if (← env "HC_TERMINAL_ID").isNone then return
+  let db ← Store.txn [.event, .agent] fun db => (db, db)
+  let live := (Agents.live db).map (·.name)
+  let mut killed : List String := []
+  let mut seen : List String := []
+  for j in liveJobs db t do
+    let some mach := j.s "machine" | continue
+    let some p := (Json.field j.data "pid").bind Json.int? | continue
+    if ← Sys.pidAlive p then continue
+    if ← dropJob "submitter gone" j then
+      killed := killed ++ [s!"j{j.id.getD "?"} on {mach} ({(t - j.ts) / 60} min)"]
+      if Json.field j.data "detached" == some (.bool true) then
+        postEnd (j.agent.getD "human") ((Json.field j.data "task").bind Json.int?) s!"job j{j.id.getD "?"} lost on {mach}: its process died; log: see jobs/{j.id.getD "?"}/log beside the swarm db"
+    if let some h := j.s "hc" then seen := seen ++ [h]
+  if terms then
+    -- this repo's run dirs, `RUN_DIR/<repo>/<worktree>`, as its job-starts name them
+    let repos := (db.events.filter (·.kind == some "job-start")).filterMap fun e =>
+      ((Json.decode (e.data.getD "{}")).bind (Json.fstr · "dir")).map fun d => (d.splitOn "/").getD 2 ""
+    for h in ← remoteTerms [] do
+      if seen.contains h then continue
+      let some jid ← orphanTerm repos live h | continue
+      let j? := (liveJobs db t).find? fun j => j.s "hc" == some h
+      let alive ← match j?.bind fun j => (Json.field j.data "pid").bind Json.int? with
+        | some p => Sys.pidAlive p
+        | none => pure false
+      if alive then continue
+      killTerm h
+      if let some j := j? then discard <| dropJob "submitter gone" j
+      killed := killed ++ [s!"j{jid} on {(h.splitOn "/").headD "?"} (terminal of an ended agent)"]
+  if let some c := comms then
+    if !killed.isEmpty then
+      let now ← Clock.now
+      Store.txn [.agent, .msg] fun db => ((Msgs.post db now "swarm" c s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ())
 
 /-- A job's copy, `RUN_DIR/<repo>/<worktree>`, with no `..` that would climb out of it. -/
 def runDirOk (dir : String) : Bool :=

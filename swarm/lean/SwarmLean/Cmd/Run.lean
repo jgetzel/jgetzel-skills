@@ -328,7 +328,7 @@ def runRemote (ctx : JobCtx) (mach top cs unit dir rel wtname : String) (cfg : J
     s!"if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$$ /\" \"$f\" > \"$\{f%/*}/.h$$\" && mv \"$\{f%/*}/.h$$\" \"$f\"; fi",
     "[ -d .git ] || git init -q",
     s!"git add -A && git write-tree > {metaD}/tree",
-    s!"\{ (cd {shquote rel} && {if exports.isEmpty then "" else "export " ++ " ".intercalate exports ++ " && "}{jobCmd}); echo $? > {metaD}/rc; } 2>&1 | tee {metaD}/log",
+    s!"\{ (cd {shquote rel} && {if exports.isEmpty then "" else "export " ++ " ".intercalate exports ++ " && "}{jobCmd}) < /dev/null; echo $? > {metaD}/rc; } 2>&1 | tee {metaD}/log",
     s!"git ls-files -z -m -o --exclude-standard > {metaD}/files",
     s!"exit \"$(cat {metaD}/rc 2>/dev/null || echo 255)\""]
   let name := String.ofList (((who ++ "-j" ++ jid).toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-').take 32)
@@ -473,7 +473,7 @@ def run (a : Parsed) : m UInt32 := do
   let dir := s!"{RUN_DIR}/{repo}/{wtname}"
   let on := chosen
   let rec0 : List (String × Option Json) := [("machine", on.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t),
-    ("cmd", some (.str full)), ("pid", some (Json.int (← Sys.getpid))), ("cores", some (Json.int gotCores)), ("mem_kb", some (Json.int gotMem)),
+    ("cmd", some (.str full)), ("claim", if claimId.isEmpty then none else some (.str claimId)), ("pid", some (Json.int (← Sys.getpid))), ("cores", some (Json.int gotCores)), ("mem_kb", some (Json.int gotMem)),
     ("parent", (parent.bind parseInt).map Json.int), ("detached", if detached then some (.bool true) else none)]
   if a.flag "detach" && !detached then
     return ← detachStart a argv claimId jid jobs unit cwd chosen gotCores gotMem waitS estF
@@ -493,7 +493,7 @@ def run (a : Parsed) : m UInt32 := do
     discard <| Fs.write (jobs ++ "/cmd") (if devOn then wrapFull cfg cs line (shquote top) (shquote (common ++ "/swarm/devshell")) else full)
     discard <| Fs.write (jobs ++ "/measure.sh") measureScript
     let jobCmd := Claims.lowPrio (measured (unit ++ "-" ++ toString (← Sys.getpid)) memFlag jobs)
-    let r ← Sys.exec ["sh", "-c", jobCmd] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
+    let r ← Sys.exec ["sh", "-c", "exec < /dev/null; " ++ jobCmd] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
     finishJob ctx (.n r.code.toNat) tree none none [] none
   runRemote ctx mach top cs unit dir rel wtname cfg jenv devOn rec0
 
