@@ -28,7 +28,10 @@ with subagents.
 5. The CLI is `~/.claude/skills/swarm/swarm`; put it on your PATH for this session.
 6. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
    knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
-   `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys. `run.machines` (a list of `hc machine ls` names) is where
+   `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys. `swarm run` enters the repo's nix dev shell (a flake with
+   `devShells.default`; cached as a profile under the git dir's `swarm/devshell`, here and with `--on`), unless the command
+   starts with `nix develop|shell|run`, IN_NIX_SHELL is set, `--no-devshell` is given or `run.devshell` is `false`; a
+   shell that does not build fails the job. `run.machines` (a list of `hc machine ls` names) is where
    `swarm run` tries after this machine when it has no room. Every `swarm run` claims cores and memory in a ledger on
    the machine it runs on, at the lowest CPU and I/O priority; `swarm compute [here|<machine>]` shows the claims,
    `swarm compute cap <machine|here> [--cores N|all] [--mem G|all]` lowers what jobs may take for good (the standing

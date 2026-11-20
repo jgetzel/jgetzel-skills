@@ -16,7 +16,7 @@ open Claims (gi span)
 
 /-- The `run` parser; the command (everything from the first positional or `--` on) is split off first (`split`). -/
 def spec : Spec :=
-  .mk "run" helpRun [] [opt "--on", opt "--cores", opt "--mem", { opt "--env" with maxCount := 1000000 }] [] [] none
+  .mk "run" helpRun [] [flag "--no-devshell", opt "--on", opt "--cores", opt "--mem", { opt "--env" with maxCount := 1000000 }] [] [] none
 
 /-- main.lua's split_run on the words after `run`: the options, and the command (`--` dropped). -/
 def split (args : List String) : List String × List String :=
@@ -24,7 +24,7 @@ def split (args : List String) : List String × List String :=
     match fuel, args[i]? with
     | f + 1, some x =>
       if x == "--on" || x == "--env" || x == "--cores" || x == "--mem" then go (i + 2) f
-      else if x.startsWith "--on=" || x.startsWith "--env=" || x.startsWith "--cores=" || x.startsWith "--mem=" || x == "-h" || x == "--help" then go (i + 1) f
+      else if x.startsWith "--on=" || x.startsWith "--env=" || x.startsWith "--cores=" || x.startsWith "--mem=" || x == "--no-devshell" || x == "-h" || x == "--help" then go (i + 1) f
       else i
     | _, _ => i
   let i := go 0 (args.length + 1)
@@ -35,6 +35,53 @@ def split (args : List String) : List String × List String :=
 def sanitize (s : String) : String := s.map fun c => if c.isAlphanum || c == '_' || c == '.' || c == '-' then c else '_'
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
+
+/-- The job's line inside the project's nix dev shell (sw-run-devshell): $1 the line, $2 the tree, $3 the profile directory. A
+profile of the shell is built once per flake.nix+flake.lock (under the run's claim, serialised by flock), each job then
+`nix develop <profile> -c`. Left as it is: IN_NIX_SHELL set, no nix, no flake.nix, no devShells.default for this system
+(remembered as `.none`). A build that fails ends the job (exit 1) with the nix error's last lines. -/
+def devshellScript : String := String.intercalate "\n" [
+  "plain() { exec sh -c \"$1\"; }",
+  "[ -n \"$IN_NIX_SHELL\" ] && plain \"$@\"",
+  "command -v nix >/dev/null 2>&1 || plain \"$@\"",
+  "[ -f \"$2/flake.nix\" ] || plain \"$@\"",
+  "d=$3; h=$(cat \"$2/flake.nix\" \"$2/flake.lock\" 2>/dev/null | sha256sum | cut -c1-16); p=$d/$h",
+  "if [ ! -e \"$p\" ] && [ ! -e \"$p.none\" ]; then",
+  "  mkdir -p \"$d\" || plain \"$@\"",
+  "  e=$d/err.$$",
+  "  (",
+  "    command -v flock >/dev/null 2>&1 && flock 9",
+  "    [ -e \"$p\" ] || [ -e \"$p.none\" ] && exit 0",
+  "    sys=$(nix eval --impure --raw --expr builtins.currentSystem 2>\"$e\") || exit 1",
+  "    if ! nix eval \"$2#devShells.$sys.default.name\" >/dev/null 2>\"$e\"; then",
+  "      grep -q 'does not provide attribute' \"$e\" && { : > \"$p.none\"; exit 0; }",
+  "      exit 1",
+  "    fi",
+  "    nix develop \"$2\" --profile \"$p\" -c true >/dev/null 2>\"$e\" || exit 1",
+  "    find \"$d\" -maxdepth 1 -type l -mtime +0 ! -name \"$h*\" -exec rm -f {} + 2>/dev/null",
+  "    find \"$d\" -maxdepth 1 -name '*.none' -mtime +0 ! -name \"$h*\" -exec rm -f {} + 2>/dev/null",
+  "    exit 0",
+  "  ) 9>\"$d/lock\"",
+  "  if [ $? -ne 0 ]; then",
+  "    tail -n 8 \"$e\" >&2; rm -f \"$e\"",
+  "    echo 'swarm: the dev shell did not build; --no-devshell runs without it' >&2",
+  "    exit 1",
+  "  fi",
+  "  rm -f \"$e\"",
+  "fi",
+  "[ -e \"$p\" ] || plain \"$@\"",
+  "touch -h \"$p\" 2>/dev/null",
+  "exec nix develop \"$p\" -c sh -c \"$1\""]
+
+/-- Whether `line` already starts with `nix develop`, `nix shell` or `nix run`. -/
+def startsNix (line : String) : Bool :=
+  match (line.splitOn " ").filter (· ≠ "") with
+  | "nix" :: w :: _ => w == "develop" || w == "shell" || w == "run"
+  | _ => false
+
+/-- `line` run by the dev-shell script on tree `src` with profiles under `pdir` (both shell words, already quoted). -/
+def devshellWrap (line src pdir : String) : String :=
+  "sh -c " ++ shquote devshellScript ++ " swarm-devshell " ++ shquote line ++ " " ++ src ++ " " ++ pdir
 
 /-- `.claude/swarm.json`'s `run` object, or {}. -/
 def readCfg (top : String) : m Json := do
@@ -150,7 +197,8 @@ def run (a : Parsed) : m UInt32 := do
     (db.setMeta "jobs" (some (d n)), d n)
   -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>`; a defaulted one only a reservation
   let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
-  let jobCmd := (memFlag.map fun kb => Claims.memCap unit kb).getD id (Claims.lowPrio full)
+  let mkJob (fl : String) := (memFlag.map fun kb => Claims.memCap unit kb).getD id (Claims.lowPrio fl)
+  let jobCmd := mkJob full
   let dbp := match ← env "SWARM_DB" with | some p => p | none => common ++ "/swarm/swarm.db"
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
@@ -187,9 +235,16 @@ def run (a : Parsed) : m UInt32 := do
         | some kb, .n 137 => s!"\nkilled at its --mem cap ({gi kb} GiB)? Try a bigger --mem."
         | _, _ => ""))
     return match code with | .lost => 255 | .n c => (c.toNat % 256).toUInt32
+  -- the dev shell (devshellScript): the line goes through it unless opted out, a nix line, or no flake.nix
+  let devOn := !a.flag "no_devshell" && (Json.field cfg "devshell") != some (.bool false) && !startsNix line &&
+    (← Sys.kind (joinPath top "flake.nix") false) == .file
+  let wrapFull (src pdir : String) : String :=
+    let w := devshellWrap line src pdir
+    match Json.fstr cfg "prefix" with | some p => sub p ++ " " ++ w | none => w
   let some mach := on | do
     logEv "job-start" (obj rec0)
     let tree ← treeOf top
+    let jobCmd := if devOn then mkJob (wrapFull (shquote top) (shquote (common ++ "/swarm/devshell"))) else jobCmd
     let r ← Sys.exec ["sh", "-c", jobCmd] { env := jenv.map fun (k, v) => (k, some v), stdoutFile := some logf }
     finish (.n r.code.toNat) tree none none [] none
   let ms ← Claims.hcMachines host
@@ -232,6 +287,7 @@ def run (a : Parsed) : m UInt32 := do
     | _ => []
   let exports := exports ++ ((setO.mergeSort fun x y => x.1 ≤ y.1).map fun (k, v) =>
     k ++ "=\"" ++ v.replace "{dir}" ("$HOME/" ++ dir) ++ "\"")
+  let jobCmd := if devOn then mkJob (wrapFull ("\"$HOME/" ++ src ++ "\"") ("\"$HOME/" ++ dir ++ "/devshell\"")) else jobCmd
   let metaD := s!"\"$HOME/{dir}/jobs/{jid}\""
   let script := "; ".intercalate [
     s!"mkdir -p {metaD} && cd \"$HOME/{src}\" || exit 255",
