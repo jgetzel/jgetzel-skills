@@ -6,8 +6,6 @@ role, stay, limits and away. -/
 
 namespace SwarmLean.Agents
 
-/-- The user's name (agents.HUMAN). -/
-def HUMAN : String := "human"
 /-- A context this small is cheap to wake (agents.SMALL_CTX). -/
 def SMALL_CTX : Int := 40000
 
@@ -56,13 +54,6 @@ def away (db : Db) : Option (Option Int × Option String) :=
 /-- What the agent waits for (agents.stay_of). -/
 def stayOf (db : Db) (n : String) : Option String := (db.agent n).bind (·.stay)
 
-/-- Why this terminal may not write as `name` (agents.fence), before the time is formatted. -/
-inductive Fence
-  /-- the row ended at `t`; `why` is the data of its last reap, leave or end event -/
-  | ended (t : Option Int) (why : Option String)
-  /-- the row is bound to terminal `hc`; this one is `here` -/
-  | bound (hc : String) (here : Option String)
-
 /-- The fence on `name` from terminal `here` (HC_TERMINAL_ID), if any. -/
 def fence (db : Db) (name : String) (here : Option String) : Option Fence :=
   match db.agent name with
@@ -92,9 +83,6 @@ def touch (db : Db) (name : String) (cwd : Option String) (here : Option String)
 /-- `name` is the user's, which no agent takes (agents.not_human). -/
 def notHuman (name : String) : Except String Unit :=
   if name == HUMAN then .error "'human' is the user's name (the panel acts as it); an agent can't take it" else .ok ()
-
-/-- A row's binding as bind reads it before its transaction: its terminal and when it ended. -/
-abbrev Binding := Option (Option String × Option Int)
 
 /-- The binding of `name` now. -/
 def binding (db : Db) (name : String) : Binding := (db.agent name).map fun r => (r.hc, r.ended)
@@ -260,27 +248,6 @@ where
 def setQueueOnly (db : Db) (me : String) (on : Bool) (now : Int) : Db :=
   (db.setMeta "queue_only" (some (if on then "on" else "off"))).log now (some me) "limits" none
     (some s!"queue-only {if on then "on" else "off"}")
-
-/-- A question waiting in the away digest: a blocked task and since when. -/
-structure Question where
-  id : Nat
-  title : Option String
-  owner : Option String
-  question : Option String
-  since : Option Int
-
-/-- What happened while the user was away (agents.digest). -/
-structure Digest where
-  since : Option Int
-  back : Int
-  note : Option String
-  questions : List Question
-  done : List Task
-  merged : List Task
-  ci : Option Ci
-  /-- each ended agent: name, when, why -/
-  ended : List (String × Option Int × Option String)
-  hung : List String
 
 /-- An event's data names task `id`: `#id` or `#id …` (SQL `data='#'||id or data like '#'||id||' %'`). -/
 def namesTask (data : Option String) (id : Nat) : Bool :=

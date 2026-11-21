@@ -37,13 +37,6 @@ def tidy (db : Db) : Db := setQueue db ((queueOf db).filter fun i => (db.find i)
 def queuer (db : Db) (id : Int) : Option String :=
   ((taskEvents db id.toNat).filter (·.kind == some "queue")).getLast?.bind (·.agent)
 
-/-- Where `queue add` puts its ids. -/
-inductive Place
-  | back
-  | front
-  | before (id : Int)
-  | after (id : Int)
-
 /-- The checks of `queue add`: tasks on the board; a place other than the back, or moving an entry another agent
 queued, only by the communicator or the user; `--before`/`--after` a queued task not among the ids. -/
 def addCheck (c : Ctx) (ids : List Int) (w : Place) (db : Db) : Except String Unit := do

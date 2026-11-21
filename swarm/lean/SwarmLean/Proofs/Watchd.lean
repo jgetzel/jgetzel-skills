@@ -14,10 +14,6 @@ open Agents Swarm
 
 /-! ## `Sat`: a postcondition of a monadic run, whatever its effects return -/
 
-/-- Every result `x` can give satisfies `p` (Batteries' `SatisfiesM`): `x` factors through results carrying a proof. -/
-def Sat {m : Type → Type} [Functor m] {α : Type} (p : α → Prop) (x : m α) : Prop :=
-  ∃ x' : m {a // p a}, Subtype.val <$> x' = x
-
 section Sat
 variable {m : Type → Type} [Monad m] [LawfulMonad m] {α β : Type}
 

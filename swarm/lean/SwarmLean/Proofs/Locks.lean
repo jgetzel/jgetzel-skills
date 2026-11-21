@@ -41,23 +41,6 @@ example : overlaps "?" "[z-a]" = false := by decide +kernel
 
 open Agents
 
-/-- Agent `a` has a row that hasn't ended (the agent join of `others`). -/
-def Live (db : Db) (a : String) : Bool := db.agents.any fun g => g.name == a && g.ended.isNone
-
-/-- Lock `l` holds at time `t`: its agent is live and its lease runs past `t` (the locks `others` reads at `t`). -/
-def HeldAt (db : Db) (t : Int) (l : Lock) : Prop :=
-  ∃ a, l.agent = some a ∧ l.lease_until.any (· > t) = true ∧ Live db a = true
-
-/-- S3 at time `t`: two locks of different agents that both hold at `t` don't overlap. -/
-def Disjoint (db : Db) (t : Int) : Prop :=
-  ∀ l ∈ db.locks, ∀ m ∈ db.locks, HeldAt db t l → HeldAt db t m → l.agent ≠ m.agent → overlaps l.path m.path = false
-
-/-- Every lock's agent is live, or is the user (whom `touch` gives no row and `join` refuses). -/
-def Rows (db : Db) : Prop := ∀ l ∈ db.locks, ∀ a, l.agent = some a → a = HUMAN ∨ Live db a = true
-
-/-- The invariant at time `t`. -/
-def Good (db : Db) (t : Int) : Prop := Rows db ∧ Disjoint db t
-
 /-- From `db` to `db'` no agent stops being live, and the user doesn't start. -/
 def Grows (db db' : Db) : Prop :=
   (∀ a, Live db a = true → Live db' a = true) ∧ (∀ a, Live db' a = true → Live db a = true ∨ a ≠ HUMAN)
@@ -449,37 +432,6 @@ theorem step_frame (c : Cmd) (db : Db) : (c.step db).1.locks = db.locks ∧ Grow
   | board => exact ⟨rfl, grows_refl rfl⟩
 
 /-! Any order of transactions. -/
-
-/-- A command the lock theorems cover: `swarm lock`, `unlock`, `leave`, `join`'s transaction (`r`, the row as it read
-it before), or a task command of `Proofs.lean`. -/
-inductive LCmd
-  | lock (c : Tasks.Ctx) (path reason lease : String)
-  | unlock (me path : String) (now : Int)
-  | leave (name : String) (now : Int)
-  | join (name : String) (cwd hc model : Option String) (r : Binding) (now : Int)
-  | task (c : Cmd)
-
-/-- What a lock command answers. -/
-inductive LResult
-  | locked (r : Except String Unit)
-  | unlocked
-  | left
-  | joined (r : Except String Unit)
-  | task (r : Result)
-
-/-- A command's whole effect on the db, and its answer: the CLI's own step functions. -/
-def LCmd.step : LCmd → Db → Db × LResult
-  | .lock c p r l, db => ((Locks.lock c p r l db).1, .locked (Locks.lock c p r l db).2)
-  | .unlock me p now, db => (Locks.unlock me p now db, .unlocked)
-  | .leave n now, db => (Agents.leave db n now, .left)
-  | .join n cwd hc model r now, db => match notHuman n with
-    | .error e => (db, .joined (.error e))
-    | .ok () => ((Agents.bind db n cwd hc model r now).1, .joined (Agents.bind db n cwd hc model r now).2)
-  | .task c, db => ((c.step db).1, .task (c.step db).2)
-
-/-- The time `t` is no earlier than the clock each `swarm lock` among `cs` read: what a clock that never runs back
-gives at any moment after they ran. -/
-def Before (t : Int) (cs : List LCmd) : Prop := ∀ x ∈ cs, ∀ c p r l, x = .lock c p r l → c.now ≤ t
 
 theorem step_good (x : LCmd) {db : Db} {t : Int} (ht : Before t [x]) (h : Good db t) : Good (x.step db).1 t := by
   cases x with

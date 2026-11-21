@@ -16,8 +16,6 @@ open Lean (Json)
 
 variable {m : Type → Type} [Monad m]
 
-/-- Under each machine's home: `<repo>/<worktree>/{src,jobs/<id>}`. -/
-def RUN_DIR : String := ".cache/swarm-run"
 /-- Lines of the job's log printed at its end. -/
 def JOB_TAIL : Nat := 200
 /-- A job whose terminal is gone this long gets a job-end 'lost'. -/
@@ -303,10 +301,6 @@ def goneTick [Env m] [Sys m] [Proc m] [Store m] [Clock m] (t : Int) (comms : Opt
     if !killed.isEmpty then
       let now ← Clock.now
       Store.txn [.agent, .msg] fun db => ((Msgs.post db now "swarm" c s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ())
-
-/-- A job's copy, `RUN_DIR/<repo>/<worktree>`, with no `..` that would climb out of it. -/
-def runDirOk (dir : String) : Bool :=
-  (Re.fullmatch (Re.escape RUN_DIR ++ "/[\\w.-]+/[\\w.-]+") dir).toOption.join.isSome && !(dir.splitOn "/").contains ".."
 
 /-- Removes a landed worktree's dirs on every machine its jobs ran on (run.clean_remote). -/
 def cleanRemote [Proc m] [Store m] [Clock m] (wt : String) : m Unit := do

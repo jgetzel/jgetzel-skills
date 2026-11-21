@@ -1,4 +1,5 @@
 import SwarmLean.Db
+import SwarmLean.Spec.Data
 
 /-! msgs.lua's pure parts: post, the unread rows, take, deliver's pick, the formats, capped and the waiter's wakes. -/
 
@@ -16,9 +17,6 @@ def post (db : Db) (now : Int) (frm dest body : String) (urgent : Bool := false)
                      urgent := some (if urgent then 1 else 0), kind := some kind }
   let db := { db with msgs := db.msgs ++ [msg], msgNext := db.msgNext + 1 }
   (db.log now (some frm) "post" (some dest) (some ((if urgent then "[urgent] " else "") ++ cut body 200)), id)
-
-/-- Where `name`'s cursor stands: the last id it read. -/
-def cursorOf (db : Db) (name : String) : Int := ((db.cursor name).bind (·.last_msg_id)).getD 0
 
 /-- `name`'s unread messages by id: past its cursor, not its own, to it or to all (msgs.unread). -/
 def unread (db : Db) (name : String) : List Msg :=

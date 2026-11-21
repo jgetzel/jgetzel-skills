@@ -28,7 +28,10 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `SwarmLean/Real.lean`, `Sqlite.lean`, `c/shim.c` | the real world: the SQLite store, IO |
 | `SwarmLean/Args.lean`, `Cmd/*.lean`, `Dispatch.lean`, `Main.lean` | argparse's grammar, the command groups, main |
 | `SwarmLean/Herdr/*.lean` | the second executable, herdr-mods: the Herdr panels' installer and calendar feed (was Lua; `../../herdr-mods/herdr-mods` runs it through `../swarm` with `SWARM_EXE=herdr-mods`) |
-| `SwarmLean/Assumptions.lean` | every assumption the proofs make about the world: `Atomic`, and the tools' (`Tools`) |
+| `SwarmLean/Assumptions.lean`, `Assumptions/Code.lean` | every assumption the proofs make about the world: `Atomic`, and the tools' (`Tools`); `Code.lean` holds the few that name the code's own functions |
+| `SwarmLean/Spec/*.lean` | the spec layer: the types the code's steps take, the commands as data, each area's invariant; `Spec/Code.lean`, the definitions over the code the statements read (the step functions, the sweep's `Gate`) |
+| `SwarmLean/Challenge.lean`, `Solution.lean`, `comparator.json` | the main theorems as a person reads them, and the proofs they are checked against (below) |
+| `challenge.sh`, `layering.sh` | Comparator on that pair, with two mutants it must reject; the spec layer's imports |
 | `SwarmLean/Proofs.lean`, `Proofs/*.lean` | the theorems, about the functions the CLI runs (below) |
 | `Audit.lean` | every theorem's axioms (Lean's three only, or it fails), and the theorems taking each assumption |
 | `TestMain.lean`, `Tests/Cli/`, `Tests/Spec/` | `swarm-tests [pattern]`: the CLI's test suite (the Lua specs ported), parallel, per-test timeout |
@@ -39,7 +42,63 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
 | `Report.lean` | `swarm-report`, swarm-retro's evidence report (its old swarm-report.lua), run by ../../swarm-retro/swarm-report |
 | `build.sh` | builds the binary the launcher runs and swarm-report (elan's lake, else nix) |
-| `check.sh` | build, no `sorry`/`axiom`, `Audit.lean`, each assumption's test tag, swarm-tests and test-claim.sh on both binaries |
+| `check.sh` | build, no `sorry`/`axiom` (but Challenge.lean's), `layering.sh`, `Audit.lean`, each assumption's test tag, `challenge.sh`, swarm-tests and test-claim.sh on both binaries |
+
+## The challenge: the theorems a person reads
+
+`SwarmLean/Challenge.lean` (board #216, after high-perf-lean's #1677 and the Lean FRO's con-leche) states swarm-lean's main
+theorems with `sorry` for their proofs: 65 of them, from every area below (tasks and the board, the queue, messages,
+locks, agents and watchd, the cross-area invariant, the sweep's W1 and W2, and `no_work_lost`). The code's functions
+they name (`Tasks.claim`, `Watchd.keeps`, `Lifecycle.endAgent`, `Watchd.sweep`, … 69 in all) are holes,
+`def … := sorry` at their exact types under their real names. It imports only the spec layer, modules with no proof and
+no implementation in their imports (`layering.sh`): `Assumptions.lean` (the machine, a recorded run on it, every
+hypothesis about the world), the db's rows and the interfaces, and `Spec/` (the steps' types, the commands as data,
+each area's invariant). The definitions that name the code (each area's step function, the sweep's `Gate`, a run of
+sweeps and ends, the assumption `CwdsProc`) live in `Spec/Code.lean` and `Assumptions/Code.lean`; the challenge holds a
+word-for-word copy of them after its holes (`challenge.sh` diffs the text). They are `abbrev`s: a `def`'s reducibility
+hint is its height, which would differ where the code is holes.
+
+`challenge.sh` (in `check.sh`; 35 s here with nixpkgs' Lean, 2.5 min with elan's toolchain, which adds `--paranoid`) runs
+`lake comparator`, Comparator as Lean 4.35's lake ships it, on `comparator.json`: Challenge.lean against
+`Solution.lean`, which imports the proofs. An accept means: each theorem is proved with exactly the challenge's statement
+and only `propext`, `Classical.choice` and `Quot.sound`; every constant a statement reads, the hypothesis classes
+(`GitReadsKeep`, `ToolsKeep`, `WtRemove`, …) and invariants (`Inv`, `Locks.Good`, `Inbox.MInv`, `Cross.XInv`, …)
+included, is the same constant in both, down to Lean's core, so no proof can change what a statement means; each hole
+has its type; and Lean's kernel replays the solution, as do (with `--paranoid`) leanchecker-paranoid, lean4lean, nanoda,
+con-leche and con-ron. It then checks that Comparator rejects two mutants: the solution with `ToolsKeep`'s definition
+changed (a hypothesis of `no_work_lost`), and the challenge with `no_work_lost`'s statement changed.
+
+What is still trusted:
+
+- **Comparator** (its compare step) and **the kernels** it runs (with `--paranoid`, at least one of the six correct), and
+  Lean's front end, which reads Challenge.lean's statements as written.
+- **The sandbox and the exporter.** `lake comparator` sandboxes with bwrap (where con-leche's standalone Comparator used
+  landrun), and its build cannot see `../../claim` or `../model`; so `challenge.sh` exports both sides itself, with the
+  toolchain's `leanexport`, from this tree's own build, and the sandbox holds only the kernels' replay (with no user
+  namespaces, as on GitHub's runners, it runs unsandboxed and says so). The solution is this repo's own code, not an
+  adversary's, so what the sandbox guards against is not the risk here.
+- **A replay workaround.** Lean 4.35's `Kernel.Environment.replay` adds each constant after those it names, in name-hash
+  order, and a string literal names none: a theorem that decides a string equality fails when it replays before
+  `String.ofList`. `ChallengeAnchor.lean`'s theorem, whose name hashes lowest, replays first and brings it in; when the
+  kernel rejects, `challenge.sh` prints which constant replayed first.
+- **The holes are the binary's code.** The theorems constrain the solution's definitions of the holes, the functions in
+  `Db/` and `Lib/`; that the `swarm` binary is built from them is not checked here, nor is a hole pinned beyond what
+  the statements say of it. Two hypotheses read holes, so a person reads those functions too: `CwdsProc`
+  (`Machine.cwds`, `Watchd.inside`, of `sweepGate_W1` only) and the sweep's `Gate` (`Lifecycle.landed`, `Bases.refs`, …).
+- **The link from the model to the machine:** the tool hypotheses of `Assumptions.lean` (each tested against the real
+  tool by swarm-tests, not proved), `RecM` as the code's run on a machine, and `Real.lean`/`RealSys.lean`, the IO
+  instances the binary runs the same generic code with. `Proofs/Trust.lean` adds no axiom: its machines show that each
+  of `sweepGate_W1`'s hypotheses is needed.
+
+When `challenge.sh` fails after a change: a hole's type changed, so its `def … := sorry` in Challenge.lean takes the new
+type (`#check @Tasks.claim` prints it); a definition in `Spec/Code.lean` or `CwdsProc` changed, so its copy is pasted
+again; a new challenged theorem goes in both Challenge.lean and `comparator.json` (`challenge.sh` checks that
+Challenge.lean's sorried declarations are exactly `comparator.json`'s names).
+
+Not in the challenge: the store's theorems (`write_back`, `store_load`, `migrate_version`: their hypothesis `SqlExec`
+reads `Db/Plan.lean`'s statements, so it is in `Assumptions/Code.lean`), crash safety (`groups_keep` and the rest
+state `Keeps` of whole command groups), and `Cross.exactly_once_x` (its statement's `toM` carries `xcmd_grows`'s proof,
+which the challenge would have to hold); `Inbox.exactly_once` and `Cross.run_xinv` are in.
 
 ## What is proved of the running code
 

@@ -6,13 +6,6 @@ task's claim) and tasks.unreserve (a launch that failed). -/
 namespace SwarmLean.Spawn
 open Agents Tasks
 
-/-- Why a reservation failed: a die (`swarm: …`), the user's max (`refused`) or a lost race (`lost`), both printed as
-they are. -/
-inductive Refusal
-  | die (msg : String)
-  | refused (msg : String)
-  | lost (msg : String)
-
 /-- The max check and the new agent's row, in one transaction so two spawns can't both take the last place
 (agents.reserve). -/
 def reserveAgent (db : Db) (envComms : Option String) (name cwd : String) (model : Option String) (now : Int) :

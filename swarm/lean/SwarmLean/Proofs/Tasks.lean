@@ -8,56 +8,6 @@ the one assumption. -/
 namespace SwarmLean.Board
 open Tasks
 
-/-- Every task command, with everything it reads of the world. -/
-inductive TCmd
-  | add (c : Ctx) (a : AddArgs)
-  | claim (c : Ctx) (i : Int) (lease : String)
-  | after (c : Ctx) (i : Int) (deps : List Int)
-  | priority (c : Ctx) (i : Int) (p : Int)
-  | renew (c : Ctx) (i : Int) (lease : String)
-  | done (c : Ctx) (i : Int) (evidence : String)
-  | block (c : Ctx) (i : Int) (question : String)
-  | unblock (c : Ctx) (i : Int) (answer : String)
-  | release (c : Ctx) (i : Int) (after : Option (List Int))
-  | edit (c : Ctx) (i : Int) (a : EditArgs)
-  | drop (c : Ctx) (i : Int)
-  | land (c : Ctx) (i : Int) (sha : String) (lander : Option String)
-  | unland (c : Ctx) (i : Int) (why : String)
-  | board
-
-/-- A command's effect on the db and whether it succeeded: the CLI's own step functions. -/
-def TCmd.step : TCmd → Db → Db × Bool
-  | .add c a, db => ((Tasks.add c a db).1, (Tasks.add c a db).2.toBool)
-  | .claim c i l, db => ((Tasks.claim c i l db).1, (Tasks.claim c i l db).2.toBool)
-  | .after c i l, db => ((Tasks.after c i l db).1, (Tasks.after c i l db).2.toBool)
-  | .priority c i p, db => ((Tasks.priority c i p db).1, (Tasks.priority c i p db).2.toBool)
-  | .renew c i l, db => ((Tasks.renew c i l db).1, (Tasks.renew c i l db).2.toBool)
-  | .done c i e, db => ((Tasks.done c i e db).1, (Tasks.done c i e db).2.toBool)
-  | .block c i q, db => ((Tasks.block c i q db).1, (Tasks.block c i q db).2.toBool)
-  | .unblock c i a, db => ((Tasks.unblock c i a db).1, (Tasks.unblock c i a db).2.toBool)
-  | .release c i af, db => ((Tasks.release c i af db).1, (Tasks.release c i af db).2.toBool)
-  | .edit c i a, db => ((Tasks.edit c i a db).1, (Tasks.edit c i a db).2.toBool)
-  | .drop c i, db => ((Tasks.drop c i db).1, (Tasks.drop c i db).2.toBool)
-  | .land c i s l, db => ((Tasks.land c i s l db).1, (Tasks.land c i s l db).2.toBool)
-  | .unland c i w, db => ((Tasks.unland c i w db).1, (Tasks.unland c i w db).2.toBool)
-  | .board, db => (db, true)
-
-/-- The db after `cs` from `db`. -/
-def run (db : Db) (cs : List TCmd) : Db := (replay TCmd.step db cs).1
-
-/-- Each command of `cs`, from `db`, with whether it succeeded. -/
-def trace (db : Db) (cs : List TCmd) : List (TCmd × Bool) := (replay TCmd.step db cs).2
-
-/-- Evidence `task done` accepts: some text that is not all whitespace. -/
-def EvOk (e : Option String) : Prop := ∃ s, e = some s ∧ strip s ≠ ""
-
-/-- S5 of one task: if it is done it has evidence. -/
-def DoneEv (t : Task) : Prop := t.state = .done → EvOk t.evidence
-
-/-- The board's invariant: `Inv` (ids unique and below the next id, owners fit states) and every done task has
-evidence. -/
-def BInv (db : Db) : Prop := Inv db ∧ ∀ t ∈ db.tasks, DoneEv t
-
 /-- `v` is `u` with its id, state, owner and evidence as they were. -/
 def Keeps (u v : Task) : Prop := v.id = u.id ∧ v.state = u.state ∧ v.owner = u.owner ∧ v.evidence = u.evidence
 
@@ -370,19 +320,6 @@ theorem claim_deps_done {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed}
 
 /-! One claim wins, over every task command. -/
 
-/-- A successful claim of task `i`. -/
-def ClaimedOf (i : Int) : TCmd × Bool → Bool
-  | (.claim _ j _, true) => j == i
-  | _ => false
-
-/-- A successful release of task `i`, or a successful done of it (a red task's done reopens it), or a successful
-unland of it (its lander gives it back, open). -/
-def ReleasedOf (i : Int) : TCmd × Bool → Bool
-  | (.release _ j _, true) => j == i
-  | (.done _ j _, true) => j == i
-  | (.unland _ j _, true) => j == i
-  | _ => false
-
 /-- Task `i` is on the board and not open. -/
 def Taken (db : Db) (i : Int) : Prop := ∃ t, db.find i = some t ∧ t.state ≠ .open
 
@@ -655,9 +592,6 @@ theorem mem_pool (db : Db) (t : Task) : t ∈ pool db ↔
     t ∈ db.tasks ∧ t.state = .open ∧ blockedByDeps db t = false ∧ stopPending db t = false := by
   simp only [pool, List.mem_filter, List.mem_mergeSort, Bool.and_eq_true, decide_eq_true_eq,
     Bool.not_eq_eq_eq_not, Bool.not_true, and_assoc]
-
-/-- `t` waits on `x` in the pool's sense: `x`'s id is one of the ids in `t`'s deps text. -/
-def WaitsOn (t x : Task) : Prop := ∃ ds, t.deps = some ds ∧ hasSub ("," ++ ds ++ ",") ("," ++ d x.id ++ ",") = true
 
 theorem blockedByDeps_iff (db : Db) (t : Task) :
     blockedByDeps db t = true ↔ ∃ x ∈ db.tasks, x.state ≠ .done ∧ WaitsOn t x := by

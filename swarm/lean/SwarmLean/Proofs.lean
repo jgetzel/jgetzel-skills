@@ -1,5 +1,6 @@
 import SwarmLean.Db.Tasks
-import SwarmLean.Assumptions
+import SwarmLean.Assumptions.Code
+import SwarmLean.Spec.Code
 
 /-! The slice's theorems (board #96) about the real steps: `Cmd.step` runs Db/Tasks.lean's `add`, `claim` and
 `release`, the functions the CLI runs in `Store.txn`. -/
@@ -7,49 +8,11 @@ import SwarmLean.Assumptions
 namespace SwarmLean
 open Tasks
 
-/-- A command the theorems cover, with everything it reads of the world. -/
-inductive Cmd
-  | add (c : Tasks.Ctx) (a : AddArgs)
-  | claim (c : Tasks.Ctx) (i : Int) (lease : String)
-  | release (c : Tasks.Ctx) (i : Int) (after : Option (List Int))
-  | land (c : Tasks.Ctx) (i : Int) (sha : String) (lander : Option String)
-  | unland (c : Tasks.Ctx) (i : Int) (why : String)
-  | board
-
-/-- What a command answers. -/
-inductive Result
-  | added (r : Except String Nat)
-  | claimed (r : Except String Claimed)
-  | released (r : Except String (Option String))
-  | landed (r : Except String Unit)
-  | unlanded (r : Except String Unlanded)
-  | board (tasks : List Task)
-
-/-- A command's whole effect on the db, and its answer: the CLI's own step functions. -/
-def Cmd.step : Cmd → Db → Db × Result
-  | .add c a, db => ((Tasks.add c a db).1, .added (Tasks.add c a db).2)
-  | .claim c i l, db => ((Tasks.claim c i l db).1, .claimed (Tasks.claim c i l db).2)
-  | .release c i af, db => ((Tasks.release c i af db).1, .released (Tasks.release c i af db).2)
-  | .land c i s l, db => ((Tasks.land c i s l db).1, .landed (Tasks.land c i s l db).2)
-  | .unland c i w, db => ((Tasks.unland c i w db).1, .unlanded (Tasks.unland c i w db).2)
-  | .board, db => (db, .board db.tasks)
-
-/-- A task's owner fits its state: a claimed task has an owner, an open one has none. -/
-def Task.Owned (t : Task) : Prop :=
-  (t.state = .claimed → t.owner.isSome) ∧ (t.state = .open → t.owner = none)
-
-/-- The store's invariant: task ids are unique and below the next id, and every task's owner fits its state. -/
-def Inv (db : Db) : Prop :=
-  (db.tasks.map (·.id)).Nodup ∧ (∀ t ∈ db.tasks, t.id < db.taskNext) ∧ ∀ t ∈ db.tasks, t.Owned
-
 /-- The db after `cs` from the empty db. -/
 def run (cs : List Cmd) : Db := (replay Cmd.step {} cs).1
 
 /-- Each command of `cs`, from `db`, with its answer. -/
 def trace (db : Db) (cs : List Cmd) : List (Cmd × Result) := (replay Cmd.step db cs).2
-
-/-- Agent `a` owns task `i` in `db`. -/
-def Owns (db : Db) (i : Int) (a : String) : Prop := ∃ t ∈ db.tasks, (t.id : Int) = i ∧ t.owner = some a
 
 /-- A successful claim of task `i`. -/
 def ClaimedOf (i : Int) : Cmd × Result → Bool
