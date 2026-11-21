@@ -111,6 +111,24 @@ export default class Rail extends View {
           await read(key, w.folder, null);
         }
       } catch {}
+      // Each connected remote machine's own swarms: a space there whose folder is another repo still finds its swarm by its space id.
+      const hidden = shared(HIDDEN) ?? [];
+      const remotes = new Map(at.filter(([, a]) => a.on && !hidden.includes(a.on)
+        && !(this.listed ?? []).some((m) => m.name === a.on && m.state === "unreachable")).map(([, a]) => [a.on, a.folder]));
+      for (const [on, cwd] of remotes) {
+        try {
+          const r = await swarm(cwd, on, ["state", "--json", "--view", "swarms"]);
+          const seen = new Set([...this.sums.values()].filter((m) => m.on === on && m.db).map((m) => m.db));
+          for (const w of r.code === 0 ? swarmsOf(JSON.parse(r.stdout)) : []) {
+            const key = `${on}:${w.folder}`;
+            if (seen.has(w.db) || keys.has(key)) continue;
+            keys.add(key);
+            await read(key, w.folder, on);
+            const m = this.sums.get(key);
+            if (m?.db) seen.add(m.db);
+          }
+        } catch {}
+      }
       for (const m of [this.sums, this.polls, this.failed, this.watched]) for (const k of m.keys()) if (!keys.has(k)) m.delete(k);
       this.reading = false;
       this.round = Date.now() + Math.max(5000, 2 * (Date.now() - t0));

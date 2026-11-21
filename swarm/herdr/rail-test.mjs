@@ -148,6 +148,13 @@ assert.equal(sumFor(sums, { id: "s1", folder: "/home" }, ids), sums[0]);
 assert.equal(sumFor(sums, { id: "s2", folder: "/w/b" }, ids), null); // /w/b's swarm lives in s1
 assert.equal(sumFor(sums, { id: "s3", folder: "/w/c" }, ids), sums[1]); // s9 is gone
 assert.equal(sumFor(sums, { id: "vps/t2", folder: "", machine: "vps" }, ids), sums[2]);
+{ // a remote space whose folder is another swarm's repo, matched by space id from the machine's own listing
+  const ll = { folder: "/w/skills", on: "mac", space: "spe1", agents: [] }, hpl = { folder: "/w/hpl", on: "mac", space: "spe2", agents: [{ name: "hpl-comms4", hc: "t9" }] };
+  const ss = [ll, hpl], sids = new Set(["mac/spe1", "mac/spe2"]);
+  assert.equal(sumFor(ss, { id: "mac/spe1", folder: "/w/skills", machine: "mac" }, sids), ll);
+  assert.equal(sumFor(ss, { id: "mac/spe2", folder: "/w/skills", machine: "mac" }, sids), hpl);
+  assert.deepEqual([...swarmAddrs(hpl, "mac")], ["mac/t9"]);
+}
 assert.equal(agentAt({ on: "vps", agents: [{ name: "w", hc: "t2" }] }, "vps/t2")?.name, "w");
 assert.equal(agentAt({ on: null, agents: [{ name: "w", hc: "t2" }] }, "vps/t2"), null);
 assert.deepEqual([null, { status: "in_progress" }, { status: "completed", conclusion: "success" }, { status: "completed", conclusion: "failure" }]
