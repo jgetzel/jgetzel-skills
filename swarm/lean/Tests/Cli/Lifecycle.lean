@@ -1470,7 +1470,99 @@ def test_task_add_validates_title_and_reads_body_file (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", String.ofList (List.replicate 100 'x')]
   eq (← t.q "select * from task").size 4
 
+/-- A fake inbox socket, d/cc.sock (a plain file: `SWARM_SOCK_SEND` stands in for the send), and its sender, which logs
+"path TAB data" to sock.log and fails while sock.fail exists; the env that sends through it. -/
+def sockSetup (t : T) : IO (List (String × Option String)) := do
+  let D := shquote t.d
+  let snd ← t.fake "socksend" s!"#!/bin/sh\nprintf '%s\\t%s\\n' \"$1\" \"$2\" >> {D}/sock.log\n[ -f {D}/sock.fail ] && \{ echo 'connect: Connection refused' >&2; exit 1; }\nexit 0\n"
+  put (t.d ++ "/cc.sock") ""
+  return [("SWARM_SOCK_SEND", some snd)]
+
+/-- The variables Claude Code gives its hooks and Bash: the socket and the token. -/
+def sockVars (t : T) : List (String × Option String) :=
+  [("CLAUDE_CODE_MESSAGING_SOCKET", some (t.d ++ "/cc.sock")), ("CLAUDE_CODE_MESSAGING_TOKEN", some "tok")]
+
+/-- What the fake sender was given. -/
+def sockLog (t : T) : IO String := return (← slurp (t.d ++ "/sock.log")).getD ""
+
+/-- The communicator's watchd tick with the fake sender. -/
+def sockTick (t : T) (e : List (String × Option String)) : IO Unit :=
+  t.sw_ "human" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"] { env := e }
+
+-- board #215: a swarm command in the agent's own terminal records its inbox socket (checked with the auth line); watchd
+-- then posts the communicator's messages there as a cross-session message, not by hc send
+def test_watchd_posts_comms_by_socket (t : T) : IO Unit := do
+  let (_, sends, post) ← commsSetup t
+  let e ← sockSetup t
+  t.sw_ "t-comms" ["who"] { hc := some "elsewhere", env := e ++ sockVars t, ok := false }
+  eq (← t.q "select 1 x from meta where k='sock:t-comms'").size 0  -- inherited in another terminal: not its socket
+  t.sw_ "t-comms" ["who"] { hc := some "hc0", env := e ++ sockVars t }
+  eq (← t.q "select 1 x from meta where k='sock:t-comms'").size 1
+  has (← sockLog t) "\"type\":\"auth\""; has (← sockLog t) "\"token\":\"tok\""
+  post "landed #3" false
+  sockTick t e
+  eq (← sends).length 0
+  let log ← sockLog t
+  has log "\"type\":\"user\""; has log "<cross-session-message from-name="; has log "human: landed #3"
+  eq (← t.q "select 1 x from event where kind='comms-deliver'").size 1
+  eq (← commsUnread t) "no unread messages"
+
+-- a refused post falls back to hc send and the communicator is told once; with hc send refused too nothing is marked
+-- read; the failed record is not taken again
+def test_watchd_socket_refused_falls_back (t : T) : IO Unit := do
+  let (_, sends, post) ← commsSetup t
+  let e ← sockSetup t
+  t.sw_ "t-comms" ["who"] { hc := some "hc0", env := e ++ sockVars t }
+  put (t.d ++ "/sock.fail") ""
+  put (t.d ++ "/send.fail") ""
+  post "landed #3" false
+  sockTick t e
+  eq (← sends).length 1
+  eq (← t.q "select 1 x from event where kind='comms-deliver'").size 0
+  eq (← t.q "select 1 x from meta where k='sock:t-comms' and v is not null").size 0
+  IO.FS.removeFile (t.d ++ "/send.fail")
+  t.sw_ "t-comms" ["who"] { hc := some "hc0", env := e ++ sockVars t }
+  eq (← t.q "select 1 x from meta where k='sock:t-comms' and v is not null").size 0
+  sockTick t e
+  eq (← sends).length 2
+  has (String.intercalate "\n" (← t.calls "hc")) "human: landed #3"
+  eq (← t.q "select 1 x from msg where body like '%can''t post to t-comms''s Claude Code inbox socket%Connection refused%'").size 1
+
+-- a socket replaced since it was recorded (a reused pid's: another session) gets nothing: hc send
+def test_watchd_socket_replaced_falls_back (t : T) : IO Unit := do
+  let (_, sends, post) ← commsSetup t
+  let e ← sockSetup t
+  t.sw_ "t-comms" ["who"] { hc := some "hc0", env := e ++ sockVars t }
+  discard <| t.exec ["touch", "-d", "@1000000000", t.d ++ "/cc.sock"]
+  post "landed #3" false
+  sockTick t e
+  eq (← sends).length 1
+  hasnt (← sockLog t) "landed"
+  has ((← t.q1 "select data from event where kind='sock-fallback'").f "data") "replaced"
+
+-- a worker's continue line after its compaction goes by its socket too; /compact is still typed (a cross-session
+-- message runs no slash command)
+def test_watchd_continue_by_socket_compact_typed (t : T) : IO Unit := do
+  t.fakes
+  let e ← sockSetup t
+  t.agent "a" [("hc", "h1")]; t.agent "t-comms" [("hc", "hc0")]
+  t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }
+  t.sw_ "a" ["task", "claim", "1"] { hc := some "h1", env := e ++ sockVars t }
+  eq (← t.q "select 1 x from meta where k='sock:a'").size 1
+  t.setHc [json% {"address": "h1", "status": "done"}, json% {"address": "hc0", "status": "done"}]
+  t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'a', 'compact')" []
+  t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"] { env := e }
+  has (← sockLog t) "Compaction done"
+  eq ((← t.calls "hc").filter (·.startsWith "send h1 Compaction done")).length 0
+  t.sw_ "a" ["compact"] { hc := some "h1", env := e }
+  eq ((← t.calls "hc").filter (·.startsWith "send h1 /compact")).length 1
+  hasnt (← sockLog t) "/compact"
+
 def tests : List Case := [
+  ("test_watchd_posts_comms_by_socket", test_watchd_posts_comms_by_socket),
+  ("test_watchd_socket_refused_falls_back", test_watchd_socket_refused_falls_back),
+  ("test_watchd_socket_replaced_falls_back", test_watchd_socket_replaced_falls_back),
+  ("test_watchd_continue_by_socket_compact_typed", test_watchd_continue_by_socket_compact_typed),
   ("test_join_leave_who", test_join_leave_who),
   ("test_watchd_compacts_at_context_limit", test_watchd_compacts_at_context_limit),
   ("test_watchd_continues_after_compaction", test_watchd_continues_after_compaction),

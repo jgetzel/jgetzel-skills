@@ -53,5 +53,7 @@ class Sys (m : Type → Type) where
   /-- Runs statements in one transaction on the SQLite file at a path other than the swarm db (db.open_at: made, with its
   dirs and the schema, when missing); each statement's rows. `ro` (db.open_ro): no schema, never made, no transaction. -/
   sqlAt : (path schema : String) → List (String × List Sqlite.Val) → (ro : Bool := false) → m (List (Array (Array Sqlite.Val)))
+  /-- Connects to the unix socket at a path, writes the data and closes; the error, none when every byte went. -/
+  udsSend : (path data : String) → m (Option String)
 
 end SwarmLean

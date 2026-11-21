@@ -169,7 +169,7 @@ theorem sql_consistent : SqlExec .model ∧ SqlSelect .model ∧ SqlTableInfo .m
 
 /-- A call of the code that changes the machine other than a command line: a line written to stdout or stderr, a file
 written, a directory made, a hard link, a file removed, an environment variable set, a sleep, statements run on an
-SQLite file. -/
+SQLite file, data sent to a unix socket. -/
 inductive Eff
   | line (err : Bool) (s : String)
   | write (path text : String)
@@ -179,6 +179,7 @@ inductive Eff
   | setenv (k v : String)
   | sleep (ms : Nat)
   | sql (path schema : String) (stmts : List (String × List Sqlite.Val)) (ro : Bool)
+  | uds (path data : String)
 
 /-- The machine at one moment, as the assumptions read it: what each of the code's calls to the world (each method of
 World.lean's and Sys.lean's classes but `Store`) answers there, the world after a command or an effect, and what is true
@@ -237,7 +238,7 @@ structure Tools where
   run : World → List String → RunOpts → ProcOut
   /-- the machine after effect `e` in `w` -/
   effect : World → Eff → World
-  /-- what effect `e` returns in `w` (`Fs.write`, `Sys.mkdirp`, `Sys.link`, `Sys.remove`: whether it worked) -/
+  /-- what effect `e` returns in `w` (`Fs.write`, `Sys.mkdirp`, `Sys.link`, `Sys.remove`, `Sys.udsSend`: whether it worked) -/
   ok : World → Eff → Bool
   /-- the rows `Sys.sqlAt` returns in `w` -/
   rows : World → Eff → List (Array (Array Sqlite.Val))
@@ -372,6 +373,7 @@ instance : Sys (RecM M) where
   remove p := Rec.eff (.remove p) (M.ok · (.remove p))
   exec argv o := Rec.cmd (withEnv o.env argv) o.cwd (M.run · argv o)
   sqlAt p sc st ro := Rec.eff (.sql p sc st ro) (M.rows · (.sql p sc st ro))
+  udsSend p d := Rec.eff (.uds p d) fun w => if M.ok w (.uds p d) then none else some "refused"
 
 /-- `x` run on the machine from state `s`: its result and the state it left. -/
 @[irreducible] def Rec.go {M : Tools} (x : RecM M α) (s : Rec M) : Except Exit α × Rec M := x.run.run s
@@ -511,6 +513,12 @@ def HcRunStarts : Prop := ∀ w rest o, M.out w (["hc", "run", "--json", "--bg"]
 as it was (env_spec: cgroup_kill_keeps). -/
 def CgroupKillKeeps : Prop := ∀ w dir, M.SameRepo w (M.effect w (.write (dir ++ "/cgroup.kill") "1"))
 
+/-- the OS: `Sys.udsSend p d` that answers none wrote all of `d` to the process listening on the unix socket at `p`, and
+a path with no listener answers an error; it starts or ends no terminal and leaves the repo as it was. What a Claude
+Code session does with the line (its inbox makes it a cross-session message: watchd's delivery, board #215) is an
+internal of Claude Code that no ack confirms, and is not assumed (env_spec: uds_send). -/
+def UdsSendKeeps : Prop := ∀ w p d, (∀ h, M.Live (M.effect w (.uds p d)) h ↔ M.Live w h) ∧ M.SameRepo w (M.effect w (.uds p d))
+
 /-- processes: `kill(p, 0)` is 0 exactly when process `p` is in the process table, a zombie included (env_spec: kill0_alive). -/
 def Kill0Alive : Prop := ∀ w p, M.pidAlive w p = true ↔ M.Running w p
 
@@ -597,12 +605,12 @@ def Tools.idle : Tools where
 swarm-tests' env_spec cases test. -/
 theorem consistent : AncestorReach .idle ∧ SameContentReach .idle ∧ StatusClean .idle ∧ ListedOn .idle ∧
     WtRemove .idle ∧ DelRef .idle ∧ BranchD .idle ∧ RevParseHead .idle ∧ GitReadsKeep .idle ∧ ToolsKeep .idle ∧ HcLsLive .idle ∧ HcKillEnds .idle ∧ HcRmKeeps .idle ∧ HcSendTargets .idle ∧
-    HcRunStarts .idle ∧ CgroupKillKeeps .idle ∧ Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧
+    HcRunStarts .idle ∧ CgroupKillKeeps .idle ∧ UdsSendKeeps .idle ∧ Kill0Alive .idle ∧ CwdsProc .idle ∧ TouchedRecent .idle ∧
     NowMono .idle ∧ GhChecks .idle ∧ GhState .idle := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
     simp [AncestorReach, SameContentReach, StatusClean, ListedOn, WtRemove, DelRef, BranchD, RevParseHead, GitReadsKeep,
       ToolsKeep, HcLsLive, HcKillEnds, HcRmKeeps,
-      HcSendTargets, HcRunStarts, CgroupKillKeeps, Kill0Alive, CwdsProc, TouchedRecent, NowMono, GhChecks, GhState,
+      HcSendTargets, HcRunStarts, CgroupKillKeeps, UdsSendKeeps, Kill0Alive, CwdsProc, TouchedRecent, NowMono, GhChecks, GhState,
       Tools.idle, Tools.SameRepo, Ok0]
 
 end SwarmLean

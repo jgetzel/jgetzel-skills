@@ -13,6 +13,7 @@ import SwarmLean.Cmd.Hook
 import SwarmLean.Cmd.Watchd
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Agents
+import SwarmLean.Lib.Sock
 
 /-! The ported command groups and main.lua's dispatch around them: the fence and the communicator's nudge. -/
 
@@ -54,7 +55,8 @@ def NUDGED : List String := ["read", "wait", "board", "who"]
 def find (w : String) : Option (Group m × Spec) :=
   (groups (m := m)).findSome? fun g => (g.specs.lookup w).map (g, ·)
 
-/-- Runs a ported command line as main.lua's main does after parsing: fence, nudge, then the group. -/
+/-- Runs a ported command line as main.lua's main does after parsing: fence, the inbox socket's record, nudge, then the
+group. -/
 def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
   if a.cmd == "wait" then if let some n := a.str "me" then Sys.setenv "SWARM_NAME" n
   if let some name ← env "SWARM_NAME" then
@@ -62,6 +64,7 @@ def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
       let here ← env "HC_TERMINAL_ID"
       if let some f ← Store.txn [.agent, .event] fun db => (db, Agents.fence db name here) then
         die (← Agents.fenceText name f)
+    Sock.record name  -- the session's inbox socket, where watchd posts (board #215)
   if NUDGED.contains a.cmd then Hook.commsNudge (a.cmd == "wait")
   g.run a
 

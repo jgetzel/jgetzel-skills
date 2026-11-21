@@ -343,6 +343,22 @@ def kill0_alive (t : T) : IO Unit := do
   discard <| c.wait
   eq (← app (Sys.pidAlive pid : App Bool)) false "kill0_alive: a reaped process doesn't"
 
+/-- `Sys.udsSend`, with python3 as the listener (none on PATH: skipped). -/
+def uds_send (t : T) : IO Unit := do
+  if (← t.exec ["python3", "-c", ""]).code != 0 then return
+  let (p, got) := (t.d ++ "/in.sock", t.d ++ "/got")
+  let c ← IO.Process.spawn { cmd := "python3", args := #["-I", "-c",
+    "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1]); s.listen(1)\nc, _ = s.accept(); d = b''\nwhile True:\n  b = c.recv(4096)\n  if not b: break\n  d += b\nopen(sys.argv[2], 'wb').write(d)", p, got] }
+  for _ in [0:100] do
+    if ← System.FilePath.pathExists p then break
+    IO.sleep 50
+  let line := Sock.frame "a line\nand \"quotes\""
+  eq (← app (Sys.udsSend p line : App _)) (none : Option String) "uds_send: a listener takes the line"
+  discard <| c.wait
+  eq ((← slurp got).getD "") line "uds_send: every byte, as sent"
+  eq (← app (Sys.udsSend p "x" : App _)).isSome true "uds_send: a socket nobody listens on is an error"
+  eq (← app (Sys.udsSend (t.d ++ "/none.sock") "x" : App _)).isSome true "uds_send: no socket is an error"
+
 def realOr (p : String) : IO String := try return (← IO.FS.realPath p).toString catch _ => return p
 
 def cwds_proc (t : T) : IO Unit := do
@@ -566,6 +582,7 @@ def tests : List Case := [
   ("tools_keep", tools_keep),
   ("touched_recent", touched_recent),
   ("kill0_alive", kill0_alive),
+  ("uds_send", uds_send),
   ("cwds_proc", cwds_proc),
   ("now_mono", now_mono),
   ("hc_ls_live", hc_ls_live),

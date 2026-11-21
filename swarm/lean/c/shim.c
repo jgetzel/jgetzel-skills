@@ -2,6 +2,11 @@
 #include <lean/lean.h>
 #include <sqlite3.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -253,4 +258,40 @@ LEAN_EXPORT lean_obj_res swarm_set_tz(b_lean_obj_arg tz, uint8_t unset, lean_obj
   if (unset) unsetenv("TZ"); else setenv("TZ", lean_string_cstr(tz), 1);
   tzset();
   return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* Connects to the unix socket at path, writes data and closes: "" when every byte went, else the error. A connect
+   or a write that waits past 2 s fails. */
+LEAN_EXPORT lean_obj_res swarm_uds_send(b_lean_obj_arg path, b_lean_obj_arg data, lean_obj_arg w) {
+  const char *p = lean_string_cstr(path);
+  const char *d = lean_string_cstr(data);
+  size_t n = lean_string_size(data) - 1;
+  struct sockaddr_un sa;
+  char err[160];
+  memset(&sa, 0, sizeof sa);
+  sa.sun_family = AF_UNIX;
+  if (strlen(p) >= sizeof sa.sun_path) return lean_io_result_mk_ok(lean_mk_string("socket path too long"));
+  strcpy(sa.sun_path, p);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) { snprintf(err, sizeof err, "socket: %s", strerror(errno)); return lean_io_result_mk_ok(lean_mk_string(err)); }
+  struct timeval tv = {2, 0};
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+  if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+    snprintf(err, sizeof err, "connect: %s", strerror(errno));
+    close(fd);
+    return lean_io_result_mk_ok(lean_mk_string(err));
+  }
+  size_t off = 0;
+  while (off < n) {
+    ssize_t k = send(fd, d + off, n - off, MSG_NOSIGNAL);
+    if (k < 0) {
+      if (errno == EINTR) continue;
+      snprintf(err, sizeof err, "write: %s", strerror(errno));
+      close(fd);
+      return lean_io_result_mk_ok(lean_mk_string(err));
+    }
+    off += (size_t)k;
+  }
+  close(fd);
+  return lean_io_result_mk_ok(lean_mk_string(""));
 }

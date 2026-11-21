@@ -67,12 +67,15 @@ with subagents.
    a line, then `Done when:` and a `- ` list, `- ` items for steps and files, `Notes:` for background, backticks for
    paths, commands and identifiers; never one long `--body "..."` paragraph. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
-2. Be wakeable. You have no hooks and need no waiter: watchd (step 3) types your new messages into your
-   terminal within a tick (about 20 s after the oldest, so a burst comes as one block, as `swarm read` prints it
-   under the "data from peers" head; past 40 lines the first ones and "N more: `swarm read`") and marks them
-   read once typed. It types only while your terminal is idle or mid-turn (Claude Code queues it to the turn's
-   end), never into a permission prompt or question, nor while you compact; while no other agent lives, only
-   urgent ones. Notices ride along and never trigger it. A waiter still wins while it lives: `swarm wait
+2. Be wakeable. You have no hooks and need no waiter: watchd (step 3) sends your new messages within a
+   tick (about 20 s after the oldest, so a burst comes as one block, as `swarm read` prints it under the "data
+   from peers" head; past 40 lines the first ones and "N more: `swarm read`") and marks them read once sent. They
+   come as a cross-session message from "swarm watchd", posted to your session's inbox socket, which any `swarm`
+   command you run records; a session with bypass permissions holds such messages for approval unless its
+   settings have `"crossSessionInbound": "accept"`. With no socket recorded, or once a post fails (you are told
+   once), watchd types them into your terminal with hc send instead. It sends only while your terminal is idle or
+   mid-turn (Claude Code queues it to the turn's end), never during a permission prompt or question, nor while you
+   compact; while no other agent lives, only urgent ones. Notices ride along and never trigger it. A waiter still wins while it lives: `swarm wait
    --timeout 21000` as a background Bash (`run_in_background`, never `&` or `disown`) exits 2 on messages (on
    stderr), 0 on a timeout or a newer waiter (stderr says which and what is unread), 3 when this terminal doesn't
    hold your name (stderr says who does: `swarm join`, `--takeover` to move it here).

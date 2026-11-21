@@ -6,6 +6,7 @@ import SwarmLean.Sys
 import SwarmLean.Db.Compact
 import SwarmLean.Lib.Spawn
 import SwarmLean.Db.Notes
+import SwarmLean.Lib.Sock
 
 /-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait), `swarm nudge` (agents.cmd_nudge) and
 `swarm compact` (board #136). -/
@@ -90,7 +91,7 @@ def post (a : Parsed) : m UInt32 := do
   Env.out ("posted. " ++ "; ".intercalate parts)
   let (held, idle) := g[3]!.partition fun n => isComms db envComms (some n)
   if !held.isEmpty then
-    Env.out (", ".intercalate held ++ ": no waiter; watchd types it into the communicator's terminal within a tick (while no other agent lives, only an urgent one)")
+    Env.out (", ".intercalate held ++ ": no waiter; watchd sends it to the communicator within a tick (while no other agent lives, only an urgent one)")
   if !idle.isEmpty then
     Env.out ("nudge by SendMessage (one line, `swarm read`): " ++ ", ".intercalate idle)
   return 0
@@ -187,6 +188,12 @@ and a wrapped `/compact` is no command. Its error, or none. -/
 def typeLine (hc text : String) : m (Option String) := do
   let o ← Sys.exec ["hc", "send", hc, text] { env := [("HC_TERMINAL_ID", none)] }
   return if o.code == 0 then none else some (strip (o.stderr ++ o.stdout))
+
+/-- Delivers `text` to agent `name` in terminal `hc`: as a cross-session message by its Claude Code inbox socket when
+one is recorded (board #215), else, or when that fails, typed with hc send (`typeLine`). hc send's error, or none. -/
+def deliverTo (name hc text : String) : m (Option String) := do
+  if (← Sock.post name text).isNone then return none
+  typeLine hc text
 
 /-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136); `db` holds the
 agent, task and workspace tables. -/
