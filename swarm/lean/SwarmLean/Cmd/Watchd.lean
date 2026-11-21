@@ -13,7 +13,7 @@ open Args _root_.SwarmLean.Agents _root_.SwarmLean.Watchd
 
 /-- `swarm watchd -h`. -/
 def helpWatchd : String :=
-  "Usage: swarm watchd [-h] [--comms <comms>] [--interval <interval>]\n       [--once] [--ci] [--takeover] [--restart] [--dry-run]\n       [--max-agents <max_agents>] [--min-free-mem <min_free_mem>]\n       [--blocker-idle <blocker_idle>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --comms <comms>\n   --interval <interval>\n   --once\n   --ci                  also watch main CI with gh\n   --takeover            replace a live watchd; it exits on its next tick\n   --restart             start the same watchd (its recorded flags) in a hidden hc terminal, taking over\n   --dry-run             only list the worktrees the sweep would remove, then exit\n   --max-agents <max_agents>\n                         set the auto-spawn number (`swarm limits --min`; default: live agents when first started)\n   --min-free-mem <min_free_mem>\n                         GiB of MemAvailable needed to auto-spawn\n   --blocker-idle <blocker_idle>\n                         minutes an agent may sit idle holding a claim other tasks wait on before it is nudged and comms told\n   --model <model>       model for auto-spawned agents (default: sonnet; a task's own --model wins)\n   --effort {low,medium,high,xhigh,max}\n                         effort for auto-spawned agents (default: their settings)\n\nWith --comms, the communicator needs no waiter: with none alive, each tick types its unread messages into its\nterminal (as `swarm read` prints them, once the oldest is 20 s old, at most 40 lines) and marks them read once hc\nsend took them; only while hc shows the terminal idle or working, never blocked or compacting, and while no other\nagent lives only for an urgent one."
+  "Usage: swarm watchd [-h] [--comms <comms>] [--interval <interval>]\n       [--once] [--ci] [--takeover] [--restart] [--dry-run]\n       [--max-agents <max_agents>] [--min-free-mem <min_free_mem>]\n       [--blocker-idle <blocker_idle>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --comms <comms>\n   --interval <interval>\n   --once\n   --ci                  also watch main CI with gh\n   --takeover            replace a live watchd; it exits on its next tick\n   --restart             start the same watchd (its recorded flags) in a hidden hc terminal, taking over\n   --dry-run             only list the worktrees the sweep would remove, then exit\n   --max-agents <max_agents>\n                         set the auto-spawn number (`swarm limits --min`; default: live agents when first started)\n   --min-free-mem <min_free_mem>\n                         GiB of MemAvailable needed to auto-spawn\n   --blocker-idle <blocker_idle>\n                         minutes an agent may sit idle holding a claim other tasks wait on before it is nudged and comms told\n   --model <model>       model for auto-spawned agents (default: sonnet; a task's own --model wins)\n   --effort {low,medium,high,xhigh,max}\n                         effort for auto-spawned agents (default: their settings)\n\nWith --comms, the communicator needs no waiter: with none alive, each tick sends its unread messages (as `swarm\nread` prints them, once the oldest is 20 s old, at most 40 lines) and marks them read once sent; only while hc shows\nthe terminal idle or working, never blocked or compacting, and while no other agent lives only for an urgent one.\n\nwatchd sends to an agent (these messages, the continue line after a compaction or an API error) as a Claude Code\ncross-session message, posted to the inbox socket its `swarm` commands recorded; with none recorded, or once a\npost fails (the communicator is told once), it types the line with hc send. A /compact is always typed."
 
 /-- The parser, as main.lua declares it. -/
 def watchdSpec : Spec :=
@@ -177,7 +177,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
             ((say db now comms s!"{a.name} did not resume after its compaction (terminal {h})." false "system").log now (some a.name)
               "ctx-resent" none none, ())
           let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
-          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+          if let some e ← Msgs.deliverTo a.name h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
     -- a compaction ended (the hook's `compact` event, then the continue line or the agent's first turn) and the stay
     -- was set before it: the stay ends
     let mut stayNote := ""
@@ -203,7 +203,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
           Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
           -- a stayer or the communicator has no verdict (a declared wait): still tell it to carry on
           let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
-          if let some e ← Msgs.typeLine h ("Compaction done. " ++ why ++ stayNote) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
+          if let some e ← Msgs.deliverTo a.name h ("Compaction done. " ++ why ++ stayNote) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
           continue
     let k := a.ctx_tokens.getD 0
     let force := too || !stays
@@ -270,7 +270,7 @@ def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
         let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
           (match task with | some r => s!": task #{r.id}." | none => ".")
         Store.txn [.event] fun db => (db.log now (some a.name) "api-resume" none none, ())
-        if let some e ← Msgs.typeLine h line then Env.err s!"api-error {a.name}: hc send {h} failed: {e}"
+        if let some e ← Msgs.deliverTo a.name h line then Env.err s!"api-error {a.name}: hc send {h} failed: {e}"
     | some s =>
       if now - s.ts.getD 0 ≥ APIERR_WAIT && a.name != comms && (evs "api-noresume").all (·.id < err.id) then
         Store.txn [.agent, .msg, .cursor, .event] fun db =>
@@ -281,10 +281,10 @@ def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
 burst within it goes in one block. -/
 def COMMS_SETTLE : Int := 20
 
-/-- The communicator's inbox (board #210). It has no hooks, so with no live waiter watchd types its unread messages into
-its terminal: `swarm read`'s lines under the peer head, at most `Msgs.TYPE_LINES` (then "N more"), once a waking one
-(not a plain notice) is COMMS_SETTLE old. They are marked read only once hc send took them (event `comms-deliver`,
-data the last id). Only while hc shows the terminal idle or working (Claude Code queues it to the turn's end): never
+/-- The communicator's inbox (board #210). It has no hooks, so with no live waiter watchd sends its unread messages
+(`Msgs.deliverTo`: its inbox socket, else typed into its terminal, board #215): `swarm read`'s lines under the peer
+head, at most `Msgs.TYPE_LINES` (then "N more"), once a waking one (not a plain notice) is COMMS_SETTLE old. They are
+marked read only once sent (event `comms-deliver`, data the last id). Only while hc shows the terminal idle or working (Claude Code queues it to the turn's end): never
 into a prompt, which it could answer (hc send refuses a blocked one too). None while it compacts (compactPass sends
 its continue line); while no other agent lives, only for an urgent message: the terminal may hold a session doing
 other work. A live waiter delivers itself. -/
@@ -308,7 +308,7 @@ def commsInbox (t : Int) (comms : String) (terms : Option (List Term)) : m Unit 
   let some last := fit.getLast? | return
   let now ← Clock.now
   let hh ← fit.mapM fun r => Clock.hhmm (r.ts.getD now)
-  match ← Msgs.typeLine h (Msgs.typedNote hh fit (rows.length - fit.length)) with
+  match ← Msgs.deliverTo comms h (Msgs.typedNote hh fit (rows.length - fit.length)) with
   | some e => Env.err s!"comms inbox: hc send {h} failed: {e}"
   | none =>
     let now ← Clock.now
@@ -526,6 +526,7 @@ def watchd (a : Parsed) : m UInt32 := do
   if let some o := refused then
     let ws := words o
     die s!"watchd already runs (pid {ws.headD ""}, terminal {(ws[1]?).getD ""}); `swarm watchd --takeover` replaces it."
+  Sock.checkAll  -- a recorded inbox socket that no longer connects falls back to hc send, comms told
   -- the auto-spawn number: --max-agents writes it; else the first watchd sets it to the roster the human launched
   let envComms ← env "SWARM_COMMS"
   Store.txn [.agent, .«meta»] fun db =>

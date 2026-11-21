@@ -44,7 +44,7 @@ instance : Clock TM where
 
 instance : Env TM where
   var k := do
-    if k.startsWith "SWARM_" || k.startsWith "HC_" then return (← read).vars.lookup k
+    if k.startsWith "SWARM_" || k.startsWith "HC_" || k.startsWith "CLAUDE_CODE_" then return (← read).vars.lookup k
     (Env.var k : App _)
   out s := (Env.out s : App _)
   err s := (Env.err s : App _)
@@ -89,6 +89,7 @@ instance : Sys TM where
   remove p := (Sys.remove p : App _)
   exec argv o := (Sys.exec argv o : App _)
   sqlAt p s stmts ro := (Sys.sqlAt p s stmts ro : App _)
+  udsSend p d := (Sys.udsSend p d : App _)
 
 instance : Guard TM where
   guard x := do let h ← read; (Guard.guard (x.run h) : App _)

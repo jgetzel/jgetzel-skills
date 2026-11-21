@@ -674,6 +674,9 @@ theorem X.Msgs.take {n} (h : XInv db t) : XInv (Msgs.take n id db).1 t := step_x
 theorem X.Msgs.deliverStep {n b} (h : XInv db t) : XInv (Msgs.deliverStep n b db).1 t := step_xinv (.deliver n b) (nolock nofun) h
 /-- board #210: watchd marks read what it typed into the communicator's terminal -/
 theorem X.Msgs.typedStep {n i} (h : XInv db t) : XInv (Msgs.typedStep n i db).1 t := step_xinv (.typed n i) (nolock nofun) h
+/-- board #215: a failed post to an agent's inbox socket drops its record, logs it and tells comms once -/
+theorem X.Sock.failed {now n v e c} (h : XInv db t) : XInv (Sock.failed db now n v e c) t := by
+  unfold SwarmLean.Sock.failed; xstep
 /-- board #202: a note to a task, and the take of its held notes at a claim or spawn -/
 theorem X.Notes.post {now frm id text u here comms} (h : XInv db t) :
     XInv (Notes.post db now frm id text u here comms).1 t := by

@@ -235,6 +235,7 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 | `HcSendTargets` | hc | `hc send h l` types `l` into `h` alone, starts or ends no terminal, leaves the repo | none |
 | `HcRunStarts` | hc | `hc run --json --bg` that exits 0 started the terminal and pid it prints | none |
 | `CgroupKillKeeps` | cgroups | "1" to a scope's `cgroup.kill` leaves the repo | `endAgent_keepsGit`, `no_work_lost` |
+| `UdsSendKeeps` | OS | `Sys.udsSend` writes its line to the socket's listener (none listening: an error), leaves terminals and the repo | none |
 | `Kill0Alive` | OS | `kill(p, 0)` is 0 exactly when `p` is in the process table | none |
 | `CwdsProc` | OS | `Machine.cwds` lists a directory inside every worktree a process sits in | `sweepGate_W1`, `gateW1` |
 | `TouchedRecent` | filesystem | a worktree used in the last 30 min has an mtime within 30 min | `sweepGate_W1`, `gateW1` |

@@ -15,6 +15,7 @@ namespace Shim
 @[extern "swarm_setenv"] opaque setenv (k v : @& String) : IO Unit
 @[extern "swarm_readlink"] opaque readlink (p : @& String) : IO String
 @[extern "swarm_link"] opaque link (a b : @& String) : IO Unit
+@[extern "swarm_uds_send"] opaque udsSend (path data : @& String) : IO String
 end Shim
 
 /-- proc.exec on IO: stdin piped when there is input (else inherited), stdout and stderr read to their ends. -/
@@ -93,5 +94,6 @@ instance : Sys App where
   remove p := (do try IO.FS.removeFile p; return true catch _ => return false : IO _)
   exec argv o := execIO' argv o
   sqlAt path schema stmts ro := sqlAtIO path schema stmts ro
+  udsSend p d := return (match ← Shim.udsSend p d with | "" => none | e => some e)
 
 end SwarmLean
