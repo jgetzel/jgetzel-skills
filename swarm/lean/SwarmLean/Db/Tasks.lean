@@ -209,34 +209,6 @@ def reapedFrom (db : Db) (n : String) (id : Int) : Bool :=
   last == some n && db.events.any fun e =>
     e.kind == some "reap" && e.agent == some n && e.data == some s!"task #{d id} lease expired"
 
-/-- What a task command knows of the world, read before it runs. -/
-structure Ctx where
-  /-- the agent ($SWARM_NAME) -/
-  me : String
-  now : Int
-  /-- $HC_TERMINAL_ID, none when unset or empty -/
-  here : Option String := none
-  /-- $SWARM_COMMS, none when unset or empty -/
-  comms : Option String := none
-  /-- the working directory -/
-  cwd : Option String := none
-  /-- `task claim --force`: the communicator claims a held task -/
-  force : Bool := false
-  /-- `task done` of a landing task: its evidence names a commit on the task's base (checked with git first) -/
-  onBase : Bool := false
-
-/-- What `task add` was given. -/
-structure AddArgs where
-  title : String
-  body : String := ""
-  deps : List Int := []
-  model : Option String := none
-  effort : Option String := none
-  base : Option String := none
-  priority : Option Int := none
-  /-- `--label`: its labels, comma-separated as given -/
-  labels : Option String := none
-
 /-- A `--label` text as stored: split at commas and spaces, empties and repeats dropped; none when nothing is left. -/
 def labelsText (s : String) : Option String :=
   let ls := ((s.map fun c => if isSpace c then ',' else c).splitOn ",").filter (· ≠ "")
@@ -266,11 +238,6 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
                           (t.state = .claimed || t.state = .blocked)).map (d ·.id)))) }
       let db := { db with tasks := db.tasks ++ [t], taskNext := db.taskNext + 1 }
       (db.log c.now (some c.me) "task-add" none (some s!"#{d id} {a.title}"), .ok id)
-
-/-- What a successful claim prints: the lease's end and the body. -/
-structure Claimed where
-  «until» : Int
-  body : Option String
 
 /-- `task claim`: `lease` is `--lease` as given. -/
 def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String Claimed :=
@@ -384,11 +351,6 @@ def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) (db : Db) 
         | none => db
       (db, .ok ())
 
-/-- What `task unland` reopened: the former owner, and the task's new priority. -/
-structure Unlanded where
-  owner : Option String
-  priority : Int
-
 /-- A landing task its lander gave back: open, at P1 unless already lower, with why appended to its body. -/
 def unlandF (by_ why : String) (t : Task) : Task :=
   { t with state := .open, owner := none, lease_until := none,
@@ -421,13 +383,6 @@ def unland (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String U
           else db
         | none => db
       (db, .ok ⟨r.owner, p⟩)
-
-/-- What `task done` says after: a red task is released and held for a green run; a landing task closed by its lander,
-with its former owner; else the context line's parts. -/
-inductive DoneOut
-  | red
-  | done (k : Int) (stay : Option String) (poolSize : Nat)
-  | landed (owner : Option String)
 
 /-- `task done`. -/
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
@@ -512,19 +467,6 @@ def release (c : Ctx) (id : Int) (after : Option (List Int)) (db : Db) : Db × E
             s!"{if c.me == HUMAN then "the user" else c.me} released #{d id}: stop work on it" true
           (p.1.set id ({ · with stop_to := some f, stop_msg := some p.2 }), .ok fromA)
         | none => (db3, .ok fromA)
-
-/-- What `task edit` was given. -/
-structure EditArgs where
-  title : Option String := none
-  body : Option String := none
-  /-- `--body-file`: its path and text, none when it could not be read -/
-  bodyFile : Option (String × Option String) := none
-  append : Option String := none
-  model : Option String := none
-  effort : Option String := none
-  /-- `task label`: the new labels (`labelsText`; "" clears them) -/
-  labels : Option String := none
-  urgent : Bool := false
 
 /-- `task edit`'s new title, body, model, effort and labels for row `r` with the new body `newBody`, the columns changed
 and a note for each. -/

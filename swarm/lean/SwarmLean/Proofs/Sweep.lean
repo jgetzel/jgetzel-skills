@@ -36,9 +36,6 @@ variable {M : Tools}
 @[spec] theorem ask_spec {f : M.World → α} {Q : PostCond α (PS M)} :
     ⦃fun s => Q.1 (f s.w) s⦄ (Rec.ask f : RecM M α) ⦃Q⦄ := by mvcgen [Rec.ask]
 
-/-- What `x` answers from state `s` when it does not throw (`default` when it does). -/
-@[irreducible] def Rec.val [Inhabited α] (x : RecM M α) (s : Rec M) : α := match (Rec.go x s).1 with | .ok a => a | .error _ => default
-
 /-- `x` never ends early, from any state. -/
 def NoThrow (x : RecM M α) : Prop := ∀ s, ∃ a, (Rec.go x s).1 = .ok a
 
@@ -277,9 +274,6 @@ theorem mapM_reads {f : α → RecM M β} {g : M.World → α → β} (hf : ∀ 
 
 /-! ## Branches: `deleteBranch` -/
 
-/-- `git -C main worktree remove wt`. -/
-def rmArgv (main wt : String) : List String := ["git", "-C", main, "worktree", "remove", wt]
-
 /-- A call that removes a worktree. -/
 def IsRm (c : Call) : Prop := ∃ m x, c = .cmd (rmArgv m x) none
 
@@ -336,50 +330,6 @@ theorem deleteBranch_ext (s : Rec M) :
 theorem mem_go [Inhabited α] {x : RecM M α} (hx : Ext x) {s : Rec M} {e : M.World × Call} (h : e ∈ s.log) :
     e ∈ (Rec.go x s).2.log := (hx s).2.prefix.subset h
 theorem prefix_go [Inhabited α] {x : RecM M α} (hx : Ext x) (s : Rec M) : s.log <+: (Rec.go x s).2.log := (hx s).2.prefix
-
-/-- `p` as `Watchd.real` reads it on machine `w`. -/
-def realW (w : M.World) (p : String) : String := (M.realpath w p).getD p
-
-/-- `git worktree list --porcelain`, the sweep's first command. -/
-def lsArgv : List String := ["git", "worktree", "list", "--porcelain"]
-
-/-- The lines of what the sweep's `git worktree list` printed, run on machine `w`. -/
-def lsLines (w : M.World) : List String :=
-  splitlines (((M.out w lsArgv none).bind fun o => if o.code == 0 then some o.stdout else none).getD "")
-
-/-- The later mtime of `wt` and of its git dir's logs/HEAD, `gd` what `rev-parse --absolute-git-dir` printed: the
-sweep's "last touched", read on machine `w`. -/
-def lastAt (w : M.World) (wt : String) (gd : Option String) : Int :=
-  max (max 0 ((M.mtime w wt).getD 0)) ((M.mtime w (joinPath (joinPath ((py (gd.map strip)).getD wt) "logs") "HEAD")).getD 0)
-
-/-- What the sweep, run from state `s0`, checked of worktree `x` of the main checkout `m` before removing it, `L` the
-calls it made before: `x` is listed (the realpath of a `worktree` line of the `git worktree list` it ran first, `m`
-the first such line's), not the main checkout, used by no live agent of the db (realpaths read on one machine `w`), no process sat in it when
-`Machine.cwds` read, untouched for `SWEEP_IDLE` and `status` clean (both read on one machine `wk`), and `landed` found
-it landed on the refs of the protected bases. -/
-structure Gate (s0 : Rec M) (m x : String) (L : List (M.World × Call)) : Prop where
-  main : ∃ first, (lsLines s0.w).head? = some first ∧ m = realW (M.after s0.w lsArgv none) (first.drop 9).toString
-  notMain : x ≠ m
-  listed : ∃ e ∈ Watchd.wtLines (lsLines s0.w).tail, ∃ w : M.World, x = realW w e.1
-  unused : ∃ w : M.World, ∀ p ∈ ((Agents.live s0.db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != ""),
-    Watchd.inside (realW w p) x = false
-  noProc : ∃ (s : Rec M) (cs : List (Int × String)), s.log <+: L ∧ (Rec.go (Machine.cwds : RecM M _) s).1 = .ok (some cs) ∧
-    ∀ c ∈ cs, Watchd.inside (realW (Rec.go (Machine.cwds : RecM M _) s).2.w c.2) x = false
-  idle : ∃ wk t, (wk, .git ["-C", x, "rev-parse", "--absolute-git-dir"] none) ∈ L ∧
-    (wk, .cmd ["git", "--no-optional-locks", "-C", x, "status", "--porcelain"] none) ∈ L ∧
-    (∃ st, (M.out wk ["git", "--no-optional-locks", "-C", x, "status", "--porcelain"] none).bind
-      (fun o => if o.code == 0 then some o.stdout else none) = some st ∧ strip st = "") ∧
-    (∃ st : Rec M, st.log <+: L ∧ t = M.now st.w) ∧
-    Watchd.SWEEP_IDLE ≤ t - lastAt wk x (M.git wk ["-C", x, "rev-parse", "--absolute-git-dir"] none)
-  landed : ∃ s sp sb : Rec M,
-    (Rec.go (Lifecycle.landed x (Rec.val (Bases.refs (Rec.val (Workspaces.protectedOf s0.db (some m) : RecM M _) sp)
-      (some m) : RecM M _) sb) (some m) : RecM M Bool) s).2.log <+: L ∧
-    (Rec.go (Lifecycle.landed x (Rec.val (Bases.refs (Rec.val (Workspaces.protectedOf s0.db (some m) : RecM M _) sp)
-      (some m) : RecM M _) sb) (some m) : RecM M Bool) s).1 = .ok true
-
-/-- Every worktree removal at or after index `n` of log `l` passed `G` on the calls before it. -/
-def GoodFrom (n : Nat) (G : String → String → List (M.World × Call) → Prop) (l : List (M.World × Call)) : Prop :=
-  ∀ i w m x, n ≤ i → l[i]? = some (w, .cmd (rmArgv m x) none) → G m x (l.take i)
 
 theorem GoodFrom.base (G : String → String → List (M.World × Call) → Prop) (l : List (M.World × Call)) :
     GoodFrom l.length G l := fun i _ _ _ hi h => by simp [List.getElem?_eq_none hi] at h
@@ -638,14 +588,6 @@ theorem wtLines_mem {ls : List String} {e : String × Option String} (h : e ∈ 
             exact ⟨l', hl', hw, by rw [← hy1]⟩
         · exact hacc
   exact key ls #[] (fun _ h => h) (by simp) e h
-
-/-- `gh pr list --head br --state merged …`, landedRef1's last check. -/
-def ghArgv (br : String) : List String :=
-  ["gh", "pr", "list", "--head", br, "--state", "merged", "--json", "number,headRefOid"]
-
-/-- landedRef1 answering true: a machine it ran a command on has `b` holding `ref`'s changes, or it asked `gh`. -/
-def Reached (cwd ref b : String) (l : List (M.World × Call)) : Prop :=
-  (∃ e ∈ l, M.Holds e.1 cwd ref b) ∨ ∃ w br, (w, .cmd (ghArgv br) (some cwd)) ∈ l
 
 /-- What `Lifecycle.run` answers of a command's result. -/
 def okOut (o : ProcOut) : Option String := if o.code == 0 then some o.stdout else none

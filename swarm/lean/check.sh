@@ -1,12 +1,16 @@
 #!/bin/sh
-# Builds swarm-lean and its proofs, refuses an open proof or an axiom beyond Lean's three (Audit.lean), and on the stock binary and
+# Builds swarm-lean and its proofs, refuses an open proof or an axiom beyond Lean's three (Audit.lean), checks the layering
+# (layering.sh) and Challenge.lean against the proofs by Comparator (challenge.sh), and on the stock binary and
 # the hpl one (when ../../../high-perf-lean has an hpl binary, or $HPL is set) runs swarm-tests (the Lean suite) and
 # test-claim.sh; and harness-retro's test (test-harness-retro.sh). The claim tool's own gate (../../claim/check.sh) runs first.
 cd "$(dirname "$0")" || exit 1
 # the claim tool's own gate (../../claim: its proofs' axioms and claim-tests) first, and both toolchains the same
 ../../claim/check.sh || exit 1
 cmp -s lean-toolchain ../../claim/lean-toolchain || { echo "swarm/lean/lean-toolchain differs from claim/lean-toolchain" >&2; exit 1; }
-if grep -rnw 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+# Challenge.lean's sorries are its statements and holes (challenge.sh checks they are its only diagnostics)
+if grep -rnw --exclude=Challenge.lean 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+# the spec layer imports no proof and no implementation; nothing but the proofs imports a proof (board #216)
+./layering.sh || exit 1
 # git runs only through Git.git / Git.out (World.lean: they put `--end-of-options` before ref operands), never a raw argv
 if grep -rn 'Proc\.output (\?\["git"' SwarmLean Main.lean | grep -v '^SwarmLean/World.lean:'; then echo "a raw Proc.output [\"git\" outside World.lean" >&2; exit 1; fi
 # a signal is sent only by the orphan sweep (to Watchd.orphanVictims), the takeover of a stale watchd, and hc kill
@@ -22,13 +26,15 @@ echo "$ax" | grep -c "^'\?Swarm" | sed 's/^/theorems audited: /'
 # each assumption's tag names a case of swarm-tests' env_spec or sqlite_spec, which checks it against the real tool (a
 # tag may wrap a line)
 cases=$(.lake/build/bin/swarm-tests --list) || exit 1
-tags=$(tr '\n' ' ' <SwarmLean/Assumptions.lean | grep -o '(\(env\|sqlite\)_spec: [a-z0-9_, ]*)' | tr -d '(),:')
+tags=$(cat SwarmLean/Assumptions.lean SwarmLean/Assumptions/Code.lean | tr '\n' ' ' | grep -o '(\(env\|sqlite\)_spec: [a-z0-9_, ]*)' | tr -d '(),:')
 [ -n "$tags" ] || { echo "Assumptions.lean has no (env_spec: …) tag" >&2; exit 1; }
 echo "$tags" | while read -r spec names; do
   for a in $names; do
     echo "$cases" | grep -qx "$spec $a" || { echo "Assumptions.lean's $a has no case in swarm-tests' $spec" >&2; exit 1; }
   done
 done || exit 1
+# Challenge.lean against the proofs, by Comparator, and its two mutants rejected (board #216)
+./challenge.sh || exit 1
 on() { SWARM_BIN=$(realpath "$1") .lake/build/bin/swarm-tests >.lake/swarm-tests.log 2>&1 || { grep -v "^ok " .lake/swarm-tests.log; return 1; }; tail -1 .lake/swarm-tests.log; ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
 ./test-harness-retro.sh || exit 1

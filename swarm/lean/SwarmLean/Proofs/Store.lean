@@ -1,4 +1,4 @@
-import SwarmLean.Assumptions
+import SwarmLean.Assumptions.Code
 
 /-! The store layer (board #134): each row type's codec round-trips and refuses what it would misread; the write-back
 plan, run by SQLite (`SqlExec`), leaves each table holding exactly the step's rows with unknown columns as they were;

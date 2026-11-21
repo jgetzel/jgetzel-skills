@@ -12,12 +12,6 @@ open Tasks Queue
 
 /-! The places. -/
 
-/-- The places the queued tasks hold. -/
-def places (db : Db) : List Int := db.tasks.filterMap (·.qpos)
-
-/-- The queue's invariant: the queued tasks hold the places 1..n, each once. -/
-def QInv (db : Db) : Prop := ∃ n, (places db).Perm ((List.range n).map fun (i : Nat) => (i : Int) + 1)
-
 /-- `db` with no task queued: everything a queue op must leave as it was (but the events it logs). -/
 def unplaced (db : Db) : Db := { db with tasks := db.tasks.map fun t => { t with qpos := none } }
 

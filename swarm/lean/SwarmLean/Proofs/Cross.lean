@@ -161,39 +161,6 @@ theorem live_two {db : Db} {n a : String} {f g : Agent → Agent} (hf : ∀ x, (
 
 /-! ## Every transaction of every area -/
 
-/-- Every transaction the theorems of #103-#106 cover, of all four areas: the task commands, the message transactions,
-the lock commands with leave and join, and watchd's end and reaps. -/
-inductive XCmd
-  | task (c : TCmd)
-  | post (now : Int) (frm dest body : String) (urgent : Bool) (kind : Option String)
-  | read (n : String)
-  | deliver (n : String) (budget : Nat)
-  | typed (n : String) (i : Nat)
-  | lock (c : Locks.LCmd)
-  | end_ (n : String) (hc : Option String) (force : Bool) (by_ : Option String) (now : Int)
-  | reapTask (r : Task) (t now : Int)
-  | reapLock (l : Lock) (t now : Int)
-  | reapGone (n h : String) (t : Int)
-
-/-- Each transaction's effect on the db: the CLI's own steps, as each area's theorems run them. -/
-def XCmd.step : XCmd → Db → Db
-  | .task c, db => (c.step db).1
-  | .post now f d b u k, db => (Inbox.MCmd.step (.post now f d b u k) db).1
-  | .read n, db => (Inbox.MCmd.step (.read n) db).1
-  | .deliver n b, db => (Inbox.MCmd.step (.deliver n b) db).1
-  | .typed n i, db => (Inbox.MCmd.step (.typed n i) db).1
-  | .lock c, db => (c.step db).1
-  | .end_ n hc force by_ now, db => (Lifecycle.endStep n hc force by_ now db).1
-  | .reapTask r t now, db => (Watchd.reapTask r t now db).1
-  | .reapLock l t now, db => (Watchd.reapLock l t now db).1
-  | .reapGone n h t, db => (Watchd.reapGone n h t db).1
-
-/-- Every area's invariant at time `t`: the board's (ids, owners, S5), the inbox's (S4's) and the locks' (S3). -/
-def XInv (db : Db) (t : Int) : Prop := BInv db ∧ Inbox.MInv db ∧ Locks.Good db t
-
-/-- `t` is no earlier than the clock of each `swarm lock` among `cs` (`Locks.Before`). -/
-def XBefore (t : Int) (cs : List XCmd) : Prop := ∀ x ∈ cs, ∀ c p r l, x = .lock (.lock c p r l) → c.now ≤ t
-
 /-- `take` (read, deliver, typed) moves a cursor only. -/
 theorem take_keep (n : String) (pick : List Msg → List Msg) (db : Db) : (Msgs.take n pick db).1.tasks = db.tasks ∧
     (Msgs.take n pick db).1.taskNext = db.taskNext ∧ (Msgs.take n pick db).1.locks = db.locks ∧
@@ -349,9 +316,6 @@ theorem step_xinv (x : XCmd) {db : Db} {t : Int} (ht : XBefore t [x]) (h : XInv 
         (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) ⟨hb, hm, hg⟩
     · exact ⟨hb, hm, hg⟩
 
-/-- The db after `cs` from `db`. -/
-def run (db : Db) (cs : List XCmd) : Db := cs.foldl (fun d x => x.step d) db
-
 theorem xinv_empty (t : Int) : XInv {} t := ⟨binv_empty, Inbox.inv_empty, Locks.good_empty t⟩
 
 theorem run_xinv_from (cs : List XCmd) {db : Db} {t : Int} (ht : XBefore t cs) (h : XInv db t) : XInv (run db cs) t := by
@@ -405,15 +369,6 @@ An infinite run is a transaction per moment (`r k`), each on what the ones befor
 hypothesis of each statement: watchd's reap reaches the task (or row) with the facts it judged. Which transactions the
 reap pass issues is decided in its monadic loop (`Watchd.reap`), not proved here. -/
 
-/-- The db after the first `k` transactions of the run `r` from `db`. -/
-def at_ (db : Db) (r : Nat → XCmd) : Nat → Db
-  | 0 => db
-  | k + 1 => (r k).step (at_ db r k)
-
-/-- Task `i` is claimed by `o` with lease `L`. -/
-def ClaimedBy (db : Db) (i : Int) (o : String) (L : Int) : Prop :=
-  ∃ u, db.find i = some u ∧ u.owner = some o ∧ u.state = .claimed ∧ u.lease_until = some L
-
 /-- L2 (model: `idleClaim_leads_to`), reap's half: on a run where reap, judging task `i` claimed by `o`, runs at some
 point from `n` on with a clock past the lease `L`, the claim `(o, L)` does not last: at some point from `n` on the task
 is no longer claimed by `o` with that lease (done, released, renewed, dropped, or reopened by that reap). -/
@@ -436,9 +391,6 @@ theorem claim_lapses (db : Db) (r : Nat → XCmd) (n : Nat) {i : Int} {o : Strin
       (fun _ => rfl) hu'] at hv
     cases hv; cases hvs
   · exact ⟨m, hm, hc⟩
-
-/-- Row `a` is live and bound to terminal `h`. -/
-def BoundLive (db : Db) (a h : String) : Prop := ∃ g, db.agent a = some g ∧ g.hc = some h ∧ g.ended = none
 
 /-- L4 (model: `deadLive_leads_to`), reap's half: on a run where reap, finding terminal `h` gone from `hc ls`, runs on
 row `a` at some point from `n` on, the row does not stay live and bound to `h`: at some point it is ended (its claims

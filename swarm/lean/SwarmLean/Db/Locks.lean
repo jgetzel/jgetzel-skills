@@ -7,15 +7,6 @@ task line, and lock/unlock as steps. -/
 namespace SwarmLean.Locks
 open Agents
 
-/-- A Lua string's bytes as the `Char`s below 256 that Glob.lean reads. -/
-def bytes (s : String) : List Char := s.toUTF8.toList.map fun b => Char.ofNat b.toNat
-
-/-- Whether lock pattern `pat` covers `path` (locks.covers). -/
-def covers (path pat : String) : Bool := Swarm.Glob.covers true (bytes path) (bytes pat)
-
-/-- Whether some path is covered by both lock patterns (locks.overlaps). -/
-def overlaps (p q : String) : Bool := Swarm.Glob.overlaps true (bytes p) (bytes q)
-
 /-- The live, unexpired locks of agents other than `me`, in load order (lock_holder's and cmd_lock's join). -/
 def others (db : Db) (me : String) (now : Int) : List Lock :=
   db.locks.filter fun l => match l.agent with

@@ -1,6 +1,7 @@
 import SwarmLean.World
 import SwarmLean.Sys
 import SwarmLean.Db
+import SwarmLean.Spec.Data
 import Std.Data.HashMap
 import Lean.Data.Json
 
@@ -94,18 +95,6 @@ def psSecs (s : String) : Int :=
       ((String.ofList ds).toNat?.getD 0, String.ofList (s.toList.drop (ds.length + 1))) else (0, s)
   let n := ((rest.splitOn ":").filter (· ≠ "")).foldl (fun n x => n * 60 + (parseFloat x).getD 0) 0.0
   (Float.floor (n + Float.ofNat (dd * 86400))).toInt64.toInt
-
-/-- One process as `ps` lists it (a row of machine.parse_ps). -/
-structure Ps where
-  pid : Int
-  ppid : Int
-  rss_kb : Int
-  age : Int
-  cpu_s : Int
-  args : String
-  argv : List String
-  comm : String
-  deriving Repr, BEq, Inhabited
 
 /-- One line of `ps -o pid=,ppid=,rss=,etime=,time=,args=`, none when it is not one. -/
 def parsePsLine (l : String) : Option Ps := do

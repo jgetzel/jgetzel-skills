@@ -11,56 +11,6 @@ they didn't show. -/
 namespace SwarmLean.Inbox
 open Msgs
 
-/-- Message `r` is for agent `n`: from another sender, to `n` or to all. -/
-def ToIt (n : String) (r : Msg) : Prop :=
-  r.frm ≠ none ∧ r.frm ≠ some n ∧ (r.dest = some n ∨ r.dest = some "@all")
-
-instance (n : String) : DecidablePred (ToIt n) := fun _ => inferInstanceAs (Decidable (_ ∧ _ ∧ _))
-
-/-- The messages for `n` with ids past cursor `a` up to cursor `b`, in log order. -/
-def window (db : Db) (n : String) (a b : Int) : List Msg :=
-  db.msgs.filter fun r => decide (ToIt n r ∧ a < r.id ∧ r.id ≤ b)
-
-/-- The message log's invariant: ids increase along the log and stay below the next id, and so does every cursor; the
-next id is positive. -/
-def MInv (db : Db) : Prop :=
-  (db.msgs.map (·.id)).Pairwise (· < ·) ∧ (∀ r ∈ db.msgs, r.id < db.msgNext) ∧ (∀ n, cursorOf db n < db.msgNext) ∧
-    0 < db.msgNext
-
-/-- `db'` only adds to `db`'s messages and cursors: messages after the old ones with fresh ids in order, and cursors
-of agents that had none. -/
-def Grows (db db' : Db) : Prop :=
-  db.msgNext ≤ db'.msgNext ∧
-  (∃ new, db'.msgs = db.msgs ++ new ∧ (new.map (·.id)).Pairwise (· < ·) ∧
-    ∀ r ∈ new, db.msgNext ≤ r.id ∧ r.id < db'.msgNext) ∧
-  ∃ more, db'.cursors = db.cursors ++ more ∧ ∀ c ∈ more, db.cursor c.agent = none ∧ c.last_msg_id.getD 0 < db'.msgNext
-
-/-- A transaction the theorems cover: a post, `swarm read`, a delivery with a budget, or any other step that only grows
-the messages and cursors of a db that keeps the invariant. -/
-inductive MCmd
-  | post (now : Int) (frm dest body : String) (urgent : Bool) (kind : Option String)
-  | read (n : String)
-  | deliver (n : String) (budget : Nat)
-  | typed (n : String) (i : Nat)
-  | other (f : Db → Db) (h : ∀ db, MInv db → Grows db (f db))
-
-/-- A transaction's effect and the messages it showed: the CLI's own step functions. -/
-def MCmd.step : MCmd → Db → Db × List Msg
-  | .post now f d b u k, db => ((Msgs.post db now f d b u k).1, [])
-  | .read n, db => ((take n id db).1, (take n id db).2.2)
-  | .deliver n b, db => ((deliverStep n b db).1, (deliverStep n b db).2.1)
-  | .typed n i, db => ((typedStep n i db).1, (typedStep n i db).2.2)
-  | .other f _, db => (f db, [])
-
-/-- Whom a transaction delivers to. -/
-def MCmd.to : MCmd → Option String
-  | .read n | .deliver n _ | .typed n _ => some n
-  | _ => none
-
-/-- What the deliveries to `n` among `t` showed, in order. -/
-def shownTo (n : String) (t : List (MCmd × List Msg)) : List Msg :=
-  t.flatMap fun (c, fit) => if c.to = some n then fit else []
-
 /-! Lemmas on the steps. -/
 
 theorem cursor_append (db : Db) (more : List Cursor) (n : String) :
@@ -155,11 +105,6 @@ theorem grows_trans {a b c : Db} (h1 : Grows a b) (h2 : Grows b c) : Grows a c :
 @[simp] theorem setAgent_msgNext (db : Db) n f : (db.setAgent n f).msgNext = db.msgNext := rfl
 
 theorem grows_log (db : Db) ts a k p x : Grows db (db.log ts a k p x) := grows_of_eq rfl rfl rfl
-
-/-- The message `post` appends. -/
-def posted (db : Db) (now : Int) (frm dest body : String) (urgent : Bool) (kind : Option String) : Msg :=
-  { id := db.msgNext, ts := some now, frm := some frm, dest := some dest, body := some body,
-    urgent := some (if urgent then 1 else 0), kind := some (kind.getD (if dest == "@all" then "all" else "dm")) }
 
 theorem post_eq (db : Db) now frm dest body urgent kind :
     (Msgs.post db now frm dest body urgent kind).1.msgs = db.msgs ++ [posted db now frm dest body urgent kind] ∧
@@ -418,12 +363,6 @@ theorem take_inv {db : Db} {n : String} {pick : List Msg → List Msg} (hpick : 
 
 /-! Any order of transactions. -/
 
-/-- The db after `cs` from `db`. -/
-def run (db : Db) (cs : List MCmd) : Db := (replay MCmd.step db cs).1
-
-/-- Each transaction of `cs`, from `db`, with what it showed. -/
-def trace (db : Db) (cs : List MCmd) : List (MCmd × List Msg) := (replay MCmd.step db cs).2
-
 theorem deliverStep_eq (n : String) (b : Nat) (db : Db) :
     (deliverStep n b db).1 = (take n (fits b) db).1 ∧ (deliverStep n b db).2.1 = (take n (fits b) db).2.2 := ⟨rfl, rfl⟩
 
@@ -614,15 +553,6 @@ theorem posted_urgent (db : Db) now frm dest body urgent kind :
   cases urgent <;> simp [posted]
 
 /-! The waiter's decision (msgs.wakes, Decide.wakesL). -/
-
-/-- An urgent row. -/
-def Urgent (r : Msg) : Prop := r.urgent.getD 0 ≠ 0
-
-/-- A row the waiter wakes on: anything but a notice, and an urgent notice. -/
-def Wakes (r : Msg) : Prop := r.kind ≠ some "notice" ∨ Urgent r
-
-instance : DecidablePred Urgent := fun _ => inferInstanceAs (Decidable (_ ≠ _))
-instance : DecidablePred Wakes := fun _ => inferInstanceAs (Decidable (_ ∨ _))
 
 theorem wake_filter (rows : List Msg) :
     rows.filter (fun r => r.kind != some "notice" || r.urgent.getD 0 != 0) = rows.filter fun r => decide (Wakes r) := by

@@ -135,27 +135,6 @@ def jobTree (p : Machine.Ps) (ps : List Machine.Ps) : Option String :=
   let tree := p :: walk ps.length [p.pid]
   if tree.any (WAITERS.contains ·.comm) then none else some (",".intercalate (tree.map fun q => s!"{q.pid}:{q.cpu_s}"))
 
-/-- Fate's reads of one agent, each made only when asked (watchd.reads(…).f(n)). -/
-structure Reads (m : Type → Type) where
-  /-- it owns a claimed or blocked task -/
-  claims : Bool
-  /-- it holds a lock -/
-  locks : Bool
-  /-- its background job: a Bash-tool shell under its claude process -/
-  job : m (Option Machine.Ps)
-  /-- a worktree of its with work not on its bases, and those refs -/
-  unlanded : m (Option (String × List String))
-  /-- a terminal's cwd is in this repo or one of its worktrees (else another swarm's terminal) -/
-  ours : String → m Bool
-  /-- how many tasks it would be offered (`Reuse.candidates`) -/
-  pool : Nat
-  /-- the reuse threshold (`Reuse.reuseBelow`); 0 is off -/
-  below : Nat
-  /-- process `pid` lives -/
-  alive : Int → m Bool
-  /-- it was offered every task it would be and has read what would wake it -/
-  passedOver : Bool
-
 /-- The task ids `n`'s offers named since it finished its last task (watchd.reads' told_of). -/
 def toldOf (db : Db) (n : String) : List Int := (Reuse.offers db n).flatMap (·.2)
 
@@ -186,13 +165,6 @@ def reads (db : Db) (main : Option String) (wts : List (String × String)) (all 
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
   let db ← Store.txn [.agent, .task, .lock, .workspace, .«meta»] fun db => (db, db)
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
-
-/-- What a fate run heard: each check made, in order, with whether it held; the unlanded worktree and its refs (once
-that check was made); the job's process (once that one was). -/
-structure Heard where
-  checks : List (String × Bool) := []
-  held : Option (String × List String) := none
-  proc : Option Machine.Ps := none
 
 /-- Lifecycle's verdict on live agent row `a` (watchd.fate, model Decide.lean's fateL), and what it heard: none (kept:
 staying, busy, idle under 2 min, in another swarm's or a busy terminal, holding a claim or lock, or, once its work is

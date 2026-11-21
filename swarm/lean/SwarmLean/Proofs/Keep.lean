@@ -450,10 +450,6 @@ theorem Kept.trans {s0 s1 s2 : Rec M} (h1 : Kept s0 s1) (h2 : Kept s1 s2) : Kept
       · exact .inr (h.weaken hn)
     · exact .inr (h.mono p2)
 
-/-- The worktree `x` of main checkout `m` passed `Gate` on the calls `L` before its removal, in the sweep that started
-from some state. -/
-def GateAny (m x : String) (L : List (M.World × Call)) : Prop := ∃ sk : Rec M, Gate sk m x L
-
 theorem GoodFrom.join {n : Nat} {s1 : Rec M} {l : List (M.World × Call)}
     (h1 : GoodFrom n GateAny s1.log) (hp : s1.log <+: l) (h2 : GoodFrom s1.log.length (Gate s1) l) :
     GoodFrom n GateAny l := by
@@ -491,19 +487,6 @@ theorem sweepBranches_kept (hg : GitReadsKeep M) (ht : ToolsKeep M) (hbd : Branc
     rcases List.mem_append.1 he with he | he
     · exact hn e he
     · simp at he; subst he; simp [IsRm, rmArgv]
-
-/-- One step of watchd or the CLI that touches worktrees or branches: a sweep (watchd's, or `--dry-run`), the branch
-sweep after it, or ending an agent (`swarm end`, lifecycle's end, hung's). -/
-inductive Step
-  | sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String)
-  | branches (main : String) (ended prot : List String)
-  | stop (a : Agent) (force : Bool) (by_ : Option String)
-
-/-- What a step runs. -/
-def Step.run : Step → RecM M Unit
-  | .sweep comms dry nl dir => discard (Watchd.sweep comms dry nl dir)
-  | .branches main ended prot => Watchd.sweepBranches main ended prot
-  | .stop a force by_ => discard (Lifecycle.endAgent a force by_)
 
 /-- From `s0` to `s`: `Kept`, and every `worktree remove` since passed `Gate`. -/
 def RunInv (s0 s : Rec M) : Prop := Kept s0 s ∧ GoodFrom s0.log.length GateAny s.log

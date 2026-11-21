@@ -12,14 +12,6 @@ variable {m : Type → Type}
 /-- A prompt cache counts as warm this long after the last turn (agents.COLD_IDLE). -/
 def COLD_IDLE : Int := 55 * 60
 
-/-- A terminal as `hc ls --json` lists it. -/
-structure Term where
-  state : Option String
-  address : Option String
-  name : Option String := none
-  cwd : Option String := none
-  status : Option String := none
-
 /-- `hc ls --json`'s terminals; none when hc fails or prints no list (agents.hc_terminals). -/
 def hcTerminals [Monad m] [Proc m] : m (Option (List Term)) := do
   let some o ← Proc.output ["hc", "ls", "--json"] none [] | return none
