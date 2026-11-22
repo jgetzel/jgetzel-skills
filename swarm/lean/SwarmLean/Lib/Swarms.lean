@@ -94,6 +94,11 @@ def taskRepos (id : Int) : m (List (String × Option String)) := do
   let rs ← Sys.sqlAt (← dbPath) schema [("select repo, base from task_repo where task=? order by rowid", [.int id])] true
   return (rs.headD #[]).toList.filterMap fun r => (txt r[0]?).map (·, txt r[1]?)
 
+/-- The ids of the tasks that touch repo `p` (its `task_repo` rows): what the repo's CI passes act on (board #136). -/
+def tasksOf (p : String) : m (List Int) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select task from task_repo where repo=? order by task", [.text p])] true
+  return (rs.headD #[]).toList.filterMap (int ·[0]?)
+
 /-- Every task's id and state text, in id order: one two-column select, for counts and deps' states without the
 rows. -/
 def taskStates : m (List (Int × String)) := do

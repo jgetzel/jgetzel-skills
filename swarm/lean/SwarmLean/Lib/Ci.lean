@@ -97,6 +97,15 @@ structure Run where
   createdAt : Option String
   updatedAt : Option String
 
+/-- Sel `s` cut to the tasks of ids `ids` (none: every task): a repo's CI passes act only on its own tasks (board #136). -/
+def ofIds (ids : Option (List Int)) (s : Sel) : Sel :=
+  match ids with
+  | some xs => { s with cond := .and s.cond (.oneOf "id" (xs.map .int)) }
+  | none => s
+
+/-- Task `t` is one of `ids` (none: every task is). -/
+def inIds (ids : Option (List Int)) (t : Task) : Bool := ids.all (·.contains (t.id : Int))
+
 /-- The done tasks pr_ci still fills: no merge data or no green run yet, done in the last day. -/
 def prCiTodo (now : Int) (db : Db) : List Task :=
   db.tasks.filter fun t => t.state = .done && (t.merged_at.isNone || t.ci_green_at.isNone) && t.done_at.getD 0 > now - 86400
@@ -161,13 +170,23 @@ def ghList (out : Option ProcOut) (dflt : String) : Option (List Lean.Json) :=
 
 variable [Store m] [Clock m] [Proc m] [Git m] [Fs m]
 
-/-- ci.pr_ci: fill merge-to-green for done tasks. -/
-def prCi (repo : Option String) : m Unit := do
+/-- Repo `repo`'s main worktree and the ids of its tasks (`Swarms.tasksOf`), none without a repo (every task). Tasks are
+the machine's, but GitHub's run ids are global and PR numbers per repo, so each repo's CI passes read only its own
+(board #136); a folder in no repo has none. -/
+def repoTasks [Env m] [Sys m] (repo : Option String) : m (Option (String × List Int)) := do
+  let some _ := repo | return none
+  let some p ← Workspaces.main repo | return some ("", [])
+  return some (p, ← Swarms.tasksOf p)
+
+/-- ci.pr_ci: fill merge-to-green for the repo's done tasks. -/
+def prCi [Env m] [Sys m] (repo : Option String) : m Unit := do
   let now ← Clock.now
-  if !(← Store.run (Txn.update [prCiSel now, Sels.metas ["pr_polled"]] [] (prCiGate now))) then return
+  let ids := (← repoTasks repo).map (·.2)
+  let sel := ofIds ids (prCiSel now)
+  if !(← Store.run (Txn.update [sel, Sels.metas ["pr_polled"]] [] (prCiGate now))) then return
   let some prs := ghList (← Proc.output ["gh", "pr", "list", "--state", "merged", "--limit", "100", "--json",
     "number,mergedAt,mergeCommit,headRefName"] repo []) "[]" | return
-  Store.run (Txn.update [prCiSel now, Sels.all .ci] [] fun db => (prCiApply now prs db, ()))
+  Store.run (Txn.update [sel, Sels.all .ci] [] fun db => (prCiApply now prs db, ()))
 
 /-- A claimed task of a live owner (pr_watch's held). -/
 structure Held where
@@ -197,13 +216,17 @@ def prWatchGate (now : Int) (db : Db) : Db × Option (List (Held × List String)
     let n := (db.tasks.filter fun x => x.owner == some t.owner && (x.state = .claimed || x.state = .blocked)).length
     (t, s!"{t.owner}/{d t.id}" :: if n == 1 then (db.workspaces.filter (·.agent == t.owner)).filterMap (·.branch) else [])))
 
-/-- `prWatchGate` on what it reads: the claims, the live agents, the stamp and the owners' worktrees. -/
-def prWatchTxn (now : Int) : Txn (Option (List (Held × List String))) := do
-  let ss := [heldSel, Sels.live]
+/-- `prWatchGate` on what it reads: the claims, the live agents, the stamp and the owners' worktrees; with repo `r` (its
+main worktree and its tasks' ids, `repoTasks`) only its claims and the worktrees recorded in it (board #136). -/
+def prWatchTxn (now : Int) (r : Option (String × List Int)) : Txn (Option (List (Held × List String))) := do
+  let ss := [ofIds (r.map (·.2)) heldSel, Sels.live]
   let owners := ((held (← Txn.slice ss)).map (·.owner)).eraseDups
   if owners.isEmpty then return none
-  Txn.update (ss ++ [Sels.metas ["pr_watched"], { table := .workspace, cond := .oneOf "agent" (owners.map .text) }]) []
-    (prWatchGate now)
+  let wts : Cond := .oneOf "agent" (owners.map .text)
+  let wts := match r with
+    | some (p, _) => .and wts (.oneOf "repo" [.text p, .text ""])
+    | none => wts
+  Txn.update (ss ++ [Sels.metas ["pr_watched"], { table := .workspace, cond := wts }]) [] (prWatchGate now)
 
 /-- The rollup's checks that did not finish well, by name. -/
 def failedChecks (rollup : List Lean.Json) : List String :=
@@ -258,10 +281,10 @@ def pickPr (prs : List Lean.Json) (branches : List String) (base : String) (clai
       && (st == some "OPEN" || (st == some "MERGED" && (Json.fstr x "mergedAt").any (ts · ≥ claimed)))
       && (pr.isNone || (Json.fint x "number").getD 0 > ((pr.bind (Json.fint · "number")).getD 0)) then some x else pr) none
 
-/-- ci.pr_watch: PRs from live owners' task branches, a minute apart while a live agent holds a claim. -/
+/-- ci.pr_watch: PRs from live owners' task branches, a minute apart while a live agent holds a claim of the repo. -/
 def prWatch [Env m] [Sys m] (repo : Option String) : m Unit := do
   let now ← Clock.now
-  let some hs ← Store.run (prWatchTxn now) | return
+  let some hs ← Store.run (prWatchTxn now (← repoTasks repo)) | return
   let some prs := ghList (← Proc.output ["gh", "pr", "list", "--state", "all", "--limit", "50", "--json",
     "number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeCommit,statusCheckRollup"] repo []) "" | return
   let gated := (← flow repo) == some "pr-gated"
@@ -333,14 +356,15 @@ def checkRuns (db : Db) : List Ci :=
     fun a b => a.created.getD "" ≥ b.created.getD "").take 10
 
 /-- ci_check before the git and gh reads: a green run on top closes the red tasks it is as new as; a new red run is
-logged once and joins an open red task's body, or is returned to get its own task. -/
-def ciCheckStep (now : Int) (db : Db) : Db × Option NewRed :=
+logged once and joins an open red task's body, or is returned to get its own task. The red tasks are those of `ids`,
+the repo's (none: every task's): another repo's runs never touch them (board #136). -/
+def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option NewRed :=
   let runs := checkRuns db
   match runs with
   | [] => (db, none)
   | red :: _ =>
     let openRed := db.tasks.filter fun t => likePrefix (t.title.getD "") Tasks.RED_TASK &&
-      (t.state = .open || t.state = .claimed || t.state = .blocked)
+      (t.state = .open || t.state = .claimed || t.state = .blocked) && inIds ids t
     if red.conclusion == some "success" then
       (Queue.tidy <| openRed.foldl (fun db t =>
         let n := (t.title.getD "").toList.drop (Tasks.RED_TASK ++ "run ").length |>.takeWhile Char.isDigit
@@ -383,25 +407,25 @@ def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String)
 
 /-- ci_check's first transaction: `ciCheckStep`'s commit when it needs no task; a new red run comes back uncommitted,
 for `ciCheckApply` to log with its task once the reads are done. -/
-def ciCheckFirst (now : Int) (db : Db) : Db × Option NewRed :=
-  match ciCheckStep now db with
+def ciCheckFirst (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option NewRed :=
+  match ciCheckStep now ids db with
   | (_, some r) => (db, some r)
   | x => x
 
 /-- ci_check's second transaction: the `ci-red` event and the task for red run `r` in one commit, so a stop never
 leaves the event without its task; if the check now finds another outcome it commits nothing (the next check redoes it). -/
-def ciCheckApply (now : Int) (comms : Option String) (r : NewRed) (rng : String) (names : List String) (tail : String)
-    (db : Db) : Db :=
-  match ciCheckStep now db with
+def ciCheckApply (now : Int) (ids : Option (List Int)) (comms : Option String) (r : NewRed) (rng : String)
+    (names : List String) (tail : String) (db : Db) : Db :=
+  match ciCheckStep now ids db with
   | (db', some r') => if r'.red.id == r.red.id then ciNewRedTask now comms r' rng names tail db' else db
   | _ => db
 
-/-- What `ciCheckStep` reads: the repo's runs, the open, claimed and blocked tasks, the queue, the `red-fixed` events
-and the newest run's `ci-red`. -/
-def ciCheckSels : Txn (List Sel) := do
+/-- What `ciCheckStep` reads: the repo's runs, the open, claimed and blocked tasks of `ids`, the queue, the `red-fixed`
+events and the newest run's `ci-red`. -/
+def ciCheckSels (ids : Option (List Int)) : Txn (List Sel) := do
   let red := (checkRuns (← Txn.slice [Sels.all .ci])).head?.map fun r =>
     ({ table := .event, cond := .and (.eq "kind" (.text "ci-red")) (.eq "data" (.text (d r.id))) } : Sel)
-  return [Sels.all .ci, { table := .task, cond := .oneOf "state" [.text "open", .text "claimed", .text "blocked"] },
+  return [Sels.all .ci, ofIds ids { table := .task, cond := .oneOf "state" [.text "open", .text "claimed", .text "blocked"] },
     TaskTxn.queuedSel, { table := .event, cond := .eq "kind" (.text "red-fixed") }] ++ red.toList
 
 /-- The `Swarm-Agent:` names in commit messages, distinct and sorted. -/
@@ -419,7 +443,8 @@ def redTitleOf (id : Nat) (x : String) : Bool :=
 one closes it. -/
 def ciCheck [Env m] [Sys m] (repo comms : Option String) : m Unit := do
   let now ← Clock.now
-  let some r ← Store.run (do Txn.update (← ciCheckSels) [.msg] (ciCheckFirst now)) | return
+  let ids := (← repoTasks repo).map (·.2)
+  let some r ← Store.run (do Txn.update (← ciCheckSels ids) [.msg] (ciCheckFirst now ids)) | return
   let rng := match r.green with
     | some g => s!"{g.sha.getD ""}..{r.red.sha.getD ""}"
     | none => s!"-20 {r.red.sha.getD ""}"
@@ -432,8 +457,8 @@ def ciCheck [Env m] [Sys m] (repo comms : Option String) : m Unit := do
   let tail := "\n".intercalate (lines.drop (lines.length - 30))
   let title : Sel := { table := .task, cond := .pre "title" (Tasks.RED_TASK ++ "run " ++ d r.red.id) }
   let tid ← Store.run do
-    Txn.update ((← ciCheckSels) ++ [Sels.live, title]) [.task, .msg] fun db =>
-      let db := ciCheckApply now comms r rng (authors log) tail db
+    Txn.update ((← ciCheckSels ids) ++ [Sels.live, title]) [.task, .msg] fun db =>
+      let db := ciCheckApply now ids comms r rng (authors log) tail db
       (db, ((db.tasks.filter fun t => t.title.any (redTitleOf r.red.id)).getLast?).map (·.id))
   if let (some tid, some p) := (tid, ← Workspaces.main repo) then
     Swarms.addTaskRepos tid [(p, none, some (← Bases.default (some p)))]
