@@ -8,7 +8,7 @@ def helpSpawn : String :=
 
 /-- `swarm join -h`. -/
 def helpJoin : String :=
-  "Usage: swarm join [-h] [--model <model>] [--takeover] [<name>]\n\nArguments:\n   name\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --model <model>\n   --takeover            move a live binding of this name to this terminal"
+  "Usage: swarm join [-h] [--model <model>] [--takeover] [<name>]\n\nBinds <name> (default $SWARM_NAME) to this terminal in the swarm this command acts on and labels the\nterminal swarm=<swarm>. A communicator <x>-comms with no --swarm, $SWARM, agent row or label naming one makes swarm\n<x> (the folder's repo its repo) or joins it.\n\nArguments:\n   name\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --model <model>\n   --takeover            move a live binding of this name to this terminal"
 
 /-- `swarm leave -h`. -/
 def helpLeave : String :=
@@ -24,7 +24,7 @@ def helpEndable : String :=
 
 /-- `swarm who -h`. -/
 def helpWho : String :=
-  "Usage: swarm who [-h]\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm who [-h]\n\nThe agents of the swarm this command acts on.\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm role -h`. -/
 def helpRole : String :=
@@ -36,7 +36,7 @@ def helpStay : String :=
 
 /-- `swarm limits -h`. -/
 def helpLimits : String :=
-  "Usage: swarm limits [-h] [--min <min>] [--max <max>]\n       [--queue-only {on,off}] [--ctx-nudge <ctx_nudge>]\n       [--ctx-compact <ctx_compact>] [--compact-stayers {on,off}]\n       [--reuse-below <reuse_below>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --min <min>           auto-spawn number: watchd staffs tasks until this many agents are live\n   --max <max>           agent max: `swarm spawn` refuses at this many live agents\n   --queue-only {on,off}\n                         on: auto-spawn staffs only `swarm queue` (and main red tasks); unqueued tasks are\n                         backlog (default off)\n   --ctx-nudge <ctx_nudge>\n                         context in tokens from which watchd nudges an agent to compact itself and claims are\n                         refused (default 325000; 0: off)\n   --ctx-compact <ctx_compact>\n                         context in tokens from which watchd compacts an idle agent (default 400000; 0: off)\n   --compact-stayers {on,off}\n                         on: the communicator and agents with a stay are compacted too, not only nudged\n                         (default off)\n   --reuse-below <reuse_below>\n                         context in tokens under which an agent done with a task is offered related startable\n                         tasks (lineage, a shared label) before it is ended (default 0: off)"
+  "Usage: swarm limits [-h] [--min <min>] [--max <max>]\n       [--queue-only {on,off}] [--ctx-nudge <ctx_nudge>]\n       [--ctx-compact <ctx_compact>] [--compact-stayers {on,off}]\n       [--reuse-below <reuse_below>]\n\nThe knobs of the swarm this command acts on (`--swarm`, $SWARM, ...); live counts are its agents.\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --min <min>           auto-spawn number: watchd staffs tasks until this many agents are live\n   --max <max>           agent max: `swarm spawn` refuses at this many live agents\n   --queue-only {on,off}\n                         on: auto-spawn staffs only `swarm queue` (and main red tasks); unqueued tasks are\n                         backlog (default off)\n   --ctx-nudge <ctx_nudge>\n                         context in tokens from which watchd nudges an agent to compact itself and claims are\n                         refused (default 325000; 0: off)\n   --ctx-compact <ctx_compact>\n                         context in tokens from which watchd compacts an idle agent (default 400000; 0: off)\n   --compact-stayers {on,off}\n                         on: the communicator and agents with a stay are compacted too, not only nudged\n                         (default off)\n   --reuse-below <reuse_below>\n                         context in tokens under which an agent done with a task is offered related startable\n                         tasks (lineage, a shared label) before it is ended (default 0: off)"
 
 /-- `swarm away -h`. -/
 def helpAway : String :=

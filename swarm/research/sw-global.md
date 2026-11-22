@@ -149,3 +149,17 @@ edits in the main checkout while this runs, and tests run with `XDG_STATE_HOME`/
 - Remote machines: each has its own db; a repo is a path on one machine. `swarm run --on` keeps working as today
   (its ledger is per machine already).
 - `Lib/Cost.lean`'s `cmd` table and the compute ledger are separate dbs today; folding them in is a later task.
+- A swarm's repos are set when it is made (`swarm new --repo`, or the folder's on a communicator's first `join`); no
+  command adds or removes one later. Add `swarm new`-like `--repo` editing when a swarm first needs it.
+- `swarm new <x>` without `--comms` leaves the swarm with no communicator, and a later `join` as `<x>-comms` does not
+  set one (the swarm exists): the docs say `new … --comms <x>-comms`, and `watchd --comms` sets it.
+
+Decided while writing the docs (#78):
+
+- `lock`, `unlock` and `ci` take the folder's repo only; §2's `--repo <path>` is built for `task add` alone.
+- `swarm board` lists every task on the machine (tasks belong to no swarm); auto-spawn staffs only those touching a
+  repo of its swarm, and the Herdr swarm view groups them per swarm.
+- `settings.template.json` already carried `SWARM={{GROUP}}` and no `SWARM_DB`; it needed no change. An agent's
+  settings file and the `swarm` link on its PATH live beside the db (`<state>/swarm/agents/`, `<state>/swarm/bin/`).
+- The communicator starts watchd as `swarm watchd --ci --comms $SWARM_NAME` (no `SWARM_COMMS`): in a second swarm on
+  the machine that sets its knobs and is then refused, which is all it needs.

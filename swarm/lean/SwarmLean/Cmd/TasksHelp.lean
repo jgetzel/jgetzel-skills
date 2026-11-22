@@ -88,7 +88,7 @@ def helpRulesShow : String :=
 
 /-- `swarm rules set -h`. -/
 def helpRulesSet : String :=
-  "Usage: swarm rules set [-h] <text> [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm rules set [-h] <text> [<text>] ...\n\nSets the rules of the swarm this command acts on: every spawn's first message carries them.\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm board -h`. -/
 def helpBoard : String :=

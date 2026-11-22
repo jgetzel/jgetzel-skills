@@ -39,11 +39,15 @@ def groups : List (Group m) := [
 ]
 
 /-- main.lua's root usage, printed before a parse error. -/
-def USAGE : String := "Usage: swarm [-h] <command> ..."
+def USAGE : String := "Usage: swarm [-h] [--swarm <name>] <command> ..."
 
 /-- `swarm -h`: the usage and every command word. -/
 def help : String :=
-  s!"{USAGE}\n\ncommands: {", ".intercalate ((groups (m := m)).flatMap (·.specs.map (·.1)))}"
+  s!"{USAGE}\n\ncommands: {", ".intercalate ((groups (m := m)).flatMap (·.specs.map (·.1)))}\n\n" ++
+  "One db per machine: $XDG_STATE_HOME/swarm/swarm.db (else ~/.local/state; $SWARM_DB for tests). A command acts on one\n" ++
+  "swarm (a group of agents): --swarm <name>, else $SWARM, else the swarm of $SWARM_NAME's agent, else the terminal's hc\n" ++
+  "label swarm=<name>, else the only live swarm; never the folder. Tasks, locks, CI and worktrees belong to repos:\n" ++
+  "`lock`, `ci` and `task add` take the folder's. `swarm swarms` lists the swarms, `swarm new` makes one."
 
 /-- The commands main.lua fences: their writes are refused to a terminal the agent is not bound to. -/
 def FENCED : List String := ["post", "read", "task", "lock", "unlock", "leave", "stay", "queue", "compact"]

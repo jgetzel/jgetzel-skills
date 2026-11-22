@@ -62,7 +62,7 @@ def norm (path : String) : m Locks.InRepo := do
 
 /-- `swarm lock -h`. -/
 def helpLock : String :=
-  "Usage: swarm lock [-h] [--reason <reason>] [--lease <lease>] <path>\n\nArguments:\n   path\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --reason <reason>     default: \n   --lease <lease>       default: 2h"
+  "Usage: swarm lock [-h] [--reason <reason>] [--lease <lease>] <path>\n\nReserves <path> (a glob, or dir/) in the folder's repo, for every swarm working there; it frees itself when\nyour work on it lands.\n\nArguments:\n   path\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --reason <reason>     default: \n   --lease <lease>       default: 2h"
 
 /-- `swarm unlock -h`. -/
 def helpUnlock : String :=

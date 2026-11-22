@@ -242,13 +242,32 @@ The Herdr panels' installer and calendar feed are swarm/lean's executable herdr-
 
 ### Store
 
-Being replaced: one db per machine, swarms as groups of agents, tasks per repo, a statement store
-([research/sw-global.md](research/sw-global.md), 2026-11-21).
+One db per machine, swarms as groups of agents, tasks per repo
+([research/sw-global.md](research/sw-global.md), 2026-11-21; schema in `lean/SwarmLean/Db/Schema.lean`).
 
-`$SWARM_DB`, default `<git common dir>/swarm/swarm.db`, shared by every
-worktree of the repo. Tables: `agent`, `msg` (`kind` includes `notice`),
-`cursor`, `task` (with `after` and `model`), `lock`, `conflict`, `pairkey`
-and an append-only `event` log for `swarm watch` and `swarm-retro`.
+- **Where.** `$XDG_STATE_HOME/swarm/swarm.db`, else `~/.local/state/swarm/swarm.db`, shared by every swarm, repo and
+  worktree on the machine; `$SWARM_DB` overrides it for tests. Agents' settings files (`agents/`) and the `swarm`
+  link on their PATH (`bin/`) sit beside it. Per-repo dbs from before are not migrated. watchd copies it hourly to
+  `swarm.db.bak` (`VACUUM INTO`, then a rename). Remote machines have dbs of their own.
+- **Swarms.** A `swarm` row (name, communicator, created, ended) is a group of agents: `agent.swarm` is
+  membership, set by `join` and `spawn`. Its knobs are `meta` rows scoped by its name (`agent_min`, `agent_max`,
+  `rules`, `away`, `queue_only`, `ci`, `spawn_model`, …); the machine's (`watchd*`, `machines`, `jobs`) are scope
+  `''`. `swarm_repo` lists the repos its auto-spawn staffs from. A command acts on one swarm, never the folder's:
+  `--swarm`, `$SWARM`, the swarm of `$SWARM_NAME`'s row, the terminal's hc label `swarm=<name>`, the only live
+  swarm, else a refusal listing them (`Real.lean` `resolveSwarm`).
+- **Repos.** A `repo` row is a main worktree's path and its base (`.claude/swarm.json`'s, read when first seen).
+  Tasks, locks, conflicts, CI runs and worktrees belong to repos: `task_repo` (zero or more per task, each with an
+  optional base of its own), `lock` keyed by (repo, path), `ci` by (repo, id), a `workspace` row per worktree.
+  Tasks carry no swarm; the board lists the machine's, auto-spawn staffs those of its swarm's repos.
+- **Other tables.** `msg` (`kind` includes `notice`; `dest` an agent, `@<swarm>` or `#<task>`, `@all` stored as
+  the sender's swarm), `cursor`, `conflict` and `pairkey`, keyed by agent names
+  (unique on the machine), and the append-only `event` log (with `swarm` and `repo`) for `swarm watch` and
+  `swarm-retro`, never loaded by a hook.
+- **Statement store** (sw-global §3). A command reads keyed or filtered selects, decides purely on the rows read and
+  writes a plan of statements (`ins`, `upd`, `del`, a guarded `upd` whose `changes()` settles a race), in one
+  `begin immediate` transaction; a claim is a guarded update. Hooks and the commands run so; what still loads whole
+  tables through `loadDb`/`storeDb` (watchd's ticks) moves off them under board #77, which deletes both. The proofs of the store sit in
+  `lean/SwarmLean/Proofs/LEGACY.md` until the proofs phase ([research/sw-global-proofs.md](research/sw-global-proofs.md)).
 
 ### Locks and overlap: [research/sw-locks.md](research/sw-locks.md)
 
@@ -268,18 +287,25 @@ and an append-only `event` log for `swarm watch` and `swarm-retro`.
 
 ### Lifecycle: [research/sw-lifecycle.md](research/sw-lifecycle.md)
 
-- **Bases are data** (sw-bases.md, implemented): a task's `--base`, else `.claude/swarm.json`
-  `base`, else main; one `base_for(task)` serves the landed checks, conflict snapshots, brief and CI.
+- **Bases are data** (sw-bases.md, implemented), per repo: a task's base in a repo (`task_repo.base`, from
+  `--base`), else that repo's (`.claude/swarm.json` `base`), else main; one `base_for(task, repo)` serves the
+  landed checks, conflict snapshots, brief and CI.
 - **Agent GC and workspace GC are split.** `watchd` (or `swarm end`) ends landed agents:
   idle, no claim, no lock, work on its task's base; that kills the terminal only. A
-  separate sweep removes a worktree that is clean, unattached, has no process inside and is
-  reachable from a protected ref, then deletes its branch (never a base). `swarm spawn --task`
-  makes and records the worktree; agents never check out a base. All proved in
+  separate sweep, per repo, removes a worktree that a `workspace` row made (never one made by hand) and that is
+  clean, unattached, has no process inside and is reachable from a protected ref, then deletes its branch (never a
+  base). `swarm spawn --task` makes and records a worktree in each repo of the task (none for a task of no repo);
+  agents never check out a base. All proved in
   `swarm/model` (W1-W4, B1; Workspaces.lean). An agent kept only by an unclean
   worktree is told what holds it after 30 min idle. The communicator is a
   stayer (watchd's start gives it one) and does not end agents.
-- **`watchd` spawns** a fresh agent per startable task when none is reusable,
-  up to the auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
+- **One `watchd` per machine** (sw-global §4; its record is meta `watchd`, scope `''`; a second is refused unless
+  `--takeover`). Each tick: per agent of any live swarm (reap, end landed, leases, context, api-resume, stays), per
+  swarm (auto-spawn, messages to its communicator), per repo in its folder (trial-merge conflicts among every agent
+  with a worktree there, locks, the sweep, and CI and PRs when a swarm staffing it has its `ci` knob on), then the
+  machine tick and the hourly backup.
+- **`watchd` spawns** a fresh agent per startable task of the swarm's repos when none is reusable (a task of no
+  repo only by a claim or `spawn --task`), up to the swarm's auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
   and says on the board when either holds it (`spawn-held`). Each launch is
   for the first task of the pool as it is then (red main, priority, id): the
   pool is read again before each, and the claim checks it in its transaction
