@@ -81,13 +81,18 @@ folder enters it. -/
 def commsPresent (r : Option Agent) (terms : List Term) : Bool :=
   r.any fun a => a.ended.isNone && (py a.hc).any fun h => terms.any fun x => x.address == some h && x.state == some "live"
 
+/-- What `ensureComms` reads: its knobs, the communicator's row, and what `Queue.staffing` reads. -/
+def ensureCommsReads (comms : String) : Txn Db := do
+  let ps ← TaskTxn.poolSels
+  Txn.slice (ps ++ [Sels.agent comms, Sels.metas ["comms_hc", "comms_backoff", "queue_only"]])
+
 /-- A swarm whose communicator joined from a Herdr terminal gets one launched and bound when its bound terminal is gone
 (not `commsPresent`) and the swarm has work it can start (`Queue.staffing` of its repos: a held task is none, board
 #67). A live
 binding is never moved: only `swarm join --takeover` moves one. Why it can't, for the board's auto-spawn line, or none
-(watchd.ensure_comms). -/
-def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String) := do
-  let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
+(watchd.ensure_comms). `t` is the tick's. -/
+def ensureComms (comms : String) (terms : Option (List Term)) (t : Int) : m (Option String) := do
+  let db ← Store.run (ensureCommsReads comms)
   -- only a swarm whose communicator joined from a Herdr terminal (`join` records it) gets one launched
   if ((db.getMeta "comms_hc").bind (·.v)).isNone then return none
   let some sw ← env "SWARM" | return none
@@ -96,7 +101,7 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
   let mine ← Swarms.staffable sw  -- work of its repos (sw-global §2), as auto-spawn staffs it
   if !(Queue.staffing db).any (mine.contains ·.id) then return none
   if let some bo := (db.getMeta "comms_backoff").bind (·.v) then
-    if (← Clock.now) < (parseInt bo).getD 0 then return some "no communicator can be launched (last launch failed)"
+    if t < (parseInt bo).getD 0 then return some "no communicator can be launched (last launch failed)"
   let brief := s!"You are the communicator of swarm {sw} (your name: {comms}), started by watchd because the swarm had " ++
     "work it could start and its communicator's terminal was gone. Load the swarm skill, run `swarm board` and `swarm read`, and carry on as the communicator."
   let model := match db.agent comms with
@@ -105,17 +110,16 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
   let cwd ← Env.cwd
   let (out, err) ← Spawn.launchAgent comms brief model none (some cwd) true
   let some out := out | do
-    let now ← Clock.now
-    Store.txn [.«meta»] fun db => (db.setMeta "comms_backoff" (some (d (now + 300))), ())
+    Store.run (Txn.update [Sels.metas ["comms_backoff"]] [] fun db => (db.setMeta "comms_backoff" (some (d (t + 300))), ()))
     return some ("no communicator can be launched: " ++ err)
   let addr := (splitlines (strip out)).getLastD ""
   -- a `join` while it launched bound the row to a live terminal: that binding stays
-  let db ← Store.txn [.agent] fun db => (db, db)
-  if commsPresent (db.agent comms) ((← hcTerminals).getD []) then return none
+  let r ← Store.view [Sels.agent comms] (·.agent comms)
+  if commsPresent r ((← hcTerminals).getD []) then return none
   Cmd.Agents.bindAgent comms (some cwd) (some addr) none false
   discard <| Proc.output ["hc", "label", addr, "swarm=" ++ sw] none []
-  let now ← Clock.now
-  Store.txn [.«meta»] fun db => ((delMeta db "comms_backoff").log now (some comms) "comms-launch" none (some addr), ())
+  Store.run (Txn.update [Sels.metas ["comms_backoff"]] [] fun db =>
+    ((delMeta db "comms_backoff").log t (some comms) "comms-launch" none (some addr), ()))
   return none
 
 /-- The user is away: a question waits for them. -/
@@ -410,10 +414,10 @@ def Plan.home (p : Plan) (sw : Swarms.Row) : String :=
     | none => ((mine.map (·.2.2)).find? (· != "")).getD ""
 
 /-- A swarm's knobs for auto-spawn: its `spawn_model` and `spawn_effort` over watchd's flags. -/
-def knobs (opts : Opts) : m Opts := do
-  let db ← Store.txn [.«meta»] fun db => (db, db)
-  let k (key : String) : Option String := py ((db.getMeta key).bind (·.v))
-  return { opts with model := (k "spawn_model").orElse fun _ => opts.model, effort := (k "spawn_effort").orElse fun _ => opts.effort }
+def knobs (opts : Opts) : m Opts :=
+  Store.view [Sels.metas ["spawn_model", "spawn_effort"]] fun db =>
+    let k (key : String) : Option String := py ((db.getMeta key).bind (·.v))
+    { opts with model := (k "spawn_model").orElse fun _ => opts.model, effort := (k "spawn_effort").orElse fun _ => opts.effort }
 
 /-- One swarm's passes (sw-global §4, per agent and per swarm), in the swarm's scope and its home repo: reap, its
 communicator, hc's prompts, the blocked notices, the lifecycle (ends, offers, auto-spawn: an agent working in another
@@ -428,15 +432,15 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
   let foreign := (p.agents.filter (·.2.1 != sw.name)).map (·.1)
   let (errs, opts) ← Scoped.within hs do
     let mut errs : List String := []
-    errs ← pass errs (pre ++ "reap: ") (discard <| reap live (← Clock.now) comms foreign)
+    errs ← pass errs (pre ++ "reap: ") (discard <| reap live t comms foreign)
     let mut opts ← match ← Guard.guard (knobs opts) with
       | .ok o => pure o
       | .error e => errs := errs ++ [pre ++ "knobs: " ++ e]; pure opts
     if let some c := comms then
-      match ← Guard.guard (ensureComms c terms) with
+      match ← Guard.guard (ensureComms c terms t) with
       | .ok h => opts := { opts with commsHold := h }
       | .error e => errs := errs ++ [pre ++ "comms: " ++ e]; opts := { opts with commsHold := none }
-    let away := (away (← Store.txn [.«meta»] fun db => (db, db))).isSome
+    let away ← Store.view [Sels.metas ["away"]] fun db => (away db).isSome
     if let some ts := terms then
       if !ts.isEmpty then errs ← pass errs (pre ++ "hc blocked: ") (hcBlocked ts t comms away)
     if let some c := comms then errs ← pass errs (pre ++ "notices: ") (notices t c away)
@@ -466,7 +470,7 @@ def repoTick (p : Plan) (r : String) (notLanded : List String) (t : Int) : m (Li
   let pre := s!"{r}: "
   Scoped.within { swarm := "", repo := r, every := true } do
     let conflictPass : m Unit := do  -- a bad conflict pass never stops the tick
-      let db ← Store.txn [.agent, .workspace] fun db => (db, db)
+      let db ← Store.view [Sels.live, Sels.all .workspace] id
       let all ← Workspaces.worktrees
       let rs ← (Workspaces.wtMapOf db all).mapM fun (n, w) => do pure (n, w, ← real w)
       let here := (rs.filter fun (_, _, r) => all.any (·.1 == r)).map fun (n, w, _) => (n, w)
@@ -542,28 +546,28 @@ def tickFailed (msg : String) (st : St) : m St := do
   if st.lastErr == some msg then return st
   let cs := (← Swarms.list).filterMap fun sw => if sw.ended.isNone then sw.comms else none
   let now ← Clock.now
-  Store.txn [] fun db =>
+  Store.run (Txn.update [] [.msg] fun db =>
     let db := db.log now (some "swarm") "watchd-tick-error" none (some msg)
-    (cs.foldl (fun db c => say db now (.agent c) ("watchd tick failed (it carries on): " ++ msg) false "system") db, ())
+    (cs.foldl (fun db c => say db now (.agent c) ("watchd tick failed (it carries on): " ++ msg) false "system") db, ()))
   return { st with lastErr := some msg }
 
 /-- The tick lease (meta watchd_tick): the record still ours and no other live watchd mid-tick, in one transaction.
 true: ours; false: the record isn't; none: another's tick (or the lease changed since its holder was checked). -/
 def claimTick (mine : String) : m (Option Bool) := do
-  let t0 ← Store.txn [.«meta»] fun db => (db, (db.getMeta "watchd_tick").bind (·.v))
+  let t0 ← Store.view [Sels.metas ["watchd_tick"]] fun db => (db.getMeta "watchd_tick").bind (·.v)
   let busy ← match t0 with
     | some v => if v != mine then recAlive v else pure false
     | none => pure false
-  Store.txn [.«meta»] fun db =>
+  Store.run (Txn.update [Sels.metas ["watchd", "watchd_tick"]] [] fun db =>
     if (db.getMeta "watchd").bind (·.v) != some mine then (db, some false)
     else if (db.getMeta "watchd_tick").bind (·.v) != t0 || busy then (db, none)
-    else (db.setMeta "watchd_tick" (some mine), some true)
+    else (db.setMeta "watchd_tick" (some mine), some true))
 
 /-- One pass of the loop: the record, then the tick; whether a tick has finished, why watchd exits if it should, and
 the tick's error (watchd.watchd_pass). -/
 def watchdPass (mine : String) (opts : Opts) (up : Bool) (st : St) :
     m (Bool × Option String × St × Option String) := do
-  let db ← Store.txn [.«meta»] fun db => (db, db)
+  let db ← Store.view [Sels.metas ["watchd", "watchd_up"]] id
   let some cur := (db.getMeta "watchd").bind (·.v) | return (up, some ": its record is gone", st, none)
   if cur != mine then
     -- hand over only to a live watchd that has finished a tick; a replacement that died gets the record back
@@ -571,10 +575,11 @@ def watchdPass (mine : String) (opts : Opts) (up : Bool) (st : St) :
     if (db.getMeta "watchd_up").bind (·.v) == some cur && alive then return (up, some s!" was replaced by {cur}", st, none)
     if !alive then
       let now ← Clock.now
-      Store.txn [.«meta»] fun db =>  -- the record and its event together: a reader that sees one sees both
+      -- the record and its event together: a reader that sees one sees both
+      Store.run (Txn.update [Sels.metas ["watchd"]] [] fun db =>
         if (db.getMeta "watchd").bind (·.v) == some cur then
           ((db.setMeta "watchd" (some mine)).log now (some "swarm") "watchd-back" none (some s!"{cur} died before its first tick; {mine} carries on"), ())
-        else (db, ())
+        else (db, ()))
     return (up, none, st, none)
   let mut mid ← claimTick mine
   while mid.isNone do  -- not a whole interval: --restart waits for our first tick
@@ -584,9 +589,9 @@ def watchdPass (mine : String) (opts : Opts) (up : Bool) (st : St) :
   let (st, err) ← match ← Guard.guard (tick opts st) with
     | .ok r => pure r
     | .error e => pure (st, some e)
-  Store.txn [.«meta»] fun db =>
+  Store.run (Txn.update [Sels.metas ["watchd_up", "watchd_tick"]] [] fun db =>
     let db := if err.isNone && !up then db.setMeta "watchd_up" (some mine) else db
-    (if (db.getMeta "watchd_tick").bind (·.v) == some mine then delMeta db "watchd_tick" else db, ())
+    (if (db.getMeta "watchd_tick").bind (·.v) == some mine then delMeta db "watchd_tick" else db, ()))
   match err with
   | some e => return (up, none, st, some e)
   | none => return (true, none, { st with lastErr := none }, none)
@@ -613,7 +618,7 @@ def loop (mine : String) (opts : Opts) : m (Option String) := do
 /-- `swarm watchd --restart`: the same watchd (recorded flags and cwd) in a hidden hc terminal, taking over; success
 only once it has finished a tick (watchd.restart). -/
 def restart (over : List String := []) : m UInt32 := do
-  let db ← Store.txn [.«meta»] fun db => (db, db)
+  let db ← Store.view [Sels.metas ["watchd_run", "watchd"]] id
   let rec_ := ((db.getMeta "watchd_run").bind (·.v)).bind Json.decode
   let some (fl, cwd) := rec_.bind (fun j => match Json.field j "flags", Json.fstr j "cwd" with
       | some f, some c => some ((Json.items f).filterMap Json.str?, c)
@@ -632,7 +637,7 @@ def restart (over : List String := []) : m UInt32 := do
   let t0 ← Clock.now
   let mut seen : Option String := none  -- the record of the watchd that took over (it may already have given it back)
   while Float.ofInt ((← Clock.now) - t0) < wait do
-    let db ← Store.txn [.«meta»] fun db => (db, db)
+    let db ← Store.view [Sels.metas ["watchd", "watchd_up"]] id
     let r := (db.getMeta "watchd").bind (·.v)
     if r.isSome && r != old then seen := r
     if let some s := seen then
@@ -647,7 +652,8 @@ def restart (over : List String := []) : m UInt32 := do
     -- shortcut: SIGTERM through kill(1); Sys has no signal call
     if alive then discard <| Proc.output ["kill", "-TERM", (words s).headD ""] none []  -- kill-site: the watchd it displaced
     if let some o := old then
-      Store.txn [.«meta»] fun db => (if (db.getMeta "watchd").bind (·.v) == some s then db.setMeta "watchd" (some o) else db, ())
+      Store.run (Txn.update [Sels.metas ["watchd"]] [] fun db =>
+        (if (db.getMeta "watchd").bind (·.v) == some s then db.setMeta "watchd" (some o) else db, ()))
     fail s!"the new watchd ({s}) {if alive then "did not finish a tick" else "died before its first tick"}"
   fail s!"no new watchd took over within {(Float.floor wait).toInt64.toInt} s"
   return 1
@@ -661,7 +667,8 @@ def setKnobs (a : Parsed) : m Unit := do
     return
   let now ← Clock.now
   let envComms ← env "SWARM_COMMS"
-  Store.txn [.«meta», .agent] fun db =>
+  let ss := Sels.limits ++ [Sels.metas ["ci", "spawn_model", "spawn_effort"]] ++ (comms.map Sels.agent).toList
+  Store.run <| Txn.update ss [] fun db =>
     let db := match comms with  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
       | some c =>
         let db := db.setMeta "comms" (some c)
@@ -685,12 +692,12 @@ def repoScope : m Scope := return { swarm := "", repo := (← Workspaces.main no
 `--takeover`), then the loop. -/
 def serve (a : Parsed) : m UInt32 := do
   let mine := s!"{← Sys.getpid} {(← env "HC_TERMINAL_ID").getD "-"}"  -- the watchd record
-  let old := ((← Store.txn [.«meta»] fun db => (db, db)).getMeta "watchd").bind (·.v)
+  let old ← Store.view [Sels.metas ["watchd"]] fun db => (db.getMeta "watchd").bind (·.v)
   let oldAlive ← match old with | some o => recAlive o | none => pure false
   let once := a.flag "once"
   let run := Json.encode (Lean.Json.mkObj [("cwd", .str (← Env.cwd)),
     ("flags", .arr (flags a |>.map Lean.Json.str |>.toArray)), ("started", Json.int (← Clock.now))])
-  let refused ← Store.txn [.«meta»] fun db =>
+  let refused ← Store.run <| Txn.update [Sels.metas ["watchd", "watchd_run"]] [] fun db =>
     let o := (db.getMeta "watchd").bind (·.v)
     -- the pid was checked outside: a record changed since counts as alive
     if o.isSome && o != some mine && (o != old || oldAlive) && !a.flag "takeover" then (db, o) else
