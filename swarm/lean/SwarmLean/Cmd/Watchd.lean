@@ -343,7 +343,7 @@ def noticeSels : List Sel :=
 def notices (t : Int) (comms : String) (away : Bool) : m Unit :=
   Store.run (Txn.update noticeSels [.msg] fun d => (noticesStep t comms away d, ()))
 
-/-- Runs a pass's acts in order: the only place a pass sends (sw-architecture-review §4 B1). -/
+/-- Runs a pass's acts in order: the only place a pass sends or kills a terminal (sw-architecture-review §4 B1). -/
 def runActs (acts : List Act) : m Unit := do
   for x in acts do
     match x with
@@ -353,6 +353,9 @@ def runActs (acts : List Act) : m Unit := do
       | some e => Env.err s!"{n}: hc send {h} failed: {e}"
       | none => if once == Once.atLeast && !mark.isEmpty then Store.run (Txn.exec mark)
     | .endAgent a => discard <| Lifecycle.endAgent a false none
+    | .kill h =>
+      discard <| Proc.output ["hc", "kill", h] none []
+      discard <| Proc.output ["hc", "rm", h] none []
     | .err line => Env.err line
 
 /-- A pass under its guard: its error, prefixed, added to `errs`. -/
@@ -432,7 +435,7 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
   let foreign := (p.agents.filter (·.2.1 != sw.name)).map (·.1)
   let (errs, opts) ← Scoped.within hs do
     let mut errs : List String := []
-    errs ← pass errs (pre ++ "reap: ") (discard <| reap live t comms foreign)
+    errs ← pass errs (pre ++ "reap: ") (do runActs (← reap live t comms foreign home).2)
     let mut opts ← match ← Guard.guard (knobs opts) with
       | .ok o => pure o
       | .error e => errs := errs ++ [pre ++ "knobs: " ++ e]; pure opts
@@ -477,7 +480,7 @@ def repoTick (p : Plan) (r : String) (notLanded : List String) (t : Int) : m (Li
       Conflict.conflictTick r here (Bases.baseFor · none) t
     if let .error e ← Guard.guard conflictPass then Env.err s!"conflict: {e}"
     let mut errs : List String := []
-    errs ← pass errs (pre ++ "locks: ") (discard <| reapLocks t)
+    errs ← pass errs (pre ++ "locks: ") (discard <| reapLocks r t)
     let mut nl := notLanded
     match ← Guard.guard (repoSweep comms notLanded) with
     | .ok x => nl := x

@@ -100,6 +100,8 @@ inductive Act
   | send (agent hc text : String) (mark : List Stmt) (once : Once)
   /-- the agent ended (`Lifecycle.endAgent`) -/
   | endAgent (a : Agent)
+  /-- hc terminal `hc` killed and removed -/
+  | kill (hc : String)
   /-- a line to stderr -/
   | err (line : String)
 
@@ -176,61 +178,89 @@ def git (args : List String) (cwd : Option String := none) : m (Option String) :
 /-- A path's realpath, the path itself when it has none. -/
 def real (p : String) : m String := Workspaces.real p
 
-/-- Reopens expired task leases whose owner neither keeps them for its work nor lives (`keeps`, `lives`): a kept one
-is told to its owner, then maybe the communicator (`leaseLate`); a hung owner's reopened one is told to the
-communicator. A claim of an agent of another swarm (`foreign`) is left to that swarm's reap. Drops expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
-none skips both) (watchd.reap). -/
-def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreign : List String := []) :
-    m (List String) := do
-  let db ← Store.txn [.task, .agent, .event] fun db => (db, db)
+/-- The events `keeps` and `lives` read of an owner: its compactions (`Compact.compacting`) and liveness flags (`hungNow`). -/
+def KEEP_KINDS : List String := ["compact-asked", "ctx-compact", "ctx-continue", "compact", "stay-hung"]
+
+/-- Owner `n`'s events of `KEEP_KINDS`. -/
+def keepSel (n : String) : Sel :=
+  { table := .event, cond := .and (.eq "agent" (.text n)) (.oneOf "kind" (KEEP_KINDS.map .text)) }
+
+/-- What `reapClaim` reads of lapsed claim `r`: the task, its `lease-late` events, its owner's row and `keepSel`. -/
+def claimSels (r : Task) : List Sel :=
+  [Sels.task (r.id : Int), { table := .event, cond := .and (.eq "kind" (.text "lease-late")) (.eq "path" (.text (d r.id))) }] ++
+    match r.owner with
+    | some n => [Sels.agent n, keepSel n]
+    | none => []
+
+/-- Reap's step on lapsed claim `r` (read before), on the rows read now: its owner keeps it for its work or lives
+(`keeps`, `lives`; `bg` the agents running a background job, `live` hc's live terminals): told (`leaseLate`, `hhmm` the
+lease's end); else reopened (`reapTask`), and a hung owner's reopen told to the communicator. True when it reopened it. -/
+def reapClaim (r : Task) (t : Int) (hhmm : String) (comms : Option String) (bg : List String)
+    (live : Option (List String)) (db : Db) : Db × Bool :=
+  let o := r.owner.bind db.agent
+  let comp := o.any fun a => Compact.compacting db.events a.name (a.last_active.getD 0) t
+  let hung := o.any (hungNow db.events)
+  if keeps o (o.any fun a => bg.contains a.name) comp live || lives o hung live then
+    -- its owner is live (working, blocked, waiting on a job, compacting, or idle and not hung): keep it, tell them
+    (leaseLate r o t hhmm comms comp db, false)
+  else
+    let (db, done) := reapTask r t t db
+    match done && hung, comms with
+    | true, some c =>
+      let own := r.owner.getD "nil"
+      (say db t (.agent c) (s!"#{d r.id} reopened: {own} is hung (no answer to the liveness " ++
+        s!"check). `swarm nudge {own}`, or end it.") false "system", true)
+    | _, _ => (db, done)
+
+/-- The lock row `l` by its key. -/
+def lockSel (l : Lock) : Sel :=
+  { table := .lock, cond := .and (.eq "repo" (.text l.repo)) (.eq "path" (.text l.path)) }
+
+/-- Reopens expired task leases whose owner neither keeps them for its work nor lives (`reapClaim`): a kept one is told
+to its owner, then maybe the communicator (`leaseLate`); a hung owner's reopened one is told to the communicator. A
+claim of an agent of another swarm (`foreign`) is left to that swarm's reap. Drops expired locks of `repo`, ends the
+agents whose bound terminal hc no longer lists and asks for the kill of the terminal of an ended row hc still lists
+(`live`: none skips both) (watchd.reap). One read of the scope, then one transaction per task, lock and agent, each
+deciding on the rows it reads; `t` stamps the writes. What it did, and the kills for `runActs`. -/
+def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreign : List String := [])
+    (repo : String := "") : m (List String × List Act) := do
+  let db ← Store.view [Sels.all .agent, { table := .task, cond := .eq "state" (.text "claimed") },
+    { table := .lock, cond := .eq "repo" (.text repo) }] id
+  let lapsed := db.tasks.filter fun r => r.state = .claimed && r.lease_until.any (· < t) &&
+    !((r.owner.bind db.agent).isNone && r.owner.any foreign.contains)
+  -- the process table only when an idle live owner may be waiting on a background job
+  let idle := lapsed.any fun r => (r.owner.bind db.agent).any fun a => a.ended.isNone && a.status == some "idle"
+  let bg ← if idle then do pure ((Machine.bgAgents db.agents (← Machine.procs)).map (·.1)) else pure []
   let mut out := []
-  let mut bg : Option (List (String × Machine.Ps)) := none
-  for r in db.tasks.filter fun r => r.state = .claimed && r.lease_until.any (· < t) do
-    let o := r.owner.bind db.agent
-    if o.isNone && r.owner.any foreign.contains then continue
-    if let some a := o then
-      if a.ended.isNone && a.status == some "idle" && bg.isNone then bg := some (Machine.bgAgents db.agents (← Machine.procs))
-    let hasBg := match o, bg with
-      | some a, some b => (b.lookup a.name).isSome
-      | _, _ => false
-    let comp := o.any fun a => Compact.compacting db.events a.name (a.last_active.getD 0) t
-    let hung := o.any (hungNow db.events)
-    if keeps o hasBg comp live || lives o hung live then
-      -- its owner is live (working, blocked, waiting on a job, compacting, or idle and not hung): keep it, tell them
-      let hm ← Clock.hhmm (r.lease_until.getD t)
-      Store.txn [.event] fun db => (leaseLate r o t hm comms comp db, ())
-    else
-      let now ← Clock.now
-      let done ← Store.txn [.task] (reapTask r t now)
-      if done then
-        out := out ++ [s!"task #{d r.id}"]
-        if hung then
-          if let some c := comms then
-            let own := r.owner.getD "nil"
-            Store.txn [] fun db => (say db now (.agent c) (s!"#{d r.id} reopened: {own} is hung (no answer to the liveness " ++
-              s!"check). `swarm nudge {own}`, or end it.") false "system", ())
-  let locks ← Store.txn [.lock] fun db => (db, db.locks.filter (·.lease_until.any (· < t)))
-  for l in locks do
-    let now ← Clock.now
-    let done ← Store.txn [.lock] (reapLock l t now)
-    if done then out := out ++ [s!"lock {l.path}"]
-  if let some up := live then
-    for a in Agents.live (← Store.txn [.agent] fun db => (db, db)) do
-      let some h := py a.hc | continue
-      if up.contains h then continue
-      let done ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] (reapGone a.name h t)
-      if done then out := out ++ [s!"agent {a.name}"]
-    -- an ended row whose terminal hc still lists and no live row is bound to: its end stopped before the kill
-    let db ← Store.txn [.agent] fun db => (db, db)
-    for a in db.agents do
-      let some h := py a.hc | continue
-      if a.ended.isNone || !up.contains h || (Agents.live db).any (py ·.hc == some h) then continue
-      discard <| Proc.output ["hc", "kill", h] none []
-      discard <| Proc.output ["hc", "rm", h] none []
-      out := out ++ [s!"terminal {a.name}"]
-  return out
+  for r in lapsed do
+    let hm ← Clock.hhmm (r.lease_until.getD t)
+    if ← Store.run (Txn.update (claimSels r) [.msg] (reapClaim r t hm comms bg live)) then out := out ++ [s!"task #{d r.id}"]
+  for l in db.locks.filter (·.lease_until.any (· < t)) do
+    if ← Store.run (Txn.update [lockSel l] [] (reapLock l t t)) then out := out ++ [s!"lock {l.path}"]
+  let some up := live | return (out, [])
+  for a in Agents.live db do
+    let some h := py a.hc | continue
+    if up.contains h then continue
+    if ← Store.run (Txn.update (Sels.release a.name) [.msg] (reapGone a.name h t)) then out := out ++ [s!"agent {a.name}"]
+  -- an ended row whose terminal hc still lists and no live row is bound to: its end stopped before the kill
+  let mut acts : List Act := []
+  for a in db.agents do
+    let some h := py a.hc | continue
+    if a.ended.isNone || !up.contains h || (Agents.live db).any (py ·.hc == some h) then continue
+    acts := acts ++ [Act.kill h]
+    out := out ++ [s!"terminal {a.name}"]
+  return (out, acts)
 
 -- ---------- sweep ----------
+
+/-- The worktree rows an agent made (not a read-only one): what `madeHere`, `Workspaces.usedOf` and `owned` read. -/
+def madeSel : Sel := { table := .workspace, cond := .eq "ro" (.int 0) }
+
+/-- The tasks with a base: what `Workspaces.protectedOf` reads. -/
+def basesSel : Sel := { table := .task, cond := .notNull "base" }
+
+/-- What the sweep and `keepReasons` read: the live agents, the made worktrees and the tasks' bases. -/
+def sweepSels : List Sel := [Sels.live, madeSel, basesSel]
 
 /-- Deletes the local branch of a removed worktree: never a prot one, never master; `branch -d` when git agrees it
 is merged, else `update-ref -d` guarded by the tip the sweep checked (watchd.delete_branch). -/
@@ -257,7 +287,7 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
   let lines := splitlines ((← Lifecycle.run ["git", "worktree", "list", "--porcelain"]).getD "")
   let some first := lines.head? | return ([], notLanded)
   let main ← real (first.drop 9).toString
-  let db ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
+  let db ← Store.view sweepSels id
   let prot ← Workspaces.protectedOf db (some main)
   let bs ← Bases.refs prot (some main)
   let wts ← (wtLines lines.tail).mapM fun (p, br) => return (← real p, br)
@@ -291,15 +321,14 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
       else
         Run.cleanRemote wt
         deleteBranch main br head prot
-        let now ← Clock.now
-        Store.txn [] fun db => (db.log now none "sweep" (some wt) (some s!"{br.getD "None"} {mb}MB"), ())
+        Store.run (Txn.exec [logStmt t none "sweep" (some wt) (some s!"{br.getD "None"} {mb}MB")])
     if removed then
       out := out ++ [(wt, br, mb)]
       freed := freed + mb
   if !out.isEmpty && !dry then
     if let some c := comms then
-      let now ← Clock.now
-      Store.txn [] fun db => (say db now (.agent c) s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ())
+      Store.run (Txn.update [] [.msg] fun db =>
+        (say db t (.agent c) s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ()))
   return (out, cache)
 
 /-- Why the sweep keeps each worktree of the repo that lies inside `dir` (a realpath), as it reads them now; "landed" for one
@@ -308,7 +337,7 @@ def keepReasons (dir : String) : m (List (String × Option String × String)) :=
   let lines := splitlines ((← Lifecycle.run ["git", "worktree", "list", "--porcelain"]).getD "")
   let some first := lines.head? | return []
   let main ← real (first.drop 9).toString
-  let db ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
+  let db ← Store.view sweepSels id
   let prot ← Workspaces.protectedOf db (some main)
   let bs ← Bases.refs prot (some main)
   let used := (← (((Agents.live db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM real) ++
@@ -716,13 +745,12 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
 
 /-- The worktrees of the scope's repo a `workspace` row made (realpaths): the only ones the sweep removes (sw-global §4). -/
 def madeHere : m (List String) := do
-  let db ← Store.txn [.workspace] fun db => (db, db)
-  ((db.workspaces.filter (·.ro == some 0)).map (·.path)).mapM real
+  (← Store.view [madeSel] fun db => (db.workspaces.filter (·.ro == some 0)).map (·.path)).mapM real
 
 /-- The repo's own upkeep (sw-global §4, per repo, in its folder and scope): its bases fetched, the sweep of the
 worktrees a `workspace` row made and the branches ended agents left; the "not landed" cache before and after. -/
 def repoSweep (comms : Option String) (notLanded : List String) : m (List String) := do
-  let db0 ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
+  let db0 ← Store.view [{ table := .agent, cond := .notNull "ended" }, basesSel] id
   let main ← Workspaces.main none
   let prot ← Workspaces.protectedOf db0 main
   for b in prot do Bases.fetch b main
@@ -730,23 +758,27 @@ def repoSweep (comms : Option String) (notLanded : List String) : m (List String
   if let some mn := main then sweepBranches mn ((db0.agents.filter (·.ended.isSome)).map (·.name)) prot
   return notLanded
 
+/-- Repo lock `l` dropped if its holder is no live agent of any swarm and the lock is still its (read before); true when
+it dropped it. -/
+def reapHolderGone (l : Lock) (t : Int) (db : Db) : Db × Bool :=
+  if (Agents.live db).any (some ·.name == l.agent) || !db.locks.any (fun x => x.path == l.path && x.agent == l.agent) then (db, false)
+  else
+    let db := { db with locks := db.locks.filter fun x => !(x.path == l.path && x.agent == l.agent) }
+    (db.log t l.agent "reap" (some l.path) (some "holder gone"), true)
+
 /-- The repo's locks (sw-global §4, per repo, every swarm's agents in view): an expired one dropped (`reapLock`), and
-one whose holder is no live agent of any swarm (its end released the locks of its own repo only). -/
-def reapLocks (t : Int) : m (List String) := do
-  let db ← Store.txn [.lock, .agent] fun db => (db, db)
+one whose holder is no live agent of any swarm (`reapHolderGone`; its end released the locks of its own repo only).
+One read, then one transaction per lock on its row (and its holder's); `t` stamps the writes. -/
+def reapLocks (repo : String) (t : Int) : m (List String) := do
+  let db ← Store.view [{ table := .lock, cond := .eq "repo" (.text repo) }, Sels.live] id
   let live := (Agents.live db).map (·.name)
   let mut out := []
   for l in db.locks do
-    let now ← Clock.now
     if l.lease_until.any (· < t) then
-      if ← Store.txn [.lock] (reapLock l t now) then out := out ++ [s!"lock {l.path}"]
+      if ← Store.run (Txn.update [lockSel l] [] (reapLock l t t)) then out := out ++ [s!"lock {l.path}"]
     else if l.agent.all (!live.contains ·) then
-      let gone ← Store.txn [.lock, .agent] fun db =>
-        if (Agents.live db).any (some ·.name == l.agent) || !db.locks.any (fun x => x.path == l.path && x.agent == l.agent) then (db, false)
-        else
-          let db := { db with locks := db.locks.filter fun x => !(x.path == l.path && x.agent == l.agent) }
-          (db.log now l.agent "reap" (some l.path) (some "holder gone"), true)
-      if gone then out := out ++ [s!"lock {l.path}"]
+      let holder := match l.agent with | some n => [Sels.agent n] | none => []
+      if ← Store.run (Txn.update ([lockSel l] ++ holder) [] (reapHolderGone l t)) then out := out ++ [s!"lock {l.path}"]
   return out
 
 /-- Ends finished agents, offers reusable ones related tasks (board #186), staffs the startable tasks not under an
