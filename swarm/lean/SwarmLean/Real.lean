@@ -1,37 +1,27 @@
 import SwarmLean.World
 import SwarmLean.Db.Plan
+import SwarmLean.Db.Schema
 import Std.Data.HashMap
+import Lean.Data.Json
 
 /-! The real world: the instances of the interfaces on IO, and the SQLite store on the Lua CLI's database. -/
 
 namespace SwarmLean
 open Sqlite
 
-/-- db.lua's SCHEMA, as is. -/
-def schema : String := "
-create table if not exists agent(name text primary key, hc text, model text, cwd text, status text,
-  last_active int, ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text,
-  waiter int, wt text);
-create table if not exists msg(id integer primary key autoincrement, ts int, frm text, dest text,
-  body text, urgent int default 0, kind text);
-create table if not exists cursor(agent text primary key, last_msg_id int default 0);
-create table if not exists task(id integer primary key autoincrement, title text, body text,
-  state text default 'open', owner text, lease_until int, created_by text, evidence text, deps text, model text, question text,
-  effort text);
-create table if not exists lock(path text primary key, agent text, reason text, since int, lease_until int, seen int default 0);
-create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
-create table if not exists pairkey(a text, b text, key text, primary key(a,b));
-create table if not exists meta(k text primary key, v text);
-create table if not exists event(id integer primary key autoincrement, ts int, agent text, kind text,
-  path text, data text);
-create table if not exists workspace(path text, branch text, base text, agent text, ro int default 0, primary key(path, agent));
-create table if not exists ci(id integer primary key, sha text, status text, conclusion text, url text,
-  created text, updated text, failed text);
-"
+/-- What a command's transactions see of the machine's db: one swarm's agents, knobs and events, and one repo's locks,
+CI runs and worktrees (the folder's). -/
+structure Scope where
+  swarm : String
+  repo : String
 
-/-- What the real monad carries: the db path and the connection, opened at the first transaction. -/
+/-- What the real monad carries: the connection, opened at the first transaction, and the scope, resolved then. -/
 structure Ctx where
   conn : IO.Ref (Option Conn)
+  scope : IO.Ref (Option Scope)
+
+/-- A context with no connection yet and the scope unresolved. -/
+def Ctx.new : IO Ctx := return { conn := ← IO.mkRef none, scope := ← IO.mkRef none }
 
 /-- The real monad: IO with the connection, and an early exit. -/
 abbrev App := ExceptT Exit (ReaderT Ctx IO)
@@ -41,13 +31,13 @@ def tableCols (c : Conn) (t : String) : IO (List String) := do
   let rows ← c.query s!"pragma table_info({t})"
   return rows.toList.filterMap fun r => match r[1]? with | some (Val.text n) => some n | _ => none
 
-/-- The db file (db.dbpath): $SWARM_DB, else swarm/swarm.db in the repo's git common dir. -/
+/-- The machine's db: $SWARM_DB (tests), else swarm/swarm.db in $XDG_STATE_HOME, else in ~/.local/state. -/
 def dbPath : IO String := do
   if let some p ← IO.getEnv "SWARM_DB" then if p ≠ "" then return p
-  let r ← IO.Process.output { cmd := "git", args := #["rev-parse", "--path-format=absolute", "--git-common-dir"] }
-  let d := strip r.stdout
-  if r.exitCode ≠ 0 || d.isEmpty then throw <| IO.userError "not in a git repo and SWARM_DB is unset"
-  return d ++ "/swarm/swarm.db"
+  let st ← match ← IO.getEnv "XDG_STATE_HOME" with
+    | some x => if x ≠ "" then pure x else pure (((← IO.getEnv "HOME").getD "") ++ "/.local/state")
+    | none => pure (((← IO.getEnv "HOME").getD "") ++ "/.local/state")
+  return st ++ "/swarm/swarm.db"
 
 /-- Runs the statements in order. -/
 def runStmts (c : Conn) (p : List Stmt) : IO Unit := do
@@ -92,6 +82,67 @@ def theConn : App Conn := do
   | some c => pure c
   | none => let c ← connect; r.set (some c); pure c
 
+@[extern "swarm_setenv"] opaque setenvIO (k v : @& String) : IO Unit
+
+/-- The repo of the working directory: its main worktree (the first `git worktree list` names), resolved; `''` outside
+one. -/
+def repoHere : IO String := do
+  try
+    let r ← IO.Process.output { cmd := "git", args := #["worktree", "list", "--porcelain"] }
+    if r.exitCode ≠ 0 || !r.stdout.startsWith "worktree " then return ""
+    let p := String.ofList ((r.stdout.drop 9).toString.toList.takeWhile (· ≠ '\n'))
+    try return (← IO.FS.realPath p).toString catch _ => return p
+  catch _ => return ""
+
+/-- The first column of each row, as text. -/
+def texts (rows : Array (Array Val)) : List String :=
+  rows.toList.filterMap fun r => match r[0]? with | some (.text s) => some s | _ => none
+
+/-- The swarms not ended, by name. -/
+def liveSwarms (c : Conn) : IO (List String) := return texts (← c.query "select name from swarm where ended is null order by name")
+
+/-- The `swarm` label hc keeps on terminal `h`, if any. -/
+def hcSwarmLabel (h : String) : IO (Option String) := do
+  try
+    let r ← IO.Process.output { cmd := "hc", args := #["get", h] }
+    if r.exitCode ≠ 0 then return none
+    let j ← IO.ofExcept (Lean.Json.parse r.stdout)
+    return ((j.getObjValD "labels").getObjValAs? String "swarm").toOption
+  catch _ => return none
+
+/-- The swarm this process acts on (sw-global §2), never from the folder: `$SWARM` (`--swarm` sets it), the swarm of
+`$SWARM_NAME`'s agent row, the hc label `swarm=<name>` of `$HC_TERMINAL_ID`, the only live swarm; else why not. -/
+def resolveSwarm (c : Conn) : IO (Except String String) := do
+  let has (s : String) : IO Bool := return !(← c.query "select 1 from swarm where name=?" [.text s]).isEmpty
+  let var (k : String) : IO (Option String) := return (← IO.getEnv k).filter (· ≠ "")
+  if let some s ← var "SWARM" then
+    return if ← has s then .ok s else .error s!"no swarm '{s}' (`swarm swarms` lists them; `swarm new {s}` makes it)"
+  if let some n ← var "SWARM_NAME" then
+    if let some s := (texts (← c.query "select swarm from agent where name=? and swarm is not null" [.text n])).head? then
+      return .ok s
+  if let some h ← var "HC_TERMINAL_ID" then
+    if let some s ← hcSwarmLabel h then if ← has s then return .ok s
+  match ← liveSwarms c with
+  | [s] => return .ok s
+  | [] => return .error "no swarm on this machine: `swarm new <name>` makes one (or `swarm join` as <name>-comms)"
+  | l => return .error s!"which swarm? Pass --swarm <name> or set $SWARM; live: {", ".intercalate l}"
+
+/-- Acts on swarm `s` from here on, and exports it as `$SWARM` to what this process starts. -/
+def useSwarm (s : String) : App Scope := do
+  let sc : Scope := { swarm := s, repo := ← repoHere }
+  (← read).scope.set (some sc)
+  setenvIO "SWARM" s
+  return sc
+
+/-- The scope, resolved on first use; a process with no swarm to act on stops here. -/
+def theScope : App Scope := do
+  match ← (← read).scope.get with
+  | some sc => pure sc
+  | none =>
+    match ← resolveSwarm (← theConn) with
+    | .ok s => useSwarm s
+    | .error e => IO.eprintln s!"swarm: {e}"; throw (Exit.mk 1)
+
 /-- All rows of a row type's table, in key order (asked of SQLite so that `decodeRows` only checks it). -/
 def loadRows [Row α] (c : Conn) : IO (List α) := do
   let cols := Row.cols α
@@ -107,25 +158,72 @@ def nextId (c : Conn) (t : String) : IO Nat := do
   let get (rows : Array (Array Val)) : Nat := match rows[0]?.bind (·[0]?) with | some (Val.int i) => i.toNat | _ => 0
   return max (get seq) (get mx) + 1
 
-/-- Loads the tables `ts` into a db (the others empty) with the next ids. -/
-def loadDb (c : Conn) (ts : List Table) : IO Db := do
+/-- The rows of a row type's table that `cond` (a where clause over `ps`) selects, in key order. -/
+def loadWhere [Row α] (c : Conn) (cond : String) (ps : List Val) : IO (List α) := do
+  let cols := Row.cols α
+  let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} where {cond} order by {", ".intercalate (cols.take (Row.nkey α))}" ps
+  IO.ofExcept (decodeRows rows.toList)
+
+/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
+def loadMetas (c : Conn) (s : String) : IO (List Meta) := do
+  let ks := ", ".intercalate (machineKeys.map fun k => s!"'{k}'")
+  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end" [.text s]
+  let cm ← c.query "select comms from swarm where name=? and comms is not null" [.text s]
+  let cms : List Meta := match cm[0]?.bind (·[0]?) with
+    | some (.text v) => [{ k := "comms", v := some v }]
+    | _ => []
+  return sortRows (cms ++ ms.filter (·.k != "comms"))
+
+/-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents, knobs and events of the scope's
+swarm, the locks, CI runs and worktrees of its repo, and every task, message, cursor and conflict. -/
+def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
   let has (t : Table) := ts.contains t
+  let sw := [Val.text sc.swarm]
+  let rp := [Val.text sc.repo]
   return {
-    agents := ← if has .agent then loadRows c else pure []
+    agents := ← if has .agent then loadWhere c "swarm=?" sw else pure []
     msgs := ← if has .msg then loadRows c else pure []
     cursors := ← if has .cursor then loadRows c else pure []
     tasks := ← if has .task then loadRows c else pure []
-    locks := ← if has .lock then loadRows c else pure []
+    locks := ← if has .lock then loadWhere c "repo=?" rp else pure []
     conflicts := ← if has .conflict then loadRows c else pure []
     pairkeys := ← if has .pairkey then loadRows c else pure []
-    metas := ← if has .«meta» then loadRows c else pure []
-    events := ← if has .event then loadRows c else pure []
-    workspaces := ← if has .workspace then loadRows c else pure []
-    cis := ← if has .ci then loadRows c else pure []
+    metas := ← if has .«meta» then loadMetas c sc.swarm else pure []
+    events := ← if has .event then loadWhere c "swarm=?" sw else pure []
+    workspaces := ← if has .workspace then loadWhere c "repo=?" rp else pure []
+    cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
     taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
 
-/-- Writes every table of `new` over what `old` loaded (`dbPlan`). -/
-def storeDb (c : Conn) (old new : Db) : IO Unit := runStmts c (dbPlan old new)
+/-- A write-back statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
+column, and meta `comms` is the swarm row's. A new agent row replaces one of that name in another swarm: the agent
+moves (names are the machine's). -/
+def scoped1 (sc : Scope) : Stmt → Stmt
+  | .ins "event" cs vs => .ins "event" (cs ++ ["swarm", "repo"]) (vs ++ [.text sc.swarm, .text sc.repo])
+  | .ins "meta" cs vs => match vs with
+    | [.text "comms", v] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [v]
+    | .text k :: _ => .ins "meta" (cs ++ ["scope"]) (vs ++ [.text (metaScope sc.swarm k)])
+    | _ => .ins "meta" cs vs
+  | .upd "meta" ks k cs vs => match k with
+    | [.text "comms"] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] vs
+    | [.text kk] => .upd "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.swarm kk)]) cs vs
+    | _ => .upd "meta" ks k cs vs
+  | .del "meta" ks k => match k with
+    | [.text "comms"] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [.null]
+    | [.text kk] => .del "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.swarm kk)])
+    | _ => .del "meta" ks k
+  | .ins t cs vs => if ["lock", "ci", "workspace"].contains t then .ins t (cs ++ ["repo"]) (vs ++ [.text sc.repo]) else .ins t cs vs
+  | .upd t ks k cs vs => if ["lock", "ci", "workspace"].contains t then .upd t (ks ++ ["repo"]) (k ++ [.text sc.repo]) cs vs
+    else .upd t ks k cs vs
+  | .del t ks k => if ["lock", "ci", "workspace"].contains t then .del t (ks ++ ["repo"]) (k ++ [.text sc.repo]) else .del t ks k
+  | st => st
+
+/-- `scoped1`, an agent's insert after a delete of its name. -/
+def scoped (sc : Scope) : Stmt → List Stmt
+  | .ins "agent" cs vs => [.del "agent" ["name"] (vs.take 1), .ins "agent" (cs ++ ["swarm"]) (vs ++ [.text sc.swarm])]
+  | st => [scoped1 sc st]
+
+/-- Writes every table of `new` over what `old` loaded (`dbPlan`), in scope `sc`. -/
+def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := runStmts c ((dbPlan old new).flatMap (scoped sc))
 
 /-- `act` between `begin` and COMMIT; any error rolls back. -/
 def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
@@ -145,21 +243,21 @@ def dataVersion (c : Conn) : IO (Array (Array Val)) := c.query "pragma data_vers
 readers never wait on or starve each other); if `f` changed the db, write it back under BEGIN IMMEDIATE, as computed when
 no other connection committed since (data_version unchanged), else loaded and applied again there. Any error rolls back.
 -/
-def sqliteTxn (c : Conn) (ts : List Table) (f : Db → Db × α) : IO α := do
-  let (db, v) ← inTxn c "begin" do pure (← loadDb c ts, ← dataVersion c)
+def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : IO α := do
+  let (db, v) ← inTxn c "begin" do pure (← loadDb c sc ts, ← dataVersion c)
   let (db', a) := f db
   if db' = db then return a
   inTxn c "begin immediate" do
     if (← dataVersion c) == v then
-      storeDb c db db'
+      storeDb c sc db db'
       return a
-    let db ← loadDb c ts
+    let db ← loadDb c sc ts
     let (db', a) := f db
-    if db' ≠ db then storeDb c db db'
+    if db' ≠ db then storeDb c sc db db'
     return a
 
 instance : Store App where
-  txn ts f := do sqliteTxn (← theConn) ts f
+  txn ts f := do sqliteTxn (← theConn) (← theScope) ts f
 
 instance : Guard App where
   guard x := ExceptT.mk fun ctx => do

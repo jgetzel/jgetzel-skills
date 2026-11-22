@@ -3,6 +3,7 @@ import SwarmLean.Cmd.OpsHelp
 import SwarmLean.Lib.Run
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Compute
+import SwarmLean.Lib.Swarms
 import Claims.Acquire
 import Claims.Machines
 
@@ -465,7 +466,7 @@ def run (a : Parsed) : m UInt32 := do
   let jenv := jenv.filter (fun (k, _) => k != "SWARM_JOB_ID" && k != "SWARM_JOB_MACHINE") ++ [("SWARM_JOB_ID", jid), ("SWARM_JOB_MACHINE", chosen.getD hn)]
   -- an explicit --mem is a hard cap, in the job's own scope `swarm-job-<agent>-j<jid>` (a local job's with its pid after, a scope name is per machine); a defaulted one only a reservation
   let unit := "swarm-job-" ++ String.ofList (who.toLower.toList.map fun c => if c.isLower || c.isDigit || c == '_' || c == '-' then c else '-') ++ "-j" ++ jid
-  let dbp := match ← env "SWARM_DB" with | some p => p | none => common ++ "/swarm/swarm.db"
+  let dbp ← Swarms.dbPath
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
   let logf := jobs ++ "/log"
@@ -545,7 +546,7 @@ def jobRecord (a : Parsed) : m UInt32 := do
   let jid ← Store.txn [.«meta»] fun db =>
     let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
     (db.setMeta "jobs" (some (d n)), d n)
-  let dbp := match ← env "SWARM_DB" with | some p => p | none => common ++ "/swarm/swarm.db"
+  let dbp ← Swarms.dbPath
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
   if let some lf := a.str "log" then discard <| Sys.exec ["cp", lf, jobs ++ "/log"] {}

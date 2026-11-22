@@ -46,7 +46,7 @@ def doneTask (t : T) (owner base : String) : IO Unit := do
 
 /-- An action of the real monad, run as the Lua called its module (the cwd, SWARM_DB as the Lua had them). -/
 def runApp (act : App α) : IO α := do
-  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  match ← (act.run.run (← Ctx.new)) with
   | .ok a => pure a
   | .error _ => fail "App action exited"
 

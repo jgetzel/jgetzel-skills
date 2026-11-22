@@ -5,6 +5,7 @@ import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Spawn
 import SwarmLean.Lib.Lifecycle
+import SwarmLean.Lib.Swarms
 
 /-! `swarm join`, `leave`, `role`, `stay`, `limits`, `away`, `who` and `machine` (agents.lua's commands and
 machine.cmd_machine). -/
@@ -42,6 +43,10 @@ def spawnSpec : Spec :=
 def endSpec : Spec := .mk "end" helpEnd [{ name := "agent" }] [flag "--force"] [] [] none
 /-- `swarm endable`'s parser. -/
 def endableSpec : Spec := .mk "endable" helpEndable [maybe "agent"] [flag "--why"] [] [] none
+/-- `swarm new`'s parser. -/
+def newSpec : Spec := .mk "new" helpNew [{ name := "name" }] [{ opt "--repo" with maxCount := 1000000 }, opt "--comms"] [] [] none
+/-- `swarm swarms`'s parser. -/
+def swarmsSpec : Spec := .mk "swarms" helpSwarms [] [] [] [] none
 /-- `swarm who`'s parser. -/
 def whoSpec : Spec := .mk "who" helpWho [] [] [] [] none
 /-- `swarm machine`'s parser. -/
@@ -54,12 +59,12 @@ def unfence (name : String) : Except Fence α → m α
   | .ok a => pure a
   | .error f => do die (← fenceText name f)
 
-/-- The labels hc keeps on a terminal: its Herdr space and the db it is the communicator of (agents.hc_info). -/
-def hcInfo (addr : String) : m (Option String × Option String) := do
+/-- The swarm a terminal's hc label `swarm` names, if any (`join` sets it). -/
+def hcSwarm (addr : String) : m (Option String) := do
   let o ← Proc.output ["hc", "get", addr] none []
   let j := match o with | some o => if o.code == 0 then (Lean.Json.parse o.stdout).toOption else none | none => none
   let l := (j.bind fun j => (j.getObjVal? "labels").toOption).getD .null
-  return ((l.getObjValAs? String "herdr.space").toOption, (l.getObjValAs? String "swarm.comms").toOption)
+  return (l.getObjValAs? String "swarm").toOption
 
 /-- Binds `name` to terminal `hc` (agents.bind): a live binding elsewhere moves only with `takeover`. -/
 def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) : m Unit := do
@@ -75,33 +80,28 @@ def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) :
   let now ← Clock.now
   orDie (← Store.txn [.agent, .cursor] (bind · name cwd hc model r now))
 
-/-- `swarm join [name] [--model M] [--takeover]` (agents.cmd_join). -/
+/-- `swarm join [name] [--model M] [--takeover]` (agents.cmd_join): binds the agent to this terminal in the swarm this
+process acts on (sw-global §2), its row moved there; a communicator `<x>-comms` in no swarm (none given, its row in
+none) makes and joins swarm `x`. Labels the terminal `swarm=<name>`. -/
 def join (a : Parsed) : m UInt32 := do
   let n ← match a.str "name" with | some n => pure n | none => me
   let here ← env "HC_TERMINAL_ID"
-  let envComms ← env "SWARM_COMMS"
-  let isC ← match here with
-    | some _ => Store.txn [.«meta»] fun db => (db, isComms db envComms (some n))
-    | none => pure false
-  if let (true, some h) := (isC, here) then
-    let (space, comms) ← hcInfo h
-    let sp ← Store.txn [.«meta»] fun db => (db, (db.getMeta "space").bind (·.v))
-    if let (some sp, some i) := (sp, space) then
-      if i != sp then die s!"{n} is the communicator of a swarm in space {sp}; this terminal is in space {i}."
-    if let some c := comms then
-      if c != (← Spawn.dbPath) && !a.flag "takeover" then
-        die s!"this terminal is the communicator of another swarm ({c}). `swarm join --takeover` takes it for this one."
+  if let some x := Swarms.ofComms n then
+    if (← env "SWARM").isNone && (← Swarms.ofAgent n).isNone then
+      let repo ← Workspaces.main none
+      let base ← match repo with | some r => pure (some (← Bases.default (some r))) | none => pure none
+      discard <| Swarms.create x (some n) (repo.toList.map (·, base)) (← Clock.now)
+      Sys.setenv "SWARM" x
+  Store.txn [] fun db => (db, ())  -- resolves the swarm (or refuses), which the store exports as $SWARM
+  if let (some h, some cur) := (here, ← env "SWARM") then
+    if let some s ← hcSwarm h then
+      if s != cur && !a.flag "takeover" then
+        die s!"this terminal is in swarm {s}. `swarm join --takeover` moves it to {cur}."
   bindAgent n (some (← Env.cwd)) here (a.str "model") (a.flag "takeover")
-  let mut space := none
-  if let (true, some h) := (isC, here) then
-    discard <| Proc.output ["hc", "label", h, "swarm.comms=" ++ (← Spawn.dbPath)] none []
-    space := (← hcInfo h).1
+  let sw ← env "SWARM"  -- exported by the store once its first transaction resolved it
+  if let (some h, some s) := (here, sw) then discard <| Proc.output ["hc", "label", h, "swarm=" ++ s] none []
   let now ← Clock.now
-  Store.txn [.«meta»] fun db =>
-    let db := match space with
-      | some sp => if (db.getMeta "space").isSome then db else db.setMeta "space" (some sp)
-      | none => db
-    (db.log now (some n) "join" none none, ())
+  Store.txn [] fun db => (db.log now (some n) "join" none none, ())
   return 0
 
 /-- `swarm leave [name]` (agents.cmd_leave). -/
@@ -323,6 +323,28 @@ def endCmd (a : Parsed) : m UInt32 := do
   Env.out s!"{n} ended"
   return 0
 
+/-- `swarm new <name> [--repo P]… [--comms C]`: makes swarm `name` with the repos its auto-spawn staffs from (each a
+path in a git repo: its main worktree). -/
+def newCmd (a : Parsed) : m UInt32 := do
+  let some n := a.str "name" | die "usage: swarm new <name> [--repo P]... [--comms C]"
+  if n == "" || n.any (fun c => c == ' ' || c == '/' || c == '@' || c == '#') then die s!"not a swarm name: '{n}'"
+  let mut repos : List (String × Option String) := []
+  for p in a.strs "repo" do
+    let some r ← Workspaces.main (some p) | die s!"not in a git repo: {p}"
+    repos := repos ++ [(r, some (← Bases.default (some r)))]
+  if !(← Swarms.create n (a.str "comms") repos (← Clock.now)) then die s!"swarm {n} exists"
+  Env.out s!"swarm {n}{if repos.isEmpty then "" else " (" ++ ", ".intercalate (repos.map (·.1)) ++ ")"}"
+  return 0
+
+/-- `swarm swarms`: the machine's swarms, each with its communicator, repos and live agents. -/
+def swarmsCmd : m UInt32 := do
+  let l ← Swarms.list
+  if l.isEmpty then Env.out "(no swarms: `swarm new <name>`)"
+  for r in l do
+    let st := if r.ended.isSome then " (ended)" else ""
+    Env.out s!"{r.name}{st}  comms {r.comms.getD "-"}  {r.live.length} live{if r.live.isEmpty then "" else ": " ++ ", ".intercalate r.live}  repos: {if r.repos.isEmpty then "-" else ", ".intercalate r.repos}"
+  return 0
+
 /-- `swarm machine` (machine.cmd_machine). -/
 def machineCmd : m UInt32 := do
   Env.out (← Machine.note)
@@ -331,7 +353,7 @@ def machineCmd : m UInt32 := do
 /-- The group. -/
 def group : Group m where
   specs := [("spawn", spawnSpec), ("join", joinSpec), ("end", endSpec), ("endable", endableSpec), ("leave", leaveSpec), ("role", roleSpec), ("stay", staySpec), ("limits", limitsSpec),
-    ("away", awaySpec), ("who", whoSpec), ("machine", machineSpec)]
+    ("away", awaySpec), ("who", whoSpec), ("machine", machineSpec), ("new", newSpec), ("swarms", swarmsSpec)]
   run a := match a.cmd with
     | "spawn" => spawnCmd a
     | "join" => join a
@@ -343,6 +365,8 @@ def group : Group m where
     | "limits" => limitsCmd a
     | "away" => awayCmd a
     | "who" => who
+    | "new" => newCmd a
+    | "swarms" => swarmsCmd
     | _ => machineCmd
 
 end SwarmLean.Cmd.Agents

@@ -125,6 +125,14 @@ theorem busy_eq : (Decide.nz (row a).hc && hasTerms && (term x).all fun x => x.s
     | none => simp
     | some v => simp only [Option.getD_some, bne_dec, Option.some.injEq]
 
+theorem v_terminal_mk {m : Type → Type} (f : Lifecycle.Reads m) u j w :
+    Decide.Check.val (row a) t (term x) hasTerms (mkF f true u j w) .terminal = busyL a hasTerms x := by
+  simp only [Decide.Check.val]
+  rw [busy_eq]
+  have : (term x).any (fun x => Decide.nz x.cwd && !(mkF f true u j w).ours) = false := by
+    cases x <;> simp [mkF, term]
+  rw [this, Bool.false_or]
+
 theorem v_terminal_none (h : ((x.bind fun x => x.cwd).bind fun x => py (some x)) = none) :
     Decide.Check.val (row a) t (term x) hasTerms F .terminal =
     (busyL a hasTerms x) := by
@@ -252,7 +260,7 @@ macro "leaf" fr:ident o:term:max u:term:max j:term:max w:term:max hv:term:max : 
 
 set_option maxHeartbeats 1000000 in
 /-- Lifecycle's run on agent row `a` is `Decide.fateRec` (so its verdict, without `all`, `Decide.fateL`) on what its
-reads returned, for any monad and any reads: `F` is the reads' pure fields and the answers of `ours`, `unlanded`, `job`
+reads returned, for any monad and any reads: `F` is the reads' pure fields (a terminal always the swarm's) and the answers of `unlanded`, `job`
 and `alive`. -/
 theorem fateHeard_rec {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) (t : Int) (x : Option Term)
     (hasTerms : Bool) (f : Lifecycle.Reads m) (all : Bool) :
@@ -263,42 +271,21 @@ theorem fateHeard_rec {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) 
   · leaf fr_stay true none none false True.intro
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
   · leaf fr_idle true none none false True.intro
-  cases hc : (x.bind fun x => x.cwd).bind fun x => py (some x) with
-  | none =>
-    dsimp only
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_terminal true none none false (v_terminal_none a t x hasTerms (h := hc))
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_task true none none false (v_terminal_none a t x hasTerms (h := hc))
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_lock true none none false (v_terminal_none a t x hasTerms (h := hc))
-    refine Sat.any fun u => ?_
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_unlanded true u none false (v_terminal_none a t x hasTerms (h := hc))
-    refine Sat.any fun j => ?_
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_job true u j false (v_terminal_none a t x hasTerms (h := hc))
-    cases hw : a.waiter with
-    | none => simp only; leaf fr_last true u j false (v_terminal_none a t x hasTerms (h := hc))
-    | some p => simp only; refine Sat.any fun w => ?_; leaf fr_last true u j w (v_terminal_none a t x hasTerms (h := hc))
-  | some c =>
-    simp only
-    refine Sat.any fun o => ?_
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_terminal o none none false (v_terminal_some a t x hasTerms (h := hc))
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_task o none none false (v_terminal_some a t x hasTerms (h := hc))
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_lock o none none false (v_terminal_some a t x hasTerms (h := hc))
-    refine Sat.any fun u => ?_
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_unlanded o u none false (v_terminal_some a t x hasTerms (h := hc))
-    refine Sat.any fun j => ?_
-    refine ite_sat (fun _ => ?_) (fun _ => ?_)
-    · leaf fr_job o u j false (v_terminal_some a t x hasTerms (h := hc))
-    cases hw : a.waiter with
-    | none => simp only; leaf fr_last o u j false (v_terminal_some a t x hasTerms (h := hc))
-    | some p => simp only; refine Sat.any fun w => ?_; leaf fr_last o u j w (v_terminal_some a t x hasTerms (h := hc))
+  refine ite_sat (fun _ => ?_) (fun _ => ?_)
+  · leaf fr_terminal true none none false (v_terminal_mk a t x hasTerms)
+  refine ite_sat (fun _ => ?_) (fun _ => ?_)
+  · leaf fr_task true none none false (v_terminal_mk a t x hasTerms)
+  refine ite_sat (fun _ => ?_) (fun _ => ?_)
+  · leaf fr_lock true none none false (v_terminal_mk a t x hasTerms)
+  refine Sat.any fun u => ?_
+  refine ite_sat (fun _ => ?_) (fun _ => ?_)
+  · leaf fr_unlanded true u none false (v_terminal_mk a t x hasTerms)
+  refine Sat.any fun j => ?_
+  refine ite_sat (fun _ => ?_) (fun _ => ?_)
+  · leaf fr_job true u j false (v_terminal_mk a t x hasTerms)
+  cases hw : a.waiter with
+  | none => simp only; leaf fr_last true u j false (v_terminal_mk a t x hasTerms)
+  | some p => simp only; refine Sat.any fun w => ?_; leaf fr_last true u j w (v_terminal_mk a t x hasTerms)
 
 theorem verdictStr_end {v : Decide.Verdict} (h : verdictStr v = some "end" ∨ verdictStr v = some "reuse") :
     v = .end_ ∨ v = .reuse := by

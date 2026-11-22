@@ -396,7 +396,7 @@ def report (c : Conn) (since? : Option Int) (state : List Json) : IO Json := do
     | some "orphan-kill" => kills := kills + 1
     | _ => pure ()
   -- finished commands that cost something, from the cmd-cost history (a measurement, not a word list)
-  let hist ← match ← (Cost.path : App String).run.run { conn := ← IO.mkRef none } with
+  let hist ← match ← (Cost.path : App String).run.run (← Ctx.new) with
     | .ok p => pure p
     | .error _ => pure ""
   let rows ← try

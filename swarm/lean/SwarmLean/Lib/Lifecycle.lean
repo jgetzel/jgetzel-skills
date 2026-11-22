@@ -152,10 +152,6 @@ def reads (db : Db) (main : Option String) (wts : List (String × String)) (all 
   locks := db.locks.any (·.agent == some n)
   job := do return (Machine.bgAgents db.agents (← Machine.procs)).lookup n
   unlanded := unlanded db n main wts all
-  ours cwd := do
-    let cwd ← Workspaces.real cwd
-    let under (w : String) := cwd == w || cwd.startsWith (w ++ "/")
-    return all.any (under ·.1) || main.any under
   pool := pool.length
   below := Reuse.reuseBelow db
   alive := Sys.pidAlive
@@ -167,7 +163,7 @@ def readsNow [Store m] (n : String) : m (Db × Reads m) := do
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
 
 /-- Lifecycle's verdict on live agent row `a` (watchd.fate, model Decide.lean's fateL), and what it heard: none (kept:
-staying, busy, idle under 2 min, in another swarm's or a busy terminal, holding a claim or lock, or, once its work is
+staying, busy, idle under 2 min, in a busy terminal, holding a claim or lock, or, once its work is
 landed, running a background job); "unclean", idle but kept by work not on its bases; "reuse", context under the
 reuse threshold, an offer of related tasks (`Reuse.candidates`) not passed over, its waiter alive; else "end". `x`: its hc terminal; `hasTerms`: hc answered. With `all`
 no check holds, so every one is made (the verdict is then meaningless). -/
@@ -180,13 +176,10 @@ def fateHeard (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Rea
   h := h1; if b then return (none, h)
   let (h1, b) := k h "idle" (a.status != some "idle" || t - a.last_active.getD 0 < 120)
   h := h1; if b then return (none, h)
-  let other ← match x.bind (·.cwd) |>.bind (py ·) with
-    | some c => pure !(← f.ours c)
-    | none => pure false
   let busy := (py a.hc).isSome && hasTerms && match x with
     | none => true
     | some x => x.status != some "idle" && x.status != some "done"
-  let (h1, b) := k h "terminal" (other || busy)
+  let (h1, b) := k h "terminal" busy
   h := h1; if b then return (none, h)
   let (h1, b) := k h "task" f.claims
   h := h1; if b then return (none, h)

@@ -12,7 +12,7 @@ open SwarmLean.Sqlite (Val)
 /-- Runs an App action under the fixture's db. -/
 def app (t : T) (act : App α) : IO α := do
   Shim.setenv "SWARM_DB" t.db
-  match ← act.run.run { conn := ← IO.mkRef none } with
+  match ← act.run.run (← Ctx.new) with
   | .ok a => return a
   | .error _ => fail "App action exited"
 

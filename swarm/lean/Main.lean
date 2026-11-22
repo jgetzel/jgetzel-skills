@@ -10,13 +10,24 @@ def noCommand (args : List String) : IO UInt32 := do
   | some w => IO.eprintln s!"{Dispatch.USAGE}\nswarm: error: unknown command '{w}'"; return 2
   | none => IO.eprintln s!"{Dispatch.USAGE}\nswarm: error: a command is required"; return 2
 
-def main (args : List String) : IO UInt32 := do
+/-- `args` without the global `--swarm <name>` (`--swarm=<name>`) before any `--`, and the name it gave. -/
+def swarmOpt : List String → List String × Option String
+  | [] => ([], none)
+  | "--" :: rest => ("--" :: rest, none)
+  | "--swarm" :: s :: rest => ((swarmOpt rest).1, some s)
+  | a :: rest =>
+    if a.startsWith "--swarm=" then ((swarmOpt rest).1, some (a.drop 8).toString)
+    else let (r, s) := swarmOpt rest; (a :: r, s)
+
+def main (args0 : List String) : IO UInt32 := do
+  let (args, sw) := swarmOpt args0
+  if let some s := sw then setenvIO "SWARM" s
   match args with
   | w :: rest =>
     match Dispatch.find (m := App) w with
     | none => noCommand args
     | some (g, spec) =>
-      let ctx : Ctx := { conn := ← IO.mkRef none }
+      let ctx : Ctx := (← Ctx.new)
       try
         match ← (Dispatch.run g spec rest).run ctx with
         | .ok code => pure code

@@ -185,8 +185,6 @@ structure Reads (m : Type → Type) where
   job : m (Option Machine.Ps)
   /-- a worktree of its with work not on its bases, and those refs -/
   unlanded : m (Option (String × List String))
-  /-- a terminal's cwd is in this repo or one of its worktrees (else another swarm's terminal) -/
-  ours : String → m Bool
   /-- how many tasks it would be offered (`Reuse.candidates`) -/
   pool : Nat
   /-- the reuse threshold (`Reuse.reuseBelow`); 0 is off -/

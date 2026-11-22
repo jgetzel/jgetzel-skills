@@ -18,7 +18,7 @@ def try_ (t : T) (st id cores : String) (holder := "t") : IO String :=
 
 /-- Runs an App action. -/
 def app (act : App α) : IO α := do
-  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  match ← (act.run.run (← Ctx.new)) with
   | .ok a => pure a
   | .error e => fail s!"exit {e.code}"
 
@@ -84,14 +84,14 @@ def test_run_env_and_claim_released (t : T) : IO Unit := do
 
 def test_run_sized_from_history (t : T) : IO Unit := do
   let rec_ : SwarmLean.Cost.Rec := { ts := 1, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 450, peak_kb := 4000000 }
-  match ← ((SwarmLean.Cost.record rec_ : App Bool).run.run { conn := ← IO.mkRef none }) with
+  match ← ((SwarmLean.Cost.record rec_ : App Bool).run.run (← Ctx.new)) with
   | .ok _ => pure ()
   | .error _ => fail "cost.record exited"
   let r ← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES $SWARM_MEM_KB"]
   has r.stdout "5 5000000"
   -- a `swarm run` row's cpu_s is the job's own CPU seconds: it raises the cores too (700 s over 100 s: 7)
   let big : SwarmLean.Cost.Rec := { ts := 2, machine := "elsewhere", repo := "repo", agent := "a", cmd := "make all", wall_s := 100, cpu_s := 700, peak_kb := 1, source := "run" }
-  match ← ((SwarmLean.Cost.record big : App Bool).run.run { conn := ← IO.mkRef none }) with
+  match ← ((SwarmLean.Cost.record big : App Bool).run.run (← Ctx.new)) with
   | .ok _ => pure ()
   | .error _ => fail "cost.record exited"
   has (← t.sw "b" ["run", "--", "make all 2>/dev/null; echo $SWARM_CORES"]).stdout "7\n"

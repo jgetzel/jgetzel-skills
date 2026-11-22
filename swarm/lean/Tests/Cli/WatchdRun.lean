@@ -131,12 +131,12 @@ def test_machine_note_and_patterns (t : T) : IO Unit := do
   eq (← hookp t "a" pr "./my-build-script all") (Json.mkObj [])
   -- history here: a small command is silent, one predicted above half of the 19.1G available speaks
   let host ← SwarmLean.Shim.hostname
-  let repo := ((← (SwarmLean.Cost.repoName (some (← t.cwdOf "a")) : App _).run.run { conn := ← IO.mkRef none })
+  let repo := ((← (SwarmLean.Cost.repoName (some (← t.cwdOf "a")) : App _).run.run (← Ctx.new))
     |> fun r => match r with | .ok (some n) => n | _ => "")
   for (cmd, gb) in [("cabal build", 1), ("./my-build-script all", 12)] do
     let ts ← now t
     let rec_ : SwarmLean.Cost.Rec := { ts, machine := host, repo, agent := "b", cmd, wall_s := 360, peak_kb := gb * 1048576 }
-    match ← ((SwarmLean.Cost.record rec_ : App Bool).run.run { conn := ← IO.mkRef none }) with
+    match ← ((SwarmLean.Cost.record rec_ : App Bool).run.run (← Ctx.new)) with
     | .ok _ => pure ()
     | .error _ => fail "cost.record exited"
   let hk (cmd : String) := hookp t "a" pr cmd

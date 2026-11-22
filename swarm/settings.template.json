@@ -3,7 +3,7 @@
   "promptCacheTtl": "1h",
   "env": {
     "SWARM_NAME": "{{NAME}}",
-    "SWARM_DB": "{{DB}}",
+    "SWARM": "{{GROUP}}",
     "PATH": "{{PATH}}",
     "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "100000"
   },

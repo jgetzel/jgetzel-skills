@@ -5,6 +5,7 @@ import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Lib.Msgs
 import SwarmLean.Db.Notes
+import SwarmLean.Lib.Swarms
 
 /-! watchd.lua's spawn: the reservation, the agent's worktree, its brief and settings, launch.sh, and undoing all of
 it when the launch fails (cmd_spawn, launch_agent). -/
@@ -14,38 +15,8 @@ open Agents
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
-/-- The db file (db.dbpath): $SWARM_DB, else swarm/swarm.db in the repo's git common dir. -/
-def dbPath : m String := do
-  if let some p ← env "SWARM_DB" then return p
-  match ← Git.git ["rev-parse", "--path-format=absolute", "--git-common-dir"] none with
-  | some dir => if strip dir != "" then return joinPath (joinPath (strip dir) "swarm") "swarm.db" else die "not in a git repo and SWARM_DB is unset"
-  | none => die "not in a git repo and SWARM_DB is unset"
-
-/-- The swarms on this machine (UI-SPEC.md, "New swarm CLI output" 2): one file per db, written by its running watchd,
-in $XDG_STATE_HOME (else ~/.local/state)/swarm/swarms. -/
-def registryDir : m String := do
-  let x ← match ← env "XDG_STATE_HOME" with | some x => pure x | none => pure (((← env "HOME").getD "") ++ "/.local/state")
-  return x ++ "/swarm/swarms"
-
-/-- Db `p`'s registry file: its path with `/` as `%`. -/
-def registryFile (p : String) : m String := return s!"{← registryDir}/{p.replace "/" "%"}.json"
-
-/-- The swarm's tag: its communicator's name without `-comms` (as the rail draws it). -/
-def tagOf (comms : String) : String :=
-  let c := (comms.toList.reverse.dropWhile Char.isDigit).reverse
-  let c := if String.ofList c |>.endsWith "comms" then c.take (c.length - 5) else c
-  String.ofList (c.reverse.dropWhile (· == '-')).reverse
-
-/-- Each registered swarm whose watchd still runs, by folder; a dead watchd's file goes. -/
-def registered : m (List Lean.Json) := do
-  let dir ← registryDir
-  let mut out : List Lean.Json := []
-  for f in ((← Fs.list dir).getD []).filter (·.endsWith ".json") do
-    let path := dir ++ "/" ++ f
-    let some j := (← Fs.read path).bind Json.decode | continue
-    if ← match Json.fint j "pid" with | some p => Sys.pidAlive p | none => pure false then out := out ++ [j]
-    else discard <| Sys.remove path
-  return out.mergeSort fun x y => (Json.fstr x "folder").getD "" ≤ (Json.fstr y "folder").getD ""
+/-- The machine's db (`Swarms.dbPath`). -/
+def dbPath : m String := Swarms.dbPath
 
 /-- The swarm/ directory (the launcher's SWARM_HERE): $SWARM_HERE, else the one above this binary. -/
 def swarmHere : m (Option String) := do
@@ -75,7 +46,7 @@ def leanSettings (cwd : String) : m (List (String × Lean.Json)) := do
           ("skillOverrides", Lean.Json.mkObj (off.map (·, Lean.Json.str "off"))),
           ("syncClaudeAiSkills", Lean.Json.bool false), ("disableWorkflows", Lean.Json.bool true)]
 
-/-- Writes agent `name`'s settings file and runs launch.sh for it in `cwd`, in the swarm's Herdr space: launch.sh's
+/-- Writes agent `name`'s settings file and runs launch.sh for it in `cwd`: launch.sh's
 output (none on failure) and the first line of its stderr (watchd.launch_agent). Unless `full`, the agent gets the lean
 profile: `leanSettings` and no MCP servers. -/
 def launchAgent (name brief model : String) (effort cwd : Option String) (full : Bool) : m (Option String × String) := do
@@ -91,7 +62,9 @@ def launchAgent (name brief model : String) (effort cwd : Option String) (full :
   if (← Sys.kind (joinPath bindir "swarm") false) == .none then
     discard <| Proc.output ["ln", "-s", self_, joinPath bindir "swarm"] none []
   let path := (← Env.var "PATH").getD ""
-  let text := ((((tpl.replace "{{SWARM}}" self_).replace "{{DB}}" dbp).replace "{{NAME}}" name).replace "{{PATH}}" (bindir ++ ":" ++ path))
+  -- the swarm the spawner acts on (the real store exports it once resolved) goes into the agent's settings
+  let group := (← env "SWARM").getD ""
+  let text := (((((tpl.replace "{{SWARM}}" self_).replace "{{DB}}" dbp).replace "{{NAME}}" name).replace "{{GROUP}}" group).replace "{{PATH}}" (bindir ++ ":" ++ path))
   let text ← if full then pure text else do
     let some j := Json.decode text | die s!"settings.template.json in {here} is not JSON"
     pure (Json.encode ((← leanSettings (cwd.getD (← Env.cwd))).foldl (fun j (k, v) => j.setObjVal! k v) j))
@@ -102,8 +75,7 @@ def launchAgent (name brief model : String) (effort cwd : Option String) (full :
   let argv := [launch, name, "tab", brief, "--permission-mode", "auto", "--model", model, "--settings", sf] ++
     (match effort with | some e => ["--effort", e] | none => []) ++
     (if full then [] else ["--strict-mcp-config", "--no-chrome"])
-  let space ← Store.txn [.«meta»] fun db => (db, (db.getMeta "space").bind (·.v))
-  let o ← Proc.output argv cwd (match space with | some s => [("SWARM_SPACE", s)] | none => [])
+  let o ← Proc.output argv cwd []
   let err := match o with | some o => ((strip o.stderr).splitOn "\n").headD "" | none => ""
   let mut out := match o with | some o => if o.code == 0 then some o.stdout else none | none => none
   if out.isNone then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
