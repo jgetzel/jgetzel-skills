@@ -391,9 +391,22 @@ def test_spawn_role_set_before_and_shown_in_roster (t : T) : IO Unit := do
 
 def test_rules_appended_to_spawn (t : T) : IO Unit := do
   t.fakes
-  eq (strip (← t.sw "a" ["rules", "set", "never", "edit", "main"]).stdout) "never edit main"
+  eq (strip (← t.sw "human" ["rules", "set", "never", "edit", "main"]).stdout) "never edit main"
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--", "go"]
   has ((argvOf (← t.launched)[0]!).getD 2 "") "never edit main"
+
+/-- Security review H1: only the communicator or the user sets the rules; each call, refused or not, is an event with
+the caller's name and terminal. -/
+def test_rules_set_rights (t : T) : IO Unit := do
+  t.q_ "update swarm set comms='cm' where name='t'"
+  t.sw_ "cm" ["rules", "set", "one"] { hc := some "w1" }
+  eq ((← t.q1 "select count(*) n from event where kind='rules-set' and agent='cm' and data='one (terminal w1)'").f "n") 1
+  let r ← t.sw "a" ["rules", "set", "two"] { ok := false, hc := some "w9" }
+  has r.stderr "only the communicator (cm) or the user (human) can set the rules; you are a"
+  eq (strip (← t.sw "a" ["rules", "show"]).stdout) "one"
+  eq ((← t.q1 "select count(*) n from event where kind='rules-set-refused' and agent='a' and data='two (terminal w9)'").f "n") 1
+  eq (strip (← t.sw "human" ["rules", "set", "three"]).stdout) "three"
+  eq ((← t.q1 "select count(*) n from event where kind='rules-set' and agent='human' and data='three (terminal -)'").f "n") 1
 
 -- ---- cold-cache rule ----
 def sendmsg (t : T) (to : String) (text : String := "hi") : IO Json :=
@@ -760,6 +773,7 @@ def tests : List Case := [
   ("test_agent_without_terminal_reads_as_gone", test_agent_without_terminal_reads_as_gone),
   ("test_spawn_role_set_before_and_shown_in_roster", test_spawn_role_set_before_and_shown_in_roster),
   ("test_rules_appended_to_spawn", test_rules_appended_to_spawn),
+  ("test_rules_set_rights", test_rules_set_rights),
   ("test_cold_cache_cheap_cases_and_cold", test_cold_cache_cheap_cases_and_cold),
   ("test_session_turns_keep_cache_warm", test_session_turns_keep_cache_warm),
   ("test_working_session_is_warm", test_working_session_is_warm),

@@ -535,4 +535,20 @@ def drop (c : Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
 /-- `rules set`. -/
 def rulesSet (text : String) (db : Db) : Db := db.setMeta "rules" (some text)
 
+/-- The caller's terminal, for an event's data: `(terminal <id>)`, `-` for the id when $HC_TERMINAL_ID is unset. -/
+def callerTerm (c : Ctx) : String := s!"(terminal {c.here.getD "-"})"
+
+/-- A step only the communicator or the user may take (security review H1): run `f`, logging `kind` with `data` and
+the caller's terminal; else refuse, logging `<kind>-refused`, naming who may. -/
+def inChargeStep (c : Ctx) (what kind data : String) (f : Db → Db) (db : Db) : Db × Except String Unit :=
+  let data := s!"{data} {callerTerm c}"
+  if inCharge db c.comms c.me then ((f db).log c.now (some c.me) kind none (some data), .ok ())
+  else
+    (db.log c.now (some c.me) s!"{kind}-refused" none (some data),
+      .error s!"only the communicator{match commsOf db c.comms with | some n => " (" ++ n ++ ")" | none => ""} or the user ({HUMAN}) can {what}; you are {c.me}")
+
+/-- `rules set`, by the communicator or the user only. -/
+def setRules (c : Ctx) (text : String) (db : Db) : Db × Except String Unit :=
+  inChargeStep c "set the rules" "rules-set" (oneLine text) (rulesSet text) db
+
 end SwarmLean.Tasks
