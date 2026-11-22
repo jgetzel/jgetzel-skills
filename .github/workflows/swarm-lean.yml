@@ -38,6 +38,8 @@ jobs:
       - name: the launcher runs the binary
         run: |
           swarm/lean/build.sh
-          out=$(SWARM_DB=$RUNNER_TEMP/swarm.db SWARM_NAME=ci swarm/swarm task add launcher-check 2>&1)
+          # a command acts on a swarm (sw-global §2): the scratch db's one
+          SWARM_DB=$RUNNER_TEMP/swarm.db env -u SWARM -u SWARM_NAME swarm/swarm new ci --repo . >/dev/null
+          out=$(SWARM_DB=$RUNNER_TEMP/swarm.db SWARM=ci SWARM_NAME=ci swarm/swarm task add launcher-check 2>&1)
           echo "$out"
           [ "$out" = "task #1" ] || { echo "swarm/swarm did not run swarm-lean quietly" >&2; exit 1; }
