@@ -40,7 +40,7 @@ def runCmd (args : List String) : IO UInt32 := do
   let (pos, fl) ← match split ["--cores", "--mem", "--est", "--who"] opts ([], []) with
     | .ok r => pure r
     | .error e => return ← die e
-  unless pos.isEmpty do return ← die s!"unexpected {pos.head!} before --"
+  if let p :: _ := pos then return ← die s!"unexpected {p} before --"
   let cores ← match fl.lookup "--cores" with
     | some (some "all") => pure "all"
     | some (some c) => match parseInt c with

@@ -60,7 +60,9 @@ def compute {m : Type → Type} [Monad m] (h : Host m) (prog : String) (words : 
     let shown := match words with
       | [n] => all.filter fun (x : String × Option String) => x.1 == n
       | _ => all
-    if shown.isEmpty then return .error (if ["cap", "reserve", "off", "on"].contains words.head! then usage else s!"no machine {words.head!} in `hc machine ls`")
+    if shown.isEmpty then return .error (match words with
+      | n :: _ => if ["cap", "reserve", "off", "on"].contains n then usage else s!"no machine {n} in `hc machine ls`"
+      | [] => usage)
     let mut out := []
     let mut js := []
     for (n, c) in shown do

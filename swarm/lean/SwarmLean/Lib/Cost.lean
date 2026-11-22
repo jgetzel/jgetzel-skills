@@ -73,7 +73,9 @@ def dropAssign : List Char → Option (List Char)
     match r with
     | '=' :: t =>
       let v := t.dropWhile (!isSpace ·)
-      if v.isEmpty || !isSpace v.head! then none else some (v.dropWhile isSpace)
+      match v with
+      | c :: _ => if isSpace c then some (v.dropWhile isSpace) else none
+      | [] => none
     | _ => none
   | [] => none
 
@@ -388,8 +390,8 @@ def reapedCpu [Env m] [Fs m] (pid : Int) : m Float := do
   -- shortcut: CLK_TCK as 100 (Linux's on every common arch; Sys has no sysconf), upgrade if a machine differs
   let some s ← Fs.read s!"{← Machine.procRoot}/{d pid}/stat" | return 0
   match s.splitOn ")" with
-  | _ :: _ :: _ =>
-    let f := words ((s.splitOn ")").getLast!)
+  | _ :: x :: rest =>
+    let f := words ((x :: rest).getLast (List.cons_ne_nil _ _))
     let n (k : Nat) : Float := Float.ofInt ((f[k]?.bind parseInt).getD 0)
     return (n 13 + n 14) / 100
   | _ => return 0

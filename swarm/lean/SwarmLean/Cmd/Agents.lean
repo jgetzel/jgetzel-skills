@@ -155,7 +155,8 @@ def endStayCmd (n : String) : m UInt32 := do
 def stayCmd (a : Parsed) : m UInt32 := do
   let text := a.strs "text"
   let isEnd := a.flag "end"
-  if isEnd && !text.isEmpty then return ← endStayCmd text.head!
+  if isEnd then
+    if let h :: _ := text then return ← endStayCmd h
   let n ← me
   if text.isEmpty && !isEnd then
     let s ← Store.view [Sels.agent n] (stayOf · n)

@@ -191,11 +191,24 @@ def finish (target : String) (nargs minA maxA minC maxC : Nat) (vals : List V) (
       | [] => pure ()
   else setResult target (.ss (vals.filterMap fun | .s x => some x | .i n => some (toString n) | _ => none))
 
+/-- Option `i` and its state. -/
+def optAt (i : Nat) : P (Opt × ElemSt) := do
+  let s ← get
+  match s.opts[i]?, s.optSt[i]? with
+  | some o, some e => pure (o, e)
+  | _, _ => err s!"internal error: no option {i}"
+
+/-- Argument `i` and its state. -/
+def posAt (i : Nat) : P (Pos × ElemSt) := do
+  let s ← get
+  match s.poss[i]?, s.posSt[i]? with
+  | some a, some e => pure (a, e)
+  | _, _ => err s!"internal error: no argument {i}"
+
 /-- Closes option `i`: checks its argument count and stores it. -/
 def closeOpt (i : Nat) : P Unit := do
   let s ← get
-  let o := s.opts[i]!
-  let e := s.optSt[i]!
+  let (o, e) ← optAt i
   if !e.isOpen then return
   set { s with optSt := s.optSt.set! i { e with isOpen := false } }
   if e.args.length < o.nargs then
@@ -213,22 +226,24 @@ def close : P Unit := do
 /-- Records that element (`isOpt`, `i`) is used, failing if another element of one of its mutexes was. -/
 def checkMutexes (isOpt : Bool) (i : Nat) : P Unit := do
   let s ← get
-  let target := if isOpt then s.opts[i]!.target else s.poss[i]!.name
-  let name := if isOpt then s.optSt[i]!.name else s.posSt[i]!.name
+  let (target, name) ← if isOpt then do
+      let (o, e) ← optAt i
+      pure (o.target, e.name)
+    else do
+      let (a, e) ← posAt i
+      pure (a.name, e.name)
   for (mx, k) in s.mutexes.zipIdx do
     if mx.contains target then
       match (← get).mutexUsed.lookup k with
       | some (o, j) =>
         if (o, j) != (isOpt, i) then
-          let st ← get
-          let other := if o then st.optSt[j]!.name else st.posSt[j]!.name
+          let other ← if o then do pure (← optAt j).2.name else do pure (← posAt j).2.name
           err s!"{name} can not be used together with {other}"
       | none => modify fun s => { s with mutexUsed := (k, (isOpt, i)) :: s.mutexUsed }
 
 /-- Passes one value to option `i`; false when it is then full (closed). -/
 def passOpt (i : Nat) (arg : String) : P Bool := do
-  let o := (← get).opts[i]!
-  let e := (← get).optSt[i]!
+  let (o, e) ← optAt i
   let v ← convert o.choices o.conv true e.name arg
   modify fun s => { s with optSt := s.optSt.set! i { e with args := e.args ++ [arg], vals := e.vals ++ [v] } }
   if e.args.length + 1 ≥ o.nargs then
@@ -239,10 +254,10 @@ def passOpt (i : Nat) (arg : String) : P Bool := do
 /-- Invokes option `i` under the alias `name`. -/
 def invoke (i : Nat) (name : String) : P Unit := do
   close
-  modify fun s => { s with optSt := s.optSt.set! i { s.optSt[i]! with name := s!"option '{name}'" } }
+  let (_, e0) ← optAt i
+  modify fun s => { s with optSt := s.optSt.set! i { e0 with name := s!"option '{name}'" } }
   checkMutexes true i
-  let o := (← get).opts[i]!
-  let e := (← get).optSt[i]!
+  let (o, e) ← optAt i
   if e.invocations ≥ o.maxCount then err s!"{e.name} must be used {bound "time" o.minCount o.maxCount true}"
   let e := { e with invocations := e.invocations + 1, isOpen := true, args := [], vals := [] }
   modify fun s => { s with optSt := s.optSt.set! i e }
@@ -252,8 +267,7 @@ def invoke (i : Nat) (name : String) : P Unit := do
 /-- Closes argument `i`: checks its count and stores it. -/
 def closePos (i : Nat) : P Unit := do
   let s ← get
-  let a := s.poss[i]!
-  let e := s.posSt[i]!
+  let (a, e) ← posAt i
   if !e.isOpen then return
   set { s with posSt := s.posSt.set! i { e with isOpen := false } }
   if e.args.length < a.minArgs then
@@ -263,8 +277,7 @@ def closePos (i : Nat) : P Unit := do
 
 /-- Passes one value to argument `i`; false when it is then full. -/
 def passPos (i : Nat) (arg : String) : P Bool := do
-  let a := (← get).poss[i]!
-  let e := (← get).posSt[i]!
+  let (a, e) ← posAt i
   let v ← convert a.choices a.conv false e.name arg
   modify fun s => { s with posSt := s.posSt.set! i { e with args := e.args ++ [arg], vals := e.vals ++ [v] } }
   if e.args.length + 1 ≥ a.maxArgs then
@@ -273,9 +286,9 @@ def passPos (i : Nat) (arg : String) : P Bool := do
   return true
 
 /-- The option an alias names, or the unknown-option error. -/
-def getOpt (name : String) : P Nat := do
+def getOpt (name : String) : P (Nat × Opt) := do
   match (← get).aliasMap.lookup name with
-  | some i => pure i
+  | some i => pure (i, (← optAt i).1)
   | none => err s!"unknown option '{name}'{tip ((← get).aliasMap.map (·.1)).eraseDups name}"
 
 /-- Passes a plain word: to the open option, the current argument, or as a subcommand. -/
@@ -302,8 +315,7 @@ def finalize : P Unit := do
   close
   let s ← get
   for i in [s.argI:s.poss.size] do
-    let a := (← get).poss[i]!
-    let e := (← get).posSt[i]!
+    let (a, e) ← posAt i
     match e.args, a.default with
     | [], some dv =>
       -- argparse leaves an unpassed optional argument at its default
@@ -312,16 +324,16 @@ def finalize : P Unit := do
     | _, _ => closePos i
   if (← get).requireCmd then err "a command is required"
   for i in [0:(← get).opts.size] do
-    let o := (← get).opts[i]!
-    let e := (← get).optSt[i]!
-    let e := if e.name == "" then { e with name := s!"option '{o.aliases.getLast!}'" } else e
+    let (o, e) ← optAt i
+    let some lastAlias := o.aliases.getLast? | err "internal error: option without alias"
+    let e := if e.name == "" then { e with name := s!"option '{lastAlias}'" } else e
     modify fun s => { s with optSt := s.optSt.set! i e }
     if e.invocations == 0 then
       if let some dv := o.default then
         modify fun s => { s with optSt := s.optSt.set! i { e with invocations := 1, isOpen := true } }
         discard <| passOpt i dv
         closeOpt i
-    let e := (← get).optSt[i]!
+    let (_, e) ← optAt i
     if e.invocations < o.minCount then
       if e.invocations == 0 then err s!"missing {e.name}"
       err s!"{e.name} must be used {bound "time" o.minCount o.maxCount false}"
@@ -340,25 +352,25 @@ def parse (root : Spec) (rootTarget : String) (rootHelp : String) (args : List S
       if s.handleOptions && a.startsWith "-" && a.length > 1 then
         if (a.drop 1).startsWith "-" then
           if a.length == 2 then
-            if s.aliasMap.lookup a |>.isSome then invoke (← getOpt a) a else close
+            if s.aliasMap.lookup a |>.isSome then invoke (← getOpt a).1 a else close
             modify fun s => { s with handleOptions := false }
           else
             match a.splitOn "=" with
             | name :: rest@(_ :: _) =>
-              let i ← getOpt name
-              if (← get).opts[i]!.nargs == 0 then err s!"option '{name}' does not take arguments"
+              let (i, o) ← getOpt name
+              if o.nargs == 0 then err s!"option '{name}' does not take arguments"
               invoke i name
               pass ("=".intercalate rest)
-            | _ => invoke (← getOpt a) a
+            | _ => invoke (← getOpt a).1 a
         else
           let cs := (a.drop 1).toString.toList
           let rec shorts : List Char → P Unit
             | [] => pure ()
             | c :: rest => do
               let name := "-" ++ c.toString
-              let i ← getOpt name
+              let (i, o) ← getOpt name
               invoke i name
-              if !rest.isEmpty && (← get).opts[i]!.nargs > 0 then pass (String.ofList rest)
+              if !rest.isEmpty && o.nargs > 0 then pass (String.ofList rest)
               else shorts rest
           shorts cs
       else pass a

@@ -13,7 +13,7 @@ open Lean Elab Command
 run_cmd do
   let env ← getEnv
   let modOf (n : Name) : Name := match env.getModuleIdxFor? n with
-    | some i => env.header.moduleNames[i.toNat]!
+    | some i => match env.header.moduleNames[i.toNat]? with | some m => m | none => `Audit
     | none => `Audit
   let ours (n : Name) : Bool := (`Claims).isPrefixOf (modOf n)
   -- equation lemmas Lean generates for a definition (`f.eq_1`, `f.eq_def`) are not ours to count

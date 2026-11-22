@@ -31,7 +31,8 @@ def realpathLoose (p : String) : m String := do
   for _ in [0:parts.size + 1] do
     if let some r ← Sys.realpath ("/" ++ "/".intercalate parts.toList) then
       return if tail.isEmpty then r else join r ("/".intercalate tail)
-    tail := parts.back! :: tail
+    let some last := parts.back? | break
+    tail := last :: tail
     parts := parts.pop
   return p
 

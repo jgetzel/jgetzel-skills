@@ -99,7 +99,11 @@ def post (a : Parsed) : m UInt32 := do
   let toIt (x : Agent) : Bool := x.name != frm && (match dest with | .agent n => x.name == n | _ => true)
   let envComms ← env "SWARM_COMMS"
   let isC (n : String) : Bool := isComms db envComms (some n) || sws.any (·.comms == some n)
-  let mut g : Array (List String) := #[[], [], [], [], []]
+  let mut g0 : List String := []
+  let mut g1 : List String := []
+  let mut g2 : List String := []
+  let mut g3 : List String := []
+  let mut g4 : List String := []
   let mut seen : Seen := []
   for x in here.filter toIt do
     let mut k := 0
@@ -112,13 +116,18 @@ def post (a : Parsed) : m UInt32 := do
       if k == 3 then  -- the events only for a recipient no waiter wakes
         let e ← Store.view [compactEvs x.name] (·.events)
         if Compact.compacting e x.name (x.last_active.getD 0) (← Clock.now) then k := 4
-    g := g.modify k (· ++ [x.name])
-  let mut parts := (KEYS.zip g.toList).filterMap fun (k, ns) => if ns.isEmpty then none else some (", ".intercalate ns ++ ": " ++ k)
+    match k with
+    | 1 => g1 := g1 ++ [x.name]
+    | 2 => g2 := g2 ++ [x.name]
+    | 3 => g3 := g3 ++ [x.name]
+    | 4 => g4 := g4 ++ [x.name]
+    | _ => g0 := g0 ++ [x.name]
+  let mut parts := (KEYS.zip [g0, g1, g2, g3, g4]).filterMap fun (k, ns) => if ns.isEmpty then none else some (", ".intercalate ns ++ ": " ++ k)
   let dead := (gone.filter toIt).map (·.name)
   if !dead.isEmpty then
     parts := parts ++ [", ".intercalate dead ++ ": no terminal; can't be delivered now (stored; read after `swarm join --takeover`)"]
   Env.out ("posted. " ++ "; ".intercalate parts)
-  let (held, idle) := g[3]!.partition isC
+  let (held, idle) := g3.partition isC
   if !held.isEmpty then
     Env.out (", ".intercalate held ++ ": no waiter; watchd sends it to the communicator within a tick (while no other agent lives, only an urgent one)")
   if !idle.isEmpty then

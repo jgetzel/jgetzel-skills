@@ -125,8 +125,9 @@ def parsePs (txt : String) : List (Nat × Nat × Int × Float) × List (String �
   let mut cur : Option String := none
   for l in splitlines tail do
     if l.startsWith "@hc " && !(l.drop 4).toString.isEmpty && !((l.drop 4).toString.toList.any isSpace) then
-      cur := some (l.drop 4).toString
-      got := (cur.get!, "") :: got.filter (·.1 != cur.get!)
+      let c := (l.drop 4).toString
+      cur := some c
+      got := (c, "") :: got.filter (·.1 != c)
     else if let some c := cur then got := (c, l) :: got.filter (·.1 != c)
     else if let some p := psLine l then ps := ps ++ [p]
   return (ps, got)
@@ -141,8 +142,8 @@ def jobReadings [Sys m] (t : Int) (txt : String) (mine : List (Job × String)) (
     let g := match Json.decode ((got.lookup term).getD "") with | some g@(.obj _) => g | _ => Json.mkObj []
     let pid := (Json.field g "pid").bind fun p => match p with | .str s => parseInt s | x => Json.int? x
     let jid := j.id.getD ""
-    if Json.fstr g "state" == some "live" && pid.isSome then
-      let (rss, cpu) := treeSum ps pid.get!.toNat
+    if let (true, some p) := (Json.fstr g "state" == some "live", pid) then
+      let (rss, cpu) := treeSum ps p.toNat
       out := out ++ [(jid, obj [("rss_kb", some (Json.int rss)), ("cpu", some (Json.int (cpu + 0.5).floor.toInt64.toInt))])]
     else if (Json.field g "state").isSome || ((Json.field g "error").bind (Json.fstr · "kind")) == some "not_found" then
       let since := ((Json.field old jid).bind (Json.fint · "gone")).getD t
@@ -176,13 +177,13 @@ def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit :
           | none => pure none)
       else pure none
     let head := txt.map fun x => match x.splitOn "\n@ps\n" with | h :: _ :: _ => h | _ => x
-    match head.bind parseProbe with
-    | some p =>
+    match txt, head.bind parseProbe with
+    | some tx, some p =>
       let oldJobs := match Json.field o "jobs" with | some x@(.obj _) => x | _ => Json.mkObj []
-      let (rd, l) ← jobReadings t txt.get! mine oldJobs
+      let (rd, l) ← jobReadings t tx mine oldJobs
       lost := lost ++ l
       out := out ++ [(n, p.json [("state", some (.str "connected")), ("ts", some (Json.int t)), ("jobs", some (Json.mkObj rd))])]
-    | none =>
+    | _, _ =>
       let s := if st != some "connected" then st.getD "nil" else "unreachable"
       let since := if Json.fstr o "state" == some s then (Json.fint o "since").getD t else t
       out := out ++ [(n, obj [("state", some (.str s)), ("ts", some (Json.int t)), ("since", some (Json.int since))])]
