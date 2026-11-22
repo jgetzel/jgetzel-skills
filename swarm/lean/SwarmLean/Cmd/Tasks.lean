@@ -93,24 +93,24 @@ def showText (db : Db) (r : Task) : m String := do
   let evs := taskEvents db r.id
   let tm := timing r evs now
   let f (x : Option Int) : String := match x with | some v => s!"{fdiv v 60}m" | none => "-"
-  let mut s := s!"#{d r.id} {r.state.text} {(py r.owner).getD "-"}  {r.title.getD ""}\ntiming: queue {f tm.queue_wait_s}, work {f tm.work_s}, total {f tm.total_s}, blocked {f (some tm.blocked_s)}, claims {tm.claims}, releases {tm.releases}, held by {(py (some (", ".intercalate tm.holders))).getD "-"}"
+  let mut s := s!"#{d r.id} {r.state.text} {(py r.owner).getD "-"}  {cont (r.title.getD "")}\ntiming: queue {f tm.queue_wait_s}, work {f tm.work_s}, total {f tm.total_s}, blocked {f (some tm.blocked_s)}, claims {tm.claims}, releases {tm.releases}, held by {(py (some (", ".intercalate tm.holders))).getD "-"}"
   for e in evs do
     if e.kind == some "task-edit" then
       let data := e.data.getD ""
       let ds := (data.drop 1).toString.toList.takeWhile Char.isDigit
       let data := if data.startsWith "#" && !ds.isEmpty && ((data.drop (1 + ds.length)).startsWith " ") then
         (data.drop (2 + ds.length)).toString else data
-      s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {data}"
+      s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {cont data}"
   if r.state = .landing then s := s ++ "\n" ++ (← landingLine r)
   for n in Notes.notes db r.id do
     let to := match n.to with
       | some t => if n.held then " (held)" else if t == Notes.box r.id then " (given at claim)" else s!" (to {t})"
       | none => ""
-    s := s ++ s!"\nnote {← Clock.hhmm n.ts} {n.frm}{to}: {((n.text.splitOn "\n").headD "")}"
+    s := s ++ s!"\nnote {← Clock.hhmm n.ts} {n.frm}{to}: {((clean n.text).splitOn "\n").headD ""}"
   s := s ++ "\npriority: P" ++ d (r.priority.getD DEFAULT_PRIORITY)
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
   if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
-  if let some h := r.hold then s := s ++ "\nheld: " ++ h
+  if let some h := r.hold then s := s ++ "\nheld: " ++ cont h
   if !(labelsOf r).isEmpty then s := s ++ "\nlabels: " ++ ", ".intercalate (labelsOf r)
   if !(parentsOf r).isEmpty then s := s ++ s!"\nfiled by {r.created_by.getD "-"} while holding {idsText (parentsOf r)}"
   if let some k := pyI tm.claim_ctx then s := s ++ s!", ctx {fdiv k 1000}k at claim"
@@ -118,8 +118,8 @@ def showText (db : Db) (r : Task) : m String := do
   if let some ma := pyI tm.merged_at then
     s := s ++ s!"\nPR #{(tm.pr.map d).getD "None"} merged {← Clock.hhmm ma}, main CI {(py tm.ci_conclusion).getD "pending"}"
     if let some g := tm.merge_to_green_s then s := s ++ s!", green {fdiv g 60}m after merge"
-  return s ++ depLines db r ++ "\n" ++ (py r.body).getD "(no body)" ++
-    (match py r.answer with | some a => "\nAnswer to the block: " ++ a | none => "")
+  return s ++ depLines db r ++ "\n" ++ ((py r.body).map contBlock).getD "(no body)" ++
+    (match py r.answer with | some a => "\nAnswer to the block: " ++ cont a | none => "")
 
 /-- `task show --json`: the row's fields and its notes, oldest first (board #202). -/
 def showJson (db : Db) (r : Task) : Lean.Json :=
@@ -140,13 +140,13 @@ def task (a : Parsed) : m UInt32 := do
   | "add" =>
     let body ← match a.str "body_file" with
       | some p => match ← Fs.read p with
-        | some t => pure t
+        | some t => pure (clean t)
         | none => die s!"can't read {p}"
-      | none => pure ((a.str "body").getD "")
+      | none => pure (clean ((a.str "body").getD ""))
     match a.str "base" with
     | some b => if b != "" && (GitRef.parse? b).isNone then die s!"--base {b}: not a valid git ref name"
     | none => Bases.warnBadConfig ["base"] (some (← Env.cwd))
-    let n ← step [.task] (add c { title := (a.str "title").getD "", body, deps := (a.ids "after").getD [],
+    let n ← step [.task] (add c { title := clean ((a.str "title").getD ""), body, deps := (a.ids "after").getD [],
                                     model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority",
                                     labels := a.str "label" })
     out s!"task #{d n}"
@@ -163,7 +163,7 @@ def task (a : Parsed) : m UInt32 := do
       if Machine.pressureHigh avail total psi then
         out (← Machine.note)
       else out (Machine.line avail total psi)
-    out (r.body.getD "(no body)")
+    out (((py r.body).map contBlock).getD "(no body)")
   | "show" =>
     let db ← Store.txn [.task, .event] fun db => (db, db)
     let some r := db.find id | die s!"no task #{d id}"
@@ -212,10 +212,10 @@ def task (a : Parsed) : m UInt32 := do
     let u ← step [.task, .agent, .«meta»] (unland c id ((a.str "why").getD ""))
     out s!"unlanded #{d id}: open again at P{d u.priority}{match py u.owner with | some o => ", " ++ o ++ " and the communicator told" | none => ""}"
   | "block" =>
-    let away ← step [.task, .«meta»] (block c id ((a.str "question").getD ""))
+    let away ← step [.task, .«meta»] (block c id (clean ((a.str "question").getD "")))
     out s!"blocked #{d id}; {if away then "the user is away: park this and take work that doesn't need the answer." else "watchd tells the communicator."} It stays yours until `swarm task unblock`."
   | "unblock" =>
-    let o ← step [.task, .agent, .«meta»] (unblock c id ((a.str "answer").getD ""))
+    let o ← step [.task, .agent, .«meta»] (unblock c id (clean ((a.str "answer").getD "")))
     out s!"unblocked #{d id}; claimed by {o.getD "nil"}"
   | "release" =>
     let after := a.ids "after"
@@ -223,10 +223,10 @@ def task (a : Parsed) : m UInt32 := do
     out s!"released #{d id}{match fromA with | some f => " from " ++ f | none => ""}; it is open again{match after with | some l@(_ :: _) => " after " ++ idsText l | _ => ""}"
   | "edit" =>
     let bodyFile ← match a.str "body_file" with
-      | some p => pure (some (p, ← Fs.read p))
+      | some p => pure (some (p, (← Fs.read p).map clean))
       | none => pure none
-    let (fields, st) ← step [.task, .agent] (edit c id { title := a.str "title", body := a.str "body", bodyFile,
-                                                           append := a.str "append", model := a.str "model", effort := a.str "effort", urgent := a.flag "urgent" })
+    let (fields, st) ← step [.task, .agent] (edit c id { title := (a.str "title").map clean, body := (a.str "body").map clean, bodyFile,
+                                                           append := (a.str "append").map clean, model := a.str "model", effort := a.str "effort", urgent := a.flag "urgent" })
     out s!"edited #{d id}: {", ".intercalate fields}"
     let fs := " ".intercalate fields
     if st = .claimed && (hasSub fs "model" || hasSub fs "effort") then
@@ -266,9 +266,9 @@ def board (a : Parsed) : m UInt32 := do
     let who := (py r.owner).getD "-" ++ (match role r.owner with | some x => s!" ({x})" | none => "")
     let pr := s!"  [P{d (r.priority.getD DEFAULT_PRIORITY)}]"
     if r.state = .blocked then
-      out s!"#{d r.id} blocked by {who}: {r.question.getD "None"}  {r.title.getD ""}{pr}"
+      out s!"#{d r.id} blocked by {who}: {cont (r.question.getD "None")}  {cont (r.title.getD "")}{pr}"
     else if r.state = .landing then
-      out s!"{← landingLine r}  {r.title.getD ""}{pr}"
+      out s!"{← landingLine r}  {cont (r.title.getD "")}{pr}"
     else
       let lease := if r.state = .claimed then
         let left := r.lease_until.getD 0 - now
@@ -277,10 +277,10 @@ def board (a : Parsed) : m UInt32 := do
       let u := undone db r
       let wait := if u.isEmpty then "" else
         " after " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.state = .dropped then " (dropped)" else ""))
-      out (s!"#{d r.id} {padRight r.state.text 7} {who}{lease}{wait}  {r.title.getD ""}" ++ pr ++
+      out (s!"#{d r.id} {padRight r.state.text 7} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++
         (match r.qpos with | some q => s!"  [queue {q}]" | none => "") ++
         (if (py r.body).isSome then "  [body: task show]" else "") ++
-        (match r.hold with | some h => s!"  held: {h}" | none => "") ++
+        (match r.hold with | some h => s!"  held: {cont h}" | none => "") ++
         (match py r.evidence with | some e => s!"  [evidence: {e}]" | none => ""))
   if all then out s!"({rows.length} tasks)"
   else out s!"({rows.length} shown, {(db.tasks.filter (·.state = .done)).length} done)"
@@ -305,7 +305,7 @@ def queue (a : Parsed) : m UInt32 := do
     if q.isEmpty then out "(queue empty)"
     for t in q do
       let why := (Queue.whyNot db t).getD "startable"
-      out s!"{(t.qpos.map d).getD "?"}. #{d t.id} {padRight t.state.text 7} {why}  {t.title.getD ""}  [P{d (t.priority.getD DEFAULT_PRIORITY)}]"
+      out s!"{(t.qpos.map d).getD "?"}. #{d t.id} {padRight t.state.text 7} {why}  {cont (t.title.getD "")}  [P{d (t.priority.getD DEFAULT_PRIORITY)}]"
   | "add" :: ws@(_ :: _) =>
     let w : Queue.Place := match a.flag "front", a.int "before", a.int "after" with
       | true, _, _ => .front

@@ -30,6 +30,32 @@ def likePrefix (s p : String) : Bool := s.toLower.startsWith p.toLower
 /-- The first `n` characters of `s` (util.cut: by characters, never splitting one). -/
 def cut (s : String) (n : Nat) : String := String.ofList (s.toList.take n)
 
+/-- A control or escape character: C0 but newline and tab, DEL, C1, and the bidi overrides and isolates (board #93). -/
+def isCtl (c : Char) : Bool :=
+  let n := c.toNat
+  (n < 0x20 && c != '\n' && c != '\t') || (0x7f ≤ n && n < 0xa0) || (0x202a ≤ n && n ≤ 0x202e) ||
+    (0x2066 ≤ n && n ≤ 0x2069)
+
+/-- `s` without control and escape characters; CR LF, a lone CR and U+2028/U+2029 become newlines (board #93). -/
+def clean (s : String) : String :=
+  let rec go : List Char → List Char
+    | [] => []
+    | '\r' :: '\n' :: cs => '\n' :: go cs
+    | c :: cs =>
+      if c == '\r' || c == '\u2028' || c == '\u2029' then '\n' :: go cs
+      else if isCtl c then go cs else c :: go cs
+  String.ofList (go s.toList)
+
+/-- What starts each continuation line of peer text (board #93). -/
+def CONT : String := "  ┆ "
+
+/-- Peer text as printed in a line of swarm's: cleaned, each line after the first indented under `CONT`, so none reads
+as a line of its own (board #93). -/
+def cont (s : String) : String := ("\n" ++ CONT).intercalate ((clean s).splitOn "\n")
+
+/-- Peer text as a block of its own: every line under `CONT`. -/
+def contBlock (s : String) : String := "\n".intercalate (((clean s).splitOn "\n").map (CONT ++ ·))
+
 /-- Lua's `tonumber` on an integer text with optional surrounding whitespace and sign (main.lua's int). -/
 def parseInt (s : String) : Option Int :=
   let t := strip s

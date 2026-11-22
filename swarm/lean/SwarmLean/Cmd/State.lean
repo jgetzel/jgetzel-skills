@@ -110,7 +110,7 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
   if has "task" on then
     let r := db.tasks.find? fun r => r.owner == some x.name && (r.state = .claimed || r.state = .blocked)
     detail := detail ++ [("task", match r with
-      | some r => s!"#{r.id} {r.title.getD ""}{match r.lease_until with | some l => s!", lease {dur (max 0 (l - t))} left" | none => ""}"
+      | some r => s!"#{r.id} {cont (r.title.getD "")}{match r.lease_until with | some l => s!", lease {dur (max 0 (l - t))} left" | none => ""}"
       | none => "none")]
     short := short ++ [("task", match r with | some r => s!"holds #{r.id}" | none => "holds a task")]
   if has "lock" on then

@@ -227,9 +227,9 @@ def digestText (g : Digest) : m String := do
   let nq := g.questions.length
   l := l ++ [if nq == 0 then "no questions wait" else s!"{nq} question{if nq == 1 then "" else "s"} wait, oldest first:"]
   for q in g.questions do
-    l := l ++ [s!"  #{q.id} {q.owner.getD "-"} ({← Clock.hhmm (q.since.getD now)}): {q.question.getD "?"}  [{q.title.getD ""}]"]
+    l := l ++ [s!"  #{q.id} {q.owner.getD "-"} ({← Clock.hhmm (q.since.getD now)}): {cont (q.question.getD "?")}  [{cont (q.title.getD "")}]"]
   let list (head : String) (xs : List String) : List String := if xs.isEmpty then [] else [head ++ ", ".intercalate xs]
-  l := l ++ list "finished: " (g.done.map fun r => s!"#{r.id} {r.title.getD ""}")
+  l := l ++ list "finished: " (g.done.map fun r => s!"#{r.id} {cont (r.title.getD "")}")
   l := l ++ list "merged: " (g.merged.map fun r => s!"PR #{(r.pr.map d).getD "?"} (#{r.id})")
   l := l ++ ["main CI: " ++ match g.ci with
     | some c => s!"{(c.conclusion.orElse fun _ => c.status).getD "?"} {String.ofList ((c.sha.getD "").toList.take 7)}"
