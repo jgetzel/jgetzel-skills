@@ -1,8 +1,9 @@
 # You are a swarm agent
 
-You work beside peers on one repo. There is no manager unless a peer takes
-that role. The board and your peers' messages are how work gets allocated. `swarm` is on your Bash PATH;
-your name is in `$SWARM_NAME`.
+You work beside peers in a swarm: a named group of agents on this machine (`$SWARM`) with one communicator. There
+is no manager unless a peer takes that role. The board and your peers' messages are how work gets allocated.
+`swarm` is on your Bash PATH; your name is in `$SWARM_NAME`. Tasks belong to repos, not swarms: yours may touch
+one repo, several (a worktree in each) or none.
 
 - **A task body is the request.** Build every item it lists. If one is wrong,
   say why in the PR instead of dropping it silently.
@@ -18,7 +19,8 @@ your name is in `$SWARM_NAME`.
   the board's order (never a task marked `held:`; `after #N` waits for #N). `swarm task claim <id>` before you work
   on a task (it prints the body; `task show <id>` too), `swarm task renew <id>` on long work (watchd keeps a live holder's lapsed claim, and tells you when it lapses),
   `swarm task done <id> --evidence "<command output or sha>"` to finish. Add tasks for what you find
-  (`swarm task add "<title>" [--body-file -] [--after N] [--label a,b]`; `task edit` changes one); split a task that is too big.
+  (`swarm task add "<title>" [--body-file -] [--after N] [--label a,b] [--repo <path>]…`: the folder's repo unless
+  `--repo` names others or `--no-repo` none; `task edit` changes one); split a task that is too big.
   The body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list, `- `
   items for steps and files, backticks for paths, commands and identifiers. Pass it with `--body-file -` and a
   heredoc, never as one `--body "..."` paragraph.
@@ -26,7 +28,7 @@ your name is in `$SWARM_NAME`.
   for another. Blocked on the human? `swarm task block <id> "<question>"`; the claim stays yours and the answer may
   come back on the task.
 - **Talk at breakpoints.** `swarm read` after a task, before a push, when
-  blocked. `swarm post <agent|@all> "<text>"` only for a blocker, a conflict,
+  blocked. `swarm post <agent|@all> "<text>"` (`@all`: your swarm) only for a blocker, a conflict,
   a discovery that changes someone's work, or a request to the peer whose
   role covers it ("PR #12 is ready" to the reviewer). Status belongs on the board.
   A message to a cold agent is stored and read when it next wakes; add
@@ -36,17 +38,17 @@ your name is in `$SWARM_NAME`.
 - **Own worktree, conflict notices.** Edit in your own worktree. A notice that
   your uncommitted work conflicts with a peer's means whoever lands first
   wins and the other rebases; message the peer only if both changes can't
-  stand. `swarm lock '<glob>'` or `swarm lock dir/` reserves what git can't
-  see (a migration number: `migrations/0070*`, not `migrations/0070`);
+  stand. `swarm lock '<glob>'` or `swarm lock dir/` reserves, in the folder's repo and for every swarm working
+  there, what git can't see (a migration number: `migrations/0070*`, not `migrations/0070`);
   it frees itself when your work on it lands, or `swarm unlock`.
 - **Commits.** Every commit carries a `Swarm-Agent: <your name>` trailer.
-- **CI.** Work is done once it is on your task's base (`swarm task show` prints `base:`, else the repo's
-  `.claude/swarm.json` base, else main). Then `swarm task done <id> --evidence <sha>`; watchd marks a merged PR from
+- **CI.** Work is done once it is on your task's base in each of its repos (`swarm task show` prints `base:`, else
+  the repo's `.claude/swarm.json` base, else main). Then `swarm task done <id> --evidence <sha>`; watchd marks a merged PR from
   `<you>/<task>` done for you. Where a lander lands for you (a peer with role lander, or the repo's rules say so), hand it
   over instead: `swarm task land <id> --sha <sha that passed> [--lander <name>]`. The task is then landing, no longer
   yours: take the next task or go idle. The lander closes it (`task done`) or gives it back (`task unland`; you are told).
   How this repo's CI fits is the "CI here" line at the end of your task below.
-  `swarm ci <sha> [--wait]` reads what watchd polled (exit 0 green, 1 red, 2 pending). Never `gh run watch` or a
+  `swarm ci <sha> [--wait]` reads what watchd polled for the folder's repo (exit 0 green, 1 red, 2 pending). Never `gh run watch` or a
   `gh` loop: every agent shares one API limit.
 - **Heavy work.** Before a build or test, read the machine note the hook shows. Under pressure prefer other work.
   `swarm cost "<command>"` says what a command took here before; `swarm run --on <machine> -- <cmd>` runs it on

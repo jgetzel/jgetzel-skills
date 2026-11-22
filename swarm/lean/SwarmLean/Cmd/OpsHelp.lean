@@ -4,7 +4,7 @@ namespace SwarmLean.Cmd
 
 /-- `swarm ci -h`. -/
 def helpCi : String :=
-  "Usage: swarm ci [-h] [--wait] [--timeout <timeout>] [--poll <poll>]\n       [<sha>]\n\nArguments:\n   sha                   default: HEAD\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --wait                block until a finished run includes it\n   --timeout <timeout>\n   --poll <poll>"
+  "Usage: swarm ci [-h] [--wait] [--timeout <timeout>] [--poll <poll>]\n       [<sha>]\n\nThe CI runs watchd polled for the folder's repo that include <sha>: exit 0 green, 1 red, 2 pending.\n\nArguments:\n   sha                   default: HEAD\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --wait                block until a finished run includes it\n   --timeout <timeout>\n   --poll <poll>"
 
 /-- `swarm cost -h`. -/
 def helpCost : String :=

@@ -21,6 +21,15 @@ with subagents.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
    The communicator is not a `SendMessage` address: agents' blocked notices and posts wait in your inbox until your next `swarm wait` delivers them.
+   **A swarm is a named group of agents** on this machine with one communicator, its own knobs (limits, rules, away,
+   spawn model, CI) and the repos its auto-spawn staffs from. Joining as `<prefix>-comms` with no swarm given makes
+   swarm `<prefix>` (you its communicator, the folder's repo its repo) or joins it, and labels your terminal
+   `swarm=<prefix>`. For several repos make it first, then join:
+   `swarm new <prefix> --comms <prefix>-comms --repo <path> [--repo <path>]…`. `swarm swarms` lists the machine's
+   swarms (communicator, live agents, repos). Every command acts on one swarm: `--swarm <name>`, else `$SWARM`, else
+   the swarm of `$SWARM_NAME`'s agent row, else your terminal's `swarm=` label, else the only live swarm; else it
+   refuses and lists them. Never the folder. Several swarms share a machine, its db and its one watchd; agent names
+   are unique on the machine (the prefixes keep them so).
 4. The CLI is swarm-lean (`lean/`, Lean 4). Build it once per checkout, and again after a pull that changes
    `lean/`: `~/.claude/skills/swarm/lean/build.sh` (lake from elan, else the repo flake through nix; `install.sh`
    runs it). Until then `swarm` fails, saying how to build it; while a source is newer than the binary, it runs the
@@ -29,7 +38,7 @@ with subagents.
 6. Other machines: `hc machine add` makes one usable by `swarm run --on`. Repo
    knobs (wrapper, env, cache variable, bring-back) go in `.claude/swarm.json`
    `run`; `swarm/research/sw-remote-jobs.md` §5 has the keys. `swarm run` enters the repo's nix dev shell (a flake with
-   `devShells.default`; cached as a profile under the git dir's `swarm/devshell`, here and with `--on`), unless the command
+   `devShells.default`; cached as a profile under the repo's git dir, `swarm/devshell`, here and with `--on`), unless the command
    starts with `nix develop|shell|run`, IN_NIX_SHELL is set, `--no-devshell` is given or `run.devshell` is `false`; a
    shell that does not build fails the job. `run.machines` (a list of `hc machine ls` names) is where
    `swarm run` tries after this machine when it has no room. Every `swarm run` claims cores and memory in a ledger on
@@ -55,7 +64,8 @@ with subagents.
 
 ## 1. Start
 
-0. Set the rules every spawn's first message carries, auto-spawns included:
+0. Set the rules every spawn's first message carries, auto-spawns included (rules, limits and the other knobs are
+   your swarm's):
    `swarm rules set "<what CLAUDE.md and orchestration.md ask of agents, e.g. never edit the main checkout>"`.
    Ask the user for the two staffing numbers and set them before the first
    spawn: `swarm limits --min N --max M`. `--min` is the auto-spawn number
@@ -70,6 +80,10 @@ with subagents.
    a line, then `Done when:` and a `- ` list, `- ` items for steps and files, `Notes:` for background, backticks for
    paths, commands and identifiers; never one long `--body "..."` paragraph. Aim for tasks
    an agent finishes in an hour. Strike what doesn't split.
+   **Tasks belong to repos, not swarms.** A task touches the folder's repo unless `--repo <path>` (repeatable: a
+   cross-repo task) or `--no-repo` (research: no worktree; staffed only by a claim or `spawn --task`, never by
+   auto-spawn) says otherwise; `--base` is its base in each (default: the repo's `.claude/swarm.json` base, else main).
+   The board lists the machine's tasks; your auto-spawn staffs only those touching one of your swarm's repos.
 2. Be wakeable. You have no hooks and need no waiter: watchd (step 3) sends your new messages within a
    tick (about 20 s after the oldest, so a burst comes as one block, as `swarm read` prints it under the "data
    from peers" head; past 40 lines the first ones and "N more: `swarm read`") and marks them read once sent. They
@@ -83,26 +97,31 @@ with subagents.
    stderr), 0 on a timeout or a newer waiter (stderr says which and what is unread), 3 when this terminal doesn't
    hold your name (stderr says who does: `swarm join`, `--takeover` to move it here).
 3. Start the watcher, in the background:
-   `SWARM_COMMS=$SWARM_NAME swarm watchd --ci`
-   One watchd per repo: a second is refused while the first lives, naming it;
+   `swarm watchd --ci --comms $SWARM_NAME`
+   **One watchd per machine**, for every swarm and repo on it: each tick it runs each live swarm's agent and swarm
+   passes (reaping, ending, leases, auto-spawn, your messages), each repo's conflict, lock, sweep and CI passes,
+   then the machine's, and hourly copies the db to `swarm.db.bak` beside it. `--ci`, `--comms`, `--max-agents`,
+   `--model` and `--effort` set your swarm's knobs (`--ci`: poll your repos' CI and PRs); the rest are the
+   machine's. A second watchd is refused while the first lives, naming it, after setting the knobs it was given: when
+   one already runs for another swarm, that refusal is all you need.
    `--takeover` replaces it (the old one exits once the new one has ticked). `swarm watchd --restart` starts the same watchd (the flags
    it recorded) in a hidden hc terminal and reports success only once the new one has ticked; else it exits 1
    and the old one runs on.
-   Auto-spawn goes through `swarm spawn --task N`, which makes the agent's worktree (`../<repo>-<agent>`, branch
-   `<agent>/<task>`, from the task's base) and records it; `--attach <wt>` starts a read-only peer in one. It claims the task for
+   Auto-spawn goes through `swarm spawn --task N`, which makes the agent's worktree in each repo of the task
+   (`../<repo>-<agent>`, branch `<agent>/<task>`, from the task's base there; none for a task of no repo) and records it; `--attach <wt>` starts a read-only peer in one. It claims the task for
    the new agent before launching, so a task a peer claimed first is skipped.
    It reaps dead agents and expired locks, ends agents whose work has landed
    (the terminal only; the sweep removes worktrees), spawns fresh agents for startable
-   tasks when none is free (up to the auto-spawn number, default the live count
-   when the first watchd starts; `--min-free-mem` GiB, default 4; `--blocker-idle` min, default 25: an agent idle that long
+   tasks of your swarm's repos when none is free (up to the auto-spawn number, default the swarm's live count
+   when its knobs are first set; `--min-free-mem` GiB, default 4; `--blocker-idle` min, default 25: an agent idle that long
    holding a claim that open tasks wait on (`--after`, transitively) is asked once per idle stretch what it waits on, and
    comms is told; while either
    holds it, the board says so: `auto-spawn holding: …`; the model is the task's
-   `--model`, else `watchd --model`, else sonnet), keeps a live agent's claim past its lease (through a compaction and
+   `--model`, else the swarm's `watchd --model`, else sonnet), keeps a live agent's claim past its lease (through a compaction and
    an idle turn; the agent is told to renew, you only if it goes idle again without renewing) and reopens it only when
    the agent ends, its terminal is gone, or it is hung: it left that notice or a stayer's liveness check unanswered 5 min
-   (`#N reopened: <agent> is hung`), and tells you when an agent is blocked on a prompt. With `--ci` it is the swarm's only GitHub
-   poller: a base's push runs once a minute into the board (bases with a remote only), which agents read with
+   (`#N reopened: <agent> is hung`), and tells you when an agent is blocked on a prompt. With your swarm's `--ci` it is the
+   machine's only GitHub poller for your repos: each repo's base push runs once a minute into the db (bases with a remote only), which agents read with
    `swarm ci <sha>` instead of `gh run watch` (several push workflows on main?
    `.claude/swarm.json` `{"ci": {"workflow": "ci.yml"}}` keeps the check's). Agents finish a task when it
    is on its base, not when CI passes, so a red run's authors have often ended:
@@ -117,7 +136,7 @@ with subagents.
    agent stays for them and stops, and watchd wakes it, urgent, once per head, when they finish green or red),
    `promoted` (CI on a dev base that promotes itself: tasks land on that base, as post-merge). Unset is post-merge
    with nothing enforced. Each spawn message ends with the flow's "CI here" line. The user watches in Herdr's Swarm panel
-   (`swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
+   (one machine-wide view, grouped by swarm; `swarm/herdr`, installed by `install.sh` into the `jgetzel` layout); open a `swarm watch` split only
    if the user has no Swarm button. Agents and you don't read either view.
    The panel also acts, always through this CLI as `SWARM_NAME=human` (the user, with your rights), so expect
    `human` in events and messages: Away switch (`swarm away` / `--back`; the digest is a card on Home),
@@ -156,7 +175,8 @@ with subagents.
 
 - **Read state, not streams.** `swarm board`, `swarm who`, `swarm read`.
 - **Steer where agents already pull from:** add or drop tasks, then
-  `swarm post <agent> …`, then `swarm post @all …`. Prefer the board.
+  `swarm post <agent> …`, then `swarm post @all …` (your swarm; `@<swarm>` reaches another swarm's agents, and an
+  agent of any swarm takes its name). Prefer the board.
 - **Don't reassign claimed work by message.** Add, drop or split tasks and let
   claims settle; one message per agent, not a sequence of corrections.
 - **You hear two things:** messages addressed to you (questions for the human)
@@ -183,10 +203,10 @@ with subagents.
   A background job of your own, a blocked task, a stay or an API-error turn let the stop through. Two blocks per reason, then it lets go and tells comms.
 - **Ending.** `watchd` ends agents (kills the terminal, nothing else) once they are idle with no claim, lock or
   stay and their work is on their task's base. `swarm end <agent> [--force]` does it by hand with the same checks.
-  Worktrees are a separate sweep: watchd removes any worktree of this repo (yours included) that is clean, has no
-  live agent attached and no process in it, was untouched for 30 minutes and is on a ref some task base, `main` or
-  `origin/*` already has, then deletes its branch (`git branch -d`, else `update-ref -d` guarded by the tip it checked; never a base, never `-D`): tell the user before the
-  first watchd if they park worktrees here (`swarm watchd --dry-run` lists what the sweep would remove). When all tasks are done, tell
+  Worktrees are a separate sweep, per repo: watchd removes a worktree that `swarm spawn` made (a `workspace` row;
+  one made by hand is never touched) that is clean, has no live agent attached and no process in it, was untouched for 30 minutes and is on a ref some task base, `main` or
+  `origin/*` already has, then deletes its branch (`git branch -d`, else `update-ref -d` guarded by the tip it checked; never a base, never `-D`;
+  `swarm watchd --dry-run`, run in a repo, lists what the sweep would remove there). When all tasks are done, tell
   the user. A stayer idle 50 min is asked if it still stays; one that does not wake within 5 min, has no
   waiter, or ignores a message gets you an urgent or plain notice (`stay-hung`): unstick it with `swarm nudge <agent>`
   (one fixed line typed into its terminal), or end it. `swarm stay --end <agent>` (you or `human`) ends another
@@ -222,6 +242,9 @@ with subagents.
 
 ## Reference
 
-Commands: `spawn join leave end endable post read wait nudge compact board queue who task rules role stay limits away
-lock unlock ci cost machine run state watch watchd`; `swarm <cmd> -h` has flags. State is in
-`<git common dir>/swarm/swarm.db`, shared by every worktree of the repo.
+Commands: `new swarms spawn join leave end endable post read wait nudge compact board queue who task rules role stay
+limits away lock unlock ci pr cost machine run job compute state watch watchd worktrees`; `swarm <cmd> -h` has flags,
+and `swarm --swarm <name> <cmd>` acts on another swarm. State is one db per machine,
+`$XDG_STATE_HOME/swarm/swarm.db` (else `~/.local/state/swarm/swarm.db`), shared by every swarm, repo and worktree on
+it (`$SWARM_DB` overrides it, for tests only); a per-repo db from before 2026-11-21 is not read. Locks, conflicts,
+CI runs and worktrees are per repo (`swarm lock` and `swarm ci` take the folder's).
