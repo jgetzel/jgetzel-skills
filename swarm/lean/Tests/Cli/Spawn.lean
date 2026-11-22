@@ -341,7 +341,7 @@ def test_agent_without_terminal_reads_as_gone (t : T) : IO Unit := do
   let out := (← t.sw "a" ["post", "t-comms", "hi"]).stdout
   has out "can't be delivered now"; has out "stored"
   hasnt out "held;"; hasnt out "nudge by SendMessage"
-  has (← t.sw "a" ["post", "@all", "hi"]).stdout "w, x-comms: no terminal"
+  has (← t.sw "a" ["post", "@all", "hi"]).stdout "t-comms, w: no terminal"
 
 def test_spawn_role_set_before_and_shown_in_roster (t : T) : IO Unit := do
   t.fakes

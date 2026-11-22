@@ -301,7 +301,7 @@ def test_comms_ctx_recorded_from_commands (t : T) : IO Unit := do
     ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 360000}}}).compress ++ "\n")
   let env := [("HOME", some (t.d ++ "/home")), ("CLAUDE_CODE_SESSION_ID", some s)]
   hasnt (← t.sw "t-comms" ["board"] { env, ok := false }).stdout "Context is"
-  eq ((← t.q1 "select ctx_tokens c from agent where name='x-comms'").f "c").i 360000
+  eq ((← t.q1 "select ctx_tokens c from agent where name='t-comms'").f "c").i 360000
 
 -- board #136: `swarm compact` types an unwrapped /compact with the agent's task, worktree and --keep into its terminal
 def test_compact_types_into_own_terminal (t : T) : IO Unit := do
