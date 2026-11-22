@@ -105,21 +105,22 @@ def seedSource [Fs m] [Git m] [Sys m] (path : String) (dirs : List String) : m (
   return best.map (·.1)
 
 /-- Clones each seed dir of `.claude/swarm.json` from the last built worktree into the new worktree `path`
-(`cp -c` on macOS, `--reflink=auto` elsewhere), minus a `.lake`'s `config` (it holds the source worktree's paths).
+(`cp -c`, else `cp --reflink=auto`), minus a `.lake`'s `config` (it holds the source worktree's paths).
 A copy that fails leaves nothing: that build runs from scratch. -/
 def seed [Fs m] [Proc m] [Git m] [Sys m] (path : String) : m Unit := do
   let dirs ← seedDirs path
   if dirs.isEmpty then return
   let some src ← seedSource path dirs | return
-  let mac := match ← Proc.output ["uname"] none [] with | some o => strip o.stdout == "Darwin" | none => false
   for s in dirs do
     let (from_, to) := (joinPath src s, joinPath path s)
     if (← Sys.kind from_ false) != .dir || (← Sys.kind to false) != .none || (← Sys.kind (dirname to) true) != .dir then
       continue
-    let o ← Proc.output (["cp"] ++ (if mac then ["-c"] else ["--reflink=auto"]) ++ ["-R", from_, to]) none []
-    if o.all (·.code != 0) then
+    -- BSD cp clones with -c, GNU cp (Linux, or a nix shell on macOS) with --reflink
+    let mut copied := false
+    for flag in ["-c", "--reflink=auto"] do
+      if (← Proc.output ["cp", flag, "-R", from_, to] none []).any (·.code == 0) then copied := true; break
       discard <| Proc.output ["rm", "-rf", to] none []
-    else if basename to == ".lake" then
+    if copied && basename to == ".lake" then
       discard <| Proc.output ["rm", "-rf", joinPath to "config"] none []
 
 variable [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]

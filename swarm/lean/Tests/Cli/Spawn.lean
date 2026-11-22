@@ -280,7 +280,7 @@ def test_spawn_seeds_build_dirs (t : T) : IO Unit := do
   let isDir (p : String) : IO Bool := System.FilePath.isDir p
   t.sw_ "a" ["spawn", "s1", "--model", "haiku", "--task", "1"]
   ok (← isDir (wtOf "s1" ++ "/lean")) "s1's worktree"
-  ok !(← isDir (wtOf "s1" ++ "/lean/.lake")) "no built worktree: no seed"
+  ok (!(← isDir (wtOf "s1" ++ "/lean/.lake"))) "no built worktree: no seed"
   -- the repo's build is older than the wt's; the wt has no claim/.lake
   for (w, v) in [(t.repo, "old"), (t.wt, "new")] do
     IO.FS.createDirAll (w ++ "/lean/.lake/build/bin"); IO.FS.createDirAll (w ++ "/lean/.lake/config")
@@ -290,16 +290,16 @@ def test_spawn_seeds_build_dirs (t : T) : IO Unit := do
     discard <| t.exec ["find", p, "-exec", "touch", "-t", "202001010000", "{}", "+"]
   t.sw_ "a" ["spawn", "s2", "--model", "haiku", "--task", "2"]
   eq (← slurp (wtOf "s2" ++ "/lean/.lake/build/bin/out")) (some "new")
-  ok !(← isDir (wtOf "s2" ++ "/lean/.lake/config")) "config dropped"
-  ok !(← isDir (wtOf "s2" ++ "/claim/.lake")) "only from the worktree built last"
-  ok !(← isDir (wtOf "s2" ++ "/gone")) "no seed where the worktree lacks the parent"
+  ok (!(← isDir (wtOf "s2" ++ "/lean/.lake/config"))) "config dropped"
+  ok (!(← isDir (wtOf "s2" ++ "/claim/.lake"))) "only from the worktree built last"
+  ok (!(← isDir (wtOf "s2" ++ "/gone"))) "no seed where the worktree lacks the parent"
   -- s2's copy is now the newest; an unreadable dir in it makes the copy fail
   IO.FS.createDirAll (wtOf "s2" ++ "/lean/.lake/build/locked")
   discard <| t.exec ["chmod", "000", wtOf "s2" ++ "/lean/.lake/build/locked"]
   t.defer (discard <| t.exec ["chmod", "755", wtOf "s2" ++ "/lean/.lake/build/locked"])
   t.sw_ "a" ["spawn", "s3", "--model", "haiku", "--task", "3"]
   ok (← isDir (wtOf "s3" ++ "/lean")) "s3's worktree"
-  ok !(← isDir (wtOf "s3" ++ "/lean/.lake")) "a failed copy leaves nothing"
+  ok (!(← isDir (wtOf "s3" ++ "/lean/.lake"))) "a failed copy leaves nothing"
 
 -- The spawn message keeps the task line and body with the spawner's text after them, and ends with the repo's ci.flow line.
 def test_spawn_message_task_body_text_and_ci_flow (t : T) : IO Unit := do
