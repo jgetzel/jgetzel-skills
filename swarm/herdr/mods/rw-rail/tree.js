@@ -1106,6 +1106,10 @@ export const showAll = (run, on) => run("layout.select", { stack: "view", child:
 // shared("rw-swarm.view") ({swarm, folder, machine, section, page}: `swarm` its name, `folder` where its commands run).
 // viewShown: a view other than the tabs shows.
 export const swarmShown = (lay) => findId(lay, "view")?.active === "swarm";
+// The swarm view's selection (select-sync), shared by rw-swarm's board and rw-rail: {from: "agent" | "task", agent,
+// swarm, task}; the agent is the task's holder when a task is picked. null: nothing picked.
+export const SELECT = "rw-swarm.select";
+export const selectedAgent = (sel, swarm, name) => Boolean(sel?.agent && sel.agent === name && (sel.swarm ?? null) === (swarm ?? null));
 export const viewShown = (lay) => (findId(lay, "view")?.active ?? "main") !== "main";
 export const SECTIONS = [["overview", "Overview"], ["agents", "Agents"], ["board", "Board"], ["activity", "Activity"], ["landing", "Landing"],
   ["system", "System"], ["history", "History"]];

@@ -15,7 +15,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, homesOf,
-  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering, addrOf, ciWord, repoName } from "./tree.js";
+  swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering, addrOf, ciWord, repoName, SELECT, selectedAgent } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 
@@ -560,6 +560,9 @@ export default class Rail extends View {
     const working = items.filter((it) => it.r.mark === "working").length;
     const asks = (j.needs ?? []).length;
     const on = this.swarmOn === k;
+    // select-sync with the swarm view: while it shows, a row's click picks the agent (its tasks light there), a second
+    // click on the picked one opens its terminal; a task picked there marks its holder here
+    const sel = shared(SELECT), viewOn = swarmShown(layout());
     const many = (j.repos ?? []).length > 1;
     const stop = (_e, cx) => cx.stop_propagation();
     const meta = items.length === 1 && items[0].comms ? "communicator only" : `${items.length} ${items.length === 1 ? "agent" : "agents"}, ${working} working`;
@@ -615,9 +618,14 @@ export default class Rail extends View {
         .text_color(st === "asks" || st === "hung" ? kit.colors(t).asks : st === "landing" ? kit.colors(t).landing : t.dim).child(side) : null;
       const menu = () => openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
         props: { agentMenu: { name: it.a.name, swarm: j.swarm, folder: j.folder, machine: j.on ?? null, comms: Boolean(it.comms), task: it.a.task?.id ?? null } } });
+      const picked = viewOn && selectedAgent(sel, j.swarm, it.a.name);
       const row = kit.agentRow(t, this.motion, { name: it.a.name, status: st, swarm: j.swarm }, {
-        onClick: (cx) => { if (Date.now() - (this.droppedAt ?? 0) > 300) this.open(root, cx); },
-        sel: shownTerm === it.r.t.address ? true : null, sub, compact: true, right: [...tags, sideEl].filter(Boolean) })
+        onClick: (cx) => {
+          if (Date.now() - (this.droppedAt ?? 0) <= 300) return;
+          if (viewOn && !picked) return setShared(SELECT, { from: "agent", agent: it.a.name, swarm: j.swarm, task: null });
+          this.open(root, cx);
+        },
+        sel: shownTerm === it.r.t.address || picked ? true : null, sub, compact: true, right: [...tags, sideEl].filter(Boolean) })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); menu(); })
         .tooltip(this.card(it.r, it.a.name, side));
       out.child(kit.arrive(row, this.motion, `ag:${k}:${it.a.name}`));

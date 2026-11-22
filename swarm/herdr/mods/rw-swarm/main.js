@@ -1,8 +1,8 @@
 // The rework's swarm view (swarm/herdr/UI-SPEC.md, slice 7 and Part II.3). With props {view: true} it is the layout's
 // full-width swarm view (a child of the "view" stack): the swarm, section and page are shared("rw-swarm.view")
-// ({swarm, folder, machine, section}: the swarm by name, sw-global §5), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
-// width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
-// cards. With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
+// ({swarm, folder, machine, section}: the swarm by name, sw-global §5), rw-bar draws the sections, and Overview and Board
+// are board.js (the unified redesign's direction 8: the board by repo, its peek and its inbox).
+// With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
 // last one it showed, in one column under 700 px, under a head with the section as a menu, Expand and Close, and over a
 // message line to the communicator; the focused agent's row is marked "shown", and a click on a row shows its terminal
 // (its name and its right-click menu open its page). Without it, the older swarm tab: a mod pane with props {swarm, folder, machine}. Needs you with an answer field, the
@@ -18,6 +18,7 @@ import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnAr
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
+import { SwarmBoard } from "./board.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 // `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
@@ -86,13 +87,22 @@ export default class SwarmTab extends View {
     this.motion = new kit.Motion(); // the kit's motions (swarm/herdr/kit), for the rows drawn with it
     this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
+    // the full view's Overview and Board: the board by repo with its peek and inbox (board.js), reading for itself
+    this.sb = new SwarmBoard((args) => { const w = this.where(); return swarm(w.cwd, w.on, args, w.swarm); });
     this.refresh(cx); this.refreshPrs(cx);
     cx.timer.every(POLL, (cx) => {
+      if (this.boardView()) { if (this.hidden()) this.sb.gone = true; else this.sb.tick(cx, this.where()); return; }
       if (this.due()) this.refresh(cx);
       if (!this.hidden() && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx); // gh only while it shows
     });
   }
   hidden() { return props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout())); }
+  // The full view shows board.js: its Overview, or its Board but for the older List and Graph, no page open.
+  boardView() {
+    const p = props() ?? {}, v = p.view && !p.side ? shared("rw-swarm.view") ?? {} : null;
+    const sec = v?.section ?? "overview";
+    return Boolean(v && !v.page && (sec === "overview" || (sec === "board" && !["list", "graph"].includes(v.board))));
+  }
 
   // The swarm shown: { cwd: a repo of it (where its commands and gh run), on: its machine, swarm: its name }.
   where() {
@@ -127,7 +137,7 @@ export default class SwarmTab extends View {
   }
   refresh(cx) {
     const { cwd, on, swarm: sw } = this.where(), who = this.pageKey();
-    if (this.loading || this.busy || !sw) return;
+    if (this.loading || this.busy || !sw || this.boardView()) return;
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
@@ -1390,7 +1400,7 @@ export default class SwarmTab extends View {
     const left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), past = this.qwhich !== "open";
     return h_flex().id("b-head").flex_none().px(4).gap(10).items_center().flex_wrap()
       .when(!graph, (el) => el.child(this.seg(t, "q-which", [["open", `Open ${left}`], ["done", `Done ${c.done ?? 0}`], ["dropped", `Dropped ${c.dropped ?? 0}`]], this.qwhich, (x) => { this.qwhich = x; })))
-      .child(this.seg(t, "b-as", [["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
+      .child(this.seg(t, "b-as", [["repo", "By repo"], ["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
       .when(graph, (el) => el.child(this.seg(t, "b-scope", [["queue", "Queue"], ["all", "All tasks"]], all ? "all" : "queue", (x) => set({ graph: x })))
         .when(all, (el) => el.child(h_flex().id("b-donetoo").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
           .on_click((_e, cx) => { set({ done: !v.done }); cx.notify(); })
@@ -1727,10 +1737,13 @@ export default class SwarmTab extends View {
       if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.sys = null; this.hist = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
+      const bv = this.boardView();
+      if (bv !== this.bvWas) { this.bvWas = bv; if (!bv) { this.loading = false; this.dirty = true; this.refresh(cx); } }
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } })
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
       if (props().side && !this.where().swarm) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
+      if (bv) return root.child(this.sb.draw(t, cx, this.motion, { w: this.where(), width: this.width, board: (shared("rw-swarm.view") ?? {}).section === "board" }));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
       const side = Boolean(props().side);
       return root.child(this.staffBar(t, this.s, !side).mt(side ? 0 : 4)).when(side, (el) => el.child(this.sideTabs(t, this.s)))
