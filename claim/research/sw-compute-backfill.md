@@ -21,8 +21,9 @@ until the ledger empties. Now the oldest waiting ticket that can run (the **head
 **shadow**: the earliest expected end of running claims at which it would fit. A younger request that fits now is
 granted if its own expected end (now + the 90th percentile of its recent wall times) is no later than the shadow (EASY
 backfill, as Slurm's `sched/backfill` with one reservation). Expected durations travel in the claim lines and the `try`
-arguments. `--cores all` asks for the whole machine alone; while the user's reservation or unclaimed use keeps it off,
-it waits without blocking anyone. A per-machine `reserve` file holds the user's reservation, separate from the cap;
+arguments. `--cores all` asks for the whole machine alone; while the user's reservation keeps it off it waits without
+blocking anyone. Unclaimed use alone no longer costs a waiting head its place (the user's Slurm-style rule of
+2026-11-21, §2.2); it yields only after ten minutes of it with no claim (our default). A per-machine `reserve` file holds the user's reservation, separate from the cap;
 the room sized jobs may take is `min(cap, size - reserve)`. Jobs run under `nice -n 19` and, where it works,
 `ionice -c3`.
 
@@ -168,21 +169,61 @@ The estimates:
 Inside `try`, after `clean`, with `fc`, `fm` as today but over the reserve-aware limit (§3):
 
 ```
-held(t)    = sized t:     t.cores > fc + Σ cores or t.mem > fm + Σ mem     # it would not fit with every live claim ended:
-                                       # = min(lim_c, ncpu - outside)   = min(lim_m, available + Σ mem)
-             exclusive t: reserve != 0 0, or outside > 0, or a cap below the machine     (§2.4)
+held(t)    = yielded(t), or
+             sized t:     t.cores > lim_c or t.mem > fm + Σ mem     # what the user set, or memory it would not have
+                                                                     # with every live claim ended: min(lim_m, available + Σ mem)
+             exclusive t: reserve != 0 0, or a cap below the machine     (§2.4)
+yielded(t) = t.since is set and now >= t.since + 600                  # 10 min blocked only by unclaimed use (below)
 ahead      = live tickets t != me, not held, (t.first, t.id) < (my first, my id)     # ids compared bytewise (LC_ALL=C)
 head       = the least of `ahead` by (first, id)
 end(c)     = max(now, c.start + c.est)        for a claim with an estimate; a claim without one has no expected end
 events     = {now} ∪ {end(c)}
-free_at(τ) = (fc + Σ cores, fm + Σ mem) over claims with end(c) <= τ
+free_at(τ) = (lim_c - cc + Σ cores, fm + Σ mem) over claims with end(c) <= τ     # cores by the claims alone
 fits_at(h, τ) = sized h:     h.cores <= free_at(τ).cores and h.mem <= free_at(τ).mem
                 exclusive h: every claim has end(c) <= τ
 shadow     = the least τ in events with fits_at(head, τ); none if no τ
 
 grant iff  fits now and ( ahead is empty or (my est is known and shadow is known and now + est <= shadow) )
            where fits now = sized: cores <= fc and mem <= fm;  exclusive: no live claim, reserve 0 0, outside = 0
+
+on wait:   since = (my ticket's since, else now)  if no live claim, not fits now, and it would fit but for unclaimed
+                                                  cores (sized: cores <= lim_c, mem <= fm; exclusive: reserve 0 0)
+           none                                   otherwise
 ```
+
+**The user's Slurm-style rule (2026-11-21).** The head of the line gets a reservation, and a later job starts only if
+its stated duration ends before that reserved start; a job without a duration waits. It replaces the 2026-11-15 rule
+that a ticket unclaimed use keeps out is held (§2.4 as first written): on the desktop a whole-machine head waited 1h35m
+and more while every job that fitted was granted past it, and those jobs kept the machine busy, so it stayed held. Now:
+
+- **Held is what the user set, or what can never fit.** A ticket is held by the reservation, a cap, `off` (no one is
+  granted then), or a size it can never have (cores past `lim_c`); unclaimed cores (`outside`, which counts claimed
+  jobs using more than they claimed too) never hold it. `Proofs.unclaimed_use_moves_no_one`: `held`, `ahead`, the head
+  and its shadow do not depend on the busy cores.
+- **A head kept off by unclaimed use keeps its place.** Its shadow is computed from the claims alone (`free_at`'s cores
+  ignore `outside`), so others start only by backfill against it, ending by the time the claims leave it room. Its own
+  start still needs `fits now` (for an exclusive one `quiet`). With no claim left its shadow is `now`, so nothing
+  passes it.
+- **Memory is as before.** A sized ticket that would not have its memory with every claim ended (low `MemAvailable`)
+  is still held: the 2026-11-15 desktop case (a 3-core job three hours behind an 8-core 30 GiB head that 23 + 4 GiB
+  could never seat) stays fixed. Chosen here, for the user to overturn: hole 1 named only cores.
+- **The yield (our default, not the user's words; the user can veto it).** Unclaimed use that never goes away (the
+  user working on the machine) would hold every job behind the head for as long. So a ticket whose own `try` finds it
+  blocked only by unclaimed use (no live claim, nothing the user set in the way, it does not fit now) starts a clock,
+  `since` in its ticket line, kept while that holds and cleared otherwise; 600 s on (`Admit.YIELD`) it yields: it is
+  held, and the jobs behind it run as under the old rule. Ten minutes: longer than a burst (a compile, a test, a short
+  job outside the ledger), short enough that a user at the machine all afternoon costs the queue ten minutes, not the
+  afternoon. `decide` is pure and there is no daemon, so the clock lives in the ledger. Once a younger job is granted
+  past the yielded head, its next `try` sees a claim, clears the clock, and it is an ordinary head again whose shadow
+  is that job's end; when the claims are gone and the unclaimed use is still there, the clock starts again. The jobs
+  granted in between are those whose `try` comes before the head's next one (one poll, 5 s).
+- **No estimate, as before.** A claim without an estimate has no end in the model, so a head that needs its room has no
+  shadow and nothing passes it however long the claim runs (`unknown_shadow_no_backfill`), and a request without one
+  never starts past an older ticket that is not held (`no_estimate_never_past_unheld`). Only an estimate on the claim
+  (`claim run --est`, `claim op <m> try … <est_s>`) or the user cutting it short changes that. The wait line says so
+  (§2.2a).
+- **Priority grows with age.** The queue order is `(first, id)` (`Admit.before`): the oldest ticket that is not held is
+  the head, and a ticket keeps its `first` across its rewrites, so a waiter only moves up.
 
 - **No history, no backfill.** A request without an estimate is granted only when nothing is ahead of it (today's
   rule). Since every `swarm run` job is now recorded (§2.1), only a command's first run lacks one; guessing it would let
@@ -190,24 +231,41 @@ grant iff  fits now and ( ahead is empty or (my est is known and shadow is known
 - **A running claim without an estimate never ends, in the model**, rather than "makes the head's start unknown". The
   head's shadow is then none only if it needs that claim's room, and a claim it does not need does not stop backfill.
   This is sound for the theorem (§6, `backfill_no_delay`): the shadow counts only room that estimates promise.
-- **Held: what claims ending cannot fix blocks no one.** A ticket that would not fit even with every live claim ended
-  is held: the reservation, a cap, unclaimed use (`outside`) or low `MemAvailable` keeps it out, and nothing the
-  ledger promises changes that. Its shadow would be none, and "shadow none, nothing backfills" would block every job
+- **Held: what claims ending cannot fix blocks no one** (the 2026-11-15 rule; for cores the rule above replaces it). A
+  ticket that would not fit even with every live claim ended is held: the reservation, a cap or low `MemAvailable`
+  keeps it out, and nothing the ledger promises changes that. Its shadow would be none, and "shadow none, nothing backfills" would block every job
   behind it indefinitely. Found on the desktop on 2026-11-15: 12 free cores and 23 GiB available; the oldest ticket
   asked 8 cores and 30 GiB, more than the 23 + 4 GiB it could have with every claim ended, and a 3-core 12 GiB request
   behind it waited 3 hours. Now that ticket is held and the request runs (the `desktop` cases, §7 and §8).
 - **Shadow none forbids backfill.** With `held` as above a head's shadow is none only through a live claim without an
   estimate whose room the head needs: the head would fit once claims end, but one of them never ends in the model.
   That case stays conservative: nothing backfills past it (§6.2 5 proves this is the only way).
-- **A held ticket becomes a head again** as soon as it would fit with every claim ended (unclaimed use drops, memory
-  comes back, the reservation is lifted): `held` is decided on every `try` from that moment's reading, and it may flip
+- **A held ticket becomes a head again** as soon as it would fit with every claim ended (memory comes back, the
+  reservation is lifted, its clock is cleared): `held` is decided on every `try` from that moment's reading, and it may flip
   back. It is then an ordinary head, and its shadow is computed from the claims live then, including those granted
   while it was held, which it did not protect: they got in ahead of it. From then on backfill protects it as any head.
 - Only the head is protected. A younger request may pass an older non-head waiter; that waiter is protected once it
   is the head. Held tickets are neither ahead nor head, and a held sized request cannot fit
   (`cores > fc + Σ cores >= fc`, likewise memory).
-- Model assumptions, stated in the docs: measured unclaimed use stays as it is; memory a claim frees becomes
-  available; estimates are what jobs take. None of these is checked; the theorems are about the estimates.
+- Model assumptions, stated in the docs: memory a claim frees becomes available; estimates are what jobs take; the head
+  starts at its shadow only if unclaimed use is gone by then (`head_runs_by_shadow`'s `outside m' ≤ ncpu - lim_c`).
+  None of these is checked; the theorems are about the estimates.
+
+### 2.2a The wait line
+
+`claim run` and `swarm run` say what they wait on, from the ledger (`Ls.waitLine`, `Ls.waitsOn`): the request
+itself when nothing is ahead, else the head before it, and what that waits on: the claims it needs by name (one
+without an estimate as such, since nothing passes it), unclaimed use with the yield's time left, or memory.
+
+```
+swarm: waiting for room: desktop: whole machine waits on hpl-ci (4 cores, no estimate, 2h10m)
+swarm: waiting for room: desktop: whole machine waits on 2.3 cores unclaimed use, yields in 7m
+swarm: waiting for room: desktop: 2 cores 2.0G, 1 ahead: timing (whole machine, 35m) waits on hpl-ci (4 cores, no estimate, 2h10m)
+swarm: waiting for room: desktop: whole machine held: 2.3 cores unclaimed use; younger jobs go first
+```
+
+`acquire` reads `ls` for it at most once a minute while it waits, and prints the line again only when the reason
+changes (`waitKey`: the line without its numbers). Where `ls` fails it prints the old `N cores, NG free, N ahead`.
 
 ### 2.3 Where the numbers travel
 
@@ -217,7 +275,8 @@ grant iff  fits now and ( ahead is empty or (my est is known and shadow is known
 - **Claim line**: `cores mem_kb holder start [~est_s] who cmd…`. `~<n>` is written only when the estimate is known,
   so a claim without one is byte-for-byte today's line. `who` is sanitised to `[A-Za-z0-9._:-]`, so a fifth field
   starting with `~` is always the estimate. The remote job script's holder rewrite (`sed` on field 3) is unchanged.
-- **Ticket line**: `first cores mem_kb who`, with `cores` the word `all` and `mem_kb` 0 for an exclusive request.
+- **Ticket line**: `first cores mem_kb [@since] who`, with `cores` the word `all` and `mem_kb` 0 for an exclusive request,
+  and `@<epoch>` the yield's clock (§2.2) when it runs; an old line without it has none (`who` never starts with `@`).
   `try` now **rewrites** its ticket on every `wait` (keeping `first`) instead of touching it. Tickets need no estimate:
   only the head's size enters the rule.
 - **Old lines** (a ledger written before this change): a claim without `~` has no estimate; a ticket reads as a sized
@@ -236,12 +295,12 @@ For benchmarks (hpl-comms' cross-language runs): no other job, and the user off 
   below the machine says part of it is not for jobs; the user lifts it (`claim cap here --cores all --mem all`) to
   run a benchmark. `swarm run`'s 255 message says so.
 - `--mem` with `--cores all` is refused by both CLIs (the memory is all that is available).
-- **Held, so it blocks no one** (the exclusive case of §2.2's `held`): while the reservation is not `0 0`,
-  `outside > 0`, or the cap is below the machine (lowered after it queued), an exclusive ticket is held: neither ahead
-  of anyone nor head. Otherwise only claims
-  stand in its way, and it is an ordinary head whose shadow is the first event by which every claim has ended by its
-  estimate (none if a claim has no estimate: then nothing backfills past it, as for any head that needs an unknown
-  claim). It may flip between held and not as the user works; it runs when the machine is quiet and empty.
+- **Held, so it blocks no one** (the exclusive case of §2.2's `held`): while the reservation is not `0 0` or the cap
+  is below the machine (lowered after it queued), or once it has yielded, an exclusive ticket is held: neither ahead
+  of anyone nor head. Otherwise it is an ordinary head, unclaimed use or not (the user's rule of 2026-11-21; it was
+  held by `outside > 0` before), whose shadow is the first event by which every claim has ended by its estimate (none
+  if a claim has no estimate: then nothing backfills past it, as for any head that needs an unknown claim). It runs
+  when the machine is quiet and empty.
 - **Alone while it runs**: a request must ask for at least 1 core (the script refuses 0, `bad size`), so with an
   `ncpu`-core claim live nothing else fits (`fc <= ncpu - cc - outside <= 0`). The claim line is an ordinary one.
 
@@ -279,14 +338,14 @@ here: 8 of 16 cores claimed (cap 20 of 24, 4 reserved, 9.3 busy), 10.0 of 72.0G 
   sr-3   6 cores  8.0G  4m of ~10m  nix build .#x
   sr-5   2 cores  2.0G  1m  cargo test
   waiting: sr-7 18 cores 2.0G 2m, held by the reservation
-  waiting: bench whole machine 5m, held: reserved, unclaimed use
+  waiting: bench whole machine 5m, held: reserved
 ```
 
 `N of L` is claimed of `lim` (today: of the cap; the same when nothing is reserved and the cap is at most the
 machine). `, N reserved` / `N.NG reserved, ` only when non-zero. `of ~10m` when the claim has an estimate. A held
-sized waiter says `held by the reservation` when it is over `lim`, else `held by unclaimed use` (cores or memory in
-use outside the claims). A held exclusive waiter names each reason: `reserved`, `unclaimed use`, `cap below the
-machine`.
+sized waiter says `held by the reservation` when it is over `lim`, else `held by unclaimed memory use`. A held exclusive
+waiter names each reason: `reserved`, `cap below the machine`. One that has yielded (§2.2) says `held: 2.3 cores
+unclaimed use` (busy cores past the claims).
 
 ### 3.2 `--json`, the fields a desktop plugin reads
 
@@ -299,8 +358,8 @@ Per machine, as today plus the new fields (marked +):
           "limit_cores": 20, "limit_mem_kb": 75497472,                            (+, lim_c / lim_m)
           "claims": [{"cores": 6, "mem_kb": 8388608, "holder": "p31", "start": 1763200000,
                       "est_s": 600, "who": "sr-3", "cmd": "nix build .#x"}],      (+ est_s: int or null)
-          "queue": [{"first": 1763200100, "cores": 18, "mem_kb": 2097152, "who": "sr-7",
-                     "exclusive": false, "held": true}]},                         (+ exclusive, held)
+          "queue": [{"id": "sr-7-311-1763200100", "first": 1763200100, "cores": 18, "mem_kb": 2097152, "who": "sr-7",
+                     "exclusive": false, "held": true, "since": null}]},          (+ exclusive, held; id, since 2026-11-21)
  "laptop": {"state": "disconnected"}}
 ```
 
@@ -341,23 +400,24 @@ Still one POSIX `sh` string, now in `claim/Claims/Ledger.lean`. Changes:
 
 `ADMIT_AWK`'s contract (the differential test depends on it exactly):
 
-- Variables: `now ncpu total busy avail capc capm resc resm limc limm off id first cores mem est`; `busy` decimal,
+- Variables: `now ncpu total busy avail capc capm resc resm limc limm off id first since cores mem est`; `busy` decimal,
   `cores` a number or `all`, `est` a number or `-`, `resc resm` the file's values (unclamped, 0 without the file),
-  `first` the requester's ticket's first epoch or `now`, everything else whole numbers.
+  `first` the requester's ticket's first epoch or `now`, `since` its `@since` or empty, everything else whole numbers.
 - Input lines: `c <claim line>` per live claim, `q <id> <ticket line>` per live ticket (the requester's own included;
   the program skips `id`).
 - Output: exactly one line, `off` | `never <capc> <capm>` | `ok <cores> <mem_kb>` |
-  `wait <max(0,fc)> <max(0,fm)> <ahead>`, decided as `Admit.decide` (§6.1). `outside` as today:
+  `wait <max(0,fc)> <max(0,fm)> <ahead> <since|->`, decided as `Admit.decide` and `Admit.sinceOf` (`Admit.awkLine`, §6.1). `outside` as today:
   `k = max(1, int(ncpu/8)); max(0, int(busy - cc + 0.5) - k)`.
 
 `try` after the awk: `ok c g` writes the claim `c g holder now [~est] who cmd` and removes the ticket; `wait` writes
-`first cores mem who` to the ticket; `never` and `off` remove the ticket. It prints the awk's line.
+`first cores mem [@since] who` to the ticket; `never` and `off` remove the ticket. It prints the awk's line (for `wait`,
+its first four words).
 
 | Op | Does | Prints |
 |---|---|---|
 | `try <id> <cores\|all> <mem_kb> <est_s\|-> <holder> <who> <cmd>` | admission (§2.2-§3) by `ADMIT_AWK`; writes the claim and removes the ticket, or rewrites the ticket | `ok <cores> <mem_kb>`, `wait <free_cores> <free_mem_kb> <ahead>`, `never <cap_cores> <cap_mem_kb>`, or `off` |
 | `drop <id>` | removes the claim and the ticket | |
-| `ls` | | `ncpu busy total_kb avail_kb cap_cores cap_mem_kb off reserve_cores reserve_mem_kb` (reserve clamped), then `c <claim line>` and `q <ticket line>` rows |
+| `ls` | | `ncpu busy total_kb avail_kb cap_cores cap_mem_kb off reserve_cores reserve_mem_kb` (reserve clamped), then `c <claim line>` and `q <id> <ticket line>` rows |
 | `cap <cores\|-\|=> <mem_kb\|-\|=>` | writes `cap` | |
 | `reserve <cores> <mem_kb>` | writes `reserve`; `0 0` removes it; not a number: `bad reserve`, exit 2 | |
 | `off`, `on` | makes or removes `off` | |
@@ -383,12 +443,13 @@ structure Claim where
   start : Int
   est : Option Int
 
-/-- A live ticket; `cores` none: exclusive (`all`). -/
+/-- A live ticket; `cores` none: exclusive (`all`); `since`: the yield's clock (§2.2), none on every old line. -/
 structure Ticket where
   id : String
   first : Int
   cores : Option Int
   mem : Int
+  since : Option Int
 
 /-- The machine and its ledger as `try` reads them under the lock, after `clean`. -/
 structure Machine where
@@ -432,10 +493,14 @@ def whole (m : Machine) : Bool := capC m ≥ m.ncpu && capM m ≥ m.total
 /-- Nothing but claims keeps an exclusive job off: no reservation, no unclaimed use past the noise floor. -/
 def quiet (m : Machine) : Bool := m.res == (0, 0) && outside m == 0
 
-/-- Held: it would not fit even with every live claim ended (§2.2). -/
-def held (m : Machine) (t : Ticket) : Bool := match t.cores with
-  | some c => c > freeC m + cc m || t.mem > freeM m + cm m
-  | none => !whole m || !quiet m
+def YIELD : Int := 600
+def yielded (m : Machine) (t : Ticket) : Bool := t.since.any (· + YIELD ≤ m.now)
+
+/-- Held (§2.2, the user's rule of 2026-11-21): what the user set, what can never fit, memory, or the yield; never
+unclaimed cores. -/
+def held (m : Machine) (t : Ticket) : Bool := yielded m t || match t.cores with
+  | some c => c > limC m || t.mem > freeM m + cm m
+  | none => !whole m || m.res != (0, 0)
 
 /-- (first, id) order; String's `<` is bytewise on these ids, as LC_ALL=C. The one place the queue order is set. -/
 def before (a b : Int × String) : Bool := a.1 < b.1 || (a.1 == b.1 && decide (a.2 < b.2))
@@ -453,7 +518,7 @@ def released (m : Machine) (τ : Int) : Int × Int :=
   let g := m.claims.filter fun c => (endOf m c).any (· ≤ τ)
   ((g.map (·.cores)).sum, (g.map (·.mem)).sum)
 def fitsAt (m : Machine) (h : Ticket) (τ : Int) : Bool := match h.cores with
-  | some c => c ≤ freeC m + (released m τ).1 && h.mem ≤ freeM m + (released m τ).2
+  | some c => c ≤ limC m - cc m + (released m τ).1 && h.mem ≤ freeM m + (released m τ).2   -- cores by the claims alone
   | none => m.claims.all fun c => (endOf m c).any (· ≤ τ)
 /-- The head's estimated start. -/
 def shadow (m : Machine) (h : Ticket) : Option Int := ((events m).filter (fitsAt m h)).min?
@@ -464,6 +529,12 @@ def tooBig (m : Machine) (r : Req) : Bool := match r.cores with
 def fitsNow (m : Machine) (r : Req) : Bool := match r.cores with
   | some c => c ≤ freeC m && r.mem ≤ freeM m
   | none => m.claims.isEmpty && quiet m
+/-- Blocked only by unclaimed use: the yield's clock runs. -/
+def blockedOut (m : Machine) (r : Req) : Bool := m.claims.isEmpty && !fitsNow m r && match r.cores with
+  | some c => c ≤ limC m && r.mem ≤ freeM m
+  | none => m.res == (0, 0)
+def ownSince (m : Machine) (r : Req) : Option Int := (m.tickets.find? (·.id == r.id)).bind (·.since)
+def sinceOf (m : Machine) (r : Req) : Option Int := if blockedOut m r then some ((ownSince m r).getD m.now) else none
 /-- What a grant claims. -/
 def take (m : Machine) (r : Req) : Int × Int := match r.cores with
   | some c => (c, r.mem)
@@ -492,7 +563,7 @@ def after (m : Machine) (r : Req) : Machine :=
   let rest := m.tickets.filter (·.id != r.id)
   match decide m r with
   | .ok .. => grant m r
-  | .wait .. => { m with tickets := rest ++ [⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0⟩] }
+  | .wait .. => { m with tickets := rest ++ [⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0, sinceOf m r⟩] }
   | _ => { m with tickets := rest }
 
 /-- `h` is the machine's head: a live ticket, not held, before every other live ticket that is not held. -/
@@ -549,19 +620,22 @@ Must:
    Given `WF m r`, `head0 m h`, `shadow m h = some s`, and a later state `m'` with: the same `ncpu total cap res`,
    `m'.off = false`, `s ≤ m'.now`; `m'.claims` a sublist of `m.claims.filter (fun c => ¬ (endOf m c).any (· ≤ s))`
    (estimates held, and every claim granted in between, a backfill, ended by `s` by 6's condition);
-   `outside m' ≤ outside m`; `m'.avail ≥ m.avail + (released m s).2`; `h ∈ m'.tickets` before every other ticket of
+   `outside m' ≤ m.ncpu - limC m` (unclaimed use within what the cap and reservation keep from jobs; for an exclusive
+   head none; 2026-11-21, was `outside m' ≤ outside m`); `m'.avail ≥ m.avail + (released m s).2`; `h ∈ m'.tickets` before every other ticket of
    `m'` that is not held; the ticket names of `m'` distinct (`(m'.tickets.map (·.id)).Nodup`, as `WF`). Then for any `e`,
    `decide m' ⟨h.id, h.cores, h.mem, e⟩ = .ok (take m' ⟨h.id, h.cores, h.mem, e⟩).1 (take m' …).2`.
-   (For an exclusive head the filter is empty, so `m'` has no claim, and `held m h = false` gives `quiet`.) That `h`
+   (For an exclusive head the filter is empty, so `m'` has no claim, `held m h = false` gives no reservation and the
+   `outside` hypothesis none.) That `h`
    is not held in `m'` follows from the rest (it has the room it had at `s`), so it is not assumed; `s ≤ m'.now` is
    not needed by the model either. The trace
    form, "finitely many arrivals → the head is eventually granted", follows from 6 and 7 informally; it is not asked.
 8. Held tickets block no one:
    - `held_not_ahead`: `held m t = true → t ∉ aheadOf m r`, hence `head m r ≠ some t`.
-   - `excl_waiting_blocks_none`: `t.cores = none → (m.res ≠ (0, 0) ∨ 0 < outside m ∨ whole m = false) →
-     t ∉ aheadOf m r` (the exclusive case of the above, stated in its terms).
-   - `sized_waiting_blocks_none`: `t.cores = some k → (freeC m + cc m < k ∨ freeM m + cm m < t.mem) →
-     t ∉ aheadOf m r` (the sized case: it would not fit with every claim ended).
+   - `excl_waiting_blocks_none`: `t.cores = none → (m.res ≠ (0, 0) ∨ whole m = false ∨ yielded m t = true) →
+     t ∉ aheadOf m r` (the exclusive case of the above, stated in its terms; 2026-11-21: `0 < outside m` is no longer
+     a disjunct).
+   - `sized_waiting_blocks_none`: `t.cores = some k → (limC m < k ∨ freeM m + cm m < t.mem ∨ yielded m t = true) →
+     t ∉ aheadOf m r` (the sized case; 2026-11-21: cores past `limC`, not past `freeC m + cc m`).
 9. Exclusive claims:
    - `excl_grant`: `r.cores = none → decide m r = .ok c g → m.claims = [] ∧ m.res = (0, 0) ∧ outside m = 0 ∧
      c = m.ncpu ∧ g = m.avail ∧ whole m = true`.
@@ -587,6 +661,17 @@ Stretch:
 13. `after_ledger`: `after` is the ledger the script leaves (the claim count rises by one exactly on `ok`, a ticket
     exists for `r.id` exactly on `wait`), stated over `after`; the differential test checks the files.
 
+Of the user's Slurm-style rule (2026-11-21, §2.2):
+
+14. `unclaimed_use_moves_no_one`: `held`, `aheadOf`, `head` and `shadow` of `{ m with busy := b }` are those of `m`.
+    `excl_unheld_ahead`: an older exclusive ticket, with `whole m`, `m.res = (0, 0)` and not yielded, is in `aheadOf m r`
+    whatever the busy cores.
+15. `no_estimate_never_past_unheld` (and `script_no_estimate_never_past_unheld`): `r.est = none → t ∈ m.tickets →
+    t.id ≠ r.id → held m t = false → before (t.first, t.id) (first m r, r.id) → ∀ c g, decide m r ≠ .ok c g`: a job
+    with no estimate is never granted past a ticket that is not held, the head or any other.
+16. The yield: `yield_holds` (`t.since = some s → s + YIELD ≤ m.now → held m t`) and `since_only_blocked_out`
+    (`sinceOf m r = some s → m.claims = [] ∧ fitsNow m r = false ∧ (s = m.now ∨ ownSince m r = some s)`).
+
 ### 6.3 What the proof pass changed
 
 All of 1-13 are proved in `claim/Claims/Proofs.lean` (the `script_*` of 11 through `ScriptAdmits`). Against the text
@@ -596,6 +681,17 @@ above as first written:
 - 7 as first written was false: without distinct ticket names in `m'`, another ticket under `h`'s id sets the
   request's `first` and an older ticket can be ahead. It now takes them (the script's queue is a directory, so they are).
 - `lim_zero` was false for a negative size; it takes `0 ≤ size` (`WF` gives it for `ncpu` and `total`).
+
+The user's rule of 2026-11-21 (§2.2) changed `held` and `fitsAt`, so three statements are restated, not weakened by
+choice: the old ones are false of the new rule.
+
+- `excl_waiting_blocks_none` and `sized_waiting_blocks_none` lose their unclaimed-use disjunct and gain the yield (8):
+  unclaimed use no longer holds a ticket, which is the change.
+- `held_sized` says `yielded m t = false ∧ c ≤ limC m ∧ t.mem ≤ freeM m + cm m`; `held_excl` is new.
+- 7, `head_runs_by_shadow`, takes `outside m' ≤ m.ncpu - limC m` for `outside m' ≤ outside m`: the head now reserves
+  against claims, not against unclaimed use, so it is granted at its shadow only if unclaimed use is gone by then (for
+  an exclusive head, none). Before, a head that unclaimed use kept out was held and the theorem was not about it.
+- `shadow_some` (12) takes `k ≤ limC m` for `k ≤ freeC m + cc m`: weaker, so the theorem is stronger.
 
 And of the history, in swarm (a `#guard`-checked pure function, proved if cheap): `estimate` is `none` iff there is no
 `run` row with `wall_s > 0`, it is one of those walls, and with fewer than 10 such rows it is the largest.
@@ -631,13 +727,23 @@ def ScriptAdmits (run : Admit.Machine → Admit.Req → Admit.Answer) : Prop :=
   claims at most `min 6 ncpu` cores and 3 MiB starting `now-60..now`, an exclusive request finds an empty ledger in
   one case of two, and one case in four is a backfill scene (a calm machine whose claims all have estimates, an older
   head of `ncpu` cores or exclusive, a one-core request with an estimate of 1-60 s). One more count: sized tickets held
-  by unclaimed use alone (within `lim`). The first case is the desktop's (§2.2), which must be `ok 3 <12 GiB>`.
+  within `lim` (by memory or the yield). The first case is the desktop's (§2.2), which must be `ok 3 <12 GiB>`.
+  2026-11-21: tickets carry `since` (a third of them, `now-1200..now`), the awk's line is `Admit.awkLine` (with the
+  `since` a wait writes), `-v since` is the requester's own; the backfill scenes have unclaimed use in half, and one
+  case in six of the rest is a yield scene (no claim mostly, an older exclusive head whose clock may run or be past
+  the yield, a request exclusive, of `ncpu` cores or of one core mostly without an estimate, often with its own
+  ticket and clock). New counts, each 20 or more: yielded tickets, tickets with the clock running, a head with
+  unclaimed use, a backfill grant past unclaimed use, no estimate waiting past unclaimed use, and the clock started,
+  kept and cleared. After the desktop's come the five `slurm` cases: a whole-machine head that a 6-core claim
+  ending in 90 s and unclaimed use keep off (held before): a younger 1-core job without an estimate waits, one of 50 s
+  is granted, one of 200 s waits; with no claim and the head's clock ten minutes old it yields and the job without an
+  estimate is granted, with it ten seconds old it waits.
 - **`script_try`**: 60 of those cases through the whole script against a scratch `SWARM_COMPUTE_DIR`: the test writes
   `cap`, `reserve`, `off`, each claim as a file with holder `t<now+100000>` (live, as `clean` reads it) and `~est`
   when it has one, each ticket as a fresh file (`all 0` for an exclusive one), a stat file with `ncpu` cpu lines, a
   meminfo file, and runs `try` with `SWARM_COMPUTE_NOW`, `SWARM_COMPUTE_BUSY` (the hundredths as `%.2f`),
   `SWARM_COMPUTE_STAT`, `SWARM_COMPUTE_MEM`. It checks the answer and the files left against `Admit.after`: claims as
-  `(cores, mem, start, est)` multisets, tickets as `(id, first, cores, mem)`. At least 10 of the 60 are exclusive
+  `(cores, mem, start, est)` multisets, tickets as `(id, first, cores, mem, since)`. At least 10 of the 60 are exclusive
   requests (as built: the first 45 cases and the next 15 exclusive ones). This ties `caps()` (reserve, clamping, `limc`), `all`, the claim line's `~` field and the ticket rewrite,
   which the awk test does not see.
 - Not tied, and said so in the assumption's doc: the `mkdir` lock serialising tries (the 50-parallel test covers it),
@@ -657,12 +763,16 @@ If the test and the model disagree, the model is the spec: fix the script, unles
   request with est 50 is `ok 2 …`, est 200 `wait`, no est `wait`; the claim without an estimate: `wait`); a held sized
   ticket is not ahead. Exclusive: on an empty, quiet machine `ok ncpu avail`; with a claim, `wait`; under a cap of 4
   of 8, `never`; an exclusive head behind a 6-core claim ending in 90 s lets a 2-core est-50 request through and holds
-  an est-200 one; with `res = (1, 0)`, or `busy` past the noise floor, the exclusive ticket is held and a younger
-  2-core request **without** an estimate is granted; with an `ncpu`-core claim live, a 1-core request waits.
+  an est-200 one; with `res = (1, 0)` the exclusive ticket is held and a younger
+  2-core request **without** an estimate is granted; with `busy` past the noise floor (2026-11-21) it is not: the
+  younger request waits with or without an estimate (no claim, so its shadow is now), until the head's clock is ten
+  minutes old; with an `ncpu`-core claim live, a 1-core request waits. `after` starts, keeps and clears the clock.
+  `Ls.waitLine` names a claim without an estimate (`hpl-ci (4 cores, no estimate, 2h10m)`), a claim's time left,
+  unclaimed use with the yield's time left, the yield, and the head before the request.
 - The desktop (§2.2): 24 cores, 23 of 64 GiB available, two 4-core 2 GiB claims (one without an estimate) and 4
   cores of unclaimed use; the 8-core 30 GiB head is held and the 3-core 12 GiB request is `ok`; with 26 GiB available
   the head is an ordinary one again, its start unknown, and a request with an estimate waits. Rendered, it is `held by
-  unclaimed use`.
+  unclaimed memory use`.
 
 `claim/Tests/Script.lean` (the script, a scratch dir; the `try_` helper gains the `-` estimate):
 - Backfill through the script: the same example with files, then the 2-core claim's line has `~50`.
@@ -670,6 +780,9 @@ If the test and the model disagree, the model is the spec: fix the script, unles
 - Reserve: `reserve 4 0` on an 8-core machine: a 6-core request waits held and a younger 2-core one is granted past
   it; `reserve 0 0` and the 6-core one is granted. Separately, `cap 6 -`, `reserve 4 0`, `reserve 0 0` leaves the
   `cap` file `6 -`.
+- An exclusive head with 4 busy cores no claim explains (2026-11-21): it waits with its clock started (`@5000` in
+  its ticket, kept by its next try); a younger request waits with no estimate and with a 50 s one; ten minutes on, the
+  oldest one behind it is granted; the head's next try sees a claim and clears its clock, and it is ahead again.
 - Exclusive: `all` waits for an empty ledger and gets `ok 8 <avail>`, its claim line `8 <avail> …`, its waiting
   ticket `… all 0 …`; `all` under `cap 4 -` is `never`; `try` of 0 cores is `bad size`.
 - The existing cases, moved, keep passing with the new `try` argument and `ok` line (`never_off_and_all`'s `all`
@@ -682,6 +795,9 @@ If the test and the model disagree, the model is the spec: fix the script, unles
   5 and only `here`; the text says `3 reserved`; `reserve here 0` lifts both; a negative or non-number and an
   unknown machine `die`. `claim op here ls` prints the 9-field header.
 - `claim run --cores all --mem 1 -- true` is refused.
+- The wait line (2026-11-21): `claim run --cores all` behind a claim without an estimate says `whole machine waits on
+  hpl-ci (4 cores, no estimate, …)` and runs once it is dropped; with 4 busy cores and no claim it says `whole machine
+  waits on 4.0 cores unclaimed use, yields in 10m`.
 
 swarm's `Tests/Cli/Compute.lean`:
 - `swarm compute reserve here 3` and `swarm compute --json` show the same as `claim`.
@@ -754,7 +870,8 @@ Decided:
 1. `swarm run` records every job in cmd-cost without a threshold (§2.1); `swarm cost` and the note include short jobs.
 2. No pruning; the estimate is the 90th percentile of a recent window, the largest below 5 rows; `size` reads the
    same window (§2.1).
-3. `--cores all` is exclusive (§2.4), held while the reservation or unclaimed use keeps it off.
+3. `--cores all` is exclusive (§2.4), held while the reservation or unclaimed use keeps it off. Unclaimed use: replaced
+   on 2026-11-21, below.
 4. `reserve` without `--mem` reserves no memory.
 5. Older binaries ignoring the `reserve` file: accepted; every machine is upgraded on landing.
 6. The Herdr rail panel change is in (§9).
@@ -766,6 +883,19 @@ Chosen here, for the user to overturn:
 - An exclusive request under a cap below the machine is `never`, not "the cap's share alone" (§2.4).
 - The estimate reads only `run` rows of the window, and a local `run` row carries no CPU or peak (§2.1).
 - `claim run` does not read cmd-cost even inside a repo (§1a).
+
+The user's decision of 2026-11-21 (board #217): the compute claim accounts for starvation by Slurm's rule. The head of
+the line gets a reservation, and a later job starts only if its stated duration ends before that reserved start; a
+job without a duration waits (§2.2). Unclaimed use no longer holds a ticket.
+
+Chosen with it, for the user to overturn:
+- **The yield**: a ticket blocked only by unclaimed use, with no claim live, for 600 s becomes held (§2.2). Not the
+  user's words; without it a user working on the machine holds every job behind a whole-machine head.
+- Memory stays as 2026-11-15: a sized ticket that low `MemAvailable` keeps out is held (§2.2).
+- The clock runs only with no live claim (the task's words), so a head behind claimed jobs that overuse their cores
+  reserves its place and does not yield.
+- A claim without an estimate still blocks a head that needs it for as long as it runs; the wait line names it
+  (§2.2a). An estimate on the claim is the remedy.
 
 ## 12. Build plan
 

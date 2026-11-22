@@ -144,9 +144,15 @@ theorem outside_nonneg (m : Machine) : 0 ≤ outside m := by simp only [outside]
 theorem limC_le_capC (m : Machine) : limC m ≤ capC m := by simp only [limC, lim]; omega
 theorem limM_le_capM (m : Machine) : limM m ≤ capM m := by simp only [limM, lim]; omega
 
-/-- With every claim ended, a sized ticket fits exactly when it is not held. -/
+/-- A sized ticket is not held exactly when it has not yielded, its cores are within the cap less the reservation, and its
+memory would fit with every claim ended. -/
 theorem held_sized {m : Machine} {t : Ticket} {c : Int} (e : t.cores = some c) :
-    held m t = false ↔ c ≤ freeC m + cc m ∧ t.mem ≤ freeM m + cm m := by
+    held m t = false ↔ yielded m t = false ∧ c ≤ limC m ∧ t.mem ≤ freeM m + cm m := by
+  simp [held, e]
+
+/-- An exclusive ticket is not held exactly when it has not yielded, the cap is the whole machine and nothing is reserved. -/
+theorem held_excl {m : Machine} {t : Ticket} (e : t.cores = none) :
+    held m t = false ↔ yielded m t = false ∧ whole m = true ∧ m.res = (0, 0) := by
   simp [held, e]
 
 /-! ### 1-2. The rule, stated whole -/
@@ -286,11 +292,12 @@ theorem unheld_shadow_some {m : Machine} {h : Ticket} (hh : held m h = false) (h
   have fit : fitsAt m h τ = true := by
     rcases hx : h.cores with _ | k
     · simp only [fitsAt, hx, List.all_eq_true]; exact ends
-    · have := (held_sized hx).mp hh
+    · obtain ⟨-, h1, h2⟩ := (held_sized hx).mp hh
       have r1 := sum_filter_all m.claims (fun c => (endOf m c).any (· ≤ τ)) (·.cores) ends
       have r2 := sum_filter_all m.claims (fun c => (endOf m c).any (· ≤ τ)) (·.mem) ends
-      simp only [fitsAt, hx, released, Bool.and_eq_true, r1, r2]
-      simpa [cc, cm] using this
+      simp only [fitsAt, hx, released, Bool.and_eq_true, decide_eq_true_eq, r1, r2]
+      simp only [cc, cm] at h1 h2 ⊢
+      omega
   obtain ⟨s, hs, -⟩ := shadow_le hτ fit
   simp [hs]
 
@@ -312,8 +319,10 @@ theorem unknown_shadow_no_backfill {m : Machine} {r : Req} {h : Ticket} (e : hea
 /-! ### 12. When the head's start is known -/
 
 theorem shadow_some {m : Machine} {h : Ticket} {k : Int} (hx : h.cores = some k) (hc : ∀ c ∈ m.claims, c.est.isSome)
-    (hf : k ≤ freeC m + cc m ∧ h.mem ≤ freeM m + cm m) : shadow m h ≠ none :=
-  unheld_shadow_some ((held_sized hx).mpr hf) hc
+    (hf : k ≤ limC m ∧ h.mem ≤ freeM m + cm m) : shadow m h ≠ none := by
+  have e : shadow m h = shadow m { h with since := none } := rfl
+  rw [e]
+  exact unheld_shadow_some ((held_sized (t := { h with since := none }) hx).mpr ⟨by simp [yielded], hf⟩) hc
 
 theorem excl_shadow_some {m : Machine} {t : Ticket} (hx : t.cores = none) (hc : ∀ c ∈ m.claims, c.est.isSome) :
     shadow m t ≠ none := by
@@ -351,23 +360,76 @@ theorem held_not_ahead {m : Machine} {r : Req} {t : Ticket} (h : held m t = true
 theorem held_not_head {m : Machine} {r : Req} {t : Ticket} (h : held m t = true) : head m r ≠ some t :=
   fun e => held_not_ahead h (head_mem e)
 
+/-- An exclusive ticket blocks no one while the reservation or a cap below the machine keeps it off, or once it has
+yielded (the user's rule of 2026-11-21: unclaimed use alone does not hold it). -/
 theorem excl_waiting_blocks_none {m : Machine} {r : Req} {t : Ticket} (hx : t.cores = none)
-    (h : m.res ≠ (0, 0) ∨ 0 < outside m ∨ whole m = false) : t ∉ aheadOf m r := by
+    (h : m.res ≠ (0, 0) ∨ whole m = false ∨ yielded m t = true) : t ∉ aheadOf m r := by
   apply held_not_ahead
-  have := outside_nonneg m
-  simp only [held, hx, quiet, Bool.or_eq_true, Bool.not_eq_true', Bool.and_eq_false_iff, beq_eq_false_iff_ne]
-  rcases h with h | h | h
-  · exact .inr (.inl h)
-  · exact .inr (.inr (by omega))
-  · exact .inl h
+  cases e : held m t
+  · obtain ⟨hy, hw, hr⟩ := (held_excl hx).mp e
+    rcases h with h | h | h <;> simp_all
+  · rfl
 
-/-- The generalised `held`, in its terms: a sized ticket that would not fit with every live claim ended (the
-reservation, a cap, unclaimed use or memory keeps it out) is ahead of no one. -/
+/-- A sized ticket blocks no one when it needs more cores than the cap less the reservation, more memory than it could
+have with every claim ended, or once it has yielded. -/
 theorem sized_waiting_blocks_none {m : Machine} {r : Req} {t : Ticket} {k : Int} (hx : t.cores = some k)
-    (h : freeC m + cc m < k ∨ freeM m + cm m < t.mem) : t ∉ aheadOf m r := by
+    (h : limC m < k ∨ freeM m + cm m < t.mem ∨ yielded m t = true) : t ∉ aheadOf m r := by
   apply held_not_ahead
-  simp only [held, hx, Bool.or_eq_true, decide_eq_true_eq]
-  omega
+  cases e : held m t
+  · obtain ⟨hy, h1, h2⟩ := (held_sized hx).mp e
+    rcases h with h | h | h
+    · omega
+    · omega
+    · simp_all
+  · rfl
+
+/-! ### 8b. Unclaimed use holds no one; the yield -/
+
+/-- The fix of 2026-11-21: what is held, who is ahead, the head and its shadow do not depend on the busy cores; unclaimed
+use can keep a request from starting (`fitsNow`), never a waiting ticket from its place. -/
+theorem unclaimed_use_moves_no_one (m : Machine) (r : Req) (b : Int) (t : Ticket) :
+    held { m with busy := b } t = held m t ∧ aheadOf { m with busy := b } r = aheadOf m r ∧
+      head { m with busy := b } r = head m r ∧ shadow { m with busy := b } t = shadow m t :=
+  ⟨rfl, rfl, rfl, rfl⟩
+
+/-- An older exclusive ticket under a cap at the machine, with nothing reserved and no yield, is ahead of a request
+whatever the machine's unclaimed use. -/
+theorem excl_unheld_ahead {m : Machine} {r : Req} {t : Ticket} (hx : t.cores = none) (hm : t ∈ m.tickets)
+    (hid : t.id ≠ r.id) (hw : whole m = true) (hr : m.res = (0, 0)) (hy : yielded m t = false)
+    (hb : before (t.first, t.id) (first m r, r.id) = true) : t ∈ aheadOf m r := by
+  have : held m t = false := (held_excl hx).mpr ⟨hy, hw, hr⟩
+  simp only [aheadOf, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.not_eq_true']
+  exact ⟨hm, ⟨hid, this⟩, hb⟩
+
+/-- A ticket that has been blocked only by unclaimed use for `YIELD` seconds is held. -/
+theorem yield_holds {m : Machine} {t : Ticket} {s : Int} (hs : t.since = some s) (hy : s + YIELD ≤ m.now) :
+    held m t = true := by
+  simp [held, yielded, hs, hy]
+
+/-- The clock runs only while the request would start on the claims alone and does not: no live claim, and it does not
+fit now. It keeps the time it started. -/
+theorem since_only_blocked_out {m : Machine} {r : Req} {s : Int} (e : sinceOf m r = some s) :
+    m.claims = [] ∧ fitsNow m r = false ∧ (s = m.now ∨ ownSince m r = some s) := by
+  simp only [sinceOf] at e
+  split at e
+  · rename_i hb
+    simp only [blockedOut, Bool.and_eq_true, List.isEmpty_iff, Bool.not_eq_true'] at hb
+    refine ⟨hb.1.1, hb.1.2, ?_⟩
+    cases ho : ownSince m r <;> simp_all
+  · simp at e
+
+/-! ### 4b. No estimate, no start past a ticket that is not held -/
+
+/-- A request without an estimate is never granted past an older live ticket that is not held (the head, or any other). -/
+theorem no_estimate_never_past_unheld {m : Machine} {r : Req} {t : Ticket} (he : r.est = none) (hm : t ∈ m.tickets)
+    (hid : t.id ≠ r.id) (hh : held m t = false) (hb : before (t.first, t.id) (first m r, r.id) = true) :
+    ∀ c g, Admit.decide m r ≠ .ok c g := by
+  intro c g e
+  have h0 := no_history_no_backfill he e
+  have : t ∈ aheadOf m r := by
+    simp only [aheadOf, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.not_eq_true']
+    exact ⟨hm, ⟨hid, hh⟩, hb⟩
+  simp_all
 
 /-! ### 6. A backfill does not move the head's start later -/
 
@@ -425,7 +487,7 @@ theorem backfill_no_delay {m : Machine} {r : Req} {h : Ticket} {c g : Int} (w : 
       have ho := outside_le (m := m) (m' := grant m r) rfl rfl (by omega)
       have l1 : limC (grant m r) = limC m := rfl
       have l2 : limM (grant m r) = limM m := rfl
-      simp only [freeC, freeM, l1, l2, g1, g2] at hfit ⊢
+      simp only [freeM, l1, l2, g1, g2] at hfit ⊢
       have : (grant m r).ncpu = m.ncpu := rfl
       have : (grant m r).avail = m.avail := rfl
       simp only [*] at ⊢
@@ -483,7 +545,7 @@ theorem inv_after {m : Machine} {r : Req} (w : WF m r) : Inv (after m r) := by
     · intro t ht
       rcases List.mem_append.mp ht with ht | ht
       · exact filt t ht
-      · have : t = ⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0⟩ := by simpa using ht
+      · have : t = ⟨r.id, first m r, r.cores, if r.cores.isSome then r.mem else 0, sinceOf m r⟩ := by simpa using ht
         subst this
         refine ⟨fun x hx => by have := hk x hx; omega, ?_⟩
         show 0 ≤ (if r.cores.isSome then r.mem else 0)
@@ -601,7 +663,7 @@ theorem head_runs_by_shadow {m m' : Machine} {r : Req} {h : Ticket} {s : Int} (w
     (hn : m'.ncpu = m.ncpu) (ht : m'.total = m.total) (hc : m'.cap = m.cap) (hr : m'.res = m.res)
     (hoff : m'.off = false)
     (hcl : m'.claims.Sublist (m.claims.filter fun c => !(endOf m c).any (· ≤ s)))
-    (hout : outside m' ≤ outside m) (hav : m.avail + (released m s).2 ≤ m'.avail)
+    (hout : outside m' ≤ m.ncpu - limC m) (hav : m.avail + (released m s).2 ≤ m'.avail)
     (hm' : h ∈ m'.tickets)
     (hfirst : ∀ t ∈ m'.tickets, t.id ≠ h.id → held m' t = false → before (h.first, h.id) (t.first, t.id) = true)
     (hnd : (m'.tickets.map (·.id)).Nodup) :
@@ -640,29 +702,35 @@ theorem head_runs_by_shadow {m m' : Machine} {r : Req} {h : Ticket} {s : Int} (w
   apply decide_ok_iff.mpr
   refine ⟨hoff, ?_, ?_, rfl, .inl hahead⟩
   all_goals rcases hx : h.cores with _ | k
-  · simp only [held, hx, Bool.or_eq_false_iff, Bool.not_eq_false', quiet, Bool.and_eq_true, beq_iff_eq] at hheld
+  · obtain ⟨-, hw, -⟩ := (held_excl hx).mp hheld
     simp only [tooBig, Bool.not_eq_false', whole, hcap1, hcap2, hn, ht]
-    simpa [whole] using hheld.1
+    simpa [whole] using hw
   · simp only [fitsAt, hx, Bool.and_eq_true, decide_eq_true_eq] at hfit
     simp only [released] at hfit
     have := limC_le_capC m
     have := limM_le_capM m
     simp only [tooBig, hcap1, hcap2, Bool.or_eq_false_iff, decide_eq_false_iff_not]
-    simp only [freeC, freeM, cc, cm] at hfit
+    simp only [freeM, cc, cm] at hfit
     omega
-  · simp only [held, hx, Bool.or_eq_false_iff, Bool.not_eq_false', quiet, Bool.and_eq_true, beq_iff_eq] at hheld
+  · obtain ⟨-, hw, hr0⟩ := (held_excl hx).mp hheld
+    have hl : limC m = m.ncpu := by
+      have hw' : m.ncpu ≤ capC m := by simp [whole] at hw; exact hw.1
+      have h1 : m.res.1 = 0 := by rw [hr0]
+      have := w.1
+      simp only [limC, lim, h1]; omega
     simp only [fitsAt, hx, List.all_eq_true] at hfit
     have h0 : m.claims.filter (fun c => !(endOf m c).any (· ≤ s)) = [] := by
       apply List.filter_eq_nil_iff.mpr
       intro c hc; simp [hfit c hc]
     rw [h0] at hcl
+    have ho0 : outside m' = 0 := by have := outside_nonneg m'; rw [hl] at hout; omega
     simp only [fitsNow, Bool.and_eq_true, List.isEmpty_iff, quiet, beq_iff_eq, List.sublist_nil.mp hcl,
-      hr, hheld.2.1, true_and]
-    omega
+      hr, hr0, ho0, true_and]
   · simp only [fitsAt, hx, Bool.and_eq_true, decide_eq_true_eq] at hfit
     simp only [released] at hfit
+    have := (limC_bounds w).2.1
     simp only [fitsNow, Bool.and_eq_true, decide_eq_true_eq, freeC, freeM, hlim1, hlim2, hn]
-    simp only [freeC, freeM, cc, cm] at hfit ⊢
+    simp only [freeM, cc, cm] at hfit ⊢
     omega
 
 /-! ### 11. The same of the shipped script, through `ScriptAdmits` -/
@@ -704,6 +772,10 @@ theorem script_excl_grant {c g : Int} (hx : r.cores = none) (e : run m r = .ok c
 theorem script_excl_alone (hc : m.ncpu ≤ cc m) : ∀ c g, run m r ≠ .ok c g := by
   rw [sa m r w]; exact excl_alone w hc
 
+theorem script_no_estimate_never_past_unheld {t : Ticket} (he : r.est = none) (hm : t ∈ m.tickets) (hid : t.id ≠ r.id)
+    (hh : held m t = false) (hb : before (t.first, t.id) (first m r, r.id) = true) : ∀ c g, run m r ≠ .ok c g := by
+  rw [sa m r w]; exact no_estimate_never_past_unheld he hm hid hh hb
+
 end Script
 
 theorem script_head_runs_by_shadow {run : Machine → Req → Answer} (sa : ScriptAdmits run) {m m' : Machine} {r : Req}
@@ -712,7 +784,7 @@ theorem script_head_runs_by_shadow {run : Machine → Req → Answer} (sa : Scri
     (hn : m'.ncpu = m.ncpu) (ht : m'.total = m.total) (hc : m'.cap = m.cap) (hr : m'.res = m.res)
     (hoff : m'.off = false)
     (hcl : m'.claims.Sublist (m.claims.filter fun c => !(endOf m c).any (· ≤ s)))
-    (hout : outside m' ≤ outside m) (hav : m.avail + (released m s).2 ≤ m'.avail)
+    (hout : outside m' ≤ m.ncpu - limC m) (hav : m.avail + (released m s).2 ≤ m'.avail)
     (hm' : h ∈ m'.tickets)
     (hfirst : ∀ t ∈ m'.tickets, t.id ≠ h.id → held m' t = false → before (h.first, h.id) (t.first, t.id) = true) :
     run m' ⟨h.id, h.cores, h.mem, e⟩ =

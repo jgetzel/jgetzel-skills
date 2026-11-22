@@ -46,7 +46,8 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
   let nameOf (c : Option String) := c.getD "here"
   let mut won : Option (Option String × Int × Int) := none
   let mut first := true
-  let mut told := false
+  let mut told : Option String := none
+  let mut lastWhy : Int := 0
   let mut order := a.usable
   if a.usable.length > 1 then
     let mut reads : List (Option String × Option Float) := []
@@ -85,11 +86,22 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
         (if a.cores == "all" then s!". Ask for a count of cores, or lift the cap: `{a.capCmd} cap <machine> --cores all --mem all`."
          else s!". Lower --cores/--mem, or `{a.capCmd} cap`/`on`."))
       return none
-    if !told then
-      told := true
-      h.err (s!"{a.prog}: waiting for room: " ++ "; ".intercalate (seen.map fun (c, x) => s!"{nameOf c}: " ++ match x with
-        | .wait fc fm ah => s!"{fc} cores, {gi fm}G free, {ah} ahead"
-        | _ => "no room"))
+    -- what it waits on, read from the ledger at most once a minute, said again when the reason changes
+    let now ← h.now
+    if told.isNone || now - lastWhy ≥ 60 then
+      lastWhy := now
+      let mut parts : List String := []
+      for (c, x) in seen do
+        let why ← match x with
+          | .wait fc fm ah => do
+            let l := parseLs ((← call h c ["ls"]).getD "")
+            pure ((l.bind (·.waitLine now a.id)).getD s!"{fc} cores, {gi fm}G free, {ah} ahead")
+          | _ => pure "no room"
+        parts := parts ++ [s!"{nameOf c}: {why}"]
+      let line := s!"{a.prog}: waiting for room: " ++ "; ".intercalate parts
+      if told.map waitKey != some (waitKey line) then
+        h.err line
+        told := some line
     h.sleep a.pollMs
   let some (chosen, got, mem) := won | return none
   for c in a.usable do if c != chosen then release h c a.id
