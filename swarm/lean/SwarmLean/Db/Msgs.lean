@@ -8,22 +8,67 @@ namespace SwarmLean.Msgs
 /-- Hook context over 10,000 chars is replaced by a 2 KB preview the model never opens (msgs.CTX_CAP). -/
 def CTX_CAP : Nat := 9000
 
-/-- A destination naming a swarm, `@<swarm>`: every agent of it. -/
+/-- A stored destination naming a swarm, `@<swarm>`: every agent of it. -/
 def isGroup (dest : String) : Bool := dest.startsWith "@"
 
-/-- Where a post to `dest` goes: `@all` is the swarm of the db's view, `@<swarm>` (sw-global §2); any other as given. -/
-def resolve (db : Db) (dest : String) : String := if dest == "@all" then "@" ++ db.swarm else dest
+/-- Where a message goes (review B5): no destination is the empty name. -/
+inductive Dest
+  /-- one agent, of any swarm -/
+  | agent (n : String)
+  /-- every agent of a swarm, stored `@<swarm>` (sw-global §2) -/
+  | all (swarm : String)
+  /-- held for task `id`'s next owner, stored `#id` (board #202) -/
+  | task (id : Nat)
+  deriving DecidableEq, Repr, Inhabited
+
+/-- A destination as the `dest` column stores it. -/
+def Dest.text : Dest → String
+  | .agent n => n
+  | .all sw => "@" ++ sw
+  | .task id => "#" ++ toString id
+
+/-- A destination as typed or stored: `@all` is swarm `sw`'s, `@<s>` swarm `s`'s, `#N` task N's, a name an agent's;
+none for an empty name, a bare `@` or `#`, or `#` with more than digits. -/
+def Dest.ofText (sw s : String) : Option Dest :=
+  if s == "@all" then some (.all sw)
+  else if s.startsWith "@" then
+    let r := (s.drop 1).toString
+    if r.isEmpty then none else some (.all r)
+  else if s.startsWith "#" then
+    let r := (s.drop 1).toString
+    if !r.isEmpty && r.all Char.isDigit then r.toNat?.map Dest.task else none
+  else if s.isEmpty then none else some (.agent s)
+
+/-- Who a message is from (review B5). -/
+inductive Who
+  /-- the user (`human`) -/
+  | user
+  /-- watchd and swarm itself (`swarm`) -/
+  | system
+  /-- an agent -/
+  | agent (n : String)
+  deriving DecidableEq, Repr, Inhabited
+
+/-- A sender as the `frm` column stores it. -/
+def Who.text : Who → String
+  | .user => Agents.HUMAN
+  | .system => "swarm"
+  | .agent n => n
+
+/-- A sender from a name: `human` the user, `swarm` the system, any other an agent. -/
+def Who.ofText (s : String) : Who :=
+  if s == Agents.HUMAN then .user else if s == "swarm" then .system else .agent s
 
 /-- The destinations agent `name` reads in the db's view: its name and its swarm's `@<swarm>`. -/
-def inbox (db : Db) (name : String) : List String := if db.swarm == "" then [name] else [name, "@" ++ db.swarm]
+def inbox (db : Db) (name : String) : List String := if db.swarm == "" then [name] else [name, (Dest.all db.swarm).text]
 
-/-- Posts a message from `frm` to `dest` (msgs.post), `@all` stored as the view's swarm (`resolve`): the db and the
-message's id. -/
-def post (db : Db) (now : Int) (frm dest body : String) (urgent : Bool := false) (kind : Option String := none) :
-    Db × Nat :=
-  let dest := resolve db dest
-  let kind := kind.getD (if isGroup dest then "all" else "dm")
+/-- Posts a message from `frm` to `dest` (msgs.post): the db and the message's id. -/
+def post (db : Db) (now : Int) (frm : Who) (dest : Dest) (body : String) (urgent : Bool := false)
+    (kind : Option String := none) : Db × Nat :=
+  let kind := kind.getD (match dest with | .all _ => "all" | _ => "dm")
   let id := db.msgNext
+  let frm := frm.text
+  let dest := dest.text
   let msg : Msg := { id, ts := some now, frm := some frm, dest := some dest, body := some body,
                      urgent := some (if urgent then 1 else 0), kind := some kind }
   let db := { db with msgs := db.msgs ++ [msg], msgNext := db.msgNext + 1 }

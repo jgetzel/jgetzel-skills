@@ -362,7 +362,7 @@ def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) (db : Db) 
         (some s!"#{d id} {strip sha}{match lander with | some l => " by " ++ l | none => ""}")
       let db := match lander with
         | some l => if l != c.me && (db.agents.any fun x => x.name == l && x.ended.isNone) then
-            (Msgs.post db c.now c.me l s!"{c.me} handed you #{d id} at {strip sha} to land: `swarm task done {d id} --evidence <sha on its base>` once it is on its base, or `swarm task unland {d id} --why \"…\"`." false).1
+            (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent l) s!"{c.me} handed you #{d id} at {strip sha} to land: `swarm task done {d id} --evidence <sha on its base>` once it is on its base, or `swarm task unland {d id} --why \"…\"`." false).1
           else db
         | none => db
       (db, .ok ())
@@ -391,11 +391,11 @@ def unland (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String U
       let db := db.log c.now (some c.me) "task-unland" none (some s!"#{d id} {why}")
       let text := s!"{c.me} could not land #{d id} ({String.ofList ((r.land_sha.getD "-").toList.take 12)}): {why}. It is open again at P{d p}."
       let db := match py r.owner with
-        | some o => if o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone) then (Msgs.post db c.now c.me o text false).1 else db
+        | some o => if o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone) then (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent o) text false).1 else db
         | none => db
       let db := match commsOf db c.comms with
         | some k => if k != c.me && some k != r.owner then
-            (Msgs.post db c.now c.me k (text ++ match py r.owner with | some o => s!" ({o} handed it over.)" | none => "") false).1
+            (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent k) (text ++ match py r.owner with | some o => s!" ({o} handed it over.)" | none => "") false).1
           else db
         | none => db
       (db, .ok ⟨r.owner, p⟩)
@@ -454,7 +454,7 @@ def unblock (c : Ctx) (id : Int) (answer : String) (db : Db) : Db × Except Stri
         | none => db
       let db := db.log c.now (some c.me) "unblock" none (some s!"#{d id}")
       let db := match ans, r.owner with
-        | some a, some o => if c.me != o then (Msgs.post db c.now c.me o s!"#{d id} is unblocked. Answer: {a}").1 else db
+        | some a, some o => if c.me != o then (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent o) s!"#{d id} is unblocked. Answer: {a}").1 else db
         | _, _ => db
       (db, .ok r.owner)
 
@@ -482,7 +482,7 @@ def release (c : Ctx) (id : Int) (after : Option (List Int)) (db : Db) : Db × E
           (some ("#" ++ d id ++ match fromA with | some f => " from " ++ f | none => ""))
         match fromA with
         | some f =>
-          let p := Msgs.post db3 c.now c.me f
+          let p := Msgs.post db3 c.now (Msgs.Who.ofText c.me) (.agent f)
             s!"{if c.me == HUMAN then "the user" else c.me} released #{d id}: stop work on it" true
           (p.1.set id ({ · with stop_to := some f, stop_msg := some p.2 }), .ok fromA)
         | none => (db3, .ok fromA)
@@ -533,7 +533,7 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
       let db := match py r.owner with
         | some o =>
           if (r.state = .claimed || r.state = .blocked) && o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone)
-          then (Msgs.post db c.now c.me o s!"{c.me} edited #{d id}: {"; ".intercalate notes}" a.urgent).1 else db
+          then (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent o) s!"{c.me} edited #{d id}: {"; ".intercalate notes}" a.urgent).1 else db
         | none => db
       (db, .ok (fields, r.state))
 

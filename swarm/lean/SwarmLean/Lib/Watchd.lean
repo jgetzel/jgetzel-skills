@@ -78,8 +78,8 @@ def lastEvent (db : Db) (kinds : List String) : Option String :=
   ((db.events.filter fun e => e.kind.any kinds.contains).getLast?).bind (·.kind)
 
 /-- Posts as `swarm` (msgs.post from watchd). -/
-def say (db : Db) (now : Int) (dest body : String) (urgent : Bool) (kind : String) : Db :=
-  (Msgs.post db now "swarm" dest body urgent (some kind)).1
+def say (db : Db) (now : Int) (dest : Msgs.Dest) (body : String) (urgent : Bool) (kind : String) : Db :=
+  (Msgs.post db now .system dest body urgent (some kind)).1
 
 /-- The `lease-late` event of task `id` with `data` (`holder`: its owner told; `comms`: the communicator) in the last
 LEASE before `t`. -/
@@ -96,15 +96,17 @@ def leaseLate (r : Task) (o : Option Agent) (t : Int) (hhmm : String) (comms : O
   match leaseLateEv db r.id "holder" t with
   | none =>
     let db := db.log t r.owner "lease-late" (some (d r.id)) (some "holder")
-    say db t own (s!"Your lease on #{d r.id} ended at {hhmm}; `swarm task renew {d r.id}` (it is kept while you are " ++
-      "live, but renew on long work).") (o.any (·.status == some "idle")) "system"
+    match r.owner with
+    | none => db
+    | some own => say db t (.agent own) (s!"Your lease on #{d r.id} ended at {hhmm}; `swarm task renew {d r.id}` (it is kept while you are " ++
+        "live, but renew on long work).") (o.any (·.status == some "idle")) "system"
   | some h =>
     match comms, o with
     | some c, some a =>
       if !quiet && a.status == some "idle" && a.last_active.any (· > h.ts.getD 0) &&
           (leaseLateEv db r.id "comms" t).isNone then
         let db := db.log t r.owner "lease-late" (some (d r.id)) (some "comms")
-        say db t c (s!"{own} has held #{d r.id} past its lease (idle {ago t (a.last_active.getD 0)}) and did not renew " ++
+        say db t (.agent c) (s!"{own} has held #{d r.id} past its lease (idle {ago t (a.last_active.getD 0)}) and did not renew " ++
           "it when told.") false "notice"
       else db
     | _, _ => db
@@ -118,10 +120,11 @@ def reapTask (r : Task) (t now : Int) (db : Db) : Db × Bool :=
   | some x =>
     if x.owner == r.owner && x.owner.isSome && x.state = .claimed && x.lease_until.any (· < t) then
       let db := db.set r.id fun x => { x with state := .open, owner := none, lease_until := none }
-      let own := r.owner.getD "nil"
-      let db := say db now own (s!"released #{d r.id} ({r.title.getD "nil"}): its lease ended and watchd did not see you " ++
-        s!"live (ended, no terminal, or no answer to the liveness check). `swarm task claim {d r.id}` to take it back.")
-        false "system"
+      let db := match r.owner with
+        | none => db
+        | some own => say db now (.agent own) (s!"released #{d r.id} ({r.title.getD "nil"}): its lease ended and watchd did not see you " ++
+            s!"live (ended, no terminal, or no answer to the liveness check). `swarm task claim {d r.id}` to take it back.")
+            false "system"
       (db.log now r.owner "reap" none (some s!"task #{d r.id} lease expired"), true)
     else (db, false)
   | none => (db, false)
@@ -139,7 +142,7 @@ what it held is released, everyone is told; true when it ended it. -/
 def reapGone (n h : String) (t : Int) (db : Db) : Db × Bool :=
   if (db.agent n).any fun x => x.hc == some h && x.ended.isNone then
     let db := endRow db n t
-    let db := say db t "@all" s!"{n} is gone; its tasks and locks are released." false "system"
+    let db := say db t (.all db.swarm) s!"{n} is gone; its tasks and locks are released." false "system"
     (db.log t (some n) "reap" none (some "agent gone"), true)
   else (db, false)
 
@@ -182,7 +185,7 @@ def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreig
         if hung then
           if let some c := comms then
             let own := r.owner.getD "nil"
-            Store.txn [] fun db => (say db now c (s!"#{d r.id} reopened: {own} is hung (no answer to the liveness " ++
+            Store.txn [] fun db => (say db now (.agent c) (s!"#{d r.id} reopened: {own} is hung (no answer to the liveness " ++
               s!"check). `swarm nudge {own}`, or end it.") false "system", ())
   let locks ← Store.txn [.lock] fun db => (db, db.locks.filter (·.lease_until.any (· < t)))
   for l in locks do
@@ -274,7 +277,7 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
   if !out.isEmpty && !dry then
     if let some c := comms then
       let now ← Clock.now
-      Store.txn [] fun db => (say db now c s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ())
+      Store.txn [] fun db => (say db now (.agent c) s!"swept {out.length} landed worktree(s), {freed} MB freed." false "notice", ())
   return (out, cache)
 
 /-- Why the sweep keeps each worktree of the repo that lies inside `dir` (a realpath), as it reads them now; "landed" for one
@@ -343,13 +346,13 @@ def unclean (a : Agent) (wt b : String) (t : Int) (comms : String) : m Unit := d
   if !same && waits then
     Store.txn [] fun db =>
       let db := db.log now (some n) "unclean-nudge" (some wt) (some list)
-      (say db now n (s!"You are idle {mins} min with no claim or lock; watchd keeps you only because worktree {wt} holds:\n{shown}\n" ++
+      (say db now (.agent n) (s!"You are idle {mins} min with no claim or lock; watchd keeps you only because worktree {wt} holds:\n{shown}\n" ++
         "If your work is done: land what is real, delete or ignore build outputs and scratch, then stop, and watchd ends you. " ++
         s!"If not, tell the communicator ({comms}) what you are waiting on.") true "system", ())
   else
     Store.txn [] fun db =>
       let db := db.log now (some n) "unclean-notice" (some wt) (some list)
-      (say db now comms (s!"{n} is idle {mins} min, kept only by its unclean worktree {wt} " ++
+      (say db now (.agent comms) (s!"{n} is idle {mins} min, kept only by its unclean worktree {wt} " ++
         s!"({if same then "nudged once, idle again and still unclean" else "no live waiter, so not nudged"}):\n{shown}") false "system", ())
 
 /-- On the edge into quiet (no task open, claimed, blocked or landing, only stayers and comms live; re-armed by a task add or
@@ -379,12 +382,12 @@ def quiet (t : Int) (comms : String) : m Unit := do
     let stay := a.stay.getD ""
     if woken then
       let now ← Clock.now
-      Store.txn [] fun db => (say db now a.name (s!"The board is empty and nobody is working. You stay for: '{stay}'. If that is over, " ++
+      Store.txn [] fun db => (say db now (.agent a.name) (s!"The board is empty and nobody is working. You stay for: '{stay}'. If that is over, " ++
         "`swarm stay --end` and stop; if not, carry on.") false "system", ())
     l := l ++ [s!"{a.name}{match py a.role with | some r => " " ++ r | none => ""} stays for '{stay}' " ++
       s!"({if woken then "asked if that is over" else if waits then "cold, not woken" else "no live waiter, not woken"})"]
   let now ← Clock.now
-  Store.txn [] fun db => (say db now comms ("The swarm is quiet: no task is open, claimed or blocked and nobody else is working. " ++
+  Store.txn [] fun db => (say db now (.agent comms) ("The swarm is quiet: no task is open, claimed or blocked and nobody else is working. " ++
     (if l.isEmpty then "No stayers." else "Stayers:\n" ++ "\n".intercalate l) ++ "\nIf the work is done, tell the user.") false "system", ())
 
 /-- An agent idle `blockerIdle` min while its claim blocks open tasks: asked once per idle stretch what it waits on,
@@ -403,8 +406,8 @@ def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
       let now ← Clock.now
       Store.txn [] fun db =>
         let db := db.log now (some n) "blocker-nudge" none (some (toString w))
-        let db := say db now n "What are you waiting on? Can you continue without it/land without it?" true "system"
-        (say db now comms s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
+        let db := say db now (.agent n) "What are you waiting on? Can you continue without it/land without it?" true "system"
+        (say db now (.agent comms) s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
 
 /-- How long a landing task waits for its lander before the communicator is told (board #200). -/
 def LANDING_LATE : Int := 7200
@@ -417,7 +420,7 @@ def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
     if x.state = .landing && x.land_sha == r.land_sha && x.landing_at.any (· ≤ t - LANDING_LATE) &&
         !db.events.any (fun e => e.kind == some "landing-late" && e.path == some (d r.id) && e.data == x.land_sha) then
       let db := db.log t x.owner "landing-late" (some (d r.id)) x.land_sha
-      say db t comms (s!"{Tasks.landingText r.id x} has waited {fdiv (t - x.landing_at.getD t) 60} min with no " ++
+      say db t (.agent comms) (s!"{Tasks.landingText r.id x} has waited {fdiv (t - x.landing_at.getD t) 60} min with no " ++
         s!"`task done` or `task unland`{match py x.owner with | some o => " (" ++ o ++ " handed it over)" | none => ""}.") false "notice"
     else db
   | none => db
@@ -446,7 +449,7 @@ def wakeStay (n : String) (t : Int) : m Bool := do
           let db := db.log now (some n) "stay-wake" (some c.text) (some detail)
           let db := db.tasks.foldl (fun db r =>
             if r.owner == some n && r.state == .claimed then db.set r.id ({ · with lease_until := some (now + 7200) }) else db) db
-          (say db now n s!"Your wait is over: {c} ({detail})" true "system", true)
+          (say db now (.agent n) s!"Your wait is over: {c} ({detail})" true "system", true)
       | _ => (db, false)
 
 /-- Hung stayers: no live waiter, a waking message unread two ticks, and the liveness check and its answer; all state in
@@ -481,7 +484,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
         let now ← Clock.now
         Store.txn [] fun db =>
           let db := db.log now (some n) "stay-nowaiter" none none
-          (say db now comms s!"{n} stays for '{stay}' but has no waiter and can't be woken." false "system", ())
+          (say db now (.agent comms) s!"{n} stays for '{stay}' but has no waiter and can't be woken." false "system", ())
       continue
     if (py a.stay).isSome && (← wakeStay n t) then continue
     for msg in Msgs.unread db n do
@@ -490,7 +493,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
         let now ← Clock.now
         Store.txn [] fun db =>
           let db := db.log now (some n) "stay-unwoken" none (some (d msg.id))
-          (say db now comms s!"{n} did not wake on a message (#{d msg.id} from {msg.frm.getD "nil"}, {t - msg.ts.getD 0} s ago)." false "system", ())
+          (say db now (.agent comms) s!"{n} did not wake on a message (#{d msg.id} from {msg.frm.getD "nil"}, {t - msg.ts.getD 0} s ago)." false "system", ())
     if (ev "stay-hung").isSome then continue  -- no more checks until it is active again
     if let some chk := ev "stay-check" then
       if t - chk.ts.getD 0 ≥ LIVENESS_WAIT then
@@ -498,7 +501,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
         let now ← Clock.now
         Store.txn [] fun db =>
           let db := db.log now (some n) "stay-hung" none none
-          (say db now comms (s!"{n} stays for '{stay}' and did not answer the liveness check (terminal {a.hc.getD "?"}, hc status " ++
+          (say db now (.agent comms) (s!"{n} stays for '{stay}' and did not answer the liveness check (terminal {a.hc.getD "?"}, hc status " ++
             s!"{(x.bind (·.status)).getD "unknown"}). Unstick it with `swarm nudge {n}`, or end it.") true "system", ())
     else if t - last ≥ (match stayCondOf db n with
         | (some _, _) => LIVENESS_IDLE
@@ -510,7 +513,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
         let now ← Clock.now
         Store.txn [] fun db =>
           let db := db.log now (some n) "stay-check" none none
-          (say db now n (s!"Liveness check: you have stayed {fdiv (t - last) 60} min for '{stay}'. What exactly are you waiting for? " ++
+          (say db now (.agent n) (s!"Liveness check: you have stayed {fdiv (t - last) 60} min for '{stay}'. What exactly are you waiting for? " ++
             "If you can take any step now, take it and `swarm stay --end`. If you are blocked, set the stay again with the " ++
             "condition (`swarm stay \"<why>\" --until <cond>`); that re-arms the check.") false "system", ())
 
@@ -547,13 +550,13 @@ def idleJob (a : Agent) (f : Lifecycle.Reads m) (p : Machine.Ps) (procs : List M
     let now ← Clock.now
     Store.txn [] fun db =>
       let db := db.log now (some a.name) "job-nudge" none none
-      (say db now a.name (s!"Your task is done and your background job (pid {p.pid}) {why}: {cut (Machine.jobCmd p.args) 120}. " ++
+      (say db now (.agent a.name) (s!"Your task is done and your background job (pid {p.pid}) {why}: {cut (Machine.jobCmd p.args) 120}. " ++
         s!"Kill it, or say why you stay (`swarm stay \"<what>\"`); else watchd ends you in {JOB_GRACE / 60} min.") false "system", ())
   | some e =>
     if t - e.ts.getD 0 ≥ JOB_GRACE then
       if ← Lifecycle.endAgent a false none then
         let now ← Clock.now
-        Store.txn [] fun db => (say db now comms s!"ended {a.name}: idle with only a background job left, which {why}: {cut p.args 120}" false "notice", ())
+        Store.txn [] fun db => (say db now (.agent comms) s!"ended {a.name}: idle with only a background job left, which {why}: {cut p.args 120}" false "notice", ())
 
 -- ---------- auto-spawn ----------
 
@@ -658,7 +661,7 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
       Store.txn [.«meta»] fun db =>
         let db := db.setMeta "spawn_backoff" (some s!"{now + delay},{delay},{name}")
         let db := if first then  -- one notice per failure streak
-            say db now comms s!"auto-spawn of {name} for #{d task.id} failed: {err}. Auto-spawn pauses {fdiv delay 60} min and retries, doubling." false "notice"
+            say db now (.agent comms) s!"auto-spawn of {name} for #{d task.id} failed: {err}. Auto-spawn pauses {fdiv delay 60} min and retries, doubling." false "notice"
           else db
         let fails : Int := match ((db.getMeta "spawn_fails").bind (·.v)).map (·.splitOn ",") with
           | some [ft, fn] => if ft == d task.id then (parseInt fn).getD 0 else 0
@@ -667,7 +670,7 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
         let db := db.setMeta "spawn_fails" (some s!"{d task.id},{fn}")
         if fn ≥ (SPAWN_FAILS : Int) then
           let db := delMeta (delMeta (db.setMeta "spawn_halt" (some (d task.id))) "spawn_backoff") "spawn_fails"
-          (say db now comms (s!"auto-spawn for #{d task.id} failed {fn} times in a row (last: {err}). " ++
+          (say db now (.agent comms) (s!"auto-spawn for #{d task.id} failed {fn} times in a row (last: {err}). " ++
             "Auto-spawn stops for it until it is claimed or changes; spawn it by hand.") true "system", ())
         else (db, ())
       break
@@ -722,9 +725,9 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
     Store.txn [.event] fun db =>
       if db.events.any fun e => e.kind == some "base-out" && e.agent == some n && e.path == some base then (db, ()) else
       let db := db.log now (some n) "base-out" (some base) (some path)
-      let db := say db now n (s!"Your worktree {path} has {base} checked out: that blocks `git push . HEAD:{base}` for everyone. " ++
+      let db := say db now (.agent n) (s!"Your worktree {path} has {base} checked out: that blocks `git push . HEAD:{base}` for everyone. " ++
         "Switch back to your own branch.") false "notice"
-      (say db now comms s!"{n}'s worktree {path} has base {base} checked out." false "notice", ())
+      (say db now (.agent comms) s!"{n}'s worktree {path} has base {base} checked out." false "notice", ())
   let by_ (h : String) : Option Term := (terms.getD []).find? (·.address == some h)
   let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor, .«meta»] fun db => (db, db)
   let wts := Workspaces.wtMapOf db all
@@ -756,7 +759,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
       if ids.all told.contains then (db, ()) else
       -- the event marks it told: never without its message
       let db := db.log now (some a.name) "digest" none (some (",".intercalate (ids.map d)))
-      (say db now a.name (Reuse.text offer) false "system", ())
+      (say db now (.agent a.name) (Reuse.text offer) false "system", ())
   let offered ← if pool.isEmpty then pure [] else do
     let now ← Clock.now
     Store.txn [.agent, .task, .event] fun db => (db, Reuse.offered db now)
@@ -816,7 +819,7 @@ def machineTick [Guard m] (cost : Cost.TickMem) : m Cost.TickMem := do
     let whoS := who.mergeSort (· ≤ ·)
     Store.txn [] fun db =>
       let db := db.log now none "pressure" none (some line)
-      (whoS.foldl (fun db w => say db now w s!"memory pressure: {line}. Top holders: {", ".intercalate top}. Prefer other work or ask the agent holding the most." false "notice") db, ())
+      (whoS.foldl (fun db w => say db now (.agent w) s!"memory pressure: {line}. Top holders: {", ".intercalate top}. Prefer other work or ask the agent holding the most." false "notice") db, ())
   else if was && !high then
     let now ← Clock.now
     Store.txn [] fun db => (db.log now none "pressure-end" none none, ())

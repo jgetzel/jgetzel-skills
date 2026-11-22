@@ -36,7 +36,7 @@ def failed (db : Db) (now : Int) (name v e : String) (comms : Option String) : D
   if ((db.getMeta (badKey name)).bind (·.v)) == some v then db else
   let db := db.setMeta (badKey name) (some v)
   match comms with
-  | some c => (Msgs.post db now "swarm" c (s!"watchd can't post to {name}'s Claude Code inbox socket ({(parse v).map (·.2) |>.getD v}): {e}. " ++
+  | some c => (Msgs.post db now .system (.agent c) (s!"watchd can't post to {name}'s Claude Code inbox socket ({(parse v).map (·.2) |>.getD v}): {e}. " ++
       "It types to that terminal with hc send until the session restarts.") false (some "system")).1
   | none => db
 

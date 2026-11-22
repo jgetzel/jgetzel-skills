@@ -213,14 +213,14 @@ def prWatchApply (now : Int) (gated : Bool) (t : Held) (pr : Lean.Json) (db : Db
       let db := if (db.find t.id).any (·.pr != some num) then db.log now none "task-pr" none (some s!"#{d t.id} {d num}") else db
       let db := db.set t.id fun x => { x with state := .done, evidence := some ev, lease_until := none, done_at := some now, pr := some num, merged_at := some (ts ((Json.fstr pr "mergedAt").getD "")) }
       let db := Queue.tidy (db.log now (some "swarm") "done" none (some s!"#{d t.id} {ev}"))
-      (Msgs.post db now "swarm" t.owner s!"{ev}: watchd marked #{d t.id} done, so no `task done` is needed. If you stay for it, `swarm stay --end`." true (some "system")).1
+      (Msgs.post db now .system (.agent t.owner) s!"{ev}: watchd marked #{d t.id} done, so no `task done` is needed. If you stay for it, `swarm stay --end`." true (some "system")).1
     else db
   | some "wake" =>
     let db := db.log now (some t.owner) "pr-wake" none (some key)
     let body := if v == "green" then
         s!"PR #{d num}'s checks are green (head {short head}): merge it; watchd marks #{d t.id} done once it is merged."
       else s!"PR #{d num}'s checks failed ({", ".intercalate (failedChecks (Json.items (rollup.getD .null)))}, head {short head}): fix and push; watchd wakes you on the next verdict."
-    (Msgs.post db now "swarm" t.owner body true (some "system")).1
+    (Msgs.post db now .system (.agent t.owner) body true (some "system")).1
   | _ => db
 
 /-- The newest open, or merged since the claim, PR from one of `branches` into `base`. -/
@@ -317,7 +317,7 @@ def ciCheckStep (now : Int) (db : Db) : Db × Option NewRed :=
         let db := db.set t.id fun x => { x with state := .done, evidence := some s!"green run {d red.id} at {short red.sha}", lease_until := none, hold := none, done_at := some now }
         let db := db.log now (some "swarm") "done" none (some s!"#{d t.id} green run {d red.id}")
         match t.owner with
-        | some o => (Msgs.post db now "swarm" o s!"main is green (run {d red.id}): #{d t.id} is done; stop fixing it." false (some "system")).1
+        | some o => (Msgs.post db now .system (.agent o) s!"main is green (run {d red.id}): #{d t.id} is done; stop fixing it." false (some "system")).1
         | none => db) db, none)
     else if !(["failure", "timed_out", "startup_failure"].contains (red.conclusion.getD "")) then (db, none)
     else if db.events.any fun e => e.kind == some "ci-red" && e.data == some (d red.id) then (db, none)
@@ -344,9 +344,9 @@ def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String)
   let live := (Agents.live db).map (·.name)
   let msg := s!"{about} Task #{d tid} is its one fix: `swarm task claim {d tid}` if your commit broke it, then fix forward; if someone holds it, leave it to them."
   let sus := names.filter live.contains
-  let db := sus.foldl (fun db n => (Msgs.post db now "swarm" n msg true (some "system")).1) db
+  let db := sus.foldl (fun db n => (Msgs.post db now .system (.agent n) msg true (some "system")).1) db
   match comms with
-  | some c => if sus.isEmpty then (Msgs.post db now "swarm" c (msg ++ " No live agent has commits in it.") true (some "system")).1 else db
+  | some c => if sus.isEmpty then (Msgs.post db now .system (.agent c) (msg ++ " No live agent has commits in it.") true (some "system")).1 else db
   | none => db
 
 /-- ci_check's first transaction: `ciCheckStep`'s commit when it needs no task; a new red run comes back uncommitted,

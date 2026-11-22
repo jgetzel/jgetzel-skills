@@ -150,7 +150,7 @@ def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool
         | some c =>
           let hint := if nostart then
             s!" Its terminal {a.hc.getD ""} has no Claude session yet (a folder-trust prompt?): `hc read {a.hc.getD ""}`." else ""
-          (say db now c (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
+          (say db now (.agent c) (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
         | none => (db, ())
 
 /-- How long a continue line may go unanswered (no turn) before it is sent once more. -/
@@ -176,7 +176,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
         let now ← Clock.now
         if now - ct ≥ RESUME_WAIT && a.last_active.getD 0 ≤ ct && (evId "ctx-resent").all (· < cid) then
           Store.txn [.agent, .msg, .cursor, .event] fun db =>
-            ((say db now comms s!"{a.name} did not resume after its compaction (terminal {h})." false "system").log now (some a.name)
+            ((say db now (.agent comms) s!"{a.name} did not resume after its compaction (terminal {h})." false "system").log now (some a.name)
               "ctx-resent" none none, ())
           let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
           if let some e ← Msgs.deliverTo a.name h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
@@ -194,7 +194,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
           ((db.setAgent a.name ({ · with stay := none })).log now (some a.name) "stay-end" (some s) (some "compaction"), ())
         stayNote := s!" Your stay '{s}' ended with the compaction; `swarm stay \"<why>\"` again if it still holds."
         if !willSend then
-          Store.txn [.agent, .msg, .cursor] fun db => (say db now a.name stayNote.trimAscii.toString false "system", ())
+          Store.txn [.agent, .msg, .cursor] fun db => (say db now (.agent a.name) stayNote.trimAscii.toString false "system", ())
     if !stays && task.isNone then continue  -- holds nothing: watchd ends it soon
     -- a compaction has ended (the hook logged "compact") and nothing woke the agent since: send it the stop hook's
     -- verdict as a prompt, once; a hook cannot start a turn itself
@@ -216,7 +216,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
       | .nothing => pure true
       | .nudge =>
         Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now a.name (Compact.nudgeText k cAt (task.map (·.id)) force) false "system").log now (some a.name)
+          ((say db now (.agent a.name) (Compact.nudgeText k cAt (task.map (·.id)) force) false "system").log now (some a.name)
             "ctx-nudge" none (some (d k)), true)
       | .compact =>
         match ← Msgs.typeLine h (← Msgs.compactLine db a none) with
@@ -224,7 +224,7 @@ def compactPass (terms : List Term) (comms : String) : m Unit := do
         | none => Store.txn [.event] fun db => (db.log now (some a.name) "ctx-compact" none (some (d k)), true)
       | .failed =>
         Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now comms (Compact.failedText a.name k cAt h) false "system").log now (some a.name)
+          ((say db now (.agent comms) (Compact.failedText a.name k cAt h) false "system").log now (some a.name)
             "ctx-compact-failed" none (some (d k)), true)
     if done && s != s0 then Store.txn [.«meta»] fun db => (Compact.save db a.name s, ())
 
@@ -266,7 +266,7 @@ def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
       let txt := err.data.getD ""
       if a.name == comms then
         Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now comms s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log now
+          ((say db now (.agent comms) s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log now
             (some a.name) "api-resume" none none, ())
       else
         let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
@@ -276,7 +276,7 @@ def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
     | some s =>
       if now - s.ts.getD 0 ≥ APIERR_WAIT && a.name != comms && (evs "api-noresume").all (·.id < err.id) then
         Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now comms s!"{a.name} did not resume after an API error (terminal {h})." false "system").log now
+          ((say db now (.agent comms) s!"{a.name} did not resume after an API error (terminal {h})." false "system").log now
             (some a.name) "api-noresume" none none, ())
 
 /-- How old the communicator's oldest waking unread message is before watchd types its inbox in (`commsInbox`): a
@@ -330,7 +330,7 @@ def notices (comms : String) (away : Bool) : m Unit := do
       if e.any (·.kind == some "task-blocked") then (db, ()) else
       -- the event marks it told: never without its message
       let db := db.log now r.owner "task-blocked" (some (d r.id)) r.question
-      (say db now comms (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
+      (say db now (.agent comms) (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
         s!"Answer with `swarm task unblock {d r.id} --answer \"...\"`." ++ (if away then AWAY else "")) (!away) "system", ())
 
 /-- A pass under its guard: its error, prefixed, added to `errs`. -/
@@ -526,7 +526,7 @@ def tickFailed (msg : String) (st : St) : m St := do
   let now ← Clock.now
   Store.txn [] fun db =>
     let db := db.log now (some "swarm") "watchd-tick-error" none (some msg)
-    (cs.foldl (fun db c => say db now c ("watchd tick failed (it carries on): " ++ msg) false "system") db, ())
+    (cs.foldl (fun db c => say db now (.agent c) ("watchd tick failed (it carries on): " ++ msg) false "system") db, ())
   return { st with lastErr := some msg }
 
 /-- The tick lease (meta watchd_tick): the record still ours and no other live watchd mid-tick, in one transaction.

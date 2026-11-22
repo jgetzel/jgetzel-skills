@@ -60,11 +60,11 @@ def Dest.text (id : Int) : Dest → String
   | .none st => s!"recorded on #{d id} only: it is {st.text}, whoever did it has ended and there is no other communicator"
 
 /-- The message a note sends, if any: its addressee and body. -/
-def Dest.msg (id : Int) (text : String) : Dest → Option (String × String)
-  | .owner o => some (o, s!"[#{d id}] {text}")
-  | .held => some (box id, text)
-  | .doer o st => some (o, s!"[#{d id}, {st.text}] {text}")
-  | .comms c st => some (c, s!"[#{d id} is {st.text}] {text}")
+def Dest.msg (id : Int) (text : String) : Dest → Option (Msgs.Dest × String)
+  | .owner o => some (Msgs.Dest.agent o, s!"[#{d id}] {text}")
+  | .held => some (Msgs.Dest.task id.toNat, text)
+  | .doer o st => some (Msgs.Dest.agent o, s!"[#{d id}, {st.text}] {text}")
+  | .comms c st => some (Msgs.Dest.agent c, s!"[#{d id} is {st.text}] {text}")
   | .self | .none _ => Option.none
 
 /-- Where a delivered note went, as its event's path. -/
@@ -82,7 +82,9 @@ def post (db : Db) (now : Int) (frm : String) (id : Int) (text : String) (urgent
   | some t =>
     let to := dest here comms frm t
     let db := match to.msg id text with
-      | some (who, body) => (Msgs.post db now frm who body urgent (if who == box id then some "task-note" else Option.none)).1
+      | some (who, body) =>
+        let kind := match who with | .task _ => some "task-note" | _ => Option.none
+        (Msgs.post db now (Msgs.Who.ofText frm) who body urgent kind).1
       | Option.none => db
     (db.log now (some frm) "task-note" (to.path id) (some s!"#{d id} {text}"), .ok to)
 
