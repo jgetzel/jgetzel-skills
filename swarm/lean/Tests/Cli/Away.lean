@@ -127,7 +127,8 @@ def test_notices_only_the_swarms_own (t : T) : IO Unit := do
     "values('their landing', 'landing', 'u-1', 'abc', 'u-1', 1)")
   t.sw_ "e" ["task", "add", "ours"]; t.sw_ "e" ["task", "claim", "3"]
   t.sw_ "e" ["task", "block", "3", "which db?"]
-  tick t
+  -- two live swarms: watchd's knobs need the swarm named (a is no agent)
+  t.sw_ "a" ["watchd", "--once", "--comms", "c", "--max-agents", "0"] { env := [("SWARM", some "t")] }
   let n (dest pat : String) : IO Json := do
     return (← t.q1 "select count(*) n from msg where dest=? and body like ?" [.text dest, .text pat]).f "n"
   eq (← n "c" "%is blocked on #3%") 1
