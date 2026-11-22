@@ -221,11 +221,11 @@ def test_lock_across_swarms_and_repos (t : T) : IO Unit := do
   let ext := t.d ++ "/ext"
   IO.FS.createDirAll ext
   discard <| t.git ext ["init", "-q"]
-  eq ((← t.editFrom "b" (ext ++ "/a.txt")).f "permissionDecision") Json.null
+  eq ((← editFrom t "b" (ext ++ "/a.txt")).f "permissionDecision") Json.null
   has (← t.sw "x" ["lock", "a.txt"] { cwd := some ext }).stdout "locked a.txt"
   eq (← t.q "select repo, path, agent from lock order by agent")
     (json% [{"repo": $(t.repo), "path": "a.txt", "agent": "a"}, {"repo": $(ext), "path": "a.txt", "agent": "x"}])
-  has ((← t.editFrom "a" (ext ++ "/a.txt")).f "permissionDecisionReason") "locked by x"
+  has ((← editFrom t "a" (ext ++ "/a.txt")).f "permissionDecisionReason") "locked by x"
   t.sw_ "x" ["unlock", "a.txt"] { cwd := some ext }
   eq ((← t.q "select agent from lock").map (·.f "agent")) #[Json.str "a"]
 

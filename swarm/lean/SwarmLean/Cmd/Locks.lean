@@ -49,7 +49,8 @@ def repoRel (path : String) (cwd : Option String) : m (Option (String × Locks.I
   if top == "" then return none
   let top ← realpathLoose top
   let pre := if top == "/" then "/" else top ++ "/"
-  let rel ← if p == top then pure "." else if p.startsWith pre then pure (p.drop pre.length).toString else return none
+  let rel := if p == top then some "." else if p.startsWith pre then some (p.drop pre.length).toString else none
+  let some rel := rel | return none
   return some (top, { repo := (← Workspaces.main (some top)).getD top, rel })
 
 /-- A lock path as typed made relative to its repo, a trailing slash kept; outside a repo as typed, in the folder's

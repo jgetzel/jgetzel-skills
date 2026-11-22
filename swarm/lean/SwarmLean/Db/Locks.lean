@@ -19,9 +19,9 @@ structure InRepo where
 
 /-- The live, unexpired locks in `repo` of agents other than `me`, in load order (lock_holder's and cmd_lock's join). -/
 def others (db : Db) (repo me : String) (now : Int) : List Lock :=
-  db.locks.filter fun l => l.repo == repo && match l.agent with
+  db.locks.filter fun l => l.repo == repo && (match l.agent with
     | some a => a != me && l.lease_until.any (· > now) && db.agents.any fun g => g.name == a && g.ended.isNone
-    | none => false
+    | none => false)
 
 /-- Another live agent's lock that covers `p` in its repo (locks.lock_holder). -/
 def lockHolder (db : Db) (me : String) (p : InRepo) (now : Int) : Option Lock :=
