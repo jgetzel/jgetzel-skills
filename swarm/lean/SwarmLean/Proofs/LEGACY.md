@@ -22,5 +22,5 @@ back in the new shape, or replaces it, and empties this list.
 | `SwarmLean/Proofs/Keep.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
 
 With them: `Audit.lean` and `challenge.sh` (Challenge.lean, Solution.lean, comparator.json) are skipped by `check.sh` unless
-`SWARM_PROOFS` is set. The `sorry`/axiom grep still covers every file. The proofs phase restores each import in
+`SWARM_PROOFS` is set. The `sorry`/axiom grep still covers every Lean file. The proofs phase restores each import in
 `SwarmLean.lean`, the two `check.sh` steps, and empties this list.

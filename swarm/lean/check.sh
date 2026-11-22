@@ -8,7 +8,7 @@ cd "$(dirname "$0")" || exit 1
 ../../claim/check.sh || exit 1
 cmp -s lean-toolchain ../../claim/lean-toolchain || { echo "swarm/lean/lean-toolchain differs from claim/lean-toolchain" >&2; exit 1; }
 # Challenge.lean's sorries are its statements and holes (challenge.sh checks they are its only diagnostics)
-if grep -rnw --exclude=Challenge.lean 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+if grep -rnw --include='*.lean' --exclude=Challenge.lean 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 # the spec layer imports no proof and no implementation; nothing but the proofs imports a proof (board #216)
 ./layering.sh || exit 1
 # git runs only through Git.git / Git.out (World.lean: they put `--end-of-options` before ref operands), never a raw argv
