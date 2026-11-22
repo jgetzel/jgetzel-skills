@@ -407,6 +407,8 @@ def board91_a_task_freed_before_the_reserve_is_staffed_first (t : T) : IO Unit :
 def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   setup t
   let h ← hooks t
+  -- x is the swarm's: comms hears only its own agents' questions (board #135)
+  t.q_ "insert into agent(name,cwd,status,last_active,started) values('x',?,'working',1,1)" [.text t.repo]
   t.q_ "insert into task(title,state,owner,question) values('q','blocked','x','which way?')"
   let armed ← IO.mkRef true
   h.before.set fun ts => do

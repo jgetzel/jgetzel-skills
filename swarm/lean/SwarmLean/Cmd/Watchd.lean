@@ -321,9 +321,10 @@ def commsInbox (t : Int) (comms : String) (terms : Option (List Term)) : m Unit 
     Store.txn [.msg, .cursor, .event] fun db =>
       ((Msgs.typedStep comms last.id db).1.log now (some comms) "comms-deliver" none (some (d last.id)), ())
 
-/-- Each blocked task's question told to comms once per block: a task-blocked event after its latest `task block`. -/
+/-- Each blocked task of the swarm's agents (`ofSwarm`, board #135) has its question told to comms once per block: a
+task-blocked event after its latest `task block`. -/
 def noticesStep (t : Int) (comms : String) (away : Bool) (db0 : Db) : Db :=
-  (db0.tasks.filter (·.state = .blocked)).foldl (fun db r =>
+  (db0.tasks.filter fun r => r.state = .blocked && ofSwarm db0 r).foldl (fun db r =>
     -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is new
     let e := (db.events.filter fun e =>
       (e.kind == some "block" && e.data.any fun x => x == "#" ++ d r.id || likePrefix x ("#" ++ d r.id ++ " ")) ||
@@ -334,9 +335,9 @@ def noticesStep (t : Int) (comms : String) (away : Bool) (db0 : Db) : Db :=
     say db t (.agent comms) (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
       s!"Answer with `swarm task unblock {d r.id} --answer \"...\"`." ++ (if away then AWAY else "")) (!away) "system") db0
 
-/-- What `noticesStep` reads: the blocked tasks and the `block` and `task-blocked` events. -/
+/-- What `noticesStep` reads: the blocked tasks, the swarm's agents and the `block` and `task-blocked` events. -/
 def noticeSels : List Sel :=
-  [{ table := .task, cond := .eq "state" (.text "blocked") },
+  [{ table := .task, cond := .eq "state" (.text "blocked") }, Sels.all .agent,
    { table := .event, cond := .oneOf "kind" [.text "block", .text "task-blocked"] }]
 
 /-- The blocked notices in one transaction. -/

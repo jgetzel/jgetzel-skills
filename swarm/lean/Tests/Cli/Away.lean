@@ -113,6 +113,30 @@ def test_not_away_block_is_urgent (t : T) : IO Unit := do
   eq (((← msgsTo t "c")[0]!).f "urgent") 1
   hasnt (← t.sw "c" ["read"]).stdout "the user is away"
 
+-- board #135: tasks are the machine's, but each swarm's watchd passes tell its communicator only of its own agents'
+-- tasks: swarm u's blocked and late-landing tasks go to u-comms, never to c
+def test_notices_only_the_swarms_own (t : T) : IO Unit := do
+  t.fakes
+  comms t
+  t.agent "e"
+  t.q_ "insert into swarm(name, comms, created) values('u', 'u-comms', 0)"
+  t.q_ ("insert into agent(name, swarm, cwd, status, last_active, started) values('u-comms', 'u', ?, 'idle', 1, 1), " ++
+    "('u-1', 'u', ?, 'idle', 1, 1)") [.text t.repo, .text t.repo]
+  t.q_ "insert into task(title, state, owner, question) values('theirs', 'blocked', 'u-1', 'which way?')"
+  t.q_ ("insert into task(title, state, owner, land_sha, lander, landing_at) " ++
+    "values('their landing', 'landing', 'u-1', 'abc', 'u-1', 1)")
+  t.sw_ "e" ["task", "add", "ours"]; t.sw_ "e" ["task", "claim", "3"]
+  t.sw_ "e" ["task", "block", "3", "which db?"]
+  tick t
+  let n (dest pat : String) : IO Json := do
+    return (← t.q1 "select count(*) n from msg where dest=? and body like ?" [.text dest, .text pat]).f "n"
+  eq (← n "c" "%is blocked on #3%") 1
+  eq (← n "c" "%is blocked on #1%") 0  -- u-1's question is u's
+  eq (← n "c" "%has waited%") 0  -- and so is its landing
+  eq (← n "u-comms" "%is blocked on #1%") 1
+  eq (← n "u-comms" "%is blocked on #3%") 0
+  eq (← n "u-comms" "%#2 landing%has waited%") 1
+
 def test_away_hc_prompt_not_urgent (t : T) : IO Unit := do
   t.fakes
   t.setHc [json% {"address": "h1", "status": "blocked"}]
@@ -194,6 +218,7 @@ def tests : List Case := [
   ("test_human_drops_and_unblocks", test_human_drops_and_unblocks),
   ("test_away_queues_questions", test_away_queues_questions),
   ("test_not_away_block_is_urgent", test_not_away_block_is_urgent),
+  ("test_notices_only_the_swarms_own", test_notices_only_the_swarms_own),
   ("test_away_hc_prompt_not_urgent", test_away_hc_prompt_not_urgent),
   ("test_back_digest", test_back_digest),
   ("test_back_digest_exact_since", test_back_digest_exact_since),

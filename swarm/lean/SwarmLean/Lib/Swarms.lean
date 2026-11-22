@@ -1,5 +1,7 @@
 import SwarmLean.Sys
 import SwarmLean.Db.Schema
+import Std.Data.HashMap
+import Std.Data.HashSet
 
 /-! The machine's swarms (sw-global §2): the one db, the `swarm`, `repo`, `swarm_repo` and `task_repo` tables, read
 and written outside the store's transactions (they belong to no swarm's scope). -/
@@ -110,5 +112,40 @@ def staffable (s : String) : m (List Int) := do
   let rs ← Sys.sqlAt (← dbPath) schema [("select distinct tr.task from task_repo tr join swarm_repo sr on sr.repo = tr.repo " ++
     "where sr.swarm=? order by tr.task", [.text s])] true
   return (rs.headD #[]).toList.filterMap (int ·[0]?)
+
+/-- Task `k` is swarm `s`'s: one of its repos is the swarm's, a member owns or added it, or it has no repo and no swarm's
+agent owns or added it (a task before `task_repo`, or the human's: every swarm's board shows it). -/
+def mine (repos : List String) (members everyone : Std.HashSet String) (taskRepos : List String) (owner by_ : Option String) :
+    Bool :=
+  taskRepos.any repos.contains || owner.any members.contains || by_.any members.contains ||
+    (taskRepos.isEmpty && !owner.any everyone.contains && !by_.any everyone.contains)
+
+/-- The ids of swarm `s`'s tasks (`mine`): what its panel's board and Next up list (sw-global §5). -/
+def mineIds (s : String) : m (Std.HashSet Int) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [
+    ("select id, owner, created_by from task", []),
+    ("select task, repo from task_repo", []),
+    ("select name, swarm from agent where swarm is not null", []),
+    ("select repo from swarm_repo where swarm=?", [.text s])] true
+  let rows (i : Nat) : List (Array Val) := (rs.getD i #[]).toList
+  let taskRepos : Std.HashMap Int (List String) := (rows 1).foldl (init := {}) fun h r =>
+    match int r[0]?, txt r[1]? with
+    | some k, some rp => h.insert k (rp :: h.getD k [])
+    | _, _ => h
+  let everyone : Std.HashSet String := (rows 2).foldl (init := {}) fun h r =>
+    match txt r[0]? with
+    | some a => h.insert a
+    | none => h
+  let members : Std.HashSet String := (rows 2).foldl (init := {}) fun h r =>
+    match txt r[0]?, txt r[1]? with
+    | some a, some w => if w == s then h.insert a else h
+    | _, _ => h
+  let repos := (rows 3).filterMap (txt ·[0]?)
+  return (rows 0).foldl (init := {}) fun h r =>
+    match int r[0]? with
+    | some k =>
+      if mine repos members everyone (taskRepos.getD k []) (py (txt r[1]?)) (py (txt r[2]?)) then h.insert k
+      else h
+    | none => h
 
 end SwarmLean.Swarms
