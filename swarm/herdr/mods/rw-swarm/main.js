@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -240,19 +240,20 @@ export default class SwarmTab extends View {
     const hc = this.s?.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, this.where().on), term = addr && terminals().find((x) => x.address === addr);
     return { addr, msg: term ? line(term.report?.msg, 300) : "", blocked: term?.status === "blocked" };
   }
-  // II.6d: what the PermissionRequest hook recorded, only while its terminal is blocked; else hc's msg.
-  promptText(name, cx) {
-    const p = this.promptOf(name);
-    return (p.blocked && cx ? hookFor(this.hooks, exec, this.s?.db, name, p.msg, this.where(), cx) : null) || p.msg || "Answer it in its terminal.";
+  // II.6d, H3: an agent's prompt card: the screen's box, the hook's record (read only while blocked) where it matches.
+  promptCardOf(name, cx) {
+    const p = this.promptOf(name), box = p.addr && cx ? boxFor(this.boxes, hc, p.addr, p.msg, cx) : null;
+    const rec = p.blocked && cx ? hookFor(this.hooks, exec, this.s?.db, name, p.msg, this.where(), cx) : null;
+    return { ...p, box, ...promptCard(box, rec, p.msg, blockedAt(shared("rw-rail.changed"), p.addr)) };
   }
   peek(name) {
     const { addr, msg } = this.promptOf(name);
     if (addr) openOverlay(peekWindow(addr, name, msg || "stopped at a prompt"));
   }
   // Tier 2 (II.6c): the box's options as buttons, only on a full parse; a click re-reads and else shows the terminal.
-  promptBtns(t, name, i, cx) {
-    const { addr, msg } = this.promptOf(name), box = addr && cx ? boxFor(this.boxes, hc, addr, msg, cx) : null;
-    return promptButtons(box).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
+  promptBtns(t, pc, name, i) {
+    const { addr, box } = pc;
+    return (pc.buttons ? promptButtons(box) : []).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
       if (b.say) { this.saying = { addr, box, b, name }; this.sayIn.set_value(""); cx.notify(); cx.timer.after(50, () => this.sayIn.focus()); }
       else answerBox(this.boxes, hc, addr, box, b, null, cx, () => this.peek(name));
     }, k === 0 && !b.say));
@@ -510,16 +511,16 @@ export default class SwarmTab extends View {
       .child(div().size(8).rounded(4).bg(t.ansi2)).child("Nothing needs you"));
     const hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toTimeString().slice(0, 5); };
     const item = (n, i) => {
-      const ago = n.ago != null ? `${dur(n.ago * 1000)}` : "";
+      const ago = n.ago != null ? `${dur(n.ago * 1000)}` : "", pc = n.kind === "prompt" ? this.promptCardOf(n.agent, cx) : null;
       const [m, title, text] = n.kind === "question" ? ["asks", `${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
-        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, this.promptText(n.agent, cx)]
+        : n.kind === "prompt" ? ["asks", `${n.agent} stopped at a prompt`, pc.text]
         : n.kind === "hung" ? ["hung", `${n.agent} is hung`, `No answer to the liveness check${(() => { const a = s.agents.find((x) => x.name === n.agent); return a?.task ? ` · holds #${a.task.id}` : ""; })()}`]
         : n.kind === "ci" ? ["asks", "main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
         : n.kind === "watchd" ? ["asks", "watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
         : ["asks", "The machine is short on memory", n.line];
       const st = n.kind === "question" ? this.answers.get(n.task.id) : null;
       const acts = n.kind === "question" ? [this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
-        : n.kind === "prompt" ? [...this.promptBtns(t, n.agent, i, cx), this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))]
+        : n.kind === "prompt" ? [...this.promptBtns(t, pc, n.agent, i), this.btn(t, `term-${i}`, "Show terminal", () => this.peek(n.agent))]
         : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(cx, nudgeArgs(n.agent))), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.agent, cx))]
         : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []),
           this.twice(t, `rerun-${n.run.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(n.run.id), "--failed"]))]
@@ -530,6 +531,7 @@ export default class SwarmTab extends View {
           .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(ago)))
         .child(n.kind === "question" ? div().pl(17).child(md(`nq-${n.task.id}-${hash(n.task.question)}`, n.task.question || n.task.title))
           : v_flex().pl(17).text_size(13).line_height("19px").text_color(t.muted).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
+        .when(Boolean(pc?.warn), (el) => el.child(div().pl(17).whitespace_normal().text_size(12.5).text_color(t.blocked).child(pc?.warn ?? "")))
         .child(h_flex().pl(17).gap(8).items_center().flex_wrap()
           .when(Boolean(st), (el) => el.child(this.field(t, `answer-${i}`, st, true)).child(this.btn(t, `send-${i}`, "Send", (cx) => this.answer(cx, n.task), true)))
           .children(acts))

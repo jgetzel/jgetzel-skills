@@ -280,21 +280,66 @@ export function hookText(raw) {
     return para(x.questions.slice(0, 4).map((q) => `${line(S(q?.question), 200)}${q?.multiSelect === true ? " (any of)" : ""}: ${(Array.isArray(q?.options) ? q.options : []).slice(0, 8).map((o) => line(S(o?.label), 60)).join(" · ")}`).join("\n"), 1200);
   return line(`${tool}: ${Object.keys(x).slice(0, 6).join(", ")}`, 300);
 }
+// What on the screen a record's tool_input must show for it to be the box's (promptCard): each of these strings, or
+// null when nothing in it can be checked. Bash: the command; Write: the file's name and first line; Fetch: the url.
+export function hookKeys(raw) {
+  let j;
+  try { j = JSON.parse(String(raw ?? "")); } catch { return null; }
+  const x = j?.tool_input, S = (v) => (typeof v === "string" ? v : "");
+  if (typeof j?.tool_name !== "string" || !x || typeof x !== "object" || Array.isArray(x)) return null;
+  const base = (f) => S(f).replace(/\/+$/, "").split("/").pop();
+  const ks = j.tool_name === "Bash" ? [S(x.command)]
+    : j.tool_name === "Write" ? [base(x.file_path), S(x.content).split("\n").find((l) => l.trim()) ?? ""]
+    : /^(Edit|MultiEdit|NotebookEdit|Read)$/.test(j.tool_name) ? [base(x.file_path) || base(x.notebook_path)]
+    : j.tool_name === "WebFetch" ? [S(x.url)]
+    : j.tool_name === "AskUserQuestion" && Array.isArray(x.questions) ? [S(x.questions[0]?.question)] : [];
+  const out = ks.map((k) => k.replace(/\s+/g, "")).filter(Boolean);
+  return out.length ? out : null;
+}
 // The hook's record for a swarm agent at a prompt, read once per hc msg into `hooks` (a Map per view): `exec`: herdr's,
-// `db`: the swarm's db path, `opts`: {cwd, on}. null until read, without a record, or for a name that is not one.
+// `db`: the swarm's db path, `opts`: {cwd, on}. {text, keys, mtime (ms)}; null until read, without a record, or for a
+// name that is not one. The file is peer-writable: promptCard decides whether it shows.
 export function hookFor(hooks, exec, db, name, msg, opts, cx) {
   if (typeof db !== "string" || !db.includes("/") || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name ?? "")) return null;
   const key = `${db}|${name}`, c = hooks.get(key);
-  if (c?.msg === msg) return c.text;
-  hooks.set(key, { msg, text: null });
+  if (c?.msg === msg) return c.rec;
+  hooks.set(key, { msg, rec: null });
   if (hooks.size > 100) hooks.delete(hooks.keys().next().value);
   cx.spawn(async (cx) => {
-    let text = null;
-    try { const r = await exec("cat", [`${db.replace(/\/[^/]*$/, "")}/prompts/${name}.json`], opts); text = r?.code === 0 ? hookText(r.stdout) : null; } catch {}
+    let rec = null;
+    try {
+      const f = `${db.replace(/\/[^/]*$/, "")}/prompts/${name}.json`;
+      const r = await exec("sh", ["-c", 'm=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1") && echo "$m" && exec cat "$1"', "sh", f], opts);
+      const nl = r?.code === 0 ? r.stdout.indexOf("\n") : -1, mtime = Number(r?.stdout?.slice(0, nl)) * 1000, raw = r?.stdout?.slice(nl + 1);
+      const text = nl > 0 && Number.isFinite(mtime) ? hookText(raw) : null;
+      rec = text ? { text, keys: hookKeys(raw), mtime } : null;
+    } catch {}
     const e = hooks.get(key);
-    if (e?.msg === msg) { e.text = text; cx.notify(); }
+    if (e?.msg === msg) { e.rec = rec; cx.notify(); }
   });
   return null;
+}
+// When the rail saw the terminal at `addr` start asking (rw-rail's shared stamps, ms), else null.
+export const blockedAt = (changed, addr) => { const c = changed?.[addr]; return c?.m === "asks" && Number.isFinite(c.at) ? c.at : null; };
+// How long before the terminal's switch to blocked (hc's or the rail's time) a record may have been written: the hook
+// runs just before the box is drawn, mtimes are whole seconds, and another machine's clock differs.
+export const HOOK_SLACK = 5000;
+// II.6d, H3: a prompt card's text and whether it gets buttons. The box (parsePrompt: what Claude Code drew) leads; the
+// hook record `rec` (hookFor; any agent can write it) adds its text only when each of its keys is on the screen and it
+// was written no earlier than `blockedAt` (ms, null: unknown); else the card warns and has no buttons. A record with
+// nothing to check (hookKeys null) is left out. Without a box there are no buttons anyway: the record shows, marked
+// unchecked, else hc's `msg`.
+export function promptCard(box, rec, msg, blockedAt) {
+  if (!box) return { text: rec?.text ? `${rec.text}\n(the hook's record, not checked against the screen)` : msg || "Answer it in its terminal.", buttons: false, warn: null };
+  const flat = (x) => String(x ?? "").replace(/\s+/g, "");
+  const shown = box.kind === "permission" ? `${box.title}${box.about ? ` · ${box.about}` : ""}\n${box.detail}` : box.ask;
+  if (!rec?.keys) return { text: shown, buttons: true, warn: null };
+  const screen = flat([box.title, box.about, box.detail, box.ask].join("\n"));
+  const fresh = !Number.isFinite(blockedAt) || (Number.isFinite(rec.mtime) && rec.mtime >= blockedAt - HOOK_SLACK);
+  if (!fresh || !rec.keys.every((k) => screen.includes(k)))
+    return { text: shown, buttons: false, warn: "The hook's record does not match the screen: answer in its terminal." };
+  const same = [flat(box.detail), flat(`$ ${box.detail}`), flat(box.ask)].includes(flat(rec.text));
+  return { text: same ? shown : `${shown}\n${rec.text}`, buttons: true, warn: null };
 }
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 

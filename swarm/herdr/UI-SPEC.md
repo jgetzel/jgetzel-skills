@@ -548,9 +548,14 @@ II.3m All swarms links into the sections and shows the same needs.
   answering by itself is out of scope.
 - II.6d, the hook route (display only, decided with the designer): the swarm's settings template (not the user's
   settings) runs `swarm/herdr/prompt-hook.sh`: PermissionRequest records the hook's JSON to `<db dir>/prompts/<agent>.json`,
-  PostToolUse and Stop clear it. Needs you (Overview, All swarms) shows its text in place of hc's msg, and only while
-  hc's status for that terminal is blocked. The text is untrusted: plain, bounded, a long Write as its first lines and
-  size; never run, and never what decides a key: buttons stay on II.6c's re-read rule. No blocking hook: a decision made
+  PostToolUse and Stop clear it (under `umask 077`). Any agent can overwrite the record (sw-security-review H3), so
+  Needs you (Overview, All swarms) shows the screen's box (II.6c: title, about, detail) and adds the record's text only
+  while hc's status for that terminal is blocked, when each of its keys (`hookKeys`: Bash's command, Write's file name
+  and first line, an edit's file name, Fetch's url, a question's text) is on the screen and its mtime is no earlier than
+  the rail's stamp of the switch to blocked (5 s slack); else the card warns that the record does not match and has no
+  buttons (`promptCard`). Without a parsed box the record shows marked unchecked, with no buttons. The text is
+  untrusted: plain, bounded, a long Write as its first lines and size; never run, and never what decides a key: buttons
+  stay on II.6c's re-read rule. No blocking hook: a decision made
   by the hook could disagree with an answer typed in the terminal. Agents without the hook keep II.6c's screen text.
 - Slices: II.6a spike: real permission and question prompts in the sandbox as parser fixtures; check the hook.
   II.6b tier 1. II.6c tier 2. II.6d the hook route.
