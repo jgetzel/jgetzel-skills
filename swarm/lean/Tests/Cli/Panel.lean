@@ -355,7 +355,7 @@ def test_state_summary (t : T) : IO Unit := do
   unless ((s.f "rss_kb").getInt?.toOption.getD 0) > 0 do fail s!"summary rss_kb {s.f "rss_kb"}"
 
 -- sw-global §5: --view swarms is every swarm on the machine in one read, before any swarm is resolved: its communicator,
--- staffing, agents with their repo, tasks by state and what needs the human
+-- staffing, repos as objects, agents with their repos, tasks by state and what needs the human
 def test_state_swarms (t : T) : IO Unit := do
   t.q_ "update swarm set comms='c' where name='t'"
   t.agent "c" [("hc", "t1"), ("cwd", .text t.repo)]
@@ -387,6 +387,14 @@ def test_state_swarms (t : T) : IO Unit := do
   eq ((byName st0 "w").f "repo") (Json.str t.repo)
   eq ((byName st0 "w").f "task") (json% {"id": 1, "title": "one", "state": "claimed"})
   eq ((byName su "x").f "repo") (json% "/r2")
+  -- every repo an agent has a worktree in, else its own; each swarm repo with its base, CI, locks and other swarms
+  let has (j : Json) (r : String) : Bool := match j.f "repos" with | .arr a => a.contains (Json.str r) | _ => false
+  unless has (byName su "x") "/r2" && has (byName st0 "w") t.repo do
+    fail s!"agent repos {(byName su "x").f "repos"} {(byName st0 "w").f "repos"}"
+  let r2 := match su.f "repos" with
+    | .arr a => (a.toList.find? fun (x : Json) => x.f "path" == json% "/r2").getD .null
+    | _ => .null
+  eq r2 (json% {"path": "/r2", "base": null, "ci": null, "locks": 0, "swarms": []})
   eq ((byName su "x").f "status") (json% "blocked")
   eq (su.f "needs") (json% [{"kind": "question", "task": 2, "agent": "x", "question": "which?", "title": "two"},
     {"kind": "prompt", "agent": "y"}])

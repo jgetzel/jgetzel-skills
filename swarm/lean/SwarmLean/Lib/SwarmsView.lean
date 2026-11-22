@@ -69,7 +69,8 @@ def repoOf (known : List String) (dir : String) : m (Option String) := do
   | none => return none
 
 /-- The view: `now`, the db, the machine's task counts, and per swarm its communicator (and its terminal), staffing,
-repos, live agents (each with its repo, status, task, idle time and hung sign), tasks by state, what needs the human
+repos (each with its base, latest CI run, lock count and the other live swarms on it), live agents (each with its
+repo, every repo it has a worktree in, status, task, idle time and hung sign), tasks by state, what needs the human
 and whether the user is away. -/
 def view (t : Int) : m Json := do
   let p ← Swarms.dbPath
@@ -83,7 +84,9 @@ def view (t : Int) : m Json := do
     (s!"select scope, k, v from meta where k in ({", ".intercalate (KNOBS.map fun k => s!"'{k}'")})", []),
     ("select path from repo order by length(path) desc", []),
     ("select agent, kind, ts from event where kind = 'stay-hung' and ts >= ?", [.int (t - 86400)]),
-    ("select repo, status, conclusion, url, created, id from ci order by created desc", [])] true
+    ("select repo, status, conclusion, url, created, id from ci order by created desc", []),
+    ("select path, base from repo", []),
+    ("select repo, count(*) from lock group by repo", [])] true
   let rows (i : Nat) : List (Array Val) := (rs.getD i #[]).toList
   let txt (v : Option Val) : Option String := Swarms.txt v
   let int (v : Option Val) : Option Int := Swarms.int v
@@ -103,6 +106,22 @@ def view (t : Int) : m Json := do
     match txt r[0]?, txt r[1]? with
     | some a, some rp => if h.contains a then h else h.insert a rp
     | _, _ => h
+  -- every repo an agent has a worktree in, for the rail's repo tags (an agent may work across repos)
+  let wsRepos : Std.HashMap String (List String) := (rows 3).foldl (init := {}) fun h r =>
+    match txt r[0]?, txt r[1]? with
+    | some a, some rp => let l := h.getD a []; if l.contains rp then h else h.insert a (l ++ [rp])
+    | _, _ => h
+  let bases : Std.HashMap String String := (rows 8).foldl (init := {}) fun h r =>
+    match txt r[0]?, py (txt r[1]?) with
+    | some rp, some b => h.insert rp b
+    | _, _ => h
+  let locks : Std.HashMap String Int := (rows 9).foldl (init := {}) fun h r =>
+    match txt r[0]?, int r[1]? with
+    | some rp, some n => h.insert rp n
+    | _, _ => h
+  let ciJson (r : Array Val) : Json := obj [("repo", (txt r[0]?).map .str), ("status", (txt r[1]?).map .str),
+    ("conclusion", (txt r[2]?).map .str), ("url", (txt r[3]?).map .str), ("created", (txt r[4]?).map .str),
+    ("id", (int r[5]?).map Json.int)]
   let knob (s k : String) : Option String :=
     ((rows 4).find? fun r => txt r[0]? == some s && txt r[1]? == some k).bind fun r => py (txt r[2]?)
   let known := ((rows 5).filterMap (txt ·[0]?)) ++ (sws.flatMap (·.repos))
@@ -135,7 +154,9 @@ def view (t : Int) : m Json := do
       let asks := own.any (·.state == "blocked")
       if !asks && x.status == some "blocked" then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
       if h then needs := needs.push (Json.mkObj [("kind", .str "hung"), ("agent", .str x.name)])
+      let rps := (wsRepos.get? x.name).getD rp.toList
       ags := ags.push (obj [("name", some (.str x.name)), ("hc", some (Json.ostr x.hc)), ("repo", some (Json.ostr rp)),
+        ("repos", some (.arr (rps.map Json.str).toArray)),
         ("status", some (Json.ostr (if asks then some "blocked" else x.status))), ("role", some (Json.ostr x.role)),
         ("model", some (Json.ostr x.model)), ("stay", some (Json.ostr (py x.stay))),
         ("task", some (match own.head? with
@@ -151,9 +172,15 @@ def view (t : Int) : m Json := do
     let ni (k : String) : Json := Json.oint ((knob sw.name k).bind parseInt)
     let next := startable tasks ks
     let ci := (rows 7).find? fun r => (txt r[0]?).any sw.repos.contains
+    -- each repo with its base, its latest CI run, how many locks it holds and the other live swarms that share it
+    let repoJs : List Json := sw.repos.map fun rp => Json.mkObj [("path", .str rp), ("base", Json.ostr (bases.get? rp)),
+      ("ci", (((rows 7).find? fun r => txt r[0]? == some rp).map ciJson).getD .null),
+      ("locks", Json.int (locks.getD rp 0)),
+      ("swarms", .arr ((sws.filter fun o => o.name != sw.name && o.ended.isNone && o.repos.contains rp).map
+        fun o => Json.str o.name).toArray)]
     out := out.push (Json.mkObj [("name", .str sw.name), ("active", .bool (!alive.isEmpty && sw.ended.isNone)),
       ("comms", Json.ostr cv), ("comms_hc", Json.ostr commsHc),
-      ("repos", .arr (sw.repos.map Json.str).toArray), ("folder", Json.ostr sw.repos.head?),
+      ("repos", .arr repoJs.toArray), ("folder", Json.ostr sw.repos.head?),
       ("created", Json.oint sw.created), ("ended", Json.oint sw.ended),
       ("staffing", Json.mkObj [("live", Json.int nlive), ("min", ni "agent_min"), ("max", ni "agent_max"),
         ("held", Json.ostr (knob sw.name "spawn_held")), ("queue_only", .bool (knob sw.name "queue_only" == some "on"))]),
@@ -161,11 +188,7 @@ def view (t : Int) : m Json := do
       ("next", .arr ((next.take 5).map fun k => obj [("id", some (Json.int k.id)), ("title", k.title.map .str),
         ("qpos", k.qpos.map Json.int), ("priority", k.priority.map Json.int)]).toArray),
       ("ready", Json.int next.length),
-      ("ci", match ci with
-        | some r => obj [("repo", (txt r[0]?).map .str), ("status", (txt r[1]?).map .str),
-            ("conclusion", (txt r[2]?).map .str), ("url", (txt r[3]?).map .str), ("created", (txt r[4]?).map .str),
-            ("id", (int r[5]?).map Json.int)]
-        | none => .null),
+      ("ci", (ci.map ciJson).getD .null),
       ("agents", .arr ags), ("needs", .arr (qs.toArray ++ needs)), ("rss_kb", Json.int rss),
       ("away", .bool (knob sw.name "away").isSome)])
   return Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("db", .str p),

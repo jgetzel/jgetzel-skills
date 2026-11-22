@@ -46,6 +46,8 @@ async function readSwarms(on, cwd) {
 // The swarm the panel shows (never the folder's alone, sw-global §2): the focused agent's, else the one whose communicator
 // the shown space shows, else the one with most agents there, else the one whose repo the focused folder is in, else the
 // only one. `cwd`: a repo of it, where its commands and gh run.
+// A swarm's repo paths: `repos` holds {path, ...} objects, or paths from an older CLI.
+const pathsOf = w => (Array.isArray(w.repos) ? w.repos : []).map(r => (typeof r === "string" ? r : r?.path)).filter(r => typeof r === "string");
 function location() {
   const space = spaces().find(s => s.active), f = focused(), ps = panes();
   const pane = f?.pane ? ps.find(p => p.pane === f.pane) : null;
@@ -56,9 +58,9 @@ function location() {
   const sw = list.find(w => term && (w.agents ?? []).some(a => typeof a.hc === "string" && addr(a.hc) === term))
     ?? list.find(w => typeof w.comms_hc === "string" && here.has(addr(w.comms_hc)))
     ?? [...list].sort((a, b) => n(b) - n(a)).find(w => n(w) > 0)
-    ?? list.find(w => (w.repos ?? []).some(r => cwd0 === r || cwd0?.startsWith(`${r}/`)))
+    ?? list.find(w => pathsOf(w).some(r => cwd0 === r || cwd0?.startsWith(`${r}/`)))
     ?? (list.length === 1 ? list[0] : null);
-  return { cwd: (typeof sw?.repos?.[0] === "string" ? sw.repos[0] : null) ?? cwd0, cwd0, on, swarm: sw?.name ?? null };
+  return { cwd: (sw ? pathsOf(sw)[0] : null) ?? cwd0, cwd0, on, swarm: sw?.name ?? null };
 }
 // Focus address of an agent's terminal: remote spaces name terminals "machine/tN". null when it is gone
 // (ended, hc rm'd, or relaunched into a new terminal). shortcut: if panes() carries no terminal ids, trust a.hc.
