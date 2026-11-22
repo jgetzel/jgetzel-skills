@@ -33,6 +33,13 @@ def tight := deliverStep "n" 130 db0
 
 #guard note tight == "2 more unread message(s), too long to show here: run `swarm read`." && cursorOf tight.1 "n" == 0
 
+/-- In swarm s's view: `@all` stored as `@s`, which n reads; a post to `@u` is not n's (sw-global §2). -/
+def inS : Db := (post (post { db0 with swarm := "s" } 0 "p" "@all" "hi").1 0 "p" "@u" "no").1
+
+#guard inS.msgs.map (·.dest) == [some "n", some "n", some "@s", some "@u"]
+#guard (unread inS "n").map (·.body) == [some "one", some "two", some "hi"]
+#guard (unread inS "p").isEmpty
+
 /-- A notice to n. -/
 def notice : Db := (post db0 0 "p" "n" "fyi" false (some "notice")).1
 

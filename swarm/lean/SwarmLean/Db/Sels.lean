@@ -21,6 +21,13 @@ def metas (ks : List String) : Sel := { table := .«meta», cond := .oneOf "k" (
 /-- `n`'s cursor. -/
 def cursor (n : String) : Sel := { table := .cursor, cond := .eq "agent" (.text n) }
 
+/-- The messages to `dests` past id `c` that `n` did not send: an inbox, on index msg(dest, id). -/
+def inbox (n : String) (dests : List String) (c : Int) : Sel :=
+  { table := .msg, cond := .and (.and (.oneOf "dest" (dests.map .text)) (.gt "id" (.int c))) (.ne "frm" (.text n)) }
+
+/-- Task `id`. -/
+def task (id : Int) : Sel := { table := .task, cond := .eq "id" (.int id) }
+
 /-- The tasks `n` owns. -/
 def owned (n : String) : Sel := { table := .task, cond := .eq "owner" (.text n) }
 
@@ -57,9 +64,9 @@ def tasks (is : List Int) : Sel := { table := .task, cond := .oneOf "id" (is.map
 /-- The cursors of agents `ns`. -/
 def cursors (ns : List String) : Sel := { table := .cursor, cond := .oneOf "agent" (ns.map .text) }
 
-/-- The messages to `n` (or to all) past cursor `cur` (`Msgs.unread`'s rows). -/
+/-- The messages to `n` past cursor `cur`: a task box's held notes (`#N`; a swarm's `@<swarm>` is no box's). -/
 def unreadPast (n : String) (cur : Int) : Sel :=
-  { table := .msg, cond := .and (.gt "id" (.int cur)) (.oneOf "dest" [.text n, .text "@all"]) }
+  { table := .msg, cond := .and (.gt "id" (.int cur)) (.eq "dest" (.text n)) }
 
 /-- What `Agents.fence` reads of `n`: its row and the last event that ended it. -/
 def fence (n : String) : List Sel :=
