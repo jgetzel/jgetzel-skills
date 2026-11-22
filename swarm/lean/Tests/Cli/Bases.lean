@@ -162,6 +162,23 @@ def spawnOn (t : T) (base : String) : IO String := do
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
   return t.d ++ "/repo-t-9"
 
+-- no git the commands run may prompt: a stale credential helper held desktop's watchd tick on an askpass dialog for an
+-- hour (2026-11-22); with no prompt and a low-speed abort the fetch fails instead. Both Git.git and Git.out (the
+-- spawn's fetch of origin/main and its worktree add) run with Git.ENV.
+def test_git_never_prompts (t : T) : IO Unit := do
+  let real := strip (← t.exec ["sh", "-c", "command -v git"]).stdout
+  let D := shquote t.d
+  discard <| t.fake "git" s!"#!/bin/sh\necho \"$\{GIT_TERMINAL_PROMPT-unset}|$\{GIT_ASKPASS-unset}|$\{GIT_HTTP_LOW_SPEED_TIME-unset}|$1\" >> {D}/genv.log\nexec {shquote real} \"$@\"\n"
+  let o := t.d ++ "/origin.git"
+  discard <| t.git none ["clone", "-q", "--bare", t.repo, o]
+  discard <| t.git t.repo ["remote", "add", "origin", o]
+  discard <| t.git t.repo ["fetch", "-q", "origin"]
+  discard <| spawnOn t "origin/main"
+  let lines := (← IO.FS.readFile (t.d ++ "/genv.log")).splitOn "\n" |>.filter (· ≠ "")
+  unless lines.any (·.endsWith "|fetch") do fail s!"no fetch among {lines}"
+  for l in lines do
+    unless l.startsWith "0||60|" do fail s!"git ran with {l}"
+
 def test_spawn_task_makes_and_records_the_worktree (t : T) : IO Unit := do
   let wt ← spawnOn t "formal"
   eq (strip (← t.git (some wt) ["rev-parse", "--abbrev-ref", "HEAD"])) "t-9/1"
@@ -322,6 +339,7 @@ def test_landed_check_judges_each_worktree_in_its_repo (t : T) : IO Unit := do
   has (← t.sw "human" ["end", "t-9"]).stdout "t-9 ended"
 
 def tests : List Case := [
+  ("test_git_never_prompts", test_git_never_prompts),
   ("test_task_add_repos", test_task_add_repos),
   ("test_spawn_task_of_two_repos_makes_a_worktree_in_each", test_spawn_task_of_two_repos_makes_a_worktree_in_each),
   ("test_landed_check_judges_each_worktree_in_its_repo", test_landed_check_judges_each_worktree_in_its_repo),

@@ -54,10 +54,16 @@ class Git (m : Type → Type) where
   /-- `git <args>` in `cwd`: its stdout when it exits 0, else none (proc.git). -/
   git : List String → Option String → m (Option String)
 
+/-- The environment every git of the commands runs with: never a prompt (no terminal one, and an empty GIT_ASKPASS
+skips SSH_ASKPASS's dialog too), and an https transfer under 1 KB/s for 60 s aborts. A credential problem then fails
+the one command instead of holding watchd's tick on a prompt nobody answers. -/
+def Git.ENV : List (String × String) :=
+  [("GIT_TERMINAL_PROMPT", "0"), ("GIT_ASKPASS", ""), ("GIT_HTTP_LOW_SPEED_LIMIT", "1000"), ("GIT_HTTP_LOW_SPEED_TIME", "60")]
+
 /-- `git <args>` in `cwd` with its exit code and output, for the callers that need more than `Git.git`'s stdout; the only
 other place `git` is put in front of an argv. A ref or path operand goes after `--end-of-options`. -/
 def Git.out {m : Type → Type} [Proc m] (args : List String) (cwd : Option String) : m (Option ProcOut) :=
-  Proc.output ("git" :: args) cwd []
+  Proc.output ("git" :: args) cwd Git.ENV
 
 /-- How a command ends early: its exit code, its message already written. -/
 structure Exit where

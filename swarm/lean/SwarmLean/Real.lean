@@ -82,7 +82,7 @@ def theConn : App Conn := do
 one. -/
 def repoHere : IO String := do
   let out ← try
-      let r ← IO.Process.output { cmd := "git", args := #["worktree", "list", "--porcelain"] }
+      let r ← IO.Process.output { cmd := "git", args := #["worktree", "list", "--porcelain"], env := Git.ENV.toArray.map fun (k, v) => (k, some v) }
       pure (if r.exitCode == 0 then r.stdout else "")
     catch _ => pure ""
   if !out.startsWith "worktree " then return ""
@@ -398,7 +398,7 @@ instance : Proc App where
 
 instance : Git App where
   git args cwd := do
-    match ← outputIO ("git" :: args) cwd [] with
+    match ← outputIO ("git" :: args) cwd Git.ENV with
     | some o => return if o.code == 0 then some o.stdout else none
     | none => return none
 
