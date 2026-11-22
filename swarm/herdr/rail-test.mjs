@@ -303,6 +303,12 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     agents: [{ name: "ll-3", status: "idle" }] }));
   assert.deepEqual(other.map((x) => x.task?.id), [4]);
 }
+// A swarm's own tasks: state marks them `mine`; another swarm's open task stays off its board (board #101)
+{
+  const { ownTasks } = await import("./mods/rw-rail/tree.js");
+  assert.deepEqual(ownTasks([{ id: 1, mine: true }, { id: 49, mine: false }, { id: 2 }]).map((k) => k.id), [1, 2]);
+  assert.deepEqual(ownTasks(undefined), []);
+}
 // A prompt's terminal in a window (II.6 tier 1): a title bar from rw-pane, then the terminal; one window per terminal.
 {
   const { peekWindow, addrOf } = await import("./mods/rw-rail/tree.js");

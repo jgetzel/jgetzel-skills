@@ -47,9 +47,10 @@ def startable (all ks : List T) : List T :=
 
 /-- Task `k` is swarm `s`'s: one of its repos is the swarm's, a member owns or added it, or it has no repo and no swarm's
 agent owns or added it (a task before `task_repo`, or the human's: every swarm's board shows it). -/
-def mine (repos : List String) (members everyone : Std.HashSet String) (taskRepos : List String) (k : T) : Bool :=
-  taskRepos.any repos.contains || k.owner.any members.contains || k.by_.any members.contains ||
-    (taskRepos.isEmpty && !k.owner.any everyone.contains && !k.by_.any everyone.contains)
+def mine (repos : List String) (members everyone : Std.HashSet String) (taskRepos : List String) (owner by_ : Option String) :
+    Bool :=
+  taskRepos.any repos.contains || owner.any members.contains || by_.any members.contains ||
+    (taskRepos.isEmpty && !owner.any everyone.contains && !by_.any everyone.contains)
 
 /-- An agent's hung sign (watchd.hung, as `State.staySign`): a stayer, idle, with a stay-hung event since it was active. -/
 def hung (x : Agent) (evs : List (String × String × Int)) : Bool :=
@@ -57,6 +58,34 @@ def hung (x : Agent) (evs : List (String × String × Int)) : Bool :=
     evs.any fun (a, k, ts) => a == x.name && k == "stay-hung" && ts ≥ x.last_active.getD 0
 
 variable {m : Type → Type} [Monad m] [Env m] [Sys m] [Proc m] [Git m]
+
+/-- The ids of swarm `s`'s tasks (`mine`): what its panel's board and Next up list (sw-global §5). -/
+def mineIds (s : String) : m (Std.HashSet Int) := do
+  let rs ← Sys.sqlAt (← Swarms.dbPath) schema [
+    ("select id, owner, created_by from task", []),
+    ("select task, repo from task_repo", []),
+    ("select name, swarm from agent where swarm is not null", []),
+    ("select repo from swarm_repo where swarm=?", [.text s])] true
+  let rows (i : Nat) : List (Array Val) := (rs.getD i #[]).toList
+  let taskRepos : Std.HashMap Int (List String) := (rows 1).foldl (init := {}) fun h r =>
+    match Swarms.int r[0]?, Swarms.txt r[1]? with
+    | some k, some rp => h.insert k (rp :: h.getD k [])
+    | _, _ => h
+  let everyone : Std.HashSet String := (rows 2).foldl (init := {}) fun h r =>
+    match Swarms.txt r[0]? with
+    | some a => h.insert a
+    | none => h
+  let members : Std.HashSet String := (rows 2).foldl (init := {}) fun h r =>
+    match Swarms.txt r[0]?, Swarms.txt r[1]? with
+    | some a, some w => if w == s then h.insert a else h
+    | _, _ => h
+  let repos := (rows 3).filterMap (Swarms.txt ·[0]?)
+  return (rows 0).foldl (init := {}) fun h r =>
+    match Swarms.int r[0]? with
+    | some k =>
+      if mine repos members everyone (taskRepos.getD k []) (py (Swarms.txt r[1]?)) (py (Swarms.txt r[2]?)) then h.insert k
+      else h
+    | none => h
 
 /-- The repo a folder is in: the known repo it is under, else its main worktree (`git rev-parse --git-common-dir`'s
 parent), else none. -/
@@ -136,7 +165,7 @@ def view (t : Int) : m Json := do
   let mut out : Array Json := #[]
   for sw in sws do
     let members : Std.HashSet String := agents.foldl (fun h (s, a) => if s == sw.name then h.insert a.name else h) {}
-    let ks := tasks.filter fun k => mine sw.repos members everyone (taskRepos.getD k.id []) k
+    let ks := tasks.filter fun k => mine sw.repos members everyone (taskRepos.getD k.id []) k.owner k.by_
     let cv := sw.comms
     let mut ags : Array Json := #[]
     let mut needs : Array Json := #[]

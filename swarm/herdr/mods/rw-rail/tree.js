@@ -114,6 +114,8 @@ export function overOf(j) {
   for (const r of s?.ci?.runs ?? []) if (!/^https:\/\/[^\s]+$/.test(r.url ?? "")) r.url = null;
   return s;
 }
+// A state's tasks that are its swarm's own (`mine`, sw-global §5): the store's are every swarm's. Unmarked: all.
+export const ownTasks = (ks) => (ks ?? []).filter((k) => k.mine !== false);
 // `swarm state --json --view swarms`: the machine's swarms (sumOf each), unique by name; `db` the machine's db.
 export const swarmsOf = (j) => uniq(Lx(sumOf, 500)(j?.swarms), "name").map((s) => ({ ...s, db: Tx(j?.db) }));
 // The swarm CLI's arguments for swarm `name` (sw-global §2: a command names its swarm, never its folder).
