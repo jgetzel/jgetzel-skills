@@ -276,6 +276,12 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     needs: [{ kind: "question", task: 3, agent: "a", title: "T" }], ci: { status: "completed", conclusion: "failure", url: "javascript:x" } }, { name: "ll" }, null, { name: 3 }] });
   assert.deepEqual(ws.map((w) => [w.swarm, w.folder, w.db]), [["ll", "/w/ll", "/s/swarm.db"], ["3", null, "/s/swarm.db"]]);
   assert.equal(ws[0].ci.url, null);
+  // rail B's repos: objects (base, CI, locks, other swarms) or an older CLI's paths; an agent's repos, else its repo
+  assert.deepEqual([ws[0].repos, ws[0].repoInfo.map((r) => r.path), ws[0].agents[0].repos], [["/w/ll"], ["/w/ll"], ["/w/ll"]]);
+  const ob = sumOf({ name: "nx", repos: [{ path: "/w/nix", base: "main", locks: 2, swarms: ["gl"], ci: { status: "completed", conclusion: "failure", url: "javascript:x" } }, { path: "rel" }, 7],
+    agents: [{ name: "nx-2", hc: "t2", repo: "/w/nix", repos: ["/w/nix", "/w/jgs", "rel"] }] });
+  assert.deepEqual([ob.repos, ob.folder, ob.repoInfo[0].base, ob.repoInfo[0].locks, ob.repoInfo[0].swarms, ob.repoInfo[0].ci.url, ob.agents[0].repos],
+    [["/w/nix"], "/w/nix", "main", 2, ["gl"], null, ["/w/nix", "/w/jgs"]]);
   const sh = shapeOf(ws[0]);
   assert.deepEqual([sh.agents[0].stay_sign, sh.tasks[0].state, sh.tasks[0].owner, sh.ci.red_streak], ["hung", "blocked", "a", 1]);
 }

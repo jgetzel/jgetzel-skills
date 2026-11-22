@@ -118,8 +118,10 @@ copy.
 ## 5. The Herdr panels
 
 `swarm state --json --view swarms` answers for the whole machine in one call (each swarm: communicator, staffing,
-agents with their repo, tasks by state); the rail and `rw-swarms` call it once per machine (remote machines through
-`hc exec`, as now) instead of once per space folder, and group by swarm. An agent row shows its repo. "Open space"
+repos as objects with their base, latest CI run, lock count and the other live swarms on them, agents with their repo
+and every repo they work in, tasks by state); the rail and `rw-swarms` call it once per machine (remote machines through
+`hc exec`, as now) instead of once per space folder, and group by swarm. An agent row shows its repo. The rail
+(direction B, board #91) lists per machine its swarms first, then its spaces with the terminals no swarm holds. "Open space"
 becomes "focus the communicator's terminal". The side and swarm views take a swarm name, not a folder.
 
 ## 6. Build order (the board)

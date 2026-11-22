@@ -52,21 +52,28 @@ const uniq = (xs, ...keys) => {
   });
 };
 const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, landing: Nx, ended: Nx });
-const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, status: Tx, role: Tx, model: Tx, stay: Tx, task: Ox({ id: Nx, title: Tx, state: Tx }),
-  idle_s: Nx, hung: Bx });
+const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, repos: Lx(Tx, 50), status: Tx, role: Tx, model: Tx, stay: Tx,
+  task: Ox({ id: Nx, title: Tx, state: Tx }), idle_s: Nx, hung: Bx });
 const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx });
-const summary = Ox({ name: Tx, active: Bx, comms: Tx, comms_hc: Tx, repos: Lx(Tx, 200), folder: Tx, created: Nx, ended: Nx,
+const CI = Ox({ id: Nx, repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx });
+// A swarm's repo: {path, base, ci, locks, swarms} (the other live swarms on it), or a bare path from an older CLI.
+const repoOf = (x) => (typeof x === "string" ? { path: Tx(x), base: null, ci: null, locks: null, swarms: [] }
+  : Ox({ path: Tx, base: Tx, ci: CI, locks: Nx, swarms: Lx(Tx, 50) })(x));
+const summary = Ox({ name: Tx, active: Bx, comms: Tx, comms_hc: Tx, repos: Lx(repoOf, 200), folder: Tx, created: Nx, ended: Nx,
   staffing: Ox({ live: Nx, min: Nx, max: Nx, held: Tx, queue_only: Bx }), rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
-  needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, qpos: Nx, priority: Nx }), 50), ready: Nx,
-  ci: Ox({ id: Nx, repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx }), away: Ax });
+  needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, qpos: Nx, priority: Nx }), 50), ready: Nx, ci: CI, away: Ax });
 // One swarm of `swarm state --json --view swarms` (sw-global §5): null unless an object with a name. `swarm` is its name,
 // what the views and the CLI's --swarm go by; `folder` an absolute repo of it (the cwd its commands run in), else null.
+// `repos` its absolute repos' paths, `repoInfo` the same repos as objects; an agent's `repos` every repo it works in.
 export function sumOf(j) {
   const s = summary(j);
   if (!s?.name) return null;
   s.swarm = s.name;
   s.agents = uniq(s.agents.filter((a) => a.name), "name", "hc");
-  s.repos = s.repos.filter((r) => r.startsWith("/"));
+  for (const a of s.agents) { a.repos = a.repos.filter((r) => r.startsWith("/")); if (!a.repos.length && a.repo?.startsWith("/")) a.repos = [a.repo]; }
+  s.repoInfo = uniq(s.repos.filter((r) => r?.path?.startsWith("/")), "path");
+  for (const r of s.repoInfo) if (r.ci && !/^https:\/\/[^\s]+$/.test(r.ci.url ?? "")) r.ci.url = null;
+  s.repos = s.repoInfo.map((r) => r.path);
   if (!s.folder?.startsWith("/")) s.folder = s.repos[0] ?? null;
   if (s.ci && !/^https:\/\/[^\s]+$/.test(s.ci.url ?? "")) s.ci.url = null;
   return s;
