@@ -81,6 +81,28 @@ def lastEvent (db : Db) (kinds : List String) : Option String :=
 def say (db : Db) (now : Int) (dest : Msgs.Dest) (body : String) (urgent : Bool) (kind : String) : Db :=
   (Msgs.post db now .system dest body urgent (some kind)).1
 
+-- ---------- a pass's shape (sw-architecture-review §4 B1) ----------
+
+/-- What a tick read of the machine before deciding, no db rows: the clock, once, and hc's terminals. -/
+structure TickIn where
+  now : Int
+  terms : Option (List Term) := none
+  away : Bool := false
+
+/-- The order of a send and its mark: `atMost` marks, then sends (a failed send is not retried); `atLeast` sends,
+then marks once it went (a crash between resends). -/
+inductive Once | atMost | atLeast
+  deriving BEq, Inhabited
+
+/-- A non-db effect a pass asks for; `runActs` (Cmd/Watchd.lean) runs it. -/
+inductive Act
+  /-- `text` to agent `agent` at terminal `hc`, its `mark` run around the send as `once` says -/
+  | send (agent hc text : String) (mark : List Stmt) (once : Once)
+  /-- the agent ended (`Lifecycle.endAgent`) -/
+  | endAgent (a : Agent)
+  /-- a line to stderr -/
+  | err (line : String)
+
 /-- The `lease-late` event of task `id` with `data` (`holder`: its owner told; `comms`: the communicator) in the last
 LEASE before `t`. -/
 def leaseLateEv (db : Db) (id : Nat) (data : String) (t : Int) : Option Event :=
@@ -392,22 +414,29 @@ def quiet (t : Int) (comms : String) : m Unit := do
 
 /-- An agent idle `blockerIdle` min while its claim blocks open tasks: asked once per idle stretch what it waits on,
 and comms told (watchd.blockers). -/
-def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit := do
+def blockersStep (t : Int) (comms : String) (blockerIdle : Float) (db0 : Db) : Db :=
   let lim := blockerIdle * 60
-  let db ← Store.txn [.agent, .task, .event] fun db => (db, db)
-  for a in Agents.live db do
+  (Agents.live db0).foldl (fun db a =>
     let n := a.name
     let last := a.last_active.getD 0
-    if n == comms || a.status != some "idle" || Float.ofInt (t - last) < lim then continue
-    if db.events.any fun e => e.agent == some n && e.kind == some "blocker-nudge" && e.ts.any (· ≥ last) then continue
-    let ids : List Int := (db.tasks.filter fun x => x.state = .claimed && x.owner == some n).map (·.id)
-    let w := dependants db ids
-    if w > 0 then
-      let now ← Clock.now
-      Store.txn [] fun db =>
-        let db := db.log now (some n) "blocker-nudge" none (some (toString w))
-        let db := say db now (.agent n) "What are you waiting on? Can you continue without it/land without it?" true "system"
-        (say db now (.agent comms) s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system", ())
+    if n == comms || a.status != some "idle" || Float.ofInt (t - last) < lim then db
+    else if db.events.any (fun e => e.agent == some n && e.kind == some "blocker-nudge" && e.ts.any (· ≥ last)) then db
+    else
+      let ids : List Int := (db.tasks.filter fun x => x.state = .claimed && x.owner == some n).map (·.id)
+      let w := dependants db ids
+      if w > 0 then
+        let db := db.log t (some n) "blocker-nudge" none (some (toString w))
+        let db := say db t (.agent n) "What are you waiting on? Can you continue without it/land without it?" true "system"
+        say db t (.agent comms) s!"{n} is idle {fdiv (t - last) 60} min holding #{",#".intercalate (ids.map d)}, which {w} open task(s) wait on (nudged)." false "system"
+      else db) db0
+
+/-- What `blockersStep` reads: the live agents, every task (`dependants` follows the deps), the `blocker-nudge` events. -/
+def blockerSels : List Sel :=
+  [Sels.live, Sels.all .task, { table := .event, cond := .eq "kind" (.text "blocker-nudge") }]
+
+/-- The blockers pass in one transaction. -/
+def blockers (t : Int) (comms : String) (blockerIdle : Float) : m Unit :=
+  Store.run (Txn.update blockerSels [.msg] fun d => (blockersStep t comms blockerIdle d, ()))
 
 /-- How long a landing task waits for its lander before the communicator is told (board #200). -/
 def LANDING_LATE : Int := 7200
@@ -426,10 +455,17 @@ def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
   | none => db
 
 /-- The landing tasks no lander closed within LANDING_LATE, each told to the communicator once (`landingLate1`). -/
-def landingLate (t : Int) (comms : String) : m Unit := do
-  let db ← Store.txn [.task] fun db => (db, db)
-  for r in db.tasks.filter fun x => x.state = .landing && x.landing_at.any (· ≤ t - LANDING_LATE) do
-    Store.txn [.task, .event] fun db => (landingLate1 r t comms db, ())
+def landingLateStep (t : Int) (comms : String) (db : Db) : Db :=
+  (db.tasks.filter fun x => x.state = .landing && x.landing_at.any (· ≤ t - LANDING_LATE)).foldl
+    (fun db r => landingLate1 r t comms db) db
+
+/-- What `landingLateStep` reads: the landing tasks and the `landing-late` events. -/
+def landingSels : List Sel :=
+  [{ table := .task, cond := .eq "state" (.text "landing") }, { table := .event, cond := .eq "kind" (.text "landing-late") }]
+
+/-- The landing-late pass in one transaction. -/
+def landingLate (t : Int) (comms : String) : m Unit :=
+  Store.run (Txn.update landingSels [.msg] fun d => (landingLateStep t comms d, ()))
 
 /-- Ends `n`'s stay if its `--until` condition holds (board #195): the stay cleared, its claimed tasks' leases renewed
 2 h, and "Your wait is over: <cond> (<detail>)" sent. Whether it woke. -/
