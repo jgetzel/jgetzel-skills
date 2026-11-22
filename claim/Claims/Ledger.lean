@@ -458,6 +458,16 @@ def Ls.unclaimed (l : Ls) : String :=
   let cc : Int := (l.claims.map (·.cores)).sum
   fixed (if l.busy > Float.ofInt cc then l.busy - Float.ofInt cc else 0) 1
 
+/-- The memory (KiB) the live claims hold. -/
+def Ls.claimedMem (l : Ls) : Int := (l.claims.map (·.mem_kb)).sum
+
+/-- A sized request of `mem` KiB is short of memory by unclaimed use: more than is available plus what every live claim
+holds, so no claim ending lets it in (board #104). -/
+def Ls.memShort (l : Ls) (mem : Int) : Bool := mem > l.avail_kb + l.claimedMem
+
+/-- The most memory (KiB) a sized request could hold with every live claim ended (`Admit.freeM + Admit.cm`). -/
+def Ls.memRoom (l : Ls) (now : Int) : Int := let m := l.model now; Admit.freeM m + Admit.cm m
+
 /-- Why a waiting ticket is held (the model's `held`), in words: none when it is not held. -/
 def Ls.whyHeld (l : Ls) (now : Int) (q : Ticket) : List String :=
   let m := l.model now

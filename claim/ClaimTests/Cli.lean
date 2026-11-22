@@ -170,6 +170,46 @@ def test_claim_queue_shows_beside_the_claims (t : T) : IO Unit := do
   eq (← claim t ["queue", "add", "laptop", "--id", "a", "--who", "w", "--pid", "1", "--", "c"]).code 1
   eq (← claim t ["queue", "add", "nowhere", "--id", "a", "--who", "w", "--", "c"]).code 1
 
+/-- The fixture's available memory, in KiB (Linux: the ledger reads macOS's own `vm_stat`, so these run on Linux alone). -/
+def availKb (t : T) (kb : Nat) : IO Bool := do
+  put (t.d ++ "/meminfo") s!"MemTotal:       16777216 kB\nMemAvailable:   {kb} kB\n"
+  return strip (← t.exec ["uname"]).stdout != "Darwin"
+
+/-- Board #104: a request short of memory by unclaimed use does not wait for it. A given --mem is refused with the reason;
+a defaulted one is lowered to what is free, or refused under 1 GiB; the wait line says which and when. -/
+def test_claim_run_short_of_memory_by_unclaimed_use (t : T) : IO Unit := do
+  unless (← availKb t 4718592) do return
+  let steady0 := [("SWARM_COMPUTE_STEADY_S", some "0")]
+  let r ← t.exec [← bin, "run", "--cores", "1", "--mem", "10", "--", "echo", "ran"] steady0 (cwd := some t.d)
+  eq r.code 255; hasnt r.stdout "ran"
+  has r.stderr "nothing can run this job: it needs 10.0G, and unclaimed use leaves at most 4.5G with every claim ended"
+  has r.stderr "Lower --mem."
+  eq ((splitlines (← claim t ["op", "here", "ls"]).stdout).filter (·.startsWith "q ")).length 0
+  -- the default 2G, with 1.5G free: lowered to nine tenths of it
+  discard <| availKb t 1572864
+  let r ← t.exec [← bin, "run", "--cores", "1", "--", "sh", "-c", "echo $SWARM_MEM_KB"] steady0 (cwd := some t.d)
+  eq r.code 0; eq r.stdout "1415577\n"
+  has r.stderr "not 2.0G: unclaimed use leaves at most 1.5G with every claim ended"
+  -- with 0.5G free there is nothing to lower it to
+  discard <| availKb t 524288
+  let r ← t.exec [← bin, "run", "--cores", "1", "--", "echo", "ran"] steady0 (cwd := some t.d)
+  eq r.code 255; has r.stderr "under the 1.0G it could be lowered to"
+  -- before the steady time: the wait line says what will happen and when
+  discard <| availKb t 1572864
+  bgRun t ["--cores", "1", "--", "echo", "ran"]
+  until_ (return (← slurp (t.d ++ "/e")).any (subIn · "held by unclaimed memory use; younger jobs go first; unclaimed use leaves at most 1.5G with every claim ended: lowered to "))
+  discard <| claim t ["off", "here"]
+  until_ (exists_ (t.d ++ "/rc"))
+  eq (strip (← readF [t.d, "rc"])) "255"
+
+/-- Board #104: a defaulted core count over the cap is lowered to it, with a line; a given one is refused. -/
+def test_claim_run_defaulted_cores_over_the_cap_are_lowered (t : T) : IO Unit := do
+  discard <| claim t ["cap", "here", "--cores", "1"]
+  let r ← claim t ["run", "--", "sh", "-c", "echo $SWARM_CORES"]
+  eq r.code 0; eq r.stdout "1\n"
+  has r.stderr "claiming 1 cores, 2.0G, not 2 cores, 2.0G: here's cap is 1 cores"
+  eq (← claim t ["run", "--cores", "2", "--", "true"]).code 255
+
 def tests : List Case := [
   ("test_claim_queue_shows_beside_the_claims", test_claim_queue_shows_beside_the_claims),
   ("test_claim_help", test_claim_help),
@@ -183,6 +223,8 @@ def tests : List Case := [
   ("test_claim_run_waits_while_the_ledger_is_full", test_claim_run_waits_while_the_ledger_is_full),
   ("test_claim_run_wait_line_names_what_the_head_waits_on", test_claim_run_wait_line_names_what_the_head_waits_on),
   ("test_claim_reserve_and_the_one_machine_view", test_claim_reserve_and_the_one_machine_view),
-  ("test_claim_run_all_is_exclusive_and_refuses_mem", test_claim_run_all_is_exclusive_and_refuses_mem)]
+  ("test_claim_run_all_is_exclusive_and_refuses_mem", test_claim_run_all_is_exclusive_and_refuses_mem),
+  ("test_claim_run_short_of_memory_by_unclaimed_use", test_claim_run_short_of_memory_by_unclaimed_use),
+  ("test_claim_run_defaulted_cores_over_the_cap_are_lowered", test_claim_run_defaulted_cores_over_the_cap_are_lowered)]
 
 end Claims.Tests.Cli

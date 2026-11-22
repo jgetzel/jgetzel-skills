@@ -23,7 +23,8 @@ $XDG_STATE_HOME/swarm-compute, else ~/.local/state/swarm-compute)
   claim run [--cores N|all] [--mem G] [--est S] [--who NAME] -- <cmd…>
                                                    claims here (default 2 cores, 2G), waits, runs the command at the lowest
                                                    priority, drops the claim; exits with the command's code, 255 when nothing
-                                                   can fit. --est S (seconds the job takes) lets it start before older waiters
+                                                   can fit. A default over the cap is lowered to it; memory that unclaimed
+                                                   use keeps short for 2 minutes lowers a default and refuses a --mem. --est S (seconds the job takes) lets it start before older waiters
                                                    that cannot start sooner. --cores all: the whole machine, alone (no --mem)
   claim op <machine|here> <try|drop|ls|qadd|qrm|cap|reserve|off|on> <args…>
                                                    the ledger script's op, its output as is (exit 1: no answer, 2: bad args)

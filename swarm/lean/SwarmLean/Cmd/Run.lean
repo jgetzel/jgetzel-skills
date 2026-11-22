@@ -471,7 +471,9 @@ def run (a : Parsed) : m UInt32 := do
     let poll := ((← env "SWARM_COMPUTE_POLL_MS").bind parseInt).getD 5000
     let ask : Claims.Ask := {
       prog := "swarm", capCmd := "swarm compute", cands, usable, stateOf, id := claimId, cores := wantC,
-      mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat }
+      mem_kb := wantM, est, who, cmd := line, pid := ← Sys.getpid, pollMs := poll.toNat,
+      coresFixed := coresArg.isSome, memFixed := memFlag.isSome || wantC == "all",
+      steadyS := ((← env "SWARM_COMPUTE_STEADY_S").bind parseInt).getD Claims.STEADY }
     let some (chosen, gotCores, gotMem) ← Claims.acquire host ask | throw (Exit.mk 255)
     let waitS : Int := Int.ofNat ((← Sys.nowF) - tw).floor.toUInt64.toNat
     pure (chosen, gotCores, gotMem, claimId, waitS, est)

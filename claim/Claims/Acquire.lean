@@ -5,6 +5,24 @@ fit. -/
 
 namespace Claims
 
+/-- How long (s) every machine a sized request waits on must find it short of memory by unclaimed use (`Ls.memShort`)
+before `acquire` lowers a defaulted size or refuses a given one (board #104). -/
+def STEADY : Int := 120
+
+/-- The least memory (KiB) `acquire` lowers a defaulted size to: 1 GiB. -/
+def MIN_LOWER : Int := 1048576
+
+/-- What `acquire` does with a sized request short of memory by unclaimed use on every machine it waits on, after `held`
+of `steady` seconds, with `room` the most any of them could give it: wait `left` seconds more, lower a defaulted size
+(`fixed` false) to nine tenths of the room (available memory moves) when that is at least `MIN_LOWER`, or refuse. -/
+inductive Short | wait (left : Int) | lower (memKb : Int) | refuse
+  deriving BEq, Repr
+
+def short (fixed : Bool) (room held steady : Int) : Short :=
+  if held < steady then .wait (steady - held)
+  else if fixed || room * 9 / 10 < MIN_LOWER then .refuse
+  else .lower (room * 9 / 10)
+
 /-- What the loop needs of its caller. `cands` are the machines asked for (none: here), `usable` those of them that are
 connected; `stateOf` says why one is not. `prog` prefixes the messages and `capCmd` is the command whose `cap` and `on` change a machine's limits. -/
 structure Ask where
@@ -24,6 +42,11 @@ structure Ask where
   /-- this process's pid, the holder of a claim here -/
   pid : Int
   pollMs : Nat
+  /-- `cores` and `mem_kb` were asked for (`--cores`, `--mem`); a defaulted one is lowered to a cap it is over, and memory
+  to what unclaimed use leaves (`short`) -/
+  coresFixed : Bool := true
+  memFixed : Bool := true
+  steadyS : Int := STEADY
 
 /-- Real idle cores of a machine: `ncpu - max busy claimed`, at least 0. -/
 def idleCores (l : Ls) : Float :=
@@ -41,7 +64,9 @@ def rankByIdle (xs : List (Option String × Option Float)) : List (Option String
     | none, none => true
 
 /-- Claims on one of `a.usable` and waits for room: the machine, the cores and the memory granted, or none (after saying why)
-when nothing can ever run it. The claims on the machines not chosen are released. -/
+when nothing can ever run it. The claims on the machines not chosen are released. A request no machine can ever fit does
+not wait: a defaulted size over the cap is lowered to it, and a sized request short of memory by unclaimed use on every
+machine it waits on for `steadyS` is lowered or refused (`short`), each with a stderr line; the wait line says which. -/
 def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Option String × Int × Int)) := do
   let nameOf (c : Option String) := c.getD "here"
   let mut won : Option (Option String × Int × Int) := none
@@ -49,6 +74,9 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
   let mut told : Option String := none
   let mut lastWhy : Int := 0
   let mut order := a.usable
+  let mut cores := a.cores
+  let mut mem := a.mem_kb
+  let mut shortSince : Option Int := none
   if a.usable.length > 1 then
     let mut reads : List (Option String × Option Float) := []
     for c in a.usable do
@@ -64,7 +92,7 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
     for c in order do
       if won.isSome then break
       let holder := if c.isNone then s!"p{a.pid}" else "t"
-      let r := parseTry ((← call h c ["try", a.id, a.cores, toString a.mem_kb, (a.est.elim "-" toString), holder, a.who, a.cmd]).getD "")
+      let r := parseTry ((← call h c ["try", a.id, cores, toString mem, (a.est.elim "-" toString), holder, a.who, a.cmd]).getD "")
       match r with
       | .ok n g => won := some (c, n, g)
       | .gone => gone := true
@@ -74,6 +102,19 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
     let isFirst := first
     first := false
     if !anyWait && (isFirst || !gone) then
+      -- a defaulted size over a machine's cap: lowered to the cap
+      let capped := seen.findSome? fun (c, x) => match x, cores.toInt? with
+        | .never capc capm, some n =>
+          let n' := if a.coresFixed then n else min n capc
+          let g' := if a.memFixed then mem else min mem capm
+          if 1 ≤ n' && n' ≤ capc && g' ≤ capm && (n' != n || g' != mem) then some (c, capc, capm, n', g') else none
+        | _, _ => none
+      if let some (c, x, y, n', g') := capped then
+        h.err s!"{a.prog}: claiming {n'} cores, {gi g'}G, not {cores} cores, {gi mem}G: {nameOf c}'s cap is {x} cores, {gi y}G"
+        cores := toString n'
+        mem := g'
+        first := true
+        continue
       for c in a.usable do release h c a.id
       h.err (s!"{a.prog}: nothing can run this job: " ++ "; ".intercalate (a.cands.map fun c =>
         s!"{nameOf c}: " ++ match a.stateOf c, (seen.lookup c) with
@@ -91,14 +132,39 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
     if told.isNone || now - lastWhy ≥ 60 then
       lastWhy := now
       let mut parts : List String := []
+      -- per machine waited on: the room it could give when it finds the request short of memory by unclaimed use
+      let mut rooms : List (Option Int) := []
       for (c, x) in seen do
-        let why ← match x with
-          | .wait fc fm ah => do
-            let l := parseLs ((← call h c ["ls"]).getD "")
-            pure ((l.bind (·.waitLine now a.id)).getD s!"{fc} cores, {gi fm}G free, {ah} ahead")
-          | _ => pure "no room"
-        parts := parts ++ [s!"{nameOf c}: {why}"]
-      let line := s!"{a.prog}: waiting for room: " ++ "; ".intercalate parts
+        match x with
+        | .wait fc fm ah =>
+          let l := parseLs ((← call h c ["ls"]).getD "")
+          rooms := rooms ++ [if cores == "all" then none else l.bind fun l => if l.memShort mem then some (l.memRoom now) else none]
+          parts := parts ++ [s!"{nameOf c}: " ++ ((l.bind (·.waitLine now a.id)).getD s!"{fc} cores, {gi fm}G free, {ah} ahead")]
+        | _ => parts := parts ++ [s!"{nameOf c}: no room"]
+      let room := if !rooms.isEmpty && rooms.all (·.isSome) then (rooms.filterMap id).max? else none
+      let mut tail := ""
+      match room with
+      | none => shortSince := none
+      | some room =>
+        let since := shortSince.getD now
+        shortSince := some since
+        let why := s!"unclaimed use leaves at most {gi room}G with every claim ended"
+        match short a.memFixed room (now - since) a.steadyS with
+        | .wait left =>
+          let act := (match short a.memFixed room a.steadyS a.steadyS with | .lower kb => s!"lowered to {gi kb}G" | _ => "refused")
+          tail := s!"; {why}: {act} in {spanHM left}" ++ (if a.memFixed then " (--mem was given)" else "")
+        | .lower kb =>
+          h.err s!"{a.prog}: claiming {gi kb}G, not {gi mem}G: {why}, for {spanHM (now - since)}; the job may use more than it claims"
+          mem := kb
+          shortSince := none
+          told := none
+          continue
+        | .refuse =>
+          for c in a.usable do release h c a.id
+          h.err (s!"{a.prog}: nothing can run this job: it needs {gi mem}G, and {why}, for {spanHM (now - since)}" ++
+            (if a.memFixed then ". Lower --mem." else s!", under the {gi MIN_LOWER}G it could be lowered to."))
+          return none
+      let line := s!"{a.prog}: waiting for room: " ++ "; ".intercalate parts ++ tail
       if told.map waitKey != some (waitKey line) then
         h.err line
         told := some line

@@ -294,6 +294,15 @@ def test_run_all_is_the_whole_machine (t : T) : IO Unit := do
   let r ← t.sw "b" ["run", "--cores", "all", "--", "true"] { ok := false }
   eq r.code 255; has r.stderr "here: the cap (4 cores, 16.0G) is below the whole machine. Ask for a count of cores, or lift the cap: `swarm compute cap <machine> --cores all --mem all`."
 
+/-- Board #104: a defaulted size over the cap is lowered to it, with a line; a given one is still refused. -/
+def test_run_defaulted_size_over_the_cap_is_lowered (t : T) : IO Unit := do
+  discard <| t.sw "b" ["compute", "cap", "here", "--cores", "1", "--mem", "1"]
+  let r ← t.sw "b" ["run", "--", "echo $SWARM_CORES $SWARM_MEM_KB"]
+  has r.stdout "1 1048576"
+  has r.stderr "swarm: claiming 1 cores, 1.0G, not 2 cores, 2.0G: here's cap is 1 cores, 1.0G"
+  eq (← t.sw "b" ["run", "--mem", "2", "--", "true"] { ok := false }).code 255
+  eq (← t.sw "b" ["run", "--cores", "2", "--", "true"] { ok := false }).code 255
+
 def test_run_lowest_priority (t : T) : IO Unit := do
   has (← t.sw "b" ["run", "--", "echo nice=$(nice)"]).stdout "nice=19"
   if (← t.exec ["ionice", "-c3", "true"]).code == 0 then
@@ -420,6 +429,7 @@ def tests : List Case := [
   ("test_run_detach_a_killed_process_is_lost", test_run_detach_a_killed_process_is_lost),
   ("test_run_estimate_into_the_claim", test_run_estimate_into_the_claim),
   ("test_run_all_is_the_whole_machine", test_run_all_is_the_whole_machine),
+  ("test_run_defaulted_size_over_the_cap_is_lowered", test_run_defaulted_size_over_the_cap_is_lowered),
   ("test_run_lowest_priority", test_run_lowest_priority),
   ("test_run_explicit_mem_is_a_cap", test_run_explicit_mem_is_a_cap),
   ("test_run_records_the_local_jobs_own_use", test_run_records_the_local_jobs_own_use),
