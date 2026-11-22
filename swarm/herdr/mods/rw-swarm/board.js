@@ -84,7 +84,7 @@ export class SwarmBoard {
     this.tab = null; this.peek = null; this.pick = null; // the Board's peeked task, the Inbox's picked item (its key)
     this.show = null; this.showFor = null; this.showing = null; // `task show --json` of the peeked or picked task
     this.others = "quiet"; this.doneShown = true; this.inboxAll = false;
-    this.lists = {}; this.lastList = null; this.drewAt = 0; // per list: what the last render placed, gone rows still leaving
+    this.lists = {}; this.lastList = null; this.gone = false; // per list: what the last render placed, gone rows still leaving
     this.ans = InputState.new({ placeholder: "Your answer" });
     this.ans.on("submit", (_e, cx) => this.answer(cx));
     this.note = InputState.new({ placeholder: "A note on this task, for its holder" });
@@ -131,6 +131,12 @@ export class SwarmBoard {
   wantShow() {
     if (this.tab === "board") return this.peek;
     return this.items()?.find((n) => n.key === this.pick)?.task ?? null;
+  }
+  // Read task `id`'s history now (a pick shouldn't wait for the next poll).
+  loadShow(cx, id) {
+    if (id == null || this.showFor === id || this.showing === id) return;
+    this.show = null;
+    cx.spawn(async (cx) => { try { await this.readShow(id); } catch { this.showing = null; } cx.notify(); });
   }
   async readShow(id) {
     this.showing = id;
@@ -223,8 +229,8 @@ export class SwarmBoard {
   // The view: the head, then the Inbox or the Board. `w` where() of rw-swarm; `width` the view's; `board` the bar's
   // Board section (it opens on the Board; Overview opens on the Inbox while something needs you).
   draw(t, cx, m, { w, width, board }) {
-    if (Date.now() - this.drewAt > 5000) this.tab = null; // shown again: it opens as it opens
-    this.drewAt = Date.now(); this.m = m; this.width = width ?? 1200; this.monoF = settings().font_family;
+    if (this.gone) { this.gone = false; this.tab = null; } // shown again: it opens as it opens
+    this.m = m; this.width = width ?? 1200; this.monoF = settings().font_family;
     if (!this.d) {
       if (!this.busy) this.tick(cx, w);
       return v_flex().id("sb-reading").flex_1().items_center().justify_center().text_size(kit.TYPE.body)
@@ -320,7 +326,7 @@ export class SwarmBoard {
     if (this.peek === k.id) { this.unselect(); return cx.notify(); }
     setShared(SELECT, { from: "task", task: k.id, agent: k.holder?.agent ?? null, swarm: k.holder?.swarm ?? null });
     this.peek = k.id; this.ans.set_value(""); this.note.set_value("");
-    if (this.showFor !== k.id) { this.show = null; this.tick(cx, { on: this.on, swarm: this.sw.name }); }
+    this.loadShow(cx, k.id);
     cx.notify();
   }
   selOf(k) {
@@ -539,7 +545,7 @@ export class SwarmBoard {
     const age = n.ts ? dur(Date.now() - n.ts * 1000) : "";
     return h_flex().id(`sb-ib-${hash(n.key)}`).size_full().px(14).py(8).gap(10).items_start().border_b(1).border_color(t.border)
       .cursor_pointer().when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click((_e, cx) => { this.pick = n.key; this.ans.set_value(""); this.tick(cx, { on: this.on, swarm: this.sw.name }); cx.notify(); })
+      .on_click((_e, cx) => { this.pick = n.key; this.ans.set_value(""); this.loadShow(cx, n.task); cx.notify(); })
       .child(div().pt(3).flex_none().child(this.glyph(t, n, kind)))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(kind === "asks" || n.kind === "ci-red" ? kit.colors(t).asks : t.foreground).child(words))

@@ -1,8 +1,8 @@
 // The rework's swarm view (swarm/herdr/UI-SPEC.md, slice 7 and Part II.3). With props {view: true} it is the layout's
 // full-width swarm view (a child of the "view" stack): the swarm, section and page are shared("rw-swarm.view")
-// ({swarm, folder, machine, section}: the swarm by name, sw-global §5), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
-// width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
-// cards. With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
+// ({swarm, folder, machine, section}: the swarm by name, sw-global §5), rw-bar draws the sections, and Overview and Board
+// are board.js (the unified redesign's direction 8: the board by repo, its peek and its inbox).
+// With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
 // last one it showed, in one column under 700 px, under a head with the section as a menu, Expand and Close, and over a
 // message line to the communicator; the focused agent's row is marked "shown", and a click on a row shows its terminal
 // (its name and its right-click menu open its page). Without it, the older swarm tab: a mod pane with props {swarm, folder, machine}. Needs you with an answer field, the
@@ -91,7 +91,7 @@ export default class SwarmTab extends View {
     this.sb = new SwarmBoard((args) => { const w = this.where(); return swarm(w.cwd, w.on, args, w.swarm); });
     this.refresh(cx); this.refreshPrs(cx);
     cx.timer.every(POLL, (cx) => {
-      if (this.boardView()) { if (!this.hidden()) this.sb.tick(cx, this.where()); return; }
+      if (this.boardView()) { if (this.hidden()) this.sb.gone = true; else this.sb.tick(cx, this.where()); return; }
       if (this.due()) this.refresh(cx);
       if (!this.hidden() && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx); // gh only while it shows
     });
