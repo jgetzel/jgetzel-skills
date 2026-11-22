@@ -64,9 +64,9 @@ def tasks (is : List Int) : Sel := { table := .task, cond := .oneOf "id" (is.map
 /-- The cursors of agents `ns`. -/
 def cursors (ns : List String) : Sel := { table := .cursor, cond := .oneOf "agent" (ns.map .text) }
 
-/-- The messages to `n` (or to all) past cursor `cur` (`Msgs.unread`'s rows). -/
+/-- The messages to `n` past cursor `cur`: a task box's held notes (`#N`; a swarm's `@<swarm>` is no box's). -/
 def unreadPast (n : String) (cur : Int) : Sel :=
-  { table := .msg, cond := .and (.gt "id" (.int cur)) (.oneOf "dest" [.text n, .text "@all"]) }
+  { table := .msg, cond := .and (.gt "id" (.int cur)) (.eq "dest" (.text n)) }
 
 /-- What `Agents.fence` reads of `n`: its row and the last event that ended it. -/
 def fence (n : String) : List Sel :=
