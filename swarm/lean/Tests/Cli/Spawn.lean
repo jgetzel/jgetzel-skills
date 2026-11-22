@@ -373,6 +373,24 @@ def test_spawned_agent_skips_older_broadcasts (t : T) : IO Unit := do
   let out := (← t.sw "t-9" ["read"] { hc := some "hc1" }).stdout
   hasnt out "old rule"; has out "new rule"
 
+-- names are the machine's (board #123): a name live in swarm u is refused from t, an ended one moves to t
+def test_spawn_name_of_another_swarm (t : T) : IO Unit := do
+  t.fakes
+  t.q_ "insert into swarm(name, created) values('u', 0)"
+  t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
+  t.q_ "update agent set hc='u7', role='u-role' where name='x'"
+  let before ← t.q "select * from agent where name='x'"
+  let r ← t.sw "a" ["spawn", "x", "--", "go"] { ok := false }
+  eq r.code 1
+  has r.stderr "x is a live agent"
+  eq (← t.launched).size 0
+  eq (← t.q "select * from agent where name='x'") before
+  t.q_ "update agent set ended=1, hc=null where name='x'"
+  t.sw_ "a" ["spawn", "x", "--", "go"]
+  eq (← names t) ["x"]
+  eq (row (← t.q1 "select swarm, ended from agent where name='x'") ["swarm", "ended"]) (json% ["t", null])
+  eq ((← t.q1 "select count(*) n from agent where name='x'").f "n") 1
+
 def test_spawn_launch_failure_keeps_live_agent (t : T) : IO Unit := do
   t.fakes; t.setHc [json% {"name": "t-9", "address": "t7"}]
   touch (t.d ++ "/launch.fail")
@@ -818,6 +836,7 @@ def tests : List Case := [
   ("test_spawn_task_claims_before_launch", test_spawn_task_claims_before_launch),
   ("test_spawn_message_task_body_text_and_ci_flow", test_spawn_message_task_body_text_and_ci_flow),
   ("test_spawned_agent_skips_older_broadcasts", test_spawned_agent_skips_older_broadcasts),
+  ("test_spawn_name_of_another_swarm", test_spawn_name_of_another_swarm),
   ("test_spawn_launch_failure_keeps_live_agent", test_spawn_launch_failure_keeps_live_agent),
   ("test_launch_sh_survives_failure_after_hc_run", test_launch_sh_survives_failure_after_hc_run),
   ("test_spawn_task_launch_failure_rolls_back", test_spawn_task_launch_failure_rolls_back),

@@ -109,14 +109,22 @@ def refuse (e : Refusal) : m α := do
   | .refused msg | .lost msg => Env.err msg; throw (Exit.mk 1)
 
 /-- The reservation (`reserve`, with task `tid` `reserveTask`) and the task's held notes, as one transaction: it reads the
-live agents, `name`'s row and cursor, the staffing knobs and the next message id; with a task, the task and its deps
-(with `top`, every task not done: the pool), the cursors of the agents their stops wait on, and the task's unread notes. -/
+live agents, `name`'s row of any swarm (names are the machine's: one live anywhere is refused) and cursor, the staffing
+knobs and the next message id; with a task, the task and its deps (with `top`, every task not done: the pool), the
+cursors of the agents their stops wait on, and the task's unread notes. An ended row of another swarm is left out of
+the slice, so the reservation inserts the name and the insert moves it here (`scopeStmts`). -/
 def reserveTxn (envComms : Option String) (name cwd : String) (model : Option String) (now : Int) (tid : Option Int)
     (top : Option (Db → Option Int)) : Txn (Except Refusal (Option Task × List Msg)) := do
-  let base := [Sels.live, Sels.agent name, Sels.cursor name, Sels.metas Sels.LIMIT_KEYS]
+  let own := (← Txn.slice [Sels.agent name]).agents
+  let moved (db : Db) : Db :=
+    if own.isEmpty then { db with agents := db.agents.filter fun a => a.name != name || a.ended.isNone } else db
+  let upd (ss : List Sel) (f : Db → Db × Except Refusal (Option Task × List Msg)) :
+      Txn (Except Refusal (Option Task × List Msg)) :=
+    Txn.step ss [.msg] fun d => let d := moved d; let (d', a) := f d; (slicePlan d d', a)
+  let base := [Sels.live, { Sels.agent name with inScope := false }, Sels.cursor name, Sels.metas Sels.LIMIT_KEYS]
   match tid with
   | none =>
-    Txn.update base [.msg] fun db =>
+    upd base fun db =>
       let (db, e) := reserve db envComms name cwd model now
       (db, e.map fun () => (none, []))
   | some tid =>
@@ -126,8 +134,8 @@ def reserveTxn (envComms : Option String) (name cwd : String) (model : Option St
     let d ← Txn.slice [ts, Sels.cursor box]
     let deps := ((d.find tid).map Tasks.depsOf).getD []
     let stops := (d.tasks.filterMap fun t => py t.stop_to).eraseDups
-    Txn.update (base ++ [ts, Sels.tasks deps, Sels.cursors stops, Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf d box)])
-      [.msg] fun db =>
+    upd (base ++ [ts, Sels.tasks deps, Sels.cursors stops, Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf d box)])
+      fun db =>
         let (db, e) := reserveTask db envComms name cwd tid model now top
         (db, e.map fun r => (some r, Notes.held db tid))
 
