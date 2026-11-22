@@ -507,7 +507,7 @@ def Regex.never : Regex := { root := .alt [], groups := 0 }
 
 /-- A literal pattern, compiled once where it is named. Every named one is in `Tests/Re.lean`'s table, which fails
 the build on one that does not parse; here such a pattern matches nothing. (A subtype of the patterns that compile
-would need `native_decide`: `compile` runs a `partial` parser.) -/
+would need a compiled decision procedure: `compile` runs a `partial` parser.) -/
 structure Pat where
   src : String
   fl : Flags
