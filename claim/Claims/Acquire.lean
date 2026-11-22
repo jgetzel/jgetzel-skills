@@ -169,9 +169,9 @@ def acquire {m : Type → Type} [Monad m] (h : Host m) (a : Ask) : m (Option (Op
         h.err line
         told := some line
     h.sleep a.pollMs
-  let some (chosen, got, mem) := won | return none
+  let some (chosen, got, gotMem) := won | return none
   for c in a.usable do if c != chosen then release h c a.id
-  return some (chosen, got, mem)
+  return some (chosen, got, gotMem)
 
 /-- The environment of a job that holds `cs` cores and `mem_kb`, on top of `nixConfig` (NIX_CONFIG as it is). -/
 def jobEnv (cs : String) (mem_kb : Int) (nixConfig : Option String) : List (String × String) :=
