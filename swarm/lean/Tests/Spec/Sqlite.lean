@@ -446,7 +446,10 @@ def task_txns_match_their_steps (_ : T) : IO Unit := do
   for (c, i) in [(a1, 1), (a1, 3), (a2, 3), (cc, 8), (a2, 6), (a1, 4)] do
     same s!"drop #{i} by {c.me}" (TaskTxn.drop c i) (Queue.drop c i)
   same "hold" (TaskTxn.one 1 (Queue.hold a1 1 "why")) (Queue.hold a1 1 "why")
-  same "unhold" (TaskTxn.one 7 (Queue.unhold a1 7)) (Queue.unhold a1 7)
+  same "unhold" (TaskTxn.unhold cc 7) (Queue.unhold cc 7)
+  same "unhold, not in charge" (TaskTxn.unhold a1 7) (Queue.unhold a1 7)
+  same "rules set" (TaskTxn.setRules cc "be kind") (Tasks.setRules cc "be kind")
+  same "rules set, not in charge" (TaskTxn.setRules a1 "be kind") (Tasks.setRules a1 "be kind")
   same "queue add" (TaskTxn.qadd a1 [5, 1] .back) (Queue.add a1 [5, 1] .back)
   same "queue add, front" (TaskTxn.qadd cc [5] (.before 12)) (Queue.add cc [5] (.before 12))
   same "queue add, moves another's" (TaskTxn.qadd a1 [12] .back) (Queue.add a1 [12] .back)
