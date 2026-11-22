@@ -7,6 +7,9 @@ cd "$(dirname "$0")" || exit 1
 # the claim tool's own gate (../../claim: its proofs' axioms and claim-tests) first, and both toolchains the same
 ../../claim/check.sh || exit 1
 cmp -s lean-toolchain ../../claim/lean-toolchain || { echo "swarm/lean/lean-toolchain differs from claim/lean-toolchain" >&2; exit 1; }
+# swarm/herdr/kit/kit.js is the panels' kit; a mod can't import across folders, so each mod that uses it has its own
+# kit.js (a link, copied by the installer): none may differ from the kit
+for k in ../herdr/mods/*/kit.js; do [ -e "$k" ] || continue; cmp -s "$k" ../herdr/kit/kit.js || { echo "$k differs from swarm/herdr/kit/kit.js" >&2; exit 1; }; done
 # Challenge.lean's sorries are its statements and holes (challenge.sh checks they are its only diagnostics)
 if grep -rnw --include='*.lean' --exclude=Challenge.lean 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 # the spec layer imports no proof and no implementation; nothing but the proofs imports a proof (board #216)

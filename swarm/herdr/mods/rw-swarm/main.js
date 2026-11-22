@@ -16,6 +16,7 @@ import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } 
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
 import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName } from "./tree.js";
 import { mark, look } from "./marks.js";
+import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -82,6 +83,7 @@ export default class SwarmTab extends View {
     this.capCores.on("submit", (_e, cx) => this.saveCap(cx)); this.capMem.on("submit", (_e, cx) => this.saveCap(cx));
     this.ended = null; // the ended agents, read when you open their line
     this.ent = new Entering(); // motion (II.4c): what just came
+    this.motion = new kit.Motion(); // the kit's motions (swarm/herdr/kit), for the rows drawn with it
     this.hist = null; this.histDay = "today"; this.histSort = "finished"; // History's pages read ({tasks, agents, tMore, aMore}), its day and sort (II.3l)
     this.past = null; this.pastTasks = null; // "done" or "dropped" while the board lists those; the tasks `--view board` sent
     this.refresh(cx); this.refreshPrs(cx);
@@ -749,10 +751,11 @@ export default class SwarmTab extends View {
         .tooltip(n ? `${kilo(n)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
         .child(div().w(64).h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(hot ? t.blocked : t.muted).w(`${Math.min(100, Math.round((100 * (n ?? 0)) / full))}%`)))
       : div().w(34).flex_none().text_size(11.5).text_color(hot ? t.blocked : t.dim).child(n ? kilo(n) : "");
-    return this.sideRow(h_flex().id(`now-${r.a.name}`).px(wide ? 14 : 6).py(5).gap(wide ? 12 : 8).items_center().min_w(0).rounded(6).cursor_pointer().hover((st) => st.bg(t.hover)), t, r.a, s, shown)
-      .child(mark(t, r.mark)).child(this.nameLink(t, r.a.name, wide ? 80 : 68))
-      .child(v_flex().flex_1().min_w(0).child(div().truncate().text_color(t.muted).child(r.task)).child(div().truncate().text_size(11.5).text_color(tone).child(r.state)))
-      .children([model].filter(Boolean)).child(ctx);
+    // The kit's agent row (status glyph first, name, task; select-sync when it is the shown one), the row's state words,
+    // model and context on its right.
+    const state = div().flex_none().max_w(140).truncate().text_size(11.5).text_color(tone).child(r.state);
+    return this.sideRow(kit.agentRow(t, this.motion, { name: r.a.name, status: r.mark, swarm: this.where().swarm }, {
+      sub: r.task, sel: shown ? true : null, right: [state, model, ctx].filter(Boolean) }), t, r.a, s, false);
   }
   // Working: a row per live agent; it is not drawn at zero (the staffing bar says 0 working).
   workingCard(t, s, wide) {
@@ -1677,8 +1680,10 @@ export default class SwarmTab extends View {
 
   render(cx) {
     this.anim = animOn(shared("rw.animations"));
+    this.motion.begin(this.anim); kit.useMono(settings().font_family);
     const el = this.draw(cx);
     if (this.anim && this.ent.end()) cx.timer.after(20, (cx) => cx.notify());
+    this.motion.end(cx);
     return el;
   }
   // The side view's head (II.7): the swarm's name, Expand (full width, same section and page) and Close.
