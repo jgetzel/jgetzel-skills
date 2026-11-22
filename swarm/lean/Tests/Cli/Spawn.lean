@@ -191,6 +191,38 @@ def test_spawn_refused_at_the_max (t : T) : IO Unit := do
   t.sw_ "a" ["spawn", "t-9", "--", "go"]  -- raising the max lets the next through
   eq (← names t) ["t-8", "t-9"]
 
+def test_limits_all_or_nothing (t : T) : IO Unit := do
+  t.fakes; twoHaiku t
+  let r ← t.sw "a" ["limits", "--min", "3", "--queue-only", "on", "--ctx-nudge", "-1"] { ok := false }
+  eq r.code 1
+  has r.stderr "a context threshold is tokens"
+  let l := (← t.sw "a" ["limits"]).stdout
+  has l "agents: 1 live, no auto-spawn number, no max set"  -- a bad flag sets none of the good ones
+  hasnt l "queue-only"
+  eq (← t.q "select 1 from event where kind='limits'").size 0
+  t.sw_ "a" ["limits", "--max", "2"]
+  has (← t.sw "a" ["limits", "--min", "3", "--queue-only", "on"] { ok := false }).stderr "the auto-spawn number 3 is above the max 2"
+  hasnt (← t.sw "a" ["limits"]).stdout "queue-only"
+  has (← t.sw "a" ["limits", "--min", "2", "--queue-only", "on", "--reuse-below", "50000"]).stdout
+    "agents: 1 live, auto-spawn to 2, max 2, queue-only"
+
+def test_reserved_and_bad_names_refused (t : T) : IO Unit := do
+  t.fakes; twoHaiku t
+  for n in ["human", "swarm", "nil", "@all", "@t", "#5", "a b", "a/b", "Big", "a.b"] do
+    let j ← t.sw "a" ["join", n] { ok := false }
+    eq j.code 1
+    ok (subIn j.stderr "an agent can't take it" || subIn j.stderr "not an agent name") s!"join {n}: {j.stderr}"
+    let s ← t.sw "a" ["spawn", n, "--", "go"] { ok := false }
+    eq s.code 1
+    ok (subIn s.stderr "an agent can't take it" || subIn s.stderr "not an agent name") s!"spawn {n}: {s.stderr}"
+  eq (← t.launched).size 0
+  eq (← t.q "select 1 from agent where name not in ('t-comms', 't-1')").size 0
+  has (← t.sw "swarm" ["role", "x"] { ok := false }).stderr "SWARM_NAME: 'swarm' is the system's name"
+  for n in ["all", "a b", "@x", "#1"] do
+    has (← t.sw "human" ["new", n] { ok := false }).stderr "not a swarm name"
+  has (← t.sw "human" ["new", "u2", "--comms", "@x"] { ok := false }).stderr "not an agent name"
+  eq (← t.q "select 1 from swarm where name<>'t'").size 0
+
 def test_two_spawns_race_for_the_last_place (t : T) : IO Unit := do
   t.fakes; twoHaiku t
   t.sw_ "a" ["limits", "--max", "2"]
@@ -751,6 +783,8 @@ def test_state_json_hc_only_where_shown (t : T) : IO Unit := do
 
 def tests : List Case := [
   ("test_auto_spawn_once_within_cap", test_auto_spawn_once_within_cap),
+  ("test_limits_all_or_nothing", test_limits_all_or_nothing),
+  ("test_reserved_and_bad_names_refused", test_reserved_and_bad_names_refused),
   ("test_auto_spawn_model_order", test_auto_spawn_model_order),
   ("test_auto_spawn_failure_backs_off", test_auto_spawn_failure_backs_off),
   ("test_auto_spawn_backoff_name_used_once", test_auto_spawn_backoff_name_used_once),

@@ -192,6 +192,44 @@ end GitRef
 #guard (GitRef.parse? "a.").isNone
 #guard (GitRef.parse? "@").isNone
 
+/-- A name's characters: 1-32 of a-z 0-9 - _. -/
+private def nameChars (s : String) : Bool :=
+  0 < s.length && s.length ≤ 32 && s.all fun c => ('a' ≤ c && c ≤ 'z') || c.isDigit || c == '-' || c == '_'
+
+/-- An agent's name: 1-32 of a-z 0-9 - _, and none of the names the tables use for something else (`human` the user,
+`swarm` the system sender, `nil` no owner). No `@` or `#`, so never a message's `@all`/`@<swarm>` or a task's note box. -/
+structure AgentName where private mk ::
+  val : String
+deriving DecidableEq, Repr
+
+/-- `s` as an agent's name, if it is one. -/
+def AgentName.parse? (s : String) : Option AgentName :=
+  if nameChars s && !["human", "swarm", "nil"].contains s then some ⟨s⟩ else none
+
+/-- Why `s` is not an agent's name. -/
+def AgentName.why (s : String) : String :=
+  if s == "human" then "'human' is the user's name (the panel acts as it); an agent can't take it"
+  else if s == "swarm" then "'swarm' is the system's name (its messages come from it); an agent can't take it"
+  else if s == "nil" then "'nil' means no owner; an agent can't take it"
+  else s!"not an agent name: '{s}' (1-32 of a-z 0-9 - _)"
+
+/-- A swarm's name: 1-32 of a-z 0-9 - _, not `all` (`@all` is the sender's swarm). -/
+structure SwarmName where private mk ::
+  val : String
+deriving DecidableEq, Repr
+
+/-- `s` as a swarm's name, if it is one. -/
+def SwarmName.parse? (s : String) : Option SwarmName :=
+  if nameChars s && s != "all" then some ⟨s⟩ else none
+
+#guard (AgentName.parse? "gl-14").isSome
+#guard (AgentName.parse? "t-comms2").isSome
+#guard (AgentName.parse? "a_b").isSome
+#guard ["human", "swarm", "nil", "", "@all", "#5", "a b", "a/b", "A", "a.b", String.ofList (List.replicate 33 'a')].all
+  fun s => (AgentName.parse? s).isNone
+#guard (SwarmName.parse? "gl").isSome
+#guard ["all", "", "@x", "#5", "a b", "a/b", "X"].all fun s => (SwarmName.parse? s).isNone
+
 /-- util.shquote: as is when only `[%w@%%+=:,./_-]`, else single-quoted. -/
 def shquote (s : String) : String :=
   if s != "" && s.toList.all (fun c => c.isAlphanum || "@%+=:,./_-".contains c) then s

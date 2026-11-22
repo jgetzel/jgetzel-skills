@@ -138,8 +138,7 @@ def reapLock (l : Lock) (t now : Int) (db : Db) : Db × Bool :=
 what it held is released, everyone is told; true when it ended it. -/
 def reapGone (n h : String) (t : Int) (db : Db) : Db × Bool :=
   if (db.agent n).any fun x => x.hc == some h && x.ended.isNone then
-    let db := db.setAgent n ({ · with ended := some t, status := some "ended" })
-    let db := release db n
+    let db := endRow db n t
     let db := say db t "@all" s!"{n} is gone; its tasks and locks are released." false "system"
     (db.log t (some n) "reap" none (some "agent gone"), true)
   else (db, false)
@@ -444,7 +443,7 @@ def wakeStay (n : String) (t : Int) : m Bool := do
         | some detail =>
           let db := db.setAgent n ({ · with stay := none })
           let db := db.log now (some n) "stay-end" (some n) (some s)
-          let db := db.log now (some n) "stay-wake" (some c) (some detail)
+          let db := db.log now (some n) "stay-wake" (some c.text) (some detail)
           let db := db.tasks.foldl (fun db r =>
             if r.owner == some n && r.state == .claimed then db.set r.id ({ · with lease_until := some (now + 7200) }) else db) db
           (say db now n s!"Your wait is over: {c} ({detail})" true "system", true)
