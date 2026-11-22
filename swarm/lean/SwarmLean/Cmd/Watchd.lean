@@ -136,7 +136,7 @@ def runActs (acts : List Act) : m Unit := do
     match x with
     | .send n h text mark once => go n h mark once (Msgs.deliverTo n h text)
     | .type n h text mark once => go n h mark once (Msgs.typeLine h text)
-    | .endAgent a => discard <| Lifecycle.endAgent a false none
+    | .endAgent a after => if ← Lifecycle.endAgent a false none then Store.run after
     | .kill h =>
       discard <| Proc.output ["hc", "kill", h] none []
       discard <| Proc.output ["hc", "rm", h] none []
@@ -537,7 +537,7 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
   let some c := comms | return errs
   Scoped.within hs do
     let mut errs := errs
-    errs ← pass errs (pre ++ "lifecycle: ") (lifecycle t c terms opts)
+    errs ← pass errs (pre ++ "lifecycle: ") (lifecycle t c terms opts runActs)
     errs ← pass errs (pre ++ "quiet: ") (quiet t c)
     errs ← pass errs (pre ++ "hung: ") (hung t c terms opts.interval)
     errs ← pass errs (pre ++ "comms inbox: ") (commsInbox t c terms)
