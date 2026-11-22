@@ -133,6 +133,23 @@ theorem v_terminal_mk {m : Type → Type} (f : Lifecycle.Reads m) u j w :
     cases x <;> simp [mkF, term]
   rw [this, Bool.false_or]
 
+/-- `v_terminal_mk` with `mkF` unfolded, for the simp sets of `leaf`. -/
+theorem v_terminal_t (c l u j : Bool) (p : Nat) (po al : Bool) (b : Nat) :
+    Decide.Check.val (row a) t (term x) hasTerms (Decide.Facts.mk true c l u j p po al b) .terminal =
+      busyL a hasTerms x := by
+  simp only [Decide.Check.val]
+  rw [busy_eq]
+  have : (term x).any (fun x => Decide.nz x.cwd && !true) = false := by cases x <;> simp [term]
+  rw [this, Bool.false_or]
+
+/-- `v_terminal_t` with `busyL` unfolded, as the leaves' goals hold it. -/
+theorem v_terminal_u (c l u j : Bool) (p : Nat) (po al : Bool) (b : Nat) :
+    Decide.Check.val (row a) t (term x) hasTerms (Decide.Facts.mk true c l u j p po al b) .terminal =
+      ((py a.hc).isSome && hasTerms && match x with
+        | none => true
+        | some x => x.status != some "idle" && x.status != some "done") := by
+  rw [v_terminal_t]; rfl
+
 theorem v_terminal_none (h : ((x.bind fun x => x.cwd).bind fun x => py (some x)) = none) :
     Decide.Check.val (row a) t (term x) hasTerms F .terminal =
     (busyL a hasTerms x) := by
@@ -247,9 +264,10 @@ macro "vneg" hv:term:max : tactic => `(tactic| first
 macro "vpos" hv:term:max : tactic => `(tactic| first
   | (rw [v_stay]; exact ‹_›) | (rw [v_idle]; exact ‹_›) | (rw [$hv:term]; exact ‹_›) | exact ‹_›)
 
+set_option hygiene false in
 /-- One leaf of fate's run: the result is `pure`, its facts `mkF f o u j w`, the verdict by lemma `fr`. -/
 macro "leaf" fr:ident o:term:max u:term:max j:term:max w:term:max hv:term:max : tactic => `(tactic|
-  exact Sat.pure ⟨mkF _ $o $u $j $w, ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, by
+  exact Sat.pure ⟨Decide.Facts.mk $o f.claims f.locks (Option.isSome ($u : Option (String × List String))) (Option.isSome ($j : Option Machine.Ps)) f.pool f.passedOver $w f.below, ⟨rfl, rfl, rfl, rfl, rfl⟩, rfl, rfl, by
     rw [Decide.fateRec, $fr:ident] <;> first | vneg $hv | vpos $hv | skip
     all_goals try simp only [v_context, v_waiter, mkF]
     all_goals first | rfl | (simp_all [verdictStr, busyL] <;> rfl) | (simp_all [verdictStr, busyL] <;> split <;> rfl), by
@@ -272,20 +290,20 @@ theorem fateHeard_rec {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) 
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
   · leaf fr_idle true none none false True.intro
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
-  · leaf fr_terminal true none none false (v_terminal_mk a t x hasTerms)
+  · leaf fr_terminal true none none false (v_terminal_t a t x hasTerms)
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
-  · leaf fr_task true none none false (v_terminal_mk a t x hasTerms)
+  · leaf fr_task true none none false (v_terminal_t a t x hasTerms)
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
-  · leaf fr_lock true none none false (v_terminal_mk a t x hasTerms)
+  · leaf fr_lock true none none false (v_terminal_t a t x hasTerms)
   refine Sat.any fun u => ?_
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
-  · leaf fr_unlanded true u none false (v_terminal_mk a t x hasTerms)
+  · leaf fr_unlanded true u none false (v_terminal_t a t x hasTerms)
   refine Sat.any fun j => ?_
   refine ite_sat (fun _ => ?_) (fun _ => ?_)
-  · leaf fr_job true u j false (v_terminal_mk a t x hasTerms)
+  · leaf fr_job true u j false (v_terminal_t a t x hasTerms)
   cases hw : a.waiter with
-  | none => simp only; leaf fr_last true u j false (v_terminal_mk a t x hasTerms)
-  | some p => simp only; refine Sat.any fun w => ?_; leaf fr_last true u j w (v_terminal_mk a t x hasTerms)
+  | none => simp only; leaf fr_last true u j false (v_terminal_t a t x hasTerms)
+  | some p => simp only; refine Sat.any fun w => ?_; leaf fr_last true u j w (v_terminal_t a t x hasTerms)
 
 theorem verdictStr_end {v : Decide.Verdict} (h : verdictStr v = some "end" ∨ verdictStr v = some "reuse") :
     v = .end_ ∨ v = .reuse := by

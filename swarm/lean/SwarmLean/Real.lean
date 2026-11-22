@@ -87,16 +87,17 @@ def theConn : App Conn := do
 /-- The repo of the working directory: its main worktree (the first `git worktree list` names), resolved; `''` outside
 one. -/
 def repoHere : IO String := do
-  try
-    let r ← IO.Process.output { cmd := "git", args := #["worktree", "list", "--porcelain"] }
-    if r.exitCode ≠ 0 || !r.stdout.startsWith "worktree " then return ""
-    let p := String.ofList ((r.stdout.drop 9).toString.toList.takeWhile (· ≠ '\n'))
-    try return (← IO.FS.realPath p).toString catch _ => return p
-  catch _ => return ""
+  let out ← try
+      let r ← IO.Process.output { cmd := "git", args := #["worktree", "list", "--porcelain"] }
+      pure (if r.exitCode == 0 then r.stdout else "")
+    catch _ => pure ""
+  if !out.startsWith "worktree " then return ""
+  let p := String.ofList ((out.drop 9).toString.toList.takeWhile (· ≠ '\n'))
+  try return (← IO.FS.realPath p).toString catch _ => return p
 
 /-- The first column of each row, as text. -/
-def texts (rows : Array (Array Val)) : List String :=
-  rows.toList.filterMap fun r => match r[0]? with | some (.text s) => some s | _ => none
+def texts (rows : Array (Array Sqlite.Val)) : List String :=
+  rows.toList.filterMap fun (r : Array Sqlite.Val) => match r[0]? with | some (Sqlite.Val.text s) => some s | _ => none
 
 /-- The swarms not ended, by name. -/
 def liveSwarms (c : Conn) : IO (List String) := return texts (← c.query "select name from swarm where ended is null order by name")
@@ -169,8 +170,8 @@ def loadMetas (c : Conn) (s : String) : IO (List Meta) := do
   let ks := ", ".intercalate (machineKeys.map fun k => s!"'{k}'")
   let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end" [.text s]
   let cm ← c.query "select comms from swarm where name=? and comms is not null" [.text s]
-  let cms : List Meta := match cm[0]?.bind (·[0]?) with
-    | some (.text v) => [{ k := "comms", v := some v }]
+  let cms : List Meta := match (cm[0]? : Option (Array Sqlite.Val)).bind (·[0]?) with
+    | some (Sqlite.Val.text v) => [{ k := "comms", v := some v }]
     | _ => []
   return sortRows (cms ++ ms.filter (·.k != "comms"))
 
@@ -197,7 +198,7 @@ def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
 /-- A write-back statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
 column, and meta `comms` is the swarm row's. A new agent row replaces one of that name in another swarm: the agent
 moves (names are the machine's). -/
-def scoped1 (sc : Scope) : Stmt → Stmt
+def scopeStmt (sc : Scope) : Stmt → Stmt
   | .ins "event" cs vs => .ins "event" (cs ++ ["swarm", "repo"]) (vs ++ [.text sc.swarm, .text sc.repo])
   | .ins "meta" cs vs => match vs with
     | [.text "comms", v] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [v]
@@ -217,13 +218,13 @@ def scoped1 (sc : Scope) : Stmt → Stmt
   | .del t ks k => if ["lock", "ci", "workspace"].contains t then .del t (ks ++ ["repo"]) (k ++ [.text sc.repo]) else .del t ks k
   | st => st
 
-/-- `scoped1`, an agent's insert after a delete of its name. -/
-def scoped (sc : Scope) : Stmt → List Stmt
+/-- `scopeStmt`, an agent's insert after a delete of its name. -/
+def scopeStmts (sc : Scope) : Stmt → List Stmt
   | .ins "agent" cs vs => [.del "agent" ["name"] (vs.take 1), .ins "agent" (cs ++ ["swarm"]) (vs ++ [.text sc.swarm])]
-  | st => [scoped1 sc st]
+  | st => [scopeStmt sc st]
 
 /-- Writes every table of `new` over what `old` loaded (`dbPlan`), in scope `sc`. -/
-def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := runStmts c ((dbPlan old new).flatMap (scoped sc))
+def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := runStmts c ((dbPlan old new).flatMap (scopeStmts sc))
 
 /-- `act` between `begin` and COMMIT; any error rolls back. -/
 def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do

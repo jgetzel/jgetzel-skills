@@ -13,6 +13,9 @@ open Lean (Json toJson)
 def one (c : Conn) (sql : String) (ps : List Val := []) : IO (Option Val) := do
   return (← c.query sql ps)[0]?.bind (·[0]?)
 
+/-- The fixture's swarm and repo. -/
+def sc (t : T) : Scope := { swarm := "t", repo := t.repo }
+
 def test_values_and_params (t : T) : IO Unit := do
   Shim.setenv "SWARM_DB" (t.d ++ "/sub/swarm.db")
   let c ← connect
@@ -41,12 +44,12 @@ def test_txn_rolls_back_on_error (t : T) : IO Unit := do
   -- the trigger fails `boom`'s
   discard <| c.exec "create trigger nope before insert on meta when new.k='boom' begin select raise(abort, 'boom'); end"
   let r ← try
-      sqliteTxn c [.meta] fun db => ({ db with metas := db.metas ++ [{ k := "gone", v := some "1" }, { k := "boom" }] }, ())
+      sqliteTxn c (sc t) [.meta] fun db => ({ db with metas := db.metas ++ [{ k := "gone", v := some "1" }, { k := "boom" }] }, ())
       pure false
     catch _ => pure true
   eq r true
   eq ((← one c "select count(*) n from meta where k like 'gone%'") == some (.int 0)) true
-  eq (← sqliteTxn c [] fun db => (db, 7)) 7
+  eq (← sqliteTxn c (sc t) [] fun db => (db, 7)) 7
 
 def test_after_migration_columns_and_log (t : T) : IO Unit := do
   Shim.setenv "SWARM_DB" t.db
@@ -60,7 +63,7 @@ def test_after_migration_columns_and_log (t : T) : IO Unit := do
   for (tb, col) in columns do
     has (← tableCols c tb) ((col.splitOn " ").headD col) s!"{tb}.{col}"
   let now := (← Sqlite.now).toNat
-  sqliteTxn c [] fun db => (db.log now (some "a") "join" none none, ())
+  sqliteTxn c (sc t) [] fun db => (db.log now (some "a") "join" none none, ())
   let ev ← t.q1 "select * from event"
   eq (ev.f "agent") "a"; eq (ev.f "kind") "join"; eq (ev.f "path") Json.null
   eq (decide ((ev.f "ts").i ≥ now - 5)) true
@@ -81,7 +84,10 @@ def test_connect_eight_at_once (t : T) : IO Unit := do
                                           stdout := .null, stderr := .piped, cwd := some t.repo })
     for ch in cs do
       let err ← ch.stderr.readToEnd
-      eq (← ch.wait).toNat 0 s!"db.connect failed alongside others: {err}"
+      -- a fresh db has no swarm: `board` refuses after connecting
+      let code ← ch.wait
+      unless code == 0 || (code == 1 && subIn err "no swarm on this machine") do
+        fail s!"db.connect failed alongside others: {err}"
 
 def tests : List Case := [
   ("test_values_and_params", test_values_and_params),

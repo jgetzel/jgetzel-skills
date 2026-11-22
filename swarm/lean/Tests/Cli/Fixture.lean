@@ -356,6 +356,9 @@ def liveHc (t : T) (addrs : List String) : IO Unit := do
   let ts := addrs.map fun a => Json.mkObj [("address", Json.str a), ("state", "live")]
   discard <| t.fake "hc" s!"#!/bin/sh\n[ \"$1\" = ls ] && echo '{(Json.mkObj [("terminals", toJson ts)]).compress}' || echo '\{}'\n"
 
+/-- What the store sees as the fixture's swarm `t` in its repo. -/
+def scope (t : T) : Scope := { swarm := "t", repo := t.repo }
+
 /-- A fresh fixture. -/
 def new : IO T := do
   let tmp := (← IO.getEnv "TMPDIR").getD "/tmp"
@@ -387,6 +390,11 @@ def new : IO T := do
   t.q_ "insert into swarm(name, created) values('t', 0)"
   t.q_ "insert into repo(path, base) values(?, 'main')" [.text t.repo]
   t.q_ "insert into swarm_repo(swarm, repo) values('t', ?)" [.text t.repo]
+  -- rows a test writes by hand are swarm t's and the repo's, as the store would write them
+  for tb in ["agent", "event"] do
+    t.q_ s!"create trigger {tb}_in_t after insert on {tb} when new.swarm is null begin update {tb} set swarm='t' where rowid=new.rowid; end"
+  for tb in ["lock", "ci", "workspace"] do
+    t.q_ s!"create trigger {tb}_in_repo after insert on {tb} when new.repo = '' begin update {tb} set repo='{t.repo}' where rowid=new.rowid; end"
   return t
 
 /-- Runs the deferred actions (last first); removes the dir when the test passed. -/

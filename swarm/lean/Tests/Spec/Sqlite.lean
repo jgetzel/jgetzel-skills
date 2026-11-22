@@ -35,6 +35,9 @@ def int (c : Conn) (sql : String) : IO Int := do
   | some (.text s) => pure (s.toInt?.getD 0)
   | _ => fail s!"{sql}: no number"
 
+/-- The machine's scope with no swarm: every meta key is scope `''`, as the raw statements here write them. -/
+def sc0 : Scope := { swarm := "", repo := "" }
+
 def sumSql : String := "select coalesce(sum(cast(v as integer)),0)*100 + count(*) from meta where k like 'acct.%'"
 
 /-- Prints a line and flushes it: the parent waits for it. -/
@@ -55,7 +58,7 @@ where go (role : String) (args : List String) : IO UInt32 := do
   | "tx", rest =>
     let both := rest == ["auto"]
     for _ in [0:K] do
-      sqliteTxn c [.«meta»] fun db => let v := getI db "tx"; ((setI db "tx" (v + 1)).log 0 none "seen" (some (toString v)) none, ())
+      sqliteTxn c sc0 [.«meta»] fun db => let v := getI db "tx"; ((setI db "tx" (v + 1)).log 0 none "seen" (some (toString v)) none, ())
       if both then discard <| c.exec "update meta set v=cast(v as integer)+1 where k='auto'"
   | "auto", [] =>
     for _ in [0:K] do discard <| c.exec "update meta set v=cast(v as integer)+1 where k='auto'"
@@ -65,7 +68,7 @@ where go (role : String) (args : List String) : IO UInt32 := do
       let (a, g1) := randNat g 1 8
       let (b, g2) := randNat g1 1 8
       g := g2
-      sqliteTxn c [.«meta»] fun db =>
+      sqliteTxn c sc0 [.«meta»] fun db =>
         let db := setI db s!"acct.{a}" (getI db s!"acct.{a}" - 1)
         (setI db s!"acct.{b}" (getI db s!"acct.{b}" + 1), ())
   | "sum", [] =>
@@ -144,10 +147,10 @@ def sqlite_begin (t : T) : IO Unit := do
   pragma200 c
   holding t "hold" do
     let ms ← busy "sqlite_begin: waits out busy_timeout, then SQLITE_BUSY" <|
-      sqliteTxn c [.«meta»] fun db => (setI db "seen.-1" (-1), ())
+      sqliteTxn c sc0 [.«meta»] fun db => (setI db "seen.-1" (-1), ())
     eq (decide (ms ≥ 190)) true "sqlite_begin: it waits out busy_timeout"
   discard <| c.query "pragma busy_timeout=10000"
-  sqliteTxn c [] fun db => (db, ())  -- no transaction was left open (else: cannot start a transaction within a transaction)
+  sqliteTxn c sc0 [] fun db => (db, ())  -- no transaction was left open (else: cannot start a transaction within a transaction)
   eq (← int c "select count(*) from meta where k='seen.-1'") 0 "sqlite_begin: a BUSY changes nothing"
 
 /-- Concurrent writes outside a transaction lose no update; one that can't get the lock waits out busy_timeout, then
@@ -192,7 +195,7 @@ def sqlite_commit (t : T) : IO Unit := do
   pragma200 c
   holding t "readhold" do
     let t0 ← IO.monoMsNow
-    sqliteTxn c [.«meta»] fun db => (setI db "auto" 0, ())
+    sqliteTxn c sc0 [.«meta»] fun db => (setI db "auto" 0, ())
     eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_commit: a commit doesn't wait for a reader (WAL)"
 
 /-- A transaction whose process is killed (SIGKILL) in it, or whose Store.txn fails, leaves nothing and frees the lock. -/
@@ -203,10 +206,10 @@ def sqlite_rollback (t : T) : IO Unit := do
   discard <| t.exec ["kill", "-KILL", toString w.pid]
   discard <| w.wait
   discard <| c.query "pragma busy_timeout=1000"
-  sqliteTxn c [] fun db => (db, ())  -- the lock is free
+  sqliteTxn c sc0 [] fun db => (db, ())  -- the lock is free
   -- the write-back fails at the second row: the first is rolled back with it
   discard <| c.exec "create trigger nope before insert on meta when new.k='boom' begin select raise(abort, 'boom'); end"
-  let failed ← try sqliteTxn c [.«meta»] (fun db => (setI (setI db "seen.-8" (-8)) "boom" 0, ())); pure false
+  let failed ← try sqliteTxn c sc0 [.«meta»] (fun db => (setI (setI db "seen.-8" (-8)) "boom" 0, ())); pure false
     catch _ => pure true
   eq failed true "sqlite_rollback: the failing Store.txn fails"
   eq (← int c "select count(*) from meta where k in ('seen.-7', 'seen.-8')") 0 "sqlite_rollback: nothing of either is left"
@@ -235,14 +238,14 @@ def sqlite_version (t : T) : IO Unit := do
   -- no fsync of the WAL under the write lock: a commit's wait on a busy disk held every other writer
   eq (toString (repr (← b.query "pragma synchronous"))) (toString (repr (#[#[Sqlite.Val.int 1]] : Array (Array Sqlite.Val)))) "connect: synchronous=normal"
   let v ← inTxn a "begin" (dataVersion a)
-  sqliteTxn a [.«meta»] fun db => (setI db "tx" 1, ())
+  sqliteTxn a sc0 [.«meta»] fun db => (setI db "tx" 1, ())
   eq ((← inTxn a "begin immediate" (dataVersion a)) == v) true "sqlite_version: unchanged by this connection's commits"
   discard <| b.exec "update meta set v='2' where k='tx'"
   eq ((← inTxn a "begin immediate" (dataVersion a)) == v) false "sqlite_version: changed by another connection's commit"
   pragma200 a
   holding t "hold" do
     let t0 ← IO.monoMsNow
-    eq (← sqliteTxn a [.«meta»] fun db => (db, getI db "tx")) 2 "sqlite_version: a read-only Store.txn reads the last commit"
+    eq (← sqliteTxn a sc0 [.«meta»] fun db => (db, getI db "tx")) 2 "sqlite_version: a read-only Store.txn reads the last commit"
     eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_version: a read-only Store.txn doesn't wait on the writer"
 
 /-- The rows `sql` returns, each cell as JSON. -/

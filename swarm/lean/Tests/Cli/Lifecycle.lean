@@ -1274,22 +1274,10 @@ def test_after_dependency (t : T) : IO Unit := do
   t.sw_ "a" ["task", "claim", "1"]; t.sw_ "a" ["task", "done", "1", "--evidence", "e"]
   t.sw_ "a" ["task", "claim", "2"]
 
-def test_deps_migration (t : T) : IO Unit := do
-  -- a task.after from before task.deps
-  let h ← SwarmLean.Sqlite.Conn.open t.db false
-  h.script ("create table task(id integer primary key, title text, body text, state text default 'open', owner text,"
-    ++ " lease_until int, created_by text, evidence text, after int);"
-    ++ "insert into task(title) values('one'); insert into task(title,after) values('two',1);")
-  t.agent "a"
-  let rows ← t.q "select deps from task"
-  eq [rows[0]!.f "deps", rows[1]!.f "deps"] (json% [null, "1"])
-  for c in ← t.q "pragma table_info(task)" do ok (c.f "name" != "after") "after column left"
-  has (← t.sw "a" ["board"]).stdout "after #1  two"
-
 def poolIds (t : T) : IO (List Nat) := do
   Shim.setenv "SWARM_DB" t.db
   let c ← connect
-  let db ← loadDb c [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  let db ← loadDb c t.scope [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
   return (SwarmLean.Tasks.pool db).map (·.id)
 
 def test_priority_orders_pool_and_board (t : T) : IO Unit := do
@@ -1643,7 +1631,6 @@ def tests : List Case := [
   ("test_hc_blocked_marks_task", test_hc_blocked_marks_task),
   ("test_hc_no_status_after_spawn_blocks", test_hc_no_status_after_spawn_blocks),
   ("test_after_dependency", test_after_dependency),
-  ("test_deps_migration", test_deps_migration),
   ("test_priority_orders_pool_and_board", test_priority_orders_pool_and_board),
   ("test_deps_list_holds_until_last_done", test_deps_list_holds_until_last_done),
   ("test_release_after_leaves_pool", test_release_after_leaves_pool),

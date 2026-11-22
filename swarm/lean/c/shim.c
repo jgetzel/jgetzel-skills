@@ -272,8 +272,9 @@ LEAN_EXPORT lean_obj_res swarm_uds_send(b_lean_obj_arg path, b_lean_obj_arg data
   sa.sun_family = AF_UNIX;
   if (strlen(p) >= sizeof sa.sun_path) return lean_io_result_mk_ok(lean_mk_string("socket path too long"));
   strcpy(sa.sun_path, p);
-  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);  /* SOCK_CLOEXEC is Linux's: set the flag after */
   if (fd < 0) { snprintf(err, sizeof err, "socket: %s", strerror(errno)); return lean_io_result_mk_ok(lean_mk_string(err)); }
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
   struct timeval tv = {2, 0};
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
   if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {

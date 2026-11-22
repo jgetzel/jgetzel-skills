@@ -500,7 +500,7 @@ def USAGE : String := "Usage: swarm-report [-h] [--db <db>] [--since <since>] [-
 def HELP : String := USAGE ++ "
 
 Evidence for a swarm retro, read from the swarm db: who did what, where time and attention went.
-Default db: <git-common-dir>/swarm/swarm.db (or $SWARM_DB). Sections: agents, tasks (claim -> done time, evidence), event counts per agent (conflicts, shared trees, reaps, compactions, pushes, ci-red are the friction signals), messages, locks. Read-only.
+Default db: the machine's, $XDG_STATE_HOME/swarm/swarm.db (or $SWARM_DB). Sections: agents, tasks (claim -> done time, evidence), event counts per agent (conflicts, shared trees, reaps, compactions, pushes, ci-red are the friction signals), messages, locks. Read-only.
 
 Options:
    -h, --help            Show this help message and exit.
