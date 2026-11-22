@@ -273,7 +273,9 @@ def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option Str
       if wtOf a != wtOf b && bnames.lookup a == bnames.lookup b && (snapOf b).files.any (snapOf a).files.contains then
         cand := cand ++ [(a, b)]
   let db ← Store.txn [.conflict, .pairkey] fun db =>
-    let db := { db with conflicts := db.conflicts.filter fun r => cand.contains (r.a, r.b) }
+    -- the conflict table is the machine's: only pairs of these agents are this pass's to drop
+    let mine (n : String) : Bool := (wts.lookup n).isSome
+    let db := { db with conflicts := db.conflicts.filter fun r => cand.contains (r.a, r.b) || !(mine r.a || mine r.b) }
     (db, db)
   -- the git work for each candidate pair whose key changed: none (stale), some none (git failed), some (some merge)
   let mut ontos : List (String × Option String) := []

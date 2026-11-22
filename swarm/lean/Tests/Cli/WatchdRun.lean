@@ -140,6 +140,20 @@ def test_one_watchd_serves_every_swarm (t : T) : IO Unit := do
   let rows ← c.query "select count(*) from swarm"
   eq (match rows[0]?.bind (·[0]?) with | some (.int n) => n | _ => -1) 2
 
+-- review of #75: swarm t's reap read only t's agents and reopened a lapsed claim of u's live agent x
+def test_watchd_leaves_another_swarms_claim (t : T) : IO Unit := do
+  t.fakes
+  t.setHc [json% {"address": "t5"}]
+  t.sw_ "zz" ["new", "u"]
+  t.sw_ "a" ["join"] { env := [("SWARM", some "t")] }
+  t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
+  t.q_ "update agent set hc='t5', status='working' where name='x'"
+  t.q_ "insert into task(title, state, owner, lease_until, created_by) values('w', 'claimed', 'x', 1, 'x')"
+  t.sw_ "a" ["watchd", "--once"]
+  let r ← t.q1 "select state, owner from task where title='w'"
+  eq (r.f "state") "claimed"
+  eq (r.f "owner") "x"
+
 def test_machine_note_and_patterns (t : T) : IO Unit := do
   let pr ← fakeProc t
   discard <| t.hook "a" "session"; discard <| t.hook "b" "session"
@@ -510,6 +524,7 @@ def test_run_remote_job_telemetry (t : T) : IO Unit := do
 def tests : List Case := [
   ("test_one_watchd", test_one_watchd),
   ("test_one_watchd_serves_every_swarm", test_one_watchd_serves_every_swarm),
+  ("test_watchd_leaves_another_swarms_claim", test_watchd_leaves_another_swarms_claim),
   ("test_machine_note_and_patterns", test_machine_note_and_patterns),
   ("test_pressure_edge_oom_and_orphans", test_pressure_edge_oom_and_orphans),
   ("test_machine_line_at_decisions", test_machine_line_at_decisions),

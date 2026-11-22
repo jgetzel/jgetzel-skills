@@ -405,9 +405,10 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
   let live := terms.map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none
   let hs : Scope := { swarm := sw.name, repo := home }
   let comms := sw.comms
+  let foreign := (p.agents.filter (·.2.1 != sw.name)).map (·.1)
   let (errs, opts) ← Scoped.within hs do
     let mut errs : List String := []
-    errs ← pass errs (pre ++ "reap: ") (discard <| reap live (← Clock.now) comms)
+    errs ← pass errs (pre ++ "reap: ") (discard <| reap live (← Clock.now) comms foreign)
     let mut opts ← match ← Guard.guard (knobs opts) with
       | .ok o => pure o
       | .error e => errs := errs ++ [pre ++ "knobs: " ++ e]; pure opts

@@ -154,14 +154,16 @@ def real (p : String) : m String := Workspaces.real p
 
 /-- Reopens expired task leases whose owner neither keeps them for its work nor lives (`keeps`, `lives`): a kept one
 is told to its owner, then maybe the communicator (`leaseLate`); a hung owner's reopened one is told to the
-communicator. Drops expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
+communicator. A claim of an agent of another swarm (`foreign`) is left to that swarm's reap. Drops expired locks, ends the agents whose bound terminal hc no longer lists and kills the terminal of an ended row hc still lists (`live`:
 none skips both) (watchd.reap). -/
-def reap (live : Option (List String)) (t : Int) (comms : Option String) : m (List String) := do
+def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreign : List String := []) :
+    m (List String) := do
   let db ← Store.txn [.task, .agent, .event] fun db => (db, db)
   let mut out := []
   let mut bg : Option (List (String × Machine.Ps)) := none
   for r in db.tasks.filter fun r => r.state = .claimed && r.lease_until.any (· < t) do
     let o := r.owner.bind db.agent
+    if o.isNone && r.owner.any foreign.contains then continue
     if let some a := o then
       if a.ended.isNone && a.status == some "idle" && bg.isNone then bg := some (Machine.bgAgents db.agents (← Machine.procs))
     let hasBg := match o, bg with
