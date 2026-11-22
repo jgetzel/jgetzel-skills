@@ -245,7 +245,7 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
   let mut cache := notLanded
   for (wt, br) in wts do
     if wt == main || (← Sys.kind wt true) != .dir || used.any (inside · wt) || pcwd.any (inside · wt) ||
-        !(dir.all (inside wt)) || !(made.all (·.contains wt)) then continue
+        (!(dir.all (inside wt)) || !(made.all (·.contains wt))) then continue
     let gd ← git ["-C", wt, "rev-parse", "--absolute-git-dir"]
     let last := max (max 0 ((← Sys.mtime wt).getD 0)) ((← Sys.mtime (joinPath (joinPath ((py gd).getD wt) "logs") "HEAD")).getD 0)
     -- no index.lock: an agent committing in wt meanwhile must not fail (#127)
