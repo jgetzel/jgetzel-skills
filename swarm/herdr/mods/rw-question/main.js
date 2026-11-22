@@ -1,7 +1,7 @@
 // The rework's "an agent needs you" (swarm/herdr/UI-SPEC.md, slice 8): an agent's question, as a mod pane above its
 // terminal (the rail's row and the swarm tab's Open its terminal open it), with an answer field and under it the
 // context: its task, why watchd keeps it, its context size and the files it edits. It closes once the question is answered,
-// here or anywhere. props: {folder, machine, agent}.
+// here or anywhere. props: {swarm, folder, machine, agent}: the agent's swarm (its name), a repo of it, its machine.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -9,9 +9,10 @@ import { panes, exec, theme, run, appHome, props, settings, watchFolder } from "
 import { answerArgs, dur, line, overOf } from "./tree.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
-const swarm = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
+const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000; // as rw-swarm
 const NOTE = 325000, CTX = 400000; // swarm's context marks: told to compact, watchd compacts
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
@@ -26,19 +27,19 @@ export default class Question extends View {
     cx.timer.every(POLL, (cx) => { if (this.due()) this.refresh(cx); });
   }
 
-  where() { const p = props() ?? {}; return { cwd: p.folder, on: p.machine ?? null, name: p.agent }; }
+  where() { const p = props() ?? {}; return { cwd: p.folder ?? null, on: p.machine ?? null, name: p.agent, swarm: p.swarm ?? null }; }
   due() {
     const age = Date.now() - (this.at ?? 0);
     // never more often than 3× as long as a read takes (a big board's overview takes seconds)
     return age > 3 * (this.took ?? 0) && (this.dirty || age > (this.where().on ? REMOTE_POLL : this.watching ? QUIET_POLL : POLL));
   }
   refresh(cx) {
-    const { cwd, on, name } = this.where();
-    if (this.loading || this.busy || !cwd || !name) return;
+    const { cwd, on, name, swarm: sw } = this.where();
+    if (this.loading || this.busy || !(cwd || sw) || !name) return;
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", "overview", `--agent=${name}`]);
+        const r = await swarm(cwd, on, ["state", "--json", "--view", "overview", `--agent=${name}`], sw);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
@@ -72,11 +73,11 @@ export default class Question extends View {
     for (const p of ps.filter((p) => tab && p.tab === tab && p.mod === "rw-question")) run("pane.close", { pane: p.pane });
   }
   act(cx, args, ok) {
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.busy = true; this.flash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, args);
+        const r = await swarm(cwd, on, args, sw);
         if (r.code === 0) ok?.(); else this.flash = [line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`, true];
       } catch (e) { this.flash = [line(e?.message ?? e, 300), true]; }
       this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();

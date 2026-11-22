@@ -51,15 +51,24 @@ const uniq = (xs, ...keys) => {
     return true;
   });
 };
-const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, ended: Nx });
-const sumAgent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, hung: Bx });
+const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, landing: Nx, ended: Nx });
+const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, status: Tx, role: Tx, model: Tx, stay: Tx, task: Ox({ id: Nx, title: Tx, state: Tx }),
+  idle_s: Nx, hung: Bx });
 const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx });
-const summary = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, space: Tx, rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
-  needs: Lx(need, 5000), ci: Ox({ status: Tx, conclusion: Tx }), away: Ax });
-// `--view summary`: null unless an object.
+const summary = Ox({ name: Tx, active: Bx, comms: Tx, comms_hc: Tx, repos: Lx(Tx, 200), folder: Tx, created: Nx, ended: Nx,
+  staffing: Ox({ live: Nx, min: Nx, max: Nx, held: Tx, queue_only: Bx }), rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
+  needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, qpos: Nx, priority: Nx }), 50), ready: Nx,
+  ci: Ox({ repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx }), away: Ax });
+// One swarm of `swarm state --json --view swarms` (sw-global §5): null unless an object with a name. `swarm` is its name,
+// what the views and the CLI's --swarm go by; `folder` an absolute repo of it (the cwd its commands run in), else null.
 export function sumOf(j) {
   const s = summary(j);
-  if (s) s.agents = uniq(s.agents.filter((a) => a.name), "name", "hc");
+  if (!s?.name) return null;
+  s.swarm = s.name;
+  s.agents = uniq(s.agents.filter((a) => a.name), "name", "hc");
+  s.repos = s.repos.filter((r) => r.startsWith("/"));
+  if (!s.folder?.startsWith("/")) s.folder = s.repos[0] ?? null;
+  if (s.ci && !/^https:\/\/[^\s]+$/.test(s.ci.url ?? "")) s.ci.url = null;
   return s;
 }
 const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx }), idle_s: Nx, stay_sign: Tx, stay: Tx, ctx_tokens: Nx,
@@ -98,8 +107,10 @@ export function overOf(j) {
   for (const r of s?.ci?.runs ?? []) if (!/^https:\/\/[^\s]+$/.test(r.url ?? "")) r.url = null;
   return s;
 }
-// `--view swarms`' registry entries: a db and an absolute folder each.
-export const swarmsOf = (j) => Lx(Ox({ db: Tx, folder: Tx }), 500)(j?.swarms).filter((w) => w.db && w.folder?.startsWith("/"));
+// `swarm state --json --view swarms`: the machine's swarms (sumOf each), unique by name; `db` the machine's db.
+export const swarmsOf = (j) => uniq(Lx(sumOf, 500)(j?.swarms), "name").map((s) => ({ ...s, db: Tx(j?.db) }));
+// The swarm CLI's arguments for swarm `name` (sw-global §2: a command names its swarm, never its folder).
+export const swarmArgs = (name, args) => (name ? ["--swarm", name, ...args] : args);
 // `gh pr list --json number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url`; a url only if https.
 export const prsOf = (j) => Lx(Ox({ number: Nx, title: Tx, headRefName: Tx, state: Tx, isDraft: Bx, reviewDecision: Tx, mergedAt: Tx, url: Tx,
   statusCheckRollup: Lx(Ox({ conclusion: Tx, state: Tx, status: Tx }), 200) }), 100)(j)
@@ -459,20 +470,20 @@ export function rowsOf(space, ps, byAddr, own = new Set()) {
 export const needsYou = (all) => all.filter((t) => t.state === "live" && !t.program?.shell && (t.status === "blocked" || t.status === "error"));
 
 // The questions swarm agents wait on you for (tasks blocked on you), from the rail's summaries (shared
-// "rw-rail.swarms"), less those whose terminal needsYou already counts: [{address, name, what, task, folder, on}].
+// "rw-rail.swarms"), less those whose terminal needsYou already counts: [{address, name, what, task, swarm, folder, on}].
 export function questionsOf(swarms, counted) {
   return (swarms ?? []).flatMap((j) => (j.needs ?? []).filter((n) => n.kind === "question").map((n) => {
     const hc = (j.agents ?? []).find((a) => a.name === n.agent)?.hc;
     const address = hc ? (j.on && !hc.includes("/") ? `${j.on}/${hc}` : hc) : null;
-    return { address, name: n.agent ?? "", what: line(n.question) || n.title || `#${n.task}`, task: n.task ?? null, folder: j.folder ?? null, on: j.on ?? null };
+    return { address, name: n.agent ?? "", what: line(n.question) || n.title || `#${n.task}`, task: n.task ?? null, swarm: j.swarm ?? null, folder: j.folder ?? null, on: j.on ?? null };
   })).filter((q) => !q.address || !counted.has(q.address));
 }
 // Hung swarm agents (round 4, proposal 1: a Needs you row with Nudge), less those already `counted`:
-// [{address, name, what, hung: true, folder, on}].
+// [{address, name, what, hung: true, swarm, folder, on}].
 export function hungOf(swarms, counted) {
   return (swarms ?? []).flatMap((j) => (j.agents ?? []).filter((a) => a.hung).map((a) => {
     const address = a.hc ? (j.on && !a.hc.includes("/") ? `${j.on}/${a.hc}` : a.hc) : null;
-    return { address, name: a.name ?? "", what: `hung${a.task ? ` · holds #${a.task.id}` : ""}`, hung: true, folder: j.folder ?? null, on: j.on ?? null };
+    return { address, name: a.name ?? "", what: `hung${a.task ? ` · holds #${a.task.id}` : ""}`, hung: true, swarm: j.swarm ?? null, folder: j.folder ?? null, on: j.on ?? null };
   })).filter((q) => !q.address || !counted.has(q.address));
 }
 
@@ -533,12 +544,29 @@ export const agentAt = (sum, address) => (sum?.agents ?? []).find((a) => a.hc &&
 // main's CI word from a run {status, conclusion}: green, red (or the conclusion), checks run; null for no run.
 export const ciWord = (r) => (!r ? null : r.status !== "completed" ? "checks run" : r.conclusion === "success" ? "green"
   : r.conclusion === "failure" ? "red" : r.conclusion ?? "?");
-// Space s's swarm among the rail's summaries (shared "rw-rail.swarms"): the one whose communicator's space it is, else
-// one run in its folder whose space isn't another of `ids` (spaces()' ids). A space's folder can be wrong (#175).
-export function sumFor(sums, s, ids) {
-  const at = (j) => j.space && addrOn(j.space, j.on);
-  return (sums ?? []).find((j) => at(j) === s.id) ?? (sums ?? []).find((j) => s.folder && j.folder === s.folder
-    && (j.on ?? null) === (s.machine ?? null) && !(at(j) && ids.has(at(j)))) ?? null;
+// Space s's swarm among the rail's summaries (shared "rw-rail.swarms", each with its space from homesOf), or null.
+export const sumFor = (sums, s) => (sums ?? []).find((j) => j.space != null && j.space === s?.id) ?? null;
+// The swarm `sum` the view names ({swarm, machine}), among the rail's summaries, or null.
+export const sumNamed = (sums, v) => (sums ?? []).find((j) => v?.swarm && j.swarm === v.swarm && (j.on ?? null) === (v.machine ?? null)) ?? null;
+// Each swarm's space (sw-global §5): the one showing its communicator's terminal, else the one showing most of its
+// agents', else one on its machine whose folder is in its repos; a space holds one swarm, the first to claim it.
+// `sp`: spaces(), `ps`: panes(). Returns a Map from `${on}:${swarm}` to a space id.
+export function homesOf(sums, sp, ps) {
+  const spaceOfTab = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s])));
+  const spaceOf = new Map();
+  for (const p of ps) if (p.terminal && spaceOfTab.has(p.tab) && !spaceOf.has(p.terminal)) spaceOf.set(p.terminal, spaceOfTab.get(p.tab));
+  const out = new Map(), taken = new Set(), key = (j) => `${j.on ?? ""}:${j.swarm}`;
+  const take = (j, s) => { if (s && !taken.has(s.id) && !out.has(key(j))) { out.set(key(j), s.id); taken.add(s.id); } };
+  for (const j of sums) if (j.comms_hc) take(j, spaceOf.get(addrOn(j.comms_hc, j.on)));
+  for (const j of sums) {
+    if (out.has(key(j))) continue;
+    const n = new Map();
+    for (const a of j.agents ?? []) { const s = a.hc && spaceOf.get(addrOn(a.hc, j.on)); if (s && !taken.has(s.id)) n.set(s, (n.get(s) ?? 0) + 1); }
+    take(j, [...n].sort((x, y) => y[1] - x[1])[0]?.[0]);
+  }
+  const inRepo = (j, f) => (j.repos ?? []).some((r) => f === r || f?.startsWith(`${r}/`));
+  for (const j of sums) if (!out.has(key(j))) take(j, sp.find((s) => !taken.has(s.id) && (s.machine ?? null) === (j.on ?? null) && inRepo(j, s.folder)));
+  return out;
 }
 
 // A space's swarm (UI-SPEC.md, slice 6) from `swarm state --json --view summary` (`sum`) of the space's folder on
@@ -611,9 +639,11 @@ export function due(asked, ids, now, ms = 10000, max = 20) {
   return out;
 }
 
-// A swarm row's name (the agent's), what follows it ("communicator" or the task number) and its side text.
+// A repo's name: its path's last part.
+export const repoName = (p) => (typeof p === "string" ? p.replace(/\/+$/, "").replace(/.*\//, "") : "");
+// A swarm row's name (the agent's), what follows it ("communicator" or the task number, then its repo) and its side text.
 export function swarmText(it, at, now, opened) {
-  const name = it.a.name, what = it.comms ? "communicator" : it.a.task ? `#${it.a.task.id}` : "";
+  const name = it.a.name, what = [it.comms ? "communicator" : it.a.task ? `#${it.a.task.id}` : "", repoName(it.a.repo)].filter(Boolean).join(" · ");
   if (it.r.mark === "hung") return { name, what, side: `hung ${dur(it.a.idle_s * 1000)}` };
   if (opened) return { name, what, side: "open" };
   const side = since(it.r.mark, at, now);
@@ -965,7 +995,7 @@ export function capArgs(key, was, { cores, mem }) {
   return a.length ? ["compute", "cap", key, ...a] : [];
 }
 
-// An agent needs you (slice 8): its question, mod rw-question (props {folder, machine, agent}), as a pane above the
+// An agent needs you (slice 8): its question, mod rw-question (props {swarm, folder, machine, agent}), as a pane above the
 // agent's pane `pane`, once per tab; then that pane has focus. Splits only go right or down, so it splits down and swaps
 // the two once the new pane has its place (`later`: a timer; swap goes by geometry). `ps`: panes().
 export function openAsk(run, ps, pane, props, later) {
@@ -1004,7 +1034,8 @@ const findId = (node, id) => (node?.id === id ? node : (node?.children ?? []).re
 export const allShown = (lay) => findId(lay, "view")?.active === "all-swarms";
 export const showAll = (run, on) => run("layout.select", { stack: "view", child: on ? "all-swarms" : "main" });
 // The swarm view (Part II.3): the stack's "swarm" child, rw-swarm full width; which swarm, section and page it shows is
-// shared("rw-swarm.view") ({folder, machine, section, page}). viewShown: a view other than the tabs shows.
+// shared("rw-swarm.view") ({swarm, folder, machine, section, page}: `swarm` its name, `folder` where its commands run).
+// viewShown: a view other than the tabs shows.
 export const swarmShown = (lay) => findId(lay, "view")?.active === "swarm";
 export const viewShown = (lay) => (findId(lay, "view")?.active ?? "main") !== "main";
 export const SECTIONS = [["overview", "Overview"], ["agents", "Agents"], ["board", "Board"], ["activity", "Activity"], ["landing", "Landing"],
@@ -1029,8 +1060,8 @@ export function toggleFull(run, setShared, shared, lay, sum) {
   if (swarmShown(lay)) return showAll(run, false);
   if (!sum) return;
   if (sideShown(lay)) showSide(run, false);
-  const v = shared("rw-swarm.view") ?? {}, same = v.folder === sum.folder && (v.machine ?? null) === (sum.on ?? null);
-  showSwarm(run, setShared, { ...(same ? v : { section: v.section }), folder: sum.folder, machine: sum.on ?? null });
+  const v = shared("rw-swarm.view") ?? {}, same = v.swarm === sum.swarm && (v.machine ?? null) === (sum.on ?? null);
+  showSwarm(run, setShared, { ...(same ? v : { section: v.section }), swarm: sum.swarm, folder: sum.folder, machine: sum.on ?? null });
 }
 // An event as one line of an agent's Latest: what it did, in words.
 export const evText = (e) => line(evWords(e), 300);
@@ -1063,7 +1094,7 @@ export const tagOf = (comms) =>(comms ?? "").replace(/-?comms\d*$/, "");
 export const asksIn = (sums) => sums.flatMap((s) => (s.needs ?? []).filter((n) => ["question", "prompt", "hung"].includes(n.kind)));
 // This computer's memory in use (kB) split by swarm, then everything else: the swarms' process trees can't exceed it.
 export function memoryOf(sums, used) {
-  const parts = sums.filter((s) => !s.on).map((s) => ({ tag: tagOf(s.comms), kb: s.rss_kb ?? 0 }));
+  const parts = sums.filter((s) => !s.on).map((s) => ({ tag: s.swarm ?? tagOf(s.comms), kb: s.rss_kb ?? 0 }));
   const mine = parts.reduce((n, p) => n + p.kb, 0);
   return { parts, other: Math.max(0, used - mine) };
 }

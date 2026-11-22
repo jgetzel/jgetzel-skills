@@ -8,9 +8,10 @@ import { spaces, panes, focused, exec, theme, layout, run, appHome, window, sett
 const SCREEN = "home";
 // Locally mods/swarm is a symlink into the repo, so this is the swarm CLI of the same checkout; on another
 // machine it is that machine's installed skill. It runs as "human": the user, with the communicator's rights.
-const swarm = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
+const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
 // POLL: the fastest rate, while the db changes. QUIET_POLL: a watched local db that hasn't changed (idle
 // timers, cache countdowns and the machine reading still move). REMOTE_POLL: other machines, unwatched.
 const POLL = 3000, QUIET_POLL = 30000, REMOTE_POLL = 10000, PR_POLL = 60000;

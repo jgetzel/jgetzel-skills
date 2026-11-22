@@ -6,23 +6,24 @@
 // tabs live in the rail only: the shown tab is named by its rail row and its pane header. With All swarms shown it names
 // that view. Opened as a popup with props {needs: true} it is that list, under the bar. Needs you also lists the
 // questions swarm agents wait on (slice 6), each with an answer field, and hung agents with Nudge (round 4), from the
-// rail's summaries. Opened as a popup with props {agentMenu: {name, folder, machine, comms}} it is a swarm agent's menu
+// rail's summaries. Opened as a popup with props {agentMenu: {name, swarm, folder, machine, comms}} it is a swarm agent's menu
 // from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal). Keys: rw-bar.side,
 // rw-bar.full, rw-bar.needs (opens the list), rw-bar.<section> (rw-bar.board: that section).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
-import { SECTIONS, TABS, tabOf, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
+import { SECTIONS, TABS, tabOf, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
 const stop = (_e, cx) => cx.stop_propagation();
 const NEEDS = 60; // Needs you rows drawn
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
-const swarm = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
+const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
 const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
@@ -46,10 +47,10 @@ export default class Bar extends View {
       // an answer field per question asked as the list opens (round 4, proposal 4); one asked later answers from its terminal
       this.answers = new Map(); this.sent = new Map();
       for (const q of questionsOf(sumsOf(), new Set())) {
-        if (q.task == null || !q.folder) continue;
+        if (q.task == null || !q.swarm) continue;
         const st = InputState.new({ placeholder: `Answer ${line(q.name, 40)}…` });
         st.on("submit", (_e, cx) => this.answerQ(cx, q));
-        this.answers.set(`${q.on ?? ""}:${q.folder}:${q.task}`, st);
+        this.answers.set(`${q.on ?? ""}:${q.swarm}:${q.task}`, st);
       }
     }
     if (!props()?.agentMenu) return;
@@ -69,7 +70,7 @@ export default class Bar extends View {
     this.busy = true; cx.notify();
     cx.spawn(async (cx) => {
       let r = null;
-      try { r = await swarm(m.folder, m.machine, args); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
+      try { r = await swarm(m.folder, m.machine, args, m.swarm); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
       this.busy = false;
       if (r.code === 0) { closeOverlay(props().overlay); return; }
       this.why = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
@@ -102,7 +103,7 @@ export default class Bar extends View {
       btn("f-no", "Cancel", close), btn("f-yes", this.busy ? "Ending…" : "End anyway", (cx) => this.cmd(cx, ["end", "--force", "--", m.name]), true)));
     return root
       .child(item("a-msg", `Message ${name}…`, (cx) => { this.step = "message"; cx.notify(); cx.timer.after(50, () => this.msg.focus()); }))
-      .child(item("a-page", "Open its page", () => { close(); showSwarm(run, setShared, { folder: m.folder, machine: m.machine ?? null, page: { agent: m.name, back: "tab" } }); }))
+      .child(item("a-page", "Open its page", () => { close(); showSwarm(run, setShared, { swarm: m.swarm, folder: m.folder, machine: m.machine ?? null, page: { agent: m.name, back: "tab" } }); }))
       .child(item("a-nudge", "Nudge", (cx) => this.cmd(cx, nudgeArgs(m.name))))
       .when(!m.comms, (el) => el.child(div().h(1).mx(4).my(3).bg(t.border))
         .child(item("a-end", "End agent…", (cx) => { this.step = "end"; cx.notify(); }, true)));
@@ -129,7 +130,7 @@ export default class Bar extends View {
   away(t, sum) {
     const on = this.asked ?? Boolean(sum.away);
     if (this.asked === Boolean(sum.away)) this.asked = null;
-    const go = (_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"]).catch(() => {}); };
+    const go = (_e, cx) => { this.asked = !on; cx.notify(); swarm(sum.folder, sum.on ?? null, on ? ["away", "--back"] : ["away"], sum.swarm).catch(() => {}); };
     const since = sum.away?.since ? new Date(sum.away.since * 1000).toTimeString().slice(0, 5) : "";
     const btn = (id, label, f) => div().id(id).h(30).px(10).flex().items_center().rounded(8).text_size(13).cursor_pointer().text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(f).child(label);
@@ -145,7 +146,7 @@ export default class Bar extends View {
   }
   spaceSum() {
     const sp = spaces(), space = sp.find((s) => s.active);
-    return space ? sumFor(sumsOf(), space, new Set(sp.map((s) => s.id))) : null;
+    return space ? sumFor(sumsOf(), space) : null;
   }
   // Side and Full (II.7): the swarm view beside the tabs or full width, each a toggle.
   views(t, lay, sum) {
@@ -163,14 +164,14 @@ export default class Bar extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
   }
 
-  // A question answered from the list: `swarm task unblock` in its swarm's folder; the row says how it went.
+  // A question answered from the list: `swarm --swarm <its swarm> task unblock`; the row says how it went.
   answerQ(cx, q) {
-    const k = `${q.on ?? ""}:${q.folder}:${q.task}`, text = this.answers.get(k)?.value().trim();
+    const k = `${q.on ?? ""}:${q.swarm}:${q.task}`, text = this.answers.get(k)?.value().trim();
     if (!text || this.sent.get(k) === "Sending…") return;
     this.sent.set(k, "Sending…"); cx.notify();
     cx.spawn(async (cx) => {
       let r = null;
-      try { r = await swarm(q.folder, q.on, answerArgs(q.task, text)); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
+      try { r = await swarm(q.folder, q.on, answerArgs(q.task, text), q.swarm); } catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
       this.sent.set(k, r.code === 0 ? "Sent" : line(r.stderr || r.stdout, 200).replace(/^swarm: /, "") || `swarm exited ${r.code}`);
       cx.notify();
     });
@@ -178,7 +179,7 @@ export default class Bar extends View {
   nudge(cx, q) {
     const k = `hung:${q.address}`;
     this.sent.set(k, "Nudging…"); cx.notify();
-    swarm(q.folder, q.on, nudgeArgs(q.name)).then((r) => { this.sent.set(k, r.code === 0 ? "Nudged" : "Nudge failed"); cx.notify(); })
+    swarm(q.folder, q.on, nudgeArgs(q.name), q.swarm).then((r) => { this.sent.set(k, r.code === 0 ? "Nudged" : "Nudge failed"); cx.notify(); })
       .catch(() => { this.sent.set(k, "Nudge failed"); cx.notify(); });
   }
 
@@ -237,7 +238,7 @@ export default class Bar extends View {
           .on_click((_e, cx) => { cx.stop_propagation(); this.nudge(cx, q); })
           .child(this.sent.get(`hung:${address}`) ?? "Nudge")))
         .child(mark(t, q.hung ? "hung" : "asks"));
-      const k = q.task != null ? `${q.on ?? ""}:${q.folder}:${q.task}` : null, st = k && this.answers.get(k), said = k && this.sent.get(k);
+      const k = q.task != null ? `${q.on ?? ""}:${q.swarm}:${q.task}` : null, st = k && this.answers.get(k), said = k && this.sent.get(k);
       const more = peek != null && address && cx ? this.promptLine(t, address, peek, show, i, cx)
         : st ? h_flex().pl(10).pb(6).gap(6).items_center()
           .child(div().flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.border).bg(t.background)
@@ -281,13 +282,12 @@ export default class Bar extends View {
     // A swarm's space: its base's CI from the rail's summary ("main green"), else the space's branch. The swarm view
     // (Part II.3): its swarm's space and tag, and its sections.
     const lay = layout(), all = allShown(lay), v = swarmShown(lay) ? shared("rw-swarm.view") ?? {} : null;
-    const vsum = v && (v.folder ? sums.find((x) => x.folder === v.folder && (x.on ?? null) === (v.machine ?? null))
-      : space && sumFor(sums, space, new Set(sp.map((s) => s.id)))); // none chosen: the shown space's swarm
-    const sum = v ? vsum : space && sumFor(sums, space, new Set(sp.map((s) => s.id)));
+    const vsum = v && (v.swarm ? sumNamed(sums, v) : space && sumFor(sums, space)); // none chosen: the shown space's swarm
+    const sum = v ? vsum : space && sumFor(sums, space);
     const ci = all ? null : ciWord(sum?.ci);
-    const name = all ? "All swarms" : v ? line(sp.find((s) => s.id === vsum?.space)?.name ?? v.folder?.replace(/\/+$/, "").replace(/.*\//, ""), 80)
+    const name = all ? "All swarms" : v ? line(sp.find((s) => s.id === vsum?.space)?.name ?? v.swarm ?? vsum?.swarm ?? "", 80)
       : line(space?.name, 80);
-    const sub = all ? `${sums.length} running` : v ? line(`Swarm ${tagOf(vsum?.comms)}${ci ? " · main" : ""}`, 120)
+    const sub = all ? `${sums.length} running` : v ? line(`Swarm ${vsum?.swarm ?? v.swarm ?? tagOf(vsum?.comms)}${ci ? " · main" : ""}`, 120)
       : line([space?.machine ?? "This computer", ci ? "main" : space?.branch].filter(Boolean).join(" · "), 120);
     return h_flex().id("bar").size_full().min_w(0).pl(mac ? 84 : 20).pr(10).gap(12).items_center().bg(t.chrome)
       .on_size_change((sz, cx) => { if (sz.width !== this.barW) { this.barW = sz.width; cx.notify(); } })
