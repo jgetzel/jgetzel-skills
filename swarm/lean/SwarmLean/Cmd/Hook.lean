@@ -83,7 +83,7 @@ def sharedTxn (name top : String) (t : Int) : Txn (Option String) := do
   let tk ← Txn.slice [{ table := .task, cond := .oneOf "owner" [.text name, .text o.name] }] [.msg]
   let d := { d with tasks := tk.tasks, msgNext := tk.msgNext }
   let db := (d.setAgent name ({ · with wt := some top })).log t (some name) "shared-tree" (some top) (some o.name)
-  let (db, _) := Msgs.post db t "swarm" o.name s!"{name} also edits in {top} ({Locks.taskOf db name}). Two agents' uncommitted edits in one tree mix and can't be told apart; make your own worktree." false (some "notice")
+  let (db, _) := Msgs.post db t .system (.agent o.name) s!"{name} also edits in {top} ({Locks.taskOf db name}). Two agents' uncommitted edits in one tree mix and can't be told apart; make your own worktree." false (some "notice")
   Txn.exec (slicePlan d db)
   return some s!"{top} is also {o.name}'s worktree ({Locks.taskOf db o.name}). Two agents' uncommitted edits in one tree mix and can't be told apart. Make your own: `git worktree add …`."
 
@@ -171,8 +171,10 @@ def capTxn (name key : String) (active : Bool) (envComms : Option String) (t : I
     return false
   let d ← Txn.slice [Sels.metas ["comms"]] [.msg]
   let db := d.log t (some name) "stop-cap" none (some key)
-  let (db, _) := Msgs.post db t "swarm" ((commsName db envComms).getD "")
-    s!"{name} stopped though not endable ({key}); the stop hook let it go after {STOP_CAP} blocks." false (some "notice")
+  let db := match commsName db envComms with
+    | some c => (Msgs.post db t .system (.agent c)
+        s!"{name} stopped though not endable ({key}); the stop hook let it go after {STOP_CAP} blocks." false (some "notice")).1
+    | none => db
   Txn.exec (slicePlan d db)
   return true
 

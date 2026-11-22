@@ -210,7 +210,7 @@ def tickApply (repo : String) (wts : List (String × String)) (snaps : List (Str
           if notes.any (·.1 == n) then notes.map fun (k, l) => if k == n then (k, l ++ [x]) else (k, l)
           else notes ++ [(n, [x])]
         (db, add (add notes a (note b ha hb)) b (note a hb ha))
-  let db := notes.foldl (init := db) fun db (n, l) => (Msgs.post db t "swarm" n ("\n".intercalate l) false (some "notice")).1
+  let db := notes.foldl (init := db) fun db (n, l) => (Msgs.post db t .system (.agent n) ("\n".intercalate l) false (some "notice")).1
   -- edits to another agent's lock, from the snapshot; only in trees one agent owns
   let db := names.foldl (init := db) fun db n =>
     if tally (wtOf n) > 1 then db else
@@ -221,8 +221,8 @@ def tickApply (repo : String) (wts : List (String × String)) (snaps : List (Str
         if db.events.any fun e => e.kind == some "lock-violation" && e.agent == some n && e.path == some p then db else
         let who := lk.agent.getD ""
         let db := db.log t (some n) "lock-violation" (some p) (some who)
-        let db := (Msgs.post db t "swarm" n s!"{n} edited {p}, locked by {who}: violation. Revert it or ask {who}." false (some "system")).1
-        (Msgs.post db t "swarm" who s!"{n} edited your locked path {p}." false (some "system")).1
+        let db := (Msgs.post db t .system (.agent n) s!"{n} edited {p}, locked by {who}: violation. Revert it or ask {who}." false (some "system")).1
+        (Msgs.post db t .system (.agent who) s!"{n} edited your locked path {p}." false (some "system")).1
   -- a lock is released once the holder's work on it lands (it matched, and no longer does)
   let same (lk l : Lock) : Bool := l.repo == lk.repo && l.path == lk.path
   let db := (db.locks.filter (·.repo == repo)).foldl (init := db) fun db lk =>

@@ -355,7 +355,7 @@ def goAway (db : Db) (me : String) (comms : Option String) (note line : String) 
     let db := (delMeta db "away_digest").setMeta "away" (some (strip s!"{now} {note}"))
     let db := db.log now (some me) "away" none (some note)
     match comms with
-    | some c => ((Msgs.post db now me c line false (some "system")).1, none)
+    | some c => ((Msgs.post db now (Msgs.Who.ofText me) (.agent c) line false (some "system")).1, none)
     | none => (db, none)
 
 /-- `swarm away --back` by `me`: clears the flag, keeps the digest and tells the communicator; none when the user was
@@ -372,7 +372,7 @@ def goBack (db : Db) (me : String) (comms : Option String) (now : Int) : Db × O
     | some c =>
       let ids := g.questions.map fun q => s!"#{q.id}"
       let body := s!"the user is back: {ids.length} question{if ids.length == 1 then "" else "s"} wait{if ids.isEmpty then "" else " (" ++ ", ".intercalate ids ++ ")"}"
-      ((Msgs.post db now me c body true (some "system")).1, some g)
+      ((Msgs.post db now (Msgs.Who.ofText me) (.agent c) body true (some "system")).1, some g)
     | none => (db, some g)
 
 end SwarmLean.Agents

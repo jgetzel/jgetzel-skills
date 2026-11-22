@@ -222,11 +222,11 @@ def postEnd [Env m] [Store m] [Clock m] (who : String) (task : Option Int) (body
   let now ← Clock.now
   Store.run <| Txn.update ([Sels.live, Sels.metas ["comms"]] ++ (task.map Sels.task).toList) [.msg] fun db =>
     let names := (Agents.live db).map (·.name)
-    if names.contains who then ((Msgs.post db now "swarm" who body).1, ())
+    if names.contains who then ((Msgs.post db now .system (.agent who) body).1, ())
     else match task with
     | some t => ((Notes.post db now "swarm" t body false (names.contains ·) (Agents.commsOf db envComms)).1, ())
     | none => match Agents.commsOf db envComms with
-      | some c => ((Msgs.post db now "swarm" c body).1, ())
+      | some c => ((Msgs.post db now .system (.agent c) body).1, ())
       | none => (db, ())
 
 /-- watchd: a detached job whose process is gone with no job-end ends as lost, and its submitter is told (board #205). -/
@@ -301,7 +301,7 @@ def goneTick [Env m] [Sys m] [Proc m] [Store m] [Clock m] (t : Int) (comms : Opt
   if let some c := comms then
     if !killed.isEmpty then
       let now ← Clock.now
-      Store.run (Txn.update [] [.msg] fun db => ((Msgs.post db now "swarm" c s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ()))
+      Store.run (Txn.update [] [.msg] fun db => ((Msgs.post db now .system (.agent c) s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ()))
 
 /-- Removes a landed worktree's dirs on every machine its jobs ran on (run.clean_remote). -/
 def cleanRemote [Proc m] [Store m] [Clock m] (wt : String) : m Unit := do

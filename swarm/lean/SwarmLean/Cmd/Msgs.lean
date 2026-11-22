@@ -56,22 +56,25 @@ def postTask (frm : String) (id : Int) (body : String) (urgent : Bool) : m UInt3
   Env.out s!"posted to #{d id}: {to.text id}"
   return 0
 
-/-- The agents a post to `dest` (resolved) reaches: the agent of that name in any swarm, or the agents of swarm
-`@<s>` (`sw`: the view's). -/
-def reachSel (sw dest : String) : Sel :=
-  if dest == "@" ++ sw then { table := .agent }
-  else if isGroup dest then { table := .agent, cond := .eq "swarm" (.text (dest.drop 1).toString), inScope := false }
-  else { Sels.agent dest with inScope := false }
+/-- The agents a post to `dest` reaches: the agent of that name in any swarm, or the agents of swarm `s` (`sw`: the
+view's). -/
+def reachSel (sw : String) : Dest → Sel
+  | .all s => if s == sw then { table := .agent } else { table := .agent, cond := .eq "swarm" (.text s), inScope := false }
+  | dest => { Sels.agent dest.text with inScope := false }
 
-/-- `post`'s transaction: the message from `frm` to `to`, `@all` the sender's swarm (`resolve`), and the slice it read:
-the agents it reaches and who the communicator is. None when `to` names no agent and no swarm of `swarms`. -/
-def postTxn (now : Int) (frm to body : String) (urgent : Bool) (swarms : List String) : Txn (Option (String × Db)) := do
+/-- `post`'s transaction: the message from `frm` to `to` (`Dest.ofText`: `@all` the sender's swarm), and the slice it
+read: the agents it reaches and who the communicator is. None when `to` names no agent and no swarm of `swarms`. -/
+def postTxn (now : Int) (frm to body : String) (urgent : Bool) (swarms : List String) : Txn (Option (Dest × Db)) := do
   let d ← Txn.slice []
-  let dest := resolve d to
-  if isGroup dest && dest != "@" ++ d.swarm && !swarms.contains (dest.drop 1).toString then return none
+  let some dest := Dest.ofText d.swarm to | return none
+  match dest with
+  | .task _ => return none
+  | .all s => if s != d.swarm && !swarms.contains s then return none
+  | .agent _ => pure ()
   let d ← Txn.slice [reachSel d.swarm dest, Sels.metas ["comms"]] [.msg]
-  if !isGroup dest && (d.agent dest).isNone then return none
-  let (d', _) := _root_.SwarmLean.Msgs.post d now frm dest body urgent
+  if let .agent n := dest then
+    if (d.agent n).isNone then return none
+  let (d', _) := _root_.SwarmLean.Msgs.post d now (Who.ofText frm) dest body urgent
   Txn.exec (slicePlan d d')
   return some (dest, d)
 
@@ -94,7 +97,7 @@ def post (a : Parsed) : m UInt32 := do
   let some (dest, db) ← Store.run (postTxn now frm to body urgent ((sws.filter (·.ended.isNone)).map (·.name)))
     | die s!"unknown agent or swarm '{to}'; `swarm who` lists the agents, `swarm swarms` the swarms"
   let (here, gone) ← splitAgents db
-  let toIt (x : Agent) : Bool := x.name != frm && (isGroup dest || x.name == dest)
+  let toIt (x : Agent) : Bool := x.name != frm && (match dest with | .agent n => x.name == n | _ => true)
   let envComms ← env "SWARM_COMMS"
   let isC (n : String) : Bool := isComms db envComms (some n) || sws.any (·.comms == some n)
   let mut g : Array (List String) := #[[], [], [], [], []]

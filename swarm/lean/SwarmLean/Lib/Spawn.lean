@@ -230,7 +230,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
       Txn.update [Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf c box)] [.msg] fun db =>
         let (db, ns) := Notes.takeHeld name now tid db
         ((ns.filter (·.id > last)).foldl (fun db n =>
-          (Msgs.post db now (n.frm.getD "") name s!"[#{d tid}] {n.body.getD ""}" (n.urgent.getD 0 != 0)).1) db, ())
+          (Msgs.post db now (Msgs.Who.ofText (n.frm.getD "")) (.agent name) s!"[#{d tid}] {n.body.getD ""}" (n.urgent.getD 0 != 0)).1) db, ())
   Env.out s!"spawned {name} at {strip out}"
   Env.out (← Machine.note)
   return .ok none
