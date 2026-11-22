@@ -8,21 +8,33 @@ namespace SwarmLean.Msgs
 /-- Hook context over 10,000 chars is replaced by a 2 KB preview the model never opens (msgs.CTX_CAP). -/
 def CTX_CAP : Nat := 9000
 
-/-- Posts a message from `frm` to `dest` (msgs.post): the db and the message's id. -/
+/-- A destination naming a swarm, `@<swarm>`: every agent of it. -/
+def isGroup (dest : String) : Bool := dest.startsWith "@"
+
+/-- Where a post to `dest` goes: `@all` is the swarm of the db's view, `@<swarm>` (sw-global §2); any other as given. -/
+def resolve (db : Db) (dest : String) : String := if dest == "@all" then "@" ++ db.swarm else dest
+
+/-- The destinations agent `name` reads in the db's view: its name and its swarm's `@<swarm>`. -/
+def inbox (db : Db) (name : String) : List String := if db.swarm == "" then [name] else [name, "@" ++ db.swarm]
+
+/-- Posts a message from `frm` to `dest` (msgs.post), `@all` stored as the view's swarm (`resolve`): the db and the
+message's id. -/
 def post (db : Db) (now : Int) (frm dest body : String) (urgent : Bool := false) (kind : Option String := none) :
     Db × Nat :=
-  let kind := kind.getD (if dest == "@all" then "all" else "dm")
+  let dest := resolve db dest
+  let kind := kind.getD (if isGroup dest then "all" else "dm")
   let id := db.msgNext
   let msg : Msg := { id, ts := some now, frm := some frm, dest := some dest, body := some body,
                      urgent := some (if urgent then 1 else 0), kind := some kind }
   let db := { db with msgs := db.msgs ++ [msg], msgNext := db.msgNext + 1 }
   (db.log now (some frm) "post" (some dest) (some ((if urgent then "[urgent] " else "") ++ cut body 200)), id)
 
-/-- `name`'s unread messages by id: past its cursor, not its own, to it or to all (msgs.unread). -/
+/-- `name`'s unread messages by id: past its cursor, not its own, to it or to its swarm (msgs.unread). -/
 def unread (db : Db) (name : String) : List Msg :=
   let from_ := cursorOf db name
-  (db.msgs.filter fun r => (r.id : Int) > from_ && (r.frm.any (· != name)) &&
-    (r.dest == some name || r.dest == some "@all")).mergeSort (·.id ≤ ·.id)
+  let to := inbox db name
+  (db.msgs.filter fun r => (r.id : Int) > from_ && (r.frm.any (· != name)) && r.dest.any to.contains).mergeSort
+    (·.id ≤ ·.id)
 
 /-- `name`'s unread rows and the prefix `pick` chooses, that prefix marked read (msgs.take). One transaction, so no
 other delivery moves the cursor in between. -/
@@ -42,7 +54,7 @@ def take (name : String) (pick : List Msg → List Msg := id) (db : Db) : Db × 
 def fmtMsg (hhmm : String) (r : Msg) : String :=
   let frm := " ".intercalate ((clean (r.frm.getD "")).splitOn "\n")
   let tag := (if r.kind == some "system" || r.kind == some "notice" then "swarm" else frm) ++
-    (if r.dest == some "@all" then " (to all)" else "")
+    (if r.dest.any isGroup then " (to all)" else "")
   s!"#{r.id} {hhmm} {tag}{if r.urgent.getD 0 != 0 then " [urgent]" else ""}: {cont (r.body.getD "")}"
 
 /-- The head of a peer note (msgs.peer_note). -/

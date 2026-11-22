@@ -373,8 +373,8 @@ def report (c : Conn) (since? : Option Int) (state : List Json) : IO Json := do
       |>.setObjVal! "hook_bytes" hb
       |>.setObjVal! "brief_bytes" (SwarmLean.Json.int bs)
       |>.setObjVal! "msgs_sent" (SwarmLean.Json.int (← q "select count(*) n from msg where frm=? and ts>=?" [.text n, .int since]))
-      |>.setObjVal! "msgs_to_all" (SwarmLean.Json.int (← q "select count(*) n from msg where frm=? and dest='@all' and ts>=?" [.text n, .int since]))
-      |>.setObjVal! "msgs_recv" (SwarmLean.Json.int (← q "select count(*) n from msg where (dest=? or dest='@all') and frm!=? and coalesce(kind,'') not in ('system','notice') and ts>=?" [.text n, .text n, .int since]))
+      |>.setObjVal! "msgs_to_all" (SwarmLean.Json.int (← q "select count(*) n from msg where frm=? and dest like '@%' and ts>=?" [.text n, .int since]))
+      |>.setObjVal! "msgs_recv" (SwarmLean.Json.int (← q "select count(*) n from msg where (dest=? or dest=(select '@' || swarm from agent where name=?)) and frm!=? and coalesce(kind,'') not in ('system','notice') and ts>=?" [.text n, .text n, .text n, .int since]))
       |>.setObjVal! "tasks_done_no_evidence" (SwarmLean.Json.int (← q "select count(*) n from task where owner=? and state='done' and coalesce(evidence,'')=''" [.text n]))
     for (k, v) in pairs hb do hs := bump hs k (SwarmLean.Json.int? v |>.getD 0)
     totalBrief := totalBrief + bs

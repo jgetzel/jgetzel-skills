@@ -4,7 +4,8 @@ namespace SwarmLean
 
 /-- The whole database: every table of the schema as its rows (in rowid or key order, as loaded), and the id the next
 insert into each AUTOINCREMENT table gets. A command loads only the tables it reads (`Table`); the others stay empty
-here and only gain the rows it inserts. -/
+here and only gain the rows it inserts. `swarm` is the swarm whose view it is (the store's scope; `''` for a repo's or
+the machine's), which `@all` and a reader's inbox name. -/
 structure Db where
   agents : List Agent := []
   msgs : List Msg := []
@@ -20,6 +21,7 @@ structure Db where
   taskNext : Nat := 1
   msgNext : Nat := 1
   eventNext : Nat := 1
+  swarm : String := ""
   deriving DecidableEq, Repr, Inhabited
 
 /-- A table of the schema. -/

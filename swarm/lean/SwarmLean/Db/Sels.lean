@@ -21,6 +21,13 @@ def metas (ks : List String) : Sel := { table := .«meta», cond := .oneOf "k" (
 /-- `n`'s cursor. -/
 def cursor (n : String) : Sel := { table := .cursor, cond := .eq "agent" (.text n) }
 
+/-- The messages to `dests` past id `c` that `n` did not send: an inbox, on index msg(dest, id). -/
+def inbox (n : String) (dests : List String) (c : Int) : Sel :=
+  { table := .msg, cond := .and (.and (.oneOf "dest" (dests.map .text)) (.gt "id" (.int c))) (.ne "frm" (.text n)) }
+
+/-- Task `id`. -/
+def task (id : Int) : Sel := { table := .task, cond := .eq "id" (.int id) }
+
 /-- The tasks `n` owns. -/
 def owned (n : String) : Sel := { table := .task, cond := .eq "owner" (.text n) }
 

@@ -200,7 +200,7 @@ def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
         (if sc.every then loadWhere c "repo=? or agent in (select name from agent)" rp
          else loadWhere c "repo=? or agent in (select name from agent where swarm=?)" (rp ++ sw)) else pure []
     cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
-    taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
+    taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event", swarm := sc.swarm }
 
 /-- A write-back statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
 column (a lock carries its own repo, and so does a workspace), and meta `comms` is the swarm row's. A new agent row
@@ -332,7 +332,8 @@ def readSlice (c : Conn) (sc : Scope) (ss : List Sel) (next : List Table) : IO D
     workspaces := ← unionRows c sc .workspace ss, cis := ← unionRows c sc .ci ss,
     taskNext := ← if next.contains .task then nextId c "task" else pure 0
     msgNext := ← if next.contains .msg then nextId c "msg" else pure 0
-    eventNext := ← if next.contains .event then nextId c "event" else pure 0 }
+    eventNext := ← if next.contains .event then nextId c "event" else pure 0
+    swarm := sc.swarm }
 
 /-- Runs a transaction's program on the connection, in scope `sc`. With `writes` false (a read transaction) it stops
 at the first write or guarded update, with none: the caller runs it again under BEGIN IMMEDIATE. -/

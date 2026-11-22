@@ -270,6 +270,31 @@ def test_cursor (t : T) : IO Unit := do
   t.sw_ "a" ["post", "b", "again"]
   has (← t.sw "b" ["read"]).stdout "again"
 
+-- @all is the sender's swarm, stored as @<swarm>; @<swarm> reaches that swarm's agents; a name reaches any swarm's
+def test_post_across_swarms (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  t.sw_ "zz" ["new", "u"]
+  for n in ["x", "y"] do t.sw_ n ["join"] { env := [("SWARM", some "u")] }
+  eq ((← t.q1 "select swarm from agent where name='x'").f "swarm") "u"
+  t.sw_ "a" ["post", "@all", "to t"]
+  eq ((← t.q1 "select dest from msg where body='to t'").f "dest") "@t"
+  has (← t.sw "b" ["read"]).stdout "a (to all): to t"
+  has (← t.sw "x" ["read"]).stdout "no unread"
+  let r ← t.sw "a" ["post", "@u", "hello u"]
+  has r.stdout "x, y: "; ok (!hasSub r.stdout "b") s!"only u's agents: {r.stdout}"
+  has (← t.sw "x" ["read"]).stdout "a (to all): hello u"
+  has (← t.sw "y" ["read"]).stdout "hello u"
+  has (← t.sw "b" ["read"]).stdout "no unread"
+  has (← t.sw "a" ["read"]).stdout "no unread"
+  t.sw_ "x" ["post", "@all", "u only"]
+  eq ((← t.q1 "select dest from msg where body='u only'").f "dest") "@u"
+  has (← t.sw "y" ["read"]).stdout "u only"
+  has (← t.sw "b" ["read"]).stdout "no unread"
+  has (← t.sw "x" ["post", "b", "dm across"]).stdout "b: "
+  has (← t.sw "b" ["read"]).stdout "x: dm across"
+  has (← t.sw "a" ["post", "@nope", "hi"] { ok := false }).stderr "unknown agent or swarm '@nope'"
+  has (← t.sw "a" ["post", "nobody", "hi"] { ok := false }).stderr "unknown agent or swarm 'nobody'"
+
 def test_post_delivery_in_post_tool (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
   t.sw_ "a" ["post", "b", "look at X"]
@@ -510,6 +535,7 @@ def tests : List Case := [
   ("test_drop_claimed_only_by_owner_or_comms", test_drop_claimed_only_by_owner_or_comms),
   ("test_drop_refuses_done", test_drop_refuses_done),
   ("test_cursor", test_cursor),
+  ("test_post_across_swarms", test_post_across_swarms),
   ("test_post_delivery_in_post_tool", test_post_delivery_in_post_tool),
   ("test_ctx_recorded_and_claim_refusal", test_ctx_recorded_and_claim_refusal),
   ("test_comms_ctx_recorded_from_commands", test_comms_ctx_recorded_from_commands),

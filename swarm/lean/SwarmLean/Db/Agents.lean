@@ -251,7 +251,7 @@ def stayMet (db : Db) (ciTs : String → Int) (n : String) (c : StayCond) (since
       else none
     | none => some s!"#{id} is gone"
   | .msg f =>
-    (db.msgs.filter fun m => m.frm == some f && (m.dest == some n || m.dest == some "@all") && m.ts.getD 0 ≥ since).getLast?.map
+    (db.msgs.filter fun m => m.frm == some f && m.dest.any (Msgs.inbox db n).contains && m.ts.getD 0 ≥ since).getLast?.map
       fun m => s!"message #{m.id} from {f}"
   | .time h m =>
     let secs : Int := (h.val * 3600 + m.val * 60 : Nat)

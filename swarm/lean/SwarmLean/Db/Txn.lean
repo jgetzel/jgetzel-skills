@@ -101,6 +101,7 @@ def Db.slice (db : Db) (ss : List Sel) (next : List Table) : Db where
   taskNext := if next.contains .task then db.taskNext else 0
   msgNext := if next.contains .msg then db.msgNext else 0
   eventNext := if next.contains .event then db.eventNext else 0
+  swarm := db.swarm
 
 /-- A transaction: reads, then what to do on the rows read. The continuations are pure: a decision on a slice. -/
 inductive Txn (α : Type) where
@@ -209,7 +210,7 @@ def Db.execIf (st : Stmt) (c : Cond) (db : Db) : Db × Nat :=
   let (workspaces, w) := Row.execIf st c 0 db.workspaces
   let (cis, ci) := Row.execIf st c 0 db.cis
   ({ agents, msgs, cursors, tasks, locks, conflicts, pairkeys, metas, events, workspaces, cis
-     taskNext := bump t db.taskNext, msgNext := bump m db.msgNext, eventNext := bump e db.eventNext },
+     taskNext := bump t db.taskNext, msgNext := bump m db.msgNext, eventNext := bump e db.eventNext, swarm := db.swarm },
    a + m + cu + t + l + co + p + me + e + w + ci)
 
 /-- A transaction run on the model db: the db it leaves and its answer. -/

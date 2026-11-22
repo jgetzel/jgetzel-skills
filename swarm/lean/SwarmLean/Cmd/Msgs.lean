@@ -7,6 +7,7 @@ import SwarmLean.Db.Compact
 import SwarmLean.Lib.Spawn
 import SwarmLean.Db.Notes
 import SwarmLean.Lib.Sock
+import SwarmLean.Lib.Swarms
 
 /-! `swarm post`, `read`, `wait` (msgs.lua's cmd_post, cmd_read, cmd_wait), `swarm nudge` (agents.cmd_nudge) and
 `swarm compact` (board #136). -/
@@ -45,16 +46,42 @@ def KEYS : List String :=
 /-- `swarm post '#N' <text>… [--urgent]` (board #202): a note on task N, sent to its live owner, held for its next
 owner, or for a done task to whoever did it, else the communicator; the poster is told which. -/
 def postTask (frm : String) (id : Int) (body : String) (urgent : Bool) : m UInt32 := do
-  let db0 ← Store.txn [.agent] fun db => (db, db)
-  let here := (← splitAgents db0).1.map (·.name)
+  let owner := ((← Store.view [Sels.task id] (·.find id)).bind (·.owner)).toList
+  let rows ← Store.view (owner.map fun o => { Sels.agent o with inScope := false }) (·.agents)  -- of any swarm
+  let here := (← splitAgents { agents := rows }).1.map (·.name)
   let envComms ← env "SWARM_COMMS"
   let now ← Clock.now
-  let to ← orDie (← Store.txn [.task, .agent, .«meta», .msg, .event] fun db =>
-    Notes.post db now frm id body urgent (here.contains ·) (commsOf db envComms))
+  let to ← orDie (← Store.run (Txn.update [Sels.task id, Sels.metas ["comms"]] [.msg] fun db =>
+    Notes.post db now frm id body urgent (here.contains ·) (commsOf db envComms)))
   Env.out s!"posted to #{d id}: {to.text id}"
   return 0
 
-/-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post); `#N` or `task:N` is a note to a task (`postTask`). -/
+/-- The agents a post to `dest` (resolved) reaches: the agent of that name in any swarm, or the agents of swarm
+`@<s>` (`sw`: the view's). -/
+def reachSel (sw dest : String) : Sel :=
+  if dest == "@" ++ sw then { table := .agent }
+  else if isGroup dest then { table := .agent, cond := .eq "swarm" (.text (dest.drop 1).toString), inScope := false }
+  else { Sels.agent dest with inScope := false }
+
+/-- `post`'s transaction: the message from `frm` to `to`, `@all` the sender's swarm (`resolve`), and the slice it read:
+the agents it reaches and who the communicator is. None when `to` names no agent and no swarm of `swarms`. -/
+def postTxn (now : Int) (frm to body : String) (urgent : Bool) (swarms : List String) : Txn (Option (String × Db)) := do
+  let d ← Txn.slice []
+  let dest := resolve d to
+  if isGroup dest && dest != "@" ++ d.swarm && !swarms.contains (dest.drop 1).toString then return none
+  let d ← Txn.slice [reachSel d.swarm dest, Sels.metas ["comms"]] [.msg]
+  if !isGroup dest && (d.agent dest).isNone then return none
+  let (d', _) := _root_.SwarmLean.Msgs.post d now frm dest body urgent
+  Txn.exec (slicePlan d d')
+  return some (dest, d)
+
+/-- What `Compact.compacting` reads of agent `n`: its compaction events, in any swarm. -/
+def compactEvs (n : String) : Sel :=
+  { table := .event, inScope := false, cond := .and (.eq "agent" (.text n))
+      (.oneOf "kind" [.text "compact-asked", .text "ctx-compact", .text "ctx-continue", .text "compact"]) }
+
+/-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post): `to` an agent of any swarm, `@all` (the sender's swarm) or
+`@<swarm>` (its live agents); `#N` or `task:N` is a note to a task (`postTask`). -/
 def post (a : Parsed) : m UInt32 := do
   let frm ← me
   if strip frm == "swarm" then die "`swarm` is reserved for watchd's own messages; set SWARM_NAME to your agent's name"
@@ -62,16 +89,16 @@ def post (a : Parsed) : m UInt32 := do
   let urgent := a.flag "urgent"
   let body := clean (" ".intercalate (a.strs "text"))
   if let some id := Notes.target? to then return ← postTask frm id body urgent
+  let sws ← Swarms.list
   let now ← Clock.now
-  let some db ← Store.txn [.agent, .«meta»] (fun db =>
-      if to != "@all" && (db.agent to).isNone then (db, none) else let db := (_root_.SwarmLean.Msgs.post db now frm to body urgent).1; (db, some db))
-    | die s!"unknown agent '{to}'; `swarm who` lists them"
+  let some (dest, db) ← Store.run (postTxn now frm to body urgent ((sws.filter (·.ended.isNone)).map (·.name)))
+    | die s!"unknown agent or swarm '{to}'; `swarm who` lists the agents, `swarm swarms` the swarms"
   let (here, gone) ← splitAgents db
-  let toIt (x : Agent) : Bool := x.name != frm && (to == "@all" || x.name == to)
+  let toIt (x : Agent) : Bool := x.name != frm && (isGroup dest || x.name == dest)
+  let envComms ← env "SWARM_COMMS"
+  let isC (n : String) : Bool := isComms db envComms (some n) || sws.any (·.comms == some n)
   let mut g : Array (List String) := #[[], [], [], [], []]
   let mut seen : Seen := []
-  let mut evs : Option (List Event) := none
-  let envComms ← env "SWARM_COMMS"
   for x in here.filter toIt do
     let mut k := 0
     if x.status != some "working" then
@@ -79,10 +106,9 @@ def post (a : Parsed) : m UInt32 := do
       seen := s
       let up ← match x.waiter with | some w => Sys.pidAlive w | none => pure false
       -- a communicator with no waiter is not held cold: watchd types it in (board #210)
-      k := if cr.isSome && !urgent && (up || !isComms db envComms (some x.name)) then 2 else if up then 1 else 3
+      k := if cr.isSome && !urgent && (up || !isC x.name) then 2 else if up then 1 else 3
       if k == 3 then  -- the events only for a recipient no waiter wakes
-        let e ← match evs with | some e => pure e | none => Store.txn [.event] fun db => (db, db.events)
-        evs := some e
+        let e ← Store.view [compactEvs x.name] (·.events)
         if Compact.compacting e x.name (x.last_active.getD 0) (← Clock.now) then k := 4
     g := g.modify k (· ++ [x.name])
   let mut parts := (KEYS.zip g.toList).filterMap fun (k, ns) => if ns.isEmpty then none else some (", ".intercalate ns ++ ": " ++ k)
@@ -90,7 +116,7 @@ def post (a : Parsed) : m UInt32 := do
   if !dead.isEmpty then
     parts := parts ++ [", ".intercalate dead ++ ": no terminal; can't be delivered now (stored; read after `swarm join --takeover`)"]
   Env.out ("posted. " ++ "; ".intercalate parts)
-  let (held, idle) := g[3]!.partition fun n => isComms db envComms (some n)
+  let (held, idle) := g[3]!.partition isC
   if !held.isEmpty then
     Env.out (", ".intercalate held ++ ": no waiter; watchd sends it to the communicator within a tick (while no other agent lives, only an urgent one)")
   if !idle.isEmpty then
@@ -100,7 +126,7 @@ def post (a : Parsed) : m UInt32 := do
 /-- `swarm read` (msgs.cmd_read). -/
 def read : m UInt32 := do
   let n ← me
-  let rows ← Store.txn [.msg, .cursor] fun db => let (db, _, fit) := take n id db; (db, fit)
+  let (_, rows) ← Store.run (takeTxn n)
   Env.out (← if rows.isEmpty then pure "no unread messages" else fmtMsgs rows)
   return 0
 
@@ -114,8 +140,8 @@ def retryBusy [Guard m] (x : m α) : m α := do
     Sys.sleep 1000
   x
 
-/-- `Store.txn ts f` under `retryBusy`. -/
-def txnBusy [Guard m] (ts : List Table) (f : Db → Db × α) : m α := retryBusy (Store.txn ts f)
+/-- `Store.run t` under `retryBusy`. -/
+def runBusy [Guard m] (t : Txn α) : m α := retryBusy (Store.run t)
 
 /-- `swarm wait [--me N] [--timeout S] [--poll S]` (msgs.cmd_wait): 2 after a delivery to stderr, 3 when fenced, 0 on
 a timeout or when superseded or working, with one stderr line saying which (and, on a timeout, what is unread). -/
@@ -124,19 +150,19 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
   -- the Stop hook set last_active; the cold rule needs it untouched
-  if let some f ← txnBusy [.agent, .event, .cursor] (touchWith · n none here now true ({ · with status := some "idle" })) then
+  if let some f ← runBusy (Sels.onAgent n (touchWith · n none here now true ({ · with status := some "idle" }))) then
     -- fenced: this waiter can never wake; 3 so it isn't read as a timeout (0) or messages (2)
     Env.err (← fenceText n f)
     throw (Exit.mk 3)
   let pid ← Sys.getpid  -- every Stop starts a waiter and none is killed: the newest owns the inbox
-  txnBusy [.agent] fun db => (db.setAgent n ({ · with waiter := some pid }), ())
+  runBusy (Txn.update [Sels.agent n] [] fun db => (db.setAgent n ({ · with waiter := some pid }), ()))
   let deadline := (← Clock.now) + (a.int "timeout").getD 21000
   let pollMs := ((parseFloat (strip ((a.str "poll").getD "1"))).getD 1 * 1000).toUInt64.toNat
   let mut seen : Seen := []
   let mut left : List Msg := []  -- the last poll's unread rows
   let mut held : Option String := none  -- why they were held as cold
   while (← Clock.now) < deadline do
-    let (ag, rows) ← txnBusy [.agent, .msg, .cursor] fun db => (db, (db.agent n, unread db n))
+    let (ag, rows) ← runBusy do let db ← inboxTxn n [Sels.agent n]; pure (db.agent n, unread db n)
     let some ag := ag | Env.err s!"swarm wait: {n} has no agent row; `swarm join`"; return 0
     if ag.waiter != some pid then
       Env.err s!"swarm wait: superseded: a newer waiter (pid {(ag.waiter.map toString).getD "none"}) owns {n}'s inbox"
@@ -155,7 +181,7 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
       held := cr
     if (← wakes rows (pure cold : m Bool)).isSome then
       let t ← Clock.now
-      txnBusy [] fun db => (db.log t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}"), ())
+      runBusy (Txn.exec [logStmt t (some n) "wake" none (some s!"{wake.length} msg{if urgent then " urgent" else ""}")])
       Env.err (← retryBusy (deliver n))  -- a failed delivery rolls back: nothing is marked read
       throw (Exit.mk 2)
     left := rows
@@ -172,7 +198,7 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
 def nudge (a : Parsed) : m UInt32 := do
   let me := (← env "SWARM_NAME").getD HUMAN
   let ag := (a.str "agent").getD ""
-  let some r ← Store.txn [.agent] fun db => (db, db.agent ag) | die s!"{ag} is not an agent"
+  let some r ← Store.view [Sels.agent ag] (·.agent ag) | die s!"{ag} is not an agent"
   if r.ended.isSome then die s!"{ag} has ended; nothing to nudge"
   let some hc := py r.hc | die s!"{ag} has no terminal"
   let err := match ← Proc.output ["hc", "send", hc, NUDGE] none [] with
@@ -180,7 +206,7 @@ def nudge (a : Parsed) : m UInt32 := do
     | none => some ""
   if let some e := err then die s!"hc send {hc} failed: {strip e}"
   let now ← Clock.now
-  Store.txn [] fun db => (db.log now (some me) "nudge" (some ag) none, ())
+  Store.run (Txn.exec [logStmt now (some me) "nudge" (some ag) none])
   Env.out s!"nudged {ag} ({hc})"
   return 0
 
@@ -197,7 +223,7 @@ def deliverTo (name hc text : String) : m (Option String) := do
   typeLine hc text
 
 /-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136); `db` holds the
-agent, task and workspace tables. -/
+agent's row, its tasks and its worktrees. -/
 def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
   let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
     (·.id ≤ ·.id)).head?
@@ -222,12 +248,12 @@ def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
 when the turn ends (board #136). -/
 def compact (a : Parsed) : m UInt32 := do
   let some me ← env "SWARM_NAME" | die "swarm compact: SWARM_NAME is not set"
-  let (row, db) ← Store.txn [.agent, .task, .workspace] fun db => (db, (db.agent me, db))
+  let (row, db) ← Store.view [Sels.agent me, Sels.owned me, Sels.workspaces me] fun db => (db.agent me, db)
   let some r := row.filter (·.ended.isNone) | die s!"{me} is not a live agent"
   let some hc := py r.hc | die s!"{me} has no terminal"
   if let some e ← typeLine hc (← compactLine db r (a.str "keep")) then die s!"hc send {hc} failed: {e}"
   let now ← Clock.now
-  Store.txn [] fun db => (db.log now (some me) "compact-asked" none none, ())
+  Store.run (Txn.exec [logStmt now (some me) "compact-asked" none none])
   Env.out s!"/compact queued in {hc}: it runs when this turn ends."
   return 0
 
