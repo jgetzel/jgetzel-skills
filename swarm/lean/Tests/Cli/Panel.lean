@@ -403,7 +403,7 @@ def test_state_swarms (t : T) : IO Unit := do
   -- in u's repo
   let o ← parse (← t.sw "a" ["state", "--json", "--view", "overview"] { env := [("SWARM", some "t")] }).stdout
   let ours := match o.f "tasks" with
-    | .arr a => (a.toList.filter fun (k : Json) => k.f "mine" == Json.bool true).map (·.f "id")
+    | .arr a => (a.toList.filter fun (k : Json) => k.f "mine" == Json.bool true).map fun (k : Json) => k.f "id"
     | _ => []
   eq ours [json% 1, json% 3]
   eq (((o.f "counts").f "open"), ((o.f "counts").f "blocked")) (json% 1, json% 0)
