@@ -74,28 +74,28 @@ def agents (ns : List (Option String)) : List Sel :=
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
   Txn.update [tasks a.deps, Sels.owned c.me] [.task] (Tasks.add c a)
 
-/-- The claim of task `id` whose step left `d1` from `d`: the task's row by a guarded update, then the rest with the
+/-- The claim of task `id` on its slice: the task's row by a guarded update, then the rest with the
 held notes taken (`Notes.takeHeld`). -/
 def claimTxn (c : Ctx) (id : Int) (lease : String) : Txn (Except String (Claimed × List Msg)) := do
   let box := Notes.box id
   let s ← Txn.slice [task id, Sels.cursor box]
   let some r := s.find id | return .error s!"no task #{d id}"
-  let notes : Cond := .and (.gt "id" (.int (cursorOf s box))) (.oneOf "dest" [.text box, .text "@all"])
+  let notes : Cond := .and (.gt "id" (.int (Msgs.cursorOf s box))) (.oneOf "dest" [.text box, .text "@all"])
   let reap : Cond := .and (Sels.evOf c.me "reap") (.eq "data" (.text s!"task #{d id} lease expired"))
   let ss := [task id, tasks (depsOf r), Sels.metas ["comms", "ctx_nudge"], evs id ["claim", "spawn"],
     { table := .event, cond := reap }, Sels.cursor box, { table := .msg, cond := notes }] ++ Sels.touch c.me ++ stops [r]
-  let d ← Txn.slice ss [.msg]
-  let (d1, res) := claim c id lease d
+  let d0 ← Txn.slice ss [.msg]
+  let (d1, res) := claim c id lease d0
   match res, d1.find id with
   | .ok cl, some t =>
     let won ← Txn.guarded (Row.put t) (.and (.eq "state" (.text "open")) (.null "owner"))
     if !won then return .error s!"task #{d id} was taken under you; `swarm task show {d id}`"
     let (d2, ns) := Notes.takeHeld c.me c.now id d1
-    Txn.exec (slicePlan { d with tasks := d1.tasks } d2)
+    Txn.exec (slicePlan { d0 with tasks := d1.tasks } d2)
     return .ok (cl, ns)
   | .ok _, none => return .error s!"no task #{d id}"
   | .error e, _ =>
-    Txn.exec (slicePlan d d1)
+    Txn.exec (slicePlan d0 d1)
     return .error e
 
 /-- `task after`: the task and every task its new deps reach. -/
