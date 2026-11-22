@@ -450,7 +450,7 @@ def repoTick (p : Plan) (r : String) (notLanded : List String) (t : Int) : m (Li
       let all ← Workspaces.worktrees
       let rs ← (Workspaces.wtMapOf db all).mapM fun (n, w) => do pure (n, w, ← real w)
       let here := (rs.filter fun (_, _, r) => all.any (·.1 == r)).map fun (n, w, _) => (n, w)
-      Conflict.conflictTick here (Bases.baseFor · none) t
+      Conflict.conflictTick r here (Bases.baseFor · none) t
     if let .error e ← Guard.guard conflictPass then Env.err s!"conflict: {e}"
     let mut errs : List String := []
     errs ← pass errs (pre ++ "locks: ") (discard <| reapLocks t)

@@ -181,9 +181,9 @@ def baseSha (b : String) : m (Option String) := do
 /-- `xs` without repeats, sorted. -/
 def uniqSorted (xs : List String) : List String := (xs.eraseDups.toArray.qsort (· < ·)).toList
 
-/-- The conflict tick's write (`conflictTick`): each candidate pair's key and conflicts from its git work (`work`,
-`ranges`), the notices, lock violations, and locks whose holder's work landed. -/
-def tickApply (wts : List (String × String)) (snaps : List (String × Snap))
+/-- The conflict tick's write (`conflictTick`) in repo `repo`: each candidate pair's key and conflicts from its git work
+(`work`, `ranges`), the notices, lock violations, and the repo's locks whose holder's work landed. -/
+def tickApply (repo : String) (wts : List (String × String)) (snaps : List (String × Snap))
     (work : List (String × String × String × Option (Option (List (String × List (String × String)) × Bool))))
     (ranges : List ((String × String × String) × String × String)) (t : Int) (db : Db) : Db :=
   let wtOf (n : String) : String := (wts.lookup n).getD ""
@@ -217,7 +217,7 @@ def tickApply (wts : List (String × String)) (snaps : List (String × Snap))
   let db := names.foldl (init := db) fun db n =>
     if tally (wtOf n) > 1 then db else
     (snapOf n).files.foldl (init := db) fun db p =>
-      match Locks.lockHolder db n p t with
+      match Locks.lockHolder db n { repo, rel := p } t with
       | none => db
       | some lk =>
         if db.events.any fun e => e.kind == some "lock-violation" && e.agent == some n && e.path == some p then db else
@@ -226,25 +226,33 @@ def tickApply (wts : List (String × String)) (snaps : List (String × Snap))
         let db := (Msgs.post db t "swarm" n s!"{n} edited {p}, locked by {who}: violation. Revert it or ask {who}." false (some "system")).1
         (Msgs.post db t "swarm" who s!"{n} edited your locked path {p}." false (some "system")).1
   -- a lock is released once the holder's work on it lands (it matched, and no longer does)
-  let db := db.locks.foldl (init := db) fun db lk =>
+  let same (lk l : Lock) : Bool := l.repo == lk.repo && l.path == lk.path
+  let db := (db.locks.filter (·.repo == repo)).foldl (init := db) fun db lk =>
     match lk.agent.bind (fun n => snaps.lookup n) with
     | none => db
     | some s =>
       let hit := s.files.any (Locks.covers · lk.path)
       let seen := lk.seen.any (· != 0)
-      if hit && !seen then { db with locks := db.locks.map fun (l : Lock) => if l.path == lk.path then { l with seen := some 1 } else l }
+      if hit && !seen then { db with locks := db.locks.map fun (l : Lock) => if same lk l then { l with seen := some 1 } else l }
       else if !hit && seen then
-        ({ db with locks := db.locks.filter fun (l : Lock) => l.path != lk.path }).log t lk.agent "unlock" (some lk.path) (some "landed")
+        ({ db with locks := db.locks.filter fun (l : Lock) => !same lk l }).log t lk.agent "unlock" (some lk.path) (some "landed")
       else db
   db
 
-/-- The conflict tick (conflict.conflict_tick): snapshots each live agent's worktree (`wts`: agent and worktree,
-by name), trial-merges every pair working for one base whose changed files meet, notices both of a new real conflict,
-flags edits to a peer's lock, and releases a lock once its holder's work on it has landed. `baseFor` is
-bases.base_for of the base column of the task an agent holds (none: it holds none, or the column is NULL). -/
-def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option String → m String) (t : Int) : m Unit := do
+/-- The conflict tick (conflict.conflict_tick) of repo `repo`: snapshots each live agent's worktree (`wts`: agent and
+worktree, by name, in any swarm), trial-merges every pair working for one base whose changed files meet, notices both
+of a new real conflict, flags edits to a peer's lock in the repo, and releases a lock once its holder's work on it has
+landed. `baseFor` is bases.base_for of the base column of the task an agent holds (none: it holds none, or the column
+is NULL). Each write is keyed reads of these agents' rows, a pure decision and its plan (sw-global §3). -/
+def conflictTick [Store m] (repo : String) (wts : List (String × String)) (baseFor : Option String → m String)
+    (t : Int) : m Unit := do
   let wtOf (n : String) : String := (wts.lookup n).getD ""
-  let db0 ← Store.txn [.task] fun db => (db, db)
+  let mine : List Sqlite.Val := (wts.map (·.1)).eraseDups.map .text
+  -- the conflicts, pair keys and tasks of these agents
+  let ofMine : Sel := { table := .conflict, cond := .or (.oneOf "a" mine) (.oneOf "b" mine) }
+  let keys : Sel := { table := .pairkey, cond := .oneOf "a" mine }
+  let owned : Sel := { table := .task, cond := .oneOf "owner" mine }
+  let db0 ← Store.view [owned] id
   let mut snaps : List (String × Snap) := []
   let mut bywt : List (String × Option Snap) := []
   let mut shas : List (String × Option String) := []
@@ -264,7 +272,7 @@ def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option Str
       | none => do let s ← snapshot w base; bywt := (w, s) :: bywt; pure s
     if let some s := s then
       snaps := snaps ++ [(n, s)]
-      Store.txn [.agent] fun db => (db.setAgent n ({ · with snap := some s.json }), ())
+      Store.run (Txn.exec [.upd "agent" ["name"] [.text n] ["snap"] [.text s.json]])
   let names := snaps.map (·.1)
   let snapOf (n : String) : Snap := (snaps.lookup n).getD default
   let mut cand : List (String × String) := []
@@ -272,11 +280,12 @@ def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option Str
     for b in names.drop (i + 1) do
       if wtOf a != wtOf b && bnames.lookup a == bnames.lookup b && (snapOf b).files.any (snapOf a).files.contains then
         cand := cand ++ [(a, b)]
-  let db ← Store.txn [.conflict, .pairkey] fun db =>
-    -- the conflict table is the machine's: only pairs of these agents are this pass's to drop
-    let mine (n : String) : Bool := (wts.lookup n).isSome
-    let db := { db with conflicts := db.conflicts.filter fun r => cand.contains (r.a, r.b) || !(mine r.a || mine r.b) }
-    (db, db)
+  -- the conflict table is the machine's: only pairs of these agents are this pass's to drop
+  let db ← Store.run do
+    let d ← Txn.slice [ofMine, keys]
+    let d' := { d with conflicts := d.conflicts.filter fun r => cand.contains (r.a, r.b) }
+    Txn.exec (slicePlan d d')
+    return d'
   -- the git work for each candidate pair whose key changed: none (stale), some none (git failed), some (some merge)
   let mut ontos : List (String × Option String) := []
   let mut work : List (String × String × String × Option (Option (List (String × List (String × String)) × Bool))) := []
@@ -300,6 +309,11 @@ def conflictTick [Store m] (wts : List (String × String)) (baseFor : Option Str
         for h in hs do l := l ++ [← lineRange (wtOf n) (snapOf n).commit p (side h)]
         return ", ".intercalate (uniqSorted l)
       ranges := ranges ++ [((a, b, p), ← rng a (·.1), ← rng b (·.2))]
-  Store.txn [.conflict, .pairkey, .task, .lock, .agent, .event] fun db => (tickApply wts snaps work ranges t db, ())
+  Store.run do
+    let violations : Sel := { table := .event, cond := .and (.eq "kind" (.text "lock-violation")) (.oneOf "agent" mine) }
+    let locks : Sel := { table := .lock, cond := .eq "repo" (.text repo) }
+    let d ← Txn.slice [ofMine, keys, owned, locks, violations] [.msg]
+    let d := { d with agents := ← Locks.holders d.locks "" }
+    Txn.exec (slicePlan d (tickApply repo wts snaps work ranges t d))
 
 end SwarmLean.Conflict

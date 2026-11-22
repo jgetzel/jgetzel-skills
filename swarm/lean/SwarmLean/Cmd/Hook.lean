@@ -69,20 +69,10 @@ def costNote (cmd cwd : String) : m (Option String) := do
 /-- Prints the hook's JSON answer. -/
 def emit (event : String) (ctx deny : Option String) : m Unit := Env.out (emitText event ctx deny)
 
-/-- Another live agent's lock that covers `path` (`Locks.lockHolder`), read by key: the unexpired locks of others in
-this repo, then their holders' rows. -/
-def lockTxn (name path : String) (t : Int) : Txn (Option Lock) := do
-  let d ← Txn.slice [{ table := .lock, cond := .and (.gt "lease_until" (.int t)) (.ne "agent" (.text name)) }]
-  let hs := (d.locks.filterMap (·.agent)).eraseDups
-  if hs.isEmpty then return none
-  -- the holders in any swarm: a lock holds for every swarm in its repo (sw-global §2)
-  let a ← Txn.slice [{ table := .agent, cond := .oneOf "name" (hs.map .text), inScope := false }]
-  return Locks.lockHolder { d with agents := a.agents } name path t
-
-/-- `name` edits in worktree `top`: recorded as its `wt`; when another live agent's is `top` too, both are told once
-(a `shared-tree` event per agent and tree), and the context for `name`. -/
+/-- `name` edits in worktree `top`: recorded as its `wt`; when another live agent's is `top` too, in any swarm (a
+worktree is a repo's), both are told once (a `shared-tree` event per agent and tree), and the context for `name`. -/
 def sharedTxn (name top : String) (t : Int) : Txn (Option String) := do
-  let d ← Txn.slice [Sels.agent name, { table := .agent, cond := .and (.eq "wt" (.text top)) (.null "ended") }]
+  let d ← Txn.slice [Sels.agent name, { table := .agent, cond := .and (.eq "wt" (.text top)) (.null "ended"), inScope := false }]
   let db := d.setAgent name ({ · with wt := some top })
   let some o := db.agents.find? fun a => a.wt == some top && a.name != name && a.ended.isNone
     | Txn.exec (slicePlan d db); return none
@@ -121,18 +111,19 @@ def preTool (name cwd : String) (tool : Option String) (ti : Json) (here : Optio
   | some tl =>
     if !EDIT_TOOLS.contains tl then return
     let fp := match str? ti "file_path" with | some f => if f == "" then str? ti "notebook_path" else some f | none => str? ti "notebook_path"
-    let some (top, path) ← Cmd.Locks.repoRel (fp.getD "") (some cwd) | return
-    let lk ← Store.run (lockTxn name path t)
+    -- the file's own repo: a file of another repo is checked against that repo's locks
+    let some (top, p) ← Cmd.Locks.repoRel (fp.getD "") (some cwd) | return
+    let lk ← Store.run (Locks.holderTxn name p t)
     if let some lk := lk then
       let who := lk.agent.getD ""
-      Store.run (Txn.exec [logStmt t (some name) "deny-lock" (some path) (some who)])
+      Store.run (Txn.exec [logStmt t (some name) "deny-lock" (some p.rel) (some who)])
       let why := match lk.reason with | some r => if r != "" then s!" ({r})" else "" | none => ""
-      emit "PreToolUse" none (some s!"{path} is locked by {who} since {← Clock.hhmm (lk.since.getD 0)}{why}. Ask it with `swarm post {who} ...`.")
+      emit "PreToolUse" none (some s!"{p.rel} is locked by {who} since {← Clock.hhmm (lk.since.getD 0)}{why}. Ask it with `swarm post {who} ...`.")
       return
     -- a file of another repo (one the task builds on) is not this agent's worktree: lifecycle would judge it by this
     -- repo's bases and keep the agent forever
     let here ← Workspaces.main none
-    if here.isSome && (← Workspaces.main (some top)) != here then return
+    if here.isSome && some p.repo != here then return
     let shared ← Store.run (sharedTxn name top t)
     if let some ctx := shared then emit "PreToolUse" (some ctx) none
   | none => return
