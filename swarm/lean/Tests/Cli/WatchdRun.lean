@@ -122,7 +122,7 @@ def test_one_watchd_serves_every_swarm (t : T) : IO Unit := do
   t.fakes
   t.setHc [json% {"address": "t5"}]
   t.sw_ "zz" ["new", "u"]
-  t.sw_ "a" ["join"]
+  t.sw_ "a" ["join"] { env := [("SWARM", some "t")] }
   t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
   t.q_ "update agent set hc='t1' where name='a'"
   t.q_ "update agent set hc='t2' where name='x'"

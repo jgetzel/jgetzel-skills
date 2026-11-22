@@ -215,7 +215,9 @@ def test_watchd_restart_same_flags_old_exits (t : T) : IO Unit := do
   let (oc, old) ← firstWatchd t ["--interval", "1", "--comms", "comms", "--model", "haiku", "--max-agents", "2"]
   until_ "the first watchd's tick" 10 do return (← mval t "watchd_up") == Json.str s!"{old} -"
   let run ← parse (((← mval t "watchd_run").s?).getD "")
-  eq (run.f "flags") (json% ["--interval", "1", "--min-free-mem", "4", "--comms", "comms", "--blocker-idle", "25", "--model", "haiku"])
+  -- the machine's flags only: --comms, --model and --max-agents went to the swarm's meta (sw-global §4)
+  eq (run.f "flags") (json% ["--interval", "1", "--min-free-mem", "4", "--blocker-idle", "25"])
+  eq ((← t.q1 "select v from meta where scope='t' and k='spawn_model'").f "v") "haiku"
   t.sw_ "a" ["limits", "--min", "5"]
   let r ← t.sw "x" ["watchd", "--restart"] { env := [("SWARM_NAME", none)] }
   has r.stdout "watchd restarted: pid "
@@ -226,7 +228,8 @@ def test_watchd_restart_same_flags_old_exits (t : T) : IO Unit := do
   has ((← slurp (t.d ++ "/old.err")).getD "") s!"was replaced by {new}"
   let call := ((← t.calls "hc").filter (·.startsWith "run ")).getLast?.getD ""
   has call s!"run --json --bg --no-parent --no-notify --cwd {t.repo} -- "
-  has call "watchd --takeover --interval 1 --min-free-mem 4 --comms comms --blocker-idle 25 --model haiku"
+  has call "watchd --takeover --interval 1 --min-free-mem 4 --blocker-idle 25"
+  hasnt call "--comms"
   eq (← mval t "agent_min") "5"  -- --max-agents is not replayed over the user's number
   eq (((← st t).f "watchd").f "pid") new.toNat!
 
@@ -236,10 +239,13 @@ def test_watchd_restart_amends_flags (t : T) : IO Unit := do
   t.sw_ "comms" ["join"]
   let (_, old) ← firstWatchd t ["--interval", "1", "--comms", "comms", "--model", "haiku"]
   until_ "the first watchd's tick" 10 do return (← mval t "watchd_up") == Json.str s!"{old} -"
-  let r ← t.sw "x" ["watchd", "--restart", "--ci", "--model", "sonnet"] { env := [("SWARM_NAME", none)] }
+  let r ← t.sw "x" ["watchd", "--restart", "--interval", "2", "--ci", "--model", "sonnet"] { env := [("SWARM_NAME", none)] }
   has r.stdout "watchd restarted: pid "
   let call := ((← t.calls "hc").filter (·.startsWith "run ")).getLast?.getD ""
-  has call "watchd --takeover --interval 1 --min-free-mem 4 --comms comms --blocker-idle 25 --model sonnet --ci"
+  has call "watchd --takeover --min-free-mem 4 --blocker-idle 25 --interval 2"
+  -- a swarm's knobs given with --restart are set on it, not replayed
+  eq ((← t.q1 "select v from meta where scope='t' and k='spawn_model'").f "v") "sonnet"
+  eq ((← t.q1 "select v from meta where scope='t' and k='ci'").f "v") "on"
 
 -- a new watchd that never shows up: refused, the old one keeps the record and runs on
 def test_watchd_restart_nothing_started (t : T) : IO Unit := do

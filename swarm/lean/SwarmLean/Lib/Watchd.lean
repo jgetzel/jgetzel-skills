@@ -701,15 +701,14 @@ def reapLocks (t : Int) : m (List String) := do
       if gone then out := out ++ [s!"lock {l.path}"]
   return out
 
-/-- Ends finished agents, offers reusable ones related tasks (board #186), and with `spawn` staffs the startable tasks
-not under an offer (watchd.lifecycle). Only the live agents `only` admits: those of the repo this runs in. -/
-def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Opts) (only : String → Bool := fun _ => true)
-    (spawn : Bool := true) : m Unit := do
+/-- Ends finished agents, offers reusable ones related tasks (board #186), staffs the startable tasks not under an
+offer (watchd.lifecycle). -/
+def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Opts) : m Unit := do
   let all ← Workspaces.worktrees
   let every ← Workspaces.every
   let main ← Workspaces.main none
   let db ← Store.txn [.agent, .task, .workspace, .event] fun db => (db, db)
-  for (n, path, base) in (← Workspaces.baseOut db all).filter (only ·.1) do  -- a base checked out in an agent's worktree: once per agent and base
+  for (n, path, base) in ← Workspaces.baseOut db all do  -- a base checked out in an agent's worktree: once per agent and base
     let now ← Clock.now
     Store.txn [.event] fun db =>
       if db.events.any fun e => e.kind == some "base-out" && e.agent == some n && e.path == some base then (db, ()) else
@@ -724,7 +723,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
   let dflt := (py opts.model).getD "sonnet"
-  for a in (Agents.live db).filter (only ·.name) do
+  for a in Agents.live db do
     let offer := Reuse.candidates db a.name a.model dflt pool
     let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts every a.name offer
     -- an offer unanswered OFFER_TTL counts as declined
@@ -747,7 +746,6 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
       -- the event marks it told: never without its message
       let db := db.log now (some a.name) "digest" none (some (",".intercalate (ids.map d)))
       (say db now a.name (Reuse.text offer) false "system", ())
-  if !spawn then return
   let offered ← if pool.isEmpty then pure [] else do
     let now ← Clock.now
     Store.txn [.agent, .task, .event] fun db => (db, Reuse.offered db now)

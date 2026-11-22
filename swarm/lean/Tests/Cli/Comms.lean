@@ -98,7 +98,8 @@ def test_watchd_never_moves_a_live_communicator (t : T) : IO Unit := do
 -- the bound terminal is gone and the swarm has work: a communicator is launched and bound
 def test_watchd_launches_when_the_bound_terminal_is_gone (t : T) : IO Unit := do
   setup t [json% {"address": "t1"}]
-  eq (← join t "c" "t1").code 0
+  t.q_ "update swarm set comms='c' where name='t'"
+  eq (← join t "c" "t1").code 0  -- the communicator joins from a Herdr terminal
   t.agent "a" [("status", "working")]
   t.q_ "insert into task(title,state) values('x','open')"
   tick t

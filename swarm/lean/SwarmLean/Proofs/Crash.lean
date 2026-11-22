@@ -1221,8 +1221,8 @@ theorem K.SwarmLean.Watchd.reap (hM : ∀ w, M.now w ≤ t) live t' comms :
 
 set_option maxHeartbeats 20000000 in
 /-- Lifecycle keeps the cross-area invariant at every commit (applied by `pass_keeps`, as `reap`). -/
-theorem K.SwarmLean.Watchd.lifecycle (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) t' comms terms opts only spawn :
-    Keeps (M := M) (XInv · t) (Watchd.lifecycle t' comms terms opts only spawn) := by
+theorem K.SwarmLean.Watchd.lifecycle (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) t' comms terms opts :
+    Keeps (M := M) (XInv · t) (Watchd.lifecycle t' comms terms opts) := by
   keeps_walk
   all_goals xstep
 

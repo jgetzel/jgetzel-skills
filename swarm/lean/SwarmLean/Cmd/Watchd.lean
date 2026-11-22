@@ -337,9 +337,9 @@ def pass (errs : List String) (what : String) (x : m Unit) : m (List String) := 
   | .ok _ => pure errs
   | .error e => pure (errs ++ [what ++ e])
 
-/-- The repo of folder `dir`: its main worktree, resolved; `''` outside one. -/
+/-- The repo of folder `dir`: its main worktree, resolved; `''` outside one or when it is gone. -/
 def repoOf (dir : String) : m String := do
-  if dir == "" then return ""
+  if dir == "" || (← Sys.kind dir true) != .dir then return ""
   return (← Workspaces.main (some dir)).getD ""
 
 /-- What one tick covers (sw-global §4), read at its start: the live swarms, each live agent's (name, swarm, repo: of
@@ -355,15 +355,22 @@ structure Plan where
 def plan : m Plan := do
   let swarms := (← Swarms.list).filter (·.ended.isNone)
   let rs ← Sys.sqlAt (← Swarms.dbPath) "" [
-    ("select name, coalesce(swarm, ''), coalesce(nullif(wt, ''), cwd, '') from agent where ended is null order by name", []),
+    ("select a.name, coalesce(a.swarm, ''), coalesce(nullif(a.wt, ''), a.cwd, ''), (select w.repo from workspace w " ++
+      "where w.agent = a.name and w.path = a.wt and w.repo <> '') from agent a where a.ended is null order by a.name", []),
     ("select path from repo union select repo from swarm_repo union select repo from workspace where repo <> '' " ++
       "union select repo from lock where repo <> ''", []),
     ("select sr.repo, sr.swarm, s.comms, (select v from meta m where m.scope = sr.swarm and m.k = 'ci') from swarm_repo sr " ++
       "join swarm s on s.name = sr.swarm where s.ended is null order by sr.swarm, sr.repo", [])] true
   let txt := Swarms.txt
   let mut agents := []
+  let mut seen : List (String × String) := []  -- each folder asked of git once
   for r in (rs.getD 0 #[]).toList do
-    agents := agents ++ [((txt r[0]?).getD "", (txt r[1]?).getD "", ← repoOf ((txt r[2]?).getD ""))]
+    let dir := (txt r[2]?).getD ""
+    let repo ← match txt r[3]?, seen.lookup dir with
+      | some w, _ => pure w
+      | none, some x => pure x
+      | none, none => do let x ← repoOf dir; seen := (dir, x) :: seen; pure x
+    agents := agents ++ [((txt r[0]?).getD "", (txt r[1]?).getD "", repo)]
   let mut repos := []
   for r in ((rs.getD 1 #[]).toList.filterMap (txt ·[0]?)) ++ agents.map (·.2.2) do
     if r != "" && !repos.contains r && (← Sys.kind r true) == .dir then repos := repos ++ [r]
@@ -388,14 +395,12 @@ def knobs (opts : Opts) : m Opts := do
   let k (key : String) : Option String := py ((db.getMeta key).bind (·.v))
   return { opts with model := (k "spawn_model").orElse fun _ => opts.model, effort := (k "spawn_effort").orElse fun _ => opts.effort }
 
-/-- One swarm's passes (sw-global §4, per agent and per swarm), each in the swarm's scope: in its home repo reap,
-its communicator, hc's prompts and the blocked notices; the lifecycle in each repo its agents work in (auto-spawn in the
-home repo); then in the home repo the quiet, hung, inbox, blocker, landing, compaction and API-error passes. Without a
-communicator only reap and hc's prompts run: nobody would hear the rest. The errors. -/
+/-- One swarm's passes (sw-global §4, per agent and per swarm), in the swarm's scope and its home repo: reap, its
+communicator, hc's prompts, the blocked notices, the lifecycle (ends, offers, auto-spawn: an agent working in another
+repo is judged as the lifecycle judges a foreign worktree), then the quiet, hung, inbox, blocker, landing, compaction
+and API-error passes. Without a communicator only reap and hc's prompts run: nobody would hear the rest. The errors. -/
 def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : Opts) (t : Int) : m (List String) := do
   let home := p.home sw
-  let mine := p.agents.filter (·.2.1 == sw.name)
-  let repoOfAgent (n : String) : String := ((mine.find? (·.1 == n)).map (·.2.2)).getD ""
   let pre := s!"{sw.name}: "
   let live := terms.map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none
   let hs : Scope := { swarm := sw.name, repo := home }
@@ -416,12 +421,9 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
     if let some c := comms then errs ← pass errs (pre ++ "notices: ") (notices c away)
     return (errs, opts)
   let some c := comms | return errs
-  let mut errs := errs
-  for r in (home :: (mine.map (·.2.2)).filter (· != "")).eraseDups do
-    let only (n : String) : Bool := repoOfAgent n == r || (r == home && repoOfAgent n == "")
-    errs ← Scoped.within { swarm := sw.name, repo := r } (pass errs (pre ++ "lifecycle: ") (lifecycle t c terms opts only (r == home)))
   Scoped.within hs do
     let mut errs := errs
+    errs ← pass errs (pre ++ "lifecycle: ") (lifecycle t c terms opts)
     errs ← pass errs (pre ++ "quiet: ") (quiet t c)
     errs ← pass errs (pre ++ "hung: ") (hung t c terms opts.interval)
     errs ← pass errs (pre ++ "comms inbox: ") (commsInbox t c terms)

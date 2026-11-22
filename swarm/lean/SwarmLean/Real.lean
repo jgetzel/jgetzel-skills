@@ -191,7 +191,10 @@ def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
     pairkeys := ← if has .pairkey then loadRows c else pure []
     metas := ← if has .«meta» then loadMetas c sc.swarm sc.metaName else pure []
     events := ← if has .event then
-        (if sc.swarm == "" then loadWhere c "swarm='' and repo=?" rp else loadWhere c "swarm=?" sw) else pure []
+        (if sc.every && sc.repo == "" then loadWhere c "swarm='' or kind in ('job-start', 'job-end')" []
+         else if sc.every then loadWhere c "repo=?" rp
+         else if sc.swarm == "" then loadWhere c "swarm='' and repo=?" rp
+         else loadWhere c "swarm=?" sw) else pure []
     workspaces := ← if has .workspace then loadWhere c "repo=?" rp else pure []
     cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
     taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
@@ -224,8 +227,19 @@ def scopeStmts (sc : Scope) : Stmt → List Stmt
   | .ins "agent" cs vs => [.del "agent" ["name"] (vs.take 1), .ins "agent" (cs ++ ["swarm"]) (vs ++ [.text sc.swarm])]
   | st => [scopeStmt sc st]
 
+/-- An event a scope with every swarm in view inserts belongs to its agent's swarm (none: no swarm's). -/
+def agentSwarm (c : Conn) (sc : Scope) : Stmt → IO Stmt
+  | .ins "event" cs vs => do
+    if !sc.every then return .ins "event" cs vs
+    let sw ← match (cs.zip vs).lookup "agent" with
+      | some (.text a) => pure ((texts (← c.query "select swarm from agent where name=? and swarm is not null" [.text a])).headD "")
+      | _ => pure ""
+    return .ins "event" cs ((cs.zip vs).map fun (k, v) => if k == "swarm" then .text sw else v)
+  | st => return st
+
 /-- Writes every table of `new` over what `old` loaded (`dbPlan`), in scope `sc`. -/
-def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := runStmts c ((dbPlan old new).flatMap (scopeStmts sc))
+def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := do
+  runStmts c (← ((dbPlan old new).flatMap (scopeStmts sc)).mapM (agentSwarm c sc))
 
 /-- `act` between `begin` and COMMIT; any error rolls back. -/
 def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do

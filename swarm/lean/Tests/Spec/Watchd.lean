@@ -427,17 +427,18 @@ def the_whole_iteration_is_under_pcall (t : T) : IO Unit := do
   -- ci_poll raises: its first call, the repo's git, is the seam (swarm t's `ci` knob on)
   t.q_ "insert into meta(scope,k,v) values('t','ci','on')"
   let booms ← IO.mkRef 0
-  h.git.set fun args cwd => do
-    if cwd == some t.repo && args == ["rev-parse", "--show-toplevel"] then
+  h.proc.set fun argv => do
+    if argv.take 2 == ["gh", "api"] then
       booms.modify (· + 1)
       if (← booms.get) == 2 then t.q_ "delete from meta where k='watchd'"
       throw (IO.userError "boom")
+    return none
   let opts : SwarmLean.Watchd.Opts := { minFreeGib := 0, once := false, interval := 0 }
   eq (← run h (Cmd.Watchd.loop "me" opts)) ": its record is gone"
   eq (← booms.get) 2
   eq (← t.q1 "select v from meta where k='watchd_up'") Json.null  -- up false
   eq (← t.q "select 1 from event where kind='watchd-tick-error'").size 1  -- once per distinct message
-  h.git.set fun _ _ => pure ()
+  h.proc.set fun _ => pure none
   t.q_ "insert or replace into meta(k,v) values('watchd','me')"
   eq (← run h (Cmd.Watchd.loop "me" { opts with once := true })) Json.null
   eq ((← t.q1 "select v from meta where k='watchd_up'").f "v") "me"
