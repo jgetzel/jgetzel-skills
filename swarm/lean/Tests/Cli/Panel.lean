@@ -391,6 +391,14 @@ def test_state_swarms (t : T) : IO Unit := do
   eq (su.f "needs") (json% [{"kind": "question", "task": 2, "agent": "x", "question": "which?", "title": "two"},
     {"kind": "prompt", "agent": "y"}])
   unless ((st0.f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {st0.f "folder"}"
+  -- a swarm's own state sends every task but marks its own, and counts only those (board #101): #2 is u's agent's, #4
+  -- in u's repo
+  let o ← parse (← t.sw "a" ["state", "--json", "--view", "overview"] { env := [("SWARM", some "t")] }).stdout
+  let ours := match o.f "tasks" with
+    | .arr a => (a.toList.filter fun (k : Json) => k.f "mine" == Json.bool true).map (·.f "id")
+    | _ => []
+  eq ours [json% 1, json% 3]
+  eq (((o.f "counts").f "open"), ((o.f "counts").f "blocked")) (json% 1, json% 0)
 
 def tests : List Case := [
   ("test_state_swarms", test_state_swarms),

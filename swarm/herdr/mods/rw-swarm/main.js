@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -136,6 +136,7 @@ export default class SwarmTab extends View {
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
         if (!this.same(cwd, sw) || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
+        if (!who) s.tasks = ownTasks(s.tasks); // the overview's Next up and board: this swarm's tasks
         this.s = s; this.error = null;
         if (this.pend && this.at >= (this.actDone ?? 0)) this.pend = null;
         if (props()?.view && s.comms !== this.sideFor) { // the message line names its communicator
@@ -218,7 +219,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, ["state", "--json", "--view", "board"], sw);
-        if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? [];
+        if (r.code === 0) this.pastTasks = ownTasks(overOf(JSON.parse(r.stdout))?.tasks);
       } catch {}
       cx.notify();
     });

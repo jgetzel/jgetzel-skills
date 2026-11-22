@@ -395,6 +395,9 @@ def state (a : Parsed) : m UInt32 := do
     Env.out (Json.encode (← summary db p t))
     return 0
   let full := view.isNone
+  -- the swarm's tasks (SwarmsView.mine): the store's are every swarm's, and a panel lists only its own (sw-global §5)
+  let ours : Option (Std.HashSet Int) ← if db.swarm == "" then pure none else some <$> SwarmsView.mineIds db.swarm
+  let isOurs (i : Int) : Bool := ours.all (·.contains i)
   let lanes := wants view "lanes"
   let me := a.str "agent"
   let tid := a.int "task"
@@ -416,7 +419,8 @@ def state (a : Parsed) : m UInt32 := do
   -- `--before`: the next page back, the Board's tasks numbered below it, the Agents' ended before it (UI-SPEC II.3l)
   let before := a.int "before"
   let below (n : Int) : Bool := match before with | some b => decide (n < b) | none => true
-  let newest (s : Status) : List Int := ((db.tasks.filter fun r => r.state = s && below r.id).reverse.take 80).map (·.id)
+  let newest (s : Status) : List Int :=
+    ((db.tasks.filter fun r => r.state = s && below r.id && isOurs r.id).reverse.take 80).map (·.id)
   let edged : List Int := if view == some "graph" then
       (db.tasks.filter fun r => !(Tasks.depsOf r).isEmpty).foldl (fun acc r => r.id :: Tasks.depsOf r ++ acc) [] else []
   let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++ edged.eraseDups ++
@@ -424,7 +428,8 @@ def state (a : Parsed) : m UInt32 := do
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
   let sent (r : Task) : Bool := full || !(r.state = .done || r.state = .dropped) || page.contains r.id ||
     (r.state = .done && me.isSome && r.owner == me)
-  let tasksJ := (db.tasks.filter sent).map fun r => taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])
+  let tasksJ := (db.tasks.filter sent).map fun r =>
+    (taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
   let endedPage := if view == some "agents" then
       (((db.agents.filter fun x => x.ended.isSome && below (x.ended.getD 0)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
     else []
@@ -521,9 +526,9 @@ def state (a : Parsed) : m UInt32 := do
       ("reuse_below", some (Json.int (Reuse.reuseBelow db)))]),
     ("rules", N (metaV "rules")),  -- `swarm rules show`: what every agent's brief starts with
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
-    -- every task by state, and the ended agents but the communicator: what the trimmed lists leave out
+    -- the swarm's tasks by state, and the ended agents but the communicator: what the trimmed lists leave out
     ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
-      (k, Json.int (db.tasks.filter (·.state.text == k)).length)) ++
+      (k, Json.int (db.tasks.filter fun r => r.state.text == k && isOurs r.id).length)) ++
       [("ended", Json.int (db.agents.filter fun x => x.ended.isSome && some x.name != cv).length)])),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>
       Json.mkObj [("a", .str c.a), ("b", .str c.b), ("path", .str c.path), ("since", NI c.since)]).toArray),

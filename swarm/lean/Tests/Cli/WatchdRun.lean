@@ -420,17 +420,18 @@ def test_run_enters_the_dev_shell (t : T) : IO Unit := do
   if (← t.exec ["sh", "-c", "command -v nix"]).code != 0 then return  -- skipped: no nix
   unless ← devFlake t do return
   let cmd := "echo dev=$SWARM_DEVSHELL"
-  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=yes"
-  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=yes"  -- the cached profile
-  has (← t.sw "b" ["run", "--no-devshell", "--", cmd]).stdout "dev=\n"
+  let o : Opts := { env := [("IN_NIX_SHELL", none)] }  -- a suite run inside a nix shell (swarm run on Linux)
+  has (← t.sw "b" ["run", "--", cmd] o).stdout "dev=yes"
+  has (← t.sw "b" ["run", "--", cmd] o).stdout "dev=yes"  -- the cached profile
+  has (← t.sw "b" ["run", "--no-devshell", "--", cmd] o).stdout "dev=\n"
   mkdir (t.wt ++ "/.claude")
   put (t.wt ++ "/.claude/swarm.json") (json% {"run": {"devshell": false}}).compress
-  has (← t.sw "b" ["run", "--", cmd]).stdout "dev=\n"
+  has (← t.sw "b" ["run", "--", cmd] o).stdout "dev=\n"
   put (t.wt ++ "/.claude/swarm.json") "{}"
   -- a shell that does not build ends the job with the hint
   put (t.wt ++ "/flake.nix") "{ outputs = { self }: throw \"broken shell\"; }\n"
   discard <| t.exec ["git", "-C", t.wt, "add", "-A"]
-  let r ← t.sw "b" ["run", "--", cmd] { ok := false }
+  let r ← t.sw "b" ["run", "--", cmd] { o with ok := false }
   eq r.code 1
   has r.stdout "the dev shell did not build; --no-devshell runs without it"
 
