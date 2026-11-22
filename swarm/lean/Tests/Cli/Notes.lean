@@ -42,7 +42,7 @@ def test_note_held_until_claim (t : T) : IO Unit := do
   has (← t.sw "a" ["post", "#1", "bench result 4.2s\nfull log in /tmp/x"]).stdout "posted to #1: held for #1's next owner"
   eq (← t.q "select 1 x from msg where dest='b' or dest='c'").size 0
   let out := (← t.sw "b" ["task", "claim", "1"]).stdout
-  has out "notes left on #1 for its next owner:"; has out "a: bench result 4.2s\nfull log in /tmp/x"
+  has out "notes left on #1 for its next owner:"; has out "a: bench result 4.2s\n  ┆ full log in /tmp/x"
   hasnt out "broadcast"
   ok (match at? out "claimed #1", at? out "notes left" with | some i, some j => i < j | _, _ => false) "the notes after the claim line"
   hasnt (← t.sw "b" ["read"]).stdout "bench result"  -- given at the claim, not again

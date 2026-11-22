@@ -57,9 +57,10 @@ def postTask (frm : String) (id : Int) (body : String) (urgent : Bool) : m UInt3
 /-- `swarm post <to> <text>… [--urgent]` (msgs.cmd_post); `#N` or `task:N` is a note to a task (`postTask`). -/
 def post (a : Parsed) : m UInt32 := do
   let frm ← me
+  if strip frm == "swarm" then die "`swarm` is reserved for watchd's own messages; set SWARM_NAME to your agent's name"
   let to := (a.str "to").getD ""
   let urgent := a.flag "urgent"
-  let body := " ".intercalate (a.strs "text")
+  let body := clean (" ".intercalate (a.strs "text"))
   if let some id := Notes.target? to then return ← postTask frm id body urgent
   let now ← Clock.now
   let some db ← Store.txn [.agent, .«meta»] (fun db =>

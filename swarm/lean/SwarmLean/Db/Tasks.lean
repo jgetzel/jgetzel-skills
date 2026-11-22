@@ -503,6 +503,7 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
   | some r =>
     if r.state = .done || r.state = .dropped then (db, .error s!"task #{d id} is {r.state.text}; it can't be edited")
     else if a.title == some "" then (db, .error "the title can't be empty")
+    else if a.title.any (·.contains '\n') then (db, .error "the title is one line; put the rest in --body or --body-file")
     else
       if let some (p, none) := a.bodyFile then (db, .error s!"can't read {p}") else
       let newBody := match a.bodyFile with | some (_, some t) => some t | _ => a.body
