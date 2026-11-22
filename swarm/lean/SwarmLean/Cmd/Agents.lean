@@ -283,7 +283,7 @@ def backTxn (envComms : Option String) (me : String) (now : Int) : Txn (Option D
   let ids := (later.filter (·.kind == some "done")).filterMap (taskOf ·.data)
   let names := ((later.filter fun e => [some "reap", some "leave", some "end", some "stay-hung"].contains e.kind).filterMap (·.agent)).eraseDups
   let merged : Cond := match since with | some s => .gt "merged_at" (.int (s - 1)) | none => .oneOf "id" []
-  let tasks : Cond := .or (.eq "state" (.text "blocked")) (.or (.oneOf "id" (ids.map fun i => .int i)) merged)
+  let tasks : Cond := .or (.eq "state" (.text "blocked")) (.or (.oneOf "id" (ids.map fun i => .int (Int.ofNat i))) merged)
   Txn.update (flag ++ [evs, { table := .task, cond := tasks }, { table := .agent, cond := .oneOf "name" (names.map .text) },
       { table := .ci }]) [.msg]
     fun db => goBack db me (commsName db envComms) now
