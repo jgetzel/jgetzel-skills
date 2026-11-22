@@ -22,11 +22,16 @@ def host {m : Type → Type} [Monad m] [Proc m] [Sys m] [Clock m] [Env m] : Clai
   out s := Env.out s
   now := Clock.now
 
-/-- What a job claims, from its history rows (wall_s, cpu_s, peak_kb, source) on any machine: cores are the default or the
-largest `cpu_s / wall_s` rounded up over rows with a CPU reading (0 is none), whichever is more, so history only raises it; memory is the largest peak × 1.25 over every row; none
+/-- How many of the newest rows with a wall time `size` reads: a command that got lighter stops asking for an old peak
+once that many lighter runs follow it (board #104). -/
+def RECENT : Nat := 10
+
+/-- What a job claims, from its history rows (wall_s, cpu_s, peak_kb, source) on any machine, newest first, of which it
+reads the newest `RECENT` with a wall time: cores are the default or the largest `cpu_s / wall_s` rounded up over those
+with a CPU reading (0 is none), whichever is more, so history only raises it; memory is their largest peak × 1.25; none
 without a row that has a wall time. -/
 def size (rows : List (Int × Int × Int × String)) : Option (Int × Int) :=
-  let rs := rows.filter (·.1 > 0)
+  let rs := (rows.filter (·.1 > 0)).take RECENT
   if rs.isEmpty then none else
   let cores := rs.foldl (fun a r => if r.2.1 > 0 then max a ((r.2.1 + r.1 - 1) / r.1) else a) DEFAULT_CORES
   let peak := rs.foldl (fun a r => max a r.2.2.1) 0
@@ -38,7 +43,7 @@ def estimate (rows : List (Int × Int × Int × String)) : Option Int :=
   let w := (rows.filter fun r => r.2.2.2 == "run" && r.1 > 0).map (·.1) |>.mergeSort (· ≤ ·)
   if w.isEmpty then none else w[(9 * w.length + 9) / 10 - 1]?
 
-/-- The newest cmd-cost rows (wall_s, cpu_s, peak_kb, source) of this repo's command `line`, from any machine: the window
+/-- The newest cmd-cost rows (wall_s, cpu_s, peak_kb, source) of this repo's command `line`, from any machine, newest first: the window
 (`Cost.WINDOW`) `size` and `estimate` read. -/
 def history {m : Type → Type} [Monad m] [Env m] [Sys m] [Git m] (line : String) : m (List (Int × Int × Int × String)) := do
   if !(← Cost.exists?) then return []

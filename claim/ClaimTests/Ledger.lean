@@ -1,4 +1,5 @@
 import Claims.Ledger
+import Claims.Acquire
 
 /-! The script's answers and the `ls` rendering, as pure functions (moved from swarm's Tests/Compute.lean). -/
 
@@ -190,3 +191,16 @@ open Claims.Admit in
 #guard waitKey "desktop: whole machine waits on hpl-ci (4 cores, no estimate, 2h10m)" ==
   waitKey "desktop: whole machine waits on hpl-ci (4 cores, no estimate, 2h11m)"
 #guard spanHM 7800 == "2h10m" && spanHM 7200 == "2h" && spanHM 59 == "59s"
+
+-- board #104: short of memory by unclaimed use, 4.5G available on an idle machine and a 10G ticket: no claim ending lets it in
+def short45 : String := "10 0.50 16777216 4718592 10 16777216 0 0 0\nq me 999000 4 10485760 w\n"
+#guard (parseLs short45).map (fun l => (l.memShort 10485760, l.memShort 4718592, l.memRoom 1000000)) == some (true, false, 4718592)
+-- a live claim of 8G would leave 12.5G when it ends: waiting for it is no shortage
+#guard (parseLs "10 0.50 16777216 4718592 10 16777216 0 0 0\nc 2 8388608 t9999999 999000 a x\nq me 999000 4 10485760 w\n").map
+  (·.memShort 10485760) == some false
+-- the room is no more than the cap less the reservation
+#guard (parseLs "10 0.50 16777216 4718592 10 16777216 0 0 14680064\n").map (·.memRoom 1000000) == some 2097152
+-- the wait, then a defaulted size lowered to nine tenths of the room, a given one (or a room under 1 GiB) refused
+#guard short false 4718592 0 120 == .wait 120 && short true 4718592 119 120 == .wait 1
+#guard short false 4718592 120 120 == .lower 4246732 && short false 4718592 0 0 == .lower 4246732
+#guard short true 4718592 120 120 == .refuse && short false 1048576 120 120 == .refuse

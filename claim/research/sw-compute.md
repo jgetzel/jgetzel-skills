@@ -79,7 +79,9 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
 1. **Size.** `--cores` and `--mem` when given. Else from the cmd-cost rows for this repo and command key on any
    machine: cores = 2, or the largest `cpu_s / wall_s` rounded up over rows with `cpu_s > 0` and `source != 'run'`
    (those rows hold a %CPU sample, and many rows have no CPU reading), whichever is more, so history only raises the
-   default; memory = the largest `peak_kb` × 1.25 over every row. With no history, 2 cores and 2 GiB. One stderr line says what was claimed and from what.
+   default; memory = the largest `peak_kb` × 1.25. Both read only the newest 10 rows with a wall time (`Compute.RECENT`,
+   board #104), so a command that got lighter stops asking for its old peak. With no history, 2 cores and 2 GiB. One
+   stderr line says what was claimed and from what.
 2. **Candidates.** `--on m`: only `m`. Else this machine, then `.claude/swarm.json` `run.machines` in order (a list
    of `hc machine ls` names; absent: this machine only, as before). A machine not `connected` is skipped.
 3. **Claim.** `try` on each candidate in order; the first `ok` wins and `drop` runs on the others. If none: one stderr
@@ -87,6 +89,12 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
    did not answer is tried again). Exit 255 with a message naming each when the first round has no `wait` answer, or
    when in a later round every candidate answered `never` or `off`; a round where a machine did not answer keeps waiting. There is no timeout; the agent runs this in the
    background and can kill it.
+   A request that can never fit does not wait (board #104). A defaulted size over a machine's cap (`never`) is lowered
+   to it, with a stderr line. A sized request short of memory by unclaimed use on every machine it waits on (more than
+   available plus every live claim's memory, `Ls.memShort`) for 2 minutes (`STEADY`) is lowered, when defaulted, to
+   nine tenths of the most any of them could give (`Ls.memRoom`), at least 1 GiB, else refused (exit 255) with the
+   reason; a given `--mem` is refused. The wait line says which, and when: `…; unclaimed use leaves at most 4.5G with
+   every claim ended: lowered to 4.0G in 2m`.
 4. **Run.** Here: holder `p<swarm run's pid>`, `drop` after the command. On another machine: holder `t`, then the
    sync, then the job script's first step is `hold <id> $$` and its exit trap `drop <id>`. `hold <id> t` renews the
    claim before the sync, every 5 minutes while rsync runs, and after it (board #126), so a long first sync keeps it; a

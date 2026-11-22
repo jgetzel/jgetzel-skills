@@ -66,7 +66,9 @@ def runCmd (args : List String) : IO UInt32 := do
   let line := " ".intercalate cmd
   let ask : Ask := {
     prog := "claim", capCmd := "claim", cands := [none], usable := [none], stateOf := fun _ => "connected",
-    id := id, cores := cores, mem_kb := mem_kb, est := est, who := who, cmd := line, pid := pid, pollMs := poll }
+    id := id, cores := cores, mem_kb := mem_kb, est := est, who := who, cmd := line, pid := pid, pollMs := poll,
+    coresFixed := (fl.lookup "--cores").isSome, memFixed := (fl.lookup "--mem").isSome || cores == "all",
+    steadyS := ((← IO.getEnv "SWARM_COMPUTE_STEADY_S").bind (·.toInt?)).getD STEADY }
   let some (_, got, gotMem) ← acquire host ask | return 255
   let cs := toString got
   let env := (jobEnv cs gotMem (← IO.getEnv "NIX_CONFIG")).map fun (k, v) => (k, some v)
