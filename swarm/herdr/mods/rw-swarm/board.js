@@ -318,7 +318,14 @@ export class SwarmBoard {
       .child(chip("others", "Other swarms", this.others === "quiet" ? "quieter" : "hidden", () => { this.others = this.others === "quiet" ? "hidden" : "quiet"; }))
       .child(chip("group", "Group", "repo, then state"))
       .child(chip("done", "Done today", this.doneShown ? "shown" : "hidden", () => { this.doneShown = !this.doneShown; }))
-      .when(Boolean(sel), (el) => el.child(chip("sel", sel.from === "task" ? `#${sel.task}` : sel.agent, "clear", () => this.unselect())));
+      .when(Boolean(sel), (el) => el.child(chip("sel", sel.from === "task" ? `#${sel.task}` : sel.agent, "clear", () => this.unselect())))
+      .child(div().flex_1())
+      .child(chip("list", "Also as", "a list, new task", () => this.view({ section: "board", board: "list" })))
+      .child(chip("graph", "Also as", "a graph", () => this.view({ section: "board", board: "graph" })));
+  }
+  // The older Board screens (List with New task, Done and Dropped; Graph) stay in main.js.
+  view(o) {
+    setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o, page: null });
   }
   unselect() { setShared(SELECT, null); this.peek = null; }
   // Click a task: it is picked (its holder lights in the rail) and peeked; click it again to let go.

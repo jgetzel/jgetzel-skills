@@ -97,10 +97,11 @@ export default class SwarmTab extends View {
     });
   }
   hidden() { return props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout())); }
-  // The full view shows board.js: its Overview or Board section, no page open.
+  // The full view shows board.js: its Overview, or its Board but for the older List and Graph, no page open.
   boardView() {
     const p = props() ?? {}, v = p.view && !p.side ? shared("rw-swarm.view") ?? {} : null;
-    return Boolean(v && !v.page && ["overview", "board"].includes(v.section ?? "overview"));
+    const sec = v?.section ?? "overview";
+    return Boolean(v && !v.page && (sec === "overview" || (sec === "board" && !["list", "graph"].includes(v.board))));
   }
 
   // The swarm shown: { cwd: a repo of it (where its commands and gh run), on: its machine, swarm: its name }.
@@ -1399,7 +1400,7 @@ export default class SwarmTab extends View {
     const left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0), past = this.qwhich !== "open";
     return h_flex().id("b-head").flex_none().px(4).gap(10).items_center().flex_wrap()
       .when(!graph, (el) => el.child(this.seg(t, "q-which", [["open", `Open ${left}`], ["done", `Done ${c.done ?? 0}`], ["dropped", `Dropped ${c.dropped ?? 0}`]], this.qwhich, (x) => { this.qwhich = x; })))
-      .child(this.seg(t, "b-as", [["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
+      .child(this.seg(t, "b-as", [["repo", "By repo"], ["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
       .when(graph, (el) => el.child(this.seg(t, "b-scope", [["queue", "Queue"], ["all", "All tasks"]], all ? "all" : "queue", (x) => set({ graph: x })))
         .when(all, (el) => el.child(h_flex().id("b-donetoo").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
           .on_click((_e, cx) => { set({ done: !v.done }); cx.notify(); })
