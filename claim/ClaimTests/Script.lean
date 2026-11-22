@@ -181,16 +181,31 @@ def test_script_reserve (t : T) : IO Unit := do
   has (← t.scr st ["ls"]).stdout " 0 8 16777216\n"
   eq (← t.scr st ["reserve", "x", "0"]).code 2
 
-def test_script_hooks_and_a_held_exclusive_ticket (t : T) : IO Unit := do
+def test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields (t : T) : IO Unit := do
   let st := t.d ++ "/h1"
   -- 4 busy cores that no claim explains: 3 past the noise floor
-  let env : List (String × Option String) := [("SWARM_COMPUTE_BUSY", some "4.00"), ("SWARM_COMPUTE_NOW", some "5000")]
-  let try2 (id cores : String) : IO String := return strip (← t.scr st ["try", id, cores, "1024", "-", "t", "w", "cmd"] env).stdout
-  eq (← try2 "bench" "all") "wait 5 16777216 0"
-  -- held, so it blocks no one
-  eq (← try2 "small" "2") "ok 2 1024"
-  eq (← try2 "big" "6") "wait 5 16776192 0"
-  has (← t.scr st ["ls"] env).stdout " 5000 w cmd"
+  let env (now : Nat) : List (String × Option String) := [("SWARM_COMPUTE_BUSY", some "4.00"), ("SWARM_COMPUTE_NOW", some (toString now))]
+  let try2 (now : Nat) (id cores : String) (est := "-") : IO String :=
+    return strip (← t.scr st ["try", id, cores, "1024", est, "t", "w", "cmd"] (env now)).stdout
+  -- `ls` at the test's clock: the real one would sweep its claims
+  let ticket (now : Nat) (id : String) : IO String := do
+    return ((splitlines (← t.scr st ["ls"] (env now)).stdout).find? (·.startsWith s!"q {id} ")).getD ""
+  eq (← try2 5000 "bench" "all") "wait 5 16777216 0"
+  -- no claim, and unclaimed use keeps it off: its clock starts
+  eq (← ticket 5000 "bench") "q bench 5000 all 0 @5000 w"
+  -- it keeps its place: no estimate waits, and with no claim its shadow is now, so no estimate is short enough
+  eq (← try2 5000 "small" "2") "wait 5 16777216 1"
+  eq (← try2 5000 "quick" "2" "50") "wait 5 16777216 1"
+  -- its own tries keep the clock
+  eq (← try2 5300 "bench" "all") "wait 5 16777216 0"
+  eq (← ticket 5300 "bench") "q bench 5000 all 0 @5000 w"
+  -- ten minutes on it has yielded: held, so it blocks no one (the oldest waiter behind it runs)
+  eq (← try2 5600 "quick" "2" "50") "ok 2 1024"
+  -- a claim is live: the clock stops, and it is a head again
+  eq (← try2 5601 "bench" "all") "wait 5 16776192 0"
+  eq (← ticket 5601 "bench") "q bench 5000 all 0 w"
+  eq (← try2 5601 "tiny" "1") "wait 5 16776192 2"
+  has (← t.scr st ["ls"] (env 5601)).stdout " 5600 ~50 w cmd"
 
 
 
@@ -263,7 +278,7 @@ def tests : List Case := [
   ("test_script_backfill", test_script_backfill),
   ("test_script_an_old_claim_without_an_estimate_blocks_only_a_head_that_needs_its_cores", test_script_an_old_claim_without_an_estimate_blocks_only_a_head_that_needs_its_cores),
   ("test_script_reserve", test_script_reserve),
-  ("test_script_hooks_and_a_held_exclusive_ticket", test_script_hooks_and_a_held_exclusive_ticket),
+  ("test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields", test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields),
   ("test_script_compute_dir_overrides_the_ledger", test_script_compute_dir_overrides_the_ledger),
   ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs)]
 

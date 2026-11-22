@@ -65,9 +65,9 @@ def test_claim_run_est_is_in_the_claim_line (t : T) : IO Unit := do
   eq (← claim t ["run", "--est", "x", "--", "true"]).code 1
 
 /-- `claim run …` in the background: its stdout, stderr and exit code are `o`, `e`, `rc` under the test dir. -/
-def bgRun (t : T) (args : List String) : IO Unit := do
+def bgRun (t : T) (args : List String) (env : List (String × Option String) := []) : IO Unit := do
   let D := shquote t.d
-  discard <| t.exec (["sh", "-c", s!"( \"$@\" >{D}/o 2>{D}/e; echo $? > {D}/rc ) >/dev/null 2>&1 </dev/null &", "sh", ← bin, "run"] ++ args) (cwd := some t.d)
+  discard <| t.exec (["sh", "-c", s!"( \"$@\" >{D}/o 2>{D}/e; echo $? > {D}/rc ) >/dev/null 2>&1 </dev/null &", "sh", ← bin, "run"] ++ args) env (cwd := some t.d)
 
 /-- Waits (100 ms steps, up to 20 s) for `p`. -/
 def until_ (p : IO Bool) : IO Unit := do
@@ -86,6 +86,25 @@ def test_claim_run_waits_while_the_ledger_is_full (t : T) : IO Unit := do
   discard <| t.scr st ["drop", "hog"]
   until_ (exists_ (t.d ++ "/rc"))
   eq (strip (← readF [t.d, "o"])) "ran"; eq (strip (← readF [t.d, "rc"])) "0"
+
+/-- The wait line says what the head waits on: a claim without an estimate, by name, and unclaimed use with the yield's
+time left. -/
+def test_claim_run_wait_line_names_what_the_head_waits_on (t : T) : IO Unit := do
+  let st := t.d ++ "/.state"
+  has (← t.scr st ["try", "ci", "4", "1024", "-", "t", "hpl-ci", "bisect"]).stdout "ok 4"
+  bgRun t ["--cores", "all", "--", "echo", "alone"]
+  until_ (return (← slurp (t.d ++ "/e")).any (subIn · "waiting for room: here: whole machine waits on hpl-ci (4 cores, no estimate, "))
+  discard <| t.scr st ["drop", "ci"]
+  until_ (exists_ (t.d ++ "/rc"))
+  eq (strip (← readF [t.d, "o"])) "alone"
+  -- 4 busy cores no claim explains
+  let busy := [("SWARM_COMPUTE_BUSY", some "4.00")]
+  discard <| t.exec ["rm", "-f", t.d ++ "/rc", t.d ++ "/e"]
+  bgRun t ["--cores", "all", "--", "echo", "alone"] busy
+  until_ (return (← slurp (t.d ++ "/e")).any (subIn · "waiting for room: here: whole machine waits on 4.0 cores unclaimed use, yields in 10m"))
+  discard <| t.scr st ["off"]
+  until_ (exists_ (t.d ++ "/rc"))
+  eq (strip (← readF [t.d, "rc"])) "255"
 
 /-- A hc that knows one machine and answers nothing else. -/
 def hcWith (t : T) : IO Unit := do
@@ -162,6 +181,7 @@ def tests : List Case := [
   ("test_claim_run_at_the_lowest_priority_and_with_its_claim", test_claim_run_at_the_lowest_priority_and_with_its_claim),
   ("test_claim_run_est_is_in_the_claim_line", test_claim_run_est_is_in_the_claim_line),
   ("test_claim_run_waits_while_the_ledger_is_full", test_claim_run_waits_while_the_ledger_is_full),
+  ("test_claim_run_wait_line_names_what_the_head_waits_on", test_claim_run_wait_line_names_what_the_head_waits_on),
   ("test_claim_reserve_and_the_one_machine_view", test_claim_reserve_and_the_one_machine_view),
   ("test_claim_run_all_is_exclusive_and_refuses_mem", test_claim_run_all_is_exclusive_and_refuses_mem)]
 
