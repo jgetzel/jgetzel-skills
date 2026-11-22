@@ -265,6 +265,36 @@ def test_script_a_note_with_a_pid_is_swept_when_it_is_gone (t : T) : IO Unit := 
   eq rows.length 1; has rows.head! s!"n p{live} "
   eq (← exists_ (led st ++ "/notes/gone")) false
 
+/-- `hold` (board #109): the claim's holder becomes a pid, its other fields kept. A remote claim (holder `t`) is held 15
+minutes from its grant: a job that starts later (a long sync) finds it lapsed, and `hold` fails, as for a claim whose
+holder died or one never made. -/
+def test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim (t : T) : IO Unit := do
+  let st := t.d ++ "/hd"
+  let env (now : Nat) : List (String × Option String) := [("SWARM_COMPUTE_BUSY", some "0.00"), ("SWARM_COMPUTE_NOW", some (toString now))]
+  let live := strip (← t.exec ["sh", "-c", "echo $PPID"]).stdout
+  let dead := strip (← t.exec ["sh", "-c", "echo $$"]).stdout
+  let claim (id : String) : IO String := return strip ((← slurp (led st ++ "/claims/" ++ id)).getD "")
+  eq (strip (← t.scr st ["try", "r", "1", "1024", "60", "t", "w", "a b  c"] (env 1000)).stdout) "ok 1 1024"
+  eq (← claim "r") "1 1024 t1900 1000 ~60 w a b  c"
+  -- the job starts within the 15 minutes: its pid holds the claim, past them too
+  eq (← t.scr st ["hold", "r", live] (env 1899)).code 0
+  eq (← claim "r") s!"1 1024 p{live} 1000 ~60 w a b  c"
+  discard <| t.scr st ["ls"] (env 5000)
+  eq (← claim "r") s!"1 1024 p{live} 1000 ~60 w a b  c"
+  -- the job starts after them: the claim lapsed, the job is told
+  eq (strip (← t.scr st ["try", "s", "1", "1024", "-", "t", "w", "c"] (env 1000)).stdout) "ok 1 1024"
+  let r ← t.scr st ["hold", "s", live] (env 1901)
+  eq r.code 3; has r.stderr "no claim s"
+  eq (← exists_ (led st ++ "/claims/s")) false
+  -- a claim whose holder died (a detached run's parent), and one never made
+  put (led st ++ "/claims/d") s!"1 1024 p{dead} 1000 w c\n"
+  eq (← t.scr st ["hold", "d", live]).code 3
+  eq (← exists_ (led st ++ "/claims/d")) false
+  eq (← t.scr st ["hold", "none", live]).code 3
+  eq (← t.scr st ["hold", "../x", live]).code 2
+  eq (← t.scr st ["hold", "r", "x"]).code 2
+  eq (← claim "r") s!"1 1024 p{live} 1000 ~60 w a b  c"
+
 def tests : List Case := [
   ("test_script_notes_add_renew_rm_and_lapse", test_script_notes_add_renew_rm_and_lapse),
   ("test_script_a_note_with_a_pid_is_swept_when_it_is_gone", test_script_a_note_with_a_pid_is_swept_when_it_is_gone),
@@ -280,6 +310,7 @@ def tests : List Case := [
   ("test_script_reserve", test_script_reserve),
   ("test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields", test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields),
   ("test_script_compute_dir_overrides_the_ledger", test_script_compute_dir_overrides_the_ledger),
-  ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs)]
+  ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs),
+  ("test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim", test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim)]
 
 end Claims.Tests.Script
