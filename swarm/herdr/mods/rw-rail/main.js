@@ -35,8 +35,8 @@ const SPACES = 60; // a machine's spaces drawn (the shown one always among them)
 const CHANGED = 5000; // agents' since-when times kept (the live ones always): the oldest of the rest go first
 const QUIET = 30000; // a watched swarm db that hasn't changed is read again this often (its times and watchd still move), as rw-swarm
 const SHOWN = 4; // a swarm's agent rows drawn before "N more, M working" (those that ask you or hang always show)
-// A swarm row's kit status: asks, hung and working from its mark, landing from its task, else idle.
-const statusOf = (it) => (["asks", "hung", "working"].includes(it.r.mark) ? it.r.mark : it.a.task?.state === "landing" ? "landing" : "idle");
+// A swarm row's kit status: asks, hung, working and gone from its mark, landing from its task, else idle.
+const statusOf = (it) => (["asks", "hung", "working", "gone"].includes(it.r.mark) ? it.r.mark : it.a.task?.state === "landing" ? "landing" : "idle");
 
 export default class Rail extends View {
   init(_props, cx) {
@@ -133,6 +133,7 @@ export default class Rail extends View {
 
   // `r.ask`: the agent's question (slice 8), shown above its pane.
   open(r, cx) {
+    if (r.mark === "gone") return; // its terminal is gone: nothing to show
     if (viewShown(layout())) showAll(run, false);
     if (r.pane && r.ask) openAsk(run, panes(), r.pane, r.ask, (f) => cx.timer.after(300, f));
     else if (r.pane) run("pane.focus", { pane: r.pane }); else run("terminal.peek", { terminal: r.t.address });

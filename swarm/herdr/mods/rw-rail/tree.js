@@ -413,6 +413,7 @@ export function since(mark, at, now) {
   switch (mark) {
     case "asks": return "asks you";
     case "hung": return "hung";
+    case "gone": return "terminal gone";
     case "done": return at ? (long ? `done ${ago}` : "done") : "";
     case "idle": return long ? `idle ${ago}` : "";
   }
@@ -625,8 +626,8 @@ export function homesOf(sums, sp, ps) {
 
 // A space's swarm (UI-SPEC.md, slice 6) from `swarm state --json --view summary` (`sum`) of the space's folder on
 // machine `on`: its block (the communicator, then the workers by name, each with its sub-terminals) and the space's
-// other rows. An agent's mark is its terminal's, but asks when its task is blocked on you, hung on watchd's sign, and
-// a worker's done is idle (a worker's turns report to the communicator). Past FOLD agents, unless `all`, workers that
+// other rows. An agent's mark is its terminal's, but gone when the view says its terminal is (nothing to open; watchd's
+// reap ends it), asks when its task is blocked on you, hung on watchd's sign, and a worker's done is idle (a worker's turns report to the communicator). Past FOLD agents, unless `all`, workers that
 // neither ask, are hung nor are in `keep` (addresses you opened) fold into a working and an idle count.
 // Returns { rows: the space's rows, marks as above, block first; block: [{r, kids, side} | {fold, n, more}], rest, big,
 // put: the folding workers' addresses and their sub-terminals' (slice 9 puts their tabs away, `all` or not), hot: the
@@ -645,7 +646,7 @@ export function swarmOf(rows, sum, byAddr, on, keep = new Set(), all = false) {
     const t = byAddr.get(at) ?? { address: at, name: a.name, status: a.status === "working" ? "working" : "idle" };
     const root = tree?.[0] ?? { t, pane: null, lines: [], mark: markOf(t, false) };
     const comms = a.name === sum.comms;
-    const mark = a.status === "blocked" ? "asks" : a.hung ? "hung" : root.mark === "done" && !comms ? "idle" : root.mark;
+    const mark = a.gone ? "gone" : a.status === "blocked" ? "asks" : a.hung ? "hung" : root.mark === "done" && !comms ? "idle" : root.mark;
     return { r: { ...root, mark }, kids: tree?.slice(1) ?? [], a, comms };
   });
   const rest = trees.filter((tr) => !taken.has(tr)).flat();

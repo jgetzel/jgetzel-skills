@@ -92,7 +92,7 @@ export function synced(el, t, m, sel, color, height = ROW) {
 }
 
 // ---- glyphs -------------------------------------------------------------------------------------------------------
-// Agents: ring idle, turning arc working, still violet arc landing, filled square asks you, outlined square hung.
+// Agents: ring idle, turning arc working, still violet arc landing, filled square asks you, outlined square hung, dash gone.
 export function agentGlyph(t, status, size = 10) {
   const c = colors(t), box = h_flex().size(size).flex_none().items_center().justify_center();
   switch (status) {
@@ -100,6 +100,7 @@ export function agentGlyph(t, status, size = 10) {
     case "landing": return svg("mods/workspace-chrome/spinner.svg").size(size + 1).flex_none().text_color(c.landing);
     case "asks": return box.rounded(2).bg(c.asks);
     case "hung": return box.rounded(2).border(1.5).border_color(c.asks);
+    case "gone": return box.child(div().w(size - 2).h(1.5).rounded(1).bg(t.dim));
     default: return box.rounded(size).border(1.5).border_color(c.idle);
   }
 }
