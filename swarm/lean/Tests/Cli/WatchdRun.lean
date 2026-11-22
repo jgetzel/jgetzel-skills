@@ -336,6 +336,8 @@ def test_ci_acts_only_on_the_repos_tasks (t : T) : IO Unit := do
   t.agent "a"; t.agent "comms"
   t.q_ "insert into task(title, body, state, created_by) values('main red: run 5', 'b', 'open', 'swarm')"
   t.q_ "insert into task(title, state, owner, first_claimed_at) values('b work', 'claimed', 'a', 1)"
+  -- B's alone: the fixture's task_of_repo trigger put both in this repo too
+  t.q_ "delete from task_repo where task in (1, 2)"
   t.q_ "insert into task_repo(task, repo) values(1, '/elsewhere/b'), (2, '/elsewhere/b')"
   let go : IO Unit := t.sw_ "a" ["watchd", "--once", "--ci", "--comms", "comms"] { cwd := some t.repo }
   gh #[run 9 "failure" "2026-11-08T10:05:00Z"]
