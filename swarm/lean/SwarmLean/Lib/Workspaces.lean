@@ -66,6 +66,12 @@ def wtMapOf (db : Db) (wts : List (String × String)) : List (String × String) 
         | none => (wts.find? fun (x : String × String) => x.2.startsWith (a.name ++ "/")).map Prod.fst
     w.map (a.name, ·)
 
+/-- The worktrees live agents work in: each one's (`wtMapOf`) and every one recorded as a live agent's own, in any
+repo (an agent on a task of several repos has one in each). -/
+def usedOf (db : Db) (wts : List (String × String)) : List String :=
+  let live := (Agents.live db).map (·.name)
+  (wtMapOf db wts).map (·.2) ++ ((db.workspaces.filter fun w => w.ro == some 0 && live.contains w.agent).map (·.path))
+
 /-- Each live agent's worktree (conflict.wt_map); `db` holds the agent and workspace tables. -/
 def wtMap [Git m] [Sys m] (db : Db) : m (List (String × String)) := return wtMapOf db (← worktrees)
 
@@ -125,11 +131,11 @@ def seed [Fs m] [Proc m] [Git m] [Sys m] (path : String) : m Unit := do
 
 variable [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
-/-- `git worktree add ../<repo>-<agent> -b <agent>/<task> <base ref>`, recorded: path, branch, base
-(workspaces.create). -/
+/-- `git worktree add ../<repo>-<agent> -b <agent>/<task> <base ref>` in the repo of `cwd`, recorded: path, branch,
+base (task `task`'s there) (workspaces.create). -/
 def create (name : String) (task : Task) (cwd : Option String) (start : Option String := none) : m (String × String × String) := do
   let some main ← main cwd | die "not in a git repo: no worktree to make"
-  let base ← Bases.baseFor task.base (some main)
+  let base ← Bases.forTask task main
   Bases.fetch base (some main)
   -- the worktree starts at --base / spawn.base when git has it, else at the landing base
   let wanted ← match start with | some s => pure (some s) | none => Bases.spawnBase (some main)
@@ -146,7 +152,7 @@ def create (name : String) (task : Task) (cwd : Option String) (start : Option S
   | some o => if o.code != 0 then die ("git worktree add failed: " ++ strip o.stderr)
   | none => die "git worktree add failed: "
   let rp ← real path
-  Store.txn [.workspace] fun db => (upsert db { path := rp, branch, base, agent := name, ro := some 0 }, ())
+  Store.txn [.workspace] fun db => (upsert db { path := rp, branch, base, agent := name, ro := some 0, repo := main }, ())
   seed rp
   return (rp, branch, base)
 
@@ -164,7 +170,7 @@ def attach (name path : String) : m (String × Option String × Option String) :
   let path ← real path
   let w ← Store.txn [.workspace] fun db =>
     match db.workspaces.find? fun w => w.path == path && w.ro == some 0 with
-    | some w => (upsert db { path, branch := w.branch, base := w.base, agent := name, ro := some 1 }, some w)
+    | some w => (upsert db { path, branch := w.branch, base := w.base, agent := name, ro := some 1, repo := w.repo }, some w)
     | none => (db, none)
   let some w := w | die s!"{path} is not a swarm workspace"
   return (path, w.branch, w.base)

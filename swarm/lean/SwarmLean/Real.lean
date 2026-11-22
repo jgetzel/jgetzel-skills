@@ -175,8 +175,9 @@ def loadMetasWhere (c : Conn) (s : String) (cond : Cond) (ms : String := s) : IO
 def loadMetas (c : Conn) (s : String) (ms : String := s) : IO (List Meta) := loadMetasWhere c s .all ms
 
 /-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents (of every swarm when `every`), knobs
-and events of the scope's swarm (a repo's own: its events of no swarm), the locks, CI runs and worktrees of its repo,
-and every task, message, cursor and conflict. -/
+and events of the scope's swarm (a repo's own: its events of no swarm), the locks and CI runs of its repo, the worktrees
+of its repo and of its swarm's agents (of every swarm's when `every`) in any repo, and every task, message, cursor and
+conflict. -/
 def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
   let has (t : Table) := ts.contains t
   let sw := [Val.text sc.swarm]
@@ -195,13 +196,15 @@ def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
          else if sc.every then loadWhere c "repo=?" rp
          else if sc.swarm == "" then loadWhere c "swarm='' and repo=?" rp
          else loadWhere c "swarm=?" sw) else pure []
-    workspaces := ← if has .workspace then loadWhere c "repo=?" rp else pure []
+    workspaces := ← if has .workspace then
+        (if sc.every then loadWhere c "repo=? or agent in (select name from agent)" rp
+         else loadWhere c "repo=? or agent in (select name from agent where swarm=?)" (rp ++ sw)) else pure []
     cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
     taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
 
 /-- A write-back statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
-column (a lock carries its own repo), and meta `comms` is the swarm row's. A new agent row replaces one of that name in another swarm: the agent
-moves (names are the machine's). -/
+column (a lock carries its own repo, and so does a workspace), and meta `comms` is the swarm row's. A new agent row
+replaces one of that name in another swarm: the agent moves (names are the machine's). -/
 def scopeStmt (sc : Scope) : Stmt → Stmt
   | .ins "event" cs vs => .ins "event" (cs ++ ["swarm", "repo"]) (vs ++ [.text sc.swarm, .text sc.repo])
   | .ins "meta" cs vs => match vs with
@@ -216,10 +219,10 @@ def scopeStmt (sc : Scope) : Stmt → Stmt
     | [.text "comms"] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [.null]
     | [.text kk] => .del "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.metaName kk)])
     | _ => .del "meta" ks k
-  | .ins t cs vs => if ["ci", "workspace"].contains t then .ins t (cs ++ ["repo"]) (vs ++ [.text sc.repo]) else .ins t cs vs
-  | .upd t ks k cs vs => if ["ci", "workspace"].contains t then .upd t (ks ++ ["repo"]) (k ++ [.text sc.repo]) cs vs
+  | .ins t cs vs => if ["ci"].contains t then .ins t (cs ++ ["repo"]) (vs ++ [.text sc.repo]) else .ins t cs vs
+  | .upd t ks k cs vs => if ["ci"].contains t then .upd t (ks ++ ["repo"]) (k ++ [.text sc.repo]) cs vs
     else .upd t ks k cs vs
-  | .del t ks k => if ["ci", "workspace"].contains t then .del t (ks ++ ["repo"]) (k ++ [.text sc.repo]) else .del t ks k
+  | .del t ks k => if ["ci"].contains t then .del t (ks ++ ["repo"]) (k ++ [.text sc.repo]) else .del t ks k
   | st => st
 
 /-- `scopeStmt`, an agent's insert after a delete of its name. -/
@@ -273,8 +276,8 @@ def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : 
     return a
 
 /-- The condition a select of table `t` is scoped by, as `loadDb` loads it: the scope's swarm for agents (none when
-`every`) and events, its repo for CI runs and worktrees (meta is scoped by `loadMetas`). A lock row carries its repo,
-so a select of locks names it. -/
+`every`) and events, its repo for CI runs, its repo and its agents for worktrees (meta is scoped by `loadMetas`). A
+lock row carries its repo, so a select of locks names it. -/
 def scopeCond (sc : Scope) : Table → Option (String × List Val)
   | .agent => if sc.every then none else some ("swarm=?", [.text sc.swarm])
   | .event =>
@@ -282,7 +285,10 @@ def scopeCond (sc : Scope) : Table → Option (String × List Val)
     else if sc.every then some ("repo=?", [.text sc.repo])
     else if sc.swarm == "" then some ("swarm='' and repo=?", [.text sc.repo])
     else some ("swarm=?", [.text sc.swarm])
-  | .ci | .workspace => some ("repo=?", [.text sc.repo])
+  | .ci => some ("repo=?", [.text sc.repo])
+  | .workspace =>
+    if sc.every then some ("(repo=? or agent in (select name from agent))", [.text sc.repo])
+    else some ("(repo=? or agent in (select name from agent where swarm=?))", [.text sc.repo, .text sc.swarm])
   | _ => none
 
 /-- The rows of a row type's table that select `s` picks, in the scope `sc`, in key order: one indexed select. -/

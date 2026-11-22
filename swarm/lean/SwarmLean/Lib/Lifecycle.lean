@@ -83,25 +83,32 @@ def foreignLanded (wt : String) (main : Option String) : m (Option (Bool × Stri
   | some u => return some (← landedRef wt "HEAD" [u], b)
 
 /-- A worktree `n` owns that holds work not on its tasks' bases, with those refs (watchd.unlanded); `wts` the live
-agents' worktrees, `all` every worktree (a detached one too, with no branch), `db` the agent, task and workspace
-tables. -/
+agents' worktrees, `all` every worktree of `main`'s repo (a detached one too, with no branch), `db` the agent, task and
+workspace tables. A recorded worktree is judged in its own repo, on its tasks' bases there and its own. -/
 def unlanded (db : Db) (n : String) (main : Option String) (wts : List (String × String))
     (all : List (String × Option String)) : m (Option (String × List String)) := do
-  let names ← Bases.ofAgent ((db.tasks.filter (·.owner == some n)).map (·.base)) main
+  let owned := (db.tasks.filter (·.owner == some n)).map (·.base)
   -- the commits n handed to a lander (`task land`, board #200) count as landed: the lander lands them
   let handed := (db.tasks.filter fun t => t.owner == some n && t.state = .landing).filterMap fun t =>
     t.land_sha.filter fun s => (GitRef.parse? s).isSome
   -- a detached worktree is owned by its record or its directory's name: no branch names an owner
   let all := all.map fun (p, b) => (p, b.getD "")
-  let own := (wts.lookup n).toList ++ Workspaces.ownedWts n all (some db) ++ Workspaces.ownedWts n all
+  let rows := db.workspaces.filter fun x => x.agent == n && x.ro == some 0
+  let own := (wts.lookup n).toList ++ Workspaces.ownedWts n all (some db) ++ Workspaces.ownedWts n all ++ rows.map (·.path)
   for w in own.eraseDups do
-    if let some (ok, b) ← foreignLanded w main then
-      if !ok then return some (w, [b])
-      continue
-    let mut bs ← Bases.refs names main
-    if let some b := ((db.workspaces.find? fun x => x.path == w && x.agent == n && x.ro == some 0).bind (·.base)) then
-      bs := bs ++ [← Bases.ref b main]
-    if !(← landed w (handed ++ bs) main) then return some (w, bs)
+    let row := rows.find? (·.path == w)
+    -- the repo it is a worktree of: its record's, else `main`'s (one of another repo is judged by its upstream)
+    let wm := match row.map (·.repo) with
+      | some r => if r != "" then some r else main
+      | none => main
+    if row.all (·.repo == "") then
+      if let some (ok, b) ← foreignLanded w main then
+        if !ok then return some (w, [b])
+        continue
+    let mut bs ← Bases.refs (← Bases.ofAgent owned wm) wm
+    if let some b := row.bind (·.base) then
+      bs := bs ++ [← Bases.ref b wm]
+    if !(← landed w (handed ++ bs) wm) then return some (w, bs)
   return none
 
 /-- What keeps worktree `wt` from landing on ref `b`: git status lines, `commit …` lines, and a `base …` line when `b`

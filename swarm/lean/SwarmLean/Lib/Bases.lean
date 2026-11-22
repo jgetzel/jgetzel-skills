@@ -1,5 +1,6 @@
 import SwarmLean.World
 import SwarmLean.Lib.Json
+import SwarmLean.Lib.Swarms
 
 /-! bases.lua: the branch a task's work lands on and the refs git compares against. -/
 
@@ -45,6 +46,20 @@ def baseFor (base : Option String) (cwd : Option String) : m String := do
   match base with
   | some b => if b != "" then return b else default cwd
   | none => default cwd
+
+/-- Repo `repo`'s base (a main worktree's path): `.claude/swarm.json`'s at its top while git knows it, else the one
+recorded in its `repo` row, else main. -/
+def ofRepo [Env m] [Sys m] (repo : String) : m String := do
+  if (← Git.git ["rev-parse", "--show-toplevel"] (some repo)).isSome then default (some repo)
+  else return ((← Swarms.repoBase repo).filter (· ≠ "")).getD "main"
+
+/-- Task `t`'s base in `repo` (bases.base_for, sw-global §2): its `task_repo` row's, else its own, else the repo's. -/
+def forTask [Env m] [Sys m] (t : Task) (repo : String) : m String := do
+  match (((← Swarms.taskRepos t.id).lookup repo).join.filter (· ≠ "")) with
+  | some b => return b
+  | none => match t.base.filter (· ≠ "") with
+    | some b => return b
+    | none => ofRepo repo
 
 /-- `origin/<b>` when origin has it (bases.remote_ref). -/
 def remoteRef (b : String) (cwd : Option String) : m (Option String) := do

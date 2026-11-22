@@ -293,23 +293,25 @@ instance : Row Event where
     pure { id := ← (col v 0).id, ts := ← (col v 1).oi, agent := ← (col v 2).os, kind := ← (col v 3).os,
            path := ← (col v 4).os, data := ← (col v 5).os }
 
-/-- A swarm worktree and who works in it (table workspace). -/
+/-- A swarm worktree, who works in it and the repo it is a worktree of (table workspace). -/
 structure Workspace where
   path : String
   agent : String
   branch : Option String := none
   base : Option String := none
   ro : Option Int := some 0
+  /-- the main worktree of its repo; `''` when not known -/
+  repo : String := ""
   deriving DecidableEq, Repr, Inhabited
 
 instance : Row Workspace where
   table := "workspace"
-  cols := ["path", "agent", "branch", "base", "ro"]
+  cols := ["path", "agent", "branch", "base", "ro", "repo"]
   nkey := 2
-  enc w := [.text w.path, .text w.agent, oS w.branch, oS w.base, oI w.ro]
+  enc w := [.text w.path, .text w.agent, oS w.branch, oS w.base, oI w.ro, .text w.repo]
   dec v := do
     pure { path := ← (col v 0).key, agent := ← (col v 1).key, branch := ← (col v 2).os, base := ← (col v 3).os,
-           ro := ← (col v 4).oi }
+           ro := ← (col v 4).oi, repo := ← (col v 5).key }
 
 /-- One CI run watchd polled (table ci). -/
 structure Ci where

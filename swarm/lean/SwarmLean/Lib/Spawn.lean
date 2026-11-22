@@ -151,18 +151,18 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
     | .error e =>
       if let .refused _ := e then Store.run (Txn.exec [logStmt now (some spawner) "spawn-refused" none (some name)])
       return .error e
-  let undo (wt : Option (String × String)) : m Unit := do
-    if let some (p, b) := wt then Workspaces.discardWs name p b a.attach.isNone
+  let undo (wts : List (String × String)) : m Unit := do
+    for (p, b) in wts do Workspaces.discardWs name p b a.attach.isNone
     let now ← Clock.now
     Store.run (Txn.update (Sels.release name) [] fun db => (unreserve db name r now, ()))
-  -- the role, the stay, the task line and the worktree: a failure leaves no worktree to discard
-  let (task, wt) ← tryCatchThe Exit (do
+  -- the role, the stay, the task line and the worktrees (one per repo of the task): a failure discards those made
+  let (task, wts) ← tryCatchThe Exit (do
     let now ← Clock.now
     if let some role := a.role then discard <| Store.run (Txn.update [Sels.live, Sels.agent name] [] (setRole · name role now))
     if let some s := a.stay then
       Store.run (Txn.update [Sels.agent name] [] fun db => (db.setAgent name ({ · with stay := some (oneLine s) }), ()))
     let mut task := task
-    let mut wt : Option (String × String) := none
+    let mut wts : List (String × String) := []
     if let (some tid, some r) := (a.taskId, r) then
       let held ← Msgs.fmtMsgs notes
       task := s!"Board task #{d tid}: {r.title.getD ""}. It is claimed for you; `swarm task show {d tid}` prints it." ++
@@ -172,15 +172,30 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
       match a.attach with
       | some at_ =>
         let (path, br, _) ← Workspaces.attach name at_
-        wt := some (path, br.getD "")
+        wts := [(path, br.getD "")]
         task := task ++ s!"\n\nYou are attached READ-ONLY to {path} (branch {br.getD "nil"}): read and run, never edit or commit there. Make your own worktree for changes."
       | none =>
         let row ← Store.view (a.taskId.map Sels.task).toList fun db => a.taskId.bind db.find
-        Bases.warnBadConfig ["base", "spawn.base"] none
-        let (path, br, base) ← Workspaces.create name (row.getD { id := 0 }) none a.base
-        wt := some (path, br)
-        task := task ++ s!"\n\nYour worktree: {path} (branch {br}, base {base}). Work only there. Never check out {base}: land by a fast-forward of it from this branch (`git push . HEAD:{base}`, or a PR for a remote base)."
-    pure (task, wt)) fun e => do undo none; throw e
+        let repos ← match a.taskId with
+          | some tid => Swarms.taskRepos tid
+          | none => pure []
+        if repos.isEmpty then
+          task := task ++ "\n\nThis task touches no repo: no worktree was made for it."
+        let mut lines : List String := []
+        for (repo, _) in repos do
+          Bases.warnBadConfig ["base", "spawn.base"] (some repo)
+          let done := wts
+          let (path, br, base) ← tryCatchThe Exit (Workspaces.create name (row.getD { id := 0 }) (some repo) a.base)
+            fun e => do for (p, b) in done do Workspaces.discardWs name p b true
+                        throw e
+          wts := wts ++ [(path, br)]
+          lines := lines ++ [s!"{path} (branch {br}, base {base}, repo {repo})"]
+          if repos.length == 1 then
+            task := task ++ s!"\n\nYour worktree: {path} (branch {br}, base {base}). Work only there. Never check out {base}: land by a fast-forward of it from this branch (`git push . HEAD:{base}`, or a PR for a remote base)."
+        if repos.length > 1 then
+          task := task ++ "\n\nYour worktrees, one per repo of the task:\n" ++ "\n".intercalate (lines.map ("- " ++ ·)) ++
+            "\nWork only there. Never check out a base: land each by a fast-forward of its base from its branch (`git push . HEAD:<base>`, or a PR for a remote base)."
+    pure (task, wts)) fun e => do undo []; throw e
   let out ← tryCatchThe Exit (do
     let here := (← swarmHere).getD "."
     let db ← Store.view [Sels.live, Sels.metas ["rules"]] id
@@ -188,11 +203,11 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
       s!"{x.name} ({x.status.getD "None"}{match x.role with | some r => ", " ++ r | none => ""})"
     let mut brief := ((← Fs.read (joinPath here "brief.md")).getD "") ++
       s!"\n\n---\nYour name: {name}. Roster: {if roster.isEmpty then "nobody yet" else ", ".intercalate roster}.\nYour area and first task:\n{task}\n"
-    brief := brief ++ "\n" ++ ((Ci.FLOW_LINE ((← Ci.flow (wt.map (·.1))).getD "post-merge")).getD "") ++ "\n"
+    brief := brief ++ "\n" ++ ((Ci.FLOW_LINE ((← Ci.flow (wts.head?.map (·.1))).getD "post-merge")).getD "") ++ "\n"
     if let some rules := db.getMeta "rules" then
       brief := brief ++ s!"\nRules for this repo, from the communicator:\n{rules.v.getD "None"}\n"
-    launchAgent name brief a.model a.effort (wt.map (·.1)) a.full) fun e => do undo wt; throw e
-  let (some out, _) := out | do undo wt; Env.err "swarm: launch.sh failed"; return .ok (some out.2)
+    launchAgent name brief a.model a.effort (wts.head?.map (·.1)) a.full) fun e => do undo wts; throw e
+  let (some out, _) := out | do undo wts; Env.err "swarm: launch.sh failed"; return .ok (some out.2)
   let addr := (splitlines (strip out)).getLastD ""
   let now ← Clock.now
   Store.run (Txn.update [Sels.agent name] [] fun db =>
