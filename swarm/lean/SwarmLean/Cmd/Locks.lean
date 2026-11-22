@@ -1,8 +1,10 @@
 import SwarmLean.Cmd
 import SwarmLean.Db.Locks
+import SwarmLean.Lib.Workspaces
 import SwarmLean.Sys
 
-/-! `swarm lock` and `swarm unlock` (locks.lua's cmd_lock, cmd_unlock), and repo_rel, which the edit hook uses too. -/
+/-! `swarm lock` and `swarm unlock` (locks.lua's cmd_lock, cmd_unlock) on a path in its repo, and repo_rel, which the
+edit hook uses too. -/
 
 namespace SwarmLean.Cmd.Locks
 open Args
@@ -33,9 +35,9 @@ def realpathLoose (p : String) : m String := do
     parts := parts.pop
   return p
 
-/-- The repo's toplevel and the path relative to it, for an absolute or `cwd`-relative path; none outside a repo
-(locks.repo_rel). -/
-def repoRel (path : String) (cwd : Option String) : m (Option (String × String)) := do
+/-- The toplevel of the worktree an absolute or `cwd`-relative path is in, and the path in its repo (the repo keyed by
+its main worktree, as a lock is); none outside a repo (locks.repo_rel). -/
+def repoRel (path : String) (cwd : Option String) : m (Option (String × Locks.InRepo)) := do
   let here := (← Sys.realpath (← Env.cwd)).getD "/"
   let p ← realpathLoose (join (join here (cwd.getD ".")) path)
   let mut dir := dirname p
@@ -46,16 +48,17 @@ def repoRel (path : String) (cwd : Option String) : m (Option (String × String)
   let top := strip top
   if top == "" then return none
   let top ← realpathLoose top
-  if p == top then return some (top, ".")
   let pre := if top == "/" then "/" else top ++ "/"
-  if p.startsWith pre then return some (top, (p.drop pre.length).toString)
-  return none
+  let rel := if p == top then some "." else if p.startsWith pre then some (p.drop pre.length).toString else none
+  let some rel := rel | return none
+  return some (top, { repo := (← Workspaces.main (some top)).getD top, rel })
 
-/-- A lock path as typed made repo-relative, a trailing slash kept; as typed outside a repo (locks.norm). -/
-def norm (path : String) : m String := do
+/-- A lock path as typed made relative to its repo, a trailing slash kept; outside a repo as typed, in the folder's
+repo (locks.norm). -/
+def norm (path : String) : m Locks.InRepo := do
   match ← repoRel path none with
-  | none => return path
-  | some (_, rel) => return rel ++ (if path.endsWith "/" && rel != "." then "/" else "")
+  | none => return { repo := (← Workspaces.main none).getD "", rel := path }
+  | some (_, p) => return { p with rel := p.rel ++ (if path.endsWith "/" && p.rel != "." then "/" else "") }
 
 /-- `swarm lock -h`. -/
 def helpLock : String :=
@@ -74,15 +77,15 @@ def unlockSpec : Spec := .mk "unlock" helpUnlock [{ name := "path" }] [] [] [] n
 /-- `swarm lock` / `swarm unlock`. -/
 def run (a : Parsed) : m UInt32 := do
   let n ← me
-  let path ← norm ((a.str "path").getD "")
+  let p ← norm ((a.str "path").getD "")
   let now ← Clock.now
   if a.cmd == "lock" then
     let c : Tasks.Ctx := { me := n, now, here := ← env "HC_TERMINAL_ID" }
-    orDie (← Store.txn [.agent, .lock, .event, .cursor] (Locks.lock c path ((a.str "reason").getD "") ((a.str "lease").getD "2h")))
-    Env.out s!"locked {path}"
+    orDie (← Store.run (Locks.lockTxn c p ((a.str "reason").getD "") ((a.str "lease").getD "2h")))
+    Env.out s!"locked {p.rel}"
   else
-    Store.txn [.lock] fun db => (Locks.unlock n path now db, ())
-    Env.out s!"unlocked {path}"
+    Store.run (Locks.unlockTxn n p now)
+    Env.out s!"unlocked {p.rel}"
   return 0
 
 /-- The group: lock and unlock. -/

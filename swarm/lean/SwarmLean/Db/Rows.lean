@@ -212,8 +212,9 @@ instance : Row Cursor where
   enc c := [.text c.agent, oI c.last_msg_id]
   dec v := do pure { agent := ← (col v 0).key, last_msg_id := ← (col v 1).oi }
 
-/-- A path lock (table lock). -/
+/-- A path lock (table lock): keyed by its repo (the main worktree's toplevel) and the path relative to it. -/
 structure Lock where
+  repo : String := ""
   path : String
   agent : Option String := none
   reason : Option String := none
@@ -224,12 +225,12 @@ structure Lock where
 
 instance : Row Lock where
   table := "lock"
-  cols := ["path", "agent", "reason", "since", "lease_until", "seen"]
-  nkey := 1
-  enc l := [.text l.path, oS l.agent, oS l.reason, oI l.since, oI l.lease_until, oI l.seen]
+  cols := ["repo", "path", "agent", "reason", "since", "lease_until", "seen"]
+  nkey := 2
+  enc l := [.text l.repo, .text l.path, oS l.agent, oS l.reason, oI l.since, oI l.lease_until, oI l.seen]
   dec v := do
-    pure { path := ← (col v 0).key, agent := ← (col v 1).os, reason := ← (col v 2).os, since := ← (col v 3).oi,
-           lease_until := ← (col v 4).oi, seen := ← (col v 5).oi }
+    pure { repo := ← (col v 0).key, path := ← (col v 1).key, agent := ← (col v 2).os, reason := ← (col v 3).os,
+           since := ← (col v 4).oi, lease_until := ← (col v 5).oi, seen := ← (col v 6).oi }
 
 /-- A conflict notice between two agents on a path (table conflict). -/
 structure Conflict where

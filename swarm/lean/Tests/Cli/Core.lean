@@ -441,6 +441,15 @@ def test_shared_tree_notice_once (t : T) : IO Unit := do
   discard <| t.edit "a" "b.txt"
   eq (← t.notices "a").size 1
 
+-- a worktree is a repo's: an agent of another swarm editing in it is told too
+def test_shared_tree_across_swarms (t : T) : IO Unit := do
+  t.agent "a"
+  t.q_ "insert into swarm(name, created) values('u', 0)"
+  t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
+  eq (← t.edit "a" "a.txt") emptyObj
+  has ((← t.edit "x" "a.txt").f "additionalContext") "also a's worktree"
+  has (((← t.notices "a")[0]!).f "body") "x also edits in"
+
 -- ---- roles (sw-roles §3, PR 1) ----
 def test_role_set_change_print_and_logged (t : T) : IO Unit := do
   t.sw_ "a" ["join"] (okc "t1")
@@ -514,6 +523,7 @@ def tests : List Case := [
   ("test_merge_origin_main_is_silent", test_merge_origin_main_is_silent),
   ("test_edit_in_another_repo_not_its_worktree", test_edit_in_another_repo_not_its_worktree),
   ("test_shared_tree_notice_once", test_shared_tree_notice_once),
+  ("test_shared_tree_across_swarms", test_shared_tree_across_swarms),
   ("test_role_set_change_print_and_logged", test_role_set_change_print_and_logged),
   ("test_role_same_text_names_peer_and_survives_takeover", test_role_same_text_names_peer_and_survives_takeover),
   ("test_role_shown_in_who_board_state", test_role_shown_in_who_board_state)]

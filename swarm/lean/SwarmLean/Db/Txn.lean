@@ -62,8 +62,9 @@ def Row.cell [Row α] (r : α) (c : String) : Val :=
   ((Row.cols α).zip (Row.enc r)).lookup c |>.getD .null
 
 /-- A read of one table: the rows `cond` selects, or with `last` only the last that many of them by key. The real
-store reads a swarm's agents and events and a repo's locks, CI runs and worktrees (`inScope`); else the machine's
-(agent names are the machine's, and a lock holds for every swarm in its repo). -/
+store reads a swarm's agents and events and a repo's CI runs and worktrees (`inScope`); else the machine's (agent
+names are the machine's, and a lock holds for every swarm in its repo). Locks are the machine's: a lock row carries its
+repo, and a select of them names it. -/
 structure Sel where
   table : Table
   cond : Cond := .all

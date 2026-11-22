@@ -202,6 +202,33 @@ def test_lock_path_is_repo_relative (t : T) : IO Unit := do
   t.sw_ "a" ["lock", "app/[id]/page.tsx"]  -- glob characters in a literal path still cover that path
   eq ((← t.edit "b" "app/[id]/page.tsx").f "permissionDecision") "deny"
 
+/-- An edit of `path` from a session in this repo, as `who`. -/
+def editFrom (t : T) (who path : String) : IO Json :=
+  t.hook who "pre-tool" (Json.mkObj [("tool_name", "Edit"), ("tool_input", Json.mkObj [("file_path", path)]),
+    ("cwd", t.repo)])
+
+-- sw-global §2: a lock is keyed by (repo, path) and holds for every swarm in its repo
+def test_lock_across_swarms_and_repos (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  t.q_ "insert into swarm(name, created) values('u', 0)"
+  t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
+  eq ((← t.q1 "select swarm from agent where name='x'").f "swarm") "u"
+  t.sw_ "a" ["lock", "a.txt"]
+  -- a peer of another swarm in the same repo: refused, and its edit denied
+  has (← t.sw "x" ["lock", "a.txt"] { ok := false }).stderr "locked by a"
+  has ((← t.edit "x" "a.txt").f "permissionDecisionReason") "locked by a"
+  -- the same path in another repo: a file there is checked against that repo's locks, not this one's
+  let ext := t.d ++ "/ext"
+  IO.FS.createDirAll ext
+  discard <| t.git ext ["init", "-q"]
+  eq ((← editFrom t "b" (ext ++ "/a.txt")).f "permissionDecision") Json.null
+  has (← t.sw "x" ["lock", "a.txt"] { cwd := some ext }).stdout "locked a.txt"
+  eq (← t.q "select repo, path, agent from lock order by agent")
+    (json% [{"repo": $(t.repo), "path": "a.txt", "agent": "a"}, {"repo": $(ext), "path": "a.txt", "agent": "x"}])
+  has ((← editFrom t "a" (ext ++ "/a.txt")).f "permissionDecisionReason") "locked by x"
+  t.sw_ "x" ["unlock", "a.txt"] { cwd := some ext }
+  eq ((← t.q "select agent from lock").map (·.f "agent")) #[Json.str "a"]
+
 -- ---- sweep ----
 def test_sweep (t : T) : IO Unit := do
   oldWt t t.wt
@@ -1603,6 +1630,7 @@ def tests : List Case := [
   ("test_bash_lock_violation", test_bash_lock_violation),
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),
+  ("test_lock_across_swarms_and_repos", test_lock_across_swarms_and_repos),
   ("test_sweep", test_sweep),
   ("test_sweep_detached", test_sweep_detached),
   ("test_worktrees_prune", test_worktrees_prune),
