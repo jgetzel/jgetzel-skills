@@ -318,13 +318,23 @@ def runRemote (ctx : JobCtx) (mach top cs unit dir rel wtname : String) (cfg : J
     Env.err s!"swarm: sync to {mach} failed (mkdir exit {mk.code}: {last.getLastD "?"}); the job never ran."
     Claims.release host on claimId
     throw (Exit.mk 255)
-  let rs ← Sys.exec ["rsync", "-rlpD", "--checksum", "--delete", "--exclude=.git", "--filter=:- .gitignore",
-    "-e", ssh, top ++ "/", tgt ++ ":" ++ src ++ "/"] {}
+  -- the claim is held 15 minutes from its grant until the job's shell holds it (`t`, board #126): renewed before the
+  -- sync, every 5 minutes while it runs (a loop beside rsync that ends with the shell running both), and after it
+  let lapsed := s!"swarm: the claim on {mach} lapsed before the job started (a remote claim is held 15 minutes until then); the job never ran."
+  if !(← Claims.renew host on claimId) then
+    Env.err lapsed
+    throw (Exit.mk 255)
+  let renewing := s!"(while sleep 300; kill -0 $$ 2>/dev/null; do {shjoin (Claims.opArgv on ["hold", claimId, "t"])}; done) </dev/null >/dev/null 2>&1 & exec \"$@\""
+  let rs ← Sys.exec (["sh", "-c", renewing, "sh", "rsync", "-rlpD", "--checksum", "--delete", "--exclude=.git",
+    "--filter=:- .gitignore", "-e", ssh, top ++ "/", tgt ++ ":" ++ src ++ "/"]) {}
   let sync := (← Sys.nowF) - t0
   if rs.code != 0 then
     let last := splitlines (strip rs.stderr)
     Env.err s!"swarm: sync to {mach} failed (rsync exit {rs.code}: {last.getLastD "?"}); the job never ran."
     Claims.release host on claimId
+    throw (Exit.mk 255)
+  if !(← Claims.renew host on claimId) then
+    Env.err lapsed
     throw (Exit.mk 255)
   let exports := ((jenv.map fun (k, v) => k ++ "=" ++ shquote v).mergeSort (· ≤ ·))
   let setO : List (String × String) := match Json.field cfg "set" with
@@ -334,7 +344,6 @@ def runRemote (ctx : JobCtx) (mach top cs unit dir rel wtname : String) (cfg : J
     k ++ "=\"" ++ v.replace "{dir}" ("$HOME/" ++ dir) ++ "\"")
   let jobCmd := mkJob unit memFlag (if devOn then wrapFull cfg cs line ("\"$HOME/" ++ src ++ "\"") ("\"$HOME/" ++ dir ++ "/devshell\"") else full)
   let metaD := s!"\"$HOME/{dir}/jobs/{jid}\""
-  let lapsed := s!"swarm: the claim on {mach} lapsed before the job started (a remote claim is held 15 minutes until then); the job never ran."
   let script := "; ".intercalate [
     s!"mkdir -p {metaD} && cd \"$HOME/{src}\" || exit 255",
     -- the claim's holder becomes this shell (the ledger's `hold`), or the job never runs: a remote claim is held 15

@@ -231,14 +231,18 @@ try_() {
 case $op in
   try) try_ \"$@\";;
   drop) okid \"$1\"; rm -f \"$d/claims/$1\" \"$d/queue/$1\";;
-  # the claim's holder becomes pid $2; a claim gone (lapsed, its holder dead, or dropped) fails with exit 3
+  # the claim's holder becomes pid $2, or with `t` a timed holder's 15 minutes start again (a pid's claim is kept as it is);
+  # a claim gone (lapsed, its holder dead, or dropped) fails with exit 3
   hold)
     okid \"$1\"
-    if ! num \"$2\"; then echo 'bad pid' >&2; exit 2; fi
+    if [ \"$2\" != t ] && ! num \"$2\"; then echo 'bad pid' >&2; exit 2; fi
     lock; clean
     f=\"$d/claims/$1\"
-    if [ ! -f \"$f\" ] || ! read -r c m _ rest < \"$f\"; then echo \"no claim $1\" >&2; exit 3; fi
-    printf '%s %s p%s %s\\n' \"$c\" \"$m\" \"$2\" \"$rest\" > \"$d/claims/.$1\" && mv \"$d/claims/.$1\" \"$f\";;
+    if [ ! -f \"$f\" ] || ! read -r c m h rest < \"$f\"; then echo \"no claim $1\" >&2; exit 3; fi
+    if [ \"$2\" = t ]; then
+      case $h in t*) nh=t$((now + 900));; *) exit 0;; esac
+    else nh=p$2; fi
+    printf '%s %s %s %s\\n' \"$c\" \"$m\" \"$nh\" \"$rest\" > \"$d/claims/.$1\" && mv \"$d/claims/.$1\" \"$f\";;
   # a display-only note: holds no cores and no place in line; `qadd id owner who est ttl pid cmd` (est, pid: - for none)
   qadd)
     id=$1; owner=$2; who=$3; est=$4; ttl=$5; pid=$6; cmd=$7
@@ -311,11 +315,15 @@ def parseTry (s : String) : Try :=
   | ["off"] => .off
   | _ => .gone
 
+/-- The argv that runs the script's op on a machine (none: here). -/
+def opArgv (mach : Option String) (args : List String) : List String :=
+  match mach with
+  | none => ["sh", "-c", SCRIPT, "sh"] ++ args
+  | some n => ["hc", "exec", "--on", n, "--timeout", "20", "sh", "-c", SCRIPT, "sh"] ++ args
+
 /-- Runs the script's op on a machine (none: here): its exit code and stdout, none when it did not start. -/
 def callRaw {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (args : List String) : m (Option (Int × String)) :=
-  match mach with
-  | none => h.run (["sh", "-c", SCRIPT, "sh"] ++ args)
-  | some n => h.run (["hc", "exec", "--on", n, "--timeout", "20", "sh", "-c", SCRIPT, "sh"] ++ args)
+  h.run (opArgv mach args)
 
 /-- Runs the script's op on a machine (none: here) and returns its stdout; none when it failed or did not answer. -/
 def call {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (args : List String) : m (Option String) := do
@@ -329,6 +337,11 @@ def release {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (i
 or it was dropped). -/
 def hold {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (id : String) (pid : Int) : m Bool := do
   return (← call h mach ["hold", id, toString pid]).isSome
+
+/-- Starts a timed claim's 15 minutes again (a claim held by a pid is kept as it is): false when the claim is gone (exit
+3), not when the machine did not answer. -/
+def renew {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (id : String) : m Bool := do
+  return (← callRaw h mach ["hold", id, "t"]).all (·.1 != 3)
 
 /-- A claim row of `ls`. -/
 structure Claim where
