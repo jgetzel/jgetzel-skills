@@ -170,7 +170,7 @@ def repoOf (known : List String) (dir : String) : m (Option String) := do
 
 /-- The view: `now`, the db, the machine's task counts, and per swarm its communicator (and its terminal), staffing,
 repos (each with its base, latest CI run, lock count and the other live swarms on it), live agents (each with its
-repo, every repo it has a worktree in, status, task, idle time and hung sign), tasks by state, what needs the human
+repo, every repo it has a worktree in, status, task, idle time, hung sign and whether its terminal is gone), tasks by state, what needs the human
 and whether the user is away. -/
 def view (t : Int) : m Json := do
   let p ← Swarms.dbPath
@@ -242,6 +242,14 @@ def view (t : Int) : m Json := do
     | _, _, _ => none
   let everyone : Std.HashSet String := agents.foldl (fun h (_, a) => h.insert a.name) {}
   let live := agents.filter fun (_, a) => a.ended.isNone
+  -- the terminals hc lists live here, read once and only when a live agent is bound to one; none when hc fails
+  let up ← if live.any (fun (_, a) => (py a.hc).isSome) then
+      pure ((← Agents.hcTerminals).map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none)
+    else pure none
+  -- bound to a terminal hc no longer lists (watchd's reap ends it; until then nothing can open or answer it)
+  let gone (x : Agent) : Bool := match up, py x.hc with
+    | some u, some h => !u.contains h
+    | _, _ => false
   -- memory per swarm: the live agents' process trees on this machine, one ps for them all
   let held := (Machine.holders (live.map (·.2)) (← Machine.procs)).filter (·.agent != "other session")
   -- each agent's worktrees (agent, repo, path): a task holder's worktree in each of the task's repos
@@ -268,8 +276,9 @@ def view (t : Int) : m Json := do
       let act := x.last_active.getD 0
       let h := hung x evs
       let asks := own.any (·.state == "blocked")
-      if !asks && x.status == some "blocked" then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
-      if h then needs := needs.push (Json.mkObj [("kind", .str "hung"), ("agent", .str x.name)])
+      let g := gone x
+      if !g && !asks && x.status == some "blocked" then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
+      if h && !g then needs := needs.push (Json.mkObj [("kind", .str "hung"), ("agent", .str x.name)])
       let rps := (wsRepos.get? x.name).getD rp.toList
       ags := ags.push (obj [("name", some (.str x.name)), ("hc", some (Json.ostr x.hc)), ("repo", some (Json.ostr rp)),
         ("repos", some (.arr (rps.map Json.str).toArray)),
@@ -279,12 +288,12 @@ def view (t : Int) : m Json := do
         ("task", some (match own.head? with
           | some k => obj [("id", some (Json.int k.id)), ("title", k.title.map .str), ("state", some (.str k.state))]
           | none => .null)),
-        ("idle_s", some (Json.int (t - (if act == 0 then t else act)))), ("hung", some (.bool h))])
+        ("idle_s", some (Json.int (t - (if act == 0 then t else act)))), ("hung", some (.bool h)), ("gone", some (.bool g))])
     let qs := (ks.filter (·.state == "blocked")).map fun k => obj [("kind", some (.str "question")),
       ("task", some (Json.int k.id)), ("agent", k.owner.map .str), ("question", k.question.map .str), ("title", k.title.map .str)]
     let names := alive.map (·.name)
     let rss := (held.filter fun h => names.contains h.agent).foldl (· + ·.kb) 0
-    let commsHc := (alive.find? fun x => some x.name == cv).bind (py ·.hc)
+    let commsHc := (alive.find? fun x => some x.name == cv && !gone x).bind (py ·.hc)
     let nlive := (alive.filter fun x => some x.name != cv).length
     let ni (k : String) : Json := Json.oint ((knob sw.name k).bind parseInt)
     let next := startable tasks ks

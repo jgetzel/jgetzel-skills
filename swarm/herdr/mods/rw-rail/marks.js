@@ -9,6 +9,7 @@ export function mark(t, kind, size = 9) {
     case "done": return box.rounded(size).bg(t.done);
     case "asks": return box.rounded(2).bg(t.blocked);
     case "hung": return box.rounded(2).border(2).border_color(t.blocked);
+    case "gone": return box.child(div().w(size - 2).h(2).rounded(1).bg(t.dim));
     case "idle": return box.rounded(size).border(2).border_color(t.idle ?? t.dim);
     case "run": return box.child(div().size(5).rounded(3).bg(t.foreground));
     case "prompt": return box.child(div().size(5).rounded(3).bg(t.dim));

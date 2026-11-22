@@ -363,6 +363,7 @@ def test_state_swarms (t : T) : IO Unit := do
   t.agent "gone" [("ended", .int 1)]
   t.agent "x" [("cwd", "/nowhere")]
   t.agent "y" [("status", "blocked")]
+  t.liveHc ["t1"]
   t.sw_ "zz" ["new", "u"]
   t.q_ "insert into swarm_repo(swarm, repo) values('u', '/r2')"
   t.q_ "update agent set swarm='u' where name in ('x', 'y')"
@@ -396,6 +397,7 @@ def test_state_swarms (t : T) : IO Unit := do
     | _ => .null
   eq r2 (json% {"path": "/r2", "base": null, "ci": null, "locks": 0, "swarms": []})
   eq ((byName su "x").f "status") (json% "blocked")
+  eq ((byName st0 "c").f "gone", (byName st0 "w").f "gone") (Json.bool false, Json.bool false)
   eq (su.f "needs") (json% [{"kind": "question", "task": 2, "agent": "x", "question": "which?", "title": "two"},
     {"kind": "prompt", "agent": "y"}])
   unless ((st0.f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {st0.f "folder"}"
@@ -413,6 +415,25 @@ def withF (j : Json) (k : String) (v : Json) : Json :=
   match j with
   | .arr a => (a.find? fun x => x.f k == v).getD .null
   | _ => .null
+
+-- an agent bound to a terminal hc no longer lists is gone (its machine restarted, say): it asks nothing and is not hung
+-- until watchd's reap ends it; one with no terminal, or when hc fails, is not gone
+def test_state_swarms_gone (t : T) : IO Unit := do
+  t.q_ "update swarm set comms='c' where name='t'"
+  t.agent "c" [("hc", "t1"), ("status", "blocked")]
+  t.agent "w" [("hc", "t2"), ("status", "blocked")]
+  t.agent "y" [("status", "blocked")]
+  t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'blocked', 'w', 'c', 'which?')"
+  t.liveHc ["t2"]
+  let s ← st t ["--view", "swarms"]
+  let sw := withF (s.f "swarms") "name" (json% "t")
+  eq ((byName sw "c").f "gone", (byName sw "w").f "gone", (byName sw "y").f "gone") (Json.bool true, Json.bool false, Json.bool false)
+  eq (sw.f "comms_hc") Json.null  -- no Talk to a terminal that is gone
+  eq (sw.f "needs") (json% [{"kind": "question", "task": 1, "agent": "w", "question": "which?", "title": "one"}, {"kind": "prompt", "agent": "y"}])
+  -- hc failing says nothing of any terminal
+  discard <| t.fake "hc" "#!/bin/sh\nexit 1\n"
+  let s ← st t ["--view", "swarms"]
+  eq ((byName (withF (s.f "swarms") "name" (json% "t")) "c").f "gone") (Json.bool false)
 
 -- board #120: --view swarms carries the machine-wide board the swarm view reads: every task with its repos (base and
 -- worktree), holder and its swarm; every repo with its CI, locks and swarms; what needs the human, by kind; each agent's
@@ -512,6 +533,7 @@ def tests : List Case := [
   ("test_state_swarms_board", test_state_swarms_board),
   ("test_events_since", test_events_since),
   ("test_state_swarms", test_state_swarms),
+  ("test_state_swarms_gone", test_state_swarms_gone),
   ("test_state_sends_what_the_view_lists", test_state_sends_what_the_view_lists),
   ("test_state_summary", test_state_summary),
   ("test_fate_is_the_ticks_verdict", test_fate_is_the_ticks_verdict),

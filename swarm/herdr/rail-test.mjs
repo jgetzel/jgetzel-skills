@@ -172,6 +172,11 @@ assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)),
   { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "" },
   { name: "ll-110", what: "#146", side: "" }]);
 assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 600e3, false).side), ["replied 10m", "asks you", "hung 58m", "idle 10m", ""]);
+// An agent whose terminal the view says is gone (its machine restarted, say) is gone, never asks, whatever its task.
+const goneSw = swarmOf([], { comms: "c", agents: [A("c", "t9", { status: "blocked", gone: true, task: { id: 229 } })] }, new Map(), "desktop");
+assert.equal(goneSw.block[0].r.mark, "gone");
+assert.equal(swarmText(goneSw.block[0], 1000, 1000 + 7200e3, false).side, "terminal gone");
+assert.deepEqual(rollOf(goneSw.rows), []);
 // Another machine's swarm: its hc ids are that machine's.
 assert.equal(swarmOf([], { agents: [A("r", "t3")] }, new Map(), "vps").block[0].r.t.address, "vps/t3");
 // Past 8 agents: the communicator, who asks, who is hung and who you opened stay named; the rest are two counts.
