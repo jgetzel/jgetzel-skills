@@ -368,7 +368,7 @@ def test_rules_set_rights (t : T) : IO Unit := do
   eq ((← t.q1 "select count(*) n from event where kind='rules-set' and agent='cm' and data='one (terminal w1)'").f "n") 1
   let r ← t.sw "a" ["rules", "set", "two"] { ok := false, hc := some "w9" }
   has r.stderr "only the communicator (cm) or the user (human) can set the rules; you are a"
-  eq (strip (← t.sw "a" ["rules"]).stdout) "one"
+  eq (strip (← t.sw "a" ["rules", "show"]).stdout) "one"
   eq ((← t.q1 "select count(*) n from event where kind='rules-set-refused' and agent='a' and data='two (terminal w9)'").f "n") 1
   eq (strip (← t.sw "human" ["rules", "set", "three"]).stdout) "three"
   eq ((← t.q1 "select count(*) n from event where kind='rules-set' and agent='human' and data='three (terminal -)'").f "n") 1
