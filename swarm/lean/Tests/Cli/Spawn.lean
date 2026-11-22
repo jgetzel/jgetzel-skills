@@ -328,17 +328,17 @@ def test_spawn_task_raise_rolls_back (t : T) : IO Unit := do
 
 def test_agent_without_terminal_reads_as_gone (t : T) : IO Unit := do
   t.fakes; t.setHc [json% {"address": "t1"}]  -- only t1 is live
-  t.agent "a"; t.agent "alive"; t.agent "x-comms" [("status", "idle")]; t.agent "w" [("status", "idle")]
+  t.agent "a"; t.agent "alive"; t.agent "t-comms" [("status", "idle")]; t.agent "w" [("status", "idle")]
   t.q_ "update agent set hc='t1' where name='alive'"
-  t.q_ "update agent set hc='dead' where name in ('x-comms','w')"
+  t.q_ "update agent set hc='dead' where name in ('t-comms','w')"
   let who := (← t.sw "a" ["who"]).stdout
-  has who "x-comms gone: no terminal; swarm join --takeover x-comms"
-  hasnt who "x-comms idle"
+  has who "t-comms gone: no terminal; swarm join --takeover t-comms"
+  hasnt who "t-comms idle"
   has who "alive idle"
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--", "go"]
   let brief := (argvOf (← t.launched)[0]!).getD 2 ""
-  has brief "alive (idle)"; hasnt brief "x-comms"; hasnt brief "w ("
-  let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
+  has brief "alive (idle)"; hasnt brief "t-comms"; hasnt brief "w ("
+  let out := (← t.sw "a" ["post", "t-comms", "hi"]).stdout
   has out "can't be delivered now"; has out "stored"
   hasnt out "held;"; hasnt out "nudge by SendMessage"
   has (← t.sw "a" ["post", "@all", "hi"]).stdout "w, x-comms: no terminal"
@@ -484,13 +484,13 @@ def test_newest_waiter_owns_inbox (t : T) : IO Unit := do
   has (← t.sw "a" ["post", "b", "again"]).stdout "no live waiter"
 
 def test_post_to_comms_has_no_sendmessage_nudge (t : T) : IO Unit := do
-  t.agent "a"; t.agent "x-comms" [("status", "idle"), ("last_active", .int (← now))]
-  t.q_ "update swarm set comms='x-comms' where name='t'"
-  let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
+  t.agent "a"; t.agent "t-comms" [("status", "idle"), ("last_active", .int (← now))]
+  t.q_ "update swarm set comms='t-comms' where name='t'"
+  let out := (← t.sw "a" ["post", "t-comms", "hi"]).stdout
   hasnt out "nudge by SendMessage"
   has out "watchd sends it to the communicator within a tick"
-  t.q_ "update agent set last_active=? where name='x-comms'" [.int ((← now) - 4000)]  -- cold: still typed in
-  let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
+  t.q_ "update agent set last_active=? where name='t-comms'" [.int ((← now) - 4000)]  -- cold: still typed in
+  let out := (← t.sw "a" ["post", "t-comms", "hi"]).stdout
   hasnt out "held, cold"; has out "watchd sends it to the communicator within a tick"
   t.agent "b" [("status", "idle"), ("last_active", .int (← now))]
   has (← t.sw "a" ["post", "b", "hi"]).stdout "nudge by SendMessage"

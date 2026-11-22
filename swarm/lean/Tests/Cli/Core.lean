@@ -292,15 +292,15 @@ def test_ctx_recorded_and_claim_refusal (t : T) : IO Unit := do
   has (← t.sw "b" ["task", "claim", "1"]).stdout "claimed #1"
 
 def test_comms_ctx_recorded_from_commands (t : T) : IO Unit := do
-  t.agent "x-comms"
-  t.q_ "update swarm set comms='x-comms' where name='t'"
+  t.agent "t-comms"
+  t.q_ "update swarm set comms='t-comms' where name='t'"
   let s ← sid "c"
   let home := t.d ++ "/home/.claude/projects/p"
   discard <| t.exec ["mkdir", "-p", home]
   put (home ++ "/" ++ s ++ ".jsonl")
     ((json% {"type": "assistant", "message": {"usage": {"input_tokens": 360000}}}).compress ++ "\n")
   let env := [("HOME", some (t.d ++ "/home")), ("CLAUDE_CODE_SESSION_ID", some s)]
-  hasnt (← t.sw "x-comms" ["board"] { env, ok := false }).stdout "Context is"
+  hasnt (← t.sw "t-comms" ["board"] { env, ok := false }).stdout "Context is"
   eq ((← t.q1 "select ctx_tokens c from agent where name='x-comms'").f "c").i 360000
 
 -- board #136: `swarm compact` types an unwrapped /compact with the agent's task, worktree and --keep into its terminal
