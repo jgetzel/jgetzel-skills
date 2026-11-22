@@ -303,9 +303,9 @@ export class SwarmBoard {
     const narrow = this.width < NARROW + PEEK, peekK = this.peek != null ? this.taskBy.get(this.peek) ?? this.show : null;
     if (this.peek != null && !peekK) this.peek = null;
     const list = v_flex().id("sb-board").flex_1().min_w(0).min_h(0).child(this.filters(t)).child(this.list(t, cx));
-    if (this.peek == null) return h_flex().flex_1().min_h(0).child(list);
+    if (this.peek == null) return h_flex().flex_1().min_h(0).items_stretch().child(list);
     const peek = this.peekPane(t, peekK);
-    return narrow ? h_flex().flex_1().min_h(0).child(peek.flex_1()) : h_flex().flex_1().min_h(0).child(list).child(peek.w(PEEK).flex_none());
+    return narrow ? h_flex().flex_1().min_h(0).items_stretch().child(peek.flex_1()) : h_flex().flex_1().min_h(0).items_stretch().child(list).child(peek.w(PEEK).flex_none());
   }
   filters(t) {
     const chip = (id, k, v, f) => h_flex().id(`sb-f-${id}`).h(24).px(8).gap(5).flex_none().items_center().rounded(kit.R.ctl).border(1)
@@ -526,7 +526,7 @@ export class SwarmBoard {
     if (narrow) return picked ? v_flex().flex_1().min_h(0).child(h_flex().id("sb-ib-back").flex_none().h(32).px(14).items_center().cursor_pointer()
       .text_size(kit.TYPE.meta).text_color(t.dim).on_click((_e, cx) => { this.pick = null; cx.notify(); }).child("‹ Inbox")).child(this.detail(t, picked))
       : list.flex_1();
-    return h_flex().flex_1().min_h(0).child(list.w(380).flex_none().border_r(1).border_color(t.border))
+    return h_flex().flex_1().min_h(0).items_stretch().child(list.w(380).flex_none().border_r(1).border_color(t.border))
       .child(picked ? this.detail(t, picked) : div().flex_1());
   }
   // An item's words: what happened, then the task it is about.
