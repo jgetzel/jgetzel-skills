@@ -424,12 +424,13 @@ def the_whole_iteration_is_under_pcall (t : T) : IO Unit := do
   setup t
   let h ← hooks t
   t.q_ "insert or replace into meta(k,v) values('watchd','me')"
-  -- ci_poll raises: its first call, the repo's git, is the seam (swarm t's `ci` knob on)
+  -- ci_poll raises: its gh call is the seam (swarm t's `ci` knob on)
   t.q_ "insert into meta(scope,k,v) values('t','ci','on')"
   let booms ← IO.mkRef 0
   h.proc.set fun argv => do
     if argv.take 2 == ["gh", "api"] then
       booms.modify (· + 1)
+      t.q_ "delete from meta where k='ci_polled'"  -- polled again on the next tick
       if (← booms.get) == 2 then t.q_ "delete from meta where k='watchd'"
       throw (IO.userError "boom")
     return none
