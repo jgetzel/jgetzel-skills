@@ -666,6 +666,11 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
 
 -- ---------- lifecycle ----------
 
+/-- The worktrees of the scope's repo a `workspace` row made (realpaths): the only ones the sweep removes (sw-global §4). -/
+def madeHere : m (List String) := do
+  let db ← Store.txn [.workspace] fun db => (db, db)
+  ((db.workspaces.filter (·.ro == some 0)).map (·.path)).mapM real
+
 /-- The repo's own upkeep (sw-global §4, per repo, in its folder and scope): its bases fetched, the sweep of the
 worktrees a `workspace` row made and the branches ended agents left; the "not landed" cache before and after. -/
 def repoSweep (comms : Option String) (notLanded : List String) : m (List String) := do
@@ -673,8 +678,7 @@ def repoSweep (comms : Option String) (notLanded : List String) : m (List String
   let main ← Workspaces.main none
   let prot ← Workspaces.protectedOf db0 main
   for b in prot do Bases.fetch b main
-  let made ← ((db0.workspaces.filter (·.ro == some 0)).map (·.path)).mapM real
-  let (_, notLanded) ← sweep comms false notLanded none (some made)
+  let (_, notLanded) ← sweep comms false notLanded none (some (← madeHere))
   if let some mn := main then sweepBranches mn ((db0.agents.filter (·.ended.isSome)).map (·.name)) prot
   return notLanded
 

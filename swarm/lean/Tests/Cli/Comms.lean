@@ -70,6 +70,7 @@ def test_watchd_launches_missing_communicator (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
   t.q_ "insert into meta(k,v) values('comms_hc','t0')"  -- c joined from a Herdr terminal once
+  t.q_ "insert into task(title,state) values('x','open')"  -- work the swarm can start
   tick t
   has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
   eq ((← t.q1 "select hc from agent where name='c'").f "hc") "t9"
@@ -81,6 +82,45 @@ def test_watchd_leaves_a_good_communicator (t : T) : IO Unit := do
   eq (← join t "c" "t1").code 0
   tick t
   eq (← slurp (t.d ++ "/launch.space")) Json.null
+
+-- sw-global §4 (events 1376-1378: watchd took gl-comms's live binding): the communicator is present when its row is
+-- bound to a live terminal, whatever that terminal's label says; watchd never moves a live binding
+def test_watchd_never_moves_a_live_communicator (t : T) : IO Unit := do
+  setup t [json% {"address": "t1"}] [("t1", json% {"swarm": "other"})]
+  eq (← join t "c" "t1" (some "--takeover")).code 0  -- hc get still shows swarm=other: the label is not presence
+  t.agent "a" [("status", "working")]
+  t.q_ "insert into task(title,state) values('x','open')"
+  tick t; tick t
+  eq (← slurp (t.d ++ "/launch.space")) Json.null
+  eq ((← t.q1 "select hc, ended from agent where name='c'").f "hc") "t1"
+  eq (← t.q "select 1 from event where kind='comms-launch'").size 0
+
+-- the bound terminal is gone and the swarm has work: a communicator is launched and bound
+def test_watchd_launches_when_the_bound_terminal_is_gone (t : T) : IO Unit := do
+  setup t [json% {"address": "t1"}]
+  eq (← join t "c" "t1").code 0
+  t.agent "a" [("status", "working")]
+  t.q_ "insert into task(title,state) values('x','open')"
+  tick t
+  eq (← slurp (t.d ++ "/launch.space")) Json.null  -- t1 live: present
+  t.setHc [json% {"address": "t3"}]
+  tick t
+  has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
+  eq ((← t.q1 "select hc from agent where name='c' and ended is null").f "hc") "t9"
+
+-- board #67: only work this swarm can start counts: a held task, or live agents with nothing open, launch none
+def test_watchd_launches_no_communicator_without_startable_work (t : T) : IO Unit := do
+  setup t [json% {"address": "t3"}]
+  t.agent "a" [("status", "working")]
+  t.q_ "insert into meta(k,v) values('comms_hc','t0')"
+  tick t
+  eq (← slurp (t.d ++ "/launch.space")) Json.null
+  t.q_ "insert into task(title,state,hold) values('x','open','later')"
+  tick t
+  eq (← slurp (t.d ++ "/launch.space")) Json.null
+  t.q_ "update task set hold=null"
+  tick t
+  has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
 
 def test_watchd_holds_autospawn_when_comms_cant_launch (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
@@ -100,6 +140,9 @@ def tests : List Case := [
   ("test_new_makes_a_swarm_once", test_new_makes_a_swarm_once),
   ("test_watchd_launches_missing_communicator", test_watchd_launches_missing_communicator),
   ("test_watchd_leaves_a_good_communicator", test_watchd_leaves_a_good_communicator),
+  ("test_watchd_never_moves_a_live_communicator", test_watchd_never_moves_a_live_communicator),
+  ("test_watchd_launches_when_the_bound_terminal_is_gone", test_watchd_launches_when_the_bound_terminal_is_gone),
+  ("test_watchd_launches_no_communicator_without_startable_work", test_watchd_launches_no_communicator_without_startable_work),
   ("test_watchd_holds_autospawn_when_comms_cant_launch", test_watchd_holds_autospawn_when_comms_cant_launch)]
 
 end SwarmLean.Tests.Cli.Comms

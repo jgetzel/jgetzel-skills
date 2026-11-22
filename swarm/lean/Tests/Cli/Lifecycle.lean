@@ -151,6 +151,15 @@ def test_lock_released_when_work_lands (t : T) : IO Unit := do
   t.tick  -- main moved to include the change: the file left a's working set
   eq (← t.q "select * from lock") (json% [])
 
+-- sw-global §4, per repo: a lock whose holder is no live agent of any swarm goes; a live holder's stays
+def test_watchd_drops_a_gone_holders_lock (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  t.sw_ "a" ["lock", "a.txt"]; t.sw_ "b" ["lock", "b.txt"]
+  t.q_ "update agent set ended=1 where name='a'"
+  t.tick
+  eq ((← t.q "select path from lock").map (·.f "path")) #[Json.str "b.txt"]
+  eq ((← t.q1 "select data from event where kind='reap' and path='a.txt'").f "data") "holder gone"
+
 def test_bash_lock_violation (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
   discard <| t.edit "b" "b.txt"
@@ -188,6 +197,9 @@ def test_sweep (t : T) : IO Unit := do
   oldWt t t.wt
   let pr ← fakeProc t
   let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  hasnt (← t.sw "a" ["watchd", "--dry-run"] (swp pr)).stdout t.wt  -- no workspace row made it: never swept
+  sweep; ok (← exists_ t.wt) "a worktree no workspace row made"
+  t.made t.wt
   has (← t.sw "a" ["watchd", "--dry-run"] (swp pr)).stdout t.wt
   ok (← exists_ t.wt)
   addProc pr 500 1 "bash" ["bash"] (some t.wt)
@@ -214,6 +226,7 @@ def test_sweep (t : T) : IO Unit := do
 
 -- board #211: the sweep removes a detached worktree only once its HEAD is on the base
 def test_sweep_detached (t : T) : IO Unit := do
+  t.made t.wt
   let pr ← fakeProc t
   let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
   discard <| t.git t.wt ["checkout", "-q", "--detach"]
@@ -242,6 +255,7 @@ def test_worktrees_prune (t : T) : IO Unit := do
   ok (!(← exists_ t.wt)); eq (← branches t) ""
 
 def test_sweep_caches_not_landed (t : T) : IO Unit := do
+  t.made t.wt
   commitWip t "u.txt"
   oldWt t t.wt
   t.fakes; t.setGh "pr" (some "[]")
@@ -272,6 +286,7 @@ def test_sweep_caches_not_landed (t : T) : IO Unit := do
 -- ---- landed agents ----
 def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt)]
+  t.made t.wt "e"
   touch t.wt
   commsTick t
   ok (← ended t "e")
@@ -284,6 +299,7 @@ def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
 
 -- workspace GC removes the worktree of a base but never the base branch
 def test_sweep_keeps_a_checked_out_base (t : T) : IO Unit := do
+  t.made t.wt
   discard <| t.git t.wt ["checkout", "-q", "-B", "formal"]
   t.sw_ "a" ["task", "add", "t", "--base", "formal"]
   oldWt t t.wt
@@ -1570,6 +1586,7 @@ def tests : List Case := [
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),
   ("test_lock_prefix_and_overlap", test_lock_prefix_and_overlap),
   ("test_lock_released_when_work_lands", test_lock_released_when_work_lands),
+  ("test_watchd_drops_a_gone_holders_lock", test_watchd_drops_a_gone_holders_lock),
   ("test_bash_lock_violation", test_bash_lock_violation),
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),

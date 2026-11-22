@@ -20,7 +20,7 @@ import SwarmLean.Lib.Sock
 namespace SwarmLean.Dispatch
 open Args
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m] [Guard m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m] [Guard m] [Scoped m]
 
 /-- Every ported group: a new group is one line here (and its import above). -/
 def groups : List (Group m) := [

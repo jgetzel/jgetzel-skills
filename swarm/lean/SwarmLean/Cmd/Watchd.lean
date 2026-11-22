@@ -385,7 +385,7 @@ def Plan.home (p : Plan) (sw : Swarms.Row) : String :=
 /-- A swarm's knobs for auto-spawn: its `spawn_model` and `spawn_effort` over watchd's flags. -/
 def knobs (opts : Opts) : m Opts := do
   let db ← Store.txn [.«meta»] fun db => (db, db)
-  let k (key : String) : Option String := (db.getMeta key).bind (·.v) |>.bind py
+  let k (key : String) : Option String := py ((db.getMeta key).bind (·.v))
   return { opts with model := (k "spawn_model").orElse fun _ => opts.model, effort := (k "spawn_effort").orElse fun _ => opts.effort }
 
 /-- One swarm's passes (sw-global §4, per agent and per swarm), each in the swarm's scope: in its home repo reap,
@@ -687,7 +687,7 @@ def serve (a : Parsed) : m UInt32 := do
 /-- `swarm watchd [...]` (watchd.cmd_watchd). -/
 def watchd (a : Parsed) : m UInt32 := do
   if a.flag "dry_run" then
-    let (out, _) ← Scoped.within (← repoScope) (sweep none true [] none)
+    let (out, _) ← Scoped.within (← repoScope) do sweep none true [] none (some (← madeHere))
     for (wt, br, mb) in out do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
     return 0
   setKnobs a

@@ -116,6 +116,30 @@ def test_one_watchd (t : T) : IO Unit := do
   t.sw_ "a" ["watchd", "--once", "--takeover"]
   hasnt ((← t.q1 "select v from meta where k='watchd'").f "v") "T1"
 
+-- sw-global §4: the machine's one watchd runs every live swarm's passes in one tick (a gone agent of each reaped); a
+-- swarm's --ci and --model are its own meta; each hour it copies the db to swarm.db.bak beside it
+def test_one_watchd_serves_every_swarm (t : T) : IO Unit := do
+  t.fakes
+  t.setHc [json% {"address": "t5"}]
+  t.sw_ "zz" ["new", "u"]
+  t.sw_ "a" ["join"]
+  t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
+  t.q_ "update agent set hc='t1' where name='a'"
+  t.q_ "update agent set hc='t2' where name='x'"
+  t.sw_ "a" ["watchd", "--once"]
+  eq ((← t.q1 "select count(*) n from agent where ended is not null").f "n") 2
+  eq ((← t.q1 "select swarm from agent where name='x'").f "swarm") "u"
+  t.sw_ "a" ["watchd", "--once", "--ci", "--model", "haiku"] { env := [("SWARM", some "u")] }
+  eq ((← t.q1 "select v from meta where scope='u' and k='ci'").f "v") "on"
+  eq ((← t.q1 "select v from meta where scope='u' and k='spawn_model'").f "v") "haiku"
+  eq (← t.q "select 1 from meta where scope='t' and k in ('ci', 'spawn_model')").size 0
+  let bak := t.db ++ ".bak"
+  eq (← exists_ bak) true
+  eq (← exists_ (t.db ++ ".tmp")) false
+  let c ← SwarmLean.Sqlite.Conn.open bak true
+  let rows ← c.query "select count(*) from swarm"
+  eq (match rows[0]?.bind (·[0]?) with | some (.int n) => n | _ => -1) 2
+
 def test_machine_note_and_patterns (t : T) : IO Unit := do
   let pr ← fakeProc t
   discard <| t.hook "a" "session"; discard <| t.hook "b" "session"
@@ -485,6 +509,7 @@ def test_run_remote_job_telemetry (t : T) : IO Unit := do
 
 def tests : List Case := [
   ("test_one_watchd", test_one_watchd),
+  ("test_one_watchd_serves_every_swarm", test_one_watchd_serves_every_swarm),
   ("test_machine_note_and_patterns", test_machine_note_and_patterns),
   ("test_pressure_edge_oom_and_orphans", test_pressure_edge_oom_and_orphans),
   ("test_machine_line_at_decisions", test_machine_line_at_decisions),
