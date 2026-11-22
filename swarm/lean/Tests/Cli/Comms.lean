@@ -138,6 +138,28 @@ def test_watchd_launches_no_communicator_without_startable_work (t : T) : IO Uni
   tick t
   has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
 
+-- board #103: a swarm counts only work of its own repos: open work staffable only by u launches u's communicator, not t's
+def test_watchd_launches_only_the_communicator_whose_swarm_has_work (t : T) : IO Unit := do
+  setup t [json% {"address": "t3"}]
+  t.agent "a" [("status", "working")]
+  t.q_ "insert into meta(k,v) values('comms_hc','t0')"  -- t's communicator joined from a Herdr terminal once
+  let ur := t.d ++ "/urepo"
+  IO.FS.createDir ur
+  discard <| t.git ur ["init", "-q", "-b", "main"]
+  put (ur ++ "/u.txt") "x"
+  discard <| t.git ur ["add", "."]
+  discard <| t.git ur ["commit", "-qm", "init"]
+  t.sw_ "zz" ["new", "u", "--repo", ur]
+  t.q_ "update swarm set comms='uc' where name='u'"
+  t.q_ "insert into meta(scope,k,v) values('u','comms_hc','t0')"
+  -- open work of u's repo only (created_at set: the fixture's trigger leaves it off t's repo)
+  t.q_ "insert into task(title,state,created_at) values('y','open',0)"
+  t.q_ "insert into task_repo(task, repo) values((select max(id) from task), ?)" [.text ur]
+  tick t
+  let ls := splitlines ((← slurp (t.d ++ "/launch.space")).getD "")
+  eq (ls.contains "uc") true "u's communicator launched"
+  eq (ls.contains "c") false "t's communicator launched for u's work"
+
 def test_watchd_holds_autospawn_when_comms_cant_launch (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
@@ -160,6 +182,7 @@ def tests : List Case := [
   ("test_watchd_never_moves_a_live_communicator", test_watchd_never_moves_a_live_communicator),
   ("test_watchd_launches_when_the_bound_terminal_is_gone", test_watchd_launches_when_the_bound_terminal_is_gone),
   ("test_watchd_launches_no_communicator_without_startable_work", test_watchd_launches_no_communicator_without_startable_work),
+  ("test_watchd_launches_only_the_communicator_whose_swarm_has_work", test_watchd_launches_only_the_communicator_whose_swarm_has_work),
   ("test_watchd_holds_autospawn_when_comms_cant_launch", test_watchd_holds_autospawn_when_comms_cant_launch)]
 
 end SwarmLean.Tests.Cli.Comms
