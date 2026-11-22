@@ -116,8 +116,8 @@ def Tally.step (who : String) (s : Tally) (r : Rec) : Tally := Id.run do
     for b in arr (some c) do
       if Json.fstr b "type" == some "tool_use" then
         let inp := match Json.field b "input" with | some i@(.obj _) => i | _ => Json.mkObj []
-        s := { s with uses := s.uses.insert ((Json.fstr b "id").getD "")
-          (r.t, key ((Json.fstr b "name").getD "") inp, truthy (Json.field inp "run_in_background")) }
+        let use := (r.t, key ((Json.fstr b "name").getD "") inp, truthy (Json.field inp "run_in_background"))
+        s := { s with uses := s.uses.insert ((Json.fstr b "id").getD "") use }
     return { s with prevkind := "asst", prevt := r.t }
   for m in TOOL_USE_ID.finditer (textOf (some c)) do
     let id := (m.group 1).getD ""

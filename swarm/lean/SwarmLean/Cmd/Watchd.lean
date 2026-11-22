@@ -363,8 +363,8 @@ def COMMS_SETTLE : Int := 20
 
 /-- What `commsInboxStep` reads besides the communicator's inbox: its row, the live agents, its compaction events. -/
 def commsSels (comms : String) : List Sel :=
-  [Sels.agent comms, Sels.live, { table := .event, cond := .and (.eq "agent" (.text comms))
-    (.oneOf "kind" [.text "compact-asked", .text "ctx-compact", .text "ctx-continue", .text "compact"]) }]
+  let kinds : Cond := .oneOf "kind" [.text "compact-asked", .text "ctx-compact", .text "ctx-continue", .text "compact"]
+  [Sels.agent comms, Sels.live, { table := .event, cond := .and (.eq "agent" (.text comms)) kinds }]
 
 /-- What `commsInbox` sends: its terminal, the unread rows that fit and how many more stay unread. -/
 structure InboxSend where

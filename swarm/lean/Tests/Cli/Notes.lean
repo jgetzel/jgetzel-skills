@@ -162,7 +162,7 @@ def test_task_show_json_events (t : T) : IO Unit := do
   eq ((ev "add").f "text", (ev "block").f "text", (ev "answer").f "text", (ev "answer").f "agent", (ev "note").f "text")
     (json% "t1", json% "which db?", json% "sqlite", json% "human", json% "a note")
   eq ((ev "pr").f "text", (ev "held").f "text", (evs.back?.getD .null).f "swarm") (json% "42", json% "later", json% "t")
-  eq ((evs[10]?.getD .null).f "text") (json% "stuck?")
+  eq ((evs[10]?.getD Json.null).f "text") (json% "stuck?")
   ok ((ev "renew").f "text" != .null) "renew's text: the lease's end"
   ok (evs.all fun e => (e.f "id").i > 0 && (e.f "ts").i > 0) "each event's id and time"
 
