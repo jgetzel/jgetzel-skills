@@ -50,6 +50,19 @@ where
                                            first_claimed_at := t.first_claimed_at.orElse fun _ => some now }
     pure (db.log now (some name) "claim" none (some s!"#{d tid} {r.title.getD ""}"), r)
 
+/-- `reserveTask` on a slice that also holds other swarms' agents (the stop holders of the tasks read: agent names are
+the machine's); `own` names the swarm's live agents. The max counts only the swarm's; the stop guard and `top` see
+every row (board #124). -/
+def reserveTaskAmong (own : List String) (db : Db) (envComms : Option String) (name cwd : String) (tid : Int)
+    (model : Option String) (now : Int) (top : Option (Db → Option Int) := none) : Db × Except Refusal Task :=
+  let other := db.agents.filter fun a => !own.contains a.name && a.name != name
+  let mine := db.agents.filter fun a => !other.any (·.name == a.name)
+  match reserveTask { db with agents := mine } envComms name cwd tid model now (top.map fun f _ => f db) with
+  | (_, .error e) => (db, .error e)
+  | (db', .ok r) =>
+    if stopPending db r then (db, .error (.lost s!"task #{d tid} waits for {r.stop_to.getD "nil"} to read its stop"))
+    else ({ db' with agents := db'.agents ++ other }, .ok r)
+
 /-- A launch that failed: reopens the task `r` it reserved if the new agent still holds it (tasks.unreserve), then ends
 the row as every end does (`endRow`: its stay, claims, locks, conflicts and pair keys go; a launch that failed late may
 have run the agent long enough to take one), unless a terminal bound it meanwhile. -/

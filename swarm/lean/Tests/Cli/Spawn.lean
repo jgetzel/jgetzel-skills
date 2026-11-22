@@ -299,6 +299,27 @@ def test_spawn_task_claims_before_launch (t : T) : IO Unit := do
   eq ((← t.q1 "select hc from agent where name='t-9'").f "hc") "hc1"
   has (← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { ok := false }).stderr "live agent"  -- a live name is refused
 
+-- board #124: a task released from another swarm's agent that hasn't read the stop is not this swarm's spawn's; that
+-- agent, live in its swarm, does not count against this swarm's max
+def test_spawn_task_waits_for_another_swarms_stop (t : T) : IO Unit := do
+  t.fakes
+  t.sw_ "zz" ["new", "u"]
+  let u : Opts := { env := [("SWARM", some "u")] }
+  let tt : Opts := { env := [("SWARM", some "t")] }
+  t.sw_ "x" ["join"] u
+  t.sw_ "x" ["task", "add", "do it"] u
+  t.sw_ "x" ["task", "claim", "1"] u
+  t.q_ "update agent set status='working' where name='x'"
+  has (← t.sw "human" ["task", "release", "1"] tt).stdout "released #1 from x"
+  has (← t.sw "a" ["limits", "--max", "1"] tt).stdout "max 1"
+  has (← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { tt with ok := false }).stderr "waits for x to read its stop"
+  eq (← t.launched).size 0
+  eq (← t.q1 "select state, owner from task") (json% {"state": "open"})
+  ok ((← t.q1 "select 1 x from agent where name='t-9'") == .null) "a refused spawn leaves no row"
+  t.sw_ "x" ["read"] u
+  t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] tt
+  eq ((← t.q1 "select owner from task").f "owner") "t-9"
+
 -- --base and spawn.base pick the start ref; a missing ref falls back to the landing base.
 def test_spawn_base_ref (t : T) : IO Unit := do
   t.fakes
@@ -834,6 +855,7 @@ def tests : List Case := [
   ("test_spawn_base_ref", test_spawn_base_ref),
   ("test_spawn_seeds_build_dirs", test_spawn_seeds_build_dirs),
   ("test_spawn_task_claims_before_launch", test_spawn_task_claims_before_launch),
+  ("test_spawn_task_waits_for_another_swarms_stop", test_spawn_task_waits_for_another_swarms_stop),
   ("test_spawn_message_task_body_text_and_ci_flow", test_spawn_message_task_body_text_and_ci_flow),
   ("test_spawned_agent_skips_older_broadcasts", test_spawned_agent_skips_older_broadcasts),
   ("test_spawn_name_of_another_swarm", test_spawn_name_of_another_swarm),
