@@ -149,7 +149,7 @@ def test_nudge (t : T) : IO Unit := do
 -- stay --end NAME: human and the communicator may; anyone else is refused; watchd then ends it by the normal rules
 def test_stay_end_for_another (t : T) : IO Unit := do
   idle t "comms"
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   idle t "e" [("wt", t.wt)]
   t.sw_ "e" ["stay", "reviews"]
   t.q_ "update agent set last_active=? where name='e'" [.int ((← now t) - 3600)]

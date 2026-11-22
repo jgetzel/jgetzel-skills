@@ -225,7 +225,7 @@ def test_run_detach_ended_submitter_gets_it_on_the_task (t : T) : IO Unit := do
 
 def test_run_detach_with_no_one_to_tell_goes_to_comms (t : T) : IO Unit := do
   t.agent "b"; t.agent "c"
-  t.q_ "insert or replace into meta(k, v) values ('comms', 'c')" []
+  t.q_ "update swarm set comms='c' where name='t'"
   discard <| t.sw "b" ["run", "--detach", "--", "sleep 2"] det
   t.q_ "update agent set ended=1, status='ended' where name='b'" []
   until_ (do return (← t.q "select 1 from msg where dest='c' and frm='swarm'").size > 0)

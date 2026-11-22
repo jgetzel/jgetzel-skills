@@ -39,12 +39,13 @@ def test_join_refused_in_another_swarms_terminal (t : T) : IO Unit := do
 
 def test_join_as_comms_makes_its_swarm (t : T) : IO Unit := do
   setup t [json% {"address": "t1"}]
+  t.sw_ "zz" ["new", "u"]  -- two live swarms: none resolves for x-comms
   eq (← join t "x-comms" "t1").code 0
   eq ((← t.q1 "select swarm from agent where name='x-comms'").f "swarm") "x"
   eq ((← t.q1 "select comms from swarm where name='x'").f "comms") "x-comms"
   eq ((← t.q1 "select repo from swarm_repo where swarm='x'").f "repo") t.repo
   has (← t.calls "labels") "t1 swarm=x"
-  -- two live swarms: a command of no agent must be told which
+  -- three live swarms: a command of no agent must be told which
   let r ← t.sw "zz" ["board"] { ok := false }
   eq r.code 1
   has r.stderr "which swarm"

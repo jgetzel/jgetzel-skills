@@ -295,7 +295,7 @@ def test_sweep_keeps_a_checked_out_base (t : T) : IO Unit := do
 def test_swarm_end (t : T) : IO Unit := do
   t.fakes
   t.agent "comms" [("status", "idle")]
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   idle t "e" [("wt", t.wt)]
   t.sw_ "a" ["task", "add", "x"]; t.sw_ "e" ["task", "claim", "1"]
   eq (← t.sw "e" ["end", "e"] { ok := false }).code 1  -- not the communicator
@@ -521,15 +521,13 @@ def test_detached_owned_worktree_unlanded_kept (t : T) : IO Unit := do
   ok (← ended t "e") "its recorded worktree at the base"
   ok (← ended t "f") "its named worktree at the base"
 
--- a terminal in a repo that is not this one is still another swarm's
-def test_other_repo_terminal_kept (t : T) : IO Unit := do
+-- a terminal in another repo is the swarm's all the same (sw-global §1): no longer kept for it
+def test_other_repo_terminal_not_foreign (t : T) : IO Unit := do
   t.fakes
   let ext ← extRepo t "ext"
   t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(ext)}]
   idle t "e" [("wt", t.wt), ("hc", "t1")]
-  eq ((← fateOf t "e").f "says") "Kept: in another repo"
-  commsTick t
-  ok (!(← ended t "e"))
+  hasnt ((← fateOf t "e").f "says") "in another repo"
 
 -- a base that is no ref in the worktree's repo is a reason endable and the Stop hook give, not an empty list
 def test_unresolvable_base_named (t : T) : IO Unit := do
@@ -618,7 +616,7 @@ def test_idle_agent_with_background_job_not_ended (t : T) : IO Unit := do
   tick
   ok (!(← ended t "e")) "its job runs"
   t.agent "comms" [("status", "idle")]
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   has (← t.sw "comms" ["end", "e"] { ok := false, env := [("SWARM_PROC", some pr)] }).stderr "background job running"
   rmtree (pr ++ "/402")  -- the job ended
   tick
@@ -1592,7 +1590,7 @@ def tests : List Case := [
   ("test_foreign_repo_landed_on_its_branch_or_upstream", test_foreign_repo_landed_on_its_branch_or_upstream),
   ("test_detached_worktree_is_ours", test_detached_worktree_is_ours),
   ("test_detached_owned_worktree_unlanded_kept", test_detached_owned_worktree_unlanded_kept),
-  ("test_other_repo_terminal_kept", test_other_repo_terminal_kept),
+  ("test_other_repo_terminal_not_foreign", test_other_repo_terminal_not_foreign),
   ("test_unresolvable_base_named", test_unresolvable_base_named),
   ("test_missing_worktree", test_missing_worktree),
   ("test_missing_worktree_unlanded_branch_not_ended", test_missing_worktree_unlanded_branch_not_ended),
