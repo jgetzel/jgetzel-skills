@@ -42,11 +42,19 @@ def test_script_50_stale_lock_one_winner (t : T) : IO Unit := do
   let out := t.d ++ "/s6-answers"
   mkdir out
   -- each waits on `go`, so all 50 meet the stale lock together
-  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do (while [ ! -e \"$2/go\" ]; do :; done; sh -c \"$1\" sh try c$k all 1024 - t w cmd >\"$2/$k\") & k=$((k + 1)); done; sleep 1; : > \"$2/go\"; wait",
+  let t0 ← IO.monoMsNow
+  discard <| t.exec ["sh", "-c", "k=0; while [ $k -lt 50 ]; do (while [ ! -e \"$2/go\" ]; do :; done; sh -c \"$1\" sh try c$k all 1024 - t w cmd >\"$2/$k\" 2>\"$2/$k.err\") & k=$((k + 1)); done; sleep 1; : > \"$2/go\"; wait",
     "sh", SCRIPT, out] [("XDG_STATE_HOME", some st)]
+  let ms := (← IO.monoMsNow) - t0
   let rs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}").getD "")
-  eq (rs.filter (·.startsWith "ok")).length 1 s!"grants; answers {rs.eraseDups}"
-  eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 1
+  let errs ← (List.range 50).mapM fun k => return strip ((← slurp s!"{out}/{k}.err").getD "")
+  -- the ledger as the 50 left it, before `ls` cleans it: claims, tickets, a lock or break left behind
+  let left ← t.exec ["sh", "-c", "cd \"$1\" || exit 1; for f in claims/* claims/.[!.]* queue/* lock lock/pid break break/pid; do if [ -f \"$f\" ]; then printf '%s: %s\\n' \"$f\" \"$(cat \"$f\")\"; elif [ -d \"$f\" ]; then echo \"$f/\"; fi; done",
+    "sh", led st]
+  let byK (xs : List String) := "; ".intercalate (((List.range 50).zip xs).filterMap fun (k, x) => if x.isEmpty then none else some s!"{k}: {x}")
+  let seen := s!"the 50 took {ms} ms\n  answers {byK rs}\n  stderr {byK errs}\n  left {(strip left.stdout).replace "\n" "\n    "}"
+  eq (rs.filter (·.startsWith "ok")).length 1 s!"grants; {seen}"
+  eq ((splitlines (← t.scr st ["ls"]).stdout).filter (·.startsWith "c ")).length 1 s!"claims; {seen}"
 
 /-- A reading left empty (a `date` or `awk` whose fork failed) ends the try with no answer, and the lock is freed. -/
 def test_script_a_failed_reading_grants_nothing (t : T) : IO Unit := do
@@ -83,6 +91,11 @@ def test_script_an_old_lock_without_a_live_holder_is_broken (t : T) : IO Unit :=
   mkdir (st ++ "/swarm-compute/lock")
   discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
   eq (← try_ t st "b" "1") "ok 1 1024"
+  -- one whose holder died with its pid file made and empty
+  mkdir (st ++ "/swarm-compute/lock")
+  put (st ++ "/swarm-compute/lock/pid") ""
+  discard <| t.exec ["touch", "-t", "202001010000", st ++ "/swarm-compute/lock"]
+  eq (← try_ t st "c" "1") "ok 1 1024"
 
 def test_script_older_ticket_holds_back_younger (t : T) : IO Unit := do
   let st := t.d ++ "/s3"
