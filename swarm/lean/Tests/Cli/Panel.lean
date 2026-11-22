@@ -368,6 +368,7 @@ def test_state_swarms (t : T) : IO Unit := do
   t.q_ "update agent set swarm='u' where name in ('x', 'y')"
   t.q_ "insert into workspace(repo, path, agent) values('/r2', '/r2-x', 'x')"
   t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'claimed', 'w', 'c', null), (2, 'two', 'blocked', 'x', 'human', 'which?'), (3, 'three', 'open', null, 'human', null), (4, 'four', 'open', null, 'human', null)"
+  t.q_ "delete from task_repo"  -- the fixture gives hand-written tasks its repo: this test sets their repos
   t.q_ "insert into task_repo(task, repo) values(4, '/r2')"
   let s ← st t ["--view", "swarms"]
   eq (s.f "db") (Json.str t.db)
