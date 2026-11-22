@@ -1,4 +1,5 @@
 import Tests.Cli.Fixture
+import SwarmLean.Db.TaskTxn
 
 /-! sqlite_spec.lua: the store assumption (Assumptions.lean's `Atomic`, and the sqlite behaviour its tags name) against
 real sqlite through the code's own store: `connect` (WAL, a 10 s busy handler) and `sqliteTxn` (`Store.txn`: load
@@ -363,6 +364,137 @@ def sqlite_txn (t : T) : IO Unit := do
   sqliteRun c sc0 (Txn.update [{ table := .agent, cond := .all }] [] fun d => (d, ()))
   eq (decide ((← loaded) = before)) true "sqlite_txn: a decision that changes nothing writes nothing"
 
+/-- A board for the task transactions: deps, a queue, a hold, a landing task, a blocked one, a stop not yet read, a
+held note, and ids whose digits prefix one another (#1, #12). -/
+def taskFix : Db := {
+  agents := [{ name := "a1", status := some "idle", ctx_tokens := some 1000 },
+    { name := "a2", status := some "working", role := some "lander" }, { name := "c", status := some "idle" },
+    { name := "gone", status := some "ended", ended := some 5 }]
+  metas := [{ k := "comms", v := some "c" }, { k := "reuse_below", v := some "0" }]
+  tasks := [{ id := 1, title := some "one", qpos := some 1 }, { id := 2, title := some "two", deps := some "1", qpos := some 2 },
+    { id := 3, title := some "three", state := .claimed, owner := some "a1", lease_until := some 2000 },
+    { id := 4, title := some "four", state := .done, owner := some "a2" },
+    { id := 5, title := some "five", deps := some "4" },
+    { id := 6, title := some "six", state := .landing, owner := some "a1", lander := some "a2", land_sha := some "abc" },
+    { id := 7, title := some "seven", hold := some "wait" },
+    { id := 8, title := some "eight", state := .blocked, owner := some "a1", question := some "which?" },
+    { id := 9, title := some "nine", stop_to := some "a2", stop_msg := some 3 },
+    { id := 10, title := some "ten", deps := some "9" },
+    { id := 11, title := some "main red: x", state := .claimed, owner := some "a1" },
+    { id := 12, title := some "twelve", qpos := some 3 }]
+  events := [{ id := 1, ts := some 1, agent := some "a1", kind := some "queue", data := some "#1" },
+    { id := 2, ts := some 2, agent := some "a2", kind := some "queue", data := some "#12" },
+    { id := 3, ts := some 3, agent := some "a2", kind := some "queue", data := some "#2" },
+    { id := 4, ts := some 4, agent := some "a1", kind := some "claim", data := some "#3 three" },
+    { id := 5, ts := some 5, agent := some "a2", kind := some "task-note", path := some "#1", data := some "#1 hi" },
+    { id := 6, ts := some 6, agent := some "a2", kind := some "task-note", path := some "#12", data := some "#12 other" }]
+  msgs := [{ id := 1, ts := some 5, frm := some "a2", dest := some "#1", body := some "hi", kind := some "task-note" },
+    { id := 2, ts := some 6, frm := some "a2", dest := some "#12", body := some "other", kind := some "task-note" },
+    { id := 3, ts := some 7, frm := some "c", dest := some "a2", body := some "stop", urgent := some 1 }]
+  cursors := [{ agent := "a1", last_msg_id := some 0 }, { agent := "a2", last_msg_id := some 1 }]
+  taskNext := 13, msgNext := 4, eventNext := 7 }
+
+/-- Every table in key order, the next ids zeroed (an insert with its id leaves the model's next as it was). -/
+def normDb (d : Db) : Db :=
+  { agents := sortRows d.agents, msgs := sortRows d.msgs, cursors := sortRows d.cursors, tasks := sortRows d.tasks,
+    locks := sortRows d.locks, conflicts := sortRows d.conflicts, pairkeys := sortRows d.pairkeys,
+    metas := sortRows d.metas, events := sortRows d.events, workspaces := sortRows d.workspaces, cis := sortRows d.cis,
+    taskNext := 0, msgNext := 0, eventNext := 0 }
+
+/-- An answer as text: ok, or the error. -/
+def exText : Except String α → String
+  | .ok _ => "ok"
+  | .error e => e
+
+/-- The task and queue commands on the statement store (board #70): each `TaskTxn` reads only a slice, yet leaves the
+db and answers as its whole-db step (Tasks.lean, Queue.lean) did, on a board that exercises their reads. -/
+def task_txns_match_their_steps (_ : T) : IO Unit := do
+  let a1 : Tasks.Ctx := { me := "a1", now := 1000 }
+  let a2 : Tasks.Ctx := { me := "a2", now := 1000 }
+  let cc : Tasks.Ctx := { me := "c", now := 1000 }
+  let same {α : Type} (name : String) (t : Txn (Except String α)) (f : Db → Db × Except String α) : IO Unit := do
+    let (d1, r1) := t.onDb taskFix
+    let (d2, r2) := f taskFix
+    eq (exText r1) (exText r2) s!"task_txns: {name} answers as its step"
+    eq (decide (normDb d1 = normDb d2)) true s!"task_txns: {name} leaves the db as its step"
+  let claimStep (c : Tasks.Ctx) (id : Int) (db : Db) : Db × Except String (Tasks.Claimed × List Msg) :=
+    match Tasks.claim c id "2h" db with
+    | (db, .ok r) => let (db, ns) := Notes.takeHeld c.me c.now id db; (db, .ok (r, ns))
+    | (db, .error e) => (db, .error e)
+  for i in [1, 2, 3, 5, 7, 9, 10, 12, 99] do
+    same s!"claim #{i}" (TaskTxn.claimTxn a1 i "2h") (claimStep a1 i)
+  same "claim --force of a held task" (TaskTxn.claimTxn { cc with force := true } 7 "2h") (claimStep { cc with force := true } 7)
+  same "claim by a new agent" (TaskTxn.claimTxn { a1 with me := "new" } 1 "2h") (claimStep { a1 with me := "new" } 1)
+  same "add" (TaskTxn.add a1 { title := "x", deps := [1, 5] }) (Tasks.add a1 { title := "x", deps := [1, 5] })
+  same "add, a missing dep" (TaskTxn.add a1 { title := "x", deps := [99] }) (Tasks.add a1 { title := "x", deps := [99] })
+  same "after" (TaskTxn.after a1 1 [12, 5]) (Tasks.after a1 1 [12, 5])
+  same "after, a cycle" (TaskTxn.after a1 9 [10]) (Tasks.after a1 9 [10])
+  same "after, a long cycle" (TaskTxn.after a1 1 [2]) (Tasks.after a1 1 [2])
+  same "priority" (TaskTxn.one 1 (Tasks.priority a1 1 1)) (Tasks.priority a1 1 1)
+  same "renew" (TaskTxn.one 3 (Tasks.renew a1 3 "1h")) (Tasks.renew a1 3 "1h")
+  for (c, i) in [(a1, 3), (a2, 6), (a1, 6), (a1, 11), (a2, 3)] do
+    same s!"done #{i} by {c.me}" (TaskTxn.done { c with onBase := true } i "sha") (Queue.done { c with onBase := true } i "sha")
+  same "land" (TaskTxn.land a1 3 "def" (some "a2")) (Tasks.land a1 3 "def" (some "a2"))
+  same "unland" (TaskTxn.unland a2 6 "red") (Tasks.unland a2 6 "red")
+  same "unland by a stranger" (TaskTxn.unland { a1 with me := "x" } 6 "red") (Tasks.unland { a1 with me := "x" } 6 "red")
+  same "block" (TaskTxn.block a1 3 "q") (Tasks.block a1 3 "q")
+  same "unblock" (TaskTxn.unblock cc 8 "yes") (Tasks.unblock cc 8 "yes")
+  same "release" (TaskTxn.release a1 3 none) (Tasks.release a1 3 none)
+  same "release --after" (TaskTxn.release a1 3 (some [2])) (Tasks.release a1 3 (some [2]))
+  same "release from another" (TaskTxn.release cc 8 none) (Tasks.release cc 8 none)
+  same "edit" (TaskTxn.edit cc 3 { title := some "new" }) (Tasks.edit cc 3 { title := some "new" })
+  for (c, i) in [(a1, 1), (a1, 3), (a2, 3), (cc, 8), (a2, 6), (a1, 4)] do
+    same s!"drop #{i} by {c.me}" (TaskTxn.drop c i) (Queue.drop c i)
+  same "hold" (TaskTxn.one 1 (Queue.hold a1 1 "why")) (Queue.hold a1 1 "why")
+  same "unhold" (TaskTxn.unhold cc 7) (Queue.unhold cc 7)
+  same "unhold, not in charge" (TaskTxn.unhold a1 7) (Queue.unhold a1 7)
+  same "rules set" (TaskTxn.setRules cc "be kind") (Tasks.setRules cc "be kind")
+  same "rules set, not in charge" (TaskTxn.setRules a1 "be kind") (Tasks.setRules a1 "be kind")
+  same "queue add" (TaskTxn.qadd a1 [5, 1] .back) (Queue.add a1 [5, 1] .back)
+  same "queue add, front" (TaskTxn.qadd cc [5] (.before 12)) (Queue.add cc [5] (.before 12))
+  same "queue add, moves another's" (TaskTxn.qadd a1 [12] .back) (Queue.add a1 [12] .back)
+  same "queue rm" (TaskTxn.qrm a1 [1]) (Queue.rm a1 [1])
+  same "queue rm, another's" (TaskTxn.qrm a1 [12]) (Queue.rm a1 [12])
+  -- the views: what they read gives the answers the whole db gives
+  let (_, sh) := (TaskTxn.showTxn 1).onDb taskFix
+  eq ((Tasks.taskEvents sh 1).map (·.id)) ((Tasks.taskEvents taskFix 1).map (·.id)) "task_txns: show reads the task's events"
+  eq ((Notes.notes sh 1).map (·.text)) ["hi"] "task_txns: and its notes, not #12's"
+  eq ((Tasks.waiters sh 1).map (·.id)) ((Tasks.waiters taskFix 1).map (·.id)) "task_txns: and its waiters"
+  let (_, qv) := TaskTxn.queueView.onDb taskFix
+  eq ((Queue.queued qv).map fun t => Queue.whyNot qv t) ((Queue.queued taskFix).map fun t => Queue.whyNot taskFix t)
+    "task_txns: swarm queue says why as the whole db does"
+  eq ((Queue.staffing qv).map (·.id)) ((Queue.staffing taskFix).map (·.id)) "task_txns: and staffs the same"
+
+/-- The claim on real sqlite (board #70): the store's guarded update takes an open task for one claimer; the next
+claimer is refused, and the model says the same. -/
+def sqlite_claim (t : T) : IO Unit := do
+  Shim.setenv "SWARM_DB" t.db
+  let c ← connect
+  discard <| c.exec "insert or ignore into swarm(name) values('t')"
+  let fix : Db := { taskFix with metas := [] }
+  storeDb c sc0 {} fix
+  let a1 : Tasks.Ctx := { me := "a1", now := 1000 }
+  let a2 : Tasks.Ctx := { me := "a2", now := 1000 }
+  eq (exText (← sqliteRun c sc0 (TaskTxn.claimTxn a1 1 "2h"))) "ok" "sqlite_claim: the first claimer wins"
+  eq (exText (← sqliteRun c sc0 (TaskTxn.claimTxn a2 1 "2h"))) "task #1 is claimed, owned by a1"
+    "sqlite_claim: the second is refused"
+  let (m1, _) := (TaskTxn.claimTxn a1 1 "2h").onDb fix
+  let (m2, r2) := (TaskTxn.claimTxn a2 1 "2h").onDb m1
+  eq (exText r2) "task #1 is claimed, owned by a1" "sqlite_claim: the model refuses it too"
+  let all := [Table.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  let got ← loadDb c sc0 all
+  eq (decide (normDb got = normDb m2)) true "sqlite_claim: and the rows are the model's"
+  -- a prefix read: the events about #1, not #12's
+  let (_, want) := (TaskTxn.showTxn 1).onDb m2
+  let got ← sqliteRun c sc0 (TaskTxn.showTxn 1)
+  eq (got.events.map (·.id)) (want.events.map (·.id)) "sqlite_claim: show reads the events the model's prefix picks"
+  eq (decide ((Tasks.taskEvents got 1).all fun e => (e.data.getD "").startsWith "#1 " || e.data == some "#1")) true
+    "sqlite_claim: and the task's events among them are none of #12's"
+  -- the guard itself: an update of a claimed task where it is open changes nothing
+  let some r := got.find 1 | fail "sqlite_claim: no task 1"
+  eq (← sqliteRun c sc0 (Txn.guarded (Row.put { r with owner := some "a2" }) (.and (.eq "state" (.text "open")) (.null "owner"))))
+    false "sqlite_claim: the guard refuses a claimed task"
+
 def tests : List Case := [
   ("sqlite_begin", sqlite_begin),
   ("sqlite_write", sqlite_write),
@@ -372,6 +504,8 @@ def tests : List Case := [
   ("sqlite_dml", sqlite_dml),
   ("sqlite_alter", sqlite_alter),
   ("sqlite_txn", sqlite_txn),
+  ("task_txns_match_their_steps", task_txns_match_their_steps),
+  ("sqlite_claim", sqlite_claim),
   ("deferred", deferred),
   ("sqlite_version", sqlite_version)]
 

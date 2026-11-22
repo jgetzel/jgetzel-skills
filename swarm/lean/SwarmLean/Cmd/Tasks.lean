@@ -7,6 +7,7 @@ import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Msgs
 import SwarmLean.Db.Notes
 import SwarmLean.Lib.Workspaces
+import SwarmLean.Db.TaskTxn
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
 
@@ -67,8 +68,8 @@ variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m
 def ctx : m Tasks.Ctx := do
   return { me := ← me, now := ← Clock.now, here := ← env "HC_TERMINAL_ID", comms := ← env "SWARM_COMMS" }
 
-/-- Runs a task step in one transaction over `ts`, dying with its error. -/
-def step (ts : List Table) (f : Db → Db × Except String α) : m α := do orDie (← Store.txn ts f)
+/-- Runs a task transaction, dying with its error. -/
+def step (t : Txn (Except String α)) : m α := do orDie (← Store.run t)
 
 /-- Evidence `e` (its first word) names a commit on base `b` of repo `cwd`: local or origin's, fetched first (board
 #200). -/
@@ -167,7 +168,7 @@ def task (a : Parsed) : m UInt32 := do
     match a.str "base" with
     | some b => if b != "" && (GitRef.parse? b).isNone then die s!"--base {b}: not a valid git ref name"
     | none => for r in repos do Bases.warnBadConfig ["base"] (some r)
-    let n ← step [.task] (add c { title := clean ((a.str "title").getD ""), body, deps := (a.ids "after").getD [],
+    let n ← step (TaskTxn.add c { title := clean ((a.str "title").getD ""), body, deps := (a.ids "after").getD [],
                                     model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority",
                                     labels := a.str "label" })
     let rows ← repos.mapM fun r => do return (r, (a.str "base").filter (· ≠ ""), some (← Bases.default (some r)))
@@ -175,11 +176,7 @@ def task (a : Parsed) : m UInt32 := do
     out s!"task #{d n}"
   | "claim" =>
     -- the claim and the take of its held notes in one transaction: a note posted after it goes to the new owner
-    let (r, notes) ← step [.task, .agent, .cursor, .event, .«meta», .msg] fun db =>
-      let cl := claim { c with force := a.flag "force" } id ((a.str "lease").getD "2h") db
-      match cl.2 with
-      | .ok r => ((Notes.takeHeld c.me c.now id cl.1).1, .ok (r, (Notes.takeHeld c.me c.now id cl.1).2))
-      | .error e => (cl.1, .error e)
+    let (r, notes) ← step (TaskTxn.claimTxn { c with force := a.flag "force" } id ((a.str "lease").getD "2h"))
     out s!"claimed #{d id} until {← Clock.hhmm r.«until»}"
     if !notes.isEmpty then out s!"notes left on #{d id} for its next owner:\n{← Msgs.fmtMsgs notes}"
     if let some (avail, total, psi) ← Machine.mem then
@@ -188,29 +185,29 @@ def task (a : Parsed) : m UInt32 := do
       else out (Machine.line avail total psi)
     out (((py r.body).map contBlock).getD "(no body)")
   | "show" =>
-    let db ← Store.txn [.task, .event] fun db => (db, db)
+    let db ← Store.run (TaskTxn.showTxn id)
     let some r := db.find id | die s!"no task #{d id}"
     let repos ← Swarms.taskRepos r.id
     out (← if a.flag "json" then pure ((showJson db r).setObjVal! "repos" (Lean.toJson (repos.map (·.1)))).compress
       else showText db r repos)
   | "after" =>
     let deps := (a.ids "deps").getD []
-    step [.task] (after c id deps)
+    step (TaskTxn.after c id deps)
     out s!"#{d id} after {(py (some (idsText deps))).getD "nothing"}"
   | "priority" =>
     let p := (a.int "priority").getD DEFAULT_PRIORITY
-    step [.task] (priority c id p)
+    step (TaskTxn.one id (priority c id p))
     out s!"#{d id} P{d p}"
   | "renew" =>
-    let u ← step [.task] (renew c id ((a.str "lease").getD "2h"))
+    let u ← step (TaskTxn.one id (renew c id ((a.str "lease").getD "2h")))
     out s!"renewed #{d id} until {← Clock.hhmm u}"
   | "done" =>
     let ev := (a.str "evidence").getD ""
-    let r0 ← Store.txn [.task] fun db => (db, db.find id)
+    let r0 ← Store.view [TaskTxn.task id] (·.find id)
     let onBase ← match r0 with
       | some r => if r.state = .landing then evidenceOnBase ev r else pure false
       | none => pure false
-    match ← step [.task, .agent, .cursor, .«meta»] (Queue.done { c with onBase } id ev) with
+    match ← step (TaskTxn.done { c with onBase } id ev) with
     | .landed o => out s!"done #{d id}: landed{match py o with | some o => ", handed over by " ++ o | none => ""}"
     | .red => out s!"#{d id} released: your fix is recorded, the task stays open and held until a green run closes it (a newer red run reopens it). Go idle."
     | .done k stay n =>
@@ -218,7 +215,7 @@ def task (a : Parsed) : m UInt32 := do
       match stay with
       | some s => out s!"context ~{k}k: you stay for '{s}'. `swarm stay --end` when that is over."
       | none =>
-        let below ← Store.txn [.«meta»] fun db => (db, Reuse.reuseBelow db)
+        let below ← Store.view [Sels.metas ["reuse_below"]] Reuse.reuseBelow
         if k * 1000 < below && n > 0 then
           out s!"context ~{k}k: go idle. Once your work lands watchd offers you related startable tasks, if any; else it ends you."
         else out s!"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work."
@@ -229,46 +226,45 @@ def task (a : Parsed) : m UInt32 := do
         | some s => pure (strip s)
         | none => die s!"--sha {given}: no such commit here"
       | none => pure ""
-    step [.task, .agent] (land c id sha (a.str "lander"))
-    let db ← Store.txn [.task] fun db => (db, db)
-    if let some r := db.find id then out (← landingLine r)
+    step (TaskTxn.land c id sha (a.str "lander"))
+    if let some r ← Store.view [TaskTxn.task id] (·.find id) then out (← landingLine r)
     out s!"it is no longer yours: take the next task or go idle. Its lander closes it: `swarm task done {d id} --evidence <sha on its base>`, or `swarm task unland {d id} --why \"…\"`."
   | "unland" =>
-    let u ← step [.task, .agent, .«meta»] (unland c id ((a.str "why").getD ""))
+    let u ← step (TaskTxn.unland c id ((a.str "why").getD ""))
     out s!"unlanded #{d id}: open again at P{d u.priority}{match py u.owner with | some o => ", " ++ o ++ " and the communicator told" | none => ""}"
   | "block" =>
-    let away ← step [.task, .«meta»] (block c id (clean ((a.str "question").getD "")))
+    let away ← step (TaskTxn.block c id (clean ((a.str "question").getD "")))
     out s!"blocked #{d id}; {if away then "the user is away: park this and take work that doesn't need the answer." else "watchd tells the communicator."} It stays yours until `swarm task unblock`."
   | "unblock" =>
-    let o ← step [.task, .agent, .«meta»] (unblock c id (clean ((a.str "answer").getD "")))
+    let o ← step (TaskTxn.unblock c id (clean ((a.str "answer").getD "")))
     out s!"unblocked #{d id}; claimed by {o.getD "nil"}"
   | "release" =>
     let after := a.ids "after"
-    let fromA ← step [.task, .«meta»] (release c id after)
+    let fromA ← step (TaskTxn.release c id after)
     out s!"released #{d id}{match fromA with | some f => " from " ++ f | none => ""}; it is open again{match after with | some l@(_ :: _) => " after " ++ idsText l | _ => ""}"
   | "edit" =>
     let bodyFile ← match a.str "body_file" with
       | some p => pure (some (p, (← Fs.read p).map clean))
       | none => pure none
-    let (fields, st) ← step [.task, .agent] (edit c id { title := (a.str "title").map clean, body := (a.str "body").map clean, bodyFile,
+    let (fields, st) ← step (TaskTxn.edit c id { title := (a.str "title").map clean, body := (a.str "body").map clean, bodyFile,
                                                            append := (a.str "append").map clean, model := a.str "model", effort := a.str "effort", urgent := a.flag "urgent" })
     out s!"edited #{d id}: {", ".intercalate fields}"
     let fs := " ".intercalate fields
     if st = .claimed && (hasSub fs "model" || hasSub fs "effort") then
       out "model/effort change the row only: they apply at the next spawn/claim"
   | "label" =>
-    discard <| step [.task, .agent] (edit c id { labels := some (",".intercalate (a.strs "labels")) })
-    let db ← Store.txn [.task] fun db => (db, db)
-    out s!"#{d id} labels: {match (db.find id).map labelsOf with | some l@(_ :: _) => ", ".intercalate l | _ => "none"}"
+    discard <| step (TaskTxn.edit c id { labels := some (",".intercalate (a.strs "labels")) })
+    let r ← Store.view [TaskTxn.task id] (·.find id)
+    out s!"#{d id} labels: {match r.map labelsOf with | some l@(_ :: _) => ", ".intercalate l | _ => "none"}"
   | "drop" =>
-    let ws ← step [.task, .agent, .«meta»] (Queue.drop c id)
+    let ws ← step (TaskTxn.drop c id)
     out s!"dropped #{d id}"
     for w in ws do out s!"#{d w.id} waits on #{d id}: drop it too, or `swarm task after {d w.id} …`"
   | "hold" =>
-    step [.task] (Queue.hold c id ((a.str "why").getD ""))
+    step (TaskTxn.one id (Queue.hold c id ((a.str "why").getD "")))
     out s!"held #{d id}: neither auto-spawn nor an agent asking for work takes it until the communicator or the user runs `swarm task unhold {d id}`"
   | "unhold" =>
-    step [.task, .«meta»] (Queue.unhold c id)
+    step (TaskTxn.unhold c id)
     out s!"unheld #{d id}"
   | act => die s!"unknown task action {act}"
   return 0
@@ -277,7 +273,7 @@ def task (a : Parsed) : m UInt32 := do
 def board (a : Parsed) : m UInt32 := do
   let out := Env.out (m := m)
   if let some (avail, total, psi) ← Machine.mem then out (Machine.line avail total psi)
-  let db ← Store.txn [.task, .agent, .«meta»] fun db => (db, db)
+  let db ← Store.view TaskTxn.boardSels id
   let now ← Clock.now
   let all := a.flag "all"
   let role (o : Option String) : Option String :=
@@ -324,7 +320,7 @@ def queue (a : Parsed) : m UInt32 := do
   let c : Tasks.Ctx := { me := (← env "SWARM_NAME").getD HUMAN, now := ← Clock.now, comms := ← env "SWARM_COMMS" }
   match a.strs "words" with
   | [] =>
-    let db ← Store.txn [.task, .«meta», .agent, .cursor] fun db => (db, db)
+    let db ← Store.run TaskTxn.queueView
     let q := Queue.queued db
     if Queue.queueOnly db then out "queue-only: auto-spawn staffs only the queue (and main red tasks)"
     if q.isEmpty then out "(queue empty)"
@@ -338,12 +334,12 @@ def queue (a : Parsed) : m UInt32 := do
       | _, _, some x => .after x
       | _, _, _ => .back
     let is ← ids ws
-    step [.task, .agent, .«meta», .event] (Queue.add c is w)
+    step (TaskTxn.qadd c is w)
     out s!"queued {idsText (Queue.dedup is)}"
   | "rm" :: ws@(_ :: _) =>
     if a.flag "front" || (a.int "before").isSome || (a.int "after").isSome then die usage
     let is ← ids ws
-    step [.task, .agent, .«meta», .event] (Queue.rm c is)
+    step (TaskTxn.qrm c is)
     out s!"unqueued {idsText (Queue.dedup is)}"
   | _ => die usage
   return 0
@@ -351,8 +347,8 @@ def queue (a : Parsed) : m UInt32 := do
 /-- `swarm rules [show | set <text>…]` (tasks.cmd_rules). -/
 def rules (a : Parsed) : m UInt32 := do
   let text := " ".intercalate (a.strs "text")
-  if a.act == "set" then step [.«meta»] (setRules (← ctx) text)
-  let r ← Store.txn [.«meta»] fun db => (db, db.getMeta "rules")
+  if a.act == "set" then step (TaskTxn.setRules (← ctx) text)
+  let r ← Store.view [Sels.metas ["rules"]] (·.getMeta "rules")
   Env.out (match r with | some x => x.v.getD "None" | none => "(none)")
   return 0
 
