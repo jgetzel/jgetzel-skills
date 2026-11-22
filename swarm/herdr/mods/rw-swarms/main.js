@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window, home } from "herdr";
-import { SECTIONS, addrOf, agentRows, answerBox, boxFor, hookFor, promptButtons, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
+import { SECTIONS, addrOf, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -68,15 +68,15 @@ export default class AllSwarms extends View {
   // An agent at a prompt: what hc says it asks, and its terminal in a window (II.6 tier 1).
   promptOf(w, s, name, cx) {
     const hc = s.agents?.find((a) => a.name === name)?.hc, addr = hc && addrOf(hc, w.on), term = addr && terminals().find((x) => x.address === addr);
-    const msg = term ? line(term.report?.msg, 300) : "";
-    // II.6d: what the PermissionRequest hook recorded, only while the terminal is blocked
-    const hook = term?.status === "blocked" && cx ? hookFor(this.hooks, exec, s.db, name, msg, { cwd: w.folder, on: w.on ?? null }, cx) : null;
-    return { addr, msg, hook };
+    const msg = term ? line(term.report?.msg, 300) : "", box = addr && cx ? boxFor(this.boxes, hc, addr, msg, cx) : null;
+    // II.6d, H3: the screen's box leads; the hook's record (read only while blocked) shows where it matches (promptCard)
+    const rec = term?.status === "blocked" && cx ? hookFor(this.hooks, exec, s.db, name, msg, { cwd: w.folder, on: w.on ?? null }, cx) : null;
+    return { addr, msg, box, ...promptCard(box, rec, msg, blockedAt(shared("rw-rail.changed"), addr)) };
   }
   // Tier 2 (II.6c): the box's options as buttons, only on a full parse; a click re-reads and else shows the terminal.
-  promptBtns(t, pr, name, i, cx) {
-    const box = pr.addr ? boxFor(this.boxes, hc, pr.addr, pr.msg, cx) : null, show = () => openOverlay(peekWindow(pr.addr, name, pr.msg || "stopped at a prompt"));
-    return promptButtons(box).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
+  promptBtns(t, pr, name, i) {
+    const box = pr.box, show = () => openOverlay(peekWindow(pr.addr, name, pr.msg || "stopped at a prompt"));
+    return (pr.buttons ? promptButtons(box) : []).map((b, k) => this.btn(t, `pb-${i}-${k}`, b.label, (cx) => {
       if (b.say) { this.saying = { addr: pr.addr, box, b, name, show }; this.sayIn.set_value(""); cx.notify(); cx.timer.after(50, () => this.sayIn.focus()); }
       else answerBox(this.boxes, hc, pr.addr, box, b, null, cx, show);
     }, k === 0 && !b.say));
@@ -130,13 +130,13 @@ export default class AllSwarms extends View {
       .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
         const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent, cx) : null, hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toTimeString().slice(0, 5); };
         const [title, text] = n.kind === "question" ? [`${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
-          : n.kind === "prompt" ? [`${n.agent} stopped at a prompt`, pr.hook || pr.msg || "Answer it in its terminal."]
+          : n.kind === "prompt" ? [`${n.agent} stopped at a prompt`, pr.text]
           : n.kind === "hung" ? [`${n.agent} is hung`, "watchd keeps it, but it has done nothing for a long time."]
           : n.kind === "ci" ? ["main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
           : n.kind === "watchd" ? ["watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
           : [n.w.on ? `${n.w.on} is short on memory` : "This computer is short on memory", n.line || ""];
         const acts = n.kind === "question" ? [this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)]
-          : n.kind === "prompt" ? [...this.promptBtns(t, pr, n.agent, i, cx), this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))]
+          : n.kind === "prompt" ? [...this.promptBtns(t, pr, n.agent, i), this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))]
           : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(n.w, nudgeArgs(n.agent), cx)), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))]
           : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []), this.btn(t, `land-${i}`, "Landing", () => this.openSection(n.w, "landing"))]
           : [this.btn(t, `sys-${i}`, n.kind === "watchd" ? "Restart in System" : "System", () => this.openSection(n.w, "system"))];
@@ -145,6 +145,7 @@ export default class AllSwarms extends View {
             .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
             .child(div().truncate().text_color(t.dim).child(n.ago != null ? `· ${dur(n.ago * 1000)}` : "")))
           .child(v_flex().text_size(13.5).line_height("19px").text_color(t.foreground).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
+          .when(Boolean(pr?.warn), (el) => el.child(div().whitespace_normal().text_size(12.5).text_color(t.blocked).child(pr?.warn ?? "")))
           .child(h_flex().gap(8).items_center().flex_wrap().children(acts))
           .when(Boolean(pr?.addr) && this.saying?.addr === pr?.addr, (el) => el.child(h_flex().gap(8).items_center()
             .child(div().id(`say-in-${i}`).flex_1().min_w(160).h(28).px(10).flex().items_center().rounded(8).border(1).border_color(t.border).bg(t.background)

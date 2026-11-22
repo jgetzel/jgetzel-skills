@@ -531,7 +531,7 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 }
 // The hook route (II.6d): the PermissionRequest records as plain text, and reading one once per msg.
 {
-  const { hookText, hookFor } = await import("./mods/rw-rail/tree.js");
+  const { hookText, hookKeys, hookFor, promptCard, blockedAt, parsePrompt, promptButtons, HOOK_SLACK } = await import("./mods/rw-rail/tree.js");
   const { readFileSync } = await import("node:fs");
   const recs = readFileSync(new URL("./fixtures/prompts/hooks.jsonl", import.meta.url), "utf8").trim().split("\n").filter((l) => l.includes('"PermissionRequest"'));
   assert.deepEqual(recs.map(hookText), ["$ ls /etc/hostname /etc/os-release", "Which color do you prefer?: Red (warm) · Blue (cool) · Green (calm)",
@@ -542,12 +542,39 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   for (const bad of ["", "{", "[]", '{"tool_name":"Bash"}', '{"tool_name":1,"tool_input":{}}', '{"tool_name":"X","tool_input":[1]}']) assert.equal(hookText(bad), null);
   assert.equal(hookText('{"tool_name":"Glob","tool_input":{"pattern":"*","path":"/"}}'), "Glob: pattern, path");
   const hooks = new Map(), reads = [], cx = { spawn: (f) => f({ notify: () => {} }) };
-  const exec = async (cmd, args) => { reads.push(args[0]); return { code: 0, stdout: recs[0] }; };
+  const exec = async (cmd, args) => { reads.push([cmd, args.at(-1)]); return { code: 0, stdout: `1700000000\n${recs[0]}` }; };
   assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "ll-1", "m1", {}, cx), null); await new Promise((r) => setTimeout(r, 0));
-  assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "ll-1", "m1", {}, cx), "$ ls /etc/hostname /etc/os-release");
-  assert.deepEqual(reads, ["/r/.git/swarm/prompts/ll-1.json"]);
+  assert.deepEqual(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "ll-1", "m1", {}, cx), { text: "$ ls /etc/hostname /etc/os-release", keys: ["ls/etc/hostname/etc/os-release"], mtime: 1700000000000 });
+  assert.deepEqual(reads, [["sh", "/r/.git/swarm/prompts/ll-1.json"]]);
   assert.equal(hookFor(hooks, exec, "/r/.git/swarm/swarm.db", "../x", "m1", {}, cx), null); assert.equal(hookFor(hooks, exec, null, "ll-1", "m1", {}, cx), null);
   assert.equal(reads.length, 1);
+  // H3: the card shows the screen's box; the record only where it matches and is no older than the switch to blocked
+  const fx = (n) => readFileSync(new URL(`./fixtures/prompts/${n}.txt`, import.meta.url), "utf8");
+  const bash = parsePrompt(fx("bash-permission")), at = 1700000000000;
+  const rec = (raw, mtime = at) => ({ text: hookText(raw), keys: hookKeys(raw), mtime });
+  let c = promptCard(bash, rec(recs[0]), "m", at);
+  assert.deepEqual(c, { text: "Bash command · List hostname and os-release files\nls /etc/hostname /etc/os-release", buttons: true, warn: null });
+  // overwritten after the hook wrote it: the card still shows the screen's command, warns, and has no buttons
+  c = promptCard(bash, rec('{"tool_name":"Bash","tool_input":{"command":"rm -rf ~/x"}}'), "m", at);
+  assert.equal(c.buttons, false); assert.match(c.warn, /does not match/); assert.match(c.text, /ls \/etc\/hostname/); assert.doesNotMatch(c.text, /rm -rf/);
+  c = promptCard(bash, rec('{"tool_name":"WebFetch","tool_input":{"url":"https://evil.example"}}'), "m", at); assert.equal(c.buttons, false);
+  // a record left from an earlier prompt, though it matches
+  assert.equal(promptCard(bash, rec(recs[0], at - HOOK_SLACK - 1000), "m", at).buttons, false);
+  assert.equal(promptCard(bash, rec(recs[0], at - 1000), "m", at).buttons, true); // whole seconds, the hook just before the box
+  assert.equal(promptCard(bash, rec(recs[0], at - HOOK_SLACK - 1000), "m", null).buttons, true); // the switch unknown
+  assert.equal(promptCard(bash, null, "m", at).buttons, true); // no record: the screen alone
+  assert.equal(promptCard(bash, rec('{"tool_name":"mcp__x__y","tool_input":{"a":1}}'), "m", at).text.includes("mcp"), false); // nothing to check: left out
+  // the other fixtures' records match their boxes; Write adds its path and size
+  assert.equal(promptCard(parsePrompt(fx("fetch-permission")), rec(recs[4]), "m", at).buttons, true);
+  assert.equal(promptCard(parsePrompt(fx("question")), rec(recs[1]), "m", at).buttons, true);
+  c = promptCard(parsePrompt(fx("write-permission")), rec(recs[3]), "m", at);
+  assert.equal(c.buttons, true); assert.match(c.text, /Write \/home\/jgetzel\/Downloads\/ll127-spike-test\.txt · 1 line/);
+  // no box (a multi-select question): no buttons; the record shows as unchecked
+  c = promptCard(null, rec(recs[2]), "m", at);
+  assert.equal(c.buttons, false); assert.match(c.text, /not checked against the screen/);
+  assert.equal(promptCard(null, null, "", at).text, "Answer it in its terminal.");
+  assert.ok(promptButtons(bash).length > 0); // the buttons a matching card gets
+  assert.equal(blockedAt({ t1: { m: "asks", at: 5 }, t2: { m: "idle", at: 6 } }, "t1"), 5); assert.equal(blockedAt({ t2: { m: "idle", at: 6 } }, "t2"), null); assert.equal(blockedAt(null, "t1"), null);
 }
 // The away digest (II.3f): `back` with its lists bounded and typed.
 {
