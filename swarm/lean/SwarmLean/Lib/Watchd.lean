@@ -985,7 +985,9 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let mut reusable := []
   let mut acts : List Act := []
   let dflt := (py opts.model).getD "sonnet"
-  for a in Agents.live db do
+  let envComms ← env "SWARM_COMMS"
+  -- the communicator is never ended: it lands nothing, so its clean worktree reads as landed
+  for a in (Agents.live db).filter (fun a => a.name != comms && !isComms db envComms (some a.name)) do
     let offer := Reuse.candidates db a.name a.model dflt pool
     let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts every a.name offer
     -- an offer unanswered OFFER_TTL counts as declined

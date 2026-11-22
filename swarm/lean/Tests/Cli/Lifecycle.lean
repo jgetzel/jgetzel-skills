@@ -334,6 +334,16 @@ def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
   eq (← branches t) ""
   eq ((← t.q1 "select data from event where kind='end'").f "data") "landed"
 
+-- the communicator holds and lands nothing, so it reads as landed: the lifecycle never ends it, stay or not
+-- (`swarm new --comms` sets no stay; only `watchd --comms` did)
+def test_comms_with_landed_worktree_not_ended (t : T) : IO Unit := do
+  t.q_ "update swarm set comms='comms'"
+  idle t "comms" [("cwd", .text t.repo)]
+  idle t "e" [("cwd", .text t.repo)]
+  t.tick
+  ok (← ended t "e") "a peer like it is ended"
+  ok (!(← ended t "comms"))
+
 -- workspace GC removes the worktree of a base but never the base branch
 def test_sweep_keeps_a_checked_out_base (t : T) : IO Unit := do
   t.made t.wt
@@ -1644,6 +1654,7 @@ def tests : List Case := [
   ("test_worktrees_prune", test_worktrees_prune),
   ("test_sweep_caches_not_landed", test_sweep_caches_not_landed),
   ("test_landed_agent_ended_and_cleaned", test_landed_agent_ended_and_cleaned),
+  ("test_comms_with_landed_worktree_not_ended", test_comms_with_landed_worktree_not_ended),
   ("test_sweep_keeps_a_checked_out_base", test_sweep_keeps_a_checked_out_base),
   ("test_swarm_end", test_swarm_end),
   ("test_foreign_comms_not_ended", test_foreign_comms_not_ended),
