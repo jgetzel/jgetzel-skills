@@ -1,5 +1,6 @@
 import SwarmLean.Sys
 import SwarmLean.Lib.Machine
+import SwarmLean.Db.Sels
 
 /-! cost.lua: the cmd-cost history (one row per finished command that cost something), outside swarm.db, per user and
 machine: the key a command is filed under, the summary `swarm cost` prints, the prediction the hook shows. watchd's
@@ -403,7 +404,7 @@ def repoInfo [Git m] : m (Option (String × List String)) := do
 sessions, the cwds and the repo's worktrees), runs `tickStep`, and writes a row for each finished command. -/
 def tick [Store m] [Env m] [Fs m] [Proc m] [Sys m] [Git m] (mem : TickMem) (procs : List Machine.Ps) (t : Int) :
     m TickMem := do
-  let agents ← Store.txn [.agent] fun db => (db, db.agents)
+  let agents ← Store.view [Sels.all .agent] (·.agents)
   let owners := Machine.claudeOwners agents
   let mut cgs := []
   for (pid, n) in owners do

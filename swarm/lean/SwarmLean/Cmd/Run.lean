@@ -4,6 +4,7 @@ import SwarmLean.Lib.Run
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Compute
 import SwarmLean.Lib.Swarms
+import SwarmLean.Db.Sels
 import Claims.Acquire
 import Claims.Machines
 
@@ -147,7 +148,7 @@ def recordJob (who : String) (on : Option String) (jid cmd key repo : String) (s
       let nums := (strip ((← Fs.read mfile).getD "")).splitOn " " |>.filterMap parseInt
       pure (← Sys.hostname, nums.getD 0 0, nums.getD 1 0)
     | some mach =>
-      let db ← Store.txn [.«meta»] fun db => (db, db)
+      let db ← Store.view [Sels.metas ["machines"]] id
       let ms := (db.getMeta "machines").bind (·.v) |>.bind Json.decode
       let last := ((ms.bind (Json.field · mach)).bind (Json.field · "jobs")).bind (Json.field · jid) |>.getD (Json.mkObj [])
       pure (mach, ((Json.fint last "cpu").getD 0 * s + 50) / 100, (Json.fint last "rss_kb").getD 0)
@@ -177,7 +178,7 @@ structure JobCtx where
 /-- An event of job `jid`, logged as `who`'s. -/
 def jobEv (who jid kind : String) (data : Json) : m Unit := do
   let now ← Clock.now
-  Store.txn [] fun db => (db.log now (some who) kind (some jid) (some (Json.encode data)), ())
+  Store.run (Txn.exec [logStmt now (some who) kind (some jid) (some (Json.encode data))])
 
 /-- The job's line through the dev shell, under the config's `prefix` (its `{cores}` filled in). -/
 def wrapFull (cfg : Json) (cs line src pdir : String) : String :=
@@ -301,7 +302,7 @@ def runRemote (ctx : JobCtx) (mach top cs unit dir rel wtname : String) (cfg : J
   let ssh := shjoin sshv
   let tgt := ((mc.bind (Json.fstr · "target")).getD "nil")
   let now ← Clock.now
-  let live ← Store.txn [.event] fun db => (db, liveJobs db now)
+  let live ← Store.view [Sels.jobs] (liveJobs · now)
   let mut busy := 0
   for j in live do
     if j.s "machine" == some mach && j.s "wt" == some top then
@@ -473,7 +474,7 @@ def run (a : Parsed) : m UInt32 := do
     | none => line
   let jid ← match resume.bind (Json.fstr · "jid") with
     | some j => pure j
-    | none => Store.txn [.«meta»] fun db =>
+    | none => Store.run <| Txn.update [Sels.metas ["jobs"]] [] fun db =>
       let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
       (db.setMeta "jobs" (some (d n)), d n)
   let jenv := jenv.filter (fun (k, _) => k != "SWARM_JOB_ID" && k != "SWARM_JOB_MACHINE") ++ [("SWARM_JOB_ID", jid), ("SWARM_JOB_MACHINE", chosen.getD hn)]
@@ -483,7 +484,7 @@ def run (a : Parsed) : m UInt32 := do
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
   let logf := jobs ++ "/log"
-  let task ← Store.txn [.task] fun db => (db, ((db.tasks.filter fun t => t.owner == some who && (t.state = .claimed || t.state = .blocked)).head?.map (·.id)))
+  let task ← Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.state = .claimed || t.state = .blocked)).head?.map (·.id)
   let dir := s!"{RUN_DIR}/{repo}/{wtname}"
   let on := chosen
   let rec0 : List (String × Option Json) := [("machine", on.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t),
@@ -560,7 +561,7 @@ def jobRecord (a : Parsed) : m UInt32 := do
   let now ← Clock.now
   let t1 := match a.int "start" with | some st => st + wall | none => now
   let t0 := t1 - wall
-  let jid ← Store.txn [.«meta»] fun db =>
+  let jid ← Store.run <| Txn.update [Sels.metas ["jobs"]] [] fun db =>
     let n := match db.getMeta "jobs" with | some r => ((r.v.bind parseInt).getD 0) + 1 | none => 1
     (db.setMeta "jobs" (some (d n)), d n)
   let dbp ← Swarms.dbPath
@@ -571,13 +572,13 @@ def jobRecord (a : Parsed) : m UInt32 := do
   let mach := a.str "machine"
   let task ← match a.int "task" with
     | some t => pure (some t)
-    | none => Store.txn [.task] fun db => (db, ((db.tasks.filter fun t => t.owner == some who && (t.state = .claimed || t.state = .blocked)).head?.map (·.id)))
+    | none => Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.state = .claimed || t.state = .blocked)).head?.map (·.id)
   let start := obj [("machine", mach.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t), ("cmd", some (.str line)),
     ("pid", some (Json.int (← Sys.getpid))), ("cores", (a.int "cores").map Json.int), ("parent", parent.map Json.int)]
   let end_ := obj [("machine", mach.map .str), ("exit", some (match code with | .n c => Json.int c | .lost => .str "lost")),
     ("s", some (Json.int wall)), ("wait_s", some (Json.int 0))]
-  Store.txn [] fun db =>
-    ((db.log t0 (some who) "job-start" (some jid) (some (Json.encode start))).log t1 (some who) "job-end" (some jid) (some (Json.encode end_)), ())
+  Store.run (Txn.exec [logStmt t0 (some who) "job-start" (some jid) (some (Json.encode start)),
+    logStmt t1 (some who) "job-end" (some jid) (some (Json.encode end_))])
   let repoNm := (← Cost.repoName).getD repo
   let cpuS := (a.int "cpu").getD 0
   let peak := (a.int "peak_kb").getD 0

@@ -40,6 +40,11 @@ def failed (db : Db) (now : Int) (name v e : String) (comms : Option String) : D
       "It types to that terminal with hc send until the session restarts.") false (some "system")).1
   | none => db
 
+/-- `failed` as a transaction: keyed reads of `name`'s records and comms; the event and a message inserted. -/
+def failTxn (now : Int) (name v e : String) (envComms : Option String) : Txn Unit :=
+  Txn.update [Sels.metas [key name, badKey name, "comms"]] [.msg] fun db =>
+    (failed db now name v e (Agents.commsOf db envComms), ())
+
 variable {m : Type → Type} [Monad m] [Store m] [Clock m] [Env m] [Sys m]
 
 /-- Writes `data` to the socket at `path` (`$SWARM_SOCK_SEND path data` instead when set, exit 0 for sent); the error,
@@ -55,14 +60,14 @@ def send (path data : String) : m (Option String) := do
 /-- Sends `text` to `name`'s recorded socket when it is still the one recorded (same mtime: a reused pid's socket is
 another); none when sent. Without a record, `some ""`; on a failure the error, the record dropped (`failed`). -/
 def post (name text : String) : m (Option String) := do
-  let some v ← Store.txn [.«meta»] fun db => (db, (db.getMeta (key name)).bind (·.v)) | return some ""
+  let some v ← Store.view [Sels.metas [key name]] fun db => (db.getMeta (key name)).bind (·.v) | return some ""
   let err ← match parse v with
     | none => pure (some "unreadable record")
     | some (mt, path) => if (← Sys.mtime path) != some mt then pure (some "socket gone or replaced") else send path (frame text)
   let some e := err | return none
   let envComms ← env "SWARM_COMMS"
   let now ← Clock.now
-  Store.txn [.«meta», .event, .agent, .msg, .cursor] fun db => (failed db now name v e (Agents.commsOf db envComms), ())
+  Store.run (failTxn now name v e envComms)
   return some e
 
 /-- Records the calling session's socket for `name` when this terminal holds its live row (an inherited variable in
@@ -91,8 +96,8 @@ def record (name : String) : m Unit := do
 /-- watchd's start: each recorded socket of a live agent still there and connecting (nothing written), else dropped
 (`failed`). -/
 def checkAll : m Unit := do
-  let recs ← Store.txn [.agent, .«meta»] fun db => (db, db.agents.filterMap fun a =>
-    if a.ended.isSome then none else ((db.getMeta (key a.name)).bind (·.v)).map (a.name, ·))
+  let recs ← Store.view [Sels.live, Sels.metaPre "sock:"] fun db => db.agents.filterMap fun a =>
+    if a.ended.isSome then none else ((db.getMeta (key a.name)).bind (·.v)).map (a.name, ·)
   for (name, v) in recs do
     let err ← match parse v with
       | none => pure (some "unreadable record")
@@ -100,6 +105,6 @@ def checkAll : m Unit := do
     if let some e := err then
       let envComms ← env "SWARM_COMMS"
       let now ← Clock.now
-      Store.txn [.«meta», .event, .agent, .msg, .cursor] fun db => (failed db now name v e (Agents.commsOf db envComms), ())
+      Store.run (failTxn now name v e envComms)
 
 end SwarmLean.Sock

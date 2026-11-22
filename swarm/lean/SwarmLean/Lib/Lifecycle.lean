@@ -167,7 +167,7 @@ def reads (db : Db) (main : Option String) (wts : List (String × String)) (all 
 
 /-- The reads of agent `n` now: the db, the main worktree, the agents' and every worktree. -/
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
-  let db ← Store.txn [.agent, .task, .lock, .workspace, .«meta»] fun db => (db, db)
+  let db ← Store.view [Sels.all .agent, Sels.all .task, Sels.all .lock, Sels.all .workspace, Sels.all .«meta»] id
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
 
 /-- The reads of agent `n` that `endableReasons` makes, keyed on `n` (the stop hook): its row, the tasks it owns, its
@@ -300,7 +300,7 @@ def endAgent [Store m] [Clock m] [Env m] (a : Agent) (force : Bool) (by_ : Optio
   for h in remote do Run.killTerm h
   if !remote.isEmpty then
     let now ← Clock.now
-    let db ← Store.txn [.event] fun db => (db, db)
+    let db ← Store.view [Sels.jobs] id
     for j in Run.liveJobs db now do
       if j.agent == some n && (j.s "hc").any remote.contains then discard <| Run.markLost "agent ended" j
   if let some c := cg then
