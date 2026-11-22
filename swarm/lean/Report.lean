@@ -67,7 +67,7 @@ def all (c : Conn) (sql : String) (ps : List Val := []) : IO (List Json) := do
   let mut rows := #[]
   while (← s.stepRaw) == 1 do
     let mut kvs := []
-    for j in [0:n.toNat] do kvs := (names[j]!, cell (← s.column j.toUInt32)) :: kvs
+    for (nm, j) in names.zipIdx do kvs := (nm, cell (← s.column j.toUInt32)) :: kvs
     rows := rows.push (obj kvs)
   return rows.toList
 
@@ -168,7 +168,7 @@ def hookBytes (files : List String) : IO Json := do
         let a := ((SwarmLean.Json.decode line).bind (f · "attachment")).getD .null
         let cs := match f a "content" with | some (.str c) => [c] | some j => (SwarmLean.Json.items j).filterMap SwarmLean.Json.str? | none => []
         for c in cs do
-          let src := (SOURCES.find? fun (_, m) => hasSub c m && (c.splitOn m).head!.utf8ByteSize + m.utf8ByteSize ≤ 80).map (·.1)
+          let src := (SOURCES.find? fun (_, m) => hasSub c m && (match c.splitOn m with | h :: _ => h.utf8ByteSize | [] => 0) + m.utf8ByteSize ≤ 80).map (·.1)
           let k := src.getD "other"
           n := (k, (n.lookup k).getD 0 + c.length) :: n.filter (·.1 != k)
   return Json.mkObj (n.map fun (k, v) => (k, SwarmLean.Json.int v))

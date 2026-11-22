@@ -8,15 +8,21 @@ namespace SwarmLean.Difflib
 variable {α : Type} [BEq α] [Hashable α]
 
 /-- Each element of `b` with the indices where it occurs, ascending (no junk, no popular elements). -/
-def b2j [Inhabited α] (b : Array α) : Std.HashMap α (Array Nat) := Id.run do
+def b2j (b : Array α) : Std.HashMap α (Array Nat) := Id.run do
   let mut r : Std.HashMap α (Array Nat) := {}
-  for j in [0:b.size] do
-    r := r.insert b[j]! ((r.getD b[j]! #[]).push j)
+  for (x, j) in b.zipIdx do
+    r := r.insert x ((r.getD x #[]).push j)
   return r
+
+/-- Whether `a[i]` and `b[j]` both exist and are equal. -/
+def same (a b : Array α) (i j : Nat) : Bool :=
+  match a[i]?, b[j]? with
+  | some x, some y => x == y
+  | _, _ => false
 
 /-- The longest matching block in `a[alo:ahi]` and `b[blo:bhi]`, the earliest in `a`, then in `b`, on ties:
 `(i, j, size)`. -/
-def findLongestMatch [Inhabited α] (a b : Array α) (idx : Std.HashMap α (Array Nat)) (alo ahi blo bhi : Nat) :
+def findLongestMatch (a b : Array α) (idx : Std.HashMap α (Array Nat)) (alo ahi blo bhi : Nat) :
     Nat × Nat × Nat := Id.run do
   let mut besti := alo
   let mut bestj := blo
@@ -24,7 +30,7 @@ def findLongestMatch [Inhabited α] (a b : Array α) (idx : Std.HashMap α (Arra
   let mut j2len : Std.HashMap Nat Nat := {}
   for i in [alo:ahi] do
     let mut newj2len : Std.HashMap Nat Nat := {}
-    for j in idx.getD a[i]! #[] do
+    for j in (a[i]?.bind idx.get?).getD #[] do
       if j < blo then continue
       if j ≥ bhi then break
       let k := (if j == 0 then 0 else j2len.getD (j - 1) 0) + 1
@@ -33,14 +39,14 @@ def findLongestMatch [Inhabited α] (a b : Array α) (idx : Std.HashMap α (Arra
         besti := i + 1 - k; bestj := j + 1 - k; bestsize := k
     j2len := newj2len
   -- Python's extension over non-junk neighbours: a no-op without junk, kept as written
-  while besti > alo && bestj > blo && a[besti - 1]! == b[bestj - 1]! do
+  while besti > alo && bestj > blo && same a b (besti - 1) (bestj - 1) do
     besti := besti - 1; bestj := bestj - 1; bestsize := bestsize + 1
-  while besti + bestsize < ahi && bestj + bestsize < bhi && a[besti + bestsize]! == b[bestj + bestsize]! do
+  while besti + bestsize < ahi && bestj + bestsize < bhi && same a b (besti + bestsize) (bestj + bestsize) do
     bestsize := bestsize + 1
   return (besti, bestj, bestsize)
 
 /-- The matching blocks `(i, j, size)`, adjacent ones joined, ending with `(len a, len b, 0)`. -/
-def matchingBlocks [Inhabited α] (a b : Array α) : Array (Nat × Nat × Nat) := Id.run do
+def matchingBlocks (a b : Array α) : Array (Nat × Nat × Nat) := Id.run do
   let idx := b2j b
   let mut queue : Array (Nat × Nat × Nat × Nat) := #[(0, a.size, 0, b.size)]
   let mut blocks : Array (Nat × Nat × Nat) := #[]
@@ -65,7 +71,7 @@ def matchingBlocks [Inhabited α] (a b : Array α) : Array (Nat × Nat × Nat) :
   return out.push (a.size, b.size, 0)
 
 /-- `(tag, i1, i2, j1, j2)` rows, tag one of replace, delete, insert, equal. -/
-def opcodes [Inhabited α] (a b : Array α) : Array (String × Nat × Nat × Nat × Nat) := Id.run do
+def opcodes (a b : Array α) : Array (String × Nat × Nat × Nat × Nat) := Id.run do
   let mut i := 0
   let mut j := 0
   let mut res := #[]

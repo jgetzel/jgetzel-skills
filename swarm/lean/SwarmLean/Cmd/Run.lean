@@ -416,7 +416,7 @@ def run (a : Parsed) : m UInt32 := do
   let rel := if cwd == top then "." else if cwd.startsWith (top ++ "/") then (cwd.drop (top.length + 1)).toString else "."
   let cfg ← readCfg top
   let who := (← env "SWARM_NAME").getD "human"
-  let line := if argv.length == 1 then argv.head! else shjoin argv
+  let line := match argv with | [x] => x | _ => shjoin argv
   let jenv0 ← jobEnv cfg top (a.strs "env")
   -- the claim (sw-compute.md §3): sized from the flags, else the history, else the default
   let coresArg ← match a.str "cores" with
@@ -568,7 +568,7 @@ def jobRecord (a : Parsed) : m UInt32 := do
   let top := (← Sys.realpath top0).getD top0
   let common := (← git ["rev-parse", "--path-format=absolute", "--git-common-dir"]).getD ""
   let repo := sanitize (if common.endsWith "/.git" then basename (dirname common) else basename top)
-  let line := if argv.length == 1 then argv.head! else shjoin argv
+  let line := match argv with | [x] => x | _ => shjoin argv
   let now ← Clock.now
   let t1 := match a.int "start" with | some st => st + wall | none => now
   let t0 := t1 - wall

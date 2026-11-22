@@ -157,7 +157,7 @@ def scopeAt (l : List Char) : Option String :=
 /-- Whether `scope` (a cgroup path) is a scope of agent `name`: its `swarm-agent-<name>-<pid>.scope` (relaunch/launch.sh)
 or a job's `swarm-job-<name>-j<jid>.scope` (`swarm run --mem`). -/
 def ownsScope (name scope : String) : Bool :=
-  let b := (scope.splitOn "/").getLast!.toList
+  let b := ((scope.splitOn "/").getLast?.getD "").toList
   let named (pre : String) : Bool :=
     let pre := pre.toList
     let r := b.drop pre.length

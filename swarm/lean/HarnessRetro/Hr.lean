@@ -13,10 +13,14 @@ open Lean (Json)
 def home : IO String := return (← IO.getEnv "HOME").getD ""
 
 /-- One code point decoded at `i`, with its length, or none for an invalid sequence. -/
-def utf8At (b : ByteArray) (i : Nat) : Option (Nat × Nat) :=
-  let c0 := b[i]!.toNat
+def utf8At (b : ByteArray) (i : Nat) : Option (Nat × Nat) := (b[i]?).bind fun c => utf8From b i c.toNat
+where
+  /-- The sequence at `i` whose first byte is `c0`. -/
+  utf8From (b : ByteArray) (i c0 : Nat) : Option (Nat × Nat) :=
   let cont (k : Nat) : Option Nat :=
-    if i + k < b.size && b[i + k]!.toNat &&& 0xC0 == 0x80 then some (b[i + k]!.toNat &&& 0x3F) else none
+    match b[i + k]? with
+    | some x => if x.toNat &&& 0xC0 == 0x80 then some (x.toNat &&& 0x3F) else none
+    | none => none
   if c0 < 0x80 then some (c0, 1)
   else if c0 &&& 0xE0 == 0xC0 then do
     let n := ((c0 &&& 0x1F) <<< 6) ||| (← cont 1)
@@ -72,7 +76,7 @@ def normpath (p : String) : String :=
   let out := (p.splitOn "/").foldl (init := (#[] : Array String)) fun out c =>
     if c == "" || c == "." then out
     else if c == ".." then
-      if out.size > 0 && out.back! != ".." then out.pop else if abs then out else out.push c
+      if (out.back?.map (· != "..")) == some true then out.pop else if abs then out else out.push c
     else out.push c
   let r := (if abs then "/" else "") ++ "/".intercalate out.toList
   if r == "" then "." else r
@@ -160,7 +164,7 @@ def mktime (wall : Int) : IO Int := do
 /-- Digits at the start of `cs`, exactly `n` of them. -/
 def digitsN (cs : List Char) (n : Nat) : Option (Nat × List Char) :=
   let ds := cs.take n
-  if ds.length == n && ds.all Char.isDigit then some ((String.ofList ds).toNat!, cs.drop n) else none
+  if ds.length == n && ds.all Char.isDigit then (String.ofList ds).toNat?.map fun v => (v, cs.drop n) else none
 
 /-- Seconds since the epoch for an ISO 8601 time; without a zone the time is local (hr.parse_iso). -/
 def parseIso (s : String) : IO (Option Float) := do

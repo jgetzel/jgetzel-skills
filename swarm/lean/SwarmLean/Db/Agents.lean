@@ -203,13 +203,16 @@ def StayCond.parse? (s : String) : Option StayCond :=
   else if s.startsWith "job:" then (word (s.drop 4).toString).map StayCond.job
   else if s.startsWith "task:" then
     let x := ((s.drop 5).toString.dropWhile (· == '#')).toString
-    if nat x then some (.task x.toNat!) else none
+    if nat x then x.toNat?.map StayCond.task else none
   else if s.startsWith "msg:" then (word (s.drop 4).toString).map StayCond.msg
   else if s.startsWith "time:" then
     match ((s.drop 5).toString.splitOn ":") with
     | [h, m] =>
       if nat h && nat m && h.length ≤ 2 && m.length == 2 then
-        if hh : h.toNat! < 24 then if hm : m.toNat! < 60 then some (.time ⟨_, hh⟩ ⟨_, hm⟩) else none else none
+        match h.toNat?, m.toNat? with
+        | some hn, some mn =>
+          if hh : hn < 24 then if hm : mn < 60 then some (.time ⟨_, hh⟩ ⟨_, hm⟩) else none else none
+        | _, _ => none
       else none
     | _ => none
   else none

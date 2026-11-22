@@ -23,17 +23,16 @@ def hunks (text : String) : List (String × String × String) := Id.run do
   let n := ls.size
   let next (start : Nat) (mark : String) : Option Nat := Id.run do
     for k in [start:n] do
-      if ls[k]!.startsWith mark then return some k
+      if (ls[k]?.map (·.startsWith mark)) == some true then return some k
     return none
   let cat (a b : Nat) : String := String.join (ls.extract a b).toList
   let mut res : Array (String × String × String) := #[]
   let mut pos := 0
   for _ in [0:n + 1] do
     let some a := next pos "<<<<<<< " | break
-    let b := next (a + 1) "||||||| "
-    let c := b.bind fun b => next (b + 1) "=======\n"
-    let some dd := c.bind fun c => next (c + 1) ">>>>>>> " | break
-    let (b, c) := (b.get!, c.get!)
+    let some b := next (a + 1) "||||||| " | break
+    let some c := next (b + 1) "=======\n" | break
+    let some dd := next (c + 1) ">>>>>>> " | break
     res := res.push (cat (a + 1) b, cat (b + 1) c, cat (c + 1) dd)
     pos := dd + 1
   return res.toList

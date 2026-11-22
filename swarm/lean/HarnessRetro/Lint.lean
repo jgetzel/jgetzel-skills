@@ -72,7 +72,7 @@ def alwaysOn (o : Out) (h repo : String) : IO (List (Nat × String)) := do
   files.toList.mapM fun f => do
     let data ← slurp f
     if f.endsWith "/memory/MEMORY.md" then  -- the first 200 lines, without the newline after the last
-      let nls := (List.range data.size).filter (data[·]! == 10)
+      let nls := (List.range data.size).filter fun i => data[i]? == some 10
       if let some p := nls[199]? then return (p, f)
     return (data.size, f)
 

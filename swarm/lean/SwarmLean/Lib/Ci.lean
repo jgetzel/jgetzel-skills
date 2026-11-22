@@ -85,7 +85,7 @@ def numAt (s pat : String) : Option (Nat × Int) :=
     | x :: y :: rest =>
       let ds := y.toList.takeWhile Char.isDigit
       if ds.isEmpty then go (pre + x.utf8ByteSize + pat.utf8ByteSize) (y :: rest)
-      else some (pre + x.utf8ByteSize, (String.ofList ds).toNat!)
+      else (String.ofList ds).toNat?.map fun n => (pre + x.utf8ByteSize, (n : Int))
     | _ => none
   go 0 parts
 

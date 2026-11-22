@@ -36,7 +36,7 @@ variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m
 def eventLine (e : Event) : m String := do
   let ag := e.agent.getD ""
   let sum := ag.toUTF8.foldl (fun s b => s + b.toNat) 0
-  let col := ["31", "32", "33", "34", "35", "36"][sum % 6]!
+  let col := match sum % 6 with | 0 => "31" | 1 => "32" | 2 => "33" | 3 => "34" | 4 => "35" | _ => "36"
   let t ← match e.ts with | some t => pure t | none => Clock.now
   return s!"{← Sys.date "%H:%M:%S" t} \x1b[{col}m{padRight (e.agent.getD "-") 12}\x1b[0m {padRight (e.kind.getD "nil") 9} {e.path.getD ""} {e.data.getD ""}"
 

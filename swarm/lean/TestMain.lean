@@ -41,8 +41,10 @@ def coordinate (pat : Option String) : IO UInt32 := do
   let mut next := 0
   let mut done := 0
   while done < jobs.size do
-    while running.size < jobsMax && next < jobs.size && (!alone jobs[next]!.1 || running.isEmpty) do
-      let (s, n, _) := jobs[next]!
+    repeat
+      if running.size ≥ jobsMax then break
+      let some (s, n, _) := jobs[next]? | break
+      if alone s && !running.isEmpty then break
       let args := #["-c", "exec \"$0\" --one \"$1\" \"$2\" >\"$3\" 2>&1", self, s, n, s!"{tmp}/{next}.out"]
       let c ← IO.Process.spawn { cmd := "sh", args, stdin := .null, stdout := .null, stderr := .null }
       running := running.push (next, c, (← IO.monoMsNow))
@@ -61,7 +63,7 @@ def coordinate (pat : Option String) : IO UInt32 := do
   let mut failed := 0
   for h : i in [0:jobs.size] do
     let (s, n, _) := jobs[i]
-    let rc := rcs[i]!.getD 1
+    let rc := (rcs[i]?.bind id).getD 1
     if rc == 0 then IO.println s!"ok    {s} {n}"
     else
       failed := failed + 1

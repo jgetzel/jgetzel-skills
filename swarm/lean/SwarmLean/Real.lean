@@ -379,8 +379,8 @@ def execIO (argv : List String) : IO String := do
 /-- The first directory above this binary holding the launcher `swarm` and `lean/lakefile.lean` (swarm/ in the repo). -/
 def launcherDirIO : IO (Option String) := do
   let mut dir := (← IO.appPath).parent
-  while dir.isSome do
-    let d := dir.get!
+  while true do
+    let some d := dir | break
     if (← (d / "lean" / "lakefile.lean").pathExists) && (← (d / "swarm").pathExists) then
       return some d.toString
     dir := if d.parent == some d then none else d.parent
