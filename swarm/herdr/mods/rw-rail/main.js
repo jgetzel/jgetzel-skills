@@ -598,7 +598,7 @@ export default class Rail extends View {
     const red = (p) => ciWord(info.get(p)?.ci ?? null) === "red";
     if ((j.repos ?? []).length) out.child(h_flex().flex_none().flex_wrap().gap(4).pl(26).pr(8).pt(2).pb(4)
       .children(j.repos.map((p, i) => h_flex().id(`sw-repo-${id}-${i}`).flex_none().gap(3).items_center().tooltip(tip(p))
-        .child(kit.repoTag(t, p, repoName(p).slice(0, 12)))
+        .child(kit.repoTag(t, p, repoName(p).slice(0, 6)))
         .when(red(p), (el) => el.child(div().size(6).rounded(3).bg(kit.colors(t).asks))))));
     // The rows: kept ones always (communicator, asks, hung, opened by you), then the rest in order up to SHOWN.
     const all = this.all.has(fk);
