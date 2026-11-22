@@ -300,12 +300,13 @@ def test_spawn_task_of_two_repos_makes_a_worktree_in_each (t : T) : IO Unit := d
   eq (← t.q "select path, repo, branch, base, ro from workspace where agent='t-9' order by path") (json% [
     {"path": $w1, "repo": $(t.repo), "branch": "t-9/1", "base": "main", "ro": 0},
     {"path": $w2, "repo": $r2, "branch": "t-9/1", "base": "main", "ro": 0}])
-  let brief := ((((← t.launched)[0]!).f "argv").getArrVal? 2).toOption.getD .null
+  let briefOf (i : Nat) : IO Json := do return ((((← t.launched)[i]!).f "argv").getArrVal? 2).toOption.getD Json.null
+  let brief ← briefOf 0
   has brief "Your worktrees, one per repo of the task"; has brief w1; has brief w2
   -- a task of no repo: no worktree
   t.sw_ "a" ["spawn", "t-8", "--model", "haiku", "--task", "2"]
   eq ((← t.q1 "select count(*) n from workspace where agent='t-8'").f "n") 0
-  has ((((← t.launched)[1]!).f "argv").getArrVal? 2).toOption.getD .null) "touches no repo"
+  has (← briefOf 1) "touches no repo"
 
 def test_landed_check_judges_each_worktree_in_its_repo (t : T) : IO Unit := do
   let r2 ← spawnTwo t
