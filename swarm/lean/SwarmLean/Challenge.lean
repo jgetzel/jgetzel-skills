@@ -369,10 +369,11 @@ def Watchd.wtLines (ls : List String) : List (String × Option String) :=
 
 /-- Workspace GC: removes clean, landed worktrees (and their local branch) that no live agent or process uses; `dry`
 only lists them. The worktrees and swept sizes (MB), and the "not landed" cache (worktree, HEAD and the bases' shas)
-grown (watchd.sweep_worktrees, NOT_LANDED). With `dir` (a realpath), only the worktrees inside it are looked at. -/
+grown (watchd.sweep_worktrees, NOT_LANDED). With `dir` (a realpath), only the worktrees inside it are looked at; with
+`made`, only those (realpaths: the worktrees a `workspace` row made, sw-global §4). -/
 def Watchd.sweep {m : Type → Type} [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
-  (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String := none) :
-  m (List (String × Option String × Int) × List String) :=
+  (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String := none)
+  (made : Option (List String) := none) : m (List (String × Option String × Int) × List String) :=
   sorry
 
 /-- The branch of a worktree the sweep removed but stopped before deleting: each ended agent's branch gets

@@ -1221,23 +1221,23 @@ theorem K.SwarmLean.Watchd.reap (hM : ∀ w, M.now w ≤ t) live t' comms :
 
 set_option maxHeartbeats 20000000 in
 /-- Lifecycle keeps the cross-area invariant at every commit (applied by `pass_keeps`, as `reap`). -/
-theorem K.SwarmLean.Watchd.lifecycle (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) t' comms terms opts nl :
-    Keeps (M := M) (XInv · t) (Watchd.lifecycle t' comms terms opts nl) := by
+theorem K.SwarmLean.Watchd.lifecycle (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) t' comms terms opts only spawn :
+    Keeps (M := M) (XInv · t) (Watchd.lifecycle t' comms terms opts only spawn) := by
   keeps_walk
   all_goals xstep
 
 set_option maxHeartbeats 20000000 in
 /-- One watchd pass keeps the cross-area invariant at every commit. -/
-theorem pass_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine comms repo opts up st :
-    Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine comms repo opts up st) := by
+theorem pass_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine opts up st :
+    Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine opts up st) := by
   keeps_walk
   all_goals xstep
 
 /-- `pass_keeps` under the name `keeps_walk` looks for (`K.<function>`): `watchd_keeps` applies it at the loop's
 pass instead of walking the pass a second time. -/
-theorem K.SwarmLean.Cmd.Watchd.watchdPass (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine comms repo opts
-    up st : Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine comms repo opts up st) :=
-  pass_keeps hM hL mine comms repo opts up st
+theorem K.SwarmLean.Cmd.Watchd.watchdPass (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) mine opts up st :
+    Keeps (M := M) (XInv · t) (Cmd.Watchd.watchdPass mine opts up st) :=
+  pass_keeps hM hL mine opts up st
 
 set_option maxHeartbeats 20000000 in
 /-- Every `Watchd` command keeps the cross-area invariant at every commit (`Cmd.Watchd.group`). -/

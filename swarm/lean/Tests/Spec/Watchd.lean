@@ -103,6 +103,9 @@ instance : Sys TM where
   sqlAt p s stmts ro := (Sys.sqlAt p s stmts ro : App _)
   udsSend p d := (Sys.udsSend p d : App _)
 
+instance : Scoped TM where
+  within sc x := do let h ← read; (Scoped.within sc (x.run h) : App _)
+
 instance : Guard TM where
   guard x := do let h ← read; (Guard.guard (x.run h) : App _)
 
@@ -124,6 +127,7 @@ def run (h : Hooks) (act : TM α) : IO α := do
 def setup (t : T) : IO Unit := do
   Shim.setenv "SWARM_DB" t.db
   IO.Process.setCurrentDir t.repo
+  t.q_ "update swarm set comms='t-comms' where name='t'"
 
 def now : IO Int := return (← Sqlite.now).toNat
 
@@ -164,9 +168,9 @@ def agentRow (h : Hooks) (n : String) : IO Agent := do
   let some a ← run h (Store.txn [.agent] fun db => (db, db.agent n)) | fail s!"no agent {n}"
   return a
 
-/-- watchd_tick(c, "t-comms", nil, { min_free_gib = 0 }): its error, none when every pass ran clean. -/
+/-- watchd_tick({ min_free_gib = 0 }) (swarm t's communicator is t-comms): its error, none when every pass ran clean. -/
 def tick (h : Hooks) : IO (Option String) :=
-  return (← run h (Cmd.Watchd.tick (some "t-comms") none { minFreeGib := 0 } {})).2
+  return (← run h (Cmd.Watchd.tick { minFreeGib := 0 } {})).2
 
 -- reap judged a dead from hc ls (bound to t1, only t2 live), but a takeover rebound it to t2 since: spared
 def reap_spares_a_rebound_terminal (t : T) : IO Unit := do
@@ -420,24 +424,25 @@ def the_whole_iteration_is_under_pcall (t : T) : IO Unit := do
   setup t
   let h ← hooks t
   t.q_ "insert or replace into meta(k,v) values('watchd','me')"
-  -- ci_poll raises: its first call, the repo's git, is the seam
+  -- ci_poll raises: its first call, the repo's git, is the seam (swarm t's `ci` knob on)
+  t.q_ "insert into meta(scope,k,v) values('t','ci','on')"
   let booms ← IO.mkRef 0
-  h.git.set fun _ cwd => do
-    if cwd == some "/nonexistent" then
+  h.git.set fun args cwd => do
+    if cwd == some t.repo && args == ["rev-parse", "--show-toplevel"] then
       booms.modify (· + 1)
       if (← booms.get) == 2 then t.q_ "delete from meta where k='watchd'"
       throw (IO.userError "boom")
   let opts : SwarmLean.Watchd.Opts := { minFreeGib := 0, once := false, interval := 0 }
-  eq (← run h (Cmd.Watchd.loop "me" (some "t-comms") (some "/nonexistent") opts)) ": its record is gone"
+  eq (← run h (Cmd.Watchd.loop "me" opts)) ": its record is gone"
   eq (← booms.get) 2
   eq (← t.q1 "select v from meta where k='watchd_up'") Json.null  -- up false
   eq (← t.q "select 1 from event where kind='watchd-tick-error'").size 1  -- once per distinct message
   h.git.set fun _ _ => pure ()
   t.q_ "insert or replace into meta(k,v) values('watchd','me')"
-  eq (← run h (Cmd.Watchd.loop "me" (some "t-comms") none { opts with once := true })) Json.null
+  eq (← run h (Cmd.Watchd.loop "me" { opts with once := true })) Json.null
   eq ((← t.q1 "select v from meta where k='watchd_up'").f "v") "me"
   h.before.set fun _ => throw (IO.userError "database is locked")
-  eq (← run h (Cmd.Watchd.loop "me" (some "t-comms") none { opts with once := true })) Json.null
+  eq (← run h (Cmd.Watchd.loop "me" { opts with once := true })) Json.null
 
 def tests : List Case := [
   ("reap_spares_a_rebound_terminal", reap_spares_a_rebound_terminal),

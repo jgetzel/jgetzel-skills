@@ -224,9 +224,10 @@ def wtLines (ls : List String) : List (String × Option String) :=
 
 /-- Workspace GC: removes clean, landed worktrees (and their local branch) that no live agent or process uses; `dry`
 only lists them. The worktrees and swept sizes (MB), and the "not landed" cache (worktree, HEAD and the bases' shas)
-grown (watchd.sweep_worktrees, NOT_LANDED). With `dir` (a realpath), only the worktrees inside it are looked at. -/
-def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String := none) :
-    m (List (String × Option String × Int) × List String) := do
+grown (watchd.sweep_worktrees, NOT_LANDED). With `dir` (a realpath), only the worktrees inside it are looked at; with
+`made`, only those (realpaths: the worktrees a `workspace` row made, sw-global §4). -/
+def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : Option String := none)
+    (made : Option (List String) := none) : m (List (String × Option String × Int) × List String) := do
   let lines := splitlines ((← Lifecycle.run ["git", "worktree", "list", "--porcelain"]).getD "")
   let some first := lines.head? | return ([], notLanded)
   let main ← real (first.drop 9).toString
@@ -244,7 +245,7 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
   let mut cache := notLanded
   for (wt, br) in wts do
     if wt == main || (← Sys.kind wt true) != .dir || used.any (inside · wt) || pcwd.any (inside · wt) ||
-        !(dir.all (inside wt)) then continue
+        !(dir.all (inside wt)) || !(made.all (·.contains wt)) then continue
     let gd ← git ["-C", wt, "rev-parse", "--absolute-git-dir"]
     let last := max (max 0 ((← Sys.mtime wt).getD 0)) ((← Sys.mtime (joinPath (joinPath ((py gd).getD wt) "logs") "HEAD")).getD 0)
     -- no index.lock: an agent committing in wt meanwhile must not fail (#127)
@@ -665,21 +666,46 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
 
 -- ---------- lifecycle ----------
 
-/-- Ends finished agents, offers reusable ones related tasks (board #186), staffs the startable tasks not under an
-offer (watchd.lifecycle); the sweep's "not landed" cache before and after. -/
-def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Opts) (notLanded : List String) :
-    m (List String) := do
+/-- The repo's own upkeep (sw-global §4, per repo, in its folder and scope): its bases fetched, the sweep of the
+worktrees a `workspace` row made and the branches ended agents left; the "not landed" cache before and after. -/
+def repoSweep (comms : Option String) (notLanded : List String) : m (List String) := do
   let db0 ← Store.txn [.agent, .task, .workspace] fun db => (db, db)
-  let all ← Workspaces.worktrees
-  let every ← Workspaces.every
-  let wts := Workspaces.wtMapOf db0 all
   let main ← Workspaces.main none
   let prot ← Workspaces.protectedOf db0 main
   for b in prot do Bases.fetch b main
-  let (_, notLanded) ← sweep (some comms) false notLanded none
+  let made ← ((db0.workspaces.filter (·.ro == some 0)).map (·.path)).mapM real
+  let (_, notLanded) ← sweep comms false notLanded none (some made)
   if let some mn := main then sweepBranches mn ((db0.agents.filter (·.ended.isSome)).map (·.name)) prot
+  return notLanded
+
+/-- The repo's locks (sw-global §4, per repo, every swarm's agents in view): an expired one dropped (`reapLock`), and
+one whose holder is no live agent of any swarm (its end released the locks of its own repo only). -/
+def reapLocks (t : Int) : m (List String) := do
+  let db ← Store.txn [.lock, .agent] fun db => (db, db)
+  let live := (Agents.live db).map (·.name)
+  let mut out := []
+  for l in db.locks do
+    let now ← Clock.now
+    if l.lease_until.any (· < t) then
+      if ← Store.txn [.lock] (reapLock l t now) then out := out ++ [s!"lock {l.path}"]
+    else if l.agent.all (!live.contains ·) then
+      let gone ← Store.txn [.lock, .agent] fun db =>
+        if (Agents.live db).any (some ·.name == l.agent) || !db.locks.any (fun x => x.path == l.path && x.agent == l.agent) then (db, false)
+        else
+          let db := { db with locks := db.locks.filter fun x => !(x.path == l.path && x.agent == l.agent) }
+          (db.log now l.agent "reap" (some l.path) (some "holder gone"), true)
+      if gone then out := out ++ [s!"lock {l.path}"]
+  return out
+
+/-- Ends finished agents, offers reusable ones related tasks (board #186), and with `spawn` staffs the startable tasks
+not under an offer (watchd.lifecycle). Only the live agents `only` admits: those of the repo this runs in. -/
+def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Opts) (only : String → Bool := fun _ => true)
+    (spawn : Bool := true) : m Unit := do
+  let all ← Workspaces.worktrees
+  let every ← Workspaces.every
+  let main ← Workspaces.main none
   let db ← Store.txn [.agent, .task, .workspace, .event] fun db => (db, db)
-  for (n, path, base) in ← Workspaces.baseOut db all do  -- a base checked out in an agent's worktree: once per agent and base
+  for (n, path, base) in (← Workspaces.baseOut db all).filter (only ·.1) do  -- a base checked out in an agent's worktree: once per agent and base
     let now ← Clock.now
     Store.txn [.event] fun db =>
       if db.events.any fun e => e.kind == some "base-out" && e.agent == some n && e.path == some base then (db, ()) else
@@ -689,11 +715,12 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
       (say db now comms s!"{n}'s worktree {path} has base {base} checked out." false "notice", ())
   let by_ (h : String) : Option Term := (terms.getD []).find? (·.address == some h)
   let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor, .«meta»] fun db => (db, db)
+  let wts := Workspaces.wtMapOf db all
   let pool := Queue.staffing db
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
   let dflt := (py opts.model).getD "sonnet"
-  for a in Agents.live db do
+  for a in (Agents.live db).filter (only ·.name) do
     let offer := Reuse.candidates db a.name a.model dflt pool
     let f0 : Lifecycle.Reads m := Lifecycle.reads db main wts every a.name offer
     -- an offer unanswered OFFER_TTL counts as declined
@@ -716,6 +743,7 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
       -- the event marks it told: never without its message
       let db := db.log now (some a.name) "digest" none (some (",".intercalate (ids.map d)))
       (say db now a.name (Reuse.text offer) false "system", ())
+  if !spawn then return
   let offered ← if pool.isEmpty then pure [] else do
     let now ← Clock.now
     Store.txn [.agent, .task, .event] fun db => (db, Reuse.offered db now)
@@ -728,7 +756,6 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
       let db := db.setMeta "spawn_held" (some h)
       (if old.isNone then db.log now (some "swarm") "spawn-held" none (some h) else db, ())  -- one per edge
     | none => (if old.isSome then delMeta db "spawn_held" else db, ())
-  return notLanded
 
 -- ---------- machine ----------
 
