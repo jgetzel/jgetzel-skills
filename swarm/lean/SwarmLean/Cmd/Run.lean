@@ -193,7 +193,10 @@ def mkJob (unit : String) (memFlag : Option Int) (fl : String) : String :=
 function, as `finishJob` and `runRemote`, so Crash.lean's walk of `run` applies its lemma instead of walking it inline. -/
 def detachStart (a : Parsed) (argv : List String) (claimId jid jobs unit cwd : String) (chosen : Option String)
     (gotCores gotMem waitS : Int) (estF : Option Int) : m UInt32 := do
-  let exe := (← Sys.readlink "/proc/self/exe").getD "swarm"
+  -- no /proc on macOS: the launcher above this binary, so a test's run resumes in the swarm under test, not PATH's
+  let exe ← match ← Sys.readlink "/proc/self/exe" with
+    | some e => pure e
+    | none => pure (((← Proc.launcherDir).map (· ++ "/swarm")).getD "swarm")
   let cargs := ["run"] ++ (if a.flag "no_devshell" then ["--no-devshell"] else []) ++ ((a.str "on").elim [] (["--on", ·])) ++
     ((a.str "cores").elim [] (["--cores", ·])) ++ ((a.str "mem").elim [] (["--mem", ·])) ++ ((a.strs "env").flatMap (["--env", ·])) ++ ["--"] ++ argv
   let rj := Json.encode (obj [("claim", some (.str claimId)), ("machine", chosen.map .str), ("cores", some (Json.int gotCores)),
@@ -205,8 +208,11 @@ def detachStart (a : Parsed) (argv : List String) (claimId jid jobs unit cwd : S
     k.all fun c => c.isAlphanum || c == '_'
   let sd := ["systemd-run", "--user", "--collect", "--quiet", "--unit=" ++ unit, "--working-directory=" ++ cwd,
     "-p", "StandardOutput=file:" ++ out, "-p", "StandardError=file:" ++ out, "--setenv=SWARM_RUN_RESUME"] ++ names.map ("--setenv=" ++ ·) ++ [exe] ++ cargs
+  -- a new session: setsid, else perl's (macOS has no setsid, board #90), else only nohup
+  let newSession := "use POSIX; POSIX::setsid(); exec @ARGV or die \"exec $ARGV[0]: $!\\n\""
   let script := "if [ -z \"${SWARM_DETACH_NO_SYSTEMD:-}\" ] && " ++ shjoin sd ++ " 2>/dev/null; then :; else cd " ++ shquote cwd ++
-    " && setsid nohup " ++ shjoin (exe :: cargs) ++ " >" ++ shquote out ++ " 2>&1 </dev/null & fi"
+    " || exit 1; if command -v setsid >/dev/null 2>&1; then set -- setsid; elif command -v perl >/dev/null 2>&1; then set -- perl -e " ++
+    shquote newSession ++ " --; else set --; fi; \"$@\" nohup " ++ shjoin (exe :: cargs) ++ " >" ++ shquote out ++ " 2>&1 </dev/null & fi"
   discard <| Sys.exec ["sh", "-c", script] { env := [("SWARM_RUN_RESUME", some rj)], stdoutFile := some "/dev/null", merge := true }
   let mut up := false
   for _ in [0:300] do

@@ -215,6 +215,33 @@ def test_run_detach_a_success_posts_only_the_end_line (t : T) : IO Unit := do
   let b := ((← t.q1 "select body from msg where dest='b' and frm='swarm'").f "body").s?.getD ""
   has b "exit 0 on this machine"; hasnt b "fine\n"
 
+/-- PATH with no setsid: each of its directories holding one swapped for a copy of it in links, without setsid. -/
+def pathNoSetsid (t : T) : IO String := do
+  let mut ds : Array String := #[]
+  let mut i := 0
+  for d in (← basePath).splitOn ":" do
+    if d.isEmpty then continue
+    unless ← (System.FilePath.mk d / "setsid").pathExists do ds := ds.push d; continue
+    i := i + 1
+    let m := s!"{t.d}/nosetsid{i}"
+    IO.FS.createDirAll m
+    let es := (← System.FilePath.readDir d).filter (·.fileName != "setsid") |>.map (·.path.toString)
+    discard <| t.exec (["ln", "-s"] ++ es.toList ++ [m])
+    ds := ds.push m
+  return ":".intercalate ds.toList
+
+-- board #90: macOS has no setsid
+def test_run_detach_without_setsid (t : T) : IO Unit := do
+  t.agent "b"
+  let path ← pathNoSetsid t
+  let r ← t.exec ["sh", "-c", "command -v setsid"] { env := [("PATH", some path)] }
+  unless r.code ≠ 0 do fail s!"setsid still on PATH: {r.stdout}"
+  let fb := match ← t.fakebin with | some fb => s!"{fb}:" | none => ""
+  let r ← t.sw "b" ["run", "--detach", "--", "echo fine"] { env := det.env ++ [("PATH", some (fb ++ path))] }
+  has r.stdout "started on this machine"
+  until_ (do return (← t.q "select 1 from msg where dest='b' and frm='swarm'").size > 0)
+  has ((← t.q1 "select body from msg where dest='b' and frm='swarm'").f "body" |>.s?.getD "") "exit 0 on this machine"
+
 def test_run_detach_ended_submitter_gets_it_on_the_task (t : T) : IO Unit := do
   t.agent "b"
   t.sw_ "b" ["task", "add", "x"]; t.sw_ "b" ["task", "claim", "1"]
@@ -387,6 +414,7 @@ def tests : List Case := [
   ("test_run_claim_is_gone_after_a_killed_job", test_run_claim_is_gone_after_a_killed_job),
   ("test_run_detach_returns_before_the_job_ends_and_posts_the_end_line", test_run_detach_returns_before_the_job_ends_and_posts_the_end_line),
   ("test_run_detach_a_success_posts_only_the_end_line", test_run_detach_a_success_posts_only_the_end_line),
+  ("test_run_detach_without_setsid", test_run_detach_without_setsid),
   ("test_run_detach_ended_submitter_gets_it_on_the_task", test_run_detach_ended_submitter_gets_it_on_the_task),
   ("test_run_detach_with_no_one_to_tell_goes_to_comms", test_run_detach_with_no_one_to_tell_goes_to_comms),
   ("test_run_detach_a_killed_process_is_lost", test_run_detach_a_killed_process_is_lost),
