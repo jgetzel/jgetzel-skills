@@ -105,7 +105,8 @@ Its jobs, by what they are about:
 
 - **per agent** (any swarm): reap dead, end landed, leases, context nudges and compaction, api-resume, hung stays;
 - **per repo**: trial-merge conflicts among every agent with a worktree there, CI polling for the repo's base, PR
-  polling, the worktree sweep (only worktrees a `workspace` row made);
+  polling, the worktree sweep (only worktrees a `workspace` row made); the CI and PR passes act only on the repo's
+  tasks (its `task_repo` rows), as run ids are global and PR numbers per repo;
 - **per swarm**: auto-spawn (open startable tasks in the swarm's repos, within its `agent_min`/`agent_max`), typing
   messages into its communicator.
 

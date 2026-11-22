@@ -54,12 +54,12 @@ def redRun (id : Nat) (concl : Option String) (at_ : String) (status := "complet
   { id, sha := some RED, status := some status, conclusion := concl, url := some url, created := some at_ }
 def chkDb : Db := { agents := [{ name := "a", started := some 1 }], cis := [redRun 9 (some "failure") "2026-11-08T10:05:00Z" (url := "http://ci/9")] }
 /-- ci_check as watchd runs it, with the authors git log names. -/
-def check (db : Db) (names : List String := ["a", "gone"]) : Db :=
-  match ciCheckFirst T0 db with
-  | (db, some r) => ciCheckApply T0 (some "comms") r "-20 x" names "" db
+def check (db : Db) (names : List String := ["a", "gone"]) (ids : Option (List Int) := none) : Db :=
+  match ciCheckFirst T0 ids db with
+  | (db, some r) => ciCheckApply T0 ids (some "comms") r "-20 x" names "" db
   | (db, none) => db
 -- F5: the first transaction leaves a new red run's `ci-red` event to the second, which commits it with the task
-#guard (ciCheckFirst T0 chkDb).1.events.isEmpty
+#guard (ciCheckFirst T0 none chkDb).1.events.isEmpty
 #guard authors "x\n\nSwarm-Agent: gone\n\x1e\ny\n\nSwarm-Agent: a\n\x1e\n" == ["a", "gone"]
 def c1 : Db := check (check chkDb)
 #guard (c1.tasks.filter (likePrefix ·.title.get! "main red:")).length == 1
@@ -77,6 +77,13 @@ def c4 : Db := check { c3 with cis := c3.cis ++ [redRun 11 (some "success") "202
 -- no live suspect: comms hears
 def c5 : Db := check { c4 with agents := c4.agents.map ({ · with ended := some 1 }), events := c4.events.filter (·.kind != some "ci-red"), cis := [redRun 9 (some "failure") "2026-11-08T10:05:00Z"] }
 #guard (c5.msgs.filter (·.dest == some "comms")).length == 1
+-- board #136: repo A's checks see only A's tasks (ids): B's open red task #1 neither takes A's red run nor closes on
+-- A's green one
+def bRed : Db := { chkDb with tasks := [{ id := 1, title := some "main red: run 5", body := some "b", state := .open }], taskNext := 2 }
+def a1 : Db := check bRed (ids := some [])
+#guard (a1.find 1).get!.body == some "b" && (a1.tasks.filter fun t => t.title.any (·.startsWith "main red: run 9")).length == 1
+def a2 : Db := check { a1 with cis := a1.cis ++ [redRun 11 (some "success") "2026-11-08T10:20:00Z"] } (ids := some [2])
+#guard (a2.find 1).get!.state = .open && (a2.find 2).get!.state = .done
 
 -- a scheduled (or other) workflow's green run on the red sha is not main's CI: the red task stays and ci reads red
 def wfRun (id : Nat) (concl event wf at_ : String) : String :=

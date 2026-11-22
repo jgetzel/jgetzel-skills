@@ -321,6 +321,35 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   eq dests (json% ["a", "comms"])
   eq (← t.q "select 1 x from task where title like 'main red:%' and state='open'").size 1
 
+-- board #136: tasks are the machine's, but each repo's CI passes act only on its own (task_repo): repo B's open red
+-- task neither takes A's red run nor closes on A's green one, A's red gets its own task, and A's merged PR from a/2
+-- leaves B's claim #2 alone
+def test_ci_acts_only_on_the_repos_tasks (t : T) : IO Unit := do
+  let sha ← rev t
+  let run (id : Nat) (concl at_ : String) : Json :=
+    json% {"databaseId": $id, "headSha": $sha, "conclusion": $concl, "status": "completed", "url": "http://ci/a",
+      "createdAt": $at_, "updatedAt": $at_, "event": "push"}
+  let pr := (json% [{"number": 4, "headRefName": "a/2", "headRefOid": $sha, "baseRefName": "main", "state": "MERGED",
+    "mergedAt": "2026-11-08T10:00:00Z", "mergeCommit": {"oid": $sha}, "statusCheckRollup": []}]).compress
+  let gh (rs : Array Json) : IO Unit := discard <| t.fake "gh"
+    s!"#!/bin/sh\ncase \"$1\" in api) echo '{(Json.arr rs).compress}';; pr) echo '{pr}';; *) echo 'step Build failed';; esac\n"
+  t.agent "a"; t.agent "comms"
+  t.q_ "insert into task(title, body, state, created_by) values('main red: run 5', 'b', 'open', 'swarm')"
+  t.q_ "insert into task(title, state, owner, first_claimed_at) values('b work', 'claimed', 'a', 1)"
+  t.q_ "insert into task_repo(task, repo) values(1, '/elsewhere/b'), (2, '/elsewhere/b')"
+  let go : IO Unit := t.sw_ "a" ["watchd", "--once", "--ci", "--comms", "comms"] { cwd := some t.repo }
+  gh #[run 9 "failure" "2026-11-08T10:05:00Z"]
+  go
+  eq ((← t.q1 "select body from task where id=1").f "body") "b"
+  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
+  eq (← t.q "select id from task where title like 'main red: run 9%'") (json% [{"id": 3}])
+  eq (← t.q "select repo from task_repo where task=3") (json% [{"repo": $(t.repo)}])
+  gh #[run 10 "success" "2026-11-08T10:10:00Z", run 9 "failure" "2026-11-08T10:05:00Z"]
+  t.q_ "delete from meta where k like 'ci%'"
+  go
+  eq ((← t.q1 "select state from task where id=1").f "state") "open"
+  eq ((← t.q1 "select state from task where id=3").f "state") "done"
+
 -- ---- swarm run ----
 -- Fake hc and ssh: the 'laptop' is a home dir here; rsync is real. Per-terminal `hc get` answers come from <d>/get.<terminal>.
 def fakeRemote (t : T) (state : String := "connected") : IO String := do
@@ -534,6 +563,7 @@ def tests : List Case := [
   ("test_machine_line_at_decisions", test_machine_line_at_decisions),
   ("test_pressure_notice_reaches_stayers", test_pressure_notice_reaches_stayers),
   ("test_ci_red_is_one_task_closed_on_green", test_ci_red_is_one_task_closed_on_green),
+  ("test_ci_acts_only_on_the_repos_tasks", test_ci_acts_only_on_the_repos_tasks),
   ("test_run_remote_syncs_runs_and_brings_back", test_run_remote_syncs_runs_and_brings_back),
   ("test_run_never_ran_or_lost_is_255", test_run_never_ran_or_lost_is_255),
   ("test_run_local_records_job", test_run_local_records_job),
