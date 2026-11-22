@@ -21,21 +21,26 @@ def ts (s : String) : IO Float := do
   | some t => return t
   | none => throw (IO.userError s!"bad timestamp {s}")
 
+/-- A Bash command that loops waiting. -/
+def WAIT_LOOP : Re.Pat := .lit "\\A\\s*(until|while|sleep)\\b"
+/-- A Bash command that watches CI. -/
+def CI_WATCH : Re.Pat := .lit "gh run watch|gh pr checks .*--watch"
+
 /-- What a command ran, by tool: each pattern's first group names it. -/
-def KEYS : List (String × String) :=
-  [("just", "(?:^|[;&|(`]|\\bflock\\s+\\S+|--command)\\s*just\\s+([\\w-]+)"), ("gh", "\\bgh\\s+(\\w+\\s+[\\w-]+)"),
-   ("nix", "\\bnix\\s+(\\w+)"), ("cabal", "\\bcabal\\s+(\\w+)"), ("git", "\\bgit\\s+([\\w-]+)"),
-   ("herdr", "\\bherdr\\s+(\\w+\\s+[\\w-]+)"), ("script", "([\\w-]+\\.(?:sh|py|lua))\\b")]
+def KEYS : List (String × Re.Pat) :=
+  [("just", .lit "(?:^|[;&|(`]|\\bflock\\s+\\S+|--command)\\s*just\\s+([\\w-]+)"), ("gh", .lit "\\bgh\\s+(\\w+\\s+[\\w-]+)"),
+   ("nix", .lit "\\bnix\\s+(\\w+)"), ("cabal", .lit "\\bcabal\\s+(\\w+)"), ("git", .lit "\\bgit\\s+([\\w-]+)"),
+   ("herdr", .lit "\\bherdr\\s+(\\w+\\s+[\\w-]+)"), ("script", .lit "([\\w-]+\\.(?:sh|py|lua))\\b")]
 
 /-- The row a tool call counts in. -/
-def key (name : String) (inp : Json) : IO String := do
-  if name != "Bash" then return name
+def key (name : String) (inp : Json) : String :=
   let cmd := (Json.fstr inp "command").getD ""
-  if (← ok (Re.match "\\s*(until|while|sleep)\\b" cmd)).isSome then return "bash: wait loop"
-  if (← ok (Re.search "gh run watch|gh pr checks .*--watch" cmd)).isSome then return "gh: wait for CI"
-  for (k, pat) in KEYS do
-    if let some m ← ok (Re.search pat cmd) then return s!"{k} {(m.group 1).getD ""}"
-  return s!"bash: {(words cmd).headD "?"}"
+  if name != "Bash" then name
+  else if WAIT_LOOP.test cmd then "bash: wait loop"
+  else if CI_WATCH.test cmd then "gh: wait for CI"
+  else match KEYS.findSome? (fun (k, p) => (p.search cmd).map fun m => s!"{k} {(m.group 1).getD ""}") with
+    | some r => r
+    | none => s!"bash: {(words cmd).headD "?"}"
 
 /-- A content value's text, blocks joined with a space, as time-report always did. -/
 def textOf : Option Json → String
@@ -43,14 +48,16 @@ def textOf : Option Json → String
   | c => " ".intercalate ((arr c).filterMap fun b =>
       match b with | .obj _ => some ((Json.fstr b "text").getD "") | _ => none)
 
+/-- An orchestrator's brief naming an agent in bold. -/
+def AGENT_BOLD : Re.Pat := .lit "agent \\*\\*([\\w-]+)\\*\\*"
+/-- An agent brief's opening "You are <name>", maybe as pasted content. -/
+def YOU_ARE : Re.Pat := .lit "\\A\\W*(?:<pasted_content[^>]*>\\s*)?You are \\**([a-z][\\w-]*)"
+
 /-- A session's name: agent briefs open "You are <name>", sometimes as pasted content. -/
-def label (first sid : String) : IO String := do
-  let m ← match ← ok (Re.search "agent \\*\\*([\\w-]+)\\*\\*" first) with
-    | some m => pure (some m)
-    | none => ok (Re.search "\\A\\W*(?:<pasted_content[^>]*>\\s*)?You are \\**([a-z][\\w-]*)" first)
-  if let some m := m then return (m.group 1).getD ""
-  if hasSub first "orchestrat" then return "orchestrator"
-  return cut sid 8
+def label (first sid : String) : String :=
+  match AGENT_BOLD.search first <|> YOU_ARE.search first with
+  | some m => (m.group 1).getD ""
+  | none => if hasSub first "orchestrat" then "orchestrator" else cut sid 8
 
 /-- Total, count and max of some durations. -/
 structure Row where
@@ -75,7 +82,10 @@ def addF (t : Array (String × Float)) (k : String) (v : Float) : Array (String 
   | none => t.push (k, v)
 
 /-- Waiting on CI, agents or the user, not doing work. -/
-def WAITING := "watch\\.sh|wait loop|AskUserQuestion|wait for CI|gh pr checks|herdr agent wait"
+def WAITING : Re.Pat := .lit "watch\\.sh|wait loop|AskUserQuestion|wait for CI|gh pr checks|herdr agent wait"
+
+/-- A task-notification's tool call. -/
+def TOOL_USE_ID : Re.Pat := .lit "<tool-use-id>(\\w+)</tool-use-id>"
 
 /-- A record: its kind (user, assistant, notify), time and content. -/
 structure Rec where
@@ -83,15 +93,65 @@ structure Rec where
   t : Float
   c : Option Json
 
-/-- The tool rows, and each session's model and foreground tool time. -/
-def sessions (pdirs : List String) (since : Float) : IO (Rows × Array (String × Float) × Array (String × Float)) := do
-  let mut tools : Rows := #[]
-  let mut model : Array (String × Float) := #[]
-  let mut per : Array (String × Float) := #[]
+/-- A tool call still open: its start, its row and whether it runs in the background. -/
+abbrev Calls := Std.HashMap String (Float × String × Bool)
+
+/-- The tool rows, each session's model and foreground tool time, and the current session's open calls and last
+record. -/
+structure Tally where
+  tools : Rows := #[]
+  model : Array (String × Float) := #[]
+  per : Array (String × Float) := #[]
+  uses : Calls := {}
+  bg : Calls := {}
+  prevkind : String := ""
+  prevt : Float := 0
+
+/-- Counts record `r` of session `who`. -/
+def Tally.step (who : String) (s : Tally) (r : Rec) : Tally := Id.run do
+  let c := r.c.getD (.str "")
+  let mut s := s
+  if r.ty == "assistant" then
+    if s.prevkind == "tool" then s := { s with model := addF s.model who (r.t - s.prevt) }  -- model time after a tool result
+    for b in arr (some c) do
+      if Json.fstr b "type" == some "tool_use" then
+        let inp := match Json.field b "input" with | some i@(.obj _) => i | _ => Json.mkObj []
+        s := { s with uses := s.uses.insert ((Json.fstr b "id").getD "")
+          (r.t, key ((Json.fstr b "name").getD "") inp, truthy (Json.field inp "run_in_background")) }
+    return { s with prevkind := "asst", prevt := r.t }
+  for m in TOOL_USE_ID.finditer (textOf (some c)) do
+    let id := (m.group 1).getD ""
+    if let some (t0, k, _) := s.bg[id]? then
+      s := { s with bg := s.bg.erase id, tools := add s.tools s!"{k} (bg)" (r.t - t0) }
+  if r.ty == "notify" then return s
+  let mut isTool := false
+  for b in arr (some c) do
+    let id := (Json.fstr b "tool_use_id").getD ""
+    if Json.fstr b "type" == some "tool_result" then
+      if let some u@(t0, k, background) := s.uses[id]? then
+        isTool := true
+        s := { s with uses := s.uses.erase id }
+        if background then s := { s with bg := s.bg.insert id u }
+        else s := { s with tools := add s.tools k (r.t - t0), per := addF s.per who (r.t - t0) }
+  return { s with prevkind := if isTool then "tool" else "human", prevt := r.t }
+
+/-- Counts session `sid`'s records, named by its first user record. -/
+def Tally.session (s : Tally) (sid : String) (recs : Array Rec) : Tally :=
+  let first := match recs.find? (·.ty == "user") with
+    | some r => textOf (r.c.getD (.str ""))
+    | none => ""
+  recs.foldl (Tally.step (label first sid)) { s with uses := {}, bg := {}, prevkind := "", prevt := 0 }
+
+/-- The tally of some sessions, each its id and records. -/
+def tally (ss : Array (String × Array Rec)) : Tally := ss.foldl (fun t (sid, recs) => t.session sid recs) {}
+
+/-- Each session in `pdirs` modified since `since`: its id and its records since then. -/
+def sessions (pdirs : List String) (since : Float) : IO (Array (String × Array Rec)) := do
   let mut files := #[]
   for dir in pdirs do
     for f in ← walk dir ".jsonl" do
       if f.startsWith (dir ++ "/") && !hasSub (f.drop (dir.length + 1)).toString "/" then files := files.push f
+  let mut out : Array (String × Array Rec) := #[]
   for f in files do
     let some mt ← (try some <$> System.FilePath.metadata f catch _ => pure none) | continue
     if Float.ofInt mt.modified.sec < since then continue
@@ -105,46 +165,8 @@ def sessions (pdirs : List String) (since : Float) : IO (Rows × Array (String �
       if ty == "queue-operation" && Json.fstr r "operation" == some "enqueue" then  -- task-notifications
         recs := recs.push { ty := "notify", t := ← ts stamp, c := some ((Json.field r "content").getD (.str "")) }
     recs := recs.filter (·.t ≥ since)
-    if recs.isEmpty then continue
-    let first := match recs.find? (·.ty == "user") with
-      | some r => textOf (r.c.getD (.str ""))
-      | none => ""
-    let who ← label first (basename f)
-    let mut uses : Std.HashMap String (Float × String × Bool) := {}
-    let mut bg : Std.HashMap String (Float × String × Bool) := {}
-    let mut prevkind := ""
-    let mut prevt : Float := 0
-    for r in recs do
-      let c := r.c.getD (.str "")
-      if r.ty == "assistant" then
-        if prevkind == "tool" then model := addF model who (r.t - prevt)  -- model time after a tool result
-        for b in arr (some c) do
-          if Json.fstr b "type" == some "tool_use" then
-            let inp := match Json.field b "input" with | some i@(.obj _) => i | _ => Json.mkObj []
-            uses := uses.insert ((Json.fstr b "id").getD "") (r.t, ← key ((Json.fstr b "name").getD "") inp,
-              truthy (Json.field inp "run_in_background"))
-        prevkind := "asst"; prevt := r.t
-        continue
-      for m in ← ok (Re.finditer "<tool-use-id>(\\w+)</tool-use-id>" (textOf (some c))) do
-        let id := (m.group 1).getD ""
-        if let some (t0, k, _) := bg[id]? then
-          bg := bg.erase id
-          tools := add tools s!"{k} (bg)" (r.t - t0)
-      if r.ty != "notify" then
-        let mut isTool := false
-        for b in arr (some c) do
-          let id := (Json.fstr b "tool_use_id").getD ""
-          if Json.fstr b "type" == some "tool_result" then
-            if let some u@(t0, k, background) := uses[id]? then
-              isTool := true
-              uses := uses.erase id
-              if background then bg := bg.insert id u
-              else
-                tools := add tools k (r.t - t0)
-                per := addF per who (r.t - t0)
-        prevkind := if isTool then "tool" else "human"
-        prevt := r.t
-  return (tools, model, per)
+    if !recs.isEmpty then out := out.push (basename f, recs)
+  return out
 
 /-- A `gh run view --json jobs` output's jobs. -/
 def jobsOf (out : String) : List Json :=
@@ -207,11 +229,12 @@ def main (args : List String) : IO UInt32 := do
     match ← parseIso s with
     | some t => since := t
     | none => IO.eprintln s!"time-report.sh: error: bad --since {s}"; return 2
-  let cwdDir := s!"{← home}/.claude/projects/{← ok (Re.sub "[^A-Za-z0-9]" "-" (← IO.currentDir).toString)}"
+  let cwdDir := s!"{← home}/.claude/projects/{NON_ALNUM.sub "-" (← IO.currentDir).toString}"
   let pdirs := match a.strs "project_dir" with
     | [] => [cwdDir]
     | ds => ds
-  let (tools, model, per) ← sessions pdirs since
+  let t := tally (← sessions pdirs since)
+  let (tools, model, per) := (t.tools, t.model, t.per)
   IO.println s!"# Time report since {← Shim.strftime "%Y-%m-%d %H:%M" (Int64.ofInt since.floor.toInt64.toInt)}\n\n## Sessions (foreground tool time · model time)"
   let get (t : Array (String × Float)) (w : String) : Float := ((t.find? (·.1 == w)).map (·.2)).getD 0
   let whos := ((per.map (·.1)) ++ (model.map (·.1)).filter (fun w => !per.any (·.1 == w))).toList.mergeSort (· ≤ ·)
@@ -219,7 +242,7 @@ def main (args : List String) : IO UInt32 := do
     IO.println s!"{fmt (get per who)} tools · {fmt (get model who)} model   {who}"
   for (title, waiting) in [("Work", false), ("Waiting (CI, agents, user)", true)] do
     IO.println s!"\n## {title}: tool time, all sessions (total · calls · max)"
-    let list ← tools.toList.filterM fun (k, _) => return (← ok (Re.search WAITING k)).isSome == waiting
+    let list := tools.toList.filter fun (k, _) => WAITING.test k == waiting
     for (k, r) in (sortedBy list (fun (_, r) => -r.total)).take top do IO.println (rowLine k r)
   if !a.flag "no_ci" then
     let (n, jobs, steps) ← ci since

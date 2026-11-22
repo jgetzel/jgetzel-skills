@@ -29,13 +29,28 @@ def Out.err (o : Out) (s : String) : IO Unit := o.errors.modify (·.push s)
 /-- Records a warning. -/
 def Out.warn (o : Out) (s : String) : IO Unit := o.warnings.modify (·.push s)
 
+/-- A code span or fence, whose @ is not an import. -/
+def CODE : Re.Pat := .lit "```.*?```|`[^`\\n]*`" Re.S
+/-- An @import: its path. -/
+def IMPORT : Re.Pat := .lit "(?:^|\\s)@((?:~|\\.{1,2})?/?[\\w./-]+)"
+/-- A SKILL.md's frontmatter, its body group 1. -/
+def FRONT : Re.Pat := .lit "\\A---\\n(.*?)\\n---" Re.S
+/-- A frontmatter line: its key and value. -/
+def FIELD : Re.Pat := .lit "^(\\w[\\w-]*):\\s*(.*)$" Re.M
+/-- A skill script a SKILL.md names: the interpreter it runs under, if any, and its path. -/
+def SKILL_SCRIPT : Re.Pat := .lit "(\\b(?:python3?|luajit|bash|sh)\\s+)?(~/\\.claude/skills/[\\w./-]+\\.(?:sh|py|lua))"
+/-- A path token of a hook command. -/
+def HOOK_PATH : Re.Pat := .lit "(?:^|(?<=[\\s\"'=(]))((?:~|\\$HOME|\\$\\{HOME\\}|\\$CLAUDE_PROJECT_DIR|/)[^\\s\"';|&]*)"
+/-- A path token that is a script or a binary. -/
+def SCRIPT_PATH : Re.Pat := .lit "\\.(py|sh|lua)$|/bin/"
+
 /-- A CLAUDE.md and the files it @imports, recursively, appended to `seen` (at most 51, like Claude Code). -/
 partial def imports (o : Out) (h path : String) (seen : IO.Ref (Array String)) : IO Unit := do
   if (← seen.get).contains path then return
   if (← seen.get).size > 50 || !(← isfile path) then return
   seen.modify (·.push path)
-  let text ← ok (Re.sub "```.*?```|`[^`\\n]*`" "" ((← read path).getD "") Re.S)
-  for m in ← ok (Re.finditer "(?:^|\\s)@((?:~|\\.{1,2})?/?[\\w./-]+)" text) do
+  let text := CODE.sub "" ((← read path).getD "")
+  for m in IMPORT.finditer text do
     let ref := (m.group 1).getD ""
     let p := normpath (joinPath (dirname path) (expanduser h ref))
     if ← isfile p then imports o h p seen
@@ -52,7 +67,7 @@ def alwaysOn (o : Out) (h repo : String) : IO (List (Nat × String)) := do
     files := files ++ (← walk (repo ++ "/.claude/rules") ".md")
     let common := (← git ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"]).getD ""
     let root := if common.endsWith "/.git" then dirname common else repo
-    let mem := s!"{h}/.claude/projects/{← ok (Re.sub "[^A-Za-z0-9]" "-" root)}/memory/MEMORY.md"
+    let mem := s!"{h}/.claude/projects/{NON_ALNUM.sub "-" root}/memory/MEMORY.md"
     if ← isfile mem then files := files.push mem
   files.toList.mapM fun f => do
     let data ← slurp f
@@ -90,8 +105,8 @@ def skills (o : Out) (h repo : String) : IO Unit := do
       continue
     let text := (← read md).getD ""
     let mut fm : List (String × String) := []
-    if let some front ← ok (Re.match "---\\n(.*?)\\n---" text Re.S) then
-      for m in ← ok (Re.finditer "^(\\w[\\w-]*):\\s*(.*)$" ((front.group 1).getD "") Re.M) do
+    if let some front := FRONT.search text then
+      for m in FIELD.finditer ((front.group 1).getD "") do
         fm := ((m.group 1).getD "", (m.group 2).getD "") :: fm
     let quoteC (c : Char) : Bool := c == '"' || c == '\''
     let desc := String.ofList (((strip ((fm.lookup "description").getD "")).toList.dropWhile quoteC).reverse.dropWhile quoteC).reverse
@@ -99,7 +114,7 @@ def skills (o : Out) (h repo : String) : IO Unit := do
     else if desc.length > 1024 then o.warn s!"{md}: description is {desc.length} chars (limit 1024)"
     if let some n := fm.lookup "name" then
       if strip n != name then o.err s!"{md}: name '{strip n}' does not match directory '{name}'"
-    for m in ← ok (Re.finditer "(\\b(?:python3?|luajit|bash|sh)\\s+)?(~/\\.claude/skills/[\\w./-]+\\.(?:sh|py|lua))" text) do
+    for m in SKILL_SCRIPT.finditer text do
       let ref := (m.group 2).getD ""
       let p := expanduser h ref
       if !(← isfile p) then o.err s!"{md}: references {ref}, which does not exist"
@@ -124,11 +139,9 @@ def settings (o : Out) (h repo : String) : IO Unit := do
       for e2 in arr (some entries) do
         for hk in arr (Json.field e2 "hooks") do
           let cmd := (Json.fstr hk "command").getD ""
-          let toks ← ok (Re.finditer
-            "(?:^|(?<=[\\s\"'=(]))((?:~|\\$HOME|\\$\\{HOME\\}|\\$CLAUDE_PROJECT_DIR|/)[^\\s\"';|&]*)" cmd)
-          for m in toks do
+          for m in HOOK_PATH.finditer cmd do
             let tok := (m.group 1).getD ""
-            if (← ok (Re.search "\\.(py|sh|lua)$|/bin/" tok)).isSome then
+            if SCRIPT_PATH.test tok then
               let p := expanduser h (plainReplace (plainReplace (plainReplace tok "$CLAUDE_PROJECT_DIR" repo)
                 "${HOME}" h) "$HOME" h)
               if (← kind p) == .none then o.err s!"{f}: {event} hook runs {tok}, which does not exist"

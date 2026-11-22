@@ -210,7 +210,10 @@ def fmtF (x : Float) (w k : Nat) : String := let s := cfixed x k; "".pushn ' ' (
 /-- `n` as `%wd`. -/
 def fmtD (n : Int) (w : Nat) : String := let s := toString n; "".pushn ' ' (w - s.length) ++ s
 
-/-- An `Except` from the regex module as IO (a bad pattern is a bug). -/
+/-- A character a Claude Code project dir name replaces with `-`. -/
+def NON_ALNUM : Re.Pat := .lit "[^A-Za-z0-9]"
+
+/-- An `Except` from the regex module as IO, for a pattern built at run time. -/
 def ok (e : Except String α) : IO α := IO.ofExcept (e.mapError IO.userError)
 
 /-- Lua's truthiness of a JSON field as the tools test it: present, and not false, "", or 0. -/

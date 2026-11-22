@@ -25,9 +25,11 @@ def EDIT_TOOLS : List String := ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 def STOP_CAP : Nat := 2
 
 /-- `git … push`, with its `-C dir` (log_push). -/
-def PUSH : String := "\\bgit\\s+(?:-C\\s+(\\S+)\\s+)?push\\b"
+def PUSH : Re.Pat := .lit "\\bgit\\s+(?:-C\\s+(\\S+)\\s+)?push\\b"
 /-- A `cd dir` at the start or after `; & | (` (log_push). -/
-def CD : String := "(?:^|[;&|(]\\s*)cd\\s+([^\\s;&|)]+)"
+def CD : Re.Pat := .lit "(?:^|[;&|(]\\s*)cd\\s+([^\\s;&|)]+)"
+/-- `swarm wait`: a background task that waits on the swarm, which does not keep an agent from stopping. -/
+def SWARM_WAIT : Re.Pat := .lit "swarm\\s+wait"
 
 /-- `swarm hook -h`. -/
 def helpHook : String :=
@@ -100,7 +102,7 @@ def preTool (name cwd : String) (tool : Option String) (ti : Json) (here : Optio
   | some "Bash" =>
     let cmd := tostr ti "command"
     -- the reads only for a checkout: the agent's worktrees and the tasks' bases
-    let co := (Re.search Workspaces.CHECKOUT cmd).toOption.join.isSome
+    let co := Workspaces.CHECKOUT.test cmd
     let wdb ← if co then Store.view [Sels.workspaces name, { table := .task, cond := .notNull "base" }] id
       else pure {}
     if let some base ← Workspaces.baseCheckout wdb name cmd (some cwd) then
@@ -130,8 +132,8 @@ def preTool (name cwd : String) (tool : Option String) (ti : Json) (here : Optio
 
 /-- Logs a `git push` with the branch and subject of the tree it ran in (hook.log_push). -/
 def logPush (name cwd cmd : String) : m Unit := do
-  let some mt := (Re.search PUSH cmd).toOption.join | return
-  let cds := ((Re.findall CD (String.ofList (cmd.toList.take mt.s))).toOption.getD []).map (·.headD "")
+  let some mt := PUSH.search cmd | return
+  let cds := (CD.findall (String.ofList (cmd.toList.take mt.s))).map (·.headD "")
   let dir ← match mt.group 1 <|> cds.getLast? with
     | some d =>
       let d := String.ofList ((d.toList.dropWhile (fun c => c == '\'' || c == '"')).reverse.dropWhile (fun c => c == '\'' || c == '"')).reverse
@@ -186,7 +188,7 @@ def stopBlock (name : String) (p : Json) : m (Option String) := do
   let rs ← Lifecycle.endableReasons db row f
   let bg := match p.getObjVal? "background_tasks" with
     | .ok (.arr ts) => ts.toList.filter fun x =>
-        str? x "status" == some "running" && !((Re.search "swarm\\s+wait" (tostr x "command")).toOption.join.isSome)
+        str? x "status" == some "running" && !SWARM_WAIT.test (tostr x "command")
     | _ => []
   let bg := if rs.any (·.key == "idle-job") then [] else bg
   if !bg.isEmpty then return none

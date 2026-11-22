@@ -22,7 +22,7 @@ def TOOLS : List String := words "Read Write Edit MultiEdit NotebookEdit Bash Gl
 
 -- shortcut: a denylist on command text, not a sandbox; Bash can still write outside via a script it wrote.
 /-- Commands that leave the replay. -/
-def DENY : String :=
+def DENY : Re.Pat := .lit <|
   "\\bgit\\s+(push|worktree|tag|update-ref|stash|branch\\s+(-[dDmMcC]\\b|[^-\\s])|checkout\\s+-[bB]|switch\\s+-[cC])" ++
   "|\\bgh\\s+(pr|issue|release|repo|api|workflow|run\\s+(rerun|cancel))\\b" ++
   "|\\b(ssh|scp|rsync|herdr|pkill|killall)\\b|\\b(npm|cargo|uv)\\s+publish\\b|\\bdocker\\s+push\\b" ++
@@ -36,7 +36,7 @@ def verdict (h : String) (ev : Json) (wt main : String) : IO (Option String) := 
   if truthy (Json.field inp "isolation") then return some "worktree isolation creates shared git refs; work in this checkout"
   let cmd := (Json.fstr inp "command").getD ""
   if cmd != "" then
-    if let some m ← ok (Re.search DENY cmd) then return some s!"`{strip m.whole}` leaves this sandboxed replay"
+    if let some m := DENY.search cmd then return some s!"`{strip m.whole}` leaves this sandboxed replay"
     for p in [main, plainReplace main h "~"] do
       if (← ok (Re.search (Re.escape p ++ "(/|\\s|$|['\"])") cmd)).isSome then
         return some s!"{main} is the live repo; use this checkout ({wt})"
