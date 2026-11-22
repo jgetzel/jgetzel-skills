@@ -271,7 +271,7 @@ def scopeCol (sc : Scope) : Table → Option (String × Val)
 /-- The rows of a row type's table that select `s` picks, in the scope `sc`, in key order: one indexed select. -/
 def selRows [Row α] (c : Conn) (sc : Scope) (s : Sel) : IO (List α) := do
   let (w, ps) := s.cond.sql
-  let (w, ps) := match scopeCol sc s.table with
+  let (w, ps) := match if s.scoped then scopeCol sc s.table else none with
     | some (col, v) => (s!"{col}=? and ({w})", v :: ps)
     | none => (w, ps)
   let ks := (Row.cols α).take (Row.nkey α)
