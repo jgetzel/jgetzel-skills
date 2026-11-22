@@ -72,9 +72,6 @@ def LIMIT_KEYS : List String := ["comms", "agent_min", "agent_max", "queue_only"
 /-- What `Agents.limits` reads: the live agents and the staffing knobs. -/
 def limits : List Sel := [live, metas LIMIT_KEYS]
 
-/-- Task `i`'s row. -/
-def task (i : Int) : Sel := { table := .task, cond := .eq "id" (.int i) }
-
 /-- The tasks of ids `is`. -/
 def tasks (is : List Int) : Sel := { table := .task, cond := .oneOf "id" (is.map .int) }
 
