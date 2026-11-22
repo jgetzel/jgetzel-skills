@@ -29,6 +29,21 @@ def eventTask (e : Event) : Option Nat :=
     let rest := r.toList.drop ds.length
     if ds.isEmpty || !(rest.isEmpty || rest.head? == some ' ') then none else (String.ofList ds).toNat?
 
+/-- The event kinds `task show --json` lists: TASK_KINDS and the other kinds whose data starts with the task's `#<id>`,
+and `task-blocked`, whose path is the id. -/
+def SHOW_KINDS : List String := TASK_KINDS ++ ["renew", "answer", "task-after", "task-priority", "task-pr", "task-ci",
+  "red-fixed", "task-blocked"]
+
+/-- An event kind as the task's activity names it: add, claim, spawn, renew, release, block, answer, unblock, note,
+edit, land, unland, ci, pr, done, drop, held, unheld; the rest without their `task-` prefix. -/
+def shortKind (k : String) : String :=
+  match k with
+  | "hold" => "held"
+  | "unhold" => "unheld"
+  | "red-fixed" => "ci"
+  | "task-blocked" => "block"
+  | k => if k.startsWith "task-" then (k.drop 5).toString else k
+
 /-- The events about task `tid`, in order (tasks.task_events). -/
 def taskEvents (db : Db) (tid : Nat) : List Event :=
   db.events.filter fun e => (e.kind.map (TASK_KINDS.contains ·)).getD false && eventTask e == some tid
@@ -308,7 +323,8 @@ def renew (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
     | none => (db, .error s!"bad duration '{lease}' (use 90s, 30m, 2h)")
     | some l =>
       if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
-      else (db.set id ({ · with lease_until := some (c.now + l) }), .ok (c.now + l))
+      else ((db.set id ({ · with lease_until := some (c.now + l) })).log c.now (some c.me) "renew" none
+        (some s!"#{d id} {d (c.now + l)}"), .ok (c.now + l))
 
 /-- A task handed to `lander` at commit `sha` at time `now`: landing, its lease gone, its owner kept. -/
 def landF (sha : String) (lander : Option String) (now : Int) (t : Task) : Task :=
@@ -433,6 +449,9 @@ def unblock (c : Ctx) (id : Int) (answer : String) (db : Db) : Db × Except Stri
       let ans := py (some answer)
       let db := db.set id fun t => { t with state := .claimed, question := none, answer := ans.orElse fun _ => t.answer,
                                             lease_until := some (c.now + LEASE) }
+      let db := match ans with  -- the answer in the task's activity, then the unblock
+        | some a => db.log c.now (some c.me) "answer" none (some s!"#{d id} {a}")
+        | none => db
       let db := db.log c.now (some c.me) "unblock" none (some s!"#{d id}")
       let db := match ans, r.owner with
         | some a, some o => if c.me != o then (Msgs.post db c.now c.me o s!"#{d id} is unblocked. Answer: {a}").1 else db

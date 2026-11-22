@@ -137,7 +137,37 @@ def test_note_landing_to_owner (t : T) : IO Unit := do
   t.sw_ "b" ["task", "land", "1", "--sha", sha]
   has (← t.sw "a" ["post", "#1", "landed?"]).stdout "posted to #1: to b"
 
+-- board #120: `task show --json` lists the task's activity, oldest first, each event's kind as the swarm view names
+-- it, its raw kind and its text without the task's number; another task's events stay out
+def test_task_show_json_events (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  t.sw_ "a" ["task", "add", "t1"]
+  t.sw_ "a" ["task", "add", "t2"]
+  t.sw_ "a" ["task", "claim", "2"]
+  t.sw_ "b" ["task", "claim", "1"]
+  t.sw_ "b" ["task", "renew", "1", "--lease", "1h"]
+  t.sw_ "b" ["task", "block", "1", "which db?"]
+  t.sw_ "human" ["task", "unblock", "1", "--answer", "sqlite"]
+  t.sw_ "a" ["post", "#1", "a note"]
+  t.sw_ "b" ["task", "edit", "1", "--title", "t1 again"]
+  t.sw_ "b" ["task", "release", "1"]
+  t.sw_ "human" ["task", "hold", "1", "--why", "later"]
+  t.q_ "insert into event(ts, agent, kind, path, data) values(1, 'swarm', 'task-blocked', '1', 'stuck?'), (1, 'swarm', 'task-pr', null, '#1 42')"
+  let evs := ((← showJ t "1").f "events").getArr?.toOption.getD #[]
+  eq (evs.map (·.f "kind")) (json% ["add", "claim", "renew", "block", "answer", "unblock", "note", "edit", "release",
+    "held", "block", "pr"])
+  eq (evs.map (·.f "raw")) (json% ["task-add", "claim", "renew", "block", "answer", "unblock", "task-note", "task-edit",
+    "release", "hold", "task-blocked", "task-pr"])
+  let ev (k : String) : Json := (evs.find? (·.f "kind" == Json.str k)).getD .null
+  eq ((ev "add").f "text", (ev "block").f "text", (ev "answer").f "text", (ev "answer").f "agent", (ev "note").f "text")
+    (json% "t1", json% "which db?", json% "sqlite", json% "human", json% "a note")
+  eq ((ev "pr").f "text", (ev "held").f "text", (evs.back?.getD .null).f "swarm") (json% "42", json% "later", json% "t")
+  eq ((evs[10]?.getD .null).f "text") (json% "stuck?")
+  ok ((ev "renew").f "text" != .null) "renew's text: the lease's end"
+  ok (evs.all fun e => (e.f "id").i > 0 && (e.f "ts").i > 0) "each event's id and time"
+
 def tests : List Case := [
+  ("test_task_show_json_events", test_task_show_json_events),
   ("test_note_landing_to_owner", test_note_landing_to_owner),
   ("test_spawn_failed_launch_keeps_notes_held", test_spawn_failed_launch_keeps_notes_held),
   ("test_note_to_live_owner", test_note_to_live_owner),
