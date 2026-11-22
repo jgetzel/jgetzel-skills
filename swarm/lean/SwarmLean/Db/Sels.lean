@@ -82,6 +82,36 @@ def cursors (ns : List String) : Sel := { table := .cursor, cond := .oneOf "agen
 def unreadPast (n : String) (cur : Int) : Sel :=
   { table := .msg, cond := .and (.gt "id" (.int cur)) (.eq "dest" (.text n)) }
 
+/-- The events the feeds show: SQL's `kind not in ('touch','status')`, which a NULL kind fails. -/
+def shown : Cond := .and (.ne "kind" (.text "touch")) (.ne "kind" (.text "status"))
+
+/-- The last `n` events the feeds show; agent `a`'s when given. -/
+def feed (n : Nat) (a : Option String := none) : Sel :=
+  { table := .event, cond := (match a with | some x => .and (.eq "agent" (.text x)) shown | none => shown), last := some n }
+
+/-- The events of kinds `ks`; the last `n` of them when given. -/
+def kinds (ks : List String) (n : Option Nat := none) : Sel :=
+  { table := .event, cond := .oneOf "kind" (ks.map .text), last := n }
+
+/-- `x`'s stay-hung, stay-nowaiter and stay-unwoken events since it was last active (`staySign`'s). -/
+def staySigns (x : Agent) : Sel :=
+  { table := .event, cond := .and (.and (.eq "agent" (.text x.name))
+      (.oneOf "kind" (["stay-hung", "stay-nowaiter", "stay-unwoken"].map .text))) (.gt "ts" (.int (x.last_active.getD 0 - 1))) }
+
+/-- The last `n` messages; those from or to `a` when given. -/
+def lastMsgs (n : Nat) (a : Option String := none) : Sel :=
+  { table := .msg, cond := (match a with | some x => .or (.eq "frm" (.text x)) (.eq "dest" (.text x)) | none => .all),
+    last := some n }
+
+/-- The last `n` messages whose body holds `key`. -/
+def search (key : String) (n : Nat) : Sel := { table := .msg, cond := .has "body" key, last := some n }
+
+/-- The tasks not done. -/
+def undone : Sel := { table := .task, cond := .ne "state" (.text "done") }
+
+/-- The tasks agents `ns` own, in any state. -/
+def ownedBy (ns : List String) : Sel := { table := .task, cond := .oneOf "owner" (ns.map .text) }
+
 /-- What `Agents.fence` reads of `n`: its row and the last event that ended it. -/
 def fence (n : String) : List Sel :=
   [agent n, { table := .event, cond := .and (.eq "agent" (.text n)) (.oneOf "kind" [.text "reap", .text "leave", .text "end"]),
