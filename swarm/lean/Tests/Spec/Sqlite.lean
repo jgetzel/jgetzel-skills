@@ -315,6 +315,54 @@ def sqlite_alter (t : T) : IO Unit := do
     "sqlite_alter: after fills a NULL deps, as text"
   eq ((← tableCols c "task").contains "after") false "sqlite_alter: after is dropped"
 
+/-- The statement store (`Store.run`, sw-global §3) does on real sqlite what `Txn.onDb` does to the model: a keyed and
+a last-n select read the rows the model's `Db.slice` picks, a decision's plan (`slicePlan`) writes what the model's
+statements do, an appended event is an insert that takes the next id, and a guarded update changes a row only where its
+condition holds and says so (`changes()`). -/
+def sqlite_txn (t : T) : IO Unit := do
+  Shim.setenv "SWARM_DB" t.db
+  let c ← connect
+  discard <| c.exec "insert or ignore into swarm(name) values('t')"
+  let fix : Db := {
+    agents := [{ name := "a1", status := some "idle" }, { name := "a2", status := some "working" }]
+    tasks := [{ id := 1, title := some "one" }, { id := 2, title := some "two", owner := some "a2", state := .claimed }]
+    events := (List.range 6).map fun i =>
+      let who := if i % 2 == 0 then "a1" else "a2"
+      let k := if i < 3 then "status" else "end"
+      { id := i + 1, ts := some i, agent := some who, kind := some k }
+    cursors := [{ agent := "a1", last_msg_id := some 0 }]
+    taskNext := 3, msgNext := 1, eventNext := 7 }
+  storeDb c sc0 {} fix
+  let all := [Table.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  let loaded : IO Db := do let d ← loadDb c sc0 all; pure { d with taskNext := 0, msgNext := 0, eventNext := 0 }
+  let norm (d : Db) : Db := { d with taskNext := 0, msgNext := 0, eventNext := 0 }
+  let sels : List Sel := [{ table := .agent, cond := .eq "name" (.text "a1") },
+    { table := .event, cond := .eq "agent" (.text "a1"), last := some 2 },
+    { table := .event, cond := .and (.eq "kind" (.text "end")) (.gt "id" (.int 5)) },
+    { table := .task, cond := .notNull "owner" }]
+  let got ← sqliteRun c sc0 (Txn.slice sels)
+  eq (decide (got = fix.slice sels [])) true "sqlite_txn: a select reads the rows the model's slice picks"
+  eq (got.events.map (·.id)) [3, 5, 6] "sqlite_txn: the last two of a1's events and the end events past id 5"
+  -- a decision's plan, with an event appended
+  let step : Txn Unit := Txn.update [{ table := .agent, cond := .eq "name" (.text "a1") }] [] fun d =>
+    ((d.setAgent "a1" ({ · with status := some "working" })).log 9 (some "a1") "status" none (some "working"), ())
+  sqliteRun c sc0 step
+  let (want, _) := step.onDb fix
+  eq (decide (norm (← loaded) = norm want)) true "sqlite_txn: a plan writes what the model's statements do"
+  eq ((← loaded).events.getLast?.map (·.id)) (some 7) "sqlite_txn: an appended event takes the next id"
+  -- a guarded update: a claim that only an open task takes
+  let claim : Txn Bool := Txn.guarded (.upd "task" ["id"] [.int 1] ["owner", "state"] [.text "a1", .text "claimed"]) (.null "owner")
+  eq (← sqliteRun c sc0 claim) true "sqlite_txn: a guarded update where its condition holds changes the row"
+  eq (← sqliteRun c sc0 claim) false "sqlite_txn: and where it does not, nothing"
+  let (m1, b1) := claim.onDb want
+  let (m2, b2) := claim.onDb m1
+  eq (b1, b2) (true, false) "sqlite_txn: the model's guarded update says the same"
+  eq (decide (norm (← loaded) = norm m2)) true "sqlite_txn: and leaves the same rows"
+  -- a transaction that writes nothing leaves the db as it was
+  let before ← loaded
+  sqliteRun c sc0 (Txn.update [{ table := .agent, cond := .all }] [] fun d => (d, ()))
+  eq (decide ((← loaded) = before)) true "sqlite_txn: a decision that changes nothing writes nothing"
+
 def tests : List Case := [
   ("sqlite_begin", sqlite_begin),
   ("sqlite_write", sqlite_write),
@@ -323,6 +371,7 @@ def tests : List Case := [
   ("sqlite_rollback", sqlite_rollback),
   ("sqlite_dml", sqlite_dml),
   ("sqlite_alter", sqlite_alter),
+  ("sqlite_txn", sqlite_txn),
   ("deferred", deferred),
   ("sqlite_version", sqlite_version)]
 

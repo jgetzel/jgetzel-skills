@@ -104,7 +104,7 @@ def test_join_leave_who (t : T) : IO Unit := do
   t.sw_ "b" ["join"]
   let b ← t.q1 "select status, ended from agent where name='b'"
   eq [b.f "status", b.f "ended"] (json% ["idle", null])
-  let kinds := (← t.q "select kind from event where agent='b'").map (·.f "kind")
+  let kinds := (← t.q "select kind from event where agent='b' order by id").map (·.f "kind")
   eq kinds ["join", "leave", "join"]
 
 def test_who_flags_stale_herdr_copies (t : T) : IO Unit := do

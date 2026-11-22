@@ -5,7 +5,7 @@
 # Reads the import lines of every .lean file here (not .lake/ or hpl/); exit 1 on an edge that breaks one of these.
 cd "$(dirname "$0")" || exit 1
 # the spec layer: the db's rows and the interfaces, the assumptions about the world, and SwarmLean/Spec/ but Code.lean
-spec="SwarmLean.Util SwarmLean.Sqlite SwarmLean.Db SwarmLean.Db.Rows SwarmLean.Store SwarmLean.World SwarmLean.Sys
+spec="SwarmLean.Util SwarmLean.Sqlite SwarmLean.Db SwarmLean.Db.Rows SwarmLean.Db.Plan SwarmLean.Db.Txn SwarmLean.Store SwarmLean.World SwarmLean.Sys
 SwarmLean.Lib.Re SwarmLean.Lib.Json SwarmLean.Assumptions SwarmLean.ChallengeAnchor SwarmLean.Spec.Data SwarmLean.Spec.Board
 SwarmLean.Spec.Locks SwarmLean.Spec.Msgs SwarmLean.Spec.Cross SwarmLean.Spec.Machine"
 inspec() { echo "$spec" | tr ' ' '\n' | grep -qx "$1"; }

@@ -323,9 +323,14 @@ def remoteLines [Monad m] [Clock m] (metas : List Meta) (events : List Event) (t
 def note [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] (ps : Option (List Ps) := none) : m String := do
   let mm ← mem
   let ps ← match ps with | some p => pure p | none => procs
-  let (agents, metas) ← Store.txn [.agent, .«meta»] fun db => (db, (db.agents, db.metas))
+  let t ← Clock.now
+  -- the live agents, the machines' cache, and only when there is one the job events of the last day
+  let (agents, metas) ← Store.view [{ table := .agent, cond := .null "ended" },
+    { table := .«meta», cond := .eq "k" (.text "machines") }] fun d => (d.agents, d.metas)
+  let events ← if metas.isEmpty then pure [] else
+    let jobs : Cond := .and (.oneOf "kind" [.text "job-start", .text "job-end"]) (.gt "ts" (.int (t - 86400)))
+    Store.view [{ table := .event, cond := jobs, inScope := false }] (·.events)  -- every swarm's jobs
   let hs := holders agents ps
-  let events ← if metas.any (·.k == "machines") then Store.txn [.event] fun db => (db, db.events) else pure []
   let gib (k : Int) : String := fixed (Float.ofInt k / 1048576) 1
   let mut lines := [lineOf mm]
   for h in hs.take 3 do

@@ -1,4 +1,5 @@
 import SwarmLean.Db.Agents
+import SwarmLean.Db.Sels
 import SwarmLean.World
 import SwarmLean.Sys
 
@@ -72,9 +73,9 @@ def record (name : String) : m Unit := do
   let here ← env "HC_TERMINAL_ID"
   let some mt ← Sys.mtime path | return
   let v := s!"{mt} {path}"
-  let new ← Store.txn [.agent, .«meta»] fun db => (db,
+  let new ← Store.view [Sels.agent name, Sels.metas [key name, badKey name]] fun db =>
     here.isSome && (db.agent name).any (fun r => r.ended.isNone && r.hc == here) &&
-    ((db.getMeta (key name)).bind (·.v)) != some v && ((db.getMeta (badKey name)).bind (·.v)) != some v)
+    ((db.getMeta (key name)).bind (·.v)) != some v && ((db.getMeta (badKey name)).bind (·.v)) != some v
   if !new then return
   let auth := match ← env "CLAUDE_CODE_MESSAGING_TOKEN" with
     | some t => (Json.mkObj [("type", "auth"), ("token", t)]).compress ++ "\n"
@@ -82,9 +83,10 @@ def record (name : String) : m Unit := do
   let err ← send path auth
   let envComms ← env "SWARM_COMMS"
   let now ← Clock.now
-  Store.txn [.«meta», .event, .agent, .msg, .cursor] fun db => (match err with
+  -- every hook runs this: keyed reads, the event and a message inserted (`failed` reads its records and comms)
+  Store.run (Txn.update [Sels.metas [key name, badKey name, "comms"]] [.msg] fun db => (match err with
     | none => (db.setMeta (key name) (some v)).log now (some name) "sock" (some v) none
-    | some e => failed db now name v e (Agents.commsOf db envComms), ())
+    | some e => failed db now name v e (Agents.commsOf db envComms), ()))
 
 /-- watchd's start: each recorded socket of a live agent still there and connecting (nothing written), else dropped
 (`failed`). -/

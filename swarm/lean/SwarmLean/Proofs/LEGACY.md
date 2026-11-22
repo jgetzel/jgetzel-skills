@@ -22,5 +22,9 @@ back in the new shape, or replaces it, and empties this list.
 | `SwarmLean/Proofs/Keep.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
 
 With them: `Audit.lean` and `challenge.sh` (Challenge.lean, Solution.lean, comparator.json) are skipped by `check.sh` unless
-`SWARM_PROOFS` is set. The `sorry`/axiom grep still covers every Lean file. The proofs phase restores each import in
+`SWARM_PROOFS` is set.
+
+Within `Proofs/Crash.lean` (out of the build already), board #69 removed `hook_keeps`: the hooks run on the statement
+store (`Store.run`), and `keeps_walk` has no step for a `Txn`. `groups_keep` takes the hooks' case as a hypothesis (`hH`)
+until the statement lemmas (#79) and the agents/messages WF proofs (#81) give it back; `keeps_view` covers `Store.view`. The `sorry`/axiom grep still covers every Lean file. The proofs phase restores each import in
 `SwarmLean.lean`, the two `check.sh` steps, and empties this list.

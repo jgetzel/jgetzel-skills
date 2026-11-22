@@ -122,12 +122,14 @@ def attach (name path : String) : m (String × Option String × Option String) :
 def protectedOf (db : Db) (cwd : Option String) : m (List String) :=
   Bases.protectedBases ((db.tasks.filterMap (·.base)).eraseDups) cwd
 
+/-- `git checkout <ref>` or `git switch <ref>`, the ref its group 1. -/
+def CHECKOUT : String := "\\bgit\\s+(?:checkout|switch)\\s+(?:-[qf]\\s+)*([^\\s;&|-][^\\s;&|]*)\\s*(?:$|[;&|])"
+
 /-- The base branch `cmd` would check out in an agent's workspace (`git checkout main`), if any
 (workspaces.base_checkout); `db` holds the workspace and task tables. -/
 def baseCheckout (db : Db) (name cmd : String) (cwd : Option String) : m (Option String) := do
   if !db.workspaces.any (·.agent == name) then return none
-  let some mt := (Re.search "\\bgit\\s+(?:checkout|switch)\\s+(?:-[qf]\\s+)*([^\\s;&|-][^\\s;&|]*)\\s*(?:$|[;&|])" cmd).toOption.join
-    | return none
+  let some mt := (Re.search CHECKOUT cmd).toOption.join | return none
   let g := mt.group 1
   return (← protectedOf db cwd).find? fun b => g == some b || g == some ("origin/" ++ b)
 

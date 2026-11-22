@@ -165,15 +165,19 @@ def loadWhere [Row α] (c : Conn) (cond : String) (ps : List Val) : IO (List α)
   let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} where {cond} order by {", ".intercalate (cols.take (Row.nkey α))}" ps
   IO.ofExcept (decodeRows rows.toList)
 
-/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
-def loadMetas (c : Conn) (s : String) : IO (List Meta) := do
+/-- The meta rows swarm `s` sees that `cond` selects: the machine's keys and its own, and `comms` from its swarm row. -/
+def loadMetasWhere (c : Conn) (s : String) (cond : Cond) : IO (List Meta) := do
   let ks := ", ".intercalate (machineKeys.map fun k => s!"'{k}'")
-  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end" [.text s]
+  let (w, ps) := cond.sql
+  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end and ({w})" (.text s :: ps)
   let cm ← c.query "select comms from swarm where name=? and comms is not null" [.text s]
   let cms : List Meta := match (cm[0]? : Option (Array Sqlite.Val)).bind (·[0]?) with
     | some (Sqlite.Val.text v) => [{ k := "comms", v := some v }]
     | _ => []
-  return sortRows (cms ++ ms.filter (·.k != "comms"))
+  return sortRows (cms.filter (fun m => cond.holds (Row.cell m)) ++ ms.filter (·.k != "comms"))
+
+/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
+def loadMetas (c : Conn) (s : String) : IO (List Meta) := loadMetasWhere c s .all
 
 /-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents, knobs and events of the scope's
 swarm, the locks, CI runs and worktrees of its repo, and every task, message, cursor and conflict. -/
@@ -257,8 +261,90 @@ def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : 
     if db' ≠ db then storeDb c sc db db'
     return a
 
+/-- The column and value a select of table `t` is scoped by: the scope's swarm for agents and events, its repo for
+locks, CI runs and worktrees (meta is scoped by `loadMetas`). -/
+def scopeCol (sc : Scope) : Table → Option (String × Val)
+  | .agent | .event => some ("swarm", .text sc.swarm)
+  | .lock | .ci | .workspace => some ("repo", .text sc.repo)
+  | _ => none
+
+/-- The rows of a row type's table that select `s` picks, in the scope `sc`, in key order: one indexed select. -/
+def selRows [Row α] (c : Conn) (sc : Scope) (s : Sel) : IO (List α) := do
+  let (w, ps) := s.cond.sql
+  let (w, ps) := match if s.inScope then scopeCol sc s.table else none with
+    | some (col, v) => (s!"{col}=? and ({w})", v :: ps)
+    | none => (w, ps)
+  let ks := (Row.cols α).take (Row.nkey α)
+  match s.last with
+  | none => loadWhere c w ps
+  | some n =>
+    let rows ← c.query s!"select {", ".intercalate (Row.cols α)} from {Row.table α} where {w} order by {", ".intercalate (ks.map (· ++ " desc"))} limit {n}" ps
+    IO.ofExcept (decodeRows rows.toList)
+
+/-- Rows in key order with one of each key. -/
+def dedupKeys [Row α] : List α → List α
+  | a :: b :: l => if Row.key a == Row.key b then dedupKeys (a :: l) else a :: dedupKeys (b :: l)
+  | l => l
+
+/-- The rows of table `t` that any of the selects `ss` of it picks, in scope `sc`. -/
+def unionRows [Row α] (c : Conn) (sc : Scope) (t : Table) (ss : List Sel) : IO (List α) := do
+  match ss.filter (·.table == t) with
+  | [] => return []
+  | [s] => selRows c sc s
+  | l => return dedupKeys (sortRows (← l.flatMapM (selRows c sc)))
+
+/-- The meta rows of swarm `s` that select `sel` picks (`loadMetas`, filtered). -/
+def selMetas (c : Conn) (s : String) (sel : Sel) : IO (List Meta) :=
+  return sel.pick (← loadMetasWhere c s sel.cond)
+
+/-- The slice of the db the selects `ss` pick in scope `sc`, with the next ids of `next` (`Db.slice` of the model). -/
+def readSlice (c : Conn) (sc : Scope) (ss : List Sel) (next : List Table) : IO Db := do
+  let metas ← match ss.filter (·.table == .«meta») with
+    | [] => pure []
+    | l => do pure (dedupKeys (sortRows (← l.flatMapM (selMetas c sc.swarm))))
+  return {
+    agents := ← unionRows c sc .agent ss, msgs := ← unionRows c sc .msg ss, cursors := ← unionRows c sc .cursor ss,
+    tasks := ← unionRows c sc .task ss, locks := ← unionRows c sc .lock ss, conflicts := ← unionRows c sc .conflict ss,
+    pairkeys := ← unionRows c sc .pairkey ss, metas, events := ← unionRows c sc .event ss,
+    workspaces := ← unionRows c sc .workspace ss, cis := ← unionRows c sc .ci ss,
+    taskNext := ← if next.contains .task then nextId c "task" else pure 0
+    msgNext := ← if next.contains .msg then nextId c "msg" else pure 0
+    eventNext := ← if next.contains .event then nextId c "event" else pure 0 }
+
+/-- Runs a transaction's program on the connection, in scope `sc`. With `writes` false (a read transaction) it stops
+at the first write or guarded update, with none: the caller runs it again under BEGIN IMMEDIATE. -/
+def runTxnOn (c : Conn) (sc : Scope) (writes : Bool) : Txn α → IO (Option α)
+  | .done a => return some a
+  | .read ss n k => do runTxnOn c sc writes (k (← readSlice c sc ss n))
+  | .write p k => do
+    if p.isEmpty then return ← runTxnOn c sc writes k
+    if !writes then return none
+    runStmts c (p.flatMap (scopeStmts sc))
+    runTxnOn c sc writes k
+  | .guard s cond k => do
+    if !writes then return none
+    let (w, cps) := cond.sql
+    let mut n := 0
+    for (q, ps) in (scopeStmt sc s).sql do
+      n := n + (← c.exec (q ++ s!" and ({w})") (ps ++ cps))
+    runTxnOn c sc writes (k (n > 0))
+
+/-- The statement store's transaction (sw-global §3): the reads and the decision in a read transaction (BEGIN, no
+write lock), which ends there when it writes nothing; one that writes runs again, reads, decision and plan, in one BEGIN
+IMMEDIATE (the decision is pure, so the second run is the transaction). Any error rolls back. -/
+def sqliteRun (c : Conn) (sc : Scope) (t : Txn α) : IO α := do
+  if let some a ← inTxn c "begin" (runTxnOn c sc false t) then return a
+  match ← inTxn c "begin immediate" (runTxnOn c sc true t) with
+  | some a => return a
+  | none => throw (IO.userError "swarm: a transaction stopped short under BEGIN IMMEDIATE")
+
 instance : Store App where
   txn ts f := do sqliteTxn (← theConn) (← theScope) ts f
+  run t := do sqliteRun (← theConn) (← theScope) t
+  view ss f := do
+    let c ← theConn
+    let sc ← theScope
+    return f (← inTxn c "begin" (readSlice c sc ss []))
 
 instance : Guard App where
   guard x := ExceptT.mk fun ctx => do

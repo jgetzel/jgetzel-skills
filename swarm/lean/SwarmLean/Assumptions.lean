@@ -19,7 +19,10 @@ used:
   BEGIN IMMEDIATE transaction, as computed when `pragma data_version` says no other connection committed since (the
   state it holds is the one it read), else loaded and applied again. So `Atomic` also rests on a read transaction
   reading one committed state (WAL), placed in the order after the last write it saw, and on data_version
-  (sqlite_version); and `AllOrNothing` (#133): a process stopped mid-run leaves the store as its last commit did;
+  (sqlite_version); and `AllOrNothing` (#133): a process stopped mid-run leaves the store as its last commit did.
+  The statement store (`Store.run`, sw-global §3) runs a `Txn`'s reads and pure decision in a read transaction and
+  ends there when it writes nothing, else runs it again, reads, decision and plan, in one BEGIN IMMEDIATE; `Store.view`
+  reads in a read transaction and writes nothing. `RecM` runs a `Txn` as `Txn.onDb`, one commit;
 - the tools, through `Tools`: what a command line answers (`Proc.output`, `Git.git`), what `Sys.pidAlive`,
   `Sys.mtime`, `Clock.now` and `Machine.cwds` return, and what is true of the repo, the terminals, the processes and
   the PRs. Each assumption below says that one answer means one truth, as Env.lean's did of its `Tools`.
@@ -213,6 +216,8 @@ end Rec
 
 instance : Store (RecM M) where
   txn _ f := modifyGet fun s => let (db, a) := f s.db; (a, { s with db, commits := s.commits ++ [db] })
+  run t := modifyGet fun s => let (db, a) := t.onDb s.db; (a, { s with db, commits := s.commits ++ [db] })
+  view ss f := modifyGet fun s => (f (s.db.slice ss []), s)
 instance : Clock (RecM M) where
   now := Rec.ask M.now
   hhmm t := Rec.ask (M.hhmm · t)
