@@ -87,7 +87,6 @@ def compactEvs (n : String) : Sel :=
 `@<swarm>` (its live agents); `#N` or `task:N` is a note to a task (`postTask`). -/
 def post (a : Parsed) : m UInt32 := do
   let frm ← me
-  if strip frm == "swarm" then die "`swarm` is reserved for watchd's own messages; set SWARM_NAME to your agent's name"
   let to := (a.str "to").getD ""
   let urgent := a.flag "urgent"
   let body := clean (" ".intercalate (a.strs "text"))
