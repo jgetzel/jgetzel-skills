@@ -308,6 +308,31 @@ def test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim (t : T) : IO U
   eq (← t.scr st ["hold", "r", "x"]).code 2
   eq (← claim "r") s!"1 1024 p{live} 1000 ~60 w a b  c"
 
+/-- `hold <id> t` (board #126): a timed claim's 15 minutes start again, so a long sync keeps a remote claim; a lapsed
+claim is not renewed, and a pid's claim is kept as it is. -/
+def test_script_hold_t_renews_a_timed_claim_and_fails_on_a_lapsed_one (t : T) : IO Unit := do
+  let st := t.d ++ "/ht"
+  let env (now : Nat) : List (String × Option String) := [("SWARM_COMPUTE_BUSY", some "0.00"), ("SWARM_COMPUTE_NOW", some (toString now))]
+  let live := strip (← t.exec ["sh", "-c", "echo $PPID"]).stdout
+  let claim (id : String) : IO String := return strip ((← slurp (led st ++ "/claims/" ++ id)).getD "")
+  eq (strip (← t.scr st ["try", "r", "1", "1024", "60", "t", "w", "a b  c"] (env 1000)).stdout) "ok 1 1024"
+  eq (← claim "r") "1 1024 t1900 1000 ~60 w a b  c"
+  -- renewed within the 15 minutes: they start again, the other fields kept
+  eq (← t.scr st ["hold", "r", "t"] (env 1800)).code 0
+  eq (← claim "r") "1 1024 t2700 1000 ~60 w a b  c"
+  -- past the first expiry it still holds
+  discard <| t.scr st ["ls"] (env 2000)
+  eq (← claim "r") "1 1024 t2700 1000 ~60 w a b  c"
+  -- the job's pid then holds it, and a late renewal leaves the pid
+  eq (← t.scr st ["hold", "r", live] (env 2600)).code 0
+  eq (← t.scr st ["hold", "r", "t"] (env 2650)).code 0
+  eq (← claim "r") s!"1 1024 p{live} 1000 ~60 w a b  c"
+  -- a lapsed claim is not renewed
+  eq (strip (← t.scr st ["try", "s", "1", "1024", "-", "t", "w", "c"] (env 1000)).stdout) "ok 1 1024"
+  let r ← t.scr st ["hold", "s", "t"] (env 1901)
+  eq r.code 3; has r.stderr "no claim s"
+  eq (← exists_ (led st ++ "/claims/s")) false
+
 def tests : List Case := [
   ("test_script_notes_add_renew_rm_and_lapse", test_script_notes_add_renew_rm_and_lapse),
   ("test_script_a_note_with_a_pid_is_swept_when_it_is_gone", test_script_a_note_with_a_pid_is_swept_when_it_is_gone),
@@ -324,6 +349,7 @@ def tests : List Case := [
   ("test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields", test_script_an_exclusive_head_keeps_its_place_through_unclaimed_use_then_yields),
   ("test_script_compute_dir_overrides_the_ledger", test_script_compute_dir_overrides_the_ledger),
   ("test_script_arithmetic_of_the_awk_programs", test_script_arithmetic_of_the_awk_programs),
-  ("test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim", test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim)]
+  ("test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim", test_script_hold_moves_the_holder_and_fails_on_a_lapsed_claim),
+  ("test_script_hold_t_renews_a_timed_claim_and_fails_on_a_lapsed_one", test_script_hold_t_renews_a_timed_claim_and_fails_on_a_lapsed_one)]
 
 end Claims.Tests.Script
