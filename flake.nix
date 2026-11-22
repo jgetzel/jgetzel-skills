@@ -42,7 +42,8 @@
     in {
       # sqlite: the library and header swarm/lean links (its lakefile builds this output)
       packages = forAll (pkgs: { default = env pkgs; claim = claim pkgs; sqlite = sqlite pkgs; swarm-lean = swarm-lean pkgs; });
-      # lean: the Lean and C toolchain the build.sh scripts run lake in without elan, so .lake builds incrementally
-      devShells = forAll (pkgs: { default = pkgs.mkShell { packages = [ (env pkgs) ]; }; lean = pkgs.mkShell { packages = [ (lean4 pkgs) ]; }; });
+      # default: what swarm run enters, so a job finds lake too; lean: the Lean and C toolchain the build.sh scripts run lake in
+      # without elan, so .lake builds incrementally
+      devShells = forAll (pkgs: { default = pkgs.mkShell { packages = [ (env pkgs) (lean4 pkgs) ]; }; lean = pkgs.mkShell { packages = [ (lean4 pkgs) ]; }; });
     };
 }
