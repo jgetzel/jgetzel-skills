@@ -12,7 +12,7 @@ open SwarmLean.Sqlite (Val)
 /-- Runs an App action under the fixture's db. -/
 def app (t : T) (act : App α) : IO α := do
   Shim.setenv "SWARM_DB" t.db
-  match ← act.run.run { conn := ← IO.mkRef none } with
+  match ← act.run.run (← Ctx.new) with
   | .ok a => return a
   | .error _ => fail "App action exited"
 
@@ -71,7 +71,7 @@ def tick (t : T) (cap : Nat) : IO Unit :=
 
 def twoHaiku (t : T) : IO Unit := do
   for n in ["t-comms", "t-1"] do t.agent n [("status", "working"), ("model", "haiku")]
-  t.q_ "insert or replace into meta(k,v) values('comms','t-comms')"
+  t.q_ "update swarm set comms='t-comms' where name='t'"
 
 def spawned (t : T) : IO (List (String × Option String)) :=
   return (← t.launched).toList.map fun x => ((argvOf x).headD "", after x "--model")
@@ -485,7 +485,7 @@ def test_newest_waiter_owns_inbox (t : T) : IO Unit := do
 
 def test_post_to_comms_has_no_sendmessage_nudge (t : T) : IO Unit := do
   t.agent "a"; t.agent "x-comms" [("status", "idle"), ("last_active", .int (← now))]
-  t.q_ "insert or replace into meta(k,v) values('comms','x-comms')"
+  t.q_ "update swarm set comms='x-comms' where name='t'"
   let out := (← t.sw "a" ["post", "x-comms", "hi"]).stdout
   hasnt out "nudge by SendMessage"
   has out "watchd sends it to the communicator within a tick"
@@ -523,8 +523,10 @@ def test_board_who (t : T) : IO Unit := do
   has (← t.sw "a" ["who"]).stdout "a idle"
 
 def test_state_json (t : T) : IO Unit := do
-  eq ((← stj t).f "active") false
-  ok (!(← (t.db : System.FilePath).pathExists)) "read-only: no db is created"
+  let none_ := t.d ++ "/none.db"
+  let r ← t.sw "a" ["state", "--json"] { env := [("SWARM_DB", some none_)] }
+  eq (((Json.parse r.stdout).toOption.getD .null).f "active") false
+  ok (!(← (none_ : System.FilePath).pathExists)) "read-only: no db is created"
   t.agent "a" [("model", "opus"), ("ctx_tokens", 90000)]
   t.agent "b"
   t.sw_ "a" ["task", "add", "first"]
@@ -561,7 +563,7 @@ def test_state_json_round2 (t : T) : IO Unit := do
   discard <| t.hook "a" "post-tool" (json% {"tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": $repo})
   t.q_ "update agent set status='idle', last_active=1000 where name='a'"
   t.q_ "insert or replace into event(ts,agent,kind,data) values(1,'a','push','git push old')"
-  t.q_ "insert or replace into meta(k,v) values('comms','sr-comms')"
+  t.q_ "update swarm set comms='sr-comms' where name='t'"
   let s ← stj t
   let a := nth (s.f "agents") 1
   eq (Json.arr #[s.f "comms", a.f "branch", a.f "cold_at"]) (json% ["sr-comms", "main", 4300])
@@ -654,7 +656,7 @@ def test_state_json_staffing (t : T) : IO Unit := do
   t.agent "a"
   t.agent "b" [("status", "idle"), ("stay", "reviews"), ("last_active", 1000)]
   t.agent "cm"
-  t.q_ "insert or replace into meta(k,v) values('comms','cm')"
+  t.q_ "update swarm set comms='cm' where name='t'"
   -- the communicator is not counted; unset numbers are null; the compaction limits at their defaults
   eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false, "reuse_below": 0})
   eq ((← stj t ["--view", "overview"]).f "rules") Json.null
@@ -699,20 +701,6 @@ def test_state_json_hc_only_where_shown (t : T) : IO Unit := do
   t.sw_ "a" ["state", "--json"]
   eq (← hcCalls) ["t-live", "--json"]  -- never an ended agent's terminal; one `hc ls --json` for the live one's fate
 
-def test_state_json_old_db (t : T) : IO Unit := do
-  let c ← SwarmLean.Sqlite.Conn.open t.db false  -- schema from before agent.wt / task.after,model,question
-  c.script "create table agent(name text primary key, hc text, model text, cwd text, status text, last_active int,
- ctx_tokens int default 0, compacted_at int default 0, started int, ended int, snap text, waiter int);
-create table task(id integer primary key, title text, body text, state text, owner text, lease_until int,
- created_by text, evidence text);
-create table msg(id integer primary key, ts int, frm text, dest text, body text, urgent int, kind text);
-create table event(id integer primary key, ts int, agent text, kind text, path text, data text);
-insert into agent(name,status,last_active) values('a','idle',1);
-insert into task(title,state) values('t','open');"
-  let s ← stj t
-  ok (s.f "active" == Json.bool true) "active"
-  eq (Json.arr #[(nth (s.f "agents") 1).f "worktree", (nth (s.f "tasks") 1).f "waiting"]) (json% [null, false])
-
 def tests : List Case := [
   ("test_auto_spawn_once_within_cap", test_auto_spawn_once_within_cap),
   ("test_auto_spawn_model_order", test_auto_spawn_model_order),
@@ -753,7 +741,6 @@ def tests : List Case := [
   ("test_state_json_view", test_state_json_view),
   ("test_state_json_running", test_state_json_running),
   ("test_state_json_staffing", test_state_json_staffing),
-  ("test_state_json_hc_only_where_shown", test_state_json_hc_only_where_shown),
-  ("test_state_json_old_db", test_state_json_old_db)]
+  ("test_state_json_hc_only_where_shown", test_state_json_hc_only_where_shown),]
 
 end SwarmLean.Tests.Cli.Spawn

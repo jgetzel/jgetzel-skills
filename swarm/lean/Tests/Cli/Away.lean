@@ -10,7 +10,7 @@ open Lean (Json toJson)
 
 def comms (t : T) (name : String := "c") : IO Unit := do
   t.agent name
-  t.q_ "insert or replace into meta(k,v) values('comms',?)" [.text name]
+  t.q_ "update swarm set comms=? where name='t'" [.text name]
 
 def tick (t : T) : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "c", "--max-agents", "0"]
 
@@ -56,7 +56,7 @@ def test_release_of_anothers_task (t : T) : IO Unit := do
   has (← t.sw "f" ["task", "claim", "1"] { ok := false }).stderr "released from e, which hasn't read the stop"
   t.q_ "select 1"  -- points SWARM_DB at the test's db
   let c ← connect
-  let db ← loadDb c [.task, .agent, .cursor]
+  let db ← loadDb c t.scope [.task, .agent, .cursor]
   eq (Tasks.pool db).length 0
   t.sw_ "e" ["read"]
   -- the communicator may too, a blocked task as well; its question goes with it

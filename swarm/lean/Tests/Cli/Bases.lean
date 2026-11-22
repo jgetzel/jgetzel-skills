@@ -46,7 +46,7 @@ def doneTask (t : T) (owner base : String) : IO Unit := do
 
 /-- An action of the real monad, run as the Lua called its module (the cwd, SWARM_DB as the Lua had them). -/
 def runApp (act : App α) : IO α := do
-  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  match ← (act.run.run (← Ctx.new)) with
   | .ok a => pure a
   | .error _ => fail "App action exited"
 
@@ -186,7 +186,7 @@ def test_owned_wts_reads_the_table_not_names (t : T) : IO Unit := do
   IO.Process.setCurrentDir t.repo
   SwarmLean.Shim.setenv "SWARM_DB" t.db
   let c ← SwarmLean.connect
-  let db ← SwarmLean.loadDb c [.workspace]
+  let db ← SwarmLean.loadDb c t.scope [.workspace]
   let wts ← runApp (SwarmLean.Workspaces.worktrees : App _)
   -- the heuristic would also take t-9/other
   eq (SwarmLean.Workspaces.ownedWts "t-9" wts (some db)) [wt]

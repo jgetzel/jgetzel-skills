@@ -104,7 +104,7 @@ def hooks (t : T) (vars : List (String × String) := []) : IO Hooks := do
 
 /-- Runs an action of the test monad on its own connection; an exit fails the test. -/
 def run (h : Hooks) (act : TM α) : IO α := do
-  match ← (act.run h).run.run { conn := ← IO.mkRef none } with
+  match ← (act.run h).run.run (← Ctx.new) with
   | .ok a => pure a
   | .error e => fail s!"exited {e.code}"
 

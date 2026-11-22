@@ -219,7 +219,7 @@ def test_drop_claimed_only_by_owner_or_comms (t : T) : IO Unit := do
   for i in [0:3] do t.sw_ "a" ["task", "add", s!"t{i}"]
   t.sw_ "a" ["task", "claim", "1"]
   t.sw_ "a" ["task", "claim", "2"]
-  t.q_ "insert or replace into meta(k,v) values('comms','x-comms')"  -- the communicator is the address, not the name
+  t.q_ "update swarm set comms='x-comms' where name='t'"  -- the communicator is the address, not the name
   has (← t.sw "b" ["task", "drop", "1"] { ok := false }).stderr "only it or the communicator"
   t.sw_ "b" ["task", "drop", "3"]  -- open: anyone
   t.sw_ "a" ["task", "drop", "1"]
@@ -268,7 +268,7 @@ def test_ctx_recorded_and_claim_refusal (t : T) : IO Unit := do
 
 def test_comms_ctx_recorded_from_commands (t : T) : IO Unit := do
   t.agent "x-comms"
-  t.q_ "insert or replace into meta(k,v) values('comms','x-comms')"
+  t.q_ "update swarm set comms='x-comms' where name='t'"
   let s ← sid "c"
   let home := t.d ++ "/home/.claude/projects/p"
   discard <| t.exec ["mkdir", "-p", home]

@@ -11,7 +11,7 @@ def rev (t : T) (dir : String) : IO String := return strip (← t.git dir ["rev-
 
 /-- comms is the communicator; a holds task 1, claimed. -/
 def setup (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   for n in ["a", "l", "c", "comms"] do t.agent n
   t.sw_ "a" ["task", "add", "fix it"]
   t.sw_ "a" ["task", "claim", "1"]
@@ -126,7 +126,7 @@ def test_dependants_wait_until_done (t : T) : IO Unit := do
   t.sw_ "c" ["task", "claim", "2"]
 
 def test_land_frees_the_owner_but_not_a_dirty_worktree (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   t.agent "e" [("wt", t.wt)]
   t.setCwd "e" t.wt
   t.sw_ "e" ["task", "add", "x"]; t.sw_ "e" ["task", "claim", "1"]

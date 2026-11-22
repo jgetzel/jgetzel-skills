@@ -71,7 +71,7 @@ def test_error_turn_allows (t : T) : IO Unit := do
 
 def test_comms_is_exempt (t : T) : IO Unit := do
   t.agent "comms"; claim t "comms"
-  discard <| t.q "insert or replace into meta(k,v) values('comms','comms')"
+  discard <| t.q "update swarm set comms='comms' where name='t'"
   eq (← stop t "comms") Json.null
 
 -- board #135: high context gets the usual verdict; the harness compacts, nobody relaunches
@@ -84,7 +84,7 @@ def test_context_too_high_gets_the_usual_verdict (t : T) : IO Unit := do
 
 def test_cap_two_blocks_per_chain_then_allow_and_tell_comms (t : T) : IO Unit := do
   t.agent "a"; t.agent "comms"; claim t "a"
-  discard <| t.q "insert or replace into meta(k,v) values('comms','comms')"
+  discard <| t.q "update swarm set comms='comms' where name='t'"
   has (← stop t "a") "claim held"
   has (← stop t "a" (json% {"stop_hook_active": true})) "claim held"
   eq (← stop t "a" (json% {"stop_hook_active": true})) Json.null

@@ -82,20 +82,19 @@ def recAlive (rec : String) : m Bool := do
   | some p => Sys.pidAlive p
   | none => pure false
 
-/-- A swarm with work always has its own communicator: its row bound to a live terminal in the swarm's space whose
-session is this db's communicator; else one is launched there and bound. Why it can't, for the board's auto-spawn
-line, or none (watchd.ensure_comms). -/
+/-- A swarm with work whose communicator joined from a Herdr terminal always has its own communicator: its row bound
+to a live terminal labelled with this swarm; else one is launched and bound. Why it can't, for the board's auto-spawn line, or none (watchd.ensure_comms). -/
 def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String) := do
   let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
-  let some sp := (db.getMeta "space").bind (·.v) | return none
+  -- only a swarm whose communicator joined from a Herdr terminal (`join` records it) gets one launched
+  if ((db.getMeta "comms_hc").bind (·.v)).isNone then return none
+  let some sw ← env "SWARM" | return none
   let some terms := terms | return none
   if !((Agents.live db).any (·.name != comms) || db.tasks.any (·.state = .open)) then return none
   let r := (Agents.live db).find? (·.name == comms)
-  let dbp ← Spawn.dbPath
   for x in terms do
     if r.isSome && (r.bind (·.hc)) == x.address && x.state == some "live" then
-      let (space, cm) ← Cmd.Agents.hcInfo (x.address.getD "")
-      if space == some sp && cm == some dbp then return none
+      if (← Cmd.Agents.hcSwarm (x.address.getD "")) == some sw then return none
   if let some bo := (db.getMeta "comms_backoff").bind (·.v) then
     if (← Clock.now) < (parseInt bo).getD 0 then return some "no communicator can be launched (last launch failed)"
   let brief := s!"You are the communicator of this swarm (your name: {comms}), started by watchd because the swarm had work " ++
@@ -111,7 +110,7 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
     return some ("no communicator can be launched: " ++ err)
   let addr := (splitlines (strip out)).getLastD ""
   Cmd.Agents.bindAgent comms (some cwd) (some addr) none true
-  discard <| Proc.output ["hc", "label", addr, "swarm.comms=" ++ dbp] none []
+  discard <| Proc.output ["hc", "label", addr, "swarm=" ++ sw] none []
   let now ← Clock.now
   Store.txn [.«meta»] fun db => ((delMeta db "comms_backoff").log now (some comms) "comms-launch" none (some addr), ())
   return none
@@ -466,7 +465,7 @@ def restart (over : List String := []) : m UInt32 := do
   let old := (db.getMeta "watchd").bind (·.v)
   let here := (← Spawn.swarmHere).getD "."
   let argv := ["hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--cwd", cwd, "--", joinPath here "swarm", "watchd", "--takeover"] ++ amend fl over
-  let o ← Sys.exec argv { env := [("SWARM_DB", some (← Spawn.dbPath))] }
+  let o ← Sys.exec argv { env := [("SWARM_DB", some (← Spawn.dbPath)), ("SWARM", ← env "SWARM")] }
   let fail (why : String) : m Unit := do
     let still ← match old with | some o => recAlive o | none => pure false
     die s!"watchd restart failed: {why}; {if still then s!"the old watchd (pid {(words (old.getD "")).headD ""}) still runs" else "NO watchd runs: start one by hand"}"
@@ -538,17 +537,8 @@ def watchd (a : Parsed) : m UInt32 := do
   let num (k dflt : String) : Float := (parseFloat (strip ((a.str k).getD dflt))).getD 0
   let opts : Opts := { minFreeGib := num "min_free_mem" "4", model := a.str "model", effort := a.str "effort",
                        interval := (a.int "interval").getD 30, once, blockerIdle := num "blocker_idle" "25" }
-  -- the registry (`swarm state --view swarms`): this swarm while this watchd runs; a takeover rewrites it
   let pid ← Sys.getpid
-  let reg ← Spawn.registryFile (← Spawn.dbPath)
-  if !once then
-    let folder := (← git ["rev-parse", "--show-toplevel"]).getD (← Env.cwd)
-    discard <| Sys.mkdirp (← Spawn.registryDir)
-    discard <| Fs.write reg (Json.encode (Lean.Json.mkObj [("db", .str (← Spawn.dbPath)), ("folder", .str folder),
-      ("tag", match comms with | some c => .str (Spawn.tagOf c) | none => .null), ("comms", match comms with | some c => .str c | none => .null),
-      ("pid", Json.int pid), ("started", Json.int now)]))
   let why ← loop mine comms repo opts
-  if ((← Fs.read reg).bind Json.decode).bind (Json.fint · "pid") == some pid then discard <| Sys.remove reg
   if let some why := why then die s!"watchd (pid {pid}){why}; exiting"
   return 0
 

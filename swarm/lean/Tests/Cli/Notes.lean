@@ -72,7 +72,7 @@ def test_note_owner_gone_held (t : T) : IO Unit := do
 -- a done task: whoever did it while live, else the communicator; the poster's own task only recorded
 def test_note_done_and_self (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"; t.agent "c"
-  t.q_ "insert or replace into meta(k,v) values('comms','c')"
+  t.q_ "update swarm set comms='c' where name='t'"
   t.sw_ "a" ["task", "add", "t1"]
   t.sw_ "b" ["task", "claim", "1"]
   has (← t.sw "b" ["post", "#1", "mine"]).stdout "posted to #1: recorded on #1 (you hold it)"

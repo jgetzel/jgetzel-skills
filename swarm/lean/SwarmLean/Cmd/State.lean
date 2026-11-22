@@ -134,19 +134,14 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
     short := short ++ [("job", "background job")]
   detail := detail ++ [("unread", if w > 0 then s!"{w}{if u > 0 then s!", {u} urgent" else ""}" else "none")]
   if has "terminal" on then
-    let other ← match hx with
-      | some y => match py y.cwd with
-        | some c => pure !(← f.ours c)
-        | none => pure false
-      | none => pure false
     let hc := x.hc.getD ""
     detail := detail ++ [("terminal", if (py x.hc).isNone then "none bound" else if byT.isNone then hc ++ ": hc did not answer"
       else match hx with
         | none => hc ++ " gone"
-        | some y => if other then s!"{hc} in another repo ({y.cwd.getD ""})" else s!"{hc} {y.status.getD "?"}")]
+        | some y => s!"{hc} {y.status.getD "?"}")]
     short := short ++ [("terminal", match hx with
       | none => "terminal gone"
-      | some y => if other then "in another repo" else "terminal " ++ y.status.getD "busy")]
+      | some y => "terminal " ++ y.status.getD "busy")]
   if has "waiter" on then
     let alive ← match x.waiter with | some p => f.alive p | none => pure false
     detail := detail ++ [("waiter", if alive then s!"present (pid {x.waiter.getD 0})" else "gone: no message can wake it")]
@@ -375,7 +370,7 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
       | some (av, tot, psi) => if Machine.pressureHigh av tot psi then [need "memory" [("line", some (.str (Machine.line av tot psi)))]] else []
       | none => [])
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
-    ("comms", N cv), ("space", N (py ((db.getMeta "space").bind (·.v)))), ("rss_kb", Json.int rss),
+    ("comms", N cv), ("swarm", N (← env "SWARM")), ("rss_kb", Json.int rss),
     ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
       (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
@@ -386,8 +381,15 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
   let t ← Clock.now
-  if a.str "view" == some "swarms" then  -- before the db: it lists every repo's
-    Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("swarms", .arr (← Spawn.registered).toArray)]))
+  if a.str "view" == some "swarms" then  -- the machine's, before any swarm is resolved
+    let p ← Spawn.dbPath
+    let sws ← Swarms.list
+    Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("swarms", .arr (sws.map fun r =>
+      Json.mkObj [("name", .str r.name), ("tag", .str r.name), ("db", .str p), ("comms", N r.comms),
+        ("folder", N r.repos.head?), ("repos", .arr (r.repos.map Lean.Json.str).toArray),
+        ("live", .arr (r.live.map Lean.Json.str).toArray),
+        ("created", match r.created with | some c => Json.int c | none => .null),
+        ("ended", match r.ended with | some e => Json.int e | none => .null)]).toArray)]))
     return 0
   let p ← Spawn.dbPath
   if (← Sys.kind p true) == .none then

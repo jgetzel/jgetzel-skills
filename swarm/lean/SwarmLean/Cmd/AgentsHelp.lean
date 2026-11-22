@@ -46,4 +46,12 @@ def helpAway : String :=
 def helpMachine : String :=
   "Usage: swarm machine [-h]\n\nOptions:\n   -h, --help            Show this help message and exit."
 
+/-- `swarm new -h`. -/
+def helpNew : String :=
+  "Usage: swarm new [-h] [--repo <repo>]... [--comms <comms>] <name>\n\nArguments:\n   name                  the swarm's name (a communicator <name>-comms joins it)\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --repo <repo>         a repo its auto-spawn staffs from (repeatable)\n   --comms <comms>       its communicator"
+
+/-- `swarm swarms -h`. -/
+def helpSwarms : String :=
+  "Usage: swarm swarms [-h]\n\nThe machine's swarms: communicator, live agents, repos.\n\nOptions:\n   -h, --help            Show this help message and exit."
+
 end SwarmLean.Cmd.Agents

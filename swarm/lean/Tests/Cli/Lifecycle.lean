@@ -295,7 +295,7 @@ def test_sweep_keeps_a_checked_out_base (t : T) : IO Unit := do
 def test_swarm_end (t : T) : IO Unit := do
   t.fakes
   t.agent "comms" [("status", "idle")]
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   idle t "e" [("wt", t.wt)]
   t.sw_ "a" ["task", "add", "x"]; t.sw_ "e" ["task", "claim", "1"]
   eq (← t.sw "e" ["end", "e"] { ok := false }).code 1  -- not the communicator
@@ -313,11 +313,14 @@ def test_foreign_comms_not_ended (t : T) : IO Unit := do
   t.fakes
   t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(t.d)}, json% {"address": "t2", "status": "idle", "cwd": $(t.wt)},
     json% {"address": "t3", "status": "idle"}]
-  idle t "other-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t1")]
   idle t "x-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t2")]
   idle t "e" [("wt", .text (t.wt ++ "-gone")), ("hc", "t3")]  -- hc reports no cwd: judged as before
-  commsTick t
-  ok (!(← ended t "other-comms"))
+  -- another swarm's communicator: two live swarms, so other-comms joins its own (sw-global §2)
+  t.sw_ "zz" ["new", "other"]
+  idle t "other-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t1")]
+  eq ((← t.q1 "select swarm from agent where name='other-comms'").f "swarm") "other"
+  t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] { env := [("SWARM", some "t")] }
+  ok (!(← ended t "other-comms")) "another swarm's agent is not this watchd's"
   ok (← ended t "x-comms") "a *comms name still spared"
   ok (← ended t "e")
 
@@ -521,15 +524,13 @@ def test_detached_owned_worktree_unlanded_kept (t : T) : IO Unit := do
   ok (← ended t "e") "its recorded worktree at the base"
   ok (← ended t "f") "its named worktree at the base"
 
--- a terminal in a repo that is not this one is still another swarm's
-def test_other_repo_terminal_kept (t : T) : IO Unit := do
+-- a terminal in another repo is the swarm's all the same (sw-global §1): no longer kept for it
+def test_other_repo_terminal_not_foreign (t : T) : IO Unit := do
   t.fakes
   let ext ← extRepo t "ext"
   t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(ext)}]
   idle t "e" [("wt", t.wt), ("hc", "t1")]
-  eq ((← fateOf t "e").f "says") "Kept: in another repo"
-  commsTick t
-  ok (!(← ended t "e"))
+  hasnt ((← fateOf t "e").f "says") "in another repo"
 
 -- a base that is no ref in the worktree's repo is a reason endable and the Stop hook give, not an empty list
 def test_unresolvable_base_named (t : T) : IO Unit := do
@@ -618,7 +619,7 @@ def test_idle_agent_with_background_job_not_ended (t : T) : IO Unit := do
   tick
   ok (!(← ended t "e")) "its job runs"
   t.agent "comms" [("status", "idle")]
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   has (← t.sw "comms" ["end", "e"] { ok := false, env := [("SWARM_PROC", some pr)] }).stderr "background job running"
   rmtree (pr ++ "/402")  -- the job ended
   tick
@@ -1274,22 +1275,10 @@ def test_after_dependency (t : T) : IO Unit := do
   t.sw_ "a" ["task", "claim", "1"]; t.sw_ "a" ["task", "done", "1", "--evidence", "e"]
   t.sw_ "a" ["task", "claim", "2"]
 
-def test_deps_migration (t : T) : IO Unit := do
-  -- a task.after from before task.deps
-  let h ← SwarmLean.Sqlite.Conn.open t.db false
-  h.script ("create table task(id integer primary key, title text, body text, state text default 'open', owner text,"
-    ++ " lease_until int, created_by text, evidence text, after int);"
-    ++ "insert into task(title) values('one'); insert into task(title,after) values('two',1);")
-  t.agent "a"
-  let rows ← t.q "select deps from task"
-  eq [rows[0]!.f "deps", rows[1]!.f "deps"] (json% [null, "1"])
-  for c in ← t.q "pragma table_info(task)" do ok (c.f "name" != "after") "after column left"
-  has (← t.sw "a" ["board"]).stdout "after #1  two"
-
 def poolIds (t : T) : IO (List Nat) := do
   Shim.setenv "SWARM_DB" t.db
   let c ← connect
-  let db ← loadDb c [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  let db ← loadDb c t.scope [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
   return (SwarmLean.Tasks.pool db).map (·.id)
 
 def test_priority_orders_pool_and_board (t : T) : IO Unit := do
@@ -1604,7 +1593,7 @@ def tests : List Case := [
   ("test_foreign_repo_landed_on_its_branch_or_upstream", test_foreign_repo_landed_on_its_branch_or_upstream),
   ("test_detached_worktree_is_ours", test_detached_worktree_is_ours),
   ("test_detached_owned_worktree_unlanded_kept", test_detached_owned_worktree_unlanded_kept),
-  ("test_other_repo_terminal_kept", test_other_repo_terminal_kept),
+  ("test_other_repo_terminal_not_foreign", test_other_repo_terminal_not_foreign),
   ("test_unresolvable_base_named", test_unresolvable_base_named),
   ("test_missing_worktree", test_missing_worktree),
   ("test_missing_worktree_unlanded_branch_not_ended", test_missing_worktree_unlanded_branch_not_ended),
@@ -1643,7 +1632,6 @@ def tests : List Case := [
   ("test_hc_blocked_marks_task", test_hc_blocked_marks_task),
   ("test_hc_no_status_after_spawn_blocks", test_hc_no_status_after_spawn_blocks),
   ("test_after_dependency", test_after_dependency),
-  ("test_deps_migration", test_deps_migration),
   ("test_priority_orders_pool_and_board", test_priority_orders_pool_and_board),
   ("test_deps_list_holds_until_last_done", test_deps_list_holds_until_last_done),
   ("test_release_after_leaves_pool", test_release_after_leaves_pool),

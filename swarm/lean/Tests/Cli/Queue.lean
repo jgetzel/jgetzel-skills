@@ -18,7 +18,7 @@ def placesOk (t : T) : IO Unit := do
 def adds (t : T) (n : Nat) : IO Unit := for i in List.range n do t.sw_ "comms" ["task", "add", s!"t{i + 1}"]
 
 def test_queue_add_appends_moves_and_places (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   adds t 4
   has (← t.sw "comms" ["queue"]).stdout "(queue empty)"
   has (← t.sw "comms" ["queue", "add", "3", "1"]).stdout "queued #3, #1"
@@ -45,7 +45,7 @@ def test_queue_add_appends_moves_and_places (t : T) : IO Unit := do
   has (← t.sw "comms" ["task", "show", "4"]).stdout "queue: 2"
 
 def test_queue_rights (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   adds t 3
   t.sw_ "a" ["queue", "add", "1"]  -- any agent may append
   t.sw_ "b" ["queue", "add", "2"]
@@ -63,7 +63,7 @@ def test_queue_rights (t : T) : IO Unit := do
   eq (← order t) [toJson 1, toJson 3]
 
 def test_queue_left_on_done_and_drop (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   adds t 3
   t.sw_ "comms" ["queue", "add", "1", "2", "3"]
   t.sw_ "comms" ["task", "drop", "2"]
@@ -77,7 +77,7 @@ def test_queue_left_on_done_and_drop (t : T) : IO Unit := do
   has (← t.sw "comms" ["queue", "add", "1"] { ok := false }).stderr "task #1 is done"
 
 def test_queue_says_why_not_startable (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   adds t 3
   t.sw_ "comms" ["task", "after", "2", "1"]
   t.sw_ "comms" ["task", "hold", "3", "--why", "needs the user's call"]
@@ -88,7 +88,7 @@ def test_queue_says_why_not_startable (t : T) : IO Unit := do
   has out "3. #1 open    startable  t1"
 
 def test_hold_and_claim (t : T) : IO Unit := do
-  t.q_ "insert or replace into meta(k,v) values('comms','comms')"
+  t.q_ "update swarm set comms='comms' where name='t'"
   adds t 1
   has (← t.sw "a" ["task", "hold", "1", "--why", " "] { ok := false }).stderr "--why is empty"
   t.sw_ "a" ["task", "hold", "1", "--why", "waits for the API"]

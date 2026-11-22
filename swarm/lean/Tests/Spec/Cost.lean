@@ -10,7 +10,7 @@ open Lean (Json toJson)
 
 /-- Runs an App action. -/
 def app (act : App α) : IO α := do
-  match ← (act.run.run { conn := ← IO.mkRef none }) with
+  match ← (act.run.run (← Ctx.new)) with
   | .ok a => pure a
   | .error e => fail s!"exit {e.code}"
 
