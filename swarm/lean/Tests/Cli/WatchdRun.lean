@@ -446,9 +446,10 @@ def test_run_note_state_and_cleanup (t : T) : IO Unit := do
     "nas": {"state": "disconnected", "ts": $n, "since": $n600}}).compress]
   let d := ".cache/swarm-run/repo/wt"
   let wtReal := strip (← t.exec ["realpath", t.wt]).stdout
-  t.q_ "insert into event(ts,agent,kind,path,data) values(?,?,?,?,?)"
+  -- of the repo, as `swarm run` records it: the repo's sweep reads its own events
+  t.q_ "insert into event(ts,agent,kind,path,data,repo) values(?,?,?,?,?,?)"
     [.int n120, "a", "job-start", "1", .text (json% {"machine": "laptop", "hc": "laptop/t9", "wt": $wtReal, "dir": $d,
-      "cmd": "cargo test -p x", "pid": 999999999}).compress]
+      "cmd": "cargo test -p x", "pid": 999999999}).compress, .text t.repo]
   let out := (← swp t "a" pr ["machine"]).stdout
   has out "laptop: 80/93G available, load 3.5 on 24 cores, mem pressure 0%, jobs: a cargo test -p x 2m"
   has out "nas: disconnected since"
@@ -465,6 +466,7 @@ def test_run_note_state_and_cleanup (t : T) : IO Unit := do
   -- a landed worktree's dirs go on every machine its jobs used
   mkdir (home ++ "/" ++ d ++ "/src")
   idle t "e" [("wt", t.wt)]
+  t.made t.wt "e"
   commsTick t
   unless ← ended t "e" do fail "not ended"
   if subIn (← readF [hclog]) "rm -rf" then fail "ending an agent cleans nothing"
