@@ -125,112 +125,175 @@ def ensureComms (comms : String) (terms : Option (List Term)) (t : Int) : m (Opt
 /-- The user is away: a question waits for them. -/
 def AWAY : String := " The user is away: answer it if it is yours to decide; else it waits for them."
 
-/-- An hc terminal's prompt blocks its agent (blocked, the claim marked, comms told); gone, the claim given back. -/
+/-- Runs a pass's acts in order: the only place a pass sends or kills a terminal (sw-architecture-review §4 B1). -/
+def runActs (acts : List Act) : m Unit := do
+  let go (n h : String) (mark : Txn Unit) (once : Once) (send : m (Option String)) : m Unit := do
+    if once == Once.atMost then Store.run mark
+    match ← send with
+    | some e => Env.err s!"{n}: hc send {h} failed: {e}"
+    | none => if once == Once.atLeast then Store.run mark
+  for x in acts do
+    match x with
+    | .send n h text mark once => go n h mark once (Msgs.deliverTo n h text)
+    | .type n h text mark once => go n h mark once (Msgs.typeLine h text)
+    | .endAgent a => discard <| Lifecycle.endAgent a false none
+    | .kill h =>
+      discard <| Proc.output ["hc", "kill", h] none []
+      discard <| Proc.output ["hc", "rm", h] none []
+    | .err line => Env.err line
+
+/-- The names of the scope's live agents, read once before a per-agent pass. -/
+def liveNames : m (List String) := Store.view [Sels.live] fun db => (Agents.live db).map (·.name)
+
+/-- Agent `n`'s spawn events. -/
+def spawnSel (n : String) : Sel := { table := .event, cond := .and (.eq "kind" (.text "spawn")) (.eq "data" (.text n)) }
+
+/-- What `hcBlockedStep` reads of agent `n`: its row, its tasks and its spawn events. -/
+def hcBlockedSels (n : String) : List Sel := [Sels.agent n, Sels.owned n, spawnSel n]
+
+/-- `hcBlocked` on live agent `n`'s rows, its terminal found in `terms`: a prompt there (or no session long after its
+spawn) blocks the row, its first claimed task (on HC_Q) and tells comms; the prompt gone, the task HC_Q blocked is
+given back and a row this pass blocked follows the terminal again. -/
+def hcBlockedStep (terms : List Term) (t : Int) (comms : Option String) (away : Bool) (n : String) (db : Db) : Db :=
+  Id.run do
+  let some a := db.agent n | return db
+  if a.ended.isSome then return db
+  let some x := a.hc.bind (fun h => terms.find? (·.address == some h)) | return db
+  -- no agent in it yet, long after its spawn: a dialog before the session (folder trust)
+  let spawned := (db.events.filter fun e => e.kind == some "spawn" && e.data == some n).filterMap (·.ts)
+  let nostart := x.status.isNone && spawned.any (t - · >= START_WAIT)
+  if x.status != some "blocked" && !nostart then  -- the prompt is gone: give back the claim hc blocked
+    let back (r : Task) : Task :=
+      if r.owner == some n && r.state == .blocked && r.question == some HC_Q then
+        { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
+    -- the row this pass blocked follows the terminal again (board #135: a session started there later)
+    let st := if x.status == some "working" then "working" else "idle"
+    let db := { db with tasks := db.tasks.map back }
+    return if a.status == some "blocked" then (db.setAgent n ({ · with status := some st })).log t (some n) "status" none (some st) else db
+  if a.status == some "blocked" then return db
+  let db := (db.setAgent n ({ · with status := some "blocked" })).log t (some n) "blocked" none none
+  let db := match ((db.tasks.filter fun r => r.owner == some n && r.state = .claimed).mergeSort (·.id ≤ ·.id)).head? with
+    | some r =>  -- the agent notice below is the single notice; the task notice is marked sent
+      (db.set r.id ({ · with state := .blocked, question := some HC_Q })).log t (some n) "task-blocked" (some (d r.id)) (some HC_Q)
+    | none => db
+  match comms with  -- while the user is away the question queues: not urgent
+  | some c =>
+    let hint := if nostart then
+      s!" Its terminal {a.hc.getD ""} has no Claude session yet (a folder-trust prompt?): `hc read {a.hc.getD ""}`." else ""
+    say db t (.agent c) (n ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system"
+  | none => db
+
+/-- An hc terminal's prompt blocks its agent (blocked, the claim marked, comms told); gone, the claim given back. One
+transaction per live agent bound to one of `terms`. -/
 def hcBlocked (terms : List Term) (t : Int) (comms : Option String) (away : Bool) : m Unit := do
-  let db0 ← Store.txn [.agent, .event] fun db => (db, db)
-  for a in Agents.live db0 do
-    let some x := a.hc.bind (fun h => terms.find? (·.address == some h)) | continue
-    let now ← Clock.now
-    -- no agent in it yet, long after its spawn: a dialog before the session (folder trust)
-    let spawned := (db0.events.filter fun e => e.kind == some "spawn" && e.data == some a.name).filterMap (·.ts)
-    let nostart := x.status.isNone && spawned.foldl (fun acc s => acc || t - s >= START_WAIT) false
-    if x.status != some "blocked" && !nostart then  -- the prompt is gone: give back the claim hc blocked
-      let back (r : Task) : Task :=
-        if r.owner == some a.name && r.state == .blocked && r.question == some HC_Q then
-          { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
-      -- the row this pass blocked follows the terminal again (board #135: a session started there later)
-      let st := if x.status == some "working" then "working" else "idle"
-      Store.txn [.task, .agent, .event] fun db =>
-        let db := { db with tasks := db.tasks.map back }
-        (if a.status == some "blocked" then (db.setAgent a.name ({ · with status := some st })).log now (some a.name) "status" none (some st) else db, ())
-    else if a.status != some "blocked" then
-      Store.txn [.agent, .task] fun db =>
-        let db := (db.setAgent a.name ({ · with status := some "blocked" })).log now (some a.name) "blocked" none none
-        let db := match ((db.tasks.filter fun r => r.owner == some a.name && r.state = .claimed).mergeSort (·.id ≤ ·.id)).head? with
-          | some r =>  -- the agent notice below is the single notice; the task notice is marked sent
-            (db.set r.id ({ · with state := .blocked, question := some HC_Q })).log now (some a.name) "task-blocked" (some (d r.id)) (some HC_Q)
-          | none => db
-        match comms with  -- while the user is away the question queues: not urgent
-        | some c =>
-          let hint := if nostart then
-            s!" Its terminal {a.hc.getD ""} has no Claude session yet (a folder-trust prompt?): `hc read {a.hc.getD ""}`." else ""
-          (say db now (.agent c) (a.name ++ " is blocked (a prompt or question needs the human)." ++ hint ++ (if away then AWAY else "")) (!away) "system", ())
-        | none => (db, ())
+  for n in ← liveNames do
+    Store.run (Txn.update (hcBlockedSels n) [.msg] fun db => (hcBlockedStep terms t comms away n db, ()))
 
 /-- How long a continue line may go unanswered (no turn) before it is sent once more. -/
 def RESUME_WAIT : Int := 5 * 60
 
+/-- A continue line's text when the stop hook has no verdict (a stayer, the communicator: a declared wait). -/
+def CARRY_ON : String := "Carry on with what your keep note says is next."
+
+/-- Agent `n`'s last event of kind `k`. -/
+def lastOf (db : Db) (n k : String) : Option Event :=
+  (db.events.filter fun e => e.agent == some n && e.kind == some k).getLast?
+
+/-- What `compactStep` reads of agent `n`: its row, tasks and worktrees (its `/compact` line), the thresholds and its
+state, and its last event of each kind it decides on. -/
+def compactSels (n : String) : List Sel :=
+  [Sels.agent n, Sels.owned n, Sels.workspaces n,
+   Sels.metas ["ctx_nudge", "ctx_compact", "compact_stayers", Compact.key n]] ++
+  (["ctx-continue", "ctx-resent", "compact", "stay", "stay-end"].map (Sels.lastEv n ·))
+
+/-- What watchd read before `compactStep`'s transaction: the stop hook's verdict for a continue line
+(`Hook.stopBlock`), the `/compact` line (`Msgs.compactLine`); each only when the step on a first read wanted it. -/
+structure CompactIn where
+  why : Option String := none
+  line : Option String := none
+
+/-- The `ctx-compact` mark of a `/compact` typed at context `k`: logged, and `n`'s state `s` saved. -/
+def compactMark (t : Int) (n : String) (k : Int) (s : Compact.St) : Txn Unit :=
+  Txn.update [Sels.metas [Compact.key n]] [] fun db =>
+    (Compact.save (db.log t (some n) "ctx-compact" none (some (d k))) n s, ())
+
+/-- `compactPass` on live agent `n`'s rows (`compactSels`), its terminal found in `terms`: a continue line unanswered
+RESUME_WAIT sent again (comms told), a stay set before a compaction ended with it, the continue line once a
+compaction ended, then `Compact.step`'s act. The sends, each after its mark (at most once) but the `/compact`, marked
+once typed. -/
+def compactStep (t : Int) (comms : String) (terms : List Term) (g : CompactIn) (n : String) (db0 : Db) :
+    Db × List Act := Id.run do
+  let some a := db0.agent n | return (db0, [])
+  if a.ended.isSome then return (db0, [])
+  let some h := py a.hc | return (db0, [])
+  let some x := terms.find? (·.address == some h) | return (db0, [])
+  let task := ((db0.tasks.filter fun r => r.owner == some n && (r.state = .claimed || r.state = .blocked)).mergeSort
+    (·.id ≤ ·.id)).head?
+  let stays := n == comms || a.stay.isSome
+  let ev (k : String) := (lastOf db0 n k).bind (·.ts)
+  let evId (k : String) := (lastOf db0 n k).map (·.id)
+  let la := a.last_active.getD 0
+  let idle := Compact.Term.ofHc x.status == .idle
+  let cont := "Compaction done. " ++ g.why.getD CARRY_ON
+  let mut db := db0
+  let mut acts : List Act := []
+  -- a continue line nobody answered in RESUME_WAIT (no turn since): sent once more and the communicator told, once
+  if idle then
+    if let (some cid, some ct) := (evId "ctx-continue", ev "ctx-continue") then
+      if t - ct ≥ RESUME_WAIT && la ≤ ct && (evId "ctx-resent").all (· < cid) then
+        db := (say db t (.agent comms) s!"{n} did not resume after its compaction (terminal {h})." false "system").log t
+          (some n) "ctx-resent" none none
+        acts := acts ++ [Act.marked n h cont]
+  -- a compaction ended (the hook's `compact` event, then the continue line or the agent's first turn) and the stay
+  -- was set before it: the stay ends
+  let mut stayNote := ""
+  if let (some s, some cid) := (a.stay, evId "compact") then
+    let ended := db0.events.any fun e => e.agent == some n && e.id > cid && (e.kind == some "stay" || e.kind == some "stay-end")
+    let t0 := (ev "compact").getD 0
+    let willSend := idle && (evId "ctx-continue").all (· < cid) && la ≤ t0
+    let done := (evId "ctx-continue").any (· > cid) || la > t0 || willSend
+    if !ended && done then
+      db := (db.setAgent n ({ · with stay := none })).log t (some n) "stay-end" (some s) (some "compaction")
+      stayNote := s!" Your stay '{s}' ended with the compaction; `swarm stay \"<why>\"` again if it still holds."
+      if !willSend then db := say db t (.agent n) stayNote.trimAscii.toString false "system"
+  if !stays && task.isNone then return (db, acts)  -- holds nothing: watchd ends it soon
+  -- a compaction has ended (the hook logged "compact") and nothing woke the agent since: send it the stop hook's
+  -- verdict as a prompt, once; a hook cannot start a turn itself
+  if idle then
+    if let some t0 := ev "compact" then
+      if (ev "ctx-continue").all (· < t0) && la ≤ t0 then
+        return (db.log t (some n) "ctx-continue" none none, acts ++ [Act.marked n h (cont ++ stayNote)])
+  let k := a.ctx_tokens.getD 0
+  let cAt := Compact.compactAt db0
+  let force := Compact.stayersToo db0 || !stays
+  let s0 := Compact.load db0 n
+  let (act, s) := Compact.step k (Compact.nudgeAt db0) cAt force (Compact.Term.ofHc x.status) s0
+  let save (db : Db) : Db := if s != s0 then Compact.save db n s else db
+  match act with
+  | .nothing => return (save db, acts)
+  | .nudge =>
+    return (save ((say db t (.agent n) (Compact.nudgeText k cAt (task.map (·.id)) force) false "system").log t (some n)
+      "ctx-nudge" none (some (d k))), acts)
+  | .compact =>  -- the state saved only once it is typed: a failed send compacts again next tick
+    match g.line with
+    | some l => return (db, acts ++ [.type n h l (compactMark t n k s) .atLeast])
+    | none => return (db, acts)
+  | .failed =>
+    return (save ((say db t (.agent comms) (Compact.failedText n k cAt h) false "system").log t (some n)
+      "ctx-compact-failed" none (some (d k))), acts)
+
 /-- Context compaction (board #136): each live agent holding work (a task, a stay, the communicator's role) gets
-`Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. -/
-def compactPass (terms : List Term) (comms : String) : m Unit := do
-  let db ← Store.txn [.agent, .task, .event, .«meta», .workspace] fun db => (db, db)
-  let (nAt, cAt, too) := (Compact.nudgeAt db, Compact.compactAt db, Compact.stayersToo db)
-  for a in Agents.live db do
-    let some h := py a.hc | continue
-    let some x := terms.find? (·.address == some h) | continue
-    let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
-      (·.id ≤ ·.id)).head?
-    let stays := a.name == comms || a.stay.isSome
-    let ev (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.bind (·.ts)
-    let evId (kind : String) := (db.events.filter fun e => e.agent == some a.name && e.kind == some kind).getLast?.map (·.id)
-    let idle := Compact.Term.ofHc x.status == .idle
-    -- a continue line nobody answered in RESUME_WAIT (no turn since): sent once more and the communicator told, once
-    if idle then
-      if let (some cid, some ct) := (evId "ctx-continue", ev "ctx-continue") then
-        let now ← Clock.now
-        if now - ct ≥ RESUME_WAIT && a.last_active.getD 0 ≤ ct && (evId "ctx-resent").all (· < cid) then
-          Store.txn [.agent, .msg, .cursor, .event] fun db =>
-            ((say db now (.agent comms) s!"{a.name} did not resume after its compaction (terminal {h})." false "system").log now (some a.name)
-              "ctx-resent" none none, ())
-          let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
-          if let some e ← Msgs.deliverTo a.name h ("Compaction done. " ++ why) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
-    -- a compaction ended (the hook's `compact` event, then the continue line or the agent's first turn) and the stay
-    -- was set before it: the stay ends
-    let mut stayNote := ""
-    if let (some s, some cid) := (a.stay, evId "compact") then
-      let ended := (db.events.any fun e => e.agent == some a.name && e.id > cid && (e.kind == some "stay" || e.kind == some "stay-end"))
-      let t0 := (ev "compact").getD 0
-      let willSend := idle && (evId "ctx-continue").all (· < cid) && a.last_active.getD 0 ≤ t0
-      let done := (evId "ctx-continue").any (· > cid) || a.last_active.getD 0 > t0 || willSend
-      if !ended && done then
-        let now ← Clock.now
-        Store.txn [.agent, .event] fun db =>
-          ((db.setAgent a.name ({ · with stay := none })).log now (some a.name) "stay-end" (some s) (some "compaction"), ())
-        stayNote := s!" Your stay '{s}' ended with the compaction; `swarm stay \"<why>\"` again if it still holds."
-        if !willSend then
-          Store.txn [.agent, .msg, .cursor] fun db => (say db now (.agent a.name) stayNote.trimAscii.toString false "system", ())
-    if !stays && task.isNone then continue  -- holds nothing: watchd ends it soon
-    -- a compaction has ended (the hook logged "compact") and nothing woke the agent since: send it the stop hook's
-    -- verdict as a prompt, once; a hook cannot start a turn itself
-    if idle then
-      if let some t0 := ev "compact" then
-        if (ev "ctx-continue").all (· < t0) && a.last_active.getD 0 ≤ t0 then
-          let now ← Clock.now
-          Store.txn [.event] fun db => (db.log now (some a.name) "ctx-continue" none none, ())
-          -- a stayer or the communicator has no verdict (a declared wait): still tell it to carry on
-          let why := (← Hook.stopBlock a.name (Lean.Json.mkObj [])).getD "Carry on with what your keep note says is next."
-          if let some e ← Msgs.deliverTo a.name h ("Compaction done. " ++ why ++ stayNote) then Env.err s!"continue {a.name}: hc send {h} failed: {e}"
-          continue
-    let k := a.ctx_tokens.getD 0
-    let force := too || !stays
-    let s0 := Compact.load db a.name
-    let (act, s) := Compact.step k nAt cAt force (Compact.Term.ofHc x.status) s0
-    let now ← Clock.now
-    let done ← match act with
-      | .nothing => pure true
-      | .nudge =>
-        Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now (.agent a.name) (Compact.nudgeText k cAt (task.map (·.id)) force) false "system").log now (some a.name)
-            "ctx-nudge" none (some (d k)), true)
-      | .compact =>
-        match ← Msgs.typeLine h (← Msgs.compactLine db a none) with
-        | some e => Env.err s!"compact {a.name}: hc send {h} failed: {e}"; pure false
-        | none => Store.txn [.event] fun db => (db.log now (some a.name) "ctx-compact" none (some (d k)), true)
-      | .failed =>
-        Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now (.agent comms) (Compact.failedText a.name k cAt h) false "system").log now (some a.name)
-            "ctx-compact-failed" none (some (d k)), true)
-    if done && s != s0 then Store.txn [.«meta»] fun db => (Compact.save db a.name s, ())
+`Compact.step`'s act; the state is kept in meta `ctx:<name>` and only once the act is carried out. Per agent: a first
+read says what the step will send, the stop hook's verdict and the `/compact` line are read for that alone, then the
+step runs in one transaction on the rows read again. -/
+def compactPass (t : Int) (terms : List Term) (comms : String) : m Unit := do
+  for n in ← liveNames do
+    let db ← Store.view (compactSels n) id
+    let some a := db.agent n | continue
+    let (_, want) := compactStep t comms terms { line := some "" } n db
+    let why ← if want.any (fun | .send .. => true | _ => false) then Hook.stopBlock n (Lean.Json.mkObj []) else pure none
+    let line ← if want.any (fun | .type .. => true | _ => false) then some <$> Msgs.compactLine db a none else pure none
+    runActs (← Store.run (Txn.update (compactSels n) [.msg] fun db => compactStep t comms terms { why, line } n db))
 
 /-- A terminal idle this long with the agent's hooks silent and its transcript ending on an API error: the stop hook never ran. -/
 def APIERR_IDLE : Int := 2 * 60
@@ -238,54 +301,110 @@ def APIERR_IDLE : Int := 2 * 60
 /-- How long a continue line after an API error may go unanswered before the communicator is told. -/
 def APIERR_WAIT : Int := 5 * 60
 
+/-- What `apiErrorStep` reads of agent `n`: its row, its tasks, its last `api-error`, `api-resume` and `api-noresume`. -/
+def apiErrorSels (n : String) : List Sel :=
+  [Sels.agent n, Sels.owned n] ++ (["api-error", "api-resume", "api-noresume"].map (Sels.lastEv n ·))
+
+/-- Whether agent row `a`'s turn may have ended on an API error the hooks missed: "working", its terminal `x` idle,
+silent APIERR_IDLE. -/
+def apiSilent (t : Int) (a : Agent) (x : Term) : Bool :=
+  a.status == some "working" && Compact.Term.ofHc x.status == .idle && t - a.last_active.getD 0 ≥ APIERR_IDLE
+
+/-- `apiErrorPass` on live agent `n`'s rows (`apiErrorSels`), its terminal found in `terms`; `err`: the API error its
+transcript ends on, read when it was `apiSilent`. -/
+def apiErrorStep (t : Int) (comms : String) (terms : List Term) (err : Option String) (n : String) (db0 : Db) :
+    Db × List Act := Id.run do
+  let some a := db0.agent n | return (db0, [])
+  if a.ended.isSome then return (db0, [])
+  let some h := py a.hc | return (db0, [])
+  let some x := terms.find? (·.address == some h) | return (db0, [])
+  let db := match err with
+    | some txt => if apiSilent t a x then
+        (db0.setAgent n ({ · with status := some "idle" })).log t (some n) "api-error" none (some txt) else db0
+    | none => db0
+  let some e := lastOf db n "api-error" | return (db, [])
+  if a.last_active.getD 0 > e.ts.getD 0 then return (db, [])  -- a turn since: re-armed
+  if Compact.Term.ofHc x.status != .idle then return (db, [])
+  match (lastOf db n "api-resume").filter (·.id > e.id) with
+  | none =>
+    let txt := e.data.getD ""
+    if n == comms then
+      return ((say db t (.agent comms) s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log t
+        (some n) "api-resume" none none, [])
+    let task := ((db.tasks.filter fun r => r.owner == some n && (r.state = .claimed || r.state = .blocked)).mergeSort
+      (·.id ≤ ·.id)).head?
+    let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
+      (match task with | some r => s!": task #{r.id}." | none => ".")
+    return (db.log t (some n) "api-resume" none none, [Act.marked n h line])
+  | some s =>
+    if t - s.ts.getD 0 ≥ APIERR_WAIT && n != comms && (lastOf db n "api-noresume").all (·.id < e.id) then
+      return ((say db t (.agent comms) s!"{n} did not resume after an API error (terminal {h})." false "system").log t
+        (some n) "api-noresume" none none, [])
+    return (db, [])
+
 /-- A turn that ended on an API error (board #194). The StopFailure hook logs `api-error`; failing that, a row still
 "working" whose terminal hc shows idle/done, silent APIERR_IDLE, with a transcript ending on one gets it logged here and
 its status set idle. Per `api-error` event, once: the agent gets a continue line typed into its terminal (the
-communicator is only told); no turn APIERR_WAIT later, the communicator is told, once. A later turn re-arms it. -/
-def apiErrorPass (terms : List Term) (comms : String) : m Unit := do
-  let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
-  for a in Agents.live db do
+communicator is only told); no turn APIERR_WAIT later, the communicator is told, once. A later turn re-arms it. The
+transcripts are read first, then one transaction per agent. -/
+def apiErrorPass (t : Int) (terms : List Term) (comms : String) : m Unit := do
+  let rows ← Store.view [Sels.live, Sels.metaPre "tr:"] fun db =>
+    (Agents.live db).map fun a => (a, (db.getMeta ("tr:" ++ a.name)).bind (·.v))
+  for (a, tr) in rows do
     let some h := py a.hc | continue
     let some x := terms.find? (·.address == some h) | continue
-    let idle := Compact.Term.ofHc x.status == .idle
-    let now ← Clock.now
-    let la := a.last_active.getD 0
-    if a.status == some "working" && idle && now - la ≥ APIERR_IDLE then
-      let tr := (db.getMeta ("tr:" ++ a.name)).bind (·.v)
-      if let some txt ← SwarmLean.Hook.errorText tr then
-        Store.txn [.agent, .event] fun db =>
-          ((db.setAgent a.name ({ · with status := some "idle" })).log now (some a.name) "api-error" none (some txt), ())
-    let db ← Store.txn [.agent, .task, .event, .«meta»] fun db => (db, db)
-    let evs (kind : String) := db.events.filter fun e => e.agent == some a.name && e.kind == some kind
-    let la := ((db.agent a.name).bind (·.last_active)).getD 0
-    let some err := (evs "api-error").getLast? | continue
-    let et := err.ts.getD 0
-    if la > et then continue  -- a turn since: re-armed
-    if !idle then continue
-    let sent := (evs "api-resume").getLast?.filter (·.id > err.id)
-    match sent with
-    | none =>
-      let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
-        (·.id ≤ ·.id)).head?
-      let txt := err.data.getD ""
-      if a.name == comms then
-        Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now (.agent comms) s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log now
-            (some a.name) "api-resume" none none, ())
-      else
-        let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
-          (match task with | some r => s!": task #{r.id}." | none => ".")
-        Store.txn [.event] fun db => (db.log now (some a.name) "api-resume" none none, ())
-        if let some e ← Msgs.deliverTo a.name h line then Env.err s!"api-error {a.name}: hc send {h} failed: {e}"
-    | some s =>
-      if now - s.ts.getD 0 ≥ APIERR_WAIT && a.name != comms && (evs "api-noresume").all (·.id < err.id) then
-        Store.txn [.agent, .msg, .cursor, .event] fun db =>
-          ((say db now (.agent comms) s!"{a.name} did not resume after an API error (terminal {h})." false "system").log now
-            (some a.name) "api-noresume" none none, ())
+    let err ← if apiSilent t a x then SwarmLean.Hook.errorText tr else pure none
+    -- the next event id: the step reads the id of an `api-error` it logs
+    runActs (← Store.run (Txn.update (apiErrorSels a.name) [.msg, .event] (apiErrorStep t comms terms err a.name)))
 
 /-- How old the communicator's oldest waking unread message is before watchd types its inbox in (`commsInbox`): a
 burst within it goes in one block. -/
 def COMMS_SETTLE : Int := 20
+
+/-- What `commsInboxStep` reads besides the communicator's inbox: its row, the live agents, its compaction events. -/
+def commsSels (comms : String) : List Sel :=
+  [Sels.agent comms, Sels.live, { table := .event, cond := .and (.eq "agent" (.text comms))
+    (.oneOf "kind" [.text "compact-asked", .text "ctx-compact", .text "ctx-continue", .text "compact"]) }]
+
+/-- What `commsInbox` sends: its terminal, the unread rows that fit and how many more stay unread. -/
+structure InboxSend where
+  hc : String
+  fit : List Msg
+  more : Nat
+
+/-- `commsInbox`'s decision on the communicator's rows (`commsSels` and its inbox); `waiter`: the waiter pid read
+before and whether it lived (a waiter since then counts as alive). -/
+def commsInboxStep (t : Int) (comms : String) (terms : Option (List Term)) (waiter : Option Int × Bool) (db : Db) :
+    Option InboxSend := do
+  let a ← db.agent comms
+  guard a.ended.isNone
+  let h ← py a.hc
+  let x ← terms.bind (·.find? fun x => x.address == some h && x.state == some "live")
+  let st := Compact.Term.ofHc x.status
+  guard (st == .idle || st == .working)
+  guard !(Compact.compacting db.events comms (a.last_active.getD 0) t)
+  guard !(a.waiter.isSome && (a.waiter != waiter.1 || waiter.2))  -- a live waiter delivers itself
+  let rows := Msgs.unread db comms
+  let urg (r : Msg) : Bool := r.urgent.getD 0 != 0
+  let wake := rows.filter fun r => r.kind != some "notice" || urg r
+  let oldest ← wake.head?
+  guard !((Agents.live db).all (·.name == comms) && !wake.any urg)
+  guard (t - oldest.ts.getD t ≥ COMMS_SETTLE)
+  let fit := Msgs.linesFit Msgs.TYPE_LINES rows
+  guard !fit.isEmpty
+  pure { hc := h, fit, more := rows.length - fit.length }
+
+/-- `commsInboxStep` on the communicator's inbox and `commsSels`, read in one transaction. -/
+def commsInboxTxn (t : Int) (comms : String) (terms : Option (List Term)) (waiter : Option Int × Bool) :
+    Txn (Option InboxSend) := do
+  let db ← Msgs.inboxTxn comms (commsSels comms)
+  pure (commsInboxStep t comms terms waiter db)
+
+/-- The mark once `commsInbox` sent through id `last`: those rows read (none a `swarm read` since passed), and the
+`comms-deliver` event. -/
+def commsMark (t : Int) (comms : String) (last : Nat) : Txn Unit := do
+  discard <| Msgs.takeTxn comms (Msgs.upTo last)
+  Txn.exec [logStmt t (some comms) "comms-deliver" none (some (d last))]
 
 /-- The communicator's inbox (board #210). It has no hooks, so with no live waiter watchd sends its unread messages
 (`Msgs.deliverTo`: its inbox socket, else typed into its terminal, board #215): `swarm read`'s lines under the peer
@@ -293,33 +412,14 @@ head, at most `Msgs.TYPE_LINES` (then "N more"), once a waking one (not a plain 
 marked read only once sent (event `comms-deliver`, data the last id). Only while hc shows the terminal idle or working (Claude Code queues it to the turn's end): never
 into a prompt, which it could answer (hc send refuses a blocked one too). None while it compacts (compactPass sends
 its continue line); while no other agent lives, only for an urgent message: the terminal may hold a session doing
-other work. A live waiter delivers itself. -/
+other work. A live waiter delivers itself. The waiter's pid is asked first, then one transaction decides. -/
 def commsInbox (t : Int) (comms : String) (terms : Option (List Term)) : m Unit := do
-  let db ← Store.txn [.agent, .event, .msg, .cursor] fun db => (db, db)
-  let some a := db.agent comms | return
-  if a.ended.isSome then return
-  let some h := py a.hc | return
-  let some x := terms.bind (·.find? fun x => x.address == some h && x.state == some "live") | return
-  let st := Compact.Term.ofHc x.status
-  if !(st == .idle || st == .working) then return
-  if Compact.compacting db.events comms (a.last_active.getD 0) t then return
-  if ← (match a.waiter with | some w => Sys.pidAlive w | none => pure false) then return
-  let rows := Msgs.unread db comms
-  let urg (r : Msg) : Bool := r.urgent.getD 0 != 0
-  let wake := rows.filter fun r => r.kind != some "notice" || urg r
-  let some oldest := wake.head? | return
-  if (Agents.live db).all (·.name == comms) && !wake.any urg then return
-  if t - oldest.ts.getD t < COMMS_SETTLE then return
-  let fit := Msgs.linesFit Msgs.TYPE_LINES rows
-  let some last := fit.getLast? | return
-  let now ← Clock.now
-  let hh ← fit.mapM fun r => Clock.hhmm (r.ts.getD now)
-  match ← Msgs.deliverTo comms h (Msgs.typedNote hh fit (rows.length - fit.length)) with
-  | some e => Env.err s!"comms inbox: hc send {h} failed: {e}"
-  | none =>
-    let now ← Clock.now
-    Store.txn [.msg, .cursor, .event] fun db =>
-      ((Msgs.typedStep comms last.id db).1.log now (some comms) "comms-deliver" none (some (d last.id)), ())
+  let w ← Store.view [Sels.agent comms] fun db => (db.agent comms).bind (·.waiter)
+  let alive ← match w with | some p => Sys.pidAlive p | none => pure false
+  let some s ← Store.run (commsInboxTxn t comms terms (w, alive)) | return
+  let some last := s.fit.getLast? | return
+  let hh ← s.fit.mapM fun r => Clock.hhmm (r.ts.getD t)
+  runActs [.send comms s.hc (Msgs.typedNote hh s.fit s.more) (commsMark t comms last.id) .atLeast]
 
 /-- Each blocked task of the swarm's agents (`ofSwarm`, board #135) has its question told to comms once per block: a
 task-blocked event after its latest `task block`. -/
@@ -343,21 +443,6 @@ def noticeSels : List Sel :=
 /-- The blocked notices in one transaction. -/
 def notices (t : Int) (comms : String) (away : Bool) : m Unit :=
   Store.run (Txn.update noticeSels [.msg] fun d => (noticesStep t comms away d, ()))
-
-/-- Runs a pass's acts in order: the only place a pass sends or kills a terminal (sw-architecture-review §4 B1). -/
-def runActs (acts : List Act) : m Unit := do
-  for x in acts do
-    match x with
-    | .send n h text mark once =>
-      if once == Once.atMost && !mark.isEmpty then Store.run (Txn.exec mark)
-      match ← Msgs.deliverTo n h text with
-      | some e => Env.err s!"{n}: hc send {h} failed: {e}"
-      | none => if once == Once.atLeast && !mark.isEmpty then Store.run (Txn.exec mark)
-    | .endAgent a => discard <| Lifecycle.endAgent a false none
-    | .kill h =>
-      discard <| Proc.output ["hc", "kill", h] none []
-      discard <| Proc.output ["hc", "rm", h] none []
-    | .err line => Env.err line
 
 /-- A pass under its guard: its error, prefixed, added to `errs`. -/
 def pass (errs : List String) (what : String) (x : m Unit) : m (List String) := do
@@ -459,8 +544,8 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
     errs ← pass errs (pre ++ "blockers: ") (blockers t c opts.blockerIdle)
     errs ← pass errs (pre ++ "landing-late: ") (landingLate t c)
     if let some ts := terms then
-      errs ← pass errs (pre ++ "compact: ") (compactPass ts c)
-      errs ← pass errs (pre ++ "api-error: ") (apiErrorPass ts c)
+      errs ← pass errs (pre ++ "compact: ") (compactPass t ts c)
+      errs ← pass errs (pre ++ "api-error: ") (apiErrorPass t ts c)
     return errs
 
 /-- One repo's passes (sw-global §4, per repo), in its folder and its own scope with every swarm's agents in view: the
