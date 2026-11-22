@@ -35,10 +35,12 @@ def about (id : Int) : Cond := .or (.pre "data" ("#" ++ d id)) (.pre "data" ("au
 def evs (id : Int) (ks : List String := TASK_KINDS) : Sel :=
   { table := .event, cond := .and (.oneOf "kind" (ks.map .text)) (about id) }
 
-/-- The agents and cursors `stopPending` reads for tasks `ts`: those their stops went to. -/
+/-- The agents and cursors `stopPending` reads for tasks `ts`: those their stops went to, in any swarm (a task is the
+machine's, and agent names are unique on it). -/
 def stops (ts : List Task) : List Sel :=
   let ns := (ts.filterMap fun t => py t.stop_to).eraseDups.map Val.text
-  if ns.isEmpty then [] else [{ table := .agent, cond := .oneOf "name" ns }, { table := .cursor, cond := .oneOf "agent" ns }]
+  if ns.isEmpty then [] else
+    [{ table := .agent, cond := .oneOf "name" ns, inScope := false }, { table := .cursor, cond := .oneOf "agent" ns }]
 
 /-- The ids reachable from `ids` along deps, `ids` among them: a frontier read at a time. -/
 def closure (ids : List Int) : Txn (List Int) := go 100000 [] ids
@@ -64,11 +66,12 @@ def onTask (id : Int) (next : List Table) (more : Task → Txn (List Sel)) (f : 
     | none => pure []
   Txn.update (task id :: ss) next f
 
-/-- The live agent rows named `ns` (a role, a post's addressee). -/
+/-- The agent rows named `ns` (a role, a post's addressee), in any swarm: a task's owner or lander may be another
+swarm's. -/
 def agents (ns : List (Option String)) : List Sel :=
   match (ns.filterMap py).eraseDups with
   | [] => []
-  | l => [{ table := .agent, cond := .oneOf "name" (l.map .text) }]
+  | l => [{ table := .agent, cond := .oneOf "name" (l.map .text), inScope := false }]
 
 /-- `task add`: its deps, the creator's held tasks and the next task id. -/
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
