@@ -124,6 +124,12 @@ and every repo they work in, tasks by state); the rail and `rw-swarms` call it o
 (direction B, board #91) lists per machine its swarms first, then its spaces with the terminals no swarm holds. "Open space"
 becomes "focus the communicator's terminal". The side and swarm views take a swarm name, not a folder.
 
+The swarm view (board #120) reads the machine-wide board from the same call: `tasks` (each with its repos, base and
+holder's worktree there, holder and its swarm, deps as `after`, hold, lease left, last change), `repos` (base, CI on it,
+locks, swarms) and `needs`, each with a kind (ask, hung, lander, held, lock, ctx, ci-red); agents carry `ctx`. A task's
+peek reads `swarm task show <id> --json`'s `events` (its activity in every swarm), and the view polls `swarm events
+--json --since <last>` for what changed. Each reads by key: the event_kind index, the event rowid, task_state.
+
 ## 6. Build order (the board)
 
 The running swarm uses the main checkout's binary (`~/.claude/skills/swarm` links there). Nobody builds, pulls or

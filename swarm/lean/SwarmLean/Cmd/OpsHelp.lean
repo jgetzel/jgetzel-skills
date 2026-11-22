@@ -39,6 +39,10 @@ def helpCompute : String :=
 def helpState : String :=
   "Usage: swarm state [-h] --json\n       [--view {activity,agents,board,graph,overview,summary,swarms,system}]\n       [--agent <agent>] [--task <task>] [--before <before>]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json\n   --view {activity,agents,board,graph,overview,summary,swarms,system}\n                         only what that panel view shows (default: everything);\n                         swarms: every swarm on this machine, with its agents and tasks;\n                         graph: also every task with a dependency or that is one\n   --agent <agent>       also the detail pane's messages and events for this agent\n   --task <task>         also that task's body, events and the messages that name it\n   --before <before>     the next page: board, done and dropped tasks numbered below it;\n                         agents, ended agents that ended before it (unix seconds)"
 
+/-- `swarm events -h`. -/
+def helpEvents : String :=
+  "Usage: swarm events [-h] --json [--since <since>] [--limit <limit>]\n\nThe machine's events, oldest first, each with its swarm, repo and task.\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json\n   --since <since>       only the events after this id (default: the newest <limit>)\n   --limit <limit>       at most this many (default 500); `more` says when the limit cut them"
+
 /-- `swarm watch -h`. -/
 def helpWatch : String :=
   "Usage: swarm watch [-h] [--tail <tail>] [--once]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --tail <tail>\n   --once"

@@ -8,6 +8,7 @@ import SwarmLean.Lib.Spawn
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Run
 import SwarmLean.Lib.SwarmsView
+import SwarmLean.Lib.Events
 
 /-! `swarm state --json` (one read-only snapshot for UIs) and `swarm watch` (state.lua). -/
 
@@ -21,6 +22,10 @@ def VIEWS : List String := ["activity", "agents", "board", "graph", "overview", 
 def stateSpec : Spec := .mk "state" helpState []
   [{ flag "--json" with minCount := 1 }, { opt "--view" with choices := VIEWS }, opt "--agent", opt "--task" none (some int), opt "--before" none (some int)]
   [] [] none
+
+/-- The `events` parser. -/
+def eventsSpec : Spec := .mk "events" helpEvents []
+  [{ flag "--json" with minCount := 1 }, opt "--since" none (some int), opt "--limit" (some "500") (some int)] [] [] none
 
 /-- The `watch` parser. -/
 def watchSpec : Spec := .mk "watch" helpWatch [] [opt "--tail" (some "20") (some int), flag "--once"] [] [] none
@@ -571,11 +576,26 @@ def state (a : Parsed) : m UInt32 := do
   Env.out (Json.encode (Json.mkObj out))
   return 0
 
+/-- `swarm events --json` (the swarm view's poll, sw-global §5): the machine's events after `--since` in every swarm,
+read by key, so a view animates only what changed; `last` is the log's last id, the next poll's `--since`. -/
+def events (a : Parsed) : m UInt32 := do
+  let t ← Clock.now
+  let p ← Swarms.dbPath
+  if (← Sys.kind p true) == .none then
+    Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("since", Json.oint (a.int "since")), ("last", Json.int 0),
+      ("more", .bool false), ("events", .arr #[])]))
+    return 0
+  let lim := min 5000 (max 1 ((a.int "limit").getD 500).toNat)
+  let (evs, last) ← Events.since (a.int "since") lim
+  Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("since", Json.oint (a.int "since")), ("last", Json.int last),
+    ("more", .bool (evs.length == lim)), ("events", .arr (evs.map Events.json).toArray)]))
+  return 0
+
 end
 
-/-- The group: state and watch. -/
+/-- The group: state, events and watch. -/
 def group [Fs m] [Proc m] [Git m] : Group m where
-  specs := [("state", stateSpec), ("watch", watchSpec)]
-  run a := if a.cmd == "state" then state a else watch a
+  specs := [("state", stateSpec), ("events", eventsSpec), ("watch", watchSpec)]
+  run a := if a.cmd == "state" then state a else if a.cmd == "events" then events a else watch a
 
 end SwarmLean.Cmd.State

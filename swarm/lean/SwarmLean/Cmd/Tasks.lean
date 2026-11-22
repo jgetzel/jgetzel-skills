@@ -8,6 +8,7 @@ import SwarmLean.Lib.Msgs
 import SwarmLean.Db.Notes
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.TaskTxn
+import SwarmLean.Lib.Events
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
 
@@ -188,8 +189,12 @@ def task (a : Parsed) : m UInt32 := do
     let db ← Store.run (TaskTxn.showTxn id)
     let some r := db.find id | die s!"no task #{d id}"
     let repos ← Swarms.taskRepos r.id
-    out (← if a.flag "json" then pure ((showJson db r).setObjVal! "repos" (Lean.toJson (repos.map (·.1)))).compress
-      else showText db r repos)
+    if a.flag "json" then
+      -- its activity for the swarm view's peek: every event about it, in any swarm, by key
+      let evs ← Events.ofTask r.id
+      out (((showJson db r).setObjVal! "repos" (Lean.toJson (repos.map (·.1)))).setObjVal! "events"
+        (Lean.Json.arr (evs.map Events.taskJson).toArray)).compress
+    else out (← showText db r repos)
   | "after" =>
     let deps := (a.ids "deps").getD []
     step (TaskTxn.after c id deps)
