@@ -24,11 +24,12 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
    output (`nix build .#sqlite`, which the lakefile runs into `.lake/sqlite`; `$SWARM_SQLITE` overrides with a prefix
    holding lib/ and include/). The shim also gives `now`, the local `HH:MM` and `execvp`.
 2. **Proof shape.** `Db` (`Db.lean`) holds every table as a list of rows plus the next id of each AUTOINCREMENT
-   table. A command's effect is a pure `… → Db → Db × Except String α` (`Db/<module>.lean`), run by
-   `Store.txn tables f`: load the listed tables and apply `f` in a read transaction, write back a change under BEGIN
-   IMMEDIATE (applied again if another connection committed since), COMMIT (`Real.lean`: `sqliteTxn`). The write-back diffs by primary key: deletes the rows gone, UPDATEs the changed ones
-   (known columns only, so a column Lean does not know keeps its value), INSERTs the new. A table not loaded is empty
-   in the `Db` and only gains the rows the step inserts (an event appended needs no load). `Atomic` stays the one
+   table. A command's effect is a `Txn` (`Db/Txn.lean`): keyed or filtered selects, a pure decision on the slice
+   they read, and its plan of statements, run by `Store.run` (`Real.lean`: `sqliteRun`): the reads and the decision
+   in a read transaction, and one that writes run again, reads, decision and plan, under BEGIN IMMEDIATE, COMMIT.
+   A step of the old shape (`Db → Db × α`) runs on a slice as `Txn.update`, whose plan diffs by primary key: deletes
+   the rows gone, UPDATEs the changed ones (known columns only, so a column Lean does not know keeps its value),
+   INSERTs the new; an event appended is an insert that takes the table's next id. `Atomic` stays the one
    store assumption; it now also covers "a step reads only the tables it lists". The slice's theorems are proved of
    the real steps (`Proofs.lean`).
 3. **The world through interfaces** (`World.lean`, instances for `App` in `Real.lean`): `Store`, `Clock` (now, hhmm),
@@ -82,10 +83,10 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   the processes' cwds and a worktree's last-touched time in loops; `Watchd.sweep` builds them with `wtLines` and
   `mapM` (the same calls in the same order), so the proofs need no loop invariant for them.
 - **One transaction per command.** The Lua runs some checks and writes outside its transaction (claim's dep check,
-  `agents.touch`, the context check, the claim's event); here each command is one `Store.txn` (two for the fence),
+  `agents.touch`, the context check, the claim's event); here each command is one `Store.run` (two for the fence),
   so it is at least as atomic. What the Lua wrote before a die inside its transaction still stays: the step returns
   that db with the error (claim's touch).
-- **Read-only commands** (`board`, `task show`) take a snapshot (`Store.txn ts fun db => (db, db)`) and format it in
+- **Read-only commands** (`board`, `task show`) read a slice (`Store.view sels fun db => db`) and format it in
   the monad, since `HH:MM` is the world's.
 - **Rows** are named as the columns (`lease_until`, `created_by`), every non-key column optional. `task.state` is
   `Status`; a state text Lean does not know fails the load. A cell of the wrong storage class is coerced as SQLite's
@@ -151,7 +152,7 @@ port's progress as parity.sh's table; `./check.sh` runs both modes on both build
   (Lifecycle, #100/#113) as monadic reads made only when needed; #106 ties them to `Decide.fateRec`/`endWhyL`
   (`Proofs/Watchd.lean`: `fateHeard_rec`, `endWhy_lifted`, stated with `Sat`, a postcondition that holds whatever each
   read returns). For its proofs end_agent's and reap's transactions are named steps (`Lifecycle.endStep`,
-  `Watchd.reapTask`, `reapLock`, `reapGone`), the same functions the code hands `Store.txn`.
+  `Watchd.reapTask`, `reapLock`, `reapGone`), the same functions the code hands `Store.run`.
 - **Agents** (#100): swarm-lean has no launcher to set `SWARM_HERE`, so spawn (brief.md, settings.template.json,
   the `swarm` it links into the db's bin/) and who's Herdr check read `$SWARM_HERE`, else the Lua launcher's directory.
   launch_agent's symlink of that `swarm` is `ln -s` (Sys has hard links only).

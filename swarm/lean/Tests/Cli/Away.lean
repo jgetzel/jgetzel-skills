@@ -56,7 +56,7 @@ def test_release_of_anothers_task (t : T) : IO Unit := do
   has (← t.sw "f" ["task", "claim", "1"] { ok := false }).stderr "released from e, which hasn't read the stop"
   t.q_ "select 1"  -- points SWARM_DB at the test's db
   let c ← connect
-  let db ← loadDb c t.scope [.task, .agent, .cursor]
+  let db ← readTables c t.scope [.task, .agent, .cursor]
   eq (Tasks.pool db).length 0
   t.sw_ "e" ["read"]
   -- the communicator may too, a blocked task as well; its question goes with it

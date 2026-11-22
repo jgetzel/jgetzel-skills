@@ -187,7 +187,7 @@ def test_owned_wts_reads_the_table_not_names (t : T) : IO Unit := do
   IO.Process.setCurrentDir t.repo
   SwarmLean.Shim.setenv "SWARM_DB" t.db
   let c ← SwarmLean.connect
-  let db ← SwarmLean.loadDb c t.scope [.workspace]
+  let db ← readTables c t.scope [.workspace]
   let wts ← runApp (SwarmLean.Workspaces.worktrees : App _)
   -- the heuristic would also take t-9/other
   eq (SwarmLean.Workspaces.ownedWts "t-9" wts (some db)) [wt]

@@ -6,7 +6,7 @@ not clobber it), end_agent's re-checks and cgroup kill, auto-spawn's lost race, 
 per-pass guard and the loop's guard.
 
 The Lua patched c.all (racing), tasks.pool, proc.run, launch_agent, hc_terminals, reap and ci_poll. Here the passes run
-in `TM`, App with a hook before and after each `Store.txn` (the peer's write lands between transactions, through its
+in `TM`, App with a hook before and after each transaction (the peer's write lands between transactions, through its
 own connection, `t.q_`), a hook on `Proc.output` and `Git.git`, hc always failing (hc_terminals nil, proc.run nil for
 hc kill), and the SWARM_/HC_ variables only as the test sets them. -/
 
@@ -36,12 +36,6 @@ def firstReads {α : Type} : Txn α → List Table
   | _ => []
 
 instance : Store TM where
-  txn ts f := do
-    let h ← read
-    (← h.before.get) ts
-    let a ← (Store.txn ts f : App _)
-    (← h.after.get) ts
-    pure a
   run t := do
     let h ← read
     (← h.before.get) (firstReads t)
@@ -174,7 +168,7 @@ def exists_ (t : T) (sql : String) : IO Unit := do
 
 /-- An agent row as the pass reads it. -/
 def agentRow (h : Hooks) (n : String) : IO Agent := do
-  let some a ← run h (Store.txn [.agent] fun db => (db, db.agent n)) | fail s!"no agent {n}"
+  let some a ← run h (Store.view [Sels.agent n] fun db => db.agent n) | fail s!"no agent {n}"
   return a
 
 /-- watchd_tick({ min_free_gib = 0 }) (swarm t's communicator is t-comms): its error, none when every pass ran clean. -/

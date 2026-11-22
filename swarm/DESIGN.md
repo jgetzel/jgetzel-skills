@@ -265,8 +265,8 @@ One db per machine, swarms as groups of agents, tasks per repo
   `swarm-retro`, never loaded by a hook.
 - **Statement store** (sw-global §3). A command reads keyed or filtered selects, decides purely on the rows read and
   writes a plan of statements (`ins`, `upd`, `del`, a guarded `upd` whose `changes()` settles a race), in one
-  `begin immediate` transaction; a claim is a guarded update. Hooks and the commands run so; what still loads whole
-  tables through `loadDb`/`storeDb` (watchd's ticks) moves off them under board #77, which deletes both. The proofs of the store sit in
+  `begin immediate` transaction; a claim is a guarded update. Every command, hook and watchd pass runs so (board #77
+  deleted the whole-table `Store.txn`). The proofs of the store sit in
   `lean/SwarmLean/Proofs/LEGACY.md` until the proofs phase ([research/sw-global-proofs.md](research/sw-global-proofs.md)).
 
 ### Locks and overlap: [research/sw-locks.md](research/sw-locks.md)

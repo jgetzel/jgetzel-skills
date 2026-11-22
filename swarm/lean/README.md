@@ -102,7 +102,7 @@ which the challenge would have to hold); `Inbox.exactly_once` and `Cross.run_xin
 
 ## What is proved of the running code
 
-Every theorem is about the functions the CLI runs: the pure steps it hands `Store.txn` (`Db/*.lean`, and the steps
+Every theorem is about the functions the CLI runs: the pure decisions it hands `Store.run` (`Db/*.lean`, and the steps
 named out of `Lib/Lifecycle.lean` and `Lib/Watchd.lean`), and the monadic decisions read through the world's classes.
 No `sorry`, `admit`, `axiom` or `native_decide`; `Audit.lean` checks every theorem rests on Lean's three axioms only.
 Concurrency is "any order of whole transactions": `Atomic`. A theorem that needs anything of the world takes it as a
@@ -187,7 +187,7 @@ moves no branch and changes no other worktree (`wtRemove_only`), and the branch 
 (`delRef_guarded`). Ending an agent leaves every worktree, branch and commit as they were (`endAgent_keepsGit`, W2).
 
 **The store** (`Proofs/Store.lean`, `Proofs/WriteBack.lean`, `Proofs/Migrate.lean`, board #134). The store's SQL is
-data: `Db/Plan.lean`'s `Stmt`s, which Real.lean's `runStmts` runs (`storeDb` runs `dbPlan`, `connect` runs `migs`), and
+data: `Db/Plan.lean`'s `Stmt`s, which Real.lean's `runStmts` runs (`Store.run` runs a `Txn`'s plan, `connect` runs `migs`), and
 `decodeRows`, which `loadRows` applies to what its select returned. Every row type's codec round-trips
 (`decode_encode`), and decoding refuses rather than misreads: each cell of a decoded row is the value its field encodes
 to, or one of the documented coercions (a number read as text, integral text or float read as an integer); anything
@@ -273,7 +273,7 @@ All of it is in `SwarmLean/Assumptions.lean`, each a definition a theorem takes 
 
 | Assumption | About | Says | Taken by |
 |---|---|---|---|
-| `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`; since #137 a read-only `Store.txn` is one WAL read transaction, and a write reuses what that read computed only when `pragma data_version` shows no commit since) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
+| `Atomic` | SQLite | processes' transactions that ran at once apply one after another in some order (stands for swarm/model's five sqlite hypotheses: the code's every write is one `BEGIN IMMEDIATE … COMMIT`; a read-only `Store.run` is one WAL read transaction, and one that writes runs its reads, decision and plan again under BEGIN IMMEDIATE) | 13 theorems: `one_winner`, `exactly_one_winner`, `one_winner_all`, `atomic_good`, `exactly_once_atomic`, `atomic_inv`, `shown_once`, `shown_for_it`, `cursor_passes_only_shown`, `atomic_ran`, `end_atomic`, `reap_atomic`, `atomic_xinv` |
 | `AllOrNothing` | SQLite | a process stopped mid-run leaves the db it found or as one of its transactions committed it, never a transaction in part | `stopped_keeps` |
 | `SqlExec` | SQLite | each statement the store runs does what `Stmt.run` says: delete and update by key, insert with defaults that fails on a key a row has, `add column` with its default, the after migration | `write_back`, `store_load`, `runs_dels`, `runs_up`, `runs_ups`, `migrate_step`, `migrate_version`, `migrateAll_last` |
 | `SqlSelect` | SQLite | `select cs from t` returns each row's cells, in some order | `load_rows`, `store_load` |
@@ -373,7 +373,7 @@ case files and traces, SqlParse): every other model file has a not-moved theorem
 | Restart: `R1a_of`, `R1a'_of`, `R1b_of`, `R1c_of`, `restart_ticks`, `wdinv_*` | not moved | the watchd record and tick lease check the other watchd's pid outside their transaction (PORT.md), so (a) needs that check moved inside or `Kill0Alive` on a recording world; (b), (c) are liveness of real processes |
 | Real: `reap_gone`, `restart_alive`, `waiter_alive`, `lapsed_stays` | not moved | each pairs a tool's answer with the model's view (`HcLsLive`, `HcRunStarts`, `Kill0Alive`, `NowMono`): the assumptions are now named, but the code's reads are monadic (`hcTerminals`, `pidAlive`) and no theorem ties them yet |
 | Real: `prAct` | moved | `WatchdProofs.prAct_eq` |
-| Real: `engine_step`, `engine_reach`, `serializable`, `stmt_out`, `busyClean`; Iso: all; Sql, SqlParse | not applicable | the Lua's sqlite use as an engine model; the code's store is `Store.txn` (one `BEGIN IMMEDIATE` transaction per command) and assumes `Atomic`. Iso's `migrate_ok` (db.connect's migration): not moved, `Real.connect` is unproved |
+| Real: `engine_step`, `engine_reach`, `serializable`, `stmt_out`, `busyClean`; Iso: all; Sql, SqlParse | not applicable | the Lua's sqlite use as an engine model; the code's store is `Store.run` (one `BEGIN IMMEDIATE` transaction per write) and assumes `Atomic`. Iso's `migrate_ok` (db.connect's migration): not moved, `Real.connect` is unproved |
 | Cut: `passesIndep_of` | moved | `WatchdProofs.guard_ok` (a pass that fails ends alone) |
 | Cut: `N1cut_of`, `Q1cut`, `tickCut_*`, `lifecycleCut_*`, `replay_cut` | not moved | invariants of a tick cut partway need the tick as steps; the tick is monadic. Each db step a pass commits is a transaction of `Cross.XCmd` (end, reaps), whose invariants hold after any prefix: `Cross.run_xinv` |
 | Cut: `not_passesIndep`, `stuck36`, `seq_reap0`, `tickCut_none` | not applicable | refutations without `passGuard` |
