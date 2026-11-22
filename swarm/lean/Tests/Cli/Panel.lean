@@ -348,21 +348,16 @@ def test_state_summary (t : T) : IO Unit := do
     if s.f k != .null then fail s!"summary sent {k}"
   unless ((s.f "rss_kb").getInt?.toOption.getD 0) > 0 do fail s!"summary rss_kb {s.f "rss_kb"}"
 
--- UI-SPEC.md slice 12: a running watchd registers its swarm; --view swarms lists those whose watchd lives
+-- sw-global §2: --view swarms lists the machine's swarms from its one db, before any swarm is resolved
 def test_state_swarms (t : T) : IO Unit := do
-  restartHc t
-  let dir := t.d ++ "/.state/swarm/swarms"
-  let (c, pid) ← firstWatchd t ["--interval", "1", "--comms", "ll-comms", "--max-agents", "0"]
-  until_ "the watchd's tick" 10 do return (← mval t "watchd_up") == Json.str s!"{pid} -"
-  put (dir ++ "/dead.json") "{\"db\": \"/x/swarm.db\", \"folder\": \"/x\", \"pid\": 999999999}"
+  t.q_ "update swarm set comms='c' where name='t'"
+  t.agent "c"
+  t.sw_ "zz" ["new", "u"]
   let s ← st t ["--view", "swarms"]
   let sws := match s.f "swarms" with | .arr a => a.toList | _ => []
-  eq (sws.map fun j => (j.f "db", j.f "tag", j.f "comms", j.f "pid")) [(Json.str t.db, json% "ll", json% "ll-comms", Json.num pid.toNat!)]
+  eq (sws.map fun j => (j.f "db", j.f "tag", j.f "comms", j.f "live")) [(Json.str t.db, json% "t", json% "c", json% ["c"]),
+    (Json.str t.db, json% "u", Json.null, json% [])]
   unless (((sws.headD .null).f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {(sws.headD .null).f "folder"}"
-  if (← slurp (dir ++ "/dead.json")).isSome then fail "a dead watchd's file stayed"
-  discard <| t.exec ["kill", "-KILL", pid]  -- no exit of its own: its file stays, and the list drops it
-  discard c.wait
-  eq ((← st t ["--view", "swarms"]).f "swarms") (json% [])
 
 def tests : List Case := [
   ("test_state_swarms", test_state_swarms),

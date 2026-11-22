@@ -383,6 +383,10 @@ def new : IO T := do
   discard <| t.git t.repo ["add", "."]
   discard <| t.git t.repo ["commit", "-qm", "init"]
   discard <| t.git t.repo ["worktree", "add", "-q", "-b", "w2", t.wt]
+  -- the machine's one swarm, of this repo: every command acts on it (sw-global §2, the only live swarm)
+  t.q_ "insert into swarm(name, created) values('t', 0)"
+  t.q_ "insert into repo(path, base) values(?, 'main')" [.text t.repo]
+  t.q_ "insert into swarm_repo(swarm, repo) values('t', ?)" [.text t.repo]
   return t
 
 /-- Runs the deferred actions (last first); removes the dir when the test passed. -/

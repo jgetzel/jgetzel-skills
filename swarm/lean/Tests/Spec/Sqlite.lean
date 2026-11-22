@@ -81,7 +81,7 @@ where go (role : String) (args : List String) : IO UInt32 := do
     signal; IO.sleep 1000
     discard <| c.exec "commit"
   | "victim", [] =>
-    discard <| c.exec "begin immediate"; discard <| c.exec "insert into meta values('seen.-7','-7')"
+    discard <| c.exec "begin immediate"; discard <| c.exec "insert into meta(k, v) values('seen.-7','-7')"
     signal; IO.sleep 30000
   | _, _ => IO.eprintln s!"no sqlite role {role} {args}"; return 2
   return 0
@@ -112,8 +112,8 @@ def stress (t : T) (roles : List (Nat × List String)) (msg : String) : IO Unit 
 def setup (t : T) : IO Conn := do
   Shim.setenv "SWARM_DB" t.db
   let c ← connect
-  for k in ["tx", "auto"] do discard <| c.exec "insert into meta values(?,'0')" [.text k]
-  for i in [1:9] do discard <| c.exec "insert into meta values(?,'100')" [.text s!"acct.{i}"]
+  for k in ["tx", "auto"] do discard <| c.exec "insert into meta(k, v) values(?,'0')" [.text k]
+  for i in [1:9] do discard <| c.exec "insert into meta(k, v) values(?,'100')" [.text s!"acct.{i}"]
   return c
 
 /-- Runs `act` while a worker of `role` holds its transaction, then waits for it to end well. -/

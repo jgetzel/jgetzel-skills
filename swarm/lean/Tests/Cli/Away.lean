@@ -10,7 +10,7 @@ open Lean (Json toJson)
 
 def comms (t : T) (name : String := "c") : IO Unit := do
   t.agent name
-  t.q_ "insert or replace into meta(k,v) values('comms',?)" [.text name]
+  t.q_ "update swarm set comms=? where name='t'" [.text name]
 
 def tick (t : T) : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "c", "--max-agents", "0"]
 

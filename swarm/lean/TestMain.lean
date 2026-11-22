@@ -70,6 +70,8 @@ def coordinate (pat : Option String) : IO UInt32 := do
   return if failed == 0 && jobs.size > 0 then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
+  -- the swarm an agent running the tests acts on is not the tests' (the store reads "" as unset)
+  SwarmLean.Shim.setenv "SWARM" ""
   match args with
   | "--fake-launch" :: d :: argv => T.fakeLaunch d argv
   | "--sqlite" :: role :: rest => SwarmLean.Tests.Spec.Sqlite.worker role rest
