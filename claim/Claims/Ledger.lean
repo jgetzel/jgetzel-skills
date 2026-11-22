@@ -121,28 +121,35 @@ sample() {
   num \"$ncpu\" && num \"$total_kb\" && num \"$avail_kb\" || exit 1
   case $busy in ''|*[!0-9.-]*) exit 1;; esac
 }
-# a lock over a minute old with no live pid: a younger one may have been taken just after the pid read
+# a lock over a minute old with no live pid (read into `p`; `f` set when its file was there): a younger one may have been
+# taken just after the pid read
 stale() {
-  p=$(cat \"$d/$1/pid\" 2>/dev/null)
+  if p=$(cat \"$d/$1/pid\" 2>/dev/null); then f=1; else f=; p=; fi
   [ -n \"$(find \"$d/$1\" -prune -mmin +1 2>/dev/null)\" ] && { [ -z \"$p\" ] || ! kill -0 \"$p\" 2>/dev/null; }
 }
+# the dir $1 is held once its pid file is linked in, written whole, where none is (ln fails on one there): one that stalled
+# between its mkdir and this, its dir judged stale (no pid) and broken and taken since, meets the new holder's pid and holds
+# nothing
+own() { echo $$ > \"$d/.pid.$$\" && ln \"$d/.pid.$$\" \"$d/$1/pid\" 2>/dev/null; o=$?; rm -f \"$d/.pid.$$\"; return $o; }
+# removes $1 judged stale: one whose pid file was missing by rmdir alone, which fails once a holder that was only slow has
+# linked its pid; one whose pid file was there (dead, or empty from a crash) no one else can own
+unstale() { if [ -n \"$f\" ]; then rm -rf \"$d/$1\"; else rmdir \"$d/$1\" 2>/dev/null; fi; }
 # a stale lock is broken only by the one holding $d/break, which re-checks the lock first: a waiter that judged it stale
 # earlier cannot delete a lock taken since. A stale break (its breaker died) is removed on the same test; that removal is
 # unguarded, so the one case left is a breaker and a holder both crashing and two waiters then clearing the break at once:
-# one can delete the other's fresh break, and two breakers may run together (a minute-old window, never seen to matter)
+# one can delete the other's fresh break, and two breakers may run together (a minute-old window, never seen to matter).
+# A live process's lock or break is never stale, however long it stalls (own, unstale).
 lock() {
-  until mkdir \"$d/lock\" 2>/dev/null; do
+  until mkdir \"$d/lock\" 2>/dev/null && own lock; do
     if stale lock; then
-      if mkdir \"$d/break\" 2>/dev/null; then
+      if mkdir \"$d/break\" 2>/dev/null && own break; then
         trap 'rm -rf \"$d/break\"' EXIT
-        echo $$ > \"$d/break/pid\"
-        if stale lock; then rm -rf \"$d/lock\"; fi
+        if stale lock; then unstale lock; fi
         rm -rf \"$d/break\"; trap - EXIT
-      elif stale break; then rm -rf \"$d/break\"; fi
+      elif stale break; then unstale break; fi
     fi
     sleep 0.1
   done
-  echo $$ > \"$d/lock/pid\"
   trap 'rm -rf \"$d/lock\"' EXIT
   now=${SWARM_COMPUTE_NOW:-$(date +%s)}
   num \"$now\" || exit 1
