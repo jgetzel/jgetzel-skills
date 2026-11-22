@@ -145,14 +145,14 @@ def racing (h : Hooks) (p : List Table → Bool) (fn : IO Unit) : IO (IO Unit) :
     if (← armed.get) && p ts then armed.set false; fn
   return do if ← armed.get then fail "the peer never ran"
 
-/-- `fn` once, right after auto_spawn's own read of the pool: the first task-only transaction after its read of the
-agents, meta and tasks (the Lua's second tasks.pool call); the check that it ran. -/
+/-- `fn` once, right after auto_spawn's own read of the pool: the first task-only read (`poolNow`) after its read of the
+agents and meta (the Lua's second tasks.pool call); the check that it ran. -/
 def afterSpawnRead (h : Hooks) (fn : IO Unit) : IO (IO Unit) := do
   let st ← IO.mkRef 0
   h.after.set fun ts => do
     match ← st.get with
-    | 0 => if ts == [.agent, .«meta», .task] then st.set 1
-    | 1 => if ts == [.task, .«meta»] then st.set 2; fn
+    | 0 => if ts == [.agent, .«meta»] then st.set 1
+    | 1 => if ts == [.task] then st.set 2; fn
     | _ => pure ()
   return do if (← st.get) != 2 then fail "the peer never ran"
 

@@ -210,7 +210,8 @@ def test_spawn_refused_at_the_max (t : T) : IO Unit := do
 
 def test_limits_all_or_nothing (t : T) : IO Unit := do
   t.fakes; twoHaiku t
-  let r ← t.sw "a" ["limits", "--min", "3", "--queue-only", "on", "--ctx-nudge", "-1"] { ok := false }
+  -- `=`: a bare `-1` is an unknown short option to the parser, a usage error before the check
+  let r ← t.sw "a" ["limits", "--min", "3", "--queue-only", "on", "--ctx-nudge=-1"] { ok := false }
   eq r.code 1
   has r.stderr "a context threshold is tokens"
   let l := (← t.sw "a" ["limits"]).stdout
@@ -401,13 +402,15 @@ def test_spawn_name_of_another_swarm (t : T) : IO Unit := do
   t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
   t.q_ "update agent set hc='u7', role='u-role' where name='x'"
   let before ← t.q "select * from agent where name='x'"
-  let r ← t.sw "a" ["spawn", "x", "--", "go"] { ok := false }
+  -- two swarms are live (t, u): the spawn names its own
+  let inT : List (String × Option String) := [("SWARM", some "t")]
+  let r ← t.sw "a" ["spawn", "x", "--", "go"] { ok := false, env := inT }
   eq r.code 1
   has r.stderr "x is a live agent"
   eq (← t.launched).size 0
   eq (← t.q "select * from agent where name='x'") before
   t.q_ "update agent set ended=1, hc=null where name='x'"
-  t.sw_ "a" ["spawn", "x", "--", "go"]
+  t.sw_ "a" ["spawn", "x", "--", "go"] { env := inT }
   eq (← names t) ["x"]
   eq (row (← t.q1 "select swarm, ended from agent where name='x'") ["swarm", "ended"]) (json% ["t", null])
   eq ((← t.q1 "select count(*) n from agent where name='x'").f "n") 1
