@@ -2,8 +2,9 @@ import Tests.Cli.All
 
 /-! swarm-tests: the CLI's test suite (run.lua's runner). `swarm-tests [pattern]` runs every test whose spec or name
 contains the pattern, one worker process per test, SWARM_TEST_JOBS (8) at a time; a test running past
-SWARM_TEST_TIMEOUT (60 s) is killed and reported as HUNG. `--list` prints the tests; `--one <spec> <test>` is a worker;
-`--fake-launch` and `--sql` are the fakes the fixture writes as scripts; `--sqlite` is sqlite_spec's worker. -/
+SWARM_TEST_TIMEOUT (60 s) is killed and reported as HUNG. cli_scale_spec's tests, which time commands, run last and
+each alone, so the other workers' load is not in their numbers. `--list` prints the tests; `--one <spec> <test>` is a
+worker; `--fake-launch` and `--sql` are the fakes the fixture writes as scripts; `--sqlite` is sqlite_spec's worker. -/
 
 open SwarmLean SwarmLean.Tests.Cli
 
@@ -29,8 +30,10 @@ def envNat (k : String) (d : Nat) : IO Nat := return ((← IO.getEnv k).bind Str
 def coordinate (pat : Option String) : IO UInt32 := do
   let timeout ← envNat "SWARM_TEST_TIMEOUT" 60
   let jobsMax ← envNat "SWARM_TEST_JOBS" 8
-  let jobs := (all.filter fun (s, n, _) => match pat with
-    | some p => subIn s p || subIn n p | none => true).toArray
+  let jobs := all.filter fun (s, n, _) => match pat with
+    | some p => subIn s p || subIn n p | none => true
+  let alone (s : String) : Bool := s == "cli_scale_spec"
+  let jobs := (jobs.filter (!alone ·.1) ++ jobs.filter (alone ·.1)).toArray
   let tmp := strip (← IO.Process.output { cmd := "mktemp", args := #["-d"] }).stdout
   let self ← selfBin
   let mut running : Array (Nat × IO.Process.Child ⟨.null, .null, .null⟩ × Nat) := #[]
@@ -38,7 +41,7 @@ def coordinate (pat : Option String) : IO UInt32 := do
   let mut next := 0
   let mut done := 0
   while done < jobs.size do
-    while running.size < jobsMax && next < jobs.size do
+    while running.size < jobsMax && next < jobs.size && (!alone jobs[next]!.1 || running.isEmpty) do
       let (s, n, _) := jobs[next]!
       let args := #["-c", "exec \"$0\" --one \"$1\" \"$2\" >\"$3\" 2>&1", self, s, n, s!"{tmp}/{next}.out"]
       let c ← IO.Process.spawn { cmd := "sh", args, stdin := .null, stdout := .null, stderr := .null }
