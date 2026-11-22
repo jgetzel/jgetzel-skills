@@ -1,4 +1,5 @@
 import Tests.Cli.Fixture
+import SwarmLean.Db.TaskTxn
 
 /-! sqlite_spec.lua: the store assumption (Assumptions.lean's `Atomic`, and the sqlite behaviour its tags name) against
 real sqlite through the code's own store: `connect` (WAL, a 10 s busy handler) and `sqliteTxn` (`Store.txn`: load
