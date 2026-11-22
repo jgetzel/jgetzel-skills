@@ -5,6 +5,8 @@
 B=$(realpath "${1:-$(dirname "$0")/.lake/build/bin/swarm-lean}") || exit 1
 T=$(mktemp -d) || exit 1
 export SWARM_DB=$T/swarm.db
+# a command acts on a swarm (sw-global §2): the scratch db's only one
+"$B" new t >/dev/null || exit 1
 SWARM_NAME=setup "$B" task add contested >/dev/null || exit 1
 # each process spins until go exists, so all 50 start their transactions together
 for k in $(seq 50); do
