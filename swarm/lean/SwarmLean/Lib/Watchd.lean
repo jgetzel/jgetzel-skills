@@ -237,7 +237,7 @@ def sweep (comms : Option String) (dry : Bool) (notLanded : List String) (dir : 
   let bs ← Bases.refs prot (some main)
   let wts ← (wtLines lines.tail).mapM fun (p, br) => return (← real p, br)
   let used := (← (((Agents.live db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM real) ++
-    (Workspaces.wtMapOf db (← Workspaces.worktrees)).map (·.2)
+    Workspaces.usedOf db (← Workspaces.worktrees)
   let some cw ← Machine.cwds | return ([], notLanded)  -- which worktrees a process sits in is unknown: sweep none
   let pcwd ← cw.mapM fun (_, l) => real l
   let t ← Clock.now
@@ -287,7 +287,7 @@ def keepReasons (dir : String) : m (List (String × Option String × String)) :=
   let prot ← Workspaces.protectedOf db (some main)
   let bs ← Bases.refs prot (some main)
   let used := (← (((Agents.live db).flatMap fun a => [a.wt.getD "", a.cwd.getD ""]).filter (· != "")).mapM real) ++
-    (Workspaces.wtMapOf db (← Workspaces.worktrees)).map (·.2)
+    Workspaces.usedOf db (← Workspaces.worktrees)
   let pcwd ← (← Machine.cwds).getD [] |>.mapM fun (_, l) => real l
   let t ← Clock.now
   let mut out := []
@@ -568,6 +568,12 @@ structure Opts where
   /-- why no communicator can be launched (ensure_comms), which holds auto-spawn -/
   commsHold : Option String := none
 
+/-- The tasks this swarm staffs (sw-global §2): those of its repos; one of no repo only by a claim or `spawn --task`. -/
+def mineOf : m (List Int) := do
+  match ← env "SWARM" with
+  | some s => Swarms.staffable s
+  | none => pure []
+
 /-- `name` is `prefix` and digits: the number (re.fullmatch(prefix .. "(\\d+)")). -/
 def numbered (pre name : String) : Option Nat :=
   if name.startsWith pre then
@@ -575,8 +581,8 @@ def numbered (pre name : String) : Option Nat :=
     if !rest.isEmpty && rest.all Char.isDigit then rest.toNat? else none
   else none
 
-/-- Staffs startable tasks up to the auto-spawn number, but none under an outstanding offer (`offered`); the board's
-"auto-spawn holding" line when a limit stops it (watchd.auto_spawn). -/
+/-- Staffs startable tasks of the swarm's repos up to the auto-spawn number, but none under an outstanding offer
+(`offered`); the board's "auto-spawn holding" line when a limit stops it (watchd.auto_spawn). -/
 def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Option String) := do
   let envComms ← env "SWARM_COMMS"
   let db ← Store.txn [.agent, .«meta», .task] fun db => (db, db)
@@ -603,7 +609,9 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
       Store.txn [.«meta»] fun db => (delMeta db "spawn_halt", ())
       halt := none
   let haltOf := halt
-  let skip (x : Task) : Bool := haltOf == some (d x.id) || offered.contains x.id
+  -- only tasks of this swarm's repos (sw-global §2): one of no repo is staffed by a claim or `spawn --task` alone
+  let mine ← mineOf
+  let skip (x : Task) : Bool := haltOf == some (d x.id) || offered.contains x.id || !mine.contains (x.id : Int)
   let mut lost := 0
   repeat
     -- read again before each launch (model Staff.lean, `freshPool`): a task freed meanwhile must not wait (board #91)
@@ -720,7 +728,9 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let by_ (h : String) : Option Term := (terms.getD []).find? (·.address == some h)
   let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor, .«meta»] fun db => (db, db)
   let wts := Workspaces.wtMapOf db all
-  let pool := Queue.staffing db
+  let mine ← mineOf
+  -- offers and the reuse fate count only what auto-spawn would staff here
+  let pool := (Queue.staffing db).filter fun x => mine.contains (x.id : Int)
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
   let dflt := (py opts.model).getD "sonnet"

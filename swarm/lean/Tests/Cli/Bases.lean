@@ -248,7 +248,83 @@ def test_bad_swarm_json_base_warns (t : T) : IO Unit := do
   let r ← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
   has r.stderr "swarm.json base '--upload-pack=x' is not a valid git ref; using main"
 
+-- ---- tasks of several repos (sw-global §2, board #74) ----
+/-- A second repo beside t.repo, on main with one commit. -/
+def repo2 (t : T) : IO String := do
+  let r := t.d ++ "/repo2"
+  IO.FS.createDir r
+  discard <| t.git r ["init", "-q", "-b", "main"]
+  put (r ++ "/c.txt") "y"
+  discard <| t.git r ["add", "."]
+  discard <| t.git r ["commit", "-qm", "init"]
+  return r
+
+def test_task_add_repos (t : T) : IO Unit := do
+  let r2 ← repo2 t
+  IO.FS.createDirAll (r2 ++ "/.claude")
+  put (r2 ++ "/.claude/swarm.json") "{\"base\": \"dev\"}"
+  t.sw_ "a" ["task", "add", "here"]  -- the folder's repo
+  t.sw_ "a" ["task", "add", "both", "--repo", t.repo, "--repo", r2, "--repo", r2 ++ "/.claude"]
+  t.sw_ "a" ["task", "add", "research", "--no-repo"]
+  t.sw_ "a" ["task", "add", "from a worktree", "--repo", t.wt]  -- a worktree names its repo's main checkout
+  t.sw_ "a" ["task", "add", "on dev", "--repo", r2, "--base", "formal"]
+  eq (← t.q "select task, repo, base from task_repo order by task, rowid") (json% [
+    {"task": 1, "repo": $(t.repo)}, {"task": 2, "repo": $(t.repo)}, {"task": 2, "repo": $r2},
+    {"task": 4, "repo": $(t.repo)}, {"task": 5, "repo": $r2, "base": "formal"}])
+  eq ((← t.q1 "select base from repo where path=?" [.text r2]).f "base") "dev" "made on first sight, swarm.json's base"
+  has (← t.sw "a" ["task", "show", "2"]).stdout s!"repos: {t.repo}, {r2}"
+  hasnt (← t.sw "a" ["task", "show", "3"]).stdout "repo"
+  has (← t.sw "a" ["task", "add", "x", "--repo", t.d ++ "/nope"] { ok := false }).stderr "not in a git repo"
+  discard <| t.sw "a" ["task", "add", "x", "--repo", r2, "--no-repo"] { ok := false }
+  -- base_for(task): the task_repo base, else the task's, else the repo's
+  let task (i : Nat) (b : Option String := none) : SwarmLean.Task := { id := i, base := b }
+  eq (← runApp (SwarmLean.Bases.forTask (task 2) r2 : App String)) "dev"
+  eq (← runApp (SwarmLean.Bases.forTask (task 2) t.repo : App String)) "main"
+  eq (← runApp (SwarmLean.Bases.forTask (task 5) r2 : App String)) "formal"
+  eq (← runApp (SwarmLean.Bases.forTask (task 3 (some "x")) r2 : App String)) "x"
+
+/-- Task 1 of t.repo and repo2, task 2 of none; t-9 spawned on task 1. The second repo. -/
+def spawnTwo (t : T) : IO String := do
+  t.fakes
+  let r2 ← repo2 t
+  t.sw_ "a" ["task", "add", "both", "--repo", t.repo, "--repo", r2]
+  t.sw_ "a" ["task", "add", "research", "--no-repo"]
+  t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
+  return r2
+
+def test_spawn_task_of_two_repos_makes_a_worktree_in_each (t : T) : IO Unit := do
+  let r2 ← spawnTwo t
+  let w1 := t.d ++ "/repo-t-9"; let w2 := t.d ++ "/repo2-t-9"
+  for w in [w1, w2] do eq (strip (← t.git (some w) ["rev-parse", "--abbrev-ref", "HEAD"])) "t-9/1"
+  eq (strip (← t.git (some w2) ["rev-parse", "HEAD"])) (strip (← t.git (some r2) ["rev-parse", "main"]))
+  eq (← t.q "select path, repo, branch, base, ro from workspace where agent='t-9' order by path") (json% [
+    {"path": $w1, "repo": $(t.repo), "branch": "t-9/1", "base": "main", "ro": 0},
+    {"path": $w2, "repo": $r2, "branch": "t-9/1", "base": "main", "ro": 0}])
+  let briefOf (i : Nat) : IO Json := do return ((((← t.launched)[i]!).f "argv").getArrVal? 2).toOption.getD Json.null
+  let brief ← briefOf 0
+  has brief "Your worktrees, one per repo of the task"; has brief w1; has brief w2
+  -- a task of no repo: no worktree
+  t.sw_ "a" ["spawn", "t-8", "--model", "haiku", "--task", "2"]
+  eq ((← t.q1 "select count(*) n from workspace where agent='t-8'").f "n") 0
+  has (← briefOf 1) "touches no repo"
+
+def test_landed_check_judges_each_worktree_in_its_repo (t : T) : IO Unit := do
+  let r2 ← spawnTwo t
+  let w2 := t.d ++ "/repo2-t-9"
+  t.q_ "update task set state='done', evidence='x' where id=1"
+  t.q_ "update agent set status='idle' where name='t-9'"
+  put (w2 ++ "/n.txt") "n"
+  discard <| t.git (some w2) ["add", "."]
+  discard <| t.git (some w2) ["commit", "-qm", "n"]
+  -- run from t.repo: the work in repo2's worktree is still judged, on repo2's main
+  has (← t.sw "human" ["end", "t-9"] { ok := false }).stderr s!"has work not on its base in {w2}"
+  discard <| t.git (some r2) ["merge", "-q", "--ff-only", "t-9/1"]
+  has (← t.sw "human" ["end", "t-9"]).stdout "t-9 ended"
+
 def tests : List Case := [
+  ("test_task_add_repos", test_task_add_repos),
+  ("test_spawn_task_of_two_repos_makes_a_worktree_in_each", test_spawn_task_of_two_repos_makes_a_worktree_in_each),
+  ("test_landed_check_judges_each_worktree_in_its_repo", test_landed_check_judges_each_worktree_in_its_repo),
   ("test_pr_merge_when_green_names_the_green_head", test_pr_merge_when_green_names_the_green_head),
   ("test_pr_merge_when_green_waits_on_pending_and_failed", test_pr_merge_when_green_waits_on_pending_and_failed),
   ("test_base_for_task_then_repo_then_main", test_base_for_task_then_repo_then_main),

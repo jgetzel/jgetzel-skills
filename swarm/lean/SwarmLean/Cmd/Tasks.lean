@@ -6,6 +6,7 @@ import SwarmLean.Lib.Bases
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Msgs
 import SwarmLean.Db.Notes
+import SwarmLean.Lib.Workspaces
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
 
@@ -27,7 +28,8 @@ def taskSpec : Spec :=
     .mk "add" helpTaskAdd [{ name := "title" }]
       [opt "--body" (some ""), opt "--body-file", opt "--after" none (some idList), opt "--model",
        { opt "--effort" with choices := EFFORTS }, { aliases := ["-p", "--priority"], target := "priority", conv := some prio },
-       opt "--base", opt "--label"] [["body", "body_file"]] [] none,
+       opt "--base", opt "--label", { opt "--repo" with maxCount := 1000000 }, flag "--no-repo"]
+      [["body", "body_file"], ["repo", "no_repo"]] [] none,
     .mk "priority" helpTaskPriority [idArg, { name := "priority", conv := some prio }] [] [] [] none,
     .mk "after" helpTaskAfter [idArg, { name := "deps", minArgs := 0, conv := some idList }] [] [] [] none,
     .mk "claim" helpTaskClaim [idArg] [leaseOpt, flag "--force"] [] [] none,
@@ -59,7 +61,7 @@ def rulesSpec : Spec :=
 /-- The `board` parser. -/
 def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all", flag "--json"] [] [] none
 
-variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
 /-- The command's world: the agent, the time, the terminal, the communicator by env. -/
 def ctx : m Tasks.Ctx := do
@@ -68,14 +70,12 @@ def ctx : m Tasks.Ctx := do
 /-- Runs a task step in one transaction over `ts`, dying with its error. -/
 def step (ts : List Table) (f : Db → Db × Except String α) : m α := do orDie (← Store.txn ts f)
 
-/-- Evidence `e` (its first word) names a commit on base `b` (the task's, else the default): local or origin's, fetched
-first (board #200). -/
-def evidenceOnBase (e : String) (base : Option String) : m Bool := do
-  let cwd := some (← Env.cwd)
+/-- Evidence `e` (its first word) names a commit on base `b` of repo `cwd`: local or origin's, fetched first (board
+#200). -/
+def evidenceOnBaseIn (e b : String) (cwd : Option String) : m Bool := do
   let some w := (words e).head? | return false
   let some sha := (← Git.git ["rev-parse", "--verify", "-q", "--end-of-options", w ++ "^{commit}"] cwd).map strip
     | return false
-  let b ← Bases.baseFor base cwd
   let anc (r : String) : m Bool := return (← Git.git ["merge-base", "--is-ancestor", sha, r] cwd).isSome
   if (GitRef.parse? b).isSome && (← anc b) then return true
   Bases.fetch b cwd
@@ -83,12 +83,23 @@ def evidenceOnBase (e : String) (base : Option String) : m Bool := do
   | some r => anc r
   | none => return false
 
+/-- Evidence `e` names a commit on task `t`'s base in one of its repos (sw-global §2), or, for a task of no repo, on its
+base in the folder's repo. -/
+def evidenceOnBase (e : String) (t : Task) : m Bool := do
+  let repos ← Swarms.taskRepos t.id
+  if repos.isEmpty then
+    let cwd := some (← Env.cwd)
+    return ← evidenceOnBaseIn e (← Bases.baseFor t.base cwd) cwd
+  for (r, _) in repos do
+    if ← evidenceOnBaseIn e (← Bases.forTask t r) (some r) then return true
+  return false
+
 /-- A landing task's line: `#N landing <sha> by <lander> since HH:MM (from <owner>)`. -/
 def landingLine (r : Task) : m String := do
   return s!"{landingText r.id r} since {← Clock.hhmm (r.landing_at.getD 0)}{match py r.owner with | some o => " (from " ++ o ++ ")" | none => ""}"
 
-/-- `task show`'s text (tasks.lua's show branch). -/
-def showText (db : Db) (r : Task) : m String := do
+/-- `task show`'s text (tasks.lua's show branch); `repos` the repos it touches, with their own bases. -/
+def showText (db : Db) (r : Task) (repos : List (String × Option String) := []) : m String := do
   let now ← Clock.now
   let evs := taskEvents db r.id
   let tm := timing r evs now
@@ -109,6 +120,9 @@ def showText (db : Db) (r : Task) : m String := do
     s := s ++ s!"\nnote {← Clock.hhmm n.ts} {n.frm}{to}: {((clean n.text).splitOn "\n").headD ""}"
   s := s ++ "\npriority: P" ++ d (r.priority.getD DEFAULT_PRIORITY)
   if let some b := py r.base then s := s ++ "\nbase: " ++ b
+  if !repos.isEmpty then
+    s := s ++ s!"\nrepo{if repos.length > 1 then "s" else ""}: " ++ ", ".intercalate (repos.map fun (p, b) =>
+      p ++ (match b with | some b => s!" (base {b})" | none => ""))
   if let some q := r.qpos then s := s ++ s!"\nqueue: {q}"
   if let some h := r.hold then s := s ++ "\nheld: " ++ cont h
   if !(labelsOf r).isEmpty then s := s ++ "\nlabels: " ++ ", ".intercalate (labelsOf r)
@@ -143,12 +157,21 @@ def task (a : Parsed) : m UInt32 := do
         | some t => pure (clean t)
         | none => die s!"can't read {p}"
       | none => pure (clean ((a.str "body").getD ""))
+    -- the repos it touches (sw-global §2): each --repo's main worktree, else the folder's; none with --no-repo
+    let mut repos : List String := []
+    for p in a.strs "repo" do
+      let some r ← Workspaces.main (some p) | die s!"--repo {p}: not in a git repo"
+      if !repos.contains r then repos := repos ++ [r]
+    if a.strs "repo" == [] && !a.flag "no_repo" then
+      if let some r ← Workspaces.main (some (← Env.cwd)) then repos := [r]
     match a.str "base" with
     | some b => if b != "" && (GitRef.parse? b).isNone then die s!"--base {b}: not a valid git ref name"
-    | none => Bases.warnBadConfig ["base"] (some (← Env.cwd))
+    | none => for r in repos do Bases.warnBadConfig ["base"] (some r)
     let n ← step [.task] (add c { title := clean ((a.str "title").getD ""), body, deps := (a.ids "after").getD [],
                                     model := a.str "model", effort := a.str "effort", base := a.str "base", priority := a.int "priority",
                                     labels := a.str "label" })
+    let rows ← repos.mapM fun r => do return (r, (a.str "base").filter (· ≠ ""), some (← Bases.default (some r)))
+    Swarms.addTaskRepos n rows
     out s!"task #{d n}"
   | "claim" =>
     -- the claim and the take of its held notes in one transaction: a note posted after it goes to the new owner
@@ -167,7 +190,9 @@ def task (a : Parsed) : m UInt32 := do
   | "show" =>
     let db ← Store.txn [.task, .event] fun db => (db, db)
     let some r := db.find id | die s!"no task #{d id}"
-    out (← if a.flag "json" then pure (showJson db r).compress else showText db r)
+    let repos ← Swarms.taskRepos r.id
+    out (← if a.flag "json" then pure ((showJson db r).setObjVal! "repos" (Lean.toJson (repos.map (·.1)))).compress
+      else showText db r repos)
   | "after" =>
     let deps := (a.ids "deps").getD []
     step [.task] (after c id deps)
@@ -183,7 +208,7 @@ def task (a : Parsed) : m UInt32 := do
     let ev := (a.str "evidence").getD ""
     let r0 ← Store.txn [.task] fun db => (db, db.find id)
     let onBase ← match r0 with
-      | some r => if r.state = .landing then evidenceOnBase ev r.base else pure false
+      | some r => if r.state = .landing then evidenceOnBase ev r else pure false
       | none => pure false
     match ← step [.task, .agent, .cursor, .«meta»] (Queue.done { c with onBase } id ev) with
     | .landed o => out s!"done #{d id}: landed{match py o with | some o => ", handed over by " ++ o | none => ""}"

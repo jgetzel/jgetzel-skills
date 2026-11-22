@@ -1,4 +1,5 @@
 import SwarmLean.Lib.Bases
+import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.Msgs
 import SwarmLean.Db.Queue
 
@@ -224,14 +225,17 @@ def pickPr (prs : List Lean.Json) (branches : List String) (base : String) (clai
       && (pr.isNone || (Json.fint x "number").getD 0 > ((pr.bind (Json.fint · "number")).getD 0)) then some x else pr) none
 
 /-- ci.pr_watch: PRs from live owners' task branches, a minute apart while a live agent holds a claim. -/
-def prWatch (repo : Option String) : m Unit := do
+def prWatch [Env m] [Sys m] (repo : Option String) : m Unit := do
   let now ← Clock.now
   let some hs ← Store.txn [.task, .agent, .«meta», .workspace] (prWatchGate now) | return
   let some prs := ghList (← Proc.output ["gh", "pr", "list", "--state", "all", "--limit", "50", "--json",
     "number,headRefName,headRefOid,baseRefName,state,mergedAt,mergeCommit,statusCheckRollup"] repo []) "" | return
   let gated := (← flow repo) == some "pr-gated"
+  let main ← Workspaces.main repo
   for (t, brs) in hs do
-    let base ← Bases.baseFor t.base repo
+    let base ← match main with
+      | some r => Bases.forTask { id := t.id, base := t.base } r
+      | none => Bases.baseFor t.base repo
     if let some pr := pickPr prs brs base (t.first_claimed_at.getD 0) then
       Store.txn [.task, .event] fun db => (prWatchApply now gated t pr db, ())
 
@@ -359,8 +363,14 @@ def authors (log : String) : List String :=
     if l.startsWith "Swarm-Agent:" then (words (l.drop 12).toString).head? else none
   (Bases.uniq ns).mergeSort (· ≤ ·)
 
-/-- ci.ci_check: a red run on top becomes one task naming the live suspects; a green one closes it. -/
-def ciCheck (repo comms : Option String) : m Unit := do
+/-- Title `x` is red run `id`'s task's. -/
+def redTitleOf (id : Nat) (x : String) : Bool :=
+  let p := Tasks.RED_TASK ++ "run " ++ d id
+  x == p || x.startsWith (p ++ " ")
+
+/-- ci.ci_check: a red run on top becomes one task naming the live suspects, a task of `repo` (sw-global §2); a green
+one closes it. -/
+def ciCheck [Env m] [Sys m] (repo comms : Option String) : m Unit := do
   let now ← Clock.now
   let some r ← Store.txn [.ci, .task, .event] (ciCheckFirst now) | return
   let rng := match r.green with
@@ -373,7 +383,11 @@ def ciCheck (repo comms : Option String) : m Unit := do
     | some o => if o.code == 0 then splitlines o.stdout else []
     | none => []
   let tail := "\n".intercalate (lines.drop (lines.length - 30))
-  Store.txn [.agent, .ci, .task, .event] fun db => (ciCheckApply now comms r rng (authors log) tail db, ())
+  let tid ← Store.txn [.agent, .ci, .task, .event] fun db =>
+    let db := ciCheckApply now comms r rng (authors log) tail db
+    (db, ((db.tasks.filter fun t => t.title.any (redTitleOf r.red.id)).getLast?).map (·.id))
+  if let (some tid, some p) := (tid, ← Workspaces.main repo) then
+    Swarms.addTaskRepos tid [(p, none, some (← Bases.default (some p)))]
 
 /-- The verdict for `sha`: the newest completed, non-cancelled main CI run that includes it (its own, or a later run
 of the batch it was pushed in), else pending with the newest unfinished one, and the run (ci.ci_for). -/

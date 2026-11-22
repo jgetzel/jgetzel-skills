@@ -88,6 +88,23 @@ def test_auto_spawn_once_within_cap (t : T) : IO Unit := do
   tick t 2
   eq (← spawned t).length 1  -- the task is claimed: no second spawn
 
+-- a swarm staffs only tasks of its repos; a task of no repo only by a claim or `spawn --task`
+def test_auto_spawn_staffs_only_the_swarms_repos (t : T) : IO Unit := do
+  t.fakes; twoHaiku t
+  let r2 := t.d ++ "/repo2"
+  IO.FS.createDir r2
+  discard <| t.git r2 ["init", "-q", "-b", "main"]
+  discard <| t.git r2 ["commit", "-q", "--allow-empty", "-m", "init"]
+  t.sw_ "a" ["task", "add", "other repo", "--repo", r2]
+  t.sw_ "a" ["task", "add", "research", "--no-repo"]
+  tick t 2
+  eq (← spawned t).length 0
+  t.sw_ "a" ["task", "add", "ours"]
+  tick t 2
+  eq (← spawned t) [("t-2", some "sonnet")]
+  eq ((← t.q1 "select owner from task where id=3").f "owner") "t-2"
+  eq (← t.q "select id from task where owner is not null") (json% [{"id": 3}])
+
 def test_auto_spawn_model_order (t : T) : IO Unit := do
   t.fakes
   for n in ["t-comms", "t-1"] do t.agent n [("status", "working"), ("model", "opus")]
@@ -785,6 +802,7 @@ def tests : List Case := [
   ("test_auto_spawn_once_within_cap", test_auto_spawn_once_within_cap),
   ("test_limits_all_or_nothing", test_limits_all_or_nothing),
   ("test_reserved_and_bad_names_refused", test_reserved_and_bad_names_refused),
+  ("test_auto_spawn_staffs_only_the_swarms_repos", test_auto_spawn_staffs_only_the_swarms_repos),
   ("test_auto_spawn_model_order", test_auto_spawn_model_order),
   ("test_auto_spawn_failure_backs_off", test_auto_spawn_failure_backs_off),
   ("test_auto_spawn_backoff_name_used_once", test_auto_spawn_backoff_name_used_once),

@@ -266,6 +266,7 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   has ((m[0]!).f "body") "http://ci/9"; has ((m[0]!).f "body") "swarm task claim 2"
   let redTasks ← t.q "select id,body,state from task where title like 'main red:%'"
   eq redTasks.size 1; has ((redTasks[0]!).f "body") "Build failed"
+  eq (← t.q "select repo from task_repo where task=2") (json% [{"repo": $(t.repo)}]) "the red task is the repo's"
   let board := (← t.sw "a" ["board"]).stdout
   unless subIn board "main red" && subIn board "earlier work" && (board.splitOn "main red").head!.length <
       (board.splitOn "earlier work").head!.length do fail "the red task starts first"

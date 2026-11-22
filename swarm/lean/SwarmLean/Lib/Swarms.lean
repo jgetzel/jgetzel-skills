@@ -1,8 +1,8 @@
 import SwarmLean.Sys
 import SwarmLean.Db.Schema
 
-/-! The machine's swarms (sw-global §2): the one db, the `swarm`, `repo` and `swarm_repo` tables, read and written
-outside the store's transactions (they belong to no swarm's scope). -/
+/-! The machine's swarms (sw-global §2): the one db, the `swarm`, `repo`, `swarm_repo` and `task_repo` tables, read
+and written outside the store's transactions (they belong to no swarm's scope). -/
 
 namespace SwarmLean.Swarms
 open Sqlite (Val)
@@ -66,5 +66,41 @@ def ofComms (n : String) : Option String :=
   let c := (n.toList.reverse.dropWhile Char.isDigit).reverse
   let s := String.ofList c
   if s.endsWith "-comms" && s.length > 6 then some (String.ofList (c.take (c.length - 6))) else none
+
+/-- A cell as text or null. -/
+def ov (o : Option String) : Val := match o with | some x => .text x | none => .null
+
+/-- The repo row of `p` (a main worktree), made when first seen with `base` (`.claude/swarm.json`'s). -/
+def seeRepo (p : String) (base : Option String) : m Unit := do
+  discard <| Sys.sqlAt (← dbPath) schema [("insert or ignore into repo(path, base) values(?, ?)", [.text p, ov base])]
+
+/-- The base recorded for repo `p`, if any. -/
+def repoBase (p : String) : m (Option String) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select base from repo where path=?", [.text p])] true
+  return ((rs.headD #[])[0]?).bind (txt ·[0]?)
+
+/-- Task `id` touches each repo of `repos` (path, its base there; none: the repo's), each repo row made when first
+seen with its base. -/
+def addTaskRepos (id : Int) (repos : List (String × Option String × Option String)) : m Unit := do
+  if repos.isEmpty then return
+  discard <| Sys.sqlAt (← dbPath) schema (repos.flatMap fun (p, own, rb) =>
+    [("insert or ignore into repo(path, base) values(?, ?)", [.text p, ov rb]),
+     ("insert or ignore into task_repo(task, repo, base) values(?, ?, ?)", [.int id, .text p, ov own])])
+
+/-- The repos task `id` touches, each with its own base there (none: the repo's), in the order they were added. -/
+def taskRepos (id : Int) : m (List (String × Option String)) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select repo, base from task_repo where task=? order by rowid", [.int id])] true
+  return (rs.headD #[]).toList.filterMap fun r => (txt r[0]?).map (·, txt r[1]?)
+
+/-- The repos of swarm `s`: those its auto-spawn staffs from. -/
+def reposOf (s : String) : m (List String) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select repo from swarm_repo where swarm=? order by repo", [.text s])] true
+  return (rs.headD #[]).toList.filterMap (txt ·[0]?)
+
+/-- The tasks that touch a repo of swarm `s`: the ones its auto-spawn may staff. -/
+def staffable (s : String) : m (List Int) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select distinct tr.task from task_repo tr join swarm_repo sr on sr.repo = tr.repo " ++
+    "where sr.swarm=? order by tr.task", [.text s])] true
+  return (rs.headD #[]).toList.filterMap (int ·[0]?)
 
 end SwarmLean.Swarms
