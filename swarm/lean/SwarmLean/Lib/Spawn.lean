@@ -111,8 +111,8 @@ def refuse (e : Refusal) : m α := do
 /-- The reservation (`reserve`, with task `tid` `reserveTask`) and the task's held notes, as one transaction: it reads the
 live agents, `name`'s row of any swarm (names are the machine's: one live anywhere is refused) and cursor, the staffing
 knobs and the next message id; with a task, the task and its deps (with `top`, every task not done: the pool), the
-cursors of the agents their stops wait on, and the task's unread notes. An ended row of another swarm is left out of
-the slice, so the reservation inserts the name and the insert moves it here (`scopeStmts`). -/
+agents their stops wait on (in any swarm) and their cursors, and the task's unread notes. An ended row of another swarm
+named `name` is left out of the slice, so the reservation inserts the name and the insert moves it here (`scopeStmts`). -/
 def reserveTxn (envComms : Option String) (name cwd : String) (model : Option String) (now : Int) (tid : Option Int)
     (top : Option (Db → Option Int)) : Txn (Except Refusal (Option Task × List Msg)) := do
   let own := (← Txn.slice [Sels.agent name]).agents
@@ -131,12 +131,17 @@ def reserveTxn (envComms : Option String) (name cwd : String) (model : Option St
     let box := Notes.box tid
     let ts : Sel := if top.isSome then { table := .task, cond := .or (.ne "state" (.text "done")) (.eq "id" (.int tid)) }
       else Sels.task tid
-    let d ← Txn.slice [ts, Sels.cursor box]
+    let d ← Txn.slice [ts, Sels.cursor box, Sels.live]
     let deps := ((d.find tid).map Tasks.depsOf).getD []
     let stops := (d.tasks.filterMap fun t => py t.stop_to).eraseDups
-    upd (base ++ [ts, Sels.tasks deps, Sels.cursors stops, Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf d box)])
+    -- a stop holder may be another swarm's agent (board #124)
+    let holders : List Sel := if stops.isEmpty then [] else
+      [{ table := .agent, cond := .oneOf "name" (stops.map .text), inScope := false }]
+    let ours := d.agents.map (·.name)
+    upd (base ++ holders ++ [ts, Sels.tasks deps, Sels.cursors stops, Sels.cursor box,
+        Sels.unreadPast box (Msgs.cursorOf d box)])
       fun db =>
-        let (db, e) := reserveTask db envComms name cwd tid model now top
+        let (db, e) := reserveTaskAmong ours db envComms name cwd tid model now top
         (db, e.map fun r => (some r, Notes.held db tid))
 
 /-- `swarm spawn` (watchd.cmd_spawn): reserve (and claim), make or link the worktree, write the brief, launch; any
