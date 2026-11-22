@@ -49,6 +49,9 @@ with subagents.
    the claim, and at the end posts the end line (plus the log's tail when the exit is not 0) to the submitter, else to '#<task>',
    else to the communicator. A background process killed ends the job as lost (watchd's next tick). `swarm stay --until job:N` waits.
    `claim/research/sw-compute.md` and `sw-compute-backfill.md` have the rules.
+7. Build dirs: `.claude/swarm.json` `{"seed": ["swarm/lean/.lake"]}` lists dirs (relative to a worktree) that a worktree
+   `swarm spawn` makes clones from the worktree that built them last (`cp -c` on macOS, `--reflink=auto` elsewhere),
+   minus a `.lake`'s `config`, so its first build rebuilds only what changed. No source or a failed copy: no seed.
 
 ## 1. Start
 
