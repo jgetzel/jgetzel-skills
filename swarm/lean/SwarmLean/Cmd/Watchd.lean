@@ -318,20 +318,38 @@ def commsInbox (t : Int) (comms : String) (terms : Option (List Term)) : m Unit 
       ((Msgs.typedStep comms last.id db).1.log now (some comms) "comms-deliver" none (some (d last.id)), ())
 
 /-- Each blocked task's question told to comms once per block: a task-blocked event after its latest `task block`. -/
-def notices (comms : String) (away : Bool) : m Unit := do
-  let db ← Store.txn [.task] fun db => (db, db)
-  for r in db.tasks.filter (·.state = .blocked) do
-    let now ← Clock.now
-    Store.txn [.event] fun db =>
-      -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is new
-      let e := (db.events.filter fun e =>
-        (e.kind == some "block" && e.data.any fun x => x == "#" ++ d r.id || likePrefix x ("#" ++ d r.id ++ " ")) ||
-        (e.kind == some "task-blocked" && e.path == some (d r.id))).getLast?
-      if e.any (·.kind == some "task-blocked") then (db, ()) else
-      -- the event marks it told: never without its message
-      let db := db.log now r.owner "task-blocked" (some (d r.id)) r.question
-      (say db now (.agent comms) (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
-        s!"Answer with `swarm task unblock {d r.id} --answer \"...\"`." ++ (if away then AWAY else "")) (!away) "system", ())
+def noticesStep (t : Int) (comms : String) (away : Bool) (db0 : Db) : Db :=
+  (db0.tasks.filter (·.state = .blocked)).foldl (fun db r =>
+    -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is new
+    let e := (db.events.filter fun e =>
+      (e.kind == some "block" && e.data.any fun x => x == "#" ++ d r.id || likePrefix x ("#" ++ d r.id ++ " ")) ||
+      (e.kind == some "task-blocked" && e.path == some (d r.id))).getLast?
+    if e.any (·.kind == some "task-blocked") then db else
+    -- the event marks it told: never without its message
+    let db := db.log t r.owner "task-blocked" (some (d r.id)) r.question
+    say db t (.agent comms) (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
+      s!"Answer with `swarm task unblock {d r.id} --answer \"...\"`." ++ (if away then AWAY else "")) (!away) "system") db0
+
+/-- What `noticesStep` reads: the blocked tasks and the `block` and `task-blocked` events. -/
+def noticeSels : List Sel :=
+  [{ table := .task, cond := .eq "state" (.text "blocked") },
+   { table := .event, cond := .oneOf "kind" [.text "block", .text "task-blocked"] }]
+
+/-- The blocked notices in one transaction. -/
+def notices (t : Int) (comms : String) (away : Bool) : m Unit :=
+  Store.run (Txn.update noticeSels [.msg] fun d => (noticesStep t comms away d, ()))
+
+/-- Runs a pass's acts in order: the only place a pass sends (sw-architecture-review §4 B1). -/
+def runActs (acts : List Act) : m Unit := do
+  for x in acts do
+    match x with
+    | .send n h text mark once =>
+      if once == Once.atMost && !mark.isEmpty then Store.run (Txn.exec mark)
+      match ← Msgs.deliverTo n h text with
+      | some e => Env.err s!"{n}: hc send {h} failed: {e}"
+      | none => if once == Once.atLeast && !mark.isEmpty then Store.run (Txn.exec mark)
+    | .endAgent a => discard <| Lifecycle.endAgent a false none
+    | .err line => Env.err line
 
 /-- A pass under its guard: its error, prefixed, added to `errs`. -/
 def pass (errs : List String) (what : String) (x : m Unit) : m (List String) := do
@@ -421,7 +439,7 @@ def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : 
     let away := (away (← Store.txn [.«meta»] fun db => (db, db))).isSome
     if let some ts := terms then
       if !ts.isEmpty then errs ← pass errs (pre ++ "hc blocked: ") (hcBlocked ts t comms away)
-    if let some c := comms then errs ← pass errs (pre ++ "notices: ") (notices c away)
+    if let some c := comms then errs ← pass errs (pre ++ "notices: ") (notices t c away)
     return (errs, opts)
   let some c := comms | return errs
   Scoped.within hs do
