@@ -118,17 +118,19 @@ for (let i = 0; i < 2000; i++) {
 }
 
 // 2. The swarm CLI's JSON, malformed or hostile: the mods' readers never throw; types are as they expect.
-const sw = { comms: "c", agents: [{ name: "c", hc: "t1" }, { name: 5, hc: 7 }, null, { name: "w", hc: "t2", status: { x: 1 } }, { name: "w", hc: "t3" },
+const sw = { name: "ll", comms: "c", agents: [{ name: "c", hc: "t1" }, { name: 5, hc: 7 }, null, { name: "w", hc: "t2", status: { x: 1 } }, { name: "w", hc: "t3" },
   { name: "v", hc: "t2" }, { name: "\u202eq\nx", hc: ["t9"], task: "nope" }], needs: [null, { kind: "question", agent: "w", question: "a\nb" }, "x"],
-  counts: { open: "3" }, ci: [], space: 9 };
+  counts: { open: "3" }, ci: [], space: 9, repos: "no", comms_hc: ["t1"] };
 const s0 = T.sumOf(sw);
 assert.deepEqual(s0.agents.map((a) => [a.name, a.hc]), [["c", "t1"], ["5", "7"], ["w", "t2"], ["q x", null]]); // unique by name, then by terminal
 assert.equal(s0.counts.open, null);
-assert.equal(s0.space, "9");
-assert.deepEqual(T.questionsOf([s0], new Set()), [{ address: "t2", name: "w", what: "a b", task: null, folder: null, on: null }]);
+assert.equal(s0.space, 9); // a field the view does not list stays a scalar
+assert.deepEqual([s0.swarm, s0.repos, s0.folder, s0.comms_hc], ["ll", [], null, null]);
+assert.deepEqual(T.questionsOf([s0], new Set()), [{ address: "t2", name: "w", what: "a b", task: null, swarm: "ll", folder: null, on: null }]);
 assert.equal(T.sumOf("garbage"), null);
 assert.equal(T.sumOf([1]), null);
-assert.deepEqual(T.swarmsOf({ swarms: [null, { db: "/d", folder: "rel" }, { db: "/d", folder: "/w" }, { db: 3, folder: "/x" }] }), [{ db: "/d", folder: "/w" }, { db: "3", folder: "/x" }]);
+assert.deepEqual(T.swarmsOf({ db: 3, swarms: [null, { name: "a", folder: "rel" }, { name: "b", folder: "/w" }, { folder: "/x" }, { name: "b" }] }).map((w) => [w.swarm, w.folder, w.db]),
+  [["a", null, "3"], ["b", "/w", "3"]]);
 assert.deepEqual(T.swarmsOf(null), []);
 assert.deepEqual(T.prsOf([{ number: 1, url: "javascript:alert(1)" }, { number: 2, url: "https://github.com/x/y/pull/2" }, { url: "https://x" }]).map((p) => p.url),
   [null, "https://github.com/x/y/pull/2"]);
@@ -136,15 +138,17 @@ const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }],
   messages: "no", limits: [] });
 assert.deepEqual([ov.agents.length, ov.tasks.length, ov.messages, ov.limits, ov.tasks[0].title], [1, 1, [], null, null]);
 for (let i = 0; i < 3000; i++) {
-  const j = rnd() < 0.5 ? junk() : { ...junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk(), ci: junk(),
+  const j = rnd() < 0.5 ? junk() : { ...junk(), name: pick([junk(), "ll"]), repos: junk(), comms_hc: junk(), next: junk(), staffing: junk(), agents: junk(), needs: junk(), tasks: junk(), counts: junk(), comms: junk(), ci: junk(),
     watchd: junk(), machine: junk(), events: junk(), limits: junk(), active: junk(), locks: junk(), task: junk(), back: junk(), away: junk() };
   const s = T.sumOf(j), o = T.overOf(j);
   if (s) {
     for (const a of s.agents) assert.ok(typeof a.name === "string" && (a.hc === null || typeof a.hc === "string"));
     const rows = [], by = new Map(s.agents.filter((a) => a.hc).map((a) => [a.hc, { address: a.hc, status: "idle" }]));
     T.swarmOf(rows, s, by, pick([null, "vps"]), new Set(), rnd() < 0.5);
-    T.questionsOf([s], new Set()); T.swarmAddrs(s, null); T.agentAt(s, "t1"); T.sumFor([s], { id: "s", folder: "/w" }, new Set(["s"]));
+    T.questionsOf([s], new Set()); T.swarmAddrs(s, null); T.agentAt(s, "t1"); T.sumFor([s], { id: "s", folder: "/w" });
+    T.homesOf([s], [{ id: "s", folder: "/w", tabs: [{ id: "a" }] }], [{ pane: "p", tab: "a", terminal: "t1" }]);
     T.ciWord(s.ci); T.asksIn([s]); T.memoryOf([s], 100); T.tagOf(s.comms);
+    const sh = T.shapeOf(s); T.agentRows(sh); T.needsOf(sh);
   }
   if (o) {
     T.asksOf(o); T.agentRows(o); T.boardRows(o);
@@ -210,16 +214,16 @@ for (let i = 0; i < 3000; i++) {
   assert.ok(all.flat().every((r) => r.lines.length <= T.DEPTH));
   time("rowText of every row", 60, () => all.flat().forEach((r) => T.rowText(r.t, r.mark, null, "/h")));
   const agents = Array.from({ length: 500 }, (_, i) => ({ name: `ll-${i}`, hc: `t${i}`, status: pick(["working", "idle", "blocked"]), hung: rnd() < 0.02 }));
-  const sum = T.sumOf({ comms: "ll-0", agents, needs: [], counts: {} });
+  const sum = T.sumOf({ name: "ll", comms: "ll-0", comms_hc: "t0", agents, needs: [], counts: {} });
   const sw = time("swarmOf: 500 agents", 50, () => T.swarmOf(T.rowsOf(spaces[0], ps, by, T.swarmAddrs(sum, null)), sum, by, null));
   time("settleOf: 300 tabs, 500 put", 20, () => T.settleOf(new Set(sw.put), new Set(sw.hot), ps, spaces[0].tabs));
   const big = { comms: "ll-0", agents: [...agents, ...Array.from({ length: 10000 }, (_, i) => ({ name: `e${i}`, status: "ended" }))],
     tasks: Array.from({ length: 10000 }, (_, i) => ({ id: i, state: pick(["open", "claimed", "blocked", "done"]), owner: `ll-${i % 500}`, deps: [i - 1] })) };
   const o = time("overOf: 10500 agents, 10000 tasks", 300, () => T.overOf(big));
   time("asksOf + agentRows + boardRows + needsOf of it", 150, () => { T.asksOf(o); T.agentRows(o); T.boardRows(o); T.needsOf(o); });
-  const sums = Array.from({ length: 50 }, (_, i) => ({ ...sum, folder: `/w/${i}`, space: `s${i}` }));
-  const ids = new Set(spaces.map((s) => s.id));
-  time("sumFor: 500 spaces among 50 swarms", 30, () => spaces.forEach((s) => T.sumFor(sums, s, ids)));
+  const sums = Array.from({ length: 50 }, (_, i) => ({ ...sum, swarm: `w${i}`, comms_hc: `t${i * 10}`, repos: [`/w/${i}`], space: `s${i}` }));
+  time("sumFor: 500 spaces among 50 swarms", 30, () => spaces.forEach((s) => T.sumFor(sums, s)));
+  time("homesOf: 50 swarms of 500 agents, 500 spaces", 150, () => T.homesOf(sums, spaces, ps));
 }
 
 // 6. The swarm CLI takes an answer or a name that starts with a dash as a value (needs `swarm` on PATH and git).

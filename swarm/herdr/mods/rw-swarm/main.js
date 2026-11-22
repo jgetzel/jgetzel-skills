@@ -1,11 +1,11 @@
 // The rework's swarm view (swarm/herdr/UI-SPEC.md, slice 7 and Part II.3). With props {view: true} it is the layout's
 // full-width swarm view (a child of the "view" stack): the swarm, section and page are shared("rw-swarm.view")
-// ({folder, machine, section}), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
+// ({swarm, folder, machine, section}: the swarm by name, sw-global §5), rw-bar draws the sections, and Overview lays its cards in two columns under 1900 px of
 // width, three from there (the third adds the latest messages and landing). Sections later slices fill show today's
 // cards. With {view: true, side: true} it is the same view in the side panel (II.7): the shown space's swarm, else the
 // last one it showed, in one column under 700 px, under a head with the section as a menu, Expand and Close, and over a
 // message line to the communicator; the focused agent's row is marked "shown", and a click on a row shows its terminal
-// (its name and its right-click menu open its page). Without it, the older swarm tab: a mod pane with props {folder, machine}. Needs you with an answer field, the
+// (its name and its right-click menu open its page). Without it, the older swarm tab: a mod pane with props {swarm, folder, machine}. Needs you with an answer field, the
 // agents with their tasks, the board with staffing, the latest messages, and landing (main's CI, PRs).
 // A large swarm (past FOLD workers, slice 9) groups the agents by state under a filter, and the board is counts and the
 // next tasks to staff. Ended agents are one line; opening it lists them, read-only. The board's Done and Dropped links
@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, swarmShown, tagOf } from "./tree.js";
+import { FOLD, SECTIONS, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName } from "./tree.js";
 import { mark, look } from "./marks.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 
@@ -92,18 +92,22 @@ export default class SwarmTab extends View {
   }
   hidden() { return props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout())); }
 
+  // The swarm shown: { cwd: a repo of it (where its commands and gh run), on: its machine, swarm: its name }.
   where() {
     const p = props() ?? {}, s = spaces().find((x) => x.active), v = p.view ? shared("rw-swarm.view") ?? {} : null;
-    const spaceSum = () => { const sums = shared("rw-rail.swarms"); return s && Array.isArray(sums) ? sumFor(sums, s, new Set(spaces().map((x) => x.id))) : null; };
+    const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
+    const of = (j) => (j ? { cwd: j.folder ?? null, on: j.on ?? null, swarm: j.swarm } : null), none = { cwd: null, on: s?.machine ?? null, swarm: null };
+    const named = (x) => ({ cwd: x.folder ?? sumNamed(sums, x)?.folder ?? null, on: x.machine ?? null, swarm: x.swarm });
     if (p.side) { // the shown space's swarm; a space with none keeps the last one, else the full view's
-      const sum = spaceSum();
-      if (sum) this.last = { cwd: sum.folder, on: sum.on ?? null };
-      return this.last ?? { cwd: v.folder ?? null, on: v.machine ?? null };
+      const sum = of(sumFor(sums, s));
+      if (sum) this.last = sum;
+      return this.last ?? (v.swarm ? named(v) : none);
     }
-    if (v?.folder) return { cwd: v.folder, on: v.machine ?? null };
-    if (v) { const sum = spaceSum(); return { cwd: sum?.folder ?? null, on: sum?.on ?? null }; } // none chosen: the shown space's swarm
-    return p.folder ? { cwd: p.folder, on: p.machine ?? null } : { cwd: s?.folder, on: s?.machine ?? null };
+    if (v?.swarm) return named(v);
+    if (v) return of(sumFor(sums, s)) ?? none; // none chosen: the shown space's swarm
+    return p.swarm ? named(p) : of(sumFor(sums, s)) ?? none;
   }
+  same(cwd, sw) { const w = this.where(); return w.cwd === cwd && w.swarm === sw; }
   due() {
     if (this.hidden()) return false; // the view reads only while it shows
     const age = Date.now() - (this.at ?? 0), { on } = this.where();
@@ -120,16 +124,16 @@ export default class SwarmTab extends View {
       : v?.section === "board" && v.board === "graph" && !side ? "graph" : null;
   }
   refresh(cx) {
-    const { cwd, on } = this.where(), who = this.pageKey();
-    if (this.loading || this.busy || !cwd) return;
+    const { cwd, on, swarm: sw } = this.where(), who = this.pageKey();
+    if (this.loading || this.busy || !sw) return;
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" || who === "system" || who === "graph" ? ["--view", who] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])]);
+        const r = await swarm(cwd, on, ["state", "--json", ...(who === "activity" || who === "system" || who === "graph" ? ["--view", who] : who ? ["--view", "system", who.startsWith("agent:") ? `--agent=${who.slice(6)}` : `--task=${who.slice(5)}`] : ["--view", "overview"])], sw);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = overOf(JSON.parse(r.stdout));
         if (!s) throw new Error("swarm state printed no overview");
-        if (this.where().cwd !== cwd || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
+        if (!this.same(cwd, sw) || this.pageKey() !== who) { this.loading = false; return; } // the view moved meanwhile
         this.s = s; this.error = null;
         if (this.pend && this.at >= (this.actDone ?? 0)) this.pend = null;
         if (props()?.view && s.comms !== this.sideFor) { // the message line names its communicator
@@ -158,13 +162,13 @@ export default class SwarmTab extends View {
     })();
   }
   refreshPrs(cx) {
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     if (!cwd) return;
     this.prsAt = Date.now();
     cx.spawn(async (cx) => {
       try {
         const r = await exec("gh", ["pr", "list", "--state", "all", "--limit", "50", "--json", "number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url"], { cwd, on });
-        if (this.where().cwd !== cwd) return;
+        if (!this.same(cwd, sw)) return;
         this.prs = r.code === 0 ? prsOf(JSON.parse(r.stdout)) : null;
       } catch { this.prs = null; } // no gh: Landing shows main's CI only
       cx.notify();
@@ -172,11 +176,11 @@ export default class SwarmTab extends View {
   }
   // One swarm command for the user; why it refused shows above the sections.
   act(cx, args, ok) {
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.busy = true; this.flash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, args);
+        const r = await swarm(cwd, on, args, sw);
         if (r.code === 0) ok?.(); else { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
       } catch (e) { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(e?.message ?? e, 300); }
       this.actDone = Date.now(); this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
@@ -193,11 +197,11 @@ export default class SwarmTab extends View {
   // The ended agents: `state --view agents` sends the newest 60.
   showEnded(cx) {
     if (this.ended) { this.ended = null; cx.notify(); return; }
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.ended = [];
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", "agents"]);
+        const r = await swarm(cwd, on, ["state", "--json", "--view", "agents"], sw);
         if (r.code === 0 && this.ended) this.ended = (overOf(JSON.parse(r.stdout))?.agents ?? []).filter((a) => a.status === "ended");
       } catch {}
       cx.notify();
@@ -208,10 +212,10 @@ export default class SwarmTab extends View {
     if (this.past === which) { this.past = null; this.pastTasks = null; cx.notify(); return; }
     this.past = which;
     if (this.pastTasks) { cx.notify(); return; }
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]);
+        const r = await swarm(cwd, on, ["state", "--json", "--view", "board"], sw);
         if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? [];
       } catch {}
       cx.notify();
@@ -225,7 +229,7 @@ export default class SwarmTab extends View {
     if (props()?.view) showAll(run, false);
     const addr = addrOf(hc, on), ps = panes(), p = ps.find((x) => x.terminal === addr);
     const asks = asksOf(this.s).some((n) => n.kind === "question" && n.agent === name);
-    if (p && asks && cx) openAsk(run, ps, p.pane, { folder: cwd, machine: on, agent: name }, (f) => cx.timer.after(300, f));
+    if (p && asks && cx) openAsk(run, ps, p.pane, { swarm: sw, folder: cwd, machine: on, agent: name }, (f) => cx.timer.after(300, f));
     else if (p) run("pane.focus", { pane: p.pane }); else run("terminal.peek", { terminal: addr });
   }
 
@@ -331,8 +335,14 @@ export default class SwarmTab extends View {
       }));
   }
 
+  // Each agent's repo (sw-global §5), from the rail's `--view swarms`: the swarm's own state names none.
+  repos() {
+    const w = this.where(), sums = shared("rw-rail.swarms"), j = Array.isArray(sums) ? sumNamed(sums, { swarm: w.swarm, machine: w.on }) : null;
+    return new Map((j?.agents ?? []).map((a) => [a.name, a.repo]));
+  }
+
   agents(t, s) {
-    const all = agentRows(s), ended = s.counts?.ended ?? 0, n = all.filter((r) => !r.comms).length, big = n > FOLD;
+    const repos = this.repos(), all = agentRows(s), ended = s.counts?.ended ?? 0, n = all.filter((r) => !r.comms).length, big = n > FOLD;
     const q = big ? this.filter.value().trim().toLowerCase() : "";
     const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
     const color = (r) => (r.hot === "blocked" ? t.blocked : t.dim); // amber is only working (proposal 2)
@@ -345,6 +355,7 @@ export default class SwarmTab extends View {
       .child(side ? this.nameLink(t, r.a.name, 72) : div().w(72).flex_none().truncate().font_medium().text_color(t.foreground).child(r.a.name))
       .child(mark(t, r.mark))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.task))
+      .child(div().w(96).flex_none().truncate().text_size(12).text_color(t.muted).child(repoName(repos.get(r.a.name)) || "–"))
       .child(div().flex_none().max_w(180).truncate().text_color(color(r)).child(r.a.name === shown ? `shown · ${r.state}` : r.state))
       .child(v_flex().id(`ctx-${r.a.name}`).w(64).flex_none().gap(4).text_size(11.5).text_color(t.dim).child(r.a.ctx_tokens ? kilo(r.a.ctx_tokens) : "–")
         .tooltip(r.a.ctx_tokens ? `${kilo(r.a.ctx_tokens)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
@@ -364,7 +375,7 @@ export default class SwarmTab extends View {
       .when(side, (el) => el.child(this.quiet(t, "spawn-open", "Spawn…", (cx) => { this.openSpawn(s); cx.notify(); })));
     // the columns named (proposal 7): the context column is the one bare number
     const cols = h_flex().id("agent-cols").mx(6).px(10).pb(4).gap(12).items_center().text_size(11).text_color(t.dim)
-      .child(div().w(72).flex_none().child("Agent")).child(div().w(9).flex_none()).child(div().flex_1().child("Task")).child(div().flex_none().child("State"))
+      .child(div().w(72).flex_none().child("Agent")).child(div().w(9).flex_none()).child(div().flex_1().child("Task")).child(div().w(96).flex_none().child("Repo")).child(div().flex_none().child("State"))
       .child(div().w(64).flex_none().child("Context")).child(div().w(60).flex_none().child("Model")).when(big, (el) => el.child(div().w(48).flex_none().child("PR")));
     return this.card(t, "agents").pb(6)
       .child(this.head(t, "Agents", `${n} running${all.some((r) => r.comms) ? ", the communicator" : ""}`, filter))
@@ -473,7 +484,7 @@ export default class SwarmTab extends View {
   }
   // A command outside the swarm CLI (gh), with the same flash on failure.
   run(cx, cmd, args) {
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     cx.spawn(async (cx) => {
       try { const r = await exec(cmd, args, { cwd, on }); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300) || `${cmd} exited ${r.code}`; }
       catch (e) { this.flash = line(e?.message ?? e, 300); }
@@ -549,10 +560,10 @@ export default class SwarmTab extends View {
   // Overview's machine line reads `--view system` for the running commands, every 30 s.
   loadSys(cx) {
     if ((this.sys && Date.now() - this.sys.at < QUIET_POLL) || this.sysLoading) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.sysLoading = true;
     cx.spawn(async (cx) => {
-      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "system"]); const x = r.code === 0 ? overOf(JSON.parse(r.stdout)) : null; if (x && this.where().cwd === cwd) this.sys = { ...x, at: Date.now() }; }
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "system"], sw); const x = r.code === 0 ? overOf(JSON.parse(r.stdout)) : null; if (x && this.same(cwd, sw)) this.sys = { ...x, at: Date.now() }; }
       catch {}
       this.sysLoading = false; cx.notify();
     });
@@ -597,10 +608,10 @@ export default class SwarmTab extends View {
   }
   // A row of agents: a click shows its terminal, its name opens its page, a right click its menu.
   sideRow(el, t, a, s, shown) {
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     return el.when(shown, (el) => el.bg(t.selected).rounded(7)).on_click((_e, cx) => this.focus(a.name, cx))
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
-        props: { agentMenu: { name: a.name, folder: cwd, machine: on, comms: a.name === s.comms, task: a.task?.id ?? null } } }); });
+        props: { agentMenu: { name: a.name, swarm: sw, folder: cwd, machine: on, comms: a.name === s.comms, task: a.task?.id ?? null } } }); });
   }
   nameLink(t, name, w) {
     return div().id(`name-${name}`).w(w).flex_none().truncate().font_medium().text_color(t.foreground).cursor_pointer().hover((st) => st.underline())
@@ -650,7 +661,7 @@ export default class SwarmTab extends View {
   // The staffing bar under the head (side) or the tabs (full): who works, why auto-spawn holds, Auto-spawn and Max with the
   // number moving at once, Resume while it is halted, and in the full view Queue only.
   staffBar(t, s, wide) {
-    const l = s.limits ?? {}, p = this.pend ?? {}, key = `rw-swarm.paused:${s.db}`, [working, idle] = staffWords(s).split(", ");
+    const l = s.limits ?? {}, p = this.pend ?? {}, key = `rw-swarm.paused:${s.db}:${this.where().swarm}`, [working, idle] = staffWords(s).split(", ");
     const step = (k, label) => {
       const v = p[k] ?? l[k], b = (id, ch, n) => div().id(`${k}-${id}`).w(32).h(32).flex().items_center().justify_center().rounded(6).text_color(t.foreground).cursor_pointer()
         .hover((st) => st.bg(t.hover)).on_click((_e, cx) => {
@@ -1009,7 +1020,7 @@ export default class SwarmTab extends View {
   // Branches not on main (git) and the board's done tasks (for merge_to_green_s), read as Landing shows, once a minute.
   loadLanding(cx) {
     if (this.land && Date.now() - this.land.at < PR_POLL || this.landLoading) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.landLoading = true;
     cx.spawn(async (cx) => {
       const land = { at: Date.now(), branches: null, tasks: null };
@@ -1017,8 +1028,8 @@ export default class SwarmTab extends View {
         const g = await exec("git", ["for-each-ref", "--no-merged=origin/main", "--format=%(refname:short)%09%(committerdate:unix)%09%(ahead-behind:origin/main)", "refs/heads"], { cwd, on });
         if (g.code === 0) land.branches = branchesOf(g.stdout);
       } catch {}
-      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]); if (r.code === 0) land.tasks = overOf(JSON.parse(r.stdout))?.tasks ?? null; } catch {}
-      if (this.where().cwd === cwd) this.land = land;
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"], sw); if (r.code === 0) land.tasks = overOf(JSON.parse(r.stdout))?.tasks ?? null; } catch {}
+      if (this.same(cwd, sw)) this.land = land;
       this.landLoading = false; cx.notify();
     });
   }
@@ -1192,7 +1203,7 @@ export default class SwarmTab extends View {
   // Compute reads `swarm compute --json` while System shows: on opening it, every 30 s and never more often than 3× a read
   // takes, and after a control; a read samples each machine 0.5 s and makes one hc exec per other machine.
   loadComp(cx, force) {
-    const { cwd, on } = this.where(), c = this.comp;
+    const { cwd, on, swarm: sw } = this.where(), c = this.comp;
     if (this.compLoading) { if (force) this.compAgain = true; return; }
     if (!cwd || (!force && c?.on === on && Date.now() - c.at < Math.max(QUIET_POLL, 3 * (c.took ?? 0)))) return;
     this.compLoading = true;
@@ -1200,7 +1211,7 @@ export default class SwarmTab extends View {
     cx.spawn(async (cx) => {
       let j = null, err = null;
       try {
-        const r = await swarm(cwd, on, ["compute", "--json"]);
+        const r = await swarm(cwd, on, ["compute", "--json"], sw);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm compute exited ${r.code}`);
         j = JSON.parse(r.stdout);
       } catch (e) { err = line(e?.message ?? e, 300).replace(/^swarm: /, ""); }
@@ -1212,11 +1223,11 @@ export default class SwarmTab extends View {
   }
   compAct(cx, args, ok) {
     if (this.compBusy) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.compBusy = true; this.compFlash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, args);
+        const r = await swarm(cwd, on, args, sw);
         if (r.code === 0) ok?.(); else this.compFlash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
       } catch (e) { this.compFlash = line(e?.message ?? e, 300); }
       this.compBusy = false; this.loadComp(cx, true); cx.notify();
@@ -1262,11 +1273,11 @@ export default class SwarmTab extends View {
     if (!a) { this.flash = "The limits are whole thousands of tokens, 0 for off"; cx.notify(); return; }
     const rules = this.rulesIn.value().trim(), steps = [...(a.length ? [a] : []), ...(rules !== (s.rules ?? "").trim() ? [["rules", "set", "--", rules]] : [])];
     if (!steps.length) { this.limitsEdit = null; cx.notify(); return; }
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.busy = true; this.flash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        for (const a of steps) { const r = await swarm(cwd, on, a); if (r.code !== 0) throw new Error(r.stderr || r.stdout || `swarm exited ${r.code}`); }
+        for (const a of steps) { const r = await swarm(cwd, on, a, sw); if (r.code !== 0) throw new Error(r.stderr || r.stdout || `swarm exited ${r.code}`); }
         this.limitsEdit = null;
       } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, ""); }
       this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
@@ -1279,11 +1290,11 @@ export default class SwarmTab extends View {
   loadHistory(cx, more) {
     const h = this.hist;
     if (this.histLoading || (h ? !more : more)) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.histLoading = true; if (more) cx.notify(); // from render (the first page) a notify would throw
     cx.spawn(async (cx) => {
       const read = async (view, before) => {
-        const r = await swarm(cwd, on, ["state", "--json", "--view", view, ...(before != null ? [`--before=${before}`] : [])]);
+        const r = await swarm(cwd, on, ["state", "--json", "--view", view, ...(before != null ? [`--before=${before}`] : [])], sw);
         if (r.code !== 0) throw new Error(r.stderr || `swarm exited ${r.code}`);
         return overOf(JSON.parse(r.stdout)) ?? { tasks: [], agents: [] };
       };
@@ -1299,7 +1310,7 @@ export default class SwarmTab extends View {
           const as = (await read("agents", lo)).agents.filter((a) => Number.isFinite(a.ended) && (lo == null || a.ended < lo));
           next.agents = [...(more ? h.agents : []), ...as]; next.aMore = as.length >= 60;
         }
-        if (this.where().cwd === cwd) this.hist = next;
+        if (this.same(cwd, sw)) this.hist = next;
       } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, "") || "swarm state failed"; if (!h) this.hist = { tasks: [], agents: [] }; }
       this.histLoading = false; cx.notify();
     });
@@ -1341,16 +1352,16 @@ export default class SwarmTab extends View {
   addFull(cx) {
     const title = this.title.value().trim(), body = this.newBody.value().trim(), after = this.newAfter.value().replace(/[#\s]/g, ""), f = this.form;
     if (!title || this.busy || !/^(\d+(,\d+)*)?$/.test(after)) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.busy = true; this.flash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
         const r = await swarm(cwd, on, ["task", "add", ...(body ? [`--body=${body}`] : []), ...(after ? [`--after=${after}`] : []), `--priority=${f.p}`,
-          ...(f.model ? [`--model=${f.model}`] : []), ...(f.effort ? [`--effort=${f.effort}`] : []), "--", title]);
+          ...(f.model ? [`--model=${f.model}`] : []), ...(f.effort ? [`--effort=${f.effort}`] : []), "--", title], sw);
         if (r.code !== 0) throw new Error(r.stderr || r.stdout);
         const id = /task #(\d+)/.exec(r.stdout)?.[1];
-        if (id && f.queue) await swarm(cwd, on, ["queue", "add", id]);
-        if (id && f.hold) await swarm(cwd, on, ["task", "hold", "--why=waits for your go", id]);
+        if (id && f.queue) await swarm(cwd, on, ["queue", "add", id], sw);
+        if (id && f.hold) await swarm(cwd, on, ["task", "hold", "--why=waits for your go", id], sw);
         this.title.set_value(""); this.newBody.set_value(""); this.newAfter.set_value(""); this.form = { ...f, queue: false, hold: false };
       } catch (e) { this.flash = line(e?.message ?? e, 300).replace(/^swarm: /, "") || "task add failed"; }
       this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
@@ -1359,10 +1370,10 @@ export default class SwarmTab extends View {
   // `--view board`'s newest done and dropped, read once the Board shows.
   loadPast(cx) {
     if (this.pastTasks || this.pastLoading) return;
-    const { cwd, on } = this.where();
+    const { cwd, on, swarm: sw } = this.where();
     this.pastLoading = true;
     cx.spawn(async (cx) => {
-      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"]); if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? []; }
+      try { const r = await swarm(cwd, on, ["state", "--json", "--view", "board"], sw); if (r.code === 0) this.pastTasks = overOf(JSON.parse(r.stdout))?.tasks ?? []; }
       catch {}
       this.pastLoading = false; cx.notify();
     });
@@ -1674,16 +1685,16 @@ export default class SwarmTab extends View {
   sideHead(t) {
     const icon = (id, path, f) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(7).text_color(t.dim).cursor_pointer()
       .hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); f(); }).child(svg(path).size(14));
-    const { cwd, on } = this.where(), tag = tagOf(this.s?.comms);
+    const { cwd, on, swarm: sw } = this.where(), tag = sw ?? tagOf(this.s?.comms);
     return h_flex().id("side-head").flex_none().h(40).pl(14).pr(8).gap(8).items_center().min_w(0)
       .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.foreground))
       .child(div().flex_none().max_w(170).truncate().text_size(13).font_semibold().text_color(t.foreground)
         .child(tag ? `Swarm ${tag}` : line(cwd?.replace(/\/+$/, "").replace(/.*\//, "") ?? "Swarm", 60)))
       .child(div().flex_1())
       .when(Boolean(this.s), (el) => el.child(this.awayControl(t, this.s)))
-      .when(Boolean(cwd), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
+      .when(Boolean(sw), (el) => el.child(icon("side-expand", "mods/rw-rail/expand.svg", () => {
         const v = shared("rw-swarm.view") ?? {};
-        showSide(run, false); showSwarm(run, setShared, { ...v, section: v.section === "more" ? "overview" : v.section, folder: cwd, machine: on });
+        showSide(run, false); showSwarm(run, setShared, { ...v, section: v.section === "more" ? "overview" : v.section, swarm: sw, folder: cwd, machine: on });
       })))
       .child(icon("side-close", "mods/pane/close.svg", () => showSide(run, false)));
   }
@@ -1711,7 +1722,7 @@ export default class SwarmTab extends View {
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } })
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
-      if (props().side && !this.where().cwd) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
+      if (props().side && !this.where().swarm) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
       const side = Boolean(props().side);
       return root.child(this.staffBar(t, this.s, !side).mt(side ? 0 : 4)).when(side, (el) => el.child(this.sideTabs(t, this.s)))

@@ -29,10 +29,36 @@ function find(node, id) {
   for (const child of node?.children ?? []) { const f = find(child, id); if (f) return f; }
   return null;
 }
+// The machine's live swarms, from one `swarm state --json --view swarms` per machine at most every 10 s (sw-global §5).
+const SWARMS = new Map(); // machine ("" here) -> { at, list, busy }
+async function readSwarms(on, cwd) {
+  const k = on ?? "", c = SWARMS.get(k);
+  if (c && (c.busy || Date.now() - c.at < 10000)) return false;
+  SWARMS.set(k, { list: c?.list ?? [], at: c?.at ?? 0, busy: true });
+  let list = c?.list ?? [];
+  try {
+    const r = await swarm(cwd, on, ["state", "--json", "--view", "swarms"]);
+    if (r.code === 0) list = (JSON.parse(r.stdout).swarms ?? []).filter(w => w && typeof w.name === "string" && w.active);
+  } catch {}
+  SWARMS.set(k, { list, at: Date.now(), busy: false });
+  return true;
+}
+// The swarm the panel shows (never the folder's alone, sw-global §2): the focused agent's, else the one whose communicator
+// the shown space shows, else the one with most agents there, else the one whose repo the focused folder is in, else the
+// only one. `cwd`: a repo of it, where its commands and gh run.
 function location() {
-  const space = spaces().find(s => s.active), f = focused();
-  const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, on: space?.machine ?? null };
+  const space = spaces().find(s => s.active), f = focused(), ps = panes();
+  const pane = f?.pane ? ps.find(p => p.pane === f.pane) : null;
+  const cwd0 = pane?.cwd || f?.cwd || space?.folder, on = space?.machine ?? null, list = SWARMS.get(on ?? "")?.list ?? [];
+  const addr = hc => (on && !hc.includes("/") ? `${on}/${hc}` : hc), term = pane?.terminal ?? f?.terminal ?? null;
+  const tabs = new Set((space?.tabs ?? []).map(t => t.id)), here = new Set(ps.filter(p => p.terminal && tabs.has(p.tab)).map(p => p.terminal));
+  const n = w => (w.agents ?? []).filter(a => typeof a.hc === "string" && here.has(addr(a.hc))).length;
+  const sw = list.find(w => term && (w.agents ?? []).some(a => typeof a.hc === "string" && addr(a.hc) === term))
+    ?? list.find(w => typeof w.comms_hc === "string" && here.has(addr(w.comms_hc)))
+    ?? [...list].sort((a, b) => n(b) - n(a)).find(w => n(w) > 0)
+    ?? list.find(w => (w.repos ?? []).some(r => cwd0 === r || cwd0?.startsWith(`${r}/`)))
+    ?? (list.length === 1 ? list[0] : null);
+  return { cwd: (typeof sw?.repos?.[0] === "string" ? sw.repos[0] : null) ?? cwd0, cwd0, on, swarm: sw?.name ?? null };
 }
 // Focus address of an agent's terminal: remote spaces name terminals "machine/tN". null when it is gone
 // (ended, hc rm'd, or relaunched into a new terminal). shortcut: if panes() carries no terminal ids, trust a.hc.
@@ -41,7 +67,7 @@ function focusAddr(a) {
   const addr = location().on ? `${location().on}/${a.hc}` : a.hc, ps = panes();
   return !ps.some(p => p.terminal) || ps.some(p => p.terminal === addr) ? addr : null;
 }
-const locKey = () => { const l = location(); return `${l.on}:${l.cwd}`; };
+const locKey = () => { const l = location(); return `${l.on}:${l.swarm}:${l.cwd}`; };
 const ago = s => s == null ? "" : s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m` : s >= 60 ? `${Math.floor(s / 60)}m` : `${Math.max(0, s)}s`;
 const hhmm = ts => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const iso = s => s ? Math.floor(Date.parse(s) / 1000) : 0;
@@ -192,12 +218,13 @@ export default class Swarm extends View {
   // newer call supersedes it and its answer is dropped. A switch to another folder shows that folder's last state at
   // once, marked refreshing, until its own answer comes.
   refresh(cx) {
-    const { cwd, on } = location(), key = locKey();
+    const { cwd, cwd0, on, swarm: sw } = location(), key = locKey();
+    cx.spawn(async cx => { if (await readSwarms(on, cwd0) && locKey() !== key) cx.notify(); }); // another swarm shows: due() reads it
     if (this.busy || this.loading?.key === key && this.loading.gen === this.gen) return; // an action refreshes when it ends
     if (!cwd) { this.s = null; this.error = "No folder"; return; }
     if (key !== this.loc) {
       const c = this.cache.get(key);
-      if (c) this.show(c, cwd, on, cx);
+      if (c) this.show(c, cwd, on, sw, cx);
       this.stale = true;
     }
     this.loc = key;
@@ -206,25 +233,25 @@ export default class Swarm extends View {
     this.loading = call; this.at = Date.now(); this.dirty = false; this.polled = view;
     cx.spawn(async cx => {
       try {
-        const r = await swarm(cwd, on, args);
+        const r = await swarm(cwd, on, args, sw);
         const live = () => this.loading === call && call.gen === this.gen && locKey() === key;
         if (!live()) return; // superseded
         if (r.code !== 0) throw new Error(r.stderr.trim() || `swarm exited ${r.code}`);
         const s = JSON.parse(r.stdout);
         if (!live()) return;
-        this.show(s, cwd, on, cx); this.stale = false;
+        this.show(s, cwd, on, sw, cx); this.stale = false;
         this.cache.set(key, this.s);
         if (on) this.watching = null; else if (s.agents) this.watch(s.db.replace(/\/[^/]*$/, ""), cx);
       } catch (e) { if (this.loading === call && call.gen === this.gen) this.error = String(e.message ?? e); }
       finally { if (this.loading === call) this.loading = null; cx.notify(); }
     });
   }
-  // State `s` of folder `cwd` on screen; another repo's resets the screen to Home.
-  show(s, cwd, on, cx) {
-    const same = s.db === this.s?.db && on === this.on;
+  // State `s` of swarm `sw` (commands in `cwd`) on screen; another swarm's resets the screen to Home.
+  show(s, cwd, on, sw, cx) {
+    const same = s.db === this.s?.db && on === this.on && sw === this.sw;
     if (!same) {
-      if (this.s) { this.seen.clear(); this.stack = [{ s: "home" }]; this.flash = null; } // another repo: its swarm, not the last one's
-      this.prs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.refreshPrs(cx);
+      if (this.s) { this.seen.clear(); this.stack = [{ s: "home" }]; this.flash = null; } // another swarm: its state, not the last one's
+      this.prs = null; this.prsAt = 0; this.cwd = cwd; this.on = on; this.sw = sw; this.refreshPrs(cx);
     }
     // A view sends only its sections; the others keep their last values (empty at first) until their screen asks.
     this.s = { messages: [], events: [], locks: [], ...(same ? this.s : null), ...s }; this.error = null;
@@ -298,13 +325,13 @@ export default class Swarm extends View {
   // Runs one swarm command for the user. What it printed, or why it refused, shows at the top of the screen.
   // o.gh: a `gh` command instead (re-run CI); o.ok(): after it succeeded.
   act(cx, args, o = {}) {
-    const { cwd, on } = location();
+    const { cwd, on, swarm: sw } = location();
     this.busy = true; this.gen++;
     if (!o.gh && this.s) this.patch(args);
     cx.notify();
     cx.spawn(async cx => {
       try {
-        const r = await (o.gh ? exec("gh", args, { cwd, on }) : swarm(cwd, on, args));
+        const r = await (o.gh ? exec("gh", args, { cwd, on }) : swarm(cwd, on, args, sw));
         this.flash = r.code === 0 ? { ok: one(r.stdout) || "Done" } : { error: (r.stderr.trim() || r.stdout.trim() || `${o.gh ? "gh" : "swarm"} exited ${r.code}`).replace(/^swarm: /, ""), args };
         if (r.code === 0) o.ok?.();
       } catch (e) { this.flash = { error: String(e.message ?? e), args }; }

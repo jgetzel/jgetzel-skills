@@ -58,7 +58,7 @@ const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: N
 const summary = Ox({ name: Tx, active: Bx, comms: Tx, comms_hc: Tx, repos: Lx(Tx, 200), folder: Tx, created: Nx, ended: Nx,
   staffing: Ox({ live: Nx, min: Nx, max: Nx, held: Tx, queue_only: Bx }), rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
   needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, qpos: Nx, priority: Nx }), 50), ready: Nx,
-  ci: Ox({ repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx }), away: Ax });
+  ci: Ox({ id: Nx, repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx }), away: Ax });
 // One swarm of `swarm state --json --view swarms` (sw-global §5): null unless an object with a name. `swarm` is its name,
 // what the views and the CLI's --swarm go by; `folder` an absolute repo of it (the cwd its commands run in), else null.
 export function sumOf(j) {
@@ -660,6 +660,19 @@ export function asksOf(s) {
     ...live.filter((a) => a.status === "blocked" && !asked.has(a.name)).map((a) => ({ kind: "prompt", agent: a.name, ago: a.idle_s })),
     ...live.filter((a) => a.stay_sign === "hung").map((a) => ({ kind: "hung", agent: a.name, ago: a.idle_s })),
   ];
+}
+// A swarm of `--view swarms` (sumOf) in the shape agentRows, asksOf and needsOf read: its agents (hung as watchd's sign),
+// its questions as blocked tasks (blocked as long as their agent has been idle) and its agents' tasks, its staffing as limits and its base's
+// last run as `ci` (red once: the view sends one run per swarm).
+export function shapeOf(sum) {
+  const agents = (sum.agents ?? []).map((a) => ({ ...a, stay_sign: a.hung ? "hung" : null }));
+  const idle = new Map(agents.map((a) => [a.name, a.idle_s]));
+  const tasks = (sum.needs ?? []).filter((n) => n.kind === "question" && n.task != null)
+    .map((n) => ({ id: n.task, state: "blocked", owner: n.agent, title: n.title, question: n.question, blocked_s: idle.get(n.agent) ?? null }))
+    .concat(agents.filter((a) => a.task?.id != null && a.task.state !== "blocked").map((a) => ({ id: a.task.id, state: a.task.state ?? "claimed", owner: a.name, title: a.task.title })));
+  const run = sum.ci?.status ? sum.ci : null, red = run?.status === "completed" && run.conclusion !== "success" && run.conclusion !== "cancelled";
+  return { active: Boolean(sum.active), db: sum.db ?? null, comms: sum.comms, agents, tasks, counts: sum.counts ?? {},
+    limits: sum.staffing ?? {}, ci: { runs: run ? [run] : [], red_streak: red ? 1 : 0 } };
 }
 // Everything that waits on the user in one swarm (Part II.3, Overview's Needs you), most urgent first: watchd not
 // running, main's CI red (the last finished run, how many in a row, the task fixing it if one is claimed), then the

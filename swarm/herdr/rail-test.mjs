@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -141,25 +141,33 @@ assert.deepEqual(lv.block.map((it) => [it.a.name, it.r.t.address, it.r.lines.joi
   ["ll-107", "w107", "", []], ["ll-110", "w110", "", ["x└"]]]);
 assert.deepEqual(lv.rows.map((r) => r.t.address).sort(), [...new Set(lv.rows.map((r) => r.t.address))].sort());
 assert.deepEqual([...swarmAddrs({ agents: [A("a", "t3"), A("b", null)] }, "vps")], ["vps/t3"]);
-// A space's summary (#175): its communicator's space first (live spaces' folders can be off), else its folder's.
-const sums = [{ space: "s1", folder: "/w/b", on: null }, { space: "s9", folder: "/w/c", on: null }, { space: "t2", folder: "/w/v", on: "vps" }];
-const ids = new Set(["s1", "s2", "s3", "vps/t2"]);
-assert.equal(sumFor(sums, { id: "s1", folder: "/home" }, ids), sums[0]);
-assert.equal(sumFor(sums, { id: "s2", folder: "/w/b" }, ids), null); // /w/b's swarm lives in s1
-assert.equal(sumFor(sums, { id: "s3", folder: "/w/c" }, ids), sums[1]); // s9 is gone
-assert.equal(sumFor(sums, { id: "vps/t2", folder: "", machine: "vps" }, ids), sums[2]);
-{ // a remote space whose folder is another swarm's repo, matched by space id from the machine's own listing
-  const ll = { folder: "/w/skills", on: "mac", space: "spe1", agents: [] }, hpl = { folder: "/w/hpl", on: "mac", space: "spe2", agents: [{ name: "hpl-comms4", hc: "t9" }] };
-  const ss = [ll, hpl], sids = new Set(["mac/spe1", "mac/spe2"]);
-  assert.equal(sumFor(ss, { id: "mac/spe1", folder: "/w/skills", machine: "mac" }, sids), ll);
-  assert.equal(sumFor(ss, { id: "mac/spe2", folder: "/w/skills", machine: "mac" }, sids), hpl);
-  assert.deepEqual([...swarmAddrs(hpl, "mac")], ["mac/t9"]);
+// Each swarm's space (sw-global §5): the one showing its communicator's terminal, else most of its agents', else one
+// whose folder is in its repos; a space holds one swarm. sumFor reads the space the rail put on each.
+{
+  const sp = [{ id: "s1", folder: "/home", tabs: [{ id: "a" }] }, { id: "s2", folder: "/w/b", tabs: [{ id: "b" }, { id: "c" }] },
+    { id: "s3", folder: "/w/c/sub", tabs: [] }, { id: "vps/t2", folder: "/w/b", machine: "vps", tabs: [{ id: "v" }] }];
+  const ps = [{ pane: "p1", tab: "a", terminal: "t1" }, { pane: "p2", tab: "b", terminal: "t2" }, { pane: "p3", tab: "c", terminal: "t3" },
+    { pane: "p4", tab: "v", terminal: "vps/t7" }];
+  const ll = { swarm: "ll", on: null, comms_hc: "t1", repos: ["/w/b"], agents: [A("ll-2", "t2"), A("ll-3", "t3")] };
+  const hpl = { swarm: "hpl", on: null, comms_hc: "t9", repos: ["/w/x"], agents: [A("hpl-1", "t2"), A("hpl-2", "t3"), A("hpl-3", "t1")] };
+  const c = { swarm: "c", on: null, comms_hc: null, repos: ["/w/c"], agents: [] };
+  const far = { swarm: "ll", on: "vps", comms_hc: "t7", repos: ["/w/b"], agents: [] };
+  const h = homesOf([ll, hpl, c, far], sp, ps);
+  assert.deepEqual([...h], [[":ll", "s1"], ["vps:ll", "vps/t2"], [":hpl", "s2"], [":c", "s3"]]); // ll's communicator is in s1, though its repo is s2's folder
+  const sums = [ll, hpl, c, far].map((j) => ({ ...j, space: h.get(`${j.on ?? ""}:${j.swarm}`) ?? null }));
+  assert.equal(sumFor(sums, sp[0]).swarm, "ll");
+  assert.equal(sumFor(sums, sp[3]).on, "vps");
+  assert.equal(sumFor(sums, { id: "s9" }), null);
+  assert.equal(sumNamed(sums, { swarm: "ll", machine: "vps" }), sums[3]);
+  assert.equal(sumNamed(sums, { swarm: "ll" }), sums[0]);
+  assert.deepEqual([...homesOf([hpl, ll], sp, ps)], [[":ll", "s1"], [":hpl", "s2"]]); // a communicator's space first, whatever the order
 }
 assert.equal(agentAt({ on: "vps", agents: [{ name: "w", hc: "t2" }] }, "vps/t2")?.name, "w");
 assert.equal(agentAt({ on: null, agents: [{ name: "w", hc: "t2" }] }, "vps/t2"), null);
 assert.deepEqual([null, { status: "in_progress" }, { status: "completed", conclusion: "success" }, { status: "completed", conclusion: "failure" }]
   .map(ciWord), [null, "checks run", "green", "red"]);
 assert.deepEqual(rollOf(sw.rows), ["asks", "hung", "working", "done", "idle"]);
+assert.equal(swarmText({ ...sw.block[1], a: { ...sw.block[1].a, repo: "/w/skills/" } }, 1000, 1000 + 120e3, false).what, "#133 · skills"); // its repo (sw-global §5)
 assert.deepEqual(sw.block.map((it) => swarmText(it, 1000, 1000 + 120e3, false)), [{ name: "ll-comms", what: "communicator", side: "replied" },
   { name: "ll-97", what: "#133", side: "asks you" }, { name: "ll-99", what: "", side: "hung 58m" }, { name: "ll-107", what: "#142", side: "" },
   { name: "ll-110", what: "#146", side: "" }]);
@@ -176,7 +184,7 @@ assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
 // rw-bar: a swarm question counts unless its agent's terminal already does.
 const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
   { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
-assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three", task: 3, folder: null, on: null }]);
+assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "r", what: "three", task: 3, swarm: null, folder: null, on: null }]);
 // rows leaving (round 4, proposal 10): a gone row is drawn once more after the one it followed
 {
   const { leaving } = await import("./mods/rw-rail/tree.js");
@@ -187,8 +195,8 @@ assert.deepEqual(questionsOf(swarms, new Set(["t4"])), [{ address: "t9", name: "
   assert.deepEqual(leaving(["a"], ["a", "b"], new Map([["b", { after: "a" }]])).order.map((o) => o.k), ["a", "b"]); // came back: no ghost
 }
 // a hung agent is a Needs you row (round 4, proposal 1)
-assert.deepEqual(hungOf([{ folder: "/w", on: "vps", agents: [A("h", "t5", { hung: true, task: { id: 4 } }), A("i", "t6")] }], new Set()),
-  [{ address: "vps/t5", name: "h", what: "hung · holds #4", hung: true, folder: "/w", on: "vps" }]);
+assert.deepEqual(hungOf([{ swarm: "ll", folder: "/w", on: "vps", agents: [A("h", "t5", { hung: true, task: { id: 4 } }), A("i", "t6")] }], new Set()),
+  [{ address: "vps/t5", name: "h", what: "hung · holds #4", hung: true, swarm: "ll", folder: "/w", on: "vps" }]);
 
 // The swarm tab (slice 7): who asks first and the communicator last, each with its task's title; the board's undone
 // tasks, blocked, claimed, ready, then waiting.
@@ -259,8 +267,17 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.equal("nested" in o, false);
   assert.equal(o.agents[0].extra, 3);
   assert.equal(overOf({ away: null }).away, null);
-  assert.equal(sumOf({ away: { since: 1 } }).away, true);
-  assert.equal(sumOf({ away: { since: 1 }, brand_new: true }).brand_new, true);
+  assert.equal(sumOf({ name: "x", away: { since: 1 } }).away, true);
+  assert.equal(sumOf({ name: "x", away: { since: 1 }, brand_new: true }).brand_new, true);
+  assert.equal(sumOf({ away: true }), null); // a swarm has a name
+  // `--view swarms`: one entry per swarm, its name its `swarm`, its first absolute repo its folder
+  const { swarmsOf, shapeOf } = await import("./mods/rw-rail/tree.js");
+  const ws = swarmsOf({ db: "/s/swarm.db", swarms: [{ name: "ll", repos: ["rel", "/w/ll"], agents: [{ name: "a", hc: "t1", repo: "/w/ll", hung: true }],
+    needs: [{ kind: "question", task: 3, agent: "a", title: "T" }], ci: { status: "completed", conclusion: "failure", url: "javascript:x" } }, { name: "ll" }, null, { name: 3 }] });
+  assert.deepEqual(ws.map((w) => [w.swarm, w.folder, w.db]), [["ll", "/w/ll", "/s/swarm.db"], ["3", null, "/s/swarm.db"]]);
+  assert.equal(ws[0].ci.url, null);
+  const sh = shapeOf(ws[0]);
+  assert.deepEqual([sh.agents[0].stay_sign, sh.tasks[0].state, sh.tasks[0].owner, sh.ci.red_streak], ["hung", "blocked", "a", 1]);
 }
 // The swarm view's Needs you (Part II.3): watchd down, red main with its fixer, the asks, low memory; in that order.
 {

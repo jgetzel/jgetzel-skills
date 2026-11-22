@@ -83,7 +83,7 @@ def view (t : Int) : m Json := do
     (s!"select scope, k, v from meta where k in ({", ".intercalate (KNOBS.map fun k => s!"'{k}'")})", []),
     ("select path from repo order by length(path) desc", []),
     ("select agent, kind, ts from event where kind = 'stay-hung' and ts >= ?", [.int (t - 86400)]),
-    ("select repo, status, conclusion, url, created from ci order by created desc", [])] true
+    ("select repo, status, conclusion, url, created, id from ci order by created desc", [])] true
   let rows (i : Nat) : List (Array Val) := (rs.getD i #[]).toList
   let txt (v : Option Val) : Option String := Swarms.txt v
   let int (v : Option Val) : Option Int := Swarms.int v
@@ -163,7 +163,8 @@ def view (t : Int) : m Json := do
       ("ready", Json.int next.length),
       ("ci", match ci with
         | some r => obj [("repo", (txt r[0]?).map .str), ("status", (txt r[1]?).map .str),
-            ("conclusion", (txt r[2]?).map .str), ("url", (txt r[3]?).map .str), ("created", (txt r[4]?).map .str)]
+            ("conclusion", (txt r[2]?).map .str), ("url", (txt r[3]?).map .str), ("created", (txt r[4]?).map .str),
+            ("id", (int r[5]?).map Json.int)]
         | none => .null),
       ("agents", .arr ags), ("needs", .arr (qs.toArray ++ needs)), ("rss_kb", Json.int rss),
       ("away", .bool (knob sw.name "away").isSome)])
