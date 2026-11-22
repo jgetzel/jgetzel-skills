@@ -325,7 +325,11 @@ def herdrStale : m (Option String) := do
 /-- `swarm who` (agents.cmd_who). -/
 def who : m UInt32 := do
   let t ← Clock.now
-  let db ← Store.view [Sels.live, Sels.metas Sels.LIMIT_KEYS, { table := .lock }, { table := .workspace }] id
+  -- the live agents, the staffing knobs, the worktrees, and the locks the live agents hold
+  let db ← Store.run do
+    let d0 ← Txn.slice [Sels.live]
+    Txn.slice [Sels.live, Sels.metas Sels.LIMIT_KEYS, { table := .lock, cond := .oneOf "agent" (d0.agents.map fun x => .text x.name) },
+      { table := .workspace }]
   let wts ← Workspaces.wtMap db
   Env.out (limitsLine db (← env "SWARM_COMMS"))
   if let some (avail, total, psi) ← Machine.mem then Env.out (Machine.line avail total psi)

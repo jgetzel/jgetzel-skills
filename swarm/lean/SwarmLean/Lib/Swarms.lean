@@ -92,6 +92,14 @@ def taskRepos (id : Int) : m (List (String × Option String)) := do
   let rs ← Sys.sqlAt (← dbPath) schema [("select repo, base from task_repo where task=? order by rowid", [.int id])] true
   return (rs.headD #[]).toList.filterMap fun r => (txt r[0]?).map (·, txt r[1]?)
 
+/-- Every task's id and state text, in id order: one two-column select, for counts and deps' states without the
+rows. -/
+def taskStates : m (List (Int × String)) := do
+  let rs ← Sys.sqlAt (← dbPath) schema [("select id, state from task order by id", [])] true
+  return (rs.headD #[]).toList.filterMap fun r => match int r[0]?, txt r[1]? with
+    | some i, some s => some (i, s)
+    | _, _ => none
+
 /-- The repos of swarm `s`: those its auto-spawn staffs from. -/
 def reposOf (s : String) : m (List String) := do
   let rs ← Sys.sqlAt (← dbPath) schema [("select repo from swarm_repo where swarm=? order by repo", [.text s])] true

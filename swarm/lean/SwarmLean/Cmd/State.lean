@@ -338,7 +338,7 @@ def staySign (x : Agent) (aev : List Event) : Option String :=
 /-- `--view summary` (UI-SPEC.md, "New swarm CLI output" 1): task counts, the live agents in six fields (`hc` ties a row
 to its terminal), the Herdr space the swarm runs in, what needs the human as the panel's Needs you lists it, the latest
 CI run on the base and whether the user is away; no ended agents, events or messages. -/
-def summary (db : Db) (p : String) (t : Int) : m Json := do
+def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Json := do
   let cv ← match py ((db.getMeta "comms").bind (·.v)) with | some c => pure (some c) | none => env "SWARM_COMMS"
   let live := (db.agents.filter (·.ended.isNone)).mergeSort (·.name ≤ ·.name)
   let names := live.map (·.name)
@@ -377,11 +377,16 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
     ("comms", N cv), ("swarm", N (← env "SWARM")), ("rss_kb", Json.int rss),
     ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
-      (k, Json.int (db.tasks.filter (·.state.text == k)).length))),
+      (k, Json.int (sts.filter (·.2.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
     -- the bar's "main green" and the communicator's Away switch
     ("ci", match ci.head? with | some r => Json.mkObj [("status", N r.status), ("conclusion", N r.conclusion)] | none => .null),
     ("away", .bool ((db.getMeta "away").bind (·.v)).isSome)]
+
+/-- Each task's id and state, every task's, in id order (`Swarms.taskStates`): the counts, the deps' states and the
+Board's pages of done tasks read it; a view reads whole only the task rows it shows. -/
+def taskStates : m (List (Int × Status)) := do
+  return (← Swarms.taskStates).filterMap fun (i, s) => (Status.ofText s).toOption.map fun st => (i, st)
 
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
@@ -393,39 +398,76 @@ def state (a : Parsed) : m UInt32 := do
   if (← Sys.kind p true) == .none then
     Env.out (Json.encode (Json.mkObj [("active", .bool false), ("db", .str p), ("now", Json.int t)]))
     return 0
-  -- every table whole, read only (no write lock); the filtered selects per view are #77's follow-up
-  let db ← Store.view (([.task, .event, .agent, .msg, .lock, .conflict, .«meta», .ci, .workspace, .cursor] : List Table).map Sels.all) id
   let view := a.str "view"
-  if view == some "summary" then
-    Env.out (Json.encode (← summary db p t))
+  if view == some "summary" then  -- the agents, the tasks not done, the CI runs, two knobs and the live stayers' signs
+    let db ← Store.run do
+      let d0 ← Txn.slice [Sels.all .agent]
+      Txn.slice ([Sels.all .agent, Sels.metas ["comms", "away"], Sels.undone, Sels.all .ci] ++
+        (d0.agents.filter fun x => x.ended.isNone && (py x.stay).isSome).map Sels.staySigns)
+    Env.out (Json.encode (← summary db (← taskStates) p t))
     return 0
   let full := view.isNone
   -- the swarm's tasks (SwarmsView.mine): the store's are every swarm's, and a panel lists only its own (sw-global §5)
-  let ours : Option (Std.HashSet Int) ← if db.swarm == "" then pure none else some <$> SwarmsView.mineIds db.swarm
+  let sw ← Store.view [] (·.swarm)
+  let ours : Option (Std.HashSet Int) ← if sw == "" then pure none else some <$> SwarmsView.mineIds sw
   let isOurs (i : Int) : Bool := ours.all (·.contains i)
+  let sts ← taskStates
   let lanes := wants view "lanes"
   let me := a.str "agent"
   let tid := a.int "task"
-  -- every per-task and per-agent lookup below reads these, built in one pass each (a list scan per row took seconds)
-  let tev := db.events.filter fun e => (e.kind.map (Tasks.TASK_KINDS.contains ·)).getD false
-  let tevBy := groupBy tev fun e => (Tasks.eventTask e).toList
-  let stOf : Std.HashMap Int Status := db.tasks.foldl (fun h r => h.insert r.id r.state) {}
-  let waitersBy := groupBy (db.tasks.filter (·.state = .open)) fun x => (Tasks.depsOf x).eraseDups
-  let ownBy := groupBy (db.tasks.filter fun r => r.state = .claimed || r.state = .blocked) (·.owner.toList)
-  let evBy := groupBy db.events (·.agent.toList)
-  let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
-  let lockBy := groupBy db.locks (·.agent.toList)
   -- what the view lists (no view: everything): open work and live agents always; the Board the newest 80 done and
   -- dropped (it shows 80), the Agents screen the newest 60 ended (it shows 60), an agent's screen its done tasks, a
   -- task's screen it and its deps, the event feeds the tasks their events name, the Graph every task with a dependency
   -- or that is one (research/sw-graph-view.md); the rest only as `counts`
   let deep := view == some "activity"  -- the Activity tab folds and filters, so it reads further back
-  let evShown := if wants view "events" then (db.events.filter shown).reverse.take (if deep then 300 else 60) else []
+  let feedN := if deep then 300 else 60
   -- `--before`: the next page back, the Board's tasks numbered below it, the Agents' ended before it (UI-SPEC II.3l)
   let before := a.int "before"
   let below (n : Int) : Bool := match before with | some b => decide (n < b) | none => true
   let newest (s : Status) : List Int :=
-    ((db.tasks.filter fun r => r.state = s && below r.id && isOurs r.id).reverse.take 80).map (·.id)
+    ((sts.filter fun (i, st) => st = s && below i && isOurs i).reverse.take 80).map (·.1)
+  -- the reads, in one read transaction (sw-global §3): the small tables whole; the tasks not done and the done ones
+  -- the view shows (no view, the Graph: every task); the feeds' last events and messages; each listed agent's last
+  -- events and messages; the task kinds' events (timing); a live idle stayer's stay signs; for watchd's verdict on a
+  -- live idle agent its tasks, last stay, offers and unread messages; the job events where the System view shows them;
+  -- the last pressure events
+  let (db, pev) ← Store.run do
+    let d0 ← Txn.slice ([Sels.all .agent, Sels.all .cursor] ++ (if wants view "events" then [Sels.feed feedN] else []) ++
+      (match tid with | some i => [Sels.task i] | none => []))
+    let evShown := if wants view "events" then (d0.events.filter shown).reverse.take feedN else []
+    let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++
+      (match tid with | some i => i :: ((d0.find i).map Tasks.depsOf).getD [] | none => []) ++
+      evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
+    let live := d0.agents.filter (·.ended.isNone)
+    let fateNs := (live.filter fun x => x.status == some "idle" && (lanes || me == some x.name)).map (·.name)
+    let stayers := live.filter fun x => (py x.stay).isSome && x.status == some "idle"
+    let evNs := (d0.agents.filter fun x => full || (lanes && x.ended.isNone) || me == some x.name).map (·.name)
+    let msgNs := (d0.agents.filter fun x => full || me == some x.name).map (·.name)
+    let taskSels : List Sel := if full || view == some "graph" then [Sels.all .task] else
+      [Sels.undone, Sels.tasks page] ++ me.toList.map Sels.owned ++ (if fateNs.isEmpty then [] else [Sels.ownedBy fateNs])
+    let evSels : List Sel := (if wants view "events" then [Sels.feed feedN] else []) ++ [Sels.kinds Tasks.TASK_KINDS] ++
+      evNs.map (fun n => Sels.feed 5 (some n)) ++ stayers.map Sels.staySigns ++
+      fateNs.flatMap (fun n => [Sels.lastEv n "stay", ({ table := .event, cond := Sels.evOf n "digest" } : Sel)]) ++
+      (if wants view "running" then [Sels.jobs] else [])
+    let msgSels : List Sel := (if wants view "messages" then [Sels.lastMsgs (if deep then 120 else 40)] else []) ++
+      msgNs.map (fun n => Sels.lastMsgs 5 (some n)) ++
+      fateNs.map (fun n => Sels.inbox n (Msgs.inbox d0 n) (Msgs.cursorOf d0 n)) ++
+      (match tid with | some i => [Sels.search ("#" ++ d i) 200] | none => [])
+    let db ← Txn.slice ([Sels.all .agent, Sels.all .cursor, Sels.all .lock, Sels.all .conflict, Sels.all .«meta»,
+      Sels.all .ci, Sels.all .workspace] ++ taskSels ++ evSels ++ msgSels)
+    let pr ← Txn.slice [Sels.kinds ["pressure", "pressure-end"] (some 40)]
+    pure (db, pr.events)
+  -- every per-task and per-agent lookup below reads these, built in one pass each (a list scan per row took seconds)
+  let tev := db.events.filter fun e => (e.kind.map (Tasks.TASK_KINDS.contains ·)).getD false
+  let tevBy := groupBy tev fun e => (Tasks.eventTask e).toList
+  let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
+  let waitersBy := groupBy (db.tasks.filter (·.state = .open)) fun x => (Tasks.depsOf x).eraseDups
+  let ownBy := groupBy (db.tasks.filter fun r => r.state = .claimed || r.state = .blocked) (·.owner.toList)
+  let evBy := groupBy db.events (·.agent.toList)
+  let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
+  let lockBy := groupBy db.locks (·.agent.toList)
+  -- the feed: the newest shown events of those read (the feed's select read the newest of them all)
+  let evShown := if wants view "events" then (db.events.filter shown).reverse.take feedN else []
   let edged : List Int := if view == some "graph" then
       (db.tasks.filter fun r => !(Tasks.depsOf r).isEmpty).foldl (fun acc r => r.id :: Tasks.depsOf r ++ acc) [] else []
   let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++ edged.eraseDups ++
@@ -498,7 +540,7 @@ def state (a : Parsed) : m UInt32 := do
     agsA := agsA.push (Json.mkObj l, live, x.name)
   let ags := agsA.toList
   -- pressure episodes, newest first, the last five
-  let eps := (db.events.filter fun e => e.kind == some "pressure" || e.kind == some "pressure-end").foldl
+  let eps := (pev.filter fun e => e.kind == some "pressure" || e.kind == some "pressure-end").foldl
     (fun (eps : List (Option Int × Option Int × Option String)) e =>
       if e.kind == some "pressure" then (e.ts, none, e.data) :: eps
       else match eps with
@@ -533,7 +575,7 @@ def state (a : Parsed) : m UInt32 := do
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     -- the swarm's tasks by state, and the ended agents but the communicator: what the trimmed lists leave out
     ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
-      (k, Json.int (db.tasks.filter fun r => r.state.text == k && isOurs r.id).length)) ++
+      (k, Json.int (sts.filter fun (i, st) => st.text == k && isOurs i).length)) ++
       [("ended", Json.int (db.agents.filter fun x => x.ended.isSome && some x.name != cv).length)])),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>
       Json.mkObj [("a", .str c.a), ("b", .str c.b), ("path", .str c.path), ("since", NI c.since)]).toArray),

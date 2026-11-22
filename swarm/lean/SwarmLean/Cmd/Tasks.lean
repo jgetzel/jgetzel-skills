@@ -278,9 +278,10 @@ def task (a : Parsed) : m UInt32 := do
 def board (a : Parsed) : m UInt32 := do
   let out := Env.out (m := m)
   if let some (avail, total, psi) ← Machine.mem then out (Machine.line avail total psi)
-  let db ← Store.view TaskTxn.boardSels id
-  let now ← Clock.now
   let all := a.flag "all"
+  -- the tasks not done (`--all`: every task); the done ones only counted
+  let db ← Store.view (if all then TaskTxn.boardSels else TaskTxn.undoneSel :: TaskTxn.boardSels.filter (·.table != .task)) id
+  let now ← Clock.now
   let role (o : Option String) : Option String :=
     o.bind fun n => (db.agents.find? fun x => x.name == n && x.ended.isNone).bind (·.role)
   let red (t : Task) : Nat := if redKey t == 1 && t.state ≠ .done then 1 else 0
@@ -309,7 +310,7 @@ def board (a : Parsed) : m UInt32 := do
         (match r.hold with | some h => s!"  held: {cont h}" | none => "") ++
         (match py r.evidence with | some e => s!"  [evidence: {e}]" | none => ""))
   if all then out s!"({rows.length} tasks)"
-  else out s!"({rows.length} shown, {(db.tasks.filter (·.state = .done)).length} done)"
+  else out s!"({rows.length} shown, {((← Swarms.taskStates).filter (·.2 == "done")).length} done)"
   for x in (live db).filter (·.stay.isSome) do
     out s!"staying: {x.name}{match x.role with | some r => " " ++ r | none => ""}: {x.stay.getD ""}"
   return 0

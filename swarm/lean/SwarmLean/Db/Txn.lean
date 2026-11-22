@@ -25,6 +25,8 @@ inductive Cond
   | oneOf (c : String) (vs : List Val)
   /-- column `c` holds a text that starts with `p` -/
   | pre (c : String) (p : String)
+  /-- column `c` holds a text that contains `s` -/
+  | has (c : String) (s : String)
   | and (a b : Cond)
   | or (a b : Cond)
   deriving Inhabited
@@ -39,6 +41,7 @@ def Cond.sql : Cond → String × List Val
   | .notNull c => (s!"{c} is not null", [])
   | .oneOf c vs => if vs.isEmpty then ("0", []) else (s!"{c} in ({", ".intercalate (vs.map fun _ => "?")})", vs)
   | .pre c p => (s!"typeof({c})='text' and substr({c},1,{p.length})=?", [.text p])
+  | .has c s => (s!"typeof({c})='text' and instr({c},?)>0", [.text s])
   | .and a b => let (x, p) := a.sql; let (y, q) := b.sql; (s!"({x}) and ({y})", p ++ q)
   | .or a b => let (x, p) := a.sql; let (y, q) := b.sql; (s!"({x}) or ({y})", p ++ q)
 
@@ -59,6 +62,9 @@ def Cond.holds (cell : String → Val) : Cond → Bool
   | .oneOf c vs => vs.any fun v => !v.isNull && !(cell c).isNull && (cell c).ord == v.ord
   | .pre c p => match cell c with
     | .text s => s.startsWith p
+    | _ => false
+  | .has c s => match cell c with
+    | .text t => s.isEmpty || (t.splitOn s).length > 1
     | _ => false
   | .and a b => a.holds cell && b.holds cell
   | .or a b => a.holds cell || b.holds cell
