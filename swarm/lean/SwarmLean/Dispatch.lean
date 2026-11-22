@@ -62,7 +62,7 @@ def runParsed (g : Group m) (a : Parsed) : m UInt32 := do
   if let some name ← env "SWARM_NAME" then
     if FENCED.contains a.cmd && a.act != "show" then
       let here ← env "HC_TERMINAL_ID"
-      if let some f ← Store.txn [.agent, .event] fun db => (db, Agents.fence db name here) then
+      if let some f ← Store.view (Sels.fence name) fun db => Agents.fence db name here then
         die (← Agents.fenceText name f)
     Sock.record name  -- the session's inbox socket, where watchd posts (board #215)
   if NUDGED.contains a.cmd then Hook.commsNudge (a.cmd == "wait")

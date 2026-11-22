@@ -2,6 +2,7 @@ import SwarmLean.Lib.Bases
 import SwarmLean.Lib.Re
 import SwarmLean.Sys
 import SwarmLean.Db.Agents
+import SwarmLean.Db.Sels
 
 /-! workspaces.lua: the worktrees swarm makes for a task, recorded as workspace rows (ro=0 the agent's own, ro=1 a
 read-only attachment); and conflict.lua's worktree list, owned worktrees and agent-to-worktree map. -/
@@ -152,14 +153,16 @@ def create (name : String) (task : Task) (cwd : Option String) (start : Option S
   | some o => if o.code != 0 then die ("git worktree add failed: " ++ strip o.stderr)
   | none => die "git worktree add failed: "
   let rp ← real path
-  Store.txn [.workspace] fun db => (upsert db { path := rp, branch, base, agent := name, ro := some 0, repo := main }, ())
+  Store.run (Txn.update [Sels.workspace rp name] [] fun db =>
+    (upsert db { path := rp, branch, base, agent := name, ro := some 0, repo := main }, ()))
   seed rp
   return (rp, branch, base)
 
 /-- A launch that failed leaves nothing: the workspace row, and the fresh worktree and its branch when `created`
 (workspaces.discard). -/
 def discardWs (name path branch : String) (created : Bool) : m Unit := do
-  Store.txn [.workspace] fun db => ({ db with workspaces := db.workspaces.filter fun w => !(w.agent == name && w.path == path) }, ())
+  Store.run (Txn.update [Sels.workspace path name] [] fun db =>
+    ({ db with workspaces := db.workspaces.filter fun w => !(w.agent == name && w.path == path) }, ()))
   if created then
     if let some main ← main (some path) then
       discard <| Git.out ["-C", main, "worktree", "remove", "--force", "--end-of-options", path] none
@@ -168,7 +171,7 @@ def discardWs (name path branch : String) (created : Bool) : m Unit := do
 /-- Links `name` read-only to a recorded workspace: path, branch, base (workspaces.attach). -/
 def attach (name path : String) : m (String × Option String × Option String) := do
   let path ← real path
-  let w ← Store.txn [.workspace] fun db =>
+  let w ← Store.run <| Txn.update [{ table := .workspace, cond := .eq "path" (.text path) }] [] fun db =>
     match db.workspaces.find? fun w => w.path == path && w.ro == some 0 with
     | some w => (upsert db { path, branch := w.branch, base := w.base, agent := name, ro := some 1, repo := w.repo }, some w)
     | none => (db, none)

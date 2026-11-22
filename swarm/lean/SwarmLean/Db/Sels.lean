@@ -37,6 +37,23 @@ def locks (n : String) : Sel := { table := .lock, cond := .eq "agent" (.text n) 
 /-- The worktrees recorded for `n`. -/
 def workspaces (n : String) : Sel := { table := .workspace, cond := .eq "agent" (.text n) }
 
+/-- Every row of table `t` in scope. -/
+def all (t : Table) : Sel := { table := t }
+
+/-- The job-start and job-end events (`Run.liveJobs`): never the rest of the event table. -/
+def jobs : Sel := { table := .event, cond := .oneOf "kind" [.text "job-start", .text "job-end"] }
+
+/-- Job `j`'s job-end, if logged. -/
+def jobEnd (j : Option String) : Sel :=
+  { table := .event, cond := .and (.eq "kind" (.text "job-end")) (match j with | some p => .eq "path" (.text p) | none => .null "path") }
+
+/-- The meta rows whose key starts with `p`. -/
+def metaPre (p : String) : Sel := { table := .«meta», cond := .pre "k" p }
+
+/-- The worktree row `(path, agent)`. -/
+def workspace (path agent : String) : Sel :=
+  { table := .workspace, cond := .and (.eq "path" (.text path)) (.eq "agent" (.text agent)) }
+
 /-- The scope's live agents. -/
 def live : Sel := { table := .agent, cond := .null "ended" }
 

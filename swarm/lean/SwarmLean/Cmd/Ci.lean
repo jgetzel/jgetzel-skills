@@ -2,6 +2,7 @@ import SwarmLean.Cmd
 import SwarmLean.Cmd.OpsHelp
 import SwarmLean.Lib.Ci
 import SwarmLean.Sys
+import SwarmLean.Db.Sels
 
 /-! `swarm ci [sha]` (ci.cmd_ci): main's CI for a commit, from what watchd polled; never asks GitHub. -/
 
@@ -42,7 +43,7 @@ def ci (a : Parsed) : m UInt32 := do
   let mut warned := false
   let mut res : String × Option _root_.SwarmLean.Ci := ("pending", none)
   repeat
-    let db ← Store.txn [.ci, .«meta»] fun db => (db, db)
+    let db ← Store.view [Sels.all .ci, Sels.metas ["ci_polled"]] id
     let now ← Clock.now
     let polled := (db.getMeta "ci_polled").map fun r => (r.v.bind parseInt).getD 0
     if (polled.all (now - · > 300)) && !warned then

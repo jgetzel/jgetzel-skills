@@ -37,12 +37,11 @@ def eventLine (e : Event) : m String := do
 
 /-- `swarm watch` (state.cmd_watch): the events as they come, and the live agents every 30 s. -/
 def watch (a : Parsed) : m UInt32 := do
-  -- shortcut: each second loads the event table whole (Store has no query); fine for a human's terminal
-  let mx ← Store.txn [.event] fun db => (db, db.events.foldl (fun x e => max x e.id) 0)
+  let mx ← Store.view [{ table := .event, last := some 1 }] fun db => db.events.foldl (fun x e => max x e.id) 0
   let mut last : Int := max 0 (mx - (a.int "tail").getD 20)
   let mut tick : Nat := 0
   repeat
-    let db ← Store.txn [.event, .agent] fun db => (db, db)
+    let db ← Store.view [{ table := .event, cond := .gt "id" (.int last) }, Sels.live] id
     for e in db.events do
       if (e.id : Int) > last then
         last := e.id
@@ -389,7 +388,8 @@ def state (a : Parsed) : m UInt32 := do
   if (← Sys.kind p true) == .none then
     Env.out (Json.encode (Json.mkObj [("active", .bool false), ("db", .str p), ("now", Json.int t)]))
     return 0
-  let db ← Store.txn [.task, .event, .agent, .msg, .lock, .conflict, .«meta», .ci, .workspace, .cursor] fun db => (db, db)
+  -- every table whole, read only (no write lock); the filtered selects per view are #77's follow-up
+  let db ← Store.view (([.task, .event, .agent, .msg, .lock, .conflict, .«meta», .ci, .workspace, .cursor] : List Table).map Sels.all) id
   let view := a.str "view"
   if view == some "summary" then
     Env.out (Json.encode (← summary db p t))

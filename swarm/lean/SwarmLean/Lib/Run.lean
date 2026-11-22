@@ -5,6 +5,7 @@ import SwarmLean.Lib.Re
 import SwarmLean.Db
 import SwarmLean.Db.Msgs
 import SwarmLean.Db.Notes
+import SwarmLean.Db.Sels
 import SwarmLean.Lib.Compute
 import Claims.Machines
 
@@ -157,7 +158,7 @@ lost an hour get a job-end. Only a watchd started from a Herdr terminal probes. 
 def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit := do
   if (← env "HC_TERMINAL_ID").isNone then return
   let ms ← Claims.hcMachines Compute.host
-  let db ← Store.txn [.«meta», .event] fun db => (db, db)
+  let db ← Store.view [Sels.metas ["machines"], Sels.jobs] id
   let old := ((db.getMeta "machines").bind (·.v) |>.bind Json.decode).getD (Json.mkObj [])
   let jobs := liveJobs db t
   let names := (ms.map (·.1)).eraseDups.mergeSort (· ≤ ·)
@@ -186,7 +187,7 @@ def remoteTick [Env m] [Proc m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit :
       let since := if Json.fstr o "state" == some s then (Json.fint o "since").getD t else t
       out := out ++ [(n, obj [("state", some (.str s)), ("ts", some (Json.int t)), ("since", some (Json.int since))])]
   let now ← Clock.now
-  Store.txn [.«meta»] fun db =>
+  Store.run <| Txn.update [Sels.metas ["machines"]] [] fun db =>
     let db := lost.foldl (fun db j => db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
       ("exit", some (.str "lost")), ("s", some (Json.int (t - j.ts)))])))) db
     (db.setMeta "machines" (some (Json.encode (Json.mkObj out))), ())
@@ -209,7 +210,7 @@ def killTerm [Proc m] (h : String) : m Unit := do
 /-- `j`'s job-end as lost, with the reason, unless it has one; true when this wrote it. -/
 def markLost [Store m] [Clock m] (why : String) (j : Job) : m Bool := do
   let now ← Clock.now
-  Store.txn [.event] fun db =>
+  Store.run <| Txn.update [Sels.jobEnd j.id] [] fun db =>
     if (db.events.any fun e => e.kind == some "job-end" && e.path == j.id) then (db, false)
     else (db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
       ("exit", some (.str "lost")), ("s", some (Json.int (now - j.ts))), ("why", some (.str why))]))), true)
@@ -219,7 +220,7 @@ with neither, to the communicator. -/
 def postEnd [Env m] [Store m] [Clock m] (who : String) (task : Option Int) (body : String) : m Unit := do
   let envComms ← env "SWARM_COMMS"
   let now ← Clock.now
-  Store.txn [.agent, .task, .«meta», .msg, .event] fun db =>
+  Store.run <| Txn.update ([Sels.live, Sels.metas ["comms"]] ++ (task.map Sels.task).toList) [.msg] fun db =>
     let names := (Agents.live db).map (·.name)
     if names.contains who then ((Msgs.post db now "swarm" who body).1, ())
     else match task with
@@ -230,13 +231,13 @@ def postEnd [Env m] [Store m] [Clock m] (who : String) (task : Option Int) (body
 
 /-- watchd: a detached job whose process is gone with no job-end ends as lost, and its submitter is told (board #205). -/
 def detachedTick [Env m] [Sys m] [Store m] [Clock m] (t : Int) : m Unit := do
-  let db ← Store.txn [.event] fun db => (db, db)
+  let db ← Store.view [Sels.jobs] id
   for j in liveJobs db t do
     if Json.field j.data "detached" != some (.bool true) then continue
     let some p := (Json.field j.data "pid").bind Json.int? | continue
     if ← Sys.pidAlive p then continue
     let now ← Clock.now
-    let fresh ← Store.txn [.event] fun db =>
+    let fresh ← Store.run <| Txn.update [Sels.jobEnd j.id] [] fun db =>
       if (db.events.any fun e => e.kind == some "job-end" && e.path == j.id) then (db, false)
       else (db.log now j.agent "job-end" j.id (some (Json.encode (obj [("machine", (j.s "machine").map .str),
         ("exit", some (.str "lost")), ("s", some (Json.int (now - j.ts)))]))), true)
@@ -269,7 +270,7 @@ pid is left alone). -/
 def goneTick [Env m] [Sys m] [Proc m] [Store m] [Clock m] (t : Int) (comms : Option String) (terms : Bool) :
     m Unit := do
   if (← env "HC_TERMINAL_ID").isNone then return
-  let db ← Store.txn [.event, .agent] fun db => (db, db)
+  let db ← Store.view [Sels.jobs, Sels.live] id
   let live := (Agents.live db).map (·.name)
   let mut killed : List String := []
   let mut seen : List String := []
@@ -300,11 +301,11 @@ def goneTick [Env m] [Sys m] [Proc m] [Store m] [Clock m] (t : Int) (comms : Opt
   if let some c := comms then
     if !killed.isEmpty then
       let now ← Clock.now
-      Store.txn [.agent, .msg] fun db => ((Msgs.post db now "swarm" c s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ())
+      Store.run (Txn.update [] [.msg] fun db => ((Msgs.post db now "swarm" c s!"watchd ended {killed.length} remote job(s) no one waited for: {", ".intercalate killed}").1, ()))
 
 /-- Removes a landed worktree's dirs on every machine its jobs ran on (run.clean_remote). -/
 def cleanRemote [Proc m] [Store m] [Clock m] (wt : String) : m Unit := do
-  let db ← Store.txn [.event] fun db => (db, db)
+  let db ← Store.view [{ table := .event, cond := .eq "kind" (.text "job-start") }] id
   let mut seen : List (String × String) := []
   for e in db.events.filter (·.kind == some "job-start") do
     let some j := Json.decode (e.data.getD "{}") | continue
@@ -315,7 +316,7 @@ def cleanRemote [Proc m] [Store m] [Clock m] (wt : String) : m Unit := do
     seen := (mach, dir) :: seen
     let ok := (← Proc.output ["hc", "exec", "--on", mach, "--timeout", "120", "rm", "-rf", dir] none []).any (·.code == 0)
     let now ← Clock.now
-    Store.txn [] fun db => (db.log now none "remote-clean" (some dir) (some s!"{mach} {if ok then "ok" else "failed"}"), ())
+    Store.run (Txn.exec [logStmt now none "remote-clean" (some dir) (some s!"{mach} {if ok then "ok" else "failed"}")])
 
 /-- ssh with one shared connection per host that gives up fast on a sleeping host (run.ssh_cmd). -/
 def sshCmd [Env m] : m (List String) := do
