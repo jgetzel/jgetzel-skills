@@ -241,9 +241,9 @@ def task (a : Parsed) : m UInt32 := do
     for w in ws do out s!"#{d w.id} waits on #{d id}: drop it too, or `swarm task after {d w.id} …`"
   | "hold" =>
     step [.task] (Queue.hold c id ((a.str "why").getD ""))
-    out s!"held #{d id}: neither auto-spawn nor an agent asking for work takes it until `swarm task unhold {d id}`"
+    out s!"held #{d id}: neither auto-spawn nor an agent asking for work takes it until the communicator or the user runs `swarm task unhold {d id}`"
   | "unhold" =>
-    step [.task] (Queue.unhold c id)
+    step [.task, .«meta»] (Queue.unhold c id)
     out s!"unheld #{d id}"
   | act => die s!"unknown task action {act}"
   return 0
@@ -326,10 +326,8 @@ def queue (a : Parsed) : m UInt32 := do
 /-- `swarm rules [show | set <text>…]` (tasks.cmd_rules). -/
 def rules (a : Parsed) : m UInt32 := do
   let text := " ".intercalate (a.strs "text")
-  let set := a.act == "set"
-  let r ← Store.txn [.«meta»] fun db =>
-    let db := if set then rulesSet text db else db
-    (db, db.getMeta "rules")
+  if a.act == "set" then step [.«meta»] (setRules (← ctx) text)
+  let r ← Store.txn [.«meta»] fun db => (db, db.getMeta "rules")
   Env.out (match r with | some x => x.v.getD "None" | none => "(none)")
   return 0
 

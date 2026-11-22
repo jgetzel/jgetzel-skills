@@ -94,15 +94,13 @@ def hold (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String Uni
       let db := db.set id ({ · with hold := some (oneLine why) })
       (db.log c.now (some c.me) "hold" none (some s!"#{d id} {oneLine why}"), .ok ())
 
-/-- `task unhold`. -/
+/-- `task unhold`: by the communicator or the user only. -/
 def unhold (c : Ctx) (id : Int) (db : Db) : Db × Except String Unit :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
     if r.hold.isNone then (db, .error s!"task #{d id} is not held")
-    else
-      let db := db.set id ({ · with hold := none })
-      (db.log c.now (some c.me) "unhold" none (some s!"#{d id}"), .ok ())
+    else inChargeStep c s!"unhold #{d id}" "unhold" s!"#{d id}" (·.set id ({ · with hold := none })) db
 
 /-- Held from staffing. -/
 def held (t : Task) : Bool := t.hold.isSome

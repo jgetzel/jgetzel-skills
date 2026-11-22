@@ -102,6 +102,24 @@ def test_hold_and_claim (t : T) : IO Unit := do
   hasnt (← t.sw "a" ["board"]).stdout "held:"
   has (← t.sw "a" ["task", "unhold", "1"] { ok := false }).stderr "task #1 is not held"
 
+/-- Security review H1: only the communicator or the user unholds; each call, refused or not, is an event with the
+caller's name and terminal. -/
+def test_unhold_rights (t : T) : IO Unit := do
+  t.q_ "update swarm set comms='comms' where name='t'"
+  adds t 1
+  t.sw_ "a" ["task", "hold", "1", "--why", "for the user"]
+  let r ← t.sw "a" ["task", "unhold", "1"] { ok := false, hc := some "w9" }
+  has r.stderr "only the communicator (comms) or the user (human) can unhold #1; you are a"
+  has (← t.sw "a" ["board"]).stdout "held: for the user"
+  eq ((← t.q1 "select count(*) n from event where kind='unhold-refused' and agent='a' and data='#1 (terminal w9)'").f "n") 1
+  t.sw_ "comms" ["task", "unhold", "1"] { hc := some "w1" }
+  hasnt (← t.sw "a" ["board"]).stdout "held:"
+  eq ((← t.q1 "select count(*) n from event where kind='unhold' and agent='comms' and data='#1 (terminal w1)'").f "n") 1
+  t.sw_ "a" ["task", "hold", "1", "--why", "again"]
+  t.sw_ "human" ["task", "unhold", "1"]
+  hasnt (← t.sw "a" ["board"]).stdout "held:"
+  eq ((← t.q1 "select count(*) n from event where kind='unhold' and agent='human' and data='#1 (terminal -)'").f "n") 1
+
 /-- The task the one auto-spawned agent took (room for one: two live, the number 2). -/
 def staffed (t : T) : IO Json := do
   tick t 2
@@ -158,6 +176,7 @@ def tests : List Case := [
   ("test_queue_left_on_done_and_drop", test_queue_left_on_done_and_drop),
   ("test_queue_says_why_not_startable", test_queue_says_why_not_startable),
   ("test_hold_and_claim", test_hold_and_claim),
+  ("test_unhold_rights", test_unhold_rights),
   ("test_staffing_queue_beats_priority", test_staffing_queue_beats_priority),
   ("test_staffing_skips_held", test_staffing_skips_held),
   ("test_staffing_queue_only", test_staffing_queue_only),
