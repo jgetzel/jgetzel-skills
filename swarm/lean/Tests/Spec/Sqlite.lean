@@ -485,8 +485,8 @@ def sqlite_claim (t : T) : IO Unit := do
   let (_, want) := (TaskTxn.showTxn 1).onDb m2
   let got ← sqliteRun c sc0 (TaskTxn.showTxn 1)
   eq (got.events.map (·.id)) (want.events.map (·.id)) "sqlite_claim: show reads the events the model's prefix picks"
-  eq (decide (got.events.all fun e => (e.data.getD "").startsWith "#1 " || e.data == some "#1")) true
-    "sqlite_claim: none of #12's"
+  eq (decide ((Tasks.taskEvents got 1).all fun e => (e.data.getD "").startsWith "#1 " || e.data == some "#1")) true
+    "sqlite_claim: and the task's events among them are none of #12's"
   -- the guard itself: an update of a claimed task where it is open changes nothing
   let some r := got.find 1 | fail "sqlite_claim: no task 1"
   eq (← sqliteRun c sc0 (Txn.guarded (Row.put { r with owner := some "a2" }) (.and (.eq "state" (.text "open")) (.null "owner"))))
