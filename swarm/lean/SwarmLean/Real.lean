@@ -272,18 +272,23 @@ def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : 
     if db' ≠ db then storeDb c sc db db'
     return a
 
-/-- The column and value a select of table `t` is scoped by: the scope's swarm for agents and events, its repo for
-locks, CI runs and worktrees (meta is scoped by `loadMetas`). -/
-def scopeCol (sc : Scope) : Table → Option (String × Val)
-  | .agent | .event => some ("swarm", .text sc.swarm)
-  | .lock | .ci | .workspace => some ("repo", .text sc.repo)
+/-- The condition a select of table `t` is scoped by, as `loadDb` loads it: the scope's swarm for agents (none when
+`every`) and events, its repo for locks, CI runs and worktrees (meta is scoped by `loadMetas`). -/
+def scopeCond (sc : Scope) : Table → Option (String × List Val)
+  | .agent => if sc.every then none else some ("swarm=?", [.text sc.swarm])
+  | .event =>
+    if sc.every && sc.repo == "" then some ("(swarm='' or kind in ('job-start', 'job-end'))", [])
+    else if sc.every then some ("repo=?", [.text sc.repo])
+    else if sc.swarm == "" then some ("swarm='' and repo=?", [.text sc.repo])
+    else some ("swarm=?", [.text sc.swarm])
+  | .lock | .ci | .workspace => some ("repo=?", [.text sc.repo])
   | _ => none
 
 /-- The rows of a row type's table that select `s` picks, in the scope `sc`, in key order: one indexed select. -/
 def selRows [Row α] (c : Conn) (sc : Scope) (s : Sel) : IO (List α) := do
   let (w, ps) := s.cond.sql
-  let (w, ps) := match if s.inScope then scopeCol sc s.table else none with
-    | some (col, v) => (s!"{col}=? and ({w})", v :: ps)
+  let (w, ps) := match if s.inScope then scopeCond sc s.table else none with
+    | some (sw, sps) => (s!"{sw} and ({w})", sps ++ ps)
     | none => (w, ps)
   let ks := (Row.cols α).take (Row.nkey α)
   match s.last with
@@ -304,15 +309,15 @@ def unionRows [Row α] (c : Conn) (sc : Scope) (t : Table) (ss : List Sel) : IO 
   | [s] => selRows c sc s
   | l => return dedupKeys (sortRows (← l.flatMapM (selRows c sc)))
 
-/-- The meta rows of swarm `s` that select `sel` picks (`loadMetas`, filtered). -/
-def selMetas (c : Conn) (s : String) (sel : Sel) : IO (List Meta) :=
-  return sel.pick (← loadMetasWhere c s sel.cond)
+/-- The meta rows scope `sc` sees that select `sel` picks (`loadMetas`, filtered). -/
+def selMetas (c : Conn) (sc : Scope) (sel : Sel) : IO (List Meta) :=
+  return sel.pick (← loadMetasWhere c sc.swarm sel.cond sc.metaName)
 
 /-- The slice of the db the selects `ss` pick in scope `sc`, with the next ids of `next` (`Db.slice` of the model). -/
 def readSlice (c : Conn) (sc : Scope) (ss : List Sel) (next : List Table) : IO Db := do
   let metas ← match ss.filter (·.table == .«meta») with
     | [] => pure []
-    | l => do pure (dedupKeys (sortRows (← l.flatMapM (selMetas c sc.swarm))))
+    | l => do pure (dedupKeys (sortRows (← l.flatMapM (selMetas c sc))))
   return {
     agents := ← unionRows c sc .agent ss, msgs := ← unionRows c sc .msg ss, cursors := ← unionRows c sc .cursor ss,
     tasks := ← unionRows c sc .task ss, locks := ← unionRows c sc .lock ss, conflicts := ← unionRows c sc .conflict ss,
@@ -330,7 +335,7 @@ def runTxnOn (c : Conn) (sc : Scope) (writes : Bool) : Txn α → IO (Option α)
   | .write p k => do
     if p.isEmpty then return ← runTxnOn c sc writes k
     if !writes then return none
-    runStmts c (p.flatMap (scopeStmts sc))
+    runStmts c (← (p.flatMap (scopeStmts sc)).mapM (agentSwarm c sc))
     runTxnOn c sc writes k
   | .guard s cond k => do
     if !writes then return none
