@@ -30,6 +30,11 @@ structure Hooks where
 
 abbrev TM := ReaderT Hooks App
 
+/-- The tables a transaction reads first, as the hooks see a `Store.run`: none when it starts with a write. -/
+def firstReads {α : Type} : Txn α → List Table
+  | .read ss _ _ => (ss.map (·.table)).eraseDups
+  | _ => []
+
 instance : Store TM where
   txn ts f := do
     let h ← read
@@ -39,15 +44,16 @@ instance : Store TM where
     pure a
   run t := do
     let h ← read
-    (← h.before.get) []
+    (← h.before.get) (firstReads t)
     let a ← (Store.run t : App _)
-    (← h.after.get) []
+    (← h.after.get) (firstReads t)
     pure a
   view ss f := do
     let h ← read
-    (← h.before.get) []
+    let ts := (ss.map (·.table)).eraseDups
+    (← h.before.get) ts
     let a ← (Store.view ss f : App _)
-    (← h.after.get) []
+    (← h.after.get) ts
     pure a
 
 instance : Clock TM where
@@ -157,6 +163,9 @@ def claim (t : T) (name title : String) : IO Unit := do
     [.text name, .text t.repo, .int n, .int n, .null]
   t.q_ "insert into task(title,state,owner,lease_until) values(?,'claimed',?,?)" [.text title, .text name, .int (n + 7200)]
 
+/-- The tables of reap's one read of the scope, before its transactions per task, lock and agent. -/
+def reapRead : List Table := [.agent, .task, .lock]
+
 def task1 (t : T) : IO Json := t.q1 "select state, owner from task where id=1"
 
 /-- A row exists (the Lua's truthy peer:one). -/
@@ -178,9 +187,9 @@ def reap_spares_a_rebound_terminal (t : T) : IO Unit := do
   let h ← hooks t
   claim t "a" "t"
   t.q_ "update agent set hc='t1'"
-  -- reap's read of the live agents is its agent-only transaction
-  let ran ← racing h (· == [.agent]) (t.q_ "update agent set hc='t2' where name='a'")
-  let out ← run h (Watchd.reap (some ["t2"]) (← now) none)
+  -- the peer acts after reap's one read of the scope
+  let ran ← racing h (· == reapRead) (t.q_ "update agent set hc='t2' where name='a'")
+  let (out, _) ← run h (Watchd.reap (some ["t2"]) (← now) none)
   ran
   eq out.length 0 (",".intercalate out)
   let a ← t.q1 "select hc, ended from agent"
@@ -195,7 +204,7 @@ def reap_kills_an_ended_rows_terminal (t : T) : IO Unit := do
   t.q_ "insert into agent(name, started, hc, ended, status) values('b', 1, 't1', 1, 'ended'), ('c', 1, 't2', 1, 'ended')"
   t.q_ "update agent set hc='t2' where name='a'"
   -- (the test monad drops every hc call: `out` names the terminals reap killed)
-  let out ← run h (Watchd.reap (some ["t1", "t2"]) (← now) none)
+  let (out, _) ← run h (Watchd.reap (some ["t1", "t2"]) (← now) none)
   eq out ["terminal b"]
 
 -- a sweep stopped between its worktree remove and the branch delete: the branch sweep deletes an ended agent's
@@ -218,14 +227,14 @@ def reap_keeps_a_renewed_lease_and_a_fresh_lock (t : T) : IO Unit := do
   t.q_ "insert into lock(path,agent,since,lease_until) values('a.txt','a',1,?)" [.int ((← now) + 3600)]
   t.q_ "update task set lease_until=1"
   t.q_ "update agent set ended=1"
-  let ran ← racing h (·.contains .task) do t.q_ "update task set lease_until=? where id=1" [.int ((← now) + 3600)]
-  let out ← run h (Watchd.reap none (← now) none)
+  let ran ← racing h (· == reapRead) do t.q_ "update task set lease_until=? where id=1" [.int ((← now) + 3600)]
+  let (out, _) ← run h (Watchd.reap none (← now) none)
   ran
   eq out.length 0 (",".intercalate out)
   eq ((← task1 t).f "state") "claimed"
   t.q_ "update lock set lease_until=1"
-  let ran ← racing h (· == [.lock]) do t.q_ "update lock set lease_until=?" [.int ((← now) + 3600)]
-  let out ← run h (Watchd.reap none (← now) none)
+  let ran ← racing h (· == reapRead) do t.q_ "update lock set lease_until=?" [.int ((← now) + 3600)]
+  let (out, _) ← run h (Watchd.reap none (← now) none)
   ran
   eq out.length 0 (",".intercalate out)
   eq (← t.q "select * from lock").size 1
@@ -403,7 +412,7 @@ def board91_a_task_freed_before_the_reserve_is_staffed_first (t : T) : IO Unit :
   eq ((← t.q1 "select state from task where id=2").f "state") "open"
 
 -- board #84: each pass under its own pcall: reap failing ends reap alone; the notices still run, and the tick raises it
--- (reap fails at its first transaction, the closest seam to the Lua's patched reap; the tick returns its errors)
+-- (reap fails at its one read of the scope, the closest seam to the Lua's patched reap; the tick returns its errors)
 def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   setup t
   let h ← hooks t
@@ -412,7 +421,7 @@ def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   t.q_ "insert into task(title,state,owner,question) values('q','blocked','x','which way?')"
   let armed ← IO.mkRef true
   h.before.set fun ts => do
-    if (← armed.get) && ts == [.task, .agent, .event] then armed.set false; throw (IO.userError "boom")
+    if (← armed.get) && ts == reapRead then armed.set false; throw (IO.userError "boom")
   let err ← tick h
   has (err.getD "") "reap: boom"
   exists_ t "select 1 from msg where dest='t-comms' and body like '%is blocked on #1%'"
