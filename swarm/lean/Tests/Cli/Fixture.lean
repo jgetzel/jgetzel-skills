@@ -411,4 +411,21 @@ def cleanup (t : T) (passed : Bool) : IO Unit := do
   if passed then discard <| IO.Process.output { cmd := "rm", args := #["-rf", t.d] }
 
 end T
+
+/-- Tables `ts` of the db as scope `sc` sees them, every row, with the next ids. -/
+def readTables (c : Sqlite.Conn) (sc : Scope) (ts : List Table) : IO Db :=
+  readSlice c sc (ts.map fun tb => ({ table := tb } : Sel)) [.task, .msg, .event]
+
+/-- Every table of the db. -/
+def allTables : List Table := [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+
+/-- The inserts of every row of `d`, its ids as given. -/
+def insertsOf (d : Db) : List Stmt :=
+  rowsPlan [] d.agents ++ rowsPlan [] d.msgs ++ rowsPlan [] d.cursors ++ rowsPlan [] d.tasks ++ rowsPlan [] d.locks ++
+  rowsPlan [] d.conflicts ++ rowsPlan [] d.pairkeys ++ rowsPlan [] d.metas ++ rowsPlan [] d.events ++
+  rowsPlan [] d.workspaces ++ rowsPlan [] d.cis
+
+/-- Writes every row of `d` into an empty db, in scope `sc`, through the store. -/
+def writeRows (c : Sqlite.Conn) (sc : Scope) (d : Db) : IO Unit := sqliteRun c sc (Txn.exec (insertsOf d))
+
 end SwarmLean.Tests.Cli

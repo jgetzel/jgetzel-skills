@@ -1,6 +1,6 @@
 import Tests.Cli.Fixture
 
-/-! db_spec.lua's asserts on the Lean's db layer (Real.lean's `connect`, `sqliteTxn`, `Db.log`; Sqlite.lean's binding).
+/-! db_spec.lua's asserts on the Lean's db layer (Real.lean's `connect`, `sqliteRun`, `Db.log`; Sqlite.lean's binding).
 db.lua's own API has no Lean form for three of them, not ported: a bool parameter (Val has none), a nested tx joining
 the outer one (a Lean step is one pure function in one transaction), and refusing a statement given fewer values than
 it has `?` (Conn.query binds what it is given, sqlite reads the rest as NULL; every statement is the code's own). -/
@@ -44,12 +44,13 @@ def test_txn_rolls_back_on_error (t : T) : IO Unit := do
   -- the trigger fails `boom`'s
   discard <| c.exec "create trigger nope before insert on meta when new.k='boom' begin select raise(abort, 'boom'); end"
   let r ← try
-      sqliteTxn c (sc t) [.meta] fun db => ({ db with metas := db.metas ++ [{ k := "gone", v := some "1" }, { k := "boom" }] }, ())
+      sqliteRun c (sc t) (Txn.update [{ table := .meta }] [] fun db =>
+        ({ db with metas := db.metas ++ [{ k := "gone", v := some "1" }, { k := "boom" }] }, ()))
       pure false
     catch _ => pure true
   eq r true
   eq ((← one c "select count(*) n from meta where k like 'gone%'") == some (.int 0)) true
-  eq (← sqliteTxn c (sc t) [] fun db => (db, 7)) 7
+  eq (← sqliteRun c (sc t) (Txn.done 7)) 7
 
 def test_after_migration_columns_and_log (t : T) : IO Unit := do
   Shim.setenv "SWARM_DB" t.db
@@ -63,7 +64,7 @@ def test_after_migration_columns_and_log (t : T) : IO Unit := do
   for (tb, col) in columns do
     has (← tableCols c tb) ((col.splitOn " ").headD col) s!"{tb}.{col}"
   let now := (← Sqlite.now).toNat
-  sqliteTxn c (sc t) [] fun db => (db.log now (some "a") "join" none none, ())
+  sqliteRun c (sc t) (Txn.update [] [.event] fun db => (db.log now (some "a") "join" none none, ()))
   let ev ← t.q1 "select * from event"
   eq (ev.f "agent") "a"; eq (ev.f "kind") "join"; eq (ev.f "path") Json.null
   eq (decide ((ev.f "ts").i ≥ now - 5)) true

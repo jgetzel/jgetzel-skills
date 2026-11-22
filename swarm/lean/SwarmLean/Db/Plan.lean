@@ -1,7 +1,7 @@
 import SwarmLean.Db
 import Std.Data.HashMap
 
-/-! The store's statements as data (board #134): what `storeDb` writes back and what `connect` migrates, each a list of
+/-! The store's statements as data (board #134): what a transaction's plan writes and what `connect` migrates, each a list of
 `Stmt` that Real.lean's `runStmts` runs, and how `loadRows` decodes what a select returned. Pure, so the proofs
 (Proofs/Store.lean) are about the plans the code runs. -/
 
@@ -93,13 +93,6 @@ plus one comparison per row kept (board #138). Columns Lean does not know keep t
 def rowsPlan [Row α] [BEq α] (old new : List α) : List Stmt :=
   let p := dropSame old new
   planOf p.1 p.2
-
-/-- The write-back of every table of `new` over what `old` loaded. -/
-def dbPlan (old new : Db) : List Stmt :=
-  rowsPlan old.agents new.agents ++ rowsPlan old.msgs new.msgs ++ rowsPlan old.cursors new.cursors ++
-  rowsPlan old.tasks new.tasks ++ rowsPlan old.locks new.locks ++ rowsPlan old.conflicts new.conflicts ++
-  rowsPlan old.pairkeys new.pairkeys ++ rowsPlan old.metas new.metas ++ rowsPlan old.events new.events ++
-  rowsPlan old.workspaces new.workspaces ++ rowsPlan old.cis new.cis
 
 /-- db.lua's COLUMNS: the columns added to dbs made before them. -/
 def columns : List (String × String) :=

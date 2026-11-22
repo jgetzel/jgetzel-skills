@@ -2,12 +2,10 @@ import SwarmLean.Db.Txn
 
 namespace SwarmLean
 
-/-- The database as the commands see it: a store that runs a function of the db as one transaction, given the tables
-the function reads (`txn`, the whole-table store the unconverted commands use), or a `Txn`: keyed reads, a pure
-decision on the rows read, its plan of statements (`run`, sw-global §3); or reads alone, the slice the selects pick
-(`view`), which writes nothing. -/
+/-- The database as the commands see it: a store that runs a `Txn` as one transaction: keyed reads, a pure decision on
+the rows read, its plan of statements (`run`, sw-global §3); or reads alone, the slice the selects pick (`view`), which
+writes nothing. -/
 class Store (m : Type → Type) where
-  txn {α : Type} : List Table → (Db → Db × α) → m α
   run {α : Type} : Txn α → m α
   view {α : Type} : List Sel → (Db → α) → m α
 
