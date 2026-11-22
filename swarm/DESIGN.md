@@ -242,6 +242,9 @@ The Herdr panels' installer and calendar feed are swarm/lean's executable herdr-
 
 ### Store
 
+Being replaced: one db per machine, swarms as groups of agents, tasks per repo, a statement store
+([research/sw-global.md](research/sw-global.md), 2026-11-21).
+
 `$SWARM_DB`, default `<git common dir>/swarm/swarm.db`, shared by every
 worktree of the repo. Tables: `agent`, `msg` (`kind` includes `notice`),
 `cursor`, `task` (with `after` and `model`), `lock`, `conflict`, `pairkey`
