@@ -76,7 +76,7 @@ def lockTxn (name path : String) (t : Int) : Txn (Option Lock) := do
   let hs := (d.locks.filterMap (·.agent)).eraseDups
   if hs.isEmpty then return none
   -- the holders in any swarm: a lock holds for every swarm in its repo (sw-global §2)
-  let a ← Txn.slice [{ table := .agent, cond := .oneOf "name" (hs.map .text), scoped := false }]
+  let a ← Txn.slice [{ table := .agent, cond := .oneOf "name" (hs.map .text), inScope := false }]
   return Locks.lockHolder { d with agents := a.agents } name path t
 
 /-- `name` edits in worktree `top`: recorded as its `wt`; when another live agent's is `top` too, both are told once

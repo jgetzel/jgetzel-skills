@@ -329,7 +329,7 @@ def note [Monad m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] (ps : Option (Lis
     { table := .«meta», cond := .eq "k" (.text "machines") }] fun d => (d.agents, d.metas)
   let events ← if metas.isEmpty then pure [] else
     let jobs : Cond := .and (.oneOf "kind" [.text "job-start", .text "job-end"]) (.gt "ts" (.int (t - 86400)))
-    Store.view [{ table := .event, cond := jobs, scoped := false }] (·.events)  -- every swarm's jobs
+    Store.view [{ table := .event, cond := jobs, inScope := false }] (·.events)  -- every swarm's jobs
   let hs := holders agents ps
   let gib (k : Int) : String := fixed (Float.ofInt k / 1048576) 1
   let mut lines := [lineOf mm]
