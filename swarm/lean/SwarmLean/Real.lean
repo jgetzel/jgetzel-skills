@@ -171,38 +171,7 @@ def loadMetasWhere (c : Conn) (s : String) (cond : Cond) (ms : String := s) : IO
     | _ => []
   return sortRows (cms.filter (fun m => cond.holds (Row.cell m)) ++ ms.filter (·.k != "comms"))
 
-/-- The meta rows swarm `s` sees: the machine's keys and those of meta scope `ms`, and `comms` from its swarm row. -/
-def loadMetas (c : Conn) (s : String) (ms : String := s) : IO (List Meta) := loadMetasWhere c s .all ms
-
-/-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents (of every swarm when `every`), knobs
-and events of the scope's swarm (a repo's own: its events of no swarm), the locks and CI runs of its repo, the worktrees
-of its repo and of its swarm's agents (of every swarm's when `every`) in any repo, and every task, message, cursor and
-conflict. -/
-def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
-  let has (t : Table) := ts.contains t
-  let sw := [Val.text sc.swarm]
-  let rp := [Val.text sc.repo]
-  return {
-    agents := ← if has .agent then (if sc.every then loadRows c else loadWhere c "swarm=?" sw) else pure []
-    msgs := ← if has .msg then loadRows c else pure []
-    cursors := ← if has .cursor then loadRows c else pure []
-    tasks := ← if has .task then loadRows c else pure []
-    locks := ← if has .lock then loadWhere c "repo=?" rp else pure []
-    conflicts := ← if has .conflict then loadRows c else pure []
-    pairkeys := ← if has .pairkey then loadRows c else pure []
-    metas := ← if has .«meta» then loadMetas c sc.swarm sc.metaName else pure []
-    events := ← if has .event then
-        (if sc.every && sc.repo == "" then loadWhere c "swarm='' or kind in ('job-start', 'job-end')" []
-         else if sc.every then loadWhere c "repo=?" rp
-         else if sc.swarm == "" then loadWhere c "swarm='' and repo=?" rp
-         else loadWhere c "swarm=?" sw) else pure []
-    workspaces := ← if has .workspace then
-        (if sc.every then loadWhere c "repo=? or agent in (select name from agent)" rp
-         else loadWhere c "repo=? or agent in (select name from agent where swarm=?)" (rp ++ sw)) else pure []
-    cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
-    taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event", swarm := sc.swarm }
-
-/-- A write-back statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
+/-- A statement on the machine's db: rows of the scoped tables get the scope's swarm or repo, keys the scope
 column (a lock carries its own repo, and so does a workspace), and meta `comms` is the swarm row's. A new agent row
 replaces one of that name in another swarm: the agent moves (names are the machine's). -/
 def scopeStmt (sc : Scope) : Stmt → Stmt
@@ -240,10 +209,6 @@ def agentSwarm (c : Conn) (sc : Scope) : Stmt → IO Stmt
     return .ins "event" cs ((cs.zip vs).map fun (k, v) => if k == "swarm" then .text sw else v)
   | st => return st
 
-/-- Writes every table of `new` over what `old` loaded (`dbPlan`), in scope `sc`. -/
-def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := do
-  runStmts c (← ((dbPlan old new).flatMap (scopeStmts sc)).mapM (agentSwarm c sc))
-
 /-- `act` between `begin` and COMMIT; any error rolls back. -/
 def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
   discard <| c.exec begin
@@ -255,28 +220,8 @@ def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
     try discard <| c.exec "rollback" catch _ => pure ()
     throw e
 
-/-- The commits other connections made: changed by each (sqlite's `pragma data_version`). -/
-def dataVersion (c : Conn) : IO (Array (Array Val)) := c.query "pragma data_version"
-
-/-- The real store's transaction: load the tables `ts` and apply `f` in a read transaction (BEGIN, no write lock, so
-readers never wait on or starve each other); if `f` changed the db, write it back under BEGIN IMMEDIATE, as computed when
-no other connection committed since (data_version unchanged), else loaded and applied again there. Any error rolls back.
--/
-def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : IO α := do
-  let (db, v) ← inTxn c "begin" do pure (← loadDb c sc ts, ← dataVersion c)
-  let (db', a) := f db
-  if db' = db then return a
-  inTxn c "begin immediate" do
-    if (← dataVersion c) == v then
-      storeDb c sc db db'
-      return a
-    let db ← loadDb c sc ts
-    let (db', a) := f db
-    if db' ≠ db then storeDb c sc db db'
-    return a
-
-/-- The condition a select of table `t` is scoped by, as `loadDb` loads it: the scope's swarm for agents (none when
-`every`) and events, its repo for CI runs, its repo and its agents for worktrees (meta is scoped by `loadMetas`). A
+/-- The condition a select of table `t` is scoped by: the scope's swarm for agents (none when
+`every`) and events, its repo for CI runs, its repo and its agents for worktrees (meta is scoped by `loadMetasWhere`). A
 lock row carries its repo, so a select of locks names it. -/
 def scopeCond (sc : Scope) : Table → Option (String × List Val)
   | .agent => if sc.every then none else some ("swarm=?", [.text sc.swarm])
@@ -316,7 +261,7 @@ def unionRows [Row α] (c : Conn) (sc : Scope) (t : Table) (ss : List Sel) : IO 
   | [s] => selRows c sc s
   | l => return dedupKeys (sortRows (← l.flatMapM (selRows c sc)))
 
-/-- The meta rows scope `sc` sees that select `sel` picks (`loadMetas`, filtered). -/
+/-- The meta rows scope `sc` sees that select `sel` picks (`loadMetasWhere`, filtered). -/
 def selMetas (c : Conn) (sc : Scope) (sel : Sel) : IO (List Meta) :=
   return sel.pick (← loadMetasWhere c sc.swarm sel.cond sc.metaName)
 
@@ -363,7 +308,6 @@ def sqliteRun (c : Conn) (sc : Scope) (t : Txn α) : IO α := do
   | none => throw (IO.userError "swarm: a transaction stopped short under BEGIN IMMEDIATE")
 
 instance : Store App where
-  txn ts f := do sqliteTxn (← theConn) (← theScope) ts f
   run t := do sqliteRun (← theConn) (← theScope) t
   view ss f := do
     let c ← theConn

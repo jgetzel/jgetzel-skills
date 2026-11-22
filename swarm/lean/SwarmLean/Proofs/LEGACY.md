@@ -21,6 +21,10 @@ back in the new shape, or replaces it, and empties this list.
 | `SwarmLean/Proofs/Crash.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
 | `SwarmLean/Proofs/Keep.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
 
+Board #77 deleted the whole-table store (`Store.txn`, `loadDb`, `storeDb`, `dbPlan`). `Proofs/WriteBack.lean` proves
+`rowsPlan`, which `slicePlan` still runs per table; `Proofs/Crash.lean`, `Keep.lean` and `Sweep.lean` unfold
+`Store.txn`: the proofs phase states them over `Store.run` and `slicePlan`.
+
 With them: `Audit.lean` and `challenge.sh` (Challenge.lean, Solution.lean, comparator.json) are skipped by `check.sh` unless
 `SWARM_PROOFS` is set.
 

@@ -2,9 +2,9 @@ import Tests.Cli.Fixture
 import SwarmLean.Db.TaskTxn
 
 /-! sqlite_spec.lua: the store assumption (Assumptions.lean's `Atomic`, and the sqlite behaviour its tags name) against
-real sqlite through the code's own store: `connect` (WAL, a 10 s busy handler) and `sqliteTxn` (`Store.txn`: load
-and apply in a read transaction; a change written under BEGIN IMMEDIATE, applied again if another connection committed
-since), many processes at once. Each case carries the name a tag gives. The other
+real sqlite through the code's own store: `connect` (WAL, a 10 s busy handler) and `sqliteRun` (`Store.run`: reads
+and the decision in a read transaction; one that writes run again, reads, decision and plan, under BEGIN IMMEDIATE),
+many processes at once. Each case carries the name a tag gives. The other
 processes are this binary's `--sqlite <role> …` (`worker`), each on its own connection to $SWARM_DB. Counters and
 accounts are meta rows. -/
 
@@ -36,6 +36,9 @@ def int (c : Conn) (sql : String) : IO Int := do
   | some (.text s) => pure (s.toInt?.getD 0)
   | _ => fail s!"{sql}: no number"
 
+/-- A step of the meta rows, as a transaction of the store. -/
+def onMetas (f : Db → Db × α) : Txn α := Txn.update [{ table := .«meta» }] [] f
+
 /-- The machine's scope with no swarm: every meta key is scope `''`, as the raw statements here write them. -/
 def sc0 : Scope := { swarm := "t", repo := "" }
 
@@ -44,9 +47,9 @@ def sumSql : String := "select coalesce(sum(cast(v as integer)),0)*100 + count(*
 /-- Prints a line and flushes it: the parent waits for it. -/
 def signal : IO Unit := do let o ← IO.getStdout; o.putStrLn "x"; o.flush
 
-/-- A worker process's role. tx: K Store.txns adding one to meta tx, each logging the value it read (an event of kind
+/-- A worker process's role. tx: K transactions adding one to meta tx, each logging the value it read (an event of kind
 seen); `tx auto` adds one to meta auto outside a transaction after each. auto: K writes outside a transaction adding
-one to meta auto. move <i>: K Store.txns moving 1 between two of eight accounts. sum: 4K reads of the accounts' total.
+one to meta auto. move <i>: K transactions moving 1 between two of eight accounts. sum: 4K reads of the accounts' total.
 hold: holds the write lock 1 s (BEGIN IMMEDIATE, auto = -1). readhold: holds a read transaction 1 s. victim: BEGIN
 IMMEDIATE, a write, then waits to be killed. -/
 def worker (role : String) (args : List String) : IO UInt32 := do
@@ -59,7 +62,7 @@ where go (role : String) (args : List String) : IO UInt32 := do
   | "tx", rest =>
     let both := rest == ["auto"]
     for _ in [0:K] do
-      sqliteTxn c sc0 [.«meta»] fun db => let v := getI db "tx"; ((setI db "tx" (v + 1)).log 0 none "seen" (some (toString v)) none, ())
+      sqliteRun c sc0 <| onMetas fun db => let v := getI db "tx"; ((setI db "tx" (v + 1)).log 0 none "seen" (some (toString v)) none, ())
       if both then discard <| c.exec "update meta set v=cast(v as integer)+1 where k='auto'"
   | "auto", [] =>
     for _ in [0:K] do discard <| c.exec "update meta set v=cast(v as integer)+1 where k='auto'"
@@ -69,7 +72,7 @@ where go (role : String) (args : List String) : IO UInt32 := do
       let (a, g1) := randNat g 1 8
       let (b, g2) := randNat g1 1 8
       g := g2
-      sqliteTxn c sc0 [.«meta»] fun db =>
+      sqliteRun c sc0 <| onMetas fun db =>
         let db := setI db s!"acct.{a}" (getI db s!"acct.{a}" - 1)
         (setI db s!"acct.{b}" (getI db s!"acct.{b}" + 1), ())
   | "sum", [] =>
@@ -134,9 +137,12 @@ def busy (msg : String) (act : IO Unit) : IO Nat := do
   | some e => if hasSub e "locked" then return (← IO.monoMsNow) - t0 else fail s!"{msg}: {e}"
   | none => fail s!"{msg}: it went through"
 
+/-- The commits other connections made: changed by each (sqlite's `pragma data_version`). -/
+def dataVersion (c : Conn) : IO (Array (Array Val)) := c.query "pragma data_version"
+
 def pragma200 (c : Conn) : IO Unit := discard <| c.query "pragma busy_timeout=200"
 
-/-- Concurrent Store.txns lose no update and each reads the latest value; one that can't get the write lock waits out
+/-- Concurrent transactions lose no update and each reads the latest value; one that can't get the write lock waits out
 busy_timeout, then fails with SQLITE_BUSY, changing nothing and leaving no transaction open. -/
 def sqlite_begin (t : T) : IO Unit := do
   let c ← setup t
@@ -148,10 +154,10 @@ def sqlite_begin (t : T) : IO Unit := do
   pragma200 c
   holding t "hold" do
     let ms ← busy "sqlite_begin: waits out busy_timeout, then SQLITE_BUSY" <|
-      sqliteTxn c sc0 [.«meta»] fun db => (setI db "seen.-1" (-1), ())
+      sqliteRun c sc0 <| onMetas fun db => (setI db "seen.-1" (-1), ())
     eq (decide (ms ≥ 190)) true "sqlite_begin: it waits out busy_timeout"
   discard <| c.query "pragma busy_timeout=10000"
-  sqliteTxn c sc0 [] fun db => (db, ())  -- no transaction was left open (else: cannot start a transaction within a transaction)
+  sqliteRun c sc0 (Txn.done ())  -- no transaction was left open (else: cannot start a transaction within a transaction)
   eq (← int c "select count(*) from meta where k='seen.-1'") 0 "sqlite_begin: a BUSY changes nothing"
 
 /-- Concurrent writes outside a transaction lose no update; one that can't get the lock waits out busy_timeout, then
@@ -167,7 +173,7 @@ def sqlite_write (t : T) : IO Unit := do
     eq (decide (ms ≥ 190)) true "sqlite_write: it waits out busy_timeout"
   eq (← int c "select v from meta where k='tx'") 0 "sqlite_write: a BUSY changes nothing"
 
-/-- A transaction reads its own writes; reads never see part of a Store.txn, don't wait on the writer and don't see
+/-- A transaction reads its own writes; reads never see part of a transaction, don't wait on the writer and don't see
 its uncommitted write. -/
 def sqlite_read (t : T) : IO Unit := do
   let c ← setup t
@@ -182,7 +188,7 @@ def sqlite_read (t : T) : IO Unit := do
     eq (← int c "select v from meta where k='auto'") 0 "sqlite_read: a read doesn't see the writer's uncommitted write"
     eq (decide ((← IO.monoMsNow) - t0 < 100)) true "sqlite_read: a read doesn't wait on the writer"
 
-/-- Every Store.txn of many processes at once commits whole (counters, transfers, readers, as sqlite_spec.lua ran
+/-- Every transaction of many processes at once commits whole (counters, transfers, readers, as sqlite_spec.lua ran
 them together); a commit is the next version; a commit doesn't wait for a reader (WAL). -/
 def sqlite_commit (t : T) : IO Unit := do
   let c ← setup t
@@ -196,10 +202,10 @@ def sqlite_commit (t : T) : IO Unit := do
   pragma200 c
   holding t "readhold" do
     let t0 ← IO.monoMsNow
-    sqliteTxn c sc0 [.«meta»] fun db => (setI db "auto" 0, ())
+    sqliteRun c sc0 <| onMetas fun db => (setI db "auto" 0, ())
     eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_commit: a commit doesn't wait for a reader (WAL)"
 
-/-- A transaction whose process is killed (SIGKILL) in it, or whose Store.txn fails, leaves nothing and frees the lock. -/
+/-- A transaction whose process is killed (SIGKILL) in it, or whose `Store.run` fails, leaves nothing and frees the lock. -/
 def sqlite_rollback (t : T) : IO Unit := do
   let c ← setup t
   let w ← spawnW t ["victim"]
@@ -207,17 +213,17 @@ def sqlite_rollback (t : T) : IO Unit := do
   discard <| t.exec ["kill", "-KILL", toString w.pid]
   discard <| w.wait
   discard <| c.query "pragma busy_timeout=1000"
-  sqliteTxn c sc0 [] fun db => (db, ())  -- the lock is free
+  sqliteRun c sc0 (Txn.done ())  -- the lock is free
   -- the write-back fails at the second row: the first is rolled back with it
   discard <| c.exec "create trigger nope before insert on meta when new.k='boom' begin select raise(abort, 'boom'); end"
-  let failed ← try sqliteTxn c sc0 [.«meta»] (fun db => (setI (setI db "seen.-8" (-8)) "boom" 0, ())); pure false
+  let failed ← try sqliteRun c sc0 (onMetas fun db => (setI (setI db "seen.-8" (-8)) "boom" 0, ())); pure false
     catch _ => pure true
-  eq failed true "sqlite_rollback: the failing Store.txn fails"
+  eq failed true "sqlite_rollback: the failing transaction fails"
   eq (← int c "select count(*) from meta where k in ('seen.-7', 'seen.-8')") 0 "sqlite_rollback: nothing of either is left"
   eq ((← c.query "pragma integrity_check")[0]?.bind (·[0]?) == some (.text "ok")) true "sqlite_rollback: the db is whole"
 
 /-- A deferred transaction that has read, then writes after another connection's commit, gets SQLITE_BUSY
-(BUSY_SNAPSHOT) at once, busy_timeout (10 s) not waited, and stays open: why Store.txn never upgrades its read
+(BUSY_SNAPSHOT) at once, busy_timeout (10 s) not waited, and stays open: why `Store.run` never upgrades its read
 transaction but writes in a new BEGIN IMMEDIATE one. -/
 def deferred (t : T) : IO Unit := do
   let a ← setup t
@@ -231,7 +237,7 @@ def deferred (t : T) : IO Unit := do
   discard <| a.exec "rollback"
 
 /-- `pragma data_version` stays put while no other connection commits (across this connection's own transactions) and
-changes when one does, read inside BEGIN IMMEDIATE too; a read-only Store.txn takes no write lock, so it goes through at
+changes when one does, read inside BEGIN IMMEDIATE too; a read-only `Store.run` takes no write lock, so it goes through at
 once while another connection holds it (board #137). -/
 def sqlite_version (t : T) : IO Unit := do
   let a ← setup t
@@ -239,15 +245,15 @@ def sqlite_version (t : T) : IO Unit := do
   -- no fsync of the WAL under the write lock: a commit's wait on a busy disk held every other writer
   eq (toString (repr (← b.query "pragma synchronous"))) (toString (repr (#[#[Sqlite.Val.int 1]] : Array (Array Sqlite.Val)))) "connect: synchronous=normal"
   let v ← inTxn a "begin" (dataVersion a)
-  sqliteTxn a sc0 [.«meta»] fun db => (setI db "tx" 1, ())
+  sqliteRun a sc0 <| onMetas fun db => (setI db "tx" 1, ())
   eq ((← inTxn a "begin immediate" (dataVersion a)) == v) true "sqlite_version: unchanged by this connection's commits"
   discard <| b.exec "update meta set v='2' where k='tx'"
   eq ((← inTxn a "begin immediate" (dataVersion a)) == v) false "sqlite_version: changed by another connection's commit"
   pragma200 a
   holding t "hold" do
     let t0 ← IO.monoMsNow
-    eq (← sqliteTxn a sc0 [.«meta»] fun db => (db, getI db "tx")) 2 "sqlite_version: a read-only Store.txn reads the last commit"
-    eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_version: a read-only Store.txn doesn't wait on the writer"
+    eq (← sqliteRun a sc0 <| onMetas fun db => (db, getI db "tx")) 2 "sqlite_version: a read-only transaction reads the last commit"
+    eq (decide ((← IO.monoMsNow) - t0 < 150)) true "sqlite_version: a read-only transaction doesn't wait on the writer"
 
 /-- The rows `sql` returns, each cell as JSON. -/
 def rowsOf (c : Conn) (sql : String) : IO (List (List Json)) :=
@@ -333,9 +339,8 @@ def sqlite_txn (t : T) : IO Unit := do
       { id := i + 1, ts := some i, agent := some who, kind := some k }
     cursors := [{ agent := "a1", last_msg_id := some 0 }]
     taskNext := 3, msgNext := 1, eventNext := 7 }
-  storeDb c sc0 {} fix
-  let all := [Table.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
-  let loaded : IO Db := do let d ← loadDb c sc0 all; pure { d with taskNext := 0, msgNext := 0, eventNext := 0 }
+  writeRows c sc0 fix
+  let loaded : IO Db := do let d ← readTables c sc0 allTables; pure { d with taskNext := 0, msgNext := 0, eventNext := 0 }
   let norm (d : Db) : Db := { d with taskNext := 0, msgNext := 0, eventNext := 0 }
   let sels : List Sel := [{ table := .agent, cond := .eq "name" (.text "a1") },
     { table := .event, cond := .eq "agent" (.text "a1"), last := some 2 },
@@ -472,7 +477,7 @@ def sqlite_claim (t : T) : IO Unit := do
   let c ← connect
   discard <| c.exec "insert or ignore into swarm(name) values('t')"
   let fix : Db := { taskFix with metas := [] }
-  storeDb c sc0 {} fix
+  writeRows c sc0 fix
   let a1 : Tasks.Ctx := { me := "a1", now := 1000 }
   let a2 : Tasks.Ctx := { me := "a2", now := 1000 }
   eq (exText (← sqliteRun c sc0 (TaskTxn.claimTxn a1 1 "2h"))) "ok" "sqlite_claim: the first claimer wins"
@@ -481,8 +486,7 @@ def sqlite_claim (t : T) : IO Unit := do
   let (m1, _) := (TaskTxn.claimTxn a1 1 "2h").onDb fix
   let (m2, r2) := (TaskTxn.claimTxn a2 1 "2h").onDb m1
   eq (exText r2) "task #1 is claimed, owned by a1" "sqlite_claim: the model refuses it too"
-  let all := [Table.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
-  let got ← loadDb c sc0 all
+  let got ← readTables c sc0 allTables
   eq (decide (normDb got = normDb m2)) true "sqlite_claim: and the rows are the model's"
   -- a prefix read: the events about #1, not #12's
   let (_, want) := (TaskTxn.showTxn 1).onDb m2

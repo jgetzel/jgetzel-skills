@@ -1341,7 +1341,7 @@ def test_after_dependency (t : T) : IO Unit := do
 def poolIds (t : T) : IO (List Nat) := do
   Shim.setenv "SWARM_DB" t.db
   let c ← connect
-  let db ← loadDb c t.scope [.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
+  let db ← readTables c t.scope allTables
   return (SwarmLean.Tasks.pool db).map (·.id)
 
 def test_priority_orders_pool_and_board (t : T) : IO Unit := do
