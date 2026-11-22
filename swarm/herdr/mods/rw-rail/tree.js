@@ -652,11 +652,13 @@ export function swarmText(it, at, now, opened) {
 
 // The swarm tab (rw-swarm, slice 7), from `swarm state --json --view overview` (`s`).
 // What waits on you: questions (tasks blocked on you), agents stopped at a prompt, hung agents.
+// A question is the swarm's when its agent is (sw-global §2: membership is agent.swarm; the board may hold other swarms').
 export function asksOf(s) {
-  const tasks = s.tasks ?? [], live = (s.agents ?? []).filter((a) => a.status !== "ended");
-  const asked = new Set(tasks.filter((k) => k.state === "blocked").map((k) => k.owner));
+  const all = s.agents ?? [], live = all.filter((a) => a.status !== "ended"), ours = new Set(all.map((a) => a.name));
+  const tasks = (s.tasks ?? []).filter((k) => k.state === "blocked" && (k.owner == null || !all.length || ours.has(k.owner)));
+  const asked = new Set(tasks.map((k) => k.owner));
   return [
-    ...tasks.filter((k) => k.state === "blocked").map((k) => ({ kind: "question", agent: k.owner, task: k, ago: k.blocked_s })),
+    ...tasks.map((k) => ({ kind: "question", agent: k.owner, task: k, ago: k.blocked_s })),
     ...live.filter((a) => a.status === "blocked" && !asked.has(a.name)).map((a) => ({ kind: "prompt", agent: a.name, ago: a.idle_s })),
     ...live.filter((a) => a.stay_sign === "hung").map((a) => ({ kind: "hung", agent: a.name, ago: a.idle_s })),
   ];

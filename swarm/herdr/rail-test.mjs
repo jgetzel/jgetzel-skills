@@ -285,13 +285,17 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   const o = overOf({ active: true, watchd: { alive: false }, machine: { high: true, line: "machine: 2/94G" },
     ci: { red_streak: 2, runs: [{ id: 9, status: "in_progress" }, { id: 8, status: "completed", conclusion: "failure", url: "javascript:x" }] },
     tasks: [{ id: 1, state: "claimed", title: "main red: fix it", owner: "ll-2" }, { id: 2, state: "blocked", owner: "ll-3", title: "q", question: "?" }],
-    agents: [{ name: "ll-4", status: "idle", stay_sign: "hung" }], limits: { queue_only: true } });
+    agents: [{ name: "ll-3", status: "idle" }, { name: "ll-4", status: "idle", stay_sign: "hung" }], limits: { queue_only: true } });
   const n = needsOf(o);
   assert.deepEqual(n.map((x) => x.kind), ["watchd", "ci", "question", "hung", "memory"]);
   assert.equal(n[1].run.id, 8); assert.equal(n[1].run.url, null); assert.equal(n[1].reds, 2); assert.equal(n[1].fixer.id, 1);
   assert.equal(n[4].line, "2/94G");
   assert.equal(o.limits.queue_only, true);
   assert.deepEqual(needsOf(overOf({ active: true, watchd: { alive: true }, ci: { red_streak: 0 } })), []);
+  // another swarm's question on the shared board is not this swarm's (sw-global: membership is agent.swarm)
+  const other = needsOf(overOf({ active: true, tasks: [{ id: 3, state: "blocked", owner: "hpl-4", question: "?" }, { id: 4, state: "blocked", owner: "ll-3", question: "?" }],
+    agents: [{ name: "ll-3", status: "idle" }] }));
+  assert.deepEqual(other.map((x) => x.task?.id), [4]);
 }
 // A prompt's terminal in a window (II.6 tier 1): a title bar from rw-pane, then the terminal; one window per terminal.
 {

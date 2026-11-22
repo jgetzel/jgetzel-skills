@@ -72,12 +72,14 @@ board() {
   sql "update swarm set comms='$2' where name='$cur'"
 }
 cat >"$(dir .)/reg.sh" <<'EOF'
-sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, swarm, hc, status, last_active, started, stay, claude_pid) values('$2', '$6', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''), $PPID)"
+sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, swarm, hc, status, last_active, started, stay, claude_pid) values('$2', '$6', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''), $PPID);
+  insert or replace into workspace(repo, path, agent) values('$7', '$PWD', '$2')"
 EOF
-# swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers in $cur, then as agent()
+# swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers in $cur (its workspace in
+# $crepo, as `swarm spawn` records one), then as agent()
 swagent() {
   n=$1 st=$2 ago=$3 stay=$4; shift 4
-  jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay' '$cur'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
+  jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay' '$cur' '$crepo'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
 }
 # task <id> <title> <state> [owner] [question]: a task of $crepo
 task() { sql "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''));
