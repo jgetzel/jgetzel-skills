@@ -47,7 +47,8 @@ def list : m (List Row) := do
     { name, comms := txt r[1]?, created := int r[2]?, ended := int r[3]?, repos := of 1 name, live := of 2 name }
 
 /-- Makes swarm `s` with communicator `comms` and repos (path, base) at time `t`; false when it exists. -/
-def create (s : String) (comms : Option String) (repos : List (String × Option String)) (t : Int) : m Bool := do
+def create (sn : SwarmName) (comms : Option String) (repos : List (String × Option String)) (t : Int) : m Bool := do
+  let s := sn.val
   let txt (o : Option String) : Val := match o with | some x => .text x | none => .null
   let rs ← Sys.sqlAt (← dbPath) schema ([("select 1 from swarm where name=?", [.text s]),
       ("insert or ignore into swarm(name, comms, created) values(?, ?, ?)", [.text s, txt comms, .int t])] ++

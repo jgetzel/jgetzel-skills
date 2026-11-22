@@ -76,10 +76,10 @@ def die [Monad m] [Env m] [MonadExceptOf Exit m] (msg : String) : m α := do
   Env.err s!"swarm: {msg}"
   throw (Exit.mk 1)
 
-/-- The agent this process runs as, or die (agents.me). -/
+/-- The agent this process runs as (`human`: the user), or die (agents.me): unset, or not an agent's name. -/
 def me [Monad m] [Env m] [MonadExceptOf Exit m] : m String := do
   match ← env "SWARM_NAME" with
-  | some n => pure n
+  | some n => if n == "human" || (AgentName.parse? n).isSome then pure n else die s!"SWARM_NAME: {AgentName.why n}"
   | none => die "SWARM_NAME is unset (run as a swarm agent, or export SWARM_NAME)"
 
 /-- The value of an `Except` from a pure step, or die with its message. -/

@@ -30,6 +30,37 @@ def locks (n : String) : Sel := { table := .lock, cond := .eq "agent" (.text n) 
 /-- The worktrees recorded for `n`. -/
 def workspaces (n : String) : Sel := { table := .workspace, cond := .eq "agent" (.text n) }
 
+/-- The scope's live agents. -/
+def live : Sel := { table := .agent, cond := .null "ended" }
+
+/-- The conflicts naming `n`. -/
+def conflicts (n : String) : Sel := { table := .conflict, cond := .or (.eq "a" (.text n)) (.eq "b" (.text n)) }
+
+/-- The pair keys naming `n`. -/
+def pairkeys (n : String) : Sel := { table := .pairkey, cond := .or (.eq "a" (.text n)) (.eq "b" (.text n)) }
+
+/-- What `Agents.release` and `Agents.endRow` read of `n`: its row, the tasks it owns, its locks, conflicts and pair keys. -/
+def release (n : String) : List Sel := [agent n, owned n, locks n, conflicts n, pairkeys n]
+
+/-- The staffing knobs `Agents.limits` and `limitsLine` read, and the communicator. -/
+def LIMIT_KEYS : List String := ["comms", "agent_min", "agent_max", "queue_only"]
+
+/-- What `Agents.limits` reads: the live agents and the staffing knobs. -/
+def limits : List Sel := [live, metas LIMIT_KEYS]
+
+/-- Task `i`'s row. -/
+def task (i : Int) : Sel := { table := .task, cond := .eq "id" (.int i) }
+
+/-- The tasks of ids `is`. -/
+def tasks (is : List Int) : Sel := { table := .task, cond := .oneOf "id" (is.map .int) }
+
+/-- The cursors of agents `ns`. -/
+def cursors (ns : List String) : Sel := { table := .cursor, cond := .oneOf "agent" (ns.map .text) }
+
+/-- The messages to `n` (or to all) past cursor `cur` (`Msgs.unread`'s rows). -/
+def unreadPast (n : String) (cur : Int) : Sel :=
+  { table := .msg, cond := .and (.gt "id" (.int cur)) (.oneOf "dest" [.text n, .text "@all"]) }
+
 /-- What `Agents.fence` reads of `n`: its row and the last event that ended it. -/
 def fence (n : String) : List Sel :=
   [agent n, { table := .event, cond := .and (.eq "agent" (.text n)) (.oneOf "kind" [.text "reap", .text "leave", .text "end"]),
@@ -38,11 +69,11 @@ def fence (n : String) : List Sel :=
 /-- What `Agents.touch` reads of `n`: the fence's reads and its cursor. -/
 def touch (n : String) : List Sel := fence n ++ [cursor n]
 
-/-- A step on agent `n`'s row, its fence and its cursor (`touch`, `set_status`): the next message id is read only when
-the row is missing, for the cursor touch makes then. -/
-def onAgent (n : String) (f : Db → Db × α) : Txn α := do
-  let d ← Txn.slice (touch n)
-  let d ← if (d.agent n).isSome then pure d else Txn.slice (touch n) [.msg]
+/-- A step on agent `n`'s row, its fence and its cursor (`touch`, `set_status`), and what `extra` selects: the next
+message id is read only when the row is missing, for the cursor touch makes then. -/
+def onAgent (n : String) (f : Db → Db × α) (extra : List Sel := []) : Txn α := do
+  let d ← Txn.slice (touch n ++ extra)
+  let d ← if (d.agent n).isSome then pure d else Txn.slice (touch n ++ extra) [.msg]
   let (d', a) := f d
   Txn.exec (slicePlan d d')
   pure a

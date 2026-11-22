@@ -50,16 +50,15 @@ where
                                            first_claimed_at := t.first_claimed_at.orElse fun _ => some now }
     pure (db.log now (some name) "claim" none (some s!"#{d tid} {r.title.getD ""}"), r)
 
-/-- A launch that failed: ends the row and drops its locks, as every end does (a launch that failed late may have run
-the agent long enough to take one), and reopens the task `r` it reserved if the new agent still holds it
-(tasks.unreserve). -/
+/-- A launch that failed: reopens the task `r` it reserved if the new agent still holds it (tasks.unreserve), then ends
+the row as every end does (`endRow`: its stay, claims, locks, conflicts and pair keys go; a launch that failed late may
+have run the agent long enough to take one), unless a terminal bound it meanwhile. -/
 def unreserve (db : Db) (name : String) (r : Option Task) (now : Int) : Db :=
-  let db := db.setAgent name fun a => if a.hc.isNone then { a with ended := some now } else a
-  let db := if (live db).any (·.name == name) then db else { db with locks := db.locks.filter (·.agent != some name) }
-  match r with
-  | none => db
-  | some r => db.set r.id fun t =>
-    if t.owner == some name && t.state = .claimed then
-      { t with state := .open, owner := none, lease_until := none, first_claimed_at := r.first_claimed_at } else t
+  let db := match r with
+    | none => db
+    | some r => db.set r.id fun t =>
+      if t.owner == some name && t.state = .claimed then
+        { t with state := .open, owner := none, lease_until := none, first_claimed_at := r.first_claimed_at } else t
+  if (db.agent name).any (·.hc.isNone) then endRow db name now else db
 
 end SwarmLean.Spawn

@@ -98,7 +98,8 @@ structure Args where
   full : Bool := false
   /-- the words after the options: text for the brief -/
   task : List String := []
-  /-- auto-spawn: the head of the pool, checked in the claim's transaction -/
+  /-- auto-spawn: the head of the pool, checked in the claim's transaction on what `reserveTxn` reads (the tasks not
+  done, the live agents with the cursors their stops wait on, the staffing knobs) -/
   top : Option (Db → Option Int) := none
 
 /-- Prints a refusal as main.lua does (a die's `swarm: …`, the others as they are) and exits 1. -/
@@ -106,6 +107,29 @@ def refuse (e : Refusal) : m α := do
   match e with
   | .die msg => die msg
   | .refused msg | .lost msg => Env.err msg; throw (Exit.mk 1)
+
+/-- The reservation (`reserve`, with task `tid` `reserveTask`) and the task's held notes, as one transaction: it reads the
+live agents, `name`'s row and cursor, the staffing knobs and the next message id; with a task, the task and its deps
+(with `top`, every task not done: the pool), the cursors of the agents their stops wait on, and the task's unread notes. -/
+def reserveTxn (envComms : Option String) (name cwd : String) (model : Option String) (now : Int) (tid : Option Int)
+    (top : Option (Db → Option Int)) : Txn (Except Refusal (Option Task × List Msg)) := do
+  let base := [Sels.live, Sels.agent name, Sels.cursor name, Sels.metas Sels.LIMIT_KEYS]
+  match tid with
+  | none =>
+    Txn.update base [.msg] fun db =>
+      let (db, e) := reserve db envComms name cwd model now
+      (db, e.map fun () => (none, []))
+  | some tid =>
+    let box := Notes.box tid
+    let ts : Sel := if top.isSome then { table := .task, cond := .or (.ne "state" (.text "done")) (.eq "id" (.int tid)) }
+      else Sels.task tid
+    let d ← Txn.slice [ts, Sels.cursor box]
+    let deps := ((d.find tid).map Tasks.depsOf).getD []
+    let stops := (d.tasks.filterMap fun t => py t.stop_to).eraseDups
+    Txn.update (base ++ [ts, Sels.tasks deps, Sels.cursors stops, Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf d box)])
+      [.msg] fun db =>
+        let (db, e) := reserveTask db envComms name cwd tid model now top
+        (db, e.map fun r => (some r, Notes.held db tid))
 
 /-- `swarm spawn` (watchd.cmd_spawn): reserve (and claim), make or link the worktree, write the brief, launch; any
 failure after the reservation undoes it. A refused reservation comes back unprinted (auto-spawn tells them apart), a
@@ -116,32 +140,27 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   if a.taskId.isNone && task == "" then
     die "usage: swarm spawn <name> [--model M] [--effort E] [--role R] [--stay S] [--task N] [--attach WT] [--full] -- <task>"
   let spawner := (← env "SWARM_NAME").getD HUMAN
-  orDie (notHuman name)
+  orDie (agentName name)
   let envComms ← env "SWARM_COMMS"
   let cwd ← Env.cwd
   let now ← Clock.now
   -- with a task: its held notes (board #202), read here for the brief and marked given once the launch succeeds
-  let r ← match a.taskId with
-    | none => Store.txn [.agent, .«meta», .cursor] fun db =>
-        let (db, e) := reserve db envComms name cwd (some a.model) now
-        (db, e.map fun () => (none, []))
-    | some tid => Store.txn [.agent, .«meta», .cursor, .task, .msg] fun db =>
-        let (db, e) := reserveTask db envComms name cwd tid (some a.model) now a.top
-        (db, e.map fun r => (some r, Notes.held db tid))
+  let r ← Store.run (reserveTxn envComms name cwd (some a.model) now a.taskId a.top)
   let (r, notes) ← match r with
     | .ok r => pure r
     | .error e =>
-      if let .refused _ := e then Store.txn [] fun db => (db.log now (some spawner) "spawn-refused" none (some name), ())
+      if let .refused _ := e then Store.run (Txn.exec [logStmt now (some spawner) "spawn-refused" none (some name)])
       return .error e
   let undo (wt : Option (String × String)) : m Unit := do
     if let some (p, b) := wt then Workspaces.discardWs name p b a.attach.isNone
     let now ← Clock.now
-    Store.txn [.agent, .task, .lock] fun db => (unreserve db name r now, ())
+    Store.run (Txn.update (Sels.release name) [] fun db => (unreserve db name r now, ()))
   -- the role, the stay, the task line and the worktree: a failure leaves no worktree to discard
   let (task, wt) ← tryCatchThe Exit (do
     let now ← Clock.now
-    if let some role := a.role then discard <| Store.txn [.agent] fun db => setRole db name role now
-    if let some s := a.stay then Store.txn [.agent] fun db => (db.setAgent name ({ · with stay := some (oneLine s) }), ())
+    if let some role := a.role then discard <| Store.run (Txn.update [Sels.live, Sels.agent name] [] (setRole · name role now))
+    if let some s := a.stay then
+      Store.run (Txn.update [Sels.agent name] [] fun db => (db.setAgent name ({ · with stay := some (oneLine s) }), ()))
     let mut task := task
     let mut wt : Option (String × String) := none
     if let (some tid, some r) := (a.taskId, r) then
@@ -156,7 +175,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
         wt := some (path, br.getD "")
         task := task ++ s!"\n\nYou are attached READ-ONLY to {path} (branch {br.getD "nil"}): read and run, never edit or commit there. Make your own worktree for changes."
       | none =>
-        let row ← Store.txn [.task] fun db => (db, a.taskId.bind db.find)
+        let row ← Store.view (a.taskId.map Sels.task).toList fun db => a.taskId.bind db.find
         Bases.warnBadConfig ["base", "spawn.base"] none
         let (path, br, base) ← Workspaces.create name (row.getD { id := 0 }) none a.base
         wt := some (path, br)
@@ -164,7 +183,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
     pure (task, wt)) fun e => do undo none; throw e
   let out ← tryCatchThe Exit (do
     let here := (← swarmHere).getD "."
-    let db ← Store.txn [.agent, .«meta»] fun db => (db, db)
+    let db ← Store.view [Sels.live, Sels.metas ["rules"]] id
     let roster := (← splitAgents db).1.map fun x =>
       s!"{x.name} ({x.status.getD "None"}{match x.role with | some r => ", " ++ r | none => ""})"
     let mut brief := ((← Fs.read (joinPath here "brief.md")).getD "") ++
@@ -176,16 +195,19 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
   let (some out, _) := out | do undo wt; Env.err "swarm: launch.sh failed"; return .ok (some out.2)
   let addr := (splitlines (strip out)).getLastD ""
   let now ← Clock.now
-  Store.txn [.agent] fun db =>
+  Store.run (Txn.update [Sels.agent name] [] fun db =>
     let db := db.setAgent name fun x => if x.hc.isNone then { x with hc := some addr } else x
-    (db.log now (some spawner) "spawn" none (some name), ())
+    (db.log now (some spawner) "spawn" none (some name), ()))
   if let some tid := a.taskId then
     -- the brief showed `notes`; a held note it missed (none: the task is the new agent's since the reservation) is sent
     let last := notes.foldl (fun x n => max x n.id) 0
-    Store.txn [.msg, .cursor, .event] fun db =>
-      let (db, ns) := Notes.takeHeld name now tid db
-      ((ns.filter (·.id > last)).foldl (fun db n =>
-        (Msgs.post db now (n.frm.getD "") name s!"[#{d tid}] {n.body.getD ""}" (n.urgent.getD 0 != 0)).1) db, ())
+    let box := Notes.box tid
+    Store.run do
+      let c ← Txn.slice [Sels.cursor box]
+      Txn.update [Sels.cursor box, Sels.unreadPast box (Msgs.cursorOf c box)] [.msg] fun db =>
+        let (db, ns) := Notes.takeHeld name now tid db
+        ((ns.filter (·.id > last)).foldl (fun db n =>
+          (Msgs.post db now (n.frm.getD "") name s!"[#{d tid}] {n.body.getD ""}" (n.urgent.getD 0 != 0)).1) db, ())
   Env.out s!"spawned {name} at {strip out}"
   Env.out (← Machine.note)
   return .ok none

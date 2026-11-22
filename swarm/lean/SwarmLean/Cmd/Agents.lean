@@ -68,8 +68,8 @@ def hcSwarm (addr : String) : m (Option String) := do
 
 /-- Binds `name` to terminal `hc` (agents.bind): a live binding elsewhere moves only with `takeover`. -/
 def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) : m Unit := do
-  orDie (notHuman name)
-  let r ← Store.txn [.agent] fun db => (db, binding db name)
+  orDie (agentName name)
+  let r ← Store.view [Sels.agent name] (binding · name)
   if let some old := boundTo r then
     if some old != hc && !takeover then
       let live := match ← hcTerminals with
@@ -78,13 +78,14 @@ def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) :
       if live then
         die s!"{name} is bound to {old}; this terminal is {hc.getD "outside Herdr"}. `swarm join --takeover` moves it here."
   let now ← Clock.now
-  orDie (← Store.txn [.agent, .cursor] (bind · name cwd hc model r now))
+  orDie (← Store.run (Txn.update [Sels.agent name, Sels.cursor name] [.msg] (bind · name cwd hc model r now)))
 
 /-- `swarm join [name] [--model M] [--takeover]` (agents.cmd_join): binds the agent to this terminal in the swarm this
 process acts on (sw-global §2), its row moved there; a communicator `<x>-comms` with no `$SWARM`, row or label makes
 (or joins) swarm `x`, even while another swarm is the only live one. Labels the terminal `swarm=<name>`. -/
 def join (a : Parsed) : m UInt32 := do
   let n ← match a.str "name" with | some n => pure n | none => me
+  orDie (agentName n)
   let here ← env "HC_TERMINAL_ID"
   -- a communicator `<x>-comms` with no swarm given, no row and no label naming one makes swarm `x`, or joins it,
   -- before the "only live swarm" fallback: another live swarm is not its own
@@ -94,11 +95,12 @@ def join (a : Parsed) : m UInt32 := do
       | some h => pure ((← hcSwarm h).any fun s => sws.any (·.name == s))
       | none => pure false
     if (← env "SWARM").isNone && (← Swarms.ofAgent n).isNone && !byLabel then
+      let some sx := SwarmName.parse? x | die s!"not a swarm name: '{x}' (from {n}; 1-32 of a-z 0-9 - _, not 'all')"
       let repo ← Workspaces.main none
       let base ← match repo with | some r => pure (some (← Bases.default (some r))) | none => pure none
-      discard <| Swarms.create x (some n) (repo.toList.map (·, base)) (← Clock.now)
+      discard <| Swarms.create sx (some n) (repo.toList.map (·, base)) (← Clock.now)
       Sys.setenv "SWARM" x
-  Store.txn [] fun db => (db, ())  -- resolves the swarm (or refuses), which the store exports as $SWARM
+  Store.view [] fun _ => ()  -- resolves the swarm (or refuses), which the store exports as $SWARM
   if let (some h, some cur) := (here, ← env "SWARM") then
     if let some s ← hcSwarm h then
       if s != cur && !a.flag "takeover" then
@@ -108,19 +110,19 @@ def join (a : Parsed) : m UInt32 := do
   if let (some h, some s) := (here, sw) then discard <| Proc.output ["hc", "label", h, "swarm=" ++ s] none []
   let now ← Clock.now
   let envComms ← env "SWARM_COMMS"
-  Store.txn [.«meta»] fun db =>
+  Store.run (Txn.update [Sels.metas ["comms", "comms_hc"]] [] fun db =>
     -- the communicator in a Herdr terminal: watchd keeps one there (`ensureComms`)
     let db := match here with
       | some h => if isComms db envComms (some n) then db.setMeta "comms_hc" (some h) else db
       | none => db
-    (db.log now (some n) "join" none none, ())
+    (db.log now (some n) "join" none none, ()))
   return 0
 
 /-- `swarm leave [name]` (agents.cmd_leave). -/
 def leaveCmd (a : Parsed) : m UInt32 := do
   let n ← match a.str "name" with | some n => pure n | none => me
   let now ← Clock.now
-  Store.txn [.agent, .task, .lock, .conflict, .pairkey] fun db => (leave db n now, ())
+  Store.run (Txn.update (Sels.release n) [] fun db => (leave db n now, ()))
   return 0
 
 /-- `swarm role [text…]` (agents.cmd_role). -/
@@ -128,13 +130,13 @@ def roleCmd (a : Parsed) : m UInt32 := do
   let n ← me
   let text := a.strs "text"
   if text.isEmpty then
-    let r ← Store.txn [.agent] fun db => (db, (db.agent n).bind (·.role))
+    let r ← Store.view [Sels.agent n] fun db => (db.agent n).bind (·.role)
     Env.out (r.getD "(none)")
     return 0
   let cwd ← Env.cwd
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
-  let same ← unfence n (← Store.txn [.agent, .cursor, .event] (role · n (some cwd) here (" ".intercalate text) now))
+  let same ← unfence n (← Store.run (Sels.onAgent n (role · n (some cwd) here (" ".intercalate text) now) [Sels.live]))
   for s in same do Env.out s
   return 0
 
@@ -142,10 +144,10 @@ def roleCmd (a : Parsed) : m UInt32 := do
 def endStayCmd (n : String) : m UInt32 := do
   let me := (← env "SWARM_NAME").getD HUMAN
   let envComms ← env "SWARM_COMMS"
-  if !(← Store.txn [.«meta»] fun db => (db, inCharge db envComms me)) then
+  if !(← Store.view [Sels.metas ["comms"]] (inCharge · envComms me)) then
     die "only human or the communicator ends another agent's stay"
   let now ← Clock.now
-  orDie (← Store.txn [.agent] (endStay · me n now))
+  orDie (← Store.run (Txn.update [Sels.agent n] [] (endStay · me n now)))
   Env.out s!"{n}'s stay ended: watchd ends it once it is idle, holds nothing and its work is on its base."
   return 0
 
@@ -156,7 +158,7 @@ def stayCmd (a : Parsed) : m UInt32 := do
   if isEnd && !text.isEmpty then return ← endStayCmd text.head!
   let n ← me
   if text.isEmpty && !isEnd then
-    let s ← Store.txn [.agent] fun db => (db, stayOf db n)
+    let s ← Store.view [Sels.agent n] (stayOf · n)
     Env.out (match s with
       | some s => s!"you stay for '{s}'"
       | none => "you stay for nothing: watchd ends you once idle, holding nothing, work landed")
@@ -165,17 +167,17 @@ def stayCmd (a : Parsed) : m UInt32 := do
   if v == some "" then die "say what you wait for: swarm stay \"<what>\""
   let cond ← match a.str "until" with
     | none => pure none
-    | some u => match stayCond u with
+    | some u => match StayCond.parse? u with
       | some c => pure (some c)
       | none => die s!"bad --until '{u}': one of job:<id>, task:<id>, msg:<agent>, ci, time:<HH:MM> (UTC)"
   if isEnd && cond.isSome then die "--until goes with a stay, not --end"
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
-  unfence n (← Store.txn [.agent, .cursor, .event] fun db =>
+  unfence n (← Store.run (Sels.onAgent n fun db =>
     let (db, r) := stay db n here v now
     match r, cond with
-    | .ok _, some c => (db.log now (some n) "stay-until" (some c) v, r)
-    | _, _ => (db, r))
+    | .ok _, some c => (db.log now (some n) "stay-until" (some c.text) v, r)
+    | _, _ => (db, r)))
   Env.out (match v with
     | some v => match cond with
       | some c => s!"you stay for '{v}' until {c}; watchd wakes you then, and won't end you before. `swarm stay --end` if it is over sooner."
@@ -183,34 +185,50 @@ def stayCmd (a : Parsed) : m UInt32 := do
     | none => "stay ended: watchd ends you once you are idle, hold nothing and your work is on your task's base.")
   return 0
 
-/-- `swarm limits [--min N] [--max M]` (agents.cmd_limits). -/
+/-- What `swarm limits` was asked to set. -/
+structure LimitsReq where
+  min : Option Int := none
+  max : Option Int := none
+  queueOnly : Option Bool := none
+  nudge : Option Int := none
+  compact : Option Int := none
+  stayers : Option Bool := none
+  reuse : Option Int := none
+
+/-- `swarm limits`'s flags as one request, every one checked before anything is set. -/
+def limitsReq (a : Parsed) : Except String LimitsReq := do
+  let q : LimitsReq :=
+    { min := a.int "min", max := a.int "max", queueOnly := (a.str "queue_only").map (· == "on")
+      nudge := a.int "ctx_nudge", compact := a.int "ctx_compact", stayers := (a.str "compact_stayers").map (· == "on")
+      reuse := a.int "reuse_below" }
+  if q.nudge.any (· < 0) || q.compact.any (· < 0) || q.reuse.any (· < 0) then throw "a context threshold is tokens, 0 for off"
+  pure q
+
+/-- The meta keys `swarm limits` reads and sets. -/
+def LIMITS_KEYS : List String := Sels.LIMIT_KEYS ++ ["ctx_nudge", "ctx_compact", "compact_stayers", "reuse_below"]
+
+/-- `swarm limits` by `me` as one step: sets what `q` asks (all or nothing: an auto-spawn number above the max refuses
+the whole request) and returns the three lines it prints. -/
+def limitsStep (envComms : Option String) (me : String) (q : LimitsReq) (now : Int) (db : Db) : Db × Except String String :=
+  let (db', r) := if q.min.isSome || q.max.isSome then setLimits db envComms me q.min q.max now else (db, .ok ())
+  match r with
+  | .error e => (db, .error e)
+  | .ok () =>
+    let db := db'
+    let db := match q.queueOnly with | some b => setQueueOnly db me b now | none => db
+    let db := if q.nudge.isSome || q.compact.isSome || q.stayers.isSome then
+      Compact.setLimits db me q.nudge q.compact q.stayers now else db
+    let db := match q.reuse with | some r => Reuse.setBelow db me r now | none => db
+    (db, .ok (limitsLine db envComms ++ "\n" ++ Compact.limitsLine db ++ "\n" ++ Reuse.limitsLine db))
+
+/-- `swarm limits [--min N] [--max M] [--queue-only on|off] [--ctx-nudge N] [--ctx-compact N] [--compact-stayers on|off]
+[--reuse-below N]` (agents.cmd_limits): every flag checked, then one transaction. -/
 def limitsCmd (a : Parsed) : m UInt32 := do
+  let q ← orDie (limitsReq a)
   let envComms ← env "SWARM_COMMS"
-  let mn := a.int "min"
-  let mx := a.int "max"
-  if mn.isSome || mx.isSome then
-    let me := (← env "SWARM_NAME").getD HUMAN
-    let now ← Clock.now
-    orDie (← Store.txn [.agent, .«meta»] (setLimits · envComms me mn mx now))
-  if let some q := a.str "queue_only" then
-    let me := (← env "SWARM_NAME").getD HUMAN
-    let now ← Clock.now
-    Store.txn [.«meta»] fun db => (setQueueOnly db me (q == "on") now, ())
-  let cn := a.int "ctx_nudge"
-  let cc := a.int "ctx_compact"
-  let cs := (a.str "compact_stayers").map (· == "on")
-  let rb := a.int "reuse_below"
-  if cn.any (· < 0) || cc.any (· < 0) || rb.any (· < 0) then die "a context threshold is tokens, 0 for off"
-  if cn.isSome || cc.isSome || cs.isSome then
-    let me := (← env "SWARM_NAME").getD HUMAN
-    let now ← Clock.now
-    Store.txn [.«meta», .event] fun db => (Compact.setLimits db me cn cc cs now, ())
-  if let some r := rb then
-    let me := (← env "SWARM_NAME").getD HUMAN
-    let now ← Clock.now
-    Store.txn [.«meta», .event] fun db => (Reuse.setBelow db me r now, ())
-  Env.out (← Store.txn [.agent, .«meta»] fun db =>
-    (db, limitsLine db envComms ++ "\n" ++ Compact.limitsLine db ++ "\n" ++ Reuse.limitsLine db))
+  let me := (← env "SWARM_NAME").getD HUMAN
+  let now ← Clock.now
+  Env.out (← orDie (← Store.run (Txn.update [Sels.live, Sels.metas LIMITS_KEYS] [] (limitsStep envComms me q now))))
   return 0
 
 /-- The communicator's name: meta comms when set and not empty, else $SWARM_COMMS (agents.comms_name). -/
@@ -238,18 +256,51 @@ def digestText (g : Digest) : m String := do
   l := l ++ list "hung: " g.hung
   return "\n".intercalate l
 
+/-- The task an event's data names: `#id` or `#id …` (`namesTask`). -/
+def taskOf (data : Option String) : Option Nat :=
+  match (data.getD "").toList with
+  | '#' :: rest =>
+    let ds := rest.takeWhile Char.isDigit
+    let tail := rest.drop ds.length
+    if ds.isEmpty || !(tail.isEmpty || tail.head? == some ' ') then none else (String.ofList ds).toNat?
+  | _ => none
+
+#guard taskOf (some "#12 title") == some 12
+#guard taskOf (some "#12") == some 12
+#guard taskOf (some "#12x") == none
+#guard taskOf (some "12") == none
+
+/-- `swarm away --back` by `me` (`goBack`): the flag and the away event first, then what the digest reads of what
+happened since: the events after it and every block, the tasks they name or blocked or merged since, the agents they
+name, and the CI runs. -/
+def backTxn (envComms : Option String) (me : String) (now : Int) : Txn (Option Digest) := do
+  let flag := [Sels.metas ["away", "away_digest", "comms"], { table := .event, cond := .eq "kind" (.text "away"), last := some 1 }]
+  let d ← Txn.slice flag
+  let some (since, _) := away d | pure none
+  let «from» := (d.events.map (·.id)).max?.getD 0
+  let evs : Sel := { table := .event, cond := .or (.gt "id" (.int «from»)) (.oneOf "kind" [.text "block", .text "task-blocked"]) }
+  let later := (← Txn.slice [evs]).events.filter (·.id > «from»)
+  let ids := (later.filter (·.kind == some "done")).filterMap (taskOf ·.data)
+  let names := ((later.filter fun e => [some "reap", some "leave", some "end", some "stay-hung"].contains e.kind).filterMap (·.agent)).eraseDups
+  let merged : Cond := match since with | some s => .gt "merged_at" (.int (s - 1)) | none => .oneOf "id" []
+  let tasks : Cond := .or (.eq "state" (.text "blocked")) (.or (.oneOf "id" (ids.map fun i => .int i)) merged)
+  Txn.update (flag ++ [evs, { table := .task, cond := tasks }, { table := .agent, cond := .oneOf "name" (names.map .text) },
+      { table := .ci }]) [.msg]
+    fun db => goBack db me (commsName db envComms) now
+
 /-- `swarm away [note…] | --back` (agents.cmd_away). -/
 def awayCmd (a : Parsed) : m UInt32 := do
   let me := (← env "SWARM_NAME").getD HUMAN
   let envComms ← env "SWARM_COMMS"
   let now ← Clock.now
   if a.flag "back" then
-    let g ← Store.txn [.«meta», .event, .task, .agent, .ci] fun db => goBack db me (commsName db envComms) now
+    let g ← Store.run (backTxn envComms me now)
     Env.out (← match g with | some g => digestText g | none => pure "you were not away")
     return 0
   let note := strip (" ".intercalate (a.strs "note"))
   let line ← Hook.awayLine (some now, if note == "" then none else some note)
-  let was ← Store.txn [.«meta»] fun db => goAway db me (commsName db envComms) note line now
+  let was ← Store.run (Txn.update [Sels.metas ["away", "away_digest", "comms"]] [.msg] fun db =>
+    goAway db me (commsName db envComms) note line now)
   match was with
   | some (since, _) => Env.out s!"already away since {← Clock.hhmm (since.getD now)}"
   | none => Env.out s!"away{if note != "" then ": " ++ note else ""}; questions wait for you, work goes on"
@@ -274,7 +325,7 @@ def herdrStale : m (Option String) := do
 /-- `swarm who` (agents.cmd_who). -/
 def who : m UInt32 := do
   let t ← Clock.now
-  let db ← Store.txn [.agent, .«meta», .lock, .workspace] fun db => (db, db)
+  let db ← Store.view [Sels.live, Sels.metas Sels.LIMIT_KEYS, { table := .lock }, { table := .workspace }] id
   let wts ← Workspaces.wtMap db
   Env.out (limitsLine db (← env "SWARM_COMMS"))
   if let some (avail, total, psi) ← Machine.mem then Env.out (Machine.line avail total psi)
@@ -323,7 +374,7 @@ def endableCmd (a : Parsed) : m UInt32 := do
 def endCmd (a : Parsed) : m UInt32 := do
   let me ← me
   let envComms ← env "SWARM_COMMS"
-  if !(← Store.txn [.«meta»] fun db => (db, inCharge db envComms me)) then
+  if !(← Store.view [Sels.metas ["comms"]] (inCharge · envComms me)) then
     die "only the communicator or the user (`human`) ends agents"
   let n := (a.str "agent").getD ""
   let (db, f) ← Lifecycle.readsNow n
@@ -339,12 +390,13 @@ def endCmd (a : Parsed) : m UInt32 := do
 path in a git repo: its main worktree). -/
 def newCmd (a : Parsed) : m UInt32 := do
   let some n := a.str "name" | die "usage: swarm new <name> [--repo P]... [--comms C]"
-  if n == "" || n.any (fun c => c == ' ' || c == '/' || c == '@' || c == '#') then die s!"not a swarm name: '{n}'"
+  let some sn := SwarmName.parse? n | die s!"not a swarm name: '{n}' (1-32 of a-z 0-9 - _, not 'all')"
+  if let some c := a.str "comms" then orDie (agentName c)
   let mut repos : List (String × Option String) := []
   for p in a.strs "repo" do
     let some r ← Workspaces.main (some p) | die s!"not in a git repo: {p}"
     repos := repos ++ [(r, some (← Bases.default (some r)))]
-  if !(← Swarms.create n (a.str "comms") repos (← Clock.now)) then die s!"swarm {n} exists"
+  if !(← Swarms.create sn (a.str "comms") repos (← Clock.now)) then die s!"swarm {n} exists"
   Env.out s!"swarm {n}{if repos.isEmpty then "" else " (" ++ ", ".intercalate (repos.map (·.1)) ++ ")"}"
   return 0
 

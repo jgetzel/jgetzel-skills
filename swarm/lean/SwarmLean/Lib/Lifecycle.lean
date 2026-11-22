@@ -272,7 +272,7 @@ def endStep (n : String) (hc : Option String) (force : Bool) (by_ : Option Strin
         !db.tasks.any (fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)) &&
         !db.locks.any (·.agent == some n))
   if !fine then (db, false) else
-  let db := (release db n).setAgent n ({ · with ended := some now, status := some "ended" })
+  let db := endRow db n now
   (db.log now (some n) "end" none (some ((if force then "forced" else "landed") ++ (match by_ with | some b => " by " ++ b | none => ""))), true)
 
 /-- Agent GC: re-checks that `a` is still idle on the same terminal with no claim, lock or stay (unless `force`),
@@ -281,7 +281,7 @@ releases and ends it (`endStep`), then kills its terminal and what it left in it
 def endAgent [Store m] [Clock m] [Env m] (a : Agent) (force : Bool) (by_ : Option String) : m Bool := do
   let n := a.name
   let now ← Clock.now
-  let ok ← Store.txn [.agent, .task, .lock, .conflict, .pairkey] (endStep n a.hc force by_ now)
+  let ok ← Store.run (Txn.update (Sels.release n) [] (endStep n a.hc force by_ now))
   if !ok then return false
   let cg ← match a.claude_pid with  -- read while claude lives
     | some p => Machine.cgroup p
