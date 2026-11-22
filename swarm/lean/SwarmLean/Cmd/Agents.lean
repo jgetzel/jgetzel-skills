@@ -81,19 +81,19 @@ def bindAgent (name : String) (cwd hc model : Option String) (takeover : Bool) :
   orDie (← Store.txn [.agent, .cursor] (bind · name cwd hc model r now))
 
 /-- `swarm join [name] [--model M] [--takeover]` (agents.cmd_join): binds the agent to this terminal in the swarm this
-process acts on (sw-global §2), its row moved there; a communicator `<x>-comms` for whom no swarm resolves makes (or
-joins) swarm `x`. Labels the terminal `swarm=<name>`. -/
+process acts on (sw-global §2), its row moved there; a communicator `<x>-comms` with no `$SWARM`, row or label makes
+(or joins) swarm `x`, even while another swarm is the only live one. Labels the terminal `swarm=<name>`. -/
 def join (a : Parsed) : m UInt32 := do
   let n ← match a.str "name" with | some n => pure n | none => me
   let here ← env "HC_TERMINAL_ID"
-  -- no swarm resolves (none given, its row in none, no label naming one, not exactly one live): a communicator
-  -- `<x>-comms` makes swarm `x`, or joins it
+  -- a communicator `<x>-comms` with no swarm given, no row and no label naming one makes swarm `x`, or joins it,
+  -- before the "only live swarm" fallback: another live swarm is not its own
   if let some x := Swarms.ofComms n then
     let sws ← Swarms.list
     let byLabel ← match here with
       | some h => pure ((← hcSwarm h).any fun s => sws.any (·.name == s))
       | none => pure false
-    if (← env "SWARM").isNone && (← Swarms.ofAgent n).isNone && !byLabel && (sws.filter (·.ended.isNone)).length != 1 then
+    if (← env "SWARM").isNone && (← Swarms.ofAgent n).isNone && !byLabel then
       let repo ← Workspaces.main none
       let base ← match repo with | some r => pure (some (← Bases.default (some r))) | none => pure none
       discard <| Swarms.create x (some n) (repo.toList.map (·, base)) (← Clock.now)

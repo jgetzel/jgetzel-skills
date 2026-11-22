@@ -58,6 +58,21 @@ def test_join_as_comms_makes_its_swarm (t : T) : IO Unit := do
   let l := (← t.sw "zz" ["swarms"]).stdout
   has l "t  comms -"; has l "x  comms x-comms  1 live: x-comms"
 
+-- one other swarm live (t): ll-comms makes ll, not an agent of t by the "only live swarm" fallback (board #86)
+def test_join_as_comms_beside_one_live_swarm (t : T) : IO Unit := do
+  setup t [json% {"address": "t1"}]
+  eq (← join t "ll-comms" "t1").code 0
+  eq ((← t.q1 "select swarm from agent where name='ll-comms'").f "swarm") "ll"
+  eq ((← t.q1 "select comms from swarm where name='ll'").f "comms") "ll-comms"
+  eq ((← t.q1 "select repo from swarm_repo where swarm='ll'").f "repo") t.repo
+  has (← t.calls "labels") "t1 swarm=ll"
+  eq ((← t.sw "ll-comms" ["board"] { env := [("SWARM", some "ll")] }).code) 0
+  let l := (← t.sw "zz" ["--swarm", "t", "swarms"]).stdout
+  has l "ll  comms ll-comms  1 live: ll-comms"
+  -- joined again, it stays ll's
+  eq (← join t "ll-comms" "t1").code 0
+  eq ((← t.q1 "select swarm from agent where name='ll-comms'").f "swarm") "ll"
+
 def test_new_makes_a_swarm_once (t : T) : IO Unit := do
   has (← t.sw "zz" ["new", "u", "--repo", t.wt]).stdout s!"swarm u ({t.repo})"
   has (← t.sw "zz" ["new", "u"] { ok := false }).stderr "swarm u exists"
@@ -138,6 +153,7 @@ def tests : List Case := [
   ("test_join_labels_the_terminal_with_its_swarm", test_join_labels_the_terminal_with_its_swarm),
   ("test_join_refused_in_another_swarms_terminal", test_join_refused_in_another_swarms_terminal),
   ("test_join_as_comms_makes_its_swarm", test_join_as_comms_makes_its_swarm),
+  ("test_join_as_comms_beside_one_live_swarm", test_join_as_comms_beside_one_live_swarm),
   ("test_new_makes_a_swarm_once", test_new_makes_a_swarm_once),
   ("test_watchd_launches_missing_communicator", test_watchd_launches_missing_communicator),
   ("test_watchd_leaves_a_good_communicator", test_watchd_leaves_a_good_communicator),
