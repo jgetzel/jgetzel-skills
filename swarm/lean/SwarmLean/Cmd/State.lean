@@ -7,6 +7,7 @@ import SwarmLean.Lib.Lifecycle
 import SwarmLean.Lib.Spawn
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Run
+import SwarmLean.Lib.SwarmsView
 
 /-! `swarm state --json` (one read-only snapshot for UIs) and `swarm watch` (state.lua). -/
 
@@ -382,14 +383,7 @@ def summary (db : Db) (p : String) (t : Int) : m Json := do
 def state (a : Parsed) : m UInt32 := do
   let t ← Clock.now
   if a.str "view" == some "swarms" then  -- the machine's, before any swarm is resolved
-    let p ← Spawn.dbPath
-    let sws ← Swarms.list
-    Env.out (Json.encode (Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("swarms", .arr (sws.map fun r =>
-      Json.mkObj [("name", .str r.name), ("tag", .str r.name), ("db", .str p), ("comms", N r.comms),
-        ("folder", N r.repos.head?), ("repos", .arr (r.repos.map Lean.Json.str).toArray),
-        ("live", .arr (r.live.map Lean.Json.str).toArray),
-        ("created", match r.created with | some c => Json.int c | none => .null),
-        ("ended", match r.ended with | some e => Json.int e | none => .null)]).toArray)]))
+    Env.out (Json.encode (← SwarmsView.view t))
     return 0
   let p ← Spawn.dbPath
   if (← Sys.kind p true) == .none then

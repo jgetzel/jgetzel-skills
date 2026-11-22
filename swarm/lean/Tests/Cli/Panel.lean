@@ -348,16 +348,42 @@ def test_state_summary (t : T) : IO Unit := do
     if s.f k != .null then fail s!"summary sent {k}"
   unless ((s.f "rss_kb").getInt?.toOption.getD 0) > 0 do fail s!"summary rss_kb {s.f "rss_kb"}"
 
--- sw-global §2: --view swarms lists the machine's swarms from its one db, before any swarm is resolved
+-- sw-global §5: --view swarms is every swarm on the machine in one read, before any swarm is resolved: its communicator,
+-- staffing, agents with their repo, tasks by state and what needs the human
 def test_state_swarms (t : T) : IO Unit := do
   t.q_ "update swarm set comms='c' where name='t'"
-  t.agent "c"
+  t.agent "c" [("hc", "t1"), ("cwd", .text t.repo)]
+  t.agent "w" [("status", "working"), ("cwd", .text (t.repo ++ "/sub"))]
+  t.agent "gone" [("ended", .int 1)]
+  t.agent "x" [("cwd", "/nowhere")]
+  t.agent "y" [("status", "blocked")]
   t.sw_ "zz" ["new", "u"]
+  t.q_ "insert into swarm_repo(swarm, repo) values('u', '/r2')"
+  t.q_ "update agent set swarm='u' where name in ('x', 'y')"
+  t.q_ "insert into workspace(repo, path, agent) values('/r2', '/r2-x', 'x')"
+  t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'claimed', 'w', 'c', null), (2, 'two', 'blocked', 'x', 'human', 'which?'), (3, 'three', 'open', null, 'human', null), (4, 'four', 'open', null, 'human', null)"
+  t.q_ "insert into task_repo(task, repo) values(4, '/r2')"
   let s ← st t ["--view", "swarms"]
+  eq (s.f "db") (Json.str t.db)
+  eq (s.f "counts") (json% {"open": 2, "claimed": 1, "blocked": 1, "done": 0, "dropped": 0, "landing": 0})
   let sws := match s.f "swarms" with | .arr a => a.toList | _ => []
-  eq (sws.map fun j => (j.f "db", j.f "tag", j.f "comms", j.f "live")) [(Json.str t.db, json% "t", json% "c", json% ["c"]),
-    (Json.str t.db, json% "u", Json.null, json% [])]
-  unless (((sws.headD .null).f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {(sws.headD .null).f "folder"}"
+  eq (sws.map (·.f "name")) [json% "t", json% "u"]
+  let st0 := sws.headD .null
+  let su := sws.getD 1 .null
+  eq ((st0.f "comms"), (st0.f "comms_hc"), (st0.f "active"), (su.f "comms")) (json% "c", json% "t1", json% true, Json.null)
+  eq (st0.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 0, "done": 0, "dropped": 0, "landing": 0})
+  eq (su.f "counts") (json% {"open": 2, "claimed": 0, "blocked": 1, "done": 0, "dropped": 0, "landing": 0})
+  eq ((st0.f "staffing").f "live") (json% 1)
+  let names (j : Json) : List Json := match j.f "agents" with | .arr a => a.toList.map fun (x : Json) => x.f "name" | _ => []
+  eq (names st0) [json% "c", json% "w"]
+  eq (names su) [json% "x", json% "y"]
+  eq ((byName st0 "w").f "repo") (Json.str t.repo)
+  eq ((byName st0 "w").f "task") (json% {"id": 1, "title": "one", "state": "claimed"})
+  eq ((byName su "x").f "repo") (json% "/r2")
+  eq ((byName su "x").f "status") (json% "blocked")
+  eq (su.f "needs") (json% [{"kind": "question", "task": 2, "agent": "x", "question": "which?", "title": "two"},
+    {"kind": "prompt", "agent": "y"}])
+  unless ((st0.f "folder").s?.getD "").endsWith "/repo" do fail s!"folder {st0.f "folder"}"
 
 def tests : List Case := [
   ("test_state_swarms", test_state_swarms),
