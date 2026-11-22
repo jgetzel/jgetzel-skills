@@ -407,9 +407,9 @@ def state (a : Parsed) : m UInt32 := do
     Env.out (Json.encode (← summary db (← taskStates) p t))
     return 0
   let full := view.isNone
-  -- the swarm's tasks (SwarmsView.mine): the store's are every swarm's, and a panel lists only its own (sw-global §5)
+  -- the swarm's tasks (Swarms.mine): the store's are every swarm's, and a panel lists only its own (sw-global §5)
   let sw ← Store.view [] (·.swarm)
-  let ours : Option (Std.HashSet Int) ← if sw == "" then pure none else some <$> SwarmsView.mineIds sw
+  let ours : Option (Std.HashSet Int) ← if sw == "" then pure none else some <$> Swarms.mineIds sw
   let isOurs (i : Int) : Bool := ours.all (·.contains i)
   let sts ← taskStates
   let lanes := wants view "lanes"

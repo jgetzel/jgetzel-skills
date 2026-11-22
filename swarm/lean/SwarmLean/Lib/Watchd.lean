@@ -377,11 +377,23 @@ def unclean (a : Agent) (wt b : String) (t : Int) (comms : String) : m Unit := d
       (say db now (.agent comms) (s!"{n} is idle {mins} min, kept only by its unclean worktree {wt} " ++
         s!"({if same then "nudged once, idle again and still unclean" else "no live waiter, so not nudged"}):\n{shown}") false "system", ())
 
-/-- On the edge into quiet (no task open, claimed, blocked or landing, only stayers and comms live; re-armed by a task add or
-claim): each wakeable stayer is asked once whether its stay is over, and comms gets one notice (watchd.quiet). -/
+/-- Task `r` is held by an agent of the swarm whose agents `db` read (board #135): its owner or its lander is one. Tasks
+are the machine's, so a per-swarm pass acts only on these. -/
+def ofSwarm (db : Db) (r : Task) : Bool :=
+  let ns := db.agents.map (·.name)
+  r.owner.any ns.contains || r.lander.any ns.contains
+
+/-- On the edge into quiet (no task of the swarm open, claimed, blocked or landing, only stayers and comms live;
+re-armed by a task add or claim): each wakeable stayer is asked once whether its stay is over, and comms gets one
+notice (watchd.quiet). A task is the swarm's as its board lists it (`Swarms.mine`) or when its agent lands it
+(`ofSwarm`, board #135); without a swarm every task is. -/
 def quiet (t : Int) (comms : String) : m Unit := do
   let db ← Store.txn [.task, .event, .agent, .«meta»] fun db => (db, db)
-  if db.tasks.any fun x => x.state = .open || x.state = .claimed || x.state = .blocked || x.state = .landing then return
+  let mine ← match py (← env "SWARM") with
+    | some s => some <$> Swarms.mineIds s
+    | none => pure none
+  if db.tasks.any fun x => (x.state = .open || x.state = .claimed || x.state = .blocked || x.state = .landing) &&
+      (mine.all (·.contains (x.id : Int)) || ofSwarm db x) then return
   let q := ((db.events.filter (·.kind == some "quiet")).getLast?.map (·.id)).getD 0
   if !db.events.any fun e => (e.kind == some "task-add" || e.kind == some "claim") && e.id > q then return
   let envComms ← env "SWARM_COMMS"
@@ -454,14 +466,16 @@ def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
     else db
   | none => db
 
-/-- The landing tasks no lander closed within LANDING_LATE, each told to the communicator once (`landingLate1`). -/
+/-- The landing tasks of the swarm (`ofSwarm`: its agent handed it over or lands it) no lander closed within
+LANDING_LATE, each told to the communicator once (`landingLate1`). -/
 def landingLateStep (t : Int) (comms : String) (db : Db) : Db :=
-  (db.tasks.filter fun x => x.state = .landing && x.landing_at.any (· ≤ t - LANDING_LATE)).foldl
+  (db.tasks.filter fun x => x.state = .landing && x.landing_at.any (· ≤ t - LANDING_LATE) && ofSwarm db x).foldl
     (fun db r => landingLate1 r t comms db) db
 
-/-- What `landingLateStep` reads: the landing tasks and the `landing-late` events. -/
+/-- What `landingLateStep` reads: the landing tasks, the swarm's agents and the `landing-late` events. -/
 def landingSels : List Sel :=
-  [{ table := .task, cond := .eq "state" (.text "landing") }, { table := .event, cond := .eq "kind" (.text "landing-late") }]
+  [{ table := .task, cond := .eq "state" (.text "landing") }, Sels.all .agent,
+   { table := .event, cond := .eq "kind" (.text "landing-late") }]
 
 /-- The landing-late pass in one transaction. -/
 def landingLate (t : Int) (comms : String) : m Unit :=
