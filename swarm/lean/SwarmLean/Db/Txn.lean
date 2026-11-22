@@ -19,6 +19,8 @@ inductive Cond
   | gt (c : String) (v : Val)
   /-- column `c` is NULL -/
   | null (c : String)
+  /-- column `c` is not NULL -/
+  | notNull (c : String)
   /-- column `c` holds one of `vs` -/
   | oneOf (c : String) (vs : List Val)
   | and (a b : Cond)
@@ -32,6 +34,7 @@ def Cond.sql : Cond → String × List Val
   | .ne c v => (s!"{c}<>?", [v])
   | .gt c v => (s!"{c}>?", [v])
   | .null c => (s!"{c} is null", [])
+  | .notNull c => (s!"{c} is not null", [])
   | .oneOf c vs => if vs.isEmpty then ("0", []) else (s!"{c} in ({", ".intercalate (vs.map fun _ => "?")})", vs)
   | .and a b => let (x, p) := a.sql; let (y, q) := b.sql; (s!"({x}) and ({y})", p ++ q)
   | .or a b => let (x, p) := a.sql; let (y, q) := b.sql; (s!"({x}) or ({y})", p ++ q)
@@ -49,6 +52,7 @@ def Cond.holds (cell : String → Val) : Cond → Bool
   | .ne c v => !v.isNull && !(cell c).isNull && (cell c).ord != v.ord
   | .gt c v => !v.isNull && !(cell c).isNull && decide (v.ord < (cell c).ord)
   | .null c => (cell c).isNull
+  | .notNull c => !(cell c).isNull
   | .oneOf c vs => vs.any fun v => !v.isNull && !(cell c).isNull && (cell c).ord == v.ord
   | .and a b => a.holds cell && b.holds cell
   | .or a b => a.holds cell || b.holds cell

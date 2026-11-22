@@ -165,15 +165,19 @@ def loadWhere [Row α] (c : Conn) (cond : String) (ps : List Val) : IO (List α)
   let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} where {cond} order by {", ".intercalate (cols.take (Row.nkey α))}" ps
   IO.ofExcept (decodeRows rows.toList)
 
-/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
-def loadMetas (c : Conn) (s : String) : IO (List Meta) := do
+/-- The meta rows swarm `s` sees that `cond` selects: the machine's keys and its own, and `comms` from its swarm row. -/
+def loadMetasWhere (c : Conn) (s : String) (cond : Cond) : IO (List Meta) := do
   let ks := ", ".intercalate (machineKeys.map fun k => s!"'{k}'")
-  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end" [.text s]
+  let (w, ps) := cond.sql
+  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end and ({w})" (.text s :: ps)
   let cm ← c.query "select comms from swarm where name=? and comms is not null" [.text s]
   let cms : List Meta := match (cm[0]? : Option (Array Sqlite.Val)).bind (·[0]?) with
     | some (Sqlite.Val.text v) => [{ k := "comms", v := some v }]
     | _ => []
-  return sortRows (cms ++ ms.filter (·.k != "comms"))
+  return sortRows (cms.filter (fun m => cond.holds (Row.cell m)) ++ ms.filter (·.k != "comms"))
+
+/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
+def loadMetas (c : Conn) (s : String) : IO (List Meta) := loadMetasWhere c s .all
 
 /-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents, knobs and events of the scope's
 swarm, the locks, CI runs and worktrees of its repo, and every task, message, cursor and conflict. -/
@@ -291,7 +295,7 @@ def unionRows [Row α] (c : Conn) (sc : Scope) (t : Table) (ss : List Sel) : IO 
 
 /-- The meta rows of swarm `s` that select `sel` picks (`loadMetas`, filtered). -/
 def selMetas (c : Conn) (s : String) (sel : Sel) : IO (List Meta) :=
-  return sel.pick (← loadMetas c s)
+  return sel.pick (← loadMetasWhere c s sel.cond)
 
 /-- The slice of the db the selects `ss` pick in scope `sc`, with the next ids of `next` (`Db.slice` of the model). -/
 def readSlice (c : Conn) (sc : Scope) (ss : List Sel) (next : List Table) : IO Db := do
@@ -337,6 +341,10 @@ def sqliteRun (c : Conn) (sc : Scope) (t : Txn α) : IO α := do
 instance : Store App where
   txn ts f := do sqliteTxn (← theConn) (← theScope) ts f
   run t := do sqliteRun (← theConn) (← theScope) t
+  view ss f := do
+    let c ← theConn
+    let sc ← theScope
+    return f (← inTxn c "begin" (readSlice c sc ss []))
 
 instance : Guard App where
   guard x := ExceptT.mk fun ctx => do

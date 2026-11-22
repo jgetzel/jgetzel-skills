@@ -1,4 +1,5 @@
 import SwarmLean.Db.Tasks
+import SwarmLean.Db.Sels
 import SwarmLean.Lib.Agents
 import SwarmLean.World
 import Lean.Data.Json
@@ -36,7 +37,7 @@ def ctxFrom [Monad m] [Fs m] (path : Option String) : m (Option Int) := do
 def recordCtx [Monad m] [Store m] [Fs m] (name : String) (transcript : Option String) : m Unit := do
   let some k ← ctxFrom transcript | return
   if k == 0 then return
-  Store.txn [.agent] fun db => (db.setAgent name ({ · with ctx_tokens := some k }), ())
+  Store.run (Sels.onAgent name fun db => (db.setAgent name ({ · with ctx_tokens := some k }), ()))
 
 /-- What the communicator is told while the user is away (agents.away_line). -/
 def awayLine [Monad m] [Clock m] (aw : Option Int × Option String) : m String := do
@@ -49,7 +50,7 @@ def commsNudge [Monad m] [Store m] [Clock m] [Env m] [Fs m] (toErr : Bool) : m U
   let some name ← env "SWARM_NAME" | return
   let sid ← env "CLAUDE_CODE_SESSION_ID"
   let envComms ← env "SWARM_COMMS"
-  let (isC, aw) ← Store.txn [.meta] fun db => (db, (isComms db envComms (some name), away db))
+  let (isC, aw) ← Store.view [Sels.metas ["comms", "away"]] fun db => (isComms db envComms (some name), away db)
   if !isC then return
   if let some s := sid then
     let home := (← Env.var "HOME").getD ""

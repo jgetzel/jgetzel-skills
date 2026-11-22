@@ -5,6 +5,7 @@ import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.Msgs
 import SwarmLean.Db.Queue
 import SwarmLean.Db.Reuse
+import SwarmLean.Db.Sels
 
 /-! watchd.lua's parts that `swarm end` and `swarm endable` run: whether an agent's work landed (landed_ref, landed,
 unlanded, unclean_list), what keeps it (end_why, endable_reasons, over fate's reads of one agent), and the end itself
@@ -160,6 +161,12 @@ def reads (db : Db) (main : Option String) (wts : List (String × String)) (all 
 /-- The reads of agent `n` now: the db, the main worktree, the agents' and every worktree. -/
 def readsNow [Store m] (n : String) : m (Db × Reads m) := do
   let db ← Store.txn [.agent, .task, .lock, .workspace, .«meta»] fun db => (db, db)
+  return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
+
+/-- The reads of agent `n` that `endableReasons` makes, keyed on `n` (the stop hook): its row, the tasks it owns, its
+locks and worktrees, and the reuse knob; then the main worktree, its worktree and every worktree. -/
+def readsOf [Store m] (n : String) : m (Db × Reads m) := do
+  let db ← Store.view [Sels.agent n, Sels.owned n, Sels.locks n, Sels.workspaces n, Sels.metas ["reuse_below"]] id
   return (db, reads db (← Workspaces.main none) (← Workspaces.wtMap db) (← Workspaces.every) n)
 
 /-- Lifecycle's verdict on live agent row `a` (watchd.fate, model Decide.lean's fateL), and what it heard: none (kept:

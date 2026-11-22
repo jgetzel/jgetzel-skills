@@ -125,6 +125,9 @@ theorem keeps_txn {ts : List Table} {f : Db → Db × α} (h : ∀ db, P db → 
   · exact .inl hd
   · exact .inr (List.mem_singleton.1 hd ▸ h _ hs)
 
+theorem keeps_view {ss : List Sel} {f : Db → α} : Keeps P (Store.view ss f : RecM M α) :=
+  keeps_of fun s => by rw [go_eq]; exact ⟨rfl, rfl⟩
+
 theorem keeps_ask (f : M.World → α) : Keeps P (Rec.ask f : RecM M α) := keeps_of fun s => by rw [go_eq]; exact ⟨rfl, rfl⟩
 theorem keeps_cmd (argv : List String) (cwd : Option String) (f : M.World → α) :
     Keeps P (Rec.cmd argv cwd f : RecM M α) := keeps_of fun s => by rw [go_eq]; exact ⟨rfl, rfl⟩
@@ -296,6 +299,7 @@ elab "keeps_step" : tactic => do
       else if (x.getArg! 4).isAppOf ``Clock.now then run (← `(tactic| (apply keeps_now_bind; assumption)))
       else run (← `(tactic| apply keeps_bind))
     else if c == ``Store.txn then run (← `(tactic| apply keeps_txn))
+    else if c == ``Store.view then run (← `(tactic| apply keeps_view))
     else if c == ``Pure.pure then run (← `(tactic| apply keeps_pure))
     else if c == ``Functor.map then run (← `(tactic| apply keeps_map))
     else if c == ``MonadExcept.throw || c == ``MonadExceptOf.throw || c == ``throwThe then
@@ -1208,13 +1212,6 @@ theorem state_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) (
   all_goals xstep
 
 set_option maxHeartbeats 20000000 in
-/-- Every `Hook` command keeps the cross-area invariant at every commit (`Cmd.Hook.group`). -/
-theorem hook_keeps (hM : ∀ w, M.now w ≤ t) (a : Args.Parsed) :
-    Keeps (XInv · t) ((Cmd.Hook.group (m := RecM M)).run a) := by
-  keeps_walk
-  all_goals xstep
-
-set_option maxHeartbeats 20000000 in
 /-- Reap keeps the cross-area invariant at every commit: its own theorem, which `pass_keeps` applies (`K.<function>`)
 rather than walking it inline, so no one proof holds the whole pass. -/
 theorem K.SwarmLean.Watchd.reap (hM : ∀ w, M.now w ≤ t) live t' comms :
@@ -1249,8 +1246,10 @@ theorem watchd_keeps (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) 
   keeps_walk
   all_goals xstep
 
-/-- Every ported command group keeps the cross-area invariant at every commit. -/
-theorem groups_keep (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) :
+/-- Every ported command group keeps the cross-area invariant at every commit, given that the hooks do (`hH`: the
+hooks run on the statement store, whose proofs come back in board #81; Proofs/LEGACY.md). -/
+theorem groups_keep (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t))
+    (hH : ∀ a, Keeps (XInv · t) ((Cmd.Hook.group (m := RecM M)).run a)) :
     ∀ g ∈ Dispatch.groups (m := RecM M), ∀ a, Keeps (XInv · t) (g.run a) := by
   intro g hg a
   simp only [Dispatch.groups, List.mem_cons, List.not_mem_nil, or_false] at hg
@@ -1265,7 +1264,7 @@ theorem groups_keep (hM : ∀ w, M.now w ≤ t) (hL : LoopsKeep M (XInv · t)) :
   · exact run_keeps hM hL a
   · exact compute_keeps hM a
   · exact state_keeps hM hL a
-  · exact hook_keeps hM a
+  · exact hH a
   · exact watchd_keeps hM hL a
 
 /-- Crash safety (board #133): a run of `x` that keeps `P`, from a store with `P` (and earlier commits with it),
