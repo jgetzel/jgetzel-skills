@@ -62,6 +62,7 @@ macOS.
 |---|---|---|
 | `try <id> <cores\|all> <mem_kb> <est_s\|-> <holder> <who> <cmd>` | admission (§1, with backfill, sw-compute-backfill.md §2-§5); writes the claim and removes the ticket, or rewrites the ticket | `ok <cores> <mem_kb>`, `wait <free_cores> <free_mem_kb> <ahead>`, `never <cap_cores> <cap_mem_kb>` (larger than the cap), or `off` |
 | `drop <id>` | removes the claim and the ticket | |
+| `hold <id> <pid>` | makes `p<pid>` the claim's holder, the rest of its line kept; exit 3 when the claim is gone (lapsed, its holder dead, or dropped) | |
 | `ls` | | `ncpu busy total_kb avail_kb cap_cores cap_mem_kb off reserve_cores reserve_mem_kb`, then `c <claim line>` and `q <ticket line>` rows |
 | `cap <cores\|-> <mem_kb\|->` | writes `cap` | |
 | `reserve <cores> <mem_kb>` | writes `reserve` (`0 0` removes it): the user's reservation | |
@@ -87,7 +88,9 @@ swarm run [--on <machine>] [--cores N|all] [--mem <G>] [--env NAME[=VAL]]... -- 
    when in a later round every candidate answered `never` or `off`; a round where a machine did not answer keeps waiting. There is no timeout; the agent runs this in the
    background and can kill it.
 4. **Run.** Here: holder `p<swarm run's pid>`, `drop` after the command. On another machine: holder `t`, then the
-   sync, then the job script rewrites the holder to `p$$` as its first step and removes the claim in an exit trap.
+   sync, then the job script's first step is `hold <id> $$` and its exit trap `drop <id>`. A sync past the claim's 15
+   minutes finds it lapsed: `hold` fails and the job never runs, saying so (board #109). A `--detach` run here `hold`s its
+   claim for the background process the same way.
    A failed sync or `hc run` drops the claim.
 5. **Environment** the job gets: `SWARM_CORES`, `SWARM_MEM_KB`, `MAKEFLAGS=-j<cores>`, `CARGO_BUILD_JOBS`,
    `NIX_BUILD_CORES`, and `NIX_CONFIG` with `cores = <n>` and `max-jobs = 1` appended (a `nix build` runs in the nix

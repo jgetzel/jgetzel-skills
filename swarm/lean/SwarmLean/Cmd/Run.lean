@@ -221,6 +221,11 @@ def detachStart (a : Parsed) (argv : List String) (claimId jid jobs unit cwd : S
   if !up then
     Env.err s!"swarm: the background run of j{jid} did not start in 30s; see {out}"
     throw (Exit.mk 255)
+  -- anything but `1`: why the background run did not start the job
+  let r := strip ((← Fs.read ready).getD "1")
+  if r != "1" then
+    Env.err r
+    throw (Exit.mk 255)
   Env.out s!"job j{jid} started on {chosen.getD "this machine"} ({d gotCores} cores, {estF.elim "no estimate" fun e => "~" ++ span e}); you get its end line as a message. `swarm stay --until job:{jid}` waits for it."
   return 0
 
@@ -328,11 +333,13 @@ def runRemote (ctx : JobCtx) (mach top cs unit dir rel wtname : String) (cfg : J
     k ++ "=\"" ++ v.replace "{dir}" ("$HOME/" ++ dir) ++ "\"")
   let jobCmd := mkJob unit memFlag (if devOn then wrapFull cfg cs line ("\"$HOME/" ++ src ++ "\"") ("\"$HOME/" ++ dir ++ "/devshell\"") else full)
   let metaD := s!"\"$HOME/{dir}/jobs/{jid}\""
+  let lapsed := s!"swarm: the claim on {mach} lapsed before the job started (a remote claim is held 15 minutes until then); the job never ran."
   let script := "; ".intercalate [
     s!"mkdir -p {metaD} && cd \"$HOME/{src}\" || exit 255",
-    -- the claim's holder becomes this shell; the claim goes when it exits
-    s!"f=\"$\{SWARM_COMPUTE_DIR:-$\{XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}/claims/{claimId}\"; trap 'rm -f \"$f\"' EXIT",
-    s!"if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$$ /\" \"$f\" > \"$\{f%/*}/.h$$\" && mv \"$\{f%/*}/.h$$\" \"$f\"; fi",
+    -- the claim's holder becomes this shell (the ledger's `hold`), or the job never runs: a remote claim is held 15
+    -- minutes until then (its `t`), and lapses when the sync takes longer; the claim goes when this shell exits
+    s!"L() \{ sh -c {shquote Claims.SCRIPT} sh \"$@\"; }; trap 'L drop {claimId}' EXIT",
+    s!"L hold {claimId} $$ 2>/dev/null || \{ echo {shquote lapsed} | tee {metaD}/log >&2; exit 255; }",
     "[ -d .git ] || git init -q",
     s!"git add -A && git write-tree > {metaD}/tree",
     s!"\{ (cd {shquote rel} && {if exports.isEmpty then "" else "export " ++ " ".intercalate exports ++ " && "}{jobCmd}) < /dev/null; echo $? > {metaD}/rc; } 2>&1 | tee {metaD}/log",
@@ -486,8 +493,12 @@ def run (a : Parsed) : m UInt32 := do
     return ← detachStart a argv claimId jid jobs unit cwd chosen gotCores gotMem waitS estF
   if detached && chosen.isNone && !nested then
     -- the claim's holder becomes this process: it drops when this dies
-    discard <| Sys.exec ["sh", "-c", "f=\"${SWARM_COMPUTE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/swarm-compute}/claims/$2\"; " ++
-      "if [ -f \"$f\" ]; then sed \"s/^\\([^ ]* [^ ]* \\)[^ ]* /\\1p$1 /\" \"$f\" > \"${f%/*}/.h$1\" && mv \"${f%/*}/.h$1\" \"$f\"; fi", "sh", toString (← Sys.getpid), claimId] {}
+    if !(← Claims.hold host none claimId (← Sys.getpid)) then
+      -- the parent (detachStart) says it and exits; this one never runs the job
+      let why := s!"swarm: the claim of j{jid} was gone before the job started (its holder, the `swarm run` that made it, died, or it was dropped); the job never ran."
+      Env.err why
+      discard <| Fs.write (jobs ++ "/ready") why
+      throw (Exit.mk 255)
   if detached then discard <| Fs.write (jobs ++ "/ready") "1"
   let t0 ← Sys.nowF
   let ctx : JobCtx := { who, jid, on, nested, claimId, waitS, t0, full, line, repo, jobs, logf, memFlag, detached, task }

@@ -231,6 +231,14 @@ try_() {
 case $op in
   try) try_ \"$@\";;
   drop) okid \"$1\"; rm -f \"$d/claims/$1\" \"$d/queue/$1\";;
+  # the claim's holder becomes pid $2; a claim gone (lapsed, its holder dead, or dropped) fails with exit 3
+  hold)
+    okid \"$1\"
+    if ! num \"$2\"; then echo 'bad pid' >&2; exit 2; fi
+    lock; clean
+    f=\"$d/claims/$1\"
+    if [ ! -f \"$f\" ] || ! read -r c m _ rest < \"$f\"; then echo \"no claim $1\" >&2; exit 3; fi
+    printf '%s %s p%s %s\\n' \"$c\" \"$m\" \"$2\" \"$rest\" > \"$d/claims/.$1\" && mv \"$d/claims/.$1\" \"$f\";;
   # a display-only note: holds no cores and no place in line; `qadd id owner who est ttl pid cmd` (est, pid: - for none)
   qadd)
     id=$1; owner=$2; who=$3; est=$4; ttl=$5; pid=$6; cmd=$7
@@ -274,7 +282,7 @@ case $op in
 esac
 "
 
-/-- The script: `sh -c SCRIPT sh <op> <args…>`; ops `try`, `drop`, `ls`, `cap`, `off`, `on` (sw-compute.md §2). -/
+/-- The script: `sh -c SCRIPT sh <op> <args…>`; ops `try`, `drop`, `hold`, `ls`, `cap`, `off`, `on` (sw-compute.md §2). -/
 def SCRIPT : String := SCRIPT_A ++ SCRIPT_B
 
 /-- What `try` answered. -/
@@ -316,6 +324,11 @@ def call {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (args
 /-- Removes a claim and ticket (their absence is no error). -/
 def release {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (id : String) : m Unit :=
   discard <| call h mach ["drop", id]
+
+/-- Makes pid `pid` (on that machine) the holder of claim `id`: false when the claim is gone (it lapsed, its holder died,
+or it was dropped). -/
+def hold {m : Type → Type} [Monad m] (h : Host m) (mach : Option String) (id : String) (pid : Int) : m Bool := do
+  return (← call h mach ["hold", id, toString pid]).isSome
 
 /-- A claim row of `ls`. -/
 structure Claim where
