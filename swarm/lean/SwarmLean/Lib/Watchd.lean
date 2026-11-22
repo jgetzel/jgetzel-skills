@@ -568,6 +568,12 @@ structure Opts where
   /-- why no communicator can be launched (ensure_comms), which holds auto-spawn -/
   commsHold : Option String := none
 
+/-- The tasks this swarm staffs (sw-global §2): those of its repos; one of no repo only by a claim or `spawn --task`. -/
+def mineOf : m (List Int) := do
+  match ← env "SWARM" with
+  | some s => Swarms.staffable s
+  | none => pure []
+
 /-- `name` is `prefix` and digits: the number (re.fullmatch(prefix .. "(\\d+)")). -/
 def numbered (pre name : String) : Option Nat :=
   if name.startsWith pre then
@@ -604,9 +610,7 @@ def autoSpawn (comms : String) (opts : Opts) (offered : List Int := []) : m (Opt
       halt := none
   let haltOf := halt
   -- only tasks of this swarm's repos (sw-global §2): one of no repo is staffed by a claim or `spawn --task` alone
-  let mine ← match ← env "SWARM" with
-    | some s => Swarms.staffable s
-    | none => pure []
+  let mine ← mineOf
   let skip (x : Task) : Bool := haltOf == some (d x.id) || offered.contains x.id || !mine.contains (x.id : Int)
   let mut lost := 0
   repeat
@@ -724,7 +728,9 @@ def lifecycle (t : Int) (comms : String) (terms : Option (List Term)) (opts : Op
   let by_ (h : String) : Option Term := (terms.getD []).find? (·.address == some h)
   let db ← Store.txn [.agent, .task, .lock, .workspace, .event, .msg, .cursor, .«meta»] fun db => (db, db)
   let wts := Workspaces.wtMapOf db all
-  let pool := Queue.staffing db
+  let mine ← mineOf
+  -- offers and the reuse fate count only what auto-spawn would staff here
+  let pool := (Queue.staffing db).filter fun x => mine.contains (x.id : Int)
   let procs ← Machine.procs  -- machine.bg_agents, read once
   let mut reusable := []
   let dflt := (py opts.model).getD "sonnet"

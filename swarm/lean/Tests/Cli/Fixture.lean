@@ -399,6 +399,8 @@ def new : IO T := do
     t.q_ s!"create trigger {tb}_in_t after insert on {tb} when new.swarm is null begin update {tb} set swarm='t' where rowid=new.rowid; end"
   let mk := ", ".intercalate (machineKeys.map fun k => "'" ++ k ++ "'")
   t.q_ s!"create trigger meta_in_t after insert on meta when new.scope = '' and new.k not in ({mk}) begin update meta set scope='t' where rowid=new.rowid; end"
+  -- a task a test writes by hand (no created_at, which `task add` and CI set) touches the repo, as `task add` here would
+  t.q_ s!"create trigger task_of_repo after insert on task when new.created_at is null begin insert or ignore into task_repo(task, repo) values(new.id, '{t.repo}'); end"
   for tb in ["lock", "ci", "workspace"] do
     t.q_ s!"create trigger {tb}_in_repo after insert on {tb} when new.repo = '' begin update {tb} set repo='{t.repo}' where rowid=new.rowid; end"
   return t

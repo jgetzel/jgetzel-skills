@@ -82,7 +82,8 @@ def commsPresent (r : Option Agent) (terms : List Term) : Bool :=
   r.any fun a => a.ended.isNone && (py a.hc).any fun h => terms.any fun x => x.address == some h && x.state == some "live"
 
 /-- A swarm whose communicator joined from a Herdr terminal gets one launched and bound when its bound terminal is gone
-(not `commsPresent`) and the swarm has work it can start (`Queue.staffing`: a held task is none, board #67). A live
+(not `commsPresent`) and the swarm has work it can start (`Queue.staffing` of its repos: a held task is none, board
+#67). A live
 binding is never moved: only `swarm join --takeover` moves one. Why it can't, for the board's auto-spawn line, or none
 (watchd.ensure_comms). -/
 def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String) := do
@@ -92,7 +93,8 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
   let some sw ← env "SWARM" | return none
   let some terms := terms | return none
   if commsPresent (db.agent comms) terms then return none
-  if (Queue.staffing db).isEmpty then return none
+  let mine ← Swarms.staffable sw  -- work of its repos (sw-global §2), as auto-spawn staffs it
+  if !(Queue.staffing db).any (mine.contains ·.id) then return none
   if let some bo := (db.getMeta "comms_backoff").bind (·.v) then
     if (← Clock.now) < (parseInt bo).getD 0 then return some "no communicator can be launched (last launch failed)"
   let brief := s!"You are the communicator of swarm {sw} (your name: {comms}), started by watchd because the swarm had " ++

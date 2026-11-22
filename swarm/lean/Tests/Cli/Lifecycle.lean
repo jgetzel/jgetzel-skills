@@ -838,6 +838,14 @@ def test_comms_never_digested_or_ended_reusable_digested (t : T) : IO Unit := do
   has (← t.sw "r" ["read"]).stdout "Related tasks are startable: #2 t."
   hasnt (← t.sw "comms" ["read"]).stdout "Related tasks"
 
+-- an offer names only tasks this swarm staffs: of its repos, none of no repo (sw-global §2, board #74)
+def test_offer_only_the_swarms_repos (t : T) : IO Unit := do
+  idle t "comms"; idle t "r"; finished t "r"
+  t.sw_ "comms" ["task", "add", "research", "--label", "x", "--no-repo"]
+  t.sw_ "comms" ["task", "add", "ours", "--label", "x"]
+  commsTick t
+  eq ((← t.q1 "select data from event where kind='digest' and agent='r'").f "data") "3"
+
 def test_digest_edge_triggered (t : T) : IO Unit := do
   idle t "comms"; idle t "r"; finished t "r"
   t.sw_ "comms" ["task", "add", "t1", "--label", "x"]
@@ -1673,6 +1681,7 @@ def tests : List Case := [
   ("test_working_owner_past_lease_keeps_claim", test_working_owner_past_lease_keeps_claim),
   ("test_prompt_blocked_owner_past_lease_keeps_claim", test_prompt_blocked_owner_past_lease_keeps_claim),
   ("test_comms_never_digested_or_ended_reusable_digested", test_comms_never_digested_or_ended_reusable_digested),
+  ("test_offer_only_the_swarms_repos", test_offer_only_the_swarms_repos),
   ("test_digest_edge_triggered", test_digest_edge_triggered),
   ("test_reuse_off_by_default", test_reuse_off_by_default),
   ("test_offer_lineage_labels_model", test_offer_lineage_labels_model),
