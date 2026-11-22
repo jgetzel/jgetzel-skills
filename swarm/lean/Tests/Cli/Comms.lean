@@ -25,7 +25,9 @@ def metaV (t : T) (k : String) : IO Json := return (← t.q1 s!"select v from me
 
 def test_join_labels_the_terminal_with_its_swarm (t : T) : IO Unit := do
   setup t [json% {"address": "t1"}]
+  t.q_ "update swarm set comms='c' where name='t'"
   eq (← join t "c" "t1").code 0
+  eq (← metaV t "comms_hc") "t1"
   eq ((← t.q1 "select swarm from agent where name='c'").f "swarm") "t"
   has (← t.calls "labels") "t1 swarm=t"
 
@@ -67,6 +69,7 @@ def tick (t : T) : IO Unit :=
 def test_watchd_launches_missing_communicator (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
+  t.q_ "insert into meta(k,v) values('comms_hc','t0')"  -- c joined from a Herdr terminal once
   tick t
   has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
   eq ((← t.q1 "select hc from agent where name='c'").f "hc") "t9"
@@ -82,6 +85,7 @@ def test_watchd_leaves_a_good_communicator (t : T) : IO Unit := do
 def test_watchd_holds_autospawn_when_comms_cant_launch (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
+  t.q_ "insert into meta(k,v) values('comms_hc','t0')"
   t.q_ "insert into task(title,state) values('x','open')"
   put (t.d ++ "/launch.fail") ""
   tick t

@@ -82,10 +82,12 @@ def recAlive (rec : String) : m Bool := do
   | some p => Sys.pidAlive p
   | none => pure false
 
-/-- A swarm with work always has its own communicator: its row bound to a live terminal labelled with this swarm;
-else one is launched and bound. Why it can't, for the board's auto-spawn line, or none (watchd.ensure_comms). -/
+/-- A swarm with work whose communicator joined from a Herdr terminal always has its own communicator: its row bound
+to a live terminal labelled with this swarm; else one is launched and bound. Why it can't, for the board's auto-spawn line, or none (watchd.ensure_comms). -/
 def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String) := do
   let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
+  -- only a swarm whose communicator joined from a Herdr terminal (`join` records it) gets one launched
+  if ((db.getMeta "comms_hc").bind (·.v)).isNone then return none
   let some sw ← env "SWARM" | return none
   let some terms := terms | return none
   if !((Agents.live db).any (·.name != comms) || db.tasks.any (·.state = .open)) then return none

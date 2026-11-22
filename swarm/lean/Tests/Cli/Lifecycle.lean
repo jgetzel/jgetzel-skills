@@ -313,11 +313,14 @@ def test_foreign_comms_not_ended (t : T) : IO Unit := do
   t.fakes
   t.setHc [json% {"address": "t1", "status": "idle", "cwd": $(t.d)}, json% {"address": "t2", "status": "idle", "cwd": $(t.wt)},
     json% {"address": "t3", "status": "idle"}]
-  idle t "other-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t1")]
   idle t "x-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t2")]
   idle t "e" [("wt", .text (t.wt ++ "-gone")), ("hc", "t3")]  -- hc reports no cwd: judged as before
-  commsTick t
-  ok (!(← ended t "other-comms"))
+  -- another swarm's communicator: two live swarms, so other-comms joins its own (sw-global §2)
+  t.sw_ "zz" ["new", "other"]
+  idle t "other-comms" [("wt", .text (t.wt ++ "-gone")), ("hc", "t1")]
+  eq ((← t.q1 "select swarm from agent where name='other-comms'").f "swarm") "other"
+  t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] { env := [("SWARM", some "t")] }
+  ok (!(← ended t "other-comms")) "another swarm's agent is not this watchd's"
   ok (← ended t "x-comms") "a *comms name still spared"
   ok (← ended t "e")
 

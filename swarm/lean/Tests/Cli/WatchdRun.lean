@@ -402,7 +402,7 @@ def test_run_note_state_and_cleanup (t : T) : IO Unit := do
   t.agent "a"
   let n ← now t
   let n600 := n - 600; let n120 := n - 120
-  t.q_ "insert into meta values('machines',?)" [.text (json% {
+  t.q_ "insert into meta(k, v) values('machines',?)" [.text (json% {
     "laptop": {"state": "connected", "ts": $n, "cores": 24, "load": 3.5, "avail_kb": 83886080, "total_kb": 97517568,
       "psi": 0},
     "nas": {"state": "disconnected", "ts": $n, "since": $n600}}).compress]
@@ -453,7 +453,7 @@ def test_run_remote_job_telemetry (t : T) : IO Unit := do
     try discard tree.wait catch _ => pure ()
   put (t.d ++ "/get.t9") (json% {"state": "live", "pid": $pid.toNat!}).compress
   put (t.d ++ "/get.t7") (json% {"state": "exited"}).compress
-  t.q_ "insert into meta values('machines',?)"
+  t.q_ "insert into meta(k, v) values('machines',?)"
     [.text (json% {"laptop": {"state": "connected", "ts": $n, "jobs": {"2": {"gone": $n3601}}}}).compress]
   for (id, hc, age) in [("1", "laptop/t9", 60), ("2", "laptop/t8", 9000), ("3", "laptop/t7", 30), ("4", "nas/t1", 30)] do
     let machine := (hc.splitOn "/").head!

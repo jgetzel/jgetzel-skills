@@ -107,7 +107,13 @@ def join (a : Parsed) : m UInt32 := do
   let sw ← env "SWARM"  -- exported by the store once its first transaction resolved it
   if let (some h, some s) := (here, sw) then discard <| Proc.output ["hc", "label", h, "swarm=" ++ s] none []
   let now ← Clock.now
-  Store.txn [] fun db => (db.log now (some n) "join" none none, ())
+  let envComms ← env "SWARM_COMMS"
+  Store.txn [.«meta»] fun db =>
+    -- the communicator in a Herdr terminal: watchd keeps one there (`ensureComms`)
+    let db := match here with
+      | some h => if isComms db envComms (some n) then db.setMeta "comms_hc" (some h) else db
+      | none => db
+    (db.log now (some n) "join" none none, ())
   return 0
 
 /-- `swarm leave [name]` (agents.cmd_leave). -/

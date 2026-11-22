@@ -36,7 +36,7 @@ def int (c : Conn) (sql : String) : IO Int := do
   | _ => fail s!"{sql}: no number"
 
 /-- The machine's scope with no swarm: every meta key is scope `''`, as the raw statements here write them. -/
-def sc0 : Scope := { swarm := "", repo := "" }
+def sc0 : Scope := { swarm := "t", repo := "" }
 
 def sumSql : String := "select coalesce(sum(cast(v as integer)),0)*100 + count(*) from meta where k like 'acct.%'"
 
