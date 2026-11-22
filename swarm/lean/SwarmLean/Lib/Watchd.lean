@@ -96,14 +96,19 @@ inductive Once | atMost | atLeast
 
 /-- A non-db effect a pass asks for; `runActs` (Cmd/Watchd.lean) runs it. -/
 inductive Act
-  /-- `text` to agent `agent` at terminal `hc`, its `mark` run around the send as `once` says -/
-  | send (agent hc text : String) (mark : List Stmt) (once : Once)
+  /-- `text` to agent `agent` at terminal `hc` (`Msgs.deliverTo`), its `mark` run around the send as `once` says -/
+  | send (agent hc text : String) (mark : Txn Unit) (once : Once)
+  /-- `text` typed into agent `agent`'s terminal `hc` (`Msgs.typeLine`: a `/compact`), its `mark` as for `send` -/
+  | type (agent hc text : String) (mark : Txn Unit) (once : Once)
   /-- the agent ended (`Lifecycle.endAgent`) -/
   | endAgent (a : Agent)
   /-- hc terminal `hc` killed and removed -/
   | kill (hc : String)
   /-- a line to stderr -/
   | err (line : String)
+
+/-- A send whose mark its pass's transaction already wrote: at most once. -/
+def Act.marked (agent hc text : String) : Act := .send agent hc text (pure ()) .atMost
 
 /-- The `lease-late` event of task `id` with `data` (`holder`: its owner told; `comms`: the communicator) in the last
 LEASE before `t`. -/
