@@ -32,9 +32,9 @@ def worktrees [Git m] [Sys m] : m (List (String × String)) := do
   return out
 
 /-- Every worktree, a detached one too, as (resolved path, branch or none); `worktrees` lists only those on a branch. -/
-def every [Git m] [Sys m] : m (List (String × Option String)) := do
+def every [Git m] [Sys m] (cwd : Option String := none) : m (List (String × Option String)) := do
   let mut out : Array (String × Option String) := #[]
-  for l in splitlines ((← Git.git ["worktree", "list", "--porcelain"] none).getD "") do
+  for l in splitlines ((← Git.git ["worktree", "list", "--porcelain"] cwd).getD "") do
     if l.startsWith "worktree " then
       out := out.push (← real (l.drop 9).toString, none)
     else if l.startsWith "branch refs/heads/" && !out.isEmpty then
@@ -73,6 +73,56 @@ def wtMap [Git m] [Sys m] (db : Db) : m (List (String × String)) := return wtMa
 def upsert (db : Db) (w : Workspace) : Db :=
   { db with workspaces := db.workspaces.filter (fun x => !(x.path == w.path && x.agent == w.agent)) ++ [w] }
 
+/-- `.claude/swarm.json`'s `seed` in `top`: the build dirs, relative to a worktree, a new worktree copies from a built
+one. Only relative paths without `..`. -/
+def seedDirs [Fs m] (top : String) : m (List String) := do
+  let some j := Json.decode ((← Fs.read s!"{top}/.claude/swarm.json").getD "") | return []
+  let some (.arr a) := Json.field j "seed" | return []
+  return a.toList.filterMap fun
+    | .str s => if s != "" && !s.startsWith "/" && !(s.splitOn "/").contains ".." then some s else none
+    | _ => none
+
+/-- The newest mtime at or under `p`, at most `depth` levels down (a build's outputs sit a few levels in). -/
+def newest [Fs m] [Sys m] (p : String) : Nat → m Int
+  | 0 => return (← Sys.mtime p).getD 0
+  | d + 1 => do
+    let mut t := (← Sys.mtime p).getD 0
+    if (← Sys.kind p false) == .dir then
+      for e in (← Fs.list p).getD [] do
+        if e != "." && e != ".." then t := max t (← newest (joinPath p e) d)
+    return t
+
+/-- The worktree other than `path` whose seed dirs were built last, if any has one. -/
+def seedSource [Fs m] [Git m] [Sys m] (path : String) (dirs : List String) : m (Option String) := do
+  let mut best : Option (String × Int) := none
+  for (w, _) in ← every (some path) do
+    if w == path then continue
+    for s in dirs do
+      let p := joinPath w s
+      if (← Sys.kind p false) != .dir then continue
+      let t ← newest p 3
+      if best.all (·.2 < t) then best := some (w, t)
+  return best.map (·.1)
+
+/-- Clones each seed dir of `.claude/swarm.json` from the last built worktree into the new worktree `path`
+(`cp -c`, else `cp --reflink=auto`), minus a `.lake`'s `config` (it holds the source worktree's paths).
+A copy that fails leaves nothing: that build runs from scratch. -/
+def seed [Fs m] [Proc m] [Git m] [Sys m] (path : String) : m Unit := do
+  let dirs ← seedDirs path
+  if dirs.isEmpty then return
+  let some src ← seedSource path dirs | return
+  for s in dirs do
+    let (from_, to) := (joinPath src s, joinPath path s)
+    if (← Sys.kind from_ false) != .dir || (← Sys.kind to false) != .none || (← Sys.kind (dirname to) true) != .dir then
+      continue
+    -- BSD cp clones with -c, GNU cp (Linux, or a nix shell on macOS) with --reflink
+    let mut copied := false
+    for flag in ["-c", "--reflink=auto"] do
+      if (← Proc.output ["cp", flag, "-R", from_, to] none []).any (·.code == 0) then copied := true; break
+      discard <| Proc.output ["rm", "-rf", to] none []
+    if copied && basename to == ".lake" then
+      discard <| Proc.output ["rm", "-rf", joinPath to "config"] none []
+
 variable [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
 /-- `git worktree add ../<repo>-<agent> -b <agent>/<task> <base ref>`, recorded: path, branch, base
@@ -97,6 +147,7 @@ def create (name : String) (task : Task) (cwd : Option String) (start : Option S
   | none => die "git worktree add failed: "
   let rp ← real path
   Store.txn [.workspace] fun db => (upsert db { path := rp, branch, base, agent := name, ro := some 0 }, ())
+  seed rp
   return (rp, branch, base)
 
 /-- A launch that failed leaves nothing: the workspace row, and the fresh worktree and its branch when `created`

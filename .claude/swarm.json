@@ -1,1 +1,1 @@
-{"ci": {"flow": "post-merge"}}
+{"ci": {"flow": "post-merge"}, "seed": ["swarm/lean/.lake", "claim/.lake"]}
