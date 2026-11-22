@@ -111,6 +111,7 @@ def test_agent_on_main_task_still_ended_on_main (t : T) : IO Unit := do
 
 -- the sweep protects every base a task names, and main
 def test_sweep_removes_work_landed_on_a_task_base (t : T) : IO Unit := do
+  t.made t.wt
   discard <| t.git t.repo ["branch", "formal"]
   t.write "b" "new.txt" "wip"
   discard <| t.git t.wt ["add", "."]

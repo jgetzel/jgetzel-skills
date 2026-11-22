@@ -13,7 +13,7 @@ open Args _root_.SwarmLean.Agents _root_.SwarmLean.Watchd
 
 /-- `swarm watchd -h`. -/
 def helpWatchd : String :=
-  "Usage: swarm watchd [-h] [--comms <comms>] [--interval <interval>]\n       [--once] [--ci] [--takeover] [--restart] [--dry-run]\n       [--max-agents <max_agents>] [--min-free-mem <min_free_mem>]\n       [--blocker-idle <blocker_idle>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --comms <comms>\n   --interval <interval>\n   --once\n   --ci                  also watch main CI with gh\n   --takeover            replace a live watchd; it exits on its next tick\n   --restart             start the same watchd (its recorded flags) in a hidden hc terminal, taking over\n   --dry-run             only list the worktrees the sweep would remove, then exit\n   --max-agents <max_agents>\n                         set the auto-spawn number (`swarm limits --min`; default: live agents when first started)\n   --min-free-mem <min_free_mem>\n                         GiB of MemAvailable needed to auto-spawn\n   --blocker-idle <blocker_idle>\n                         minutes an agent may sit idle holding a claim other tasks wait on before it is nudged and comms told\n   --model <model>       model for auto-spawned agents (default: sonnet; a task's own --model wins)\n   --effort {low,medium,high,xhigh,max}\n                         effort for auto-spawned agents (default: their settings)\n\nWith --comms, the communicator needs no waiter: with none alive, each tick sends its unread messages (as `swarm\nread` prints them, once the oldest is 20 s old, at most 40 lines) and marks them read once sent; only while hc shows\nthe terminal idle or working, never blocked or compacting, and while no other agent lives only for an urgent one.\n\nwatchd sends to an agent (these messages, the continue line after a compaction or an API error) as a Claude Code\ncross-session message, posted to the inbox socket its `swarm` commands recorded; with none recorded, or once a\npost fails (the communicator is told once), it types the line with hc send. A /compact is always typed."
+  "Usage: swarm watchd [-h] [--comms <comms>] [--interval <interval>]\n       [--once] [--ci] [--takeover] [--restart] [--dry-run]\n       [--max-agents <max_agents>] [--min-free-mem <min_free_mem>]\n       [--blocker-idle <blocker_idle>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --comms <comms>       set the communicator of the swarm this acts on\n   --interval <interval>\n   --once\n   --ci                  turn on the swarm's `ci` knob: watch its repos' base CI and PRs with gh\n   --takeover            replace a live watchd; it exits on its next tick\n   --restart             start the same watchd (its recorded flags) in a hidden hc terminal, taking over\n   --dry-run             only list the worktrees the sweep would remove, then exit\n   --max-agents <max_agents>\n                         set the swarm's auto-spawn number (`swarm limits --min`; default: its live agents when unset)\n   --min-free-mem <min_free_mem>\n                         GiB of MemAvailable needed to auto-spawn\n   --blocker-idle <blocker_idle>\n                         minutes an agent may sit idle holding a claim other tasks wait on before it is nudged and comms told\n   --model <model>       set the swarm's model for auto-spawned agents (`spawn_model`; default: sonnet; a task's own --model wins)\n   --effort {low,medium,high,xhigh,max}\n                         set the swarm's effort for auto-spawned agents (`spawn_effort`; default: their settings)\n\nOne watchd runs per machine: each tick it runs every live swarm's agent and swarm passes, every repo's conflict,\nlock, sweep and (a staffing swarm's `ci` knob on) CI passes, then the machine's, and hourly copies the db to\nswarm.db.bak beside it. --comms, --max-agents, --ci, --model and --effort set knobs of the swarm this command acts\non (`--swarm`, $SWARM, ...); the others are the machine's.\n\nA communicator the communicator needs no waiter: with none alive, each tick sends its unread messages (as `swarm\nread` prints them, once the oldest is 20 s old, at most 40 lines) and marks them read once sent; only while hc shows\nthe terminal idle or working, never blocked or compacting, and while no other agent lives only for an urgent one.\n\nwatchd sends to an agent (these messages, the continue line after a compaction or an API error) as a Claude Code\ncross-session message, posted to the inbox socket its `swarm` commands recorded; with none recorded, or once a\npost fails (the communicator is told once), it types the line with hc send. A /compact is always typed."
 
 /-- The parser, as main.lua declares it. -/
 def watchdSpec : Spec :=
@@ -45,21 +45,15 @@ structure St where
 /-- A `--…` number as Lua's tostring prints it (`4`, `4.5`). -/
 def numText (s : String) : String := fmtG ((parseFloat (strip s)).getD 0)
 
-/-- The flags watchd ran with, as argv for `--restart`: comms resolved, --max-agents left out (watchd.flags). -/
-def flags (a : Parsed) (comms : Option String) : List String :=
-  ["--interval", d ((a.int "interval").getD 30), "--min-free-mem", numText ((a.str "min_free_mem").getD "4")] ++
-  (match comms with | some c => ["--comms", c] | none => []) ++
-  ["--blocker-idle", numText ((a.str "blocker_idle").getD "25")] ++
-  (if a.flag "ci" then ["--ci"] else []) ++
-  (match a.str "model" with | some x => ["--model", x] | none => []) ++
-  (match a.str "effort" with | some x => ["--effort", x] | none => [])
+/-- The machine's flags watchd ran with, as argv for `--restart` (watchd.flags); a swarm's knobs are its meta. -/
+def flags (a : Parsed) : List String :=
+  ["--interval", d ((a.int "interval").getD 30), "--min-free-mem", numText ((a.str "min_free_mem").getD "4"),
+   "--blocker-idle", numText ((a.str "blocker_idle").getD "25")]
 
-/-- The flags given on this command line, as argv (what `--restart` amends the recorded flags with). -/
+/-- The machine's flags given on this command line, as argv (what `--restart` amends the recorded flags with). -/
 def given (a : Parsed) : List String :=
-  [("comms", "--comms"), ("interval", "--interval"), ("min_free_mem", "--min-free-mem"), ("blocker_idle", "--blocker-idle"),
-   ("model", "--model"), ("effort", "--effort"), ("max_agents", "--max-agents")].flatMap (fun (k, f) =>
-    match a.str k with | some v => [f, v] | none => (match a.int k with | some v => [f, d v] | none => [])) ++
-  (if a.flag "ci" then ["--ci"] else [])
+  [("interval", "--interval"), ("min_free_mem", "--min-free-mem"), ("blocker_idle", "--blocker-idle")].flatMap (fun (k, f) =>
+    match a.str k with | some v => [f, v] | none => (match a.int k with | some v => [f, d v] | none => []))
 
 /-- The recorded flags with those of `over` replacing same-named ones. -/
 def amend (fl over : List String) : List String :=
@@ -74,7 +68,7 @@ def amend (fl over : List String) : List String :=
 def pidOf (rec : String) : Option Int := parseInt ((words rec).headD "")
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
-  [Guard m]
+  [Guard m] [Scoped m]
 
 /-- The record's process lives (run.pid_alive of its first word). -/
 def recAlive (rec : String) : m Bool := do
@@ -82,23 +76,27 @@ def recAlive (rec : String) : m Bool := do
   | some p => Sys.pidAlive p
   | none => pure false
 
-/-- A swarm with work whose communicator joined from a Herdr terminal always has its own communicator: its row bound
-to a live terminal labelled with this swarm; else one is launched and bound. Why it can't, for the board's auto-spawn line, or none (watchd.ensure_comms). -/
+/-- A swarm's communicator is present (sw-global §4): its live row bound to a terminal hc lists live. No space, label or
+folder enters it. -/
+def commsPresent (r : Option Agent) (terms : List Term) : Bool :=
+  r.any fun a => a.ended.isNone && (py a.hc).any fun h => terms.any fun x => x.address == some h && x.state == some "live"
+
+/-- A swarm whose communicator joined from a Herdr terminal gets one launched and bound when its bound terminal is gone
+(not `commsPresent`) and the swarm has work it can start (`Queue.staffing`: a held task is none, board #67). A live
+binding is never moved: only `swarm join --takeover` moves one. Why it can't, for the board's auto-spawn line, or none
+(watchd.ensure_comms). -/
 def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String) := do
   let db ← Store.txn [.agent, .task, .«meta»] fun db => (db, db)
   -- only a swarm whose communicator joined from a Herdr terminal (`join` records it) gets one launched
   if ((db.getMeta "comms_hc").bind (·.v)).isNone then return none
   let some sw ← env "SWARM" | return none
   let some terms := terms | return none
-  if !((Agents.live db).any (·.name != comms) || db.tasks.any (·.state = .open)) then return none
-  let r := (Agents.live db).find? (·.name == comms)
-  for x in terms do
-    if r.isSome && (r.bind (·.hc)) == x.address && x.state == some "live" then
-      if (← Cmd.Agents.hcSwarm (x.address.getD "")) == some sw then return none
+  if commsPresent (db.agent comms) terms then return none
+  if (Queue.staffing db).isEmpty then return none
   if let some bo := (db.getMeta "comms_backoff").bind (·.v) then
     if (← Clock.now) < (parseInt bo).getD 0 then return some "no communicator can be launched (last launch failed)"
-  let brief := s!"You are the communicator of this swarm (your name: {comms}), started by watchd because the swarm had work " ++
-    "and no communicator in its Herdr space. Load the swarm skill, run `swarm board` and `swarm read`, and carry on as the communicator."
+  let brief := s!"You are the communicator of swarm {sw} (your name: {comms}), started by watchd because the swarm had " ++
+    "work it could start and its communicator's terminal was gone. Load the swarm skill, run `swarm board` and `swarm read`, and carry on as the communicator."
   let model := match db.agent comms with
     | some a => a.model.getD "opus"
     | none => "opus"
@@ -109,7 +107,10 @@ def ensureComms (comms : String) (terms : Option (List Term)) : m (Option String
     Store.txn [.«meta»] fun db => (db.setMeta "comms_backoff" (some (d (now + 300))), ())
     return some ("no communicator can be launched: " ++ err)
   let addr := (splitlines (strip out)).getLastD ""
-  Cmd.Agents.bindAgent comms (some cwd) (some addr) none true
+  -- a `join` while it launched bound the row to a live terminal: that binding stays
+  let db ← Store.txn [.agent] fun db => (db, db)
+  if commsPresent (db.agent comms) ((← hcTerminals).getD []) then return none
+  Cmd.Agents.bindAgent comms (some cwd) (some addr) none false
   discard <| Proc.output ["hc", "label", addr, "swarm=" ++ sw] none []
   let now ← Clock.now
   Store.txn [.«meta»] fun db => ((delMeta db "comms_backoff").log now (some comms) "comms-launch" none (some addr), ())
@@ -330,63 +331,200 @@ def notices (comms : String) (away : Bool) : m Unit := do
       (say db now comms (s!"{r.owner.getD "None"} is blocked on #{d r.id} ({r.title.getD "nil"}): {r.question.getD "None"} " ++
         s!"Answer with `swarm task unblock {d r.id} --answer \"...\"`." ++ (if away then AWAY else "")) (!away) "system", ())
 
-/-- One tick: each pass under its own guard, an error ending its pass alone; the errors joined, or none
-(watchd.watchd_tick). -/
-def tick (comms repo : Option String) (opts : Opts) (st : St) : m (St × Option String) := do
+/-- A pass under its guard: its error, prefixed, added to `errs`. -/
+def pass (errs : List String) (what : String) (x : m Unit) : m (List String) := do
+  match ← Guard.guard x with
+  | .ok _ => pure errs
+  | .error e => pure (errs ++ [what ++ e])
+
+/-- The repo of folder `dir`: its main worktree, resolved; `''` outside one or when it is gone. -/
+def repoOf (dir : String) : m String := do
+  if dir == "" || (← Sys.kind dir true) != .dir then return ""
+  return (← Workspaces.main (some dir)).getD ""
+
+/-- What one tick covers (sw-global §4), read at its start: the live swarms, each live agent's (name, swarm, repo: of
+its worktree, else its folder), the repos (every one the db names or a live agent works in), and for each live swarm's
+repo (repo, swarm, its communicator, its `ci` knob). -/
+structure Plan where
+  swarms : List Swarms.Row := []
+  agents : List (String × String × String) := []
+  repos : List String := []
+  staff : List (String × String × Option String × Bool) := []
+
+/-- The plan of a tick, from the machine's db. -/
+def plan : m Plan := do
+  let swarms := (← Swarms.list).filter (·.ended.isNone)
+  let rs ← Sys.sqlAt (← Swarms.dbPath) "" [
+    ("select a.name, coalesce(a.swarm, ''), coalesce(nullif(a.wt, ''), a.cwd, ''), (select w.repo from workspace w " ++
+      "where w.agent = a.name and w.path = a.wt and w.repo <> '') from agent a where a.ended is null order by a.name", []),
+    ("select path from repo union select repo from swarm_repo union select repo from workspace where repo <> '' " ++
+      "union select repo from lock where repo <> ''", []),
+    ("select sr.repo, sr.swarm, s.comms, (select v from meta m where m.scope = sr.swarm and m.k = 'ci') from swarm_repo sr " ++
+      "join swarm s on s.name = sr.swarm where s.ended is null order by sr.swarm, sr.repo", [])] true
+  let txt := Swarms.txt
+  let mut agents := []
+  let mut seen : List (String × String) := []  -- each folder asked of git once
+  for r in (rs.getD 0 #[]).toList do
+    let dir := (txt r[2]?).getD ""
+    let repo ← match txt r[3]?, seen.lookup dir with
+      | some w, _ => pure w
+      | none, some x => pure x
+      | none, none => do let x ← repoOf dir; seen := (dir, x) :: seen; pure x
+    agents := agents ++ [((txt r[0]?).getD "", (txt r[1]?).getD "", repo)]
+  let mut repos := []
+  for r in ((rs.getD 1 #[]).toList.filterMap (txt ·[0]?)) ++ agents.map (·.2.2) do
+    if r != "" && !repos.contains r && (← Sys.kind r true) == .dir then repos := repos ++ [r]
+  let staff := (rs.getD 2 #[]).toList.filterMap fun r => match txt r[0]?, txt r[1]? with
+    | some p, some sw => some (p, sw, txt r[2]?, (txt r[3]?).any (· != ""))
+    | _, _ => none
+  return { swarms, agents, repos, staff }
+
+/-- A swarm's home repo, where its own passes and auto-spawn run: its first repo, else its communicator's, else its
+first agent's; `''` with none. -/
+def Plan.home (p : Plan) (sw : Swarms.Row) : String :=
+  let mine := p.agents.filter (·.2.1 == sw.name)
+  match sw.repos.head? with
+  | some r => r
+  | none => match (mine.find? fun a => some a.1 == sw.comms).map (·.2.2) with
+    | some r => if r != "" then r else ((mine.map (·.2.2)).find? (· != "")).getD ""
+    | none => ((mine.map (·.2.2)).find? (· != "")).getD ""
+
+/-- A swarm's knobs for auto-spawn: its `spawn_model` and `spawn_effort` over watchd's flags. -/
+def knobs (opts : Opts) : m Opts := do
+  let db ← Store.txn [.«meta»] fun db => (db, db)
+  let k (key : String) : Option String := py ((db.getMeta key).bind (·.v))
+  return { opts with model := (k "spawn_model").orElse fun _ => opts.model, effort := (k "spawn_effort").orElse fun _ => opts.effort }
+
+/-- One swarm's passes (sw-global §4, per agent and per swarm), in the swarm's scope and its home repo: reap, its
+communicator, hc's prompts, the blocked notices, the lifecycle (ends, offers, auto-spawn: an agent working in another
+repo is judged as the lifecycle judges a foreign worktree), then the quiet, hung, inbox, blocker, landing, compaction
+and API-error passes. Without a communicator only reap and hc's prompts run: nobody would hear the rest. The errors. -/
+def swarmTick (p : Plan) (sw : Swarms.Row) (terms : Option (List Term)) (opts : Opts) (t : Int) : m (List String) := do
+  let home := p.home sw
+  let pre := s!"{sw.name}: "
+  let live := terms.map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none
+  let hs : Scope := { swarm := sw.name, repo := home }
+  let comms := sw.comms
+  let foreign := (p.agents.filter (·.2.1 != sw.name)).map (·.1)
+  let (errs, opts) ← Scoped.within hs do
+    let mut errs : List String := []
+    errs ← pass errs (pre ++ "reap: ") (discard <| reap live (← Clock.now) comms foreign)
+    let mut opts ← match ← Guard.guard (knobs opts) with
+      | .ok o => pure o
+      | .error e => errs := errs ++ [pre ++ "knobs: " ++ e]; pure opts
+    if let some c := comms then
+      match ← Guard.guard (ensureComms c terms) with
+      | .ok h => opts := { opts with commsHold := h }
+      | .error e => errs := errs ++ [pre ++ "comms: " ++ e]; opts := { opts with commsHold := none }
+    let away := (away (← Store.txn [.«meta»] fun db => (db, db))).isSome
+    if let some ts := terms then
+      if !ts.isEmpty then errs ← pass errs (pre ++ "hc blocked: ") (hcBlocked ts t comms away)
+    if let some c := comms then errs ← pass errs (pre ++ "notices: ") (notices c away)
+    return (errs, opts)
+  let some c := comms | return errs
+  Scoped.within hs do
+    let mut errs := errs
+    errs ← pass errs (pre ++ "lifecycle: ") (lifecycle t c terms opts)
+    errs ← pass errs (pre ++ "quiet: ") (quiet t c)
+    errs ← pass errs (pre ++ "hung: ") (hung t c terms opts.interval)
+    errs ← pass errs (pre ++ "comms inbox: ") (commsInbox t c terms)
+    errs ← pass errs (pre ++ "blockers: ") (blockers t c opts.blockerIdle)
+    errs ← pass errs (pre ++ "landing-late: ") (landingLate t c)
+    if let some ts := terms then
+      errs ← pass errs (pre ++ "compact: ") (compactPass ts c)
+      errs ← pass errs (pre ++ "api-error: ") (apiErrorPass ts c)
+    return errs
+
+/-- One repo's passes (sw-global §4, per repo), in its folder and its own scope with every swarm's agents in view: the
+trial-merge conflicts among the agents with a worktree here, its locks, the sweep, and with a swarm's `ci` knob on CI
+and PR polling for its base. What it says goes to the communicator of the first swarm staffing from it. The sweep's
+"not landed" cache before and after, and the errors. -/
+def repoTick (p : Plan) (r : String) (notLanded : List String) (t : Int) : m (List String × List String) := do
+  let staff := p.staff.filter (·.1 == r)
+  let comms := (staff.filterMap (·.2.2.1)).head?.orElse fun _ =>
+    (p.agents.filter (·.2.2 == r)).findSome? fun a => (p.swarms.find? (·.name == a.2.1)).bind (·.comms)
+  let pre := s!"{r}: "
+  Scoped.within { swarm := "", repo := r, every := true } do
+    let conflictPass : m Unit := do  -- a bad conflict pass never stops the tick
+      let db ← Store.txn [.agent, .workspace] fun db => (db, db)
+      let all ← Workspaces.worktrees
+      let rs ← (Workspaces.wtMapOf db all).mapM fun (n, w) => do pure (n, w, ← real w)
+      let here := (rs.filter fun (_, _, r) => all.any (·.1 == r)).map fun (n, w, _) => (n, w)
+      Conflict.conflictTick here (Bases.baseFor · none) t
+    if let .error e ← Guard.guard conflictPass then Env.err s!"conflict: {e}"
+    let mut errs : List String := []
+    errs ← pass errs (pre ++ "locks: ") (discard <| reapLocks t)
+    let mut nl := notLanded
+    match ← Guard.guard (repoSweep comms notLanded) with
+    | .ok x => nl := x
+    | .error e => errs := errs ++ [pre ++ "sweep: " ++ e]
+    if staff.any (·.2.2.2) then
+      errs ← pass errs (pre ++ "ci_poll: ") (Ci.ciPoll (some r))
+      errs ← pass errs (pre ++ "ci_check: ") (Ci.ciCheck (some r) comms)
+      errs ← pass errs (pre ++ "pr_ci: ") (Ci.prCi (some r))
+      errs ← pass errs (pre ++ "pr_watch: ") (Ci.prWatch (some r))
+    return (nl, errs)
+
+/-- How old `swarm.db.bak` may get before watchd makes it again (s). -/
+def BACKUP_EVERY : Int := 3600
+
+/-- The backup (sw-global §4): once `swarm.db.bak` is BACKUP_EVERY old, `VACUUM INTO` `swarm.db.tmp` beside the db,
+renamed over it. One copy. -/
+def backup (t : Int) : m Unit := do
+  let db ← Swarms.dbPath
+  let bak := db ++ ".bak"
+  if let some mt ← Sys.mtime bak then if t - mt < BACKUP_EVERY then return
+  let tmp := db ++ ".tmp"
+  discard <| Sys.remove tmp
+  discard <| Sys.sqlAt db "" [("vacuum into ?", [.text tmp])] true
+  match ← Proc.output ["mv", "-f", tmp, bak] none [] with
+  | some o => if o.code != 0 then die s!"backup: mv: {strip o.stderr}"
+  | none => die "backup: mv did not start"
+
+/-- The machine's scope: its own meta keys and events (and every swarm's job events), every swarm's agents. -/
+def machineScope : Scope := { swarm := "", repo := "", every := true }
+
+/-- One tick (sw-global §4): each live swarm's passes, each repo's, then the machine's (pressure, oom bias, orphans,
+remote machines and jobs, the backup); each pass under its own guard, an error ending its pass alone; the errors
+joined, or none (watchd.watchd_tick). -/
+def tick (opts : Opts) (st : St) : m (St × Option String) := do
   let mut errs : List String := []
   let mut st := st
   let terms ← hcTerminals
-  let live := terms.map fun ts => ts.filterMap fun x => if x.state == some "live" then x.address else none
-  if let .error e ← Guard.guard (reap live (← Clock.now) comms) then errs := errs ++ ["reap: " ++ e]
-  let mut opts := opts
-  if let some c := comms then
-    match ← Guard.guard (ensureComms c terms) with
-    | .ok h => opts := { opts with commsHold := h }
-    | .error e => errs := errs ++ ["comms: " ++ e]; opts := { opts with commsHold := none }
   let t ← Clock.now
-  let away := (away (← Store.txn [.«meta»] fun db => (db, db))).isSome
-  if let some ts := terms then
-    if !ts.isEmpty then
-      if let .error e ← Guard.guard (hcBlocked ts t comms away) then errs := errs ++ ["hc blocked: " ++ e]
-  if let some c := comms then
-    if let .error e ← Guard.guard (notices c away) then errs := errs ++ ["notices: " ++ e]
-  let conflictPass : m Unit := do  -- a bad conflict pass never stops the tick
-    let db ← Store.txn [.agent, .workspace] fun db => (db, db)
-    Conflict.conflictTick (← Workspaces.wtMap db) (Bases.baseFor · none) t
-  if let .error e ← Guard.guard conflictPass then Env.err s!"conflict: {e}"
-  if let some c := comms then  -- ending reports to the communicator; without one, nobody hears what it did
-    match ← Guard.guard (lifecycle t c terms opts st.notLanded) with
-    | .ok nl => st := { st with notLanded := nl }
-    | .error e => errs := errs ++ ["lifecycle: " ++ e]
-    if let .error e ← Guard.guard (quiet t c) then errs := errs ++ ["quiet: " ++ e]
-    if let .error e ← Guard.guard (hung t c terms opts.interval) then errs := errs ++ ["hung: " ++ e]
-    if let .error e ← Guard.guard (commsInbox t c terms) then errs := errs ++ ["comms inbox: " ++ e]
-    if let .error e ← Guard.guard (blockers t c opts.blockerIdle) then errs := errs ++ ["blockers: " ++ e]
-    if let .error e ← Guard.guard (landingLate t c) then errs := errs ++ ["landing-late: " ++ e]
-    if let some ts := terms then
-      if let .error e ← Guard.guard (compactPass ts c) then errs := errs ++ ["compact: " ++ e]
-      if let .error e ← Guard.guard (apiErrorPass ts c) then errs := errs ++ ["api-error: " ++ e]
-  match ← Guard.guard (machineTick st.cost) with
-  | .ok c => st := { st with cost := c }
-  | .error e => errs := errs ++ ["machine: " ++ e]
-  if let .error e ← Guard.guard (Run.remoteTick t) then errs := errs ++ ["remote: " ++ e]
-  if let .error e ← Guard.guard (Run.goneTick t comms (t % 300 < opts.interval)) then errs := errs ++ ["gone: " ++ e]
-  if let .error e ← Guard.guard (Run.detachedTick t) then errs := errs ++ ["detached: " ++ e]
-  if let some r := repo then
-    if let .error e ← Guard.guard (Ci.ciPoll (some r)) then errs := errs ++ ["ci_poll: " ++ e]
-    if let .error e ← Guard.guard (Ci.ciCheck (some r) comms) then errs := errs ++ ["ci_check: " ++ e]
-    if let .error e ← Guard.guard (Ci.prCi (some r)) then errs := errs ++ ["pr_ci: " ++ e]
-    if let .error e ← Guard.guard (Ci.prWatch (some r)) then errs := errs ++ ["pr_watch: " ++ e]
-  return (st, if errs.isEmpty then none else some ("; ".intercalate errs))
+  let p ← match ← Guard.guard plan with
+    | .ok p => pure p
+    | .error e => errs := errs ++ ["plan: " ++ e]; pure {}
+  for sw in p.swarms do
+    match ← Guard.guard (swarmTick p sw terms opts t) with
+    | .ok e => errs := errs ++ e
+    | .error e => errs := errs ++ [s!"{sw.name}: {e}"]
+  for r in p.repos do
+    match ← Guard.guard (repoTick p r st.notLanded t) with
+    | .ok (nl, e) => st := { st with notLanded := nl }; errs := errs ++ e
+    | .error e => errs := errs ++ [s!"{r}: {e}"]
+  Scoped.within machineScope do
+    let mut errs := errs
+    let mut st := st
+    match ← Guard.guard (machineTick st.cost) with
+    | .ok c => st := { st with cost := c }
+    | .error e => errs := errs ++ ["machine: " ++ e]
+    errs ← pass errs "remote: " (Run.remoteTick t)
+    errs ← pass errs "gone: " (Run.goneTick t none (t % 300 < opts.interval))
+    errs ← pass errs "detached: " (Run.detachedTick t)
+    errs ← pass errs "backup: " (backup t)
+    return (st, if errs.isEmpty then none else some ("; ".intercalate errs))
 
-/-- An error out of a tick: to stderr, and logged and told to comms once per distinct message (watchd.tick_failed). -/
-def tickFailed (comms : Option String) (msg : String) (st : St) : m St := do
+/-- An error out of a tick: to stderr, and logged and told to every live swarm's communicator once per distinct message
+(watchd.tick_failed). -/
+def tickFailed (msg : String) (st : St) : m St := do
   Env.err s!"watchd tick: {msg}"
   if st.lastErr == some msg then return st
+  let cs := (← Swarms.list).filterMap fun sw => if sw.ended.isNone then sw.comms else none
   let now ← Clock.now
   Store.txn [] fun db =>
     let db := db.log now (some "swarm") "watchd-tick-error" none (some msg)
-    (match comms with | some c => say db now c ("watchd tick failed (it carries on): " ++ msg) false "system" | none => db, ())
+    (cs.foldl (fun db c => say db now c ("watchd tick failed (it carries on): " ++ msg) false "system") db, ())
   return { st with lastErr := some msg }
 
 /-- The tick lease (meta watchd_tick): the record still ours and no other live watchd mid-tick, in one transaction.
@@ -403,7 +541,7 @@ def claimTick (mine : String) : m (Option Bool) := do
 
 /-- One pass of the loop: the record, then the tick; whether a tick has finished, why watchd exits if it should, and
 the tick's error (watchd.watchd_pass). -/
-def watchdPass (mine : String) (comms repo : Option String) (opts : Opts) (up : Bool) (st : St) :
+def watchdPass (mine : String) (opts : Opts) (up : Bool) (st : St) :
     m (Bool × Option String × St × Option String) := do
   let db ← Store.txn [.«meta»] fun db => (db, db)
   let some cur := (db.getMeta "watchd").bind (·.v) | return (up, some ": its record is gone", st, none)
@@ -423,7 +561,7 @@ def watchdPass (mine : String) (comms repo : Option String) (opts : Opts) (up : 
     Sys.sleep 1000
     mid ← claimTick mine
   if mid != some true then return (up, none, st, none)
-  let (st, err) ← match ← Guard.guard (tick comms repo opts st) with
+  let (st, err) ← match ← Guard.guard (tick opts st) with
     | .ok r => pure r
     | .error e => pure (st, some e)
   Store.txn [.«meta»] fun db =>
@@ -435,16 +573,16 @@ def watchdPass (mine : String) (comms repo : Option String) (opts : Opts) (up : 
 
 /-- watchd's loop: passes, a failed tick reported, the pause, until a pass says why watchd exits (or `--once`); why
 (watchd.loop). -/
-def loop (mine : String) (comms repo : Option String) (opts : Opts) : m (Option String) := do
+def loop (mine : String) (opts : Opts) : m (Option String) := do
   let mut up := false
   let mut st : St := {}
   repeat
-    let (up', why, st', err) ← match ← Guard.guard (watchdPass mine comms repo opts up st) with
+    let (up', why, st', err) ← match ← Guard.guard (watchdPass mine opts up st) with
       | .ok r => pure r
       | .error e => pure (up, none, st, some e)
     up := up'; st := st'
     if let some e := err then
-      match ← Guard.guard (tickFailed comms e st) with
+      match ← Guard.guard (tickFailed e st) with
       | .ok s => st := s
       | .error _ => pure ()
     if why.isSome then return why
@@ -465,7 +603,7 @@ def restart (over : List String := []) : m UInt32 := do
   let old := (db.getMeta "watchd").bind (·.v)
   let here := (← Spawn.swarmHere).getD "."
   let argv := ["hc", "run", "--json", "--bg", "--no-parent", "--no-notify", "--cwd", cwd, "--", joinPath here "swarm", "watchd", "--takeover"] ++ amend fl over
-  let o ← Sys.exec argv { env := [("SWARM_DB", some (← Spawn.dbPath)), ("SWARM", ← env "SWARM")] }
+  let o ← Sys.exec argv { env := [("SWARM_DB", some (← Spawn.dbPath)), ("SWARM", none), ("SWARM_NAME", none)] }
   let fail (why : String) : m Unit := do
     let still ← match old with | some o => recAlive o | none => pure false
     die s!"watchd restart failed: {why}; {if still then s!"the old watchd (pid {(words (old.getD "")).headD ""}) still runs" else "NO watchd runs: start one by hand"}"
@@ -494,53 +632,71 @@ def restart (over : List String := []) : m UInt32 := do
   fail s!"no new watchd took over within {(Float.floor wait).toInt64.toInt} s"
   return 1
 
-/-- `swarm watchd [...]` (watchd.cmd_watchd). -/
-def watchd (a : Parsed) : m UInt32 := do
-  if a.flag "dry_run" then
-    for (wt, br, mb) in (← sweep none true [] none).1 do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
-    return 0
-  if a.flag "restart" then return ← restart (given a)
-  let repo ← if a.flag "ci" then git ["rev-parse", "--show-toplevel"] else pure none
-  let comms ← match py (a.str "comms") with | some c => pure (some c) | none => env "SWARM_COMMS"
+/-- The swarm knobs given on the command line, set on the swarm this process acts on (it must resolve one): `--comms`
+(the communicator, a stayer), `--max-agents` (`agent_min`, else the live roster when it has none), `--ci` (meta `ci`),
+`--model` and `--effort` (meta `spawn_model`, `spawn_effort`). Nothing when none is given. -/
+def setKnobs (a : Parsed) : m Unit := do
+  let comms := py (a.str "comms")
+  if comms.isNone && (a.int "max_agents").isNone && !a.flag "ci" && (a.str "model").isNone && (a.str "effort").isNone then
+    return
+  let now ← Clock.now
+  let envComms ← env "SWARM_COMMS"
+  Store.txn [.«meta», .agent] fun db =>
+    let db := match comms with  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
+      | some c =>
+        let db := db.setMeta "comms" (some c)
+        if (db.agent c).any fun x => x.ended.isNone && x.stay.isNone then
+          (db.setAgent c ({ · with stay := some "the user's channel" })).log now (some c) "stay" none (some "the user's channel")
+        else db
+      | none => db
+    let (n, mn, _) := limits db envComms
+    let db := match a.int "max_agents", mn with
+      | some x, _ => db.setMeta "agent_min" (some (d x))
+      | none, none => db.setMeta "agent_min" (some (toString n))
+      | none, some _ => db
+    let db := if a.flag "ci" then db.setMeta "ci" (some "on") else db
+    let db := match a.str "model" with | some x => db.setMeta "spawn_model" (some x) | none => db
+    (match a.str "effort" with | some x => db.setMeta "spawn_effort" (some x) | none => db, ())
+
+/-- The repo scope of the working directory, every swarm's agents in view (the sweep's and `worktrees prune`'s). -/
+def repoScope : m Scope := return { swarm := "", repo := (← Workspaces.main none).getD "", every := true }
+
+/-- The machine's one watchd (sw-global §4), its record in meta scope `''`: refused while another lives (unless
+`--takeover`), then the loop. -/
+def serve (a : Parsed) : m UInt32 := do
   let mine := s!"{← Sys.getpid} {(← env "HC_TERMINAL_ID").getD "-"}"  -- the watchd record
   let old := ((← Store.txn [.«meta»] fun db => (db, db)).getMeta "watchd").bind (·.v)
   let oldAlive ← match old with | some o => recAlive o | none => pure false
   let once := a.flag "once"
   let run := Json.encode (Lean.Json.mkObj [("cwd", .str (← Env.cwd)),
-    ("flags", .arr (flags a comms |>.map Lean.Json.str |>.toArray)), ("started", Json.int (← Clock.now))])
-  let now ← Clock.now
-  let refused ← Store.txn [.«meta», .agent] fun db =>
+    ("flags", .arr (flags a |>.map Lean.Json.str |>.toArray)), ("started", Json.int (← Clock.now))])
+  let refused ← Store.txn [.«meta»] fun db =>
     let o := (db.getMeta "watchd").bind (·.v)
     -- the pid was checked outside: a record changed since counts as alive
     if o.isSome && o != some mine && (o != old || oldAlive) && !a.flag "takeover" then (db, o) else
     let db := db.setMeta "watchd" (some mine)
-    let db := if once then db else db.setMeta "watchd_run" (some run)  -- what --restart starts again
-    match comms with  -- the communicator is a stayer; meta.comms is only where watchd sends what needs the human
-    | some c =>
-      let db := db.setMeta "comms" (some c)
-      if (db.agent c).any fun x => x.ended.isNone && x.stay.isNone then
-        ((db.setAgent c ({ · with stay := some "the user's channel" })).log now (some c) "stay" none (some "the user's channel"), none)
-      else (db, none)
-    | none => (db, none)
+    (if once then db else db.setMeta "watchd_run" (some run), none)  -- what --restart starts again
   if let some o := refused then
     let ws := words o
     die s!"watchd already runs (pid {ws.headD ""}, terminal {(ws[1]?).getD ""}); `swarm watchd --takeover` replaces it."
   Sock.checkAll  -- a recorded inbox socket that no longer connects falls back to hc send, comms told
-  -- the auto-spawn number: --max-agents writes it; else the first watchd sets it to the roster the human launched
-  let envComms ← env "SWARM_COMMS"
-  Store.txn [.agent, .«meta»] fun db =>
-    let (n, mn, _) := limits db envComms
-    match a.int "max_agents", mn with
-    | some x, _ => (db.setMeta "agent_min" (some (d x)), ())
-    | none, none => (db.setMeta "agent_min" (some (toString n)), ())
-    | none, some _ => (db, ())
   let num (k dflt : String) : Float := (parseFloat (strip ((a.str k).getD dflt))).getD 0
-  let opts : Opts := { minFreeGib := num "min_free_mem" "4", model := a.str "model", effort := a.str "effort",
-                       interval := (a.int "interval").getD 30, once, blockerIdle := num "blocker_idle" "25" }
+  let opts : Opts := { minFreeGib := num "min_free_mem" "4", interval := (a.int "interval").getD 30, once,
+                       blockerIdle := num "blocker_idle" "25" }
   let pid ← Sys.getpid
-  let why ← loop mine comms repo opts
+  let why ← loop mine opts
   if let some why := why then die s!"watchd (pid {pid}){why}; exiting"
   return 0
+
+/-- `swarm watchd [...]` (watchd.cmd_watchd). -/
+def watchd (a : Parsed) : m UInt32 := do
+  if a.flag "dry_run" then
+    let (out, _) ← Scoped.within (← repoScope) do sweep none true [] none (some (← madeHere))
+    for (wt, br, mb) in out do Env.out s!"{wt}\t{br.getD "None"}\t{mb} MB"
+    return 0
+  setKnobs a
+  if a.flag "restart" then return ← Scoped.within machineScope (restart (given a))
+  Scoped.within machineScope (serve a)
 
 /-- `swarm worktrees prune [--apply] [--dir <dir>]`: the sweep's gate and removal on every worktree under `dir`
 (default `.worktrees` of the main checkout), whether or not an agent owns it; a dry run unless `--apply`. -/
@@ -548,8 +704,10 @@ def prune (a : Parsed) : m UInt32 := do
   let some main ← Workspaces.main none | die "not in a git repository"
   let dir ← real ((a.str "dir").getD (main ++ "/.worktrees"))
   let go := a.flag "apply"
-  let reasons ← keepReasons dir
-  let (gone, _) ← sweep none (!go) [] (some dir)
+  let (reasons, gone) ← Scoped.within (← repoScope) do
+    let reasons ← keepReasons dir
+    let (gone, _) ← sweep none (!go) [] (some dir)
+    return (reasons, gone)
   for (wt, br, why) in reasons do
     let b := br.getD "None"
     if gone.any (·.1 == wt) then Env.out s!"{if go then "removed" else "would remove"}: {wt} [{b}]"

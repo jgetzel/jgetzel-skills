@@ -3,6 +3,7 @@ import SwarmLean.Real
 import SwarmLean.RealSys
 open SwarmLean
 
+set_option maxHeartbeats 800000 in
 /-- No known command word: `-h` prints the commands; anything else is argparse's usage error (exit 2). -/
 def noCommand (args : List String) : IO UInt32 := do
   match args.head? with

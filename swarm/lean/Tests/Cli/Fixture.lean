@@ -274,6 +274,10 @@ def write (t : T) (who path text : String) : IO Unit := do put s!"{← t.cwdOf w
 /-- watchd --once. -/
 def tick (t : T) : IO Unit := discard <| t.sw "a" ["watchd", "--once"]
 
+/-- A `workspace` row made worktree `path` (of `agent`, on branch w2): the sweep removes only such (sw-global §4). -/
+def made (t : T) (path : String) (agent : String := "old") : IO Unit :=
+  t.q_ "insert into workspace(path, branch, base, agent, ro) values(?, 'w2', 'main', ?, 0)" [.text path, .text agent]
+
 /-- Notices to `who`. -/
 def notices (t : T) (who : String) : IO (Array Json) := t.q "select body from msg where dest=? and kind='notice'" [.text who]
 

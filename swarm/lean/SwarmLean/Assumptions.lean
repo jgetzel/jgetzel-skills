@@ -259,6 +259,10 @@ instance : Sys (RecM M) where
   sqlAt p sc st ro := Rec.eff (.sql p sc st ro) (M.rows · (.sql p sc st ro))
   udsSend p d := Rec.eff (.uds p d) fun w => if M.ok w (.uds p d) then none else some "refused"
 
+/-- The model has one store: another scope runs on the same db, in the same folder. -/
+instance : Scoped (RecM M) where
+  within _ x := x
+
 /-- `x` run on the machine from state `s`: its result and the state it left. -/
 @[irreducible] def Rec.go {M : Tools} (x : RecM M α) (s : Rec M) : Except Exit α × Rec M := x.run.run s
 

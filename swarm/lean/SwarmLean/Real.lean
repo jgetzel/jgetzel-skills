@@ -9,12 +9,6 @@ import Lean.Data.Json
 namespace SwarmLean
 open Sqlite
 
-/-- What a command's transactions see of the machine's db: one swarm's agents, knobs and events, and one repo's locks,
-CI runs and worktrees (the folder's). -/
-structure Scope where
-  swarm : String
-  repo : String
-
 /-- What the real monad carries: the connection, opened at the first transaction, and the scope, resolved then. -/
 structure Ctx where
   conn : IO.Ref (Option Conn)
@@ -165,36 +159,42 @@ def loadWhere [Row α] (c : Conn) (cond : String) (ps : List Val) : IO (List α)
   let rows ← c.query s!"select {", ".intercalate cols} from {Row.table α} where {cond} order by {", ".intercalate (cols.take (Row.nkey α))}" ps
   IO.ofExcept (decodeRows rows.toList)
 
-/-- The meta rows swarm `s` sees that `cond` selects: the machine's keys and its own, and `comms` from its swarm row. -/
-def loadMetasWhere (c : Conn) (s : String) (cond : Cond) : IO (List Meta) := do
+/-- The meta rows swarm `s` sees that `cond` selects: the machine's keys and those of meta scope `ms` (the swarm's own
+by default), and `comms` from its swarm row. -/
+def loadMetasWhere (c : Conn) (s : String) (cond : Cond) (ms : String := s) : IO (List Meta) := do
   let ks := ", ".intercalate (machineKeys.map fun k => s!"'{k}'")
   let (w, ps) := cond.sql
-  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end and ({w})" (.text s :: ps)
+  let ms : List Meta ← loadWhere c s!"scope = case when k in ({ks}) then '' else ? end and ({w})" (.text ms :: ps)
   let cm ← c.query "select comms from swarm where name=? and comms is not null" [.text s]
   let cms : List Meta := match (cm[0]? : Option (Array Sqlite.Val)).bind (·[0]?) with
     | some (Sqlite.Val.text v) => [{ k := "comms", v := some v }]
     | _ => []
   return sortRows (cms.filter (fun m => cond.holds (Row.cell m)) ++ ms.filter (·.k != "comms"))
 
-/-- The meta rows swarm `s` sees: the machine's keys and its own, and `comms` from its swarm row. -/
-def loadMetas (c : Conn) (s : String) : IO (List Meta) := loadMetasWhere c s .all
+/-- The meta rows swarm `s` sees: the machine's keys and those of meta scope `ms`, and `comms` from its swarm row. -/
+def loadMetas (c : Conn) (s : String) (ms : String := s) : IO (List Meta) := loadMetasWhere c s .all ms
 
-/-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents, knobs and events of the scope's
-swarm, the locks, CI runs and worktrees of its repo, and every task, message, cursor and conflict. -/
+/-- Loads the tables `ts` into a db (the others empty) with the next ids: the agents (of every swarm when `every`), knobs
+and events of the scope's swarm (a repo's own: its events of no swarm), the locks, CI runs and worktrees of its repo,
+and every task, message, cursor and conflict. -/
 def loadDb (c : Conn) (sc : Scope) (ts : List Table) : IO Db := do
   let has (t : Table) := ts.contains t
   let sw := [Val.text sc.swarm]
   let rp := [Val.text sc.repo]
   return {
-    agents := ← if has .agent then loadWhere c "swarm=?" sw else pure []
+    agents := ← if has .agent then (if sc.every then loadRows c else loadWhere c "swarm=?" sw) else pure []
     msgs := ← if has .msg then loadRows c else pure []
     cursors := ← if has .cursor then loadRows c else pure []
     tasks := ← if has .task then loadRows c else pure []
     locks := ← if has .lock then loadWhere c "repo=?" rp else pure []
     conflicts := ← if has .conflict then loadRows c else pure []
     pairkeys := ← if has .pairkey then loadRows c else pure []
-    metas := ← if has .«meta» then loadMetas c sc.swarm else pure []
-    events := ← if has .event then loadWhere c "swarm=?" sw else pure []
+    metas := ← if has .«meta» then loadMetas c sc.swarm sc.metaName else pure []
+    events := ← if has .event then
+        (if sc.every && sc.repo == "" then loadWhere c "swarm='' or kind in ('job-start', 'job-end')" []
+         else if sc.every then loadWhere c "repo=?" rp
+         else if sc.swarm == "" then loadWhere c "swarm='' and repo=?" rp
+         else loadWhere c "swarm=?" sw) else pure []
     workspaces := ← if has .workspace then loadWhere c "repo=?" rp else pure []
     cis := ← if has .ci then loadWhere c "repo=?" rp else pure []
     taskNext := ← nextId c "task", msgNext := ← nextId c "msg", eventNext := ← nextId c "event" }
@@ -206,15 +206,15 @@ def scopeStmt (sc : Scope) : Stmt → Stmt
   | .ins "event" cs vs => .ins "event" (cs ++ ["swarm", "repo"]) (vs ++ [.text sc.swarm, .text sc.repo])
   | .ins "meta" cs vs => match vs with
     | [.text "comms", v] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [v]
-    | .text k :: _ => .ins "meta" (cs ++ ["scope"]) (vs ++ [.text (metaScope sc.swarm k)])
+    | .text k :: _ => .ins "meta" (cs ++ ["scope"]) (vs ++ [.text (metaScope sc.metaName k)])
     | _ => .ins "meta" cs vs
   | .upd "meta" ks k cs vs => match k with
     | [.text "comms"] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] vs
-    | [.text kk] => .upd "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.swarm kk)]) cs vs
+    | [.text kk] => .upd "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.metaName kk)]) cs vs
     | _ => .upd "meta" ks k cs vs
   | .del "meta" ks k => match k with
     | [.text "comms"] => .upd "swarm" ["name"] [.text sc.swarm] ["comms"] [.null]
-    | [.text kk] => .del "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.swarm kk)])
+    | [.text kk] => .del "meta" (ks ++ ["scope"]) (k ++ [.text (metaScope sc.metaName kk)])
     | _ => .del "meta" ks k
   | .ins t cs vs => if ["lock", "ci", "workspace"].contains t then .ins t (cs ++ ["repo"]) (vs ++ [.text sc.repo]) else .ins t cs vs
   | .upd t ks k cs vs => if ["lock", "ci", "workspace"].contains t then .upd t (ks ++ ["repo"]) (k ++ [.text sc.repo]) cs vs
@@ -227,8 +227,19 @@ def scopeStmts (sc : Scope) : Stmt → List Stmt
   | .ins "agent" cs vs => [.del "agent" ["name"] (vs.take 1), .ins "agent" (cs ++ ["swarm"]) (vs ++ [.text sc.swarm])]
   | st => [scopeStmt sc st]
 
+/-- An event a scope with every swarm in view inserts belongs to its agent's swarm (none: no swarm's). -/
+def agentSwarm (c : Conn) (sc : Scope) : Stmt → IO Stmt
+  | .ins "event" cs vs => do
+    if !sc.every then return .ins "event" cs vs
+    let sw ← match (cs.zip vs).lookup "agent" with
+      | some (.text a) => pure ((texts (← c.query "select swarm from agent where name=? and swarm is not null" [.text a])).headD "")
+      | _ => pure ""
+    return .ins "event" cs ((cs.zip vs).map fun (k, v) => if k == "swarm" then .text sw else v)
+  | st => return st
+
 /-- Writes every table of `new` over what `old` loaded (`dbPlan`), in scope `sc`. -/
-def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := runStmts c ((dbPlan old new).flatMap (scopeStmts sc))
+def storeDb (c : Conn) (sc : Scope) (old new : Db) : IO Unit := do
+  runStmts c (← ((dbPlan old new).flatMap (scopeStmts sc)).mapM (agentSwarm c sc))
 
 /-- `act` between `begin` and COMMIT; any error rolls back. -/
 def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
@@ -261,18 +272,23 @@ def sqliteTxn (c : Conn) (sc : Scope) (ts : List Table) (f : Db → Db × α) : 
     if db' ≠ db then storeDb c sc db db'
     return a
 
-/-- The column and value a select of table `t` is scoped by: the scope's swarm for agents and events, its repo for
-locks, CI runs and worktrees (meta is scoped by `loadMetas`). -/
-def scopeCol (sc : Scope) : Table → Option (String × Val)
-  | .agent | .event => some ("swarm", .text sc.swarm)
-  | .lock | .ci | .workspace => some ("repo", .text sc.repo)
+/-- The condition a select of table `t` is scoped by, as `loadDb` loads it: the scope's swarm for agents (none when
+`every`) and events, its repo for locks, CI runs and worktrees (meta is scoped by `loadMetas`). -/
+def scopeCond (sc : Scope) : Table → Option (String × List Val)
+  | .agent => if sc.every then none else some ("swarm=?", [.text sc.swarm])
+  | .event =>
+    if sc.every && sc.repo == "" then some ("(swarm='' or kind in ('job-start', 'job-end'))", [])
+    else if sc.every then some ("repo=?", [.text sc.repo])
+    else if sc.swarm == "" then some ("swarm='' and repo=?", [.text sc.repo])
+    else some ("swarm=?", [.text sc.swarm])
+  | .lock | .ci | .workspace => some ("repo=?", [.text sc.repo])
   | _ => none
 
 /-- The rows of a row type's table that select `s` picks, in the scope `sc`, in key order: one indexed select. -/
 def selRows [Row α] (c : Conn) (sc : Scope) (s : Sel) : IO (List α) := do
   let (w, ps) := s.cond.sql
-  let (w, ps) := match if s.inScope then scopeCol sc s.table else none with
-    | some (col, v) => (s!"{col}=? and ({w})", v :: ps)
+  let (w, ps) := match if s.inScope then scopeCond sc s.table else none with
+    | some (sw, sps) => (s!"{sw} and ({w})", sps ++ ps)
     | none => (w, ps)
   let ks := (Row.cols α).take (Row.nkey α)
   match s.last with
@@ -293,15 +309,15 @@ def unionRows [Row α] (c : Conn) (sc : Scope) (t : Table) (ss : List Sel) : IO 
   | [s] => selRows c sc s
   | l => return dedupKeys (sortRows (← l.flatMapM (selRows c sc)))
 
-/-- The meta rows of swarm `s` that select `sel` picks (`loadMetas`, filtered). -/
-def selMetas (c : Conn) (s : String) (sel : Sel) : IO (List Meta) :=
-  return sel.pick (← loadMetasWhere c s sel.cond)
+/-- The meta rows scope `sc` sees that select `sel` picks (`loadMetas`, filtered). -/
+def selMetas (c : Conn) (sc : Scope) (sel : Sel) : IO (List Meta) :=
+  return sel.pick (← loadMetasWhere c sc.swarm sel.cond sc.metaName)
 
 /-- The slice of the db the selects `ss` pick in scope `sc`, with the next ids of `next` (`Db.slice` of the model). -/
 def readSlice (c : Conn) (sc : Scope) (ss : List Sel) (next : List Table) : IO Db := do
   let metas ← match ss.filter (·.table == .«meta») with
     | [] => pure []
-    | l => do pure (dedupKeys (sortRows (← l.flatMapM (selMetas c sc.swarm))))
+    | l => do pure (dedupKeys (sortRows (← l.flatMapM (selMetas c sc))))
   return {
     agents := ← unionRows c sc .agent ss, msgs := ← unionRows c sc .msg ss, cursors := ← unionRows c sc .cursor ss,
     tasks := ← unionRows c sc .task ss, locks := ← unionRows c sc .lock ss, conflicts := ← unionRows c sc .conflict ss,
@@ -319,7 +335,7 @@ def runTxnOn (c : Conn) (sc : Scope) (writes : Bool) : Txn α → IO (Option α)
   | .write p k => do
     if p.isEmpty then return ← runTxnOn c sc writes k
     if !writes then return none
-    runStmts c (p.flatMap (scopeStmts sc))
+    runStmts c (← (p.flatMap (scopeStmts sc)).mapM (agentSwarm c sc))
     runTxnOn c sc writes k
   | .guard s cond k => do
     if !writes then return none
@@ -345,6 +361,20 @@ instance : Store App where
     let c ← theConn
     let sc ← theScope
     return f (← inTxn c "begin" (readSlice c sc ss []))
+
+instance : Scoped App where
+  within sc x := ExceptT.mk fun ctx => do
+    let old ← ctx.scope.get
+    let oldSw ← IO.getEnv "SWARM"
+    let oldDir ← IO.currentDir
+    ctx.scope.set (some sc)
+    if sc.swarm != "" then setenvIO "SWARM" sc.swarm
+    if sc.repo != "" then try IO.Process.setCurrentDir sc.repo catch _ => pure ()
+    try x.run ctx
+    finally
+      ctx.scope.set old
+      setenvIO "SWARM" (oldSw.getD "")
+      try IO.Process.setCurrentDir oldDir catch _ => pure ()
 
 instance : Guard App where
   guard x := ExceptT.mk fun ctx => do

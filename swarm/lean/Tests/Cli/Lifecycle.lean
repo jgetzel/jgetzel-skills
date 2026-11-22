@@ -151,6 +151,25 @@ def test_lock_released_when_work_lands (t : T) : IO Unit := do
   t.tick  -- main moved to include the change: the file left a's working set
   eq (← t.q "select * from lock") (json% [])
 
+-- sw-global §4, per repo: a lock whose holder is no live agent of any swarm goes; a live holder's stays
+def test_watchd_drops_a_gone_holders_lock (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  t.sw_ "a" ["lock", "a.txt"]; t.sw_ "b" ["lock", "b.txt"]
+  t.q_ "update agent set ended=1 where name='a'"
+  t.tick
+  eq ((← t.q "select path from lock").map (·.f "path")) #[Json.str "b.txt"]
+  eq ((← t.q1 "select data from event where kind='reap' and path='a.txt'").f "data") "holder gone"
+
+-- review of #75: the conflict table is the machine's; one repo's pass dropped every other repo's conflicts
+def test_conflict_pass_keeps_other_repos_conflicts (t : T) : IO Unit := do
+  t.agent "a"; t.agent "b"
+  discard <| t.edit "a" "x.txt"; discard <| t.edit "b" "y.txt"
+  t.write "a" "x.txt" "x"; t.write "b" "y.txt" "y"
+  -- p and q are agents of another repo; a and b no longer touch one file, so their row is this pass's to drop
+  t.q_ "insert into conflict(a, b, path, since) values('p', 'q', 'f.txt', 1), ('a', 'b', 'g.txt', 1)"
+  t.tick
+  eq ((← t.q "select a from conflict").map (·.f "a")) #[Json.str "p"]
+
 def test_bash_lock_violation (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
   discard <| t.edit "b" "b.txt"
@@ -188,6 +207,9 @@ def test_sweep (t : T) : IO Unit := do
   oldWt t t.wt
   let pr ← fakeProc t
   let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
+  hasnt (← t.sw "a" ["watchd", "--dry-run"] (swp pr)).stdout t.wt  -- no workspace row made it: never swept
+  sweep; ok (← exists_ t.wt) "a worktree no workspace row made"
+  t.made t.wt
   has (← t.sw "a" ["watchd", "--dry-run"] (swp pr)).stdout t.wt
   ok (← exists_ t.wt)
   addProc pr 500 1 "bash" ["bash"] (some t.wt)
@@ -214,6 +236,7 @@ def test_sweep (t : T) : IO Unit := do
 
 -- board #211: the sweep removes a detached worktree only once its HEAD is on the base
 def test_sweep_detached (t : T) : IO Unit := do
+  t.made t.wt
   let pr ← fakeProc t
   let sweep : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "comms", "--max-agents", "0"] (swp pr)
   discard <| t.git t.wt ["checkout", "-q", "--detach"]
@@ -242,6 +265,7 @@ def test_worktrees_prune (t : T) : IO Unit := do
   ok (!(← exists_ t.wt)); eq (← branches t) ""
 
 def test_sweep_caches_not_landed (t : T) : IO Unit := do
+  t.made t.wt
   commitWip t "u.txt"
   oldWt t t.wt
   t.fakes; t.setGh "pr" (some "[]")
@@ -272,6 +296,7 @@ def test_sweep_caches_not_landed (t : T) : IO Unit := do
 -- ---- landed agents ----
 def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt)]
+  t.made t.wt "e"
   touch t.wt
   commsTick t
   ok (← ended t "e")
@@ -284,6 +309,7 @@ def test_landed_agent_ended_and_cleaned (t : T) : IO Unit := do
 
 -- workspace GC removes the worktree of a base but never the base branch
 def test_sweep_keeps_a_checked_out_base (t : T) : IO Unit := do
+  t.made t.wt
   discard <| t.git t.wt ["checkout", "-q", "-B", "formal"]
   t.sw_ "a" ["task", "add", "t", "--base", "formal"]
   oldWt t t.wt
@@ -1064,7 +1090,8 @@ def test_watchd_compacts_at_context_limit (t : T) : IO Unit := do
   -- the communicator is nudged, not compacted, unless the limit says so
   ctx "t-comms" 410000; tick
   eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%swarm compact%'").size 1
-  eq ((← t.calls "hc").filter (·.startsWith "send hc0")).length 0
+  -- not compacted (on a slow machine the urgent "a is blocked" settles and is typed in: that send is not this)
+  eq ((← t.calls "hc").filter (·.startsWith "send hc0 /compact")).length 0
   t.sw_ "human" ["limits", "--compact-stayers", "on"]; tick
   eq ((← t.calls "hc").filter (·.startsWith "send hc0 /compact")).length 1
   -- 0 turns a threshold off
@@ -1570,6 +1597,8 @@ def tests : List Case := [
   ("test_branch_fallback_for_wt", test_branch_fallback_for_wt),
   ("test_lock_prefix_and_overlap", test_lock_prefix_and_overlap),
   ("test_lock_released_when_work_lands", test_lock_released_when_work_lands),
+  ("test_watchd_drops_a_gone_holders_lock", test_watchd_drops_a_gone_holders_lock),
+  ("test_conflict_pass_keeps_other_repos_conflicts", test_conflict_pass_keeps_other_repos_conflicts),
   ("test_bash_lock_violation", test_bash_lock_violation),
   ("test_hard_lock_deny", test_hard_lock_deny),
   ("test_lock_path_is_repo_relative", test_lock_path_is_repo_relative),
