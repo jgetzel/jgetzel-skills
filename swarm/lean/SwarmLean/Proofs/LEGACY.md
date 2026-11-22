@@ -7,6 +7,20 @@ back in the new shape, or replaces it, and empties this list.
 
 | File | Dropped by | Why |
 |---|---|---|
+| `SwarmLean/Proofs.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Tasks.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Locks.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Msgs.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Watchd.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Cross.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Sweep.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Trust.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/WriteBack.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Migrate.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Queue.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Crash.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
+| `SwarmLean/Proofs/Keep.lean` | board #84 | all proofs out at once (user's call, 2026-11-21): land the store work first |
 
-None so far: the foundation (board #68) kept every proof in the build. `Proofs/Watchd.lean`'s fate correspondence
-now runs with `Decide.Facts.ours` always true (a terminal in another repo is no longer foreign).
+With them: `Audit.lean` and `challenge.sh` (Challenge.lean, Solution.lean, comparator.json) are skipped by `check.sh` unless
+`SWARM_PROOFS` is set. The `sorry`/axiom grep still covers every file. The proofs phase restores each import in
+`SwarmLean.lean`, the two `check.sh` steps, and empties this list.

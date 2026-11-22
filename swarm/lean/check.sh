@@ -19,6 +19,9 @@ if grep -rn '"kill"' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean | gr
 fi
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build || exit 1
+# The proofs are out of the build until sw-global's proofs phase (board #79-#82; SwarmLean/Proofs/LEGACY.md): Audit.lean
+# (which imports them) and challenge.sh come back with them.
+if [ -n "$SWARM_PROOFS" ]; then
 # Audit.lean prints every theorem's axioms and the theorems taking each assumption, and fails on any axiom but Lean's three
 ax=$(lean_do env lean Audit.lean) || { echo "$ax"; exit 1; }
 echo "$ax" | grep -v ": \[\(propext\|Classical.choice\|Quot.sound\|, \)*\]$"
@@ -35,6 +38,7 @@ echo "$tags" | while read -r spec names; do
 done || exit 1
 # Challenge.lean against the proofs, by Comparator, and its two mutants rejected (board #216)
 ./challenge.sh || exit 1
+fi
 on() { SWARM_BIN=$(realpath "$1") .lake/build/bin/swarm-tests >.lake/swarm-tests.log 2>&1 || { grep -v "^ok " .lake/swarm-tests.log; return 1; }; tail -1 .lake/swarm-tests.log; ./test-claim.sh "$1"; }
 on .lake/build/bin/swarm-lean || exit 1
 ./test-harness-retro.sh || exit 1
