@@ -2,7 +2,8 @@ import Tests.Cli.Fixture
 
 /-! cli_scale_spec: the write commands stay fast on a big db (board #138: a write-back quadratic in a table's rows made
 hook post-tool take 82 s on 12.6k events, holding the write lock). Each command's best of three is under a second on
-20k events, 500 tasks, 400 agents; each view of state --json under 300 ms (board #139). -/
+20k events, 500 tasks, 400 agents; each view of state --json under 300 ms (board #139). swarm-tests runs this spec last,
+each test alone. -/
 
 namespace SwarmLean.Tests.Cli.Scale
 open SwarmLean.Tests.Cli
