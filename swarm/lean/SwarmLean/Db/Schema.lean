@@ -40,6 +40,8 @@ create index if not exists lock_repo on lock(repo);
 create index if not exists event_agent on event(agent, kind, id);
 create index if not exists task_owner on task(owner);
 create index if not exists event_kind on event(kind, ts);
+create index if not exists event_swarm_agent on event(swarm, agent, id);
+create index if not exists msg_frm on msg(frm, id);
 "
 
 /-- The meta keys of the machine (scope `''`); every other key is a swarm's (scope: its name). -/

@@ -332,7 +332,7 @@ def sqlite_txn (t : T) : IO Unit := do
       let k := if i < 3 then "status" else "end"
       { id := i + 1, ts := some i, agent := some who, kind := some k }
     cursors := [{ agent := "a1", last_msg_id := some 0 }]
-    taskNext := 3, msgNext := 1, eventNext := 7 }
+    taskNext := 3, msgNext := 1, eventNext := 7, swarm := sc0.swarm }
   storeDb c sc0 {} fix
   let all := [Table.agent, .msg, .cursor, .task, .lock, .conflict, .pairkey, .«meta», .event, .workspace, .ci]
   let loaded : IO Db := do let d ← loadDb c sc0 all; pure { d with taskNext := 0, msgNext := 0, eventNext := 0 }
