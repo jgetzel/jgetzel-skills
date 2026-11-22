@@ -213,6 +213,7 @@ end Rec
 
 instance : Store (RecM M) where
   txn _ f := modifyGet fun s => let (db, a) := f s.db; (a, { s with db, commits := s.commits ++ [db] })
+  run t := modifyGet fun s => let (db, a) := t.onDb s.db; (a, { s with db, commits := s.commits ++ [db] })
 instance : Clock (RecM M) where
   now := Rec.ask M.now
   hhmm t := Rec.ask (M.hhmm · t)

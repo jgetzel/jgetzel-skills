@@ -1,11 +1,13 @@
-import SwarmLean.Db
+import SwarmLean.Db.Txn
 
 namespace SwarmLean
 
 /-- The database as the commands see it: a store that runs a function of the db as one transaction, given the tables
-the function reads. -/
+the function reads (`txn`, the whole-table store the unconverted commands use), or a `Txn`: keyed reads, a pure
+decision on the rows read, its plan of statements (`run`, sw-global §3). -/
 class Store (m : Type → Type) where
   txn {α : Type} : List Table → (Db → Db × α) → m α
+  run {α : Type} : Txn α → m α
 
 /-- Applies `step` to each request in turn from `db`: the db left and each request with its answer. -/
 def replay (step : τ → Db → Db × α) : Db → List τ → Db × List (τ × α)

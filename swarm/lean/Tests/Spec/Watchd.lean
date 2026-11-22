@@ -37,6 +37,12 @@ instance : Store TM where
     let a ← (Store.txn ts f : App _)
     (← h.after.get) ts
     pure a
+  run t := do
+    let h ← read
+    (← h.before.get) []
+    let a ← (Store.run t : App _)
+    (← h.after.get) []
+    pure a
 
 instance : Clock TM where
   now := (Clock.now : App _)
