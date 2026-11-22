@@ -12,7 +12,7 @@ locks. Which agent works in which worktree (wt_map) and a task's base are given 
 namespace SwarmLean.Conflict
 
 /-- A token: a word, one other non-space character, or a newline (conflict.TOK). -/
-def TOK : String := "\\w+|[^\\w\\s]|\\n"
+def TOK : Re.Pat := .lit "\\w+|[^\\w\\s]|\\n"
 
 /-- diff3 conflict hunks as (ours, base, theirs), each keeping its trailing newline, by scanning lines for the
 markers (conflict.hunks). -/
@@ -53,9 +53,7 @@ def clash (a b : Nat × Nat) : Bool :=
 
 /-- A text's tokens. -/
 def toks (s : String) : Array String :=
-  match Re.findall TOK s with
-  | .ok l => (l.map (·.headD "")).toArray
-  | .error _ => #[]
+  ((TOK.findall s).map (·.headD "")).toArray
 
 /-- Whether a hunk is a real conflict: some edit of ours clashes with one of theirs (conflict.real_hunk). -/
 def realHunk (base ours theirs : String) : Bool :=

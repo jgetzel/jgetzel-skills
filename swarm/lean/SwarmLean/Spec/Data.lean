@@ -208,9 +208,12 @@ namespace SwarmLean.Run
 /-- Under each machine's home: `<repo>/<worktree>/{src,jobs/<id>}`. -/
 def RUN_DIR : String := ".cache/swarm-run"
 
+/-- A path `RUN_DIR/<repo>/<worktree>`, the whole string. -/
+def RUN_DIR_RE : Re.Pat := .lit ("\\A" ++ Re.escape RUN_DIR ++ "/[\\w.-]+/[\\w.-]+\\z")
+
 /-- A job's copy, `RUN_DIR/<repo>/<worktree>`, with no `..` that would climb out of it. -/
 def runDirOk (dir : String) : Bool :=
-  (Re.fullmatch (Re.escape RUN_DIR ++ "/[\\w.-]+/[\\w.-]+") dir).toOption.join.isSome && !(dir.splitOn "/").contains ".."
+  RUN_DIR_RE.test dir && !(dir.splitOn "/").contains ".."
 
 end SwarmLean.Run
 

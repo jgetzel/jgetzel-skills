@@ -55,12 +55,14 @@ def textOf : Option Json → String
   | c => "\n".intercalate ((arr c).filterMap fun b =>
       if Json.fstr b "type" == some "text" then some ((Json.fstr b "text").getD "") else none)
 
+/-- A system reminder. -/
+def REMINDER : Re.Pat := .lit "<system-reminder>.*?</system-reminder>" Re.S
+
 /-- `s` without system reminders, stripped, cut to `n` characters with a note of what was cut. -/
-def clip (s : String) (n : Nat) : IO String := do
-  let s := strip (← ok (Re.sub "<system-reminder>.*?</system-reminder>" "" s Re.S))
+def clip (s : String) (n : Nat) : String :=
+  let s := strip (REMINDER.sub "" s)
   let len := s.length
-  if len ≤ n then return s
-  return cut s n ++ s!" …[{len - n} more chars]"
+  if len ≤ n then s else cut s n ++ s!" …[{len - n} more chars]"
 
 /-- A tool call's input in one line: its first set key of a few, else the whole input. -/
 def summary (inp : Json) : String := Id.run do
@@ -114,16 +116,16 @@ def main (args : List String) : IO UInt32 := do
     | .str c =>
       if ty == "user" then
         let isMeta := luaT (Json.field r "isMeta")  -- skill bodies, injected context, cross-session messages
-        out := out.push s!"\n### user{if isMeta then " (meta)" else ""}\n{← clip c (if isMeta then 600 else 3000)}\n"
+        out := out.push s!"\n### user{if isMeta then " (meta)" else ""}\n{clip c (if isMeta then 600 else 3000)}\n"
     | c@(.arr _) | c@(.obj _) =>
       for b in arr (some c) do
         let t := Json.fstr b "type"
         if t == some "text" && strip ((Json.fstr b "text").getD "") != "" then
-          out := out.push s!"\n**{ty}:** {← clip ((Json.fstr b "text").getD "") 3000}\n"
+          out := out.push s!"\n**{ty}:** {clip ((Json.fstr b "text").getD "") 3000}\n"
         else if t == some "tool_use" then
           calls := calls + 1
           let inp := (Json.field b "input").getD (Json.mkObj [])
-          out := out.push s!"→ {(Json.fstr b "name").getD ""}: {← clip (summary inp) 400}"
+          out := out.push s!"→ {(Json.fstr b "name").getD ""}: {clip (summary inp) 400}"
         else if t == some "tool_result" then
           let body := match Json.field b "content" with
             | some (.arr x) => textOf (some (.arr x))
@@ -134,7 +136,7 @@ def main (args : List String) : IO UInt32 := do
             | _ => ""
           let err := luaT (Json.field b "is_error")
           if err then errors := errors + 1
-          out := out.push (s!"  ← {if err then "ERROR " else ""}{← clip body 400}".replace "\n" "\n    ")
+          out := out.push (s!"  ← {if err then "ERROR " else ""}{clip body 400}".replace "\n" "\n    ")
     | _ => pure ()
   let mut first : Option Float := none
   let mut last : Float := 0

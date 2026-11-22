@@ -2,6 +2,7 @@ import SwarmLean.RealSys
 import SwarmLean.Lib.Cost
 import SwarmLean.Lib.Hook
 import SwarmLean.Lib.Re
+import SwarmLean.Lib.Report
 import SwarmLean.Lib.Json
 
 /-! swarm-report (swarm-retro/swarm-report.lua): evidence for a swarm retro, read from the swarm db: who did what, where
@@ -491,7 +492,7 @@ def showText (r : Json) : IO Unit := do
 /-- `--since`: `2026-11-07T08:00` (time parts optional) as local epoch seconds (os.time). -/
 def parseSince (x : String) : IO Int := do
   let bad : IO Int := die s!"swarm-report: bad --since '{x}' (use 2026-11-07T08:00)"
-  let .ok (some m) := Re.fullmatch "(\\d+)-(\\d+)-(\\d+)[T ]?(\\d*):?(\\d*):?(\\d*)" x | bad
+  let some m := SINCE.search x | bad
   let g := fun k => Int64.ofNat (((m.group k).bind String.toNat?).getD 0)
   try return (← Shim.mktime (g 1) (g 2) (g 3) (g 4) (g 5) (g 6)).toInt64.toInt catch _ => bad
 

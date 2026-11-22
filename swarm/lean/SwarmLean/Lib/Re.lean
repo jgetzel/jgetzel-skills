@@ -452,6 +452,33 @@ def exec (r : Regex) (s : Array Char) (init : Nat := 0) : Option Match := Id.run
                     groups := (List.range r.groups).toArray.map fun g => c[g + 1]!.map fun (a, b) => slice s a b }
   return none
 
+/-- The non-overlapping matches of a compiled pattern, as finditer; an empty match moves on one character. -/
+def execAll (r : Regex) (s : String) : List Match := Id.run do
+  let cs := s.toList.toArray
+  let mut out : Array Match := #[]
+  let mut init := 0
+  for _ in [0:cs.size + 2] do
+    if init > cs.size then break
+    let some m := exec r cs init | break
+    out := out.push m
+    init := if m.e ≤ m.s then m.s + 1 else m.e
+  return out.toList
+
+/-- re.findall's rows for some matches: per match its whole text with no groups, its group with one, else every group
+("" if unset). -/
+def rows (ms : List Match) : List (List String) :=
+  ms.map fun m => if m.groups.isEmpty then [m.whole] else m.groups.toList.map (·.getD "")
+
+/-- re.sub with a compiled pattern and a literal replacement (no backreferences). -/
+def subAll (r : Regex) (repl s : String) : String := Id.run do
+  let cs := s.toList.toArray
+  let mut out := ""
+  let mut last := 0
+  for m in execAll r s do
+    out := out ++ slice cs last m.s ++ repl
+    last := m.e
+  return out ++ slice cs last cs.size
+
 /-- re.search. -/
 def search (pat s : String) (fl : Flags := {}) : Except String (Option Match) :=
   return exec (← compile pat fl) s.toList.toArray
@@ -463,33 +490,49 @@ def «match» (pat s : String) (fl : Flags := {}) : Except String (Option Match)
 def fullmatch (pat s : String) (fl : Flags := {}) : Except String (Option Match) :=
   search ("\\A(?:" ++ pat ++ ")\\z") s fl
 
-/-- The non-overlapping matches, as finditer; an empty match moves on one character. -/
-def finditer (pat s : String) (fl : Flags := {}) : Except String (List Match) := do
-  let r ← compile pat fl
-  let cs := s.toList.toArray
-  let mut out : Array Match := #[]
-  let mut init := 0
-  for _ in [0:cs.size + 2] do
-    if init > cs.size then break
-    let some m := exec r cs init | break
-    out := out.push m
-    init := if m.e ≤ m.s then m.s + 1 else m.e
-  return out.toList
+/-- The non-overlapping matches, as finditer. -/
+def finditer (pat s : String) (fl : Flags := {}) : Except String (List Match) :=
+  return execAll (← compile pat fl) s
 
-/-- re.findall: per match its whole text with no groups, its group with one, else every group ("" if unset). -/
-def findall (pat s : String) (fl : Flags := {}) : Except String (List (List String)) := do
-  return (← finditer pat s fl).map fun m =>
-    if m.groups.isEmpty then [m.whole] else m.groups.toList.map (·.getD "")
+/-- re.findall. -/
+def findall (pat s : String) (fl : Flags := {}) : Except String (List (List String)) :=
+  return rows (← finditer pat s fl)
 
 /-- re.sub with a literal replacement (no backreferences). -/
-def sub (pat repl s : String) (fl : Flags := {}) : Except String String := do
-  let cs := s.toList.toArray
-  let mut out := ""
-  let mut last := 0
-  for m in ← finditer pat s fl do
-    out := out ++ slice cs last m.s ++ repl
-    last := m.e
-  return out ++ slice cs last cs.size
+def sub (pat repl s : String) (fl : Flags := {}) : Except String String :=
+  return subAll (← compile pat fl) repl s
+
+/-- A pattern that matches nothing. -/
+def Regex.never : Regex := { root := .alt [], groups := 0 }
+
+/-- A literal pattern, compiled once where it is named. Every named one is in `Tests/Re.lean`'s table, which fails
+the build on one that does not parse; here such a pattern matches nothing. (A subtype of the patterns that compile
+would need `native_decide`: `compile` runs a `partial` parser.) -/
+structure Pat where
+  src : String
+  fl : Flags
+  re : Regex
+
+/-- The pattern `src` with flags `fl`. -/
+def Pat.lit (src : String) (fl : Flags := {}) : Pat := { src, fl, re := (compile src fl).toOption.getD Regex.never }
+
+/-- Whether the pattern parses. -/
+def Pat.parses (p : Pat) : Bool := (compile p.src p.fl).toOption.isSome
+
+/-- re.search. -/
+def Pat.search (p : Pat) (s : String) : Option Match := exec p.re s.toList.toArray
+
+/-- Whether the pattern occurs in `s`. -/
+def Pat.test (p : Pat) (s : String) : Bool := (p.search s).isSome
+
+/-- The non-overlapping matches, as finditer. -/
+def Pat.finditer (p : Pat) (s : String) : List Match := execAll p.re s
+
+/-- re.findall. -/
+def Pat.findall (p : Pat) (s : String) : List (List String) := rows (p.finditer s)
+
+/-- re.sub with a literal replacement (no backreferences). -/
+def Pat.sub (p : Pat) (repl s : String) : String := subAll p.re repl s
 
 /-- re.escape: every ASCII character but letters, digits and `_` gets a backslash. -/
 def escape (s : String) : String :=
