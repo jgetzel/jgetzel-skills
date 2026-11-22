@@ -1090,7 +1090,8 @@ def test_watchd_compacts_at_context_limit (t : T) : IO Unit := do
   -- the communicator is nudged, not compacted, unless the limit says so
   ctx "t-comms" 410000; tick
   eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%swarm compact%'").size 1
-  eq ((← t.calls "hc").filter (·.startsWith "send hc0")).length 0
+  -- not compacted (on a slow machine the urgent "a is blocked" settles and is typed in: that send is not this)
+  eq ((← t.calls "hc").filter (·.startsWith "send hc0 /compact")).length 0
   t.sw_ "human" ["limits", "--compact-stayers", "on"]; tick
   eq ((← t.calls "hc").filter (·.startsWith "send hc0 /compact")).length 1
   -- 0 turns a threshold off
