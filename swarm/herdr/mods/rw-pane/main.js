@@ -12,9 +12,10 @@ import { agentAt, line, looked, markOf, rowText, showAll, showSwarm, since, sumF
 import { mark } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
-const swarm = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
+const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
 
 export default class PaneHeader extends View {
   init(_props, cx) {
@@ -37,7 +38,7 @@ export default class PaneHeader extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation(); this.asked = !on; cx.notify();
-        swarm(sum.folder, sum.on, on ? ["away", "--back"] : ["away"]).catch(() => {});
+        swarm(sum.folder, sum.on, on ? ["away", "--back"] : ["away"], sum.swarm).catch(() => {});
       })
       .child(div().size(14).rounded(4).border(1).border_color(on ? t.working : t.border).bg(on ? t.working : t.background)
         .flex().items_center().justify_center().text_size(10).text_color(t.background).child(on ? "✓" : "")).child("Away");
@@ -77,7 +78,7 @@ export default class PaneHeader extends View {
     const m = term ? markOf(term, false) : null;
     const sp = spaces(), space = sp.find((s) => s.tabs.some((x) => x.id === p.tab)), tab = space?.tabs.find((x) => x.id === p.tab);
     let { name, what } = term ? rowText(term, m, tab?.named ? tab.name : null, home()) : { name: line(p.title, 120), what: "" };
-    const sums = shared("rw-rail.swarms"), sum = term && space && sumFor(Array.isArray(sums) ? sums : [], space, new Set(sp.map((s) => s.id)));
+    const sums = shared("rw-rail.swarms"), sum = term && space && sumFor(Array.isArray(sums) ? sums : [], space);
     const a = term && agentAt(sum, term.address), comms = a && a.name === sum.comms;
     if (comms) { name = "Communicator"; what = `${a.name} · your channel to the swarm`; }
     else if (a) { name = a.name; what = a.task ? `#${a.task.id} ${a.task.title}` : what; }
@@ -87,7 +88,7 @@ export default class PaneHeader extends View {
       .on_click(() => run("pane.focus", { pane: p.pane }))
       .child(div().id(`ph-name-${p.pane}`).flex_none().max_w(200).truncate().font_semibold().text_color(t.foreground)
         .when(Boolean(a), (el) => el.cursor_pointer().hover((s) => s.underline()).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { cx.stop_propagation(); showSwarm(run, setShared, { folder: sum.folder, machine: sum.on ?? null, page: { agent: a.name, back: "tab" } }); }))
+          .on_click((_e, cx) => { cx.stop_propagation(); showSwarm(run, setShared, { swarm: sum.swarm, folder: sum.folder, machine: sum.on ?? null, page: { agent: a.name, back: "tab" } }); }))
         .child(name))
       .when(Boolean(what) && what !== name, (el) => el.child(div().flex_shrink_1().min_w(0).truncate().text_color(t.muted).child(what)))
       .when(Boolean(state), (el) => el.child(div().flex_none().text_color(m === "asks" ? t.blocked : t.dim).child(`· ${state}`)))

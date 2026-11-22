@@ -10,8 +10,10 @@
 # --screen: the screen the panel opens on (default home); +ask also opens its confirmation (End agent, Release task,
 #   Restart watchd on more:system); board+new opens the new-task form.
 # --before: a shell command run just before the shot, in the sandbox (its DISPLAY, HERDR_APP_HOME, and $DEMO_DB the
-#   board's copy): clicks and keys for the private display (xdotool), or a swarm command against the copy.
-# --db (default $SWARM_DB): the board to show, copied in; with neither, a backup of this repo's real board.
+#   machine db's copy): clicks and keys for the private display (xdotool), a mod command (herdr-app do rw-bar.full), or
+#   a swarm command against the copy.
+# --db (default $SWARM_DB): the machine db to show (sw-global: every swarm on it), copied in; with neither, a backup of
+#   this machine's (${XDG_STATE_HOME:-~/.local/state}/swarm/swarm.db). --rework starts from an empty one.
 # --theme: light/dark set settings.json's appearance; anything else is a theme name (themes/ or Herdr's own).
 # --fixture: a made-up swarm from `swarm/herdr/demo.sh DIR`: its board, machine reading, processes and cost history.
 # Everything lives under one /tmp/hs.* dir (socket paths must be shorter than SUN_LEN): its own Xvfb display,
@@ -44,11 +46,11 @@ case $rework in '') ;; small|real|large|hostile) before="sh '$(cd -P "$(dirname 
 
 here=$(cd -P "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-real=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/swarm/swarm.db
+real=${XDG_STATE_HOME:-$HOME/.local/state}/swarm/swarm.db
 [ -n "$db" ] || db=$real
 # the panel's `swarm state` inherits these: the fixture's /proc, `ps` and cmd-cost history instead of this machine's
 [ -z "$fx" ] || { db=$fx/swarm.db; export SWARM_PROC="$fx/proc" XDG_STATE_HOME="$fx/state" PATH="$fx/bin:$PATH"; }
-[ -f "$db" ] || { echo "shot.sh: no board at $db" >&2; exit 1; }
+[ -n "$rework" ] || [ -f "$db" ] || { echo "shot.sh: no db at $db" >&2; exit 1; }
 
 # Tripwire: every Herdr window outside a shot.sh sandbox now must still be running after cleanup.
 others=
@@ -75,12 +77,14 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
-# The board: the panel unsets SWARM_DB and reads <cwd's git common dir>/swarm/swarm.db, so a demo repo holds it.
-mkdir -p "$D/demo/.git/swarm" "$H"
+# The machine db: the panel unsets SWARM_DB and reads $XDG_STATE_HOME/swarm/swarm.db (sw-global §2); a demo repo is the
+# demo space's folder. --rework's demo makes its own swarms in an empty one.
+mkdir -p "$D/demo" "$H" "$XDG_STATE_HOME/swarm"
 git -C "$D/demo" init -q
+DEMO_DB=$XDG_STATE_HOME/swarm/swarm.db
+[ -n "$rework" ] || { rm -f "$DEMO_DB"; sqlite3 -readonly "$db" "vacuum into '$DEMO_DB'"; }
 # A fixture's live watchd is recorded as pid 1 (demo.sh), which this user can't signal: make it this script's pid.
-sqlite3 -readonly "$db" "vacuum into '$D/demo/.git/swarm/swarm.db'"
-[ -z "$fx" ] || sqlite3 "$D/demo/.git/swarm/swarm.db" "update meta set v='$$ t3' where k='watchd' and v like '1 %'"
+[ -z "$fx" ] || sqlite3 "$DEMO_DB" "update meta set v='$$ t3' where k='watchd' and v like '1 %'"
 
 # The panel runs <app home>/../swarm: this checkout's CLI.
 ln -s "$repo/swarm/swarm" "$D/swarm"
@@ -138,7 +142,7 @@ for o in $(herdr-app status | jq -r '.overlays[]?'); do
 done
 case $screen in *+ask) hd swarm.ask ;; esac
 sleep 1
-[ -z "$before" ] || { DEMO_DB=$D/demo/.git/swarm/swarm.db sh -c "$before"; sleep 5; } # 5 s: the command's result and the next poll
+[ -z "$before" ] || { DEMO_DB=$DEMO_DB sh -c "$before"; sleep 5; } # 5 s: the command's result and the next poll
 errs=$(herdr-app status | jq -r '.errors[]? | if type == "object" then tojson else . end')
 [ -z "$errs" ] || echo "shot.sh: Herdr reports: $errs" >&2
 herdr-app shot "$out" >/dev/null

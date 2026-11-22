@@ -33,7 +33,7 @@ import { calendarFeed, markCalendarOpened } from "./feed.js";"##),
 "##,
    r##"  init(_props, cx) {
     this.feed = calendarFeed(cx);
-    this.swarm = {}; // machine:folder -> has a live swarm (undefined: not checked yet)
+    this.swarm = {}; // machine -> has a live swarm (undefined: not checked yet)
     cx.timer.every(15000, cx => this.swarmCheck(cx));
 "##),
   (r##"  render() {
@@ -41,8 +41,8 @@ import { calendarFeed, markCalendarOpened } from "./feed.js";"##),
    r##"  swarmFolder() {
     const space = spaces().find(s => s.active), f = focused();
     if (!space) return null;
-    const cwd = (f?.pane ? panes().find(p => p.pane === f.pane)?.cwd : null) || f?.cwd || space.folder;
-    return cwd ? { cwd, on: space.machine ?? null, key: `${space.machine}:${cwd}` } : null;
+    const cwd = (f?.pane ? panes().find(p => p.pane === f.pane)?.cwd : null) || f?.cwd || space.folder || undefined;
+    return { cwd, on: space.machine ?? null, key: space.machine ?? "" };
   }
 
   swarmCheck(cx) {
@@ -51,11 +51,11 @@ import { calendarFeed, markCalendarOpened } from "./feed.js";"##),
     this.swarmBusy = true;
     cx.spawn(async cx => {
       let on = false;
-      // Another machine: its installed swarm skill (full state if it predates --view); here: the CLI beside
-      // mods/swarm. Only `active` is read, so the cheapest view.
-      const r = loc.on ? exec("sh", ["-c", 'S="$HOME/.claude/skills/swarm/swarm"; env -u SWARM_DB "$S" state --json --view board 2>/dev/null || exec env -u SWARM_DB "$S" state --json'], { cwd: loc.cwd, on: loc.on })
-        : exec("env", ["-u", "SWARM_DB", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", "--view", "board"], { cwd: loc.cwd });
-      try { const out = await r; on = out.code === 0 && JSON.parse(out.stdout).active === true; } catch {}
+      // The machine's swarms in one read (sw-global §5): another machine's installed swarm skill; here the CLI beside
+      // mods/swarm. On while any swarm there has a live agent.
+      const r = loc.on ? exec("sh", ["-c", 'exec env -u SWARM_DB "$HOME/.claude/skills/swarm/swarm" state --json --view swarms'], { cwd: loc.cwd, on: loc.on })
+        : exec("env", ["-u", "SWARM_DB", `${appHome()}/mods/swarm/../../../swarm`, "state", "--json", "--view", "swarms"], { cwd: loc.cwd });
+      try { const out = await r; on = out.code === 0 && (JSON.parse(out.stdout).swarms ?? []).some(w => w?.active === true); } catch {}
       this.swarmBusy = false;
       if (this.swarm[loc.key] !== on) { this.swarm[loc.key] = on; cx.notify(); }
     });

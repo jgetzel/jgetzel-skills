@@ -5,8 +5,8 @@
 #   swarm/herdr/shot.sh --before 'sh swarm/herdr/rail-demo.sh [--preset P] [--fold] [--swarm 5|24 [--two]] [--vps]' out.png
 # Presets (no flags: real):
 # - real: about the user's window. Ten spaces on this computer, 15 agents. Two swarms shaped as `swarm spawn` makes them:
-#   jgetzel-skills' communicator ll-comms joined in its space (the db's space, its terminal's swarm.comms label), a
-#   watchd terminal with no pane that the registry (`swarm state --view swarms`) lists, workers started with
+#   jgetzel-skills' communicator ll-comms joined in its space (its terminal's swarm label), the machine's one
+#   watchd (a terminal with no pane), workers started with
 #   --outlive-parent from the communicator's terminal, from watchd's (auto-spawn) or from an earlier communicator's
 #   that has ended; one asks, one is hung, one has a helper, four ended. high-perf-lean runs hpl, one of them asking.
 #   As in the user's window (#175), the spaces' folders are off: jgetzel-skills' is the home folder, high-perf-lean's
@@ -57,61 +57,69 @@ agent() {
 }
 tab() { do_ tab.new --space "$1" --argv "$2" >/dev/null; }
 
-# A swarm: a repo whose board the swarm CLI made, its agents and tasks; each fake agent records its own terminal. The
-# helpers below write to $db as they run.
+# A swarm (sw-global): a group of agents in the machine's one db, made by `swarm new`, with a repo its tasks belong to;
+# each fake agent records its own terminal. The helpers below write to $db for swarm $cur (repo $crepo) as they run.
 now=$(date +%s)
+db=${XDG_STATE_HOME:?shot.sh sets it}/swarm/swarm.db
 sql() { sqlite3 -cmd ".timeout 9000" "$db" "$@"; }
-# board <repo> <comms> <min> <max>: a git repo whose board the swarm CLI made, no tasks, <comms> its communicator; sets db
+# board <repo> <comms> <min> <max>: a git repo and the swarm <comms> leads (named <comms> less -comms), no tasks; sets
+# cur and crepo
 board() {
   git -C "$1" init -q
-  (cd "$1" && env -u SWARM_DB SWARM_NAME=human "$D/swarm" task add seed && env -u SWARM_DB SWARM_NAME=human "$D/swarm" limits --min "$3" --max "$4") >/dev/null 2>&1
-  db=$1/.git/swarm/swarm.db
-  sql "delete from task; insert or replace into meta(k, v) values('comms', '$2')"
+  cur=${2%-comms}
+  (cd "$1" && SWARM_NAME=human "$D/swarm" new "$cur" --repo "$1" && SWARM_NAME=human "$D/swarm" --swarm "$cur" limits --min "$3" --max "$4") >/dev/null 2>&1
+  crepo=$(sql "select repo from swarm_repo where swarm='$cur' limit 1")
+  sql "update swarm set comms='$2' where name='$cur'"
 }
 cat >"$(dir .)/reg.sh" <<'EOF'
-sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, hc, status, last_active, started, stay, claude_pid) values('$2', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''), $PPID)"
+sqlite3 -cmd ".timeout 9000" "$1" "insert or replace into agent(name, swarm, hc, status, last_active, started, stay, claude_pid) values('$2', '$6', '$HC_TERMINAL_ID', '$3', $4, 1, nullif('$5', ''), $PPID);
+  insert or replace into workspace(repo, path, agent) values('$7', '$PWD', '$2')"
 EOF
-# swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers, then as agent()
+# swagent <name> <db status> <seconds idle> <stay> <agent args...>: a fake agent that registers in $cur (its workspace in
+# $crepo, as `swarm spawn` records one), then as agent()
 swagent() {
   n=$1 st=$2 ago=$3 stay=$4; shift 4
-  jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
+  jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay' '$cur' '$crepo'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
 }
-task() { sql "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''))"; }
+# task <id> <title> <state> [owner] [question]: a task of $crepo
+task() { sql "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''));
+  insert into task_repo(task, repo) values($1, '$crepo')"; }
+# homed: the tasks with no repo yet (the bulk inserts') are $crepo's
+homed() { sql "insert into task_repo(task, repo) select id, '$crepo' from task where id not in (select task from task_repo)"; }
+# ev <ts> <agent> <kind>: an event of $cur's
+ev() { sql "insert into event(ts, swarm, agent, kind, data) values($1, '$cur', '$2', '$3', '')"; }
 # wtab <space> <communicator's terminal> <argv>: a worker started from the communicator's terminal (so that is its
 # parent), opting into the space; Herdr gives it a tab there.
 wtab() { hc run --bg --json --parent "$2" --label "herdr.space=$1" -- sh -c "$(echo "$3" | jq -r '.[2]')" >/dev/null; }
 # spawn <parent terminal> <space> <swagent args...>: a worker as `swarm spawn` starts one (launch.sh): named, in its
 # worktree, outliving its parent, opting into the swarm's space
 spawn() {
-  p=$1 s=$2 wt=$(dir "$(basename "${db%/.git/swarm/swarm.db}")-$3"); shift 2
+  p=$1 s=$2 wt=$(dir "$(basename "$crepo")-$3"); shift 2
   hc run --bg --json --parent "$p" --outlive-parent --no-notify --name "$1" --cwd "$wt" --label "herdr.space=$s" -- sh -c "$(swagent "$@" | jq -r '.[2]')" >/dev/null
 }
-# join <space> <terminal>: what `swarm join` records for a communicator: the db's space, the terminal's swarm.comms label
-join() { sql "insert or replace into meta(k, v) values('space', '$1')"; hc label "$2" "swarm.comms=$db" >/dev/null; }
-# watchd <repo> <comms>: a watchd as `swarm watchd --restart` starts one, a terminal with no parent and so no pane, in
-# the db and in the registry of swarms on this machine; sets wd (its terminal)
+# join <space> <terminal>: what `swarm join` records for a communicator: its terminal's swarm label (board sets the
+# swarm row's comms)
+join() { hc label "$2" "swarm=$cur" >/dev/null; }
+# watchd <repo>: the machine's one watchd as `swarm watchd --restart` starts it, a terminal with no parent and so no
+# pane; sets wd (its terminal)
 watchd() {
   wd=$(hc run --bg --json --no-parent --no-notify --cwd "$1" -- sh -c "echo \$\$ >'$1/.git/watchd.pid'; exec sleep 1d" | id address)
   until [ -s "$1/.git/watchd.pid" ]; do sleep 0.2; done
-  pid=$(cat "$1/.git/watchd.pid") reg=${XDG_STATE_HOME:?shot.sh sets it}/swarm/swarms
-  sql "insert or replace into meta(k, v) values('watchd', '$pid $wd')"
-  mkdir -p "$reg"
-  jq -cn --arg db "$db" --arg f "$1" --arg c "$2" --argjson p "$pid" --argjson s "$now" \
-    '{db: $db, folder: $f, tag: ($c | sub("-comms$"; "")), comms: $c, pid: $p, started: $s}' >"$reg/$(echo "$db" | tr / %).json"
+  sql "insert or replace into meta(scope, k, v) values('', 'watchd', '$(cat "$1/.git/watchd.pid") $wd')"
 }
-# await <n>: until n of $db's agents are live, each having recorded its terminal
+# await <n>: until n of $cur's agents are live, each having recorded its terminal
 await() {
-  n=0; while [ $n -lt 30 ] && [ "$(sql "select count(*) from agent where ended is null")" -lt "$1" ]; do sleep 1; n=$((n + 1)); done
+  n=0; while [ $n -lt 30 ] && [ "$(sql "select count(*) from agent where ended is null and swarm='$cur'")" -lt "$1" ]; do sleep 1; n=$((n + 1)); done
 }
 
 show=
 if [ "$preset" != small ]; then
   # jgetzel-skills: ll-comms in a space whose folder is the home folder (#175); some workers spawned by ll-comms, some
   # by watchd, one by an earlier ll-comms whose terminal has ended. Agents title themselves with their name.
-  repo=$(dir jgetzel-skills); board "$repo" ll-comms 0 6; lldb=$db
+  repo=$(dir jgetzel-skills); board "$repo" ll-comms 0 6; llrepo=$crepo
   made=$(do_ space.new --name jgetzel-skills --folder "$(dir jgetzel)" --argv "$(swagent ll-comms idle 120 '' done ll-comms)")
   show=$(echo "$made" | id space) llc=$(echo "$made" | id terminal)
-  join "$show" "$llc"; watchd "$repo" ll-comms
+  join "$show" "$llc"; watchd "$repo"
   spawn "$llc" "$show" ll-124 working 0 '' working ll-124 'explore-124|working|find the live shots in GAPS.md'
   task 179 'Herdr rework: make the screenshot sandbox match a real setup (real-shaped swarms, second machine, size presets)' claimed ll-124
   spawn "$wd" "$show" ll-125 working 0 '' idle ll-125
@@ -120,7 +128,7 @@ if [ "$preset" != small ]; then
   old=$(hc run --bg --json --no-parent --no-notify -- sh -c 'sleep 2' | id address)
   spawn "$old" "$show" ll-126 idle 3480 reviews idle ll-126
   task 171 'watchd: after a compaction, a staying agent or the communicator gets no continue prompt' claimed ll-126
-  sql "insert into event(ts, agent, kind, data) values($((now - 60)), 'll-126', 'stay-hung', '')"
+  ev $((now - 60)) ll-126 stay-hung
   spawn "$llc" "$show" ll-127 idle 1500 '' done ll-127
   task 170 'Crash safety: fix the four stop-between-steps leaks #133 found (F1, F2, F3, F5)' claimed ll-127
   live=5
@@ -134,7 +142,7 @@ if [ "$preset" != small ]; then
     live=24
   fi
   sql "with recursive n(i) as (select 1 union all select i + 1 from n where i < $((live == 24 ? 110 : 4)))
-    insert into agent(name, hc, status, last_active, started, ended, model, wt) select 'll-'||(124 - i), 'tx'||i, 'idle',
+    insert into agent(name, swarm, hc, status, last_active, started, ended, model, wt) select 'll-'||(124 - i), 'll', 'tx'||i, 'idle',
     $now - i * 900, $now - i * 900 - 5400, $now - i * 900, 'opus', '/w/jgetzel-skills-ll-'||(124 - i) from n;
     insert into task(id, title, state, owner) values(173, 'Herdr rework: visual gap audit of the build against the canvas', 'done', 'll-120'),
     (174, 'Herdr rework look A: the canvas''s warm palette as the rework layout''s theme', 'done', 'll-121'),
@@ -143,23 +151,23 @@ if [ "$preset" != small ]; then
     (181, 'swarm board: group done tasks by day', 'open', null);
     insert into msg(ts, frm, dest, body, kind) values($((now - 2400)), 'll-127', 'll-comms', 'PR #342 is ready.', 'dm'),
     ($((now - 300)), 'll-comms', 'll-124', 'Use the real preset for the before/after check.', 'dm');
-    insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, 'bea333c', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean')"
+    insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'bea333c', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean')"
+  homed
   tab "$show" '["zsh"]'
   await "$live" # reg.sh replaces a row: models and context sizes once all have
   sql "update agent set model = case cast(substr(name, 4) as int) % 3 when 0 then 'opus' when 1 then 'sonnet' else 'fable' end,
-    ctx_tokens = 40000 + cast(substr(name, 4) as int) % 9 * 31000 where ended is null and name != 'll-comms'"
+    ctx_tokens = 40000 + cast(substr(name, 4) as int) % 9 * 31000 where ended is null and swarm = 'll' and name != 'll-comms'"
   # high-perf-lean: hpl, in a space whose folder is the jgetzel-skills repo (#175)
   board "$(dir high-perf-lean)" hpl-comms 3 3
   made=$(do_ space.new --name high-perf-lean --folder "$repo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)")
   hpl=$(echo "$made" | id space) hplc=$(echo "$made" | id terminal)
-  join "$hpl" "$hplc"; watchd "$D/w/high-perf-lean" hpl-comms
+  join "$hpl" "$hplc"
   spawn "$hplc" "$hpl" hpl-3 working 0 '' working hpl-3; task 41 'Arena allocator for Expr' claimed hpl-3
   spawn "$wd" "$hpl" hpl-4 idle 1140 '' idle hpl-4; task 44 'Bench: Mathlib import time' blocked hpl-4 \
     'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
   task 49 'Inline small closures in the compiler pass' open
-  sql "insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
-  await 3; db=$lldb
-  sqlite3 -cmd ".timeout 9000" "$DEMO_DB" "delete from agent" # shot.sh's demo space holds a copy of a real board: not a third swarm
+  sql "insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
+  await 3; cur=ll crepo=$llrepo
   vps=1
 fi
 
@@ -215,18 +223,19 @@ if [ -n "$sw" ]; then
     wtab "$skills" "$llc" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' blocked ll-203 'Keep the old panel?'
     wtab "$skills" "$llc" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' blocked ll-205 'Which machine is the vps?'
     wtab "$skills" "$llc" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' claimed ll-209
-    sqlite3 -cmd ".timeout 9000" "$db" "insert into event(ts, agent, kind, data) values($((now - 60)), 'll-209', 'stay-hung', '')"
+    ev $((now - 60)) ll-209 stay-hung
     i=210; while [ $i -le 223 ]; do # 14 working, ll-211 among them (you opened it)
       wtab "$skills" "$llc" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
     done
     for i in 224 225 226 227 228 229; do wtab "$skills" "$llc" "$(swagent ll-$i idle 1800 '' done ll-$i)"; done
     sqlite3 -cmd ".timeout 9000" "$db" "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state) select 2000 + i, 'Later '||i, 'open' from n"
+    homed
     folds="$jk $nix $linn"
   fi
   tab "$skills" "$(agent working 'read the watchd log')"
   tab "$skills" '["zsh"]'
   if [ -n "$two" ]; then # hpl: swagent and task write to $db as they run
-    lldb=$db hrepo=$(dir high-perf-lean); board "$hrepo" hpl-comms 8 8
+    llrepo=$crepo hrepo=$(dir high-perf-lean); board "$hrepo" hpl-comms 8 8
     made=$(do_ space.new --name high-perf-lean --folder "$hrepo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)")
     hpl=$(echo "$made" | id space) hplc=$(echo "$made" | id terminal)
     wtab "$hpl" "$hplc" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' blocked hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
@@ -234,9 +243,8 @@ if [ -n "$sw" ]; then
     wtab "$hpl" "$hplc" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' claimed hpl-6
     wtab "$hpl" "$hplc" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' claimed hpl-7
     task 49 'Inline small closures in the compiler pass' open; task 50 'Bench: instantiateMVars on deep terms' open
-    sqlite3 -cmd ".timeout 9000" "$db" "insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
-    db=$lldb
-    sqlite3 -cmd ".timeout 9000" "$DEMO_DB" "delete from agent" # shot.sh's demo space holds a copy of a real board: not a third swarm
+    sqlite3 -cmd ".timeout 9000" "$db" "insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
+    cur=ll crepo=$llrepo
   fi
 fi
 
@@ -280,17 +288,17 @@ sleep 2 # the helpers start and report
   insert into msg(ts, frm, dest, body, kind) values($((now - 6780)), 'll-97', 'll-comms', 'Walker and step solver now close every CLI group but State and Watchd.', 'dm'),
   ($((now - 3240)), 'swarm', 'll-97', 'Context is about 330k tokens: commit, note the task, then compact.', 'system'),
   ($((now - 120)), 'll-comms', 'll-107', 'The verdict is already clear. Stop after the round now running, write up, and close #142.', 'dm');
-  insert into ci(id, sha, status, conclusion, url, created, workflow) values(1, '08cc4a8', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean');
+  insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, '08cc4a8', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean');
   update task set lease_until = $((now + 5280)), first_claimed_at = $((now - 15360)) where id = 133;
   update agent set status = 'idle', last_active = $((now - 360)), snap = '{\"files\":[\"swarm/lean/SwarmLean/Proofs/Crash.lean\",
     \"swarm/lean/SwarmLean/Proofs/Watchd.lean\",\"swarm/lean/SwarmLean/Db/Spawn.lean\",\"swarm/lean/SwarmLean/Lib/Spawn.lean\",
     \"swarm/lean/SwarmLean/Lib/Conflict.lean\",\"swarm/lean/SwarmLean/Cmd/State.lean\"]}' where name = 'll-97';
-  insert into event(ts, agent, kind, data) values($((now - 9000)), 'll-97', 'compact', '')"
+  insert into event(ts, swarm, agent, kind, data) values($((now - 9000)), 'll', 'll-97', 'compact', '')"
 # The large swarm's table and board: models, 12 ended agents, the next tasks' priorities.
 [ "$sw" != 24 ] || sqlite3 -cmd ".timeout 9000" "$db" "update agent set model = case cast(substr(name, 4) as int) % 3 when 0 then 'opus'
-  when 1 then 'sonnet' else 'fable' end, ctx_tokens = 40000 + cast(substr(name, 4) as int) % 9 * 31000 where name != 'll-comms';
-  with recursive n(i) as (select 1 union all select i + 1 from n where i < 12) insert into agent(name, hc, status, last_active, started,
-  ended, model, wt) select 'll-'||(180 + i), 'tx'||i, 'idle', $now - i * 1500, $now - i * 1500 - 5400, $now - i * 1500, 'opus',
+  when 1 then 'sonnet' else 'fable' end, ctx_tokens = 40000 + cast(substr(name, 4) as int) % 9 * 31000 where swarm = 'll' and name != 'll-comms';
+  with recursive n(i) as (select 1 union all select i + 1 from n where i < 12) insert into agent(name, swarm, hc, status, last_active, started,
+  ended, model, wt) select 'll-'||(180 + i), 'll', 'tx'||i, 'idle', $now - i * 1500, $now - i * 1500 - 5400, $now - i * 1500, 'opus',
   '/w/jgetzel-skills-ll-'||(180 + i) from n;
   update task set priority = (id % 3) + 1 where id > 2000"
 opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")

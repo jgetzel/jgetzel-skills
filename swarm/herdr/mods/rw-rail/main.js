@@ -1,8 +1,9 @@
 // The rework's rail (swarm/herdr/UI-SPEC.md, slice 1 and Part II.2): spaces by machine, each with its tabs in order,
 // a row per terminal (name, title or task, time, mark), on a guide line under the space's heading, sub-terminals under
 // their parent on a thin line, a split tab's rows in a bracket, and a New tab row at the end of the shown space. A space folds to one line of counts. Click a row to focus its terminal; click a space
-// to show it, click the shown one or any chevron to fold it. A space with a live swarm (its communicator's space, else
-// its folder's) shows it as a block first (slice 6), from `swarm state --json --view summary`; its heading opens the swarm view (Part II.3), and its Side button on hover the side view (II.7). Each machine's
+// to show it, click the shown one or any chevron to fold it. Each machine's swarms come from one `swarm state --json
+// --view swarms` (sw-global §5); a swarm shows as a block first (slice 6) in its space (the one showing its communicator's
+// terminal, homesOf), each agent row with its repo; its heading opens the swarm view (Part II.3), and its Side button on hover the side view (II.7). Each machine's
 // heading (slice 10) has a menu (rename in place, hide, update, log in again, remove) and its state from
 // `hc machine ls --json`: an unreachable machine's spaces dim with Retry; hidden machines are lines at the foot with Show.
 // Once more than one swarm runs, an All swarms row heads the rail (slice 13); it shows rw-swarms in place of the tabs.
@@ -11,7 +12,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, sumOf,
+import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, homesOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering } from "./tree.js";
 import { mark, look } from "./marks.js";
 
@@ -21,11 +22,11 @@ const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).redu
 const HIDDEN = "rw-rail.hidden"; // the names of the machines hidden from the rail (shared() persists it)
 const NARROW = 160; // a sidebar narrower than this shows tiles (as workspace-chrome goes by width)
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
-const swarm = (cwd, on, args) => on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...args], { cwd, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...args], { cwd });
-const where = (s) => `${s.machine ?? ""}:${s.folder}`;
-const base = (p) => line(p.replace(/\/+$/, "").replace(/.*\//, ""), 60);
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
+const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
+const keyOf = (j) => `${j.on ?? ""}:${j.swarm}`;
 const ROWS = 40; // a space's rows drawn before a "N more" line that shows the rest
 const SPACES = 60; // a machine's spaces drawn (the shown one always among them) before a "N more spaces" line
 const CHANGED = 5000; // agents' since-when times kept (the live ones always): the oldest of the rest go first
@@ -42,8 +43,8 @@ export default class Rail extends View {
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
     this.more = new Set(); // spaces showing all their rows, machines ("" here) all their spaces
-    this.sums = new Map(); this.polls = new Map(); this.failed = new Map(); // per folder key (where()): summary, next read, why it failed
-    this.watched = new Map(); // per folder key of a local swarm: { dir, dirty, at }, its db folder watched
+    this.sums = new Map(); this.polls = new Map(); this.failed = new Map(); // per machine ("" here): its live swarms, next read, why it failed
+    this.watched = new Map(); // per machine: { dir, dirty, at }, the local db's folder watched
     this.asked = new Map(); // tab id -> when the rail last asked to put it away or bring it back
     this.mids = new Map(); // machine name -> a number for its elements' ids (a name is never part of one)
     cx.timer.every(5000, (cx) => this.swarms(cx));
@@ -69,78 +70,50 @@ export default class Rail extends View {
     cx.timer.every(15000, (cx) => this.refreshMachines(cx));
   }
 
-  // Each space folder's swarm, one `swarm state --view summary` per folder, then this computer's swarms with no space.
-  // One round at a time, the next no sooner than twice as long as this one took (50 swarms of 500 agents read in ~20 s);
-  // a folder with no swarm, or whose read fails, waits longer each time (pollNext). A swarm that stops answering keeps
-  // its last summary and says why in one line at the rail's foot.
+  // Every swarm, one `swarm state --json --view swarms` per machine (sw-global §5): this computer's, then each connected
+  // machine's with a space open here. One round at a time, the next no sooner than twice as long as this one took; a
+  // machine whose read fails waits longer each time (pollNext) and keeps its swarms, saying why in one line at the foot.
+  // A swarm with no live agent isn't listed. Which space shows each swarm is the render's (homesOf).
   swarms(cx) {
     if (this.reading || Date.now() < (this.round ?? 0)) return;
     this.reading = true;
-    const t0 = Date.now();
-    const at = [...new Map(spaces().filter((s) => s.folder).map((s) => [where(s), { folder: s.folder, on: s.machine ?? null }])).entries()];
+    const t0 = Date.now(), hidden = shared(HIDDEN) ?? [];
+    const at = new Map([["", { cwd: home(), on: null }]]);
+    for (const s of spaces()) if (s.machine && !at.has(s.machine) && !hidden.includes(s.machine)
+      && !(this.listed ?? []).some((m) => m.name === s.machine && m.state === "unreachable")) at.set(s.machine, { cwd: s.folder || null, on: s.machine });
     cx.spawn(async (cx) => {
-      const read = async (key, folder, on) => {
+      for (const [key, { cwd, on }] of at) {
         const p = this.polls.get(key), w = this.watched.get(key);
-        if (p && Date.now() < p.next) return;
-        if (w && !w.dirty && Date.now() - w.at < QUIET) return; // a watched db that hasn't changed: its summary hasn't
+        if (p && Date.now() < p.next) continue;
+        if (w && !w.dirty && Date.now() - w.at < QUIET) continue; // a watched db that hasn't changed: its swarms haven't
         if (w) { w.dirty = false; w.at = Date.now(); }
         const t1 = Date.now();
-        let j = null, err = null;
-        try {
-          const r = await swarm(folder, on, ["state", "--json", "--view", "summary"]);
-          if (r.code !== 0) err = line(r.stderr || r.stdout) || `swarm exited ${r.code}`;
-          else if (!(j = sumOf(JSON.parse(r.stdout)))) err = "swarm state printed no summary";
-        } catch (e) { err = line(e?.message ?? e) || "swarm state failed"; }
-        const fails = err ? (p?.fails ?? 0) + 1 : 0;
-        this.polls.set(key, { next: Date.now() + pollNext(Date.now() - t1, !err, j?.active, fails), fails });
-        if (err && this.sums.has(key)) this.failed.set(key, `${base(folder)}${on ? ` on ${on}` : ""}: ${err}`);
-        if (err) return;
-        this.failed.delete(key);
-        if (j.active) this.sums.set(key, { ...j, on, folder }); else { this.sums.delete(key); this.watched.delete(key); }
-        if (j.active && !on && j.db) this.watch(key, j.db.replace(/\/[^/]*$/, ""));
-      };
-      const keys = new Set(at.map(([k]) => k));
-      for (const [key, { folder, on }] of at) await read(key, folder, on);
-      try {
-        const r = await swarm(home(), null, ["state", "--json", "--view", "swarms"]);
-        const seen = new Set([...keys].map((k) => this.sums.get(k)).filter((m) => m && !m.on).map((m) => m.db));
-        for (const w of r.code === 0 ? swarmsOf(JSON.parse(r.stdout)) : []) {
-          const key = `:${w.folder}`;
-          if (seen.has(w.db) || keys.has(key)) continue;
-          keys.add(key);
-          await read(key, w.folder, null);
-        }
-      } catch {}
-      // Each connected remote machine's own swarms: a space there whose folder is another repo still finds its swarm by its space id.
-      const hidden = shared(HIDDEN) ?? [];
-      const remotes = new Map(at.filter(([, a]) => a.on && !hidden.includes(a.on)
-        && !(this.listed ?? []).some((m) => m.name === a.on && m.state === "unreachable")).map(([, a]) => [a.on, a.folder]));
-      for (const [on, cwd] of remotes) {
+        let ws = null, db = null, err = null;
         try {
           const r = await swarm(cwd, on, ["state", "--json", "--view", "swarms"]);
-          const seen = new Set([...this.sums.values()].filter((m) => m.on === on && m.db).map((m) => m.db));
-          for (const w of r.code === 0 ? swarmsOf(JSON.parse(r.stdout)) : []) {
-            const key = `${on}:${w.folder}`;
-            if (seen.has(w.db) || keys.has(key)) continue;
-            keys.add(key);
-            await read(key, w.folder, on);
-            const m = this.sums.get(key);
-            if (m?.db) seen.add(m.db);
-          }
-        } catch {}
+          if (r.code !== 0) err = line(r.stderr || r.stdout) || `swarm exited ${r.code}`;
+          else { const j = JSON.parse(r.stdout); ws = swarmsOf(j); db = typeof j?.db === "string" ? j.db : null; }
+        } catch (e) { err = line(e?.message ?? e) || "swarm state failed"; }
+        const live = (ws ?? []).filter((x) => x.active);
+        const fails = err ? (p?.fails ?? 0) + 1 : 0;
+        this.polls.set(key, { next: Date.now() + pollNext(Date.now() - t1, !err, live.length > 0, fails), fails });
+        if (err) { if (this.sums.has(key)) this.failed.set(key, `${on ?? "this computer"}: ${err}`); continue; }
+        this.failed.delete(key);
+        this.sums.set(key, live.map((x) => ({ ...x, on })));
+        if (!on && db) this.watch(key, db.replace(/\/[^/]*$/, ""));
       }
-      for (const m of [this.sums, this.polls, this.failed, this.watched]) for (const k of m.keys()) if (!keys.has(k)) m.delete(k);
+      for (const m of [this.sums, this.polls, this.failed, this.watched]) for (const k of m.keys()) if (!at.has(k)) m.delete(k);
       this.reading = false;
       this.round = Date.now() + Math.max(5000, 2 * (Date.now() - t0));
-      const mine = [...this.sums.values()], js = JSON.stringify(mine), fails = JSON.stringify([...this.failed]);
-      if (js !== this.sharedJs) { this.sharedJs = js; setShared("rw-rail.swarms", mine); } // rw-bar's Needs you counts their questions
+      const js = JSON.stringify([...this.sums.values()]), fails = JSON.stringify([...this.failed]);
+      if (js !== this.readJs) { this.readJs = js; this.gen = (this.gen ?? 0) + 1; } // the render shares them, with their spaces
       else if (fails === this.failsJs) return; // nothing to draw again
       this.failsJs = fails;
       cx.notify();
     });
   }
 
-  // As rw-swarm: a local swarm's db folder changing marks its summary stale; our own reads touch only the -shm index.
+  // As rw-swarm: a local db's folder changing marks its swarms stale; our own reads touch only the -shm index.
   watch(key, dir) {
     if (this.watched.get(key)?.dir === dir) return;
     const w = { dir, dirty: false, at: Date.now() };
@@ -168,7 +141,7 @@ export default class Rail extends View {
 
   // The swarm view (Part II.3): the swarm full width in place of the tabs, from its Overview.
   openSwarm(s, sw) {
-    showSwarm(run, setShared, { folder: sw.sum.folder, machine: s.machine ?? null, section: "overview" });
+    showSwarm(run, setShared, { swarm: sw.sum.swarm, folder: sw.sum.folder, machine: sw.sum.on ?? null, section: "overview" });
   }
   // The heading's Side button (II.7): the swarm's space shown, its swarm in the side panel beside the tabs.
   openSide(s) {
@@ -513,7 +486,7 @@ export default class Rail extends View {
   // A swarm's block: a heading (tag, agents, tasks left), its agents' rows, and past 8 agents two counts that show all.
   block(t, s, sw, tabNames, shownTerm, now, fly = false) {
     const sum = sw.sum;
-    const tag = (sum.comms ?? "").replace(/-?comms\d*$/, "");
+    const tag = sum.swarm ?? "";
     const left = ["open", "claimed", "blocked"].reduce((n, k) => n + (sum.counts?.[k] ?? 0), 0);
     const n = sum.agents.length;
     const rows = this.capped(t, `b:${s.id}`, sw.block.flatMap((it) => {
@@ -527,10 +500,10 @@ export default class Rail extends View {
       const opened = sw.big && !it.comms && it.r.mark !== "asks" && it.r.mark !== "hung" && this.opened.has(it.r.t.address);
       const text = swarmText(it, this.changed[it.r.t.address]?.at, now, opened);
       const asks = it.r.mark === "asks" && (sum.needs ?? []).some((q) => q.kind === "question" && q.agent === it.a.name);
-      const root = asks ? { ...it.r, ask: { folder: sum.folder, machine: s.machine ?? null, agent: it.a.name } } : it.r;
+      const root = asks ? { ...it.r, ask: { swarm: sum.swarm, folder: sum.folder, machine: sum.on ?? null, agent: it.a.name } } : it.r;
       // Right click: its menu (II.1b), rw-bar's popup.
       const menu = () => openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
-        props: { agentMenu: { name: it.a.name, folder: sum.folder, machine: s.machine ?? null, comms: Boolean(it.comms), task: it.a.task?.id ?? null } } });
+        props: { agentMenu: { name: it.a.name, swarm: sum.swarm, folder: sum.folder, machine: sum.on ?? null, comms: Boolean(it.comms), task: it.a.task?.id ?? null } } });
       return [root, ...it.kids].map((r, i) => Object.assign(() => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now, { text: i ? null : text, plain: false, card: !fly, menu: i ? null : menu }), { k: r.t.address }));
     }), (f) => f(), (f) => f.k ?? null);
     if (this.all.has(s.id) && n > 8) rows.push(h_flex().id(`fewer-${s.id}`).h(ROW).flex_none().mx(4).px(6).items_center().rounded(7)
@@ -539,7 +512,7 @@ export default class Rail extends View {
     // in the shown space, whose own fill already boxes it, the block keeps only its darker fill (round 4, proposal 9)
     return v_flex().id(`swarm-${s.id}`).flex_none().mx(4).mb(6).pt(5).pb(4).rounded(8).border(1).border_color(s.active ? "#00000000" : t.input).bg(t.swarm_block ?? t.chrome)
       .child(h_flex().id(`swarm-head-${s.id}`).mx(4).px(6).pt(3).pb(5).gap(7).items_center().rounded(7).text_size(11.5).text_color(t.muted)
-        .when(this.swarmOn === sum.folder, (el) => el.bg(t.raised).text_color(t.foreground))
+        .when(this.swarmOn === keyOf(sum), (el) => el.bg(t.raised).text_color(t.foreground))
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click(() => this.openSwarm(s, sw))
         .on_hover((h, cx) => this.settle("hovHead", h, s.id, cx))
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))
@@ -731,8 +704,14 @@ export default class Rail extends View {
     const lay = layout(), shownAll = allShown(lay), shownView = viewShown(lay), tab = focused()?.tab ?? null;
     if (shownView && this.viewTab !== undefined && tab !== this.viewTab) showAll(run, false);
     this.viewTab = shownView ? (this.viewTab === undefined ? tab : this.viewTab) : undefined;
-    this.swarmOn = swarmShown(lay) ? shared("rw-swarm.view")?.folder ?? null : null; // the swarm the view shows
-    const sums = Array.isArray(shared("rw-rail.swarms")) ? shared("rw-rail.swarms") : [];
+    const v = swarmShown(lay) ? shared("rw-swarm.view") : null;
+    this.swarmOn = v?.swarm ? `${v.machine ?? ""}:${v.swarm}` : null; // the swarm the view shows
+    // Every machine's swarms, each with its space; shared ("rw-rail.swarms") for the other mods once they or their
+    // spaces change (rw-bar's Needs you, rw-swarms, rw-swarm's side view, rw-pane).
+    const read = [...this.sums.values()].flat(), homes = homesOf(read, sp, ps);
+    const sums = read.map((j) => ({ ...j, space: homes.get(keyOf(j)) ?? null }));
+    const hk = `${this.gen ?? 0}|${JSON.stringify([...homes])}`;
+    if (hk !== this.sharedKey) { this.sharedKey = hk; setShared("rw-rail.swarms", sums); }
     this.paneBy = new Map(ps.map((p) => [p.pane, p]));
     this.tabsOf = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.tabs])));
     this.spaceOfTab = new Map(sp.flatMap((s) => s.tabs.map((tab) => [tab.id, s.id])));
@@ -745,7 +724,7 @@ export default class Rail extends View {
     const broken = [];
     const rowsBy = new Map(sp.map((s) => {
       try {
-        const sum = sumFor(sums, s, ids);
+        const sum = sumFor(sums, s);
         const rows = rowsOf(s, ps, byAddr, swarmAddrs(sum, s.machine ?? null));
         if (!sum) return [s.id, rows];
         const sw = { ...swarmOf(rows, sum, byAddr, s.machine ?? null, this.opened, this.all.has(s.id)), sum };
