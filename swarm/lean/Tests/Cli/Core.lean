@@ -273,6 +273,7 @@ def test_cursor (t : T) : IO Unit := do
 -- @all is the sender's swarm, stored as @<swarm>; @<swarm> reaches that swarm's agents; a name reaches any swarm's
 def test_post_across_swarms (t : T) : IO Unit := do
   t.agent "a"; t.agent "b"
+  has (← t.sw "@u" ["join"] { ok := false }).stderr "not an agent name: '@u'"
   t.sw_ "zz" ["new", "u"]
   for n in ["x", "y"] do t.sw_ n ["join"] { env := [("SWARM", some "u")] }
   eq ((← t.q1 "select swarm from agent where name='x'").f "swarm") "u"
@@ -281,7 +282,7 @@ def test_post_across_swarms (t : T) : IO Unit := do
   has (← t.sw "b" ["read"]).stdout "a (to all): to t"
   has (← t.sw "x" ["read"]).stdout "no unread"
   let r ← t.sw "a" ["post", "@u", "hello u"]
-  has r.stdout "x, y: "; ok (!hasSub r.stdout "b") s!"only u's agents: {r.stdout}"
+  has r.stdout "posted. x, y: "; hasnt r.stdout "b"
   has (← t.sw "x" ["read"]).stdout "a (to all): hello u"
   has (← t.sw "y" ["read"]).stdout "hello u"
   has (← t.sw "b" ["read"]).stdout "no unread"
