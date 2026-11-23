@@ -44,9 +44,9 @@ where
     let some r := db.find tid | throw (.die s!"no task #{d tid}")
     let u := undone db r
     if !u.isEmpty then throw (.die s!"#{d tid} waits on {idsText (u.map (·.id : Task → Int))}")
-    if r.state ≠ .open then throw (.lost s!"task #{d tid} is {r.state.text}{owned r}")
+    if r.status ≠ .open then throw (.lost s!"task #{d tid} is {r.status.text}{owned r}")
     if stopPending db r then throw (.lost s!"task #{d tid} waits for {r.stop_to.getD "nil"} to read its stop")
-    let db := db.set tid fun t => { t with state := .claimed, owner := some name, lease_until := some (now + LEASE),
+    let db := db.set tid fun t => { t with state := .claimed name (now + LEASE),
                                            first_claimed_at := t.first_claimed_at.orElse fun _ => some now }
     pure (db.log now (some name) "claim" none (some s!"#{d tid} {r.title.getD ""}"), r)
 
@@ -70,8 +70,8 @@ def unreserve (db : Db) (name : String) (r : Option Task) (now : Int) : Db :=
   let db := match r with
     | none => db
     | some r => db.set r.id fun t =>
-      if t.owner == some name && t.state = .claimed then
-        { t with state := .open, owner := none, lease_until := none, first_claimed_at := r.first_claimed_at } else t
+      if t.owner == some name && t.status = .claimed then
+        { t with state := .open, first_claimed_at := r.first_claimed_at } else t
   if (db.agent name).any (·.hc.isNone) then endRow db name now else db
 
 end SwarmLean.Spawn

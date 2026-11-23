@@ -164,17 +164,17 @@ def hcBlockedStep (terms : List Term) (t : Int) (comms : Option String) (away : 
   let nostart := x.status.isNone && spawned.any (t - · >= START_WAIT)
   if x.status != some "blocked" && !nostart then  -- the prompt is gone: give back the claim hc blocked
     let back (r : Task) : Task :=
-      if r.owner == some n && r.state == .blocked && r.question == some HC_Q then
-        { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
+      if r.owner == some n && r.status == .blocked && r.question == some HC_Q then
+        { r with state := r.state.unblock (t + Tasks.LEASE) } else r
     -- the row this pass blocked follows the terminal again (board #135: a session started there later)
     let st : AgentStatus := if x.status == some "working" then .working else .idle
     let db := { db with tasks := db.tasks.map back }
     return if a.status == some .blocked then (db.setAgent n ({ · with status := some st })).log t (some n) "status" none (some st.text) else db
   if a.status == some .blocked then return db
   let db := (db.setAgent n ({ · with status := some .blocked })).log t (some n) "blocked" none none
-  let db := match ((db.tasks.filter fun r => r.owner == some n && r.state = .claimed).mergeSort (·.id ≤ ·.id)).head? with
+  let db := match ((db.tasks.filter fun r => r.owner == some n && r.status = .claimed).mergeSort (·.id ≤ ·.id)).head? with
     | some r =>  -- the agent notice below is the single notice; the task notice is marked sent
-      (db.set r.id ({ · with state := .blocked, question := some HC_Q })).log t (some n) "task-blocked" (some (d r.id)) (some HC_Q)
+      (db.set r.id fun x => { x with state := x.state.block HC_Q }).log t (some n) "task-blocked" (some (d r.id)) (some HC_Q)
     | none => db
   match comms with  -- while the user is away the question queues: not urgent
   | some c =>
@@ -227,7 +227,7 @@ def compactStep (t : Int) (comms : String) (terms : List Term) (g : CompactIn) (
   if a.ended.isSome then return (db0, [])
   let some h := py a.hc | return (db0, [])
   let some x := terms.find? (·.address == some h) | return (db0, [])
-  let task := ((db0.tasks.filter fun r => r.owner == some n && (r.state = .claimed || r.state = .blocked)).mergeSort
+  let task := ((db0.tasks.filter fun r => r.owner == some n && (r.status = .claimed || r.status = .blocked)).mergeSort
     (·.id ≤ ·.id)).head?
   let stays := n == comms || a.stay.isSome
   let ev (k : String) := (lastOf db0 n k).bind (·.ts)
@@ -331,7 +331,7 @@ def apiErrorStep (t : Int) (comms : String) (terms : List Term) (err : Option St
     if n == comms then
       return ((say db t (.agent comms) s!"Your last turn ended on an API error ({txt}); nothing woke it. Go on from where you were." false "system").log t
         (some n) "api-resume" none none, [])
-    let task := ((db.tasks.filter fun r => r.owner == some n && (r.state = .claimed || r.state = .blocked)).mergeSort
+    let task := ((db.tasks.filter fun r => r.owner == some n && (r.status = .claimed || r.status = .blocked)).mergeSort
       (·.id ≤ ·.id)).head?
     let line := s!"Your last turn ended on an API error ({txt}). Go on from where you were" ++
       (match task with | some r => s!": task #{r.id}." | none => ".")
@@ -424,7 +424,7 @@ def commsInbox (t : Int) (comms : String) (terms : Option (List Term)) : m Unit 
 /-- Each blocked task of the swarm's agents (`ofSwarm`, board #135) has its question told to comms once per block: a
 task-blocked event after its latest `task block`. -/
 def noticesStep (t : Int) (comms : String) (away : Bool) (db0 : Db) : Db :=
-  (db0.tasks.filter fun r => r.state = .blocked && ofSwarm db0 r).foldl (fun db r =>
+  (db0.tasks.filter fun r => r.status = .blocked && ofSwarm db0 r).foldl (fun db r =>
     -- the latest of the task's question events (model Model.lean, toldAfter): the same question asked again is new
     let e := (db.events.filter fun e =>
       (e.kind == some "block" && e.data.any fun x => x == "#" ++ d r.id || likePrefix x ("#" ++ d r.id ++ " ")) ||

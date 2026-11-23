@@ -85,15 +85,15 @@ def timing (r : Task) (evs : List Event) (now : Int) : Timing :=
   let releases := (evs.filter (·.kind == some "release")).length
   let created := (pyI r.created_at).orElse fun _ => ts "task-add" min
   let first := (pyI r.first_claimed_at).orElse fun _ => ts "claim" min
-  let done := (pyI r.done_at).orElse fun _ => if r.state = .done then ts "done" max else none
-  let dropped := (pyI r.dropped_at).orElse fun _ => if r.state = .dropped then ts "drop" max else none
+  let done := (pyI r.done_at).orElse fun _ => if r.status = .done then ts "done" max else none
+  let dropped := (pyI r.dropped_at).orElse fun _ => if r.status = .dropped then ts "drop" max else none
   let stop := ((pyI done).orElse fun _ => pyI dropped).getD now
   let (blocked, start) := evs.foldl (fun (b, s) e =>
     if e.kind == some "block" && s.isNone then (b, some (e.ts.getD 0))
     else if e.kind == some "unblock" && s.isSome then (b + e.ts.getD 0 - s.getD 0, none)
     else (b, s)) ((0 : Int), (none : Option Int))
   let blocked := match start with
-    | some s => if r.state = .blocked then blocked + stop - s else blocked
+    | some s => if r.status = .blocked then blocked + stop - s else blocked
     | none => blocked
   let span (a b : Option Int) : Option Int := match a, b with
     | some x, some y => some (y - x)
@@ -108,11 +108,11 @@ def depsOf (r : Task) : List Int := (commaPieces (r.deps.getD "")).filterMap par
 
 /-- The not-done rows of `r`'s deps, in `r`'s order (tasks.undone). -/
 def undone (db : Db) (r : Task) : List Task :=
-  (depsOf r).filterMap fun i => (db.find i).filter (·.state ≠ .done)
+  (depsOf r).filterMap fun i => (db.find i).filter (·.status ≠ .done)
 
 /-- Open tasks whose deps name `tid` (tasks.waiters). -/
 def waiters (db : Db) (tid : Int) : List Task :=
-  db.tasks.filter fun t => t.state = .open && match t.deps with
+  db.tasks.filter fun t => t.status = .open && match t.deps with
     | some ds => hasSub ("," ++ ds ++ ",") ("," ++ d tid ++ ",")
     | none => false
 
@@ -120,7 +120,7 @@ def waiters (db : Db) (tid : Int) : List Task :=
 def blockedByDeps (db : Db) (t : Task) : Bool :=
   match t.deps with
   | none => false
-  | some ds => db.tasks.any fun x => x.state ≠ .done && hasSub ("," ++ ds ++ ",") ("," ++ d x.id ++ ",")
+  | some ds => db.tasks.any fun x => x.status ≠ .done && hasSub ("," ++ ds ++ ",") ("," ++ d x.id ++ ",")
 
 /-- The path `start, …, target` along deps, if any (tasks.dep_path): the cycle `task after` would close. -/
 def depPath (db : Db) (start target : Int) : Option (List Int) :=
@@ -163,7 +163,7 @@ def boardLe (red : Task → Nat) (a b : Task) : Bool :=
 
 /-- Open tasks with no undone deps and no pending stop, red first then by priority (tasks.pool). -/
 def pool (db : Db) : List Task :=
-  ((db.tasks.filter fun t => t.state = .open && !blockedByDeps db t).mergeSort (boardLe redKey)).filter
+  ((db.tasks.filter fun t => t.status = .open && !blockedByDeps db t).mergeSort (boardLe redKey)).filter
     (!stopPending db ·)
 
 /-- `#3, #5` (tasks.ids). -/
@@ -179,8 +179,8 @@ def depLines (db : Db) (r : Task) : String :=
   let deps := depsOf r
   let a := if deps.isEmpty then "" else
     "\nafter: " ++ ", ".intercalate (deps.map fun x =>
-      "#" ++ d x ++ " " ++ ((db.find x).map (·.state.text)).getD "missing")
-  let w := if r.state ≠ .done then waiters db r.id else []
+      "#" ++ d x ++ " " ++ ((db.find x).map (·.status.text)).getD "missing")
+  let w := if r.status ≠ .done then waiters db r.id else []
   a ++ (if w.isEmpty then "" else "\nblocks: " ++ ", ".intercalate (w.map fun x => "#" ++ d x.id))
 
 /-- Fails on a dep that is no task (tasks.no_task_to_wait_on). -/
@@ -192,14 +192,14 @@ def depsF (s : String) (t : Task) : Task := { t with deps := some s }
 
 /-- A task claimed by `me` until `u` at context `k` at time `now`. -/
 def claimF (me : String) (u k now : Int) (t : Task) : Task :=
-  { t with state := .claimed, owner := some me, lease_until := some u, claim_ctx := some k,
+  { t with state := .claimed me u, claim_ctx := some k,
            first_claimed_at := t.first_claimed_at.orElse fun _ => some now }
 
 /-- A task its owner gave back. -/
-def reopenF (t : Task) : Task := { t with state := .open, owner := none, lease_until := none }
+def reopenF (t : Task) : Task := { t with state := .open }
 
 /-- A task the communicator took back from its owner. -/
-def reopenFromF (t : Task) : Task := { t with state := .open, owner := none, lease_until := none, question := none }
+def reopenFromF (t : Task) : Task := { t with state := .open }
 
 /-- Fails on a missing dep or one that would close a cycle through `id`. -/
 def checkCycles (db : Db) (id : Int) (deps : List Int) : Except String Unit := do
@@ -250,7 +250,7 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
                         base := a.base, created_at := some c.now, priority := some (a.priority.getD DEFAULT_PRIORITY),
                         labels := a.labels.bind labelsText,
                         parents := py (some (",".intercalate ((db.tasks.filter fun t => t.owner == some c.me &&
-                          (t.state = .claimed || t.state = .blocked)).map (d ·.id)))) }
+                          (t.status = .claimed || t.status = .blocked)).map (d ·.id)))) }
       let db := { db with tasks := db.tasks ++ [t], taskNext := db.taskNext + 1 }
       (db.log c.now (some c.me) "task-add" none (some s!"#{d id} {a.title}"), .ok id)
 
@@ -265,7 +265,7 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
     else
     match undone db r with
     | dep :: _ =>
-      (db, .error s!"#{d id} waits on #{d dep.id} ({dep.state.text}{match py dep.owner with
+      (db, .error s!"#{d id} waits on #{d dep.id} ({dep.status.text}{match py dep.owner with
         | some o => ", claimed by " ++ o | none => ""})")
     | [] =>
       let db := touch db c.me none c.here c.now
@@ -281,19 +281,19 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
         | some r1 =>
           if stopPending db r1 then
             (db, .error s!"task #{d id} was released from {r1.stop_to.getD ""}, which hasn't read the stop yet; try again once it has")
-          else if r1.state = .open && !blockedByDeps db r1 then
+          else if r1.status = .open && !blockedByDeps db r1 then
             let db := db.set id (claimF c.me «until» k c.now)
             (db.log c.now (some c.me) "claim" none (some s!"#{d id} {r.title.getD ""}"), .ok ⟨«until», py r.body⟩)
-          else match (if r1.state = .open then undone db r1 else []) with
-            | dep :: _ => (db, .error s!"#{d id} waits on #{d dep.id} ({dep.state.text})")
-            | [] => (db, .error s!"task #{d id} is {r1.state.text}{owned r1}")
+          else match (if r1.status = .open then undone db r1 else []) with
+            | dep :: _ => (db, .error s!"#{d id} waits on #{d dep.id} ({dep.status.text})")
+            | [] => (db, .error s!"task #{d id} is {r1.status.text}{owned r1}")
 
 /-- `task after`: what the deps became. -/
 def after (c : Ctx) (id : Int) (deps : List Int) (db : Db) : Db × Except String Unit :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state ≠ .open then (db, .error s!"task #{d id} is {r.state.text}; only an open task's dependencies can change")
+    if r.status ≠ .open then (db, .error s!"task #{d id} is {r.status.text}; only an open task's dependencies can change")
     else match setDeps db id deps with
       | .error e => (db, .error e)
       | .ok (db', ds) =>
@@ -305,14 +305,14 @@ def priority (c : Ctx) (id : Int) (p : Int) (db : Db) : Db × Except String Unit
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state ≠ .open && r.state ≠ .claimed then
-      (db, .error s!"task #{d id} is {r.state.text}; only an open or claimed task's priority can change")
+    if r.status ≠ .open && r.status ≠ .claimed then
+      (db, .error s!"task #{d id} is {r.status.text}; only an open or claimed task's priority can change")
     else
       let db := db.set id ({ · with priority := some p })
       (db.log c.now (some c.me) "task-priority" none (some s!"#{d id} P{d p}"), .ok ())
 
 /-- The row is `n`'s claimed task (the Lua's `where id=? and owner=? and state='claimed'`). -/
-def mine (r : Task) (n : String) : Bool := r.owner == some n && r.state = .claimed
+def mine (r : Task) (n : String) : Bool := r.owner == some n && r.status = .claimed
 
 /-- `task renew`: the lease's new end. -/
 def renew (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String Int :=
@@ -323,12 +323,15 @@ def renew (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
     | none => (db, .error s!"bad duration '{lease}' (use 90s, 30m, 2h)")
     | some l =>
       if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
-      else ((db.set id ({ · with lease_until := some (c.now + l) })).log c.now (some c.me) "renew" none
+      else ((db.set id fun t => { t with state := t.state.renew (c.now + l) }).log c.now (some c.me) "renew" none
         (some s!"#{d id} {d (c.now + l)}"), .ok (c.now + l))
 
-/-- A task handed to `lander` at commit `sha` at time `now`: landing, its lease gone, its owner kept. -/
+/-- A claimed task handed to `lander` at commit `sha` at time `now`: landing, its lease gone, its owner kept; any
+other task as it is. -/
 def landF (sha : String) (lander : Option String) (now : Int) (t : Task) : Task :=
-  { t with state := .landing, lease_until := none, land_sha := some sha, lander, landing_at := some now }
+  match t.state with
+  | .claimed o _ => { t with state := .landing o ⟨sha, lander, now⟩ }
+  | _ => t
 
 /-- `n` may close landing task `r` (board #200): the lander `task land` named, an agent whose role has the word
 lander, or the communicator (or the user). -/
@@ -353,8 +356,8 @@ def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) (db : Db) 
     if strip sha == "" then (db, .error "--sha is empty: give the commit that passed its checks")
     else if r.owner != some c.me then
       (db, .error s!"task #{d id} is not yours{match py r.owner with | some o => " (" ++ o ++ " owns it)" | none => ""}; only its owner hands it to a lander")
-    else if r.state ≠ .claimed then
-      (db, .error s!"task #{d id} is {r.state.text}; only a claimed task can be handed to a lander")
+    else if r.status ≠ .claimed then
+      (db, .error s!"task #{d id} is {r.status.text}; only a claimed task can be handed to a lander")
     else
       let lander := lander.bind fun l => py (some (strip l))
       let db := db.set id (landF (strip sha) lander c.now)
@@ -369,11 +372,10 @@ def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) (db : Db) 
 
 /-- A landing task its lander gave back: open, at P1 unless already lower, with why appended to its body. -/
 def unlandF (by_ why : String) (t : Task) : Task :=
-  { t with state := .open, owner := none, lease_until := none,
+  { t with state := .open,
            priority := some (match t.priority with | some p => if p ≤ 1 then p else 1 | none => 1),
            body := some ((match py t.body with | some b => b ++ "\n\n" | none => "") ++
-             s!"Not landed ({String.ofList ((t.land_sha.getD "-").toList.take 12)}, by {by_}): {why}"),
-           land_sha := none, lander := none, landing_at := none }
+             s!"Not landed ({String.ofList ((t.land_sha.getD "-").toList.take 12)}, by {by_}): {why}") }
 
 /-- `task unland` (board #200): the lander gives landing task `id` back as open, at P1 unless already lower, with the
 reason appended to its body; its former owner, if live, and the communicator are told. -/
@@ -381,7 +383,7 @@ def unland (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String U
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state ≠ .landing then (db, .error s!"task #{d id} is {r.state.text}; only a landing task can be unlanded")
+    if r.status ≠ .landing then (db, .error s!"task #{d id} is {r.status.text}; only a landing task can be unlanded")
     else if !isLander db c.comms c.me r then (db, .error (notLander id r))
     else if strip why == "" then (db, .error "--why is empty: say why it did not land")
     else
@@ -407,13 +409,12 @@ def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except Strin
   | some r =>
     if strip evidence == "" then
       (db, .error "--evidence is empty: give the sha, PR or command output that shows the work is done")
-    else if r.state = .landing then
+    else if r.status = .landing then
       if !isLander db c.comms c.me r then (db, .error (notLander id r))
       else if !c.onBase then
         (db, .error s!"--evidence {strip evidence}: not a commit on #{d id}'s base; land it first, then give the sha it landed as")
       else
-        let db := db.set id fun t => { t with state := .done, evidence := some evidence, lease_until := none,
-                                              done_at := some c.now }
+        let db := db.set id fun t => { t with state := t.state.toDone, evidence := some evidence, done_at := some c.now }
         (db.log c.now (some c.me) "done" none (some s!"#{d id} {evidence}"), .ok (.landed r.owner))
     else if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
     else if (r.title.getD "").startsWith RED_TASK then
@@ -421,8 +422,8 @@ def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except Strin
       (db.log c.now (some c.me) "red-fixed" none (some s!"#{d id} {evidence}"), .ok .red)
     else
       let dctx := (db.agent c.me).bind (·.ctx_tokens)
-      let db := db.set id fun t => { t with state := .done, evidence := some evidence, lease_until := none,
-                                            done_at := some c.now, done_ctx := dctx }
+      let db := db.set id fun t => { t with state := t.state.toDone, evidence := some evidence, done_at := some c.now,
+                                            done_ctx := dctx }
       let db := db.log c.now (some c.me) "done" none (some s!"#{d id} {evidence}")
       (db, .ok (.done (fdiv (ctxOf db c.me) 1000) (stayOf db c.me) (pool db).length))
 
@@ -433,7 +434,7 @@ def block (c : Ctx) (id : Int) (question : String) (db : Db) : Db × Except Stri
   | some r =>
     if !mine r c.me then (db, .error s!"task #{d id} is not claimed by you")
     else
-      let db := db.set id ({ · with state := .blocked, question := some question })
+      let db := db.set id fun t => { t with state := t.state.block question }
       (db.log c.now (some c.me) "block" none (some s!"#{d id} {question}"), .ok (away db).isSome)
 
 /-- `task unblock`: the owner it is claimed by again. -/
@@ -441,14 +442,13 @@ def unblock (c : Ctx) (id : Int) (answer : String) (db : Db) : Db × Except Stri
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state ≠ .blocked then (db, .error s!"task #{d id} is not blocked")
+    if r.status ≠ .blocked then (db, .error s!"task #{d id} is not blocked")
     else if some c.me != r.owner && !inCharge db c.comms c.me then
       (db, .error s!"only {r.owner.getD "nil"} or the communicator can unblock #{d id}")
     else if r.owner.isNone then (db, .error s!"task #{d id} changed under you; `swarm task show {d id}`")
     else
       let ans := py (some answer)
-      let db := db.set id fun t => { t with state := .claimed, question := none, answer := ans.orElse fun _ => t.answer,
-                                            lease_until := some (c.now + LEASE) }
+      let db := db.set id fun t => { t with state := t.state.unblock (c.now + LEASE), answer := ans.orElse fun _ => t.answer }
       let db := match ans with  -- the answer in the task's activity, then the unblock
         | some a => db.log c.now (some c.me) "answer" none (some s!"#{d id} {a}")
         | none => db
@@ -466,9 +466,9 @@ def release (c : Ctx) (id : Int) (after : Option (List Int)) (db : Db) : Db × E
     let fromA := if r.owner != some c.me && inCharge db c.comms c.me then py r.owner else none
     let opened : Except String Db := match fromA with
       | some f =>
-        if r.owner == some f && (r.state = .claimed || r.state = .blocked) then
+        if r.owner == some f && (r.status = .claimed || r.status = .blocked) then
           .ok (db.set id reopenFromF)
-        else .error s!"task #{d id} is {r.state.text}{owned r}"
+        else .error s!"task #{d id} is {r.status.text}{owned r}"
       | none =>
         if mine r c.me then .ok (db.set id reopenF)
         else .error s!"task #{d id} is not claimed by you"
@@ -520,7 +520,7 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state = .done || r.state = .dropped then (db, .error s!"task #{d id} is {r.state.text}; it can't be edited")
+    if r.status = .done || r.status = .dropped then (db, .error s!"task #{d id} is {r.status.text}; it can't be edited")
     else if a.title == some "" then (db, .error "the title can't be empty")
     else if a.title.any (·.contains '\n') then (db, .error "the title is one line; put the rest in --body or --body-file")
     else
@@ -532,22 +532,22 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (Li
       let db := db.log c.now (some c.me) "task-edit" none (some s!"#{d id} {", ".intercalate fields}")
       let db := match py r.owner with
         | some o =>
-          if (r.state = .claimed || r.state = .blocked) && o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone)
+          if (r.status = .claimed || r.status = .blocked) && o != c.me && (db.agents.any fun x => x.name == o && x.ended.isNone)
           then (Msgs.post db c.now (Msgs.Who.ofText c.me) (.agent o) s!"{c.me} edited #{d id}: {"; ".intercalate notes}" a.urgent).1 else db
         | none => db
-      (db, .ok (fields, r.state))
+      (db, .ok (fields, r.status))
 
 /-- `task drop`: the open tasks that wait on it; a done task is refused. -/
 def drop (c : Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.state = .done then (db, .error s!"#{d id} is done; a done task can't be dropped")
-    else if (r.state = .claimed || r.state = .blocked) && r.owner != some c.me && !inCharge db c.comms c.me then
-      (db, .error s!"#{d id} is {r.state.text} by {r.owner.getD "nil"}; only it or the communicator can drop it")
-    else if r.state = .landing && !isLander db c.comms c.me r then (db, .error (notLander id r))
+    if r.status = .done then (db, .error s!"#{d id} is done; a done task can't be dropped")
+    else if (r.status = .claimed || r.status = .blocked) && r.owner != some c.me && !inCharge db c.comms c.me then
+      (db, .error s!"#{d id} is {r.status.text} by {r.owner.getD "nil"}; only it or the communicator can drop it")
+    else if r.status = .landing && !isLander db c.comms c.me r then (db, .error (notLander id r))
     else
-      let db := db.set id fun t => { t with state := .dropped, owner := none, lease_until := none, dropped_at := some c.now }
+      let db := db.set id fun t => { t with state := t.state.toDropped, dropped_at := some c.now }
       let db := db.log c.now (some c.me) "drop" none (some s!"#{d id}")
       (db, .ok (waiters db id))
 

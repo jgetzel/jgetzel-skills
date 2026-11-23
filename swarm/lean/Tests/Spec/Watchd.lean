@@ -357,7 +357,7 @@ def auto_spawn_loses_the_race_for_a_task (t : T) : IO Unit := do
   -- after auto_spawn's own read (the reserve's check runs in its write transaction: no peer gets in)
   let ran ← afterSpawnRead h do
     t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)" [.text t.repo]
-    t.q_ "update task set state='claimed', owner='t-1' where id=1"
+    t.q_ "update task set state='claimed', owner='t-1', lease_until=strftime('%s','now')+7200 where id=1"
   -- cap 2: with t-1 live there is room for t-2, so the spawn is tried and its reserve loses (cap 1 would stop before it)
   t.q_ "insert or replace into meta(k,v) values('agent_min','2')"
   eq (← tick h) Json.null
@@ -381,7 +381,7 @@ def board91_a_task_freed_during_a_launch_is_staffed_first (t : T) : IO Unit := d
   t.q_ "insert into task(title,deps,priority) values('H','1',0)"
   t.q_ "insert or replace into meta(k,v) values('agent_min','3')"
   let launched ← fakeLaunch h (t.d ++ "/launch") fun n => do
-    if n == 1 then t.q_ "update task set state='done' where id=1"
+    if n == 1 then t.q_ "update task set state='done', lease_until=null where id=1"
   eq (← tick h) Json.null
   let st := (← t.q "select id, state from task order by id").map fun r => (r.f "id", r.f "state")
   let state (i : Int) : Json := ((st.find? (·.1 == toJson i)).map (·.2)).getD .null
@@ -399,7 +399,7 @@ def board91_a_task_freed_before_the_reserve_is_staffed_first (t : T) : IO Unit :
   t.q_ "insert into task(title,deps,priority) values('H','1',0)"
   t.q_ "insert or replace into meta(k,v) values('agent_min','2')"
   discard <| fakeLaunch h (t.d ++ "/launch")
-  let ran ← afterSpawnRead h (t.q_ "update task set state='done' where id=1")  -- right after auto_spawn's read
+  let ran ← afterSpawnRead h (t.q_ "update task set state='done', lease_until=null where id=1")  -- right after auto_spawn's read
   eq (← tick h) Json.null
   ran
   eq ((← t.q1 "select state from task where id=3").f "state") "claimed"
@@ -412,7 +412,7 @@ def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   let h ← hooks t
   -- x is the swarm's: comms hears only its own agents' questions (board #135)
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('x',?,'working',1,1)" [.text t.repo]
-  t.q_ "insert into task(title,state,owner,question) values('q','blocked','x','which way?')"
+  t.q_ "insert into task(title,state,owner,question,lease_until) values('q','blocked','x','which way?',4000000000)"
   let armed ← IO.mkRef true
   h.before.set fun ts => do
     if (← armed.get) && ts == reapRead then armed.set false; throw (IO.userError "boom")

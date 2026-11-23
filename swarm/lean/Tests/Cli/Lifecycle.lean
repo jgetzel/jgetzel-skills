@@ -814,7 +814,7 @@ def test_claim_holder_with_sleep_loop_spared (t : T) : IO Unit := do
 def test_high_context_agent_retakes_only_its_reaped_task (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt), ("stay", "reviews")]
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "add", "u"]; t.sw_ "e" ["task", "claim", "1"]
-  t.q_ "update task set lease_until=1"
+  t.q_ "update task set lease_until=1 where id=1"
   commsTick t
   t.q_ "update agent set ctx_tokens=400000 where name='e'"
   has (← t.sw "e" ["task", "claim", "2"] { ok := false }).stderr "too high to take new work"

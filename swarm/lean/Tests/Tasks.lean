@@ -30,7 +30,7 @@ def lostOf : Except Refusal Task → Option String
 def r1 := reserveTask db0 none "n1" "/r" 1 (some "sonnet") 100
 
 #guard (match r1.2 with | .ok r => r.title == some "one" | _ => false)
-#guard (r1.1.find 1).map (fun t => (t.state, t.owner, t.first_claimed_at.isSome)) == some (.claimed, some "n1", true)
+#guard (r1.1.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at.isSome)) == some (.claimed, some "n1", true)
 #guard (r1.1.agents.find? (·.name == "n1")).bind (·.model) == some "sonnet"
 
 -- a peer got it first
@@ -39,7 +39,7 @@ def r1 := reserveTask db0 none "n1" "/r" 1 (some "sonnet") 100
 /-- The launch failed: n1 unreserves. -/
 def u := unreserve r1.1 "n1" (match r1.2 with | .ok r => some r | _ => none) 101
 
-#guard (u.find 1).map (fun t => (t.state, t.owner, t.first_claimed_at)) == some (.open, none, none)
+#guard (u.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at)) == some (.open, none, none)
 #guard ((u.agents.find? (·.name == "n1")).bind (·.ended)).isSome
 -- it ends as every end does (`endRow`): status ended, its stay cleared
 #guard ((u.agents.find? (·.name == "n1")).bind (·.status)) == some .ended
@@ -50,6 +50,17 @@ its update; here claim is one step, so the step runs on the db the race left. -/
 def raced : Db := { u with tasks := u.tasks ++ [{ id := 3, title := some "three", deps := some "1" }], taskNext := 4 }
 
 #guard (match (claim { me := "n3", now := 200 } 3 "2h" raced).2 with | .error _ => true | .ok _ => false)
-#guard ((claim { me := "n3", now := 200 } 3 "2h" raced).1.find 3).map (·.state) == some .open
+#guard ((claim { me := "n3", now := 200 } 3 "2h" raced).1.find 3).map (·.status) == some .open
+
+-- board #1810: a row's state and columns decode to a TaskState, or are refused naming what fits no state
+def misfitOf (r : Except String TaskState) : Option String := match r with | .error e => some e | .ok _ => none
+#guard misfitOf (TaskState.ofCols .claimed none (some 1) none none none none) == some "claimed with no owner"
+#guard misfitOf (TaskState.ofCols .open (some "a") none none none none none) == some "open with owner set"
+#guard misfitOf (TaskState.ofCols .done (some "a") none none none (some "l") none) == some "done with no land_sha, landing_at"
+#guard misfitOf (TaskState.ofCols .landing (some "a") (some 5) none none none none) ==
+  some "landing with no land_sha, landing_at and lease_until set"
+#guard (TaskState.ofCols .blocked (some "a") (some 5) (some "q?") none none none).toOption == some (.blocked "a" 5 "q?")
+#guard (TaskState.ofCols .dropped none none (some "q?") (some "abc") none (some 7)).toOption ==
+  some (.dropped (some "q?") (some ⟨"abc", none, 7⟩))
 
 end SwarmLean.Tests.Tasks

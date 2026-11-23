@@ -25,9 +25,10 @@ inductive Result
   | unlanded (r : Except String Unlanded)
   | board (tasks : List Task)
 
-/-- A task's owner fits its state: a claimed task has an owner, an open one has none. -/
+/-- A task's owner fits its state: a claimed task has an owner, an open one has none. It holds of every task by
+construction (`TaskState.owned`): the owner is the state's (`TaskState.claimed` holds one, `.open` none). -/
 def Task.Owned (t : Task) : Prop :=
-  (t.state = .claimed → t.owner.isSome) ∧ (t.state = .open → t.owner = none)
+  (t.status = .claimed → t.owner.isSome) ∧ (t.status = .open → t.owner = none)
 
 /-- The store's invariant: task ids are unique and below the next id, and every task's owner fits its state. -/
 def Inv (db : Db) : Prop :=
@@ -61,8 +62,9 @@ inductive TCmd
 /-- Evidence `task done` accepts: some text that is not all whitespace. -/
 def EvOk (e : Option String) : Prop := ∃ s, e = some s ∧ strip s ≠ ""
 
-/-- S5 of one task: if it is done it has evidence. -/
-def DoneEv (t : Task) : Prop := t.state = .done → EvOk t.evidence
+/-- S5 of one task: if it is done it has evidence. An invariant, not the type's: evidence is a column, which a red task
+keeps when its `task done` reopens it, and "not all whitespace" is no constructor's. -/
+def DoneEv (t : Task) : Prop := t.status = .done → EvOk t.evidence
 
 /-- The board's invariant: `Inv` (ids unique and below the next id, owners fit states) and every done task has
 evidence. -/

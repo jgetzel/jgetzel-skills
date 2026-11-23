@@ -27,7 +27,7 @@ def OFFER_TTL : Int := 300
 
 /-- The task agent `n` finished last: its done task with the latest done time. -/
 def lastDone (db : Db) (n : String) : Option Task :=
-  (db.tasks.filter fun t => t.owner == some n && t.state = .done).foldl
+  (db.tasks.filter fun t => t.owner == some n && t.status = .done).foldl
     (fun b t => match b with | some x => if t.done_at.getD 0 ≥ x.done_at.getD 0 then some t else b | none => some t) none
 
 /-- Task `t` is related to `f`, finished by `n`: `n` filed it while holding `f`, it waits on `f`, or they share a label. -/

@@ -333,7 +333,7 @@ def test_state_summary (t : T) : IO Unit := do
   t.agent "q" [("status", "working"), ("last_active", .int 0)]               -- asks about #2; never active: idle 0
   t.agent "s" [("status", "idle"), ("stay", "reviews"), ("last_active", .int (n - 50))]  -- hung
   t.agent "e" [("ended", .int 1)]
-  t.q_ "insert into task(id, title, state, owner, question) values (1, 'one', 'claimed', 'w', null), (2, 'two', 'blocked', 'q', 'which?'), (3, 'three', 'done', 'w', null), (4, 'four', 'open', null, null)"
+  t.q_ "insert into task(id, title, state, owner, question, lease_until) values (1, 'one', 'claimed', 'w', null, 4000000000), (2, 'two', 'blocked', 'q', 'which?', 4000000000), (3, 'three', 'done', 'w', null, null), (4, 'four', 'open', null, null, null)"
   t.q_ "insert into event(ts, agent, kind, data) values (?, 's', 'stay-hung', ''), (?, 'w', 'claim', '#1')" [.int (n - 10), .int (n - 10)]
   t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(7,'x','completed','failure','u','2026-11-08T10:00:00Z')"
   let s ← st t ["--view", "summary"]
@@ -368,7 +368,7 @@ def test_state_swarms (t : T) : IO Unit := do
   t.q_ "insert into swarm_repo(swarm, repo) values('u', '/r2')"
   t.q_ "update agent set swarm='u' where name in ('x', 'y')"
   t.q_ "insert into workspace(repo, path, agent) values('/r2', '/r2-x', 'x')"
-  t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'claimed', 'w', 'c', null), (2, 'two', 'blocked', 'x', 'human', 'which?'), (3, 'three', 'open', null, 'human', null), (4, 'four', 'open', null, 'human', null)"
+  t.q_ "insert into task(id, title, state, owner, created_by, question, lease_until) values (1, 'one', 'claimed', 'w', 'c', null, 4000000000), (2, 'two', 'blocked', 'x', 'human', 'which?', 4000000000), (3, 'three', 'open', null, 'human', null, null), (4, 'four', 'open', null, 'human', null, null)"
   t.q_ "delete from task_repo"  -- the fixture gives hand-written tasks its repo: this test sets their repos
   t.q_ "insert into task_repo(task, repo) values(4, '/r2')"
   let s ← st t ["--view", "swarms"]

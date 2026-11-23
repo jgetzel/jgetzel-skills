@@ -28,7 +28,7 @@ def queued (db : Db) : List Task := (db.tasks.filter (·.qpos.isSome)).mergeSort
 def queueOf (db : Db) : List Int := (queued db).map fun t => (t.id : Int)
 
 /-- On the board: open, claimed or blocked. -/
-def onBoard (t : Task) : Bool := t.state = .open || t.state = .claimed || t.state = .blocked || t.state = .landing
+def onBoard (t : Task) : Bool := t.status = .open || t.status = .claimed || t.status = .blocked || t.status = .landing
 
 /-- Takes the tasks that left the board (done, dropped) out of the queue and closes the gaps. -/
 def tidy (db : Db) : Db := setQueue db ((queueOf db).filter fun i => (db.find i).any onBoard)
@@ -44,7 +44,7 @@ def addCheck (c : Ctx) (ids : List Int) (w : Place) (db : Db) : Except String Un
   for i in ids do
     match db.find i with
     | none => throw s!"no task #{d i}"
-    | some r => if !onBoard r then throw s!"task #{d i} is {r.state.text}; only a task on the board can be queued"
+    | some r => if !onBoard r then throw s!"task #{d i} is {r.status.text}; only a task on the board can be queued"
   if !inCharge db c.comms c.me then
     if let .back := w then pure () else throw "only the communicator or the user can queue other than at the back"
     for i in ids do
@@ -88,7 +88,7 @@ def hold (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String Uni
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if !onBoard r then (db, .error s!"task #{d id} is {r.state.text}; only a task on the board can be held")
+    if !onBoard r then (db, .error s!"task #{d id} is {r.status.text}; only a task on the board can be held")
     else if strip why == "" then (db, .error "--why is empty: say what the task waits for")
     else
       let db := db.set id ({ · with hold := some (oneLine why) })
@@ -129,12 +129,12 @@ def staffHead (skip : Task → Bool) (db : Db) : Option Int := ((staffing db).fi
 /-- Why a queued task is not staffed now; none when it would be. -/
 def whyNot (db : Db) (t : Task) : Option String :=
   if let some h := t.hold then some s!"held: {h}"
-  else if t.state = .claimed then some s!"claimed by {(py t.owner).getD "-"}"
-  else if t.state = .blocked then some s!"blocked by {(py t.owner).getD "-"}"
-  else if t.state = .landing then some s!"landing by {(py t.lander).getD "a lander"}"
+  else if t.status = .claimed then some s!"claimed by {(py t.owner).getD "-"}"
+  else if t.status = .blocked then some s!"blocked by {(py t.owner).getD "-"}"
+  else if t.status = .landing then some s!"landing by {(py t.lander).getD "a lander"}"
   else if (pool db).any (·.id == t.id) then none
   else match undone db t with
-    | [] => if stopPending db t then some s!"waits for {t.stop_to.getD "nil"} to read its stop" else some t.state.text
+    | [] => if stopPending db t then some s!"waits for {t.stop_to.getD "nil"} to read its stop" else some t.status.text
     | u => some ("waits on " ++ idsText (u.map fun x => (x.id : Int)))
 
 /-- `task done`, and the task leaves the queue; the count is of the tasks to staff after it. -/

@@ -121,19 +121,168 @@ def Conclusion.passes : Conclusion → Bool
   | .success | .neutral | .skipped => true
   | _ => false
 
+/-- A hand-over to a lander (`task land`, board #200): the commit, the lander it named (none: any lander), when. -/
+structure Landing where
+  sha : String
+  lander : Option String := none
+  since : Int
+  deriving DecidableEq, Repr, Inhabited
+
+/-- Where a task is in its life, with what that state holds: the owner of a claim (claimed, blocked, landing), its
+lease, a block's question, a hand-over to a lander. A done task keeps the owner, question and hand-over it had; a
+dropped one the question and hand-over (`drop` and the green run's close take a task as it is). -/
+inductive TaskState
+  | «open»
+  | claimed (owner : String) (lease : Int)
+  | blocked (owner : String) (lease : Int) (question : String)
+  | landing (owner : String) (hand : Landing)
+  | done (owner : Option String) (question : Option String) (hand : Option Landing)
+  | dropped (question : Option String) (hand : Option Landing)
+  deriving DecidableEq, Repr, Inhabited
+
+namespace TaskState
+
+/-- The state's name. -/
+def status : TaskState → Status
+  | .open => .open | .claimed .. => .claimed | .blocked .. => .blocked | .landing .. => .landing | .done .. => .done
+  | .dropped .. => .dropped
+
+/-- The owner (column owner). -/
+def owner : TaskState → Option String
+  | .claimed o _ | .blocked o _ _ | .landing o _ => some o
+  | .done o _ _ => o
+  | _ => none
+
+/-- The claim's lease (column lease_until). -/
+def lease : TaskState → Option Int
+  | .claimed _ l | .blocked _ l _ => some l
+  | _ => none
+
+/-- The block's question (column question). -/
+def question : TaskState → Option String
+  | .blocked _ _ q => some q
+  | .done _ q _ | .dropped q _ => q
+  | _ => none
+
+/-- The hand-over to a lander (columns land_sha, lander, landing_at). -/
+def hand : TaskState → Option Landing
+  | .landing _ h => some h
+  | .done _ _ h | .dropped _ h => h
+  | _ => none
+
+/-- Closed as done: the owner, question and hand-over kept. -/
+def toDone (s : TaskState) : TaskState := .done s.owner s.question s.hand
+
+/-- Dropped: the question and hand-over kept. -/
+def toDropped (s : TaskState) : TaskState := .dropped s.question s.hand
+
+/-- A claim's lease moved to `u`; any other state as it is. -/
+def renew (u : Int) : TaskState → TaskState
+  | .claimed o _ => .claimed o u
+  | s => s
+
+/-- A claim blocked on question `q`, its lease kept; any other state as it is. -/
+def block (q : String) : TaskState → TaskState
+  | .claimed o l => .blocked o l q
+  | s => s
+
+/-- A block answered: claimed again by its owner until `u`; any other state as it is. -/
+def unblock (u : Int) : TaskState → TaskState
+  | .blocked o _ _ => .claimed o u
+  | s => s
+
+/-- The hand-over's columns. -/
+def handCols : Option Landing → Option String × Option String × Option Int
+  | some h => (some h.sha, h.lander, some h.since)
+  | none => (none, none, none)
+
+/-- The hand-over the columns land_sha, lander, landing_at hold: all NULL is none, a commit and a time is one. -/
+def handOf : Option String × Option String × Option Int → Option (Option Landing)
+  | (none, none, none) => some none
+  | (some s, l, some t) => some (some ⟨s, l, t⟩)
+  | _ => none
+
+/-- The columns a state of status `s` must have set, and those it may: owner, lease_until, question, land_sha,
+landing_at, lander. -/
+def colsOf : Status → List String × List String
+  | .open => ([], [])
+  | .claimed => (["owner", "lease_until"], [])
+  | .blocked => (["owner", "lease_until", "question"], [])
+  | .landing => (["owner", "land_sha", "landing_at"], ["lander"])
+  | .done => ([], ["owner", "question", "land_sha", "landing_at", "lander"])
+  | .dropped => ([], ["question", "land_sha", "landing_at", "lander"])
+
+/-- Why columns `set` (the names of the non-NULL ones) fit no state of status `s`. -/
+def misfit (s : Status) (set : List String) : String :=
+  let (need, may) := colsOf s
+  let need := if (set.any (["land_sha", "landing_at", "lander"].contains ·)) && may.contains "land_sha" then
+    need ++ ["land_sha", "landing_at"] else need
+  let missing := need.filter (!set.contains ·)
+  let extra := set.filter fun c => !need.contains c && !may.contains c
+  let w := if missing.isEmpty then "" else s!" with no {", ".intercalate missing}"
+  let x := if extra.isEmpty then "" else s!"{if missing.isEmpty then " with" else " and"} {", ".intercalate extra} set"
+  s!"{s.text}{if w ++ x == "" then " with columns that fit no state" else w ++ x}"
+
+/-- The state the columns state, owner, lease_until, question, land_sha, lander, landing_at hold; the refusal names
+what a row that fits no state lacks or holds. -/
+def ofCols (s : Status) (owner : Option String) (lease : Option Int) (question : Option String)
+    (sha lander : Option String) (at_ : Option Int) : Except String TaskState :=
+  match s, owner, lease, question, handOf (sha, lander, at_) with
+  | .open, none, none, none, some none => .ok .open
+  | .claimed, some o, some l, none, some none => .ok (.claimed o l)
+  | .blocked, some o, some l, some q, some none => .ok (.blocked o l q)
+  | .landing, some o, none, none, some (some h) => .ok (.landing o h)
+  | .done, o, none, q, some h => .ok (.done o q h)
+  | .dropped, none, none, q, some h => .ok (.dropped q h)
+  | _, _, _, _, _ =>
+    .error (misfit s ([("owner", owner.isSome), ("lease_until", lease.isSome), ("question", question.isSome),
+      ("land_sha", sha.isSome), ("landing_at", at_.isSome), ("lander", lander.isSome)].filterMap
+        fun (c, b) => if b then some c else none))
+
+theorem handOf_handCols (h : Option Landing) : handOf (handCols h) = some h := by
+  cases h <;> rfl
+
+theorem handCols_handOf {c : Option String × Option String × Option Int} {h : Option Landing}
+    (e : handOf c = some h) : handCols h = c := by
+  match c, e with
+  | (none, none, none), e => cases e; rfl
+  | (some _, _, some _), e => cases e; rfl
+
+/-- Every state decodes from its own columns. -/
+theorem ofCols_self (t : TaskState) :
+    ofCols t.status t.owner t.lease t.question (handCols t.hand).1 (handCols t.hand).2.1 (handCols t.hand).2.2 =
+      .ok t := by
+  cases t with
+  | «open» => rfl
+  | claimed => rfl
+  | blocked => rfl
+  | landing o h => rfl
+  | done o q h => cases h <;> rfl
+  | dropped q h => cases h <;> rfl
+
+/-- What decodes writes back the same columns: a row that is read and written is unchanged. -/
+theorem ofCols_cols {s : Status} {o : Option String} {l : Option Int} {q sha ld : Option String} {at_ : Option Int}
+    {t : TaskState} (e : ofCols s o l q sha ld at_ = .ok t) :
+    t.status = s ∧ t.owner = o ∧ t.lease = l ∧ t.question = q ∧ handCols t.hand = (sha, ld, at_) := by
+  unfold ofCols at e
+  split at e <;> (try cases e) <;> rename_i hh <;> simp [status, owner, lease, question, hand, handCols_handOf hh]
+
+/-- A claimed task has an owner and an open one none (`Task.Owned`): by construction. -/
+theorem owned (t : TaskState) : (t.status = .claimed → t.owner.isSome) ∧ (t.status = .open → t.owner = none) := by
+  cases t <;> simp [status, owner]
+
+end TaskState
+
 /-- One board task (table task). -/
 structure Task where
   id : Nat
   title : Option String := none
   body : Option String := none
-  state : Status := .open
-  owner : Option String := none
-  lease_until : Option Int := none
+  state : TaskState := .open
   created_by : Option String := none
   evidence : Option String := none
   deps : Option String := none
   model : Option String := none
-  question : Option String := none
   effort : Option String := none
   created_at : Option Int := none
   first_claimed_at : Option Int := none
@@ -158,13 +307,22 @@ structure Task where
   labels : Option String := none
   /-- the tasks its creator held when it was added, comma-separated ids (board #186) -/
   parents : Option String := none
-  /-- the commit its owner handed to a lander (`task land`, board #200) -/
-  land_sha : Option String := none
-  /-- the lander `task land --lander` named -/
-  lander : Option String := none
-  /-- when it was handed to a lander -/
-  landing_at : Option Int := none
   deriving DecidableEq, Repr, Inhabited
+
+/-- The task's state's name. -/
+def Task.status (t : Task) : Status := t.state.status
+/-- Its owner: the claim's holder, or who a done task was done by. -/
+def Task.owner (t : Task) : Option String := t.state.owner
+/-- Its claim's lease. -/
+def Task.lease_until (t : Task) : Option Int := t.state.lease
+/-- Its block's question. -/
+def Task.question (t : Task) : Option String := t.state.question
+/-- The commit its owner handed to a lander (`task land`, board #200). -/
+def Task.land_sha (t : Task) : Option String := t.state.hand.map (·.sha)
+/-- The lander `task land --lander` named. -/
+def Task.lander (t : Task) : Option String := t.state.hand.bind (·.lander)
+/-- When it was handed to a lander. -/
+def Task.landing_at (t : Task) : Option Int := t.state.hand.map (·.since)
 
 instance : Row Task where
   table := "task"
@@ -173,7 +331,7 @@ instance : Row Task where
     "ci_green_at", "claim_ctx", "done_ctx", "answer", "base", "stop_to", "stop_msg", "priority", "qpos", "hold",
     "labels", "parents", "land_sha", "lander", "landing_at"]
   nkey := 1
-  enc t := [.int t.id, oS t.title, oS t.body, .text t.state.text, oS t.owner, oI t.lease_until, oS t.created_by,
+  enc t := [.int t.id, oS t.title, oS t.body, .text t.status.text, oS t.owner, oI t.lease_until, oS t.created_by,
     oS t.evidence, oS t.deps, oS t.model, oS t.question, oS t.effort, oI t.created_at, oI t.first_claimed_at,
     oI t.done_at, oI t.dropped_at, oI t.pr, oI t.merged_at, oS (t.ci_conclusion.map Conclusion.text), oI t.ci_green_at, oI t.claim_ctx,
     oI t.done_ctx, oS t.answer, oS t.base, oS t.stop_to, oI t.stop_msg, oI t.priority, oI t.qpos,
@@ -182,17 +340,18 @@ instance : Row Task where
     let st ← match ← (col v 3).os with
       | some s => Status.ofText s
       | none => throw "NULL task state"
+    let st ← TaskState.ofCols st (← (col v 4).os) (← (col v 5).oi) (← (col v 10).os) (← (col v 31).os) (← (col v 32).os)
+      (← (col v 33).oi)
     pure { id := ← (col v 0).id, title := ← (col v 1).os, body := ← (col v 2).os, state := st,
-           owner := ← (col v 4).os, lease_until := ← (col v 5).oi, created_by := ← (col v 6).os,
-           evidence := ← (col v 7).os, deps := ← (col v 8).os, model := ← (col v 9).os, question := ← (col v 10).os,
+           created_by := ← (col v 6).os,
+           evidence := ← (col v 7).os, deps := ← (col v 8).os, model := ← (col v 9).os,
            effort := ← (col v 11).os, created_at := ← (col v 12).oi, first_claimed_at := ← (col v 13).oi,
            done_at := ← (col v 14).oi, dropped_at := ← (col v 15).oi, pr := ← (col v 16).oi,
            merged_at := ← (col v 17).oi, ci_conclusion := (← (col v 18).os).map Conclusion.ofText, ci_green_at := ← (col v 19).oi,
            claim_ctx := ← (col v 20).oi, done_ctx := ← (col v 21).oi, answer := ← (col v 22).os,
            base := ← (col v 23).os, stop_to := ← (col v 24).os, stop_msg := ← (col v 25).oi,
            priority := ← (col v 26).oi, qpos := ← (col v 27).oi, hold := ← (col v 28).os,
-           labels := ← (col v 29).os, parents := ← (col v 30).os, land_sha := ← (col v 31).os,
-           lander := ← (col v 32).os, landing_at := ← (col v 33).oi }
+           labels := ← (col v 29).os, parents := ← (col v 30).os }
 
 /-- An agent row's status in the db. -/
 inductive AgentStatus

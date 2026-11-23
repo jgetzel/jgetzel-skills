@@ -116,8 +116,8 @@ def release (db : Db) (name : String) : Db :=
   let db := db.setAgent name ({ · with stay := none })
   { db with
     tasks := db.tasks.map fun t =>
-      if t.owner == some name && (t.state = .claimed || t.state = .blocked) then
-        { t with state := .open, owner := none, lease_until := none, question := none } else t
+      if t.owner == some name && (t.status = .claimed || t.status = .blocked) then
+        { t with state := .open } else t
     locks := db.locks.filter (·.agent != some name)
     conflicts := db.conflicts.filter fun c => c.a != name && c.b != name
     pairkeys := db.pairkeys.filter fun p => p.a != name && p.b != name }
@@ -247,8 +247,8 @@ def stayMet (db : Db) (ciTs : String → Int) (n : String) (c : StayCond) (since
   | .task id =>
     match db.tasks.find? (·.id == id) with
     | some r =>
-      if r.state == .done then some s!"#{id} is done"
-      else if r.state == .dropped then some s!"#{id} was dropped"
+      if r.status == .done then some s!"#{id} is done"
+      else if r.status == .dropped then some s!"#{id} was dropped"
       else if db.events.any (fun e => e.kind == some "release" && late e && ((e.data.getD "").splitOn " ").head? == some s!"#{id}") then
         some s!"#{id} was released"
       else none
@@ -302,7 +302,7 @@ def namesTask (data : Option String) (id : Nat) : Bool :=
 
 /-- What happened since away: `since` its second, `from` its event's id (agents.digest). -/
 def digest (db : Db) (since : Option Int) (note : Option String) («from» : Nat) (now : Int) : Digest :=
-  let qs := (db.tasks.filter (·.state = .blocked)).map fun r =>
+  let qs := (db.tasks.filter (·.status = .blocked)).map fun r =>
     let es := db.events.filter fun e => (e.kind == some "block" && namesTask e.data r.id) ||
       (e.kind == some "task-blocked" && e.path == some (d r.id))
     let ts := es.foldl (fun m e => match m, e.ts with | some a, some b => some (max a b) | none, b => b | a, none => a) none
@@ -315,7 +315,7 @@ def digest (db : Db) (since : Option Int) (note : Option String) («from» : Nat
       [some "reap", some "leave", some "end"].contains e.kind).getLast?.map fun e => (r.name, r.ended, e.data)
   let hung := ((db.events.filter fun e => e.kind == some "stay-hung" && e.id > «from» &&
       (e.agent.bind fun n => (db.agent n).filter (·.ended.isNone)).isSome).filterMap (·.agent)).eraseDups.mergeSort (· ≤ ·)
-  let done := (db.tasks.filter fun t => t.state = .done && db.events.any fun e =>
+  let done := (db.tasks.filter fun t => t.status = .done && db.events.any fun e =>
       e.kind == some "done" && e.id > «from» && namesTask e.data t.id).mergeSort fun a b => a.done_at.getD 0 ≤ b.done_at.getD 0
   let merged := match since with
     | some s => (db.tasks.filter fun t => t.merged_at.any (· ≥ s)).mergeSort fun a b => a.merged_at.getD 0 ≤ b.merged_at.getD 0

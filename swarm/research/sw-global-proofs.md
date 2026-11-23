@@ -395,7 +395,7 @@ def Scope.ofSwarm (s : String) : Scope := { swarm := s, repo := "" }
 /-- The clauses about the machine tables and across swarms. -/
 structure MachineWF (d : SDb) : Prop where
   /-- a task's owner is an agent row (of any swarm), or the user, whom `touch` gives no row -/
-  owner : ∀ x ∈ (abs Scope.all d).tasks, ∀ o, x.owner = some o →
+  owner : ∀ x ∈ (abs Scope.all d).tasks, ∀ o, x.owner = some o →  -- x.owner: the state's (TaskState.owner)
     o = Agents.HUMAN ∨ o ∈ (abs Scope.all d).agents.map (·.name)
   /-- `agent.swarm` names a swarm: a swarm's view has agents only if the swarm has a row -/
   agentSwarm : ∀ s, (abs (Scope.ofSwarm s) d).agents ≠ [] → s ∈ (abs Scope.all d).swarms.map (·.name)
@@ -413,7 +413,9 @@ structure MachineWF (d : SDb) : Prop where
 shared tables, so any view states them. -/
 structure WF (d : SDb) (t : Int) : Prop where
   good : Good d
-  /-- the board: ids unique and below the next id, owners fit states, done tasks have evidence (`Board.BInv`) -/
+  /-- the board: ids unique and below the next id, owners fit states, done tasks have evidence (`Board.BInv`); owners
+  fit states by construction (`TaskState.owned`: a task's owner, lease, question and hand-over are its state's,
+  board #1810), so of `Inv` only the id clauses need `Preserves` -/
   board : Board.BInv (abs Scope.all d)
   /-- the queue's places are 1..n (`QueueProofs.QInv`) -/
   queue : QueueProofs.QInv (abs Scope.all d)

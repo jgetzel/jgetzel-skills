@@ -14,7 +14,7 @@ def T0 : Int := 1800000000
 /-- A db with live agent a and done task 1 for PR #7, and a red then a green run (the spec's pr_ci setup). -/
 def prDb : Db :=
   { agents := [{ name := "a", started := some 1 }],
-    tasks := [{ id := 1, title := some "t1", state := .done, owner := some "a", evidence := some "PR #7 merged",
+    tasks := [{ id := 1, title := some "t1", state := .done (some "a") none none, evidence := some "PR #7 merged",
                 done_at := some T0, first_claimed_at := some 1 }],
     cis := [{ id := 1, sha := some "red", status := some (RunStatus.ofText "completed"), conclusion := some (Conclusion.ofText "failure"),
               created := some "2026-11-08T10:00:05Z", updated := some "2026-11-08T10:02:00Z" },
@@ -30,7 +30,7 @@ def prDb : Db :=
 -- merged while its main run is still going: filled in once the run completes
 def pr8 : List Json := js "[{\"number\":8,\"mergedAt\":\"2026-11-08T11:00:00Z\",\"mergeCommit\":{\"oid\":\"m8\"},\"headRefName\":\"a/y\"}]"
 def db8 : Db := { prDb with
-  tasks := prDb.tasks ++ [{ id := 2, title := some "t2", state := .done, owner := some "a", evidence := some "PR #8 merged", done_at := some T0, first_claimed_at := some 1 }],
+  tasks := prDb.tasks ++ [{ id := 2, title := some "t2", state := .done (some "a") none none, evidence := some "PR #8 merged", done_at := some T0, first_claimed_at := some 1 }],
   cis := prDb.cis ++ [{ id := 3, sha := some "m8", status := some (RunStatus.ofText "in_progress"), created := some "2026-11-08T11:00:05Z", updated := some "2026-11-08T11:00:05Z" }] }
 #guard let t := ((prCiApply T0 pr8 db8).find 2).get!; t.pr == some 8 && t.merged_at.isSome && t.ci_conclusion.isNone
 #guard
@@ -68,11 +68,11 @@ def c1 : Db := check (check chkDb)
   m.length == 1 && m.head!.dest == some "a" && hasSub m.head!.body.get! "http://ci/9" && hasSub m.head!.body.get! "swarm task claim 1"
 def c2 : Db := check { c1 with cis := c1.cis ++ [redRun 10 (some (Conclusion.ofText "failure")) "2026-11-08T10:10:00Z"] }
 #guard c2.tasks.length == 1 && hasSub (c2.find 1).get!.body.get! "Later red: run 10"
-def c3 : Db := check { (c2.set 1 fun t => { t with state := .claimed, owner := some "a" }) with
+def c3 : Db := check { (c2.set 1 fun t => { t with state := .claimed "a" (T0 + 100000) }) with
   cis := c2.cis.map fun c => if c.id == 10 then { c with status := some (RunStatus.ofText "in_progress"), conclusion := none } else c }
-#guard (c3.find 1).get!.state = .claimed
+#guard (c3.find 1).get!.status = .claimed
 def c4 : Db := check { c3 with cis := c3.cis ++ [redRun 11 (some (Conclusion.ofText "success")) "2026-11-08T10:20:00Z"] }
-#guard let t := (c4.find 1).get!; t.state = .done && t.evidence == some ("green run 11 at " ++ (RED.take 7).toString)
+#guard let t := (c4.find 1).get!; t.status = .done && t.evidence == some ("green run 11 at " ++ (RED.take 7).toString)
 #guard hasSub (c4.msgs.filter (·.dest == some "a")).getLast!.body.get! "is done; stop fixing it"
 -- no live suspect: comms hears
 def c5 : Db := check { c4 with agents := c4.agents.map ({ · with ended := some 1 }), events := c4.events.filter (·.kind != some "ci-red"), cis := [redRun 9 (some (Conclusion.ofText "failure")) "2026-11-08T10:05:00Z"] }
@@ -83,7 +83,7 @@ def bRed : Db := { chkDb with tasks := [{ id := 1, title := some "main red: run 
 def a1 : Db := check bRed (ids := some [])
 #guard (a1.find 1).get!.body == some "b" && (a1.tasks.filter fun t => t.title.any (·.startsWith "main red: run 9")).length == 1
 def a2 : Db := check { a1 with cis := a1.cis ++ [redRun 11 (some (Conclusion.ofText "success")) "2026-11-08T10:20:00Z"] } (ids := some [2])
-#guard (a2.find 1).get!.state = .open && (a2.find 2).get!.state = .done
+#guard (a2.find 1).get!.status = .open && (a2.find 2).get!.status = .done
 
 -- a scheduled (or other) workflow's green run on the red sha is not main's CI: the red task stays and ci reads red
 def wfRun (id : Nat) (concl event wf at_ : String) : String :=
@@ -91,7 +91,7 @@ def wfRun (id : Nat) (concl event wf at_ : String) : String :=
 def wfDb : Db := check (ciPollApply T0 (some (js s!"[{wfRun 22 "success" "push" "deploy" "2026-11-08T11:02:00Z"},{wfRun 21 "success" "schedule" "ci" "2026-11-08T11:01:00Z"},{wfRun 20 "failure" "push" "ci" "2026-11-08T11:00:00Z"}]"))
   (some "ci.yml") { cis := [{ id := 5, sha := some "old", status := some (RunStatus.ofText "completed"), conclusion := some (Conclusion.ofText "success"), created := some "2026-11-08T09:00:00Z" }] }).1
 #guard wfDb.cis.map (fun c => (c.id, c.workflow)) == [(20, some "ci")]
-#guard (wfDb.tasks.filter fun t => (t.title.get!).startsWith "main red: run 20" && t.state = .open).length == 1
+#guard (wfDb.tasks.filter fun t => (t.title.get!).startsWith "main red: run 20" && t.status = .open).length == 1
 instance : Git Id := ⟨fun _ _ => none⟩
 #guard (Id.run (ciFor wfDb.cis RED none)).1 == "failure"
 -- a sha's own finished run beats a later pending one; a later finished run stands for a cancelled sha
@@ -109,7 +109,7 @@ def prs3 : List Json := js s!"[\{\"number\":30,\"headRefName\":\"a/9\",\"headRef
   \{\"number\":31,\"headRefName\":\"b/9\",\"headRefOid\":\"hb\",\"baseRefName\":\"main\",\"state\":\"OPEN\",\"statusCheckRollup\":{okRollup}},
   \{\"number\":32,\"headRefName\":\"a/9\",\"headRefOid\":\"h0\",\"baseRefName\":\"main\",\"state\":\"MERGED\",\"mergedAt\":\"2000-01-01T00:00:00Z\",\"statusCheckRollup\":{okRollup}}]"
 #guard (prWatchGate T0 { agents := [{ name := "a", ended := some 1 }] }).2.isNone
-def w0 : Db := { agents := [{ name := "a" }], tasks := [{ id := 9, title := some "t9", state := .claimed, owner := some "a", first_claimed_at := some (T0 - 60) }], taskNext := 10 }
+def w0 : Db := { agents := [{ name := "a" }], tasks := [{ id := 9, title := some "t9", state := .claimed "a" (T0 + 100000), first_claimed_at := some (T0 - 60) }], taskNext := 10 }
 /-- One pr_watch tick on db with gh's PR list, as prWatch runs it (base main). -/
 def watch (db : Db) (prs : List Json) (gated : Bool) (now := T0) : Db :=
   match prWatchGate now db with
@@ -124,13 +124,13 @@ def w1 : Db := watch (watch w0 prs3 true) prs3 true
   m.length == 1 && m.head!.urgent == some 1 && hasSub m.head!.body.get! "PR #30's checks are green"
 -- told once per head and verdict
 def w2 : Db := watch w1 prs3 true (now := T0 + 120)
-#guard (w2.msgs.filter (·.dest == some "a")).length == 1 && (w2.find 9).get!.state = .claimed
+#guard (w2.msgs.filter (·.dest == some "a")).length == 1 && (w2.find 9).get!.status = .claimed
 -- merged: done with the merge sha, in any flow
 def w3 : Db := watch w2 (js s!"[\{\"number\":30,\"headRefName\":\"a/9\",\"headRefOid\":\"h9\",\"baseRefName\":\"main\",\"state\":\"MERGED\",\"mergedAt\":\"2030-01-01T00:00:00Z\",\"mergeCommit\":\{\"oid\":\"abcdef123\"},\"statusCheckRollup\":{okRollup}}]") false (now := T0 + 240)
-#guard let t := (w3.find 9).get!; t.state = .done && t.evidence == some "PR #30 merged as abcdef1" && t.pr == some 30
+#guard let t := (w3.find 9).get!; t.status = .done && t.evidence == some "PR #30 merged as abcdef1" && t.pr == some 30
 #guard (w3.msgs.filter fun m => m.dest == some "a" && m.urgent == some 1).length == 2
 -- not pr-gated: green checks wake no one
-def w4 : Db := watch { w3 with tasks := w3.tasks ++ [{ id := 10, title := some "t10", state := .claimed, owner := some "a", first_claimed_at := some (T0 - 60) }] }
+def w4 : Db := watch { w3 with tasks := w3.tasks ++ [{ id := 10, title := some "t10", state := .claimed "a" (T0 + 100000), first_claimed_at := some (T0 - 60) }] }
   (js s!"[\{\"number\":40,\"headRefName\":\"a/10\",\"headRefOid\":\"h10\",\"baseRefName\":\"main\",\"state\":\"OPEN\",\"statusCheckRollup\":{okRollup}}]") false (now := T0 + 360)
 #guard (w4.msgs.filter (·.dest == some "a")).length == 2
 -- flow none: no CI, so ci_poll asks nothing

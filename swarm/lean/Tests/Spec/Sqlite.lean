@@ -275,8 +275,8 @@ def sqlite_dml (t : T) : IO Unit := do
   let dup ← try runStmts c [ins 6 "c"]; pure false catch _ => pure true
   eq dup true "sqlite_dml: an insert of a key a row has fails"
   discard <| c.exec "update task set extra='y' where id=5"
-  runStmts c [.upd "task" ["id"] [.int 5] ["title", "owner"] [.text "a2", .text "o"]]
-  eq (← rowsOf c "select id, title, owner, extra from task order by id")
+  runStmts c [.upd "task" ["id"] [.int 5] ["title", "created_by"] [.text "a2", .text "o"]]
+  eq (← rowsOf c "select id, title, created_by, extra from task order by id")
     [[toJson 5, toJson "a2", toJson "o", toJson "y"], [toJson 6, toJson "b", Json.null, toJson "x"]]
     "sqlite_dml: an update by key sets its columns in that row only"
   runStmts c [.del "task" ["id"] [.int 6]]
@@ -332,7 +332,7 @@ def sqlite_txn (t : T) : IO Unit := do
   discard <| c.exec "insert or ignore into swarm(name) values('t')"
   let fix : Db := {
     agents := [{ name := "a1", status := some .idle }, { name := "a2", status := some .working }]
-    tasks := [{ id := 1, title := some "one" }, { id := 2, title := some "two", owner := some "a2", state := .claimed }]
+    tasks := [{ id := 1, title := some "one" }, { id := 2, title := some "two", state := .claimed "a2" 2000 }]
     events := (List.range 6).map fun i =>
       let who := if i % 2 == 0 then "a1" else "a2"
       let k := if i < 3 then "status" else "end"
@@ -357,7 +357,7 @@ def sqlite_txn (t : T) : IO Unit := do
   eq (decide (norm (← loaded) = norm want)) true "sqlite_txn: a plan writes what the model's statements do"
   eq ((← loaded).events.getLast?.map (·.id)) (some 7) "sqlite_txn: an appended event takes the next id"
   -- a guarded update: a claim that only an open task takes
-  let claim : Txn Bool := Txn.guarded (.upd "task" ["id"] [.int 1] ["owner", "state"] [.text "a1", .text "claimed"]) (.null "owner")
+  let claim : Txn Bool := Txn.guarded (.upd "task" ["id"] [.int 1] ["owner", "state", "lease_until"] [.text "a1", .text "claimed", .int 2000]) (.null "owner")
   eq (← sqliteRun c sc0 claim) true "sqlite_txn: a guarded update where its condition holds changes the row"
   eq (← sqliteRun c sc0 claim) false "sqlite_txn: and where it does not, nothing"
   let (m1, b1) := claim.onDb want
@@ -377,15 +377,15 @@ def taskFix : Db := {
     { name := "gone", status := some .ended, ended := some 5 }]
   metas := [{ k := "comms", v := some "c" }, { k := "reuse_below", v := some "0" }]
   tasks := [{ id := 1, title := some "one", qpos := some 1 }, { id := 2, title := some "two", deps := some "1", qpos := some 2 },
-    { id := 3, title := some "three", state := .claimed, owner := some "a1", lease_until := some 2000 },
-    { id := 4, title := some "four", state := .done, owner := some "a2" },
+    { id := 3, title := some "three", state := .claimed "a1" 2000 },
+    { id := 4, title := some "four", state := .done (some "a2") none none },
     { id := 5, title := some "five", deps := some "4" },
-    { id := 6, title := some "six", state := .landing, owner := some "a1", lander := some "a2", land_sha := some "abc" },
+    { id := 6, title := some "six", state := .landing "a1" ⟨"abc", some "a2", 1⟩ },
     { id := 7, title := some "seven", hold := some "wait" },
-    { id := 8, title := some "eight", state := .blocked, owner := some "a1", question := some "which?" },
+    { id := 8, title := some "eight", state := .blocked "a1" 2000 "which?" },
     { id := 9, title := some "nine", stop_to := some "a2", stop_msg := some 3 },
     { id := 10, title := some "ten", deps := some "9" },
-    { id := 11, title := some "main red: x", state := .claimed, owner := some "a1" },
+    { id := 11, title := some "main red: x", state := .claimed "a1" 2000 },
     { id := 12, title := some "twelve", qpos := some 3 }]
   events := [{ id := 1, ts := some 1, agent := some "a1", kind := some "queue", data := some "#1" },
     { id := 2, ts := some 2, agent := some "a2", kind := some "queue", data := some "#12" },
@@ -496,7 +496,7 @@ def sqlite_claim (t : T) : IO Unit := do
     "sqlite_claim: and the task's events among them are none of #12's"
   -- the guard itself: an update of a claimed task where it is open changes nothing
   let some r := got.find 1 | fail "sqlite_claim: no task 1"
-  eq (← sqliteRun c sc0 (Txn.guarded (Row.put { r with owner := some "a2" }) (.and (.eq "state" (.text "open")) (.null "owner"))))
+  eq (← sqliteRun c sc0 (Txn.guarded (Row.put { r with state := .claimed "a2" (r.lease_until.getD 0) }) (.and (.eq "state" (.text "open")) (.null "owner"))))
     false "sqlite_claim: the guard refuses a claimed task"
 
 def tests : List Case := [

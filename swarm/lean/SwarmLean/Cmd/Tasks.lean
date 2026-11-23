@@ -106,7 +106,7 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
   let evs := taskEvents db r.id
   let tm := timing r evs now
   let f (x : Option Int) : String := match x with | some v => s!"{fdiv v 60}m" | none => "-"
-  let mut s := s!"#{d r.id} {r.state.text} {(py r.owner).getD "-"}  {cont (r.title.getD "")}\ntiming: queue {f tm.queue_wait_s}, work {f tm.work_s}, total {f tm.total_s}, blocked {f (some tm.blocked_s)}, claims {tm.claims}, releases {tm.releases}, held by {(py (some (", ".intercalate tm.holders))).getD "-"}"
+  let mut s := s!"#{d r.id} {r.status.text} {(py r.owner).getD "-"}  {cont (r.title.getD "")}\ntiming: queue {f tm.queue_wait_s}, work {f tm.work_s}, total {f tm.total_s}, blocked {f (some tm.blocked_s)}, claims {tm.claims}, releases {tm.releases}, held by {(py (some (", ".intercalate tm.holders))).getD "-"}"
   for e in evs do
     if e.kind == some "task-edit" then
       let data := e.data.getD ""
@@ -114,7 +114,7 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
       let data := if data.startsWith "#" && !ds.isEmpty && ((data.drop (1 + ds.length)).startsWith " ") then
         (data.drop (2 + ds.length)).toString else data
       s := s ++ s!"\nedited {← Clock.hhmm (e.ts.getD 0)} by {e.agent.getD ""}: {cont data}"
-  if r.state = .landing then s := s ++ "\n" ++ (← landingLine r)
+  if r.status = .landing then s := s ++ "\n" ++ (← landingLine r)
   for n in Notes.notes db r.id do
     let to := match n.to with
       | some t => if n.held then " (held)" else if t == Notes.box r.id then " (given at claim)" else s!" (to {t})"
@@ -142,7 +142,7 @@ def showJson (db : Db) (r : Task) : Lean.Json :=
   let j {α} [Lean.ToJson α] (x : α) : Lean.Json := Lean.toJson x
   let note (n : Notes.Note) : Lean.Json := Lean.Json.mkObj [("ts", j n.ts), ("from", j n.frm), ("text", j n.text),
     ("to", j n.to), ("held", j n.held)]
-  Lean.Json.mkObj [("id", j r.id), ("title", j r.title), ("state", j r.state.text), ("owner", j r.owner),
+  Lean.Json.mkObj [("id", j r.id), ("title", j r.title), ("state", j r.status.text), ("owner", j r.owner),
     ("priority", j (r.priority.getD DEFAULT_PRIORITY)), ("base", j r.base), ("labels", j (labelsOf r)),
     ("deps", j (depsOf r)), ("hold", j r.hold), ("evidence", j r.evidence), ("body", j (py r.body)),
     ("notes", Lean.Json.arr ((Notes.notes db r.id).map note).toArray)]
@@ -210,7 +210,7 @@ def task (a : Parsed) : m UInt32 := do
     let ev := (a.str "evidence").getD ""
     let r0 ← Store.view [TaskTxn.task id] (·.find id)
     let onBase ← match r0 with
-      | some r => if r.state = .landing then evidenceOnBase ev r else pure false
+      | some r => if r.status = .landing then evidenceOnBase ev r else pure false
       | none => pure false
     match ← step (TaskTxn.done { c with onBase } id ev) with
     | .landed o => out s!"done #{d id}: landed{match py o with | some o => ", handed over by " ++ o | none => ""}"
@@ -284,7 +284,7 @@ def board (a : Parsed) : m UInt32 := do
   let now ← Clock.now
   let role (o : Option String) : Option String :=
     o.bind fun n => (db.agents.find? fun x => x.name == n && x.ended.isNone).bind (·.role)
-  let red (t : Task) : Nat := if redKey t == 1 && t.state ≠ .done then 1 else 0
+  let red (t : Task) : Nat := if redKey t == 1 && t.status ≠ .done then 1 else 0
   let rows := (db.tasks.filter fun t => all || Queue.onBoard t).mergeSort
     (boardLe red)
   out (limitsLine db (← env "SWARM_COMMS"))
@@ -292,19 +292,19 @@ def board (a : Parsed) : m UInt32 := do
   for r in rows do
     let who := (py r.owner).getD "-" ++ (match role r.owner with | some x => s!" ({x})" | none => "")
     let pr := s!"  [P{d (r.priority.getD DEFAULT_PRIORITY)}]"
-    if r.state = .blocked then
+    if r.status = .blocked then
       out s!"#{d r.id} blocked by {who}: {cont (r.question.getD "None")}  {cont (r.title.getD "")}{pr}"
-    else if r.state = .landing then
+    else if r.status = .landing then
       out s!"{← landingLine r}  {cont (r.title.getD "")}{pr}"
     else
-      let lease := if r.state = .claimed then
+      let lease := if r.status = .claimed then
         let left := r.lease_until.getD 0 - now
         if left > 0 then s!" lease {fdiv left 60}m left" else " lease EXPIRED"
         else ""
       let u := undone db r
       let wait := if u.isEmpty then "" else
-        " after " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.state = .dropped then " (dropped)" else ""))
-      out (s!"#{d r.id} {padRight r.state.text 7} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++
+        " after " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.status = .dropped then " (dropped)" else ""))
+      out (s!"#{d r.id} {padRight r.status.text 7} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++
         (match r.qpos with | some q => s!"  [queue {q}]" | none => "") ++
         (if (py r.body).isSome then "  [body: task show]" else "") ++
         (match r.hold with | some h => s!"  held: {cont h}" | none => "") ++
@@ -332,7 +332,7 @@ def queue (a : Parsed) : m UInt32 := do
     if q.isEmpty then out "(queue empty)"
     for t in q do
       let why := (Queue.whyNot db t).getD "startable"
-      out s!"{(t.qpos.map d).getD "?"}. #{d t.id} {padRight t.state.text 7} {why}  {cont (t.title.getD "")}  [P{d (t.priority.getD DEFAULT_PRIORITY)}]"
+      out s!"{(t.qpos.map d).getD "?"}. #{d t.id} {padRight t.status.text 7} {why}  {cont (t.title.getD "")}  [P{d (t.priority.getD DEFAULT_PRIORITY)}]"
   | "add" :: ws@(_ :: _) =>
     let w : Queue.Place := match a.flag "front", a.int "before", a.int "after" with
       | true, _, _ => .front
