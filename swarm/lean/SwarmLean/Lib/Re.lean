@@ -110,7 +110,7 @@ def adv (k : Nat := 1) : P Unit := modify fun s => { s with i := s.i + k }
 /-- A run of decimal digits at the position, if any. -/
 def digits : P (Option Nat) := do
   let mut n : Option Nat := none
-  repeat
+  for _ in [0:(← get).p.size + 1] do
     match ← peek with
     | some c => if c.isDigit then n := some (n.getD 0 * 10 + (c.toNat - 48)); adv else break
     | none => break
@@ -126,7 +126,7 @@ def hexEsc : P Char := do
   if (← peek) == some '{' then
     adv
     let mut n := 0
-    repeat
+    for _ in [0:(← get).p.size + 1] do
       match ← peek with
       | some '}' => adv; break
       | some c => match hexVal c with
@@ -163,12 +163,12 @@ def clsEsc (c : Char) : Option Item :=
   | 'd' => some (.digit false) | 'D' => some (.digit true) | _ => none
 
 /-- A `[...]` class after its `[`. -/
-partial def parseClass (fl : Flags) : P Node := do
+def parseClass (fl : Flags) : P Node := do
   let neg := (← peek) == some '^'
   if neg then adv
   let mut items : Array Item := #[]
   let mut first := true
-  repeat
+  for _ in [0:(← get).p.size + 1] do
     let some c ← peek | throw "missing terminating ] for character class"
     if c == ']' && !first then adv; break
     first := false
@@ -200,7 +200,7 @@ partial def parseClass (fl : Flags) : P Node := do
 def flagLetters (fl : Flags) : P Flags := do
   let mut f := fl
   let mut on := true
-  repeat
+  for _ in [0:(← get).p.size + 1] do
     match ← peek with
     | some 'i' => adv; f := { f with I := on }
     | some 's' => adv; f := { f with S := on }
@@ -226,28 +226,38 @@ def braces : P (Option (Nat × Option Nat)) := do
   | some q => adv; return some q
   | none => set s0; return none
 
+/-! The parser's four mutual steps take fuel, one per step: a group's `(` costs four, so `compile`'s 4 × (length + 1)
+is never spent; spent, the parse fails. Each loop moves past a character or ends, so the pattern's length bounds it. -/
+
+/-- The error of a parse out of fuel. -/
+def deep : String := "pattern nested too deeply"
+
 mutual
 
 /-- Alternatives up to `)` or the end. -/
-partial def parseAlt (fl : Flags) : P Node := do
+def parseAlt (fl : Flags) : Nat → P Node
+  | 0 => throw deep
+  | fuel + 1 => do
   let mut alts : Array Node := #[]
   let mut f := fl
-  repeat
-    let (n, f') ← parseSeq f
+  for _ in [0:(← get).p.size + 1] do
+    let (n, f') ← parseSeq f fuel
     alts := alts.push n
     f := f'
     if (← peek) == some '|' then adv else break
-  return if alts.size == 1 then alts[0]! else .alt alts.toList
+  return match alts.toList with | [n] => n | ns => .alt ns
 
 /-- A sequence of quantified atoms up to `|`, `)` or the end; and the flags an inline `(?i)` left set. -/
-partial def parseSeq (fl : Flags) : P (Node × Flags) := do
+def parseSeq (fl : Flags) : Nat → P (Node × Flags)
+  | 0 => throw deep
+  | fuel + 1 => do
   let mut ns : Array Node := #[]
   let mut f := fl
-  repeat
+  for _ in [0:(← get).p.size + 1] do
     let some c ← peek | break
     if c == '|' || c == ')' then break
     if c == '*' || c == '+' || c == '?' then throw "quantifier does not follow a repeatable item"
-    match ← parseAtom f with
+    match ← parseAtom f fuel with
     | .inl f' => f := f'
     | .inr a =>
       let mut a := a
@@ -266,10 +276,12 @@ partial def parseSeq (fl : Flags) : P (Node × Flags) := do
         if let some x ← peek then
           if x == '*' || x == '+' || x == '?' then throw "quantifier does not follow a repeatable item"
       ns := ns.push a
-  return (if ns.size == 1 then ns[0]! else .cat ns.toList, f)
+  return (match ns.toList with | [n] => n | ns => .cat ns, f)
 
 /-- One atom; or, for an inline `(?i)`, the flags it sets. -/
-partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
+def parseAtom (fl : Flags) : Nat → P (Sum Flags Node)
+  | 0 => throw deep
+  | fuel + 1 => do
   let some c ← peek | throw "unexpected end of pattern"
   adv
   match c with
@@ -281,11 +293,11 @@ partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
     if (← peek) == some '?' then
       adv
       match ← peek with
-      | some ':' => adv; return .inr (.group none (← closeGroup fl))
-      | some '=' => adv; return .inr (.look false (← closeGroup fl))
-      | some '!' => adv; return .inr (.look true (← closeGroup fl))
+      | some ':' => adv; return .inr (.group none (← closeGroup fl fuel))
+      | some '=' => adv; return .inr (.look false (← closeGroup fl fuel))
+      | some '!' => adv; return .inr (.look true (← closeGroup fl fuel))
       | some '#' =>
-        repeat
+        for _ in [0:(← get).p.size + 1] do
           match ← peek with
           | some ')' => adv; break
           | some _ => adv
@@ -297,26 +309,26 @@ partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
         if o == '<' && ((← peekAt 1) == some '=' || (← peekAt 1) == some '!') then
           let neg := (← peekAt 1) == some '!'
           adv 2
-          return .inr (.lookB neg (← closeGroup fl))
+          return .inr (.lookB neg (← closeGroup fl fuel))
         let close := if o == '<' then '>' else if o == '\'' then '\'' else ' '
         if close == ' ' then throw "unrecognized character after (?P"
         adv
-        repeat
+        for _ in [0:(← get).p.size + 1] do
           match ← peek with
           | some x => adv; if x == close then break
           | none => throw "syntax error in subpattern name (missing terminator?)"
         let s ← get
         set { s with groups := s.groups + 1 }
-        return .inr (.group (some (s.groups + 1)) (← closeGroup fl))
+        return .inr (.group (some (s.groups + 1)) (← closeGroup fl fuel))
       | _ =>
         let f ← flagLetters fl
         match ← peek with
         | some ')' => adv; return .inl f
-        | some ':' => adv; return .inr (.group none (← closeGroup f))
+        | some ':' => adv; return .inr (.group none (← closeGroup f fuel))
         | _ => throw "unrecognized character after (? or (?-"
     let s ← get
     set { s with groups := s.groups + 1 }
-    return .inr (.group (some (s.groups + 1)) (← closeGroup fl))
+    return .inr (.group (some (s.groups + 1)) (← closeGroup fl fuel))
   | '\\' =>
     let some e ← peek | throw "\\ at end of pattern"
     adv
@@ -332,8 +344,10 @@ partial def parseAtom (fl : Flags) : P (Sum Flags Node) := do
   | _ => return .inr (.ch c fl.I)
 
 /-- A group's body and its `)`. -/
-partial def closeGroup (fl : Flags) : P Node := do
-  let n ← parseAlt fl
+def closeGroup (fl : Flags) : Nat → P Node
+  | 0 => throw deep
+  | fuel + 1 => do
+  let n ← parseAlt fl fuel
   if (← peek) != some ')' then throw "missing closing parenthesis"
   adv
   return n
@@ -342,7 +356,7 @@ end
 
 /-- Compiles a pattern; the error is re.error's text. -/
 def compile (pat : String) (fl : Flags := {}) : Except String Regex := do
-  let (n, s) ← (parseAlt fl).run { p := pat.toList.toArray }
+  let (n, s) ← (parseAlt fl (4 * (pat.length + 1))).run { p := pat.toList.toArray }
   if s.i < s.p.size then throw "unmatched closing parenthesis"
   return { root := n, groups := s.groups }
 
@@ -354,10 +368,31 @@ abbrev Caps := Array (Option (Nat × Nat))
 /-- What a match attempt ends with: the end and the captures. -/
 abbrev R := Option (Nat × Caps)
 
+/-- A node's size for the matcher's fuel: one per node and list cell, plus each repetition's minimum. -/
+def Node.weight : Node → Nat
+  | .group _ n | .look _ n | .lookB _ n => n.weight + 1
+  | .cat ns | .alt ns => weights ns + 1
+  | .rep n lo _ _ => n.weight + lo + 1
+  | _ => 1
+where
+  /-- The weights of a node list, one more per cell. -/
+  weights : List Node → Nat
+    | [] => 1
+    | n :: ns => n.weight + weights ns + 1
+
+/-! The matcher's five mutual steps take fuel, one per step; a continuation keeps the fuel it was made with. A step out
+of fuel fails: that branch matches nothing (so a negative lookaround around it holds). `exec`'s fuel is never spent: on
+`n` characters a node's steps on one path are at most `n + 4`, its repetition's minimum and its list's length past its
+children's (a repetition past its minimum moves on a character per round, a lookbehind tries `n + 1` starts), so the
+root's are at most `(n + 5) × weight`, and it gets twice that. -/
+
 mutual
 
 /-- Matches `n` at `i` and then the continuation `k`. -/
-partial def go (s : Array Char) (n : Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+def go (s : Array Char) (fuel : Nat) (n : Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+  match fuel with
+  | 0 => none
+  | f + 1 =>
   let at? := s[i]?
   let prev := if i == 0 then none else s[i - 1]?
   match n with
@@ -381,44 +416,56 @@ partial def go (s : Array Char) (n : Node) (i : Nat) (caps : Caps) (k : Nat → 
   | .wordB neg =>
     let b := (prev.map isWord).getD false != (at?.map isWord).getD false
     if b != neg then k i caps else none
-  | .group idx body => go s body i caps fun j c => k j (match idx with | some g => c.set! g (some (i, j)) | none => c)
+  | .group idx body => go s f body i caps fun j c => k j (match idx with | some g => c.set! g (some (i, j)) | none => c)
   | .look neg body =>
-    match go s body i caps fun j c => some (j, c) with
+    match go s f body i caps fun j c => some (j, c) with
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
   | .lookB neg body =>
-    match goBack s body i i caps with
+    match goBack s f body i i caps with
     | some (_, c) => if neg then none else k i c
     | none => if neg then k i caps else none
-  | .cat ns => goSeq s ns i caps k
-  | .alt ns => goAlt s ns i caps k
-  | .rep body lo hi greedy => goRep s body lo hi greedy 0 i caps k
+  | .cat ns => goSeq s f ns i caps k
+  | .alt ns => goAlt s f ns i caps k
+  | .rep body lo hi greedy => goRep s f body lo hi greedy 0 i caps k
 
 /-- Matches the nodes one after another. -/
-partial def goSeq (s : Array Char) (ns : List Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+def goSeq (s : Array Char) (fuel : Nat) (ns : List Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+  match fuel with
+  | 0 => none
+  | f + 1 =>
   match ns with
   | [] => k i caps
-  | n :: rest => go s n i caps fun j c => goSeq s rest j c k
+  | n :: rest => go s f n i caps fun j c => goSeq s f rest j c k
 
 /-- Tries the alternatives in order. -/
-partial def goAlt (s : Array Char) (ns : List Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+def goAlt (s : Array Char) (fuel : Nat) (ns : List Node) (i : Nat) (caps : Caps) (k : Nat → Caps → R) : R :=
+  match fuel with
+  | 0 => none
+  | f + 1 =>
   match ns with
   | [] => none
-  | n :: rest => match go s n i caps k with
+  | n :: rest => match go s f n i caps k with
     | some r => some r
-    | none => goAlt s rest i caps k
+    | none => goAlt s f rest i caps k
 
 /-- A match of `body` from `start` or an earlier start (nearest first) that ends exactly at `i`: a lookbehind. -/
-partial def goBack (s : Array Char) (body : Node) (i start : Nat) (caps : Caps) : R :=
-  match go s body start caps fun j c => if j == i then some (j, c) else none with
+def goBack (s : Array Char) (fuel : Nat) (body : Node) (i start : Nat) (caps : Caps) : R :=
+  match fuel with
+  | 0 => none
+  | f + 1 =>
+  match go s f body start caps fun j c => if j == i then some (j, c) else none with
   | some r => some r
-  | none => if start == 0 then none else goBack s body i (start - 1) caps
+  | none => if start == 0 then none else goBack s f body i (start - 1) caps
 
 /-- `count` repetitions done; an iteration past the minimum that matches empty ends the loop. -/
-partial def goRep (s : Array Char) (body : Node) (lo : Nat) (hi : Option Nat) (greedy : Bool) (count i : Nat)
+def goRep (s : Array Char) (fuel : Nat) (body : Node) (lo : Nat) (hi : Option Nat) (greedy : Bool) (count i : Nat)
     (caps : Caps) (k : Nat → Caps → R) : R :=
+  match fuel with
+  | 0 => none
+  | f + 1 =>
   let more : Unit → R := fun _ =>
-    go s body i caps fun j c => if j == i && count ≥ lo then none else goRep s body lo hi greedy (count + 1) j c k
+    go s f body i caps fun j c => if j == i && count ≥ lo then none else goRep s f body lo hi greedy (count + 1) j c k
   if count < lo then more ()
   else if hi.any (count ≥ ·) then k i caps
   else if greedy then match more () with
@@ -444,12 +491,13 @@ def Match.group (m : Match) (k : Nat) : Option String := (m.groups[k - 1]?).join
 /-- The characters `a` to `b` of `s`. -/
 def slice (s : Array Char) (a b : Nat) : String := String.ofList (s.extract a b).toList
 
-/-- The first match starting at or after `init` (rex's exec). -/
-def exec (r : Regex) (s : Array Char) (init : Nat := 0) : Option Match := Id.run do
+/-- The first match starting at or after `init` (rex's exec); `fuel` for each start, by default more than it can use. -/
+def exec (r : Regex) (s : Array Char) (init : Nat := 0) (fuel : Nat := 2 * (s.size + 5) * (r.root.weight + 1)) :
+    Option Match := Id.run do
   for st in [init:s.size + 1] do
-    if let some (e, c) := go s r.root st (Array.replicate (r.groups + 1) none) fun j c => some (j, c) then
+    if let some (e, c) := go s fuel r.root st (Array.replicate (r.groups + 1) none) fun j c => some (j, c) then
       return some { s := st, e, whole := slice s st e,
-                    groups := (List.range r.groups).toArray.map fun g => c[g + 1]!.map fun (a, b) => slice s a b }
+                    groups := (List.range r.groups).toArray.map fun g => (c[g + 1]?).join.map fun (a, b) => slice s a b }
   return none
 
 /-- The non-overlapping matches of a compiled pattern, as finditer; an empty match moves on one character. -/
@@ -506,8 +554,7 @@ def sub (pat repl s : String) (fl : Flags := {}) : Except String String :=
 def Regex.never : Regex := { root := .alt [], groups := 0 }
 
 /-- A literal pattern, compiled once where it is named. Every named one is in `Tests/Re.lean`'s table, which fails
-the build on one that does not parse; here such a pattern matches nothing. (A subtype of the patterns that compile
-would need a compiled decision procedure: `compile` runs a `partial` parser.) -/
+the build on one that does not parse; here such a pattern matches nothing. -/
 structure Pat where
   src : String
   fl : Flags

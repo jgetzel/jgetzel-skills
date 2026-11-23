@@ -142,7 +142,8 @@ def die (msg : String) : IO α := do IO.eprintln msg; IO.Process.exit 1
 /-- `argv`'s stdout when it exits 0, else none (proc.run). -/
 def run (argv : List String) (cwd : Option String := none) : IO (Option String) := do
   try
-    let o ← IO.Process.output { cmd := argv.head!, args := argv.tail.toArray, cwd := cwd.map (⟨·⟩) }
+    let cmd :: args := argv | return none
+    let o ← IO.Process.output { cmd, args := args.toArray, cwd := cwd.map (⟨·⟩) }
     return if o.exitCode == 0 then some o.stdout else none
   catch _ => return none
 
@@ -157,15 +158,17 @@ def patch (src : String) (edits : List (String × String)) (mod : String) : IO S
     src := src.replace a b
   return src
 
-partial def find (node : Json) (id : String) : Option Json :=
+def find (node : Json) (id : String) : Option Json :=
   if Json.fstr node "id" == some id then some node
-  else (Json.items ((Json.field node "children").getD .null)).findSome? (find · id)
+  else (Json.kids node "children").findSome? fun ⟨c, _⟩ => find c id
+termination_by sizeOf node
 
 def withMod (node : Json) (mod : String) : Json := node.setObjVal! "content" (((Json.field node "content").getD (Json.mkObj [])).setObjVal! "mod" mod)
 
 /-- The layout with the tab bar and agents list swapped for this repo's, the side panel at half the work area, and the
 Swarm and Calendar children last in the panel body. -/
-partial def edit (j : Json) : Json := Id.run do
+def edit (j : Json) : Json := Id.run do
+  let kids := (Json.kids j "children").map fun ⟨c, _⟩ => edit c
   let mut j := j
   match Json.fstr j "id" with
   | some "tabs" => j := withMod j "jgetzel-tabs"
@@ -176,18 +179,19 @@ partial def edit (j : Json) : Json := Id.run do
     j := j.setObjVal! "size" (Json.mkObj [("weight", 1)])
     if let .obj kv := j then j := .obj (kv.erase "max")
   | some "panel-body" =>
-    let kids := (Json.items ((Json.field j "children").getD .null)).filter fun c =>
-      Json.fstr c "id" != some "swarm" && Json.fstr c "id" != some "calendar"
+    -- edit keeps every id, and leaves the two blocks as they are
+    let kept := kids.filter fun c => Json.fstr c "id" != some "swarm" && Json.fstr c "id" != some "calendar"
     let block (id : String) := Json.mkObj [("id", id), ("type", "block"), ("content", Json.mkObj [("mod", id)])]
-    j := j.setObjVal! "children" (.arr (kids ++ [block "swarm", block "calendar"]).toArray)
+    return j.setObjVal! "children" (.arr (kept ++ [block "swarm", block "calendar"]).toArray)
   | _ => pure ()
-  if let some (.arr cs) := Json.field j "children" then j := j.setObjVal! "children" (.arr (cs.map edit))
+  if let some (.arr _) := Json.field j "children" then j := j.setObjVal! "children" (.arr kids.toArray)
   return j
+termination_by sizeOf j
 
 /-- The jgetzel layout's sidebar and work area for the rework: rw-rail in place of the spaces and agents lists, rw-settings'
 foot (Settings opens ours) in place of workspace-chrome's, panes as cards with rw-pane headers, Calendar and the swarm side
 view in a 420 px side panel, and no brand block, tab bar or status bar (rw-bar replaces them). -/
-partial def reworkBody (j : Json) : Json := Id.run do
+def reworkBody (j : Json) : Json := Id.run do
   if Json.fstr j "id" == some "sidebar-lists" then
     return Json.mkObj [("id", "rail"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-rail")])]
   if Json.fstr j "id" == some "sidebar-footer" then
@@ -213,14 +217,15 @@ partial def reworkBody (j : Json) : Json := Id.run do
     -- The swarm view (UI-SPEC.md, II.3): one swarm full width; which one is shared("rw-swarm.view").
     let sw := Json.mkObj [("id", "swarm"), ("type", "block"), ("content", Json.mkObj [("mod", "rw-swarm"), ("props", Json.mkObj [("view", true)])])]
     return Json.mkObj [("id", "view"), ("type", "stack"), ("active", "main"), ("children", .arr #[main, all, sw])]
+  let keep := (Json.kids j "children").filter fun ⟨c, _⟩ => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
+  let kids := keep.map fun ⟨c, _⟩ => reworkBody c
   let mut j := j
   -- the side view's width, Calendar's too (II.7)
   if Json.fstr j "id" == some "panel" then
     j := ((j.setObjVal! "size" (Json.mkObj [("px", 420)])).setObjVal! "min" 360).setObjVal! "max" 720
-  if let some (.arr cs) := Json.field j "children" then
-    let keep := cs.filter fun c => !["brand", "tabs", "status"].contains ((Json.fstr c "id").getD "")
-    j := j.setObjVal! "children" (.arr (keep.map reworkBody))
+  if let some (.arr _) := Json.field j "children" then j := j.setObjVal! "children" (.arr kids.toArray)
   return j
+termination_by sizeOf j
 
 /-- The rework layout (swarm/herdr/UI-SPEC.md): rw-bar across the top, then the jgetzel layout's row as `body`. -/
 def rework (lay : Json) : Json :=
@@ -245,12 +250,16 @@ def copy (src dir : String) : IO Unit := do IO.FS.writeBinFile (dir ++ "/" ++ ba
 /-- herdr-mods/: beside the swarm/ the launcher names, else above this binary (a lake build in the checkout). -/
 def hereDir : IO String := do
   if let some h ← IO.getEnv "SWARM_HERE" then if h != "" then return (← IO.FS.realPath (h ++ "/../herdr-mods")).toString
-  let mut dir := (← IO.appPath).parent
-  while dir.isSome do
-    let d := dir.get!
-    if ← (d / "herdr-mods" / "herdr-mods").pathExists then return (← IO.FS.realPath (d / "herdr-mods")).toString
-    dir := if d.parent == some d then none else d.parent
-  die "install: can't find herdr-mods/: run herdr-mods/herdr-mods install"
+  -- each step up shortens the path, so its length bounds the steps
+  let rec up : Nat → Option System.FilePath → IO (Option String)
+    | n + 1, some d => do
+      if ← (d / "herdr-mods" / "herdr-mods").pathExists then return some (← IO.FS.realPath (d / "herdr-mods")).toString
+      up n (if d.parent == some d then none else d.parent)
+    | _, _ => return none
+  let app ← IO.appPath
+  match ← up (app.toString.length + 1) app.parent with
+  | some h => return h
+  | none => die "install: can't find herdr-mods/: run herdr-mods/herdr-mods install"
 
 def main : IO UInt32 := do
   let here ← hereDir

@@ -123,22 +123,37 @@ def frame (e : Int) (x : Dt) : IO (Int × Int) := do
   | [y, m, d, h, mi, s] => return (days y m d, h * 3600 + mi * 60 + s)
   | _ => throw <| IO.userError s!"localtime gave {t}"
 
+theorem dropWhile_length_le (p : α → Bool) (l : List α) : (l.dropWhile p).length ≤ l.length :=
+  (List.dropWhile_sublist p).length_le
+
+theorem dropWhile_eq_cons {p : α → Bool} {l t : List α} {a : α} (h : l.dropWhile p = a :: t) : t.length < l.length := by
+  have := dropWhile_length_le p l
+  rw [h] at this
+  simp at this
+  omega
+
 /-- `(%d+)(%u)` matches of a duration's body, summed in seconds. -/
-partial def unitSum (cs : List Char) (acc : Int) : Int :=
+def unitSum (cs : List Char) (acc : Int) : Int :=
   match cs with
   | [] => acc
   | c :: r =>
     if c.isDigit then
-      let rest := cs.dropWhile Char.isDigit
-      match rest with
+      -- c is a digit: cs.dropWhile Char.isDigit is r's
+      match _h : r.dropWhile Char.isDigit with
       | u :: r' =>
         if u.isUpper then
           let unit : Int := match u with
             | 'W' => 604800 | 'D' => 86400 | 'H' => 3600 | 'M' => 60 | 'S' => 1 | _ => 0
           unitSum r' (acc + ((digits (cs.takeWhile Char.isDigit)).getD 0) * unit)
-        else unitSum rest acc
+        else unitSum (u :: r') acc
       | [] => acc
     else unitSum r acc
+termination_by cs.length
+decreasing_by
+  all_goals simp only [List.length_cons]
+  · have := dropWhile_eq_cons _h; omega
+  · have := dropWhile_length_le Char.isDigit r; rw [_h] at this; simp at this ⊢; omega
+  · omega
 
 /-- RFC 5545 duration (no months in iCal) as seconds. -/
 def duration (v : String) : Option Int :=
@@ -149,7 +164,7 @@ def duration (v : String) : Option Int :=
 
 -- iCal text
 
-partial def unescapeL (cs : List Char) (acc : Array Char) : Array Char :=
+def unescapeL (cs : List Char) (acc : Array Char) : Array Char :=
   match cs with
   | '\\' :: c :: r => unescapeL r (acc.push (if c == 'n' || c == 'N' then '\n' else c))
   | c :: r => unescapeL r (acc.push c)
@@ -160,7 +175,7 @@ def unescape (v : String) : String := String.ofList (unescapeL v.toList #[]).toL
 def isNameChar (c : Char) : Bool := c.isAlphanum || c == '-'
 
 /-- One content line: its name (upper case), parameters and value. -/
-partial def contentline (line : String) : Option (String × Params × String) :=
+def contentline (line : String) : Option (String × Params × String) :=
   let cs := line.toList
   let name := cs.takeWhile isNameChar
   if name.isEmpty then none else
@@ -168,18 +183,23 @@ partial def contentline (line : String) : Option (String × Params × String) :=
     match cs with
     | ';' :: r =>
       let k := r.takeWhile isNameChar
-      match r.dropWhile isNameChar with
+      match _h : r.dropWhile isNameChar with
       | '=' :: v =>
         if k.isEmpty then none else
         let kv := fun (val : List Char) => (String.ofList k |>.toUpper, String.ofList val) :: acc
-        match v with
+        match _hv : v with
         | '"' :: q =>
-          match q.dropWhile (· != '"') with
+          match _h2 : q.dropWhile (· != '"') with
           | '"' :: rest => params rest (kv (q.takeWhile (· != '"')))
           | _ => none
         | _ => params (v.dropWhile fun c => c != ';' && c != ':') (kv (v.takeWhile fun c => c != ';' && c != ':'))
       | _ => none
     | _ => some (acc, cs)
+  termination_by cs.length
+  decreasing_by
+    all_goals simp only [List.length_cons]
+    · have := dropWhile_eq_cons _h; have := dropWhile_eq_cons _h2; simp at *; omega
+    · have := dropWhile_length_le (fun c => c != ';' && c != ':') v; have := dropWhile_eq_cons _h; subst _hv; omega
   match params (cs.drop name.length) [] with
   | some (ps, ':' :: value) => some ((String.ofList name).toUpper, ps, String.ofList value)
   | _ => none
@@ -272,18 +292,22 @@ structure Rule where
 def nums (v : Option String) : Option (List Int) := v.map fun v => (commaPieces v).filterMap parseInt
 
 /-- gmatch("([+-]?%d*)(%u%u)"). -/
-partial def bydays (cs : List Char) (acc : Array (String × String)) : Array (String × String) :=
+def bydays (cs : List Char) (acc : Array (String × String)) : Array (String × String) :=
   match cs with
   | [] => acc
   | c :: r =>
-    let afterSign := if c == '+' || c == '-' then r else cs
-    let rest := afterSign.dropWhile Char.isDigit
-    match rest with
+    -- after the sign, the digits
+    match _h : (if c == '+' || c == '-' then r else c :: r).dropWhile Char.isDigit with
     | a :: b :: r' =>
       if a.isUpper && b.isUpper then
-        bydays r' (acc.push (String.ofList (cs.take (cs.length - rest.length)), String.ofList [a, b]))
+        bydays r' (acc.push (String.ofList ((c :: r).take ((c :: r).length - (a :: b :: r').length)), String.ofList [a, b]))
       else bydays r acc
     | _ => bydays r acc
+termination_by cs.length
+decreasing_by
+  all_goals simp only [List.length_cons]
+  · have := dropWhile_eq_cons _h; split at this <;> simp at this <;> omega
+  all_goals omega
 
 /-- RRULE value → rule, or the part it can't expand. -/
 def rule (s : String) : Except String Rule := do
@@ -401,13 +425,15 @@ def ENT : List (String × Char) :=
 
 /-- gsub with a matcher: at each position `f` gives the replacement and the rest after the match, else the
 character stays. -/
-partial def gsubL (f : List Char → Option (List Char × List Char)) (cs : List Char) (acc : Array Char) : Array Char :=
+def gsubL (f : List Char → Option (List Char × List Char)) (cs : List Char) (acc : Array Char) : Array Char :=
   match cs with
   | [] => acc
   | c :: r =>
-    match f cs with
-    | some (rep, rest) => gsubL f rest (acc ++ rep.toArray)
+    match f (c :: r) with
+    -- a match that consumes nothing counts as none
+    | some (rep, rest) => if rest.length < (c :: r).length then gsubL f rest (acc ++ rep.toArray) else gsubL f r (acc.push c)
     | none => gsubL f r (acc.push c)
+termination_by cs.length
 
 def gsub (f : List Char → Option (List Char × List Char)) (s : String) : String :=
   String.ofList (gsubL f s.toList #[]).toList
@@ -434,7 +460,7 @@ def unhtml (s : String) : String :=
   let s := gsub (fun cs => match cs with
     | '&' :: '#' :: x :: _ => if x == 'x' || x == 'X' then entityRun ['&', '#', x] (hexVal · |>.isSome) (cp ∘ hexNum) cs else none
     | _ => none) s
-  let s := gsub (entityRun ['&', '#'] Char.isDigit fun ds => cp (String.ofList ds).toNat!) s
+  let s := gsub (entityRun ['&', '#'] Char.isDigit fun ds => cp (ds.foldl (fun n c => n * 10 + (c.toNat - '0'.toNat)) 0)) s
   gsub (entityRun ['&'] Char.isAlpha fun n => (ENT.find? (·.1 == String.ofList n)).map (·.2)) s
 
 def isWs (c : Char) : Bool := isSpace c || c == ' '
@@ -442,7 +468,7 @@ def rstrip (s : String) : String := String.ofList (s.toList.reverse.dropWhile is
 def stripN (s : String) : String := rstrip (String.ofList (s.toList.dropWhile isWs))
 
 /-- The index of the first `pat` in `cs` at or after `i`. -/
-partial def findFrom (cs pat : List Char) (i : Nat := 0) : Option Nat :=
+def findFrom (cs pat : List Char) (i : Nat := 0) : Option Nat :=
   match cs with
   | [] => if pat.isEmpty then some i else none
   | _ :: r => if pat.isPrefixOf cs then some i else findFrom r pat (i + 1)
@@ -468,20 +494,23 @@ def dropJoin (s : String) : String :=
   | none => String.ofList cs
 
 /-- `+` as a space and `%XX` as its byte (Python's unquote_plus). -/
-def unquotePlus (s : String) : String := Id.run do
+def unquotePlus (s : String) : String :=
   let b := s.toUTF8
-  let mut out : ByteArray := .empty
-  let mut i := 0
-  while i < b.size do
-    let c := b[i]!
-    if c == 43 then out := out.push 32; i := i + 1
-    else if c == 37 && i + 2 < b.size then
-      match hexVal (Char.ofNat b[i+1]!.toNat), hexVal (Char.ofNat b[i+2]!.toNat) with
-      | some h, some l => out := out.push (h * 16 + l).toUInt8; i := i + 3
-      | _, _ => out := out.push c; i := i + 1
-    else out := out.push c; i := i + 1
+  let rec go (b : ByteArray) (i : Nat) (out : ByteArray) : ByteArray :=
+    if hi : i < b.size then
+      let c := b[i]
+      if c == 43 then go b (i + 1) (out.push 32)
+      else if h2 : c == 37 && i + 2 < b.size then
+        have : i + 2 < b.size := by simp at h2; exact h2.2
+        match hexVal (Char.ofNat b[i+1].toNat), hexVal (Char.ofNat b[i+2].toNat) with
+        | some h, some l => go b (i + 3) (out.push (h * 16 + l).toUInt8)
+        | _, _ => go b (i + 1) (out.push c)
+      else go b (i + 1) (out.push c)
+    else out
+  termination_by b.size - i
+  let out := go b 0 .empty
   -- shortcut: bytes that aren't UTF-8 read as Latin-1, where Lua passed them through; a bad link title at worst
-  return (String.fromUTF8? out).getD (String.ofList (out.toList.map (Char.ofNat ·.toNat)))
+  (String.fromUTF8? out).getD (String.ofList (out.toList.map (Char.ofNat ·.toNat)))
 
 /-- A URL's host, path and query. -/
 def urlparts (u : String) : String × String × String :=
@@ -557,7 +586,7 @@ def tags (s : String) (with_ : String) : String :=
 def lowerEq (c : Char) (l : Char) : Bool := c.toLower == l
 
 /-- (.-)</[aA]>: the text before the first `</a>` and the rest after it. -/
-partial def closeA (cs : List Char) (acc : Array Char := #[]) : Option (List Char × List Char) :=
+def closeA (cs : List Char) (acc : Array Char := #[]) : Option (List Char × List Char) :=
   match cs with
   | '<' :: r => match r with
     | '/' :: a :: '>' :: rest => if lowerEq a 'a' then some (acc.toList, rest) else closeA r (acc.push '<')
@@ -590,27 +619,42 @@ def anchorAt (cs : List Char) : Option (String × String × List Char) :=
   | '<' :: a :: sp :: r => if lowerEq a 'a' && isSpace sp then lazy r else none
   | _ => none
 
-partial def anchors (cs : List Char) (acc : Array (String × String)) : Array (String × String) :=
+def anchors (cs : List Char) (acc : Array (String × String)) : Array (String × String) :=
   match cs with
   | [] => acc
-  | _ :: r => match anchorAt cs with
-    | some (u, t, rest) => anchors rest (acc.push (u, t))
+  | c :: r => match anchorAt (c :: r) with
+    -- anchorAt's rest is past its `<a `
+    | some (u, t, rest) => if rest.length < (c :: r).length then anchors rest (acc.push (u, t)) else anchors r acc
     | none => anchors r acc
+termination_by cs.length
+
+/-- `[^%s<>"]`. -/
+def urlChar (c : Char) : Bool := !(isSpace c || c == '<' || c == '>' || c == '"')
+
+/-- The length of an `https?://` at the start, 0 for none. -/
+def schemeLen : List Char → Nat
+  | 'h' :: 't' :: 't' :: 'p' :: ':' :: '/' :: '/' :: _ => 7
+  | 'h' :: 't' :: 't' :: 'p' :: 's' :: ':' :: '/' :: '/' :: _ => 8
+  | _ => 0
 
 /-- gmatch('https?://[^%s<>"]+'). -/
-partial def httpUrls (cs : List Char) (acc : Array String) : Array String :=
-  let ok (c : Char) := !(isSpace c || c == '<' || c == '>' || c == '"')
-  let after : Option (List Char) := match cs with
-    | 'h' :: 't' :: 't' :: 'p' :: ':' :: '/' :: '/' :: r => some r
-    | 'h' :: 't' :: 't' :: 'p' :: 's' :: ':' :: '/' :: '/' :: r => some r
-    | _ => none
-  match cs, after with
-  | [], _ => acc
-  | _ :: r, none => httpUrls r acc
-  | _ :: r, some a =>
-    let body := a.takeWhile ok
-    if body.isEmpty then httpUrls r acc
-    else httpUrls (a.drop body.length) (acc.push (String.ofList (cs.take (cs.length - a.length) ++ body)))
+def httpUrls (cs : List Char) (acc : Array String) : Array String :=
+  match cs with
+  | [] => acc
+  | c :: r =>
+    let n := schemeLen (c :: r)
+    if n == 0 then httpUrls r acc else
+    match _hb : ((c :: r).drop n).takeWhile urlChar with
+    | [] => httpUrls r acc
+    | x :: xs => httpUrls (((c :: r).drop n).drop (x :: xs).length) (acc.push (String.ofList ((c :: r).take n ++ x :: xs)))
+termination_by cs.length
+decreasing_by
+  all_goals simp only [List.length_cons]
+  · omega
+  · omega
+  · have h3 := (List.takeWhile_prefix (l := (c :: r).drop n) urlChar).length_le
+    rw [_hb] at h3
+    simp only [List.length_drop, List.length_cons] at *; omega
 
 def SKIP : List String := ["meet.google.com", "tel.meet", "zoom.us/j", "support.google.com"]
 
@@ -659,7 +703,7 @@ def plain (s : String) (drop : List String) : String := Id.run do
   return cut (stripN (String.ofList out.toList)) 3000
 
 /-- The earliest i ≥ 0 where `m` matches cs.drop i, with the match's length. -/
-partial def findMatch (m : List Char → Option Nat) (cs : List Char) (i : Nat := 0) : Option (Nat × Nat) :=
+def findMatch (m : List Char → Option Nat) (cs : List Char) (i : Nat := 0) : Option (Nat × Nat) :=
   match m cs, cs with
   | some n, _ => some (i, n)
   | none, [] => none
@@ -699,18 +743,26 @@ def files (ev : Comp) : List Json :=
 
 def B64 : Array Char := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".toList.toArray
 
+theorem B64_size : B64.size = 64 := by decide
+
 /-- URL-safe base64, unpadded. -/
-def b64url (s : String) : String := Id.run do
+def b64url (s : String) : String :=
   let b := s.toUTF8
-  let mut out : Array Char := #[]
-  let mut i := 0
-  while i < b.size do
-    let get (k : Nat) := if i + k < b.size then b[i + k]!.toNat else 0
-    let n := get 0 * 65536 + get 1 * 256 + get 2
-    let k := if i + 1 ≥ b.size then 2 else if i + 2 ≥ b.size then 3 else 4
-    for j in [1:k+1] do out := out.push B64[(n / 64 ^ (4 - j)) % 64]!
-    i := i + 3
-  return String.ofList out.toList
+  let rec go (b : ByteArray) (i : Nat) (out : Array Char) : Array Char :=
+    if i < b.size then
+      let get (k : Nat) := ((b[i + k]?).map (·.toNat)).getD 0
+      let n := get 0 * 65536 + get 1 * 256 + get 2
+      let k := if i + 1 ≥ b.size then 2 else if i + 2 ≥ b.size then 3 else 4
+      let out := Id.run do
+        let mut out := out
+        for j in [1:k+1] do
+          have : (n / 64 ^ (4 - j)) % 64 < B64.size := by rw [B64_size]; omega
+          out := out.push B64[(n / 64 ^ (4 - j)) % 64]
+        return out
+      go b (i + 3) out
+    else out
+  termination_by b.size - i
+  String.ofList (go b 0 #[]).toList
 
 /-- Google's event id: the UID's prefix, plus _<original start> for one instance of a recurring event. -/
 def googleId (ev : Comp) (occ : Dt) (recurring : Bool) : IO (Option String) := do
@@ -720,7 +772,7 @@ def googleId (ev : Comp) (occ : Dt) (recurring : Bool) : IO (Option String) := d
   -- a split series' UID carries _R<series start>
   let tail := (base.toList.reverse.take 17).reverse
   let base := match tail with
-    | '_' :: 'R' :: r => if r.length == 15 && r[8]! == 'T' && (r.take 8 ++ r.drop 9).all Char.isDigit then
+    | '_' :: 'R' :: r => if r.length == 15 && r[8]? == some 'T' && (r.take 8 ++ r.drop 9).all Char.isDigit then
         dropRightC base 17 else base
     | _ => base
   if !recurring then return some base
@@ -884,7 +936,7 @@ END:VCALENDAR"
   let eq (a b : Json) (what : String) : IO Unit := do
     unless a == b do throw <| IO.userError s!"{what}: got {a.compress}, want {b.compress}"
   let strs (l : List String) : Json := .arr (l.map Json.str).toArray
-  let g (i : Nat) (k : String) : Json := got[i]!.getObjValD k
+  let g (i : Nat) (k : String) : Json := (got[i]?.getD .null).getObjValD k
   eq (.arr (got.map (·.getObjValD "title"))) (strs ["Standup", "Maybe", "Offsite", "Standup"]) "titles"
   eq (.arr #[g 1 "rsvp", g 1 "description"]) (strs ["TENTATIVE", "Agenda\nitem agenda"]) "rsvp, description" -- the file:// link's text stays, its address goes
   eq (.str (plain "a \nb\r\nc" [])) (.str "a\n\nb\nc") "line separators"
@@ -896,7 +948,7 @@ END:VCALENDAR"
     (.arr #[.null, "ACCEPTED", .arr #[], .arr #[], ""]) "standup"
   eq (g 1 "links") (.arr #[Json.mkObj [("title", "Retro Notes"), ("url", "https://x.atlassian.net/wiki/pages/1/Retro+Notes"),
     ("host", "x.atlassian.net")]]) "links"
-  let file (i : Nat) (k : String) : Json := (match g 1 "files" with | .arr a => a[i]!.getObjValD k | _ => .null)
+  let file (i : Nat) (k : String) : Json := (match g 1 "files" with | .arr a => (a[i]?.getD .null).getObjValD k | _ => .null)
   eq (.arr #[file 0 "title", file 0 "kind", file 1 "title", file 1 "kind"]) (strs ["Notes - 1:1", "doc", "Recording", "recording"]) "files"
   eq (.arr #[g 0 "id", g 3 "id", g 1 "id"]) (.arr #["a_20261103T150000Z", "a_20261104T150000Z", .null]) "ids"
   eq (.arr #[g 0 "link", g 2 "all_day", g 2 "day"]) (.arr #["https://meet.google.com/abc-defg-hij", true, "2026-11-04"]) "link, all-day"

@@ -39,15 +39,18 @@ def quote (s : String) : String := Id.run do
 
 /-- Python's json.dumps of a decoded value: ", " and ": " separators, ASCII escapes, keys sorted; a null member is
 dropped and an array ends at its first null, as the Lua's decode left them. -/
-partial def dumps : Json → String
+def dumps (j : Json) : String :=
+  match j with
   | .null => "null"
   | .bool b => toString b
   | .num n => luaNum n
   | .str s => quote s
-  | .arr a => "[" ++ ", ".intercalate ((a.toList.takeWhile (· != .null)).map dumps) ++ "]"
+  | .arr a => "[" ++ ", ".intercalate (((SwarmLean.Json.elems (.arr a)).takeWhile (·.1 != .null)).map fun ⟨x, _⟩ => dumps x) ++ "]"
   | .obj kv =>
-    let ms := (kv.toArray.toList.filter (·.2 != .null)).mergeSort (fun a b => a.1 ≤ b.1)
-    "{" ++ ", ".intercalate (ms.map fun (k, v) => quote k ++ ": " ++ dumps v) ++ "}"
+    let ms := ((SwarmLean.Json.members (.obj kv)).filter (·.2.1 != .null)).mergeSort (fun a b => a.1 ≤ b.1)
+    "{" ++ ", ".intercalate (ms.map fun (k, ⟨v, _⟩) => quote k ++ ": " ++ dumps v) ++ "}"
+termination_by sizeOf j
+decreasing_by all_goals (rename_i h; simp at h ⊢; omega)
 
 /-- A content value's text: a string as is; else its `text` blocks joined with newlines. -/
 def textOf : Option Json → String
