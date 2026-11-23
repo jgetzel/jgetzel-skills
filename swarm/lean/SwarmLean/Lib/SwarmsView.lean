@@ -18,6 +18,14 @@ def STATES : List Status := [.open, .claimed, .blocked, .done, .dropped, .landin
 /-- The task state a row's text names (none: null or not a state). -/
 def stateOf (s : Option String) : Option Status := s.bind fun x => (Status.ofText x).toOption
 
+/-- The refusal for a task row whose state cell (column `i` of `r`, its id in column 0) is not a state: the view reads
+states from a narrower select than `Row.dec`'s, so it checks this cell as the decoder does. -/
+def checkState (r : Array Val) (i : Nat) : Except String Unit :=
+  let name := s!"swarm.db: task #{(Swarms.int r[0]?).getD 0}"
+  match Swarms.txt r[i]? with
+  | none => .error s!"{name}: NULL task state"
+  | some s => (Status.ofText s).mapError (s!"{name}: " ++ ·) |>.map fun _ => ()
+
 /-- A swarm's meta keys the view reads. -/
 def KNOBS : List String := ["agent_min", "agent_max", "spawn_held", "queue_only", "away", "ctx_nudge"]
 
@@ -159,7 +167,7 @@ def machine (t : Int) (ts trs : List (Array Val)) (ws : List (String × String �
     | none => none
   (tasksJ.toArray, reposJ.toArray, (asks ++ hungs ++ landers ++ helds ++ lockNeeds ++ ctxs ++ reds).toArray)
 
-variable {m : Type → Type} [Monad m] [Env m] [Sys m] [Proc m] [Git m]
+variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Env m] [Sys m] [Proc m] [Git m]
 
 /-- The repo a folder is in: the known repo it is under, else its main worktree (`git rev-parse --git-common-dir`'s
 parent), else none. -/
@@ -204,10 +212,11 @@ def view (t : Int) : m Json := do
   let rows (i : Nat) : List (Array Val) := (rs.getD i #[]).toList
   let txt (v : Option Val) : Option String := Swarms.txt v
   let int (v : Option Val) : Option Int := Swarms.int v
-  let agents : List (String × Agent) := (rows 0).filterMap fun r =>
-    match txt r[0]?, (Row.dec (r.extract 1 r.size) : Except String Agent) with
-    | some s, .ok a => some (s, a)
-    | _, _ => none
+  let agents : List (String × Agent) ← (rows 0).filterMapM fun r => do
+    let a : Agent ← orDie (decodeRow (r.extract 1 r.size))
+    return (txt r[0]?).map (·, a)
+  for r in rows 1 do orDie (checkState r 1)
+  for r in rows 10 do orDie (checkState r 2)
   let tasks : List T := (rows 1).filterMap fun r => (int r[0]?).map fun id =>
     { id, state := (stateOf (txt r[1]?)).getD .open, owner := py (txt r[2]?), by_ := py (txt r[3]?), title := txt r[4]?,
       question := txt r[5]?, deps := ((txt r[6]?).map fun d => (commaPieces d).filterMap parseInt).getD [],

@@ -386,7 +386,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
 /-- Each task's id and state, every task's, in id order (`Swarms.taskStates`): the counts, the deps' states and the
 Board's pages of done tasks read it; a view reads whole only the task rows it shows. -/
 def taskStates : m (List (Int × Status)) := do
-  return (← Swarms.taskStates).filterMap fun (i, s) => (Status.ofText s).toOption.map fun st => (i, st)
+  (← Swarms.taskStates).mapM fun (i, s) => orDie ((Status.ofText s).mapError (s!"swarm.db: task #{i}: " ++ ·) |>.map ((i, ·)))
 
 /-- `swarm state --json` (state.cmd_state): one read-only snapshot for UIs (the Herdr panel). -/
 def state (a : Parsed) : m UInt32 := do
