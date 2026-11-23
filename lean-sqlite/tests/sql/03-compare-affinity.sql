@@ -1,0 +1,17 @@
+create table t(i integer, r real, n numeric, x text, b blob, a);
+insert into t values(1,1,1,1,1,1),('2','2','2','2','2','2'),(3.5,3.5,3.5,3.5,3.5,3.5),('abc','abc','abc','abc','abc','abc'),(null,null,null,null,null,null),('4.0','4.0','4.0','4.0','4.0','4.0'),(' 5','5 ','1e2','1e2','1e2','1e2');
+select typeof(i),typeof(r),typeof(n),typeof(x),typeof(b),typeof(a) from t;
+select i,r,n,x,b,a from t;
+select 1 = '1', 1 < '2', '10' < '9', 10 < '9', 'a' < 'b', 'a' < 1, 1 < 'a', x'01' > 'a', null = null, null is null, 1 is 1, null is not 1;
+select i = '2', r = '2', n = '2', x = 2, a = '2', a = 2 from t where rowid = 2;
+select count(*) from t where i = 3.5;
+select count(*) from t where x = 3.5;
+select count(*) from t where x = '3.5';
+select count(*) from t where a < 'b';
+select 1 <> 2, 1 != 1, 1 == 1, 2 > 1, 2 >= 2, 1 <= 0;
+select 1 between 0 and 2, 5 between 6 and 9, 'b' between 'a' and 'c', 3 not between 1 and 2;
+select 1 in (1,2,3), 4 in (1,2,3), 1 not in (2,3), null in (1,2), 1 in (null, 1), 1 in (null,2), 1 not in (null, 2);
+select cast('5' as integer) = 5, '5' + 0 = 5, typeof('5'+0), typeof('5.0'+0), typeof('5.5'+0);
+select min(1,'a',2.5), max(1,'a',2.5), min('b','a'), max(1,null,3);
+select 1 = 1.0, typeof(1 = 1), 0.5 = '0.5';
+select 'a' < 'B', 'a' collate nocase < 'B', 'abc' = 'ABC' collate nocase, 'abc  ' = 'abc' collate rtrim;

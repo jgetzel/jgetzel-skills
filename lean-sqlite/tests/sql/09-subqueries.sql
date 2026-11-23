@@ -1,0 +1,18 @@
+create table e(id integer primary key, name text, mgr integer, sal integer);
+insert into e values(1,'boss',null,500),(2,'m1',1,300),(3,'m2',1,320),(4,'w1',2,100),(5,'w2',2,120),(6,'w3',3,90);
+select name, (select name from e m where m.id = e.mgr) as mname from e order by id;
+select name from e where sal > (select avg(sal) from e) order by id;
+select name from e where id in (select mgr from e) order by id;
+select name from e where id not in (select mgr from e where mgr is not null) order by id;
+select name from e where id not in (select mgr from e) order by id;
+select name from e where exists (select 1 from e w where w.mgr = e.id) order by id;
+select name from e where not exists (select 1 from e w where w.mgr = e.id) order by id;
+select name, (select count(*) from e w where w.mgr = e.id) as n from e order by id;
+select name from e a where sal = (select max(sal) from e b where b.mgr = a.mgr) order by id;
+select (select 1), (select null), (select 1 where 0), (select 'a' union select 'b' order by 1 limit 1);
+select * from (select id, sal*2 as d from e where id < 4) order by d desc;
+select s.mgr, s.t from (select mgr, sum(sal) t from e group by mgr) s order by s.mgr;
+select 1 in (select 1), 5 in (select id from e), 5 in (select sal from e);
+select id, (select max(sal) from e where mgr = x.id) from e x order by id;
+select exists(select 1 from e where id = 99), exists(select 1 from e);
+select name from e where (mgr, sal) in (select mgr, max(sal) from e group by mgr) order by id;

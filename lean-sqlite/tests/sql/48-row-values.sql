@@ -1,0 +1,14 @@
+create table p(id integer primary key, name text, age int, city text);
+insert into p values(1,'ann',30,'x'),(2,'bob',25,'y'),(3,'cat',35,'x'),(4,'dan',25,'z'),(5,'eve',null,'y');
+select id from p where (age, id) = (25, 4);
+select id from p where (age, city) = (30, 'x');
+select id from p where (age, id) < (30, 0) order by id;
+select id from p where (age, id) >= (30, 1) order by id;
+select id from p where (age, city) in ((25, 'y'), (35, 'x')) order by id;
+select id from p where (age, city) not in ((25, 'y'), (35, 'x')) order by id;
+select id from p where (city, age) in (select city, max(age) from p group by city) order by id;
+select id from p where (age, id) between (25, 3) and (30, 1) order by id;
+select (1, 2) = (1, 2), (1, 2) < (1, 3), (1, null) = (1, 2), (1, null) = (2, 2), (2, 1) > (1, 9);
+update p set (age, city) = (40, 'w') where id = 1;
+select * from p where id = 1;
+select (1,2) = (1,2,3);

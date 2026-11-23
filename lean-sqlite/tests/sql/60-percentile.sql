@@ -1,0 +1,16 @@
+create table t(x, g); insert into t values(1,1),(2,1),(3,1),(10,2),(null,2),(2.5,2),(7,3);
+select median(x), percentile(x, 25), percentile_cont(x, 0.25), percentile_disc(x, 0.25), percentile_disc(x, 0.5), median(x) filter (where 0), percentile(x, 100), percentile(x, 0), percentile(x, '50') from t;
+select g, median(x), percentile_cont(x, 0.9) from t group by g order by g;
+select median(x) from t where 0;
+select median(x) from (select 1 x union all select 2 union all select 3 union all select 4);
+select median(1e308), median(9223372036854775807), median(-5);
+select x, median(x) over (order by x rows between unbounded preceding and current row) from t where x is not null order by x;
+select median('a');
+select percentile(1, 101);
+select percentile(1, 'a');
+select percentile_cont(1, 2);
+create table u(x,p); insert into u values(1,10),(2,20);
+select percentile(x,p) from u;
+select median(x'01');
+select median(x) from (select '7' x);
+select median(1e999);

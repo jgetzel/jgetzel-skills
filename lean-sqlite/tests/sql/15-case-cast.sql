@@ -1,0 +1,13 @@
+select case 1 when 1 then 'one' when 2 then 'two' end, case 3 when 1 then 'one' when 2 then 'two' end, case 3 when 1 then 'one' else 'other' end;
+select case when 1 > 2 then 'a' when 2 > 1 then 'b' else 'c' end, case when 0 then 1 end;
+select case 'a' when 'A' then 1 else 0 end, case 'a' when 'A' collate nocase then 1 else 0 end, case 1 when 1.0 then 'eq' end;
+select case when 1 then 1 else 'x' end, typeof(case when 0 then 1 else 'x' end), typeof(case when 1 then 1.5 end);
+select cast(1 as text), cast(1.5 as text), cast('12' as integer), cast('12.7' as integer), cast('12abc' as integer), cast('abc' as integer), cast('' as integer), cast(' 12 ' as integer);
+select cast(3.99 as integer), cast(-3.99 as integer), cast(1e30 as integer), cast(-1e30 as integer), cast('9999999999999999999' as integer), cast('1e3' as integer), cast('0x10' as integer);
+select cast('12.5' as real), cast('abc' as real), cast(5 as real), cast('1e3' as real), cast('.5' as real), cast('5.' as real), cast('-' as real);
+select cast(5 as numeric), cast('5.0' as numeric), cast('5.5' as numeric), cast('abc' as numeric), cast('1e2' as numeric), cast('9223372036854775808' as numeric), cast(' 3 ' as numeric);
+select cast(x'41' as text), cast('A' as blob), typeof(cast('A' as blob)), hex(cast('AB' as blob)), cast(65 as blob), hex(cast(1.5 as blob));
+select cast(null as integer), typeof(cast(null as text)), cast(null as blob);
+select typeof(cast(1 as boolean)), typeof(cast(1 as varchar(10))), typeof(cast(1 as float)), typeof(cast(1 as bigint)), typeof(cast('a' as char));
+select cast(1.0 as text), cast(100.0 as text), cast(1e100 as text), cast(0.1 as text), cast(-0.0 as text), cast(123456789012345678 as text);
+select cast(true as text), cast(7 as integer) / 2, cast(7 as real) / 2;

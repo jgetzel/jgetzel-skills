@@ -1,0 +1,14 @@
+create table a(id integer primary key, x text);
+create table b(id integer primary key, a_id int, y text);
+insert into a values(1,'a1'),(2,'a2'),(3,'a3');
+insert into b values(10,1,'b10'),(11,1,'b11'),(12,4,'b12'),(13,null,'b13');
+select a.id, a.x, b.id, b.y from a right join b on b.a_id = a.id order by b.id;
+select a.id, a.x, b.id, b.y from a full join b on b.a_id = a.id order by a.id, b.id;
+select a.id, b.id from a full outer join b on b.a_id = a.id where b.id is null or a.id is null order by a.id, b.id;
+select count(*) from a right outer join b on b.a_id = a.id;
+select a.x, b.y from a right join b on b.a_id = a.id and b.y > 'b10' order by b.id;
+create table c(k int, v text);
+insert into c values(1,'c1'),(5,'c5');
+select a.id, c.k, c.v from a full join c on c.k = a.id order by coalesce(a.id, c.k);
+select * from a natural right join (select 2 as id, 'z' as z) as s order by 1;
+select a.id, b.id from a left join b on b.a_id = a.id right join c on c.k = a.id order by c.k, b.id;

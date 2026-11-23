@@ -1,0 +1,5 @@
+.lake/
+hpl/.lake/
+clang/.lake/
+hpl-nounbox/.lake/
+bench/sql/

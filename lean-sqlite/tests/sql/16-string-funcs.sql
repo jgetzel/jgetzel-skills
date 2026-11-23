@@ -1,0 +1,17 @@
+select length('hello'), length(''), length(null), length('é日本'), length(x'010203'), length(123), length(1.5);
+select lower('ABC dEf'), upper('abc dEf'), lower(null), upper(123), lower('ÀB');
+select substr('hello', 2), substr('hello', 2, 3), substr('hello', -3), substr('hello', -3, 2), substr('hello', 0), substr('hello', 0, 2), substr('hello', 10), substr('hello', 2, -1), substr('hello', 2, 0), substr('hello', -10, 7);
+select substr('日本語です', 2, 3), substring('hello', 3), substr(x'414243', 2), typeof(substr(x'414243', 2)), substr(12345, 2, 3), substr('abc', null);
+select trim('  hi  '), ltrim('  hi  '), rtrim('  hi  '), trim('xxhixx', 'x'), ltrim('xyxhi', 'xy'), rtrim('hiyxy', 'xy'), trim('abc', ''), trim(null);
+select replace('hello world', 'o', '0'), replace('aaa', 'aa', 'b'), replace('abc', '', 'x'), replace('abc', 'b', ''), replace(null, 'a', 'b'), replace('abc', 'b', null), replace(12345, 3, 'x');
+select instr('hello', 'l'), instr('hello', 'z'), instr('hello', ''), instr('', 'a'), instr('日本語', '語'), instr(x'414243', x'42'), instr(null, 'a'), instr(12345, 34);
+select hex('abc'), hex(x'00ff'), hex(255), hex(1.5), hex(null), hex('');
+select quote('abc'), quote('it''s'), quote(1), quote(1.5), quote(null), quote(x'0aff'), quote(''), quote(1e100), quote(-0.0);
+select char(65, 66, 67), char(), char(8364), char(0x1F600), length(char(0)), unicode('A'), unicode('€'), unicode(''), unicode(null), unicode('abc');
+select 'a' || 'b' || 1 || 2.5 || null, 'x' || '', '' || '';
+select concat('a', 1, null, 2.5), concat_ws('-', 'a', null, 'b', 1), concat_ws(',', 'x'), concat_ws(null, 'a', 'b');
+select printf('%d', 42), printf('%5d|%-5d|%05d', 42, 42, 42), printf('%x %X %o', 255, 255, 8), printf('%s', 'str'), printf('%10s|%-10s|', 'r', 'l'), printf('%.2f', 3.14159), printf('%8.3f|', 2.5), printf('%e', 12345.678), printf('%g', 0.0001), printf('%g', 1234567.0), printf('%%'), printf('%c', 65);
+select printf('%q', 'it''s'), printf('%Q', 'it''s'), printf('%Q', null), printf('%.3s', 'abcdef'), printf('%+d', 5), printf('% d', 5), printf('%d', '12'), printf('%d', 3.9), printf('%s', 12), printf('%s', 1.5), printf('%d %d', 1), printf('x');
+select format('%d-%s', 1, 'a'), printf('%3$s %1$s %2$s', 'a', 'b', 'c'), printf('%*d', 5, 42), printf('%lld', 9223372036854775807), printf('%.0f', 2.5), printf('%.0f', 3.5), printf('%5.1f%%', 99.55);
+select soundex('Robert'), soundex('Rupert'), soundex(''), unhex('4142'), typeof(unhex('zz'));
+select lower(upper('mIxEd')), length(upper('ß'));

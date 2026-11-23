@@ -1,0 +1,17 @@
+create table w(c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50);
+insert into w values(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50);
+insert into w(c1, c50, c25) values('first', 'last', 'mid');
+select * from w;
+select c1, c25, c50 from w order by rowid;
+select c50, c49, c1 from w where c1 = 1;
+update w set c30 = 'upd', c2 = null where c1 = 'first';
+select c2, c30, c25 from w order by rowid;
+create table n2(k integer primary key, a text, b text, c text, d text, e text, f text, g text, h text, i text, j text);
+insert into n2 values(1,'a','b','c','d','e','f','g','h','i','j');
+insert into n2 values(2, printf('%.300c','a'), 'b', printf('%.300c','c'), null, 'e', printf('%.10c','f'), 'g', 'h', 'i', printf('%.500c','j'));
+select k, length(a), length(c), length(j), b, d, e from n2;
+create table v(a, b, c);
+insert into v values(1, 2, 3), (1.5, 'two', x'03'), (null, null, null), ('', 0, 0.0);
+select a, b, c, typeof(a), typeof(b), typeof(c) from v;
+select count(*) from w where c1 is not null and c50 is not null;
+select w.c1 + w.c2 + w.c3 + w.c4 + w.c5 + w.c6 + w.c7 + w.c8 + w.c9 + w.c10 from w where rowid = 1;

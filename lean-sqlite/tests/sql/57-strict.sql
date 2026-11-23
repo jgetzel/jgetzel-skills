@@ -1,0 +1,15 @@
+create table s(a int, b text, c any, d real, e integer, f blob) strict;
+insert into s values(1,'x',1.5,2,3,x'00');
+insert into s values('5','y','z',7,'8',null);
+select a, typeof(a), b, c, typeof(c), d, typeof(d), e, typeof(e) from s;
+insert into s values('abc',1,1,1,1,1);
+insert into s values(1,2,3,'x',5,6);
+insert into s values(1.5,2,3,4,5,6);
+update s set b = x'01' where a = 1;
+select count(*) from s;
+create table s2(a varchar) strict;
+create table s3(a) strict;
+create table s4(id integer primary key, v text) strict, without rowid;
+create table s5(k text primary key, v int) strict, without rowid;
+insert into s5 values('a', 1), ('b', '2');
+select k, v, typeof(v) from s5;

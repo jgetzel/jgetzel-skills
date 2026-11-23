@@ -1,0 +1,14 @@
+{"version": "1.3.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "hpl",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../../../high-perf-lean",
+   "copy": false,
+   "configFile": "lakefile.lean"}],
+ "name": "«lean-sqlite-hpl»",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

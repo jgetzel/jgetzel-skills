@@ -1,0 +1,14 @@
+select date('2024-03-15'), time('2024-03-15 13:45:10.123'), datetime('2024-03-15T13:45'), julianday('2024-03-15 12:00');
+select date('2024-01-31', '+1 month'), date('2024-02-29', '+1 year'), date('2024-03-15', 'start of month', '+1 month', '-1 day');
+select datetime('2024-03-15 10:00', '+36 hours'), datetime('2024-03-15 10:00', '-90 minutes'), datetime('2024-03-15 10:00:00', '+0.5 days');
+select date('2024-03-15', 'weekday 0'), date('2024-03-17', 'weekday 0'), date('2024-03-15', 'start of year');
+select strftime('%Y-%m-%d %H:%M:%S', '2024-03-15 13:45:10'), strftime('%j %w %W %U', '2024-03-15'), strftime('%s', '2024-03-15'), strftime('%f', '2024-03-15 10:00:01.250');
+select datetime(1710500000, 'unixepoch'), date(2460385.0), unixepoch('2024-03-15 00:00:00'), unixepoch('2024-03-15 00:00:00.5', 'subsec');
+select date('2024-13-01'), date('not a date'), date(null), time('25:00'), datetime('2024-03-15', '+1 fortnight');
+select datetime('2024-03-15 10:00+02:00'), datetime('2024-03-15 10:00Z'), time('10:30:45', '+01:15');
+select date('now') = date(), length(datetime('now')), typeof(julianday('now')), current_date = date('now');
+create table ev(d text);
+insert into ev values('2024-01-15'), ('2024-02-20'), ('2023-12-31'), ('2024-02-01');
+select strftime('%Y-%m', d) m, count(*) from ev group by m order by m;
+select d from ev where d between date('2024-01-01') and date('2024-02-15') order by d;
+select julianday('2024-03-01') - julianday('2024-02-01'), timediff('2024-03-15', '2024-01-01');
