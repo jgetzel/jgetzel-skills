@@ -52,6 +52,29 @@ def test_txn_rolls_back_on_error (t : T) : IO Unit := do
   eq ((← one c "select count(*) n from meta where k like 'gone%'") == some (.int 0)) true
   eq (← sqliteRun c (sc t) (Txn.done 7)) 7
 
+/-- A fresh db is at DB_VERSION; reconnecting changes nothing; an older binary refuses to write, and reads. -/
+def test_db_version (t : T) : IO Unit := do
+  Shim.setenv "SWARM_DB" t.db
+  let c ← connect
+  eq (← dbVersion c) DB_VERSION
+  -- a db from before the version existed (0) is raised, its rows kept
+  discard <| c.exec "pragma user_version=0"
+  discard <| c.exec "insert into meta(k,v) values('keep','1')"
+  let c ← connect
+  eq (← dbVersion c) DB_VERSION
+  eq ((← one c "select v from meta where k='keep'") == some (.text "1")) true
+  -- current to current: a no-op
+  let c ← connect
+  eq (← dbVersion c) DB_VERSION
+  -- a binary one version older: refused, naming both versions and build.sh; reads go on
+  let w := Txn.update [{ table := .meta }] [] fun db => ({ db with metas := db.metas ++ [{ k := "new", v := some "1" }] }, ())
+  let msg ← try sqliteRun c (sc t) w (DB_VERSION - 1); pure "" catch e => pure (toString e)
+  has msg "has db version 0" "refusal"; has msg "at version 1" "refusal"; has msg "build.sh" "refusal"
+  eq ((← one c "select count(*) from meta where k='new'") == some (.int 0)) true
+  eq (← sqliteRun c (sc t) (Txn.done 5) (DB_VERSION - 1)) 5
+  sqliteRun c (sc t) w
+  eq ((← one c "select count(*) from meta where k='new'") == some (.int 1)) true
+
 def test_after_migration_columns_and_log (t : T) : IO Unit := do
   Shim.setenv "SWARM_DB" t.db
   let c ← connect
@@ -94,6 +117,7 @@ def tests : List Case := [
   ("test_values_and_params", test_values_and_params),
   ("test_txn_rolls_back_on_error", test_txn_rolls_back_on_error),
   ("test_after_migration_columns_and_log", test_after_migration_columns_and_log),
-  ("test_connect_eight_at_once", test_connect_eight_at_once)]
+  ("test_connect_eight_at_once", test_connect_eight_at_once),
+  ("test_db_version", test_db_version)]
 
 end SwarmLean.Tests.Spec.Db

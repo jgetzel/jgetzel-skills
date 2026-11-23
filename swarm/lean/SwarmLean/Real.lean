@@ -38,6 +38,30 @@ def runStmts (c : Conn) (p : List Stmt) : IO Unit := do
   for st in p do
     for (q, ps) in st.sql do discard <| c.exec q ps
 
+/-- `act` between `begin` and COMMIT; any error rolls back. -/
+def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
+  discard <| c.exec begin
+  try
+    let a ← act
+    discard <| c.exec "commit"
+    return a
+  catch e =>
+    try discard <| c.exec "rollback" catch _ => pure ()
+    throw e
+
+/-- The version the db is stored at (`pragma user_version`). -/
+def dbVersion (c : Conn) : IO Nat := do
+  match (← c.query "pragma user_version")[0]?.bind (·[0]?) with
+  | some (Val.int n) => return n.toNat
+  | _ => return 0
+
+/-- Refuses when the db is at a newer version than this binary's `mine`; a write checks it inside its BEGIN IMMEDIATE. -/
+def checkWritable (c : Conn) (mine : Nat := DB_VERSION) : IO Unit := do
+  let stored ← dbVersion c
+  if stored > mine then
+    throw (IO.userError s!"swarm: this binary has db version {mine}, the db is at version {stored}: it refuses to write; \
+      rebuild it (~/.claude/skills/swarm/lean/build.sh)")
+
 /-- Opens the db as db.connect does: makes its dir, turns on WAL (retrying a first connect that races another), runs
 the schema and adds missing columns. -/
 def connect : IO Conn := do
@@ -67,6 +91,13 @@ def connect : IO Conn := do
         if m.needed (← has) then runStmts c [m]
       discard <| c.exec "commit"
     catch e => discard (c.exec "rollback"); throw e
+  -- a db at a newer version is left alone: this binary may not write to it (`checkWritable`)
+  if (← dbVersion c) < DB_VERSION then
+    inTxn c "begin immediate" do
+      let v ← dbVersion c
+      for (n, sqls) in dbMigrations do
+        if v < n then for q in sqls do discard <| c.exec q
+      if v < DB_VERSION then discard <| c.exec s!"pragma user_version={DB_VERSION}"
   return c
 
 /-- The connection, opened on first use. -/
@@ -209,17 +240,6 @@ def agentSwarm (c : Conn) (sc : Scope) : Stmt → IO Stmt
     return .ins "event" cs ((cs.zip vs).map fun (k, v) => if k == "swarm" then .text sw else v)
   | st => return st
 
-/-- `act` between `begin` and COMMIT; any error rolls back. -/
-def inTxn (c : Conn) (begin : String) (act : IO α) : IO α := do
-  discard <| c.exec begin
-  try
-    let a ← act
-    discard <| c.exec "commit"
-    return a
-  catch e =>
-    try discard <| c.exec "rollback" catch _ => pure ()
-    throw e
-
 /-- The condition a select of table `t` is scoped by: the scope's swarm for agents (none when
 `every`) and events, its repo for CI runs, its repo and its agents for worktrees (meta is scoped by `loadMetasWhere`). A
 lock row carries its repo, so a select of locks names it. -/
@@ -301,9 +321,9 @@ def runTxnOn (c : Conn) (sc : Scope) (writes : Bool) : Txn α → IO (Option α)
 /-- The statement store's transaction (sw-global §3): the reads and the decision in a read transaction (BEGIN, no
 write lock), which ends there when it writes nothing; one that writes runs again, reads, decision and plan, in one BEGIN
 IMMEDIATE (the decision is pure, so the second run is the transaction). Any error rolls back. -/
-def sqliteRun (c : Conn) (sc : Scope) (t : Txn α) : IO α := do
+def sqliteRun (c : Conn) (sc : Scope) (t : Txn α) (mine : Nat := DB_VERSION) : IO α := do
   if let some a ← inTxn c "begin" (runTxnOn c sc false t) then return a
-  match ← inTxn c "begin immediate" (runTxnOn c sc true t) with
+  match ← inTxn c "begin immediate" (do checkWritable c mine; runTxnOn c sc true t) with
   | some a => return a
   | none => throw (IO.userError "swarm: a transaction stopped short under BEGIN IMMEDIATE")
 

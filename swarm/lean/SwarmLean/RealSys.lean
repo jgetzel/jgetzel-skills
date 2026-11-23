@@ -63,6 +63,7 @@ def sqlAtIO (path schema : String) (stmts : List (String × List Sqlite.Val)) (r
   c.script schema
   discard <| c.exec "begin immediate"
   try
+    checkWritable c
     let r ← stmts.mapM fun (q, ps) => c.query q ps
     discard <| c.exec "commit"
     return r
