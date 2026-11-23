@@ -53,8 +53,9 @@ def test_land_refusals (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "other"]
   has (← t.sw "c" ["task", "land", "1", "--sha", sha] { ok := false }).stderr "task #1 is not yours (a owns it)"
   has (← t.sw "a" ["task", "land", "2", "--sha", sha] { ok := false }).stderr "task #2 is not yours"
-  t.q_ "update task set owner='a' where id=2"  -- owned but open: not claimed
-  has (← t.sw "a" ["task", "land", "2", "--sha", sha] { ok := false }).stderr "task #2 is open; only a claimed task"
+  t.q_ "update task set owner='a' where id=2"  -- owned but open fits no task state: the row is refused
+  has (← t.sw "a" ["task", "land", "2", "--sha", sha] { ok := false }).stderr "task #2: open with owner set"
+  t.q_ "update task set owner=null where id=2"
   has (← t.sw "a" ["task", "land", "1", "--sha", "nosuchref"] { ok := false }).stderr "no such commit here"
   has (← t.sw "a" ["task", "land", "1", "--sha", " "] { ok := false }).stderr "--sha is empty"
   eq (← state t 1) "claimed"

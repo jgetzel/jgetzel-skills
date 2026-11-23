@@ -39,3 +39,9 @@ loops only as if every scope were one db; and `Watchd.sweep`'s new `made` filter
 one more skip condition for `sweep_W1` and the keep proofs. #81/#82 state and prove that watchd never moves a live
 binding (`Cmd.Watchd.ensureComms` binds only when `commsPresent` is false, re-read after the launch, and with
 `bindAgent`'s takeover off).
+
+Board #1810 moved a task's owner, lease_until, question and hand-over (land_sha, lander, landing_at) into `Task.state :
+TaskState` (`Db/Rows.lean`); `Task.owner` and the rest read the state. The legacy proofs' row updates
+(`{ t with state := .open, owner := none, … }`) become the step functions' constructors (`reopenF`, `TaskState.toDone`,
+`.block`, `.unblock`, `.renew`), `t.state = .x` becomes `t.status = .x`, and `Task.Owned` follows from
+`TaskState.owned` for every task, so the `Owned` half of `Inv`'s preservation proofs goes.

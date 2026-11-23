@@ -236,7 +236,7 @@ def deliverTo (name hc text : String) : m (Option String) := do
 /-- The `/compact` line for agent row `a`: its claimed or blocked task, worktree and branch, and `extra` (board #136); `db` holds the
 agent's row, its tasks and its worktrees. -/
 def compactLine (db : Db) (a : Agent) (extra : Option String) : m String := do
-  let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.state = .claimed || r.state = .blocked)).mergeSort
+  let task := ((db.tasks.filter fun r => r.owner == some a.name && (r.status = .claimed || r.status = .blocked)).mergeSort
     (·.id ≤ ·.id)).head?
   -- an agent's cwd is the checkout it was spawned from; its worktree is what it must find again
   let dir := ((← Workspaces.wtMap db).lookup a.name).orElse fun _ => a.cwd

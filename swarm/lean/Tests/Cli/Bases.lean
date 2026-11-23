@@ -328,7 +328,7 @@ def test_spawn_task_of_two_repos_makes_a_worktree_in_each (t : T) : IO Unit := d
 def test_landed_check_judges_each_worktree_in_its_repo (t : T) : IO Unit := do
   let r2 ← spawnTwo t
   let w2 := t.d ++ "/repo2-t-9"
-  t.q_ "update task set state='done', evidence='x' where id=1"
+  t.q_ "update task set state='done', evidence='x', lease_until=null where id=1"
   t.q_ "update agent set status='idle' where name='t-9'"
   put (w2 ++ "/n.txt") "n"
   discard <| t.git (some w2) ["add", "."]

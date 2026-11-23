@@ -64,7 +64,7 @@ def test_note_owner_gone_held (t : T) : IO Unit := do
   has (← t.sw "a" ["post", "#2", "to b live"]).stdout "posted to #2: to b"
   t.q_ "update agent set ended=strftime('%s','now') where name='b'"
   has (← t.sw "a" ["post", "#2", "b ended"]).stdout "posted to #2: held for #2's next owner"
-  t.q_ "update task set state='open', owner=null"
+  t.q_ "update task set state='open', owner=null, lease_until=null"
   has (← t.sw "c" ["task", "claim", "1"]).stdout "a: for whoever"
   let o2 := (← t.sw "c" ["task", "claim", "2"]).stdout
   has o2 "a: b ended"; hasnt o2 "to b live"

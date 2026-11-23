@@ -29,7 +29,7 @@ def lockHolder (db : Db) (me : String) (p : InRepo) (now : Int) : Option Lock :=
 
 /-- `task #N: title` of the first task `name` holds, else `no claimed task` (locks.task_of). -/
 def taskOf (db : Db) (name : String) : String :=
-  let held := db.tasks.filter fun t => t.owner == some name && (t.state = .claimed || t.state = .blocked)
+  let held := db.tasks.filter fun t => t.owner == some name && (t.status = .claimed || t.status = .blocked)
   match held.mergeSort (·.id ≤ ·.id) with
   | t :: _ => s!"task #{d t.id}: {t.title.getD ""}"
   | [] => "no claimed task"

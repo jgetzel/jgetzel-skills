@@ -20,7 +20,7 @@ def big (t : T) : IO Unit := do
   let n ← now
   gen t 400 "agent(name, status, last_active, cwd)" s!"select 'ag'||i, case when i%2 then 'idle' else 'working' end, {n}-i, '/w/'||i"
   gen t 500 "task(title, body, state, owner, lease_until, created_by)"
-    s!"select 'task '||i, 'body of task '||i, case when i%5=0 then 'claimed' when i%5=1 then 'open' else 'done' end, case when i%5=0 then 'ag'||i else null end, {n}+3600, 'a'"
+    s!"select 'task '||i, 'body of task '||i, case when i%5=0 then 'claimed' when i%5=1 then 'open' else 'done' end, case when i%5=0 then 'ag'||i else null end, case when i%5=0 then {n}+3600 else null end, 'a'"
   gen t 600 "msg(ts, frm, dest, body, kind)" s!"select {n}-i, 'ag'||(i%400), 'ag'||((i+1)%400), 'message '||i, 'msg'"
   gen t 340 "workspace(path, branch, agent)" "select '/w/'||i, 'ag'||i||'/1', 'ag'||i"
   gen t 20000 "event(ts, agent, kind, path, data)" s!"select {n}-20000+i, 'ag'||(i%400), 'tool', '/w/'||(i%340)||'/f.lean', 'event '||i"

@@ -112,7 +112,7 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
       | none => "no stay")]
     short := short ++ [("stay", "stays")]
   if has "task" on then
-    let r := db.tasks.find? fun r => r.owner == some x.name && (r.state = .claimed || r.state = .blocked)
+    let r := db.tasks.find? fun r => r.owner == some x.name && (r.status = .claimed || r.status = .blocked)
     detail := detail ++ [("task", match r with
       | some r => s!"#{r.id} {cont (r.title.getD "")}{match r.lease_until with | some l => s!", lease {dur (max 0 (l - t))} left" | none => ""}"
       | none => "none")]
@@ -218,9 +218,9 @@ def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Statu
   let tm := Tasks.timing r evs t
   let deps := Tasks.depsOf r
   let undone := deps.filter fun x => st[x]? != some .done
-  let blocks := if r.state = .done then [] else waitersOf.toList.map fun x => (x.id : Int)
-  let lease := if r.state = .claimed || r.state = .blocked then (pyI r.lease_until).map (· - t) else none
-  Json.mkObj [("id", Json.int r.id), ("title", N r.title), ("state", .str r.state.text), ("owner", N r.owner),
+  let blocks := if r.status = .done then [] else waitersOf.toList.map fun x => (x.id : Int)
+  let lease := if r.status = .claimed || r.status = .blocked then (pyI r.lease_until).map (· - t) else none
+  Json.mkObj [("id", Json.int r.id), ("title", N r.title), ("state", .str r.status.text), ("owner", N r.owner),
     ("lease_until", NI r.lease_until), ("created_by", N r.created_by), ("evidence", N r.evidence),
     ("deps", .arr (deps.map Json.int).toArray), ("model", N r.model), ("question", N r.question), ("effort", N r.effort),
     ("created_at", NI tm.created_at), ("first_claimed_at", NI tm.first_claimed_at), ("done_at", NI tm.done_at),
@@ -343,14 +343,14 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
   let live := (db.agents.filter (·.ended.isNone)).mergeSort (·.name ≤ ·.name)
   let names := live.map (·.name)
   let evs := db.events.filter fun e => e.kind.any (·.startsWith "stay-") && e.agent.any names.contains
-  let mine (s : Status) (n : String) := db.tasks.filter fun r => r.state = s && r.owner == some n
-  let asks := db.tasks.filter (·.state = .blocked)
+  let mine (s : Status) (n : String) := db.tasks.filter fun r => r.status = s && r.owner == some n
+  let asks := db.tasks.filter (·.status = .blocked)
   let ags := live.map fun x =>
     let own := mine .blocked x.name ++ mine .claimed x.name
     let act := x.last_active.getD 0
     let hung := staySign x (evs.filter (·.agent == some x.name)) == some "hung"
     (x, hung, Json.mkObj [("name", .str x.name), ("hc", N x.hc),
-      ("status", N (if own.any (·.state = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text))),
+      ("status", N (if own.any (·.status = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text))),
       ("task", match own.head? with
         | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str)]
         | none => .null),
@@ -461,8 +461,8 @@ def state (a : Parsed) : m UInt32 := do
   let tev := db.events.filter fun e => (e.kind.map (Tasks.TASK_KINDS.contains ·)).getD false
   let tevBy := groupBy tev fun e => (Tasks.eventTask e).toList
   let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
-  let waitersBy := groupBy (db.tasks.filter (·.state = .open)) fun x => (Tasks.depsOf x).eraseDups
-  let ownBy := groupBy (db.tasks.filter fun r => r.state = .claimed || r.state = .blocked) (·.owner.toList)
+  let waitersBy := groupBy (db.tasks.filter (·.status = .open)) fun x => (Tasks.depsOf x).eraseDups
+  let ownBy := groupBy (db.tasks.filter fun r => r.status = .claimed || r.status = .blocked) (·.owner.toList)
   let evBy := groupBy db.events (·.agent.toList)
   let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
   let lockBy := groupBy db.locks (·.agent.toList)
@@ -473,8 +473,8 @@ def state (a : Parsed) : m UInt32 := do
   let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++ edged.eraseDups ++
     (match tid with | some i => i :: ((db.find i).map Tasks.depsOf).getD [] | none => []) ++
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
-  let sent (r : Task) : Bool := full || !(r.state = .done || r.state = .dropped) || page.contains r.id ||
-    (r.state = .done && me.isSome && r.owner == me)
+  let sent (r : Task) : Bool := full || !(r.status = .done || r.status = .dropped) || page.contains r.id ||
+    (r.status = .done && me.isSome && r.owner == me)
   let tasksJ := (db.tasks.filter sent).map fun r =>
     (taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
   let endedPage := if view == some "agents" then
@@ -495,7 +495,7 @@ def state (a : Parsed) : m UInt32 := do
     let wt := py ((wts.lookup x.name).orElse fun _ => x.wt)
     let (act, s1) ← if live && lanes then Agents.sessionActive seen x t else pure (x.last_active.getD 0, seen)
     seen := s1
-    let status := if !live then some AgentStatus.ended.text else if own.any (·.state = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text)
+    let status := if !live then some AgentStatus.ended.text else if own.any (·.status = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text)
     let sign := if live then staySign x aev else none
     let (cold, s2) ← if live && lanes then Agents.coldReason seen x t else pure (none, seen)
     seen := s2
@@ -513,7 +513,7 @@ def state (a : Parsed) : m UInt32 := do
       ("worktree", N wt), ("branch", branch),
       ("cold_at", if live && x.status != some .working then Json.int (act + Agents.COLD_IDLE) else .null),
       ("task", match own.head? with
-        | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str), ("state", some (.str r.state.text))]
+        | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str), ("state", some (.str r.status.text))]
         | none => .null),
       ("files", .arr files.toArray)]
     if full then

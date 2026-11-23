@@ -122,7 +122,7 @@ def test_notices_only_the_swarms_own (t : T) : IO Unit := do
   t.q_ "insert into swarm(name, comms, created) values('u', 'u-comms', 0)"
   t.q_ ("insert into agent(name, swarm, cwd, status, last_active, started) values('u-comms', 'u', ?, 'idle', 1, 1), " ++
     "('u-1', 'u', ?, 'idle', 1, 1)") [.text t.repo, .text t.repo]
-  t.q_ "insert into task(title, state, owner, question) values('theirs', 'blocked', 'u-1', 'which way?')"
+  t.q_ "insert into task(title, state, owner, question, lease_until) values('theirs', 'blocked', 'u-1', 'which way?', 4000000000)"
   t.q_ ("insert into task(title, state, owner, land_sha, lander, landing_at) " ++
     "values('their landing', 'landing', 'u-1', 'abc', 'u-1', 1)")
   t.sw_ "e" ["task", "add", "ours"]; t.sw_ "e" ["task", "claim", "3"]

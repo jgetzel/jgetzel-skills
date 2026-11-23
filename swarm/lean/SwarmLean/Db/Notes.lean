@@ -42,7 +42,7 @@ def dest (here : String → Bool) (comms : Option String) (me : String) (t : Tas
   let ended (st : Status) : Dest := match t.owner with
     | some o => if o != me && here o then .doer o st else gone st
     | Option.none => gone st
-  match t.state with
+  match t.status with
   | .claimed | .blocked | .landing => match t.owner with
     | some o => if o == me then .self else if here o then .owner o else .held
     | Option.none => .held
