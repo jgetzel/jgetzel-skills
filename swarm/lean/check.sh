@@ -14,6 +14,10 @@ for k in ../herdr/mods/*/kit.js; do [ -e "$k" ] || continue; cmp -s "$k" ../herd
 if grep -rnw --include='*.lean' --exclude=Challenge.lean 'sorry\|admit\|native_decide\|^axiom' SwarmLean Main.lean HarnessRetro HarnessRetroMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
 # the spec layer imports no proof and no implementation; nothing but the proofs imports a proof (board #216)
 ./layering.sh || exit 1
+# total functions, no panicking access in non-test code (nopanic.pl: comments and strings don't count)
+if find SwarmLean HarnessRetro -name '*.lean' -not -path 'SwarmLean/Proofs/*' -print0 | xargs -0 perl ./nopanic.pl *.lean | grep .; then
+  echo "partial def or panicking access (]! .get! .head! .toNat! .getLast! .back! panic! unreachable!) in non-test code" >&2; exit 1
+fi
 # git runs only through Git.git / Git.out (World.lean: they put `--end-of-options` before ref operands), never a raw argv
 if grep -rn 'Proc\.output (\?\["git"' SwarmLean Main.lean | grep -v '^SwarmLean/World.lean:'; then echo "a raw Proc.output [\"git\" outside World.lean" >&2; exit 1; fi
 # a signal is sent only by the orphan sweep (to Watchd.orphanVictims), the takeover of a stale watchd, and hc kill
