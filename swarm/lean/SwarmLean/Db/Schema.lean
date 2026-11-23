@@ -44,6 +44,19 @@ create index if not exists event_swarm_agent on event(swarm, agent, id);
 create index if not exists msg_frm on msg(frm, id);
 "
 
+/-- The invariant version of the db, stored in `pragma user_version` (a db header field: it is read and set in the same
+transaction as the migration, needs no table, and a binary can read it before it knows the schema). A fresh or current
+db is at 1; a db made before the version existed reads 0 and is raised to 1 at connect.
+Bump it, with an entry in `dbMigrations`, whenever `WF` or the schema changes: an older binary then refuses to write
+(`Real.checkWritable`), so the "only our code writes" assumption under `wf_reach` (sw-global-proofs.md §3.7) holds across
+binaries built at different commits. -/
+def DB_VERSION : Nat := 1
+
+/-- The migrations: `(v, sqls)` takes a db at version `v - 1` to `v`, run in order by `connect` in one BEGIN IMMEDIATE.
+Obligation (for the proofs phase): if `WF_{v-1} db` then `WF_v` holds of the db after `sqls`, where `WF_v` is `WF` at
+the commit that bumped `DB_VERSION` to `v`. None yet: version 1 is the first. -/
+def dbMigrations : List (Nat × List String) := []
+
 /-- The meta keys of the machine (scope `''`); every other key is a swarm's (scope: its name). -/
 def machineKeys : List String := ["watchd", "watchd_tick", "watchd_up", "watchd_run", "machines", "jobs"]
 
