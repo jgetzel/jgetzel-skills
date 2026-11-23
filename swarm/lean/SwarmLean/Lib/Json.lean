@@ -53,6 +53,44 @@ def fstr (j : Json) (k : String) : Option String := (field j k).bind str?
 /-- An integral field. -/
 def fint (j : Json) (k : String) : Option Int := (field j k).bind int?
 
+open Std.DTreeMap.Internal (Impl) in
+/-- The elements of array field `k` under an object's tree, found on `get?`'s search path, each smaller than the tree. -/
+def itemsIn (k : String) : (t : Impl String (fun _ => Json)) → List {c : Json // sizeOf c < sizeOf t}
+  | .leaf => []
+  | .inner _ k' v l r =>
+    match compare k k' with
+    | .lt => (itemsIn k l).map fun ⟨c, _⟩ => ⟨c, by simp; omega⟩
+    | .gt => (itemsIn k r).map fun ⟨c, _⟩ => ⟨c, by simp; omega⟩
+    | .eq => match v with
+      | .arr cs => cs.attach.toList.map fun ⟨c, h⟩ => ⟨c, by have := Array.sizeOf_lt_of_mem h; simp; omega⟩
+      | _ => []
+
+/-- `items ((field j k).getD .null)`, each element smaller than `j`: a walk that recurses into them terminates. -/
+def kids (j : Json) (k : String) : List {c : Json // sizeOf c < sizeOf j} :=
+  match j with
+  | .obj ⟨⟨t⟩⟩ => (itemsIn k t).map fun ⟨c, _⟩ => ⟨c, by simp; omega⟩
+  | _ => []
+
+open Std.DTreeMap.Internal (Impl) in
+/-- An object tree's members in key order, each value smaller than the tree. -/
+def membersIn : (t : Impl String (fun _ => Json)) → List (String × {c : Json // sizeOf c < sizeOf t})
+  | .leaf => []
+  | .inner _ k v l r =>
+    (membersIn l).map (fun (k, ⟨c, _⟩) => (k, ⟨c, by simp; omega⟩)) ++
+      (k, ⟨v, by simp; omega⟩) :: (membersIn r).map fun (k, ⟨c, _⟩) => (k, ⟨c, by simp; omega⟩)
+
+/-- An object's members in key order (`kvs.toList`), each value smaller than `j`; [] for anything else. -/
+def members (j : Json) : List (String × {c : Json // sizeOf c < sizeOf j}) :=
+  match j with
+  | .obj ⟨⟨t⟩⟩ => (membersIn t).map fun (k, ⟨c, _⟩) => (k, ⟨c, by simp; omega⟩)
+  | _ => []
+
+/-- An array's elements (`items`), each smaller than `j`. -/
+def elems (j : Json) : List {c : Json // sizeOf c < sizeOf j} :=
+  match j with
+  | .arr a => a.attach.toList.map fun ⟨c, h⟩ => ⟨c, by have := Array.sizeOf_lt_of_mem h; simp; omega⟩
+  | _ => []
+
 /-- An optional string as JSON (nil is null). -/
 def ostr : Option String → Json
   | some s => .str s

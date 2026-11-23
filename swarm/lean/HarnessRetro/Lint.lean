@@ -44,8 +44,10 @@ def HOOK_PATH : Re.Pat := .lit "(?:^|(?<=[\\s\"'=(]))((?:~|\\$HOME|\\$\\{HOME\\}
 /-- A path token that is a script or a binary. -/
 def SCRIPT_PATH : Re.Pat := .lit "\\.(py|sh|lua)$|/bin/"
 
-/-- A CLAUDE.md and the files it @imports, recursively, appended to `seen` (at most 51, like Claude Code). -/
-partial def imports (o : Out) (h path : String) (seen : IO.Ref (Array String)) : IO Unit := do
+/-- A CLAUDE.md and the files it @imports, recursively, appended to `seen` (at most 51, like Claude Code). Each level
+deeper pushes one, so `seen`'s cap ends the descent before `fuel` does. -/
+def imports (o : Out) (h path : String) (seen : IO.Ref (Array String)) (fuel : Nat := 64) : IO Unit := do
+  let n + 1 := fuel | return
   if (← seen.get).contains path then return
   if (← seen.get).size > 50 || !(← isfile path) then return
   seen.modify (·.push path)
@@ -53,7 +55,7 @@ partial def imports (o : Out) (h path : String) (seen : IO.Ref (Array String)) :
   for m in IMPORT.finditer text do
     let ref := (m.group 1).getD ""
     let p := normpath (joinPath (dirname path) (expanduser h ref))
-    if ← isfile p then imports o h p seen
+    if ← isfile p then imports o h p seen n
     else if hasSub ref "/" then o.warn s!"{path}: @{ref} not found"
 
 /-- The always-on files and their sizes in bytes. -/

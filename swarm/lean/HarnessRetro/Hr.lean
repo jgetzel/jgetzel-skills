@@ -82,16 +82,19 @@ def normpath (p : String) : String :=
   if r == "" then "." else r
 
 /-- os.path.realpath: symlinks resolved as far as the path exists, the rest normalised lexically. -/
-partial def realpath (p : String) : IO String := do
+def realpath (p : String) : IO String := do
   let cwd := (← IO.currentDir).toString
   let p := normpath (if p.startsWith "/" then p else cwd ++ "/" ++ p)
-  let rec go (p : String) (rest : List String) : IO String := do
+  -- each step up shortens the path, so its length bounds the steps
+  let rec go (fuel : Nat) (p : String) (rest : List String) : IO String := do
     if let some r ← (try some <$> IO.FS.realPath p catch _ => pure none) then
       return rest.foldl (fun r c => (if r == "/" then "" else r) ++ "/" ++ c) r.toString
     if p == "/" then return p
     let parent := match dirname p with | "" => "/" | d => d
-    go parent (basename p :: rest)
-  go p []
+    match fuel with
+    | 0 => return p
+    | n + 1 => go n parent (basename p :: rest)
+  go (p.length + 1) p []
 
 /-- The names in a directory, hidden ones skipped; none when it can't be read. -/
 def names (dir : String) : IO (List String) := do
@@ -99,8 +102,8 @@ def names (dir : String) : IO (List String) := do
   catch _ => return []
 
 /-- Files under `dir` (recursive, hidden names skipped, as glob's **) whose name ends in `ext`; sorted. -/
-partial def walk (dir : String) (ext : String) (depth : Nat := 0) : IO (List String) := do
-  if depth > 20 then return []
+def walk (dir : String) (ext : String) (depth : Nat := 0) : IO (List String) := do
+  if _h : depth > 20 then return [] else
   let mut out := #[]
   for n in ← names dir do
     let p := dir ++ "/" ++ n
@@ -109,6 +112,7 @@ partial def walk (dir : String) (ext : String) (depth : Nat := 0) : IO (List Str
     | .file => if n.endsWith ext then out := out.push p
     | _ => pure ()
   return out.toList.mergeSort (· ≤ ·)
+termination_by 21 - depth
 
 /-- glob(dir/*/): sorted, without the trailing slash. -/
 def subdirs (dir : String) : IO (List String) := do

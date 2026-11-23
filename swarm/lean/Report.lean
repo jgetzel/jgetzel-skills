@@ -419,16 +419,19 @@ def report (c : Conn) (since? : Option Int) (state : List Json) : IO Json := do
     ("red_main_runs", ← redRuns commits since), ("messages", .arr msgs.toArray), ("locks", .arr locks.toArray)] ++ git)
 
 /-- Pretty JSON, Python's indent=1 with sorted keys. -/
-partial def enc (v : Json) (ind : Nat) : String :=
+def enc (v : Json) (ind : Nat) : String :=
   let pad := "\n" ++ "".pushn ' ' ind
   let inner := "\n" ++ "".pushn ' ' (ind + 1)
   match v with
-  | .arr xs => if xs.isEmpty then "[]" else "[" ++ inner ++ ("," ++ inner).intercalate (xs.toList.map (enc · (ind + 1))) ++ pad ++ "]"
-  | .obj _ =>
-    let o := (pairs v).map fun (k, x) => Hook.jstr k ++ ": " ++ enc x (ind + 1)
+  | .arr xs => if xs.isEmpty then "[]" else
+    "[" ++ inner ++ ("," ++ inner).intercalate ((SwarmLean.Json.elems (.arr xs)).map fun ⟨x, _⟩ => enc x (ind + 1)) ++ pad ++ "]"
+  | .obj kv =>
+    let o := (SwarmLean.Json.members (.obj kv)).map fun (k, ⟨x, _⟩) => Hook.jstr k ++ ": " ++ enc x (ind + 1)
     if o.isEmpty then "{}" else "{" ++ inner ++ ("," ++ inner).intercalate o ++ pad ++ "}"
   | .str x => Hook.jstr x
   | j => j.compress
+termination_by sizeOf v
+decreasing_by all_goals (rename_i h; simp at h ⊢; omega)
 
 /-- Lua's `%s` class stripped from the right. -/
 def rstrip (x : String) : String := String.ofList (x.toList.reverse.dropWhile isSpace).reverse
@@ -515,9 +518,8 @@ def usageErr (msg : String) : IO α := do
   IO.Process.exit 1
 
 /-- The options: --db, --since, --json (argparse's grammar for these three). -/
-partial def parse (args : List String) (o : List (String × String)) : IO (List (String × String)) := do
+def parse (args : List String) (o : List (String × String)) : IO (List (String × String)) := do
   -- a repeated option: the last wins
-  let set := fun (k v : String) (rest : List String) => parse rest ((k, v) :: o)
   match args with
   | [] => return o
   | a :: rest =>
@@ -526,12 +528,13 @@ partial def parse (args : List String) (o : List (String × String)) : IO (List 
       | k :: v :: vs => if k.startsWith "--" then (k, some ("=".intercalate (v :: vs))) else (a, none)
       | _ => (a, none)
     if k == "--json" then
-      if inl.isSome then usageErr "option '--json' does not take arguments" else set "--json" "" rest
+      if inl.isSome then usageErr "option '--json' does not take arguments" else parse rest (("--json", "") :: o)
     else if k == "--db" || k == "--since" then
-      match inl, rest with
-      | some v, _ => set k v rest
-      | none, v :: rest' => if v.startsWith "-" && v.length > 1 then usageErr s!"option '{k}' requires an argument" else set k v rest'
-      | none, [] => usageErr s!"option '{k}' requires an argument"
+      match inl with
+      | some v => parse rest ((k, v) :: o)
+      | none => match rest with
+        | v :: rest' => if v.startsWith "-" && v.length > 1 then usageErr s!"option '{k}' requires an argument" else parse rest' ((k, v) :: o)
+        | [] => usageErr s!"option '{k}' requires an argument"
     else if a.startsWith "-" && a.length > 1 then usageErr s!"unknown option '{k}'"
     else usageErr "too many arguments"
 
