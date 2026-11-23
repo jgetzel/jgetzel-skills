@@ -65,7 +65,7 @@ structure Timing where
   done_ctx : Option Int
   pr : Option Int
   merged_at : Option Int
-  ci_conclusion : Option String
+  ci_conclusion : Option Conclusion
   merge_to_green_s : Option Int
 
 /-- Task `r`'s durations from its columns, else from its events `evs` (tasks.task_timing). -/

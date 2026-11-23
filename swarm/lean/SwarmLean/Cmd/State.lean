@@ -224,7 +224,7 @@ def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Statu
     ("lease_until", NI r.lease_until), ("created_by", N r.created_by), ("evidence", N r.evidence),
     ("deps", .arr (deps.map Json.int).toArray), ("model", N r.model), ("question", N r.question), ("effort", N r.effort),
     ("created_at", NI tm.created_at), ("first_claimed_at", NI tm.first_claimed_at), ("done_at", NI tm.done_at),
-    ("dropped_at", NI tm.dropped_at), ("pr", NI tm.pr), ("merged_at", NI tm.merged_at), ("ci_conclusion", N tm.ci_conclusion),
+    ("dropped_at", NI tm.dropped_at), ("pr", NI tm.pr), ("merged_at", NI tm.merged_at), ("ci_conclusion", N (tm.ci_conclusion.map Conclusion.text)),
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
     ("qpos", NI r.qpos), ("hold", N r.hold), ("land_sha", N r.land_sha), ("lander", N r.lander), ("landing_at", NI r.landing_at),
@@ -358,7 +358,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
       ("hung", .bool hung)])
   let need (kind : String) (l : List (String × Option Json)) := obj ((("kind", some (Json.str kind))) :: l)
   let ci := db.cis.mergeSort fun x y => x.created.getD "" ≥ y.created.getD ""
-  let fin := ci.filter fun r => r.status == some "completed" && r.conclusion.any (· != "cancelled")
+  let fin := ci.filter (·.finished)
   let mach ← Machine.mem
   -- memory per swarm ("New swarm CLI output" 3): the live agents' process trees on this machine, from their claude
   let rss := ((Machine.holders db.agents (← Machine.procs)).filter (·.agent != "other session")).foldl (· + ·.kb) 0
@@ -368,7 +368,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
       (fun x => need "prompt" [("agent", some (.str x.name))]) ++
     (ags.filter (·.2.1)).map (fun (x, _) => need "hung" [("agent", some (.str x.name))]) ++
     (match fin.head? with
-      | some r => if r.conclusion != some "success" then
+      | some r => if r.conclusion != some .success then
           [need "ci" [("run", some (Json.int r.id)), ("url", r.url.map .str), ("created", r.created.map .str)]] else []
       | none => []) ++
     (match mach with
@@ -380,7 +380,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
       (k, Json.int (sts.filter (·.2.text == k)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
     -- the bar's "main green" and the communicator's Away switch
-    ("ci", match ci.head? with | some r => Json.mkObj [("status", N r.status), ("conclusion", N r.conclusion)] | none => .null),
+    ("ci", match ci.head? with | some r => Json.mkObj [("status", N (r.status.map RunStatus.text)), ("conclusion", N (r.conclusion.map Conclusion.text))] | none => .null),
     ("away", .bool ((db.getMeta "away").bind (·.v)).isSome)]
 
 /-- Each task's id and state, every task's, in id order (`Swarms.taskStates`): the counts, the deps' states and the
@@ -557,10 +557,10 @@ def state (a : Parsed) : m UInt32 := do
   let cv ← match py (metaV "comms") with | some c => pure (some c) | none => env "SWARM_COMMS"
   let nlive := (ags.filter fun (_, live, n) => live && some n != cv).length
   let byCreated := db.cis.mergeSort fun x y => x.created.getD "" ≥ y.created.getD ""
-  let runs := (byCreated.take 5).map fun r => Json.mkObj [("id", Json.int r.id), ("status", N r.status),
-    ("conclusion", N r.conclusion), ("url", N r.url), ("created", N r.created)]
-  let fin := (byCreated.filter fun r => r.status == some "completed" && r.conclusion.any (· != "cancelled")).take 50
-  let streak := (fin.takeWhile (·.conclusion != some "success")).length
+  let runs := (byCreated.take 5).map fun r => Json.mkObj [("id", Json.int r.id), ("status", N (r.status.map RunStatus.text)),
+    ("conclusion", N (r.conclusion.map Conclusion.text)), ("url", N r.url), ("created", N r.created)]
+  let fin := (byCreated.filter (·.finished)).take 50
+  let streak := (fin.takeWhile (·.conclusion != some .success)).length
   let mut out : List (String × Json) := [("active", .bool (ags.any (·.2.1))), ("db", .str p), ("now", Json.int t),
     ("view", N view), ("comms", N cv),
     -- the user's staffing numbers (agents.limits) and the board's "auto-spawn holding" line while it holds

@@ -132,7 +132,7 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
   if let some k := pyI tm.claim_ctx then s := s ++ s!", ctx {fdiv k 1000}k at claim"
   if let some k := pyI tm.done_ctx then s := s ++ s!" -> {fdiv k 1000}k at done"
   if let some ma := pyI tm.merged_at then
-    s := s ++ s!"\nPR #{(tm.pr.map d).getD "None"} merged {← Clock.hhmm ma}, main CI {(py tm.ci_conclusion).getD "pending"}"
+    s := s ++ s!"\nPR #{(tm.pr.map d).getD "None"} merged {← Clock.hhmm ma}, main CI {(py (tm.ci_conclusion.map Conclusion.text)).getD "pending"}"
     if let some g := tm.merge_to_green_s then s := s ++ s!", green {fdiv g 60}m after merge"
   return s ++ depLines db r ++ "\n" ++ ((py r.body).map contBlock).getD "(no body)" ++
     (match py r.answer with | some a => "\nAnswer to the block: " ++ cont a | none => "")

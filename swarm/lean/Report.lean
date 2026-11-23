@@ -245,9 +245,9 @@ def redRuns (commits : List (Int × String × String)) (since : Int) : IO Json :
     (fs a "createdAt").getD "" ≤ (fs b "createdAt").getD ""
   let mut out := #[]
   for (r, i) in keep.zipIdx do
-    if fs r "conclusion" == some "failure" then
+    if (fs r "conclusion").map SwarmLean.Conclusion.ofText == some .failure then
       -- a green run created at the same second does not fix it (the Lua's sort left such ties in no set order)
-      let fix := (keep.drop (i + 1)).find? fun x => fs x "conclusion" == some "success" && fs x "createdAt" != fs r "createdAt"
+      let fix := (keep.drop (i + 1)).find? fun x => (fs x "conclusion").map SwarmLean.Conclusion.ofText == some .success && fs x "createdAt" != fs r "createdAt"
       out := out.push (Json.mkObj [("run", (f r "databaseId").getD .null), ("broke", .str (by_ (fs r "headSha"))),
         ("fixed_by", (fix.map fun x => Json.str (by_ (fs x "headSha"))).getD .null)])
   return .arr out
@@ -343,7 +343,7 @@ def report (c : Conn) (since? : Option Int) (state : List Json) : IO Json := do
     if let some x := fnum t "work_s" then works := works ++ [x]
     if let some x := fnum t "queue_wait_s" then qw := qw ++ [x]
     if let some x := fnum t "merge_to_green_s" then m2g := m2g ++ [x]
-    if fs t "ci_conclusion" == some "failure" then red := red.push ((f t "id").getD .null)
+    if (fs t "ci_conclusion").map SwarmLean.Conclusion.ofText == some .failure then red := red.push ((f t "id").getD .null)
     blocked := blocked + (fnum t "blocked_s").getD 0
     if fi t "claims" > 1 then
       reclaimed := reclaimed.push (Json.mkObj [("id", (f t "id").getD .null), ("claims", (f t "claims").getD .null),

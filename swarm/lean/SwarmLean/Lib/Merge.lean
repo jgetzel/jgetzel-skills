@@ -13,7 +13,8 @@ def VIEW_FIELDS : String := "state,mergeable,headRefOid,statusCheckRollup"
 def checksPass (rollup : Option Json) : Bool :=
   let xs := (rollup.map Json.items).getD []
   !xs.isEmpty && xs.all fun x =>
-    Json.fstr x "status" == some "COMPLETED" && (Json.fstr x "conclusion" == some "SUCCESS" || Json.fstr x "conclusion" == some "SKIPPED")
+    (Json.fstr x "status").map RunStatus.ofGh == some .completed &&
+      ((Json.fstr x "conclusion").map Conclusion.ofGh == some .success || (Json.fstr x "conclusion").map Conclusion.ofGh == some .skipped)
 
 /-- A PR's head whose checks were all green and which was mergeable when one `gh pr view` response showed it; only
 `GreenHead.parse` makes one. -/
