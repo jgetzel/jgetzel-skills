@@ -46,6 +46,18 @@ def leanSettings (cwd : String) : m (List (String × Lean.Json)) := do
           ("skillOverrides", Lean.Json.mkObj (off.map (·, Lean.Json.str "off"))),
           ("syncClaudeAiSkills", Lean.Json.bool false), ("disableWorkflows", Lean.Json.bool true)]
 
+/-- The Herdr space of swarm `group`'s communicator: its terminal's `herdr.space` label (the window labels every terminal
+it shows); none without a live bound communicator, the label or hc. -/
+def commsSpace (group : String) : m (Option String) := do
+  if group == "" then return none
+  let some c := ((← Swarms.list).find? (·.name == group)).bind (·.comms) | return none
+  let some h := (← Store.view [Sels.agent c] (·.agent c)).bind fun a => if a.ended.isNone then py a.hc else none
+    | return none
+  let o ← Proc.output ["hc", "get", h] none []
+  let j := match o with | some o => if o.code == 0 then (Lean.Json.parse o.stdout).toOption else none | none => none
+  let l := (j.bind fun j => (j.getObjVal? "labels").toOption).getD .null
+  return py (l.getObjValAs? String "herdr.space").toOption
+
 /-- Writes agent `name`'s settings file and runs launch.sh for it in `cwd`: launch.sh's
 output (none on failure) and the first line of its stderr (watchd.launch_agent). Unless `full`, the agent gets the lean
 profile: `leanSettings` and no MCP servers. -/
@@ -75,7 +87,13 @@ def launchAgent (name brief model : String) (effort cwd : Option String) (full :
   let argv := [launch, name, "tab", brief, "--permission-mode", "auto", "--model", model, "--settings", sf] ++
     (match effort with | some e => ["--effort", e] | none => []) ++
     (if full then [] else ["--strict-mcp-config", "--no-chrome"])
-  let o ← Proc.output argv cwd []
+  -- the tab opens in the swarm's space, its communicator's, not the spawner's: watchd spawns from a hidden terminal
+  -- with no space (model README row 24); launch.sh reads SWARM_SPACE first
+  let scope ← Store.view [] (·.swarm)
+  let space ← match ← env "SWARM_SPACE" with
+    | some s => pure (some s)
+    | none => commsSpace (if group != "" then group else scope)
+  let o ← Proc.output argv cwd (match space with | some s => [("SWARM_SPACE", s)] | none => [])
   let err := match o with | some o => ((strip o.stderr).splitOn "\n").headD "" | none => ""
   let mut out := match o with | some o => if o.code == 0 then some o.stdout else none | none => none
   if out.isNone then  -- launch.sh can fail after hc started the agent: keep a live terminal by that name
