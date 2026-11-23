@@ -88,6 +88,21 @@ def test_auto_spawn_once_within_cap (t : T) : IO Unit := do
   tick t 2
   eq (← spawned t).length 1  -- the task is claimed: no second spawn
 
+-- an auto-spawned agent's tab opens in its swarm's space: launch.sh gets SWARM_SPACE, the communicator's terminal's
+-- herdr.space label, since watchd may run in a hidden terminal with none (2026-11-22: --restart's)
+def test_auto_spawn_lands_in_the_comms_space (t : T) : IO Unit := do
+  t.fakes; twoHaiku t
+  t.q_ "update agent set hc='t9' where name='t-comms'"
+  let D := shquote t.d
+  discard <| t.fake "hc" s!"#!/bin/sh\necho \"$*\" >> {D}/hc.log\ncase \"$1\" in\n  ls) exit 1 ;;\n  get) if [ \"$2\" = t9 ]; then echo '\{\"labels\": \{\"herdr.space\": \"sp1\"}}'; else echo '\{}'; fi ;;\n  *) echo '\{}' ;;\nesac\n"
+  let l ← t.launch
+  put (t.d ++ "/launch2") s!"#!/bin/sh\necho \"space=$SWARM_SPACE\" >> {D}/space.log\nexec {shquote l} \"$@\"\n" "755"
+  t.launchR.set (some (t.d ++ "/launch2"))
+  t.sw_ "a" ["task", "add", "do it"]
+  tick t 2
+  eq (← spawned t).length 1
+  eq (strip ((← slurp (t.d ++ "/space.log")).getD "")) "space=sp1"
+
 -- a swarm staffs only tasks of its repos; a task of no repo only by a claim or `spawn --task`
 def test_auto_spawn_staffs_only_the_swarms_repos (t : T) : IO Unit := do
   t.fakes; twoHaiku t
@@ -841,6 +856,7 @@ def test_state_json_hc_only_where_shown (t : T) : IO Unit := do
   eq (← hcCalls) ["t-live", "--json"]  -- never an ended agent's terminal; one `hc ls --json` for the live one's fate
 
 def tests : List Case := [
+  ("test_auto_spawn_lands_in_the_comms_space", test_auto_spawn_lands_in_the_comms_space),
   ("test_auto_spawn_once_within_cap", test_auto_spawn_once_within_cap),
   ("test_limits_all_or_nothing", test_limits_all_or_nothing),
   ("test_reserved_and_bad_names_refused", test_reserved_and_bad_names_refused),
