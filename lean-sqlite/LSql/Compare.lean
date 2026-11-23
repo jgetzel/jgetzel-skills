@@ -1,0 +1,146 @@
+import LSql.Record
+/-! sqlite's value ordering (datatype3.html §4.1, vdbeaux.c sqlite3MemCompare) and collations, on values and on records. -/
+namespace LSql
+
+inductive Collation where
+  | binary | nocase | rtrim
+  deriving DecidableEq, Repr, Inhabited
+
+def Collation.ofName? (s : String) : Option Collation :=
+  match s.toUpper with
+  | "BINARY" => some .binary
+  | "NOCASE" => some .nocase
+  | "RTRIM" => some .rtrim
+  | _ => none
+
+/-- Exact comparison of an integer and a real (vdbeaux.c sqlite3IntFloatCompare); NaN compares below every integer. -/
+def cmpIntReal (i : Int64) (r : Float) : Ordering :=
+  if r.isNaN then .gt
+  else if r < -9223372036854775808.0 then .gt
+  else if r >= 9223372036854775808.0 then .lt
+  else
+    let y := r.toInt64
+    if i < y then .lt else if i > y then .gt
+    else
+      let f := r - y.toFloat
+      if f > 0 then .lt else if f < 0 then .gt else .eq
+
+@[inline] def cmpFloat (a b : Float) : Ordering :=
+  if a < b then .lt else if a > b then .gt else .eq
+
+@[inline] def foldCase (c : UInt8) : UInt8 := if c ≥ 65 && c ≤ 90 then c + 32 else c
+
+/-- Compares bytes `a[ai, ai+an)` and `b[bi, bi+bn)` under a collation (memcmp order; NOCASE folds ASCII; RTRIM ignores trailing spaces). -/
+def cmpBytes (coll : Collation) (a : ByteArray) (ai an : Nat) (b : ByteArray) (bi bn : Nat) : Ordering :=
+  let n := min an bn
+  match go 0 n with
+  | .eq =>
+    if an == bn then .eq
+    else if coll == .rtrim then
+      if an < bn then (if allSpaces b (bi + an) (bn - an) then .eq else .lt)
+      else (if allSpaces a (ai + bn) (an - bn) then .eq else .gt)
+    else compare an bn
+  | o => o
+where
+  go (k : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 =>
+      let x := rd a (ai + k)
+      let y := rd b (bi + k)
+      let (x, y) := if coll == .nocase then (foldCase x, foldCase y) else (x, y)
+      if x < y then .lt else if x > y then .gt else go (k+1) f
+  allSpaces (c : ByteArray) (i : Nat) : Nat → Bool
+    | 0 => true
+    | f+1 => rd c i == 32 && allSpaces c (i+1) f
+
+@[inline] def strByte (s : String) (i : Nat) : UInt8 :=
+  if h : (⟨i⟩ : String.Pos.Raw) < s.rawEndPos then s.getUTF8Byte ⟨i⟩ h else 0
+
+/-- Compares two strings' UTF-8 bytes in place under a collation. -/
+def cmpStrings (coll : Collation) (a b : String) : Ordering :=
+  let an := a.utf8ByteSize
+  let bn := b.utf8ByteSize
+  match go 0 (min an bn) with
+  | .eq =>
+    if an == bn then .eq
+    else if coll == .rtrim then
+      if an < bn then (if spaces b an (bn - an) then .eq else .lt)
+      else (if spaces a bn (an - bn) then .eq else .gt)
+    else compare an bn
+  | o => o
+where
+  go (k : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 =>
+      let x := strByte a k
+      let y := strByte b k
+      let (x, y) := if coll == .nocase then (foldCase x, foldCase y) else (x, y)
+      if x < y then .lt else if x > y then .gt else go (k+1) f
+  spaces (s : String) (i : Nat) : Nat → Bool
+    | 0 => true
+    | f+1 => strByte s i == 32 && spaces s (i+1) f
+
+/-- sqlite3MemCompare: NULL < numbers < text < blob; text under the collation. -/
+def cmpValues (coll : Collation) : Value → Value → Ordering
+  | .null, .null => .eq
+  | .null, _ => .lt
+  | _, .null => .gt
+  | .int a, .int b => compare a b
+  | .int a, .real b => cmpIntReal a b
+  | .real a, .int b => (cmpIntReal b a).swap
+  | .real a, .real b => cmpFloat a b
+  | .int _, _ | .real _, _ => .lt
+  | _, .int _ | _, .real _ => .gt
+  | .text a, .text b => cmpStrings coll a b
+  | .text _, .blob _ => .lt
+  | .blob _, .text _ => .gt
+  | .blob a, .blob b => cmpBytes .binary a 0 a.size b 0 b.size
+
+/-- How an index orders its key fields: one collation and direction per indexed column (the rowid after them is BINARY, ASC). -/
+structure KeyInfo where
+  colls : Array Collation := #[]
+  desc : Array Bool := #[]
+  /-- the fields that are the key (a WITHOUT ROWID table's record continues with its other columns) -/
+  limit : Nat := 1000000
+  deriving Inhabited
+
+/-- The storage class order of a serial type: 0 null, 1 number, 2 text, 3 blob. -/
+@[inline] def serialClass (t : UInt64) : Nat :=
+  if t == 0 || t == 10 || t == 11 then 0 else if t ≤ 9 then 1 else if t % 2 == 1 then 2 else 3
+
+/-- Compares one field of each record from their serial types and body offsets. -/
+def cmpField (coll : Collation) (a : ByteArray) (ta : UInt64) (oa : Nat) (b : ByteArray) (tb : UInt64) (ob : Nat) : Ordering :=
+  let ca := serialClass ta
+  let cb := serialClass tb
+  if ca != cb then compare ca cb
+  else match ca with
+  | 0 => .eq
+  | 1 =>
+    match decodeField a oa ta, decodeField b ob tb with
+    | .int x, .int y => compare x y
+    | .int x, .real y => cmpIntReal x y
+    | .real x, .int y => (cmpIntReal y x).swap
+    | .real x, .real y => cmpFloat x y
+    | _, _ => .eq
+  | 2 => cmpBytes coll a oa (serialLen ta) b ob (serialLen tb)
+  | _ => cmpBytes .binary a oa (serialLen ta) b ob (serialLen tb)
+
+/-- Compares two index records field by field (a missing field ends the comparison as equal: a probe with fewer fields
+matches every entry it is a prefix of). -/
+def cmpRecords (ki : KeyInfo) (a b : ByteArray) : Ordering :=
+  let (ha, ka) := getVarint a 0
+  let (hb, kb) := getVarint b 0
+  go ha.toNat hb.toNat ka kb ha.toNat hb.toNat 0 (a.size + 1)
+where
+  go (ha hb pa pb oa ob i : Nat) : Nat → Ordering
+    | 0 => .eq
+    | fuel+1 =>
+      if pa ≥ ha || pb ≥ hb || i ≥ ki.limit then .eq else
+      let (ta, la) := getVarint a pa
+      let (tb, lb) := getVarint b pb
+      let coll := ki.colls.getD i .binary
+      match cmpField coll a ta oa b tb ob with
+      | .eq => go ha hb (pa + la) (pb + lb) (oa + serialLen ta) (ob + serialLen tb) (i+1) fuel
+      | o => if ki.desc.getD i false then o.swap else o
+
+end LSql

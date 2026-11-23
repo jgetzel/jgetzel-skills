@@ -1,0 +1,17 @@
+select typeof(1), typeof(1.5), typeof('x'), typeof(x'00'), typeof(null), typeof(1+1), typeof(1+1.5), typeof(1||2), typeof(-'3'), typeof(+'3'), -'3', +'3', -'abc', -'3.5', ~'3';
+create table t(i integer, t text, r real, n numeric, b blob, a);
+insert into t values(1, 2, 3, 4, 5, 6);
+insert into t values('7', 8.0, '9', '10', '11', '12');
+insert into t values(7.0, 8.5, 9.5, '10.5', 'x', 'y');
+insert into t values(1e3, 1e3, 1e3, 1e3, 1e3, 1e3);
+insert into t values(x'41', x'41', x'41', x'41', x'41', x'41');
+insert into t values(null,null,null,null,null,null);
+insert into t values('  15','  16  ','0x1A','1e2','1e2',' 1e2');
+select i, typeof(i), t, typeof(t), r, typeof(r), n, typeof(n), b, typeof(b), a, typeof(a) from t;
+create table d(a integer default 5, b text default 'z', c default 1.5, d default (1+2), e real default 3);
+insert into d default values;
+select *, typeof(a), typeof(b), typeof(c), typeof(d), typeof(e) from d;
+create table z(a int, b integer, c bigint, d char(5), e varchar(10), f double, g float, h decimal(10,2), i boolean, j date, k clob, l nvarchar, m 'weird type', n2 unsigned big int);
+insert into z values('1','2','3',4,5,'6','7','8','9','10','11','12','13','14');
+select typeof(a), typeof(b), typeof(c), typeof(d), typeof(e), typeof(f), typeof(g), typeof(h), typeof(i), typeof(j), typeof(k), typeof(l), typeof(m), typeof(n2) from z;
+select a, b, c, d, e, f, g, h, i, j, k, l, m, n2 from z;

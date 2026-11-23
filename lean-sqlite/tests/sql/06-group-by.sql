@@ -1,0 +1,18 @@
+create table s(id integer primary key, dept text, who text, sal integer, bonus real);
+insert into s values(1,'eng','a',100,1.5),(2,'eng','b',200,null),(3,'ops','c',50,2.5),(4,'ops','d',70,0.5),(5,'hr','e',90,null),(6,'eng','f',150,3.0),(7,null,'g',10,1.0),(8,null,'h',20,null);
+select dept, count(*), sum(sal), avg(sal), min(sal), max(sal) from s group by dept order by dept;
+select dept, count(bonus), sum(bonus), total(bonus) from s group by dept order by dept;
+select dept, group_concat(who) from s group by dept order by dept;
+select dept, count(*) c from s group by dept having c > 1 order by dept;
+select dept, sum(sal) from s group by dept having sum(sal) >= 100 order by sum(sal) desc;
+select count(*), count(dept), count(distinct dept) from s;
+select dept, count(distinct sal > 60) from s group by dept order by 1;
+select dept, who from s group by dept order by dept;
+select dept is null, count(*) from s group by dept is null order by 1;
+select sal/100 as band, count(*) from s group by band order by band;
+select dept, bonus is null, count(*) from s group by 1, 2 order by 1, 2;
+select count(*) from s where sal > 1000;
+select sum(sal), avg(sal), min(sal), max(sal), total(sal) from s where sal > 1000;
+select dept, count(*) from s where sal > 1000 group by dept;
+select max(sal), who from s;
+select min(sal), who from s;

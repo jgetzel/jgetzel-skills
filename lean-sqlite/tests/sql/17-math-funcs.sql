@@ -1,0 +1,14 @@
+select abs(-3), abs(3), abs(-3.5), abs(null), abs(''), abs('abc'), abs(-0.0);
+select round(2.5), round(3.5), round(-2.5), round(2.4999), round(2.567, 2), round(2.5678, 3), round(1234.5, -1), round(0.5), round(1.5), round(-0.5), round(null), round('3.7'), round(5), typeof(round(5)), round(1e20, 2), round(0.285, 2), round(1.005, 2);
+select sign(-5), sign(0), sign(5), sign(-0.5), sign(null), sign('a'), typeof(sign(2.5));
+select max(1,2,3), min(1,2,3), max('a', 'b'), min('a', 1), max(null, 1), min(null, 1), max(1.5, 1), typeof(max(1, 1.0)), max(2), min(2);
+select typeof(abs(1)), typeof(abs(1.0)), abs(-9223372036854775807);
+select ceil(1.2), ceil(-1.2), ceiling(2.0), floor(1.8), floor(-1.2), typeof(ceil(1.2)), ceil(5), typeof(ceil(5)), trunc(2.7), trunc(-2.7);
+select sqrt(16), sqrt(2), sqrt(-1), power(2, 10), pow(2, 0.5), pow(2, -1), exp(0), exp(1), ln(1), ln(10), ln(0), log(100), log10(1000), log2(8), log(2, 8), mod(10, 3), mod(-10, 3), mod(5.5, 2);
+select sin(0), cos(0), tan(0), asin(1), acos(1), atan(1), atan2(1, 1), sinh(0), cosh(0), tanh(0), degrees(3.141592653589793), radians(180), pi();
+select 10 % 3, -10 % 3, 10 % -3, 5.5 % 2, 5 % 2.0, 9223372036854775807 % 2;
+select zeroblob(3), hex(zeroblob(4)), length(zeroblob(10)), typeof(zeroblob(2));
+select 1e300 * 1e10, -1e300 * 1e10, typeof(1e300*1e10), 1e300*1e10 - 1e300*1e10, typeof(1e300*1e10 - 1e300*1e10);
+select typeof(1 + 1), typeof(1 + 1.0), typeof(1 / 2), typeof(1.0 / 2), typeof(1 % 2), typeof(2 * 3.0), typeof('1' + 1), typeof('1.0' + 1);
+select last_insert_rowid(), changes(), total_changes();
+select likely(1), unlikely(2), likelihood(3, 0.5), typeof(sqlite_version()), length(sqlite_version()) > 0;

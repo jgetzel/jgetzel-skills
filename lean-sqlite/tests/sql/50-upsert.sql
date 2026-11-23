@@ -1,0 +1,18 @@
+create table kv(k text primary key, v int, n int default 0);
+insert into kv values('a', 1, 0), ('b', 2, 0);
+insert into kv values('a', 10, 0) on conflict(k) do update set v = v + excluded.v, n = n + 1;
+select * from kv order by k;
+insert into kv values('c', 3, 0), ('a', 100, 0) on conflict(k) do update set v = excluded.v where excluded.v > kv.v;
+select * from kv order by k;
+insert into kv values('b', 5, 0) on conflict do nothing;
+select changes();
+select * from kv order by k;
+insert into kv(k, v) values('b', 7) on conflict(k) do update set v = excluded.v * 2 where excluded.v > 100;
+select * from kv order by k;
+create table t(id integer primary key, u unique, w);
+insert into t values(1, 'x', 0);
+insert into t values(1, 'y', 1) on conflict(id) do update set w = w + 10;
+insert into t values(2, 'x', 1) on conflict(u) do update set w = w + 100;
+insert into t values(3, 'x', 1) on conflict(id) do nothing;
+select * from t order by id;
+insert into t values(4, 'q', 1) on conflict(w) do nothing;

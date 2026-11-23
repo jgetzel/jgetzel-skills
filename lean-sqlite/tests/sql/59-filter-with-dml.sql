@@ -1,0 +1,16 @@
+create table t(a integer, b text, g);
+insert into t values(1,'x',1),(2,'y',1),(3,null,2),(4,'z',2),(5,'x',2);
+select count(*) filter (where a > 1), sum(a) filter (where b is not null), group_concat(b) filter (where a % 2 = 1) from t;
+select g, count(*) filter (where b = 'x'), max(a) filter (where a < 4), avg(a) filter (where 0) from t group by g order by g;
+select count(distinct b) filter (where a > 1) from t;
+select json_group_array(a) filter (where b is null) from t;
+select g from t group by g having count(*) filter (where b = 'x') > 0 order by g;
+select abs(a) filter (where a > 1) from t;
+with c(v) as (select 2 union all select 4) update t set b = 'w' where a in (select v from c);
+select * from t order by a;
+with recursive r(n) as (select 1 union all select n + 2 from r where n < 5) delete from t where a in r;
+select * from t order by a;
+with m as (select max(a) m from t) update t set g = (select m from m) where a = 2 returning a, g;
+create table log(x);
+with c as (select 10 v) insert into log select v from c;
+select * from log;

@@ -1,0 +1,11 @@
+select 1/0, 1%0, 1.0/0, 1.0%0, 0/0, -1/0, 0.0/0.0, typeof(1/0), typeof(1.0/0);
+select 5 / 0.0, 5 % 0.0, 5 % 0.5, 5.5 % 1.5, 5.5 % -2, 'a' / 0, null / 0, 1 / null;
+select typeof(1 % 0), typeof(1.0 % 0);
+select abs('x'), abs(null), 1;
+select nosuchfunc(1);
+select nosuchcolumn;
+select 1 +;
+select typeof(1 / 0) , typeof(0 / 1);
+select round(1/0), coalesce(1/0, 'was null');
+select 10 / 3, 10 / 3.0, 10 % 3, -10 / 3, -10 % 3, 10 / -3, 10 % -3, 0 / 5, 0 % 5, 0.0 / 5;
+select 7 / 2 * 2 + 7 % 2;
