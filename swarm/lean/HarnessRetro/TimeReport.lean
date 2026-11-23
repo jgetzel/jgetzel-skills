@@ -187,7 +187,7 @@ def ci (since : Float) : IO (Nat × Rows × Array (String × Float)) := do
       let some done := Json.fstr j "completedAt" | continue
       if done.startsWith "0001" then continue
       let dur := (← ts done) - (← ts ((Json.fstr j "startedAt").getD ""))
-      if Json.fstr j "conclusion" == some "skipped" || dur < 0 then continue
+      if (Json.fstr j "conclusion").map SwarmLean.Conclusion.ofText == some .skipped || dur < 0 then continue
       let name := (Json.fstr j "name").getD ""
       jobs := add jobs name dur
       for s in arr (Json.field j "steps") do

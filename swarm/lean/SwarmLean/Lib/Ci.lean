@@ -50,17 +50,25 @@ def FLOW_LINE : String → Option String
 def flow [Git m] [Fs m] (repo : Option String) : m (Option String) := do
   return (Json.fstr (← ciCfg repo) "flow").filter FLOWS.contains
 
+/-- A rollup check's conclusion, none while it is pending (a status context's state counts as one). -/
+def checkResult (x : Json) : Option Conclusion :=
+  if Json.fstr x "__typename" == some "StatusContext" then
+    match (Json.fstr x "state").map String.toLower with
+    | none | some "" | some "pending" | some "expected" => none
+    | some s => some (Conclusion.ofText s)
+  else if (Json.fstr x "status").map RunStatus.ofGh == some .completed then
+    ((Json.fstr x "conclusion").filter (· ≠ "")).map Conclusion.ofGh
+  else none
+
 /-- A PR's checks from gh's statusCheckRollup: green, red or pending (ci.verdict). -/
 def verdict (rollup : Option Json) : String := Id.run do
   let some (.arr xs) := rollup | return "pending"
   if xs.isEmpty then return "pending"
   let mut red := false
   for x in xs do
-    let st := if Json.fstr x "__typename" == some "StatusContext" then Json.fstr x "state"
-      else if Json.fstr x "status" == some "COMPLETED" then Json.fstr x "conclusion" else none
-    match st with
-    | none | some "" | some "PENDING" | some "EXPECTED" => return "pending"
-    | some s => if s != "SUCCESS" && s != "NEUTRAL" && s != "SKIPPED" then red := true
+    match checkResult x with
+    | none => return "pending"
+    | some c => if !c.passes then red := true
   return if red then "red" else "green"
 
 /-- The poll's decision on a claimed task's PR (ci.pr_act): done once merged; wake once its checks finished in a
@@ -92,8 +100,8 @@ def numAt (s pat : String) : Option (Nat × Int) :=
 /-- A run as pr_ci compares them. -/
 structure Run where
   headSha : Option String
-  conclusion : Option String
-  status : Option String
+  conclusion : Option Conclusion
+  status : Option RunStatus
   createdAt : Option String
   updatedAt : Option String
 
@@ -124,7 +132,7 @@ def prCiGate (now : Int) (db : Db) : Db × Bool :=
 def prCiApply (now : Int) (prs : List Lean.Json) (db : Db) : Db :=
   let runs : List Run := (db.cis.mergeSort fun a b => a.created.getD "" ≤ b.created.getD "").map fun x =>
     { headSha := x.sha, conclusion := x.conclusion, status := x.status, createdAt := x.created, updatedAt := x.updated }
-  let completed (f : Run → Bool) : Option Run := runs.find? fun x => x.status == some "completed" && f x
+  let completed (f : Run → Bool) : Option Run := runs.find? fun x => x.status == some .completed && f x
   (prCiTodo now db).foldl (fun db r =>
     let ev := r.evidence.getD ""
     let a := numAt ev "PR #"
@@ -153,10 +161,10 @@ def prCiApply (now : Int) (prs : List Lean.Json) (db : Db) : Db :=
       match completed (·.headSha == oid) with
       | none => db.set r.id fun t => { t with pr := n, merged_at := some merged }
       | some mine =>
-        let green := if mine.conclusion == some "success" then some mine
-          else completed fun x => x.createdAt.getD "" > mine.createdAt.getD "" && x.conclusion == some "success"
+        let green := if mine.conclusion == some .success then some mine
+          else completed fun x => x.createdAt.getD "" > mine.createdAt.getD "" && x.conclusion == some .success
         let db := if r.ci_conclusion != mine.conclusion then
-            db.log now none "task-ci" none (some s!"#{d r.id} {mine.conclusion.getD "-"} {String.ofList ((mine.headSha.getD "-").toList.take 7)}") else db
+            db.log now none "task-ci" none (some s!"#{d r.id} {(mine.conclusion.map Conclusion.text).getD "-"} {String.ofList ((mine.headSha.getD "-").toList.take 7)}") else db
         db.set r.id fun t => { t with pr := n, merged_at := some merged, ci_conclusion := mine.conclusion,
                                       ci_green_at := green.map fun g => ts (g.updatedAt.getD "") }) db
 
@@ -231,8 +239,7 @@ def prWatchTxn (now : Int) (r : Option (String × List Int)) : Txn (Option (List
 /-- The rollup's checks that did not finish well, by name. -/
 def failedChecks (rollup : List Lean.Json) : List String :=
   rollup.filterMap fun x =>
-    let st := if Json.fstr x "__typename" == some "StatusContext" then Json.fstr x "state" else Json.fstr x "conclusion"
-    if st == some "SUCCESS" || st == some "NEUTRAL" || st == some "SKIPPED" then none
+    if (checkResult x).any (·.passes) then none
     else some (((Json.fstr x "name").orElse fun _ => Json.fstr x "context").getD "?")
 
 /-- `tostring(x):sub(1, 7)` of an optional text. -/
@@ -314,13 +321,14 @@ def ciPollApply (now : Int) (runs : Option (List Lean.Json)) (wf : Option String
       let path := match Json.field r "path" with | some (.str p) => p | some j => j.compress | none => "nil"
       if Json.fstr r "event" == some "push" && wf.all (hasSub path ·) then
         let id := ((Json.fint r "databaseId").getD 0).toNat
-        let concl := (Json.fstr r "conclusion").filter (· ≠ "")
+        let concl := ((Json.fstr r "conclusion").filter (· ≠ "")).map Conclusion.ofText
+        let stat := (Json.fstr r "status").map RunStatus.ofText
         if db.cis.any (·.id == id) then
           { db with cis := db.cis.map fun c => if c.id == id then
-              { c with status := Json.fstr r "status", conclusion := concl, updated := Json.fstr r "updatedAt" } else c }
-        else { db with cis := db.cis ++ [({ id, sha := Json.fstr r "headSha", status := Json.fstr r "status", conclusion := concl, url := Json.fstr r "url", created := Json.fstr r "createdAt", updated := Json.fstr r "updatedAt", workflow := some ((Json.fstr r "workflow").getD "") } : Ci)] }
+              { c with status := stat, conclusion := concl, updated := Json.fstr r "updatedAt" } else c }
+        else { db with cis := db.cis ++ [({ id, sha := Json.fstr r "headSha", status := stat, conclusion := concl, url := Json.fstr r "url", created := Json.fstr r "createdAt", updated := Json.fstr r "updatedAt", workflow := some ((Json.fstr r "workflow").getD "") } : Ci)] }
       else db) db
-    (db, (db.cis.filter fun c => c.conclusion == some "failure" && c.failed.isNone).map (·.id))
+    (db, (db.cis.filter fun c => c.conclusion == some .failure && c.failed.isNone).map (·.id))
 
 /-- ci.ci_poll: the base's push runs, one request a minute (`every`), and each red run's failed jobs once. -/
 def ciPoll (repo : Option String) (every : Int := 60) : m Unit := do
@@ -352,7 +360,7 @@ structure NewRed where
 
 /-- The runs ci_check looks at, newest first: the last 10 that finished and were not cancelled. -/
 def checkRuns (db : Db) : List Ci :=
-  ((db.cis.filter fun c => c.status == some "completed" && c.conclusion.isSome && c.conclusion != some "cancelled").mergeSort
+  ((db.cis.filter fun c => c.finished).mergeSort
     fun a b => a.created.getD "" ≥ b.created.getD "").take 10
 
 /-- ci_check before the git and gh reads: a green run on top closes the red tasks it is as new as; a new red run is
@@ -365,7 +373,7 @@ def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option N
   | red :: _ =>
     let openRed := db.tasks.filter fun t => likePrefix (t.title.getD "") Tasks.RED_TASK &&
       (t.state = .open || t.state = .claimed || t.state = .blocked) && inIds ids t
-    if red.conclusion == some "success" then
+    if red.conclusion == some .success then
       (Queue.tidy <| openRed.foldl (fun db t =>
         let n := (t.title.getD "").toList.drop (Tasks.RED_TASK ++ "run ").length |>.takeWhile Char.isDigit
         let n := if (t.title.getD "").startsWith (Tasks.RED_TASK ++ "run ") && !n.isEmpty then (String.ofList n).toNat? else none
@@ -375,7 +383,7 @@ def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option N
         match t.owner with
         | some o => (Msgs.post db now .system (.agent o) s!"main is green (run {d red.id}): #{d t.id} is done; stop fixing it." false (some "system")).1
         | none => db) db, none)
-    else if !(["failure", "timed_out", "startup_failure"].contains (red.conclusion.getD "")) then (db, none)
+    else if !(red.conclusion.any fun c => c == .failure || c == .timedOut || c == .startupFailure) then (db, none)
     else if db.events.any fun e => e.kind == some "ci-red" && e.data == some (d red.id) then (db, none)
     else
       let db := db.log now (some "swarm") "ci-red" none (some (d red.id))
@@ -386,7 +394,7 @@ def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option N
         let fixedAt := ((db.events.filter fun e => e.kind == some "red-fixed" && (e.data.getD "").startsWith s!"#{d t.id} ").filterMap (·.ts)).foldl max 0
         let reopen := hasSub (t.hold.getD "") "awaiting a green run" && ts (red.created.getD "") > fixedAt
         (db.set t.id fun x => { x with body := x.body.map (· ++ add), hold := if reopen then none else x.hold }, none)
-      | [] => (db, some { red, green := runs.find? (·.conclusion == some "success") })
+      | [] => (db, some { red, green := runs.find? (·.conclusion == some .success) })
 
 /-- ci_check's second step: the red task with the commits' authors and the failed log's tail, and the posts. -/
 def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String) (names : List String) (tail : String) (db : Db) : Db :=
@@ -469,9 +477,9 @@ def ciFor (runs : List Ci) (sha : String) (cwd : Option String) : m (String × O
   let mut pend : Option Ci := none
   for r in runs.mergeSort fun a b => a.created.getD "" ≥ b.created.getD "" do
     if r.sha == some sha || (← Git.git ["merge-base", "--is-ancestor", sha, r.sha.getD "nil"] cwd).isSome then
-      if r.status != some "completed" then pend := pend.orElse fun _ => some r
-      else if r.conclusion != some "cancelled" then
-        return (if r.conclusion == some "success" then "success" else "failure", some r)
+      if r.status != some .completed then pend := pend.orElse fun _ => some r
+      else if r.conclusion != some .cancelled then
+        return (if r.conclusion == some .success then "success" else "failure", some r)
   return ("pending", pend)
 
 end SwarmLean.Ci

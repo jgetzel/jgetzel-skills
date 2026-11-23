@@ -251,7 +251,7 @@ def digestText (g : Digest) : m String := do
   l := l ++ list "finished: " (g.done.map fun r => s!"#{r.id} {cont (r.title.getD "")}")
   l := l ++ list "merged: " (g.merged.map fun r => s!"PR #{(r.pr.map d).getD "?"} (#{r.id})")
   l := l ++ ["main CI: " ++ match g.ci with
-    | some c => s!"{(c.conclusion.orElse fun _ => c.status).getD "?"} {String.ofList ((c.sha.getD "").toList.take 7)}"
+    | some c => s!"{((c.conclusion.map Conclusion.text).orElse fun _ => c.status.map RunStatus.text).getD "?"} {String.ofList ((c.sha.getD "").toList.take 7)}"
     | none => "no run seen"]
   l := l ++ list "ended: " (g.ended.map fun (n, _, why) => n ++ match why with | some w => s!" ({w})" | none => "")
   l := l ++ list "hung: " g.hung

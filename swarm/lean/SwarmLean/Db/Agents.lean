@@ -240,8 +240,8 @@ def stayMet (db : Db) (ciTs : String → Int) (n : String) (c : StayCond) (since
   let late (e : Event) : Bool := e.ts.getD 0 ≥ since
   match c with
   | .ci =>
-    (db.cis.filter fun r => r.conclusion.isSome && (r.conclusion != some "") && r.updated.any fun u => ciTs u ≥ since).getLast?.map
-      fun r => s!"{(r.workflow.getD "")} {r.conclusion.getD ""} on {((r.sha.getD "?").take 7).toString}"
+    (db.cis.filter fun r => r.conclusion.any (· != .other "") && r.updated.any fun u => ciTs u ≥ since).getLast?.map
+      fun r => s!"{(r.workflow.getD "")} {(r.conclusion.map Conclusion.text).getD ""} on {((r.sha.getD "?").take 7).toString}"
   | .job id =>
     (db.events.filter fun e => e.kind == some "job-end" && e.path == some id).getLast?.map fun _ => s!"job {id} ended"
   | .task id =>
@@ -339,7 +339,7 @@ def Digest.json (g : Digest) : Lean.Json :=
       ("evidence", s t.evidence), ("done_at", i t.done_at)]).toArray)),
     ("merged", some (.arr (g.merged.map fun t => jobj [("id", n t.id), ("title", s t.title), ("pr", i t.pr),
       ("merged_at", i t.merged_at)]).toArray)),
-    ("ci", some (orNull (g.ci.map fun c => jobj [("sha", s c.sha), ("status", s c.status), ("conclusion", s c.conclusion),
+    ("ci", some (orNull (g.ci.map fun c => jobj [("sha", s c.sha), ("status", s (c.status.map RunStatus.text)), ("conclusion", s (c.conclusion.map Conclusion.text)),
       ("url", s c.url)]))),
     ("ended", some (.arr (g.ended.map fun (nm, at_, why) => jobj [("name", s (some nm)), ("at", i at_),
       ("why", some (orNull (s why)))]).toArray)),

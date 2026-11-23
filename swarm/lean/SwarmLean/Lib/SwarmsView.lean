@@ -13,7 +13,10 @@ open SwarmLean.Run (obj)
 open Sqlite (Val)
 
 /-- The task states the counts list. -/
-def STATES : List String := ["open", "claimed", "blocked", "done", "dropped", "landing"]
+def STATES : List Status := [.open, .claimed, .blocked, .done, .dropped, .landing]
+
+/-- The task state a row's text names (none: null or not a state). -/
+def stateOf (s : Option String) : Option Status := s.bind fun x => (Status.ofText x).toOption
 
 /-- A swarm's meta keys the view reads. -/
 def KNOBS : List String := ["agent_min", "agent_max", "spawn_held", "queue_only", "away", "ctx_nudge"]
@@ -27,11 +30,11 @@ def listed : String :=
 
 /-- A CI run's state as the view shows it: pending until completed, then green, red, or its conclusion (cancelled,
 skipped, neutral). -/
-def ciState (status conclusion : Option String) : String :=
-  if status != some "completed" then "pending" else
+def ciState (status : Option RunStatus) (conclusion : Option Conclusion) : String :=
+  if status != some .completed then "pending" else
   match conclusion with
-  | some "success" => "green"
-  | some c => if ["cancelled", "skipped", "neutral"].contains c then c else "red"
+  | some .success => "green"
+  | some c => if c == .cancelled || c == .skipped || c == .neutral then c.text else "red"
   | none => "pending"
 
 /-- A path's last segment. -/
@@ -43,7 +46,7 @@ def under (dir p : String) : Bool := p == dir || p.startsWith (dir ++ "/")
 /-- One task as the view reads it. -/
 structure T where
   id : Int
-  state : String
+  state : Status
   owner : Option String
   by_ : Option String
   title : Option String
@@ -56,8 +59,8 @@ structure T where
 /-- The open tasks auto-spawn could start (as `Queue.staffing` orders them, its stop-pending test left out): no hold, no
 undone dep; a `main red:` task first, then the queue by position, then the rest by priority and id. -/
 def startable (all ks : List T) : List T :=
-  let undone : Std.HashSet Int := all.foldl (fun h k => if k.state == "done" || k.state == "dropped" then h else h.insert k.id) {}
-  let ok := ks.filter fun k => k.state == "open" && (py k.hold).isNone && !k.deps.any undone.contains
+  let undone : Std.HashSet Int := all.foldl (fun h k => if k.state == .done || k.state == .dropped then h else h.insert k.id) {}
+  let ok := ks.filter fun k => k.state == .open && (py k.hold).isNone && !k.deps.any undone.contains
   let rank (k : T) : List Int :=
     [if (k.title.getD "").startsWith "main red: " then 0 else 1, k.qpos.getD (1 <<< 40), k.priority.getD 2, k.id]
   let rec lex : List Int → List Int → Bool
@@ -95,11 +98,11 @@ def machine (t : Int) (ts trs : List (Array Val)) (ws : List (String × String �
     | _, _ => h
   let newest (xs : List Int) : Option Int := xs.foldl (fun a x => some (match a with | some y => max x y | none => x)) none
   let tasksJ := ts.filterMap fun r => (int r[0]?).map fun id =>
-    let state := (txt r[2]?).getD "open"
+    let state := (stateOf (txt r[2]?)).getD .open
     let owner := py (txt r[9]?)
-    let lease := if state == "claimed" || state == "blocked" then (pyI (int r[7]?)).map (· - t) else none
+    let lease := if state == .claimed || state == .blocked then (pyI (int r[7]?)).map (· - t) else none
     let wt (rp : String) : Option String := owner.bind fun o => (ws.find? fun (a, p, _) => a == o && p == rp).map (·.2.2)
-    Json.mkObj [("id", Json.int id), ("title", Json.ostr (txt r[1]?)), ("state", .str state),
+    Json.mkObj [("id", Json.int id), ("title", Json.ostr (txt r[1]?)), ("state", .str state.text),
       ("priority", Json.int ((int r[3]?).getD Tasks.DEFAULT_PRIORITY)),
       ("labels", .arr ((commaPieces ((txt r[4]?).getD "")).map Json.str).toArray),
       ("repos", .arr ((repos.getD id []).map fun (rp, b) =>
@@ -119,7 +122,7 @@ def machine (t : Int) (ts trs : List (Array Val)) (ws : List (String × String �
     let ci := cis.find? fun c => txt c[0]? == some rp
     Json.mkObj [("path", .str rp), ("name", .str (baseName rp)), ("base", Json.ostr (py (txt r[1]?))),
       ("ci", match ci with
-        | some c => Json.mkObj [("state", .str (ciState (txt c[1]?) (txt c[2]?))), ("sha", Json.ostr (txt c[6]?)),
+        | some c => Json.mkObj [("state", .str (ciState ((txt c[1]?).map RunStatus.ofText) ((txt c[2]?).map Conclusion.ofText))), ("sha", Json.ostr (txt c[6]?)),
             ("run", Json.oint (int c[5]?)), ("url", Json.ostr (txt c[3]?))]
         | none => .null),
       ("locks", .arr ((locks.filter (·.1 == rp)).map fun (_, lp, a, _, _) =>
@@ -128,17 +131,17 @@ def machine (t : Int) (ts trs : List (Array Val)) (ws : List (String × String �
   let need (kind : String) (l : List (String × Json)) : Json := Json.mkObj (("kind", .str kind) :: l)
   let ofTask (kind : String) (r : Array Val) (l : List (String × Json)) : Json :=
     need kind ([("task", Json.oint (int r[0]?)), ("title", Json.ostr (txt r[1]?))] ++ l)
-  let asks := (ts.filter fun r => txt r[2]? == some "blocked").map fun r =>
+  let asks := (ts.filter fun r => stateOf (txt r[2]?) == some .blocked).map fun r =>
     let o := py (txt r[9]?)
     ofTask "ask" r [("question", Json.ostr (txt r[11]?)), ("agent", Json.ostr o), ("swarm", Json.ostr (o.bind swarmOf))]
   let hungs := (live.filter fun (_, x) => hung x evs).map fun (sw, x) =>
     need "hung" [("agent", .str x.name), ("swarm", .str sw), ("stay", Json.ostr (py x.stay))]
-  let landers := (ts.filter fun r => txt r[2]? == some "landing" &&
+  let landers := (ts.filter fun r => stateOf (txt r[2]?) == some .landing &&
       ((int r[14]?).any (· ≤ t - Watchd.LANDING_LATE) || (py (txt r[13]?)).any (!isLive ·))).map fun r =>
     let o := py (txt r[9]?)
     ofTask "lander" r [("agent", Json.ostr o), ("lander", Json.ostr (py (txt r[13]?))), ("sha", Json.ostr (txt r[12]?)),
       ("since", Json.oint (int r[14]?)), ("swarm", Json.ostr (o.bind swarmOf))]
-  let helds := (ts.filter fun r => (py (txt r[6]?)).isSome && !(["done", "dropped"].contains ((txt r[2]?).getD ""))).map fun r =>
+  let helds := (ts.filter fun r => (py (txt r[6]?)).isSome && !(stateOf (txt r[2]?) == some .done || stateOf (txt r[2]?) == some .dropped)).map fun r =>
     ofTask "held" r [("why", Json.ostr (py (txt r[6]?)))]
   let lockNeeds := (locks.filter fun (_, _, a, lu, _) => !(a.any isLive) || lu.any (· < t)).map fun (rp, lp, a, _, since) =>
     need "lock" [("repo", .str rp), ("path", .str lp), ("agent", Json.ostr a), ("since", Json.oint since)]
@@ -148,9 +151,9 @@ def machine (t : Int) (ts trs : List (Array Val)) (ws : List (String × String �
     if lim > 0 && k ≥ lim then some (need "ctx" [("agent", .str x.name), ("swarm", .str sw), ("ctx", Json.int k), ("limit", Json.int lim)])
     else none
   let reds := rps.filterMap fun r => (txt r[0]?).bind fun rp =>
-    let fin := cis.find? fun c => txt c[0]? == some rp && txt c[1]? == some "completed" && (txt c[2]?).any (· != "cancelled")
+    let fin := cis.find? fun c => txt c[0]? == some rp && (txt c[1]?).map RunStatus.ofText == some .completed && (txt c[2]?).any (Conclusion.ofText · != .cancelled)
     match fin with
-    | some c => if txt c[2]? != some "success" then
+    | some c => if (txt c[2]?).map Conclusion.ofText != some .success then
         some (need "ci-red" [("repo", .str rp), ("run", Json.oint (int c[5]?)), ("sha", Json.ostr (txt c[6]?)), ("url", Json.ostr (txt c[3]?))])
       else none
     | none => none
@@ -206,7 +209,7 @@ def view (t : Int) : m Json := do
     | some s, .ok a => some (s, a)
     | _, _ => none
   let tasks : List T := (rows 1).filterMap fun r => (int r[0]?).map fun id =>
-    { id, state := (txt r[1]?).getD "open", owner := py (txt r[2]?), by_ := py (txt r[3]?), title := txt r[4]?,
+    { id, state := (stateOf (txt r[1]?)).getD .open, owner := py (txt r[2]?), by_ := py (txt r[3]?), title := txt r[4]?,
       question := txt r[5]?, deps := ((txt r[6]?).map fun d => (commaPieces d).filterMap parseInt).getD [],
       hold := txt r[7]?, qpos := int r[8]?, priority := int r[9]? }
   let taskRepos : Std.HashMap Int (List String) := (rows 2).foldl (init := {}) fun h r =>
@@ -266,8 +269,8 @@ def view (t : Int) : m Json := do
     let mut needs : Array Json := #[]
     let alive := ((live.filter (·.1 == sw.name)).map (·.2)).mergeSort (·.name ≤ ·.name)
     for x in alive do
-      let own := ks.filter fun k => k.owner == some x.name && (k.state == "blocked" || k.state == "claimed" || k.state == "landing")
-      let own := (own.filter (·.state == "blocked")) ++ (own.filter (·.state != "blocked"))
+      let own := ks.filter fun k => k.owner == some x.name && (k.state == .blocked || k.state == .claimed || k.state == .landing)
+      let own := (own.filter (·.state == .blocked)) ++ (own.filter (·.state != .blocked))
       let rp ← match wsRepo.get? x.name with
         | some r => pure (some r)
         | none => match py (x.wt.orElse fun _ => x.cwd) with
@@ -275,7 +278,7 @@ def view (t : Int) : m Json := do
           | none => pure none
       let act := x.last_active.getD 0
       let h := hung x evs
-      let asks := own.any (·.state == "blocked")
+      let asks := own.any (·.state == .blocked)
       let g := gone x
       if !g && !asks && x.status == some .blocked then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
       if h && !g then needs := needs.push (Json.mkObj [("kind", .str "hung"), ("agent", .str x.name)])
@@ -286,10 +289,10 @@ def view (t : Int) : m Json := do
         ("model", some (Json.ostr x.model)), ("stay", some (Json.ostr (py x.stay))),
         ("ctx", some (Json.int (x.ctx_tokens.getD 0))),
         ("task", some (match own.head? with
-          | some k => obj [("id", some (Json.int k.id)), ("title", k.title.map .str), ("state", some (.str k.state))]
+          | some k => obj [("id", some (Json.int k.id)), ("title", k.title.map .str), ("state", some (.str k.state.text))]
           | none => .null)),
         ("idle_s", some (Json.int (t - (if act == 0 then t else act)))), ("hung", some (.bool h)), ("gone", some (.bool g))])
-    let qs := (ks.filter (·.state == "blocked")).map fun k => obj [("kind", some (.str "question")),
+    let qs := (ks.filter (·.state == .blocked)).map fun k => obj [("kind", some (.str "question")),
       ("task", some (Json.int k.id)), ("agent", k.owner.map .str), ("question", k.question.map .str), ("title", k.title.map .str)]
     let names := alive.map (·.name)
     let rss := (held.filter fun h => names.contains h.agent).foldl (· + ·.kb) 0
@@ -310,7 +313,7 @@ def view (t : Int) : m Json := do
       ("created", Json.oint sw.created), ("ended", Json.oint sw.ended),
       ("staffing", Json.mkObj [("live", Json.int nlive), ("min", ni "agent_min"), ("max", ni "agent_max"),
         ("held", Json.ostr (knob sw.name "spawn_held")), ("queue_only", .bool (knob sw.name "queue_only" == some "on"))]),
-      ("counts", Json.mkObj (STATES.map fun s => (s, Json.int (ks.filter (·.state == s)).length))),
+      ("counts", Json.mkObj (STATES.map fun s => (s.text, Json.int (ks.filter (·.state == s)).length))),
       ("next", .arr ((next.take 5).map fun k => obj [("id", some (Json.int k.id)), ("title", k.title.map .str),
         ("qpos", k.qpos.map Json.int), ("priority", k.priority.map Json.int)]).toArray),
       ("ready", Json.int next.length),
@@ -319,7 +322,7 @@ def view (t : Int) : m Json := do
       ("away", .bool (knob sw.name "away").isSome)])
   let (tasksJ, reposJ, needsJ) := machine t (rows 10) (rows 11) wsRows (rows 13) (rows 14) (rows 15) (rows 7) agents sws knob evs
   return Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("db", .str p),
-    ("counts", Json.mkObj (STATES.map fun s => (s, Json.int (tasks.filter (·.state == s)).length))),
+    ("counts", Json.mkObj (STATES.map fun s => (s.text, Json.int (tasks.filter (·.state == s)).length))),
     ("swarms", .arr out), ("tasks", .arr tasksJ), ("repos", .arr reposJ), ("needs", .arr needsJ)]
 
 end SwarmLean.SwarmsView

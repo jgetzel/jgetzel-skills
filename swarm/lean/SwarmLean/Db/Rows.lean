@@ -72,6 +72,55 @@ def Status.ofText : String → Except String Status
   | "open" => .ok .open | "claimed" => .ok .claimed | "blocked" => .ok .blocked | "done" => .ok .done
   | "dropped" => .ok .dropped | "landing" => .ok .landing | s => .error s!"unknown task state '{s}'"
 
+/-- A CI run's status as GitHub sends it (text in the db and in gh's REST JSON; gh's CLI upper-cases it). -/
+inductive RunStatus
+  | queued | inProgress | completed | waiting | requested | pending
+  | other (s : String)
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The status's text. -/
+def RunStatus.text : RunStatus → String
+  | .queued => "queued" | .inProgress => "in_progress" | .completed => "completed" | .waiting => "waiting"
+  | .requested => "requested" | .pending => "pending" | .other s => s
+
+/-- The status a text names; a value GitHub adds later keeps its text. -/
+def RunStatus.ofText : String → RunStatus
+  | "queued" => .queued | "in_progress" => .inProgress | "completed" => .completed | "waiting" => .waiting
+  | "requested" => .requested | "pending" => .pending | s => .other s
+
+/-- The status of gh's CLI text (COMPLETED, IN_PROGRESS, …). -/
+def RunStatus.ofGh (s : String) : RunStatus := match RunStatus.ofText s.toLower with
+  | .other _ => .other s
+  | k => k
+
+/-- A CI run's conclusion as GitHub sends it. -/
+inductive Conclusion
+  | success | failure | neutral | cancelled | skipped | timedOut | actionRequired | startupFailure | stale
+  | other (s : String)
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The conclusion's text. -/
+def Conclusion.text : Conclusion → String
+  | .success => "success" | .failure => "failure" | .neutral => "neutral" | .cancelled => "cancelled"
+  | .skipped => "skipped" | .timedOut => "timed_out" | .actionRequired => "action_required"
+  | .startupFailure => "startup_failure" | .stale => "stale" | .other s => s
+
+/-- The conclusion a text names; a value GitHub adds later keeps its text. -/
+def Conclusion.ofText : String → Conclusion
+  | "success" => .success | "failure" => .failure | "neutral" => .neutral | "cancelled" => .cancelled
+  | "skipped" => .skipped | "timed_out" => .timedOut | "action_required" => .actionRequired
+  | "startup_failure" => .startupFailure | "stale" => .stale | s => .other s
+
+/-- The conclusion of gh's CLI text (SUCCESS, TIMED_OUT, …). -/
+def Conclusion.ofGh (s : String) : Conclusion := match Conclusion.ofText s.toLower with
+  | .other _ => .other s
+  | k => k
+
+/-- Finished without failing the way a check may not: what a PR's rollup counts green. -/
+def Conclusion.passes : Conclusion → Bool
+  | .success | .neutral | .skipped => true
+  | _ => false
+
 /-- One board task (table task). -/
 structure Task where
   id : Nat
@@ -92,7 +141,7 @@ structure Task where
   dropped_at : Option Int := none
   pr : Option Int := none
   merged_at : Option Int := none
-  ci_conclusion : Option String := none
+  ci_conclusion : Option Conclusion := none
   ci_green_at : Option Int := none
   claim_ctx : Option Int := none
   done_ctx : Option Int := none
@@ -126,7 +175,7 @@ instance : Row Task where
   nkey := 1
   enc t := [.int t.id, oS t.title, oS t.body, .text t.state.text, oS t.owner, oI t.lease_until, oS t.created_by,
     oS t.evidence, oS t.deps, oS t.model, oS t.question, oS t.effort, oI t.created_at, oI t.first_claimed_at,
-    oI t.done_at, oI t.dropped_at, oI t.pr, oI t.merged_at, oS t.ci_conclusion, oI t.ci_green_at, oI t.claim_ctx,
+    oI t.done_at, oI t.dropped_at, oI t.pr, oI t.merged_at, oS (t.ci_conclusion.map Conclusion.text), oI t.ci_green_at, oI t.claim_ctx,
     oI t.done_ctx, oS t.answer, oS t.base, oS t.stop_to, oI t.stop_msg, oI t.priority, oI t.qpos,
     oS t.hold, oS t.labels, oS t.parents, oS t.land_sha, oS t.lander, oI t.landing_at]
   dec v := do
@@ -138,7 +187,7 @@ instance : Row Task where
            evidence := ← (col v 7).os, deps := ← (col v 8).os, model := ← (col v 9).os, question := ← (col v 10).os,
            effort := ← (col v 11).os, created_at := ← (col v 12).oi, first_claimed_at := ← (col v 13).oi,
            done_at := ← (col v 14).oi, dropped_at := ← (col v 15).oi, pr := ← (col v 16).oi,
-           merged_at := ← (col v 17).oi, ci_conclusion := ← (col v 18).os, ci_green_at := ← (col v 19).oi,
+           merged_at := ← (col v 17).oi, ci_conclusion := (← (col v 18).os).map Conclusion.ofText, ci_green_at := ← (col v 19).oi,
            claim_ctx := ← (col v 20).oi, done_ctx := ← (col v 21).oi, answer := ← (col v 22).os,
            base := ← (col v 23).os, stop_to := ← (col v 24).os, stop_msg := ← (col v 25).oi,
            priority := ← (col v 26).oi, qpos := ← (col v 27).oi, hold := ← (col v 28).os,
@@ -331,8 +380,8 @@ instance : Row Workspace where
 structure Ci where
   id : Nat
   sha : Option String := none
-  status : Option String := none
-  conclusion : Option String := none
+  status : Option RunStatus := none
+  conclusion : Option Conclusion := none
   url : Option String := none
   created : Option String := none
   updated : Option String := none
@@ -340,14 +389,17 @@ structure Ci where
   workflow : Option String := none
   deriving DecidableEq, Repr, Inhabited
 
+/-- A run that finished and was not cancelled. -/
+def Ci.finished (c : Ci) : Bool := c.status == some .completed && c.conclusion.any (· != .cancelled)
+
 instance : Row Ci where
   table := "ci"
   cols := ["id", "sha", "status", "conclusion", "url", "created", "updated", "failed", "workflow"]
   nkey := 1
-  enc c := [.int c.id, oS c.sha, oS c.status, oS c.conclusion, oS c.url, oS c.created, oS c.updated, oS c.failed,
+  enc c := [.int c.id, oS c.sha, oS (c.status.map RunStatus.text), oS (c.conclusion.map Conclusion.text), oS c.url, oS c.created, oS c.updated, oS c.failed,
     oS c.workflow]
   dec v := do
-    pure { id := ← (col v 0).id, sha := ← (col v 1).os, status := ← (col v 2).os, conclusion := ← (col v 3).os,
+    pure { id := ← (col v 0).id, sha := ← (col v 1).os, status := (← (col v 2).os).map RunStatus.ofText, conclusion := (← (col v 3).os).map Conclusion.ofText,
            url := ← (col v 4).os, created := ← (col v 5).os, updated := ← (col v 6).os, failed := ← (col v 7).os,
            workflow := ← (col v 8).os }
 
