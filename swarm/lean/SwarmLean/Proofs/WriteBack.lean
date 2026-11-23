@@ -554,10 +554,10 @@ theorem load_rows [Inhabited α] (S : Sql) (hQ : SqlSelect S) (db : SDb) (hT : S
     simpa [List.map_map, Function.comp_def, cellsOf] using this
   let dec := fun v => match (Row.dec v : Except String α) with | .ok x => x | .error _ => default
   have hdec : ∀ v ∈ S.select db (Row.table α) (Row.cols α),
-      (Row.dec v : Except String α).mapError (fun e => s!"{Row.table α}: {e}") = .ok (dec v) := by
+      decodeRow v = .ok (dec v) := by
     intro v hv
     obtain ⟨x, -, rfl⟩ := List.mem_map.mp (hp'.mem_iff.mp hv)
-    simp [dec, decode_encode, Except.mapError]
+    simp [dec, decodeRow, decode_encode, Except.mapError]
   simp only [decodeRows, mapM_ok hdec]
   show Except.ok (sortRows _) = _
   congr 1

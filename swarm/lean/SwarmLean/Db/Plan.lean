@@ -30,9 +30,26 @@ def sortRows [Row α] (rs : List α) : List α :=
   let ps := rs.map fun r => (Row.key r, r)
   if keysSorted ps then rs else (ps.mergeSort fun a b => decide (a.1 ≤ b.1)).map (·.2)
 
+/-- A key cell as the refusal names it. -/
+def Sqlite.Val.keyText : Val → String
+  | .int i => toString i
+  | .text s => s
+  | _ => "NULL"
+
+/-- A row's table and key cells, as the refusal names them: `task #42`, `lock /repo path`. -/
+def rowName [Row α] (v : Array Val) : String :=
+  let ks := (v.toList.take (Row.nkey α)).map Sqlite.Val.keyText
+  match ks with
+  | [k] => if (v[0]?).any (fun c => match c with | .int _ => true | _ => false) then s!"{Row.table α} #{k}" else s!"{Row.table α} {k}"
+  | _ => s!"{Row.table α} {" ".intercalate ks}"
+
+/-- A row of `Row.table α` decoded, or the refusal `swarm.db: task #42: <reason>`. -/
+def decodeRow [Row α] (v : Array Val) : Except String α :=
+  (Row.dec v : Except String α).mapError fun e => s!"swarm.db: {rowName (α := α) v}: {e}"
+
 /-- The rows a select of `Row.cols α` from `Row.table α` returned, decoded, in key order. -/
 def decodeRows [Row α] (rows : List (Array Val)) : Except String (List α) :=
-  sortRows <$> rows.mapM fun v => (Row.dec v : Except String α).mapError fun e => s!"{Row.table α}: {e}"
+  sortRows <$> rows.mapM decodeRow
 
 /-- A statement the store runs. -/
 inductive Stmt

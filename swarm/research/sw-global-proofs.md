@@ -720,3 +720,11 @@ It also does the challenge work:
 - the holes gain each `X.txn` builder;
 - Audit.lean's expectations;
 - `challenge.sh` green, LEGACY.md emptied and deleted, check.sh green with `SWARM_PROOFS` default on again.
+
+## Where the model and SQLite differ: an undecodable row
+
+`Db/Txn.lean`'s `Row.execIf` leaves rows as they were when an update or an insert would produce a row that does not
+decode (`Row.setCells` is none; an insert's `Row.dec` fails). SQLite does not: it writes the cells, and the next read
+refuses the row (`decodeRow`: `swarm.db: task #42: unknown task state 'clamed'`, board #1811). The two agree only while
+no write produces an undecodable row, which `Stmt.Plain` is meant to guarantee; if a write ever did, the model's
+state would drop the change and the db would keep it. The model is left as it is.
