@@ -331,7 +331,7 @@ def sqlite_txn (t : T) : IO Unit := do
   let c ← connect
   discard <| c.exec "insert or ignore into swarm(name) values('t')"
   let fix : Db := {
-    agents := [{ name := "a1", status := some "idle" }, { name := "a2", status := some "working" }]
+    agents := [{ name := "a1", status := some .idle }, { name := "a2", status := some .working }]
     tasks := [{ id := 1, title := some "one" }, { id := 2, title := some "two", owner := some "a2", state := .claimed }]
     events := (List.range 6).map fun i =>
       let who := if i % 2 == 0 then "a1" else "a2"
@@ -351,7 +351,7 @@ def sqlite_txn (t : T) : IO Unit := do
   eq (got.events.map (·.id)) [3, 5, 6] "sqlite_txn: the last two of a1's events and the end events past id 5"
   -- a decision's plan, with an event appended
   let step : Txn Unit := Txn.update [{ table := .agent, cond := .eq "name" (.text "a1") }] [] fun d =>
-    ((d.setAgent "a1" ({ · with status := some "working" })).log 9 (some "a1") "status" none (some "working"), ())
+    ((d.setAgent "a1" ({ · with status := some .working })).log 9 (some "a1") "status" none (some "working"), ())
   sqliteRun c sc0 step
   let (want, _) := step.onDb fix
   eq (decide (norm (← loaded) = norm want)) true "sqlite_txn: a plan writes what the model's statements do"
@@ -372,9 +372,9 @@ def sqlite_txn (t : T) : IO Unit := do
 /-- A board for the task transactions: deps, a queue, a hold, a landing task, a blocked one, a stop not yet read, a
 held note, and ids whose digits prefix one another (#1, #12). -/
 def taskFix : Db := {
-  agents := [{ name := "a1", status := some "idle", ctx_tokens := some 1000 },
-    { name := "a2", status := some "working", role := some "lander" }, { name := "c", status := some "idle" },
-    { name := "gone", status := some "ended", ended := some 5 }]
+  agents := [{ name := "a1", status := some .idle, ctx_tokens := some 1000 },
+    { name := "a2", status := some .working, role := some "lander" }, { name := "c", status := some .idle },
+    { name := "gone", status := some .ended, ended := some 5 }]
   metas := [{ k := "comms", v := some "c" }, { k := "reuse_below", v := some "0" }]
   tasks := [{ id := 1, title := some "one", qpos := some 1 }, { id := 2, title := some "two", deps := some "1", qpos := some 2 },
     { id := 3, title := some "three", state := .claimed, owner := some "a1", lease_until := some 2000 },

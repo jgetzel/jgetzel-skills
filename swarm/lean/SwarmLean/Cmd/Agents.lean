@@ -350,7 +350,7 @@ def who : m UInt32 := do
       | some (.ok (.arr a)) => a.toList.filterMap fun (j : Lean.Json) => j.getStr?.toOption
       | _ => []
     let lk := (db.locks.filter (·.agent == some x.name)).map (·.path)
-    let mut l := s!"{x.name} {x.status.getD "nil"}{match x.role with | some r => " role=" ++ r | none => ""}{match x.stay with | some s => s!" stays: \"{s}\"" | none => ""} ctx={k}k idle={ago t last} cache={if t - last < COLD_IDLE then "warm" else "cold"}"
+    let mut l := s!"{x.name} {(x.status.map (·.text)).getD "nil"}{match x.role with | some r => " role=" ++ r | none => ""}{match x.stay with | some s => s!" stays: \"{s}\"" | none => ""} ctx={k}k idle={ago t last} cache={if t - last < COLD_IDLE then "warm" else "cold"}"
     l := l ++ (if cold.isSome then " COLD-GUARDED" else "") ++ " wt: " ++ ((wts.lookup x.name).map basename).getD "?"
     if !fs.isEmpty then
       l := l ++ " files: " ++ ", ".intercalate (fs.take 5) ++ (if fs.length > 5 then s!" +{fs.length - 5} more" else "")

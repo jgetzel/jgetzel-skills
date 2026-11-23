@@ -136,11 +136,11 @@ def errorText [Monad m] [Fs m] (path : Option String) : m (Option String) := do
 
 /-- agents.set_status: `status` and last_active (and `f`'s fields) on `name`'s row through touch; a status event
 when it changed. A fenced name is left as it is. -/
-def setStatus (db : Db) (name : String) (here : Option String) (now : Int) (status : String)
+def setStatus (db : Db) (name : String) (here : Option String) (now : Int) (status : AgentStatus)
     (f : Agent → Agent := id) : Db :=
   let old := (db.agent name).map (·.status)
   match touchWith db name none here now false fun a => f { a with last_active := some now, status := some status } with
   | (db, some _) => db
-  | (db, none) => if old == some (some status) then db else db.log now (some name) "status" none (some status)
+  | (db, none) => if old == some (some status) then db else db.log now (some name) "status" none (some status.text)
 
 end SwarmLean.Hook

@@ -67,7 +67,7 @@ def startable (all ks : List T) : List T :=
 
 /-- An agent's hung sign (watchd.hung, as `State.staySign`): a stayer, idle, with a stay-hung event since it was active. -/
 def hung (x : Agent) (evs : List (String × String × Int)) : Bool :=
-  (py x.stay).isSome && x.status == some "idle" &&
+  (py x.stay).isSome && x.status == some .idle &&
     evs.any fun (a, k, ts) => a == x.name && k == "stay-hung" && ts ≥ x.last_active.getD 0
 
 /-- The machine-wide board (board #120), from `view`'s rows: every task listed (`listed`) with its repos (each with its
@@ -277,12 +277,12 @@ def view (t : Int) : m Json := do
       let h := hung x evs
       let asks := own.any (·.state == "blocked")
       let g := gone x
-      if !g && !asks && x.status == some "blocked" then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
+      if !g && !asks && x.status == some .blocked then needs := needs.push (Json.mkObj [("kind", .str "prompt"), ("agent", .str x.name)])
       if h && !g then needs := needs.push (Json.mkObj [("kind", .str "hung"), ("agent", .str x.name)])
       let rps := (wsRepos.get? x.name).getD rp.toList
       ags := ags.push (obj [("name", some (.str x.name)), ("hc", some (Json.ostr x.hc)), ("repo", some (Json.ostr rp)),
         ("repos", some (.arr (rps.map Json.str).toArray)),
-        ("status", some (Json.ostr (if asks then some "blocked" else x.status))), ("role", some (Json.ostr x.role)),
+        ("status", some (Json.ostr ((if asks then some AgentStatus.blocked else x.status).map (·.text)))), ("role", some (Json.ostr x.role)),
         ("model", some (Json.ostr x.model)), ("stay", some (Json.ostr (py x.stay))),
         ("ctx", some (Json.int (x.ctx_tokens.getD 0))),
         ("task", some (match own.head? with

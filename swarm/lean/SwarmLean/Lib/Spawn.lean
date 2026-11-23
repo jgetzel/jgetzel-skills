@@ -213,7 +213,7 @@ def spawnE (a : Args) : m (Except Refusal (Option String)) := do
     let here := (← swarmHere).getD "."
     let db ← Store.view [Sels.live, Sels.metas ["rules"]] id
     let roster := (← splitAgents db).1.map fun x =>
-      s!"{x.name} ({x.status.getD "None"}{match x.role with | some r => ", " ++ r | none => ""})"
+      s!"{x.name} ({(x.status.map (·.text)).getD "None"}{match x.role with | some r => ", " ++ r | none => ""})"
     let mut brief := ((← Fs.read (joinPath here "brief.md")).getD "") ++
       s!"\n\n---\nYour name: {name}. Roster: {if roster.isEmpty then "nobody yet" else ", ".intercalate roster}.\nYour area and first task:\n{task}\n"
     brief := brief ++ "\n" ++ ((Ci.FLOW_LINE ((← Ci.flow (wts.head?.map (·.1))).getD "post-merge")).getD "") ++ "\n"

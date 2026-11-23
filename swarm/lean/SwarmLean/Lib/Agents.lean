@@ -69,7 +69,7 @@ def sessionActive [Monad m] [Proc m] (seen : Seen) (a : Agent) (t : Int) : m (In
 /-- None if waking agent row `a` is cheap at `t`, else why it is a cold wake (agents.cold_reason). -/
 def coldReason [Monad m] [Proc m] (seen : Seen) (a : Agent) (t : Int) : m (Option String × Seen) := do
   let ctx := a.ctx_tokens.getD 0
-  if a.status == some "working" || ctx < SMALL_CTX then return (none, seen)
+  if a.status == some .working || ctx < SMALL_CTX then return (none, seen)
   let (last, seen) ← sessionActive seen a t
   if a.compacted_at.getD 0 ≥ last || t - last < COLD_IDLE then return (none, seen)
   let k := fdiv ctx 1000

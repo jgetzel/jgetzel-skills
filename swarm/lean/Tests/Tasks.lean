@@ -42,7 +42,7 @@ def u := unreserve r1.1 "n1" (match r1.2 with | .ok r => some r | _ => none) 101
 #guard (u.find 1).map (fun t => (t.state, t.owner, t.first_claimed_at)) == some (.open, none, none)
 #guard ((u.agents.find? (·.name == "n1")).bind (·.ended)).isSome
 -- it ends as every end does (`endRow`): status ended, its stay cleared
-#guard ((u.agents.find? (·.name == "n1")).bind (·.status)) == some "ended"
+#guard ((u.agents.find? (·.name == "n1")).bind (·.status)) == some .ended
 #guard ((unreserve (r1.1.setAgent "n1" ({ · with stay := some "x" })) "n1" none 101).agent "n1").bind (·.stay) == none
 
 /-- #3, open, which a `task after` made wait on #1 (open again). The Lua raced it between claim's read of the deps and

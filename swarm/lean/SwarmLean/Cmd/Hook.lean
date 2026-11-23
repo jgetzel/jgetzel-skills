@@ -234,25 +234,25 @@ def hook (ev : String) : m UInt32 := do
   match ev with
   | "pre-tool" => preTool name cwd tool ti here
   | "post-tool" =>
-    Store.run (Sels.onAgent name fun db => (setStatus db name here now "working", ()))
+    Store.run (Sels.onAgent name fun db => (setStatus db name here now .working, ()))
     if tool == some "Bash" then logPush name cwd (tostr ti "command")
     let ctx ← Msgs.deliver name
     recordCtx name transcript
     if ctx != "" then emit "PostToolUse" (some ctx) none
   | "prompt" =>
-    Store.run (Sels.onAgent name fun db => (setStatus db name here now "working", ()))
+    Store.run (Sels.onAgent name fun db => (setStatus db name here now .working, ()))
     let msg ← Msgs.deliver name
     if msg != "" then emit "UserPromptSubmit" (some msg) none
   | "stop" =>
     let k ← ctxFrom transcript
     Store.run (Sels.onAgent name fun db =>
-      let db := setStatus db name here now "idle" fun a => match k with | some k => { a with ctx_tokens := some k } | none => a
+      let db := setStatus db name here now .idle fun a => match k with | some k => { a with ctx_tokens := some k } | none => a
       (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ()))
     if let some why ← stopBlock name p then Env.out ("{\"decision\": \"block\", \"reason\": " ++ jstr why ++ "}")
   | "stop-failure" =>  -- the turn ended on an API error: no Stop hook runs
     let txt := (← errorText transcript).getD (tostr p "error")
     Store.run (Sels.onAgent name fun db =>
-      ((setStatus db name here now "idle").log now (some name) "api-error" none (some txt), ()))
+      ((setStatus db name here now .idle).log now (some name) "api-error" none (some txt), ()))
   | "session" =>
     let pid ← Machine.claudePid
     Store.run (Sels.onAgent name fun db =>
@@ -264,7 +264,7 @@ def hook (ev : String) : m UInt32 := do
           { a with compacted_at := some now, ctx_tokens := k.orElse fun _ => a.ctx_tokens }).1
         (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ()))
       Store.run (Txn.exec [logStmt now (some name) "compact" none none])
-    else Store.run (Sels.onAgent name fun db => (setStatus db name here now "idle", ()))
+    else Store.run (Sels.onAgent name fun db => (setStatus db name here now .idle, ()))
   | _ => die s!"unknown hook event {ev}"
   return 0
 

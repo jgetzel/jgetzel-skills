@@ -18,9 +18,9 @@ def reserveAgent (db : Db) (envComms : Option String) (name cwd : String) (model
 where
   go : Except Refusal Db :=
     let db := if db.agents.any (·.name == name) then db else
-      { db with agents := db.agents ++ [{ name, cwd := some cwd, status := some "idle", last_active := some now, started := some now }] }
+      { db with agents := db.agents ++ [{ name, cwd := some cwd, status := some .idle, last_active := some now, started := some now }] }
     .ok ((newInbox db name).setAgent name fun a =>
-      { a with hc := none, ended := none, status := some "idle", model := model.orElse fun _ => a.model })
+      { a with hc := none, ended := none, status := some .idle, model := model.orElse fun _ => a.model })
 
 /-- agents.reserve as a step: the db unchanged on a refusal. -/
 def reserve (db : Db) (envComms : Option String) (name cwd : String) (model : Option String) (now : Int) :

@@ -36,7 +36,7 @@ def JOB_HUNG : Int := 20 * 60
 def SPAWN_FAILS : Nat := 5
 
 /-- The owner row's columns `Decide.keepsL` reads: a NULL status is no status ("" is not "idle"). -/
-def keepRow (a : Agent) : Swarm.Decide.ARow := { ended := a.ended.map Int.toNat, status := a.status.getD "", hc := a.hc }
+def keepRow (a : Agent) : Swarm.Decide.ARow := { ended := a.ended.map Int.toNat, status := (a.status.map (·.text)).getD "", hc := a.hc }
 
 /-- Whether owner row `o` keeps a claim past its lease for the work it is doing (watchd.keeps): the model's
 `Decide.keepsL`, proved to be its `keeps` (`keeps_lifted`). Live, and working, prompt-blocked, running a background
@@ -128,11 +128,11 @@ def leaseLate (r : Task) (o : Option Agent) (t : Int) (hhmm : String) (comms : O
     match r.owner with
     | none => db
     | some own => say db t (.agent own) (s!"Your lease on #{d r.id} ended at {hhmm}; `swarm task renew {d r.id}` (it is kept while you are " ++
-        "live, but renew on long work).") (o.any (·.status == some "idle")) "system"
+        "live, but renew on long work).") (o.any (·.status == some .idle)) "system"
   | some h =>
     match comms, o with
     | some c, some a =>
-      if !quiet && a.status == some "idle" && a.last_active.any (· > h.ts.getD 0) &&
+      if !quiet && a.status == some .idle && a.last_active.any (· > h.ts.getD 0) &&
           (leaseLateEv db r.id "comms" t).isNone then
         let db := db.log t r.owner "lease-late" (some (d r.id)) (some "comms")
         say db t (.agent c) (s!"{own} has held #{d r.id} past its lease (idle {ago t (a.last_active.getD 0)}) and did not renew " ++
@@ -234,7 +234,7 @@ def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreig
   let lapsed := db.tasks.filter fun r => r.state = .claimed && r.lease_until.any (· < t) &&
     !((r.owner.bind db.agent).isNone && r.owner.any foreign.contains)
   -- the process table only when an idle live owner may be waiting on a background job
-  let idle := lapsed.any fun r => (r.owner.bind db.agent).any fun a => a.ended.isNone && a.status == some "idle"
+  let idle := lapsed.any fun r => (r.owner.bind db.agent).any fun a => a.ended.isNone && a.status == some .idle
   let bg ← if idle then do pure ((Machine.bgAgents db.agents (← Machine.procs)).map (·.1)) else pure []
   let mut out := []
   for r in lapsed do
@@ -500,7 +500,7 @@ def blockersStep (t : Int) (comms : String) (blockerIdle : Float) (db0 : Db) : D
   (Agents.live db0).foldl (fun db a =>
     let n := a.name
     let last := a.last_active.getD 0
-    if n == comms || a.status != some "idle" || Float.ofInt (t - last) < lim then db
+    if n == comms || a.status != some .idle || Float.ofInt (t - last) < lim then db
     else if db.events.any (fun e => e.agent == some n && e.kind == some "blocker-nudge" && e.ts.any (· ≥ last)) then db
     else
       let ids : List Int := (db.tasks.filter fun x => x.state = .claimed && x.owner == some n).map (·.id)
@@ -627,7 +627,7 @@ def hungPre (t : Int) (comms : String) (envComms : Option String) (n : String) (
   | none => (db, false)
   | some a =>
     let last := a.last_active.getD 0
-    if a.ended.isSome || n == comms || isComms db envComms (some n) || a.status != some "idle" then (db, false) else
+    if a.ended.isSome || n == comms || isComms db envComms (some n) || a.status != some .idle then (db, false) else
     if Compact.compacting db.events n last t then (db, false) else
     let evs := db.events.filter fun e => e.agent == some n && e.ts.any (· ≥ last)
     let told := db.tasks.filter fun r => r.owner == some n && r.state = .claimed && r.lease_until.any (· < t) &&
@@ -699,7 +699,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
   let mut seen : Seen := []
   for a in live do
     let n := a.name
-    if n == comms || a.status != some "idle" then continue
+    if n == comms || a.status != some .idle then continue
     let db ← Store.run (do Txn.slice (← hungSels n t))
     let lapsed := db.tasks.any fun r => r.owner == some n && r.state = .claimed && r.lease_until.any (· < t)
     let bg ← if !lapsed then pure false else do

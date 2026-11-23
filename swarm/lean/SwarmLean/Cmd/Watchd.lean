@@ -167,11 +167,11 @@ def hcBlockedStep (terms : List Term) (t : Int) (comms : Option String) (away : 
       if r.owner == some n && r.state == .blocked && r.question == some HC_Q then
         { r with state := .claimed, question := none, lease_until := some (t + Tasks.LEASE) } else r
     -- the row this pass blocked follows the terminal again (board #135: a session started there later)
-    let st := if x.status == some "working" then "working" else "idle"
+    let st : AgentStatus := if x.status == some "working" then .working else .idle
     let db := { db with tasks := db.tasks.map back }
-    return if a.status == some "blocked" then (db.setAgent n ({ · with status := some st })).log t (some n) "status" none (some st) else db
-  if a.status == some "blocked" then return db
-  let db := (db.setAgent n ({ · with status := some "blocked" })).log t (some n) "blocked" none none
+    return if a.status == some .blocked then (db.setAgent n ({ · with status := some st })).log t (some n) "status" none (some st.text) else db
+  if a.status == some .blocked then return db
+  let db := (db.setAgent n ({ · with status := some .blocked })).log t (some n) "blocked" none none
   let db := match ((db.tasks.filter fun r => r.owner == some n && r.state = .claimed).mergeSort (·.id ≤ ·.id)).head? with
     | some r =>  -- the agent notice below is the single notice; the task notice is marked sent
       (db.set r.id ({ · with state := .blocked, question := some HC_Q })).log t (some n) "task-blocked" (some (d r.id)) (some HC_Q)
@@ -308,7 +308,7 @@ def apiErrorSels (n : String) : List Sel :=
 /-- Whether agent row `a`'s turn may have ended on an API error the hooks missed: "working", its terminal `x` idle,
 silent APIERR_IDLE. -/
 def apiSilent (t : Int) (a : Agent) (x : Term) : Bool :=
-  a.status == some "working" && Compact.Term.ofHc x.status == .idle && t - a.last_active.getD 0 ≥ APIERR_IDLE
+  a.status == some .working && Compact.Term.ofHc x.status == .idle && t - a.last_active.getD 0 ≥ APIERR_IDLE
 
 /-- `apiErrorPass` on live agent `n`'s rows (`apiErrorSels`), its terminal found in `terms`; `err`: the API error its
 transcript ends on, read when it was `apiSilent`. -/
@@ -320,7 +320,7 @@ def apiErrorStep (t : Int) (comms : String) (terms : List Term) (err : Option St
   let some x := terms.find? (·.address == some h) | return (db0, [])
   let db := match err with
     | some txt => if apiSilent t a x then
-        (db0.setAgent n ({ · with status := some "idle" })).log t (some n) "api-error" none (some txt) else db0
+        (db0.setAgent n ({ · with status := some .idle })).log t (some n) "api-error" none (some txt) else db0
     | none => db0
   let some e := lastOf db n "api-error" | return (db, [])
   if a.last_active.getD 0 > e.ts.getD 0 then return (db, [])  -- a turn since: re-armed

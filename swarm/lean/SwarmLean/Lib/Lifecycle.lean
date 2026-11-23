@@ -188,7 +188,7 @@ def fateHeard (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Rea
   let k (h : Heard) (label : String) (v : Bool) : Heard × Bool := ({ h with checks := h.checks ++ [(label, v)] }, v && !all)
   let (h1, b) := k h "stay" (py a.stay).isSome
   h := h1; if b then return (none, h)
-  let (h1, b) := k h "idle" (a.status != some "idle" || t - a.last_active.getD 0 < 120)
+  let (h1, b) := k h "idle" (a.status != some .idle || t - a.last_active.getD 0 < 120)
   h := h1; if b then return (none, h)
   let busy := (py a.hc).isSome && hasTerms && match x with
     | none => true
@@ -220,7 +220,7 @@ def fate (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (f : Reads m)
 
 /-- Why `swarm end` without `--force` refuses live agent row `a`, or none (watchd.end_why). -/
 def endWhy (a : Agent) (f : Reads m) : m (Option String) := do
-  if a.status != some "idle" then return some s!"is {a.status.getD "nil"}"
+  if a.status != some .idle then return some s!"is {(a.status.map (·.text)).getD "nil"}"
   if let some s := py a.stay then return some s!"stays for: {s}"
   if f.claims then return some "owns a claimed task"
   if f.locks then return some "holds a lock"
@@ -275,7 +275,7 @@ def endStep (n : String) (hc : Option String) (force : Bool) (by_ : Option Strin
   let row := (live db).find? (·.name == n)
   let fine := match row with
     | none => false
-    | some r => force || (r.status == some "idle" && r.hc == hc && r.stay.isNone &&
+    | some r => force || (r.status == some .idle && r.hc == hc && r.stay.isNone &&
         !db.tasks.any (fun t => t.owner == some n && (t.state = .claimed || t.state = .blocked)) &&
         !db.locks.any (·.agent == some n))
   if !fine then (db, false) else

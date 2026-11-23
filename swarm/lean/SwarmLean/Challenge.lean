@@ -633,7 +633,7 @@ theorem fate_keeps_stayer {m : Type → Type} [Monad m] [LawfulMonad m] (a : Age
 /-- What keeps a lapsed claim for its work, on the Lean row: a live owner, working, prompt-blocked, running a
 background job or compacting, unless hc answered and no longer lists its bound terminal. -/
 theorem keeps_iff (o : Option Agent) (bg cp : Bool) (live : Option (List String)) :
-    Watchd.keeps o bg cp live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some "idle" ∨ bg = true ∨ cp = true) ∧
+    Watchd.keeps o bg cp live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some .idle ∨ bg = true ∨ cp = true) ∧
       ¬ (live.isSome = true ∧ (py a.hc).isSome = true ∧ (live.getD []).contains (a.hc.getD "") = false) :=
   sorry
 

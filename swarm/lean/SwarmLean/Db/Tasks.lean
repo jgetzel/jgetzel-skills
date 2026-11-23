@@ -147,7 +147,7 @@ def stopPending (db : Db) (r : Task) : Bool :=
     match db.agent to with
     | none => false
     | some a =>
-      if a.ended.isSome || (a.status != some "working" && a.status != some "blocked") then false
+      if a.ended.isSome || (a.status != some .working && a.status != some .blocked) then false
       else
         let cur := ((db.cursor to).bind (·.last_msg_id)).getD 0
         cur < r.stop_msg.getD 0

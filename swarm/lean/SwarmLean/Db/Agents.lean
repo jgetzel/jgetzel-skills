@@ -77,7 +77,7 @@ fenced name. -/
 def touch (db : Db) (name : String) (cwd : Option String) (here : Option String) (now : Int) : Db :=
   if name == HUMAN || (fence db name here).isSome then db
   else if db.agents.any (·.name == name) then db
-  else newInbox { db with agents := db.agents ++ [{ name, cwd, status := some "idle", last_active := some now,
+  else newInbox { db with agents := db.agents ++ [{ name, cwd, status := some .idle, last_active := some now,
                                                     started := some now, hc := here }] } name
 
 /-- `name` is the user's, which no agent takes (agents.not_human; the challenge's join step). -/
@@ -102,10 +102,10 @@ changed since, logs a takeover from another terminal. -/
 def bind (db : Db) (name : String) (cwd hc model : Option String) (r : Binding) (now : Int) : Db × Except String Unit :=
   if binding db name != r then (db, .error s!"{name}'s binding changed under you; run it again") else
   let db := if db.agents.any (·.name == name) then db else
-    { db with agents := db.agents ++ [{ name, cwd, status := some "idle", last_active := some now, started := some now }] }
+    { db with agents := db.agents ++ [{ name, cwd, status := some .idle, last_active := some now, started := some now }] }
   let db := if r.isNone then newInbox db name else db
   let db := db.setAgent name fun a => { a with hc, ended := none, model := model.orElse fun _ => a.model,
-                                                status := if a.ended.isNone then a.status else some "idle" }
+                                                status := if a.ended.isNone then a.status else some .idle }
   let db := match boundTo r with
     | some old => if some old != hc then db.log now (some name) "takeover" none (some s!"{old} -> {hc.getD "outside Herdr"}") else db
     | none => db
@@ -125,7 +125,7 @@ def release (db : Db) (name : String) : Db :=
 /-- The row ends (`ended` and status `ended`) and what it held is released: every writer of `ended` (leave, end, reap, a
 launch that failed) goes through this. -/
 def endRow (db : Db) (name : String) (now : Int) : Db :=
-  release (db.setAgent name ({ · with ended := some now, status := some "ended" })) name
+  release (db.setAgent name ({ · with ended := some now, status := some .ended })) name
 
 /-- `swarm leave`: the row ends, what it held is released (agents.cmd_leave). -/
 def leave (db : Db) (name : String) (now : Int) : Db :=

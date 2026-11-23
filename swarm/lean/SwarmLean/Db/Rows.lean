@@ -145,13 +145,27 @@ instance : Row Task where
            labels := ← (col v 29).os, parents := ← (col v 30).os, land_sha := ← (col v 31).os,
            lander := ← (col v 32).os, landing_at := ← (col v 33).oi }
 
+/-- An agent row's status in the db. -/
+inductive AgentStatus
+  | idle | working | blocked | ended
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The status's text in the db. -/
+def AgentStatus.text : AgentStatus → String
+  | .idle => "idle" | .working => "working" | .blocked => "blocked" | .ended => "ended"
+
+/-- The status a db text names. -/
+def AgentStatus.ofText : String → Except String AgentStatus
+  | "idle" => .ok .idle | "working" => .ok .working | "blocked" => .ok .blocked | "ended" => .ok .ended
+  | s => .error s!"unknown agent status '{s}'"
+
 /-- One agent (table agent). -/
 structure Agent where
   name : String
   hc : Option String := none
   model : Option String := none
   cwd : Option String := none
-  status : Option String := none
+  status : Option AgentStatus := none
   last_active : Option Int := none
   ctx_tokens : Option Int := some 0
   compacted_at : Option Int := some 0
@@ -170,11 +184,11 @@ instance : Row Agent where
   cols := ["name", "hc", "model", "cwd", "status", "last_active", "ctx_tokens", "compacted_at", "started", "ended", "snap",
     "waiter", "wt", "claude_pid", "role", "stay"]
   nkey := 1
-  enc a := [.text a.name, oS a.hc, oS a.model, oS a.cwd, oS a.status, oI a.last_active, oI a.ctx_tokens,
+  enc a := [.text a.name, oS a.hc, oS a.model, oS a.cwd, oS (a.status.map (·.text)), oI a.last_active, oI a.ctx_tokens,
     oI a.compacted_at, oI a.started, oI a.ended, oS a.snap, oI a.waiter, oS a.wt, oI a.claude_pid, oS a.role, oS a.stay]
   dec v := do
     pure { name := ← (col v 0).key, hc := ← (col v 1).os, model := ← (col v 2).os, cwd := ← (col v 3).os,
-           status := ← (col v 4).os, last_active := ← (col v 5).oi, ctx_tokens := ← (col v 6).oi,
+           status := ← (← (col v 4).os).mapM AgentStatus.ofText, last_active := ← (col v 5).oi, ctx_tokens := ← (col v 6).oi,
            compacted_at := ← (col v 7).oi, started := ← (col v 8).oi, ended := ← (col v 9).oi,
            snap := ← (col v 10).os, waiter := ← (col v 11).oi, wt := ← (col v 12).os, claude_pid := ← (col v 13).oi,
            role := ← (col v 14).os, stay := ← (col v 15).os }

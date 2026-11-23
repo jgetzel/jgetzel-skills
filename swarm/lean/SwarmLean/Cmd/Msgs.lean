@@ -107,7 +107,7 @@ def post (a : Parsed) : m UInt32 := do
   let mut seen : Seen := []
   for x in here.filter toIt do
     let mut k := 0
-    if x.status != some "working" then
+    if x.status != some .working then
       let (cr, s) ← coldReason seen x (← Clock.now)
       seen := s
       let up ← match x.waiter with | some w => Sys.pidAlive w | none => pure false
@@ -161,7 +161,7 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
   let here ← env "HC_TERMINAL_ID"
   let now ← Clock.now
   -- the Stop hook set last_active; the cold rule needs it untouched
-  if let some f ← runBusy (Sels.onAgent n (touchWith · n none here now true ({ · with status := some "idle" }))) then
+  if let some f ← runBusy (Sels.onAgent n (touchWith · n none here now true ({ · with status := some .idle }))) then
     -- fenced: this waiter can never wake; 3 so it isn't read as a timeout (0) or messages (2)
     Env.err (← fenceText n f)
     throw (Exit.mk 3)
@@ -178,7 +178,7 @@ def wait [Guard m] (a : Parsed) : m UInt32 := do
     if ag.waiter != some pid then
       Env.err s!"swarm wait: superseded: a newer waiter (pid {(ag.waiter.map toString).getD "none"}) owns {n}'s inbox"
       return 0
-    if ag.status == some "working" then
+    if ag.status == some .working then
       Env.err s!"swarm wait: {n} is working; its hooks deliver"
       return 0
     let urg (r : Msg) : Bool := r.urgent.getD 0 != 0

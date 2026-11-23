@@ -52,7 +52,7 @@ def watch (a : Parsed) : m UInt32 := do
         last := e.id
         Env.out (← eventLine e)
     if tick % 30 == 0 then
-      Env.out s!"\x1b[2m-- {" | ".intercalate ((Agents.live db).map fun x => x.name ++ ":" ++ x.status.getD "nil")} --\x1b[0m"
+      Env.out s!"\x1b[2m-- {" | ".intercalate ((Agents.live db).map fun x => x.name ++ ":" ++ (x.status.map (·.text)).getD "nil")} --\x1b[0m"
     tick := tick + 1
     if a.flag "once" then break
     Sys.sleep 1000
@@ -151,9 +151,9 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
     let alive ← match x.waiter with | some p => f.alive p | none => pure false
     detail := detail ++ [("waiter", if alive then s!"present (pid {x.waiter.getD 0})" else "gone: no message can wake it")]
   if has "idle" on then
-    let st := x.status.getD "nil"
-    detail := detail ++ [("idle", if x.status != some "idle" then st else s!"{dur (t - x.last_active.getD 0)} (watchd waits 2m)")]
-    short := short ++ [("idle", if x.status != some "idle" then st else "idle under 2 min")]
+    let st := (x.status.map (·.text)).getD "nil"
+    detail := detail ++ [("idle", if x.status != some .idle then st else s!"{dur (t - x.last_active.getD 0)} (watchd waits 2m)")]
+    short := short ++ [("idle", if x.status != some .idle then st else "idle under 2 min")]
   if has "context" on then
     let ctx := x.ctx_tokens.getD 0
     let k := fdiv ctx 1000
@@ -329,7 +329,7 @@ def watchdJson (wr : String) (runV : Option String) : m Json := do
 
 /-- A live stayer's hung sign (watchd.hung): its worst stay-* event since it was last active. -/
 def staySign (x : Agent) (aev : List Event) : Option String :=
-  if (py x.stay).isSome && x.status == some "idle" then
+  if (py x.stay).isSome && x.status == some .idle then
     let got := (aev.filter fun e => e.ts.any (· ≥ x.last_active.getD 0)).filterMap (·.kind)
     if got.contains "stay-hung" then some "hung" else if got.contains "stay-nowaiter" then some "nowaiter"
     else if got.contains "stay-unwoken" then some "unwoken" else none
@@ -350,7 +350,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
     let act := x.last_active.getD 0
     let hung := staySign x (evs.filter (·.agent == some x.name)) == some "hung"
     (x, hung, Json.mkObj [("name", .str x.name), ("hc", N x.hc),
-      ("status", N (if own.any (·.state = .blocked) then some "blocked" else x.status)),
+      ("status", N (if own.any (·.state = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text))),
       ("task", match own.head? with
         | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str)]
         | none => .null),
@@ -364,7 +364,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
   let rss := ((Machine.holders db.agents (← Machine.procs)).filter (·.agent != "other session")).foldl (· + ·.kb) 0
   let needs := asks.map (fun r => need "question" [("task", some (Json.int r.id)), ("agent", r.owner.map .str),
       ("question", r.question.map .str), ("title", r.title.map .str)]) ++
-    (live.filter fun x => x.status == some "blocked" && !asks.any (·.owner == some x.name)).map
+    (live.filter fun x => x.status == some .blocked && !asks.any (·.owner == some x.name)).map
       (fun x => need "prompt" [("agent", some (.str x.name))]) ++
     (ags.filter (·.2.1)).map (fun (x, _) => need "hung" [("agent", some (.str x.name))]) ++
     (match fin.head? with
@@ -439,8 +439,8 @@ def state (a : Parsed) : m UInt32 := do
       (match tid with | some i => i :: ((d0.find i).map Tasks.depsOf).getD [] | none => []) ++
       evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
     let live := d0.agents.filter (·.ended.isNone)
-    let fateNs := (live.filter fun x => x.status == some "idle" && (lanes || me == some x.name)).map (·.name)
-    let stayers := live.filter fun x => (py x.stay).isSome && x.status == some "idle"
+    let fateNs := (live.filter fun x => x.status == some .idle && (lanes || me == some x.name)).map (·.name)
+    let stayers := live.filter fun x => (py x.stay).isSome && x.status == some .idle
     let evNs := (d0.agents.filter fun x => full || (lanes && x.ended.isNone) || me == some x.name).map (·.name)
     let msgNs := (d0.agents.filter fun x => full || me == some x.name).map (·.name)
     let taskSels : List Sel := if full || view == some "graph" then [Sels.all .task] else
@@ -495,7 +495,7 @@ def state (a : Parsed) : m UInt32 := do
     let wt := py ((wts.lookup x.name).orElse fun _ => x.wt)
     let (act, s1) ← if live && lanes then Agents.sessionActive seen x t else pure (x.last_active.getD 0, seen)
     seen := s1
-    let status := if !live then some "ended" else if own.any (·.state = .blocked) then some "blocked" else x.status
+    let status := if !live then some AgentStatus.ended.text else if own.any (·.state = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text)
     let sign := if live then staySign x aev else none
     let (cold, s2) ← if live && lanes then Agents.coldReason seen x t else pure (none, seen)
     seen := s2
@@ -511,7 +511,7 @@ def state (a : Parsed) : m UInt32 := do
       ("idle_s", Json.int (t - (if act == 0 then t else act))), ("started", NI x.started), ("ended", NI x.ended),
       ("cache", .str (if t - act < Agents.COLD_IDLE then "warm" else "cold")), ("cold_guarded", .bool cold.isSome),
       ("worktree", N wt), ("branch", branch),
-      ("cold_at", if live && x.status != some "working" then Json.int (act + Agents.COLD_IDLE) else .null),
+      ("cold_at", if live && x.status != some .working then Json.int (act + Agents.COLD_IDLE) else .null),
       ("task", match own.head? with
         | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str), ("state", some (.str r.state.text))]
         | none => .null),
@@ -521,7 +521,7 @@ def state (a : Parsed) : m UInt32 := do
     if full || (lanes && live) || me == some x.name then
       let evs := ((aev.filter shown).reverse.take 5)
       l := l ++ [("events", .arr (evs.map (eventJson · false false)).toArray)]
-    if live && x.status == some "idle" && (lanes || me == some x.name) then  -- watchd's verdict and why (REDESIGN.md §2)
+    if live && x.status == some .idle && (lanes || me == some x.name) then  -- watchd's verdict and why (REDESIGN.md §2)
       let (byT, main, wm, all, pool) ← match reads with
         | some r => pure r
         | none => do
