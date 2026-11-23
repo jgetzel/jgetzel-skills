@@ -42,7 +42,7 @@ module is imported (here `Lean.Data.Json`) and which linked Lean's whole compile
 | `hpl/` | the same sources built with hpl (`../../../high-perf-lean`), every module `--all` |
 | `Report.lean` | `swarm-report`, swarm-retro's evidence report (its old swarm-report.lua), run by ../../swarm-retro/swarm-report |
 | `build.sh` | builds the binary the launcher runs and swarm-report (elan's lake, else nix) |
-| `check.sh` | build, no `sorry`/`axiom` (but Challenge.lean's), `layering.sh`, `Audit.lean`, each assumption's test tag, `challenge.sh`, swarm-tests and test-claim.sh on both binaries |
+| `check.sh` | build, no `sorry`/`axiom` (but Challenge.lean's), no `partial def`/`]!`/`.get!`/`.head!`/`.toNat!`/`.getLast!`/`.back!`/`panic!`/`unreachable!` in non-test code (`nopanic.pl`, also run by `claim/check.sh`; comments and strings don't count; write a structural or fuel-bounded recursion, `xs[i]?`/`getD`/`xs.head?`/`String.toNat?` with the case handled, a total `match`), `layering.sh`, `Audit.lean`, each assumption's test tag, `challenge.sh`, swarm-tests and test-claim.sh on both binaries |
 
 ## The challenge: the theorems a person reads
 

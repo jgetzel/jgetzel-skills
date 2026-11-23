@@ -3,6 +3,9 @@
 # claim's own, against a scratch ledger) on the built binary.
 cd "$(dirname "$0")" || exit 1
 if grep -rnw 'sorry\|admit\|native_decide\|^axiom' Claims Claims.lean Main.lean ClaimTests TestMain.lean; then echo "an open proof or an axiom" >&2; exit 1; fi
+if find Claims -name '*.lean' -print0 | xargs -0 perl ../swarm/lean/nopanic.pl *.lean | grep .; then
+  echo "partial def or panicking access (]! .get! .head! .toNat! .getLast! .back! panic! unreachable!) in non-test code" >&2; exit 1
+fi
 cmp -s lean-toolchain ../swarm/lean/lean-toolchain || { echo "claim/lean-toolchain differs from swarm/lean/lean-toolchain" >&2; exit 1; }
 lean_do() { if command -v lake >/dev/null; then lake "$@"; else nix shell nixpkgs#elan -c lake "$@"; fi; }
 lean_do build || exit 1
