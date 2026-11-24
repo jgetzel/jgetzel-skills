@@ -4,12 +4,12 @@
 // time change in place, a stale agent dims, and rows come and go only as terminals open and close. A question is its
 // row's own text; resting on the row opens its options over the rows below. As before (swarm/herdr/UI-SPEC.md, slice 1
 // and Part II.2): sub-terminals under their parent on a thin line, a split tab's rows in an outline. Click a row to
-// focus its terminal; click a space to show it; the shown space's heading is lit; nothing folds. Each machine's swarms
+// focus its terminal; click a space to show it; the shown space's name is bright, the others' softer; nothing folds. Each machine's swarms
 // come from one `swarm state --json --view swarms` (sw-global §5); a swarm's heading has its tag, its workers' count
 // and Talk (its communicator, lit while shown), and opens the swarm view (Part II.3), its Side button on hover the side
 // view (II.7). Each machine's heading (slice 10) has a menu on its name (rename in place, hide, update,
 // log in again, remove) and its state from `hc machine ls --json`: an unreachable machine's spaces dim with Retry;
-// hidden machines are lines at the foot with Show. Once more than one swarm runs, an All swarms row heads the rail
+// hidden machines leave the rail (Settings shows them again). Once more than one swarm runs, an All swarms row heads the rail
 // (slice 13); it shows rw-swarms in place of the tabs.
 // A hung swarm agent is a row in the bar's Needs you (round 4, proposal 1), not a card here.
 
@@ -22,7 +22,7 @@ import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, le
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 
-const ROW = 22; // fixed, so the tree lines of stacked rows meet
+const ROW = 25; // fixed, so the tree lines of stacked rows meet
 const DAY = 86400000; // an agent idle this long is stale: it dims
 const ICON = { agent: "mods/rw-rail/agent.svg", shell: "mods/workspace-chrome/terminal.svg", comms: "mods/rw-rail/comms.svg" };
 // Glass (design E), on the opaque ground: a theme colour at alpha `x`, and a rounded box's 1 px top edge of light, a top
@@ -338,10 +338,11 @@ export default class Rail extends View {
   }
 
   // A machine's heading: its name in a capsule (its menu, past this computer), its state or what its last action said,
-  // its memory in use and how many terminals it has (`count`, none when 0); as a field while it is renamed.
+  // its memory in use, resting on its name how many terminals it has (`count`), this computer's the collapse chevron;
+  // as a field while it is renamed.
   heading(t, mc, now, count) {
     const m = mc.name, n = this.mid(m), off = mc.state === "unreachable";
-    const head = h_flex().id(`machine-${m ? n : "local"}`).h(28).flex_none().when(Boolean(m), (el) => el.mt(7)).pl(4).pr(6).gap(8)
+    const head = h_flex().id(`machine-${m ? n : "local"}`).h(28).flex_none().when(Boolean(m), (el) => el.mt(16)).pl(4).pr(2).gap(8)
       .items_center().text_size(12).font_semibold().text_color(off ? t.blocked : t.foreground);
     if (m && this.renaming === m) return [
       head.child(div().id(`rename-${n}`).flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border(1).border_color(t.accent)
@@ -352,7 +353,8 @@ export default class Rail extends View {
     const state = m && mc.state && !["connected", "unreachable"].includes(mc.state) ? mc.state.replace(/_/g, " ") : null;
     const at = mc.since && new Date(mc.since).toDateString() === new Date(now).toDateString()
       ? ` since ${new Date(mc.since).toTimeString().slice(0, 5)}` : mc.since ? ` for ${dur(now - mc.since)}` : "";
-    const name = div().max_w(170).truncate().child(m ? line(m, 60) : "This computer");
+    const name = div().id(`machine-name-${m ? n : "local"}`).max_w(170).truncate()
+      .when(count > 0, (el) => el.tooltip(`${count} ${count === 1 ? "terminal" : "terminals"}`)).child(m ? line(m, 60) : "This computer");
     return [
       head.child(m ? this.menuOf(t, mc, name) : this.capsule(t, h_flex()).child(name))
         .when(off, (el) => el.child(mark(t, "hung")).child(this.act(t, `retry-${n}`, "Retry", (_e, cx) => this.refreshMachines(cx))))
@@ -360,15 +362,9 @@ export default class Rail extends View {
         .when(mc.state === "needs_login", (el) => el.child(this.act(t, `login-${n}`, "Log in", (_e, cx) => this.login(m, cx))))
         .child(div().flex_1())
         .children([off ? null : this.loadOf(t, m)].filter(Boolean))
-        .when(!off && count > 0, (el) => el.child(this.count(t, `machine-n-${m ? n : "local"}`, count))),
+        .when(!m, (el) => el.child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false)))),
       ...(off ? [this.note(t, `off-${n}`, `Can't reach it${at}. Its terminals keep running there.`)] : []),
       ...(m && this.said[m] ? [this.note(t, `said-${n}`, this.said[m])] : [])];
-  }
-
-  // How many terminals a machine has, at its heading's right end; resting on it says more (`tip`).
-  count(t, id, n, tip = null) {
-    const el = div().id(id).min_w(14).flex_none().text_right().font_family(this.mono).text_size(11).font_normal().text_color(t.dim).child(String(n));
-    return tip ? el.tooltip(tip) : el;
   }
 
   // What hover shows (`field`: hotRow the x, hot + New tab, hovHead Side, askRow and askPop a question's options),
@@ -678,29 +674,32 @@ export default class Rail extends View {
     const red = (j.repos ?? []).some((p) => ciWord(info.get(p)?.ci ?? null) === "red");
     const working = items.filter((it) => !it.comms && it.r.mark === "working").length;
     const talkOn = Boolean(comms) && comms.r.t.address === shownTerm, talkAsks = comms && (comms.r.mark === "asks" || comms.r.mark === "hung");
-    const head = h_flex().id(`sw-head-${id}`).h(23).flex_none().pl(8).pr(2).gap(6).items_center().rounded(9).cursor_pointer()
-      .when(this.swarmOn === k || talkOn, (el) => el.bg(alpha(t.foreground, 0.08)))
-      .when(this.swarmOn !== k && !talkOn, (el) => el.hover((st) => st.bg(t.hover)))
+    const head = h_flex().id(`sw-head-${id}`).h(24).mb(3).flex_none().pl(8).pr(2).gap(6).items_center().rounded(9).cursor_pointer()
+      .when(this.swarmOn === k, (el) => el.bg(alpha(t.foreground, 0.08)))
+      .when(this.swarmOn !== k, (el) => el.hover((st) => st.bg(t.hover)))
       .on_click(() => showSwarm(run, setShared, { swarm: j.swarm, folder: j.folder, machine: j.on ?? null, section: "overview" }))
       .on_hover((h, cx) => this.settle("hovHead", h, k, cx))
       .child(kit.swarmTag(t, j.swarm))
-      .child(div().id(`sw-name-${id}`).flex_none().max_w(150).truncate().font_semibold().text_color(t.foreground)
+      .child(div().id(`sw-name-${id}`).flex_shrink_1().min_w(0).max_w(150).truncate().font_semibold().text_color(t.foreground)
         .when(Boolean(tip), (el) => el.tooltip(tip)).child(line(repoName(j.folder) || j.swarm, 80)))
       .when(red, (el) => el.child(div().size(6).flex_none().rounded(3).bg(c.asks)))
-      .child(div().id(`sw-n-${id}`).flex_1().min_w(0).truncate().text_size(11.5).text_color(alpha(t.foreground, 0.74))
+      .child(div().id(`sw-n-${id}`).flex_none().text_size(11.5).text_color(alpha(t.foreground, 0.74))
         .tooltip(`${workers} ${workers === 1 ? "worker" : "workers"}, ${working} working, ${j.ready ?? 0} ready`)
-        .child(workers ? String(workers) : "no workers"))
+        .child(workers ? String(workers) : ""))
+      .child(div().flex_1())
       .when(this.hovHead === k && Boolean(this.homes?.get(k)), (el) => el.child(own(kit.button(t, `sw-side-${id}`, "Side",
         (cx) => { cx.stop_propagation(); this.openSide(this.homes.get(k)); }, { kind: "ghost", small: true }))))
-      .when(Boolean(j.comms_hc), (el) => el.child(own(this.capsule(t, h_flex().id(`sw-talk-${id}`)).cursor_pointer()
-        .when(talkOn, (el) => el.bg(alpha(t.foreground, 0.26))).when(Boolean(talkAsks), (el) => el.bg(alpha(c.asks, 0.3)))
-        .hover((st) => st.bg(alpha(t.foreground, 0.2))).text_size(11.5).font_semibold().text_color(t.foreground)
+      .when(Boolean(j.comms_hc), (el) => el.child(own(h_flex().id(`sw-talk-${id}`).h(20).px(8).gap(4).flex_none().items_center().rounded(10)
+        .border(1).border_color(alpha(t.foreground, 0.16)).cursor_pointer()
+        .when(talkOn, (el) => lit(el, t).bg(alpha(t.foreground, 0.2))).when(Boolean(talkAsks), (el) => el.bg(alpha(c.asks, 0.3)).border_color(alpha(c.asks, 0.5)))
+        .hover((st) => st.bg(alpha(t.foreground, 0.12))).text_size(11.5).font_medium().text_color(talkOn || talkAsks ? t.foreground : t.muted)
         .when(Boolean(talkAsks), (el) => el.tooltip(comms.r.mark === "hung" ? "The communicator is hung" : line(comms.r.t.report?.msg, 300) || "The communicator asks you"))
         .on_click((_e, cx) => { cx.stop_propagation(); this.talk(j); })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
           props: { agentMenu: { name: comms.a.name, swarm: j.swarm, folder: j.folder, machine: j.on ?? null, comms: true, task: null } } }); })
         .child(svg(ICON.comms).size(11)).child("Talk"))));
-    return v_flex().id(`sw-${id}`).flex_none().child(head).children(this.capped(t, `sw:${k}`, all, drawRow, (r) => r.t.address));
+    return v_flex().id(`sw-${id}`).flex_none().mt(9).child(head)
+      .child(v_flex().flex_none().pl(6).children(this.capped(t, `sw:${k}`, all, drawRow, (r) => r.t.address)));
   }
 
   // The shipped new-menu (a terminal or an agent) in space `s`: it opens its tab in the shown space.
@@ -757,21 +756,21 @@ export default class Rail extends View {
 
   // A space's lane (design E): its name, how many terminals (resting on it: its tabs, and `hid`, rail B's word for
   // those a swarm above holds, "2 in nx"; nothing when it has none) and whether it has a split tab, + New tab on hover
-  // (Part II.2); then its rows by tab. The shown space's heading is lit; a click on another's shows it. `fly`: the
+  // (Part II.2); then its rows by tab. The shown space's name is bright; a click on another's shows it. `fly`: the
   // collapsed rail's hover card, always open and not marked as shown. `sw`: the card's swarm (swarmOf).
   space(t, s, rows, tabNames, shownTerm, now, fly = false, sw = null, hid = null) {
-    const own = sw ? sw.rest : rows, on = s.active && !fly;
+    const own = sw ? sw.rest : rows, on = s.active && !fly && !this.swarmTerm; // a swarm terminal shown lights its lane instead
     const tabs = hid ? tabGroups(rows).filter((g) => g.tab).length : s.tabs.length;
     const groups = tabGroups(own), meta = [own.length || "", groups.some((g) => g.split) ? "split tab" : ""].filter(Boolean).join(" · ");
     const stop = (_e, cx) => cx.stop_propagation();
     const draw = (r) => this.row(t, r, tabNames.get(r.t.address), !fly && r.t.address === shownTerm, now, { card: !fly });
     const away = this.drag?.live && this.drag.space !== s.id; // no command moves a tab to another space
-    return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().when(away, (el) => el.opacity(0.45))
-      .child(h_flex().id(`head-${s.id}`).h(23).flex_none().pl(8).pr(2).gap(6).items_center().rounded(9).cursor_pointer()
-        .when(on, (el) => lit(el, t).bg(alpha(t.foreground, 0.08))).when(!on, (el) => el.hover((st) => st.bg(t.hover)))
+    return v_flex().id(`${fly ? "fly" : "space"}-${s.id}`).flex_none().when(!fly, (el) => el.mt(9)).when(away, (el) => el.opacity(0.45))
+      .child(h_flex().id(`head-${s.id}`).h(24).mb(3).flex_none().pl(8).pr(2).gap(6).items_center().rounded(9).cursor_pointer()
+        .hover((st) => st.bg(t.hover))
         .when(!fly, (el) => el.on_hover((h, cx) => this.settle("hot", h, s.id, cx)))
         .on_click(() => { if (viewShown(layout())) showAll(run, false); else if (!on) run("space.select", { id: s.id }); })
-        .child(div().flex_none().max_w(150).truncate().font_semibold().text_color(t.foreground).child(line(s.name, 80)))
+        .child(div().flex_shrink_1().min_w(0).max_w(150).truncate().font_semibold().text_color(on || fly ? t.foreground : alpha(t.foreground, 0.7)).child(line(s.name, 80)))
         .child(div().id(`space-n-${s.id}`).flex_1().min_w(0).truncate().text_size(11.5).text_color(alpha(t.foreground, 0.74))
           .when(Boolean(meta), (el) => el.tooltip(`${tabs} ${tabs === 1 ? "tab" : "tabs"}${hid ? `, ${hid}` : ""}`)).child(meta))
         .when(!fly && this.hot === s.id, (el) => el.child(h_flex().id(`add-${s.id}`).size(18).flex_none().items_center().justify_center()
@@ -779,7 +778,7 @@ export default class Rail extends View {
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.newTab(s); })
           .child(svg("mods/workspace-chrome/plus.svg").size(12)))))
       .when(Boolean(sw), (el) => el.child(this.block(t, s, sw, tabNames, shownTerm, now, fly)))
-      .children(this.capped(t, s.id, groups, (g) => this.tabOf(t, s, g, draw), (g) => g.tab ?? g.rows[0].t.address).flat());
+      .child(v_flex().flex_none().when(!fly, (el) => el.pl(6)).children(this.capped(t, s.id, groups, (g) => this.tabOf(t, s, g, draw), (g) => g.tab ?? g.rows[0].t.address).flat()));
   }
 
   // A list of rows (or a space's tabs): past ROWS, the first ROWS - 1 and a line that shows the rest (`key`: the space's id).
@@ -964,6 +963,7 @@ export default class Rail extends View {
     const tabOf = new Map(sp.flatMap((s) => s.tabs).map((tab) => [tab.id, tab]));
     const changedAt = new Map(ps.filter((p) => p.terminal && tabOf.get(p.tab)?.panes === 1).map((p) => [p.terminal, tabOf.get(p.tab).changed_at]));
     const swRows = [...swOf.values()].flatMap((sw) => sw.block.filter((it) => it.r).flatMap((it) => [it.r, ...it.kids]));
+    this.swarmTerm = !narrow && swRows.some((r) => r.t.address === shownTerm);
     this.track([...swRows, ...[...rowsBy.values()].flat()], now, (a) => changedAt.get(a) ?? null, cx);
     setAgentOrder([...swRows, ...[...rowsBy.values()].flat()].filter((r) => AGENT.has(r.mark) && r.pane).map((r) => r.t.address));
 
@@ -975,10 +975,12 @@ export default class Rail extends View {
     const items = ms.filter((mc) => !mc.hidden).flatMap((mc) => {
       const off = mc.state === "unreachable";
       // Past SPACES spaces, the first ones and the shown one, then a line that shows the rest.
-      const key = `m:${mc.name ?? ""}`, cut = mc.spaces.length > SPACES && !this.more.has(key);
-      const shown = cut ? mc.spaces.filter((s, i) => i < SPACES - 1 || s.active).slice(0, SPACES) : mc.spaces;
-      const more = cut ? [this.moreLine(t, `more-spaces-${this.mid(mc.name)}`, narrow ? `+${mc.spaces.length - shown.length}`
-        : `${mc.spaces.length - shown.length} more spaces`, key)] : [];
+      // a space whose every terminal is in a swarm's lane has nothing of its own to show (tiles keep every space)
+      const left = narrow ? mc.spaces : mc.spaces.filter((s) => !hidBy.has(s.id) || rowsBy.get(s.id)?.length);
+      const key = `m:${mc.name ?? ""}`, cut = left.length > SPACES && !this.more.has(key);
+      const shown = cut ? left.filter((s, i) => i < SPACES - 1 || s.active).slice(0, SPACES) : left;
+      const more = cut ? [this.moreLine(t, `more-spaces-${this.mid(mc.name)}`, narrow ? `+${left.length - shown.length}`
+        : `${left.length - shown.length} more spaces`, key)] : [];
       if (narrow) {
         const rule = div().id(`machine-${this.mid(mc.name)}`).w(32).h(1).flex_none().bg(t.border);
         return [...(mc.name ? [rule] : []), ...shown.map((s) => off ? dim(this.tile(t, s, [], tabNames, shownTerm, now, null))
@@ -994,17 +996,6 @@ export default class Rail extends View {
         + mine.reduce((n, j) => n + swOf.get(keyOf(j)).block.reduce((m, it) => m + (it.r ? 1 + it.kids.length : 0), 0), 0);
       return [...this.heading(t, mc, now, count), ...none, ...lanes, ...more];
     });
-    // Hidden machines, one line each with how many agents there ask you.
-    const hidden = ms.filter((mc) => mc.hidden);
-    const asks = (mc) => mc.spaces.reduce((n, s) => n + rowsBy.get(s.id).filter((r) => r.mark === "asks").length, 0);
-    if (!narrow && hidden.length) items.push(
-      div().id("hidden-head").flex_none().mt(14).px(10).text_size(11.5).font_semibold().text_color(t.muted).child("Hidden"),
-      ...hidden.map((mc) => h_flex().id(`hidden-${this.mid(mc.name)}`).h(28).flex_none().px(10).gap(8).items_center().text_size(12.5).text_color(t.muted)
-        .child(div().flex_1().min_w(0).truncate().font_medium().child(line(mc.name, 60)))
-        .when(asks(mc) > 0, (el) => el.child(h_flex().flex_none().gap(4).items_center().text_size(11.5).text_color(t.blocked)
-          .child(mark(t, "asks")).child(String(asks(mc)))))
-        .child(this.act(t, `show-${this.mid(mc.name)}`, "Show", () => this.hide(mc.name, false)))),
-      this.note(t, "hidden-note", "Hidden: its spaces leave the rail and its terminals keep running. An agent that asks you there still counts in Needs you."));
 
     if (narrow) return v_flex().size_full().min_h(0).pt(10).gap(14).items_center().bg(t.chrome).text_size(13)
       .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
@@ -1018,10 +1009,8 @@ export default class Rail extends View {
         const dr = this.drag;
         if (dr && !dr.live && Math.abs(e.position.y - dr.y) >= 4) { dr.live = true; dr.pane = focused()?.pane ?? null; this.keys.focus(); cx.notify(); }
       })
-      .child(h_flex().h(28).flex_none().pl(20).pr(14).pt(6).items_center().justify_end()
-        .child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false))))
       .when(sums.length > 1 || shownAll, (el) => el.child(this.allRow(t, sums, shownAll)))
-      .child(v_flex().id("rail-list").flex_1().min_h(0).px(8).pt(2).pb(12).gap(5).overflow_y_scrollbar().children(items))
+      .child(v_flex().id("rail-list").flex_1().min_h(0).px(8).pt(8).pb(12).gap(2).overflow_y_scrollbar().children(items))
       .children([this.trouble(t, [...broken, ...this.failed.values()])].filter(Boolean));
   }
 }

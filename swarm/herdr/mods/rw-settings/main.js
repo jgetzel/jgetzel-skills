@@ -114,22 +114,87 @@ export default class RwSettings extends Settings {
     return needsYou(terminals()).filter((x) => shown.has(x.address)).length;
   }
 
+  // A machine (in place of the app's row): its dot, name, a Hidden pill, what it is, and every action on one line;
+  // a machine that needs a login says so under its name and logs in from here.
   machineRow(t, m, version) {
-    const hidden = (shared(HIDDEN) ?? []).includes(m.name);
-    const asks = hidden ? this.asksOn(m.name) : 0;
+    const n = mid(m.name), busy = this.machineBusy[m.name], result = this.machineResults[m.name];
+    const edit = this.machineEdit?.machine === m.name ? this.machineEdit : null;
+    const hidden = (shared(HIDDEN) ?? []).includes(m.name), asks = hidden ? this.asksOn(m.name) : 0, login = m.state === "needs_login";
     const set = (on) => { const h = shared(HIDDEN) ?? []; setShared(HIDDEN, on ? [...h.filter((x) => x !== m.name), m.name] : h.filter((x) => x !== m.name)); };
-    return super.machineRow(t, m, version).child(h_flex().gap(6).items_center()
-      .child(div().flex_1().min_w(0).text_size(12.5).text_color(asks ? t.blocked : t.dim)
-        .child(hidden ? `Hidden from the rail${asks ? ` · ${asks} ${asks === 1 ? "asks" : "ask"} you` : ""}` : ""))
+    const color = ["connected", "online"].includes(m.state) ? t.ansi2 : ["connecting", "reconnecting"].includes(m.state) ? t.working : t.blocked;
+    const state = String(m.state ?? "unknown").replace(/[_-]/g, " ");
+    const editOf = (action) => (_e, cx) => {
+      this.machineEdit = { machine: m.name, action, name: m.name };
+      if (action === "rename") {
+        this.renameInput.set_value(m.name);
+        this.renameInput.set_selected_range({ start: 0, end: encodeURIComponent(m.name).replace(/%[0-9A-F]{2}/g, "_").length });
+        this.renameFocused = true;
+        this.renameInput.focus();
+      }
+      cx.notify();
+    };
+    const controls = h_flex().flex_none().gap(6).items_center();
+    if (busy) controls.child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900))
+      .child(div().text_size(12).text_color(t.muted).child(busy === "update" ? "Updating…" : busy === "rename" ? "Renaming…" : "Removing…"));
+    else controls
       // After `--`, a name that starts with a dash is still a name.
-      .when(m.state === "needs_login", (el) => el.child(this.button(t, `rw-login-${mid(m.name)}`, "Log in again", () =>
+      .when(login, (el) => el.child(this.button(t, `rw-login-${n}`, "Log in", () =>
         this.inTab(`log in to ${line(m.name, 40)}`, 'hc machine login -- "$1"; printf "\\nPress Enter to close. "; read _', [m.name]))))
-      .child(this.button(t, `rw-hide-${mid(m.name)}`, hidden ? "Show in the rail" : "Hide from the rail", () => set(!hidden))));
+      .when(this.olderCore(m.version, version), (el) => el.child(this.button(t, `st-m-update-${n}`, "Update", (_e, cx) => this.machineAction(m.name, "update", cx))))
+      .child(this.button(t, `rw-hide-${n}`, hidden ? "Show in rail" : "Hide", () => set(!hidden)))
+      .child(this.button(t, `st-m-rename-${n}`, "Rename", editOf("rename")))
+      .child(this.button(t, `st-m-rm-${n}`, "Remove", editOf("rm")));
+    const pill = (text, c) => div().flex_none().px(7).py(1).rounded(9).border_1().border_color(t.border).text_size(11.5).text_color(c).child(text);
+    const row = v_flex().w_full().px(16).py(14).gap(10).border_t(1).border_color(t.border)
+      .child(h_flex().gap(12).items_center()
+        .child(div().w(8).h(8).flex_none().rounded(4).bg(color))
+        .child(v_flex().flex_1().min_w(0).gap(3)
+          .child(h_flex().gap(8).items_center()
+            .child(div().min_w(0).truncate().text_size(14).font_medium().text_color(t.foreground).child(m.name))
+            .when(hidden, (el) => el.child(pill(asks ? `Hidden · ${asks} ${asks === 1 ? "asks" : "ask"} you` : "Hidden", asks ? t.blocked : t.dim)))
+            .when(m.keeps_running_after_logout === false, (el) => el.child(div().id(`st-m-logout-${n}`)
+              .text_color(t.blocked).cursor_pointer().tooltip("Agents stop when you disconnect. Click for the fix.")
+              .on_click(() => run("mod.open", { name: "machine-add" })).child("⚠"))))
+          .child(div().text_size(12.5).text_color(t.dim).child([m.target, login ? null : state, m.version ? `hc ${m.version}` : "hc version unknown"].filter(Boolean).join(" · ")))
+          .when(login, (el) => el.child(div().text_size(12.5).text_color(t.blocked).child(`Needs a login (hc machine login ${m.name})`))))
+        .child(controls));
+    if (busy === "update") row.child(div().pl(20).text_size(12.5).text_color(t.dim).child("Copying this computer's herdr-core. Its terminals keep running."));
+    if (edit && !busy) {
+      const cancel = this.button(t, `st-m-cancel-${n}`, "Cancel", (_e, cx) => { this.machineEdit = null; this.handle.focus(); cx.notify(); });
+      if (edit.action === "rm") row.child(h_flex().pl(20).gap(8).items_center()
+        .child(div().flex_1().min_w(0).text_size(12.5).text_color(t.muted).child(`Remove ${m.name}? Its terminals keep running there.`))
+        .child(cancel).child(this.button(t, `st-m-confirm-${n}`, "Remove machine", (_e, cx) => this.machineAction(m.name, "rm", cx))));
+      else row.child(v_flex().pl(20).gap(6)
+        .child(div().text_size(12).text_color(t.dim).child("New name (addresses using the old name stop working)"))
+        .child(h_flex().gap(6).items_center()
+          .child(Input.new(this.renameInput).flex_1().min_w(0).h(32).px(10).rounded(7).border_1().border_color(this.renameFocused ? t.accent : t.input).bg(t.background).text_size(13).text_color(t.foreground))
+          .child(cancel).child(this.button(t, `st-m-save-${n}`, "Save", (_e, cx) => this.machineAction(m.name, "rename", cx, edit.name)))));
+    }
+    if (result) row.child(div().pl(20).text_size(12.5).text_color(result.ok ? t.ansi2 : t.blocked).child(result.message));
+    return row;
   }
 
+  // The machines as one card (in place of the app's list): this computer first, then the others, then Add.
   machines(t) {
-    return super.machines(t).child(div().pt(14).text_size(12.5).line_height("18px").text_color(t.dim)
-      .child("Hiding a machine takes its spaces out of the rail; its terminals keep running, and an agent that asks you there still counts in Needs you."));
+    const version = updates().core.version;
+    const note = (el, c = t.dim) => el.px(16).py(14).border_t(1).border_color(t.border).text_size(12.5).text_color(c);
+    return v_flex().w_full()
+      .child(this.heading(t, "Machines"))
+      .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+        .child("Your computers, reached over ssh. Their terminals keep running when you disconnect. A hidden machine leaves the rail; an agent there that asks you still counts in Needs you."))
+      .child(v_flex().w_full().rounded(10).border_1().border_color(t.border).overflow_hidden()
+        .child(h_flex().px(16).py(14).gap(12).items_center()
+          .child(div().w(8).h(8).flex_none().rounded(4).bg(t.ansi2))
+          .child(v_flex().flex_1().min_w(0).gap(3)
+            .child(div().text_size(14).font_medium().text_color(t.foreground).child("This computer"))
+            .child(div().text_size(12.5).text_color(t.dim).child(`Connected · ${version ? `hc ${version}` : "hc version unknown"}`))))
+        .children((this.machineList ?? []).map((m) => this.machineRow(t, m, version)))
+        .when(this.machineList === null && !this.machineError, (el) => el.child(note(h_flex().gap(8).items_center())
+          .child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900)).child("Reading machines…")))
+        .when(this.machineList?.length === 0, (el) => el.child(note(div()).child("No other machines yet.")))
+        .when(Boolean(this.machineError), (el) => el.child(note(div(), t.blocked).child(this.machineError))))
+      .when(Boolean(this.machineNotice), (el) => el.child(div().pt(10).text_size(12.5).text_color(t.ansi2).child(this.machineNotice)))
+      .child(h_flex().pt(16).child(this.button(t, "st-m-add", "Add a machine", () => run("mod.open", { name: "machine-add" }))));
   }
 
   privacy(t) {

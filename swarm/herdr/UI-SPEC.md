@@ -249,8 +249,8 @@ column per swarm, Needs you merged, memory split by swarm.
 
 A connected machine always has its heading, even with no space open in this window (then one line, "No spaces open here · New space", `space.new {machine}`). A heading per machine in the rail with a menu: rename, hide, update, log in
 again, remove. Rename happens in place. An unreachable machine keeps its
-spaces, dimmed, without marks, with Retry. A hidden machine is one line at
-the foot of the rail with Show. This computer has no menu.
+spaces, dimmed, without marks, with Retry. A hidden machine leaves the rail;
+Settings shows it again. This computer has no menu.
 
 - Data: `hc machine ls --json`.
 - Actions: `hc machine rename|update|login|rm` through `exec`, as the app's
