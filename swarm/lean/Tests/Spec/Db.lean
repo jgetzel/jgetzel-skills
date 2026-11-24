@@ -69,7 +69,7 @@ def test_db_version (t : T) : IO Unit := do
   -- a binary one version older: refused, naming both versions and build.sh; reads go on
   let w := Txn.update [{ table := .meta }] [] fun db => ({ db with metas := db.metas ++ [{ k := "new", v := some "1" }] }, ())
   let msg ← try sqliteRun c (sc t) w (DB_VERSION - 1); pure "" catch e => pure (toString e)
-  has msg "has db version 0" "refusal"; has msg "at version 1" "refusal"; has msg "build.sh" "refusal"
+  has msg s!"has db version {DB_VERSION - 1}" "refusal"; has msg s!"at version {DB_VERSION}" "refusal"; has msg "build.sh" "refusal"
   eq ((← one c "select count(*) from meta where k='new'") == some (.int 0)) true
   eq (← sqliteRun c (sc t) (Txn.done 5) (DB_VERSION - 1)) 5
   sqliteRun c (sc t) w

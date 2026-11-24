@@ -35,14 +35,14 @@ def run (t : T) (sql : String := "") (home : Option String := none) (env : List 
   | .error e => fail s!"not JSON: {e}"
 
 def test_claim_to_done (t : T) : IO Unit := do
-  let r ← run t "insert into task(id,title,state,owner,evidence) values(1,'t','done','a','sha');
+  let r ← run t "insert into task(id,title,state,owner,evidence) values(1,'t','completed','a','sha');
 insert into event(ts,agent,kind,data) values(100,'a','claim','#1 t'),(190,'a','done','#1 sha'),(150,'a','reap','x'),(160,'a','digest',null);" (env := NOGIT)
   eq ((nth (r.f "tasks") 0).f "took") "1m30s"
   eq ((nth (r.f "friction") 0).f "kind") "reap"
   eq (r.f "idle_with_open_tasks").len 1
 
 def test_task_durations_from_events (t : T) : IO Unit := do
-  let r ← run t "insert into task(id,title,state,owner,evidence) values(1,'t','done','b','sha');
+  let r ← run t "insert into task(id,title,state,owner,evidence) values(1,'t','completed','b','sha');
 insert into event(ts,agent,kind,data) values(10,'a','task-add','#1 t'),(100,'a','claim','#1 t'),(130,'a','block','#1 q'),(160,'a','unblock','#1'),
  (200,'a','release','#1'),(300,'b','claim','#1 t'),(400,'b','done','#1 sha');" (env := NOGIT)
   let k := nth (r.f "tasks") 0

@@ -112,7 +112,7 @@ def fateJson (db : Db) (x : Agent) (t : Int) (f : Lifecycle.Reads m) (byT : Opti
       | none => "no stay")]
     short := short ++ [("stay", "stays")]
   if has "task" on then
-    let r := db.tasks.find? fun r => r.owner == some x.name && (r.status = .claimed || r.status = .blocked)
+    let r := db.tasks.find? fun r => r.owner == some x.name && (r.status = .inProgress || r.status = .needsInput)
     detail := detail ++ [("task", match r with
       | some r => s!"#{r.id} {cont (r.title.getD "")}{match r.lease_until with | some l => s!", lease {dur (max 0 (l - t))} left" | none => ""}"
       | none => "none")]
@@ -212,25 +212,32 @@ def msgJson (r : Msg) (fill : Bool) : Json :=
 def groupBy [BEq κ] [Hashable κ] (xs : List α) (key : α → List κ) : Std.HashMap κ (Array α) :=
   xs.foldl (fun g x => (key x).foldl (fun g k => g.alter k fun a => some ((a.getD #[]).push x)) g) {}
 
-/-- A task row as state prints it: its columns but the body, its timing, lease left, deps, the deps not done (`undone`),
-waiting and blocks. `evs`: its events; `st`: each task's state; `waitersOf`: the open tasks naming it a dep. -/
-def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (waitersOf : Array Task) : Json :=
+/-- A task row as state prints it: its columns but the body, its timing, lease left (none for a person's claim), deps,
+the deps not Completed (`undone`) and the Cancelled or Duplicate ones among them, waiting and blocks. `evs`: its events;
+`st`: each task's state; `pl`: each Ready and Backlog task's place; `waitersOf`: the Ready and Backlog tasks naming it a
+dep. -/
+def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat)
+    (waitersOf : Array Task) : Json :=
   let tm := Tasks.timing r evs t
   let deps := Tasks.depsOf r
-  let undone := deps.filter fun x => st[x]? != some .done
-  let blocks := if r.status = .done then [] else waitersOf.toList.map fun x => (x.id : Int)
-  let lease := if r.status = .claimed || r.status = .blocked then (pyI r.lease_until).map (· - t) else none
-  Json.mkObj [("id", Json.int r.id), ("title", N r.title), ("state", .str r.status.text), ("owner", N r.owner),
+  let undone := deps.filter fun x => st[x]? != some .completed
+  let cancelled := undone.filter fun x => st[x]?.any (·.category == .cancelled)
+  let blocks := if r.status = .completed then [] else waitersOf.toList.map fun x => (x.id : Int)
+  let lease := if (r.status = .inProgress || r.status = .needsInput) && r.owner != some Agents.HUMAN then
+    (pyI r.lease_until).map (· - t) else none
+  Json.mkObj [("id", Json.int r.id), ("title", N r.title), ("state", .str r.status.text),
+    ("category", .str r.category.text), ("assignee", N r.assignee), ("owner", N r.owner),
+    ("place", NI ((pl.get? r.id).map (·))), ("dup_of", NI (r.dupOf.map (·))), ("note", N r.note),
     ("lease_until", NI r.lease_until), ("created_by", N r.created_by), ("evidence", N r.evidence),
     ("deps", .arr (deps.map Json.int).toArray), ("model", N r.model), ("question", N r.question), ("effort", N r.effort),
     ("created_at", NI tm.created_at), ("first_claimed_at", NI tm.first_claimed_at), ("done_at", NI tm.done_at),
     ("dropped_at", NI tm.dropped_at), ("pr", NI tm.pr), ("merged_at", NI tm.merged_at), ("ci_conclusion", N (tm.ci_conclusion.map Conclusion.text)),
     ("ci_green_at", NI r.ci_green_at), ("claim_ctx", NI tm.claim_ctx), ("done_ctx", NI tm.done_ctx), ("answer", N r.answer),
-    ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", NI r.priority),
-    ("qpos", NI r.qpos), ("hold", N r.hold), ("land_sha", N r.land_sha), ("lander", N r.lander), ("landing_at", NI r.landing_at),
+    ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", .str r.priority.text),
+    ("land_sha", N r.land_sha), ("lander", N r.lander), ("landing_at", NI r.landing_at),
     ("labels", .arr ((Tasks.labelsOf r).map .str).toArray), ("parents", .arr ((Tasks.parentsOf r).map Json.int).toArray),
     ("lease_left", NI lease), ("waiting", .bool !undone.isEmpty), ("undone", .arr (undone.map Json.int).toArray),
-    ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
+    ("cancelled_deps", .arr (cancelled.map Json.int).toArray), ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
     ("queue_wait_s", NI tm.queue_wait_s), ("work_s", NI tm.work_s), ("total_s", NI tm.total_s),
     ("blocked_s", Json.int tm.blocked_s), ("claims", Json.int tm.claims), ("releases", Json.int tm.releases),
     ("holders", .arr (tm.holders.map .str).toArray), ("merge_to_green_s", NI tm.merge_to_green_s)]
@@ -344,13 +351,13 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
   let names := live.map (·.name)
   let evs := db.events.filter fun e => e.kind.any (·.startsWith "stay-") && e.agent.any names.contains
   let mine (s : Status) (n : String) := db.tasks.filter fun r => r.status = s && r.owner == some n
-  let asks := db.tasks.filter (·.status = .blocked)
+  let asks := db.tasks.filter (·.status = .needsInput)
   let ags := live.map fun x =>
-    let own := mine .blocked x.name ++ mine .claimed x.name
+    let own := mine .needsInput x.name ++ mine .inProgress x.name
     let act := x.last_active.getD 0
     let hung := staySign x (evs.filter (·.agent == some x.name)) == some "hung"
     (x, hung, Json.mkObj [("name", .str x.name), ("hc", N x.hc),
-      ("status", N (if own.any (·.status = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text))),
+      ("status", N (if own.any (·.status = .needsInput) then some AgentStatus.blocked.text else x.status.map (·.text))),
       ("task", match own.head? with
         | some r => obj [("id", some (Json.int r.id)), ("title", r.title.map .str)]
         | none => .null),
@@ -362,8 +369,17 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
   let mach ← Machine.mem
   -- memory per swarm ("New swarm CLI output" 3): the live agents' process trees on this machine, from their claude
   let rss := ((Machine.holders db.agents (← Machine.procs)).filter (·.agent != "other session")).foldl (· + ·.kb) 0
+  let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
+  -- a Ready or Backlog task waiting on a Cancelled dependency: remove the dependency, or cancel it too
+  let depCancelled := db.tasks.filter fun r => r.category = .unstarted || r.category = .backlog
+  let depCancelled := depCancelled.filterMap fun r =>
+    match (Tasks.depsOf r).filter fun x => stOf[x]?.any (·.category == .cancelled) with
+    | [] => none
+    | l => some (r, l)
   let needs := asks.map (fun r => need "question" [("task", some (Json.int r.id)), ("agent", r.owner.map .str),
       ("question", r.question.map .str), ("title", r.title.map .str)]) ++
+    depCancelled.map (fun (r, l) => need "dep-cancelled" [("task", some (Json.int r.id)), ("title", r.title.map .str),
+      ("deps", some (.arr (l.map Json.int).toArray))]) ++
     (live.filter fun x => x.status == some .blocked && !asks.any (·.owner == some x.name)).map
       (fun x => need "prompt" [("agent", some (.str x.name))]) ++
     (ags.filter (·.2.1)).map (fun (x, _) => need "hung" [("agent", some (.str x.name))]) ++
@@ -376,8 +392,8 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
       | none => [])
   return Json.mkObj [("active", .bool !live.isEmpty), ("db", .str p), ("now", Json.int t), ("view", .str "summary"),
     ("comms", N cv), ("swarm", N (← env "SWARM")), ("rss_kb", Json.int rss),
-    ("counts", Json.mkObj (["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
-      (k, Json.int (sts.filter (·.2.text == k)).length))),
+    ("counts", Json.mkObj (Status.all.map fun s => (s.text, Json.int (sts.filter (·.2 == s)).length))),
+    ("categories", Json.mkObj (SwarmsView.CATEGORIES.map fun c => (c.text, Json.int (sts.filter (·.2.category == c)).length))),
     ("agents", .arr (ags.map (·.2.2)).toArray), ("needs", .arr needs.toArray),
     -- the bar's "main green" and the communicator's Away switch
     ("ci", match ci.head? with | some r => Json.mkObj [("status", N (r.status.map RunStatus.text)), ("conclusion", N (r.conclusion.map Conclusion.text))] | none => .null),
@@ -435,7 +451,7 @@ def state (a : Parsed) : m UInt32 := do
     let d0 ← Txn.slice ([Sels.all .agent, Sels.all .cursor] ++ (if wants view "events" then [Sels.feed feedN] else []) ++
       (match tid with | some i => [Sels.task i] | none => []))
     let evShown := if wants view "events" then (d0.events.filter shown).reverse.take feedN else []
-    let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++
+    let page : List Int := (if view == some "board" then newest .completed ++ newest .cancelled ++ newest .duplicate else []) ++
       (match tid with | some i => i :: ((d0.find i).map Tasks.depsOf).getD [] | none => []) ++
       evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
     let live := d0.agents.filter (·.ended.isNone)
@@ -461,8 +477,10 @@ def state (a : Parsed) : m UInt32 := do
   let tev := db.events.filter fun e => (e.kind.map (Tasks.TASK_KINDS.contains ·)).getD false
   let tevBy := groupBy tev fun e => (Tasks.eventTask e).toList
   let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
-  let waitersBy := groupBy (db.tasks.filter (·.status = .open)) fun x => (Tasks.depsOf x).eraseDups
-  let ownBy := groupBy (db.tasks.filter fun r => r.status = .claimed || r.status = .blocked) (·.owner.toList)
+  let waitersBy := groupBy (db.tasks.filter Queue.unstarted) fun x => (Tasks.depsOf x).eraseDups
+  let pl : Std.HashMap Int Nat := (Queue.readyList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1))
+    ((Queue.backlogList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1)) {})
+  let ownBy := groupBy (db.tasks.filter fun r => r.status = .inProgress || r.status = .needsInput) (·.owner.toList)
   let evBy := groupBy db.events (·.agent.toList)
   let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
   let lockBy := groupBy db.locks (·.agent.toList)
@@ -470,13 +488,13 @@ def state (a : Parsed) : m UInt32 := do
   let evShown := if wants view "events" then (db.events.filter shown).reverse.take feedN else []
   let edged : List Int := if view == some "graph" then
       (db.tasks.filter fun r => !(Tasks.depsOf r).isEmpty).foldl (fun acc r => r.id :: Tasks.depsOf r ++ acc) [] else []
-  let page : List Int := (if view == some "board" then newest .done ++ newest .dropped else []) ++ edged.eraseDups ++
+  let page : List Int := (if view == some "board" then newest .completed ++ newest .cancelled ++ newest .duplicate else []) ++ edged.eraseDups ++
     (match tid with | some i => i :: ((db.find i).map Tasks.depsOf).getD [] | none => []) ++
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
-  let sent (r : Task) : Bool := full || !(r.status = .done || r.status = .dropped) || page.contains r.id ||
-    (r.status = .done && me.isSome && r.owner == me)
+  let sent (r : Task) : Bool := full || !(r.status = .completed || r.category = .cancelled) || page.contains r.id ||
+    (r.status = .completed && me.isSome && r.owner == me)
   let tasksJ := (db.tasks.filter sent).map fun r =>
-    (taskJson r (tevBy.getD r.id #[]).toList t stOf (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
+    (taskJson r (tevBy.getD r.id #[]).toList t stOf pl (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
   let endedPage := if view == some "agents" then
       (((db.agents.filter fun x => x.ended.isSome && below (x.ended.getD 0)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
     else []
@@ -495,7 +513,7 @@ def state (a : Parsed) : m UInt32 := do
     let wt := py ((wts.lookup x.name).orElse fun _ => x.wt)
     let (act, s1) ← if live && lanes then Agents.sessionActive seen x t else pure (x.last_active.getD 0, seen)
     seen := s1
-    let status := if !live then some AgentStatus.ended.text else if own.any (·.status = .blocked) then some AgentStatus.blocked.text else x.status.map (·.text)
+    let status := if !live then some AgentStatus.ended.text else if own.any (·.status = .needsInput) then some AgentStatus.blocked.text else x.status.map (·.text)
     let sign := if live then staySign x aev else none
     let (cold, s2) ← if live && lanes then Agents.coldReason seen x t else pure (none, seen)
     seen := s2
@@ -566,7 +584,6 @@ def state (a : Parsed) : m UInt32 := do
     -- the user's staffing numbers (agents.limits) and the board's "auto-spawn holding" line while it holds
     ("limits", obj [("live", some (Json.int nlive)), ("min", some (NI ((metaV "agent_min").bind parseInt))),
       ("max", some (NI ((metaV "agent_max").bind parseInt))), ("held", some (N (metaV "spawn_held"))),
-      ("queue_only", some (.bool (Queue.queueOnly db))),
       -- the compaction limits (`swarm limits --ctx-nudge/--ctx-compact/--compact-stayers`): the view's Rules and limits card
       ("ctx_nudge", some (Json.int (SwarmLean.Compact.nudgeAt db))), ("ctx_compact", some (Json.int (SwarmLean.Compact.compactAt db))),
       ("compact_stayers", some (.bool (SwarmLean.Compact.stayersToo db))),
@@ -574,8 +591,10 @@ def state (a : Parsed) : m UInt32 := do
     ("rules", N (metaV "rules")),  -- `swarm rules show`: what every agent's brief starts with
     ("tasks", .arr tasksJ.toArray), ("agents", .arr (ags.map (·.1)).toArray),
     -- the swarm's tasks by state, and the ended agents but the communicator: what the trimmed lists leave out
-    ("counts", Json.mkObj ((["open", "claimed", "blocked", "done", "dropped", "landing"].map fun k =>
-      (k, Json.int (sts.filter fun (i, st) => st.text == k && isOurs i).length)) ++
+    ("categories", Json.mkObj (SwarmsView.CATEGORIES.map fun c =>
+      (c.text, Json.int (sts.filter fun (i, st) => st.category == c && isOurs i).length))),
+    ("counts", Json.mkObj ((Status.all.map fun s =>
+      (s.text, Json.int (sts.filter fun (i, st) => st == s && isOurs i).length)) ++
       [("ended", Json.int (db.agents.filter fun x => x.ended.isSome && some x.name != cv).length)])),
     ("conflicts", .arr ((db.conflicts.mergeSort fun x y => x.since.getD 0 ≥ y.since.getD 0).map fun c =>
       Json.mkObj [("a", .str c.a), ("b", .str c.b), ("path", .str c.path), ("since", NI c.since)]).toArray),

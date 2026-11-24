@@ -148,10 +148,10 @@ def test_watchd_leaves_another_swarms_claim (t : T) : IO Unit := do
   t.sw_ "a" ["join"] { env := [("SWARM", some "t")] }
   t.sw_ "x" ["join"] { env := [("SWARM", some "u")] }
   t.q_ "update agent set hc='t5', status='working' where name='x'"
-  t.q_ "insert into task(title, state, owner, lease_until, created_by) values('w', 'claimed', 'x', 1, 'x')"
+  t.q_ "insert into task(title, state, owner, lease_until, created_by) values('w', 'in_progress', 'x', 1, 'x')"
   t.sw_ "a" ["watchd", "--once"]
   let r ← t.q1 "select state, owner from task where title='w'"
-  eq (r.f "state") "claimed"
+  eq (r.f "state") "in_progress"
   eq (r.f "owner") "x"
 
 def test_machine_note_and_patterns (t : T) : IO Unit := do
@@ -277,18 +277,18 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   eq (← t.q "select 1 x from task where title like 'main red:%'").size 1
   eq (← t.q "select 1 x from msg where kind='system'").size 1
   has ((← t.q1 "select body from task where id=2").f "body") "Later red: run 10"
-  -- the fixer's done releases the task and holds it, and the agent can stop; a re-run of the reds leaves an older green
-  -- on top: still open
+  -- the fixer's done releases the task to Backlog, and the agent can stop; a re-run of the reds leaves an older green
+  -- on top: still in Backlog
   t.sw_ "a" ["task", "claim", "2"]
   has (← t.sw "a" ["task", "done", "2", "--evidence", "abc"]).stdout "released"
   let row ← t.q1 "select state,owner,hold from task where id=2"
-  eq (toJson [row.f "state", row.f "owner", row.f "hold"]) (json% ["open", null, "abc awaiting a green run"])
+  eq (toJson [row.f "state", row.f "owner", row.f "hold"]) (json% ["backlog", null, "abc awaiting a green run"])
   eq (← t.q "select 1 x from event where kind='red-fixed' and data='#2 abc'").size 1
   eq (← t.sw "a" ["endable", "--why"] { ok := true }).stdout ""
   let rerun := runs.map fun r =>
     if r.f "conclusion" == Json.str "failure" then (r.setObjVal! "status" "in_progress").setObjVal! "conclusion" Json.null else r
   gh rerun; reset; go
-  eq ((← t.q1 "select state from task where id=2").f "state") "open"
+  eq ((← t.q1 "select state from task where id=2").f "state") "backlog"
   eq ((← t.q1 "select hold from task where id=2").f "hold") "abc awaiting a green run"
   -- a red run from before the fix leaves the hold; one after it clears it
   let old := (runs[0]!.setObjVal! "databaseId" (12 : Int)).setObjVal! "createdAt" "2026-11-08T10:12:00Z"
@@ -300,7 +300,7 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   runs := #[newer] ++ runs
   gh runs; reset; go
   has ((← t.q1 "select body from task where id=2").f "body") "Later red: run 13"
-  eq ((← t.q1 "select hold from task where id=2").f "hold") Json.null
+  eq ((← t.q1 "select state, hold from task where id=2")) (json% {"state": "ready"})  -- back in Ready, its note gone
   -- fixed again: a green run closes the held, unowned task and clears its hold
   t.sw_ "a" ["task", "claim", "2"]
   t.sw_ "a" ["task", "done", "2", "--evidence", "def"]
@@ -311,7 +311,7 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   gh runs; reset; go
   let d ← t.q1 "select state,evidence,hold from task where id=2"
   let want := s!"green run 14 at {red.take 7}"
-  eq (toJson [d.f "state", d.f "evidence", d.f "hold"]) (json% ["done", $want, null])
+  eq (toJson [d.f "state", d.f "evidence", d.f "hold"]) (json% ["completed", $want, null])
   -- no live suspect: a new task, and comms hears of it
   t.q_ "update agent set ended=1 where name='a'"; t.q_ "delete from event where kind='ci-red'"
   runs := runs.extract 1 runs.size
@@ -319,7 +319,7 @@ def test_ci_red_is_one_task_closed_on_green (t : T) : IO Unit := do
   go
   let dests := (← t.q "select dest from msg where kind='system' order by id").map (·.f "dest")
   eq dests (json% ["a", "comms"])
-  eq (← t.q "select 1 x from task where title like 'main red:%' and state='open'").size 1
+  eq (← t.q "select 1 x from task where title like 'main red:%' and state='ready'").size 1
 
 -- board #136: tasks are the machine's, but each repo's CI passes act only on its own (task_repo): repo B's open red
 -- task neither takes A's red run nor closes on A's green one, A's red gets its own task, and A's merged PR from a/2
@@ -334,8 +334,8 @@ def test_ci_acts_only_on_the_repos_tasks (t : T) : IO Unit := do
   let gh (rs : Array Json) : IO Unit := discard <| t.fake "gh"
     s!"#!/bin/sh\ncase \"$1\" in api) echo '{(Json.arr rs).compress}';; pr) echo '{pr}';; *) echo 'step Build failed';; esac\n"
   t.agent "a"; t.agent "comms"
-  t.q_ "insert into task(title, body, state, created_by) values('main red: run 5', 'b', 'open', 'swarm')"
-  t.q_ "insert into task(title, state, owner, first_claimed_at) values('b work', 'claimed', 'a', 1)"
+  t.q_ "insert into task(title, body, state, created_by) values('main red: run 5', 'b', 'ready', 'swarm')"
+  t.q_ "insert into task(title, state, owner, first_claimed_at) values('b work', 'in_progress', 'a', 1)"
   -- B's alone: the fixture's task_of_repo trigger put both in this repo too
   t.q_ "delete from task_repo where task in (1, 2)"
   t.q_ "insert into task_repo(task, repo) values(1, '/elsewhere/b'), (2, '/elsewhere/b')"
@@ -343,14 +343,14 @@ def test_ci_acts_only_on_the_repos_tasks (t : T) : IO Unit := do
   gh #[run 9 "failure" "2026-11-08T10:05:00Z"]
   go
   eq ((← t.q1 "select body from task where id=1").f "body") "b"
-  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
+  eq ((← t.q1 "select state from task where id=2").f "state") "in_progress"
   eq (← t.q "select id from task where title like 'main red: run 9%'") (json% [{"id": 3}])
   eq (← t.q "select repo from task_repo where task=3") (json% [{"repo": $(t.repo)}])
   gh #[run 10 "success" "2026-11-08T10:10:00Z", run 9 "failure" "2026-11-08T10:05:00Z"]
   t.q_ "delete from meta where k like 'ci%'"
   go
-  eq ((← t.q1 "select state from task where id=1").f "state") "open"
-  eq ((← t.q1 "select state from task where id=3").f "state") "done"
+  eq ((← t.q1 "select state from task where id=1").f "state") "ready"
+  eq ((← t.q1 "select state from task where id=3").f "state") "completed"
 
 -- ---- swarm run ----
 -- Fake hc and ssh: the 'laptop' is a home dir here; rsync is real. Per-terminal `hc get` answers come from <d>/get.<terminal>.

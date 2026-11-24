@@ -54,7 +54,7 @@ def test_fate_is_the_ticks_verdict (t : T) : IO Unit := do
   idle t "z" [("wt", t.wt), ("waiter", .int 999999)]            -- small and a task ready, but no waiter: end
   idle t "w" [("wt", t.wt), ("status", "working")]              -- not idle: no fate
   t.sw_ "comms" ["limits", "--reuse-below", "50000"]
-  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('t0','done','e','sha','ui',1)"
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('t0','completed','e','sha','ui',1)"
   t.sw_ "comms" ["task", "add", "t1", "--label", "ui"]
   let a ← st t ["--view", "agents"]
   let fate (n : String) := (byName a n).f "fate"
@@ -298,7 +298,7 @@ def test_watchd_hands_over_only_to_a_ticked_one (t : T) : IO Unit := do
 def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
   t.agent "e" [("ended", .int 1)]
   t.agent "w" [("status", "working")]
-  t.q_ "insert into task(id, title, state, owner) values (1, 'one', 'done', 'w'), (2, 'two', 'done', 'x'), (3, 'three', 'dropped', null), (4, 'four', 'open', null)"
+  t.q_ "insert into task(id, title, state, owner) values (1, 'one', 'completed', 'w'), (2, 'two', 'completed', 'x'), (3, 'three', 'cancelled', null), (4, 'four', 'ready', null)"
   t.q_ "update task set deps='1,2' where id=4"
   t.q_ "insert into event(ts, agent, kind, data) values (1, 'x', 'done', '#2 sha')"
   let ids (s : Json) : List Int := match s.f "tasks" with
@@ -309,7 +309,7 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
     | _ => []
   let o ← st t ["--view", "overview"]  -- its event feed names #2
   eq (ids o) [2, 4]
-  eq (o.f "counts") (json% {"open": 1, "claimed": 0, "blocked": 0, "done": 2, "dropped": 1, "landing": 0, "ended": 1})
+  eq (o.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 0, "needs_input": 0, "in_review": 0, "completed": 2, "cancelled": 1, "duplicate": 0, "ended": 1})
   eq ((nth (o.f "tasks") 1).f "undone") (json% [])
   if (names o).contains "e" then fail "overview sent an ended agent"
   eq (ids (← st t ["--view", "board"])) [1, 2, 3, 4]
@@ -333,11 +333,11 @@ def test_state_summary (t : T) : IO Unit := do
   t.agent "q" [("status", "working"), ("last_active", .int 0)]               -- asks about #2; never active: idle 0
   t.agent "s" [("status", "idle"), ("stay", "reviews"), ("last_active", .int (n - 50))]  -- hung
   t.agent "e" [("ended", .int 1)]
-  t.q_ "insert into task(id, title, state, owner, question, lease_until) values (1, 'one', 'claimed', 'w', null, 4000000000), (2, 'two', 'blocked', 'q', 'which?', 4000000000), (3, 'three', 'done', 'w', null, null), (4, 'four', 'open', null, null, null)"
+  t.q_ "insert into task(id, title, state, owner, question, lease_until) values (1, 'one', 'in_progress', 'w', null, 4000000000), (2, 'two', 'needs_input', 'q', 'which?', 4000000000), (3, 'three', 'completed', 'w', null, null), (4, 'four', 'ready', null, null, null)"
   t.q_ "insert into event(ts, agent, kind, data) values (?, 's', 'stay-hung', ''), (?, 'w', 'claim', '#1')" [.int (n - 10), .int (n - 10)]
   t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(7,'x','completed','failure','u','2026-11-08T10:00:00Z')"
   let s ← st t ["--view", "summary"]
-  eq (s.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 1, "done": 1, "dropped": 0, "landing": 0})
+  eq (s.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 1, "cancelled": 0, "duplicate": 0})
   let ags := match s.f "agents" with | .arr a => a.toList | _ => []
   eq (ags.map (·.f "name")) [json% "comms", json% "p", json% "q", json% "s", json% "w"]
   eq (byName s "q") (json% {"name": "q", "hc": null, "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})
@@ -368,25 +368,25 @@ def test_state_swarms (t : T) : IO Unit := do
   t.q_ "insert into swarm_repo(swarm, repo) values('u', '/r2')"
   t.q_ "update agent set swarm='u' where name in ('x', 'y')"
   t.q_ "insert into workspace(repo, path, agent) values('/r2', '/r2-x', 'x')"
-  t.q_ "insert into task(id, title, state, owner, created_by, question, lease_until) values (1, 'one', 'claimed', 'w', 'c', null, 4000000000), (2, 'two', 'blocked', 'x', 'human', 'which?', 4000000000), (3, 'three', 'open', null, 'human', null, null), (4, 'four', 'open', null, 'human', null, null)"
+  t.q_ "insert into task(id, title, state, owner, created_by, question, lease_until) values (1, 'one', 'in_progress', 'w', 'c', null, 4000000000), (2, 'two', 'needs_input', 'x', 'human', 'which?', 4000000000), (3, 'three', 'ready', null, 'human', null, null), (4, 'four', 'ready', null, 'human', null, null)"
   t.q_ "delete from task_repo"  -- the fixture gives hand-written tasks its repo: this test sets their repos
   t.q_ "insert into task_repo(task, repo) values(4, '/r2')"
   let s ← st t ["--view", "swarms"]
   eq (s.f "db") (Json.str t.db)
-  eq (s.f "counts") (json% {"open": 2, "claimed": 1, "blocked": 1, "done": 0, "dropped": 0, "landing": 0})
+  eq (s.f "counts") (json% {"backlog": 0, "ready": 2, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
   let sws := match s.f "swarms" with | .arr a => a.toList | _ => []
   eq (sws.map (·.f "name")) [json% "t", json% "u"]
   let st0 := sws.headD .null
   let su := sws.getD 1 .null
   eq ((st0.f "comms"), (st0.f "comms_hc"), (st0.f "active"), (su.f "comms")) (json% "c", json% "t1", json% true, Json.null)
-  eq (st0.f "counts") (json% {"open": 1, "claimed": 1, "blocked": 0, "done": 0, "dropped": 0, "landing": 0})
-  eq (su.f "counts") (json% {"open": 2, "claimed": 0, "blocked": 1, "done": 0, "dropped": 0, "landing": 0})
+  eq (st0.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 1, "needs_input": 0, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
+  eq (su.f "counts") (json% {"backlog": 0, "ready": 2, "in_progress": 0, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
   eq ((st0.f "staffing").f "live") (json% 1)
   let names (j : Json) : List Json := match j.f "agents" with | .arr a => a.toList.map fun (x : Json) => x.f "name" | _ => []
   eq (names st0) [json% "c", json% "w"]
   eq (names su) [json% "x", json% "y"]
   eq ((byName st0 "w").f "repo") (Json.str t.repo)
-  eq ((byName st0 "w").f "task") (json% {"id": 1, "title": "one", "state": "claimed"})
+  eq ((byName st0 "w").f "task") (json% {"id": 1, "title": "one", "state": "in_progress"})
   eq ((byName su "x").f "repo") (json% "/r2")
   -- every repo an agent has a worktree in, else its own; each swarm repo with its base, CI, locks and other swarms
   let has (j : Json) (r : String) : Bool := match j.f "repos" with | .arr a => a.contains (Json.str r) | _ => false
@@ -408,7 +408,7 @@ def test_state_swarms (t : T) : IO Unit := do
     | .arr a => (a.toList.filter fun (k : Json) => k.f "mine" == Json.bool true).map fun (k : Json) => k.f "id"
     | _ => []
   eq ours [json% 1, json% 3]
-  eq (((o.f "counts").f "open"), ((o.f "counts").f "blocked")) (json% 1, json% 0)
+  eq (((o.f "counts").f "ready"), ((o.f "counts").f "needs_input")) (json% 1, json% 0)
 
 /-- The element of array `j` whose field `k` is `v`. -/
 def withF (j : Json) (k : String) (v : Json) : Json :=
@@ -423,7 +423,7 @@ def test_state_swarms_gone (t : T) : IO Unit := do
   t.agent "c" [("hc", "t1"), ("status", "blocked")]
   t.agent "w" [("hc", "t2"), ("status", "blocked")]
   t.agent "y" [("status", "blocked")]
-  t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'blocked', 'w', 'c', 'which?')"
+  t.q_ "insert into task(id, title, state, owner, created_by, question) values (1, 'one', 'needs_input', 'w', 'c', 'which?')"
   t.liveHc ["t2"]
   let s ← st t ["--view", "swarms"]
   let sw := withF (s.f "swarms") "name" (json% "t")
@@ -450,12 +450,13 @@ def test_state_swarms_board (t : T) : IO Unit := do
   t.q_ "insert into workspace(repo, path, agent) values(?, '/wt-w', 'w'), ('/r2', '/r2-w', 'w')" [.text t.repo]
   t.q_ ("insert into task(id, title, state, owner, created_by, priority, labels, deps, hold, lease_until, question, " ++
     "land_sha, lander, landing_at) values " ++
-    "(1, 'one', 'claimed', 'w', 'c', 1, 'ui,x', null, null, ?, null, null, null, null), " ++
-    "(2, 'two', 'blocked', 'w', 'human', 2, null, '1', null, ?, 'which?', null, null, null), " ++
-    "(3, 'three', 'open', null, 'human', 3, null, null, 'wait for me', null, null, null, null, null), " ++
-    "(4, 'four', 'landing', 'w', 'c', 2, null, null, null, null, null, 'abc123', 'nobody', ?), " ++
-    "(5, 'five', 'done', 'w', 'c', 2, null, null, null, null, null, null, null, null)")
+    "(1, 'one', 'in_progress', 'w', 'c', 1, 'ui,x', null, null, ?, null, null, null, null), " ++
+    "(2, 'two', 'needs_input', 'w', 'human', 2, null, '1', null, ?, 'which?', null, null, null), " ++
+    "(3, 'three', 'backlog', null, 'human', 3, null, null, 'wait for me', null, null, null, null, null), " ++
+    "(4, 'four', 'in_review', 'w', 'c', 2, null, null, null, null, null, 'abc123', 'nobody', ?), " ++
+    "(5, 'five', 'completed', 'w', 'c', 2, null, null, null, null, null, null, null, null)")
     [.int (n + 600), .int (n + 300), .int (n - 60)]
+  t.q_ "update task set qpos=1 where id=3"
   t.q_ "insert into task_repo(task, repo, base) values(1, '/r2', 'feat')"
   t.q_ "insert into event(ts, agent, kind, data) values (?, 'w', 'claim', '#1 one'), (?, 's', 'stay-hung', '')"
     [.int (n - 5), .int (n - 10)]
@@ -467,8 +468,9 @@ def test_state_swarms_board (t : T) : IO Unit := do
   -- tasks: every one not done, and the newest done
   eq ((s.f "tasks").len) 5
   let t1 := withF (s.f "tasks") "id" (json% 1)
-  eq (t1.f "title", t1.f "state", t1.f "priority", t1.f "labels", t1.f "after", t1.f "held", t1.f "created_by")
-    (json% "one", json% "claimed", json% 1, json% ["ui", "x"], json% [], Json.null, json% "c")
+  eq (t1.f "title", t1.f "state", t1.f "priority", t1.f "labels", t1.f "after", t1.f "note", t1.f "created_by")
+    (json% "one", json% "in_progress", json% "urgent", json% ["ui", "x"], json% [], Json.null, json% "c")
+  eq (t1.f "category", t1.f "assignee", t1.f "place") (json% "started", json% "w", Json.null)
   eq (t1.f "repos") (Json.arr #[Json.mkObj [("repo", R), ("base", "main"), ("worktree", "/wt-w")],
     json% {"repo": "/r2", "base": "feat", "worktree": "/r2-w"}])
   eq (t1.f "holder") (json% {"agent": "w", "swarm": "t"})
@@ -478,7 +480,8 @@ def test_state_swarms_board (t : T) : IO Unit := do
   let t2 := withF (s.f "tasks") "id" (json% 2)
   eq (t2.f "after") (json% [1])
   let t3 := withF (s.f "tasks") "id" (json% 3)
-  eq (t3.f "holder", t3.f "held", t3.f "lease_left_s") (Json.null, json% "wait for me", Json.null)
+  eq (t3.f "holder", t3.f "note", t3.f "lease_left_s", t3.f "state", t3.f "category", t3.f "place")
+    (Json.null, json% "wait for me", Json.null, json% "backlog", json% "backlog", json% 1)
   eq (t3.f "repos") (Json.arr #[Json.mkObj [("repo", R), ("base", "main"), ("worktree", Json.null)]])
   -- repos: CI on the base, locks and swarms
   let r1 := withF (s.f "repos") "path" R
@@ -494,7 +497,6 @@ def test_state_swarms_board (t : T) : IO Unit := do
     json% {"kind": "hung", "agent": "s", "swarm": "t", "stay": "reviews"},
     Json.mkObj [("kind", "lander"), ("task", Json.num 4), ("title", "four"), ("agent", "w"), ("lander", "nobody"),
       ("sha", "abc123"), ("since", toJson (n - 60)), ("swarm", "t")],
-    json% {"kind": "held", "task": 3, "title": "three", "why": "wait for me"},
     Json.mkObj [("kind", "lock"), ("repo", R), ("path", "a.txt"), ("agent", "gone"), ("since", Json.num 5)],
     json% {"kind": "ctx", "agent": "w", "swarm": "t", "ctx": 330000, "limit": 325000},
     Json.mkObj [("kind", "ci-red"), ("repo", R), ("run", Json.num 7), ("sha", "deadbeef"), ("url", "u")]])

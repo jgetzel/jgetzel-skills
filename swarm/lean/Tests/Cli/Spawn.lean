@@ -216,7 +216,7 @@ def test_spawn_refused_at_the_max (t : T) : IO Unit := do
   has (← t.sw "a" ["spawn", "t-9", "--task", "1"] { ok := false }).stderr "the user's max is 2"
   eq (← t.launched).size 1  -- launched nothing
   ok ((← t.q1 "select 1 x from agent where name='t-9'") == .null) "a refused spawn leaves no row"
-  eq ((← t.q1 "select state from task").f "state") "open"
+  eq ((← t.q1 "select state from task").f "state") "ready"
   eq (← t.q "select 1 from event where kind='spawn-refused' and data='t-9'").size 2
   has (← t.sw "a" ["limits", "--min", "3"] { ok := false }).stderr "the auto-spawn number 3 is above the max 2"
   t.sw_ "a" ["limits", "--max", "3"]
@@ -226,18 +226,17 @@ def test_spawn_refused_at_the_max (t : T) : IO Unit := do
 def test_limits_all_or_nothing (t : T) : IO Unit := do
   t.fakes; twoHaiku t
   -- `=`: a bare `-1` is an unknown short option to the parser, a usage error before the check
-  let r ← t.sw "a" ["limits", "--min", "3", "--queue-only", "on", "--ctx-nudge=-1"] { ok := false }
+  let r ← t.sw "a" ["limits", "--min", "3", "--ctx-nudge=-1"] { ok := false }
   eq r.code 1
   has r.stderr "a context threshold is tokens"
   let l := (← t.sw "a" ["limits"]).stdout
   has l "agents: 1 live, no auto-spawn number, no max set"  -- a bad flag sets none of the good ones
-  hasnt l "queue-only"
   eq (← t.q "select 1 from event where kind='limits'").size 0
   t.sw_ "a" ["limits", "--max", "2"]
-  has (← t.sw "a" ["limits", "--min", "3", "--queue-only", "on"] { ok := false }).stderr "the auto-spawn number 3 is above the max 2"
-  hasnt (← t.sw "a" ["limits"]).stdout "queue-only"
-  has (← t.sw "a" ["limits", "--min", "2", "--queue-only", "on", "--reuse-below", "50000"]).stdout
-    "agents: 1 live, auto-spawn to 2, max 2, queue-only"
+  has (← t.sw "a" ["limits", "--min", "3"] { ok := false }).stderr "the auto-spawn number 3 is above the max 2"
+  has (← t.sw "a" ["limits", "--min", "2", "--reuse-below", "50000"]).stdout
+    "agents: 1 live, auto-spawn to 2, max 2"
+  has (← t.sw "a" ["limits", "--queue-only", "on"] { ok := false }).stderr "--queue-only is gone"
 
 def test_reserved_and_bad_names_refused (t : T) : IO Unit := do
   t.fakes; twoHaiku t
@@ -311,7 +310,7 @@ def test_spawn_task_claims_before_launch (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "do it"]
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
   has (← t.sw "a" ["spawn", "t-8", "--model", "haiku", "--", "go"]).stdout "machine:"  -- the note after the launch
-  eq ((← t.launched)[0]!.f "task") (json% [["t-9", "claimed"]])  -- claimed by the new name before launch ran
+  eq ((← t.launched)[0]!.f "task") (json% [["t-9", "in_progress"]])  -- claimed by the new name before launch ran
   eq ((← t.q1 "select hc from agent where name='t-9'").f "hc") "hc1"
   has (← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { ok := false }).stderr "live agent"  -- a live name is refused
 
@@ -330,7 +329,7 @@ def test_spawn_task_waits_for_another_swarms_stop (t : T) : IO Unit := do
   has (← t.sw "a" ["limits", "--max", "1"] tt).stdout "max 1"
   has (← t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { tt with ok := false }).stderr "waits for x to read its stop"
   eq (← t.launched).size 0
-  eq (← t.q1 "select state, owner from task") (json% {"state": "open"})
+  eq (← t.q1 "select state, owner from task") (json% {"state": "ready"})
   ok ((← t.q1 "select 1 x from agent where name='t-9'") == .null) "a refused spawn leaves no row"
   t.sw_ "x" ["read"] u
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] tt
@@ -435,7 +434,7 @@ def test_spawn_launch_failure_keeps_live_agent (t : T) : IO Unit := do
   touch (t.d ++ "/launch.fail")
   t.sw_ "a" ["task", "add", "do it"]
   t.sw_ "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"]
-  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% ["t-9", "claimed"])
+  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% ["t-9", "in_progress"])
   eq ((← t.q1 "select hc from agent where name='t-9'").f "hc") "t7"
 
 def test_launch_sh_survives_failure_after_hc_run (t : T) : IO Unit := do
@@ -453,7 +452,7 @@ def test_spawn_task_launch_failure_rolls_back (t : T) : IO Unit := do
   touch (t.d ++ "/launch.fail")
   t.sw_ "a" ["task", "add", "do it"]
   discard <| t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { ok := false }
-  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% [null, "open"])
+  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% [null, "ready"])
   ok ((← t.q1 "select ended from agent where name='t-9'").f "ended" != .null) "ended"
 
 -- launch_agent raises before launch.sh runs (its settings file can't be written): the reservation is undone too
@@ -463,7 +462,7 @@ def test_spawn_task_raise_rolls_back (t : T) : IO Unit := do
   IO.FS.createDirAll (t.d ++ "/agents/t-9.settings.json")
   t.sw_ "a" ["task", "add", "do it"]
   discard <| t.sw "a" ["spawn", "t-9", "--model", "haiku", "--task", "1"] { ok := false }
-  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% [null, "open"])
+  eq (row (← t.q1 "select owner,state from task") ["owner", "state"]) (json% [null, "ready"])
   ok ((← t.q1 "select ended from agent where name='t-9'").f "ended" != .null) "ended"
   eq (← t.launched).size 0
 
@@ -695,7 +694,7 @@ def test_state_json (t : T) : IO Unit := do
   eq ((← t.q1 "select count(*) n from event").f "n") before
   ok (s.f "active" == Json.bool true) "active"
   let t1 := nth (s.f "tasks") 1; let t2 := nth (s.f "tasks") 2
-  eq (row t1 ["state", "owner", "question"]) (json% ["blocked", "a", "which db?"])
+  eq (row t1 ["state", "owner", "question"]) (json% ["needs_input", "a", "which db?"])
   ok ((t1.f "lease_left").i > 0) "lease_left"
   ok (t2.f "waiting" == Json.bool true) "waiting"
   let a := nth (s.f "agents") 1; let b := nth (s.f "agents") 2
@@ -740,7 +739,7 @@ def test_state_json_view (t : T) : IO Unit := do
   t.sw_ "b" ["lock", "b.txt"]
   t.sw_ "a" ["post", "b", "hi"]
   t.sw_ "b" ["leave"]
-  let head := ["active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci", "counts"]
+  let head := ["active", "db", "now", "comms", "tasks", "agents", "conflicts", "pressure", "machine", "limits", "ci", "counts", "categories"]
   -- "view" and "comms" are null in JSON where unset (decoded as absent), so compare what exists
   let views : List (String × List String) := [("board", []), ("activity", ["messages", "events"]),
     ("system", ["events", "locks", "running", "costly", "cost_top"]), ("overview", ["messages", "events"]), ("agents", []), ("graph", [])]
@@ -754,7 +753,7 @@ def test_state_json_view (t : T) : IO Unit := do
     eq (b.f "events") Json.null  -- ended and not asked for
   eq ((nth ((← stj t ["--view", "board"]).f "tasks") 1).f "title") "t"
   -- the Graph (research/sw-graph-view.md): open tasks and every task with an edge, not a done task with none
-  t.q_ "insert into task(id, title, state, deps) values (50, 'old', 'done', null), (51, 'next', 'open', '50'), (52, 'lone', 'done', null)"
+  t.q_ "insert into task(id, title, state, deps) values (50, 'old', 'completed', null), (51, 'next', 'ready', '50'), (52, 'lone', 'completed', null)"
   let ids := fun (s : Json) => (elems (s.f "tasks")).map (·.f "id")
   eq (ids (← stj t ["--view", "graph"])) [json% 1, json% 50, json% 51] "graph"
   eq (ids (← stj t ["--view", "overview"])) [json% 1, json% 51] "overview"
@@ -812,7 +811,7 @@ def test_state_json_staffing (t : T) : IO Unit := do
   t.agent "cm"
   t.q_ "update swarm set comms='cm' where name='t'"
   -- the communicator is not counted; unset numbers are null; the compaction limits at their defaults
-  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "queue_only": false, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false, "reuse_below": 0})
+  eq ((← stj t ["--view", "board"]).f "limits") (json% {"live": 2, "ctx_nudge": 325000, "ctx_compact": 400000, "compact_stayers": false, "reuse_below": 0})
   eq ((← stj t ["--view", "overview"]).f "rules") Json.null
   t.sw_ "cm" ["limits", "--ctx-nudge", "300000", "--ctx-compact", "0", "--compact-stayers", "on"]
   t.sw_ "cm" ["rules", "set", "Work only in your own worktree."]

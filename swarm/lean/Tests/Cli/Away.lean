@@ -48,7 +48,7 @@ def test_release_of_anothers_task (t : T) : IO Unit := do
   t.sw_ "e" ["task", "add", "x"]; t.sw_ "e" ["task", "claim", "1"]
   has (← t.sw "f" ["task", "release", "1"] { ok := false }).stderr "not claimed by you"  -- a peer can't
   has (← t.sw "human" ["task", "release", "1"]).stdout "released #1 from e"
-  eq (← t.q1 "select state, owner from task") (json% {"state": "open"})
+  eq (← t.q1 "select state, owner from task") (json% {"state": "ready"})
   eq (← msgsTo t "e") (json% [{"frm": "human", "body": "the user released #1: stop work on it", "urgent": 1}])
   let ev ← t.q1 "select agent, data from event where kind='release'"
   eq ev (json% {"agent": "human", "data": "#1 from e"})
@@ -62,7 +62,7 @@ def test_release_of_anothers_task (t : T) : IO Unit := do
   -- the communicator may too, a blocked task as well; its question goes with it
   t.sw_ "f" ["task", "claim", "1"]; t.sw_ "f" ["task", "block", "1", "which db?"]
   t.sw_ "c" ["task", "release", "1"]
-  eq (← t.q1 "select state, question from task") (json% {"state": "open"})
+  eq (← t.q1 "select state, question from task") (json% {"state": "ready"})
   eq (((← msgsTo t "f")[0]!).f "body") "c released #1: stop work on it"
   has (← t.sw "human" ["task", "release", "1"] { ok := false }).stderr "task #1 is not claimed"
   -- an ex-owner that isn't at work holds nothing back: its next turn reads the stop first
@@ -74,11 +74,11 @@ def test_human_drops_and_unblocks (t : T) : IO Unit := do
   t.sw_ "e" ["task", "add", "x"]; t.sw_ "e" ["task", "add", "y"]
   t.sw_ "e" ["task", "claim", "1"]; t.sw_ "e" ["task", "block", "1", "which db?"]
   t.sw_ "human" ["task", "unblock", "1", "--answer", "sqlite"]
-  eq (← t.q1 "select state, answer from task where id=1") (json% {"state": "claimed", "answer": "sqlite"})
+  eq (← t.q1 "select state, answer from task where id=1") (json% {"state": "in_progress", "answer": "sqlite"})
   eq (((← msgsTo t "e")[0]!).f "frm") "human"
   t.sw_ "e" ["task", "claim", "2"]
   t.sw_ "human" ["task", "drop", "2"]
-  eq ((← t.q1 "select state from task where id=2").f "state") "dropped"
+  eq ((← t.q1 "select state from task where id=2").f "state") "cancelled"
   eq ((← t.q1 "select agent from event where kind='drop'").f "agent") "human"
 
 def test_away_queues_questions (t : T) : IO Unit := do
@@ -122,9 +122,9 @@ def test_notices_only_the_swarms_own (t : T) : IO Unit := do
   t.q_ "insert into swarm(name, comms, created) values('u', 'u-comms', 0)"
   t.q_ ("insert into agent(name, swarm, cwd, status, last_active, started) values('u-comms', 'u', ?, 'idle', 1, 1), " ++
     "('u-1', 'u', ?, 'idle', 1, 1)") [.text t.repo, .text t.repo]
-  t.q_ "insert into task(title, state, owner, question, lease_until) values('theirs', 'blocked', 'u-1', 'which way?', 4000000000)"
+  t.q_ "insert into task(title, state, owner, question, lease_until) values('theirs', 'needs_input', 'u-1', 'which way?', 4000000000)"
   t.q_ ("insert into task(title, state, owner, land_sha, lander, landing_at) " ++
-    "values('their landing', 'landing', 'u-1', 'abc', 'u-1', 1)")
+    "values('their landing', 'in_review', 'u-1', 'abc', 'u-1', 1)")
   t.sw_ "e" ["task", "add", "ours"]; t.sw_ "e" ["task", "claim", "3"]
   t.sw_ "e" ["task", "block", "3", "which db?"]
   -- two live swarms: watchd's knobs need the swarm named (a is no agent)
@@ -136,7 +136,7 @@ def test_notices_only_the_swarms_own (t : T) : IO Unit := do
   eq (← n "c" "%has waited%") 0  -- and so is its landing
   eq (← n "u-comms" "%is blocked on #1%") 1
   eq (← n "u-comms" "%is blocked on #3%") 0
-  eq (← n "u-comms" "%#2 landing%has waited%") 1
+  eq (← n "u-comms" "%#2 In Review%has waited%") 1
 
 def test_away_hc_prompt_not_urgent (t : T) : IO Unit := do
   t.fakes

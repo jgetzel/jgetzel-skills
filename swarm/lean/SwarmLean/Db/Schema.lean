@@ -15,10 +15,11 @@ create table if not exists msg(id integer primary key autoincrement, ts int, frm
   body text, urgent int default 0, kind text);
 create table if not exists cursor(agent text primary key, last_msg_id int default 0);
 create table if not exists task(id integer primary key autoincrement, title text, body text,
-  state text default 'open', owner text, lease_until int, created_by text, evidence text, deps text, model text, question text,
+  state text default 'ready', owner text, lease_until int, created_by text, evidence text, deps text, model text, question text,
   effort text, created_at int, first_claimed_at int, done_at int, dropped_at int, pr int, merged_at int,
   ci_conclusion text, ci_green_at int, claim_ctx int, done_ctx int, answer text, base text, stop_to text, stop_msg int,
-  priority int default 2, qpos int, hold text, labels text, parents text, land_sha text, lander text, landing_at int);
+  priority int default 3, qpos int, hold text, labels text, parents text, land_sha text, lander text, landing_at int,
+  dup_of int);
 create table if not exists lock(repo text not null default '', path text not null, agent text, reason text, since int,
   lease_until int, seen int default 0, primary key(repo, path));
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
@@ -50,12 +51,49 @@ db is at 1; a db made before the version existed reads 0 and is raised to 1 at c
 Bump it, with an entry in `dbMigrations`, whenever `WF` or the schema changes: an older binary then refuses to write
 (`Real.checkWritable`), so the "only our code writes" assumption under `wf_reach` (sw-global-proofs.md §3.7) holds across
 binaries built at different commits. -/
-def DB_VERSION : Nat := 1
+def DB_VERSION : Nat := 2
+
+/-- Version 2 (Linear's states): the task states renamed (open → ready, claimed → in_progress, blocked → needs_input,
+landing → in_review, done → completed, dropped → cancelled); a held open task, and with a swarm's queue-only on an
+unqueued open task of its repos, moves to backlog, its hold text kept as its note (column hold); every task not closed
+gets a place (column qpos) in today's staffing order: the queue by place, then the rest by priority (NULL first) and
+id; priorities move to Linear's numbers (P0 → 1 urgent … P3 → 4 low, NULL → 0 none); the queue-only knob goes; and
+the task table is rebuilt so its column defaults are the new ones (state 'ready', priority 3), its autoincrement sequence
+kept. Each statement is a no-op on an empty task table, so a fresh db (at version 0) runs it too. -/
+def migrateV2 : List String := [
+  "update task set state='backlog', hold=coalesce(hold, 'not queued (queue-only)') where state='open' and qpos is null \
+    and exists (select 1 from task_repo tr join swarm_repo sr on sr.repo=tr.repo join meta m on m.scope=sr.swarm \
+    and m.k='queue_only' and m.v='on' where tr.task=task.id)",
+  "update task set state='backlog' where state='open' and hold is not null",
+  "update task set qpos=(select rn from (select id, row_number() over (order by qpos is null, qpos, \
+    priority is not null, priority, id) as rn from task where state not in ('done', 'dropped')) x where x.id=task.id) \
+    where state not in ('done', 'dropped')",
+  "update task set qpos=null where state in ('done', 'dropped')",
+  "update task set state=case state when 'open' then 'ready' when 'claimed' then 'in_progress' \
+    when 'blocked' then 'needs_input' when 'landing' then 'in_review' when 'done' then 'completed' \
+    when 'dropped' then 'cancelled' else state end",
+  "update task set priority=case when priority is null then 0 when priority<=0 then 1 when priority=1 then 2 \
+    when priority=2 then 3 else 4 end",
+  "delete from meta where k='queue_only'",
+  "create table task_v2(id integer primary key autoincrement, title text, body text, \
+    state text default 'ready', owner text, lease_until int, created_by text, evidence text, deps text, model text, \
+    question text, effort text, created_at int, first_claimed_at int, done_at int, dropped_at int, pr int, merged_at int, \
+    ci_conclusion text, ci_green_at int, claim_ctx int, done_ctx int, answer text, base text, stop_to text, stop_msg int, \
+    priority int default 3, qpos int, hold text, labels text, parents text, land_sha text, lander text, landing_at int, \
+    dup_of int)",
+  "insert into task_v2(id, title, body, state, owner, lease_until, created_by, evidence, deps, model, question, effort, created_at, first_claimed_at, done_at, dropped_at, pr, merged_at, ci_conclusion, ci_green_at, claim_ctx, done_ctx, answer, base, stop_to, stop_msg, priority, qpos, hold, labels, parents, land_sha, lander, landing_at, dup_of) \
+    select id, title, body, state, owner, lease_until, created_by, evidence, deps, model, question, effort, created_at, first_claimed_at, done_at, dropped_at, pr, merged_at, ci_conclusion, ci_green_at, claim_ctx, done_ctx, answer, base, stop_to, stop_msg, priority, qpos, hold, labels, parents, land_sha, lander, landing_at, dup_of from task",
+  "update sqlite_sequence set seq=max(seq, coalesce((select seq from sqlite_sequence where name='task'), 0)) \
+    where name='task_v2'",
+  "drop table task",
+  "alter table task_v2 rename to task",
+  "create index if not exists task_state on task(state)",
+  "create index if not exists task_owner on task(owner)"]
 
 /-- The migrations: `(v, sqls)` takes a db at version `v - 1` to `v`, run in order by `connect` in one BEGIN IMMEDIATE.
 Obligation (for the proofs phase): if `WF_{v-1} db` then `WF_v` holds of the db after `sqls`, where `WF_v` is `WF` at
-the commit that bumped `DB_VERSION` to `v`. None yet: version 1 is the first. -/
-def dbMigrations : List (Nat × List String) := []
+the commit that bumped `DB_VERSION` to `v`. -/
+def dbMigrations : List (Nat × List String) := [(2, migrateV2)]
 
 /-- The meta keys of the machine (scope `''`); every other key is a swarm's (scope: its name). -/
 def machineKeys : List String := ["watchd", "watchd_tick", "watchd_up", "watchd_run", "machines", "jobs"]

@@ -43,28 +43,29 @@ def dest (here : String → Bool) (comms : Option String) (me : String) (t : Tas
     | some o => if o != me && here o then .doer o st else gone st
     | Option.none => gone st
   match t.status with
-  | .claimed | .blocked | .landing => match t.owner with
+  | .inProgress | .needsInput | .inReview => match t.owner with
     | some o => if o == me then .self else if here o then .owner o else .held
     | Option.none => .held
-  | .open => .held
-  | .done => ended .done
-  | .dropped => ended .dropped
+  | .backlog | .ready => .held
+  | .completed => ended .completed
+  | .cancelled => ended .cancelled
+  | .duplicate => ended .duplicate
 
 /-- What `post` tells the poster of where note to task `id` went. -/
 def Dest.text (id : Int) : Dest → String
   | .owner o => s!"to {o}"
   | .self => s!"recorded on #{d id} (you hold it)"
   | .held => s!"held for #{d id}'s next owner"
-  | .doer o st => s!"to {o}: #{d id} is {st.text}"
-  | .comms _ st => s!"to comms: #{d id} is {st.text}"
-  | .none st => s!"recorded on #{d id} only: it is {st.text}, whoever did it has ended and there is no other communicator"
+  | .doer o st => s!"to {o}: #{d id} is {st.name}"
+  | .comms _ st => s!"to comms: #{d id} is {st.name}"
+  | .none st => s!"recorded on #{d id} only: it is {st.name}, whoever did it has ended and there is no other communicator"
 
 /-- The message a note sends, if any: its addressee and body. -/
 def Dest.msg (id : Int) (text : String) : Dest → Option (Msgs.Dest × String)
   | .owner o => some (Msgs.Dest.agent o, s!"[#{d id}] {text}")
   | .held => some (Msgs.Dest.task id.toNat, text)
-  | .doer o st => some (Msgs.Dest.agent o, s!"[#{d id}, {st.text}] {text}")
-  | .comms c st => some (Msgs.Dest.agent c, s!"[#{d id} is {st.text}] {text}")
+  | .doer o st => some (Msgs.Dest.agent o, s!"[#{d id}, {st.name}] {text}")
+  | .comms c st => some (Msgs.Dest.agent c, s!"[#{d id} is {st.name}] {text}")
   | .self | .none _ => Option.none
 
 /-- Where a delivered note went, as its event's path. -/

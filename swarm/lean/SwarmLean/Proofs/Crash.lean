@@ -954,9 +954,6 @@ theorem X.Agents.bind {n cwd hc model r now} {u : Unit} (hn : SwarmLean.Agents.n
   exact ⟨binv_same (bind_tasks ..).1 (bind_tasks ..).2 h.1, Inbox.grows_inv (bind_grows _ _ _ _ _ _ _ h.2.1.2.2.2) h.2.1,
     Locks.bind_good n cwd hc model r now hn h.2.2⟩
 
-theorem X.Agents.setQueueOnly {me on now} (h : XInv db t) : XInv (Agents.setQueueOnly db me on now) t :=
-  X.Db.log (X.Db.setMeta h)
-
 /-- `db.set` by a change that keeps the id and a well-owned task well-owned. -/
 theorem X.Db.set {i} {f : Task → Task} (hid : ∀ u, (f u).id = u.id) (hok : ∀ u, TaskOk u → TaskOk (f u))
     (h : XInv db t) : XInv (db.set i f) t := xinv_set hid hok h

@@ -85,7 +85,7 @@ def test_stayers_expired_claim_reopens (t : T) : IO Unit := do
   t.sw_ "e" ["task", "add", "t1"]; t.sw_ "e" ["task", "claim", "1"]
   t.q_ "update task set lease_until=1"
   t.sw_ "a" ["watchd", "--once"]
-  eq ((← t.q1 "select state from task").f "state") "open"
+  eq ((← t.q1 "select state from task").f "state") "ready"
   eq (← stay t "e") "reviews"
 
 -- task done and the context note tell a stayer to keep staying and keep what it holds, not to go idle and end
@@ -242,18 +242,18 @@ def test_compacting_holder_keeps_claim (t : T) : IO Unit := do
   idle t "comms"; holder t "e" "t1"
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 10, 'e', 'compact-asked')" []
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'compact')" []
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'ctx-continue')" []
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   t.q_ "update agent set status='working', last_active=? where name='e'" [.int (← now)]
   comms_tick t
   t.q_ "update agent set status='idle' where name='e'"
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   eq (← evs t "reap") 0
 
 -- an owner with no terminal does not live (`Watchd.lives`): only the compaction keeps its lapsed claim
@@ -264,13 +264,13 @@ def test_compacting_unbound_owner_keeps_claim_until_continue (t : T) : IO Unit :
   t.q_ "update agent set status='idle', last_active=? where name='e'" [.int ((← now) - 30)]
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now') - 10, 'e', 'compact-asked')" []
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'compact')" []
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'ctx-continue')" []
   comms_tick t
-  eq (← taskState t) "open"
+  eq (← taskState t) "ready"
 
 -- a cold holder (a big context, idle past the prompt cache) is woken by an urgent notice; one with a job is not hung
 def test_cold_holder_woken_urgent (t : T) : IO Unit := do
@@ -282,7 +282,7 @@ def test_cold_holder_woken_urgent (t : T) : IO Unit := do
 def test_live_idle_holder_keeps_claim_and_is_told (t : T) : IO Unit := do
   idle t "comms"; holder t "e" "t1"
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   eq (← leaseMsgs t "e" "Your lease on #1 ended at %; `swarm task renew 1`%") 1
   eq (← leaseMsgs t "comms" "%past its lease%") 0  -- not before the holder's next idle
   comms_tick t
@@ -290,20 +290,20 @@ def test_live_idle_holder_keeps_claim_and_is_told (t : T) : IO Unit := do
   -- it woke, did not renew, and is idle again: the communicator is told, once
   t.q_ "update agent set last_active=? where name='e'" [.int ((← now) + 5)]
   comms_tick t; comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   eq (← leaseMsgs t "comms" "e has held #1 past its lease%did not renew%") 1
   eq (← evs t "stay-hung") 0
 
 def test_hung_holder_claim_reopens (t : T) : IO Unit := do
   idle t "comms"; holder t "e" "t1"
   comms_tick t
-  eq (← taskState t) "claimed"
+  eq (← taskState t) "in_progress"
   -- the notice went unanswered LIVENESS_WAIT: hung, and the next reap reopens it
   t.q_ "update event set ts=ts-400 where kind='lease-late'"
   comms_tick t
   eq (← evs t "stay-hung") 1
   comms_tick t
-  eq (← taskState t) "open"
+  eq (← taskState t) "ready"
   eq (← leaseMsgs t "comms" "#1 reopened: e is hung%") 1
   -- a stayer flagged hung by its own liveness check loses its lapsed claim too
   t.sw_ "e" ["task", "claim", "1"] { hc := some "t1" }
@@ -311,12 +311,12 @@ def test_hung_holder_claim_reopens (t : T) : IO Unit := do
   t.q_ "update agent set status='idle', stay='reviews', last_active=? where name='e'" [.int ((← now) - 60)]
   t.q_ "insert into event(ts, agent, kind) values (strftime('%s','now'), 'e', 'stay-hung')" []
   comms_tick t
-  eq (← taskState t) "open"
+  eq (← taskState t) "ready"
 
 def test_ended_holder_claim_released (t : T) : IO Unit := do
   idle t "comms"; holder t "e" "t1"
   t.sw_ "e" ["leave"] { hc := some "t1" }
-  eq (← taskState t) "open"
+  eq (← taskState t) "ready"
   -- a holder whose terminal hc no longer lists is reaped as gone, its claim released
   t.sw_ "f" ["join"] { hc := some "t2" }
   t.setHc [json% {"address": "t1"}]
@@ -324,7 +324,7 @@ def test_ended_holder_claim_released (t : T) : IO Unit := do
   t.q_ "update task set lease_until=?" [.int ((← now) - 60)]
   comms_tick t
   unless ← ended t "f" do fail "f not ended"
-  eq (← taskState t) "open"
+  eq (← taskState t) "ready"
 
 def test_communicator_never_checked (t : T) : IO Unit := do
   idle t "comms" [("stay", "the user's channel"), ("last_active", .int ((← now) - 80 * 60))]
@@ -368,7 +368,7 @@ def test_stay_until_cli (t : T) : IO Unit := do
 def untilStay (t : T) (cond : String) : IO Unit := do
   idle t "comms"; idle t "s" [("stay", "the wait"), ("last_active", .int ((← now) - 60))]
   t.q_ "insert into event(ts, agent, kind, path, data) values (?, 's', 'stay-until', ?, 'the wait')" [.int ((← now) - 1800), .text cond]
-  t.q_ "insert into task(id, title, state, owner, lease_until) values (5, 't', 'claimed', 's', ?)" [.int ((← now) + 60)]
+  t.q_ "insert into task(id, title, state, owner, lease_until) values (5, 't', 'in_progress', 's', ?)" [.int ((← now) + 60)]
 def woke (t : T) : IO Nat :=
   return (← t.q "select 1 x from msg where dest='s' and body like 'Your wait is over: %'").size
 def wokeBody (t : T) : IO String :=
@@ -396,19 +396,19 @@ def test_until_job (t : T) : IO Unit := do
 
 def test_until_task (t : T) : IO Unit := do
   untilStay t "task:9"
-  t.q_ "insert into task(id, title, state) values (9, 'other', 'claimed')"
+  t.q_ "insert into task(id, title, state) values (9, 'other', 'in_progress')"
   assertWaiting t
-  t.q_ "update task set state='open' where id=9"  -- open, but never released since the stay: still waiting
+  t.q_ "update task set state='ready' where id=9"  -- open, but never released since the stay: still waiting
   assertWaiting t
   t.q_ "insert into event(ts, agent, kind, data) values (?, 'x', 'release', '#9 from x')" [.int (← now)]
   assertWoke t "task:9" "#9 was released"
 
 def test_until_task_done (t : T) : IO Unit := do
   untilStay t "task:9"
-  t.q_ "insert into task(id, title, state) values (9, 'other', 'claimed')"
+  t.q_ "insert into task(id, title, state) values (9, 'other', 'in_progress')"
   assertWaiting t
-  t.q_ "update task set state='done' where id=9"
-  assertWoke t "task:9" "#9 is done"
+  t.q_ "update task set state='completed' where id=9"
+  assertWoke t "task:9" "#9 is Completed"
 
 def test_until_msg (t : T) : IO Unit := do
   untilStay t "msg:p"

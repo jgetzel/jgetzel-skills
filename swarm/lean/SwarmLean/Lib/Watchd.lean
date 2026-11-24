@@ -118,10 +118,12 @@ def leaseLateEv (db : Db) (id : Nat) (data : String) (t : Int) : Option Event :=
 
 /-- Reap's notices of lapsed claim `r` its live owner `o` keeps (board #193), each once per LEASE: the owner first (a
 message that wakes it, urgent when it is idle so a cold one wakes too; `hhmm` the lease's end); then the communicator, if the owner has been active since it was told
-and is idle again without a renew (`quiet`: not while it compacts). -/
+and is idle again without a renew (`quiet`: not while it compacts). A person's claim has no lease that runs out: no
+notice. -/
 def leaseLate (r : Task) (o : Option Agent) (t : Int) (hhmm : String) (comms : Option String) (quiet : Bool) (db : Db) :
     Db :=
   let own := r.owner.getD "nil"
+  if r.owner == some HUMAN then db else
   match leaseLateEv db r.id "holder" t with
   | none =>
     let db := db.log t r.owner "lease-late" (some (d r.id)) (some "holder")
@@ -143,12 +145,13 @@ def leaseLate (r : Task) (o : Option Agent) (t : Int) (hhmm : String) (comms : O
 -- ---------- reap ----------
 
 /-- Reap's reopen of lapsed claim `r` (read before): only if the task is still claimed by the same owner with its lease
-before `t` (a renew or re-claim since the read keeps it); the owner is told; true when it reopened it. -/
+before `t` (a renew or re-claim since the read keeps it), and never a person's (assignee `human`: a person's claim has
+no lease that expires); the owner is told; true when it reopened it. -/
 def reapTask (r : Task) (t now : Int) (db : Db) : Db × Bool :=
   match db.find r.id with
   | some x =>
-    if x.owner == r.owner && x.owner.isSome && x.status = .claimed && x.lease_until.any (· < t) then
-      let db := db.set r.id fun x => { x with state := .open }
+    if x.owner == r.owner && x.owner.isSome && x.owner != some HUMAN && x.status = .inProgress && x.lease_until.any (· < t) then
+      let db := db.set r.id fun x => { x with state := .ready none }
       let db := match r.owner with
         | none => db
         | some own => say db now (.agent own) (s!"released #{d r.id} ({r.title.getD "nil"}): its lease ended and watchd did not see you " ++
@@ -229,9 +232,9 @@ agents whose bound terminal hc no longer lists and asks for the kill of the term
 deciding on the rows it reads; `t` stamps the writes. What it did, and the kills for `runActs`. -/
 def reap (live : Option (List String)) (t : Int) (comms : Option String) (foreign : List String := [])
     (repo : String := "") : m (List String × List Act) := do
-  let db ← Store.view [Sels.all .agent, { table := .task, cond := .eq "state" (.text "claimed") },
+  let db ← Store.view [Sels.all .agent, { table := .task, cond := .eq "state" (.text Status.inProgress.text) },
     { table := .lock, cond := .eq "repo" (.text repo) }] id
-  let lapsed := db.tasks.filter fun r => r.status = .claimed && r.lease_until.any (· < t) &&
+  let lapsed := db.tasks.filter fun r => r.status = .inProgress && r.lease_until.any (· < t) &&
     !((r.owner.bind db.agent).isNone && r.owner.any foreign.contains)
   -- the process table only when an idle live owner may be waiting on a background job
   let idle := lapsed.any fun r => (r.owner.bind db.agent).any fun a => a.ended.isNone && a.status == some .idle
@@ -434,7 +437,7 @@ def lastQuiet : Sel := { table := .event, cond := .eq "kind" (.text "quiet"), la
 knob, the last `quiet` event and the last `task-add` or `claim` after it. -/
 def quietSels : Txn (List Sel) := do
   let q := (((← Txn.slice [lastQuiet]).events.getLast?.map (·.id)).getD 0 : Nat)
-  pure [{ table := .task, cond := .oneOf "state" [.text "open", .text "claimed", .text "blocked", .text "landing"] },
+  pure [{ table := .task, cond := .oneOf "state" ([Status.backlog, .ready, .inProgress, .needsInput, .inReview].map (.text ·.text)) },
         Sels.all .agent, Sels.metas ["comms"], lastQuiet,
         { table := .event, cond := .and (.oneOf "kind" [.text "task-add", .text "claim"]) (.gt "id" (.int (Int.ofNat q))),
           last := some 1 }]
@@ -443,7 +446,7 @@ def quietSels : Txn (List Sel) := do
 re-armed by a task add or claim since the last `quiet`): the stayers, by name. A task is the swarm's as its board lists
 it (`mine`, `Swarms.mineIds`) or when its agent lands it (`ofSwarm`, board #135); without a swarm every task is. -/
 def quietEdge (envComms : Option String) (comms : String) (mine : Option (Std.HashSet Int)) (db : Db) : Option (List Agent) :=
-  if db.tasks.any fun x => (x.status = .open || x.status = .claimed || x.status = .blocked || x.status = .landing) &&
+  if db.tasks.any fun x => (x.status = .ready || x.status = .inProgress || x.status = .needsInput || x.status = .inReview) &&
       (mine.all (·.contains (x.id : Int)) || ofSwarm db x) then none else
   let q := ((db.events.filter (·.kind == some "quiet")).getLast?.map (·.id)).getD 0
   if !db.events.any fun e => (e.kind == some "task-add" || e.kind == some "claim") && e.id > q then none else
@@ -503,7 +506,7 @@ def blockersStep (t : Int) (comms : String) (blockerIdle : Float) (db0 : Db) : D
     if n == comms || a.status != some .idle || Float.ofInt (t - last) < lim then db
     else if db.events.any (fun e => e.agent == some n && e.kind == some "blocker-nudge" && e.ts.any (· ≥ last)) then db
     else
-      let ids : List Int := (db.tasks.filter fun x => x.status = .claimed && x.owner == some n).map (·.id)
+      let ids : List Int := (db.tasks.filter fun x => x.status = .inProgress && x.owner == some n).map (·.id)
       let w := dependants db ids
       if w > 0 then
         let db := db.log t (some n) "blocker-nudge" none (some (toString w))
@@ -527,7 +530,7 @@ communicator told, once per task and commit (a `landing-late` event marks it). -
 def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
   match db.find r.id with
   | some x =>
-    if x.status = .landing && x.land_sha == r.land_sha && x.landing_at.any (· ≤ t - LANDING_LATE) &&
+    if x.status = .inReview && x.land_sha == r.land_sha && x.landing_at.any (· ≤ t - LANDING_LATE) &&
         !db.events.any (fun e => e.kind == some "landing-late" && e.path == some (d r.id) && e.data == x.land_sha) then
       let db := db.log t x.owner "landing-late" (some (d r.id)) x.land_sha
       say db t (.agent comms) (s!"{Tasks.landingText r.id x} has waited {fdiv (t - x.landing_at.getD t) 60} min with no " ++
@@ -538,12 +541,12 @@ def landingLate1 (r : Task) (t : Int) (comms : String) (db : Db) : Db :=
 /-- The landing tasks of the swarm (`ofSwarm`: its agent handed it over or lands it) no lander closed within
 LANDING_LATE, each told to the communicator once (`landingLate1`). -/
 def landingLateStep (t : Int) (comms : String) (db : Db) : Db :=
-  (db.tasks.filter fun x => x.status = .landing && x.landing_at.any (· ≤ t - LANDING_LATE) && ofSwarm db x).foldl
+  (db.tasks.filter fun x => x.status = .inReview && x.landing_at.any (· ≤ t - LANDING_LATE) && ofSwarm db x).foldl
     (fun db r => landingLate1 r t comms db) db
 
 /-- What `landingLateStep` reads: the landing tasks, the swarm's agents and the `landing-late` events. -/
 def landingSels : List Sel :=
-  [{ table := .task, cond := .eq "state" (.text "landing") }, Sels.all .agent,
+  [{ table := .task, cond := .eq "state" (.text Status.inReview.text) }, Sels.all .agent,
    { table := .event, cond := .eq "kind" (.text "landing-late") }]
 
 /-- The landing-late pass in one transaction. -/
@@ -565,7 +568,7 @@ def wakeStep (n : String) (t : Int) (db : Db) : Db × Bool :=
         let db := db.log t (some n) "stay-end" (some n) (some s)
         let db := db.log t (some n) "stay-wake" (some c.text) (some detail)
         let db := db.tasks.foldl (fun db r =>
-          if r.owner == some n && r.status == .claimed then db.set r.id fun x => { x with state := x.state.renew (t + 7200) } else db) db
+          if r.owner == some n && r.status == .inProgress then db.set r.id fun x => { x with state := x.state.renew (t + 7200) } else db) db
         (say db t (.agent n) s!"Your wait is over: {c} ({detail})" true "system", true)
     | _ => (db, false)
 
@@ -630,7 +633,7 @@ def hungPre (t : Int) (comms : String) (envComms : Option String) (n : String) (
     if a.ended.isSome || n == comms || isComms db envComms (some n) || a.status != some .idle then (db, false) else
     if Compact.compacting db.events n last t then (db, false) else
     let evs := db.events.filter fun e => e.agent == some n && e.ts.any (· ≥ last)
-    let told := db.tasks.filter fun r => r.owner == some n && r.status = .claimed && r.lease_until.any (· < t) &&
+    let told := db.tasks.filter fun r => r.owner == some n && r.status = .inProgress && r.lease_until.any (· < t) &&
       evs.any fun e => e.kind == some "lease-late" && e.data == some "holder" && e.path == some (d r.id) &&
         e.ts.any fun s => s > last && t - s ≥ LIVENESS_WAIT
     let flag := if evs.any (·.kind == some "stay-hung") || bg then none else told.head?
@@ -701,7 +704,7 @@ def hung (t : Int) (comms : String) (terms : Option (List Term)) (tick : Int) : 
     let n := a.name
     if n == comms || a.status != some .idle then continue
     let db ← Store.run (do Txn.slice (← hungSels n t))
-    let lapsed := db.tasks.any fun r => r.owner == some n && r.status = .claimed && r.lease_until.any (· < t)
+    let lapsed := db.tasks.any fun r => r.owner == some n && r.status = .inProgress && r.lease_until.any (· < t)
     let bg ← if !lapsed then pure false else do
         let ps ← match procs with
           | some ps => pure ps
@@ -788,8 +791,8 @@ def numbered (pre name : String) : Option Nat :=
     if !rest.isEmpty && rest.all Char.isDigit then rest.toNat? else none
   else none
 
-/-- What `Tasks.pool` and `Queue.staffing` read (`TaskTxn.poolSels`) and the queue-only knob, now. -/
-def poolNow : m Db := Store.run (do Txn.slice ((← TaskTxn.poolSels) ++ [Sels.metas ["queue_only"]]))
+/-- What `Tasks.pool` and `Queue.staffing` read (`TaskTxn.poolSels`), now. -/
+def poolNow : m Db := Store.run (do Txn.slice (← TaskTxn.poolSels))
 
 /-- The auto-spawn meta keys. -/
 def SPAWN_KEYS : List String := ["spawn_backoff", "spawn_fails", "spawn_halt"]

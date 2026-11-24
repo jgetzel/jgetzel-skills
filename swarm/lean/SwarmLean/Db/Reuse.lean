@@ -27,7 +27,7 @@ def OFFER_TTL : Int := 300
 
 /-- The task agent `n` finished last: its done task with the latest done time. -/
 def lastDone (db : Db) (n : String) : Option Task :=
-  (db.tasks.filter fun t => t.owner == some n && t.status = .done).foldl
+  (db.tasks.filter fun t => t.owner == some n && t.status = .completed).foldl
     (fun b t => match b with | some x => if t.done_at.getD 0 ≥ x.done_at.getD 0 then some t else b | none => some t) none
 
 /-- Task `t` is related to `f`, finished by `n`: `n` filed it while holding `f`, it waits on `f`, or they share a label. -/
@@ -38,8 +38,7 @@ def related (n : String) (f t : Task) : Bool :=
 /-- The model a task is staffed with: its own, else `dflt` (auto-spawn's). -/
 def modelOf (dflt : String) (t : Task) : String := (py t.model).getD dflt
 
-/-- The offer to agent `n` of model `model`: the tasks of `staffing` (startable, unclaimed, not held; in queue-only mode
-only queued ones) related to its last done task and staffed with its model, in staffing order, at most MAX_OFFER. -/
+/-- The offer to agent `n` of model `model`: the tasks of `staffing` (startable, unassigned, not in Backlog) related to its last done task and staffed with its model, in staffing order, at most MAX_OFFER. -/
 def candidates (db : Db) (n : String) (model : Option String) (dflt : String) (staffing : List Task) : List Task :=
   match lastDone db n with
   | none => []

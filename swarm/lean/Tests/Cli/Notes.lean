@@ -64,7 +64,7 @@ def test_note_owner_gone_held (t : T) : IO Unit := do
   has (← t.sw "a" ["post", "#2", "to b live"]).stdout "posted to #2: to b"
   t.q_ "update agent set ended=strftime('%s','now') where name='b'"
   has (← t.sw "a" ["post", "#2", "b ended"]).stdout "posted to #2: held for #2's next owner"
-  t.q_ "update task set state='open', owner=null, lease_until=null"
+  t.q_ "update task set state='ready', owner=null, lease_until=null"
   has (← t.sw "c" ["task", "claim", "1"]).stdout "a: for whoever"
   let o2 := (← t.sw "c" ["task", "claim", "2"]).stdout
   has o2 "a: b ended"; hasnt o2 "to b live"
@@ -77,11 +77,11 @@ def test_note_done_and_self (t : T) : IO Unit := do
   t.sw_ "b" ["task", "claim", "1"]
   has (← t.sw "b" ["post", "#1", "mine"]).stdout "posted to #1: recorded on #1 (you hold it)"
   t.sw_ "b" ["task", "done", "1", "--evidence", "sha"]
-  has (← t.sw "a" ["post", "#1", "late result"]).stdout "posted to #1: to b: #1 is done"
-  has (← t.sw "b" ["read"]).stdout "a: [#1, done] late result"
+  has (← t.sw "a" ["post", "#1", "late result"]).stdout "posted to #1: to b: #1 is Completed"
+  has (← t.sw "b" ["read"]).stdout "a: [#1, Completed] late result"
   t.q_ "update agent set ended=strftime('%s','now') where name='b'"
-  has (← t.sw "a" ["post", "#1", "later"]).stdout "posted to #1: to comms: #1 is done"
-  has (← t.sw "c" ["read"]).stdout "a: [#1 is done] later"
+  has (← t.sw "a" ["post", "#1", "later"]).stdout "posted to #1: to comms: #1 is Completed"
+  has (← t.sw "c" ["read"]).stdout "a: [#1 is Completed] later"
   has (← t.sw "c" ["post", "#1", "from comms"]).stdout "recorded on #1 only"
   has (← t.sw "a" ["post", "#9", "x"] { ok := false }).stderr "no task #9"
   eq (← t.q "select coalesce(path, '-') p from event where kind='task-note' order by id")
@@ -99,7 +99,7 @@ def test_task_show_lists_notes_json (t : T) : IO Unit := do
   let i := at? s "a (given at claim): one"; let j := at? s "a (to b): two"; let k := at? s "a (held): three"
   ok (match i, j, k with | some i, some j, some k => i < j && j < k | _, _, _ => false) s!"notes oldest first: {s}"
   let js ← showJ t "1"
-  eq (js.f "state") "open"; eq (js.f "labels") (json% ["x"])
+  eq (js.f "state") "ready"; eq (js.f "labels") (json% ["x"])
   eq ((js.f "notes").getArr?.toOption.getD #[]).size 3
   let ns := ((js.f "notes").getArr?.toOption.getD #[]).map fun n => Json.mkObj [("from", n.f "from"), ("text", n.f "text"),
     ("to", n.f "to"), ("held", n.f "held")]
@@ -151,17 +151,17 @@ def test_task_show_json_events (t : T) : IO Unit := do
   t.sw_ "a" ["post", "#1", "a note"]
   t.sw_ "b" ["task", "edit", "1", "--title", "t1 again"]
   t.sw_ "b" ["task", "release", "1"]
-  t.sw_ "human" ["task", "hold", "1", "--why", "later"]
+  t.sw_ "human" ["task", "backlog", "1", "--note", "later"]
   t.q_ "insert into event(ts, agent, kind, path, data) values(1, 'swarm', 'task-blocked', '1', 'stuck?'), (1, 'swarm', 'task-pr', null, '#1 42')"
   let evs := ((← showJ t "1").f "events").getArr?.toOption.getD #[]
   eq (evs.map (·.f "kind")) (json% ["add", "claim", "renew", "block", "answer", "unblock", "note", "edit", "release",
-    "held", "block", "pr"])
+    "backlog", "block", "pr"])
   eq (evs.map (·.f "raw")) (json% ["task-add", "claim", "renew", "block", "answer", "unblock", "task-note", "task-edit",
-    "release", "hold", "task-blocked", "task-pr"])
+    "release", "task-backlog", "task-blocked", "task-pr"])
   let ev (k : String) : Json := (evs.find? (·.f "kind" == Json.str k)).getD .null
   eq ((ev "add").f "text", (ev "block").f "text", (ev "answer").f "text", (ev "answer").f "agent", (ev "note").f "text")
     (json% "t1", json% "which db?", json% "sqlite", json% "human", json% "a note")
-  eq ((ev "pr").f "text", (ev "held").f "text", (evs.back?.getD .null).f "swarm") (json% "42", json% "later", json% "t")
+  eq ((ev "pr").f "text", (ev "backlog").f "text", (evs.back?.getD .null).f "swarm") (json% "42", json% "later", json% "t")
   eq ((evs[10]?.getD Json.null).f "text") (json% "stuck?")
   ok ((ev "renew").f "text" != .null) "renew's text: the lease's end"
   ok (evs.all fun e => (e.f "id").i > 0 && (e.f "ts").i > 0) "each event's id and time"

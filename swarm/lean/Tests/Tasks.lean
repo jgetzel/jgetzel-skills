@@ -30,37 +30,48 @@ def lostOf : Except Refusal Task → Option String
 def r1 := reserveTask db0 none "n1" "/r" 1 (some "sonnet") 100
 
 #guard (match r1.2 with | .ok r => r.title == some "one" | _ => false)
-#guard (r1.1.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at.isSome)) == some (.claimed, some "n1", true)
+#guard (r1.1.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at.isSome)) == some (.inProgress, some "n1", true)
 #guard (r1.1.agents.find? (·.name == "n1")).bind (·.model) == some "sonnet"
 
 -- a peer got it first
-#guard lostOf (reserveTask r1.1 none "n2" "/r" 1 none 100).2 == some "task #1 is claimed, owned by n1"
+#guard lostOf (reserveTask r1.1 none "n2" "/r" 1 none 100).2 == some "task #1 is In Progress, owned by n1"
 
 /-- The launch failed: n1 unreserves. -/
 def u := unreserve r1.1 "n1" (match r1.2 with | .ok r => some r | _ => none) 101
 
-#guard (u.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at)) == some (.open, none, none)
+#guard (u.find 1).map (fun t => (t.status, t.owner, t.first_claimed_at)) == some (.ready, none, none)
 #guard ((u.agents.find? (·.name == "n1")).bind (·.ended)).isSome
 -- it ends as every end does (`endRow`): status ended, its stay cleared
 #guard ((u.agents.find? (·.name == "n1")).bind (·.status)) == some .ended
 #guard ((unreserve (r1.1.setAgent "n1" ({ · with stay := some "x" })) "n1" none 101).agent "n1").bind (·.stay) == none
 
-/-- #3, open, which a `task after` made wait on #1 (open again). The Lua raced it between claim's read of the deps and
+/-- #3, Ready, which a `task after` made wait on #1 (Ready again). The Lua raced it between claim's read of the deps and
 its update; here claim is one step, so the step runs on the db the race left. -/
 def raced : Db := { u with tasks := u.tasks ++ [{ id := 3, title := some "three", deps := some "1" }], taskNext := 4 }
 
 #guard (match (claim { me := "n3", now := 200 } 3 "2h" raced).2 with | .error _ => true | .ok _ => false)
-#guard ((claim { me := "n3", now := 200 } 3 "2h" raced).1.find 3).map (·.status) == some .open
+#guard ((claim { me := "n3", now := 200 } 3 "2h" raced).1.find 3).map (·.status) == some .ready
 
 -- board #1810: a row's state and columns decode to a TaskState, or are refused naming what fits no state
 def misfitOf (r : Except String TaskState) : Option String := match r with | .error e => some e | .ok _ => none
-#guard misfitOf (TaskState.ofCols .claimed none (some 1) none none none none) == some "claimed with no owner"
-#guard misfitOf (TaskState.ofCols .open (some "a") none none none none none) == some "open with owner set"
-#guard misfitOf (TaskState.ofCols .done (some "a") none none none (some "l") none) == some "done with no land_sha, landing_at"
-#guard misfitOf (TaskState.ofCols .landing (some "a") (some 5) none none none none) ==
-  some "landing with no land_sha, landing_at and lease_until set"
-#guard (TaskState.ofCols .blocked (some "a") (some 5) (some "q?") none none none).toOption == some (.blocked "a" 5 "q?")
-#guard (TaskState.ofCols .dropped none none (some "q?") (some "abc") none (some 7)).toOption ==
-  some (.dropped (some "q?") (some ⟨"abc", none, 7⟩))
+#guard misfitOf (TaskState.ofCols .inProgress none (some 1) none none none none none) == some "in_progress with no owner"
+#guard misfitOf (TaskState.ofCols .ready none (some 1) none none none none none) == some "ready with lease_until set"
+#guard misfitOf (TaskState.ofCols .completed (some "a") none none none (some "l") none none) ==
+  some "completed with no land_sha, landing_at"
+#guard misfitOf (TaskState.ofCols .inReview (some "a") (some 5) none none none none none) ==
+  some "in_review with no land_sha, landing_at and lease_until set"
+#guard misfitOf (TaskState.ofCols .duplicate none none none none none none none) == some "duplicate with no dup_of"
+#guard misfitOf (TaskState.ofCols .cancelled none none none none none none (some 3)) == some "cancelled with dup_of set"
+#guard (TaskState.ofCols .needsInput (some "a") (some 5) (some "q?") none none none none).toOption ==
+  some (.needsInput "a" 5 "q?")
+#guard (TaskState.ofCols .cancelled none none (some "q?") (some "abc") none (some 7) none).toOption ==
+  some (.cancelled (some "q?") (some ⟨"abc", none, 7⟩))
+-- a Ready or Backlog task may have an assignee (reserved), a Duplicate names its original
+#guard (TaskState.ofCols .ready (some "human") none none none none none none).toOption == some (.ready (some "human"))
+#guard (TaskState.ofCols .backlog (some "a1") none none none none none none).toOption == some (.backlog (some "a1"))
+#guard (TaskState.ofCols .duplicate none none none none none none (some 4)).toOption == some (.duplicate 4 none none)
+-- priorities are names; numbers are refused with the mapping
+#guard (Priority.ofText "urgent", Priority.ofText "none", Priority.ofText "2") == (some .urgent, some .none, none)
+#guard (Priority.ofNum (some 1), Priority.ofNum none).1.toOption == some .urgent
 
 end SwarmLean.Tests.Tasks

@@ -155,7 +155,7 @@ def claim (t : T) (name title : String) : IO Unit := do
   let n ← now
   t.q_ "insert or ignore into agent(name,cwd,status,last_active,started,hc) values(?,?,'idle',?,?,?)"
     [.text name, .text t.repo, .int n, .int n, .null]
-  t.q_ "insert into task(title,state,owner,lease_until) values(?,'claimed',?,?)" [.text title, .text name, .int (n + 7200)]
+  t.q_ "insert into task(title,state,owner,lease_until) values(?,'in_progress',?,?)" [.text title, .text name, .int (n + 7200)]
 
 /-- The tables of reap's one read of the scope, before its transactions per task, lock and agent. -/
 def reapRead : List Table := [.agent, .task, .lock]
@@ -188,7 +188,7 @@ def reap_spares_a_rebound_terminal (t : T) : IO Unit := do
   eq out.length 0 (",".intercalate out)
   let a ← t.q1 "select hc, ended from agent"
   eq (a.f "hc") "t2"; eq (a.f "ended") Json.null
-  eq ((← task1 t).f "state") "claimed"
+  eq ((← task1 t).f "state") "in_progress"
 
 -- an end stopped before its hc kill: reap kills the ended row's terminal hc still lists, not a live row's
 def reap_kills_an_ended_rows_terminal (t : T) : IO Unit := do
@@ -225,7 +225,7 @@ def reap_keeps_a_renewed_lease_and_a_fresh_lock (t : T) : IO Unit := do
   let (out, _) ← run h (Watchd.reap none (← now) none)
   ran
   eq out.length 0 (",".intercalate out)
-  eq ((← task1 t).f "state") "claimed"
+  eq ((← task1 t).f "state") "in_progress"
   t.q_ "update lock set lease_until=1"
   let ran ← racing h (· == reapRead) do t.q_ "update lock set lease_until=?" [.int ((← now) + 3600)]
   let (out, _) ← run h (Watchd.reap none (← now) none)
@@ -244,7 +244,7 @@ def done_renew_block_release_by_a_reaped_owner_are_refused (t : T) : IO Unit := 
     let r ← t.sw "a" (["task", act, "1"] ++ more) { ok := false }
     unless r.code ≠ 0 do fail s!"{act}: not refused"
     let x ← task1 t
-    eq (x.f "state") "claimed" act; eq (x.f "owner") "b" act
+    eq (x.f "state") "in_progress" act; eq (x.f "owner") "b" act
     t.q_ "update task set owner='a'"
 
 -- end_agent re-checks what lifecycle judged: e claimed a task since, so it is neither ended nor cleaned
@@ -253,7 +253,7 @@ def end_agent_rechecks_a_claim_since (t : T) : IO Unit := do
   let h ← hooks t
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('e',?,'idle',1,1)" [.text t.repo]
   let row ← agentRow h "e"
-  t.q_ "insert into task(title,state,owner,lease_until) values('t','claimed','e',?)" [.int ((← now) + 3600)]
+  t.q_ "insert into task(title,state,owner,lease_until) values('t','in_progress','e',?)" [.int ((← now) + 3600)]
   discard <| run h (Lifecycle.endAgent row false none)
   eq ((← t.q1 "select ended from agent where name='e'").f "ended") Json.null
   eq ((← task1 t).f "owner") "e"
@@ -357,7 +357,7 @@ def auto_spawn_loses_the_race_for_a_task (t : T) : IO Unit := do
   -- after auto_spawn's own read (the reserve's check runs in its write transaction: no peer gets in)
   let ran ← afterSpawnRead h do
     t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)" [.text t.repo]
-    t.q_ "update task set state='claimed', owner='t-1', lease_until=strftime('%s','now')+7200 where id=1"
+    t.q_ "update task set state='in_progress', owner='t-1', lease_until=strftime('%s','now')+7200 where id=1"
   -- cap 2: with t-1 live there is room for t-2, so the spawn is tried and its reserve loses (cap 1 would stop before it)
   t.q_ "insert or replace into meta(k,v) values('agent_min','2')"
   eq (← tick h) Json.null
@@ -375,18 +375,18 @@ def board91_a_task_freed_during_a_launch_is_staffed_first (t : T) : IO Unit := d
   let h ← spawnHooks t
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)" [.text t.repo]
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)" [.text t.repo]
-  t.q_ "insert into task(title,state,owner,lease_until) values('X','claimed','t-1',?)" [.int ((← now) + 7200)]
-  t.q_ "insert into task(title) values('L1')"
-  t.q_ "insert into task(title) values('L2')"
-  t.q_ "insert into task(title,deps,priority) values('H','1',0)"
+  t.q_ "insert into task(title,state,owner,lease_until) values('X','in_progress','t-1',?)" [.int ((← now) + 7200)]
+  t.q_ "insert into task(title,qpos) values('L1',2)"
+  t.q_ "insert into task(title,qpos) values('L2',3)"
+  t.q_ "insert into task(title,deps,qpos) values('H','1',1)"  -- first in Ready
   t.q_ "insert or replace into meta(k,v) values('agent_min','3')"
   let launched ← fakeLaunch h (t.d ++ "/launch") fun n => do
-    if n == 1 then t.q_ "update task set state='done', lease_until=null where id=1"
+    if n == 1 then t.q_ "update task set state='completed', lease_until=null where id=1"
   eq (← tick h) Json.null
   let st := (← t.q "select id, state from task order by id").map fun r => (r.f "id", r.f "state")
   let state (i : Int) : Json := ((st.find? (·.1 == toJson i)).map (·.2)).getD .null
   eq (← launched.get).size 2 (repr (toJson st.toList))
-  eq (state 2) "claimed"; eq (state 4) "claimed"; eq (state 3) "open"
+  eq (state 2) "in_progress"; eq (state 4) "in_progress"; eq (state 3) "ready"
 
 -- board #91, and in the claim's own transaction: X done after auto_spawn's read of the pool, before the reserve
 def board91_a_task_freed_before_the_reserve_is_staffed_first (t : T) : IO Unit := do
@@ -394,16 +394,16 @@ def board91_a_task_freed_before_the_reserve_is_staffed_first (t : T) : IO Unit :
   let h ← spawnHooks t
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-comms',?,'working',1,1)" [.text t.repo]
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('t-1',?,'working',1,1)" [.text t.repo]
-  t.q_ "insert into task(title,state,owner,lease_until) values('X','claimed','t-1',?)" [.int ((← now) + 7200)]
-  t.q_ "insert into task(title) values('L')"
-  t.q_ "insert into task(title,deps,priority) values('H','1',0)"
+  t.q_ "insert into task(title,state,owner,lease_until) values('X','in_progress','t-1',?)" [.int ((← now) + 7200)]
+  t.q_ "insert into task(title,qpos) values('L',2)"
+  t.q_ "insert into task(title,deps,qpos) values('H','1',1)"  -- first in Ready
   t.q_ "insert or replace into meta(k,v) values('agent_min','2')"
   discard <| fakeLaunch h (t.d ++ "/launch")
-  let ran ← afterSpawnRead h (t.q_ "update task set state='done', lease_until=null where id=1")  -- right after auto_spawn's read
+  let ran ← afterSpawnRead h (t.q_ "update task set state='completed', lease_until=null where id=1")  -- right after auto_spawn's read
   eq (← tick h) Json.null
   ran
-  eq ((← t.q1 "select state from task where id=3").f "state") "claimed"
-  eq ((← t.q1 "select state from task where id=2").f "state") "open"
+  eq ((← t.q1 "select state from task where id=3").f "state") "in_progress"
+  eq ((← t.q1 "select state from task where id=2").f "state") "ready"
 
 -- board #84: each pass under its own pcall: reap failing ends reap alone; the notices still run, and the tick raises it
 -- (reap fails at its one read of the scope, the closest seam to the Lua's patched reap; the tick returns its errors)
@@ -412,7 +412,7 @@ def board84_reap_failing_ends_reap_alone (t : T) : IO Unit := do
   let h ← hooks t
   -- x is the swarm's: comms hears only its own agents' questions (board #135)
   t.q_ "insert into agent(name,cwd,status,last_active,started) values('x',?,'working',1,1)" [.text t.repo]
-  t.q_ "insert into task(title,state,owner,question,lease_until) values('q','blocked','x','which way?',4000000000)"
+  t.q_ "insert into task(title,state,owner,question,lease_until) values('q','needs_input','x','which way?',4000000000)"
   let armed ← IO.mkRef true
   h.before.set fun ts => do
     if (← armed.get) && ts == reapRead then armed.set false; throw (IO.userError "boom")

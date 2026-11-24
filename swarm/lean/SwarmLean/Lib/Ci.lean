@@ -116,12 +116,12 @@ def inIds (ids : Option (List Int)) (t : Task) : Bool := ids.all (·.contains (t
 
 /-- The done tasks pr_ci still fills: no merge data or no green run yet, done in the last day. -/
 def prCiTodo (now : Int) (db : Db) : List Task :=
-  db.tasks.filter fun t => t.status = .done && (t.merged_at.isNone || t.ci_green_at.isNone) && t.done_at.getD 0 > now - 86400
+  db.tasks.filter fun t => t.status = .completed && (t.merged_at.isNone || t.ci_green_at.isNone) && t.done_at.getD 0 > now - 86400
     && t.done_at.isSome
 
 /-- The tasks `prCiTodo` picks from: done in the last day with merge data or a green run missing. -/
 def prCiSel (now : Int) : Sel :=
-  { table := .task, cond := .and (.and (.eq "state" (.text "done")) (.gt "done_at" (.int (now - 86400))))
+  { table := .task, cond := .and (.and (.eq "state" (.text Status.completed.text)) (.gt "done_at" (.int (now - 86400))))
       (.or (.null "merged_at") (.null "ci_green_at")) }
 
 /-- pr_ci's gate: something to fill and the PR list due (every 10 min, gh calls count against the API limit). -/
@@ -206,12 +206,12 @@ structure Held where
 /-- pr_watch's claims of live owners, by id. -/
 def held (db : Db) : List Held :=
   db.tasks.filterMap fun t => match t.owner with
-    | some o => if t.status = .claimed && (db.agent o).any (·.ended.isNone) then
+    | some o => if t.status = .inProgress && (db.agent o).any (·.ended.isNone) then
         some { id := t.id, owner := o, base := t.base, first_claimed_at := t.first_claimed_at } else none
     | none => none
 
 /-- The claimed and blocked tasks: `held` and the count `prWatchGate` makes of each owner's. -/
-def heldSel : Sel := { table := .task, cond := .oneOf "state" [.text "claimed", .text "blocked"] }
+def heldSel : Sel := { table := .task, cond := .oneOf "state" [.text Status.inProgress.text, .text Status.needsInput.text] }
 
 /-- pr_watch's gate and its claims with the branches each may be on: `<owner>/<task>`, plus the owner's recorded
 worktree branches when this is its one task. -/
@@ -221,7 +221,7 @@ def prWatchGate (now : Int) (db : Db) : Db × Option (List (Held × List String)
   let (db, ok) := due now "pr_watched" 60 db
   if !ok then (db, none) else
   (db, some (hs.map fun t =>
-    let n := (db.tasks.filter fun x => x.owner == some t.owner && (x.status = .claimed || x.status = .blocked)).length
+    let n := (db.tasks.filter fun x => x.owner == some t.owner && (x.status = .inProgress || x.status = .needsInput)).length
     (t, s!"{t.owner}/{d t.id}" :: if n == 1 then (db.workspaces.filter (·.agent == t.owner)).filterMap (·.branch) else [])))
 
 /-- `prWatchGate` on what it reads: the claims, the live agents, the stamp and the owners' worktrees; with repo `r` (its
@@ -260,9 +260,9 @@ def prWatchApply (now : Int) (gated : Bool) (t : Held) (pr : Lean.Json) (db : Db
   match prAct ((Json.fstr pr "state").getD "") v gated told with
   | some "done" =>
     let ev := s!"PR #{d num} merged as {short (((Json.field pr "mergeCommit").bind (Json.fstr · "oid")).orElse fun _ => some "?")}"
-    if (db.find t.id).any (·.status = .claimed) then
+    if (db.find t.id).any (·.status = .inProgress) then
       let db := if (db.find t.id).any (·.pr != some num) then db.log now none "task-pr" none (some s!"#{d t.id} {d num}") else db
-      let db := db.set t.id fun x => { x with state := x.state.toDone, evidence := some ev, done_at := some now, pr := some num, merged_at := some (ts ((Json.fstr pr "mergedAt").getD "")) }
+      let db := db.set t.id fun x => { x with state := x.state.toCompleted, evidence := some ev, done_at := some now, pr := some num, merged_at := some (ts ((Json.fstr pr "mergedAt").getD "")) }
       let db := Queue.tidy (db.log now (some "swarm") "done" none (some s!"#{d t.id} {ev}"))
       (Msgs.post db now .system (.agent t.owner) s!"{ev}: watchd marked #{d t.id} done, so no `task done` is needed. If you stay for it, `swarm stay --end`." true (some "system")).1
     else db
@@ -372,13 +372,13 @@ def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option N
   | [] => (db, none)
   | red :: _ =>
     let openRed := db.tasks.filter fun t => likePrefix (t.title.getD "") Tasks.RED_TASK &&
-      (t.status = .open || t.status = .claimed || t.status = .blocked) && inIds ids t
+      (t.status = .backlog || t.status = .ready || t.status = .inProgress || t.status = .needsInput) && inIds ids t
     if red.conclusion == some .success then
       (Queue.tidy <| openRed.foldl (fun db t =>
         let n := (t.title.getD "").toList.drop (Tasks.RED_TASK ++ "run ").length |>.takeWhile Char.isDigit
         let n := if (t.title.getD "").startsWith (Tasks.RED_TASK ++ "run ") && !n.isEmpty then (String.ofList n).toNat? else none
         if n.any (red.id < ·) then db else
-        let db := db.set t.id fun x => { x with state := x.state.toDone, evidence := some s!"green run {d red.id} at {short red.sha}", hold := none, done_at := some now }
+        let db := db.set t.id fun x => { x with state := x.state.toCompleted, evidence := some s!"green run {d red.id} at {short red.sha}", done_at := some now, note := none, pos := none }
         let db := db.log now (some "swarm") "done" none (some s!"#{d t.id} green run {d red.id}")
         match t.owner with
         | some o => (Msgs.post db now .system (.agent o) s!"main is green (run {d red.id}): #{d t.id} is done; stop fixing it." false (some "system")).1
@@ -392,8 +392,9 @@ def ciCheckStep (now : Int) (ids : Option (List Int)) (db : Db) : Db × Option N
       | t :: _ =>
         let add := s!"\nLater red: run {d red.id} at {short red.sha}" ++ (match failed with | some f => s!" ({f})" | none => "")
         let fixedAt := ((db.events.filter fun e => e.kind == some "red-fixed" && (e.data.getD "").startsWith s!"#{d t.id} ").filterMap (·.ts)).foldl max 0
-        let reopen := hasSub (t.hold.getD "") "awaiting a green run" && ts (red.created.getD "") > fixedAt
-        (db.set t.id fun x => { x with body := x.body.map (· ++ add), hold := if reopen then none else x.hold }, none)
+        let reopen := t.status = .backlog && hasSub (t.note.getD "") "awaiting a green run" && ts (red.created.getD "") > fixedAt
+        let note := if reopen then none else t.note
+        (db.set t.id fun x => { x with body := x.body.map (· ++ add), state := if reopen then .ready none else x.state, note := note }, none)
       | [] => (db, some { red, green := runs.find? (·.conclusion == some .success) })
 
 /-- ci_check's second step: the red task with the commits' authors and the failed log's tail, and the posts. -/
@@ -403,7 +404,7 @@ def ciNewRedTask (now : Int) (comms : Option String) (r : NewRed) (rng : String)
   let about := s!"main CI is red (run {d red.id} {red.url.getD "None"}), commits {rng}, authors: {if names.isEmpty then "none" else ", ".intercalate names}."
   let title := Tasks.RED_TASK ++ "run " ++ d red.id ++ (match failed with | some f => s!" ({f})" | none => "")
   let tid := db.taskNext
-  let db := { db with tasks := db.tasks ++ [({ id := tid, title := some title, body := some (about ++ " Fix forward on main. When your fix is on main, `swarm task done " ++ d tid ++ " --evidence <sha>` releases you; watchd closes the task on the next green run.\n" ++ tail), created_by := some "swarm", created_at := some now } : Task)], taskNext := db.taskNext + 1 }
+  let db := { db with tasks := db.tasks ++ [({ id := tid, title := some title, body := some (about ++ " Fix forward on main. When your fix is on main, `swarm task done " ++ d tid ++ " --evidence <sha>` releases you; watchd closes the task on the next green run.\n" ++ tail), created_by := some "swarm", created_at := some now, pos := some (Tasks.endPos db) } : Task)], taskNext := db.taskNext + 1 }
   let db := db.log now (some "swarm") "task-add" none (some s!"#{d tid} {title}")
   let live := (Agents.live db).map (·.name)
   let msg := s!"{about} Task #{d tid} is its one fix: `swarm task claim {d tid}` if your commit broke it, then fix forward; if someone holds it, leave it to them."
@@ -433,7 +434,7 @@ events and the newest run's `ci-red`. -/
 def ciCheckSels (ids : Option (List Int)) : Txn (List Sel) := do
   let red := (checkRuns (← Txn.slice [Sels.all .ci])).head?.map fun r =>
     ({ table := .event, cond := .and (.eq "kind" (.text "ci-red")) (.eq "data" (.text (d r.id))) } : Sel)
-  return [Sels.all .ci, ofIds ids { table := .task, cond := .oneOf "state" [.text "open", .text "claimed", .text "blocked"] },
+  return [Sels.all .ci, ofIds ids { table := .task, cond := .oneOf "state" ([Status.backlog, .ready, .inProgress, .needsInput].map (.text ·.text)) },
     TaskTxn.queuedSel, { table := .event, cond := .eq "kind" (.text "red-fixed") }] ++ red.toList
 
 /-- The `Swarm-Agent:` names in commit messages, distinct and sorted. -/

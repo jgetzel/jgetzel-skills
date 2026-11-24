@@ -32,10 +32,14 @@ def idList : Conv := fun s =>
       | some n => go (if seen.contains n then seen else n :: seen) xs
   (go [] pieces).map .ids
 
-/-- main.lua's `prio`: a priority 0 to 3. -/
-def prio : Conv := fun s => match parseInt s with
-  | some n => if 0 ≤ n && n ≤ 3 then .ok (.i n) else .error (some s!"not a priority (0-3): '{s}'")
-  | none => .error (some s!"not a priority (0-3): '{s}'")
+/-- A priority's name: urgent, high, medium, low or none (Linear's levels); a number (the old P0..P3) is refused
+with the mapping. -/
+def prio : Conv := fun s =>
+  let w := (strip s).toLower
+  if ["none", "no-priority", "urgent", "high", "medium", "low"].contains w then .ok (.s w)
+  else if !w.isEmpty && w.all Char.isDigit then
+    .error (some s!"'{s}': priorities are names now, not numbers: urgent (was 0), high (was 1), medium (was 2), low (was 3), or none")
+  else .error (some s!"not a priority: '{s}' (urgent, high, medium, low or none)")
 
 /-- An option (`p:option`/`p:flag`). -/
 structure Opt where

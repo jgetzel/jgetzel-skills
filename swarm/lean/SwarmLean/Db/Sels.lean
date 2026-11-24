@@ -67,7 +67,7 @@ def pairkeys (n : String) : Sel := { table := .pairkey, cond := .or (.eq "a" (.t
 def release (n : String) : List Sel := [agent n, owned n, locks n, conflicts n, pairkeys n]
 
 /-- The staffing knobs `Agents.limits` and `limitsLine` read, and the communicator. -/
-def LIMIT_KEYS : List String := ["comms", "agent_min", "agent_max", "queue_only"]
+def LIMIT_KEYS : List String := ["comms", "agent_min", "agent_max"]
 
 /-- What `Agents.limits` reads: the live agents and the staffing knobs. -/
 def limits : List Sel := [live, metas LIMIT_KEYS]
@@ -107,7 +107,7 @@ def lastMsgs (n : Nat) (a : Option String := none) : Sel :=
 def search (key : String) (n : Nat) : Sel := { table := .msg, cond := .has "body" key, last := some n }
 
 /-- The tasks not done. -/
-def undone : Sel := { table := .task, cond := .ne "state" (.text "done") }
+def undone : Sel := { table := .task, cond := .ne "state" (.text Status.completed.text) }
 
 /-- The tasks agents `ns` own, in any state. -/
 def ownedBy (ns : List String) : Sel := { table := .task, cond := .oneOf "owner" (ns.map .text) }

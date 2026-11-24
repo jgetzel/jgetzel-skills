@@ -688,13 +688,13 @@ theorem one_owner_all (cs : List TCmd) (i : Int) (a b : String) (ha : Owns (run 
 
 /-- S5 (model: `done_task_has_evidence`): after any task commands from the empty db, every done task has evidence:
 text that is not all whitespace. -/
-theorem done_has_evidence (cs : List TCmd) : ∀ t ∈ (run {} cs).tasks, t.status = .done → EvOk t.evidence :=
+theorem done_has_evidence (cs : List TCmd) : ∀ t ∈ (run {} cs).tasks, t.status = .completed → EvOk t.evidence :=
   sorry
 
 /-- S2 (model: `no_claim_before_dependencies_done`): a successful `task claim i` finds every task `i` is after done. -/
 theorem claim_deps_done {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} {r : Task}
     (h : (Tasks.claim c i l db).2 = .ok x) (hr : db.find i = some r) :
-    ∀ j ∈ depsOf r, ∀ u, db.find j = some u → u.status = .done :=
+    ∀ j ∈ depsOf r, ∀ u, db.find j = some u → u.status = .completed :=
   sorry
 
 /-- Under the store's assumption (`Atomic`), when processes ran any task commands at once with no successful release
@@ -718,7 +718,7 @@ theorem pool_sorted (db : Db) : (pool db).Pairwise (boardLe redKey · · = true)
 /-- The pool is exactly the open tasks that wait on no task not done and have no stop pending (model: `pool`,
 `claimable`). -/
 theorem mem_pool (db : Db) (t : Task) : t ∈ pool db ↔
-    t ∈ db.tasks ∧ t.status = .open ∧ blockedByDeps db t = false ∧ stopPending db t = false :=
+    t ∈ db.tasks ∧ t.status = .ready ∧ blockedByDeps db t = false ∧ stopPending db t = false :=
   sorry
 
 /-- Stop first (model: `claimable`, `stopped`): `task claim` refuses a task released from an agent still at work that
@@ -729,41 +729,41 @@ theorem claim_not_stopped {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claime
 
 /-- A landing task is not claimable: `task claim` of it fails. -/
 theorem claim_landing {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} (hr : db.find i = some r)
-    (hs : r.status = .landing) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x :=
+    (hs : r.status = .inReview) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x :=
   sorry
 
 /-- A landing task is closed only by its lander (the one named, an agent with role lander, or the communicator), and
 only with evidence git found on the task's base. -/
 theorem done_landing {c : Ctx} {i : Int} {e : String} {db : Db} {r : Task} {x : DoneOut} (hr : db.find i = some r)
-    (hs : r.status = .landing) (h : (Tasks.done c i e db).2 = .ok x) :
+    (hs : r.status = .inReview) (h : (Tasks.done c i e db).2 = .ok x) :
     isLander db c.comms c.me r = true ∧ c.onBase = true ∧ x = .landed r.owner :=
   sorry
 
 /-- A landing task's dependants keep waiting: a task that waits on it is not in the pool. -/
-theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.status = .landing) (hw : WaitsOn h x) :
+theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.status = .inReview) (hw : WaitsOn h x) :
     h ∉ pool db :=
   sorry
 
 /-- `task land` hands over only its owner's claimed task, and leaves it landing with that owner. -/
 theorem land_ok {c : Ctx} {i : Int} {s : String} {l : Option String} {db : Db} (h : (Tasks.land c i s l db).2 = .ok ()) :
-    ∃ r, db.find i = some r ∧ r.status = .claimed ∧ r.owner = some c.me ∧
-      ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.status = .landing ∧ r'.owner = some c.me :=
+    ∃ r, db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
+      ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.status = .inReview ∧ r'.owner = some c.me :=
   sorry
 
 /-- F1 for a lander's close (board #200): a `task done` of landing task `x` puts in the pool an open task with no stop
 pending that waits on no task not done but `x`. -/
 theorem landed_frees {c : Ctx} {x : Int} {e : String} {db : Db} {o : Option String}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.landed o)) {h : Task} (hm : h ∈ db.tasks)
-    (ho : h.status = .open) (hs : stopPending db h = false)
-    (hw : ∀ y ∈ db.tasks, y.status ≠ .done → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 :=
+    (ho : h.status = .ready) (hs : stopPending db h = false)
+    (hw : ∀ y ∈ db.tasks, y.status ≠ .completed → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 :=
   sorry
 
 /-- F1, `done_frees`: a `task done` of `x` puts in the pool an open task with no stop pending that waits on no task
 not done but `x`. -/
 theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Option String} {n : Nat}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.done k st n)) {h : Task} (hm : h ∈ db.tasks)
-    (ho : h.status = .open) (hs : stopPending db h = false)
-    (hw : ∀ y ∈ db.tasks, y.status ≠ .done → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 :=
+    (ho : h.status = .ready) (hs : stopPending db h = false)
+    (hw : ∀ y ∈ db.tasks, y.status ≠ .completed → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 :=
   sorry
 
 /-- F1, `release_waits`: a `task release` of `x` frees nothing: a task that waits on `x` is not in the pool after it. -/
@@ -970,7 +970,7 @@ theorem one_owner_x (cs : List XCmd) (t : Int) (ht : XBefore t cs) (i : Int) (a 
 
 /-- S5 whatever every area did: every done task has evidence. -/
 theorem done_has_evidence_x (cs : List XCmd) (t : Int) (ht : XBefore t cs) :
-    ∀ u ∈ (run {} cs).tasks, u.status = .done → EvOk u.evidence :=
+    ∀ u ∈ (run {} cs).tasks, u.status = .completed → EvOk u.evidence :=
   sorry
 
 /-- S3 whatever every area did: two locks of different agents that hold at `t` don't overlap. -/

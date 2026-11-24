@@ -256,7 +256,7 @@ def conflictTick [Store m] (repo : String) (wts : List (String × String)) (base
   let mut basesOf : List (String × Option String) := []
   let mut bnames : List (String × String) := []
   for (n, w) in wts do
-    let held := (db0.tasks.filter fun x => x.owner == some n && (x.status = .claimed || x.status = .blocked)).mergeSort
+    let held := (db0.tasks.filter fun x => x.owner == some n && (x.status = .inProgress || x.status = .needsInput)).mergeSort
       (·.id ≤ ·.id) |>.head? |>.bind (·.base)
     let bn ← baseFor held
     let base ← match shas.lookup bn with

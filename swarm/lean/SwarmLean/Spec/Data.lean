@@ -73,7 +73,7 @@ structure Ctx where
   comms : Option String := none
   /-- the working directory -/
   cwd : Option String := none
-  /-- `task claim --force`: the communicator claims a held task -/
+  /-- `task claim --force`: the communicator claims a Backlog task, or a Ready one assigned to another -/
   force : Bool := false
   /-- `task done` of a landing task: its evidence names a commit on the task's base (checked with git first) -/
   onBase : Bool := false
@@ -86,7 +86,7 @@ structure AddArgs where
   model : Option String := none
   effort : Option String := none
   base : Option String := none
-  priority : Option Int := none
+  priority : Option Priority := none
   /-- `--label`: its labels, comma-separated as given -/
   labels : Option String := none
 
@@ -98,9 +98,9 @@ structure Claimed where
 /-- What `task unland` reopened: the former owner, and the task's new priority. -/
 structure Unlanded where
   owner : Option String
-  priority : Int
+  priority : Priority
 
-/-- What `task done` says after: a red task is released and held for a green run; a landing task closed by its lander,
+/-- What `task done` says after: a red task goes to Backlog until a green run; a landing task closed by its lander,
 with its former owner; else the context line's parts. -/
 inductive DoneOut
   | red

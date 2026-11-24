@@ -37,7 +37,7 @@ def ended (t : T) (name : String) : IO Bool :=
 def finished (t : T) (n : String) : IO Unit := do
   t.sw_ "comms" ["limits", "--reuse-below", "50000"]
   t.q_ "update agent set model='sonnet' where name=?" [.text n]
-  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','done',?,'sha','x',1)" [.text n]
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','completed',?,'sha','x',1)" [.text n]
 def offers (t : T) (n : String) : IO Nat :=
   return (← t.q "select 1 x from msg where dest=? and body like '%Related tasks%'" [.text n]).size
 def branches (t : T) : IO String := t.git t.repo ["branch", "--list", "w2"]
@@ -89,7 +89,7 @@ def test_join_leave_who (t : T) : IO Unit := do
   eq (← t.sw "a" ["join", "p", "q"] { ok := false }).code 2  -- bad usage
   t.sw_ "b" ["join"]
   t.q_ "insert into lock(path,agent,since,lease_until) values('x.txt','b',0,9999999999)"
-  t.q_ "insert into task(title,state,owner,lease_until) values('t','claimed','b',9999999999)"
+  t.q_ "insert into task(title,state,owner,lease_until) values('t','in_progress','b',9999999999)"
   t.q_ "update agent set ctx_tokens=52000 where name='b'"
   let who := (← t.sw "x" ["who"]).stdout
   has who "machine: "
@@ -98,7 +98,7 @@ def test_join_leave_who (t : T) : IO Unit := do
   let b ← t.q1 "select status, ended is not null e from agent where name='b'"
   eq [b.f "status", b.f "e"] (json% ["ended", 1])
   let tk ← t.q1 "select state, owner from task"
-  eq [tk.f "state", tk.f "owner", toJson (← t.q "select * from lock")] (json% ["open", null, []])
+  eq [tk.f "state", tk.f "owner", toJson (← t.q "select * from lock")] (json% ["ready", null, []])
   hasnt (← t.sw "x" ["who"]).stdout "\nb "
   has (← t.sw "b" ["leave"] { ok := false }).stderr "b was ended at"  -- fenced
   t.sw_ "b" ["join"]
@@ -599,7 +599,7 @@ def test_other_repo_terminal_not_foreign (t : T) : IO Unit := do
 -- a base that is no ref in the worktree's repo is a reason endable and the Stop hook give, not an empty list
 def test_unresolvable_base_named (t : T) : IO Unit := do
   idle t "e" [("wt", t.wt)]
-  t.q_ "insert into task(title,state,owner,base) values('x','done','e','nope')"
+  t.q_ "insert into task(title,state,owner,base) values('x','completed','e','nope')"
   let r ← t.sw "a" ["endable", "e", "--why"] { ok := false }
   eq r.code 1
   has r.stdout "base nope does not resolve"
@@ -657,7 +657,7 @@ def test_idle_owner_past_lease_loses_claim (t : T) : IO Unit := do
   t.q_ "update task set lease_until=1"
   commsTick t
   ok (!(← ended t "e"))
-  eq ((← t.q1 "select state from task").f "state") "open"
+  eq ((← t.q1 "select state from task").f "state") "ready"
   has (← t.sw "e" ["read"]).stdout "its lease ended and watchd did not see you live"
 
 def test_idle_owner_with_background_job_keeps_claim (t : T) : IO Unit := do
@@ -669,10 +669,10 @@ def test_idle_owner_with_background_job_keeps_claim (t : T) : IO Unit := do
   addProc pr 401 400 "luajit" ["luajit", "main.lua", "wait"]  -- the hook waiter: not a job
   addProc pr 402 400 "zsh" ["zsh", "-c", "source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'make'"]
   tick
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   rmtree (pr ++ "/402")  -- the job ended
   tick
-  eq ((← t.q1 "select state from task").f "state") "open"
+  eq ((← t.q1 "select state from task").f "state") "ready"
 
 -- board #15: an idle agent with no claim whose background job runs is kept; ending it would kill the job
 def test_idle_agent_with_background_job_not_ended (t : T) : IO Unit := do
@@ -826,7 +826,7 @@ def test_working_owner_past_lease_keeps_claim (t : T) : IO Unit := do
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
   t.q_ "update task set lease_until=1"
   commsTick t
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   eq ((← t.q1 "select count(*) n from msg where dest='e' and body like 'Your lease on #1 ended%'").f "n") 1  -- the holder first (board #193)
   commsTick t
   eq ((← t.q1 "select count(*) n from msg where dest='e' and body like 'Your lease on #1 ended%'").f "n") 1  -- once per lease period
@@ -838,7 +838,7 @@ def test_prompt_blocked_owner_past_lease_keeps_claim (t : T) : IO Unit := do
   t.sw_ "e" ["task", "add", "t"]; t.sw_ "e" ["task", "claim", "1"]
   t.q_ "update task set lease_until=1"
   commsTick t
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
 
 def test_comms_never_digested_or_ended_reusable_digested (t : T) : IO Unit := do
   idle t "comms"; idle t "r"; finished t "r"
@@ -871,13 +871,13 @@ def test_digest_edge_triggered (t : T) : IO Unit := do
 -- Reuse is off by default: a small idle agent with a related task is ended, offered nothing (board #186).
 def test_reuse_off_by_default (t : T) : IO Unit := do
   idle t "comms"; idle t "r" [("model", "sonnet")]
-  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','done','r','sha','x',1)"
+  t.q_ "insert into task(title,state,owner,evidence,labels,done_at) values('done','completed','r','sha','x',1)"
   t.sw_ "comms" ["task", "add", "t", "--label", "x"]
   commsTick t
   ok (← ended t "r"); eq (← offers t "r") 0
 
 -- The offer: lineage (filed while holding the finished task, or waiting on it) and a shared label; startable, for
--- the agent's model, at most five, in staffing order; with queue-only on, only queued ones (board #186).
+-- the agent's model, at most five, in staffing order; never a Backlog task (board #186).
 def test_offer_lineage_labels_model (t : T) : IO Unit := do
   t.fakes
   idle t "comms"; idle t "r" [("model", "sonnet")]
@@ -904,12 +904,12 @@ def test_offer_lineage_labels_model (t : T) : IO Unit := do
   has (m.s?.getD "") "#2 filed; #3 waits; #6 same"
   -- auto-spawn does not staff an offered task while the offer is out
   t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "3", "--min-free-mem", "0"]
-  eq ((← t.q1 "select state from task where id=2").f "state") "open"
+  eq ((← t.q1 "select state from task where id=2").f "state") "ready"
 
-def test_offer_queue_only (t : T) : IO Unit := do
+def test_offer_skips_backlog (t : T) : IO Unit := do
   idle t "comms"; idle t "r"; finished t "r"
   t.sw_ "comms" ["task", "add", "a", "--label", "x"]; t.sw_ "comms" ["task", "add", "b", "--label", "x"]
-  t.sw_ "comms" ["limits", "--queue-only", "on"]; t.sw_ "comms" ["queue", "add", "3"]
+  t.sw_ "comms" ["task", "backlog", "2", "--note", "later"]
   commsTick t
   eq ((← t.q1 "select data from event where kind='digest' and agent='r'").f "data") "3"
 
@@ -924,7 +924,7 @@ def test_offer_times_out (t : T) : IO Unit := do
   commsTick t
   ok (← ended t "r") "an offer past its TTL still keeps r"
   t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
-  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"
+  eq ((← t.q1 "select state from task where id=2").f "state") "in_progress"
 
 def test_task_labels (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "t", "--label", "ui, herdr,ui"]
@@ -947,7 +947,7 @@ def test_reusable_agent_told_and_idle_again_is_ended (t : T) : IO Unit := do
   commsTick t
   ok (← ended t "r") "r, offered #2 and idle again, still holds the slot"
   t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
-  eq ((← t.q1 "select state from task where id=2").f "state") "claimed"  -- the freed slot is filled for #2
+  eq ((← t.q1 "select state from task where id=2").f "state") "in_progress"  -- the freed slot is filled for #2
 
 -- An idle agent whose waiter exited (swarm wait timed out) never reads a digest: it is ended, not kept as a reason to
 -- spawn no one (swarm/model: l_after_waiter, L1 and L3).
@@ -959,7 +959,7 @@ def test_reusable_agent_with_dead_waiter_is_ended (t : T) : IO Unit := do
   commsTick t
   ok (← ended t "r") "r can't wake, yet holds the slot"
   t.sw_ "comms" ["watchd", "--once", "--comms", "comms", "--max-agents", "1", "--min-free-mem", "0"]
-  eq ((← t.q1 "select state from task where id=1").f "state") "claimed"
+  eq ((← t.q1 "select state from task where id=1").f "state") "in_progress"
 
 def test_big_context_finished_even_with_open_tasks (t : T) : IO Unit := do
   idle t "big" [("ctx_tokens", 120000)]
@@ -1048,15 +1048,15 @@ def test_block_unblock (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "t1"]; t.sw_ "a" ["task", "claim", "1"]
   t.sw_ "b" ["task", "block", "1", "q?"] { ok := false }
   t.sw_ "a" ["task", "block", "1", "which db?"]
-  has (← t.sw "a" ["board"]).stdout "#1 blocked by a: which db?"
+  has (← t.sw "a" ["board"]).stdout "#1 needs input from a: which db?"
   t.q_ "update task set lease_until=1"
   for _ in [0:2] do t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
-  eq ((← t.q1 "select state,owner from task").f "state") "blocked"
+  eq ((← t.q1 "select state,owner from task").f "state") "needs_input"
   eq (← t.q "select 1 x from msg where dest='t-comms' and body like '%which db?%'").size 1
   t.sw_ "b" ["task", "unblock", "1"] { ok := false }
   t.sw_ "t-comms" ["task", "unblock", "1", "--answer", "sqlite"]
   eq ((← t.q1 "select state,owner from task").f "owner") "a"
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   eq (← t.q "select 1 x from msg where dest='a' and body like '%sqlite%'").size 1
   has (← t.sw "a" ["task", "show", "1"]).stdout "sqlite"
   -- the answer outlives the owner: a second agent claiming the released task sees it
@@ -1071,11 +1071,11 @@ def test_hc_blocked_marks_task (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
   let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
   tick
-  eq ((← t.q1 "select state from task").f "state") "blocked"
+  eq ((← t.q1 "select state from task").f "state") "needs_input"
   eq (← t.q "select 1 x from msg where dest='t-comms'").size 1  -- one notice, not two
   t.setHc [json% {"address": "h1", "status": "working"}]
   tick
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
 
 -- board #114: Claude stuck on its folder-trust dialog leaves the terminal with no hc status; after START_WAIT that is a prompt
 def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
@@ -1085,20 +1085,20 @@ def test_hc_no_status_after_spawn_blocks (t : T) : IO Unit := do
   t.sw_ "a" ["task", "add", "t1"] { hc := some "h1" }; t.sw_ "a" ["task", "claim", "1"] { hc := some "h1" }
   let tick : IO Unit := t.sw_ "a" ["watchd", "--once", "--comms", "t-comms", "--max-agents", "0"]
   tick  -- no spawn event: a joined agent, never counted as stuck
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   t.q_ "insert into event(ts,agent,kind,data) values(?,'human','spawn','a')" [.int ((← now) - 60)]
   tick  -- spawned a minute ago: still starting
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   t.q_ "update event set ts=? where kind='spawn'" [.int ((← now) - 300)]
   tick
-  eq ((← t.q1 "select state from task").f "state") "blocked"
+  eq ((← t.q1 "select state from task").f "state") "needs_input"
   -- not the host's memory pressure notice (board #141)
   let m ← t.q "select body from msg where dest='t-comms' and body not like 'memory pressure:%'"
   eq m.size 1; has (m[0]!.f "body") "no Claude session yet"; has (m[0]!.f "body") "hc read h1"
   eq ((← t.q1 "select status from agent where name='a'").f "status") "blocked"
   t.setHc [json% {"address": "h1", "status": "working"}]  -- the human accepted the dialog
   tick
-  eq ((← t.q1 "select state from task").f "state") "claimed"
+  eq ((← t.q1 "select state from task").f "state") "in_progress"
   -- board #135: the row follows the terminal again, or watchd never ends it
   eq ((← t.q1 "select status from agent where name='a'").f "status") "working"
 
@@ -1341,7 +1341,7 @@ def test_watchd_no_continue_after_a_turn (t : T) : IO Unit := do
 def test_after_dependency (t : T) : IO Unit := do
   t.agent "a"
   t.sw_ "a" ["task", "add", "first"]; t.sw_ "a" ["task", "add", "second", "--after", "1"]
-  has (← t.sw "a" ["board"]).stdout "after #1"
+  has (← t.sw "a" ["board"]).stdout "waiting on #1"
   let r ← t.sw "a" ["task", "claim", "2"] { ok := false }
   ok (r.code != 0)
   has r.stderr "waits on #1"
@@ -1357,33 +1357,33 @@ def poolIds (t : T) : IO (List Nat) := do
 def test_priority_orders_pool_and_board (t : T) : IO Unit := do
   t.fakes
   t.agent "a"
-  t.sw_ "a" ["task", "add", "plain"]                  -- #1 default P2
-  t.sw_ "a" ["task", "add", "someday", "-p", "3"]     -- #2
-  t.sw_ "a" ["task", "add", "urgent", "--priority", "0"]  -- #3
-  t.sw_ "a" ["task", "add", "soon", "-p", "1"]        -- #4
-  t.sw_ "a" ["task", "add", "plain2  [P2]"]                 -- #5
-  eq ((← t.q1 "select priority from task where id=1").f "priority") 2
+  t.sw_ "a" ["task", "add", "plain"]                            -- #1 default Medium
+  t.sw_ "a" ["task", "add", "someday", "-p", "low"]             -- #2
+  t.sw_ "a" ["task", "add", "urgent", "--priority", "urgent"]   -- #3
+  t.sw_ "a" ["task", "add", "soon", "-p", "high"]               -- #4
+  t.sw_ "a" ["task", "add", "plain2  [Urgent]"]                 -- #5
+  eq ((← t.q1 "select priority from task where id=1").f "priority") 3
   let b := (← t.sw "a" ["board"]).stdout
   let mut pos : List Nat := []
-  for x in ["urgent", "soon", "plain  [P2]", "plain2  [P2]", "someday"] do
+  for x in ["plain  [Medium]", "someday  [Low]", "urgent  [Urgent]", "soon  [High]", "plain2  [Urgent]  [Medium]"] do
     match b.splitOn x with
     | pre :: _ :: _ => pos := pos ++ [pre.length]
     | _ => fail s!"{x} not in {b}"
-  ok (pos == pos.mergeSort && pos.eraseDups.length == 5) b
-  has b "P0"; has b "P3"
-  has (← t.sw "a" ["task", "show", "3"]).stdout "priority: P0"
-  -- the pool: priority, then id; the red task still first
-  eq (← poolIds t) [3, 4, 1, 5, 2]
-  t.sw_ "a" ["task", "priority", "2", "0"]
-  t.sw_ "a" ["task", "priority", "5", "1"]
-  eq (← poolIds t) [2, 3, 4, 5, 1]
-  -- never preempts: a claimed task keeps its owner; a done or bad priority is refused
+  ok (pos == pos.mergeSort && pos.eraseDups.length == 5) b  -- Ready's order: priority never reorders it
+  has (← t.sw "a" ["task", "show", "3"]).stdout "priority: Urgent"
+  -- the pool: Ready's order
+  eq (← poolIds t) [1, 2, 3, 4, 5]
+  t.sw_ "a" ["task", "priority", "2", "urgent"]
+  eq (← poolIds t) [1, 2, 3, 4, 5]
+  t.sw_ "human" ["queue", "add", "4", "--front"]
+  eq (← poolIds t) [4, 1, 2, 3, 5]
+  -- never preempts: a claimed task keeps its owner; a completed task or a bad priority is refused
   t.sw_ "a" ["task", "claim", "1"]
-  t.sw_ "a" ["task", "priority", "1", "0"]
-  eq (← t.q1 "select owner, priority from task where id=1") (json% {"owner": "a", "priority": 0})
-  ok ((← t.sw "a" ["task", "priority", "1", "4"] { ok := false }).code != 0)
+  t.sw_ "a" ["task", "priority", "1", "urgent"]
+  eq (← t.q1 "select owner, priority from task where id=1") (json% {"owner": "a", "priority": 1})
+  ok ((← t.sw "a" ["task", "priority", "1", "p9"] { ok := false }).code != 0)
   t.sw_ "a" ["task", "done", "1", "--evidence", "x"]
-  ok ((← t.sw "a" ["task", "priority", "1", "1"] { ok := false }).code != 0)
+  ok ((← t.sw "a" ["task", "priority", "1", "high"] { ok := false }).code != 0)
 
 def test_deps_list_holds_until_last_done (t : T) : IO Unit := do
   t.fakes
@@ -1395,7 +1395,7 @@ def test_deps_list_holds_until_last_done (t : T) : IO Unit := do
     let mut ids : Array Int := #[]
     for x in tasksOf (← state t) do
       let w := x.f "waiting"
-      if x.f "state" == "open" && !(w != .null && w != .bool false) then ids := ids.push (x.f "id").i
+      if x.f "state" == "ready" && !(w != .null && w != .bool false) then ids := ids.push (x.f "id").i
     eq (ids.qsort (· < ·)) ready
     unless ready.contains 4 do
       has (← t.sw "a" ["task", "claim", "4"] { ok := false }).stderr "waits on"
@@ -1404,7 +1404,7 @@ def test_deps_list_holds_until_last_done (t : T) : IO Unit := do
   for (n, ready) in [(1, [2, 3]), (2, [3]), (3, [4])] do
     t.sw_ "a" ["task", "claim", toString n]; t.sw_ "a" ["task", "done", toString n, "--evidence", "e"]
     check ready
-  has (← t.sw "a" ["task", "show", "4"]).stdout "after: #3 done, #1 done"
+  has (← t.sw "a" ["task", "show", "4"]).stdout "after: #3 Completed, #1 Completed"
   t.sw_ "a" ["task", "claim", "4"]
   has (← t.sw "a" ["task", "add", "x", "--after", "1,9"] { ok := false }).stderr "no task #9"
 
@@ -1414,7 +1414,7 @@ def test_release_after_leaves_pool (t : T) : IO Unit := do
   t.sw_ "a" ["task", "claim", "2"]
   has (← t.sw "a" ["task", "release", "2", "--after", "2"] { ok := false }).stderr "#2 → #2"
   has (← t.sw "a" ["task", "release", "2", "--after", "1"]).stdout "after #1"
-  has (← t.sw "a" ["board"]).stdout "after #1  work"
+  has (← t.sw "a" ["board"]).stdout "waiting on #1  work"
   has (← t.sw "a" ["task", "claim", "2"] { ok := false }).stderr "#1"
 
 def test_task_after_cycle_and_lines (t : T) : IO Unit := do
@@ -1425,23 +1425,23 @@ def test_task_after_cycle_and_lines (t : T) : IO Unit := do
   let r ← t.sw "a" ["task", "after", "1", "3"] { ok := false }
   has r.stderr "#1 → #3 → #2 → #1"
   has (← t.sw "a" ["task", "after", "1", "1"] { ok := false }).stderr "#1 → #1"
-  has (← t.sw "a" ["board"]).stdout "after #1  two"
+  has (← t.sw "a" ["board"]).stdout "waiting on #1  two"
   let shown := (← t.sw "a" ["task", "show", "1"]).stdout
   has shown "blocks: #2, #3"
   hasnt shown "after:"
-  has (← t.sw "a" ["task", "show", "3"]).stdout "after: #2 open, #1 open"
+  has (← t.sw "a" ["task", "show", "3"]).stdout "after: #2 Ready, #1 Ready"
   let ts := tasksOf (← state t)
   let s (i : Int) : Json := (ts.find? fun x => (x.f "id").i == i).getD .null
   eq [(s 3).f "deps", (s 1).f "blocks", (s 3).f "blocks"] (json% [[2, 1], [2, 3], []])
   let out := (← t.sw "a" ["task", "drop", "1"]).stdout
-  has out "#2 waits on #1: drop it too, or `swarm task after 2 …`"
+  has out "#2 waits on #1: `swarm task drop 2` too, or remove the dependency: `swarm task after 2 …`"
   has out "#3 waits on #1"
-  has (← t.sw "a" ["board"]).stdout "after #2, #1 (dropped)  three"  -- still held back
+  has (← t.sw "a" ["board"]).stdout "waiting on #2, #1 (cancelled)  three"  -- still held back
   t.sw_ "a" ["task", "after", "3", ""]  -- cleared
   eq ((← t.q1 "select deps from task where id=3").f "deps") ""
   t.sw_ "a" ["task", "claim", "2"] { ok := false }
   t.sw_ "a" ["task", "claim", "3"]
-  has (← t.sw "a" ["task", "after", "3", "2"] { ok := false }).stderr "is claimed"
+  has (← t.sw "a" ["task", "after", "3", "2"] { ok := false }).stderr "is In Progress"
 
 -- An idle agent whose claim open tasks wait on (transitively) is asked once per idle stretch; comms is told once.
 def blockerSetup (t : T) (chain : Bool) : IO Unit := do
@@ -1480,14 +1480,14 @@ def test_blocker_spared_without_dependants_or_under_threshold (t : T) : IO Unit 
 def test_task_edit (t : T) : IO Unit := do
   t.fakes
   t.agent "a"; t.agent "b"
-  t.sw_ "a" ["task", "add", "one", "--body", "old", "--model", "m1", "--priority", "1"]
+  t.sw_ "a" ["task", "add", "one", "--body", "old", "--model", "m1", "--priority", "high"]
   t.sw_ "a" ["task", "claim", "1"]
   -- open/claimed edit: row, history in show, one plain notice to the owner (not to the editor)
   t.sw_ "b" ["read"]
   let r ← t.sw "b" ["task", "edit", "1", "--title", "uno", "--append", "more", "--model", "m2", "--effort", "high"]
   has r.stdout "apply at the next spawn/claim"
   let row ← t.q1 "select title,body,model,effort,priority,owner,state from task where id=1"
-  eq row (json% {"title": "uno", "body": "old\nmore", "model": "m2", "effort": "high", "priority": 1, "owner": "a", "state": "claimed"})
+  eq row (json% {"title": "uno", "body": "old\nmore", "model": "m2", "effort": "high", "priority": 2, "owner": "a", "state": "in_progress"})
   let msg := (← t.sw "a" ["read"]).stdout
   has msg "title: one -> uno"; has msg "model: m1 -> m2"; has msg "body appended: more"
   eq ((← t.q1 "select urgent from msg where dest='a' order by id desc limit 1").f "urgent") 0
@@ -1509,11 +1509,11 @@ def test_task_edit (t : T) : IO Unit := do
       ["edit", "1", "--body-file", "/nonexistent"]] do
     t.sw_ "b" ("task" :: args) { ok := false }
   eq (← t.q "select * from event where kind='task-edit'").size n
-  -- done and dropped refuse
+  -- Completed and Cancelled refuse
   t.sw_ "a" ["task", "done", "1", "--evidence", "x"]
-  has (← t.sw "b" ["task", "edit", "1", "--title", "z"] { ok := false }).stderr "done"
+  has (← t.sw "b" ["task", "edit", "1", "--title", "z"] { ok := false }).stderr "Completed"
   t.sw_ "a" ["task", "add", "two"]; t.sw_ "a" ["task", "drop", "2"]
-  has (← t.sw "b" ["task", "edit", "2", "--title", "z"] { ok := false }).stderr "dropped"
+  has (← t.sw "b" ["task", "edit", "2", "--title", "z"] { ok := false }).stderr "Cancelled"
 
 -- task add: --body-file (- is stdin); an empty, multi-line, or over-long bodiless title is refused and adds nothing
 def test_task_add_validates_title_and_reads_body_file (t : T) : IO Unit := do
@@ -1696,7 +1696,7 @@ def tests : List Case := [
   ("test_digest_edge_triggered", test_digest_edge_triggered),
   ("test_reuse_off_by_default", test_reuse_off_by_default),
   ("test_offer_lineage_labels_model", test_offer_lineage_labels_model),
-  ("test_offer_queue_only", test_offer_queue_only),
+  ("test_offer_skips_backlog", test_offer_skips_backlog),
   ("test_offer_times_out", test_offer_times_out),
   ("test_task_labels", test_task_labels),
   ("test_reusable_agent_told_and_idle_again_is_ended", test_reusable_agent_told_and_idle_again_is_ended),

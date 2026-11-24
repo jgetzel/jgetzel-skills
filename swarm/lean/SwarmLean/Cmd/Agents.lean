@@ -190,7 +190,6 @@ def stayCmd (a : Parsed) : m UInt32 := do
 structure LimitsReq where
   min : Option Int := none
   max : Option Int := none
-  queueOnly : Option Bool := none
   nudge : Option Int := none
   compact : Option Int := none
   stayers : Option Bool := none
@@ -199,9 +198,11 @@ structure LimitsReq where
 /-- `swarm limits`'s flags as one request, every one checked before anything is set. -/
 def limitsReq (a : Parsed) : Except String LimitsReq := do
   let q : LimitsReq :=
-    { min := a.int "min", max := a.int "max", queueOnly := (a.str "queue_only").map (· == "on")
+    { min := a.int "min", max := a.int "max",
       nudge := a.int "ctx_nudge", compact := a.int "ctx_compact", stayers := (a.str "compact_stayers").map (· == "on")
       reuse := a.int "reuse_below" }
+  if (a.str "queue_only").isSome then
+    throw "--queue-only is gone: Ready is the one staffing list; `swarm task backlog <id> --note …` keeps a task out of it"
   if q.nudge.any (· < 0) || q.compact.any (· < 0) || q.reuse.any (· < 0) then throw "a context threshold is tokens, 0 for off"
   pure q
 
@@ -216,13 +217,12 @@ def limitsStep (envComms : Option String) (me : String) (q : LimitsReq) (now : I
   | .error e => (db, .error e)
   | .ok () =>
     let db := db'
-    let db := match q.queueOnly with | some b => setQueueOnly db me b now | none => db
     let db := if q.nudge.isSome || q.compact.isSome || q.stayers.isSome then
       Compact.setLimits db me q.nudge q.compact q.stayers now else db
     let db := match q.reuse with | some r => Reuse.setBelow db me r now | none => db
     (db, .ok (limitsLine db envComms ++ "\n" ++ Compact.limitsLine db ++ "\n" ++ Reuse.limitsLine db))
 
-/-- `swarm limits [--min N] [--max M] [--queue-only on|off] [--ctx-nudge N] [--ctx-compact N] [--compact-stayers on|off]
+/-- `swarm limits [--min N] [--max M] [--ctx-nudge N] [--ctx-compact N] [--compact-stayers on|off]
 [--reuse-below N]` (agents.cmd_limits): every flag checked, then one transaction. -/
 def limitsCmd (a : Parsed) : m UInt32 := do
   let q ← orDie (limitsReq a)
@@ -284,7 +284,7 @@ def backTxn (envComms : Option String) (me : String) (now : Int) : Txn (Option D
   let ids := (later.filter (·.kind == some "done")).filterMap (taskOf ·.data)
   let names := ((later.filter fun e => [some "reap", some "leave", some "end", some "stay-hung"].contains e.kind).filterMap (·.agent)).eraseDups
   let merged : Cond := match since with | some s => .gt "merged_at" (.int (s - 1)) | none => .oneOf "id" []
-  let tasks : Cond := .or (.eq "state" (.text "blocked")) (.or (.oneOf "id" (ids.map fun i => .int (Int.ofNat i))) merged)
+  let tasks : Cond := .or (.eq "state" (.text Status.needsInput.text)) (.or (.oneOf "id" (ids.map fun i => .int (Int.ofNat i))) merged)
   Txn.update (flag ++ [evs, { table := .task, cond := tasks }, { table := .agent, cond := .oneOf "name" (names.map .text) },
       { table := .ci }]) [.msg]
     fun db => goBack db me (commsName db envComms) now

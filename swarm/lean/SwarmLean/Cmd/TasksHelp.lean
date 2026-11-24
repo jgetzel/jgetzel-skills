@@ -4,11 +4,11 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   land\n   unland\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   hold\n   unhold"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   land\n   unland\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   backlog\n   ready\n   assign"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
-  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         priority 0-3, lower first (default 2)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
+  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         urgent, high, medium, low or none (default medium)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
 
 /-- `swarm task priority -h`. -/
 def helpTaskPriority : String :=
@@ -20,19 +20,31 @@ def helpTaskAfter : String :=
 
 /-- `swarm task claim -h`. -/
 def helpTaskClaim : String :=
-  "Usage: swarm task claim [-h] [--lease <lease>] [--force] <id>\n\nprints the body, and the notes held for the task's next owner (`swarm post '#<id>'`)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h\n   --force               claim a held task (the communicator or the user only)"
+  "Usage: swarm task claim [-h] [--lease <lease>] [--force] <id>\n\nprints the body, and the notes held for the task's next owner (`swarm post '#<id>'`)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h\n   --force               claim a Backlog task, or one assigned to another (the communicator or the user only)"
 
-/-- `swarm task hold -h`. -/
+/-- `swarm task backlog -h`. -/
+def helpTaskBacklog : String :=
+  "Usage: swarm task backlog [-h] --note <note> <id>\n\nMoves a Ready task to Backlog: auto-spawn and agents asking for work skip it, and `task claim` refuses it\nwithout --force, until the communicator or the user runs `task ready`.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --note <note>         what the task waits for"
+
+/-- `swarm task ready -h`. -/
+def helpTaskReady : String :=
+  "Usage: swarm task ready [-h] <id>\n\nMoves a Backlog task to the end of Ready (the communicator or the user only).\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit."
+
+/-- `swarm task assign -h`. -/
+def helpTaskAssign : String :=
+  "Usage: swarm task assign [-h] [--none] <id> [<who>]\n\nReserves a Ready or Backlog task for an agent or a person (`human`) without claiming it: auto-spawn and the\npool skip it, and a claim by anyone else fails without --force. The communicator or the user only.\n\nArguments:\n   id\n   who\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --none                clear the assignee"
+
+/-- `swarm task hold -h` (gone: it fails naming `task backlog`). -/
 def helpTaskHold : String :=
-  "Usage: swarm task hold [-h] --why <why> <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why <why>           what the task waits for; until `task unhold`, neither auto-spawn nor an agent asking for\n                         work takes it, and `task claim` refuses it"
+  "Usage: swarm task hold [-h] <id>\n\ngone: `swarm task backlog <id> --note …`"
 
-/-- `swarm task unhold -h`. -/
+/-- `swarm task unhold -h` (gone: it fails naming `task ready`). -/
 def helpTaskUnhold : String :=
-  "Usage: swarm task unhold [-h] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm task unhold [-h] <id>\n\ngone: `swarm task ready <id>`"
 
 /-- `swarm queue -h`. -/
 def helpQueue : String :=
-  "Usage: swarm queue [-h] [add <id>... [--front | --before <id> | --after <id>] | rm <id>...]\n\nThe order auto-spawn staffs in, after main red tasks and before priority. With no action: the queue in order,\neach with whether it is startable now. add appends (several ids keep their order; a queued id moves); rm takes ids out.\nAny agent may append and move or remove what it queued; --front, --before, --after and changing another's\nentries are the communicator's or the user's. A task done or dropped leaves the queue.\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --front               add at the front\n   --before <id>         add before this queued task\n   --after <id>          add after this queued task"
+  "Usage: swarm queue [-h] [add <id>... [--front | --before <id> | --after <id>] | rm <id>...]\n\nReady is one ordered list: the order auto-spawn staffs in, after main red tasks. Priority never reorders it.\nWith no action: Ready in order, each with whether it is startable now, then the Backlog ids. add moves ids to the\nend (several keep their order), or with --front, --before or --after to that place; rm moves them to the end.\nAny agent may move a task to the end; the other moves are the communicator's or the user's.\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --front               move to the front\n   --before <id>         add before this Ready or Backlog task\n   --after <id>          add after this Ready or Backlog task"
 
 /-- `swarm task renew -h`. -/
 def helpTaskRenew : String :=
@@ -52,7 +64,7 @@ def helpTaskLand : String :=
 
 /-- `swarm task unland -h`. -/
 def helpTaskUnland : String :=
-  "Usage: swarm task unland [-h] --why <why> <id>\n\nA lander gives a landing task back: open again at P1 (unless already lower), with why appended to its body;\nits former owner, if live, and the communicator are told.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why <why>           why it did not land"
+  "Usage: swarm task unland [-h] --why <why> <id>\n\nA lander gives a task In Review back: Ready again at priority High (Urgent stays), with why appended to its body;\nits former owner, if live, and the communicator are told.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why <why>           why it did not land"
 
 /-- `swarm task block -h`. -/
 def helpTaskBlock : String :=
@@ -76,7 +88,7 @@ def helpTaskLabel : String :=
 
 /-- `swarm task drop -h`. -/
 def helpTaskDrop : String :=
-  "Usage: swarm task drop [-h] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm task drop [-h] [--duplicate-of <duplicate_of>] [--note <note>] <id>\n\nCancels the task; with --duplicate-of it is a Duplicate of that task.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --duplicate-of <duplicate_of>\n                         the original task\n   --note <note>         why"
 
 /-- `swarm rules -h`. -/
 def helpRules : String :=

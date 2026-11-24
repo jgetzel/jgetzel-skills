@@ -20,7 +20,7 @@ def big (t : T) : IO Unit := do
   let n ← now
   gen t 400 "agent(name, status, last_active, cwd)" s!"select 'ag'||i, case when i%2 then 'idle' else 'working' end, {n}-i, '/w/'||i"
   gen t 500 "task(title, body, state, owner, lease_until, created_by)"
-    s!"select 'task '||i, 'body of task '||i, case when i%5=0 then 'claimed' when i%5=1 then 'open' else 'done' end, case when i%5=0 then 'ag'||i else null end, case when i%5=0 then {n}+3600 else null end, 'a'"
+    s!"select 'task '||i, 'body of task '||i, case when i%5=0 then 'in_progress' when i%5=1 then 'ready' else 'completed' end, case when i%5=0 then 'ag'||i else null end, case when i%5=0 then {n}+3600 else null end, 'a'"
   gen t 600 "msg(ts, frm, dest, body, kind)" s!"select {n}-i, 'ag'||(i%400), 'ag'||((i+1)%400), 'message '||i, 'msg'"
   gen t 340 "workspace(path, branch, agent)" "select '/w/'||i, 'ag'||i||'/1', 'ag'||i"
   gen t 20000 "event(ts, agent, kind, path, data)" s!"select {n}-20000+i, 'ag'||(i%400), 'tool', '/w/'||(i%340)||'/f.lean', 'event '||i"
@@ -41,7 +41,7 @@ def test_write_commands_fast_on_a_big_db (t : T) : IO Unit := do
   big t
   under1s "hook post-tool" (← best3 fun _ => discard <| t.hook "a" "post-tool")
   under1s "post" (← best3 fun i => t.sw_ "a" ["post", "@all", s!"hi {i}"])
-  let opens ← t.q "select id from task where state='open' order by id limit 3"
+  let opens ← t.q "select id from task where state='ready' order by id limit 3"
   under1s "task claim" (← best3 fun i => t.sw_ "a" ["task", "claim", toString ((opens[i]!.f "id").i)])
   -- watchd's reap: a lapsed claim of an agent that is gone is reopened
   t.fakes
@@ -49,7 +49,7 @@ def test_write_commands_fast_on_a_big_db (t : T) : IO Unit := do
     let id := (opens[i]!.f "id").i
     t.q_ "update task set owner='gone', lease_until=1 where id=?" [.int id]
     t.tick
-    eq ((← t.q1 "select state from task where id=?" [.int id]).f "state") "open" "the lapsed claim was not reaped")
+    eq ((← t.q1 "select state from task where id=?" [.int id]).f "state") "ready" "the lapsed claim was not reaped")
 
 -- board #139: state --json, which the panel runs every 3 s, scanned the events once per task and per agent (2-4 s on a
 -- db this size); each view's best of three is under 300 ms

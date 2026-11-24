@@ -147,7 +147,7 @@ def reserveTxn (envComms : Option String) (name cwd : String) (model : Option St
       (db, e.map fun () => (none, []))
   | some tid =>
     let box := Notes.box tid
-    let ts : Sel := if top.isSome then { table := .task, cond := .or (.ne "state" (.text "done")) (.eq "id" (.int tid)) }
+    let ts : Sel := if top.isSome then { table := .task, cond := .or (.ne "state" (.text Status.completed.text)) (.eq "id" (.int tid)) }
       else Sels.task tid
     let d ← Txn.slice [ts, Sels.cursor box, Sels.live]
     let deps := ((d.find tid).map Tasks.depsOf).getD []

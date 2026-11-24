@@ -85,7 +85,7 @@ def test_watchd_launches_missing_communicator (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
   t.q_ "insert into meta(k,v) values('comms_hc','t0')"  -- c joined from a Herdr terminal once
-  t.q_ "insert into task(title,state) values('x','open')"  -- work the swarm can start
+  t.q_ "insert into task(title,state) values('x','ready')"  -- work the swarm can start
   tick t
   has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
   eq ((← t.q1 "select hc from agent where name='c'").f "hc") "t9"
@@ -104,7 +104,7 @@ def test_watchd_never_moves_a_live_communicator (t : T) : IO Unit := do
   setup t [json% {"address": "t1"}] [("t1", json% {"swarm": "other"})]
   eq (← join t "c" "t1" (some "--takeover")).code 0  -- hc get still shows swarm=other: the label is not presence
   t.agent "a" [("status", "working")]
-  t.q_ "insert into task(title,state) values('x','open')"
+  t.q_ "insert into task(title,state) values('x','ready')"
   tick t; tick t
   eq (← slurp (t.d ++ "/launch.space")) Json.null
   eq ((← t.q1 "select hc, ended from agent where name='c'").f "hc") "t1"
@@ -116,7 +116,7 @@ def test_watchd_launches_when_the_bound_terminal_is_gone (t : T) : IO Unit := do
   t.q_ "update swarm set comms='c' where name='t'"
   eq (← join t "c" "t1").code 0  -- the communicator joins from a Herdr terminal
   t.agent "a" [("status", "working")]
-  t.q_ "insert into task(title,state) values('x','open')"
+  t.q_ "insert into task(title,state) values('x','ready')"
   tick t
   eq (← slurp (t.d ++ "/launch.space")) Json.null  -- t1 live: present
   t.setHc [json% {"address": "t3"}]
@@ -131,10 +131,10 @@ def test_watchd_launches_no_communicator_without_startable_work (t : T) : IO Uni
   t.q_ "insert into meta(k,v) values('comms_hc','t0')"
   tick t
   eq (← slurp (t.d ++ "/launch.space")) Json.null
-  t.q_ "insert into task(title,state,hold) values('x','open','later')"
+  t.q_ "insert into task(title,state,hold) values('x','backlog','later')"
   tick t
   eq (← slurp (t.d ++ "/launch.space")) Json.null
-  t.q_ "update task set hold=null"
+  t.q_ "update task set hold=null, state='ready'"
   tick t
   has ((← slurp (t.d ++ "/launch.space")).getD "") "c"
 
@@ -153,7 +153,7 @@ def test_watchd_launches_only_the_communicator_whose_swarm_has_work (t : T) : IO
   t.q_ "update swarm set comms='uc' where name='u'"
   t.q_ "insert into meta(scope,k,v) values('u','comms_hc','t0')"
   -- open work of u's repo only (created_at set: the fixture's trigger leaves it off t's repo)
-  t.q_ "insert into task(title,state,created_at) values('y','open',0)"
+  t.q_ "insert into task(title,state,created_at) values('y','ready',0)"
   t.q_ "insert into task_repo(task, repo) values((select max(id) from task), ?)" [.text ur]
   tick t
   let ls := splitlines ((← slurp (t.d ++ "/launch.space")).getD "")
@@ -164,7 +164,7 @@ def test_watchd_holds_autospawn_when_comms_cant_launch (t : T) : IO Unit := do
   setup t [json% {"address": "t3"}]
   t.agent "a" [("status", "working")]
   t.q_ "insert into meta(k,v) values('comms_hc','t0')"
-  t.q_ "insert into task(title,state) values('x','open')"
+  t.q_ "insert into task(title,state) values('x','ready')"
   put (t.d ++ "/launch.fail") ""
   tick t
   tick t  -- inside the backoff: no second launch attempt

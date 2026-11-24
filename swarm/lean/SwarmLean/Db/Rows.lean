@@ -57,20 +57,97 @@ class Row (α : Type) where
 /-- The value of column `i`. -/
 def col (v : Array Val) (i : Nat) : Val := v.getD i .null
 
-/-- Where a task is in its life (task.state). -/
+/-- A task's state (task.state): Linear's states, each in a fixed category (`Status.category`). -/
 inductive Status
-  | «open» | claimed | blocked | done | dropped | landing
+  | backlog | ready | inProgress | needsInput | inReview | completed | cancelled | duplicate
   deriving DecidableEq, Repr, Inhabited
 
-/-- The state's text in the db. -/
+/-- The state's text in the db and in `--json`. -/
 def Status.text : Status → String
-  | .open => "open" | .claimed => "claimed" | .blocked => "blocked" | .done => "done" | .dropped => "dropped"
-  | .landing => "landing"
+  | .backlog => "backlog" | .ready => "ready" | .inProgress => "in_progress" | .needsInput => "needs_input"
+  | .inReview => "in_review" | .completed => "completed" | .cancelled => "cancelled" | .duplicate => "duplicate"
+
+/-- The state's name as the board shows it. -/
+def Status.name : Status → String
+  | .backlog => "Backlog" | .ready => "Ready" | .inProgress => "In Progress" | .needsInput => "Needs Input"
+  | .inReview => "In Review" | .completed => "Completed" | .cancelled => "Cancelled" | .duplicate => "Duplicate"
 
 /-- The state a db text names. -/
 def Status.ofText : String → Except String Status
-  | "open" => .ok .open | "claimed" => .ok .claimed | "blocked" => .ok .blocked | "done" => .ok .done
-  | "dropped" => .ok .dropped | "landing" => .ok .landing | s => .error s!"unknown task state '{s}'"
+  | "backlog" => .ok .backlog | "ready" => .ok .ready | "in_progress" => .ok .inProgress
+  | "needs_input" => .ok .needsInput | "in_review" => .ok .inReview | "completed" => .ok .completed
+  | "cancelled" => .ok .cancelled | "duplicate" => .ok .duplicate | s => .error s!"unknown task state '{s}'"
+
+/-- Every state, in the board's order. -/
+def Status.all : List Status := [.backlog, .ready, .inProgress, .needsInput, .inReview, .completed, .cancelled, .duplicate]
+
+/-- A state's category: fixed, as Linear's. -/
+inductive Category
+  | backlog | unstarted | started | completed | cancelled
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The category's text in `--json` and filters. -/
+def Category.text : Category → String
+  | .backlog => "backlog" | .unstarted => "unstarted" | .started => "started" | .completed => "completed"
+  | .cancelled => "cancelled"
+
+/-- The category's name as the board shows it. -/
+def Category.name : Category → String
+  | .backlog => "Backlog" | .unstarted => "Unstarted" | .started => "Started" | .completed => "Completed"
+  | .cancelled => "Cancelled"
+
+/-- The category a text names. -/
+def Category.ofText : String → Option Category
+  | "backlog" => some .backlog | "unstarted" => some .unstarted | "started" => some .started
+  | "completed" => some .completed | "cancelled" => some .cancelled | _ => none
+
+/-- The category state `s` sits in. -/
+def Status.category : Status → Category
+  | .backlog => .backlog
+  | .ready => .unstarted
+  | .inProgress | .needsInput | .inReview => .started
+  | .completed => .completed
+  | .cancelled | .duplicate => .cancelled
+
+/-- Closed: completed or cancelled (a duplicate too). -/
+def Status.closed (s : Status) : Bool := s.category == .completed || s.category == .cancelled
+
+/-- A task's priority: Linear's five levels, stored as Linear numbers them (0 none, 1 urgent … 4 low). It labels and
+filters; it never orders Ready. -/
+inductive Priority
+  | none | urgent | high | medium | low
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The stored number. -/
+def Priority.num : Priority → Int
+  | .none => 0 | .urgent => 1 | .high => 2 | .medium => 3 | .low => 4
+
+/-- The CLI's word. -/
+def Priority.text : Priority → String
+  | .none => "none" | .urgent => "urgent" | .high => "high" | .medium => "medium" | .low => "low"
+
+/-- The name as the board shows it. -/
+def Priority.name : Priority → String
+  | .none => "No priority" | .urgent => "Urgent" | .high => "High" | .medium => "Medium" | .low => "Low"
+
+/-- The priority a stored number names (NULL: none). -/
+def Priority.ofNum : Option Int → Except String Priority
+  | Option.none | some 0 => .ok .none
+  | some 1 => .ok .urgent | some 2 => .ok .high | some 3 => .ok .medium | some 4 => .ok .low
+  | some i => .error s!"unknown priority {i}"
+
+/-- The priority a CLI word names (case aside); `no-priority` and `no priority` too. -/
+def Priority.ofText (s : String) : Option Priority :=
+  match (strip s).toLower with
+  | "none" | "no-priority" | "no priority" => some .none
+  | "urgent" => some .urgent | "high" => some .high | "medium" => some .medium | "low" => some .low
+  | _ => Option.none
+
+/-- Why a priority word is refused: a number names the old P0..P3, which map to names now. -/
+def Priority.refusal (s : String) : String :=
+  if (strip s).all Char.isDigit && !(strip s).isEmpty then
+    s!"priority '{s}': priorities are names now, not numbers: urgent (was 0), high (was 1), medium (was 2), low (was 3), or none"
+  else s!"priority '{s}': use urgent, high, medium, low or none"
 
 /-- A CI run's status as GitHub sends it (text in the db and in gh's REST JSON; gh's CLI upper-cases it). -/
 inductive RunStatus
@@ -128,67 +205,89 @@ structure Landing where
   since : Int
   deriving DecidableEq, Repr, Inhabited
 
-/-- Where a task is in its life, with what that state holds: the owner of a claim (claimed, blocked, landing), its
-lease, a block's question, a hand-over to a lander. A done task keeps the owner, question and hand-over it had; a
-dropped one the question and hand-over (`drop` and the green run's close take a task as it is). -/
+/-- Where a task is in its life, with what that state holds: the assignee (a Backlog or Ready task's, if it is
+reserved; a started one's always), a claim's lease, a question, a hand-over to a lander, the original a duplicate
+duplicates. A completed task keeps the assignee, question and hand-over it had; a cancelled one (a duplicate too) the
+question and hand-over (`drop` and the green run's close take a task as it is). -/
 inductive TaskState
-  | «open»
-  | claimed (owner : String) (lease : Int)
-  | blocked (owner : String) (lease : Int) (question : String)
-  | landing (owner : String) (hand : Landing)
-  | done (owner : Option String) (question : Option String) (hand : Option Landing)
-  | dropped (question : Option String) (hand : Option Landing)
+  | backlog (assignee : Option String)
+  | ready (assignee : Option String)
+  | inProgress (assignee : String) (lease : Int)
+  | needsInput (assignee : String) (lease : Int) (question : String)
+  | inReview (assignee : String) (hand : Landing)
+  | completed (assignee : Option String) (question : Option String) (hand : Option Landing)
+  | cancelled (question : Option String) (hand : Option Landing)
+  | duplicate (original : Nat) (question : Option String) (hand : Option Landing)
   deriving DecidableEq, Repr, Inhabited
 
 namespace TaskState
 
 /-- The state's name. -/
 def status : TaskState → Status
-  | .open => .open | .claimed .. => .claimed | .blocked .. => .blocked | .landing .. => .landing | .done .. => .done
-  | .dropped .. => .dropped
+  | .backlog .. => .backlog | .ready .. => .ready | .inProgress .. => .inProgress | .needsInput .. => .needsInput
+  | .inReview .. => .inReview | .completed .. => .completed | .cancelled .. => .cancelled | .duplicate .. => .duplicate
 
-/-- The owner (column owner). -/
+/-- The state's category: the one function code asks (never a match on every state). -/
+def category (s : TaskState) : Category := s.status.category
+
+/-- The assignee (column owner): a reserved Backlog or Ready task's, a started task's, who completed it. -/
+def assignee : TaskState → Option String
+  | .backlog a | .ready a => a
+  | .inProgress a _ | .needsInput a _ _ | .inReview a _ => some a
+  | .completed a _ _ => a
+  | _ => none
+
+/-- Who holds or did the task: a started task's assignee, or who completed it; none before it starts (a reservation
+is not a hold). -/
 def owner : TaskState → Option String
-  | .claimed o _ | .blocked o _ _ | .landing o _ => some o
-  | .done o _ _ => o
+  | .inProgress a _ | .needsInput a _ _ | .inReview a _ => some a
+  | .completed a _ _ => a
   | _ => none
 
 /-- The claim's lease (column lease_until). -/
 def lease : TaskState → Option Int
-  | .claimed _ l | .blocked _ l _ => some l
+  | .inProgress _ l | .needsInput _ l _ => some l
   | _ => none
 
-/-- The block's question (column question). -/
+/-- The question (column question). -/
 def question : TaskState → Option String
-  | .blocked _ _ q => some q
-  | .done _ q _ | .dropped q _ => q
+  | .needsInput _ _ q => some q
+  | .completed _ q _ | .cancelled q _ | .duplicate _ q _ => q
   | _ => none
 
 /-- The hand-over to a lander (columns land_sha, lander, landing_at). -/
 def hand : TaskState → Option Landing
-  | .landing _ h => some h
-  | .done _ _ h | .dropped _ h => h
+  | .inReview _ h => some h
+  | .completed _ _ h | .cancelled _ h | .duplicate _ _ h => h
   | _ => none
 
-/-- Closed as done: the owner, question and hand-over kept. -/
-def toDone (s : TaskState) : TaskState := .done s.owner s.question s.hand
+/-- The original a duplicate duplicates (column dup_of). -/
+def dupOf : TaskState → Option Nat
+  | .duplicate o _ _ => some o
+  | _ => none
 
-/-- Dropped: the question and hand-over kept. -/
-def toDropped (s : TaskState) : TaskState := .dropped s.question s.hand
+/-- Completed: the owner, question and hand-over kept. -/
+def toCompleted (s : TaskState) : TaskState := .completed s.owner s.question s.hand
+
+/-- Cancelled: the question and hand-over kept. -/
+def toCancelled (s : TaskState) : TaskState := .cancelled s.question s.hand
+
+/-- A duplicate of `o`: the question and hand-over kept. -/
+def toDuplicate (o : Nat) (s : TaskState) : TaskState := .duplicate o s.question s.hand
 
 /-- A claim's lease moved to `u`; any other state as it is. -/
 def renew (u : Int) : TaskState → TaskState
-  | .claimed o _ => .claimed o u
+  | .inProgress o _ => .inProgress o u
   | s => s
 
-/-- A claim blocked on question `q`, its lease kept; any other state as it is. -/
+/-- A claim stopped on question `q` (Needs Input), its lease kept; any other state as it is. -/
 def block (q : String) : TaskState → TaskState
-  | .claimed o l => .blocked o l q
+  | .inProgress o l => .needsInput o l q
   | s => s
 
-/-- A block answered: claimed again by its owner until `u`; any other state as it is. -/
+/-- A question answered: In Progress again for its assignee until `u`; any other state as it is. -/
 def unblock (u : Int) : TaskState → TaskState
-  | .blocked o _ _ => .claimed o u
+  | .needsInput o _ _ => .inProgress o u
   | s => s
 
 /-- The hand-over's columns. -/
@@ -203,14 +302,15 @@ def handOf : Option String × Option String × Option Int → Option (Option Lan
   | _ => none
 
 /-- The columns a state of status `s` must have set, and those it may: owner, lease_until, question, land_sha,
-landing_at, lander. -/
+landing_at, lander, dup_of. -/
 def colsOf : Status → List String × List String
-  | .open => ([], [])
-  | .claimed => (["owner", "lease_until"], [])
-  | .blocked => (["owner", "lease_until", "question"], [])
-  | .landing => (["owner", "land_sha", "landing_at"], ["lander"])
-  | .done => ([], ["owner", "question", "land_sha", "landing_at", "lander"])
-  | .dropped => ([], ["question", "land_sha", "landing_at", "lander"])
+  | .backlog | .ready => ([], ["owner"])
+  | .inProgress => (["owner", "lease_until"], [])
+  | .needsInput => (["owner", "lease_until", "question"], [])
+  | .inReview => (["owner", "land_sha", "landing_at"], ["lander"])
+  | .completed => ([], ["owner", "question", "land_sha", "landing_at", "lander"])
+  | .cancelled => ([], ["question", "land_sha", "landing_at", "lander"])
+  | .duplicate => (["dup_of"], ["question", "land_sha", "landing_at", "lander"])
 
 /-- Why columns `set` (the names of the non-NULL ones) fit no state of status `s`. -/
 def misfit (s : Status) (set : List String) : String :=
@@ -223,20 +323,22 @@ def misfit (s : Status) (set : List String) : String :=
   let x := if extra.isEmpty then "" else s!"{if missing.isEmpty then " with" else " and"} {", ".intercalate extra} set"
   s!"{s.text}{if w ++ x == "" then " with columns that fit no state" else w ++ x}"
 
-/-- The state the columns state, owner, lease_until, question, land_sha, lander, landing_at hold; the refusal names
-what a row that fits no state lacks or holds. -/
+/-- The state the columns state, owner, lease_until, question, land_sha, lander, landing_at, dup_of hold; the refusal
+names what a row that fits no state lacks or holds. -/
 def ofCols (s : Status) (owner : Option String) (lease : Option Int) (question : Option String)
-    (sha lander : Option String) (at_ : Option Int) : Except String TaskState :=
-  match s, owner, lease, question, handOf (sha, lander, at_) with
-  | .open, none, none, none, some none => .ok .open
-  | .claimed, some o, some l, none, some none => .ok (.claimed o l)
-  | .blocked, some o, some l, some q, some none => .ok (.blocked o l q)
-  | .landing, some o, none, none, some (some h) => .ok (.landing o h)
-  | .done, o, none, q, some h => .ok (.done o q h)
-  | .dropped, none, none, q, some h => .ok (.dropped q h)
-  | _, _, _, _, _ =>
+    (sha lander : Option String) (at_ : Option Int) (dup : Option Nat) : Except String TaskState :=
+  match s, owner, lease, question, handOf (sha, lander, at_), dup with
+  | .backlog, a, none, none, some none, none => .ok (.backlog a)
+  | .ready, a, none, none, some none, none => .ok (.ready a)
+  | .inProgress, some o, some l, none, some none, none => .ok (.inProgress o l)
+  | .needsInput, some o, some l, some q, some none, none => .ok (.needsInput o l q)
+  | .inReview, some o, none, none, some (some h), none => .ok (.inReview o h)
+  | .completed, o, none, q, some h, none => .ok (.completed o q h)
+  | .cancelled, none, none, q, some h, none => .ok (.cancelled q h)
+  | .duplicate, none, none, q, some h, some o => .ok (.duplicate o q h)
+  | _, _, _, _, _, _ =>
     .error (misfit s ([("owner", owner.isSome), ("lease_until", lease.isSome), ("question", question.isSome),
-      ("land_sha", sha.isSome), ("landing_at", at_.isSome), ("lander", lander.isSome)].filterMap
+      ("land_sha", sha.isSome), ("landing_at", at_.isSome), ("lander", lander.isSome), ("dup_of", dup.isSome)].filterMap
         fun (c, b) => if b then some c else none))
 
 theorem handOf_handCols (h : Option Landing) : handOf (handCols h) = some h := by
@@ -250,26 +352,34 @@ theorem handCols_handOf {c : Option String × Option String × Option Int} {h : 
 
 /-- Every state decodes from its own columns. -/
 theorem ofCols_self (t : TaskState) :
-    ofCols t.status t.owner t.lease t.question (handCols t.hand).1 (handCols t.hand).2.1 (handCols t.hand).2.2 =
-      .ok t := by
+    ofCols t.status t.assignee t.lease t.question (handCols t.hand).1 (handCols t.hand).2.1 (handCols t.hand).2.2
+      t.dupOf = .ok t := by
   cases t with
-  | «open» => rfl
-  | claimed => rfl
-  | blocked => rfl
-  | landing o h => rfl
-  | done o q h => cases h <;> rfl
-  | dropped q h => cases h <;> rfl
+  | backlog => rfl
+  | ready => rfl
+  | inProgress => rfl
+  | needsInput => rfl
+  | inReview o h => rfl
+  | completed o q h => cases h <;> rfl
+  | cancelled q h => cases h <;> rfl
+  | duplicate o q h => cases h <;> rfl
 
 /-- What decodes writes back the same columns: a row that is read and written is unchanged. -/
 theorem ofCols_cols {s : Status} {o : Option String} {l : Option Int} {q sha ld : Option String} {at_ : Option Int}
-    {t : TaskState} (e : ofCols s o l q sha ld at_ = .ok t) :
-    t.status = s ∧ t.owner = o ∧ t.lease = l ∧ t.question = q ∧ handCols t.hand = (sha, ld, at_) := by
+    {dp : Option Nat} {t : TaskState} (e : ofCols s o l q sha ld at_ dp = .ok t) :
+    t.status = s ∧ t.assignee = o ∧ t.lease = l ∧ t.question = q ∧ handCols t.hand = (sha, ld, at_) ∧ t.dupOf = dp := by
   unfold ofCols at e
-  split at e <;> (try cases e) <;> rename_i hh <;> simp [status, owner, lease, question, hand, handCols_handOf hh]
+  split at e <;> (try cases e) <;> rename_i hh <;> simp [status, assignee, lease, question, hand, dupOf, handCols_handOf hh]
 
-/-- A claimed task has an owner and an open one none (`Task.Owned`): by construction. -/
-theorem owned (t : TaskState) : (t.status = .claimed → t.owner.isSome) ∧ (t.status = .open → t.owner = none) := by
+/-- An In Progress task has an assignee and a Ready one an owner of none (`Task.Owned`): by construction. A
+Ready task's assignee is a reservation, not a hold. -/
+theorem owned (t : TaskState) :
+    (t.status = .inProgress → t.owner.isSome) ∧ (t.status = .ready → t.owner = none) := by
   cases t <;> simp [status, owner]
+
+/-- A state's owner is its assignee once it has started (or completed). -/
+theorem owner_eq (t : TaskState) (h : t.category = .started ∨ t.category = .completed) : t.owner = t.assignee := by
+  cases t <;> simp_all [category, status, Status.category, owner, assignee]
 
 end TaskState
 
@@ -278,7 +388,7 @@ structure Task where
   id : Nat
   title : Option String := none
   body : Option String := none
-  state : TaskState := .open
+  state : TaskState := .ready none
   created_by : Option String := none
   evidence : Option String := none
   deps : Option String := none
@@ -298,11 +408,13 @@ structure Task where
   base : Option String := none
   stop_to : Option String := none
   stop_msg : Option Int := none
-  priority : Option Int := some 2
-  /-- the task's place in the staffing queue, 1..n (board #128); none: not queued -/
-  qpos : Option Int := none
-  /-- why the task is held from staffing (board #128); none: not held -/
-  hold : Option String := none
+  /-- a label and a filter; it never orders Ready -/
+  priority : Priority := .medium
+  /-- the task's place (column qpos): Ready's and Backlog's order, Ready's the staffing order; every task not closed
+  has one, a closed one none -/
+  pos : Option Int := none
+  /-- the note of its last move to Backlog (or Cancelled): why it waits (column hold) -/
+  note : Option String := none
   /-- its labels, comma-separated (board #186) -/
   labels : Option String := none
   /-- the tasks its creator held when it was added, comma-separated ids (board #186) -/
@@ -311,8 +423,14 @@ structure Task where
 
 /-- The task's state's name. -/
 def Task.status (t : Task) : Status := t.state.status
-/-- Its owner: the claim's holder, or who a done task was done by. -/
+/-- Its owner: a started task's assignee, or who completed it; none before it starts. -/
 def Task.owner (t : Task) : Option String := t.state.owner
+/-- Its assignee (column owner): a reserved Backlog or Ready task's too. -/
+def Task.assignee (t : Task) : Option String := t.state.assignee
+/-- Its state's category. -/
+def Task.category (t : Task) : Category := t.state.category
+/-- The original a duplicate duplicates. -/
+def Task.dupOf (t : Task) : Option Nat := t.state.dupOf
 /-- Its claim's lease. -/
 def Task.lease_until (t : Task) : Option Int := t.state.lease
 /-- Its block's question. -/
@@ -329,19 +447,22 @@ instance : Row Task where
   cols := ["id", "title", "body", "state", "owner", "lease_until", "created_by", "evidence", "deps", "model", "question",
     "effort", "created_at", "first_claimed_at", "done_at", "dropped_at", "pr", "merged_at", "ci_conclusion",
     "ci_green_at", "claim_ctx", "done_ctx", "answer", "base", "stop_to", "stop_msg", "priority", "qpos", "hold",
-    "labels", "parents", "land_sha", "lander", "landing_at"]
+    "labels", "parents", "land_sha", "lander", "landing_at", "dup_of"]
   nkey := 1
-  enc t := [.int t.id, oS t.title, oS t.body, .text t.status.text, oS t.owner, oI t.lease_until, oS t.created_by,
+  enc t := [.int t.id, oS t.title, oS t.body, .text t.status.text, oS t.assignee, oI t.lease_until, oS t.created_by,
     oS t.evidence, oS t.deps, oS t.model, oS t.question, oS t.effort, oI t.created_at, oI t.first_claimed_at,
     oI t.done_at, oI t.dropped_at, oI t.pr, oI t.merged_at, oS (t.ci_conclusion.map Conclusion.text), oI t.ci_green_at, oI t.claim_ctx,
-    oI t.done_ctx, oS t.answer, oS t.base, oS t.stop_to, oI t.stop_msg, oI t.priority, oI t.qpos,
-    oS t.hold, oS t.labels, oS t.parents, oS t.land_sha, oS t.lander, oI t.landing_at]
+    oI t.done_ctx, oS t.answer, oS t.base, oS t.stop_to, oI t.stop_msg, .int t.priority.num, oI t.pos,
+    oS t.note, oS t.labels, oS t.parents, oS t.land_sha, oS t.lander, oI t.landing_at, oI (t.dupOf.map fun n => (n : Int))]
   dec v := do
     let st ← match ← (col v 3).os with
       | some s => Status.ofText s
       | none => throw "NULL task state"
     let st ← TaskState.ofCols st (← (col v 4).os) (← (col v 5).oi) (← (col v 10).os) (← (col v 31).os) (← (col v 32).os)
-      (← (col v 33).oi)
+      (← (col v 33).oi) (← match ← (col v 34).oi with
+        | some (.ofNat n) => pure (some n)
+        | some i => throw s!"negative dup_of {i}"
+        | none => pure none)
     pure { id := ← (col v 0).id, title := ← (col v 1).os, body := ← (col v 2).os, state := st,
            created_by := ← (col v 6).os,
            evidence := ← (col v 7).os, deps := ← (col v 8).os, model := ← (col v 9).os,
@@ -350,7 +471,7 @@ instance : Row Task where
            merged_at := ← (col v 17).oi, ci_conclusion := (← (col v 18).os).map Conclusion.ofText, ci_green_at := ← (col v 19).oi,
            claim_ctx := ← (col v 20).oi, done_ctx := ← (col v 21).oi, answer := ← (col v 22).os,
            base := ← (col v 23).os, stop_to := ← (col v 24).os, stop_msg := ← (col v 25).oi,
-           priority := ← (col v 26).oi, qpos := ← (col v 27).oi, hold := ← (col v 28).os,
+           priority := ← Priority.ofNum (← (col v 26).oi), pos := ← (col v 27).oi, note := ← (col v 28).os,
            labels := ← (col v 29).os, parents := ← (col v 30).os }
 
 /-- An agent row's status in the db. -/

@@ -42,7 +42,7 @@ def landOnMainOnly (t : T) : IO Unit := do
 
 def doneTask (t : T) (owner base : String) : IO Unit := do
   t.sw_ "a" ["task", "add", "t", "--base", base]
-  t.q_ "update task set state='done', owner=?, evidence='x' where id=1" [.text owner]
+  t.q_ "update task set state='completed', owner=?, evidence='x' where id=1" [.text owner]
 
 /-- An action of the real monad, run as the Lua called its module (the cwd, SWARM_DB as the Lua had them). -/
 def runApp (act : App α) : IO α := do
@@ -135,7 +135,7 @@ def test_conflict_only_between_agents_on_the_same_base (t : T) : IO Unit := do
   t.write "a" "a.txt" "y"; t.write "b" "a.txt" "z"
   t.tick
   eq ((← t.q1 "select count(*) n from msg where kind='notice'").f "n") 0
-  t.q_ "update task set state='open', owner=null where id=1"
+  t.q_ "update task set state='ready', owner=null where id=1"
   t.tick
   eq ((← t.q1 "select count(*) n from msg where kind='notice'").f "n") 2
 
@@ -328,7 +328,7 @@ def test_spawn_task_of_two_repos_makes_a_worktree_in_each (t : T) : IO Unit := d
 def test_landed_check_judges_each_worktree_in_its_repo (t : T) : IO Unit := do
   let r2 ← spawnTwo t
   let w2 := t.d ++ "/repo2-t-9"
-  t.q_ "update task set state='done', evidence='x', lease_until=null where id=1"
+  t.q_ "update task set state='completed', evidence='x', lease_until=null where id=1"
   t.q_ "update agent set status='idle' where name='t-9'"
   put (w2 ++ "/n.txt") "n"
   discard <| t.git (some w2) ["add", "."]

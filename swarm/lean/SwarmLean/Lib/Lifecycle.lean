@@ -89,7 +89,7 @@ def unlanded (db : Db) (n : String) (main : Option String) (wts : List (String �
     (all : List (String × Option String)) : m (Option (String × List String)) := do
   let owned := (db.tasks.filter (·.owner == some n)).map (·.base)
   -- the commits n handed to a lander (`task land`, board #200) count as landed: the lander lands them
-  let handed := (db.tasks.filter fun t => t.owner == some n && t.status = .landing).filterMap fun t =>
+  let handed := (db.tasks.filter fun t => t.owner == some n && t.status = .inReview).filterMap fun t =>
     t.land_sha.filter fun s => (GitRef.parse? s).isSome
   -- a detached worktree is owned by its record or its directory's name: no branch names an owner
   let all := all.map fun (p, b) => (p, b.getD "")
@@ -156,7 +156,7 @@ cursor tables); `wts` the live agents' worktrees, `all` every worktree (`Workspa
 be offered. -/
 def reads (db : Db) (main : Option String) (wts : List (String × String)) (all : List (String × Option String)) (n : String)
     (pool : List Task := []) : Reads m where
-  claims := db.tasks.any fun t => t.owner == some n && (t.status = .claimed || t.status = .blocked)
+  claims := db.tasks.any fun t => t.owner == some n && (t.status = .inProgress || t.status = .needsInput)
   locks := db.locks.any (·.agent == some n)
   job := do return (Machine.bgAgents db.agents (← Machine.procs)).lookup n
   unlanded := unlanded db n main wts all
@@ -241,8 +241,8 @@ def endableReasons [Clock m] (db : Db) (a : Agent) (f : Reads m) : m (List Reaso
   let n := a.name
   let mut out : List Reason := []
   if let some s := py a.stay then out := out ++ [⟨"stay", "stay: " ++ s, true⟩]
-  for r in db.tasks.filter fun t => t.owner == some n && (t.status = .claimed || t.status = .blocked) do
-    out := out ++ [⟨"claim", s!"claim held (#{r.id}{if r.status = .blocked then ", blocked on a question" else ""})", r.status = .blocked⟩]
+  for r in db.tasks.filter fun t => t.owner == some n && (t.status = .inProgress || t.status = .needsInput) do
+    out := out ++ [⟨"claim", s!"claim held (#{r.id}{if r.status = .needsInput then ", blocked on a question" else ""})", r.status = .needsInput⟩]
   for l in db.locks.filter (·.agent == some n) do out := out ++ [⟨"lock", "lock held: " ++ l.path, false⟩]
   if let some p ← f.job then
     let cmd := Machine.jobCmd p.args
@@ -276,7 +276,7 @@ def endStep (n : String) (hc : Option String) (force : Bool) (by_ : Option Strin
   let fine := match row with
     | none => false
     | some r => force || (r.status == some .idle && r.hc == hc && r.stay.isNone &&
-        !db.tasks.any (fun t => t.owner == some n && (t.status = .claimed || t.status = .blocked)) &&
+        !db.tasks.any (fun t => t.owner == some n && (t.status = .inProgress || t.status = .needsInput)) &&
         !db.locks.any (·.agent == some n))
   if !fine then (db, false) else
   let db := endRow db n now

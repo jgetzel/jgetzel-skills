@@ -495,7 +495,7 @@ def run (a : Parsed) : m UInt32 := do
   let jobs := joinPath (joinPath (dirname dbp) "jobs") jid
   discard <| Sys.mkdirp jobs
   let logf := jobs ++ "/log"
-  let task ← Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.status = .claimed || t.status = .blocked)).head?.map (·.id)
+  let task ← Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.status = .inProgress || t.status = .needsInput)).head?.map (·.id)
   let dir := s!"{RUN_DIR}/{repo}/{wtname}"
   let on := chosen
   let rec0 : List (String × Option Json) := [("machine", on.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t),
@@ -583,7 +583,7 @@ def jobRecord (a : Parsed) : m UInt32 := do
   let mach := a.str "machine"
   let task ← match a.int "task" with
     | some t => pure (some t)
-    | none => Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.status = .claimed || t.status = .blocked)).head?.map (·.id)
+    | none => Store.view [Sels.owned who] fun db => (db.tasks.filter fun t => t.owner == some who && (t.status = .inProgress || t.status = .needsInput)).head?.map (·.id)
   let start := obj [("machine", mach.map .str), ("wt", some (.str top)), ("task", task.map fun t => Json.int t), ("cmd", some (.str line)),
     ("pid", some (Json.int (← Sys.getpid))), ("cores", (a.int "cores").map Json.int), ("parent", parent.map Json.int)]
   let end_ := obj [("machine", mach.map .str), ("exit", some (match code with | .n c => Json.int c | .lost => .str "lost")),

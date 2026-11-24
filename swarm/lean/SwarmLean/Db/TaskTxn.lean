@@ -4,7 +4,7 @@ import SwarmLean.Db.Sels
 
 /-! The task and queue commands on the statement store (sw-global §3): each reads the rows its pure step (Tasks.lean,
 Queue.lean, Notes.lean) looks at, by key or filter, runs the step on that slice and writes its difference. A claim
-takes its task by a guarded update (`state='open' and owner is null`), so of two claimers only one wins. -/
+takes its task by a guarded update (its state and assignee as read), so of two claimers only one wins. -/
 
 namespace SwarmLean.TaskTxn
 open Sqlite (Val)
@@ -17,13 +17,14 @@ def task (id : Int) : Sel := { table := .task, cond := .eq "id" (.int id) }
 def tasks (ids : List Int) : Sel := { table := .task, cond := .oneOf "id" (ids.map .int) }
 
 /-- The tasks not done: every task a dependency can wait on, and the pool's. -/
-def undoneSel : Sel := { table := .task, cond := .ne "state" (.text "done") }
+def undoneSel : Sel := { table := .task, cond := .ne "state" (.text Status.completed.text) }
 
-/-- The queued tasks. -/
+/-- The tasks with a place: every task not closed. -/
 def queuedSel : Sel := { table := .task, cond := .notNull "qpos" }
 
-/-- The open tasks with deps: every task `waiters` can name. -/
-def waitingSel : Sel := { table := .task, cond := .and (.eq "state" (.text "open")) (.notNull "deps") }
+/-- The Ready and Backlog tasks with deps: every task `waiters` can name. -/
+def waitingSel : Sel :=
+  { table := .task, cond := .and (.oneOf "state" [.text Status.ready.text, .text Status.backlog.text]) (.notNull "deps") }
 
 /-- Every task. -/
 def allTasks : Sel := { table := .task }
@@ -73,9 +74,10 @@ def agents (ns : List (Option String)) : List Sel :=
   | [] => []
   | l => [{ table := .agent, cond := .oneOf "name" (l.map .text), inScope := false }]
 
-/-- `task add`: its deps, the creator's held tasks and the next task id. -/
+/-- `task add`: its deps, the creator's held tasks, the places (a new task goes to the end of Ready) and the next
+task id. -/
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
-  Txn.update [tasks a.deps, Sels.owned c.me] [.task] (Tasks.add c a)
+  Txn.update [tasks a.deps, Sels.owned c.me, queuedSel] [.task] (Tasks.add c a)
 
 /-- The claim of task `id` on its slice: the task's row by a guarded update, then the rest with the
 held notes taken (`Notes.takeHeld`). -/
@@ -91,7 +93,8 @@ def claimTxn (c : Ctx) (id : Int) (lease : String) : Txn (Except String (Claimed
   let (d1, res) := claim c id lease d0
   match res, d1.find id with
   | .ok cl, some t =>
-    let won ← Txn.guarded (Row.put t) (.and (.eq "state" (.text "open")) (.null "owner"))
+    let won ← Txn.guarded (Row.put t) (.and (.eq "state" (.text r.status.text))
+      (match r.assignee with | some a => .eq "owner" (.text a) | none => .null "owner"))
     if !won then return .error s!"task #{d id} was taken under you; `swarm task show {d id}`"
     let (d2, ns) := Notes.takeHeld c.me c.now id d1
     Txn.exec (slicePlan { d0 with tasks := d1.tasks } d2)
@@ -106,13 +109,13 @@ def after (c : Ctx) (id : Int) (deps : List Int) : Txn (Except String Unit) := d
   let ids ← closure deps
   Txn.update [task id, tasks ids] [] (Tasks.after c id deps)
 
-/-- A step that reads task `id` alone (`priority`, `renew`, `hold`, `unhold`). -/
+/-- A step that reads task `id` alone (`priority`, `renew`). -/
 def one (id : Int) (f : Db → Db × α) : Txn α := Txn.update [task id] [] f
 
 /-- `task done`, the task out of the queue: the task, the communicator, the agent and what `staffing` reads. -/
 def done (c : Ctx) (id : Int) (evidence : String) : Txn (Except String DoneOut) := do
   let ps ← poolSels
-  Txn.update ([task id, Sels.metas ["comms", "queue_only"], Sels.agent c.me] ++ ps) [] (Queue.done c id evidence)
+  Txn.update ([task id, Sels.metas ["comms"], Sels.agent c.me] ++ ps) [] (Queue.done c id evidence)
 
 /-- `task land`: the task and the lander's row, for its message. -/
 def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) : Txn (Except String Unit) :=
@@ -141,19 +144,20 @@ def release (c : Ctx) (id : Int) (af : Option (List Int)) : Txn (Except String (
 def edit (c : Ctx) (id : Int) (a : EditArgs) : Txn (Except String (List String × Status)) :=
   onTask id [.msg] (fun r => pure (agents [r.owner])) (Tasks.edit c id a)
 
-/-- `task drop`, the task out of the queue: the task, the communicator, the agent's role, the waiters and the queue. -/
-def drop (c : Ctx) (id : Int) : Txn (Except String (List Task)) :=
-  Txn.update [task id, Sels.metas ["comms"], Sels.agent c.me, waitingSel, queuedSel] [] (Queue.drop c id)
+/-- `task drop`, its place gone: the task, the original it duplicates, the communicator, the agent's role, the waiters
+and the places. -/
+def drop (c : Ctx) (id : Int) (dup : Option Int) (note : Option String) : Txn (Except String (List Task)) :=
+  Txn.update [task id, tasks dup.toList, Sels.metas ["comms"], Sels.agent c.me, waitingSel, queuedSel] []
+    (Queue.drop c id dup note)
 
 /-- What `task show` reads: the task, its events, its deps and its waiters. -/
 def showTxn (id : Int) : Txn Db := do
   let s ← Txn.slice [task id]
   let deps := ((s.find id).map depsOf).getD []
-  Txn.slice [task id, evs id, tasks deps, waitingSel]
+  Txn.slice [task id, evs id, tasks deps, waitingSel, queuedSel]
 
-/-- What `queue add` and `queue rm` read: the tasks named, the queue, the communicator and who queued each. -/
-def queueSels (ids : List Int) : List Sel :=
-  [tasks ids, queuedSel, Sels.metas ["comms"]] ++ ids.map fun i => evs i ["queue"]
+/-- What `queue add` and `queue rm` read: the tasks named, the places and the communicator. -/
+def queueSels (ids : List Int) : List Sel := [tasks ids, queuedSel, Sels.metas ["comms"]]
 
 /-- `queue add`. -/
 def qadd (c : Ctx) (ids : List Int) (w : Queue.Place) : Txn (Except String Unit) :=
@@ -163,19 +167,30 @@ def qadd (c : Ctx) (ids : List Int) (w : Queue.Place) : Txn (Except String Unit)
 def qrm (c : Ctx) (ids : List Int) : Txn (Except String Unit) :=
   Txn.update (queueSels ids) [] (Queue.rm c ids)
 
-/-- What `swarm queue` reads: the queue, the switch and what `whyNot` reads. -/
+/-- What `swarm queue` reads: the places and what `whyNot` reads. -/
 def queueView : Txn Db := do
   let ps ← poolSels
-  Txn.slice (Sels.metas ["queue_only"] :: ps)
+  Txn.slice ps
 
 /-- What `swarm board` reads: every task, the live agents and the staffing knobs. -/
 def boardSels : List Sel :=
   [allTasks, { table := .agent, cond := .null "ended" },
-   Sels.metas ["comms", "agent_min", "agent_max", "queue_only", "spawn_held"]]
+   Sels.metas ["comms", "agent_min", "agent_max", "spawn_held"]]
 
-/-- `task unhold`: the task and the communicator. -/
-def unhold (c : Ctx) (id : Int) : Txn (Except String Unit) :=
-  Txn.update [task id, Sels.metas ["comms"]] [] (Queue.unhold c id)
+/-- What `task backlog`, `task ready` and `task assign` read: the task, the places and the communicator. -/
+def moveSels (id : Int) : List Sel := [task id, queuedSel, Sels.metas ["comms"]]
+
+/-- `task backlog`. -/
+def backlog (c : Ctx) (id : Int) (note : String) : Txn (Except String Unit) :=
+  Txn.update (moveSels id) [] (Queue.backlog c id note)
+
+/-- `task ready`. -/
+def ready (c : Ctx) (id : Int) : Txn (Except String Unit) :=
+  Txn.update (moveSels id) [] (Queue.ready c id)
+
+/-- `task assign`. -/
+def assign (c : Ctx) (id : Int) (who : Option String) : Txn (Except String Unit) :=
+  Txn.update (moveSels id) [] (Queue.assign c id who)
 
 /-- `rules set`: the communicator and the rules. -/
 def setRules (c : Ctx) (text : String) : Txn (Except String Unit) :=

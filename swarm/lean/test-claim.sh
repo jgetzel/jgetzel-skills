@@ -15,9 +15,9 @@ for k in $(seq 50); do
 done
 sleep 1; touch "$T/go"; wait
 won=$(cat "$T"/out* | grep -c '^claimed #1 until ')
-held=$(cat "$T"/out* | grep -c '^swarm: task #1 is claimed, owned by a[0-9]*$')
+held=$(cat "$T"/out* | grep -c '^swarm: task #1 is In Progress, owned by a[0-9]*$')
 board=$("$B" board) || { echo "FAIL: the db does not read after"; exit 1; }
 rm -r "$T"
 echo "$won claimed, $held held"
-[ "$won" = 1 ] && [ "$held" = 49 ] && echo "$board" | grep -q '^#1 claimed a[0-9]* ' || { echo "FAIL: $board"; exit 1; }
+[ "$won" = 1 ] && [ "$held" = 49 ] && echo "$board" | grep -q '^#1 In Progress a[0-9]* ' || { echo "FAIL: $board"; exit 1; }
 echo ok
