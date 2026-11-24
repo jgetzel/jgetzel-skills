@@ -93,7 +93,9 @@ namespace SwarmLean.QueueProofs
 /-- The places the tasks hold (Ready and Backlog are ordered by them). -/
 def places (db : Db) : List Int := db.tasks.filterMap (·.pos)
 
-/-- The places' invariant: no two tasks hold the same place, so Ready and Backlog are each one order. -/
-def QInv (db : Db) : Prop := (places db).Nodup
+/-- The places' invariant: no two tasks hold the same place, so Ready and Backlog are each one order, and every place
+is positive (a task without a place sorts first). The places need not be 1..n: a move to the end takes one past the
+last, and a closed task's place is taken without renumbering the rest. -/
+def QInv (db : Db) : Prop := (places db).Nodup ∧ ∀ p ∈ places db, 0 < p
 
 end SwarmLean.QueueProofs

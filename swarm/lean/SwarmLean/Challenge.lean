@@ -909,7 +909,7 @@ namespace SwarmLean.QueueProofs
 open Tasks Queue
 
 /-- Place moves (`queue add`, `queue rm`, `task backlog`, `task ready`, and `tidy`, which `task done`/`task drop`
-end with) keep the tasks' places distinct. -/
+end with) keep the tasks' places distinct and positive. -/
 theorem add_qinv (c : Ctx) (ids : List Int) (w : Place) (db : Db) (hi : Inv db) (hq : QInv db) :
     QInv (Queue.add c ids w db).1 :=
   sorry

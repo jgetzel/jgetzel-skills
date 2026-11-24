@@ -67,12 +67,14 @@ theorem setQueue_perm (db : Db) (l : List Int) (hi : (db.tasks.map (·.id)).Nodu
     obtain ⟨t, ht⟩ := Option.isSome_iff_exists.1 hx
     exact List.mem_map.2 ⟨t, Board.find_mem ht, find_id ht⟩
 
-/-- So its places are distinct. -/
+/-- So its places are distinct and positive. -/
 theorem setQueue_qinv (db : Db) (l : List Int) (hi : (db.tasks.map (·.id)).Nodup) : QInv (setQueue db l) := by
   obtain ⟨n, hp⟩ := setQueue_perm db l hi
-  refine hp.nodup_iff.2 ?_
-  rw [List.Nodup, List.pairwise_map]
-  exact List.Pairwise.imp (fun h e => h (by omega)) (List.nodup_range ..)
+  refine ⟨hp.nodup_iff.2 ?_, fun p h => ?_⟩
+  · rw [List.Nodup, List.pairwise_map]
+    exact List.Pairwise.imp (fun h e => h (by omega)) (List.nodup_range ..)
+  · obtain ⟨k, -, rfl⟩ := List.mem_map.1 (hp.mem_iff.1 h)
+    omega
 
 /-- `setQueue` changes the places only. -/
 theorem setQueue_frame (db : Db) (l : List Int) : unplaced (setQueue db l) = unplaced db := by
@@ -109,6 +111,25 @@ theorem places_setPos (ts : List Task) (i e : Int) (hi : (ts.map (·.id)).Nodup)
   · exact he _ ‹a ∈ ts› (by rw [hx]; exact hy.symm)
   · exact hp x hx x hy rfl
 
+/-- A map that only takes places or keeps them keeps them positive. -/
+theorem pos_places_map (ts : List Task) (g : Task → Task) (hg : ∀ t x, (g t).pos = some x → t.pos = some x)
+    (hq : ∀ p ∈ ts.filterMap (·.pos), 0 < p) : ∀ p ∈ (ts.map g).filterMap (·.pos), 0 < p := by
+  intro p hp
+  rw [List.filterMap_map, List.mem_filterMap] at hp
+  obtain ⟨t, ht, e⟩ := hp
+  exact hq p (List.mem_filterMap.2 ⟨t, ht, hg t p e⟩)
+
+/-- Setting task `i`'s place to a positive `e` keeps the places positive. -/
+theorem pos_setPos (ts : List Task) (i e : Int) (he : 0 < e) (hq : ∀ p ∈ ts.filterMap (·.pos), 0 < p) :
+    ∀ p ∈ (ts.map fun t => if (t.id : Int) = i then { t with pos := some e } else t).filterMap (·.pos), 0 < p := by
+  intro p hp
+  rw [List.filterMap_map, List.mem_filterMap] at hp
+  obtain ⟨t, ht, h⟩ := hp
+  simp only [Function.comp_apply] at h
+  split at h
+  · cases h; exact he
+  · exact hq p (List.mem_filterMap.2 ⟨t, ht, h⟩)
+
 theorem le_foldl_max : ∀ (l : List Int) (a : Int), a ≤ l.foldl max a ∧ ∀ x ∈ l, x ≤ l.foldl max a
   | [], a => ⟨Int.le_refl a, by simp⟩
   | y :: l, a => by
@@ -127,12 +148,17 @@ theorem endPos_fresh (db : Db) : ∀ t ∈ db.tasks, t.pos ≠ some (endPos db) 
   unfold endPos at this
   omega
 
+/-- `endPos` is positive. -/
+theorem endPos_pos (db : Db) : 0 < endPos db := by
+  have := (le_foldl_max (db.tasks.filterMap (·.pos)) 0).1
+  unfold endPos; omega
+
 theorem toEnd_ids (i : Int) (db : Db) : (toEnd i db).tasks.map (·.id) = db.tasks.map (·.id) :=
   set_tasks_ids _ _ _ fun _ => rfl
 
-/-- `toEnd` keeps the places distinct. -/
+/-- `toEnd` keeps the places distinct and positive. -/
 theorem toEnd_qinv (i : Int) (db : Db) (hi : (db.tasks.map (·.id)).Nodup) (hq : QInv db) : QInv (toEnd i db) :=
-  places_setPos db.tasks i (endPos db) hi hq (endPos_fresh db)
+  ⟨places_setPos db.tasks i (endPos db) hi hq.1 (endPos_fresh db), pos_setPos db.tasks i (endPos db) (endPos_pos db) hq.2⟩
 
 /-- A step that changes tasks only by `db.set` of fields other than the place keeps the places. -/
 theorem places_set (db : Db) (i : Int) (f : Task → Task) (hf : ∀ t, (f t).pos = t.pos) :
@@ -276,8 +302,30 @@ theorem assign_places (c : Ctx) (i : Int) (who : Option String) (db : Db) :
 
 /-! `tidy`, `task done`, `task drop`. -/
 
+/-- `tidy` keeps the places distinct and positive. It takes places without renumbering, so it needs them distinct
+before: two open tasks on one place stay so. -/
 theorem tidy_qinv (db : Db) (hq : QInv db) : QInv (tidy db) :=
-  nodup_places_map db.tasks _ (fun t x h => by split at h <;> simp_all) hq
+  ⟨nodup_places_map db.tasks _ (fun t x h => by split at h <;> simp_all) hq.1,
+    pos_places_map db.tasks _ (fun t x h => by split at h <;> simp_all) hq.2⟩
+
+/-- `task add` gives the new task the end place, so the places stay distinct and positive. -/
+theorem tasks_add_qinv (c : Ctx) (a : AddArgs) (db : Db) (hq : QInv db) : QInv (Tasks.add c a db).1 := by
+  have hpl : ∀ t : Task, t.pos = some (endPos db) →
+      places { db with tasks := db.tasks ++ [t], taskNext := db.taskNext + 1 } = places db ++ [endPos db] := by
+    intro t ht; simp [places, List.filterMap_append, ht]
+  unfold Tasks.add
+  repeat' split
+  all_goals first
+    | exact hq
+    | (show QInv ({ db with tasks := db.tasks ++ [_], taskNext := db.taskNext + 1 }.log _ _ _ _ _)
+       unfold QInv; rw [show ∀ d : Db, places (d.log _ _ _ _ _) = places d from fun _ => rfl, hpl _ rfl]
+       refine ⟨List.nodup_append.2 ⟨hq.1, List.nodup_cons.2 ⟨by simp, List.nodup_nil⟩, fun x hx y hy e => ?_⟩, fun p hp => ?_⟩
+       · simp only [List.mem_singleton] at hy; subst hy; subst e
+         obtain ⟨t, ht, htp⟩ := List.mem_filterMap.1 hx
+         exact endPos_fresh db t ht htp
+       · rcases List.mem_append.1 hp with hp | hp
+         · exact hq.2 p hp
+         · simp only [List.mem_singleton] at hp; subst hp; exact endPos_pos db)
 
 theorem tidy_frame (db : Db) : unplaced (tidy db) = unplaced db := by
   simp only [unplaced, tidy, List.map_map]
@@ -349,6 +397,30 @@ theorem staffHead_ready {db : Db} {skip : Task → Bool} {q : Task} (hr : ∀ t 
     (hq : (staffReady db).find? (!skip ·) = some q) : staffHead skip db = some (q.id : Int) := by
   have : (staffRed db).find? (!skip ·) = none := List.find?_eq_none.2 fun t ht => by simp [hr t ht]
   simp only [staffHead, staffing, List.find?_append, this, hq, Option.none_or, Option.some_or, Option.map_some]
+
+/-- The startable Ready tasks no one is assigned, no red one. -/
+theorem mem_staffReady (db : Db) (t : Task) :
+    t ∈ staffReady db ↔ t ∈ pool db ∧ t.assignee = none ∧ redKey t = 0 := by
+  simp only [staffReady, free, List.mem_filter, Bool.and_eq_true, Option.isNone_iff_eq_none, beq_iff_eq]
+
+/-- ... in place order (then id), as `queued` orders them: the pool's order, which is the place order when every place
+is positive. -/
+theorem staffReady_sorted (db : Db) (hq : QInv db) : (staffReady db).Pairwise (qLe · · = true) := by
+  have hs : (staffReady db).Pairwise (boardLe redKey · · = true) := (Board.pool_sorted db).filter _
+  refine hs.imp_of_mem fun {a b} ha hb h => ?_
+  have hpos : ∀ t ∈ staffReady db, ∀ p, t.pos = some p → 0 < p := fun t ht p e =>
+    hq.2 p (List.mem_filterMap.2 ⟨t, ((Board.mem_pool db t).1 ((mem_staffReady db t).1 ht).1).1, e⟩)
+  have ra := ((mem_staffReady db a).1 ha).2.2
+  have rb := ((mem_staffReady db b).1 hb).2.2
+  unfold boardLe at h
+  unfold qLe
+  simp only [ra, rb, bne_self_eq_false, Bool.false_eq_true, ↓reduceIte] at h
+  cases e1 : a.pos <;> cases e2 : b.pos <;> simp only [e1, e2, Option.map_none, Option.map_some, Option.getD_none,
+    Option.getD_some, bne_iff_ne, ne_eq, decide_eq_true_eq, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] at h ⊢
+  all_goals split at h <;> simp only [decide_eq_true_eq, true_and] at h ⊢
+  all_goals first
+    | omega
+    | (have := hpos _ hb _ e2; omega)
 
 /-- In a list sorted as the pool is, the red tasks come first. -/
 theorem red_first : ∀ {l : List Task}, l.Pairwise (boardLe redKey · · = true) →
