@@ -40,7 +40,7 @@ abbrev TCmd.step : TCmd → Db → Db × Bool
   | .unblock c i a, db => ((Tasks.unblock c i a db).1, (Tasks.unblock c i a db).2.toBool)
   | .release c i af, db => ((Tasks.release c i af db).1, (Tasks.release c i af db).2.toBool)
   | .edit c i a, db => ((Tasks.edit c i a db).1, (Tasks.edit c i a db).2.toBool)
-  | .drop c i, db => ((Tasks.drop c i db).1, (Tasks.drop c i db).2.toBool)
+  | .drop c i d n, db => ((Tasks.drop c i d n db).1, (Tasks.drop c i d n db).2.toBool)
   | .land c i s l, db => ((Tasks.land c i s l db).1, (Tasks.land c i s l db).2.toBool)
   | .unland c i w, db => ((Tasks.unland c i w db).1, (Tasks.unland c i w db).2.toBool)
   | .board, db => (db, true)

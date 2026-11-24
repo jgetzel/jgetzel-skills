@@ -153,11 +153,11 @@ def Tasks.stopPending (db : Db) (r : Task) : Bool :=
 def Tasks.redKey (t : Task) : Nat :=
   sorry
 
-/-- Order by `red desc, priority, id` (NULL priority first, as SQL sorts it). -/
+/-- Order by `red desc, place, id`: a red main's task first, then the places (priority never reorders). -/
 def Tasks.boardLe (red : Task → Nat) (a b : Task) : Bool :=
   sorry
 
-/-- Open tasks with no undone deps and no pending stop, red first then by priority (tasks.pool). -/
+/-- Ready tasks with every dep completed and no pending stop, red first then by place (tasks.pool). -/
 def Tasks.pool (db : Db) : List Task :=
   sorry
 
@@ -174,7 +174,7 @@ def Tasks.after (c : Tasks.Ctx) (id : Int) (deps : List Int) (db : Db) : Db × E
   sorry
 
 /-- `task priority`. -/
-def Tasks.priority (c : Tasks.Ctx) (id p : Int) (db : Db) : Db × Except String Unit :=
+def Tasks.priority (c : Tasks.Ctx) (id : Int) (p : Priority) (db : Db) : Db × Except String Unit :=
   sorry
 
 /-- `task renew`: the lease's new end. -/
@@ -192,7 +192,7 @@ def Tasks.land (c : Tasks.Ctx) (id : Int) (sha : String) (lander : Option String
   Db × Except String Unit :=
   sorry
 
-/-- `task unland` (board #200): the lander gives landing task `id` back as open, at P1 unless already lower, with the
+/-- `task unland` (board #200): the lander gives In Review task `id` back as Ready, at High unless already higher, with the
 reason appended to its body; its former owner, if live, and the communicator are told. -/
 def Tasks.unland (c : Tasks.Ctx) (id : Int) (why : String) (db : Db) : Db × Except String Unlanded :=
   sorry
@@ -218,8 +218,10 @@ def Tasks.release (c : Tasks.Ctx) (id : Int) (after : Option (List Int)) (db : D
 def Tasks.edit (c : Tasks.Ctx) (id : Int) (a : EditArgs) (db : Db) : Db × Except String (List String × Status) :=
   sorry
 
-/-- `task drop`: the open tasks that wait on it; a done task is refused. -/
-def Tasks.drop (c : Tasks.Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
+/-- `task drop`: Cancelled, or with `dup` a Duplicate of that task, `note` its note; the tasks that wait on it; a
+Completed task is refused. -/
+def Tasks.drop (c : Tasks.Ctx) (id : Int) (dup : Option Int) (note : Option String) (db : Db) :
+  Db × Except String (List Task) :=
   sorry
 
 /-- `swarm lock` on the repo-relative `path`: refused for an ended agent (a lock `swarm join` would bring back unchecked)
@@ -232,40 +234,42 @@ def Locks.lock (c : Tasks.Ctx) (path reason lease : String) (db0 : Db) : Db × E
 def Locks.unlock (me path : String) (now : Int) (db : Db) : Db :=
   sorry
 
-/-- Takes the tasks that left the board (done, dropped) out of the queue and closes the gaps. -/
+/-- Takes the places of the tasks that closed (Completed, Cancelled, Duplicate). -/
 def Queue.tidy (db : Db) : Db :=
   sorry
 
-/-- `queue add`: puts `ids`, in their order, at `w`; an id already queued moves. -/
+/-- `queue add`: puts `ids` (Ready or Backlog tasks), in their order, at `w` (the end: of the places); a place other
+than the end only by the communicator or the user. -/
 def Queue.add (c : Tasks.Ctx) (ids : List Int) (w : Queue.Place) (db : Db) : Db × Except String Unit :=
   sorry
 
-/-- `queue rm`: takes `ids` out of the queue; an entry another agent queued only by the communicator or the user. -/
+/-- `queue rm`: moves `ids` to the end of the places. -/
 def Queue.rm (c : Tasks.Ctx) (ids : List Int) (db : Db) : Db × Except String Unit :=
   sorry
 
-/-- `task hold`: the task is never staffed until `task unhold`. -/
-def Queue.hold (c : Tasks.Ctx) (id : Int) (why : String) (db : Db) : Db × Except String Unit :=
+/-- `task backlog`: Ready task `id` moves to the end of Backlog with note `note`; never staffed until `task ready`. -/
+def Queue.backlog (c : Tasks.Ctx) (id : Int) (note : String) (db : Db) : Db × Except String Unit :=
   sorry
 
-/-- `task unhold`. -/
-def Queue.unhold (c : Tasks.Ctx) (id : Int) (db : Db) : Db × Except String Unit :=
+/-- `task ready`: Backlog task `id` moves to the end of Ready; by the communicator or the user only. -/
+def Queue.ready (c : Tasks.Ctx) (id : Int) (db : Db) : Db × Except String Unit :=
   sorry
 
-/-- The `swarm limits --queue-only` switch: unqueued tasks are backlog. -/
-def Queue.queueOnly (db : Db) : Bool :=
+/-- `task assign`: Ready or Backlog task `id` reserved for `who` (none: no assignee); by the communicator or the user
+only. -/
+def Queue.assign (c : Tasks.Ctx) (id : Int) (who : Option String) (db : Db) : Db × Except String Unit :=
   sorry
 
-/-- Startable `main red:` tasks not held, in pool order. -/
+/-- Startable `main red:` tasks no one is assigned, in pool order. -/
 def Queue.staffRed (db : Db) : List Task :=
   sorry
 
-/-- Startable queued tasks not held (no red one), in queue order. -/
-def Queue.staffQueue (db : Db) : List Task :=
+/-- Startable Ready tasks no one is assigned (no red one), in place order. -/
+def Queue.staffReady (db : Db) : List Task :=
   sorry
 
-/-- The tasks to staff, in order: a red main's task, then the queue, then (queue-only off) the rest by priority; never
-a held one. Auto-spawn staffs from it and an idle agent is told of it. -/
+/-- The tasks to staff, in order: a red main's task, then Ready by place; never a Backlog task, one waiting on a
+dependency or one reserved for an assignee. Auto-spawn staffs from it and an idle agent is told of it. -/
 def Queue.staffing (db : Db) : List Task :=
   sorry
 
@@ -273,12 +277,13 @@ def Queue.staffing (db : Db) : List Task :=
 def Queue.staffHead (skip : Task → Bool) (db : Db) : Option Int :=
   sorry
 
-/-- `task done`, and the task leaves the queue; the count is of the tasks to staff after it. -/
+/-- `task done`, and a completed task's place goes; the count is of the tasks to staff after it. -/
 def Queue.done (c : Tasks.Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
   sorry
 
-/-- `task drop`, and the task leaves the queue. -/
-def Queue.drop (c : Tasks.Ctx) (id : Int) (db : Db) : Db × Except String (List Task) :=
+/-- `task drop`, and its place goes. -/
+def Queue.drop (c : Tasks.Ctx) (id : Int) (dup : Option Int) (note : Option String) (db : Db) :
+  Db × Except String (List Task) :=
   sorry
 
 /-- Reserves the agent and claims task `tid` for it, the task row as it was returned; `top` (auto-spawn): the claim
@@ -416,7 +421,7 @@ abbrev TCmd.step : TCmd → Db → Db × Bool
   | .unblock c i a, db => ((Tasks.unblock c i a db).1, (Tasks.unblock c i a db).2.toBool)
   | .release c i af, db => ((Tasks.release c i af db).1, (Tasks.release c i af db).2.toBool)
   | .edit c i a, db => ((Tasks.edit c i a db).1, (Tasks.edit c i a db).2.toBool)
-  | .drop c i, db => ((Tasks.drop c i db).1, (Tasks.drop c i db).2.toBool)
+  | .drop c i d n, db => ((Tasks.drop c i d n db).1, (Tasks.drop c i d n db).2.toBool)
   | .land c i s l, db => ((Tasks.land c i s l db).1, (Tasks.land c i s l db).2.toBool)
   | .unland c i w, db => ((Tasks.unland c i w db).1, (Tasks.unland c i w db).2.toBool)
   | .board, db => (db, true)
@@ -659,14 +664,14 @@ theorem lives_eq (o : Option Agent) (hung : Bool) (live : Option (List String)) 
 
 /-- F1's `launch_top` on the code, with the queue (board #128): auto-spawn's reservation claims task `tid` only if,
 in the transaction that claims it, `tid` heads the staffing order (`Queue.staffHead`, the tasks it has not given up on)
-and the max held there (a free slot). So `tid` is startable and not held, and when no startable red task is left to
-staff and some startable queued task is not held, `tid` is the first such in queue order. -/
+and the max held there (a free slot). So `tid` is startable and no one is assigned it, and when no startable red task
+is left to staff and some startable Ready task is free, `tid` is the first such in place order. -/
 theorem reserveTask_top {db : Db} {e : Option String} {name cwd : String} {tid : Int} {model : Option String}
     {now : Int} {skip : Task → Bool} {r : Task}
     (h : (Spawn.reserveTask db e name cwd tid model now (some (Queue.staffHead skip))).2 = .ok r) :
     Queue.staffHead skip db = some tid ∧ (∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x) ∧
-    (∃ t ∈ Tasks.pool db, (t.id : Int) = tid ∧ t.hold = none) ∧
-    ∀ q, (∀ t ∈ Queue.staffRed db, skip t = true) → (Queue.staffQueue db).find? (!skip ·) = some q →
+    (∃ t ∈ Tasks.pool db, (t.id : Int) = tid ∧ t.assignee = none) ∧
+    ∀ q, (∀ t ∈ Queue.staffRed db, skip t = true) → (Queue.staffReady db).find? (!skip ·) = some q →
       tid = (q.id : Int) :=
   sorry
 
@@ -687,7 +692,7 @@ theorem one_owner_all (cs : List TCmd) (i : Int) (a b : String) (ha : Owns (run 
   sorry
 
 /-- S5 (model: `done_task_has_evidence`): after any task commands from the empty db, every done task has evidence:
-text that is not all whitespace. -/
+text that is not all whitespace (every Completed task). -/
 theorem done_has_evidence (cs : List TCmd) : ∀ t ∈ (run {} cs).tasks, t.status = .completed → EvOk t.evidence :=
   sorry
 
@@ -715,7 +720,7 @@ theorem claimed_once_all (db : Db) (cs : List TCmd) (i : Int) (a b : TCmd × Boo
 theorem pool_sorted (db : Db) : (pool db).Pairwise (boardLe redKey · · = true) :=
   sorry
 
-/-- The pool is exactly the open tasks that wait on no task not done and have no stop pending (model: `pool`,
+/-- The pool is exactly the Ready tasks that wait on no task not Completed and have no stop pending (model: `pool`,
 `claimable`). -/
 theorem mem_pool (db : Db) (t : Task) : t ∈ pool db ↔
     t ∈ db.tasks ∧ t.status = .ready ∧ blockedByDeps db t = false ∧ stopPending db t = false :=
@@ -727,39 +732,39 @@ theorem claim_not_stopped {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claime
     (h : (Tasks.claim c i l db).2 = .ok x) (hr : db.find i = some r) : stopPending db r = false :=
   sorry
 
-/-- A landing task is not claimable: `task claim` of it fails. -/
+/-- An In Review task is not claimable: `task claim` of it fails. -/
 theorem claim_landing {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} (hr : db.find i = some r)
     (hs : r.status = .inReview) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x :=
   sorry
 
-/-- A landing task is closed only by its lander (the one named, an agent with role lander, or the communicator), and
+/-- An In Review task is closed only by its lander (the one named, an agent with role lander, or the communicator), and
 only with evidence git found on the task's base. -/
 theorem done_landing {c : Ctx} {i : Int} {e : String} {db : Db} {r : Task} {x : DoneOut} (hr : db.find i = some r)
     (hs : r.status = .inReview) (h : (Tasks.done c i e db).2 = .ok x) :
     isLander db c.comms c.me r = true ∧ c.onBase = true ∧ x = .landed r.owner :=
   sorry
 
-/-- A landing task's dependants keep waiting: a task that waits on it is not in the pool. -/
+/-- An In Review task's dependants keep waiting: a task that waits on it is not in the pool. -/
 theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.status = .inReview) (hw : WaitsOn h x) :
     h ∉ pool db :=
   sorry
 
-/-- `task land` hands over only its owner's claimed task, and leaves it landing with that owner. -/
+/-- `task land` hands over only its owner's In Progress task, and leaves it In Review with that owner. -/
 theorem land_ok {c : Ctx} {i : Int} {s : String} {l : Option String} {db : Db} (h : (Tasks.land c i s l db).2 = .ok ()) :
     ∃ r, db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
       ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.status = .inReview ∧ r'.owner = some c.me :=
   sorry
 
-/-- F1 for a lander's close (board #200): a `task done` of landing task `x` puts in the pool an open task with no stop
-pending that waits on no task not done but `x`. -/
+/-- F1 for a lander's close (board #200): a `task done` of In Review task `x` puts in the pool a Ready task with no
+stop pending that waits on no task not Completed but `x`. -/
 theorem landed_frees {c : Ctx} {x : Int} {e : String} {db : Db} {o : Option String}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.landed o)) {h : Task} (hm : h ∈ db.tasks)
     (ho : h.status = .ready) (hs : stopPending db h = false)
     (hw : ∀ y ∈ db.tasks, y.status ≠ .completed → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 :=
   sorry
 
-/-- F1, `done_frees`: a `task done` of `x` puts in the pool an open task with no stop pending that waits on no task
-not done but `x`. -/
+/-- F1, `done_frees`: a `task done` of `x` puts in the pool a Ready task with no stop pending that waits on no task
+not Completed but `x`. -/
 theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Option String} {n : Nat}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.done k st n)) {h : Task} (hm : h ∈ db.tasks)
     (ho : h.status = .ready) (hs : stopPending db h = false)
@@ -898,13 +903,13 @@ theorem nudge_frame (db : Db) (now : Int) (me ag : String) :
 
 end SwarmLean.Inbox
 
-/-! ## The queue and holds (`Proofs/Queue.lean`) -/
+/-! ## Places, Ready and Backlog (`Proofs/Queue.lean`) -/
 
 namespace SwarmLean.QueueProofs
 open Tasks Queue
 
-/-- Queue ops (`queue add`, `queue rm`, and `tidy`, which `task done`/`task drop` and watchd's done marks end with)
-keep the places a permutation of 1..n. -/
+/-- Place moves (`queue add`, `queue rm`, `task backlog`, `task ready`, and `tidy`, which `task done`/`task drop`
+end with) keep the tasks' places distinct. -/
 theorem add_qinv (c : Ctx) (ids : List Int) (w : Place) (db : Db) (hi : Inv db) (hq : QInv db) :
     QInv (Queue.add c ids w db).1 :=
   sorry
@@ -912,41 +917,55 @@ theorem add_qinv (c : Ctx) (ids : List Int) (w : Place) (db : Db) (hi : Inv db) 
 theorem rm_qinv (c : Ctx) (ids : List Int) (db : Db) (hi : Inv db) (hq : QInv db) : QInv (Queue.rm c ids db).1 :=
   sorry
 
+theorem backlog_qinv (c : Ctx) (i : Int) (note : String) (db : Db) (hi : Inv db) (hq : QInv db) :
+    QInv (Queue.backlog c i note db).1 :=
+  sorry
+
+theorem ready_qinv (c : Ctx) (i : Int) (db : Db) (hi : Inv db) (hq : QInv db) : QInv (Queue.ready c i db).1 :=
+  sorry
+
 theorem done_qinv (c : Ctx) (i : Int) (e : String) (db : Db) (hi : Inv db) (hq : QInv db) :
     QInv (Queue.done c i e db).1 :=
   sorry
 
-theorem drop_qinv (c : Ctx) (i : Int) (db : Db) (hi : Inv db) (hq : QInv db) : QInv (Queue.drop c i db).1 :=
+theorem drop_qinv (c : Ctx) (i : Int) (dup : Option Int) (note : Option String) (db : Db) (hi : Inv db)
+    (hq : QInv db) : QInv (Queue.drop c i dup note db).1 :=
   sorry
 
-theorem tidy_qinv (db : Db) (hi : (db.tasks.map (·.id)).Nodup) : QInv (tidy db) :=
+theorem tidy_qinv (db : Db) (hq : QInv db) : QInv (tidy db) :=
   sorry
 
-/-- With an empty queue, queue-only off and no task held, the staffing order is exactly today's: the pool. -/
-theorem staffing_today (db : Db) (hq : ∀ t ∈ db.tasks, t.qpos = none) (hh : ∀ t ∈ db.tasks, t.hold = none)
-    (ho : queueOnly db = false) : staffing db = pool db :=
+/-- `task assign` changes the task's assignee and nothing of the places. -/
+theorem assign_places (c : Ctx) (i : Int) (who : Option String) (db : Db) :
+    places (Queue.assign c i who db).1 = places db :=
   sorry
 
-/-- `task claim` refuses a held task, unless the communicator (or the user) gives --force. -/
-theorem claim_not_held {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} {r : Task}
+/-- With no task reserved for an assignee, the staffing order is exactly the pool: red first, then Ready by place. -/
+theorem staffing_today (db : Db) (ha : ∀ t ∈ db.tasks, t.assignee = none) : staffing db = pool db :=
+  sorry
+
+/-- `task claim` refuses a Backlog task, unless the communicator (or the user) gives --force. -/
+theorem claim_not_backlog {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} {r : Task}
     (h : (Tasks.claim c i l db).2 = .ok x) (hr : db.find i = some r) :
-    r.hold = none ∨ (c.force = true ∧ Agents.inCharge db c.comms c.me = true) :=
+    r.status ≠ .backlog ∨ (c.force = true ∧ Agents.inCharge db c.comms c.me = true) :=
   sorry
 
-/-- A held task is never staffed: not by auto-spawn, not told to an idle agent. -/
-theorem staffing_not_held {db : Db} {t : Task} (h : t ∈ staffing db) : t.hold = none :=
+/-- `task claim` of a Ready or Backlog task reserved for an assignee succeeds only for that assignee, unless the
+communicator (or the user) gives --force. -/
+theorem claim_reserved {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} {r : Task}
+    (h : (Tasks.claim c i l db).2 = .ok x) (hr : db.find i = some r) (hs : r.status = .ready ∨ r.status = .backlog) :
+    (py r.assignee).all (· == c.me) = true ∨ (c.force = true ∧ Agents.inCharge db c.comms c.me = true) :=
   sorry
 
-/-- With no startable red task left to staff, auto-spawn's next is the first startable queued task not held. -/
-theorem staffHead_queue {db : Db} {skip : Task → Bool} {q : Task} (hr : ∀ t ∈ staffRed db, skip t = true)
-    (hq : (staffQueue db).find? (!skip ·) = some q) : staffHead skip db = some (q.id : Int) :=
+/-- Only a Ready task no one is assigned is staffed: never a Backlog task, never a reserved one, not by auto-spawn,
+not told to an idle agent. -/
+theorem staffing_free {db : Db} {t : Task} (h : t ∈ staffing db) : t.status = .ready ∧ t.assignee = none :=
   sorry
 
-/-- `task hold` and `task unhold` change the task's hold and nothing of the queue. -/
-theorem hold_places (c : Ctx) (i : Int) (why : String) (db : Db) : places (Queue.hold c i why db).1 = places db :=
-  sorry
-
-theorem unhold_places (c : Ctx) (i : Int) (db : Db) : places (Queue.unhold c i db).1 = places db :=
+/-- With no startable red task left to staff, auto-spawn's next is the first startable Ready task no one is assigned,
+in place order. -/
+theorem staffHead_ready {db : Db} {skip : Task → Bool} {q : Task} (hr : ∀ t ∈ staffRed db, skip t = true)
+    (hq : (staffReady db).find? (!skip ·) = some q) : staffHead skip db = some (q.id : Int) :=
   sorry
 
 end SwarmLean.QueueProofs
@@ -985,10 +1004,11 @@ theorem atomic_xinv {before after : Db} {ran : List (XCmd × Unit)} {t : Int}
   sorry
 
 /-- L2 (model: `idleClaim_leads_to`), reap's half: on a run where reap, judging task `i` claimed by `o`, runs at some
-point from `n` on with a clock past the lease `L`, the claim `(o, L)` does not last: at some point from `n` on the task
-is no longer claimed by `o` with that lease (done, released, renewed, dropped, or reopened by that reap). -/
+point from `n` on with a clock past the lease `L`, the claim `(o, L)` of an agent (not the user's: a person's claim
+has no lease that expires) does not last: at some point from `n` on the task is no longer claimed by `o` with that
+lease (done, released, renewed, dropped, or reopened by that reap). -/
 theorem claim_lapses (db : Db) (r : Nat → XCmd) (n : Nat) {i : Int} {o : String} {L : Int} {x : Task}
-    (hx : (x.id : Int) = i) (ho : x.owner = some o)
+    (hx : (x.id : Int) = i) (ho : x.owner = some o) (hh : o ≠ Agents.HUMAN)
     (hfair : ∃ m ≥ n, ∃ t now, r m = .reapTask x t now ∧ L < t) :
     ∃ m ≥ n, ¬ ClaimedBy (at_ db r m) i o L :=
   sorry

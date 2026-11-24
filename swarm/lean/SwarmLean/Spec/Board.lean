@@ -25,8 +25,8 @@ inductive Result
   | unlanded (r : Except String Unlanded)
   | board (tasks : List Task)
 
-/-- A task's owner fits its state: a claimed task has an owner, an open one has none. It holds of every task by
-construction (`TaskState.owned`): the owner is the state's (`TaskState.claimed` holds one, `.open` none). -/
+/-- A task's owner fits its state: an In Progress task has an owner, a Ready one has none (its assignee, if any, only
+reserves it). It holds of every task by construction: the owner is a started state's assignee. -/
 def Task.Owned (t : Task) : Prop :=
   (t.status = .inProgress → t.owner.isSome) ∧ (t.status = .ready → t.owner = none)
 
@@ -47,14 +47,14 @@ inductive TCmd
   | add (c : Ctx) (a : AddArgs)
   | claim (c : Ctx) (i : Int) (lease : String)
   | after (c : Ctx) (i : Int) (deps : List Int)
-  | priority (c : Ctx) (i : Int) (p : Int)
+  | priority (c : Ctx) (i : Int) (p : Priority)
   | renew (c : Ctx) (i : Int) (lease : String)
   | done (c : Ctx) (i : Int) (evidence : String)
   | block (c : Ctx) (i : Int) (question : String)
   | unblock (c : Ctx) (i : Int) (answer : String)
   | release (c : Ctx) (i : Int) (after : Option (List Int))
   | edit (c : Ctx) (i : Int) (a : EditArgs)
-  | drop (c : Ctx) (i : Int)
+  | drop (c : Ctx) (i : Int) (dup : Option Int) (note : Option String)
   | land (c : Ctx) (i : Int) (sha : String) (lander : Option String)
   | unland (c : Ctx) (i : Int) (why : String)
   | board
@@ -90,10 +90,10 @@ end SwarmLean.Board
 
 namespace SwarmLean.QueueProofs
 
-/-- The places the queued tasks hold. -/
-def places (db : Db) : List Int := db.tasks.filterMap (·.qpos)
+/-- The places the tasks hold (Ready and Backlog are ordered by them). -/
+def places (db : Db) : List Int := db.tasks.filterMap (·.pos)
 
-/-- The queue's invariant: the queued tasks hold the places 1..n, each once. -/
-def QInv (db : Db) : Prop := ∃ n, (places db).Perm ((List.range n).map fun (i : Nat) => (i : Int) + 1)
+/-- The places' invariant: no two tasks hold the same place, so Ready and Backlog are each one order. -/
+def QInv (db : Db) : Prop := (places db).Nodup
 
 end SwarmLean.QueueProofs
