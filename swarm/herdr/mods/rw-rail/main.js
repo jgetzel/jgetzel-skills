@@ -500,7 +500,6 @@ export default class Rail extends View {
   block(t, s, sw, tabNames, shownTerm, now, fly = false) {
     const sum = sw.sum;
     const tag = sum.swarm ?? "";
-    const left = leftOf(sum.counts);
     const n = sum.agents.length;
     const rows = this.capped(t, `b:${s.id}`, sw.block.flatMap((it) => {
       if (it.fold) return [Object.assign(() => h_flex().id(`fold-${s.id}-${it.fold}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
@@ -529,7 +528,8 @@ export default class Rail extends View {
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click(() => this.openSwarm(s, sw))
         .on_hover((h, cx) => this.settle("hovHead", h, s.id, cx))
         .child(svg("mods/rw-rail/diamond.svg").size(8).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).truncate().child(`Swarm${tag ? ` ${tag}` : ""} · ${n} ${n === 1 ? "agent" : "agents"} · ${left} left`))
+        .child(div().flex_none().child(`Swarm${tag ? ` ${tag}` : ""}`)).child(div().flex_none().font_family(settings().font_family).text_size(10.5).text_color(t.dim).child(String(n))).child(div().flex_1())
+        .child(kit.taskGlyph(t, "ready", 10)).child(div().flex_none().font_family(settings().font_family).text_size(10.5).text_color(t.dim).child(String(sum.counts?.ready ?? 0)))
         .when(this.hovHead === s.id, (el) => el.child(h_flex().id(`swarm-side-${s.id}`).flex_none().h(18).px(6).gap(4).items_center().rounded(5)
           .border(1).border_color(t.border).text_color(t.foreground).hover((st) => st.bg(t.selected))
           .on_click((_e, cx) => { cx.stop_propagation(); this.openSide(s); }).child(svg("mods/rw-rail/side.svg").size(11)).child("Side"))))
@@ -566,11 +566,13 @@ export default class Rail extends View {
     const sel = shared(SELECT), viewOn = swarmShown(layout());
     const many = (j.repos ?? []).length > 1;
     const stop = (_e, cx) => cx.stop_propagation();
-    const meta = items.length === 1 && items[0].comms ? "communicator only" : `${items.length} ${items.length === 1 ? "agent" : "agents"}, ${working} working`;
+    const cnt = (kids) => h_flex().flex_none().gap(4).items_center().children(kids), mono = settings().font_family, n = (x) => div().font_family(mono).text_color(t.dim).child(String(x));
+    const meta = items.length === 1 && items[0].comms ? "communicator only" : h_flex().gap(10).items_center().text_size(kit.TYPE.meta)
+      .child(cnt([kit.agentGlyph(t, "idle", 8), n(items.length)])).child(cnt([kit.agentGlyph(t, "working", 8), n(working)])).child(cnt([kit.taskGlyph(t, "ready", 9), n(j.ready ?? 0)]));
     const right = [];
     if (folded && working) right.push(h_flex().flex_none().gap(4).items_center().text_size(kit.TYPE.meta).text_color(t.dim)
       .child(kit.agentGlyph(t, "working", 8)).child(String(working)));
-    if (asks) right.push(div().flex_none().text_size(kit.TYPE.meta).text_color(kit.colors(t).asks).child(`${asks} ${asks === 1 ? "asks" : "ask"}`));
+    if (asks) right.push(h_flex().flex_none().gap(4).items_center().text_size(kit.TYPE.meta).text_color(kit.colors(t).asks).child(kit.agentGlyph(t, "asks", 8)).child(div().font_family(settings().font_family).child(String(asks))));
     // the header opens the swarm view: its buttons keep their press and click to themselves
     const own = (el) => el.on_mouse_down("left", stop);
     if (!asks && !folded && j.comms_hc) right.push(own(kit.button(t, `sw-talk-${id}`, "Talk", (cx) => { cx.stop_propagation(); this.talk(j); }, { kind: "ghost", small: true })));
@@ -639,7 +641,7 @@ export default class Rail extends View {
       out.child(div().id(`sw-more-${id}`).flex_none().pl(44).pr(8).py(4).rounded(kit.R.ctl).text_size(kit.TYPE.meta).text_color(t.dim)
         .cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => { this.all.add(fk); cx.notify(); })
-        .child(`${rest.length} more${w ? `, ${w} working` : ""}`));
+        .child(h_flex().gap(8).items_center().child(div().child(`${rest.length} more`)).when(w > 0, (e) => e.child(h_flex().gap(4).items_center().child(kit.agentGlyph(t, "working", 8)).child(div().font_family(settings().font_family).child(String(w)))))));
     } else if (all && items.length > SHOWN + 1) out.child(div().id(`sw-fewer-${id}`).flex_none().pl(44).pr(8).py(4).rounded(kit.R.ctl)
       .text_size(kit.TYPE.meta).text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { this.all.delete(fk); cx.notify(); }).child("show fewer"));

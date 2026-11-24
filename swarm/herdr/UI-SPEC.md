@@ -433,7 +433,7 @@ their content). Both views are laid out from the same functions in rw-swarm (`st
 - Now: Needs you and Next up on the left (two columns at 900 px and over, else one), Working and Machines on the right;
   Working is not drawn at zero. Next up's empty state gives the reason (`heldWhy`: no tasks, or chips Waiting, Reserved, Backlog with the
   task most wait on) and the one action that changes it. Every priority but Medium (the default) shows as a chip.
-- Board (the tab was Queue): Open, Completed, Cancelled as one switch (Completed and Cancelled, with Duplicate, list in the table, newest
+- Board (the tab was Queue; II.8 supersedes this bullet): Open, Completed, Cancelled as one switch (Completed and Cancelled, with Duplicate, list in the table, newest
   first, with a filter; they no longer open History); List or Graph; model and label chips with counts (AND, one line and "n more");
   one table: Being worked on, Next with the cut line (chips Auto-spawn, Live, Start), Waiting (Ready past the cut: Waiting, Reserved),
   Backlog; each row's action is Spawn now, To the end, To Ready or Open terminal, and a Ready Next row keeps its reorder arrows (they move
@@ -635,6 +635,66 @@ From sandbox shots of the built layout (`shot.sh --rework real`, three sizes), r
 9. Active space nests three boxes: the swarm block loses its border there.
 10. Unbuilt motion: build only rows leaving; leave sliding highlights, the drop spring and menu fades; the rail's
     collapse is the app's show/hide and cannot animate.
+
+## II.8 The Board as the status canvas (board-linear-states)
+
+The status canvas (Main, Side, Key, Filter, Task, Backlog, History, Wording) is built in the rw-* mods; this section supersedes the Board,
+Next up, Needs you, staffing bar and task page bullets of II.3 and II.7 where they differ. No UI sentence carries a variable value: a
+fact is a label, a field, a chip or a table cell.
+
+- Icons (kit.js, one set for every mod and the older panel): task states are circles (Backlog faint dashed ring, Ready ring, In Progress half
+  filled, Needs Input red ring round a square, In Review green ring three quarters full, Completed blue disc with a check, Cancelled grey
+  disc with a cross, Duplicate grey disc with an equals sign; `kit.taskGlyph(t, kit.glyphOf(state))`); priority is an icon (Urgent a square
+  with "!", High, Medium and Low three bars with three, two and one lit, None three dots; `kit.priority`). `kit.cells` draws a task event
+  as a table cell and `kit.chipText`, `labelTag`, `noteChip`, `personGlyph`, `checkbox` the small parts.
+- Board tab (rw-swarm/queue.js, `boardTab`; full width and the side panel's single column under 700 px): the switch Active n, Backlog n,
+  History; Filter; Group (the Display menu); New task (a "+" icon in the side panel). Active groups by State (default): the caption STARTED
+  over In Progress, Needs Input, In Review; UNSTARTED over Ready; then a Backlog line with Open Backlog. A row never repeats its group's
+  state: Ready says nothing of Ready, a started row shows its assignee (an agent's glyph and name, a person for "human"), the age since its
+  claim and its context. A Ready row shows its place (the number), priority, id, title, the next chip on the first startable row, "waiting
+  on #N" chips (a dependency's own state icon; a Cancelled one in red, struck through), a reservation's assignee, labels and the model; the
+  Free slots line sits after the last row auto-spawn will start (`nextUp().cut`); under the pointer the row shows ⤒ ↑ ↓ (`queue add`) and
+  Spawn now. Backlog rows carry their note under the title and the creator and age; under the pointer ⤒ ↑ ↓ and Move to Ready (End of Ready,
+  Top of Ready, Before #… : `task ready` then `queue add --front/--before`). History lists Completed (PR chip, assignee, time, tokens, day),
+  Cancelled (note chip, age) and Duplicate (duplicate of #N) cards from `--view board`, with a search, the two state chips as toggles and
+  Show all.
+- Places: a Ready task's place reads "Queue N", a Backlog task's "Backlog N" (`placeWord`), on the board, the task page and the activity.
+- Filter (Status, Priority): ticking a category ticks all its states (Backlog, Unstarted, Started, Completed, Cancelled); the chip reads
+  "Status is" and the ticked category whole, else its ticked states, or both mixed (`statusParts`); × clears it. With a Status filter Active
+  lists every task in those states (the closed ones from `--view board`). Display: Group by Category, State, Priority or None, Empty groups
+  Hide or Show, Shown as List, By repo or Graph (full width only). The pure logic is in rw-rail/tree.js: `CATEGORIES`, `toggleCategory`,
+  `toggleState`, `catTick`, `statusParts`, `passFilter`, `groupBy`.
+- Events as table rows (rw-rail/tree.js `evCells`, shown by Activity, the task page and the By repo peek): who, #task, change, age. The change is
+  "→ ◌ Backlog" with its note chip, "→ ○ Ready", "Queue 4 → 1" or "Backlog 1 → 3" (the list from the task's last backlog or ready event), "Low →
+  Medium" (the old value from the task's previous priority event; "Priority → Low" when there is none), "→ Duplicate #1810" (a `drop` and the
+  `task-duplicate` after it are one row), "→ Cancelled" with its note, "Assigned human", "Waiting on #1813", and the limits as Auto-spawn 7, Max 8.
+  "human" shows as "you". Activity's Full log keeps every event as the CLI wrote it.
+- Needs you (side Now, rw-swarms, the By repo inbox): a compact row per item, no sentence. A question: state icon, #task, title, the agent
+  (red square) and its age, Open; its question text and the answer field under it. Hung and prompt: the agent, a "hung" or "at a prompt" chip,
+  the task it holds. Red CI: "main CI", a red chip, run, in a row, who is on it. A Ready task waiting on a Cancelled one: ring, #task, title, a
+  red struck "waiting on #N" chip, Remove dependency, Cancel this task.
+- Next up: the first startable Ready rows as the Board draws them, the Free slots line, then chips (Waiting n, Reserved n, Backlog n) and Open
+  Backlog; when nothing starts, the chips alone with the task most wait on. The staffing bar is "Working n, Idle n" with their agent glyphs,
+  Auto-spawn and Max steppers, and Paused (amber) with Resume while auto-spawn holds. The rail's swarm header is a diamond, "Swarm" and its
+  tag, the agent count, then the working count and the Ready ring with its count; Rail B's header shows the same counts as glyphs.
+- Task page: ‹ Board / #N, the title, then the controls: the state chip (a menu: Backlog asks for a note in place, Ready, In Progress,
+  Completed, Cancelled, Duplicate of… asks for the original), the priority chip (a menu: None, Urgent, High, Medium, Low, keys 0 to 4), the
+  place with ⤒ ↑ ↓, Spawn now, Edit. Below, the description (nothing when there is none) and History as a table on the left, and the
+  properties card on the right (State with its category, Priority, Assignee, Queue or Backlog, Note, Waiting on with each dependency's
+  icon and state word and + Dependency, Needed by, Model, Labels, Created). History is read from `task show --json` (which carries the
+  priority and Waiting on events `--view` leaves out).
+- New task: Title, Description, then the chips Ready or Backlog, Priority (menu), Waiting on, Model, the place it will take, Add task. Backlog
+  also asks for its note.
+- The older panel (mods/swarm): state circles from the same kit (a link to kit/kit.js), the Needs you rows as fields, Board as Active,
+  Backlog, History with STARTED above UNSTARTED and no state repeated in its own group, "Backlog N" places, history and activity lines as
+  "#N → Backlog" cells, no description sentence. It has no Filter or Group menu.
+- Not built: Assignee, Model, Label and Waiting-on filters; the Position order; the "open" and "proposal" badges of Key and Started (Needs
+  Input and In Review are set by the swarm, not from the menu; the human-in-Ready badge). Full-width Now is still the By repo inbox (list
+  and detail), not the cards of Wording.
+- Fixture: `rail-demo.sh --swarm 5` runs `rich`: In Progress (an agent's, a human's), Needs Input, In Review with a PR, nine Ready
+  tasks (a dependency on an in-progress and on a Cancelled task, a reserved one, every priority, models), Backlog with notes, Completed,
+  Cancelled with notes, Duplicates, and the events the CLI itself writes for backlog, ready, assign, queue add, priority, drop, duplicate and
+  limits (`swarm task ...` run against the sandbox's db; their times are then spread).
 
 ## Part II build order (one builder, in sequence)
 

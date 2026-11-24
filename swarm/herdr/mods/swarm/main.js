@@ -1,6 +1,7 @@
 // Screenshot it from a worktree: swarm/herdr/shot.sh --screen task:5 --width 520 out.png (a private Herdr, never yours).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, TextView, InputState, Input } from "gpui-base";
+import * as kit from "./kit.js";
 import { spaces, panes, focused, exec, theme, layout, run, appHome, window, settings, watchFolder, openOverlay, nextCommand, shared, setShared } from "herdr";
 
 // The screen the panel opens on; shot.sh rewrites this line. home | agents | board[:done|dropped] | task:<id> |
@@ -112,9 +113,7 @@ const held = h => {
 };
 // Kinds whose event carries little or no text: what they say, from the event's first data line.
 const SAYS = {
-  "stay-hung": () => "is hung: no answer to the liveness check",
-  "stay-nowaiter": () => "stays, but has no waiter and can't be woken",
-  "stay-unwoken": () => "did not wake on a message",
+  "stay-hung": () => "hung", "stay-nowaiter": () => "no waiter", "stay-unwoken": () => "did not wake",
   "stay-check": () => "was asked if it still stays",
   "spawn-refused": d => `could not start ${d}: the swarm is at its max`,
   "spawn-held": d => `auto-spawn is ${held(d)}`,
@@ -524,15 +523,15 @@ export default class Swarm extends View {
   // An In Review task (board #200): handed to a lander at a commit, closed by its `task done` or `task unland`.
   landingWord(k) { return `In Review · ${k.lander ?? "a lander"}`; }
   backlogChip(t, k) { return this.chip(t, "Backlog", t.ansi3, true).tooltip("Never staffed or claimed until it is Ready"); }
-  taskRow(t, k, i) {
+  taskRow(t, k, i, grouped = false) { // `grouped`: the row sits under its state's heading, which says it
     const e = k.state === "completed" ? evidence(k.evidence) : null, after = this.undone(k);
-    const right = k.state === "needs_input" ? "Needs Input" : k.state === "in_review" ? `In Review · ${k.lander ?? "a lander"}` : k.state === "backlog" ? one(k.note) : k.state === "ready" ? (after.length ? `after ${after.map(x => `#${x}`).join(" ")}` : k.assignee ? `Reserved · ${k.assignee}` : "Ready") : k.state === "duplicate" ? `of #${k.dup_of}` : k.owner ?? "";
+    const right = k.state === "needs_input" ? (grouped ? (k.owner ?? "") : "Needs Input") : k.state === "in_review" ? (k.lander ?? "") : k.state === "backlog" ? one(k.note) : k.state === "ready" ? (after.length ? `waiting on ${after.map(x => `#${x}`).join(" ")}` : k.assignee ? k.assignee : "") : k.state === "duplicate" ? `duplicate of #${k.dup_of}` : k.owner ?? "";
     return this.row(t, `task-${k.id}`, i, cx => this.push({ s: "task", id: k.id }, cx))
-      .child(this.dot(this.taskColor(t, k), 7))
+      .child(kit.taskGlyph(t, kit.glyphOf(k.state), 12))
       .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
       .child(div().flex_1().min_w(0).truncate().text_color(isClosed(k) && k.state !== "completed" || k.waiting ? t.muted : t.foreground).child(k.title))
       .when(Boolean(e?.chip), el => el.child(this.chip(t, e.chip, e.chip.startsWith("PR") ? t.ansi2 : null)))
-      .when(k.state === "backlog", el => el.child(this.backlogChip(t, k)))
+      .when(k.state === "backlog" && !grouped, el => el.child(this.backlogChip(t, k)))
       .when(!isClosed(k) && this.prio(k) !== "medium", el => el.child(this.prioChip(t, k)))
       .child(div().flex_none().max_w(150).truncate().text_size(11).text_color(k.state === "needs_input" ? t.blocked : t.dim).child(right))
       .child(this.chev(t, "right"));
@@ -545,12 +544,12 @@ export default class Swarm extends View {
       : div().size(22).flex_none();
     return this.row(t, `q-${k.id}`, i, cx => this.push({ s: "task", id: k.id }, cx)).pr(6)
       .child(div().w(14).flex_none().text_size(11).text_color(t.dim).child(String(i + 1)))
-      .child(this.dot(this.taskColor(t, k), 7))
+      .child(kit.taskGlyph(t, kit.glyphOf(k.state), 12))
       .child(div().w(26).flex_none().text_size(11).text_color(t.dim).child(`#${k.id}`))
       .child(div().flex_1().min_w(0).truncate().text_color(why ? t.muted : t.foreground).child(k.title))
       .when(k === head, el => el.child(this.chip(t, "Next", t.accent, true).tooltip("Auto-spawn staffs it next (after a main red: task, if one is open).")))
       .when(!isClosed(k) && this.prio(k) !== "medium", el => el.child(this.prioChip(t, k)))
-      .child(div().flex_none().max_w(150).truncate().text_size(11).text_color(t.dim).child(why ?? "Ready"))
+      .child(div().flex_none().max_w(150).truncate().text_size(11).text_color(t.dim).child(why ?? ""))
       .child(mv("front", "⤒", "Move to the front", i > 1 ? ["--front"] : null))
       .child(mv("up", "↑", "Move up", i > 0 ? ["--before", String(q[i - 1].id)] : null))
       .child(mv("down", "↓", "Move down", i < q.length - 1 ? ["--after", String(q[i + 1].id)] : null));
@@ -576,19 +575,19 @@ export default class Swarm extends View {
       acts: [["Restart watchd…", () => this.askWatchd(), true]] });
     if (d.redRun) {
       const r = d.redRun;
-      out.push({ key: "ci", title: "main CI is red", detail: `Run ${r.id} failed at ${hhmm(iso(r.created))}${d.reds > 1 ? `; ${d.reds} red runs in a row` : ""}`,
-        owner: d.fix ? `${d.fix.owner} is fixing it (#${d.fix.id})` : "Nobody is on it yet", to: { s: "more", tab: "system" },
+      out.push({ key: "ci", title: "main CI is red", detail: "Red",
+        owner: [`run ${r.id}`, hhmm(iso(r.created)), d.reds > 1 ? `${d.reds} in a row` : null, d.fix ? `${d.fix.owner} · #${d.fix.id}` : "nobody on it"].filter(Boolean).join(" · "), to: { s: "more", tab: "system" },
         acts: [["Open run ↗", () => openUrl(r.url)], ["Re-run failed jobs…", () => this.askRerun(r.id), true]] });
     }
     for (const k of s.tasks.filter(k => (k.state === "ready" || k.state === "backlog") && (k.cancelled_deps ?? []).length))
-      out.push({ key: `d${k.id}`, title: "Waits on a Cancelled task", detail: `#${k.id} ${k.title}`, owner: `after ${k.cancelled_deps.map(x => `#${x}`).join(" ")}`, to: { s: "task", id: k.id },
+      out.push({ key: `d${k.id}`, title: `#${k.id}`, detail: k.title, owner: `waiting on ${k.cancelled_deps.map(x => `#${x}`).join(" ")} (Cancelled)`, to: { s: "task", id: k.id },
         acts: [["Remove dependency", cx => this.act(cx, ["task", "after", String(k.id), ...k.deps.filter(x => !k.cancelled_deps.includes(x)).map(String)])], ["Cancel task…", () => this.askDrop(k), true]] });
     for (const k of s.tasks.filter(k => k.state === "needs_input"))
-      out.push({ key: `t${k.id}`, title: `${k.owner} asks about #${k.id}`, detail: one(k.question) || k.title, owner: `#${k.id} ${k.title}`, to: { s: "task", id: k.id } });
+      out.push({ key: `t${k.id}`, title: k.owner, detail: one(k.question) || k.title, owner: `#${k.id} ${k.title} · Needs Input`, to: { s: "task", id: k.id } });
     for (const a of d.live.filter(a => a.status === "blocked" && !s.tasks.some(k => k.state === "needs_input" && k.owner === a.name)))
-      out.push({ key: `a${a.name}`, title: `${a.name} stopped at a prompt`, detail: "Open its terminal and answer.", to: { s: "agent", name: a.name } });
+      out.push({ key: `a${a.name}`, title: a.name, detail: "At a prompt: open its terminal and answer.", to: { s: "agent", name: a.name } });
     for (const a of d.live.filter(a => a.stay_sign === "hung"))
-      out.push({ key: `h${a.name}`, title: `${a.name} is hung`, detail: SIGN.hung[1], to: { s: "agent", name: a.name }, nudge: a });
+      out.push({ key: `h${a.name}`, title: a.name, detail: `Hung: ${SIGN.hung[1]}`, to: { s: "agent", name: a.name }, nudge: a });
     if (s.machine?.high) out.push({ key: "mem", title: "The machine is short on memory", detail: (s.machine.line ?? "").replace(/^machine: /, ""), to: { s: "more", tab: "system" } });
     return out;
   }
@@ -709,8 +708,9 @@ export default class Swarm extends View {
     const queue = f === "active" && q.length > 0 && v_flex().child(this.title(t, "Ready", `${q.length} · in staffing order`))
       .child(this.group(t, "g-queue").children(q.map((k, i) => this.queueRow(t, q, i, head))));
     const nCancelled = d.count("cancelled") + d.count("duplicate");
-    const sets = (f === "active" ? [["Needs Input", by("needs_input")], ["In Progress", by("in_progress")], ["In Review", by("in_review")], ["Backlog", backlog]]
-      : f === "done" ? [["Completed", by("completed").reverse(), "newest first", d.count("completed")]] : [["Cancelled", by("cancelled", "duplicate").reverse(), "newest first", nCancelled]]).filter(([, ks]) => ks.length);
+    const started = (f === "active" ? [["In Progress", by("in_progress")], ["Needs Input", by("needs_input")], ["In Review", by("in_review")]] : []).filter(([, ks]) => ks.length);
+    const sets = (f === "active" ? [] : f === "backlog" ? [["Backlog", backlog, "ordered; auto-spawn skips", backlog.length]]
+      : [["Completed", by("completed").reverse(), "newest first", d.count("completed")], ["Cancelled", by("cancelled", "duplicate").reverse(), "newest first", nCancelled]]).filter(([, ks]) => ks.length);
     // shortcut: 80 rows a group; a board with more done tasks than that needs a virtual list.
     const form = this.adding ? this.group(t, "new-task").px(12).py(10).gap(8)
       .child(div().text_size(12.5).font_semibold().child("New task"))
@@ -724,12 +724,16 @@ export default class Swarm extends View {
       : h_flex().child(this.btn(t, "nt-open", "+ New task", cx => { this.adding = true; this.in.title.focus(); cx.notify(); })).child(div().flex_1());
     return v_flex().gap(10)
       .child(form)
-      .child(this.seg(t, "bf", [["active", "Active", q.length + by("needs_input", "in_progress", "in_review").length + backlog.length], ["done", "Completed", d.count("completed")], ["dropped", "Cancelled", nCancelled]], f,
+      .child(this.seg(t, "bf", [["active", "Active", q.length + by("needs_input", "in_progress", "in_review").length], ["backlog", "Backlog", backlog.length], ["done", "History", d.count("completed") + nCancelled]], f,
         (id, cx) => { this.r.f = id; this.landed(cx); }))
-      .when(Boolean(queue), el => el.child(queue))
+      .when(started.length > 0, el => el.child(div().px(2).text_size(11).text_color(t.dim).child("STARTED")))
+      .children(started.map(([label, ks]) => v_flex().child(this.title(t, label, ks.length)).child(this.group(t, `g-${label}`).children(ks.map((k, i) => this.taskRow(t, k, i, true))))))
+      .when(Boolean(queue), el => el.child(div().px(2).text_size(11).text_color(t.dim).child("UNSTARTED")).child(queue))
       .children(sets.map(([label, ks, note, n]) => v_flex().child(this.title(t, label, note ? `${n ?? ks.length} · ${note}` : ks.length))
-        .child(this.group(t, `g-${label}`).children(ks.slice(0, 80).map((k, i) => this.taskRow(t, k, i))))))
-      .when(!sets.length && !queue, el => el.child(this.empty(t, f === "active" ? "Nothing left on the board" : `Nothing ${f === "done" ? "Completed" : "Cancelled"}`)));
+        .child(this.group(t, `g-${label}`).children(ks.slice(0, 80).map((k, i) => this.taskRow(t, k, i, f === "active" || f === "backlog"))))))
+      .when(f === "active" && backlog.length > 0, el => el.child(h_flex().px(4).gap(8).items_center().text_size(12).text_color(t.dim).child(kit.taskGlyph(t, "back", 12)).child("Backlog").child(String(backlog.length))
+        .child(div().flex_1()).child(this.more(t, "open-backlog", "Open Backlog", cx => { this.r.f = "backlog"; this.landed(cx); }))))
+      .when(!sets.length && !queue && !started.length, el => el.child(this.empty(t, f === "active" ? "Nothing left on the board" : `Nothing ${f === "done" ? "Completed" : "Cancelled"}`)));
   }
 
   // ---- Task: everything the board knows about one task ------------------------------------------
@@ -741,7 +745,7 @@ export default class Swarm extends View {
     const who = name => div().id(`who-${name}`).flex_none().font_semibold().cursor_pointer().hover(st => st.text_color(t.accent)).on_click((_e, cx) => this.push({ s: "agent", name }, cx)).child(name);
     const refs = ids => h_flex().gap(10).flex_wrap().children(ids.map(i => { const o = s.tasks.find(y => y.id === i);
       return h_flex().id(`ref-${i}`).gap(5).items_center().cursor_pointer().hover(st => st.text_color(t.accent)).on_click((_e, cx) => this.push({ s: "task", id: i }, cx))
-        .child(this.dot(o ? this.taskColor(t, o) : t.dim, 6)).child(`#${i}`).child(div().text_color(t.dim).child(o ? this.taskWord(o) : "gone")); }));
+        .child(kit.taskGlyph(t, kit.glyphOf(o?.state ?? "ready"), 11)).child(`#${i}`).child(div().text_color(t.dim).child(o ? this.taskWord(o) : "gone")); }));
     const dim = text => div().text_color(t.dim).child(text);
     const times = [k.queue_wait_s != null ? `queued ${ago(k.queue_wait_s)}` : null, k.work_s != null ? `worked ${ago(k.work_s)}` : null, k.blocked_s ? `blocked ${ago(k.blocked_s)}` : null].filter(Boolean);
     const facts = [
@@ -754,7 +758,7 @@ export default class Swarm extends View {
       ["Added", h_flex().gap(8).child(k.created_by ?? "?").when(Boolean(k.created_at), el => el.child(dim(hhmm(k.created_at))))],
       k.state === "in_review" ? ["In Review", h_flex().gap(8).items_center().child(this.mono(div().child((k.land_sha ?? "").slice(0, 12))))
         .child(`by ${k.lander ?? "a lander"}`).when(Boolean(k.landing_at), el => el.child(dim(`since ${hhmm(k.landing_at)}`)))] : null,
-      unstarted ? ["Queue", h_flex().gap(8).items_center().child(`Queue ${k.place ?? "–"}`).child(this.btn(t, "t-toend", "To the end", cx => this.act(cx, ["queue", "rm", String(k.id)])))] : null,
+      unstarted ? [k.state === "backlog" ? "Backlog" : "Queue", h_flex().gap(8).items_center().child(String(k.place ?? "–")).child(this.btn(t, "t-toend", "To the end", cx => this.act(cx, ["queue", "rm", String(k.id)])))] : null,
       k.state === "backlog" ? ["Backlog", h_flex().gap(8).items_center().min_w(0).child(div().flex_1().min_w(0).line_height("17px").whitespace_normal().text_color(t.ansi3).child(one(k.note)))
           .child(this.btn(t, "t-ready", "To Ready", cx => this.act(cx, ["task", "ready", String(k.id)])))]
         : k.state === "ready" ? ["Backlog", h_flex().gap(8).items_center().child(this.field(t, "t-note", this.in.note)).child(this.btn(t, "t-note-go", "To Backlog", cx => this.backlogTask(cx))
@@ -773,9 +777,14 @@ export default class Swarm extends View {
           .when(Boolean(k.ci_conclusion), el => el.child(this.chip(t, `CI ${k.ci_conclusion}`, k.ci_conclusion === "success" ? t.ansi2 : t.blocked))))
         .child(div().line_height("17px").whitespace_normal().text_color(t.muted).child(k.evidence))] : null,
     ].filter(Boolean);
-    const says = { "task-add": "added it", claim: "claimed it", spawn: "was started for it", done: "finished it", unblock: "was unblocked", release: "gave it back", drop: "cancelled it",
-      queue: "queued it", unqueue: "took it out of the queue", hold: "moved it to Backlog", unhold: "moved it to Ready",
-      "task-backlog": "moved it to Backlog", "task-ready": "moved it to Ready", "task-assign": "assigned it", "task-place": "moved it in the queue", "task-duplicate": "marked it a duplicate" };
+    // a task event as a table cell: "→ Backlog · note", "Queue 4 → 1", "Low → Medium"
+    const cell = (kind, data) => {
+      const d = one(data).replace(/^#\d+\s*/, "").replace(/\s*\(terminal \S+\)$/, ""), list = k.state === "backlog" ? "Backlog" : "Queue", to = (w, n) => `→ ${w}${n ? ` · ${n}` : ""}`;
+      return { "task-add": to("Created Ready"), claim: to("In Progress"), spawn: to("In Progress"), done: to("Completed"), unblock: to("In Progress"), release: to("Ready"), drop: to("Cancelled", d),
+        hold: to("Backlog", d), "task-backlog": to("Backlog", d), unhold: to("Ready"), "task-ready": to("Ready"), "task-assign": d && d !== "-" ? `Assigned · ${d}` : "Unassigned",
+        "task-place": (() => { const [a, b] = d.split(" "); return b && b !== "-" ? `${list} ${a === "-" ? "" : `${a} → `}${b}` : list; })(), "task-duplicate": to("Duplicate", d),
+        "task-priority": `Priority → ${d}`, block: to("Needs Input", d) }[kind];
+    };
     return v_flex().gap(12)
       .child(v_flex().gap(7).px(2)
         .child(h_flex().gap(8).items_center().child(this.chip(t, this.taskWord(k), this.taskColor(t, k), true)).child(div().text_size(11).text_color(t.dim).child(`#${k.id}`)))
@@ -791,9 +800,8 @@ export default class Swarm extends View {
       .when(Boolean(k.answer), el => el.child(this.group(t, "t-a").px(12).py(10).gap(5)
         .child(div().text_size(11).font_semibold().text_color(t.muted).child("Answered")).child(div().line_height("18px").whitespace_normal().child(k.answer ?? ""))))
       .child(this.facts(t, "t-facts", facts))
-      .child(v_flex().child(this.title(t, "Description"))
-        .child(x?.body ? this.group(t, "t-body").px(12).py(8).child(TextView.markdown(`body-${id}`, x.body))
-          : this.empty(t, x ? "No description: the title is the whole task" : "…")))
+      .when(!x || Boolean(x.body), el => el.child(v_flex().child(this.title(t, "Description"))
+        .child(x?.body ? this.group(t, "t-body").px(12).py(8).child(TextView.markdown(`body-${id}`, x.body)) : this.empty(t, "…"))))
       .when(x?.messages.length > 0, el => el.child(v_flex().child(this.title(t, "Messages about it", x.messages.length))
         .child(this.group(t, "t-msgs").children(x.messages.map((m, i) => v_flex().px(12).py(8).gap(3).min_w(0).when(i > 0, el => el.border_t(1).border_color(t.border))
           .child(h_flex().gap(8).text_size(11).text_color(t.dim).child(hhmm(m.ts)).child(div().text_color(t.muted).child(`${m.frm} → ${m.dest === "all" ? "everyone" : m.dest}`)))
@@ -802,7 +810,7 @@ export default class Swarm extends View {
         .child(this.group(t, "t-hist").children(x.events.map((ev, i) => this.row(t, `t-ev-${i}`, i).h(30).text_size(12)
           .child(div().w(34).flex_none().text_size(11).text_color(t.dim).child(hhmm(ev.ts)))
           .child(div().flex_none().child(ev.agent ?? "swarm"))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(says[ev.kind] ?? (ev.kind === "block" ? `asked: ${one(ev.data).replace(/^#\d+\s*/, "")}` : ev.kind))))))));
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(cell(ev.kind, ev.data) ?? ev.kind)))))));
   }
 
   moreScreen(t, d) {
@@ -989,21 +997,21 @@ export default class Swarm extends View {
     const task = id => s.tasks.find(k => k.id === Number(id));
     const ref = m ? `#${m[1]} ${task(m[1])?.title ?? m[2]}`.trim() : data, title = m => (m ? `#${m[1]} ${task(m[1])?.title ?? ""}`.trim() : data);
     switch (kind) {
-      case "task-add": return { text: `added ${ref}`, part: m ? `#${m[1]}` : data };
-      case "claim": return { text: `claimed ${ref}` };
-      case "done": { const ev = evidence(m?.[2]); return { text: `finished ${ref}`, chip: ev.chip }; }
+      case "task-add": return { text: `#${m?.[1] ?? data} → Created Ready`, part: m ? `#${m[1]}` : data };
+      case "claim": return { text: `#${m?.[1] ?? data} → In Progress` };
+      case "done": { const ev = evidence(m?.[2]); return { text: `#${m?.[1]} → Completed`, chip: ev.chip }; }
       case "ci-green": return { text: `main CI is green again (run ${/green run (\d+)/.exec(data)?.[1] ?? "?"})` };
-      case "block": return { text: `asked you about #${m?.[1]}: ${shortUrls(m?.[2] ?? "").text}`, task: m?.[1], open: task(m?.[1])?.state === "needs_input" };
-      case "task-blocked": return { text: `#${e.path} is waiting on you: ${shortUrls(data).text}`, task: e.path, open: task(e.path)?.state === "needs_input" };
-      case "blocked": return { text: "stopped at a prompt in its terminal", open: s.agents.find(a => a.name === e.agent)?.status === "blocked" };
-      case "unblock": return { text: `unblocked ${ref}` };
-      case "release": return { text: `gave back ${ref}` };
-      case "drop": return { text: `cancelled ${ref}`, part: m ? `#${m[1]}` : data };
-      case "hold": case "task-backlog": return { text: `moved ${title(m)} to Backlog`, sub: m?.[2] || null };
-      case "unhold": case "task-ready": return { text: `moved ${title(m)} to Ready` };
-      case "task-assign": { const who = m?.[2]?.trim(); return { text: `assigned ${title(m)}`, chip: who && who !== "-" ? who : "Unassigned" }; }
-      case "task-place": { const at = (m?.[2] ?? "").split(" ")[1]; return { text: `moved ${title(m)} in the queue`, meta: at && at !== "-" ? `Queue ${at}` : "" }; }
-      case "task-duplicate": return { text: `marked ${title(m)} a duplicate`, chip: `of ${(m?.[2] ?? "").trim()}` };
+      case "block": return { text: `#${m?.[1]} → Needs Input`, sub: shortUrls(m?.[2] ?? "").text, task: m?.[1], open: task(m?.[1])?.state === "needs_input" };
+      case "task-blocked": return { text: `#${e.path} → waiting on you`, sub: shortUrls(data).text, task: e.path, open: task(e.path)?.state === "needs_input" };
+      case "blocked": return { text: "at a prompt", open: s.agents.find(a => a.name === e.agent)?.status === "blocked" };
+      case "unblock": return { text: `#${m?.[1] ?? data} → In Progress` };
+      case "release": return { text: `#${m?.[1] ?? data} → Ready` };
+      case "drop": return { text: `#${m?.[1] ?? data} → Cancelled`, sub: m?.[2] || null, part: m ? `#${m[1]}` : data };
+      case "hold": case "task-backlog": return { text: `#${m?.[1]} → Backlog`, sub: m?.[2] || null };
+      case "unhold": case "task-ready": return { text: `#${m?.[1]} → Ready` };
+      case "task-assign": { const who = m?.[2]?.trim(); return { text: `#${m?.[1]} → Assigned`, chip: who && who !== "-" ? who.replace(/ \(terminal \S+\)$/, "") : "Unassigned" }; }
+      case "task-place": { const [a, b] = (m?.[2] ?? "").split(" "), list = task(m?.[1])?.state === "backlog" ? "Backlog" : "Queue"; return { text: `#${m?.[1]} ${list} ${a && a !== "-" ? `${a} → ` : ""}${b ?? ""}`.trim() }; }
+      case "task-duplicate": return { text: `#${m?.[1]} → Duplicate`, chip: (m?.[2] ?? "").trim() };
       case "reap": return { text: /lease/.test(data) ? `lost ${data.replace(/^task /, "").replace(/ lease expired$/, "")}: its lease ran out` : e.path ? `lost its lock on ${e.path}: it expired` : "is gone: its terminal closed" };
       case "push": return { text: `pushed ${pushBranch(e)}`.trim(), sub: one(e.subject) };
       case "ci-red": return { text: `main CI failed (run ${data})`, meta: d.told(data) ? `told ${plural(d.told(data), "agent")}` : "" };

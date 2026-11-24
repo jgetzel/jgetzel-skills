@@ -11,10 +11,10 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import { panes, run, shared, setShared, settings, window as win, exec } from "herdr";
 import * as kit from "./kit.js";
-import { SELECT, addrOf, answerArgs, cancelArgs, dropDepArgs, nudgeArgs, dur, line, prioName, repoName, showAll, stateWord } from "./tree.js";
+import { SELECT, addrOf, answerArgs, cancelArgs, dropDepArgs, nudgeArgs, dur, line, prioName, repoName, showAll, stateWord, placeWord, evCells } from "./tree.js";
 
 // The Board's groups, by state: the key is the glyph's word (kit.taskGlyph); a Ready task waiting on a dep keeps its place in Ready.
-const STATES = [["block", "Needs Input"], ["prog", "In Progress"], ["land", "In Review"], ["ready", "Ready"], ["back", "Backlog"], ["done", "Completed today"]];
+const STATES = [["prog", "In Progress"], ["block", "Needs Input"], ["land", "In Review"], ["ready", "Ready"], ["back", "Backlog"], ["done", "Completed today"]];
 const WORD = { block: "Needs Input", prog: "In Progress", land: "In Review", ready: "Ready", back: "Backlog", done: "Completed" };
 const QUIET_READ = 30000; // the board is read again this often without events: its ages and leases move
 const LEASE = 7200; // a claim's default lease (2h): the lease bar's full width
@@ -51,30 +51,9 @@ export function choicesOf(q) {
 // What a task event says in the peek's history, after who did it.
 function evWords(e) {
   const x = e.text ? line(e.text, 200) : "";
-  switch (e.kind) {
-    case "add": return ["added it", null];
-    case "claim": return ["claimed it", null];
-    case "spawn": return ["was spawned for it", null];
-    case "renew": return [`renewed the lease${x ? `, ${x}` : ""}`, null];
-    case "release": return ["released it", x || null];
-    case "block": return ["blocked it with a question for you", x || null];
-    case "answer": return ["answered", x || null];
-    case "unblock": return ["unblocked it", x || null];
-    case "note": return ["left a note", x || null];
-    case "edit": return [`edited it${x ? `: ${x}` : ""}`, null];
-    case "land": return ["handed it to the lander", x || null];
-    case "unland": return ["got it back from the lander", x || null];
-    case "ci": return [`CI ${x}`.trim(), null];
-    case "pr": return [`PR ${x}`.trim(), null];
-    case "done": return ["finished it", x || null];
-    case "drop": return ["cancelled it", x || null];
-    case "held": case "backlog": return ["moved it to Backlog", x || null];
-    case "unheld": case "ready": return ["moved it to Ready", null];
-    case "assign": return ["assigned it", x || null];
-    case "place": return ["moved it in the queue", null];
-    case "duplicate": return ["marked it a duplicate", x || null];
-    default: return [`${e.kind}${x ? ` ${x}` : ""}`, null];
-  }
+  const LABEL = { add: "created", claim: "claimed", spawn: "spawned", renew: "lease renewed", release: "released", block: "question", answer: "answered", unblock: "unblocked", note: "note",
+    edit: "edited", land: "to the lander", unland: "from the lander", ci: "CI", pr: "PR", done: "done", drop: "cancelled" };
+  return LABEL[e.kind] ? [LABEL[e.kind], x || null] : [e.kind + (x ? " " + x : ""), null];
 }
 // The state a task is in after event `e` (the history's spine takes its colour); null: unchanged.
 const afterEv = (e) => ({ add: "ready", release: "ready", unheld: "ready", ready: "ready", claim: "prog", spawn: "prog", unblock: "prog", answer: "prog",
@@ -386,11 +365,11 @@ export class SwarmBoard {
   row(t, k, path, gk) {
     const c = kit.colors(t), sel = this.selOf(k), quiet = this.quiet(k);
     const who0 = k.holder?.agent ?? k.assignee ?? null, a = who0 ? this.agentsBy.get(who0) : null;
-    const queue = k.place != null ? `Queue ${k.place}` : null;
-    const note = k.st === "block" ? div().text_color(c.asks).child("asks you")
-      : k.st === "ready" ? [queue, k.wait ? `after ${(k.after ?? []).map((x) => `#${x}`).join(", ")}` : null].filter(Boolean).join(" · ")
-      : k.st === "back" ? [queue, k.note ? line(k.note, 60) : null].filter(Boolean).join(" · ")
-      : k.st === "land" ? "with the lander" : null;
+    const deps = (k.undone ?? []).slice(0, 2).map((d) => { const o = this.taskBy.get(d), dead = o && (o.state === "cancelled" || o.state === "duplicate");
+      return h_flex().h(18).px(5).gap(4).flex_none().items_center().rounded(kit.R.tag).border(1).border_color(dead ? c.asks + "88" : t.border).text_size(10).text_color(dead ? c.asks : t.dim)
+        .child(kit.taskGlyph(t, kit.glyphOf(o?.state ?? "ready"), 10)).child(div().font_family(this.mono()).when(dead, (e) => e.line_through()).child(`#${d}`)); });
+    const place = placeWord(k), note = k.st === "ready" || k.st === "back"
+      ? h_flex().gap(6).items_center().children([place ? kit.chipText(t, place) : null, ...deps, k.st === "back" && k.note ? kit.noteChip(t, line(k.note, 60)) : null].filter(Boolean)) : null;
     const tags = (k.repos ?? []).filter((r) => r.repo !== path).map((r) => kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6)));
     if (k.st === "block") tags.push(kit.button(t, `sb-ans-${gk}-${k.id}`, "Answer", (cx) => { cx.stop_propagation(); this.pickTask(cx, k); }, { kind: "danger", small: true }));
     const age = (k.updated ?? 0) >= this.midnight ? hhmm(k.updated) : k.updated ? new Date(k.updated * 1000).toDateString().slice(4, 10) : "";
@@ -407,8 +386,9 @@ export class SwarmBoard {
     const c = kit.colors(t), m = this.m, id = k.id, st = k.st ?? stateOf(k), h = k.holder?.agent ?? k.assignee ?? k.owner ?? null;
     const a = h ? this.agentsBy.get(h) : null, show = this.showFor === id ? this.show : null;
     const repos = (k.repos ?? []).map((r) => (typeof r === "string" ? { repo: r } : r));
-    const stateLine = [stateWord(k.state), ["block", "prog", "land"].includes(st) ? h : null, st === "ready" && (k.after ?? []).length ? `after ${k.after.map((x) => `#${x}`).join(", ")}` : null,
-      st === "back" && k.note ? line(k.note, 80) : null, k.state === "duplicate" && k.dup_of != null ? `of #${k.dup_of}` : null].filter(Boolean).join(" · ");
+    const stateLine = h_flex().gap(8).items_center().flex_wrap().child(div().text_color(st === "block" ? c.asks : t.foreground).child(stateWord(k.state)))
+      .children([placeWord(k) ? kit.chipText(t, placeWord(k)) : null, ["block", "prog", "land"].includes(st) && h ? kit.assignee(t, { name: h, swarm: k.holder?.swarm ?? a?.swarm, status: statusOf(a) }) : null,
+        st === "back" && k.note ? kit.noteChip(t, line(k.note, 80)) : null, k.state === "duplicate" && k.dup_of != null ? kit.chipText(t, `duplicate of #${k.dup_of}`) : null].filter(Boolean));
     const fresh = m.isNew(`peek:${id}`);
     const head = v_flex().id("sb-pk-head").flex_none().px(16).py(14).gap(8).border_b(1).border_color(t.border)
       .child(h_flex().gap(6).items_center()
@@ -422,12 +402,11 @@ export class SwarmBoard {
     const prop = (label, v) => h_flex().gap(12).items_start().min_w(0)
       .child(div().w(86).flex_none().text_color(t.dim).child(label)).child(h_flex().flex_1().min_w(0).gap(6).items_center().flex_wrap().children([v].flat()));
     const blocks = [...this.taskBy.values()].filter((x) => (x.after ?? []).includes(id) && x.st && x.st !== "done").map((x) => `#${x.id}`);
-    const deps = [(k.after ?? []).length ? `after ${k.after.map((x) => `#${x}`).join(", ")}` : null, blocks.length ? `holds back ${blocks.join(", ")}` : null].filter(Boolean);
-    const lease = k.lease_left_s;
+        const lease = k.lease_left_s;
     const props = v_flex().id("sb-pk-props").flex_none().px(16).py(12).gap(8)
       .child(prop("State", [kit.taskGlyph(t, st), div().child(stateWord(k.state))]))
       .child(prop("Priority", div().child(prioName(k.priority) ?? "Medium")))
-      .when(k.place != null, (el) => el.child(prop("Queue", div().child(`Queue ${k.place}`))))
+      .when(k.place != null, (el) => el.child(prop(k.state === "backlog" ? "Backlog" : "Queue", div().font_family(this.mono()).child(String(k.place)))))
       .when(repos.length > 0, (el) => el.child(prop("Repos", v_flex().gap(4).children(repos.map((r) => h_flex().gap(6).items_center().flex_wrap()
         .child(kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6))).child(div().child(repoName(r.repo)))
         .when(Boolean(r.base), (e) => e.child(div().text_size(kit.TYPE.meta).text_color(t.dim).child(`base ${r.base}`)))
@@ -437,7 +416,8 @@ export class SwarmBoard {
       .when(lease != null, (el) => el.child(prop("Lease", [div().w(90).h(3).flex_none().rounded(2).bg(t.border).overflow_hidden()
         .child(kit.grow(div().h_full().bg(lease < 600 ? c.working : t.dim), m, (lease / LEASE) * 100)),
         div().text_size(kit.TYPE.meta).text_color(t.dim).child(lease > 0 ? `${dur(lease * 1000)} left` : "lapsed")])))
-      .child(prop("Depends", div().text_color(deps.length ? t.foreground : t.dim).child(deps.join("; ") || "Nothing before or after it")))
+      .child(prop("Waiting on", (k.after ?? []).length ? (k.after).map((d) => kit.chipText(t, `#${d}`)) : div().text_color(t.dim).child("Nothing")))
+      .when(blocks.length > 0, (el) => el.child(prop("Needed by", blocks.map((d) => kit.chipText(t, d)))))
       .when((k.labels ?? []).length > 0, (el) => el.child(prop("Labels", k.labels.map((l) => h_flex().h(16).px(4).flex_none().items_center()
         .rounded(kit.R.tag).border(1).border_color(t.border).font_family(this.mono()).text_size(10).text_color(t.dim).child(l)))))
       .when(Boolean(k.created_by), (el) => el.child(prop("Created by", div().child(who(k.created_by)))));
@@ -454,7 +434,9 @@ export class SwarmBoard {
     const c = kit.colors(t), m = this.m, col = (s) => ({ prog: c.working, block: c.asks, land: c.landing, done: c.done })[s] ?? t.dim;
     const evs = show?.events ?? [];
     let cur = "ready";
+    const ctx = { prio: new Map(), list: new Map() };
     const rows = evs.map((e) => {
+      const cs = evCells(e.kind, e.text, k.id, ctx);
       cur = afterEv(e) ?? cur;
       const [words, more] = evWords(e), quietEv = e.kind === "renew";
       const el = h_flex().id(`sb-ev-${e.id}`).relative().flex_none().gap(8).items_start().min_w(0).py(quietEv ? 3 : 6)
@@ -463,8 +445,8 @@ export class SwarmBoard {
         .child(div().w(12).flex_none())
         .child(v_flex().flex_1().min_w(0).gap(4)
           .child(h_flex().gap(4).min_w(0).text_color(quietEv ? t.dim : t.foreground).text_size(quietEv ? kit.TYPE.meta : kit.TYPE.body)
-            .child(div().flex_none().font_medium().child(who(e.agent))).child(div().min_w(0).whitespace_normal().text_color(t.dim).child(words)))
-          .when(Boolean(more), (el) => el.child(div().px(8).py(6).rounded(kit.R.ctl).bg(t.surface).text_size(kit.TYPE.body).whitespace_normal()
+            .child(div().flex_none().font_medium().child(who(e.agent))).child(cs ? kit.cells(t, cs) : div().min_w(0).whitespace_normal().text_color(t.dim).child(words)))
+          .when(Boolean(more) && !cs, (el) => el.child(div().px(8).py(6).rounded(kit.R.ctl).bg(t.surface).text_size(kit.TYPE.body).whitespace_normal()
             .child(TextView.markdown(`sb-ev-md-${e.id}`, more)))))
         .child(div().flex_none().font_family(this.mono()).text_size(10).text_color(t.dim).child(hhmm(e.ts)));
       return el.opacity(m.isNew(`ev:${e.id}`) ? 0 : 1).when(m.on, (x) => x.transition("opacity", kit.MOTION.arrive));
@@ -474,8 +456,8 @@ export class SwarmBoard {
     const since = k.updated ? dur(Date.now() - k.updated * 1000) : "";
     const now = h_flex().id("sb-ev-now").flex_none().gap(8).items_center().py(6)
       .child(div().w(12).flex_none().flex().justify_center().child(div().size(8).rounded(4).bg(col(st))))
-      .child(div().flex_1().text_color(st === "block" ? c.asks : t.dim)
-        .child(`Now: ${WORD[st] ?? stateWord(k.state)}${since ? `, ${since}` : ""}`));
+      .child(h_flex().flex_1().gap(8).items_center().text_color(st === "block" ? c.asks : t.dim).child(div().child("Now")).child(div().text_color(t.foreground).child(WORD[st] ?? stateWord(k.state)))
+        .when(Boolean(since), (el) => el.child(div().font_family(this.mono()).text_size(kit.TYPE.meta).child(since))));
     return v_flex().id("sb-history").flex_none().px(16).py(12).gap(0).border_t(1).border_color(t.border)
       .when(!show, (el) => el.child(div().py(6).text_size(kit.TYPE.meta).text_color(t.dim).child("Reading its history…")))
       .children(rows).when(Boolean(ask), (el) => el.child(div().py(6).child(ask))).child(now);
@@ -486,7 +468,7 @@ export class SwarmBoard {
       .border_color(t.border).bg(t.background).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_key_down((e, cx) => { if (e.key === "escape") { this.ans.set_value(""); cx.notify(); } })
       .child(Input.new(this.ans).h_full().text_size(kit.TYPE.body).text_color(t.foreground));
-    const age = k.updated ? `${dur(Date.now() - k.updated * 1000)} ago` : "";
+    const age = k.updated ? dur(Date.now() - k.updated * 1000) : "";
     return v_flex().gap(6)
       .child(kit.askSurface(t, `sb-ask-${k.id}`, { agent: h, task: k.id, age, question, field,
         onSend: (cx) => this.answer(cx), onOpen: this.agentsBy.get(h)?.hc ? () => this.focus(h) : null }))
@@ -534,26 +516,27 @@ export class SwarmBoard {
     return h_flex().flex_1().min_h(0).items_stretch().child(list.w(380).flex_none().border_r(1).border_color(t.border))
       .child(picked ? this.detail(t, picked) : div().flex_1());
   }
-  // An item's words: what happened, then the task it is about.
-  itemWords(n) {
-    const k = n.k, task = n.task != null ? `#${n.task}` : "";
+  // An item as fields: a lead (the task's number and title, an agent, a path), its glyph word, and chips (a state word, what it waits on).
+  itemWords(n, t) {
+    const k = n.k, task = n.task != null ? `#${n.task}` : "", lead = k ? `${task} ${k.title ?? ""}`.trim() : task, c = kit.colors(t), red = (s) => kit.chipText(t, s).text_color(c.asks);
     switch (n.kind) {
-      case "ask": return [`${n.agent ?? "An agent"} asks about ${task}`, "asks"];
-      case "hung": return [`${n.agent} is hung${n.stay ? `: ${line(n.stay, 60)}` : ""}`, "hung"];
-      case "lander": return [`${task} waits on the lander${n.lander ? `, ${n.lander}` : ""}`, "land"];
-      case "dep-cancelled": return [`${task} waits on a Cancelled task`, "wait"];
-      case "lock": return [`${n.path} is locked by ${n.agent ?? "nobody"}${n.agent && !this.agentsBy.has(n.agent) ? ", who is gone" : ", past its lease"}`, "idle"];
-      case "ctx": return [`${n.agent} is at ${kilo(n.ctx)} context`, "working"];
-      case "ci-red": return [`CI is red on ${repoName(n.repo)}`, "block"];
-      default: return [`${n.kind}${task ? ` ${task}` : ""}`, "idle"];
+      case "ask": return [lead || n.agent || "", "asks", []];
+      case "hung": return [n.agent ?? "", "hung", [red("hung"), ...(n.stay ? [kit.chipText(t, line(n.stay, 40))] : [])]];
+      case "lander": return [lead, "land", [kit.chipText(t, "In Review"), ...(n.lander ? [kit.chipText(t, n.lander)] : [])]];
+      case "dep-cancelled": return [lead, "wait", (n.deps ?? []).map((d) => h_flex().h(18).px(5).gap(4).flex_none().items_center().rounded(kit.R.tag).border(1).border_color(c.asks + "88").text_size(10).text_color(c.asks)
+        .child(kit.taskGlyph(t, "cancel", 10)).child(div().child("waiting on")).child(div().font_family(this.mono()).line_through().child(`#${d}`)))];
+      case "lock": return [n.path ?? "", "idle", [kit.chipText(t, "locked"), kit.chipText(t, n.agent && !this.agentsBy.has(n.agent) ? "holder gone" : "past its lease")]];
+      case "ctx": return [n.agent ?? "", "working", [kit.chipText(t, `context ${kilo(n.ctx)}`)]];
+      case "ci-red": return [repoName(n.repo), "block", [red("CI red")]];
+      default: return [`${n.kind}${task ? ` ${task}` : ""}`, "idle", []];
     }
   }
   glyph(t, n, kind) {
     return ["asks", "hung", "working", "idle", "landing"].includes(kind) ? kit.agentGlyph(t, kind) : kit.taskGlyph(t, kind, 12, this.m, `ib:${n.key}:${kind}`);
   }
   item(t, n) {
-    const [words, kind] = this.itemWords(n), on = this.pick === n.key, k = n.k;
-    const sub = k ? `#${k.id} ${k.title ?? ""}` : n.agent && this.agentsBy.get(n.agent)?.task ? `holds #${this.agentsBy.get(n.agent).task.id} ${this.agentsBy.get(n.agent).task.title ?? ""}` : "";
+    const [words, kind, chips] = this.itemWords(n, t), on = this.pick === n.key, k = n.k;
+    const held = !k && n.agent ? this.agentsBy.get(n.agent)?.task : null, sub = held ? `#${held.id} ${held.title ?? ""}` : "";
     const age = n.ts ? dur(Date.now() - n.ts * 1000) : "";
     return h_flex().id(`sb-ib-${hash(n.key)}`).size_full().px(14).py(8).gap(10).items_start().border_b(1).border_color(t.border)
       .cursor_pointer().when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
@@ -562,13 +545,13 @@ export class SwarmBoard {
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(kind === "asks" || n.kind === "ci-red" ? kit.colors(t).asks : t.foreground).child(words))
         .child(div().truncate().text_size(kit.TYPE.meta).text_color(t.dim).child(sub))
-        .child(h_flex().gap(4).items_center().children(n.repos.slice(0, 3).map((r) => kit.repoTag(t, r, repoName(r).slice(0, 6))))
+        .child(h_flex().gap(6).items_center().children(chips).children(n.repos.slice(0, 3).map((r) => kit.repoTag(t, r, repoName(r).slice(0, 6))))
           .when(Boolean(n.agent), (el) => el.child(kit.assignee(t, { name: n.agent, swarm: n.swarm, status: statusOf(n.a) })))))
       .child(div().flex_none().font_family(this.mono()).text_size(10).text_color(t.dim).child(age));
   }
   // The picked item: what it is about, the action that clears it, and its task's history and properties.
   detail(t, n) {
-    const [words, kind] = this.itemWords(n), k = n.k, c = kit.colors(t);
+    const [words, kind, chips] = this.itemWords(n, t), k = n.k, c = kit.colors(t);
     const acts = [];
     const term = (name, label) => this.agentsBy.get(name)?.hc ? kit.button(t, `sb-d-term-${name}`, label, () => this.focus(name)) : null;
     const openTask = (id) => kit.button(t, `sb-d-open-${id}`, "Open on the board", (cx) => {
@@ -589,7 +572,7 @@ export class SwarmBoard {
     const show = k && this.showFor === k.id ? this.show : null;
     return v_flex().id(`sb-d-${hash(n.key)}`).flex_1().min_w(0).min_h(0).overflow_y_scrollbar()
       .child(v_flex().flex_none().px(16).py(14).gap(8).border_b(1).border_color(t.border)
-        .child(h_flex().gap(8).items_center().child(this.glyph(t, n, kind)).child(div().font_medium().text_size(kit.TYPE.title).whitespace_normal().child(words)))
+        .child(h_flex().gap(8).items_center().flex_wrap().child(this.glyph(t, n, kind)).child(div().font_medium().text_size(kit.TYPE.title).whitespace_normal().child(words)).children(chips))
         .when(Boolean(k), (el) => el.child(h_flex().gap(6).items_center().flex_wrap()
           .child(div().font_family(this.mono()).text_size(kit.TYPE.meta).text_color(t.dim).child(`#${k.id}`)).child(div().child(k.title ?? ""))
           .children(n.repos.map((r) => kit.repoTag(t, r, repoName(r).slice(0, 6))))

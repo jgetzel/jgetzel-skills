@@ -82,8 +82,8 @@ swagent() {
   jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay' '$cur' '$crepo'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
 }
 # task <id> <title> <state> [owner] [question]: a task of $crepo (state: in_progress, needs_input, ready, ...; a Ready or Backlog one's place is its id)
-task() { sql "insert into task(id, title, state, owner, question, qpos) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''),
-    case when '$3' in ('ready', 'backlog') then $1 end);
+task() { sql "insert into task(id, title, state, owner, question, qpos, lease_until) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''),
+    case when '$3' in ('ready', 'backlog') then $1 end, case when '$3' in ('in_progress', 'needs_input') then $((now + 5400)) end);
   insert into task_repo(task, repo) values($1, '$crepo')"; }
 # homed: the tasks with no repo yet (the bulk inserts') are $crepo's
 homed() { sql "insert into task_repo(task, repo) select id, '$crepo' from task where id not in (select task from task_repo)"; }
@@ -107,6 +107,77 @@ watchd() {
   wd=$(hc run --bg --json --no-parent --no-notify --cwd "$1" -- sh -c "echo \$\$ >'$1/.git/watchd.pid'; exec sleep 1d" | id address)
   until [ -s "$1/.git/watchd.pid" ]; do sleep 0.2; done
   sql "insert or replace into meta(scope, k, v) values('', 'watchd', '$(cat "$1/.git/watchd.pid") $wd')"
+}
+# rich: the swarm's tasks for every board view (Linear states): In Progress (an agent's, human's), In Review with a PR, Ready with
+# a dependency on an in-progress and on a cancelled task, a reserved task and every priority, Backlog with notes, Completed,
+# Cancelled with notes, Duplicates; the CLI's own verbs write the events (task backlog/ready/assign/priority/drop/queue). Tasks
+# 133, 146, 145 and 142 are the agents' own (needs input and in progress).
+rich() {
+  cli() { (cd "$crepo" && SWARM_NAME=${who:-human} "$D/swarm" --swarm "$cur" "$@") >/dev/null; }
+  # tk <id> <title> <state> <priority> <qpos|-> [owner] [label]
+  tk() { sql "insert into task(id, title, body, state, priority, qpos, owner, labels, created_at, created_by) values($1, '$2', '', '$3', $4, nullif('$5', '-'),
+      nullif('${6:-}', ''), nullif('${7:-}', ''), $((now - 86400 * 3)), 'll-comms'); insert into task_repo(task, repo) values($1, '$crepo')"; }
+  sql "delete from task where id in (150, 151); delete from task_repo where task in (150, 151)"
+  tk 1812 'Board rows from TaskState' in_progress 2 - ll-110 rw-swarm
+  tk 1813 'queue add moves the position only' in_progress 3 - human cli
+  tk 1809 'SafeTxn wrapper for the store' in_review 3 - ll-127 lean
+  sql "update task set pr = 521, done_at = $((now - 600)), first_claimed_at = $((now - 5000)), land_sha = 'bea333c', landing_at = $((now - 600)) where id = 1809;
+    update task set lease_until = $((now + 6000)) where id in (1812, 1813);
+    update task set first_claimed_at = $((now - 2500)) where id = 1812;  update task set first_claimed_at = $((now - 1080)) where id = 1813"
+  tk 1814 'Verbs: task backlog, task ready' ready 2 1 '' cli
+  tk 1815 'Priority names in the CLI' ready 3 2 '' cli
+  tk 1816 'Duplicate links to its original' ready 4 3 '' cli
+  tk 1817 'Staffing line wording in rw-rail' ready 0 4 '' rw-rail
+  tk 1803 'Lease expiry is off by one second' ready 1 5 '' watchd
+  tk 1818 'Category filter in rw-swarm' ready 3 6 '' rw-swarm
+  tk 1819 'Graph view colours by category' ready 3 7 '' rw-swarm
+  tk 1820 'Lean store spike' ready 3 8 '' lean
+  tk 1821 '"Duplicate of" in task show' ready 3 9 '' cli
+  tk 1806 'Place the calendar in the rail' ready 2 20
+  tk 1801 'Slurm compute claims' ready 2 21
+  tk 1799 'Blur through XWayland' ready 0 22
+  tk 1822 'Lean store for tasks' ready 2 23
+  tk 1823 'Task templates' ready 3 24 '' cli
+  tk 1810 'Task state carries its data' completed 2 - ll-97 lean
+  tk 1807 'Spawned tab opens in the swarm''s space' completed 3 - ll-110
+  tk 1804 'Claim test flakes on main' completed 1 - ll-124
+  tk 1802 'lean-sqlite theorem list' completed 3 - ll-125
+  tk 1798 'Category column in Rows.lean' ready 3 25
+  tk 1795 'Proofs over the Lua CLI' ready 3 26
+  tk 1790 'Pills shrink to fit the bar' ready 0 27
+  tk 1811 'Task state enum in Rows.lean' ready 3 28
+  tk 1797 'Graph view of the queue' ready 4 29
+  sql "update task set pr = 518, done_at = $((now - 7200)) where id = 1810; update task set pr = 517, done_at = $((now - 3600 * 5)) where id = 1807;
+    update task set pr = 515, done_at = $((now - 86400)) where id = 1804; update task set pr = 519, done_at = $((now - 90000)) where id = 1802"
+  # the CLI's verbs: Backlog with notes, then the rest
+  cli task backlog 1806 --note 'Waits for your go'
+  cli task backlog 1801 --note 'Only if there is no Mac'
+  cli task backlog 1799 --note 'Parked in round 2'
+  cli task backlog 1822 --note 'Waits on the Lean store spike'
+  cli task backlog 1823 --note 'After the verbs land'
+  cli task after 1815 1813; cli task after 1818 1798; cli task after 1819 1818; cli task after 1821 1815
+  cli task assign 1820 human
+  cli task backlog 1821 --note 'After the task show output settles'; cli task ready 1821
+  cli queue add 1814 --after 1817; cli queue add 1814 --front
+  cli task priority 1815 low; cli task priority 1815 medium; cli task priority 1816 low
+  cli task drop 1798 --note 'Folded into #1812'
+  cli task drop 1795 --note 'Lean port first'
+  cli task drop 1790 --note 'Tabs moved to the rail'
+  cli task drop 1811 --duplicate-of 1810
+  cli task drop 1797 --duplicate-of 1802
+  sql "update event set agent = 'll-comms' where data like '#1806%' or data like '#1798%' or data like '#1790%' or data like '#1811%' and kind != 'task-place'"
+  sql "update task set model = case id when 1803 then 'opus' when 1820 then 'opus' when 1821 then 'haiku' else 'sonnet' end where id in (1814, 1815, 1816, 1817, 1803, 1818, 1819, 1820, 1821)"
+  cli limits --min 7 --max 8
+  ev $((now - 90)) ll-107 stay-hung
+  sql "update task set dropped_at = case id when 1798 then $((now - 1200)) when 1795 then $((now - 86400 * 3)) when 1790 then $((now - 86400 * 6)) when 1811 then $((now - 7000)) else $((now - 86400 * 4)) end where state in ('cancelled', 'duplicate')"
+  # ages: the event times the screenshot reads
+  sql "update event set ts = $((now - 3600 * 48)) where kind = 'task-backlog' and data like '#1806%';
+    update event set ts = $((now - 120)) where kind = 'task-ready'; update event set ts = $((now - 180)) where kind = 'task-backlog' and data like '#1821%';
+    update event set ts = $((now - 2400)) where kind = 'task-place' and data like '#1814 4%'; update event set ts = $((now - 2700)) where kind = 'task-place' and data like '#1814 1 4%';
+    update event set ts = $((now - 9000)) where kind = 'task-priority' and data like '#1815 low%'; update event set ts = $((now - 2280)) where kind = 'task-priority' and data like '#1815 medium%';
+    update event set ts = $((now - 1200)) where kind = 'drop' and data like '#1798%'; update event set ts = $((now - 86400 * 3)) where kind = 'drop' and data like '#1795%';
+    update event set ts = $((now - 86400 * 6)) where kind = 'drop' and data like '#1790%'; update event set ts = $((now - 7000)) where kind = 'task-duplicate' or (kind = 'drop' and (data = '#1811' or data = '#1797'));
+    update event set ts = $((now - 4000)) + id * 25 where ts >= $((now - 30)) and (kind like 'task-%' or kind = 'limits')"
 }
 # await <n>: until n of $cur's agents are live, each having recorded its terminal
 await() {
@@ -220,6 +291,7 @@ if [ -n "$sw" ]; then
     wtab "$skills" "$llc" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' in_progress ll-111
     wtab "$skills" "$llc" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' in_progress ll-107
     task 150 'Collapsed rail' ready; task 151 'Settings' ready
+    rich
     folds="$nix $linn"
   else
     wtab "$skills" "$llc" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' needs_input ll-203 'Keep the old panel?'

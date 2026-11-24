@@ -86,7 +86,7 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   worktree: Tx, ended: Nx, role: Tx, started: Nx, cold_at: Nx, cold_guarded: Bx,
   messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, urgent: Bx }), 200) }); // --agent: its own messages
 const task = Ox({ id: Nx, state: Tx, category: Tx, owner: Tx, assignee: Tx, lander: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), note: Tx, place: Nx, priority: Tx,
-  dup_of: Nx, waiting: Bx, undone: Lx(Nx, 200), cancelled_deps: Lx(Nx, 200),
+  dup_of: Nx, dropped_at: Nx, waiting: Bx, undone: Lx(Nx, 200), cancelled_deps: Lx(Nx, 200),
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
   claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20) });
@@ -768,7 +768,8 @@ export function agentRows(s) {
       : comms ? [a.status === "working" ? "working" : "idle", a.stay ? `stays: ${a.stay}` : a.status === "working" ? "working" : idle, null]
       : a.status === "working" ? ["working", "working", null]
       : ["idle", a.task ? `${idle} · holds #${a.task.id}` : idle, a.task ? "amber" : null];
-    return { a, comms, mark, state, hot, task: comms ? "The communicator" : a.task ? `#${a.task.id} ${a.task.title}` : "no task" };
+    const age = (q || a.status === "blocked") ? (q ? (q.blocked_s ?? 0) * 1000 : null) : (a.status === "working" && !comms) ? null : (a.idle_s ?? 0) * 1000;
+    return { a, comms, mark, state, hot, age, holds: !comms && a.status !== "working" ? a.task?.id ?? null : null, task: comms ? "The communicator" : a.task ? `#${a.task.id} ${a.task.title}` : "no task" };
   });
   const rank = (r) => r.comms ? 4 : { asks: 0, hung: 1, working: 2, idle: 3 }[r.mark];
   return rows.sort((x, y) => rank(x) - rank(y) || (nat(x.a.name) < nat(y.a.name) ? -1 : 1));
@@ -865,6 +866,85 @@ export const MORE = [["activity", "Activity"], ["landing", "Landing"], ["system"
 export const tabOf = (section) => (TABS.some(([id]) => id === section) ? section : "more");
 // Every priority but the default (Medium) is drawn: None, Urgent, High, Low.
 export const prioWord = (k) => (k?.priority && k.priority !== "medium" ? prioName(k.priority) : null);
+// Where a task stands, as a label: "Queue 4" for Ready, "Backlog 2" for Backlog (a place is within its own list); null when it has none.
+export const placeWord = (k) => (k?.place == null ? null : k.state === "backlog" ? `Backlog ${k.place}` : `Queue ${k.place}`);
+// The five categories the Filter and Group by use, each with its states in the board's order, and the label a card or chip shows.
+export const CATEGORIES = [["backlog", "Backlog", ["backlog"]], ["unstarted", "Unstarted", ["ready"]], ["started", "Started", ["in_progress", "needs_input", "in_review"]],
+  ["completed", "Completed", ["completed"]], ["cancelled", "Cancelled", ["cancelled", "duplicate"]]];
+// The state a category's icon is (Started shows In Progress's, Unstarted Ready's).
+export const CAT_ICON = { backlog: "backlog", unstarted: "ready", started: "in_progress", completed: "completed", cancelled: "cancelled" };
+// Ticking a category ticks all its states, or clears them when all were ticked; ticking a state flips it. A filter is a Set of states.
+export function toggleCategory(set, cat) {
+  const sts = CATEGORIES.find(([id]) => id === cat)?.[2] ?? [], next = new Set(set);
+  if (sts.every((s) => next.has(s))) sts.forEach((s) => next.delete(s)); else sts.forEach((s) => next.add(s));
+  return next;
+}
+export function toggleState(set, st) { const next = new Set(set); if (next.has(st)) next.delete(st); else next.add(st); return next; }
+// What a category's checkbox shows: "all" (every state ticked), "some", or "none".
+export const catTick = (set, cat) => { const sts = CATEGORIES.find(([id]) => id === cat)?.[2] ?? [], n = sts.filter((s) => set.has(s)).length; return n === 0 ? "none" : n === sts.length ? "all" : "some"; };
+// The chip for a Status filter: its parts in order, a ticked category whole as the category ("Started"), else its ticked states
+// ("In Progress", "Needs Input"); each part {kind: "category" | "state", id, label, icon (a task state)}. Empty set: no parts.
+export function statusParts(set) {
+  const out = [];
+  for (const [id, label, sts] of CATEGORIES) {
+    const on = sts.filter((s) => set.has(s));
+    if (on.length === sts.length && sts.length > 1) out.push({ kind: "category", id, label, icon: CAT_ICON[id] });
+    else for (const s of on) out.push({ kind: sts.length === 1 ? "category" : "state", id: sts.length === 1 ? id : s, label: sts.length === 1 ? label : stateWord(s), icon: s });
+  }
+  return out;
+}
+// The priorities a Priority filter or the menu lists, as the CLI names them.
+export const PRIO_ORDER = ["urgent", "high", "medium", "low", "none"];
+// Tasks passing a filter ({status: Set of states, prio: Set of priorities}); an empty set passes all.
+export const passFilter = (k, f) => (!f?.status?.size || f.status.has(k.state)) && (!f?.prio?.size || f.prio.has(k.priority ?? "medium"));
+// The groups of a list of tasks: by "state" (Started's states, then Ready, Backlog and the closed ones, as the canvas orders them), "category",
+// "priority" or "none"; each {key, label, state (its icon, a task state), cat, tasks}. Empty groups are left out unless `empty`.
+export function groupBy(tasks, how, empty = false) {
+  const lead = (xs, of) => of.map((id) => xs.find((x) => (x[0] ?? x) === id)).filter(Boolean);
+  const defs = how === "category" ? lead(CATEGORIES, ["started", "unstarted", "backlog", "completed", "cancelled"]).map(([id, label, sts]) => ({ key: id, label, state: CAT_ICON[id], cat: id, has: (k) => sts.includes(k.state) }))
+    : how === "priority" ? PRIO_ORDER.map((p) => ({ key: p, label: prioName(p) ?? p, prio: p, has: (k) => (k.priority ?? "medium") === p }))
+    : how === "none" ? [{ key: "all", label: "Tasks", has: () => true }]
+    : lead(STATES, ["in_progress", "needs_input", "in_review", "ready", "backlog", "completed", "cancelled", "duplicate"]).map(([id, label]) => ({ key: id, label, state: id, cat: CAT[id], has: (k) => k.state === id }));
+  return defs.map((d) => ({ ...d, tasks: tasks.filter(d.has) })).filter((g) => empty || g.tasks.length);
+}
+// How long ago a time was: "2d", "3h", "40m", "now".
+export const ageWord = (sec) => (sec == null ? "" : sec >= 172800 ? `${Math.floor(sec / 86400)}d` : sec >= 3600 ? `${Math.floor(sec / 3600)}h` : sec >= 60 ? `${Math.floor(sec / 60)}m` : "now");
+// A task event as table cells, after who and #task: [{t: "to", state, note?, place?, prio?}, {t: "move", list, from, to}, {t: "prio", from, to},
+// {t: "dup", of}, {t: "who", name}, {t: "text", text}]. `kind` is the event's kind with or without "task-" ("task-place" or "place"), `data` its text
+// with or without the leading "#id". `ctx` ({prio: Map of task to its last priority, list: Map of task to Queue or Backlog}) lets a priority
+// event name the old value and a place event its list; the caller passes it oldest first. null: not a task move.
+export function evCells(kind, data, task, ctx = null) {
+  const k = String(kind ?? "").replace(/^task-/, ""), d = String(data ?? "").replace(/^#\d+\s*/, "").replace(/\s*\(terminal \S+\)$/, "").trim();
+  const mem = (m, v) => { if (ctx && task != null) ctx[m].set(task, v); };
+  switch (k) {
+    case "add": return [{ t: "to", state: "ready", created: true }];
+    case "claim": mem("list", null); return [{ t: "to", state: "in_progress" }];
+    case "spawn": return [{ t: "to", state: "in_progress" }];
+    case "done": return [{ t: "to", state: "completed" }];
+    case "release": case "unheld": return [{ t: "to", state: "ready" }];
+    case "block": return [{ t: "to", state: "needs_input", note: d }];
+    case "unblock": return [{ t: "to", state: "in_progress" }];
+    case "land": return [{ t: "to", state: "in_review" }];
+    case "unland": return [{ t: "to", state: "in_progress" }];
+    case "backlog": case "held": case "hold": mem("list", "Backlog"); return [{ t: "to", state: "backlog", note: d }];
+    case "ready": case "unhold": mem("list", "Queue"); return [{ t: "to", state: "ready" }];
+    case "drop": return [{ t: "to", state: "cancelled", note: d }];
+    case "duplicate": return [{ t: "dup", of: d.replace(/^#/, "") }];
+    case "assign": return [{ t: "who", name: d && d !== "-" ? d : null }];
+    case "priority": {
+      const from = ctx && task != null ? ctx.prio.get(task) ?? null : null;
+      mem("prio", d);
+      return [{ t: "prio", from, to: d }];
+    }
+    case "place": {
+      const [a, b] = d.split(/\s+/), list = (ctx && task != null ? ctx.list.get(task) : null) ?? "Queue";
+      return b && b !== "-" ? [{ t: "move", list, from: a === "-" ? null : a, to: b }] : [{ t: "text", text: list }];
+    }
+    case "limits": { const m = /min (\S+) max (\S+)/.exec(String(data ?? "")); return m ? [{ t: "kv", k: "Auto-spawn", v: m[1] === "nil" ? "Off" : m[1] }, { t: "kv", k: "Max", v: m[2] === "nil" ? "unset" : m[2] }] : null; }
+    case "after": return [{ t: "waits", ids: d.replace(/^after\s+/, "").split(/[ ,]+/).filter(Boolean).map((x) => Number(x.replace(/^#/, ""))) }];
+    default: return null;
+  }
+}
 // "2 working, 2 idle": the live agents other than the communicator.
 export function staffWords(s) {
   const live = liveOf(s), w = live.filter((a) => a.status === "working").length;

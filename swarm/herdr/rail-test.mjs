@@ -486,7 +486,7 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
       { id: 5, ts: 230, agent: "watchd", kind: "spawn", data: "y" }, { id: 4, ts: 200, agent: "watchd", kind: "spawn", data: "x" },
       { id: 10, ts: 50, agent: "a", kind: "post", data: "x" }, { id: 11, ts: 40, agent: "a", kind: "weird", data: "?" }] });
   const sum = actItems(o, false);
-  assert.deepEqual(sum.map((i) => [i.kind, i.text]), [["block", "asked you about #7: keep it?"], ["urgent", "urgent!"], ["pressure", "machine was short on memory for 1m"],
+  assert.deepEqual(sum.map((i) => [i.kind, i.text]), [["block", "#7 → Needs Input"], ["urgent", "urgent!"], ["pressure", "machine was short on memory for 1m"],
     ["spawn", "started 2 agents: x and y"], ["msg", "hi"]]);
   assert.equal(sum[0].task, 7); assert.equal(sum[0].full.length, 2); assert.equal(tailOf(sum[0]), "needs you");
   assert.equal(sum[4].meta, "to 2 agents"); assert.equal(tailOf(sum[4]), "PR #12"); assert.equal(tailOf(sum[2]), null);
@@ -713,5 +713,36 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     ["Needs Input", "Duplicate", "started", "cancelled", true, false]);
   const ls = [["a", 5], ["b", 4], ["c", 3], ["d", 2]];
   assert.deepEqual(fitChips(ls, ["d"], 2), { top: [["a", 5], ["b", 4], ["d", 2]], more: 1 });
+}
+{ // Linear states: places, the Status filter, grouping, and a task event as table cells
+  const T = await import("./mods/rw-rail/tree.js"), { actItems } = await import("./mods/rw-rail/activity.js");
+  assert.deepEqual([T.placeWord({ state: "ready", place: 4 }), T.placeWord({ state: "backlog", place: 2 }), T.placeWord({ state: "in_progress" })], ["Queue 4", "Backlog 2", null]);
+  let set = T.toggleCategory(new Set(), "started"); assert.deepEqual([...set], ["in_progress", "needs_input", "in_review"]);
+  assert.deepEqual(T.statusParts(set).map((p) => [p.kind, p.label]), [["category", "Started"]]);
+  assert.deepEqual([T.catTick(set, "started"), T.catTick(set, "backlog"), T.catTick(T.toggleState(set, "in_review"), "started")], ["all", "none", "some"]);
+  assert.deepEqual(T.statusParts(new Set(["in_progress", "needs_input"])).map((p) => [p.kind, p.label]), [["state", "In Progress"], ["state", "Needs Input"]]);
+  assert.deepEqual(T.statusParts(new Set(["ready", "in_progress"])).map((p) => [p.kind, p.label]), [["category", "Unstarted"], ["state", "In Progress"]]);
+  assert.deepEqual(T.statusParts(new Set(["backlog", "cancelled", "duplicate"])).map((p) => p.label), ["Backlog", "Cancelled"]);
+  assert.deepEqual([...T.toggleCategory(set, "started")], []);
+  const ks = [{ id: 1, state: "ready", priority: "high" }, { id: 2, state: "needs_input" }, { id: 3, state: "in_progress", priority: "low" }];
+  assert.deepEqual(T.groupBy(ks, "state").map((g) => [g.label, g.tasks.map((k) => k.id)]), [["In Progress", [3]], ["Needs Input", [2]], ["Ready", [1]]]);
+  assert.deepEqual(T.groupBy(ks, "category").map((g) => [g.label, g.tasks.length]), [["Started", 2], ["Unstarted", 1]]);
+  assert.deepEqual(T.groupBy(ks, "priority").map((g) => g.key), ["high", "medium", "low"]);
+  assert.deepEqual(ks.filter((k) => T.passFilter(k, { status: new Set(["ready"]) })).map((k) => k.id), [1]);
+  assert.deepEqual([T.ageWord(30), T.ageWord(600), T.ageWord(7300), T.ageWord(200000)], ["now", "10m", "2h", "2d"]);
+  const ctx = { prio: new Map(), list: new Map() };
+  assert.deepEqual(T.evCells("task-backlog", "#1806 Waits for your go", 1806, ctx), [{ t: "to", state: "backlog", note: "Waits for your go" }]);
+  assert.deepEqual(T.evCells("task-place", "#1806 1 3", 1806, ctx), [{ t: "move", list: "Backlog", from: "1", to: "3" }]);
+  assert.deepEqual(T.evCells("task-ready", "#1806 (terminal t1bf)", 1806, ctx), [{ t: "to", state: "ready" }]);
+  assert.deepEqual(T.evCells("task-place", "#1806 9 2", 1806, ctx), [{ t: "move", list: "Queue", from: "9", to: "2" }]);
+  T.evCells("task-priority", "#5 low", 5, ctx); assert.deepEqual(T.evCells("priority", "medium", 5, ctx), [{ t: "prio", from: "low", to: "medium" }]);
+  assert.deepEqual(T.evCells("task-assign", "#5 human (terminal t1)", 5), [{ t: "who", name: "human" }]);
+  assert.deepEqual(T.evCells("task-after", "#5 after 1813,1814", 5), [{ t: "waits", ids: [1813, 1814] }]);
+  assert.equal(T.evCells("push", "x", 1), null);
+  const o = overOf({ tasks: [], agents: [], comms: "c", events: [{ id: 5, ts: 300, agent: "c", kind: "task-duplicate", data: "#9 #3" }, { id: 4, ts: 299, agent: "c", kind: "drop", data: "#9" },
+    { id: 3, ts: 200, agent: "human", kind: "task-priority", data: "#4 medium" }, { id: 2, ts: 100, agent: "human", kind: "task-priority", data: "#4 low" }] });
+  const rows = actItems(o, false);
+  assert.deepEqual(rows.map((i) => [i.who, i.task, i.cells.map((c) => c.t)]), [["c", 9, ["dup"]], ["you", 4, ["prio"]], ["you", 4, ["prio"]]]);
+  assert.deepEqual(rows[1].cells[0], { t: "prio", from: "low", to: "medium" });
 }
 console.log("rail-test: ok");

@@ -2,7 +2,7 @@
 // closed, routine noise left to the log; a post fanned out to N agents is one row, a memory-pressure episode is one
 // row, and runs of spawns, ends, adds and drops fold into one. Log: every event and message, its raw kind, nothing
 // folded. Input is `state --json --view activity` through overOf.
-import { line, plain } from "./tree.js";
+import { line, plain, evCells } from "./tree.js";
 
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -14,10 +14,6 @@ const pushBranch = (e) => {
   const m = /git push([^\n;&|]*)/.exec(e.data ?? "");
   return m ? m[1].trim().split(/\s+/).filter((w) => w && !w.startsWith("-")).pop() ?? "" : "";
 };
-const held = (h) => {
-  const [why, ...rest] = one(h).replace(/^auto-spawn holding: /, "").split("; "), n = /^(\d+) task/.exec(rest[0] ?? "")?.[1];
-  return `holding${n ? ` ${plural(Number(n), "task")}` : ""}: ${why}`;
-};
 // A GitHub PR or issue link becomes "PR #N" (the row's chip when the text ends with it); other links lose scheme and host.
 export function shortUrls(s) {
   s = String(s ?? "").replace(/https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(pull|issues)\/(\d+)(?:[/#?][^\s)\]]*)?/g, (_, k, n) => `${k === "pull" ? "PR" : "issue"} #${n}`)
@@ -28,26 +24,17 @@ export function shortUrls(s) {
 }
 const evidence = (s) => { s = one(s); const pr = /PR #(\d+)/.exec(s)?.[1]; return pr ? `PR #${pr}` : /^no-?op/i.test(s) ? "no-op" : /already/i.test(s) ? "already fixed" : null; };
 const SAYS = {
-  "stay-hung": () => "is hung: no answer to the liveness check",
-  "stay-nowaiter": () => "stays, but has no waiter and can't be woken",
-  "stay-unwoken": () => "did not wake on a message",
-  "stay-check": () => "was asked if it still stays",
-  "spawn-refused": (d) => `could not start ${d}: the swarm is at its max`,
-  "spawn-held": (d) => `auto-spawn is ${held(d)}`, // the log's line; the summary says Paused
-  "task-backlog": (d) => `moved ${d.replace(/^(#\d+)\s*/, "$1 to Backlog: ")}`.trim(), "task-ready": (d) => `moved ${d} to Ready`,
-  "task-assign": (d) => { const [id, who] = d.split(" "); return who && who !== "-" ? `assigned ${id} to ${who}` : `unassigned ${id}`; },
-  "task-place": (d) => { const [id, , at] = d.split(" "); return at && at !== "-" ? `moved ${id} to Queue ${at}` : `moved ${id} in the queue`; },
-  "task-duplicate": (d) => `marked ${d.replace(/^(#\d+) (#\d+)$/, "$1 a duplicate of $2")}`,
-  limits: (d) => `set the limits: ${d.replace(/min (\S+) max (\S+)/, (_, a, b) => `auto-spawn to ${a === "nil" ? "no number" : a}, max ${b === "nil" ? "unset" : b}`)}`,
-  queue: (d) => `queued ${d}`, unqueue: (d) => `took ${d} out of the queue`, // old dbs' events: hold and unhold are Backlog and Ready moves
-  hold: (d) => `moved ${d.replace(/^(#\d+)\s*/, "$1 to Backlog: ")}`.trim(), unhold: (d) => `moved ${d} to Ready`,
-  block: (d) => `asked you: ${d.replace(/^#\d+\s*/, "")}`, stay: (d) => `stays for ${d}`, "stay-end": () => "stopped staying", role: (d) => `is now ${d}`,
+  "stay-hung": () => "hung", "stay-nowaiter": () => "no waiter", "stay-unwoken": () => "did not wake", "stay-check": () => "liveness check", "spawn-refused": (d) => `refused · ${d}`,
+  "spawn-held": (d) => d, // the log shows the event as written; the summary says Paused
+  limits: (d) => d,
+  queue: (d) => d, unqueue: (d) => d, // old dbs' events: hold and unhold are Backlog and Ready moves
+  block: (d) => d, stay: (d) => d, "stay-end": () => "stay end", role: (d) => d,
 };
 // Each kind: [filter group, level ("you" waits on you, "warn" a problem, "good"), in the summary].
 export const KIND = Object.fromEntries(Object.entries({
   "task-add": ["tasks", "", 1], claim: ["tasks", "", 1], done: ["tasks", "good", 1], block: ["tasks", "you", 1], "task-blocked": ["tasks", "you", 1],
   unblock: ["tasks", "", 1], release: ["tasks", "", 1], drop: ["tasks", "", 1], reap: ["tasks", "warn", 1], "lease-late": ["tasks", "", 0],
-  "task-priority": ["tasks", "", 0], "task-after": ["tasks", "", 0], queue: ["tasks", "", 1], unqueue: ["tasks", "", 0], hold: ["tasks", "", 1],
+  "task-priority": ["tasks", "", 1], "task-after": ["tasks", "", 1], queue: ["tasks", "", 1], unqueue: ["tasks", "", 0], hold: ["tasks", "", 1],
   unhold: ["tasks", "", 1], startable: ["tasks", "", 0], "task-backlog": ["tasks", "", 1], "task-ready": ["tasks", "", 1], "task-assign": ["tasks", "", 1],
   "task-place": ["tasks", "", 1], "task-duplicate": ["tasks", "", 1],
   push: ["code", "", 1], "ci-red": ["code", "warn", 1], "ci-green": ["code", "good", 1], conflict: ["code", "warn", 1], "conflict-compat": ["code", "", 0],
@@ -64,48 +51,39 @@ export const KIND = Object.fromEntries(Object.entries({
   "remote-clean": ["machine", "", 0], "orphan-kill": ["machine", "warn", 1],
   other: ["other", "", 0],
 }).map(([k, [group, level, show]]) => [k, { group, level, show: Boolean(show) }]));
-const FOLD = { spawn: { same: true }, end: {}, "task-add": { same: true }, drop: { same: true } };
+const FOLD = { spawn: { same: true }, end: {}, "task-add": { same: true } };
 export const FILTERS = [["all", "All"], ["you", "Needs you"], ["tasks", "Tasks"], ["code", "Code"], ["agents", "Agents"], ["messages", "Messages"], ["machine", "Machine"]];
 
 // The log's line for an event (the old panel's evLine).
 function logText(e) {
   const d = one(e.data);
-  switch (e.kind) {
-    case "push": return [`pushed ${pushBranch(e)}`.trim(), one(e.subject)].filter(Boolean).join(" — ");
-    case "claim": return `claimed ${d}`;
-    case "done": return `done ${d}`;
-    case "task-add": return `added ${d}`;
-    case "spawn": return `spawned ${d}`;
-    case "end": return d ? `ended · ${d}` : "ended";
-    case "ci-red": return `main CI red${d ? ` · run ${d}` : ""}`;
-    case "compact": return "compacted context";
-    default: return SAYS[e.kind]?.(d) ?? [d, e.path].filter(Boolean).join(" ");
-  }
+  if (e.kind === "push") return [pushBranch(e), one(e.subject)].filter(Boolean).join(" · ");
+  return SAYS[e.kind]?.(d) ?? [d, e.path].filter(Boolean).join(" ");
 }
 
 // What one event says in the summary: { text, sub, part (its piece of a folded row), open, chip, meta, task }.
-function say(s, e, kind, told) {
+function say0(s, e, kind, told) {
   const data = one(e.data), m = /^#(\d+)\s*(.*)$/.exec(data);
   const task = (id) => s.tasks.find((k) => k.id === Number(id)), agent = s.agents.find((a) => a.name === e.agent);
   const ref = m ? `#${m[1]} ${task(m[1])?.title ?? m[2]}`.trim() : data, id = m ? Number(m[1]) : null;
   const title = (m) => (m ? `#${m[1]} ${task(m[1])?.title ?? ""}`.trim() : data); // the id and title only: what follows it is the event's own data
   switch (kind) {
-    case "task-add": return { text: `added ${ref}`, part: m ? `#${m[1]}` : data, task: id };
-    case "claim": return { text: `claimed ${ref}`, task: id };
-    case "done": return { text: `finished ${ref}`, chip: evidence(m?.[2]), task: id };
+    case "task-add": return { text: `#${id} → Ready (created)`, part: m ? `#${m[1]}` : data, task: id };
+    case "claim": return { text: `#${id} → In Progress`, task: id };
+    case "done": return { text: `#${id} → Completed`, chip: evidence(m?.[2]), task: id };
     case "ci-green": return { text: `main CI is green again (run ${/green run (\d+)/.exec(data)?.[1] ?? "?"})` };
-    case "block": return { text: `asked you about #${m?.[1]}: ${shortUrls(m?.[2] ?? "").text}`, task: id, open: task(m?.[1])?.state === "needs_input" };
-    case "task-blocked": { const k = Number(e.path); return { text: `#${e.path} is waiting on you: ${shortUrls(data).text}`, task: Number.isInteger(k) ? k : null, open: task(e.path)?.state === "needs_input" }; }
-    case "blocked": return { text: "stopped at a prompt in its terminal", open: agent?.status === "blocked" };
-    case "unblock": return { text: `unblocked ${ref}`, task: id };
-    case "release": return { text: `gave back ${ref}`, task: id };
-    case "drop": return { text: `cancelled ${ref}`, part: m ? `#${m[1]}` : data, task: id };
-    case "hold": case "task-backlog": return { text: `moved ${title(m)} to Backlog`, sub: m?.[2] || null, task: id };
-    case "unhold": case "task-ready": return { text: `moved ${title(m)} to Ready`, task: id };
-    case "task-assign": { const who = m?.[2]?.trim(); return { text: `assigned ${title(m)}`, chip: who && who !== "-" ? who : "Unassigned", task: id }; }
-    case "task-place": { const at = (m?.[2] ?? "").split(" ")[1]; return { text: `moved ${title(m)} in the queue`, meta: at && at !== "-" ? `Queue ${at}` : "", task: id }; }
-    case "task-duplicate": return { text: `marked ${title(m)} a duplicate`, chip: `of ${(m?.[2] ?? "").trim()}`, task: id };
-    case "reap": return { text: /lease/.test(data) ? `lost ${data.replace(/^task /, "").replace(/ lease expired$/, "")}: its lease ran out` : e.path ? `lost its lock on ${e.path}: it expired` : "is gone: its terminal closed" };
+    case "block": return { text: `#${m?.[1]} → Needs Input`, sub: shortUrls(m?.[2] ?? "").text, task: id, open: task(m?.[1])?.state === "needs_input" };
+    case "task-blocked": { const k = Number(e.path); return { text: `#${e.path} → waiting on you`, sub: shortUrls(data).text, task: Number.isInteger(k) ? k : null, open: task(e.path)?.state === "needs_input" }; }
+    case "blocked": return { text: "at a prompt", open: agent?.status === "blocked" };
+    case "unblock": return { text: `#${id} → In Progress`, task: id };
+    case "release": return { text: `#${id} → Ready`, task: id };
+    case "drop": return { text: `#${id} → Cancelled`, sub: m?.[2] || null, part: m ? `#${m[1]}` : data, task: id };
+    case "hold": case "task-backlog": return { text: `#${id} → Backlog`, sub: m?.[2] || null, task: id };
+    case "unhold": case "task-ready": return { text: `#${id} → Ready`, task: id };
+    case "task-assign": { const who = m?.[2]?.trim(); return { text: `#${id} → Assigned`, chip: who && who !== "-" ? who : "Unassigned", task: id }; }
+    case "task-place": { const at = (m?.[2] ?? "").split(" ")[1]; return { text: `#${id} Queue ${at ?? ""}`.trim(), task: id }; }
+    case "task-duplicate": return { text: `#${id} → Duplicate ${(m?.[2] ?? "").trim()}`, task: id };
+    case "reap": return { text: /lease/.test(data) ? `lease expired · ${data.replace(/^task /, "").replace(/ lease expired$/, "")}` : e.path ? `lock expired · ${e.path}` : "terminal closed" };
     case "push": return { text: `pushed ${pushBranch(e)}`.trim(), sub: one(e.subject) };
     case "ci-red": return { text: `main CI failed (run ${data})`, meta: told(data) ? `told ${plural(told(data), "agent")}` : "", open: (s.ci?.red_streak ?? 0) > 0 };
     case "conflict": return { text: `edits collide with ${data}'s in ${e.path}`, open: s.conflicts.some((c) => c.path === e.path && [c.a, c.b].includes(e.agent)) };
@@ -121,6 +99,17 @@ function say(s, e, kind, told) {
     case "stay-hung": case "stay-nowaiter": case "stay-unwoken": return { text: SAYS[kind](data), open: agent?.stay_sign === kind.slice(5) };
     default: return { text: SAYS[kind]?.(data) ?? data, task: id };
   }
+}
+
+// The kinds that are a task's move: shown as a table row (who, #task, change) from tree.js evCells, not a sentence.
+const TABLE = new Set(["task-add", "claim", "done", "release", "drop", "hold", "unhold", "task-backlog", "task-ready", "task-assign", "task-place",
+  "task-duplicate", "task-priority", "task-after", "unblock", "block", "limits"]);
+const WORD = { "stay-hung": "hung", "stay-nowaiter": "no waiter", "stay-unwoken": "did not wake", blocked: "at a prompt" };
+function say(s, e, kind, told, ctx) {
+  const r = say0(s, e, kind, told);
+  if (WORD[kind]) r.cells = [{ t: "chip", text: WORD[kind], red: kind !== "blocked" }];
+  if (TABLE.has(kind)) { const cells = evCells(kind, one(e.data), r.task ?? null, ctx); if (cells) { r.cells = cells; delete r.chip; delete r.meta; if (kind === "done") r.chip = evidence(one(e.data).replace(/^#\d+\s*/, "")); } }
+  return r;
 }
 
 // One block is up to four events within a minute: the agent's "asked you", the task's "waiting on you", the swarm's
@@ -152,6 +141,7 @@ export function actItems(s, log) {
   for (const m of items) { const n = m.dests.length; m.meta = `to ${n > 1 ? `${n} agents` : m.dests[0] === "all" ? "everyone" : m.dests[0] ?? "?"}`; delete m.dests; }
   const told = (id) => msgs.filter((m) => m.kind === "system" && (m.body ?? "").startsWith(`main CI is red (run ${id}`)).length;
   let episode = null, prev = null;
+  const ctx = { prio: new Map(), list: new Map() }; // a priority event's old value and a place event's list, read oldest first
   for (const e of [...evs].reverse()) { // oldest first: an episode opens before it closes, and runs fold forward
     if (e.kind === "post") continue; // its message is the row
     const kind = e.kind === "done" && e.agent === "swarm" && /green run/.test(e.data ?? "") ? "ci-green" : Object.hasOwn(KIND, e.kind ?? "") ? e.kind : "other";
@@ -171,11 +161,15 @@ export function actItems(s, log) {
       episode = prev;
       continue;
     }
-    const it = { key, ts, who, kind, ...say(s, e, kind, told) };
+    const it = { key, ts, who, kind, ...say(s, e, kind, told, ctx) };
+    if (kind === "task-duplicate" && it.task != null) { // `task drop --duplicate-of` writes a drop and a duplicate event: one row
+      const d = items.find((x) => x.kind === "drop" && x.task === it.task && Math.abs(x.ts - ts) <= 120);
+      if (d) { d.cells = it.cells; d.text = it.text; continue; }
+    }
     if (e.kind === "pressure") Object.assign((episode = it), { since: ts, durs: [] });
     const f = FOLD[kind];
     if (f && prev?.kind === kind && it.ts - prev.ts < 120 && (!f.same || prev.who === who)) {
-      prev.parts.push(it.part); prev.whos.push(who); prev.full.push(`${who} ${it.text}`); prev.ts = it.ts;
+      prev.parts.push(it.part); prev.ids = [...(prev.ids ?? [prev.task]), it.task]; prev.whos.push(who); prev.full.push(`${who} ${it.text}`); prev.ts = it.ts;
       const n = prev.parts.length;
       if (kind === "end") Object.assign(prev, { who: `${n} agents`, text: `${andList(prev.whos)} ended` });
       else prev.text = `${{ spawn: "started", "task-add": "added", drop: "cancelled" }[kind]} ${plural(n, kind === "spawn" ? "agent" : "task")}: ${andList(prev.parts)}`;
@@ -187,6 +181,7 @@ export function actItems(s, log) {
   items.sort((a, b) => b.ts - a.ts);
   if (!log) foldAsks(items);
   for (const i of items) {
+    if (i.who === "human") i.who = "you";
     for (const k of ["who", "text", "sub", "chip", "meta", "raw"]) if (i[k] != null) i[k] = line(i[k], k === "text" ? 400 : 120);
     if (i.full) i.full = i.full.slice(0, 50).map((x) => line(x, 300));
     delete i.parts; delete i.whos; delete i.durs; delete i.since; delete i.part;

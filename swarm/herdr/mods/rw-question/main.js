@@ -118,8 +118,9 @@ export default class Question extends View {
   question(t, { a, k }) {
     return this.card(t, "question", true).px(16).py(14).gap(10)
       .child(h_flex().gap(6).min_w(0).text_size(13)
-        .child(div().flex_none().font_semibold().text_color(t.blocked).child(`${a.name} asks you`))
-        .child(div().truncate().text_color(t.muted).child(`· blocked on #${k.id} for ${dur((k.blocked_s ?? 0) * 1000)}`)))
+        .child(div().flex_none().font_semibold().text_color(t.blocked).child(a.name))
+        .child(div().flex_none().text_color(t.muted).child(`#${k.id}`))
+        .child(div().truncate().text_color(t.dim).child(dur((k.blocked_s ?? 0) * 1000))))
       .child(div().text_size(15).line_height("22px").whitespace_normal().text_color(t.foreground).child(k.question ?? k.title))
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().id("answer").flex_1().min_w(200).h(32).px(12).flex().items_center().rounded(9).border(1)

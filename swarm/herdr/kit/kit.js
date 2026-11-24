@@ -14,6 +14,7 @@ export const R = { tag: 3, ctl: 5, card: 8, win: 10 };
 // The mono face for ids, tags and ages: the terminal font. A view sets it once a render (settings() is a host call).
 let MONO = "JetBrains Mono";
 export const useMono = (family) => { if (family) MONO = family; };
+export const mono = () => MONO;
 
 // ---- colour -------------------------------------------------------------------------------------------------------
 // Hues the theme lacks: landing violet, a second violet for repos, amber for swarms. The user kept both violets.
@@ -104,27 +105,87 @@ export function agentGlyph(t, status, size = 10) {
     default: return box.rounded(size).border(1.5).border_color(c.idle);
   }
 }
-// Tasks (12 px): backlog faint dashed ring, waiting dashed ring, ready ring, in progress half, needs input three quarters,
-// in review dot, completed filled. `state` is the glyph's own word (wait, prog, block, land, done, back); the board maps a task state to it.
+// Tasks (12 px), Linear's circle set: Backlog a faint dashed ring, Ready an empty ring, In Progress a ring with its right half
+// filled, Needs Input a red ring round a square, In Review a green ring three quarters full, Completed a blue disc with a
+// check, Cancelled a grey disc with a cross, Duplicate a grey disc with an equals sign. wait is the dashed ring of a Ready
+// task's dependency mark. `state` is the glyph's own word (back, ready, wait, prog, block, land, done, cancel, dup);
+// glyphOf maps a task state to it.
+export const glyphOf = (state) => ({ backlog: "back", ready: "ready", in_progress: "prog", needs_input: "block", in_review: "land", completed: "done",
+  cancelled: "cancel", duplicate: "dup" })[state] ?? "ready";
 export function taskGlyph(t, state, size = 12, m = null, key = null) {
-  const c = colors(t), col = { prog: c.working, block: c.asks, land: c.landing, done: c.done }[state] ?? t.dim;
+  const c = colors(t), col = { prog: c.working, block: c.asks, land: c.done, done: t.ansi4, cancel: t.dim, dup: t.dim }[state] ?? t.muted;
   const ring = h_flex().relative().flex_none().rounded(99).border(1.5).border_color(col);
   const part = () => div().absolute().bg(col);
   const half = part().top("15%").bottom("15%").left("50%").right("15%").rounded_r(99);
   const quarter = part().top("50%").bottom("15%").left("15%").right("50%").rounded_bl(99);
-  const g = state === "back" ? ring.border_dashed().opacity(0.45)
-    : state === "wait" ? ring.border_dashed().opacity(0.7)
+  const disc = (ch) => h_flex().flex_none().rounded(99).bg(col).items_center().justify_center()
+    .child(div().text_size(Math.max(7, size * 0.72)).font_semibold().text_color(c.ink).child(ch));
+  const g = state === "back" ? ring.border_dashed().opacity(0.55)
+    : state === "wait" ? ring.border_dashed().opacity(0.8)
     : state === "prog" ? ring.child(half)
-    : state === "block" ? ring.child(half).child(quarter)
-    : state === "land" ? ring.child(part().top("32%").bottom("32%").left("32%").right("32%").rounded(99))
-    : state === "done" ? ring.bg(col)
+    : state === "block" ? ring.child(part().top("32%").bottom("32%").left("32%").right("32%").rounded(1))
+    : state === "land" ? ring.child(half).child(quarter)
+    : state === "done" ? disc("✓")
+    : state === "cancel" ? disc("×")
+    : state === "dup" ? disc("=")
     : ring;
   return stamped(g, m, key ?? `task:${state}`, size);
 }
-// Urgent (coral), High (orange), the rest dim (None, Medium, Low): a mono word, 44 px. `p` is the CLI's name.
-const PRIO = { none: "None", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
-export const priority = (t, p) => div().w(44).flex_none().font_family(MONO).text_size(10)
-  .text_color(p === "urgent" ? t.blocked : p === "high" ? t.working : t.dim).child(PRIO[p] ?? "");
+// Priority as an icon (Linear's): Urgent a filled square with "!", High, Medium and Low three bars with three, two and one
+// lit, None three dots. `p` is the CLI's name.
+const PRIO = { none: "No priority", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
+export const prioName = (p) => PRIO[p] ?? "";
+export function priority(t, p, size = 14) {
+  const c = colors(t), lit = { high: 3, medium: 2, low: 1 }[p], dim = t.dim + "88", fg = t.muted;
+  const box = h_flex().w(size).h(size).flex_none().items_center().justify_center();
+  if (p === "urgent") return box.child(h_flex().size(size - 2).rounded(3).bg(t.foreground).items_center().justify_center()
+    .child(div().text_size(size - 5).font_bold().text_color(c.ink).child("!")));
+  if (lit == null) return box.gap(1.5).children([0, 1, 2].map(() => div().size(2).rounded(1).bg(t.dim)));
+  return box.items_end().gap(1.5).pb(2).children([4, 7, 10].map((h, i) => div().w(2.5).h(h * size / 14).rounded(1).bg(i < lit ? fg : dim)));
+}
+
+// A label as a small filled tag; a person (the user, "human") as a head over shoulders; a checkbox.
+export const labelTag = (t, text) => h_flex().h(16).px(5).flex_none().items_center().rounded(R.tag).bg(t.border).font_family(MONO).text_size(10).text_color(t.muted).child(text);
+export const personGlyph = (t, size = 9, color = null) => div().w(size).h(size + 1).flex_none().flex().flex_col().items_center().gap(1)
+  .child(div().size(size * 0.42).rounded(99).bg(color ?? t.muted)).child(div().w(size * 0.9).h(size * 0.42).rounded_t(99).bg(color ?? t.muted));
+export const checkbox = (t, on, some = false) => h_flex().size(14).flex_none().items_center().justify_center().rounded(3).border(1).border_color(on || some ? t.foreground : t.dim)
+  .when(on, (e) => e.bg(t.foreground).child(div().text_size(10).font_bold().text_color(colors(t).ink).child("✓")))
+  .when(some && !on, (e) => e.child(div().w(6).h(2).rounded(1).bg(t.foreground)));
+
+// ---- table cells --------------------------------------------------------------------------------------------------
+// A task event's change as inline cells (tree.js evCells): "→ ◌ Backlog ▢ note", "Queue 4 → 1", "Low → Medium", "→ Duplicate #1810".
+export const STATE_WORD = { backlog: "Backlog", ready: "Ready", in_progress: "In Progress", needs_input: "Needs Input", in_review: "In Review",
+  completed: "Completed", cancelled: "Cancelled", duplicate: "Duplicate" };
+const dimText = (t, s) => div().flex_none().text_color(t.dim).child(s);
+export const noteChip = (t, text) => h_flex().flex_none().max_w(280).gap(4).items_center().text_size(TYPE.meta).text_color(t.dim)
+  .child(div().w(8).h(8).rounded(2).border(1).border_color(t.dim)).child(div().truncate().child(text));
+export const chipText = (t, s) => h_flex().h(18).px(5).flex_none().items_center().rounded(R.tag).border(1).border_color(t.border).font_family(MONO).text_size(TYPE.meta).text_color(t.muted).child(s);
+export const stateCell = (t, st, label = STATE_WORD[st]) => h_flex().flex_none().gap(5).items_center().child(taskGlyph(t, glyphOf(st), 12)).child(div().text_color(t.foreground).child(label));
+export function cells(t, parts, { onTask } = {}) {
+  const arrow = () => dimText(t, "→");
+  const el = (p) => {
+    switch (p.t) {
+      case "to": return h_flex().flex_none().gap(6).items_center().child(arrow()).child(stateCell(t, p.state, p.created ? "Created " + STATE_WORD[p.state] : STATE_WORD[p.state]))
+        .when(Boolean(p.note), (e) => e.child(noteChip(t, p.note))).when(p.place != null, (e) => e.child(chipText(t, `Queue ${p.place}`)));
+      case "move": return h_flex().flex_none().gap(6).items_center().child(dimText(t, p.list))
+        .when(p.from != null, (e) => e.child(div().font_family(MONO).text_color(t.foreground).child(String(p.from))).child(arrow()))
+        .child(div().font_family(MONO).text_color(t.foreground).child(String(p.to)));
+      case "prio": return h_flex().flex_none().gap(6).items_center()
+        .when(Boolean(p.from), (e) => e.child(priority(t, p.from, 12)).child(div().text_color(t.muted).child(PRIO[p.from] ?? p.from)).child(arrow()))
+        .when(!p.from, (e) => e.child(dimText(t, "Priority")).child(arrow()))
+        .child(priority(t, p.to, 12)).child(div().text_color(t.foreground).child(PRIO[p.to] ?? p.to));
+      case "dup": return h_flex().flex_none().gap(6).items_center().child(arrow()).child(stateCell(t, "duplicate"))
+        .child(div().id(`dup-${p.of}`).font_family(MONO).text_color(t.ansi4).cursor_pointer().hover((s) => s.underline())
+          .on_click((_e, cx) => { if (onTask) { cx.stop_propagation(); onTask(Number(p.of)); } }).child(`#${p.of}`));
+      case "who": return h_flex().flex_none().gap(6).items_center().child(dimText(t, p.name ? "Assigned" : "Unassigned")).when(Boolean(p.name), (e) => e.child(div().text_color(t.foreground).child(p.name)));
+      case "chip": return chipText(t, p.text).when(Boolean(p.red), (e) => e.text_color(t.blocked));
+      case "kv": return h_flex().flex_none().gap(6).items_center().child(dimText(t, p.k)).child(div().font_family(MONO).text_color(t.foreground).child(String(p.v)));
+      case "waits": return h_flex().flex_none().gap(6).items_center().child(dimText(t, "Waiting on")).children(p.ids.map((i) => chipText(t, `#${i}`)));
+      default: return div().min_w(0).truncate().text_color(t.muted).child(p.text ?? "");
+    }
+  };
+  return h_flex().flex_1().min_w(0).gap(10).items_center().children(parts.map(el));
+}
 
 // ---- tags and chips -----------------------------------------------------------------------------------------------
 const tag = () => h_flex().h(16).px(4).flex_none().items_center().rounded(R.tag).font_family(MONO).text_size(10);
@@ -194,8 +255,8 @@ export function askSurface(t, id, { agent, task, age = "", question, field = nul
   const c = colors(t);
   return div().id(id).flex().flex_col().gap(8).px(12).py(10).rounded(R.card).border(1).border_color(c.askLine).bg(c.askBg)
     .child(h_flex().gap(8).items_center().text_size(TYPE.body)
-      .child(agentGlyph(t, "asks")).child(div().text_color(c.asks).child(`${agent} asks${task != null ? ` about #${task}` : ""}`))
-      .child(meta(t, age)))
+      .child(agentGlyph(t, "asks")).child(div().text_color(c.asks).child(agent ?? "")).when(task != null, (e) => e.child(chipText(t, `#${task}`)))
+      .child(div().flex_1()).child(div().font_family(MONO).text_size(TYPE.meta).text_color(t.dim).child(age)))
     .child(div().text_size(TYPE.body).text_color(t.foreground).child(question ?? ""))
     .child(h_flex().gap(8).items_center()
       .when(Boolean(field), (el) => el.child(div().flex_1().min_w(0).child(field)))

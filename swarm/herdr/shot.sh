@@ -119,7 +119,7 @@ wait_for 30 test -f "$H/layouts/main.json" -a -d "$H/mods/tabs"
 echo '{"url_command": "true"}' > "$H/calendar.json" # no calendar: never ask a keyring
 "$here/../../herdr-mods/herdr-mods" install >/dev/null
 rm "$H/mods/swarm"
-cp -r "$here/mods/swarm" "$H/mods/swarm"
+cp -rL "$here/mods/swarm" "$H/mods/swarm"
 sed -i "s|^const SCREEN = \"home\";|const SCREEN = \"$screen\";|" "$H/mods/swarm/main.js"
 grep -q "^const SCREEN = \"$screen\";" "$H/mods/swarm/main.js" || { echo "shot.sh: main.js no longer has the line const SCREEN = \"home\"; update shot.sh" >&2; exit 1; }
 

@@ -129,13 +129,14 @@ export default class AllSwarms extends View {
         .child(div().font_normal().child(`${asks.length}, across ${ws.length === 2 ? "both swarms" : `${ws.length} swarms`}`)))
       .child(h_flex().gap(12).flex_wrap().items_start().children(asks.slice(0, NEEDS).map((n, i) => {
         const pr = n.kind === "prompt" ? this.promptOf(n.w, n.s, n.agent, cx) : null, hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toTimeString().slice(0, 5); };
-        const [title, text] = n.kind === "question" ? [`${n.agent} asks about #${n.task.id}`, one(n.task.question) || n.task.title]
-          : n.kind === "prompt" ? [`${n.agent} stopped at a prompt`, pr.text]
-          : n.kind === "hung" ? [`${n.agent} is hung`, "watchd keeps it, but it has done nothing for a long time."]
-          : n.kind === "ci" ? ["main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
-          : n.kind === "dep-cancelled" ? ["Waits on a Cancelled task", `#${n.task.id} ${n.task.title ?? ""} · after ${n.deps.map((d) => `#${d}`).join(" ")}`]
-          : n.kind === "watchd" ? ["watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
-          : [n.w.on ? `${n.w.on} is short on memory` : "This computer is short on memory", n.line || ""];
+        const cc = (x, red) => this.chip(t, x).text_color(red ? t.blocked : t.muted);
+        const [title, text, chips] = n.kind === "question" ? [n.agent, one(n.task.question) || n.task.title, [cc(`#${n.task.id}`)]]
+          : n.kind === "prompt" ? [n.agent, pr.text, [cc("at a prompt")]]
+          : n.kind === "hung" ? [n.agent, "", [cc("hung", true)]]
+          : n.kind === "ci" ? ["main CI", "", [cc("red", true), cc(`run ${n.run.id ?? "?"}`), ...(n.reds > 1 ? [cc(`${n.reds} in a row`)] : []), cc(n.fixer ? `${n.fixer.owner} · #${n.fixer.id}` : "nobody on it")]]
+          : n.kind === "dep-cancelled" ? [`#${n.task.id}`, n.task.title ?? "", [cc("waiting on a cancelled task", true), ...n.deps.map((d) => cc(`#${d}`, true))]]
+          : n.kind === "watchd" ? ["watchd", "", [cc("stopped", true)]]
+          : [n.w.on ?? "This computer", n.line || "", [cc("short on memory", true)]];
         const acts = n.kind === "question" ? [this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)]
           : n.kind === "prompt" ? [...this.promptBtns(t, pr, n.agent, i), this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))]
           : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(n.w, nudgeArgs(n.agent), cx)), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))]
@@ -145,8 +146,8 @@ export default class AllSwarms extends View {
           : [this.btn(t, `sys-${i}`, n.kind === "watchd" ? "Restart in System" : "System", () => this.openSection(n.w, "system"))];
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, n.w.swarm))
-            .child(div().flex_none().font_medium().text_color(t.foreground).child(title))
-            .child(div().truncate().text_color(t.dim).child(n.ago != null ? `· ${dur(n.ago * 1000)}` : "")))
+            .child(div().flex_none().font_medium().text_color(t.foreground).child(title)).children(chips)
+            .child(div().truncate().text_color(t.dim).child(n.ago != null ? dur(n.ago * 1000) : "")))
           .child(v_flex().text_size(13.5).line_height("19px").text_color(t.foreground).children(text.split("\n").slice(0, 8).map((l) => div().whitespace_normal().child(l))))
           .when(Boolean(pr?.warn), (el) => el.child(div().whitespace_normal().text_size(12.5).text_color(t.blocked).child(pr?.warn ?? "")))
           .child(h_flex().gap(8).items_center().flex_wrap().children(acts))
