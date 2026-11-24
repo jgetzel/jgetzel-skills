@@ -635,6 +635,19 @@ theorem reapTask_spec {r : Task} {t now : Int} {db : Db} (h : (Watchd.reapTask r
     · simp at h
   · simp at h
 
+/-- Reap never takes a person's claim: the row it reopened was not the user's. -/
+theorem reapTask_not_human {r : Task} {t now : Int} {db : Db} (h : (Watchd.reapTask r t now db).2 = true) :
+    ∃ x, db.find r.id = some x ∧ x.owner ≠ some HUMAN := by
+  unfold Watchd.reapTask at h
+  split at h
+  · rename_i x hx
+    split at h
+    · rename_i hc
+      simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, bne_iff_ne, ne_eq] at hc
+      exact ⟨x, hx, hc.1.1.2⟩
+    · simp at h
+  · simp at h
+
 theorem reapTask_refused {r : Task} {t now : Int} {db : Db} (h : (Watchd.reapTask r t now db).2 = false) :
     (Watchd.reapTask r t now db).1 = db := by
   unfold Watchd.reapTask at h ⊢
@@ -800,14 +813,16 @@ theorem reserveTask_top {db : Db} {e : Option String} {name cwd : String} {tid :
     exact Option.some.inj this
 
 /-- Sp1 and Sp2 on the code: after a failed launch no claim of the new agent on its task remains, the task it held is
-Ready with no assignee (back in the pool at once), and the row, if no terminal took it, is ended. -/
+Ready with no assignee (back in the pool at once), and if no terminal took the row (the one `agent name` reads), every
+row of that name is ended. -/
 theorem unreserve_spec (db : Db) (name : String) (r : Task) (now : Int) :
     (∀ t ∈ (Spawn.unreserve db name (some r) now).tasks, (t.id : Int) = r.id → t.owner = some name →
       t.status ≠ .inProgress) ∧
     (∀ t ∈ db.tasks, (t.id : Int) = r.id → t.owner = some name → t.status = .inProgress →
       { t with state := .ready none, first_claimed_at := r.first_claimed_at } ∈
         (Spawn.unreserve db name (some r) now).tasks) ∧
-    (∀ a, (Spawn.unreserve db name (some r) now).agent name = some a → a.hc = none → a.ended = some now) := by
+    (∀ a, (Spawn.unreserve db name (some r) now).agent name = some a → a.hc = none →
+      ∀ b ∈ (Spawn.unreserve db name (some r) now).agents, b.name = name → b.ended = some now) := by
   refine ⟨?_, ?_, ?_⟩
   · intro t ht hi ho
     simp only [Spawn.unreserve] at ht
@@ -833,15 +848,13 @@ theorem unreserve_spec (db : Db) (name : String) (r : Task) (now : Int) :
     · simp only [Agents.endRow, Agents.release, Db.setAgent, List.mem_map]
       exact ⟨_, hm, by simp [Task.owner, TaskState.owner]⟩
     · exact hm
-  · intro a ha hh
-    simp only [Spawn.unreserve] at ha ⊢
+  · intro a ha hh b hb hn
+    simp only [Spawn.unreserve] at ha hb
     split at ha
-    · simp only [Db.agent, Agents.endRow, Agents.release, Db.setAgent] at ha
-      have hm := List.mem_of_find?_eq_some ha
-      have hn := List.find?_some ha
-      simp only [List.mem_map] at hm
-      obtain ⟨b, ⟨c, -, rfl⟩, rfl⟩ := hm
-      by_cases e : c.name = name <;> simp_all
+    · rename_i hc
+      simp only [hc, ↓reduceIte, Agents.endRow, Agents.release, Db.setAgent, List.mem_map] at hb
+      obtain ⟨c, ⟨d, -, rfl⟩, rfl⟩ := hb
+      by_cases e : d.name = name <;> simp_all
     · rename_i hc
       rw [ha] at hc
       simp_all
