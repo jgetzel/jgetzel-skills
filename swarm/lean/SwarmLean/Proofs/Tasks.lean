@@ -8,8 +8,12 @@ the one assumption. -/
 namespace SwarmLean.Board
 open Tasks
 
-/-- `v` is `u` with its id, state, owner and evidence as they were. -/
-def Keeps (u v : Task) : Prop := v.id = u.id ∧ v.state = u.state ∧ v.owner = u.owner ∧ v.evidence = u.evidence
+/-- `v` is `u` with its id, status, owner and evidence as they were. -/
+def Keeps (u v : Task) : Prop := v.id = u.id ∧ v.status = u.status ∧ v.owner = u.owner ∧ v.evidence = u.evidence
+
+/-- A lease moved keeps the status and the owner. -/
+theorem renew_so (l : Int) (s : TaskState) : (s.renew l).status = s.status ∧ (s.renew l).owner = s.owner := by
+  cases s <;> exact ⟨rfl, rfl⟩
 
 /-! What each step does to the task table. -/
 
@@ -37,7 +41,7 @@ theorem after_spec (c : Ctx) (i : Int) (l : List Int) (db : Db) :
         · cases h
         · cases h; refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl, rfl⟩
 
-theorem priority_spec (c : Ctx) (i p : Int) (db : Db) :
+theorem priority_spec (c : Ctx) (i : Int) (p : Priority) (db : Db) :
     ((Tasks.priority c i p db).1.tasks = db.tasks ∧ (Tasks.priority c i p db).1.taskNext = db.taskNext) ∨
     ∃ f : Task → Task, (∀ u, Keeps u (f u)) ∧ (Tasks.priority c i p db).1.tasks = (db.set i f).tasks ∧
       (Tasks.priority c i p db).1.taskNext = db.taskNext := by
@@ -59,7 +63,7 @@ theorem renew_spec (c : Ctx) (i : Int) (l : String) (db : Db) :
     · exact .inl ⟨rfl, rfl⟩
     · split
       · exact .inl ⟨rfl, rfl⟩
-      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl, rfl⟩
+      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro u; exact ⟨rfl, (renew_so _ u.state).1, (renew_so _ u.state).2, rfl⟩
 
 theorem edit_spec (c : Ctx) (i : Int) (a : EditArgs) (db : Db) :
     ((Tasks.edit c i a db).1.tasks = db.tasks ∧ (Tasks.edit c i a db).1.taskNext = db.taskNext) ∨
@@ -75,11 +79,11 @@ theorem edit_spec (c : Ctx) (i : Int) (a : EditArgs) (db : Db) :
 theorem done_spec (c : Ctx) (i : Int) (e : String) (db : Db) :
     ((Tasks.done c i e db).1.tasks = db.tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext) ∨
     (∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ EvOk (f u).evidence ∧
-        ((f u).state = u.state ∨ (f u).state = .done)) ∧
+        ((f u).state = u.state ∨ (f u).status = .completed)) ∧
       (Tasks.done c i e db).1.tasks = (db.set i f).tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext) ∨
-    -- a red task: released, open and held
-    ∃ (f : Task → Task) (x : Tasks.DoneOut) (r : Task), db.find i = some r ∧ r.state = .claimed ∧
-      (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ (f u).state = .open) ∧
+    -- a red task: released to Backlog
+    ∃ (f : Task → Task) (x : Tasks.DoneOut) (r : Task), db.find i = some r ∧ r.status = .inProgress ∧
+      (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ (f u).status = .backlog) ∧
       (Tasks.done c i e db).1.tasks = (db.set i f).tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext ∧
       (Tasks.done c i e db).2 = .ok x := by
   unfold Tasks.done
@@ -101,26 +105,38 @@ theorem done_spec (c : Ctx) (i : Int) (e : String) (db : Db) :
       · exact .inl ⟨rfl, rfl⟩
       · rename_i hm
         split
-        · let f : Task → Task := fun t => { Tasks.reopenF t with evidence := some e, hold := some (strip e ++ " awaiting a green run") }
+        · let f : Task → Task := fun t => { t with state := .backlog none, evidence := some e, note := some (strip e ++ " awaiting a green run") }
           refine .inr (.inr ⟨f, .red, r, hr, ?_, fun _ => ⟨rfl, rfl, rfl⟩, rfl, rfl, rfl⟩)
           simp [mine] at hm; exact hm.2
         · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro; exact ⟨rfl, rfl, ev, .inr rfl⟩
 
+/-- Blocking keeps the owner and moves only In Progress, to Needs Input. -/
+theorem block_so (q : String) (s : TaskState) :
+    (s.block q).owner = s.owner ∧ ((s.block q).status = s.status ∨ (s.block q).status = .needsInput) := by
+  cases s <;> simp [TaskState.block, TaskState.status, TaskState.owner]
+
+/-- Unblocking keeps the owner and moves only Needs Input, to In Progress. -/
+theorem unblock_so (l : Int) (s : TaskState) :
+    (s.unblock l).owner = s.owner ∧ ((s.unblock l).status = s.status ∨ (s.unblock l).status = .inProgress) := by
+  cases s <;> simp [TaskState.unblock, TaskState.status, TaskState.owner]
+
 theorem block_spec (c : Ctx) (i : Int) (q : String) (db : Db) :
     ((Tasks.block c i q db).1.tasks = db.tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext) ∨
-    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).state = .blocked) ∧
+    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
+        ((f u).status = u.status ∨ (f u).status = .needsInput)) ∧
       (Tasks.block c i q db).1.tasks = (db.set i f).tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext := by
   unfold Tasks.block
   split
   · exact .inl ⟨rfl, rfl⟩
   · split
     · exact .inl ⟨rfl, rfl⟩
-    · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
+    · refine .inr ⟨_, ?_, rfl, rfl⟩; intro u; exact ⟨rfl, (block_so q u.state).1, rfl, (block_so q u.state).2⟩
 
 theorem unblock_spec (c : Ctx) (i : Int) (ans : String) (db : Db) :
     ((Tasks.unblock c i ans db).1.tasks = db.tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext) ∨
     ∃ r f, db.find i = some r ∧ r.owner.isSome ∧
-      (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).state = .claimed) ∧
+      (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
+        ((f u).status = u.status ∨ (f u).status = .inProgress)) ∧
       (Tasks.unblock c i ans db).1.tasks = (db.set i f).tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext := by
   unfold Tasks.unblock
   split
@@ -136,22 +152,32 @@ theorem unblock_spec (c : Ctx) (i : Int) (ans : String) (db : Db) :
           have hs : r.owner.isSome := Option.isSome_iff_ne_none.2 (by simpa using ho)
           dsimp only
           repeat' split
-          all_goals (refine .inr ⟨r, _, hr, hs, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩)
+          all_goals
+            refine .inr ⟨r, _, hr, hs, ?_, rfl, rfl⟩
+            intro u
+            exact ⟨rfl, (unblock_so _ u.state).1, rfl, (unblock_so _ u.state).2⟩
 
-theorem drop_spec (c : Ctx) (i : Int) (db : Db) :
-    ((Tasks.drop c i db).1.tasks = db.tasks ∧ (Tasks.drop c i db).1.taskNext = db.taskNext) ∨
-    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ (f u).state = .dropped) ∧
-      (Tasks.drop c i db).1.tasks = (db.set i f).tasks ∧ (Tasks.drop c i db).1.taskNext = db.taskNext := by
+theorem drop_spec (c : Ctx) (i : Int) (dup : Option Int) (note : Option String) (db : Db) :
+    ((Tasks.drop c i dup note db).1.tasks = db.tasks ∧ (Tasks.drop c i dup note db).1.taskNext = db.taskNext) ∨
+    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ ((f u).status = .cancelled ∨ (f u).status = .duplicate)) ∧
+      (Tasks.drop c i dup note db).1.tasks = (db.set i f).tasks ∧
+      (Tasks.drop c i dup note db).1.taskNext = db.taskNext := by
   unfold Tasks.drop
   split
   · exact .inl ⟨rfl, rfl⟩
   · split
     · exact .inl ⟨rfl, rfl⟩
-    · split
-      · exact .inl ⟨rfl, rfl⟩
-      · split
-        · exact .inl ⟨rfl, rfl⟩
-        · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
+    split
+    · exact .inl ⟨rfl, rfl⟩
+    split
+    · exact .inl ⟨rfl, rfl⟩
+    split
+    · exact .inl ⟨rfl, rfl⟩
+    split
+    · exact .inl ⟨rfl, rfl⟩
+    · cases dup
+      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, .inl rfl⟩
+      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, .inr rfl⟩
 
 /-! The invariant, over every command. -/
 
@@ -188,6 +214,17 @@ theorem binv_set {db db' : Db} {i : Int} {f : Task → Task} (hid : ∀ u, (f u)
   exact ⟨⟨set_tasks_ids db i f hid ▸ hnd, fun u hu => (all u hu).2, fun u hu => (all u hu).1.1⟩,
     fun u hu => (all u hu).1.2⟩
 
+/-- A task whose evidence is kept and whose status is kept or not Completed fits the invariant if it did. -/
+theorem ok_of_ev {u v : Task} (hu : TaskOk u) (he : v.evidence = u.evidence)
+    (hs : v.status = u.status ∨ v.status ≠ .completed) : TaskOk v := by
+  refine ⟨owned_all v, fun e => ?_⟩
+  rcases hs with hs | hs
+  · rw [he]; exact hu.2 (hs.symm.trans e)
+  · exact absurd e hs
+
+/-- A task not Completed fits the invariant. -/
+theorem ok_of_ne {v : Task} (h : v.status ≠ .completed) : TaskOk v := ⟨owned_all v, fun e => absurd e h⟩
+
 theorem keeps_ok {u v : Task} (h : Keeps u v) (hu : TaskOk u) : TaskOk v := by
   obtain ⟨-, hs, ho, he⟩ := h
   obtain ⟨⟨h1, h2⟩, h3⟩ := hu
@@ -195,11 +232,11 @@ theorem keeps_ok {u v : Task} (h : Keeps u v) (hu : TaskOk u) : TaskOk v := by
     fun e => by rw [he]; exact h3 (hs.symm.trans e)⟩
 
 /-- An open task without an owner fits the invariant. -/
-theorem ok_of_open {v : Task} (h : v.state = .open) (ho : v.owner = none) : TaskOk v := by
+theorem ok_of_open {v : Task} (h : v.status = .ready) (ho : v.owner = none) : TaskOk v := by
   simp [TaskOk, Task.Owned, DoneEv, h, ho]
 
 /-- A task in a state other than open and claimed fits any owner and, unless done, needs no evidence. -/
-theorem ok_of_state {v : Task} (h : v.state = .blocked ∨ v.state = .dropped ∨ v.state = .landing) : TaskOk v := by
+theorem ok_of_state {v : Task} (h : v.status = .needsInput ∨ v.status = .cancelled ∨ v.status = .inReview) : TaskOk v := by
   rcases h with h | h | h <;> exact ⟨⟨fun e => (by rw [h] at e; cases e), fun e => (by rw [h] at e; cases e)⟩,
     fun e => (by rw [h] at e; cases e)⟩
 
@@ -242,33 +279,30 @@ theorem step_binv (c : TCmd) (db : Db) (h : BInv db) : BInv (c.step db).1 := by
   | done c i e =>
     rcases done_spec c i e db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩ | ⟨f, -, -, -, -, hf, ht, hn, -⟩
     · exact binv_same ht hn h
-    · refine binv_set (fun u => (hf u).1) (fun u _ _ hu => ?_) ht hn h
-      obtain ⟨-, ho, hev, hs⟩ := hf u
-      refine ⟨?_, fun _ => hev⟩
-      rcases hs with hs | hs
-      · exact ⟨fun e => by rw [ho]; exact hu.1.1 (hs.symm.trans e), fun e => by rw [ho]; exact hu.1.2 (hs.symm.trans e)⟩
-      · exact ⟨fun e => (by rw [hs] at e; cases e), fun e => (by rw [hs] at e; cases e)⟩
-    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_open (hf u).2.2 (hf u).2.1) ht hn h
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ⟨owned_all _, fun _ => (hf u).2.2.1⟩) ht hn h
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_ne (by rw [(hf u).2.2]; nofun)) ht hn h
   | block c i q =>
     rcases block_spec c i q db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
     · exact binv_same ht hn h
-    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_state (.inl (hf u).2.2)) ht hn h
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ hu => ok_of_ev hu (hf u).2.2.1
+        ((hf u).2.2.2.imp_right fun e => by rw [e]; nofun)) ht hn h
   | unblock c i a =>
     rcases unblock_spec c i a db with ⟨ht, hn⟩ | ⟨r, f, hr, hs, hf, ht, hn⟩
     · exact binv_same ht hn h
-    · refine binv_set (fun u => (hf u).1) (fun u hu e _ => ?_) ht hn h
-      obtain rfl := find_unique h.1.1 hr hu e
-      obtain ⟨-, ho, hst⟩ := hf u
-      exact ⟨⟨fun _ => by rw [ho]; exact hs, fun e => (by rw [hst] at e; cases e)⟩, fun e => (by rw [hst] at e; cases e)⟩
-  | drop c i =>
-    rcases drop_spec c i db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ hu => ok_of_ev hu (hf u).2.2.1
+        ((hf u).2.2.2.imp_right fun e => by rw [e]; nofun)) ht hn h
+  | drop c i d n =>
+    rcases drop_spec c i d n db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
     · exact binv_same ht hn h
-    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_state (.inr (.inl (hf u).2.2))) ht hn h
+    · exact binv_set (fun u => (hf u).1)
+        (fun u _ _ _ => ok_of_ne (by rcases (hf u).2.2 with e | e <;> rw [e] <;> nofun)) ht hn h
   | land c i s l =>
     obtain ⟨hn, hs⟩ := land_spec c i s l db
-    rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
+    rcases hs with ⟨ht, -⟩ | ⟨r, g, hr, hrs, -, hg, ht, -⟩
     · exact binv_same ht hn h
-    · exact binv_set (fun u => (hg u).1) (fun u _ _ _ => ok_of_state (.inr (.inr (hg u).2.1))) ht hn h
+    · refine binv_set (fun u => (hg u).1) (fun u hu e _ => ?_) ht hn h
+      obtain rfl := find_unique h.1.1 hr hu e
+      exact ok_of_ne (by rw [((hg u).2.2 hrs).1]; nofun)
   | unland c i w =>
     obtain ⟨hn, hs⟩ := unland_spec c i w db
     rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, -⟩
@@ -296,17 +330,19 @@ theorem one_owner_all (cs : List TCmd) (i : Int) (a b : String) (ha : Owns (run 
 
 /-- S5 (model: `done_task_has_evidence`): after any task commands from the empty db, every done task has evidence:
 text that is not all whitespace. -/
-theorem done_has_evidence (cs : List TCmd) : ∀ t ∈ (run {} cs).tasks, t.state = .done → EvOk t.evidence :=
+theorem done_has_evidence (cs : List TCmd) : ∀ t ∈ (run {} cs).tasks, t.status = .completed → EvOk t.evidence :=
   (run_binv cs).2
 
 /-- S2 (model: `no_claim_before_dependencies_done`): a successful `task claim i` finds every task `i` is after done. -/
 theorem claim_deps_done {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} {r : Task}
     (h : (Tasks.claim c i l db).2 = .ok x) (hr : db.find i = some r) :
-    ∀ j ∈ depsOf r, ∀ u, db.find j = some u → u.state = .done := by
+    ∀ j ∈ depsOf r, ∀ u, db.find j = some u → u.status = .completed := by
   have hu : undone db r = [] := by
     unfold Tasks.claim at h
     rw [hr] at h
     dsimp only at h
+    split at h
+    · cases h
     split at h
     · cases h
     split at h
@@ -321,13 +357,13 @@ theorem claim_deps_done {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed}
 /-! One claim wins, over every task command. -/
 
 /-- Task `i` is on the board and not open. -/
-def Taken (db : Db) (i : Int) : Prop := ∃ t, db.find i = some t ∧ t.state ≠ .open
+def Taken (db : Db) (i : Int) : Prop := ∃ t, db.find i = some t ∧ t.status ≠ .ready ∧ t.status ≠ .backlog
 
 theorem taken_same {db db' : Db} {i : Int} (ht : db'.tasks = db.tasks) (h : Taken db i) : Taken db' i := by
   obtain ⟨t, hf, hs⟩ := h; exact ⟨t, by rw [find_congr ht]; exact hf, hs⟩
 
 theorem taken_set {db db' : Db} {i j : Int} {f : Task → Task} (hid : ∀ u, (f u).id = u.id)
-    (hno : j = i → ∀ u, u.state ≠ .open → (f u).state ≠ .open) (ht : db'.tasks = (db.set j f).tasks)
+    (hno : j = i → ∀ u, u.status ≠ .ready ∧ u.status ≠ .backlog → (f u).status ≠ .ready ∧ (f u).status ≠ .backlog) (ht : db'.tasks = (db.set j f).tasks)
     (h : Taken db i) : Taken db' i := by
   obtain ⟨t, hf, hs⟩ := h
   unfold Taken
@@ -373,7 +409,7 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     rcases hs with ⟨ht, hne⟩ | ⟨t, g, hf, ho, hg, ht, -⟩
     · exact ⟨taken_same ht h, by rw [toBool_false hne]; rfl⟩
     · have hij : j ≠ i := fun e => by
-        subst e; obtain ⟨u, hu, hs⟩ := h; rw [hf] at hu; cases hu; exact hs ho
+        subst e; obtain ⟨u, hu, hs⟩ := h; rw [hf] at hu; cases hu; rcases ho with ho | ho; exact hs.1 ho; exact hs.2 ho
       exact ⟨taken_set (fun u => (hg u).1) (fun e => absurd e hij) ht h, by simp [hij]⟩
   | release cc j af =>
     show Taken (Tasks.release cc j af db).1 i ∧ false = false
@@ -412,9 +448,9 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     rcases done_spec cc j e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩ | ⟨f, x, -, -, -, hf, ht, -, hx⟩
     · exact taken_same ht h
     · refine taken_set (fun u => (hf u).1) (fun _ u hu => ?_) ht h
-      rcases (hf u).2.2.2 with e | e <;> rw [e]
-      · exact hu
-      · exact nofun
+      rcases (hf u).2.2.2 with e | e
+      · unfold Task.status at hu ⊢; rw [e]; exact hu
+      · rw [e]; exact ⟨nofun, nofun⟩
     · have hij : j ≠ i := fun e' => by
         subst e'
         have : ReleasedOf j (.done cc j e, (Tasks.done cc j e db).2.toBool) = true := by
@@ -425,23 +461,27 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     refine ⟨?_, rfl⟩
     rcases block_spec cc j q db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u _ => by rw [(hf u).2.2]; exact nofun) ht h
+    · exact taken_set (fun u => (hf u).1)
+        (fun _ u hu => by rcases (hf u).2.2.2 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
   | unblock cc j a =>
     refine ⟨?_, rfl⟩
     rcases unblock_spec cc j a db with ⟨ht, -⟩ | ⟨-, f, -, -, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u _ => by rw [(hf u).2.2]; exact nofun) ht h
-  | drop cc j =>
+    · exact taken_set (fun u => (hf u).1)
+        (fun _ u hu => by rcases (hf u).2.2.2 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
+  | drop cc j d n =>
     refine ⟨?_, rfl⟩
-    rcases drop_spec cc j db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+    rcases drop_spec cc j d n db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u _ => by rw [(hf u).2.2]; exact nofun) ht h
+    · exact taken_set (fun u => (hf u).1)
+        (fun _ u _ => by rcases (hf u).2.2 with e | e <;> rw [e] <;> exact ⟨nofun, nofun⟩) ht h
   | land cc j s l =>
     refine ⟨?_, rfl⟩
     obtain ⟨-, hs⟩ := land_spec cc j s l db
     rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hg u).1) (fun _ u _ => by rw [(hg u).2.1]; exact nofun) ht h
+    · exact taken_set (fun u => (hg u).1)
+        (fun _ u hu => by rcases (hg u).2.1 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
   | unland cc j w =>
     show Taken (Tasks.unland cc j w db).1 i ∧ false = false
     refine ⟨?_, rfl⟩
@@ -474,7 +514,7 @@ theorem claimed_taken (cc : Ctx) (i : Int) (l : String) (db : Db) (h : (Tasks.cl
     Taken (Tasks.claim cc i l db).1 i := by
   obtain ⟨-, ⟨-, hne⟩ | ⟨t, g, hf, -, hg, ht, -⟩⟩ := claim_spec cc i l db
   · rw [toBool_false hne] at h; cases h
-  · refine ⟨g t, ?_, by rw [(hg t).2.1]; exact nofun⟩
+  · refine ⟨g t, ?_, by rw [(hg t).2.1]; exact ⟨nofun, nofun⟩⟩
     rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hf]
     simp [find_id hf]
 
@@ -559,7 +599,7 @@ theorem one_winner_all (before after : Db) (ran : List (TCmd × Bool)) (i : Int)
 theorem boardLe_total (red : Task → Nat) (a b : Task) : (boardLe red a b || boardLe red b a) = true := by
   unfold boardLe
   generalize red a = x; generalize red b = y
-  generalize (a.priority.map (· + 1)).getD 0 = p; generalize (b.priority.map (· + 1)).getD 0 = q
+  generalize (a.pos.map (· + 1)).getD 0 = p; generalize (b.pos.map (· + 1)).getD 0 = q
   dsimp only
   repeat' split
   all_goals simp_all <;> omega
@@ -569,8 +609,8 @@ theorem boardLe_trans (red : Task → Nat) (a b c : Task) (h1 : boardLe red a b 
     boardLe red a c = true := by
   unfold boardLe at *
   generalize red a = x at *; generalize red b = y at *; generalize red c = z at *
-  generalize (a.priority.map (· + 1)).getD 0 = p at *; generalize (b.priority.map (· + 1)).getD 0 = q at *
-  generalize (c.priority.map (· + 1)).getD 0 = r at *
+  generalize (a.pos.map (· + 1)).getD 0 = p at *; generalize (b.pos.map (· + 1)).getD 0 = q at *
+  generalize (c.pos.map (· + 1)).getD 0 = r at *
   dsimp only at *
   repeat' split at h1
   all_goals (repeat' split at h2)
@@ -578,7 +618,7 @@ theorem boardLe_trans (red : Task → Nat) (a b c : Task) (h1 : boardLe red a b 
   all_goals simp_all <;> omega
 
 /-- Rows sorted as `task board` sorts them (`mergeSort (boardLe red)`) are in board order: a red task before any
-other, then the lower priority number, then the lower id (model: `ranked_sorted`, `before_total`). -/
+other, then the earlier place (no place first), then the lower id (model: `ranked_sorted`, `before_total`). -/
 theorem board_sorted (red : Task → Nat) (l : List Task) : (l.mergeSort (boardLe red)).Pairwise (boardLe red · · = true) :=
   List.pairwise_mergeSort (le := boardLe red) (fun a b c h1 h2 => boardLe_trans red a b c h1 h2) (boardLe_total red) l
 
@@ -589,12 +629,12 @@ theorem pool_sorted (db : Db) : (pool db).Pairwise (boardLe redKey · · = true)
 /-- The pool is exactly the open tasks that wait on no task not done and have no stop pending (model: `pool`,
 `claimable`). -/
 theorem mem_pool (db : Db) (t : Task) : t ∈ pool db ↔
-    t ∈ db.tasks ∧ t.state = .open ∧ blockedByDeps db t = false ∧ stopPending db t = false := by
+    t ∈ db.tasks ∧ t.status = .ready ∧ blockedByDeps db t = false ∧ stopPending db t = false := by
   simp only [pool, List.mem_filter, List.mem_mergeSort, Bool.and_eq_true, decide_eq_true_eq,
     Bool.not_eq_eq_eq_not, Bool.not_true, and_assoc]
 
 theorem blockedByDeps_iff (db : Db) (t : Task) :
-    blockedByDeps db t = true ↔ ∃ x ∈ db.tasks, x.state ≠ .done ∧ WaitsOn t x := by
+    blockedByDeps db t = true ↔ ∃ x ∈ db.tasks, x.status ≠ .completed ∧ WaitsOn t x := by
   unfold blockedByDeps WaitsOn
   cases h : t.deps <;> simp
 
@@ -618,8 +658,8 @@ theorem find_set_self {db : Db} {i : Int} {f : Task → Task} {r : Task} (hf : �
 not done but `x`. -/
 theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Option String} {n : Nat}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.done k st n)) {h : Task} (hm : h ∈ db.tasks)
-    (ho : h.state = .open) (hs : stopPending db h = false)
-    (hw : ∀ y ∈ db.tasks, y.state ≠ .done → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 := by
+    (ho : h.status = .ready) (hs : stopPending db h = false)
+    (hw : ∀ y ∈ db.tasks, y.status ≠ .completed → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 := by
   unfold Tasks.done at hd ⊢
   split at hd
   · cases hd
@@ -641,7 +681,7 @@ theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Op
   · cases hd
   rename_i h3
   simp only [h1, hl, h2, h3, Bool.false_eq_true, ↓reduceIte]
-  have hrc : r.state = .claimed := by simp [mine] at h2; exact h2.2
+  have hrc : r.status = .inProgress := by simp [mine] at h2; exact h2.2
   have hne : (h.id : Int) ≠ x := fun e => by
     obtain rfl := find_unique hi.1 hr hm e; rw [ho] at hrc; cases hrc
   rw [mem_pool]
@@ -655,7 +695,7 @@ theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Op
       simp only [Db.log, Db.set, List.mem_map] at hy'
       obtain ⟨y, hy, rfl⟩ := hy'
       by_cases e : (y.id : Int) = x
-      · simp [e] at hyd
+      · simp [e, Task.status, TaskState.toCompleted, TaskState.status] at hyd
       · simp only [e, ↓reduceIte] at hyd hwy
         exact absurd (hw y hy hyd hwy) e
   · rw [stopPending_congr rfl rfl]; exact hs
@@ -664,8 +704,8 @@ theorem done_frees {c : Ctx} {x : Int} {e : String} {db : Db} {k : Int} {st : Op
 pending that waits on no task not done but `x`. -/
 theorem landed_frees {c : Ctx} {x : Int} {e : String} {db : Db} {o : Option String}
     (hi : Inv db) (hd : (Tasks.done c x e db).2 = .ok (.landed o)) {h : Task} (hm : h ∈ db.tasks)
-    (ho : h.state = .open) (hs : stopPending db h = false)
-    (hw : ∀ y ∈ db.tasks, y.state ≠ .done → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 := by
+    (ho : h.status = .ready) (hs : stopPending db h = false)
+    (hw : ∀ y ∈ db.tasks, y.status ≠ .completed → WaitsOn h y → (y.id : Int) = x) : h ∈ pool (Tasks.done c x e db).1 := by
   unfold Tasks.done at hd ⊢
   split at hd
   · cases hd
@@ -695,7 +735,7 @@ theorem landed_frees {c : Ctx} {x : Int} {e : String} {db : Db} {o : Option Stri
         simp only [Db.log, Db.set, List.mem_map] at hy'
         obtain ⟨y, hy, rfl⟩ := hy'
         by_cases e : (y.id : Int) = x
-        · simp [e] at hyd
+        · simp [e, Task.status, TaskState.toCompleted, TaskState.status] at hyd
         · simp only [e, ↓reduceIte] at hyd hwy
           exact absurd (hw y hy hyd hwy) e
     · rw [stopPending_congr rfl rfl]; exact hs
@@ -731,7 +771,7 @@ theorem release_waits {c : Ctx} {x : Int} {af : Option (List Int)} {db : Db} {o 
 theorem release_other_conds {c : Ctx} {i : Int} {af : Option (List Int)} {db : Db} {f : String}
     (h : (Tasks.release c i af db).2 = .ok (some f)) :
     ∃ r, db.find i = some r ∧ r.owner = some f ∧ f ≠ "" ∧ f ≠ c.me ∧ Agents.inCharge db c.comms c.me = true ∧
-      (r.state = .claimed ∨ r.state = .blocked) := by
+      (r.status = .inProgress ∨ r.status = .needsInput) := by
   unfold Tasks.release at h
   split at h
   · cases h
@@ -764,14 +804,14 @@ theorem release_other_conds {c : Ctx} {i : Int} {af : Option (List Int)} {db : D
 agent `f`, as a state: `task release` on the conditions of `release_other_conds`. -/
 theorem release_other_eq {c : Ctx} {i : Int} {db : Db} {r : Task} {f : String} (hr : db.find i = some r)
     (ho : r.owner = some f) (hne : f ≠ "") (hme : f ≠ c.me) (hc : Agents.inCharge db c.comms c.me = true)
-    (hs : r.state = .claimed ∨ r.state = .blocked) :
+    (hs : r.status = .inProgress ∨ r.status = .needsInput) :
     Tasks.release c i none db =
       let p := Msgs.post ((db.set i reopenFromF).log c.now (some c.me) "release" none (some ("#" ++ d i ++ (" from " ++ f))))
-        c.now c.me f s!"{if c.me == Agents.HUMAN then "the user" else c.me} released #{d i}: stop work on it" true
+        c.now (Msgs.Who.ofText c.me) (.agent f) s!"{if c.me == Agents.HUMAN then "the user" else c.me} released #{d i}: stop work on it" true
       (p.1.set i ({ · with stop_to := some f, stop_msg := some p.2 }), .ok (some f)) := by
   have hA : (if (r.owner != some c.me && Agents.inCharge db c.comms c.me) = true then py r.owner else none) = some f := by
     simp [ho, hme, hc, py, hne]
-  have h2 : (r.owner == some f && (decide (r.state = Status.claimed) || decide (r.state = Status.blocked))) = true := by
+  have h2 : (r.owner == some f && (decide (r.status = Status.inProgress) || decide (r.status = Status.needsInput))) = true := by
     simp [ho]; exact hs
   unfold Tasks.release
   simp only [hr, hA, h2, ↓reduceIte]
@@ -780,7 +820,7 @@ theorem release_other_eq {c : Ctx} {i : Int} {db : Db} {r : Task} {f : String} (
 agent holds, claimed or blocked, succeeds and names that agent. -/
 theorem release_other_enabled {c : Ctx} {i : Int} {db : Db} {r : Task} {f : String} (hr : db.find i = some r)
     (ho : r.owner = some f) (hne : f ≠ "") (hme : f ≠ c.me) (hc : Agents.inCharge db c.comms c.me = true)
-    (hs : r.state = .claimed ∨ r.state = .blocked) : (Tasks.release c i none db).2 = .ok (some f) := by
+    (hs : r.status = .inProgress ∨ r.status = .needsInput) : (Tasks.release c i none db).2 = .ok (some f) := by
   rw [release_other_eq hr ho hne hme hc hs]
 
 /-- H2, what it does (model: `releaseOther_spec`): a `task release i` that took the task from `f` found it held by
@@ -789,9 +829,9 @@ question, records the stop (`stop_to`, `stop_msg`), and `f` is sent that stop, u
 other task, no agent row and no cursor changes. -/
 theorem release_other_spec {c : Ctx} {i : Int} {db : Db} {f : String}
     (h : (Tasks.release c i none db).2 = .ok (some f)) :
-    ∃ r, db.find i = some r ∧ r.owner = some f ∧ (r.state = .claimed ∨ r.state = .blocked) ∧ f ≠ c.me ∧
+    ∃ r, db.find i = some r ∧ r.owner = some f ∧ (r.status = .inProgress ∨ r.status = .needsInput) ∧ f ≠ c.me ∧
       Agents.inCharge db c.comms c.me = true ∧
-      ∃ r' m, (Tasks.release c i none db).1.find i = some r' ∧ r'.state = .open ∧ r'.owner = none ∧
+      ∃ r' m, (Tasks.release c i none db).1.find i = some r' ∧ r'.status = .ready ∧ r'.owner = none ∧
         r'.lease_until = none ∧ r'.question = none ∧ r'.stop_to = some f ∧
         (Tasks.release c i none db).1.msgs = db.msgs ++ [m] ∧ m.dest = some f ∧ m.urgent = some 1 ∧
         r'.stop_msg = some (m.id : Int) ∧
@@ -856,6 +896,8 @@ theorem claim_not_stopped {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claime
   · cases h
   split at h
   · cases h
+  split at h
+  · cases h
   rw [find_congr tt, hr] at h
   dsimp only at h
   split at h
@@ -903,11 +945,11 @@ theorem reapedFrom_events {db db' : Db} (h : db'.events = db.events) (n : String
     reapedFrom db' n i = reapedFrom db n i := by
   simp only [reapedFrom, taskEvents, h]
 
-/-- `task claim` is enabled for a task that is open, not held (or claimed with the communicator's --force, board #128),
-waits on no task not done, has no stop pending, and is not behind the context fence (model: `claim_enabled`,
+/-- `task claim` is enabled for a Ready task reserved for no one else (or claimed with the communicator's --force,
+board #128), that waits on no task not Completed, has no stop pending, and is not behind the context fence (model: `claim_enabled`,
 `claimable`, `fenced`; N1's retake: an agent reap took the task from may claim it back), with a lease text it reads. -/
 theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u : Int} (hr : db.find i = some r)
-    (hh : (r.hold.isSome && !(c.force && Agents.inCharge db c.comms c.me)) = false) (ho : r.state = .open) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
+    (hh : ((py r.assignee).any (· != c.me) && !(c.force && Agents.inCharge db c.comms c.me)) = false) (ho : r.status = .ready) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
     (hk : Compact.over (ctxOf db c.me) (Compact.nudgeAt db) = false ∨ reapedFrom db c.me i = true) (hl : dur l = some u) :
     ∃ x, (Tasks.claim c i l db).2 = .ok x := by
   obtain ⟨tt, -⟩ := touch_frame db c.me none c.here c.now
@@ -919,17 +961,18 @@ theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u :
     rw [ctxOf_touch, nudgeAt_touch, reapedFrom_events (touch_events ..)]
     rcases hk with hk | hk <;> simp [hk]
   unfold Tasks.claim
-  simp only [hr, hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, ho, hb',
-    Bool.not_false, Bool.and_true, decide_true]
+  simp only [hr, ho, reduceCtorEq, decide_false, decide_true, Bool.false_and, Bool.true_or, Bool.true_and, Bool.or_false,
+    hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, hb',
+    Bool.not_false, Bool.and_true]
   exact ⟨_, rfl⟩
 
 /-! A done task stays done. -/
 
 /-- The commands' one change to a task's state is at `j` on a row `f` can't have been given done. -/
 theorem done_set {db db' : Db} {i j : Int} {f : Task → Task} (hid : ∀ u, (f u).id = u.id)
-    (hj : ∀ r, db.find j = some r → r.state ≠ .done) (ht : db'.tasks = (db.set j f).tasks)
-    (h : (db.find i).map (·.state) = some .done) : (db'.find i).map (·.state) = some .done := by
-  obtain ⟨t, hf, hs⟩ : ∃ t, db.find i = some t ∧ t.state = .done := by
+    (hj : ∀ r, db.find j = some r → r.status ≠ .completed) (ht : db'.tasks = (db.set j f).tasks)
+    (h : (db.find i).map (·.status) = some .completed) : (db'.find i).map (·.status) = some .completed := by
+  obtain ⟨t, hf, hs⟩ : ∃ t, db.find i = some t ∧ t.status = .completed := by
     cases e : db.find i with
     | none => simp [e] at h
     | some t => simp [e] at h; exact ⟨t, rfl, h⟩
@@ -940,14 +983,14 @@ theorem done_set {db db' : Db} {i j : Int} {f : Task → Task} (hid : ∀ u, (f 
   · simp [e, hs]
 
 theorem done_same {db db' : Db} {i : Int} (ht : db'.tasks = db.tasks)
-    (h : (db.find i).map (·.state) = some .done) : (db'.find i).map (·.state) = some .done := by
+    (h : (db.find i).map (·.status) = some .completed) : (db'.find i).map (·.status) = some .completed := by
   rw [find_congr ht]; exact h
 
 /-- A command that keeps every task's state or makes it done leaves a done task done. -/
 theorem done_keeps {db db' : Db} {i : Int} {f : Task → Task} (hid : ∀ u, (f u).id = u.id)
-    (hs : ∀ u, u.state = .done → (f u).state = .done) {j : Int} (ht : db'.tasks = (db.set j f).tasks)
-    (h : (db.find i).map (·.state) = some .done) : (db'.find i).map (·.state) = some .done := by
-  obtain ⟨t, hf, hd⟩ : ∃ t, db.find i = some t ∧ t.state = .done := by
+    (hs : ∀ u, u.status = .completed → (f u).status = .completed) {j : Int} (ht : db'.tasks = (db.set j f).tasks)
+    (h : (db.find i).map (·.status) = some .completed) : (db'.find i).map (·.status) = some .completed := by
+  obtain ⟨t, hf, hd⟩ : ∃ t, db.find i = some t ∧ t.status = .completed := by
     cases e : db.find i with
     | none => simp [e] at h
     | some t => simp [e] at h; exact ⟨t, rfl, h⟩
@@ -956,9 +999,9 @@ theorem done_keeps {db db' : Db} {i : Int} {f : Task → Task} (hid : ∀ u, (f 
   · simp [e, hs t hd]
   · simp [e, hd]
 
-theorem block_done (c : Ctx) (i : Int) (q : String) (db : Db) (j : Int) (h : (db.find j).map (·.state) = some .done) :
-    (((Tasks.block c i q db).1).find j).map (·.state) = some .done := by
-  have hg : (Tasks.block c i q db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.state = .claimed := by
+theorem block_done (c : Ctx) (i : Int) (q : String) (db : Db) (j : Int) (h : (db.find j).map (·.status) = some .completed) :
+    (((Tasks.block c i q db).1).find j).map (·.status) = some .completed := by
+  have hg : (Tasks.block c i q db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.status = .inProgress := by
     unfold Tasks.block
     split
     · exact .inl rfl
@@ -973,15 +1016,15 @@ theorem block_done (c : Ctx) (i : Int) (q : String) (db : Db) (j : Int) (h : (db
     · refine done_set (i := j) (fun u => (hf u).1) (fun r' hr' => ?_) ht h
       rw [hr] at hr'; cases hr'; rw [hb]; nofun
 
-theorem unblock_done (c : Ctx) (i : Int) (a : String) (db : Db) (j : Int) (h : (db.find j).map (·.state) = some .done) :
-    (((Tasks.unblock c i a db).1).find j).map (·.state) = some .done := by
-  have hg : (Tasks.unblock c i a db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.state = .blocked := by
+theorem unblock_done (c : Ctx) (i : Int) (a : String) (db : Db) (j : Int) (h : (db.find j).map (·.status) = some .completed) :
+    (((Tasks.unblock c i a db).1).find j).map (·.status) = some .completed := by
+  have hg : (Tasks.unblock c i a db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.status = .needsInput := by
     unfold Tasks.unblock
     dsimp only
     split
     · exact .inl rfl
     · rename_i r hr
-      by_cases hb : r.state = .blocked
+      by_cases hb : r.status = .needsInput
       · exact .inr ⟨r, hr, hb⟩
       · exact .inl (by simp [hb])
   rcases hg with ht | ⟨r, hr, hb⟩
@@ -991,26 +1034,27 @@ theorem unblock_done (c : Ctx) (i : Int) (a : String) (db : Db) (j : Int) (h : (
     · refine done_set (i := j) (fun u => (hf u).1) (fun r' hr' => ?_) ht h
       rw [hr] at hr'; cases hr'; rw [hb]; nofun
 
-theorem drop_done (c : Ctx) (i : Int) (db : Db) (j : Int) (h : (db.find j).map (·.state) = some .done) :
-    (((Tasks.drop c i db).1).find j).map (·.state) = some .done := by
-  have hg : (Tasks.drop c i db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.state ≠ .done := by
+theorem drop_done (c : Ctx) (i : Int) (dup : Option Int) (note : Option String) (db : Db) (j : Int)
+    (h : (db.find j).map (·.status) = some .completed) :
+    (((Tasks.drop c i dup note db).1).find j).map (·.status) = some .completed := by
+  have hg : (Tasks.drop c i dup note db).1.tasks = db.tasks ∨ ∃ r, db.find i = some r ∧ r.status ≠ .completed := by
     unfold Tasks.drop
     split
     · exact .inl rfl
     · rename_i r hr
-      by_cases hd : r.state = .done
+      by_cases hd : r.status = .completed
       · exact .inl (by simp [hd])
       · exact .inr ⟨r, hr, hd⟩
   rcases hg with ht | ⟨r, hr, hd⟩
   · exact done_same ht h
-  · rcases drop_spec c i db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+  · rcases drop_spec c i dup note db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
     · refine done_set (i := j) (fun u => (hf u).1) (fun r' hr' => ?_) ht h
       rw [hr] at hr'; cases hr'; exact hd
 
 /-- If `task release` succeeds, the task was claimed or blocked. -/
 theorem release_ok_state {c : Ctx} {i : Int} {af : Option (List Int)} {db : Db} {x : Option String}
-    (h : (Tasks.release c i af db).2 = .ok x) : ∃ r, db.find i = some r ∧ (r.state = .claimed ∨ r.state = .blocked) := by
+    (h : (Tasks.release c i af db).2 = .ok x) : ∃ r, db.find i = some r ∧ (r.status = .inProgress ∨ r.status = .needsInput) := by
   unfold Tasks.release at h
   split at h
   · cases h
@@ -1029,14 +1073,14 @@ theorem release_ok_state {c : Ctx} {i : Int} {af : Option (List Int)} {db : Db} 
         · cases h1
 
 /-- A done task stays done under every command: `task drop` refuses one, and no other command changes a done task's state. -/
-theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.state) = some .done) :
-    (((c.step db).1).find i).map (·.state) = some .done := by
+theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.status) = some .completed) :
+    (((c.step db).1).find i).map (·.status) = some .completed := by
   cases c with
   | add cc a =>
-    show (((Tasks.add cc a db).1).find i).map (·.state) = some .done
+    show (((Tasks.add cc a db).1).find i).map (·.status) = some .completed
     rcases add_spec cc a db with ⟨ht, -, -⟩ | ⟨t, ht, -⟩
     · exact done_same ht h
-    · obtain ⟨u, hf, hs⟩ : ∃ u, db.find i = some u ∧ u.state = .done := by
+    · obtain ⟨u, hf, hs⟩ : ∃ u, db.find i = some u ∧ u.status = .completed := by
         cases e : db.find i with
         | none => simp [e] at h
         | some t => simp [e] at h; exact ⟨t, rfl, h⟩
@@ -1047,7 +1091,7 @@ theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.state
     obtain ⟨-, hs⟩ := claim_spec cc j l db
     rcases hs with ⟨ht, -⟩ | ⟨t, g, hf, ho, hg, ht, -⟩
     · exact done_same ht h
-    · exact done_set (fun u => (hg u).1) (fun r hr => by rw [hf] at hr; cases hr; rw [ho]; nofun) ht h
+    · exact done_set (fun u => (hg u).1) (fun r hr => by rw [hf] at hr; cases hr; rcases ho with ho | ho <;> rw [ho] <;> nofun) ht h
   | release cc j af =>
     obtain ⟨-, hs⟩ := release_spec cc j af db
     rcases hs with ⟨ht, -⟩ | ⟨g, hg, ht, x, hx⟩
@@ -1075,11 +1119,13 @@ theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.state
     rcases done_spec cc j e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩ | ⟨f, -, r, hr, hrs, hf, ht, -, -⟩
     · exact done_same ht h
     · refine done_keeps (fun u => (hf u).1) (fun u hu => ?_) ht h
-      rcases (hf u).2.2.2 with e | e <;> rw [e]; exact hu
+      rcases (hf u).2.2.2 with e | e
+      · unfold Task.status at hu ⊢; rw [e]; exact hu
+      · exact e
     · exact done_set (i := i) (fun u => (hf u).1) (fun r' hr' => by rw [hr] at hr'; cases hr'; rw [hrs]; nofun) ht h
   | block cc j q => exact block_done cc j q db i h
   | unblock cc j a => exact unblock_done cc j a db i h
-  | drop cc j => exact drop_done cc j db i h
+  | drop cc j d n => exact drop_done cc j d n db i h
   | land cc j s l =>
     obtain ⟨-, hs⟩ := land_spec cc j s l db
     rcases hs with ⟨ht, -⟩ | ⟨r, g, hr, hrs, -, hg, ht, -⟩
@@ -1096,14 +1142,14 @@ theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.state
 
 /-- A landing task is not claimable: `task claim` of it fails. -/
 theorem claim_landing {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} (hr : db.find i = some r)
-    (hs : r.state = .landing) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x := by
+    (hs : r.status = .inReview) (x : Claimed) : (Tasks.claim c i l db).2 ≠ .ok x := by
   intro hx
   obtain ⟨-, ⟨-, hne⟩ | ⟨t, -, hf, ho, -⟩⟩ := claim_spec c i l db
   · exact hne x hx
-  · rw [hr] at hf; cases hf; rw [hs] at ho; cases ho
+  · rw [hr] at hf; cases hf; rw [hs] at ho; rcases ho with ho | ho <;> cases ho
 
 /-- A landing task's dependants keep waiting: a task that waits on it is not in the pool. -/
-theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.state = .landing) (hw : WaitsOn h x) :
+theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.status = .inReview) (hw : WaitsOn h x) :
     h ∉ pool db := by
   intro hp
   have hb := ((mem_pool _ _).1 hp).2.2.1
@@ -1112,7 +1158,7 @@ theorem landing_waits {db : Db} {x h : Task} (hx : x ∈ db.tasks) (hs : x.state
 /-- A landing task is closed only by its lander (the one named, an agent with role lander, or the communicator), and
 only with evidence git found on the task's base. -/
 theorem done_landing {c : Ctx} {i : Int} {e : String} {db : Db} {r : Task} {x : DoneOut} (hr : db.find i = some r)
-    (hs : r.state = .landing) (h : (Tasks.done c i e db).2 = .ok x) :
+    (hs : r.status = .inReview) (h : (Tasks.done c i e db).2 = .ok x) :
     isLander db c.comms c.me r = true ∧ c.onBase = true ∧ x = .landed r.owner := by
   unfold Tasks.done at h
   rw [hr] at h
@@ -1130,11 +1176,11 @@ theorem done_landing {c : Ctx} {i : Int} {e : String} {db : Db} {r : Task} {x : 
 
 /-- `task land` hands over only its owner's claimed task, and leaves it landing with that owner. -/
 theorem land_ok {c : Ctx} {i : Int} {s : String} {l : Option String} {db : Db} (h : (Tasks.land c i s l db).2 = .ok ()) :
-    ∃ r, db.find i = some r ∧ r.state = .claimed ∧ r.owner = some c.me ∧
-      ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.state = .landing ∧ r'.owner = some c.me := by
+    ∃ r, db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
+      ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.status = .inReview ∧ r'.owner = some c.me := by
   obtain ⟨-, ⟨-, hne⟩ | ⟨r, g, hr, hs, ho, hg, ht, -⟩⟩ := land_spec c i s l db
   · exact absurd h (hne ())
-  · refine ⟨r, hr, hs, ho, g r, ?_, (hg r).2.1, (hg r).2.2.trans ho⟩
+  · refine ⟨r, hr, hs, ho, g r, ?_, ((hg r).2.2 hs).1, ((hg r).2.2 hs).2.trans ho⟩
     rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hr]
     simp [find_id hr]
 
