@@ -561,6 +561,16 @@ export function tabGroups(rows) {
   return out;
 }
 
+// A row's icon: the communicator, a shell (at a prompt or a program in front), else an agent.
+export const kindOf = (r, comms = false) => (comms ? "comms" : r.mark === "run" || r.mark === "prompt" ? "shell" : "agent");
+// A rail row's time (design E): how long its mark has held, with the word for asks, hung and done ("asks 1m"); "" when
+// unknown.
+export function ageOf(mark, at, now) {
+  if (mark === "gone") return "terminal gone";
+  const ago = at ? dur(now - at) : "";
+  return ["asks", "hung", "done"].includes(mark) ? `${mark} ${ago}`.trim() : ago;
+}
+
 // A rail drag's drop (Part II.2): tab `from` lands before tab `over`, or after it; the 1-based index for tab.move, or
 // null when nothing moves. `tabs`: the space's tabs (TabInfo, any order).
 export function dropAt(tabs, from, over, after) {
