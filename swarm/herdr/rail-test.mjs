@@ -85,6 +85,19 @@ assert.deepEqual(needsYou(needs).map((t) => t.address), ["t4", "t8"]);
 const gs = tabGroups([...rows, { t: { address: "z" }, pane: "pz", tab: null, lines: [] }]);
 assert.deepEqual(gs.map((g) => [g.tab, g.rows.map((r) => r.t.address), g.split]),
   [["a", ["t1", "t7"], true], ["b", ["t2", "t3", "t4", "t5"], false], [null, ["z"], false]]);
+// Fixed places (design E): a row's icon by its kind; its time says how long its mark has held, with the word for asks,
+// hung and done.
+{
+  const { kindOf, ageOf } = await import("./mods/rw-rail/tree.js");
+  assert.deepEqual([kindOf(rows[0]), kindOf(rows[1]), kindOf(rows[2]), kindOf(rows[2], true)], ["shell", "shell", "agent", "comms"]);
+  assert.deepEqual(["working", "idle", "asks", "hung", "done", "gone", "prompt"].map((m) => ageOf(m, 1000, 1000 + 180e3)),
+    ["3m", "3m", "asks 3m", "hung 3m", "done 3m", "terminal gone", "3m"]);
+  assert.deepEqual([ageOf("asks", null, 5), ageOf("idle", null, 5)], ["asks", ""]);
+  // a row never moves: the same terminals in other states keep their order
+  const moved = new Map([...byAddr].map(([a, x]) => [a, { ...x, status: { working: "idle", idle: "blocked", done: "working", blocked: "done" }[x.status] ?? "working" }]));
+  assert.deepEqual(rowsOf(space, ps, moved).map((r) => r.t.address), rows.map((r) => r.t.address));
+  assert.notDeepEqual(rowsOf(space, ps, moved).map((r) => r.mark), rows.map((r) => r.mark));
+}
 // Closing a plain row (Part II.1): the tab when it has one pane, else the pane; asks for a working or asking agent, a
 // program in front, or the space's last tab; never for a row with no pane.
 const cTabs = [{ id: "a", panes: 2 }, { id: "b", panes: 1 }];
@@ -186,6 +199,10 @@ const mBy = new Map(many.agents.map((a) => [a.hc, T(a.hc, { status: a.status ===
 const big = swarmOf([], many, mBy, null, new Set(["w3"]));
 assert.deepEqual(big.block.map((it) => it.fold ? `${it.n} ${it.fold}${it.more ? " more" : ""}` : it.a.name), ["c", "a", "h", "w3", "4 working more", "2 idle"]);
 assert.equal(swarmOf([], many, mBy, null, new Set(), true).block.length, 10);
+// all (the rail's): the communicator, then the workers by name, whatever they do (design E: a row never moves)
+const byName = (sum) => swarmOf([], sum, mBy, null, new Set(), true).block.map((it) => it.a.name);
+assert.deepEqual(byName(many), ["c", "a", "h", "i1", "i2", "w1", "w2", "w3", "w4", "w5"]);
+assert.deepEqual(byName({ ...many, agents: many.agents.map((a, i) => ({ ...a, status: i % 2 ? "blocked" : "working", hung: i === 3 })) }), byName(many));
 // rw-bar: a swarm question counts unless its agent's terminal already does.
 const swarms = [{ on: null, agents: [A("q", "t4"), A("r", "t9")], needs: [{ kind: "question", agent: "q", task: 2, question: "which?" },
   { kind: "question", agent: "r", task: 3, title: "three" }, { kind: "hung", agent: "h" }] }];
