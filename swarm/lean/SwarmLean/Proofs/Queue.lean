@@ -490,4 +490,44 @@ theorem claim_reserved {c : Ctx} {i : Int} {l : String} {db : Db} {x : Claimed} 
         | none => rfl
         | some a => rcases hs with hs | hs <;> simp_all
 
+/-! Ready's and Backlog's places are 1..n: the k-th task of each list, in place order, is at place k + 1. -/
+
+theorem findIdx_id {l : List Task} (h : (l.map (·.id)).Nodup) {k : Nat} (hk : k < l.length) :
+    l.findIdx? (·.id == l[k].id) = some k := by
+  rw [List.findIdx?_eq_some_iff_getElem]
+  refine ⟨hk, by simp, fun j hj e => ?_⟩
+  have hjk : j < l.length := by omega
+  simp only [beq_iff_eq] at e
+  have := List.pairwise_iff_getElem.1 h j k (by simpa using hjk) (by simpa using hk) hj
+  simp only [List.getElem_map] at this
+  exact this e
+
+theorem queued_ids {db : Db} (hi : (db.tasks.map (·.id)).Nodup) : ((queued db).map (·.id)).Nodup :=
+  ((List.mergeSort_perm _ _).map _).nodup_iff.2 (List.Nodup.sublist ((List.filter_sublist ..).map _) hi)
+
+theorem filter_ids {l : List Task} {p : Task → Bool} (h : (l.map (·.id)).Nodup) : ((l.filter p).map (·.id)).Nodup :=
+  List.Nodup.sublist ((List.filter_sublist ..).map _) h
+
+/-- Ready's places are 1..n in its order. -/
+theorem readyList_place (db : Db) (hi : (db.tasks.map (·.id)).Nodup) (k : Nat) (hk : k < (readyList db).length) :
+    place db (readyList db)[k] = some (k + 1) := by
+  have hs : (readyList db)[k].status = .ready := by
+    have := List.getElem_mem hk
+    simp only [readyList, List.mem_filter, decide_eq_true_eq] at this
+    exact this.2
+  have := findIdx_id (filter_ids (p := fun t => decide (t.status = .ready)) (queued_ids hi)) hk
+  simp only [place, hs, ↓reduceIte]
+  exact congrArg (Option.map (· + 1)) this
+
+/-- Backlog's places are 1..n in its order. -/
+theorem backlogList_place (db : Db) (hi : (db.tasks.map (·.id)).Nodup) (k : Nat) (hk : k < (backlogList db).length) :
+    place db (backlogList db)[k] = some (k + 1) := by
+  have hs : (backlogList db)[k].status = .backlog := by
+    have := List.getElem_mem hk
+    simp only [backlogList, List.mem_filter, decide_eq_true_eq] at this
+    exact this.2
+  have := findIdx_id (filter_ids (p := fun t => decide (t.status = .backlog)) (queued_ids hi)) hk
+  simp only [place, hs, reduceCtorEq, ↓reduceIte]
+  exact congrArg (Option.map (· + 1)) this
+
 end SwarmLean.QueueProofs
