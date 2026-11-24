@@ -429,7 +429,7 @@ def ciCheckApply (now : Int) (ids : Option (List Int)) (comms : Option String) (
   | (db', some r') => if r'.red.id == r.red.id then ciNewRedTask now comms r' rng names tail db' else db
   | _ => db
 
-/-- What `ciCheckStep` reads: the repo's runs, the open, claimed and blocked tasks of `ids`, the queue, the `red-fixed`
+/-- What `ciCheckStep` reads: the repo's runs, the Backlog, Ready, In Progress and Needs Input tasks of `ids`, the queue, the `red-fixed`
 events and the newest run's `ci-red`. -/
 def ciCheckSels (ids : Option (List Int)) : Txn (List Sel) := do
   let red := (checkRuns (← Txn.slice [Sels.all .ci])).head?.map fun r =>

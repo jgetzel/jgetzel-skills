@@ -114,7 +114,7 @@ with subagents.
    (the terminal only; the sweep removes worktrees), spawns fresh agents for startable
    tasks of your swarm's repos when none is free (up to the auto-spawn number, default the swarm's live count
    when its knobs are first set; `--min-free-mem` GiB, default 4; `--blocker-idle` min, default 25: an agent idle that long
-   holding a claim that open tasks wait on (`--after`, transitively) is asked once per idle stretch what it waits on, and
+   holding a claim that Ready tasks wait on (`--after`, transitively) is asked once per idle stretch what it waits on, and
    comms is told; while either
    holds it, the board says so: `auto-spawn holding: …`; the model is the task's
    `--model`, else the swarm's `watchd --model`, else sonnet), keeps a live agent's claim past its lease (through a compaction and
@@ -127,7 +127,8 @@ with subagents.
    is on its base, not when CI passes, so a red run's authors have often ended:
    it becomes one `main red: …` task (commit range, failed log), started
    first, told to any live author (else to you). When your fix is on main, `swarm task done <id> --evidence <sha>`
-   releases you and holds the task; watchd closes it on the next green run (a newer red run reopens it).
+   releases you and moves the task to Backlog (`<sha> awaiting a green run`); watchd completes it on the next green
+   run (a newer red run puts it back in Ready).
    It also polls, once a minute while a live agent holds a claim, the PRs from task branches (`<agent>/<task>`):
    a merged PR closes its task with the merge sha and tells the owner, in every flow.
    The swarm enforces no CI flow; a repo names its own in `.claude/swarm.json` `{"ci": {"flow": "…"}}`:
@@ -188,11 +189,11 @@ with subagents.
   tools (a timing queue, CI glue) to post a job's end line to its task, and to you only for a job with no task.
 - **Answer a blocked task** with `swarm task unblock <id> --answer "<text>"`; it DMs the owner.
 - **Landing.** An agent may hand a task whose branch passed its checks to a lander: `swarm task land <id> --sha <sha>
-  [--lander <name>]` makes it landing (`#N landing <sha> by <lander> since HH:MM` on the board): not claimable, not
+  [--lander <name>]` makes it In Review (`#N landing <sha> by <lander> since HH:MM` on the board): not claimable, not
   the owner's to hold (it may take the next task or end), its `--after` dependants still waiting. Its lander (the one
   named, any agent whose role says lander, or you) closes it: `swarm task done <id> --evidence <sha>` once that sha is
-  on the task's base (git checks), or `swarm task unland <id> --why "<text>"`: open again at P1 (unless lower), the
-  reason appended to its body, the former owner and you told. A landing task with neither for 2 h is told to you once.
+  on the task's base (git checks), or `swarm task unland <id> --why "<text>"`: Ready again at priority High (Urgent stays), the
+  reason appended to its body, the former owner and you told. An In Review task with neither for 2 h is told to you once.
 - **Cold agents.** `swarm who` marks agents whose wake would cost a full
   uncached context (`COLD-GUARDED`). A non-urgent post waits for them; use
   `--urgent` only when the stop-work is real.
@@ -216,17 +217,31 @@ with subagents.
   later (you get a notice with the job's command line). A real run (CPU time, a process starting, a waiter such as
   `gh`, `ssh`, `swarm`, `hc`, `nix`) is never ended, nor is any agent holding a claim, lock or stay.
   `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
+- **States.** A task is Backlog, Ready, In Progress, Needs Input, In Review, Completed, Cancelled or Duplicate
+  (Linear's categories: Backlog, Unstarted, Started, Completed, Cancelled). `task claim` makes a Ready task In
+  Progress, `task block` Needs Input, `task land` In Review, `task done` Completed; `swarm task drop <id> [--note T]`
+  cancels it, `--duplicate-of <orig>` makes it a Duplicate linked to its original. Needs Input and In Review come
+  only from those commands.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
-  task out of the pool (and out of auto-spawn) until #3 and #5 are done.
-  `swarm task after <id> <list>` changes an open task's list later (refusing a cycle).
-- **Priority.** `swarm task add "<title>" -p N` (0-3, default 2; P0 urgent, P3 someday) and
-  `swarm task priority <id> <N>` (open or claimed task). `swarm task edit <id> [--title T] [--body B | --body-file F (- for stdin) | --append TEXT] [--model M] [--effort E] [--urgent]` changes an open, claimed or blocked task: the owner is told, `task show` lists the edit. Startable tasks go by priority, then id: the board,
-  the pool a free agent is offered and auto-spawn all use that order, a red main (`main red:`) first of all.
-  It never preempts: it takes no claimed task and stops no agent. Known limit: strict order, no aging, so
-  new P0-P2 tasks arriving can starve a P3 one.
-- **Queue and holds.** `swarm queue add <id>… [--front | --before <id> | --after <id>]` / `queue rm` order what is
-  staffed next, ahead of priority (after a red main); `swarm limits --queue-only on` staffs only the queue. `swarm task
-  hold <id> --why <text>` keeps a task from being staffed or claimed until `task unhold` (your `claim --force` overrides).
+  task out of the pool (and out of auto-spawn) until #3 and #5 are Completed. A Cancelled dependency still blocks
+  and is yours to settle: drop it from the list or drop the task.
+  `swarm task after <id> <list>` changes a Ready or Backlog task's list later (refusing a cycle).
+- **Ready and Backlog.** Ready is one ordered list, and it is the staffing order: the pool a free agent is offered
+  and auto-spawn take it top down, a red main (`main red:`) first of all. A new task goes to the end.
+  `swarm queue` lists it; `swarm queue add <id>… [--front | --before <id> | --after <id>]` moves tasks in it (any
+  agent may move one to the end, the other moves are yours or the user's); `queue rm` moves them to the end.
+  `swarm task backlog <id> --note "<what it waits for>"` moves a task to Backlog: not staffed, and `task claim`
+  refuses it (your `claim --force` overrides) until you or the user run `swarm task ready <id>`, which puts it at
+  the end of Ready. A Backlog task is not a needs-you item. It never preempts: it takes no claimed task and stops no
+  agent.
+- **Assignees.** `swarm task assign <id> <who>` (or `--none`; you or the user) reserves a Ready or Backlog task for
+  an agent or `human` without claiming it: auto-spawn and the pool skip it, and anyone else's claim fails naming the
+  assignee (`--force` overrides). A claim makes the claimer the assignee; a human's claim has no expiring lease, so
+  watchd never frees it.
+- **Priority.** `swarm task add "<title>" -p <urgent|high|medium|low|none>` (default medium) and
+  `swarm task priority <id> <priority>` (a task not closed). It is a label for the board and the user; it never
+  reorders Ready. `swarm task edit <id> [--title T] [--body B | --body-file F (- for stdin) | --append TEXT] [--model M]
+  [--effort E] [--urgent]` changes a task not closed: the owner is told, `task show` lists the edit.
 
 ## 3. Rules that carry over from /orchestrate
 
@@ -238,7 +253,7 @@ with subagents.
 - Clean up every terminal you start (`hc kill <t> && hc rm <t>`) when the
   swarm ends.
 - A turn that ends on an API error runs no Stop hook: the StopFailure hook (or watchd, seeing a "working" row whose terminal is idle for 2 min over a transcript ending on one) logs `api-error` and sets the agent idle; watchd types one continue line into its terminal (`api-resume`; you are only told for yourself), and with no turn 5 min later tells you "did not resume after an API error" (`api-noresume`). A later turn re-arms it.
-- Keep the board and your notes current so a compaction loses nothing. A compaction ends the agent's stay (watchd's continue line says so; `stay-end`, data `compaction`); a continue line with no turn after it in 5 min is sent once more and you are told (`ctx-resent`). From 325k watchd asks an agent (you too) to `swarm compact`; from 400k it compacts an idle agent itself, not you or a stayer unless `swarm limits --compact-stayers on` (`--ctx-nudge/--ctx-compact N`, 0 off). You have no hooks, so `swarm read/wait/board/who` record your context for watchd. `swarm limits --reuse-below N` (0, the default, is off): an agent done under N tokens is offered up to five startable tasks related to its last (filed while it held it, `--after` it, or sharing a `--label`) for its model; it claims one or declines, and watchd ends it after a decline or 5 min. In queue-only mode only queued tasks are offered. Label tasks (`task add --label a,b`, `task label <id> a b`) so related work finds a warm agent.
+- Keep the board and your notes current so a compaction loses nothing. A compaction ends the agent's stay (watchd's continue line says so; `stay-end`, data `compaction`); a continue line with no turn after it in 5 min is sent once more and you are told (`ctx-resent`). From 325k watchd asks an agent (you too) to `swarm compact`; from 400k it compacts an idle agent itself, not you or a stayer unless `swarm limits --compact-stayers on` (`--ctx-nudge/--ctx-compact N`, 0 off). You have no hooks, so `swarm read/wait/board/who` record your context for watchd. `swarm limits --reuse-below N` (0, the default, is off): an agent done under N tokens is offered up to five startable tasks related to its last (filed while it held it, `--after` it, or sharing a `--label`) for its model; it claims one or declines, and watchd ends it after a decline or 5 min. Label tasks (`task add --label a,b`, `task label <id> a b`) so related work finds a warm agent.
 
 ## Reference
 

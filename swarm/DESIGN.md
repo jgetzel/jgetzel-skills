@@ -307,15 +307,15 @@ One db per machine, swarms as groups of agents, tasks per repo
 - **`watchd` spawns** a fresh agent per startable task of the swarm's repos when none is reusable (a task of no
   repo only by a claim or `spawn --task`), up to the swarm's auto-spawn number (`meta.agent_min`) and within `--min-free-mem`,
   and says on the board when either holds it (`spawn-held`). Each launch is
-  for the first task of the pool as it is then (red main, priority, id): the
+  for the first task of the pool as it is then (red main, then Ready's order, skipping a task with an assignee): the
   pool is read again before each, and the claim checks it in its transaction
   (model F1, Staff.lean). **`swarm spawn`
   refuses** at the user's agent max (`meta.agent_max`, `swarm limits`),
   checked with the new row in one transaction (sw-roles §6).
-- **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are done (`task after`
+- **`task add --after 3,5`** keeps a task unclaimable until #3 and #5 are Completed (`task after`
   edits the list; sw-deps.md); `task
   done` prints whether to take the next task or go idle.
-- **Leases** are live: an expired claim reopens when its owner has ended
+- **Leases** are live (a human's claim has none): an expired claim goes back to Ready when its owner has ended
   or sits idle with no background Bash job; a working, prompt-blocked or
   background-waiting owner is reported to the communicator, not overridden.
   An owner whose claim reap reopened may retake it past the context fence.

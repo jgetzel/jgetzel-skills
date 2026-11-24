@@ -109,29 +109,31 @@ Concurrency is "any order of whole transactions": `Atomic`. A theorem that needs
 hypothesis from `Assumptions.lean` (below).
 
 **Tasks and the board** (`Proofs.lean`, `Proofs/Tasks.lean`). After any task commands, in any order, from the empty
-db: task ids are unique and below the next id, a claimed task has an owner and an open one none, and every done task
+db: task ids are unique and below the next id, an In Progress task has an owner and a Ready one none (by construction:
+the owner is a started state's assignee, `TaskState`), and every Completed task
 has evidence that is not all whitespace (S5). No task has two owners. Two successful claims of a task have a
 successful release between them; with processes at once (`Atomic`) and no release, at most one claim of a task
 succeeds, exactly one when each would have won alone (what `test-claim.sh` runs). A successful claim found every task
-it is after done (S2), the task open, no stop pending, the claimer under the context fence or retaking what reap took
+it is after Completed (S2), the task Ready (or Backlog, with the communicator's `--force`), no stop pending, the claimer under the context fence or retaking what reap took
 from it. Each command's effect is stated (`after_spec` … `drop_spec`); the user's or the communicator's release of
-another's task (H2) is always allowed on a claimed or blocked task, reopens it, records the stop and sends the ex-owner
+another's task (H2) is always allowed on an In Progress or Needs Input task, makes it Ready, records the stop and sends the ex-owner
 one urgent message, and changes nothing else. The board's order is a total preorder and `task board` and the pool are
-sorted by it; the pool is exactly the open tasks with no undone dependency and no stop pending; `task done` frees the
+sorted by it; the pool is exactly the Ready tasks with no dependency not Completed and no stop pending; `task done` frees the
 tasks waiting on it and `release --after` makes the task wait (F1's board half). Landing (board #200): `task land` and
-`task unland` are among the commands of every theorem above; a landing task counts as held for the one-claim theorems
-(`Held`: claimed or landing), an unland as a release (it reopens the task); no claim of a landing task succeeds
-(`claim_landing`), a task after one stays out of the pool (`landing_waits`), a landing task is closed only by its
+`task unland` are among the commands of every theorem above; an In Review task counts as held for the one-claim theorems
+(`Held`: In Progress or In Review), an unland as a release (it makes the task Ready); no claim of an In Review task
+succeeds (`claim_landing`), a task after one stays out of the pool (`landing_waits`), an In Review task is closed only by its
 lander with evidence git found on its base (`done_landing`), the lander's close frees the tasks waiting on it as
-`task done` does (`landed_frees`), and `task land` hands over only its owner's claimed task
+`task done` does (`landed_frees`), and `task land` hands over only its owner's In Progress task
 (`land_ok`).
 
-**Queue and holds** (`Proofs/Queue.lean`, board #128). `queue add`, `queue rm`, and the renumbering that `task done`,
-`task drop` and watchd's done marks end with keep the queued tasks' places a permutation of 1..n (`QInv`) and change
-nothing but the places and the events they log; `task hold`/`unhold` leave the places. The staffing order (auto-spawn,
-an idle agent's digest) never holds a held task, its queue part is exactly the startable queued tasks not held, in queue
-order; with an empty queue and queue-only off it is the pool without the held tasks, exactly the pool when none is held
-(`staffing_today`). `task claim` of a held task succeeds only with the communicator's (or the user's) `--force`.
+**Ready, Backlog and assignees** (`Proofs/Queue.lean`, board #128). `queue add`, `queue rm`, `task backlog`, `task
+ready`, and the `tidy` that `task done`, `task drop` and watchd's done marks end with keep the tasks' places distinct
+(`QInv`); the place moves change nothing but the places and the events they log, and `task assign` leaves the places
+(`assign_places`). The staffing order (auto-spawn, an idle agent's digest) is the pool without the reserved tasks
+(`staffing_free`: every task in it is Ready with no assignee), red tasks first (`red_first`); with no assignee on the
+board it is exactly the pool (`staffing_today`). `task claim` of a Backlog task succeeds only with the communicator's
+(or the user's) `--force` (`claim_not_backlog`), and of a task assigned to another only with it (`claim_reserved`).
 
 **Messages** (`Proofs/Msgs.lean`). Over any transactions, the deliveries to an agent show it, in order, exactly the
 messages for it (from another sender, to it or to all) that its cursor moved past: each once, nothing else, and no
