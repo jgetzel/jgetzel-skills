@@ -45,7 +45,7 @@ end Sat
 
 /-- The agent row's columns as `Decide.ARow` (a NULL status is no status, "" not "idle", as `Watchd.keepRow`). -/
 def row (a : Agent) : Decide.ARow :=
-  { ended := a.ended.map Int.toNat, status := a.status.getD "", hc := a.hc, stay := a.stay, lastActive := a.last_active,
+  { ended := a.ended.map Int.toNat, status := (a.status.map (·.text)).getD "", hc := a.hc, stay := a.stay, lastActive := a.last_active,
     ctx := a.ctx_tokens.map Int.toNat, waiter := a.waiter.map Int.toNat }
 
 /-- An hc terminal as `Decide.Term`. -/
@@ -107,11 +107,11 @@ variable (a : Agent) (t : Int) (x : Option Term) (hasTerms : Bool) (F : Decide.F
 theorem v_stay : Decide.Check.val (row a) t (term x) hasTerms F .stay = (py a.stay).isSome := (py_isSome _).symm
 
 theorem v_idle : Decide.Check.val (row a) t (term x) hasTerms F .idle =
-    (a.status != some "idle" || decide (t - a.last_active.getD 0 < 120)) := by
-  show (a.status.getD "" != "idle" || decide (t - a.last_active.getD 0 < 120)) = _
+    (a.status != some .idle || decide (t - a.last_active.getD 0 < 120)) := by
+  show ((a.status.map (·.text)).getD "" != "idle" || decide (t - a.last_active.getD 0 < 120)) = _
   cases a.status with
   | none => simp
-  | some v => simp only [Option.getD_some, bne_dec, Option.some.injEq]
+  | some v => cases v <;> rfl
 
 theorem busy_eq : (Decide.nz (row a).hc && hasTerms && (term x).all fun x => x.status != "idle" && x.status != "done") =
     busyL a hasTerms x := by
@@ -334,14 +334,17 @@ idle 2 min with no stay, no claim and no lock, and its reads returned no unlande
 theorem fate_end_free {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) (t : Int) (x : Option Term)
     (hasTerms : Bool) (f : Lifecycle.Reads m) :
     Sat (fun r => r.1 = some "end" ∨ r.1 = some "reuse" →
-        a.status = some "idle" ∧ py a.stay = none ∧ 120 ≤ t - a.last_active.getD 0 ∧ f.claims = false ∧
+        a.status = some .idle ∧ py a.stay = none ∧ 120 ≤ t - a.last_active.getD 0 ∧ f.claims = false ∧
           f.locks = false ∧ r.2.held = none ∧ r.2.proc = none)
       (Lifecycle.fateHeard a t x hasTerms f) := by
   refine (fateHeard_rec a t x hasTerms f false).imp fun r ⟨F, ⟨hc, hl, _, _⟩, hu, hj, hv, _⟩ he => ?_
   rw [hv, Decide.fateRec_verdict] at he
   obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := fateL_free (verdictStr_end he)
   refine ⟨?_, ?_, by simp only [row] at h3; omega, hc ▸ h4, hl ▸ h5, ?_, ?_⟩
-  · simp only [row] at h2; cases e : a.status <;> simp_all
+  · simp only [row] at h2
+    cases e : a.status with
+    | none => simp_all
+    | some v => cases v <;> simp_all [AgentStatus.text]
   · rw [show (row a).stay = a.stay from rfl, ← py_isSome] at h1; simpa using h1
   · rw [h6] at hu; simpa using hu
   · rw [h7] at hj; simpa using hj
@@ -368,11 +371,11 @@ returned (and its claims and locks). -/
 theorem endWhy_lifted {m : Type → Type} [Monad m] [LawfulMonad m] (a : Agent) (f : Lifecycle.Reads m) :
     Sat (fun r => ∃ F : Decide.Facts, F.claims = f.claims ∧ F.locks = f.locks ∧
         r.isNone = (Decide.endWhyL (row a) F).isNone) (Lifecycle.endWhy a f) := by
-  have hs : ((row a).status != "idle") = (a.status != some "idle") := by
-    show (a.status.getD "" != "idle") = _
+  have hs : ((row a).status != "idle") = (a.status != some .idle) := by
+    show ((a.status.map (·.text)).getD "" != "idle") = _
     cases a.status with
     | none => simp
-    | some v => simp only [Option.getD_some, bne_dec, Option.some.injEq]
+    | some v => cases v <;> rfl
   let F (j u : Bool) : Decide.Facts := ⟨true, f.claims, f.locks, u, j, 0, false, false, 0⟩
   unfold Lifecycle.endWhy
   refine ite_sat (fun h => Sat.pure ⟨F false false, rfl, rfl, ?_⟩) (fun h => ?_)
@@ -415,15 +418,15 @@ theorem keeps_eq (o : Option Agent) (bg cp : Bool) (live : Option (List String))
 /-- What keeps a lapsed claim for its work, on the Lean row: a live owner, working, prompt-blocked, running a
 background job or compacting, unless hc answered and no longer lists its bound terminal. -/
 theorem keeps_iff (o : Option Agent) (bg cp : Bool) (live : Option (List String)) :
-    Watchd.keeps o bg cp live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some "idle" ∨ bg = true ∨ cp = true) ∧
+    Watchd.keeps o bg cp live = true ↔ ∃ a, o = some a ∧ a.ended = none ∧ (a.status ≠ some .idle ∨ bg = true ∨ cp = true) ∧
       ¬ (live.isSome = true ∧ (py a.hc).isSome = true ∧ (live.getD []).contains (a.hc.getD "") = false) := by
   cases o with
   | none => simp [keeps_eq, Decide.keepsL]
   | some a =>
-    have hs : (a.status.getD "" != "idle") = true ↔ a.status ≠ some "idle" := by
+    have hs : ((a.status.map (·.text)).getD "" != "idle") = true ↔ a.status ≠ some .idle := by
       cases a.status with
       | none => simp
-      | some v => simp
+      | some v => cases v <;> simp [AgentStatus.text]
     simp only [keeps_eq, Option.map_some, Decide.keepsL, Watchd.keepRow, Bool.and_eq_true, Bool.or_eq_true,
       Bool.not_eq_true', Option.isNone_iff_eq_none, Option.map_eq_none_iff, hs, ← py_isSome]
     constructor
@@ -499,12 +502,12 @@ theorem prAct_eq (state verdict : String) (gated told : Bool) :
 /-! ## What an agent's end releases (`Agents.release`, shared by leave, end and reap) -/
 
 theorem release_tasks (db : Db) (n : String) :
-    ∀ t ∈ (release db n).tasks, t.owner = some n → t.state ≠ .claimed ∧ t.state ≠ .blocked := by
+    ∀ t ∈ (release db n).tasks, t.owner = some n → t.status ≠ .inProgress ∧ t.status ≠ .needsInput := by
   intro t ht ho
   simp only [Agents.release, Db.setAgent, List.mem_map] at ht
   obtain ⟨u, -, rfl⟩ := ht
   split at ho
-  · simp at ho
+  · simp [Task.owner, TaskState.owner] at ho
   · rename_i hc; rw [ite_eq_right hc]; simpa [ho] using hc
 
 theorem release_locks (db : Db) (n : String) : ∀ l ∈ (release db n).locks, l.agent ≠ some n := by
@@ -514,7 +517,7 @@ theorem release_locks (db : Db) (n : String) : ∀ l ∈ (release db n).locks, l
 
 /-- A release of an agent that holds no claim and no lock leaves the tasks and locks as they were. -/
 theorem release_free {db : Db} {n : String}
-    (ht : ∀ t ∈ db.tasks, t.owner = some n → t.state ≠ .claimed ∧ t.state ≠ .blocked)
+    (ht : ∀ t ∈ db.tasks, t.owner = some n → t.status ≠ .inProgress ∧ t.status ≠ .needsInput)
     (hl : ∀ l ∈ db.locks, l.agent ≠ some n) : (release db n).tasks = db.tasks ∧ (release db n).locks = db.locks := by
   refine ⟨?_, ?_⟩
   · simp only [Agents.release, Db.setAgent]
@@ -539,13 +542,13 @@ theorem post_agents (db : Db) n f d b u k : (Msgs.post db n f d b u k).1.agents 
 
 /-- The agent is free in `db`: no claimed or blocked task and no lock of its. -/
 def Free (db : Db) (n : String) : Prop :=
-  (∀ t ∈ db.tasks, t.owner = some n → t.state ≠ .claimed ∧ t.state ≠ .blocked) ∧ ∀ l ∈ db.locks, l.agent ≠ some n
+  (∀ t ∈ db.tasks, t.owner = some n → t.status ≠ .inProgress ∧ t.status ≠ .needsInput) ∧ ∀ l ∈ db.locks, l.agent ≠ some n
 
 /-- N1end on the code: end_agent's transaction without `--force` ends only a live row still idle on the terminal it
 was judged on, staying for nothing, and free (no claim, no lock), all as the db is when it runs. -/
 theorem endStep_free {n : String} {hc by_ : Option String} {now : Int} {db : Db}
     (h : (Lifecycle.endStep n hc false by_ now db).2 = true) :
-    ∃ r ∈ live db, r.name = n ∧ r.status = some "idle" ∧ r.hc = hc ∧ r.stay = none ∧ Free db n := by
+    ∃ r ∈ live db, r.name = n ∧ r.status = some .idle ∧ r.hc = hc ∧ r.stay = none ∧ Free db n := by
   unfold Lifecycle.endStep at h
   simp only at h
   split at h
@@ -565,7 +568,7 @@ theorem endStep_free {n : String} {hc by_ : Option String} {now : Int} {db : Db}
 
 /-- What an end that went through leaves: the row released and ended at `now`, with its event. -/
 def ended (n : String) (force : Bool) (by_ : Option String) (now : Int) (db : Db) : Db :=
-  ((Agents.release db n).setAgent n ({ · with ended := some now, status := some "ended" })).log now (some n) "end" none
+  (Agents.endRow db n now).log now (some n) "end" none
     (some ((if force then "forced" else "landed") ++ (match by_ with | some b => " by " ++ b | none => "")))
 
 theorem endStep_cases (n : String) (hc by_ : Option String) (force : Bool) (now : Int) (db : Db) :
@@ -606,19 +609,19 @@ theorem endStep_ends {n : String} {hc by_ : Option String} {force : Bool} {now :
       Free (Lifecycle.endStep n hc force by_ now db).1 n := by
   rw [endStep_done h]
   refine ⟨?_, fun t ht => release_tasks db n t ht, fun l hl => release_locks db n l hl⟩
-  simp only [ended, log_agents, Db.setAgent, List.mem_map]
-  rintro a ⟨b, -, rfl⟩ hb
-  by_cases e : b.name = n <;> simp_all
+  simp only [ended, log_agents, Agents.endRow, Agents.release, Db.setAgent, List.mem_map]
+  rintro a ⟨b, ⟨c, -, rfl⟩, rfl⟩ hb
+  by_cases e : c.name = n <;> simp_all
 
 /-! ## Reap's steps (`Watchd.reapTask`, `reapLock`, `reapGone`) -/
 
 /-- Reap reopens only a task still claimed by the owner it judged, with its lease before `t`; that task alone changes,
 to open with no owner. -/
 theorem reapTask_spec {r : Task} {t now : Int} {db : Db} (h : (Watchd.reapTask r t now db).2 = true) :
-    (∃ x, db.find r.id = some x ∧ x.owner = r.owner ∧ r.owner.isSome ∧ x.state = .claimed ∧
+    (∃ x, db.find r.id = some x ∧ x.owner = r.owner ∧ r.owner.isSome ∧ x.status = .inProgress ∧
       x.lease_until.any (· < t) = true) ∧
     (Watchd.reapTask r t now db).1.tasks =
-      (db.set r.id fun x => { x with state := .open, owner := none, lease_until := none }).tasks := by
+      (db.set r.id fun x => { x with state := .ready none }).tasks := by
   unfold Watchd.reapTask at h ⊢
   split at h
   · rename_i x hx
@@ -627,8 +630,8 @@ theorem reapTask_spec {r : Task} {t now : Int} {db : Db} (h : (Watchd.reapTask r
     · rename_i hc
       rw [ite_eq_left hc]
       simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hc
-      obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := hc
-      exact ⟨⟨x, rfl, h1, h1 ▸ h2, h3, h4⟩, rfl⟩
+      obtain ⟨⟨⟨⟨h1, h2⟩, -⟩, h3⟩, h4⟩ := hc
+      exact ⟨⟨x, rfl, h1, h1 ▸ h2, h3, h4⟩, by cases r.owner <;> rfl⟩
     · simp at h
   · simp at h
 
@@ -669,7 +672,7 @@ theorem reapGone_spec {n h : String} {t : Int} {db : Db} (hd : (Watchd.reapGone 
     simp only [Option.any_eq_true, Bool.and_eq_true, beq_iff_eq, Option.isNone_iff_eq_none] at hc
     obtain ⟨x, hx, h1, h2⟩ := hc
     refine ⟨⟨x, hx, h1, h2⟩, ?_, fun u hu => release_tasks _ n u hu, fun l hl => release_locks _ n l hl⟩
-    simp only [log_agents, Watchd.say, post_agents, Agents.release, Db.setAgent, List.mem_map]
+    simp only [log_agents, Watchd.say, post_agents, Agents.endRow, Agents.release, Db.setAgent, List.mem_map]
     rintro a ⟨b, ⟨c, -, rfl⟩, rfl⟩ hb
     by_cases e : c.name = n <;> simp_all
   · simp at hd
@@ -721,7 +724,7 @@ def WCmd.step : WCmd → Db → Db × Bool
 agent live, idle on the terminal judged, staying for nothing and free, whatever else ran at the same time. -/
 theorem end_atomic {before after : Db} {ran : List (WCmd × Bool)} (h : Atomic WCmd.step before after ran)
     {n : String} {hc by_ : Option String} {now : Int} (hm : (WCmd.end_ n hc false by_ now, true) ∈ ran) :
-    ∃ db, ∃ r ∈ live db, r.name = n ∧ r.status = some "idle" ∧ r.hc = hc ∧ r.stay = none ∧ Free db n := by
+    ∃ db, ∃ r ∈ live db, r.name = n ∧ r.status = some .idle ∧ r.hc = hc ∧ r.stay = none ∧ Free db n := by
   obtain ⟨d, hd⟩ := atomic_ran h _ hm
   exact ⟨d, endStep_free hd⟩
 
@@ -729,7 +732,7 @@ theorem end_atomic {before after : Db} {ran : List (WCmd × Bool)} (h : Atomic W
 lapsed; a reap of a gone row found it still live and bound to the dead terminal. -/
 theorem reap_atomic {before after : Db} {ran : List (WCmd × Bool)} (h : Atomic WCmd.step before after ran) :
     (∀ r t now, (WCmd.reapTask r t now, true) ∈ ran → ∃ (db : Db) (x : Task), db.find r.id = some x ∧ x.owner = r.owner ∧
-      r.owner.isSome ∧ x.state = .claimed ∧ x.lease_until.any (· < t) = true) ∧
+      r.owner.isSome ∧ x.status = .inProgress ∧ x.lease_until.any (· < t) = true) ∧
     (∀ n hh t, (WCmd.reapGone n hh t, true) ∈ ran → ∃ (db : Db) (x : Agent), db.agent n = some x ∧ x.hc = some hh ∧ x.ended = none) := by
   refine ⟨fun r t now hm => ?_, fun n hh t hm => ?_⟩
   · obtain ⟨d, hd⟩ := atomic_ran h _ hm; exact ⟨d, (reapTask_spec hd).1⟩
@@ -765,14 +768,14 @@ theorem reserve_max {db : Db} {e : Option String} {name cwd : String} {model : O
 
 /-- F1's `launch_top` on the code, with the queue (board #128): auto-spawn's reservation claims task `tid` only if,
 in the transaction that claims it, `tid` heads the staffing order (`Queue.staffHead`, the tasks it has not given up on)
-and the max held there (a free slot). So `tid` is startable and not held, and when no startable red task is left to
-staff and some startable queued task is not held, `tid` is the first such in queue order. -/
+and the max held there (a free slot). So `tid` is startable and no one is assigned it, and when no startable red task
+is left to staff and some startable Ready task is free, `tid` is the first such in place order. -/
 theorem reserveTask_top {db : Db} {e : Option String} {name cwd : String} {tid : Int} {model : Option String}
     {now : Int} {skip : Task → Bool} {r : Task}
     (h : (Spawn.reserveTask db e name cwd tid model now (some (Queue.staffHead skip))).2 = .ok r) :
     Queue.staffHead skip db = some tid ∧ (∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x) ∧
-    (∃ t ∈ Tasks.pool db, (t.id : Int) = tid ∧ t.hold = none) ∧
-    ∀ q, (∀ t ∈ Queue.staffRed db, skip t = true) → (Queue.staffQueue db).find? (!skip ·) = some q →
+    (∃ t ∈ Tasks.pool db, (t.id : Int) = tid ∧ t.assignee = none) ∧
+    ∀ q, (∀ t ∈ Queue.staffRed db, skip t = true) → (Queue.staffReady db).find? (!skip ·) = some q →
       tid = (q.id : Int) := by
   have top : Queue.staffHead skip db = some tid ∧ ∀ x, (limits db e).2.2 = some x → ((limits db e).1 : Int) < x := by
     unfold Spawn.reserveTask at h
@@ -791,38 +794,57 @@ theorem reserveTask_top {db : Db} {e : Option String} {name cwd : String} {tid :
         · rename_i db1 hr; exact reserveAgent_max hr
     · cases h
   refine ⟨top.1, top.2, ?_, fun q hr hq => ?_⟩
-  · obtain ⟨t, ht, hi, hh, -⟩ := QueueProofs.staffHead_not_held top.1
+  · obtain ⟨t, ht, hi, hh, -⟩ := QueueProofs.staffHead_free top.1
     exact ⟨t, ht, hi, hh⟩
-  · have := top.1.symm.trans (QueueProofs.staffHead_queue hr hq)
+  · have := top.1.symm.trans (QueueProofs.staffHead_ready hr hq)
     exact Option.some.inj this
 
 /-- Sp1 and Sp2 on the code: after a failed launch no claim of the new agent on its task remains, the task it held is
-open with no owner (back in the pool at once), and the row, if no terminal took it, is ended. -/
+Ready with no assignee (back in the pool at once), and the row, if no terminal took it, is ended. -/
 theorem unreserve_spec (db : Db) (name : String) (r : Task) (now : Int) :
     (∀ t ∈ (Spawn.unreserve db name (some r) now).tasks, (t.id : Int) = r.id → t.owner = some name →
-      t.state ≠ .claimed) ∧
-    (∀ t ∈ db.tasks, (t.id : Int) = r.id → t.owner = some name → t.state = .claimed →
-      { t with state := .open, owner := none, lease_until := none, first_claimed_at := r.first_claimed_at } ∈
+      t.status ≠ .inProgress) ∧
+    (∀ t ∈ db.tasks, (t.id : Int) = r.id → t.owner = some name → t.status = .inProgress →
+      { t with state := .ready none, first_claimed_at := r.first_claimed_at } ∈
         (Spawn.unreserve db name (some r) now).tasks) ∧
-    (∀ a ∈ (Spawn.unreserve db name (some r) now).agents, a.name = name → a.hc = none → a.ended = some now) := by
+    (∀ a, (Spawn.unreserve db name (some r) now).agent name = some a → a.hc = none → a.ended = some now) := by
   refine ⟨?_, ?_, ?_⟩
   · intro t ht hi ho
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self] at ht
+    simp only [Spawn.unreserve] at ht
+    split at ht
+    · exact (release_tasks _ name t ht ho).1
+    simp only [Db.set, List.mem_map] at ht
     obtain ⟨u, -, rfl⟩ := ht
     by_cases h1 : (u.id : Int) = r.id
-    · by_cases h2 : (u.owner == some name && decide (u.state = .claimed)) = true
-      · simp [h1, h2]
+    · by_cases h2 : (u.owner == some name && decide (u.status = .inProgress)) = true
+      · rw [ite_eq_left h1, ite_eq_left h2]; simp [Task.status, TaskState.status]
       · simp only [h1, h2, ↓reduceIte] at ho ⊢
         simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, not_and] at h2
         exact h2 ho
     · simp_all
   · intro t ht hi ho hs
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self]
-    exact ⟨t, ht, by simp [hi, ho, hs]⟩
-  · intro a ha hn hh
-    simp only [Spawn.unreserve, Db.set, Db.setAgent, List.mem_map, apply_ite Db.tasks, apply_ite Db.agents, ite_self] at ha
-    obtain ⟨b, -, rfl⟩ := ha
-    by_cases e : b.name = name <;> by_cases hb : b.hc = none <;> simp_all
+    have hm : { t with state := .ready none, first_claimed_at := r.first_claimed_at } ∈
+        (db.set r.id fun t => if t.owner == some name && decide (t.status = .inProgress) then
+          { t with state := .ready none, first_claimed_at := r.first_claimed_at } else t).tasks := by
+      simp only [Db.set, List.mem_map]
+      exact ⟨t, ht, by simp [hi, ho, hs]⟩
+    simp only [Spawn.unreserve]
+    split
+    · simp only [Agents.endRow, Agents.release, Db.setAgent, List.mem_map]
+      exact ⟨_, hm, by simp [Task.owner, TaskState.owner]⟩
+    · exact hm
+  · intro a ha hh
+    simp only [Spawn.unreserve] at ha ⊢
+    split at ha
+    · simp only [Db.agent, Agents.endRow, Agents.release, Db.setAgent] at ha
+      have hm := List.mem_of_find?_eq_some ha
+      have hn := List.find?_some ha
+      simp only [List.mem_map] at hm
+      obtain ⟨b, ⟨c, -, rfl⟩, rfl⟩ := hm
+      by_cases e : c.name = name <;> simp_all
+    · rename_i hc
+      rw [ha] at hc
+      simp_all
 
 /-! ## Takeover: `Agents.bind` (`swarm join`, `--takeover`) -/
 

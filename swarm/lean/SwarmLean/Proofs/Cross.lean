@@ -137,11 +137,11 @@ theorem binv_map {db db' : Db} {f : Task → Task} (ht : db'.tasks = db.tasks.ma
 /-- `Agents.release` (leave, end, reap) keeps the board's invariant: what it reopens is open with no owner. -/
 theorem binv_release {db db' : Db} {n : String} (ht : db'.tasks = (release db n).tasks)
     (hn : db'.taskNext = db.taskNext) (h : BInv db) : BInv db' := by
-  refine binv_map (f := fun t => if t.owner == some n && (t.state = .claimed || t.state = .blocked) then
-    { t with state := .open, owner := none, lease_until := none, question := none } else t) ht hn
+  refine binv_map (f := fun t => if t.owner == some n && (t.status = .inProgress || t.status = .needsInput) then
+    { t with state := .ready none } else t) ht hn
     (fun u => by split <;> rfl) (fun u hu => ?_) h
   split
-  · simp [TaskOk, Task.Owned, DoneEv]
+  · exact ⟨owned_all _, fun e => by simp [Task.status, TaskState.status] at e⟩
   · exact hu
 
 /-- An end (`Agents.release` and the row ended) keeps S3: it drops the agent's locks, ends no other agent, starts none. -/
@@ -234,35 +234,29 @@ theorem lcmd_grows (c : Locks.LCmd) (db : Db) (h0 : 0 < db.msgNext) : Inbox.Grow
     · exact bind_grows _ _ _ _ _ _ _ h0
   | task c => simp only [Locks.LCmd.step]; rw [toT_step]; exact tcmd_grows _ _ h0
 
-/-- What `swarm end`'s and lifecycle's end write when they go through keeps every invariant. -/
-theorem end_body (n : String) (now : Int) (x : Option String) {db : Db} {t : Int} (h : XInv db t) :
-    XInv (((release db n).setAgent n fun x => { x with ended := some now, status := some "ended" }).log now (some n)
-      "end" none x) t := by
-  obtain ⟨hb, hm, hg⟩ := h
-  refine ⟨binv_release rfl rfl hb, Inbox.grows_inv (Inbox.grows_of_eq rfl rfl rfl) hm, ?_⟩
-  have L := fun a => live_two (db := db) (n := n) (a := a) (f := fun x => { x with stay := none })
-    (g := fun x => { x with ended := some now, status := some "ended" }) (fun _ => rfl) (fun _ => rfl) (fun _ e => e)
-    (fun _ e => by simp at e)
-  exact good_end (db := db) (n := n) (fun l hl => ⟨(List.mem_filter.1 hl).1, WatchdProofs.release_locks db n l hl⟩)
-    (fun a ha => (L a).1 ha) (fun a e ha => ((L a).2 e).trans ha) hg
-
 /-- What reap's end of a gone row writes keeps every invariant. -/
 theorem gone_body (n : String) (t' : Int) (y : Db → Db) (hy : ∀ d, Inbox.Grows d (y d)) (hyt : ∀ d, (y d).tasks = d.tasks)
     (hyn : ∀ d, (y d).taskNext = d.taskNext) (hyl : ∀ d, (y d).locks = d.locks) (hya : ∀ d, (y d).agents = d.agents)
     {db : Db} {t : Int} (h : XInv db t) :
-    XInv (y (release (db.setAgent n fun x => { x with ended := some t', status := some "ended" }) n)) t := by
+    XInv (y (release (db.setAgent n fun x => { x with ended := some t', status := some .ended }) n)) t := by
   obtain ⟨hb, hm, hg⟩ := h
   refine ⟨binv_release (hyt _) (hyn _) hb, Inbox.grows_inv (Inbox.grows_trans (Inbox.grows_of_eq rfl rfl rfl) (hy _)) hm, ?_⟩
   have L := fun a => live_two (db := db) (n := n) (a := a)
-    (f := fun x => { x with ended := some t', status := some "ended" }) (g := fun x => { x with stay := none })
+    (f := fun x => { x with ended := some t', status := some .ended }) (g := fun x => { x with stay := none })
     (fun _ => rfl) (fun _ => rfl) (fun _ e => by simp at e) (fun _ e => e)
-  have hl' : ∀ l ∈ (y (release (db.setAgent n fun x => { x with ended := some t', status := some "ended" }) n)).locks,
+  have hl' : ∀ l ∈ (y (release (db.setAgent n fun x => { x with ended := some t', status := some .ended }) n)).locks,
       l ∈ db.locks ∧ l.agent ≠ some n := fun l hl => by
     rw [hyl] at hl; exact ⟨(List.mem_filter.1 hl).1, WatchdProofs.release_locks _ n l hl⟩
-  have hL : ∀ a, Locks.Live (y (release (db.setAgent n fun x => { x with ended := some t', status := some "ended" }) n)) a =
-      Locks.Live ((db.setAgent n fun x => { x with ended := some t', status := some "ended" }).setAgent n
+  have hL : ∀ a, Locks.Live (y (release (db.setAgent n fun x => { x with ended := some t', status := some .ended }) n)) a =
+      Locks.Live ((db.setAgent n fun x => { x with ended := some t', status := some .ended }).setAgent n
         fun x => { x with stay := none }) a := fun a => by simp only [Locks.Live, hya]; rfl
   exact good_end (db := db) (n := n) hl' (fun a ha => (L a).1 ((hL a) ▸ ha)) (fun a e ha => (hL a).symm ▸ ((L a).2 e).trans ha) hg
+
+/-- What `swarm end`'s and lifecycle's end write when they go through keeps every invariant. -/
+theorem end_body (n : String) (now : Int) (x : Option String) {db : Db} {t : Int} (h : XInv db t) :
+    XInv ((endRow db n now).log now (some n) "end" none x) t :=
+  gone_body n now (fun d => d.log now (some n) "end" none x) (fun _ => Inbox.grows_of_eq rfl rfl rfl)
+    (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) h
 
 /-- Each transaction keeps every area's invariant. -/
 theorem step_xinv (x : XCmd) {db : Db} {t : Int} (ht : XBefore t [x]) (h : XInv db t) : XInv (x.step db) t := by
@@ -296,8 +290,8 @@ theorem step_xinv (x : XCmd) {db : Db} {t : Int} (ht : XBefore t [x]) (h : XInv 
     simp only [XCmd.step]; unfold Watchd.reapTask; dsimp only
     split
     · split
-      · refine ⟨binv_set (i := r.id) (f := fun x => { x with state := .open, owner := none, lease_until := none })
-          (fun _ => rfl) (fun _ _ _ _ => by simp [TaskOk, Task.Owned, DoneEv]) rfl rfl hb,
+      · refine ⟨binv_set (i := r.id) (f := fun x => { x with state := .ready none })
+          (fun _ => rfl) (fun _ _ _ _ => ⟨owned_all _, fun e => by simp [Task.status, TaskState.status] at e⟩) rfl rfl hb,
           Inbox.grows_inv (Inbox.grows_trans (Inbox.grows_of_eq rfl rfl rfl) (Inbox.grows_post _ _ _ _ _ _ _)) hm,
           Locks.good_grow rfl (Locks.grows_refl rfl) hg⟩
       · exact ⟨hb, hm, hg⟩
@@ -311,7 +305,7 @@ theorem step_xinv (x : XCmd) {db : Db} {t : Int} (ht : XBefore t [x]) (h : XInv 
   | reapGone n hh t' =>
     simp only [XCmd.step]; unfold Watchd.reapGone; dsimp only
     split
-    · exact gone_body n t' (fun d => (Watchd.say d t' "@all" _ false "system").log t' (some n) "reap" none (some "agent gone"))
+    · exact gone_body n t' (fun d => (Watchd.say d t' (.all d.swarm) _ false "system").log t' (some n) "reap" none (some "agent gone"))
         (fun d => Inbox.grows_trans (Inbox.grows_post _ _ _ _ _ _ _) (Inbox.grows_of_eq rfl rfl rfl))
         (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) ⟨hb, hm, hg⟩
     · exact ⟨hb, hm, hg⟩
@@ -342,7 +336,7 @@ theorem one_owner_x (cs : List XCmd) (t : Int) (ht : XBefore t cs) (i : Int) (a 
 
 /-- S5 whatever every area did: every done task has evidence. -/
 theorem done_has_evidence_x (cs : List XCmd) (t : Int) (ht : XBefore t cs) :
-    ∀ u ∈ (run {} cs).tasks, u.state = .done → EvOk u.evidence := (run_xinv cs t ht).1.2
+    ∀ u ∈ (run {} cs).tasks, u.status = .completed → EvOk u.evidence := (run_xinv cs t ht).1.2
 
 /-- S3 whatever every area did: two locks of different agents that hold at `t` don't overlap. -/
 theorem locks_disjoint_x (cs : List XCmd) (t : Int) (ht : XBefore t cs) : Locks.Disjoint (run {} cs) t :=
@@ -371,9 +365,10 @@ reap pass issues is decided in its monadic loop (`Watchd.reap`), not proved here
 
 /-- L2 (model: `idleClaim_leads_to`), reap's half: on a run where reap, judging task `i` claimed by `o`, runs at some
 point from `n` on with a clock past the lease `L`, the claim `(o, L)` does not last: at some point from `n` on the task
-is no longer claimed by `o` with that lease (done, released, renewed, dropped, or reopened by that reap). -/
+is no longer claimed by `o` with that lease (done, released, renewed, dropped, or reopened by that reap). The
+owner is an agent, not the user: a person's claim has no lease that expires. -/
 theorem claim_lapses (db : Db) (r : Nat → XCmd) (n : Nat) {i : Int} {o : String} {L : Int} {x : Task}
-    (hx : (x.id : Int) = i) (ho : x.owner = some o)
+    (hx : (x.id : Int) = i) (ho : x.owner = some o) (hh : o ≠ Agents.HUMAN)
     (hfair : ∃ m ≥ n, ∃ t now, r m = .reapTask x t now ∧ L < t) :
     ∃ m ≥ n, ¬ ClaimedBy (at_ db r m) i o L := by
   obtain ⟨m, hm, t, now, hr, hL⟩ := hfair
@@ -382,12 +377,12 @@ theorem claim_lapses (db : Db) (r : Nat → XCmd) (n : Nat) {i : Int} {o : Strin
     obtain ⟨u, hu, huo, hus, hul⟩ := hc
     have hu' : (at_ db r m).find x.id = some u := by rw [hx]; exact hu
     have hfire : (Watchd.reapTask x t now (at_ db r m)).2 = true := by
-      unfold Watchd.reapTask; rw [hu']; simp [ho, huo, hus, hul, hL]
+      unfold Watchd.reapTask; rw [hu']; simp [ho, huo, hus, hul, hL, hh]
     have e : (at_ db r (m + 1)).find i = ((at_ db r m).set x.id
-        fun y => { y with state := .open, owner := none, lease_until := none }).find i := by
+        fun y => { y with state := .ready none }).find i := by
       simp only [at_, hr, XCmd.step, Db.find, (WatchdProofs.reapTask_spec hfire).2]
     rintro ⟨v, hv, -, hvs, -⟩
-    rw [e, ← hx, find_set_self (f := fun y => { y with state := .open, owner := none, lease_until := none })
+    rw [e, ← hx, find_set_self (f := fun y => { y with state := .ready none })
       (fun _ => rfl) hu'] at hv
     cases hv; cases hvs
   · exact ⟨m, hm, hc⟩

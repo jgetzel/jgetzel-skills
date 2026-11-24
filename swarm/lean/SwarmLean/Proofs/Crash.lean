@@ -667,7 +667,8 @@ theorem X.Tasks.unblock {c i a} (h : XInv db t) : XInv (Tasks.unblock c i a db).
 theorem X.Tasks.release {c i a} (h : XInv db t) : XInv (Tasks.release c i a db).1 t :=
   step_xinv (.task (.release c i a)) (nolock nofun) h
 theorem X.Tasks.edit {c i a} (h : XInv db t) : XInv (Tasks.edit c i a db).1 t := step_xinv (.task (.edit c i a)) (nolock nofun) h
-theorem X.Tasks.drop {c i} (h : XInv db t) : XInv (Tasks.drop c i db).1 t := step_xinv (.task (.drop c i)) (nolock nofun) h
+theorem X.Tasks.drop {c i dup note} (h : XInv db t) : XInv (Tasks.drop c i dup note db).1 t :=
+  step_xinv (.task (.drop c i dup note)) (nolock nofun) h
 theorem X.Tasks.land {c i s l} (h : XInv db t) : XInv (Tasks.land c i s l db).1 t := step_xinv (.task (.land c i s l)) (nolock nofun) h
 theorem X.Tasks.unland {c i w} (h : XInv db t) : XInv (Tasks.unland c i w db).1 t :=
   step_xinv (.task (.unland c i w)) (nolock nofun) h
@@ -801,25 +802,6 @@ theorem X.Workspaces.upsert {w} (h : XInv db t) : XInv (Workspaces.upsert db w) 
 theorem xinv_setQueue {l} (h : XInv db t) : XInv (Queue.setQueue db l) t :=
   xinv_tasks (binv_map rfl rfl (fun _ => rfl) fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) rfl rfl rfl rfl rfl h
 
-theorem xinv_logged {a b : Db} (hl : QueueProofs.Logged a b) (h : XInv a t) : XInv b t := by
-  obtain ⟨_, _, rfl⟩ := hl; exact xinv_frame rfl rfl rfl (Locks.grows_refl rfl) (Inbox.grows_of_eq rfl rfl rfl) h
-
-theorem xinv_qstep {a b : Db} (hq : QueueProofs.QStep a b) (h : XInv a t) : XInv b t := by
-  rcases hq with rfl | ⟨l, hl⟩
-  · exact h
-  · exact xinv_logged hl (xinv_setQueue h)
-
-theorem X.Queue.add {c ids w} (h : XInv db t) : XInv (Queue.add c ids w db).1 t := xinv_qstep (QueueProofs.add_step ..) h
-theorem X.Queue.rm {c ids} (h : XInv db t) : XInv (Queue.rm c ids db).1 t := xinv_qstep (QueueProofs.rm_step ..) h
-theorem X.Queue.done {c i e} (h : XInv db t) : XInv (Queue.done c i e db).1 t := by
-  rcases QueueProofs.done_tidy c i e db with e | e <;> rw [e]
-  · exact X.Tasks.done h
-  · exact xinv_setQueue (X.Tasks.done h)
-theorem X.Queue.drop {c i} (h : XInv db t) : XInv (Queue.drop c i db).1 t := by
-  rcases QueueProofs.drop_tidy c i db with e | e <;> rw [e]
-  · exact X.Tasks.drop h
-  · exact xinv_setQueue (X.Tasks.drop h)
-
 /-- The tasks mapped by a change that keeps each id and a well-owned task well-owned. -/
 theorem xinv_tasks_map {f : Task → Task} (hid : ∀ u, (f u).id = u.id) (hok : ∀ u, TaskOk u → TaskOk (f u))
     (h : XInv db t) : XInv { db with tasks := db.tasks.map f } t := by
@@ -838,14 +820,54 @@ theorem xinv_set {i} {f : Task → Task} (hid : ∀ u, (f u).id = u.id) (hok : �
     XInv (db.set i f) t :=
   xinv_tasks (binv_set hid (fun u _ _ => hok u) rfl rfl) rfl rfl rfl rfl rfl h
 
-theorem X.Queue.hold {c i why} (h : XInv db t) : XInv (Queue.hold c i why db).1 t := by
-  unfold SwarmLean.Queue.hold; dsimp only
+theorem xinv_tidy (h : XInv db t) : XInv (Queue.tidy db) t :=
+  xinv_tasks_map (fun u => by dsimp only; split <;> rfl)
+    (fun u hu => by dsimp only; split; exact hu; simpa [TaskOk, Task.Owned, DoneEv] using hu) h
+theorem xinv_toEnd {i} (h : XInv db t) : XInv (Queue.toEnd i db) t := by
+  unfold SwarmLean.Queue.toEnd; dsimp only
+  exact xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h
+theorem X.Queue.add {c ids w} (h : XInv db t) : XInv (Queue.add c ids w db).1 t := by
+  unfold SwarmLean.Queue.add
+  split
+  · exact h
+  · dsimp only
+    refine X.List.foldl (fun _ _ hd => X.Db.log hd) ?_
+    split
+    · exact X.List.foldl (fun _ _ hd => xinv_toEnd hd) h
+    · exact xinv_setQueue h
+theorem X.Queue.rm {c ids} (h : XInv db t) : XInv (Queue.rm c ids db).1 t := X.Queue.add h
+theorem X.Queue.done {c i e} (h : XInv db t) : XInv (Queue.done c i e db).1 t := by
+  rcases QueueProofs.done_tidy c i e db with e | e <;> rw [e]
+  · exact X.Tasks.done h
+  · exact xinv_tidy (X.Tasks.done h)
+theorem X.Queue.drop {c i dup note} (h : XInv db t) : XInv (Queue.drop c i dup note db).1 t := by
+  rcases QueueProofs.drop_tidy c i dup note db with e | e <;> rw [e]
+  · exact X.Tasks.drop h
+  · exact xinv_tidy (X.Tasks.drop h)
+theorem xinv_inChargeStep {c what kind data} {f : Db → Db} (hf : XInv (f db) t) (h : XInv db t) :
+    XInv (Tasks.inChargeStep c what kind data f db).1 t := by
+  unfold Tasks.inChargeStep; dsimp only; split
+  · exact X.Db.log hf
+  · exact X.Db.log h
+theorem X.Queue.backlog {c i note} (h : XInv db t) : XInv (Queue.backlog c i note db).1 t := by
+  unfold SwarmLean.Queue.backlog; dsimp only
   repeat' split
-  all_goals first | exact h | exact X.Db.log (xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h)
-theorem X.Queue.unhold {c i} (h : XInv db t) : XInv (Queue.unhold c i db).1 t := by
-  unfold SwarmLean.Queue.unhold; dsimp only
+  all_goals first
+    | exact h
+    | exact X.Db.log (xinv_toEnd (xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h))
+    | exact X.Db.log (xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h)
+theorem X.Queue.ready {c i} (h : XInv db t) : XInv (Queue.ready c i db).1 t := by
+  unfold SwarmLean.Queue.ready; dsimp only
   repeat' split
-  all_goals first | exact h | exact X.Db.log (xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h)
+  all_goals first
+    | exact h
+    | exact xinv_inChargeStep (xinv_toEnd (xinv_set (fun _ => rfl) (fun u hu => by simpa [TaskOk, Task.Owned, DoneEv] using hu) h)) h
+theorem X.Queue.assign {c i who} (h : XInv db t) : XInv (Queue.assign c i who db).1 t := by
+  unfold SwarmLean.Queue.assign; dsimp only
+  repeat' split
+  all_goals first
+    | exact h
+    | exact xinv_inChargeStep (xinv_set (fun _ => rfl) (fun u hu => by split <;> simpa [TaskOk, Task.Owned, DoneEv] using hu) h) h
 end
 
 section
@@ -959,7 +981,7 @@ theorem X.Db.set {i} {f : Task → Task} (hid : ∀ u, (f u).id = u.id) (hok : �
     (h : XInv db t) : XInv (db.set i f) t := xinv_set hid hok h
 
 theorem X.Queue.setQueue {l} (h : XInv db t) : XInv (Queue.setQueue db l) t := xinv_setQueue h
-theorem X.Queue.tidy (h : XInv db t) : XInv (Queue.tidy db) t := xinv_setQueue h
+theorem X.Queue.tidy (h : XInv db t) : XInv (Queue.tidy db) t := xinv_tidy h
 
 theorem X.Ci.due {now key every} (h : XInv db t) : XInv (Ci.due now key every db).1 t := by
   unfold SwarmLean.Ci.due; xstep
@@ -1005,7 +1027,7 @@ theorem X.Ci.ciCheckStep {now} (h : XInv db t) : XInv (Ci.ciCheckStep now db).1 
           · exact X.Db.log h
 
 /-- A new open task with no owner, at the next id. -/
-theorem xinv_addTask {u : Task} (hid : u.id = db.taskNext) (hs : u.state = .open) (ho : u.owner = none)
+theorem xinv_addTask {u : Task} (hid : u.id = db.taskNext) (hs : u.status = .ready) (ho : u.owner = none)
     (h : XInv db t) : XInv { db with tasks := db.tasks ++ [u], taskNext := db.taskNext + 1 } t := by
   refine ⟨⟨⟨?_, ?_, ?_⟩, ?_⟩, Inbox.grows_inv (Inbox.grows_of_eq rfl rfl rfl) h.2.1,
     Locks.good_grow rfl (Locks.grows_refl rfl) h.2.2⟩
@@ -1338,7 +1360,7 @@ open WatchdProofs in
 /-- An idle row (as `reserveAgent` leaves one) never keeps a lapsed claim without a background job or a compaction,
 and an unbound one never lives: reap reopens the task a spawn reserved and never launched once its lease is past
 (`claim_lapses`). -/
-theorem idle_unkept {a : Agent} (hs : a.status = some "idle") (live : Option (List String)) :
+theorem idle_unkept {a : Agent} (hs : a.status = some .idle) (live : Option (List String)) :
     Watchd.keeps (some a) false false live = false := by
   cases h : Watchd.keeps (some a) false false live
   · rfl
@@ -1362,10 +1384,10 @@ theorem unlaunched_ends {r : Swarm.Decide.ARow} {t : Int} {h : Bool} {F : Swarm.
 /-- The row `reserveAgent` leaves for `name` is idle, unbound and live. -/
 theorem reserveAgent_row {db db' : Db} {e : Option String} {name cwd : String} {model : Option String} {now : Int}
     (h : Spawn.reserveAgent db e name cwd model now = .ok db') :
-    ∀ a ∈ db'.agents, a.name = name → a.status = some "idle" ∧ a.hc = none ∧ a.ended = none := by
+    ∀ a ∈ db'.agents, a.name = name → a.status = some .idle ∧ a.hc = none ∧ a.ended = none := by
   have k : ∀ d : Db, ∀ a ∈ ((Agents.newInbox d name).setAgent name fun a =>
-      { a with hc := none, ended := none, status := some "idle", model := model.orElse fun _ => a.model }).agents,
-      a.name = name → a.status = some "idle" ∧ a.hc = none ∧ a.ended = none := by
+      { a with hc := none, ended := none, status := some .idle, model := model.orElse fun _ => a.model }).agents,
+      a.name = name → a.status = some .idle ∧ a.hc = none ∧ a.ended = none := by
     intro d a ha hn
     simp only [Db.setAgent, List.mem_map] at ha
     obtain ⟨b, -, rfl⟩ := ha
