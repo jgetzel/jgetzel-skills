@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window, home } from "herdr";
-import { SECTIONS, addrOf, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
+import { SECTIONS, addrOf, cancelArgs, dropDepArgs, leftOf, prioName, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -133,12 +133,15 @@ export default class AllSwarms extends View {
           : n.kind === "prompt" ? [`${n.agent} stopped at a prompt`, pr.text]
           : n.kind === "hung" ? [`${n.agent} is hung`, "watchd keeps it, but it has done nothing for a long time."]
           : n.kind === "ci" ? ["main CI is red", `Run ${n.run.id ?? "?"} failed ${hhmm(n.run.created)}${n.reds > 1 ? ` · ${n.reds} in a row` : ""} · ${n.fixer ? `${n.fixer.owner} is on it (#${n.fixer.id})` : "nobody is on it"}`]
+          : n.kind === "dep-cancelled" ? ["Waits on a Cancelled task", `#${n.task.id} ${n.task.title ?? ""} · after ${n.deps.map((d) => `#${d}`).join(" ")}`]
           : n.kind === "watchd" ? ["watchd is not running", "Nothing is reaped, spawned or told until it runs again."]
           : [n.w.on ? `${n.w.on} is short on memory` : "This computer is short on memory", n.line || ""];
         const acts = n.kind === "question" ? [this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)]
           : n.kind === "prompt" ? [...this.promptBtns(t, pr, n.agent, i), this.btn(t, `term-${i}`, "Show terminal", () => pr.addr && openOverlay(peekWindow(pr.addr, n.agent, pr.msg || "stopped at a prompt")))]
           : n.kind === "hung" ? [this.btn(t, `nudge-${i}`, "Nudge", (cx) => this.act(n.w, nudgeArgs(n.agent), cx)), this.btn(t, `term-${i}`, "Open its terminal", (cx) => this.focus(n.w, n.s, n.agent, false, cx))]
           : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []), this.btn(t, `land-${i}`, "Landing", () => this.openSection(n.w, "landing"))]
+          : n.kind === "dep-cancelled" ? [this.btn(t, `dep-${i}`, "Remove dependency", (cx) => this.act(n.w, dropDepArgs(n.task, n.deps), cx), true),
+            this.btn(t, `cancel-${i}`, "Cancel task", (cx) => this.act(n.w, cancelArgs(n.task.id), cx))]
           : [this.btn(t, `sys-${i}`, n.kind === "watchd" ? "Restart in System" : "System", () => this.openSection(n.w, "system"))];
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, n.w.swarm))
@@ -158,13 +161,12 @@ export default class AllSwarms extends View {
   column(t, w, s, i) {
     const run0 = s.ci?.runs?.[0];
     const ci = !run0 ? null : run0.status !== "completed" ? ["main: checks run", t.working] : run0.conclusion === "success" ? ["main green", t.ansi2] : [`main ${run0.conclusion === "failure" ? "red" : run0.conclusion ?? "?"}`, t.blocked];
-    const c = s.counts ?? {}, done = c.done ?? 0, total = done + (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) + (c.landing ?? 0), l = s.limits ?? {};
-    const ready = w.ready ?? 0, waits = Math.max(0, (c.open ?? 0) - ready);
-    const counts = [[(c.claimed ?? 0) + (c.landing ?? 0), "claimed"], [ready, "ready"], [waits + (c.blocked ?? 0), waits + (c.blocked ?? 0) === 1 ? "waits" : "wait"]]
-      .filter(([k]) => k).map(([k, x]) => `${k} ${x}`).join(" · ");
+    const c = s.counts ?? {}, done = c.completed ?? 0, total = done + leftOf(c) + (c.backlog ?? 0), l = s.limits ?? {};
+    const started = (c.in_progress ?? 0) + (c.needs_input ?? 0) + (c.in_review ?? 0), ready = w.ready ?? 0, waits = Math.max(0, (c.ready ?? 0) - ready);
+    const counts = [[started, "Started"], [ready, "Ready"], [waits, "Waiting"], [c.backlog ?? 0, "Backlog"]].filter(([k]) => k).map(([k, x]) => `${k} ${x}`).join(" · ");
     const next = (w.next ?? []).slice(0, TASKS), ags = agentRows(s);
     const repos = (w.repos ?? []).map(repoName).filter(Boolean), many = new Set(ags.map((r) => r.a.repo).filter(Boolean)).size > 1;
-    const staff = `Auto-spawn to ${l.min ?? 0}${l.max != null ? `, max ${l.max}` : ""}.${l.held ? ` ${l.held.replace(/^auto-spawn holding: /, "Holding: ")}` : ""}`;
+    const staff = [`Auto-spawn ${l.min ?? 0}`, l.max != null ? `Max ${l.max}` : null, l.held ? "Paused" : null].filter(Boolean).join(" · ");
     return v_flex().id(`swarm-${i}`).flex_1().min_w(360).pt(12).pb(10).px(6).rounded(12).border(1).border_color(t.border).bg(t.surface)
       .child(h_flex().px(10).pb(8).gap(8).items_center().flex_wrap()
         .child(this.chip(t, w.swarm)).child(this.link(t, `name-${i}`, repos.join(", ") || "no repo", () => this.openSection(w, "overview")).text_size(14).font_semibold().text_color(t.foreground))
@@ -186,14 +188,15 @@ export default class AllSwarms extends View {
         .child(`${ags.length - AGENTS} more`)))
       .child(h_flex().mt(8).px(10).pt(10).gap(8).items_baseline().border_t(1).border_color(t.border).text_size(12.5)
         .child(this.link(t, `board-${i}`, "Board", () => this.openSection(w, "board")).font_semibold().text_color(t.foreground))
-        .child(div().text_color(t.muted).child(`${done} of ${total} done`)).child(div().flex_1())
+        .child(div().text_color(t.muted).child(`${done} of ${total} Completed`)).child(div().flex_1())
         .child(div().text_size(12).text_color(t.dim).child(counts)))
       .child(div().mx(10).mt(6).mb(4).h(4).rounded(2).bg(t.border).child(div().h(4).rounded(2).bg(t.ansi2).w(`${total ? (100 * done) / total : 0}%`)))
       .children(next.map((k) => h_flex().id(`task-${i}-${k.id}`).h(28).px(10).gap(10).items_center().min_w(0).text_size(12.5).rounded(6)
         .cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.openSection(w, "board", { task: k.id }))
         .child(div().w(44).flex_none().text_size(12).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`#${k.id}`))
         .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(k.title))
-        .child(div().flex_none().text_color(t.foreground).child("ready"))))
+        .child(div().flex_none().text_color(k.priority === "urgent" ? t.blocked : k.priority === "high" ? t.working : t.dim).child(k.priority && k.priority !== "medium" ? prioName(k.priority) : ""))
+        .child(div().flex_none().text_color(t.foreground).child(`Queue ${k.place}`))))
       .when(!next.length, (el) => el.child(div().px(10).py(4).text_size(12.5).text_color(t.dim).child(total > done ? "Nothing ready" : "Nothing left on the board")))
       .child(div().px(10).pt(6).text_size(12).text_color(l.held ? t.working : t.muted).whitespace_normal().child(staff))
       .child(h_flex().mt(8).px(10).pt(8).gap(12).flex_wrap().border_t(1).border_color(t.border)

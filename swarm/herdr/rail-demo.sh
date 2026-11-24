@@ -67,7 +67,7 @@ sql() { sqlite3 -cmd ".timeout 9000" "$db" "$@"; }
 board() {
   git -C "$1" init -q
   cur=${2%-comms}
-  (cd "$1" && SWARM_NAME=human "$D/swarm" new "$cur" --repo "$1" && SWARM_NAME=human "$D/swarm" --swarm "$cur" limits --min "$3" --max "$4") >/dev/null 2>&1
+  (cd "$1" && env -u SWARM_NAME "$D/swarm" new "$cur" --repo "$1" && SWARM_NAME=human "$D/swarm" --swarm "$cur" limits --min "$3" --max "$4") >/dev/null 2>&1
   crepo=$(sql "select repo from swarm_repo where swarm='$cur' limit 1")
   sql "update swarm set comms='$2' where name='$cur'"
 }
@@ -81,8 +81,9 @@ swagent() {
   n=$1 st=$2 ago=$3 stay=$4; shift 4
   jq -cn --arg c "sh '$D/w/reg.sh' '$db' '$n' '$st' $((now - ago)) '$stay' '$cur' '$crepo'; $(agent "$@" | jq -r '.[2]')" '["sh","-c",$c]'
 }
-# task <id> <title> <state> [owner] [question]: a task of $crepo
-task() { sql "insert into task(id, title, state, owner, question) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''));
+# task <id> <title> <state> [owner] [question]: a task of $crepo (state: in_progress, needs_input, ready, ...; a Ready or Backlog one's place is its id)
+task() { sql "insert into task(id, title, state, owner, question, qpos) values($1, '$2', '$3', nullif('${4:-}', ''), nullif('${5:-}', ''),
+    case when '$3' in ('ready', 'backlog') then $1 end);
   insert into task_repo(task, repo) values($1, '$crepo')"; }
 # homed: the tasks with no repo yet (the bulk inserts') are $crepo's
 homed() { sql "insert into task_repo(task, repo) select id, '$crepo' from task where id not in (select task from task_repo)"; }
@@ -121,34 +122,35 @@ if [ "$preset" != small ]; then
   show=$(echo "$made" | id space) llc=$(echo "$made" | id terminal)
   join "$show" "$llc"; watchd "$repo"
   spawn "$llc" "$show" ll-124 working 0 '' working ll-124 'explore-124|working|find the live shots in GAPS.md'
-  task 179 'Herdr rework: make the screenshot sandbox match a real setup (real-shaped swarms, second machine, size presets)' claimed ll-124
+  task 179 'Herdr rework: make the screenshot sandbox match a real setup (real-shaped swarms, second machine, size presets)' in_progress ll-124
   spawn "$wd" "$show" ll-125 working 0 '' idle ll-125
-  task 180 'Herdr rework: hardening against hostile input and arbitrary scale (sessions, tabs, swarms)' blocked ll-125 \
+  task 180 'Herdr rework: hardening against hostile input and arbitrary scale (sessions, tabs, swarms)' needs_input ll-125 \
     'A rail of 300 terminals takes 2 s to draw. Cap it at 200 rows with a "more" line, or page it?'
   old=$(hc run --bg --json --no-parent --no-notify -- sh -c 'sleep 2' | id address)
   spawn "$old" "$show" ll-126 idle 3480 reviews idle ll-126
-  task 171 'watchd: after a compaction, a staying agent or the communicator gets no continue prompt' claimed ll-126
+  task 171 'watchd: after a compaction, a staying agent or the communicator gets no continue prompt' in_progress ll-126
   ev $((now - 60)) ll-126 stay-hung
   spawn "$llc" "$show" ll-127 idle 1500 '' done ll-127
-  task 170 'Crash safety: fix the four stop-between-steps leaks #133 found (F1, F2, F3, F5)' claimed ll-127
+  task 170 'Crash safety: fix the four stop-between-steps leaks #133 found (F1, F2, F3, F5)' in_progress ll-127
   live=5
   if [ "$preset" = large ]; then # 19 more, auto-spawned by watchd
     i=130; while [ $i -le 148 ]; do
       st=working; [ $((i % 4)) != 0 ] || st=idle
-      spawn "$wd" "$show" ll-$i $st 0 '' $st ll-$i; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
+      spawn "$wd" "$show" ll-$i $st 0 '' $st ll-$i; task $((i + 1000)) "Task $i" in_progress ll-$i; i=$((i + 1))
     done
-    sql "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state, priority)
-      select 2000 + i, 'Later '||i, 'open', i % 3 + 1 from n"
+    sql "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state, priority, qpos)
+      select 2000 + i, 'Later '||i, 'ready', i % 3 + 2, 2000 + i from n"
     live=24
   fi
   sql "with recursive n(i) as (select 1 union all select i + 1 from n where i < $((live == 24 ? 110 : 4)))
     insert into agent(name, swarm, hc, status, last_active, started, ended, model, wt) select 'll-'||(124 - i), 'll', 'tx'||i, 'idle',
     $now - i * 900, $now - i * 900 - 5400, $now - i * 900, 'opus', '/w/jgetzel-skills-ll-'||(124 - i) from n;
-    insert into task(id, title, state, owner) values(173, 'Herdr rework: visual gap audit of the build against the canvas', 'done', 'll-120'),
-    (174, 'Herdr rework look A: the canvas''s warm palette as the rework layout''s theme', 'done', 'll-121'),
-    (175, 'Herdr rework: the live rail draws no swarm block', 'done', 'll-122'), (177, 'Herdr rework look D', 'done', 'll-123'),
-    (167, 'Phone app (.apk) to view and message remote agents over hc connect', 'open', null),
-    (181, 'swarm board: group done tasks by day', 'open', null);
+    insert into task(id, title, state, owner) values(173, 'Herdr rework: visual gap audit of the build against the canvas', 'completed', 'll-120'),
+    (174, 'Herdr rework look A: the canvas''s warm palette as the rework layout''s theme', 'completed', 'll-121'),
+    (175, 'Herdr rework: the live rail draws no swarm block', 'completed', 'll-122'), (177, 'Herdr rework look D', 'completed', 'll-123'),
+    (167, 'Phone app (.apk) to view and message remote agents over hc connect', 'backlog', null),
+    (181, 'swarm board: group done tasks by day', 'ready', null);
+    update task set qpos = 1000, hold = 'waits for the user''s go' where id = 167; update task set qpos = 1001 where id = 181;
     insert into msg(ts, frm, dest, body, kind) values($((now - 2400)), 'll-127', 'll-comms', 'PR #342 is ready.', 'dm'),
     ($((now - 300)), 'll-comms', 'll-124', 'Use the real preset for the before/after check.', 'dm');
     insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'bea333c', 'completed', 'success', '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'swarm-lean')"
@@ -162,10 +164,10 @@ if [ "$preset" != small ]; then
   made=$(do_ space.new --name high-perf-lean --folder "$repo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)")
   hpl=$(echo "$made" | id space) hplc=$(echo "$made" | id terminal)
   join "$hpl" "$hplc"
-  spawn "$hplc" "$hpl" hpl-3 working 0 '' working hpl-3; task 41 'Arena allocator for Expr' claimed hpl-3
-  spawn "$wd" "$hpl" hpl-4 idle 1140 '' idle hpl-4; task 44 'Bench: Mathlib import time' blocked hpl-4 \
+  spawn "$hplc" "$hpl" hpl-3 working 0 '' working hpl-3; task 41 'Arena allocator for Expr' in_progress hpl-3
+  spawn "$wd" "$hpl" hpl-4 idle 1140 '' idle hpl-4; task 44 'Bench: Mathlib import time' needs_input hpl-4 \
     'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
-  task 49 'Inline small closures in the compiler pass' open
+  task 49 'Inline small closures in the compiler pass' ready
   sql "insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
   await 3; cur=ll crepo=$llrepo
   vps=1
@@ -213,22 +215,22 @@ if [ -n "$sw" ]; then
   made=$(do_ space.new --name jgetzel-skills --folder "$repo" --argv "$(swagent ll-comms idle 120 '' done ll-comms)")
   skills=$(echo "$made" | id space) llc=$(echo "$made" | id terminal) show=$skills
   if [ "$sw" = 5 ]; then
-    wtab "$skills" "$llc" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Lean proofs: crash safety between any two steps' blocked ll-97 'Spawn.unreserve ends the row but keeps its locks. Fix it in this PR, or as its own task?'
-    wtab "$skills" "$llc" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' claimed ll-110
-    wtab "$skills" "$llc" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' claimed ll-111
-    wtab "$skills" "$llc" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' claimed ll-107
-    task 150 'Collapsed rail' open; task 151 'Settings' open
+    wtab "$skills" "$llc" "$(swagent ll-97 working 0 '' idle ll-97)"; task 133 'Lean proofs: crash safety between any two steps' needs_input ll-97 'Spawn.unreserve ends the row but keeps its locks. Fix it in this PR, or as its own task?'
+    wtab "$skills" "$llc" "$(swagent ll-110 working 0 '' working ll-110 'research|working|read the mod guide')"; task 146 'Rail swarm block' in_progress ll-110
+    wtab "$skills" "$llc" "$(swagent ll-111 working 0 '' working ll-111)"; task 145 'Bar pills' in_progress ll-111
+    wtab "$skills" "$llc" "$(swagent ll-107 idle 3660 '' done ll-107)"; task 142 'Pane cards' in_progress ll-107
+    task 150 'Collapsed rail' ready; task 151 'Settings' ready
     folds="$nix $linn"
   else
-    wtab "$skills" "$llc" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' blocked ll-203 'Keep the old panel?'
-    wtab "$skills" "$llc" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' blocked ll-205 'Which machine is the vps?'
-    wtab "$skills" "$llc" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' claimed ll-209
+    wtab "$skills" "$llc" "$(swagent ll-203 working 0 '' idle ll-203)"; task 214 'Swarm tab' needs_input ll-203 'Keep the old panel?'
+    wtab "$skills" "$llc" "$(swagent ll-205 working 0 '' idle ll-205)"; task 231 'Machines' needs_input ll-205 'Which machine is the vps?'
+    wtab "$skills" "$llc" "$(swagent ll-209 idle 3480 reviews idle ll-209)"; task 222 'Review queue' in_progress ll-209
     ev $((now - 60)) ll-209 stay-hung
     i=210; while [ $i -le 223 ]; do # 14 working, ll-211 among them (you opened it)
-      wtab "$skills" "$llc" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" claimed ll-$i; i=$((i + 1))
+      wtab "$skills" "$llc" "$(swagent ll-$i working 0 '' working ll-$i)"; task $((i + 1000)) "Task $i" in_progress ll-$i; i=$((i + 1))
     done
     for i in 224 225 226 227 228 229; do wtab "$skills" "$llc" "$(swagent ll-$i idle 1800 '' done ll-$i)"; done
-    sqlite3 -cmd ".timeout 9000" "$db" "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state) select 2000 + i, 'Later '||i, 'open' from n"
+    sqlite3 -cmd ".timeout 9000" "$db" "with recursive n(i) as (select 1 union all select i + 1 from n where i < 31) insert into task(id, title, state, qpos) select 2000 + i, 'Later '||i, 'ready', 2000 + i from n"
     homed
     folds="$jk $nix $linn"
   fi
@@ -238,11 +240,11 @@ if [ -n "$sw" ]; then
     llrepo=$crepo hrepo=$(dir high-perf-lean); board "$hrepo" hpl-comms 8 8
     made=$(do_ space.new --name high-perf-lean --folder "$hrepo" --argv "$(swagent hpl-comms idle 300 '' idle hpl-comms)")
     hpl=$(echo "$made" | id space) hplc=$(echo "$made" | id terminal)
-    wtab "$hpl" "$hplc" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' blocked hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
-    wtab "$hpl" "$hplc" "$(swagent hpl-3 working 0 '' working hpl-3)"; task 41 'Arena allocator for Expr' claimed hpl-3
-    wtab "$hpl" "$hplc" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' claimed hpl-6
-    wtab "$hpl" "$hplc" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' claimed hpl-7
-    task 49 'Inline small closures in the compiler pass' open; task 50 'Bench: instantiateMVars on deep terms' open
+    wtab "$hpl" "$hplc" "$(swagent hpl-4 idle 1140 '' idle hpl-4)"; task 44 'Bench: Mathlib import time' needs_input hpl-4 'The Mathlib import bench needs 40 G for 25 minutes. Run it now, or wait until the ll swarm is quieter?'
+    wtab "$hpl" "$hplc" "$(swagent hpl-3 working 0 '' working hpl-3)"; task 41 'Arena allocator for Expr' in_progress hpl-3
+    wtab "$hpl" "$hplc" "$(swagent hpl-6 working 0 '' working hpl-6)"; task 45 'Simp cache keyed by pointer hash' in_progress hpl-6
+    wtab "$hpl" "$hplc" "$(swagent hpl-7 idle 540 '' idle hpl-7)"; task 47 'CI: perf regression gate' in_progress hpl-7
+    task 49 'Inline small closures in the compiler pass' ready; task 50 'Bench: instantiateMVars on deep terms' ready
     sqlite3 -cmd ".timeout 9000" "$db" "insert into ci(repo, id, sha, status, conclusion, url, created, workflow) values('$crepo', 1, 'a1b2c3d', 'in_progress', null, '', '$(date -u +%Y-%m-%dT%H:%M:%SZ)', 'ci')"
     cur=ll crepo=$llrepo
   fi
@@ -300,7 +302,7 @@ sleep 2 # the helpers start and report
   with recursive n(i) as (select 1 union all select i + 1 from n where i < 12) insert into agent(name, swarm, hc, status, last_active, started,
   ended, model, wt) select 'll-'||(180 + i), 'll', 'tx'||i, 'idle', $now - i * 1500, $now - i * 1500 - 5400, $now - i * 1500, 'opus',
   '/w/jgetzel-skills-ll-'||(180 + i) from n;
-  update task set priority = (id % 3) + 1 where id > 2000"
+  update task set priority = (id % 3) + 2 where id > 2000"
 opened=[]; [ "$sw" != 24 ] || opened=$(sqlite3 -cmd ".timeout 9000" "$db" "select json_array(hc) from agent where name='ll-211'")
 # With a swarm, this computer's other spaces fold (shot.sh's demo and notes too), as on the rail board.
 [ -z "$sw" ] || folds="$folds $(herdr-app ls | jq -r '.. | objects | select(.name? == "demo" or .name? == "notes" or .name? == "high-perf-lean") | .id? // empty' | grep -v / || :)"

@@ -33,9 +33,14 @@ const SAYS = {
   "stay-unwoken": () => "did not wake on a message",
   "stay-check": () => "was asked if it still stays",
   "spawn-refused": (d) => `could not start ${d}: the swarm is at its max`,
-  "spawn-held": (d) => `auto-spawn is ${held(d)}`,
+  "spawn-held": (d) => `auto-spawn is ${held(d)}`, // the log's line; the summary says Paused
+  "task-backlog": (d) => `moved ${d.replace(/^(#\d+)\s*/, "$1 to Backlog: ")}`.trim(), "task-ready": (d) => `moved ${d} to Ready`,
+  "task-assign": (d) => { const [id, who] = d.split(" "); return who && who !== "-" ? `assigned ${id} to ${who}` : `unassigned ${id}`; },
+  "task-place": (d) => { const [id, , at] = d.split(" "); return at && at !== "-" ? `moved ${id} to Queue ${at}` : `moved ${id} in the queue`; },
+  "task-duplicate": (d) => `marked ${d.replace(/^(#\d+) (#\d+)$/, "$1 a duplicate of $2")}`,
   limits: (d) => `set the limits: ${d.replace(/min (\S+) max (\S+)/, (_, a, b) => `auto-spawn to ${a === "nil" ? "no number" : a}, max ${b === "nil" ? "unset" : b}`)}`,
-  queue: (d) => `queued ${d}`, unqueue: (d) => `took ${d} out of the queue`, hold: (d) => `held ${d.replace(/^(#\d+) /, "$1: ")}`, unhold: (d) => `unheld ${d}`,
+  queue: (d) => `queued ${d}`, unqueue: (d) => `took ${d} out of the queue`, // old dbs' events: hold and unhold are Backlog and Ready moves
+  hold: (d) => `moved ${d.replace(/^(#\d+)\s*/, "$1 to Backlog: ")}`.trim(), unhold: (d) => `moved ${d} to Ready`,
   block: (d) => `asked you: ${d.replace(/^#\d+\s*/, "")}`, stay: (d) => `stays for ${d}`, "stay-end": () => "stopped staying", role: (d) => `is now ${d}`,
 };
 // Each kind: [filter group, level ("you" waits on you, "warn" a problem, "good"), in the summary].
@@ -43,7 +48,8 @@ export const KIND = Object.fromEntries(Object.entries({
   "task-add": ["tasks", "", 1], claim: ["tasks", "", 1], done: ["tasks", "good", 1], block: ["tasks", "you", 1], "task-blocked": ["tasks", "you", 1],
   unblock: ["tasks", "", 1], release: ["tasks", "", 1], drop: ["tasks", "", 1], reap: ["tasks", "warn", 1], "lease-late": ["tasks", "", 0],
   "task-priority": ["tasks", "", 0], "task-after": ["tasks", "", 0], queue: ["tasks", "", 1], unqueue: ["tasks", "", 0], hold: ["tasks", "", 1],
-  unhold: ["tasks", "", 1], startable: ["tasks", "", 0],
+  unhold: ["tasks", "", 1], startable: ["tasks", "", 0], "task-backlog": ["tasks", "", 1], "task-ready": ["tasks", "", 1], "task-assign": ["tasks", "", 1],
+  "task-place": ["tasks", "", 1], "task-duplicate": ["tasks", "", 1],
   push: ["code", "", 1], "ci-red": ["code", "warn", 1], "ci-green": ["code", "good", 1], conflict: ["code", "warn", 1], "conflict-compat": ["code", "", 0],
   "conflict-stale": ["code", "", 0], "conflict-error": ["code", "", 0], overlap: ["code", "warn", 0], lock: ["code", "", 1], unlock: ["code", "", 0],
   "deny-lock": ["code", "", 0], "lock-violation": ["code", "warn", 1], "shared-tree": ["code", "warn", 1], sweep: ["code", "", 0],
@@ -82,17 +88,23 @@ function say(s, e, kind, told) {
   const data = one(e.data), m = /^#(\d+)\s*(.*)$/.exec(data);
   const task = (id) => s.tasks.find((k) => k.id === Number(id)), agent = s.agents.find((a) => a.name === e.agent);
   const ref = m ? `#${m[1]} ${task(m[1])?.title ?? m[2]}`.trim() : data, id = m ? Number(m[1]) : null;
+  const title = (m) => (m ? `#${m[1]} ${task(m[1])?.title ?? ""}`.trim() : data); // the id and title only: what follows it is the event's own data
   switch (kind) {
     case "task-add": return { text: `added ${ref}`, part: m ? `#${m[1]}` : data, task: id };
     case "claim": return { text: `claimed ${ref}`, task: id };
     case "done": return { text: `finished ${ref}`, chip: evidence(m?.[2]), task: id };
     case "ci-green": return { text: `main CI is green again (run ${/green run (\d+)/.exec(data)?.[1] ?? "?"})` };
-    case "block": return { text: `asked you about #${m?.[1]}: ${shortUrls(m?.[2] ?? "").text}`, task: id, open: task(m?.[1])?.state === "blocked" };
-    case "task-blocked": { const k = Number(e.path); return { text: `#${e.path} is waiting on you: ${shortUrls(data).text}`, task: Number.isInteger(k) ? k : null, open: task(e.path)?.state === "blocked" }; }
+    case "block": return { text: `asked you about #${m?.[1]}: ${shortUrls(m?.[2] ?? "").text}`, task: id, open: task(m?.[1])?.state === "needs_input" };
+    case "task-blocked": { const k = Number(e.path); return { text: `#${e.path} is waiting on you: ${shortUrls(data).text}`, task: Number.isInteger(k) ? k : null, open: task(e.path)?.state === "needs_input" }; }
     case "blocked": return { text: "stopped at a prompt in its terminal", open: agent?.status === "blocked" };
     case "unblock": return { text: `unblocked ${ref}`, task: id };
     case "release": return { text: `gave back ${ref}`, task: id };
-    case "drop": return { text: `dropped ${ref}`, part: m ? `#${m[1]}` : data, task: id };
+    case "drop": return { text: `cancelled ${ref}`, part: m ? `#${m[1]}` : data, task: id };
+    case "hold": case "task-backlog": return { text: `moved ${title(m)} to Backlog`, sub: m?.[2] || null, task: id };
+    case "unhold": case "task-ready": return { text: `moved ${title(m)} to Ready`, task: id };
+    case "task-assign": { const who = m?.[2]?.trim(); return { text: `assigned ${title(m)}`, chip: who && who !== "-" ? who : "Unassigned", task: id }; }
+    case "task-place": { const at = (m?.[2] ?? "").split(" ")[1]; return { text: `moved ${title(m)} in the queue`, meta: at && at !== "-" ? `Queue ${at}` : "", task: id }; }
+    case "task-duplicate": return { text: `marked ${title(m)} a duplicate`, chip: `of ${(m?.[2] ?? "").trim()}`, task: id };
     case "reap": return { text: /lease/.test(data) ? `lost ${data.replace(/^task /, "").replace(/ lease expired$/, "")}: its lease ran out` : e.path ? `lost its lock on ${e.path}: it expired` : "is gone: its terminal closed" };
     case "push": return { text: `pushed ${pushBranch(e)}`.trim(), sub: one(e.subject) };
     case "ci-red": return { text: `main CI failed (run ${data})`, meta: told(data) ? `told ${plural(told(data), "agent")}` : "", open: (s.ci?.red_streak ?? 0) > 0 };
@@ -105,7 +117,7 @@ function say(s, e, kind, told) {
     case "end": return { text: "ended", part: e.agent ?? "?" };
     case "pressure": return { text: "machine is short on memory", open: true };
     case "orphan-kill": return { text: `left a process running; the swarm stopped it: ${data.split(" ").slice(1, -1).join(" ")}` };
-    case "spawn-held": return { text: SAYS[kind](data), open: Boolean(s.limits?.held) };
+    case "spawn-held": return { text: "auto-spawn is Paused", open: Boolean(s.limits?.held) };
     case "stay-hung": case "stay-nowaiter": case "stay-unwoken": return { text: SAYS[kind](data), open: agent?.stay_sign === kind.slice(5) };
     default: return { text: SAYS[kind]?.(data) ?? data, task: id };
   }
@@ -166,7 +178,7 @@ export function actItems(s, log) {
       prev.parts.push(it.part); prev.whos.push(who); prev.full.push(`${who} ${it.text}`); prev.ts = it.ts;
       const n = prev.parts.length;
       if (kind === "end") Object.assign(prev, { who: `${n} agents`, text: `${andList(prev.whos)} ended` });
-      else prev.text = `${{ spawn: "started", "task-add": "added", drop: "dropped" }[kind]} ${plural(n, kind === "spawn" ? "agent" : "task")}: ${andList(prev.parts)}`;
+      else prev.text = `${{ spawn: "started", "task-add": "added", drop: "cancelled" }[kind]} ${plural(n, kind === "spawn" ? "agent" : "task")}: ${andList(prev.parts)}`;
       continue;
     }
     if (f) Object.assign(it, { parts: [it.part], whos: [who], full: [`${who} ${it.text}`] });

@@ -104,14 +104,16 @@ export function agentGlyph(t, status, size = 10) {
     default: return box.rounded(size).border(1.5).border_color(c.idle);
   }
 }
-// Tasks (12 px): waiting dashed ring, ready ring, in progress half, blocked three quarters, landing dot, done filled.
+// Tasks (12 px): backlog faint dashed ring, waiting dashed ring, ready ring, in progress half, needs input three quarters,
+// in review dot, completed filled. `state` is the glyph's own word (wait, prog, block, land, done, back); the board maps a task state to it.
 export function taskGlyph(t, state, size = 12, m = null, key = null) {
   const c = colors(t), col = { prog: c.working, block: c.asks, land: c.landing, done: c.done }[state] ?? t.dim;
   const ring = h_flex().relative().flex_none().rounded(99).border(1.5).border_color(col);
   const part = () => div().absolute().bg(col);
   const half = part().top("15%").bottom("15%").left("50%").right("15%").rounded_r(99);
   const quarter = part().top("50%").bottom("15%").left("15%").right("50%").rounded_bl(99);
-  const g = state === "wait" ? ring.border_dashed().opacity(0.7)
+  const g = state === "back" ? ring.border_dashed().opacity(0.45)
+    : state === "wait" ? ring.border_dashed().opacity(0.7)
     : state === "prog" ? ring.child(half)
     : state === "block" ? ring.child(half).child(quarter)
     : state === "land" ? ring.child(part().top("32%").bottom("32%").left("32%").right("32%").rounded(99))
@@ -119,9 +121,10 @@ export function taskGlyph(t, state, size = 12, m = null, key = null) {
     : ring;
   return stamped(g, m, key ?? `task:${state}`, size);
 }
-// P0 urgent (coral), P1 high (orange), P2 and P3 dim: a mono word, 20 px.
-export const priority = (t, p) => div().w(20).flex_none().font_family(MONO).text_size(10)
-  .text_color(p === 0 ? t.blocked : p === 1 ? t.working : t.dim).child(p == null ? "" : `P${p}`);
+// Urgent (coral), High (orange), the rest dim (None, Medium, Low): a mono word, 44 px. `p` is the CLI's name.
+const PRIO = { none: "None", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
+export const priority = (t, p) => div().w(44).flex_none().font_family(MONO).text_size(10)
+  .text_color(p === "urgent" ? t.blocked : p === "high" ? t.working : t.dim).child(PRIO[p] ?? "");
 
 // ---- tags and chips -----------------------------------------------------------------------------------------------
 const tag = () => h_flex().h(16).px(4).flex_none().items_center().rounded(R.tag).font_family(MONO).text_size(10);

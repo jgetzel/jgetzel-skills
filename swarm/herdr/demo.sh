@@ -1,6 +1,6 @@
 #!/bin/sh
 # A made-up swarm for shot.sh: swarm/herdr/demo.sh DIR [away|back|dead|stale], then swarm/herdr/shot.sh --fixture DIR out.png.
-# Writes DIR/swarm.db (a board mid-work: the limits reached, auto-spawn holding, a hung stayer, a blocked task, a queue),
+# Writes DIR/swarm.db (a board mid-work: the limits reached, auto-spawn Paused, a hung stayer, a Needs Input task, Ready and Backlog),
 # DIR/proc (the machine reading and `ps` output), DIR/bin/ps and DIR/state (a cmd-cost history for repo "demo").
 # Variants: the user away, just back (the digest card), watchd dead or older than the code.
 set -eu
@@ -17,8 +17,11 @@ done
 mkdir -p "$dir/proc/pressure" "$dir/bin" "$dir/state/cmd-cost"
 db=$dir/swarm.db
 rm -f "$db" "$dir/state/cmd-cost/history.db"
-# swarm-lean makes the board's schema
-SWARM_DB=$db "$here/../swarm" board >/dev/null
+# swarm-lean makes the schema (the swarm and its repo are inserted below)
+SWARM_DB=$db "$here/../swarm" swarms >/dev/null
+# swarm-lean stamps a new db at its first write, and that write would migrate the rows below (priorities move up one):
+# stamp it now at DB_VERSION (swarm/lean/SwarmLean/Db/Schema.lean)
+sqlite3 "$db" "pragma user_version=2"
 
 # watchd's record: pid 1 stands for a live one (shot.sh makes it its own pid), 2147483646 for a dead one;
 # "stale": started before the swarm code last changed. Times below are minutes before @now.
@@ -44,23 +47,28 @@ insert into meta(k,v) values ('comms','ox-comms'), ('agent_min','5'), ('agent_ma
   ('watchd',@watchd),
   ('watchd_run','{"cwd":"/tmp","started":' || (@now-@started*60) || ',"flags":["--comms","ox-comms","--auto-spawn"]}');
 
--- tasks; the shots show the priority chips
+-- tasks; the shots show the priority chips (1 urgent, 2 high, 3 medium, 4 low)
 insert into task(title,state,owner,created_by,evidence,deps,question,lease_until,model) values
-  ('Planner: carry row estimates through joins','done','ox-7','ox-comms','PR #31 merged 4f2a9c1e',null,null,null,'sonnet'),
-  ('Plan cache: key on the normalized query','done','ox-6','ox-comms','PR #33 merged 9be01d77',null,null,null,'sonnet'),
-  ('Flaky test: plan_cache_evicts under load','done','ox-1','ox-2','PR #34 merged 1c3d5e7f, 40 runs green',null,null,null,'sonnet'),
-  ('Planner: cost model for index scans','claimed','ox-1','ox-comms',null,null,null,@now+96*60,'sonnet'),
-  ('Tenants: migration and backfill','blocked','ox-3','ox-comms',null,null,'Backfill in one transaction, or in batches of 10k?',@now+110*60,'sonnet'),
-  ('Docs: how the plan cache is keyed','claimed','ox-5','ox-1',null,null,null,@now+112*60,'sonnet'),
-  ('Planner: cost model for hash joins','open',null,'ox-1',null,null,null,null,'sonnet'),
-  ('Bench: plan time on the 200-table schema','open',null,'ox-2',null,null,null,null,'sonnet'),
-  ('Tenants: per-tenant plan cache','open',null,'ox-comms',null,'5',null,null,'sonnet'),
-  ('Old: rewrite the parser','dropped',null,'ox-comms',null,null,null,null,'sonnet');
-update task set priority=0 where title like 'Planner: cost model for hash%';
-update task set priority=3 where title like 'Bench:%';
-update task set priority=1 where title like 'Docs:%';
--- the staffing queue: one waiting on a task, one held, the head (the first startable), one claimed
-update task set qpos=case id when 9 then 1 when 8 then 2 when 7 then 3 when 4 then 4 end where id in (4,7,8,9);
+  ('Planner: carry row estimates through joins','completed','ox-7','ox-comms','PR #31 merged 4f2a9c1e',null,null,null,'sonnet'),
+  ('Plan cache: key on the normalized query','completed','ox-6','ox-comms','PR #33 merged 9be01d77',null,null,null,'sonnet'),
+  ('Flaky test: plan_cache_evicts under load','completed','ox-1','ox-2','PR #34 merged 1c3d5e7f, 40 runs green',null,null,null,'sonnet'),
+  ('Planner: cost model for index scans','in_progress','ox-1','ox-comms',null,null,null,@now+96*60,'sonnet'),
+  ('Tenants: migration and backfill','needs_input','ox-3','ox-comms',null,null,'Backfill in one transaction, or in batches of 10k?',@now+110*60,'sonnet'),
+  ('Docs: how the plan cache is keyed','in_progress','ox-5','ox-1',null,null,null,@now+112*60,'sonnet'),
+  ('Planner: cost model for hash joins','ready',null,'ox-1',null,null,null,null,'sonnet'),
+  ('Bench: plan time on the 200-table schema','backlog',null,'ox-2',null,null,null,null,'sonnet'),
+  ('Tenants: per-tenant plan cache','ready',null,'ox-comms',null,'5',null,null,'sonnet'),
+  ('Old: rewrite the parser','cancelled',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: statistics for partial indexes','ready','ox-2','ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: reuse the old cost model','ready',null,'ox-comms',null,'10',null,null,'sonnet'),
+  ('Tenants: audit log table','duplicate',null,'ox-comms',null,null,null,null,'sonnet');
+update task set priority=1 where title like 'Planner: cost model for hash%';
+update task set priority=4 where title like 'Bench:%';
+update task set priority=2 where title like 'Docs:%';
+update task set dup_of=5 where id=13;
+-- places: Ready is the staffing order (the head, one reserved for ox-2, one waiting on a task, one behind a Cancelled task),
+-- Backlog its own list; a machine-wide order
+update task set qpos=case id when 7 then 1 when 11 then 2 when 9 then 3 when 12 then 4 when 8 then 5 end where id in (7,8,9,11,12);
 update task set hold='waits for the 200-table schema dump' where id=8;
 
 -- events, oldest first
@@ -77,9 +85,10 @@ insert into event(ts,agent,kind,path,data) values
   (@now-31*60,null,'pressure-end',null,null),
   (@now-30*60,'ox-comms','limits',null,'min 5 max 5'),
   (@now-24*60,'ox-2','task-add',null,'#8'),
-  (@now-23*60,'ox-comms','queue',null,'#9'), (@now-23*60,'ox-comms','queue',null,'#8'),
-  (@now-23*60,'ox-comms','queue',null,'#7'), (@now-23*60,'ox-comms','queue',null,'#4'),
-  (@now-22*60,'ox-comms','hold',null,'#8 waits for the 200-table schema dump'),
+  (@now-23*60,'ox-comms','task-place',null,'#9 - 3'), (@now-23*60,'ox-comms','task-place',null,'#8 - 1'),
+  (@now-23*60,'ox-comms','task-place',null,'#7 - 1'),
+  (@now-22*60,'ox-comms','task-backlog',null,'#8 waits for the 200-table schema dump'),
+  (@now-21*60,'ox-comms','task-assign',null,'#11 ox-2'),
   (@now-20*60,'ox-4','stay-nowaiter',null,null),
   (@now-12*60,'ox-1','push','{"branch":"ox-1/index-scan-cost","subject":"planner: cost index scans by selectivity"}','git push'),
   (@now-9*60,'swarm','spawn',null,'auto #6'), (@now-9*60,'ox-5','claim',null,'#6'),
@@ -104,6 +113,12 @@ insert into ci(id,sha,status,conclusion,url,created,updated)
 insert into meta(k,v) select 'away', (@now-60*60) || ' lunch' where @away;
 update task set done_at=@now-52*60, merged_at=@now-51*60, pr=34 where id=3 and @away;
 insert into lock(path,agent,reason,since) values ('migrations/0042*','ox-3','tenants migration',@now-90*60);
+
+-- the swarm (sw-global): its agents, events and meta keys belong to it; watchd's keys stay the machine's
+insert into swarm(name,comms,created) values ('ox','ox-comms',@now-190*60);
+update agent set swarm='ox';
+update event set swarm='ox';
+update meta set scope='ox' where k not in ('watchd','watchd_run','watchd_tick','watchd_up','machines','jobs');
 SQL
 } | sqlite3 "$db"
 # back: and returned just now (the digest card)

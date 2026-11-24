@@ -69,7 +69,7 @@ mark sits at the right end of the row or pill.
 | --- | --- | --- |
 | amber ring, spinning | working | status `working` |
 | blue dot | done and unseen; plain agents and communicators only | status `done` |
-| coral square | asks you | status `blocked`, core `error`, or the agent's swarm task is blocked on the human |
+| coral square | asks you | status `blocked`, core `error`, or the agent's swarm task is Needs Input (waiting on the human) |
 | gray ring | idle | status `idle`; also a swarm worker whose status is `done` |
 | coral hollow square | hung (swarm only) | `swarm state` agent that did not answer the liveness check |
 | small bright dot | shell: a program is in front | not an agent, and `program` is not a shell (as the shipped spaces mod infers) |
@@ -119,12 +119,12 @@ bar; machine load is at the foot of the rail.
 
 - Data: `spaces()`, `panes()`, `agents()`.
 - "Needs you" counts every agent with `blocked` or `error` on every machine,
-  including hidden ones, plus swarm tasks blocked on the human. It does not
+  including hidden ones, plus swarm tasks in Needs Input. It does not
   count shells. It opens a popup list; an item focuses the agent.
 - Buildable: mod `rw-bar`, layout root `"titlebar":"none"`. On Linux the mod
   draws the window buttons itself (`window().buttons`).
 - Reordering pills by drag has to be built by hand, as the shipped tabs mod does.
-- Built in slice 2. Swarm tasks blocked on the human join the count with the swarm block (slice 6), which reads the
+- Built in slice 2. Swarm tasks in Needs Input join the count with the swarm block (slice 6), which reads the
   summary view. `window().buttons` is false in shot.sh's sandbox (Xvfb has no window manager), so its shot forces the
   buttons on.
 
@@ -160,7 +160,7 @@ opened stay named.
   whose id is the board's `space` (else every space on that folder). A row is the agent's terminal (`hc`), its
   sub-terminals under it; an agent with no terminal here still gets a row. "You opened" is an agent you clicked in the
   rail (kept across restarts); "show" lists every worker until "show fewer". rw-bar's Needs you also counts the
-  summary's questions (tasks blocked on you) whose agent isn't already asking at a prompt.
+  summary's questions (Needs Input tasks) whose agent isn't already asking at a prompt.
 
 ### Swarm tab (screen 2)
 
@@ -182,8 +182,8 @@ answer field, the agent table, the board, staffing, messages, landing.
   mod does (3 s while the db folder changes, 30 s quiet, 10 s remote); PRs from `gh pr list --state all --limit 4` once
   a minute. Needs you lists questions with an answer field, agents stopped at a prompt and hung agents, each with Open
   its terminal. Board shows the tasks left (8, then a count), staffing (auto-spawn, max) and New task. Messages are
-  the latest three. The Done and Dropped links, the Activity link and Landing's files-not-on-main line are left out:
-  the rework has no screen for them yet. Look D (board #177): Done and Dropped links in the board's heading list the
+  the latest three. The Completed and Cancelled links, the Activity link and Landing's files-not-on-main line are left out:
+  the rework has no screen for them yet. Look D (board #177): Completed and Cancelled links in the board's heading list the
   newest of those tasks in the board's place (`--view board`, read on click); the Away switch moved to the communicator's
   pane header and stays here only while the communicator has no pane in the window.
 
@@ -204,7 +204,7 @@ and a context card (task, why watchd keeps it, context size, files, PR).
   idle agent; context with the 325k and 400k marks, the last compaction and the cache; the files it edits) rather than
   a column beside the terminal, which would leave the terminal a quarter of the tab. Send answer runs `swarm task
   unblock N --answer`; Let the communicator decide posts the question to the communicator, and the question stays.
-  Every `rw-question` pane in the agent's tab closes once its task is no longer blocked, answered here or anywhere.
+  Every `rw-question` pane in the agent's tab closes once its task is no longer Needs Input, answered here or anywhere.
   The cards' buttons (Open task, Release, Message, Nudge, End agent) are left out.
 
 ### Large swarm (screen 4)
@@ -220,7 +220,7 @@ count; opening it lists them read-only.
 - Buildable. Unchecked: `tab.settle` on 20 tabs at once.
 - Built in slice 9: past 8 workers (the rail block's fold) the swarm tab groups the agents under a filter that also
   narrows the board, adds model and PR columns, and shows the board as counts and the next 5 tasks in auto-spawn's
-  order (queue, priority, id; not main-red first). The ended line counts every ended agent; opening it reads
+  order (Ready by place; not main-red first; priority orders nothing). The ended line counts every ended agent; opening it reads
   `state --view agents`, which sends the newest 60. Not drawn: the ended line's "landed / ended by you" split and
   "today" (no field says how an agent ended), Pause, and Landing's counts. The rail puts away (`tab.settle`) each tab
   that holds only folding workers unless it is shown; showing one counts its agent as opened. It brings back a put-away
@@ -413,22 +413,31 @@ in the order at the end.
 
 **Round 3 (full view at parity with the side view; canvas page "Round 3 · full view parity").** The full view is the
 side view's parts at 1360 px, so the seven sections below are now four tabs in the top bar, the side view's: Now,
-Queue, Agents, More (More holds Activity, Landing, System and History as a second row of tabs; the pages below keep
+Board (once Queue), Agents, More (More holds Activity, Landing, System and History as a second row of tabs; the pages below keep
 their content). Both views are laid out from the same functions in rw-swarm (`staffBar`, `taskRow`, `agentRow`,
 `nextCard`, `workingCard`, `filterRow`, `queueList`, `messageLine`, `emptyLine`, `skeleton`; the pure logic is
 `TABS`, `MORE`, `tabOf`, `prioWord`, `staffWords`, `heldWhy`, `pastOf`, `fitChips`, `plain` in rw-rail/tree.js).
-- Top bar: the four tabs with Now's red count, Queue's tasks left, Agents' live agents; one Away control (Away, and
+- Task states (Linear's, board stages 1-4): Backlog, Ready, In Progress, Needs Input, In Review, Completed, Cancelled, Duplicate (the
+  JSON `state` is backlog, ready, in_progress, needs_input, in_review, completed, cancelled, duplicate with `dup_of`), counted by
+  five categories: Backlog, Ready (`unstarted`), Started (In Progress, Needs Input, In Review), Completed, Cancelled (with Duplicate).
+  `STATES`, `CATS`, `stateWord`, `catOf`, `isClosed`, `leftOf` in rw-rail/tree.js. Hold is gone: Backlog replaces it, and the old hold
+  text is the task's `note`. Queue-only is gone with it. Ready is one manually ordered list and the staffing order; every Ready and
+  Backlog task has a `place` (its 1-based position in its own list, shown "Queue N"), and priority (None, Urgent, High, Medium, Low,
+  as the CLI names it) orders nothing. A Ready or Backlog task may carry an assignee (a reservation: auto-spawn skips it). The UI says
+  no sentence with a value in it: labels and chips ("Waiting", "Reserved", "after #5"), not prose.
+- Top bar: the four tabs with Now's red count, Board's tasks left (Ready and started), Agents' live agents; one Away control (Away, and
   while away "Away since 14:13" with I'm back; the Away banner is gone).
-- Under it, on every tab, the staffing bar: "2 working, 2 idle", why auto-spawn holds (`limits.held`), Auto-spawn and Max
+- Under it, on every tab, the staffing bar: "2 working, 2 idle", Paused while auto-spawn holds (`limits.held`), Auto-spawn and Max
   steppers (32 px; the number moves at once in the accent until `swarm limits` answers; a refusal puts it back and the
-  CLI's words show in the bar), Queue only, Resume while auto-spawn is at 0 with tasks left.
+  CLI's words show in the bar), Resume while auto-spawn is at 0 with Ready tasks.
 - Now: Needs you and Next up on the left (two columns at 900 px and over, else one), Working and Machines on the right;
-  Working is not drawn at zero. Next up's empty state gives the reason (`heldWhy`: no open tasks, or what waits on what,
-  held, not queued) and the one action that changes it. P0 and P1 show; P2 is the default and says nothing.
-- Queue: Open, Done, Dropped as one switch (Done and Dropped list in the table, newest first, with a filter; they no
-  longer open History); List or Graph; model and label chips with counts (AND, one line and "n more"); one table:
-  Being worked on, Next with the cut line, Waiting; each row's action is Spawn now, + Queue, Unqueue or Open terminal,
-  and a queued Next row keeps its reorder arrows. New task opens its form from the head.
+  Working is not drawn at zero. Next up's empty state gives the reason (`heldWhy`: no tasks, or chips Waiting, Reserved, Backlog with the
+  task most wait on) and the one action that changes it. Every priority but Medium (the default) shows as a chip.
+- Board (the tab was Queue): Open, Completed, Cancelled as one switch (Completed and Cancelled, with Duplicate, list in the table, newest
+  first, with a filter; they no longer open History); List or Graph; model and label chips with counts (AND, one line and "n more");
+  one table: Being worked on, Next with the cut line (chips Auto-spawn, Live, Start), Waiting (Ready past the cut: Waiting, Reserved),
+  Backlog; each row's action is Spawn now, To the end, To Ready or Open terminal, and a Ready Next row keeps its reorder arrows (they move
+  within Ready or Backlog). New task opens its form from the head (priority, Backlog tick; a new task is Ready at the end).
 - Agents: today's table plus model chip and context bar; a row opens the agent's terminal, its name its page, a right
   click its menu (as the side view); Spawn… and Show ended stay.
 - The message line at the foot of both views: Communicator or Everyone (an agent is messaged from its page), Urgent in
@@ -443,7 +452,7 @@ their content). Both views are laid out from the same functions in rw-swarm (`st
 
 Inventory (every item of `mods/swarm/main.js`, every field of `swarm state --json`'s seven views, every CLI command,
 against the rw-* mods): the old panel's Task, Agent, Activity and System screens and its queue are gone; Home lost the
-away digest, the CI / watchd / memory needs, Pause, Queue only, the stay signs and the idle reason. Two bugs:
+away digest, the CI / watchd / memory needs, Pause, the stay signs and the idle reason. Two bugs:
 rw-swarm's own Away box reads `away === true` but `--view overview` sends `{since, note}`; `tree.js` `overOf`/`sumOf`
 drop every field they do not list, so a restored item starts by adding its fields there.
 
@@ -458,13 +467,16 @@ and the Activity list stop at 1100 px.
 - Overview: Needs you with every `needs[]` kind (question with answer field, prompt per II.6, hung with Nudge, `ci`
   with Open run and `gh run rerun --failed`, watchd not running with Restart, `memory`); the Away banner and the
   "While you were away" digest (`back`); agents with `fate.short` and `stay_sign` chips; board counts and next;
-  staffing with Pause/Resume and Queue only (`limits --queue-only`); Message the swarm (`swarm post` to the
+  staffing with Pause/Resume; Message the swarm (`swarm post` to the
   communicator, `all`, or one agent, with Urgent); Spawn (`swarm spawn`); the machine line.
-- Board: the queue (`qpos`) with "next", why-not, move (`queue add --front/--before/--after`), remove (`queue rm`) and
-  add (`queue add`); the four groups; done and dropped (`--view board`) with `work_s` and `done_ctx - claim_ctx`;
-  the new-task form with body, after, priority, model, effort, queue, hold. A List | Graph switch at its head shows the
+- Board: Ready in its order (`place`) with "next", why-not, move (`queue add --front/--before/--after`) and to the end (`queue rm`);
+  the groups Needs Input, In Progress, In Review, Ready, Backlog; Completed and Cancelled (`--view board`) with `work_s` and `done_ctx - claim_ctx`;
+  the new-task form with body, after, priority name, model, effort, Backlog (`task backlog <id> --note`). A Needs you item
+  `dep-cancelled` (a Ready or Backlog task waiting on a Cancelled one) has Remove dependency (`task after <id>` with the deps left;
+  an empty list clears them) and Cancel task (`task drop`); a Backlog task alone is no need. A List | Graph switch at its head shows the
   tasks as a dependency graph, the queue's or all of them (`--view graph`, #190: research/sw-graph-view.md).
-- Task page (`--task ID`): all the old task screen had, plus `task edit`, `task after`, queue add, `merge_to_green_s`.
+- Task page (`--task ID`): all the old task screen had, plus `task edit`, `task after`, `queue rm`, `task priority <name>`, `task backlog` /
+  `task ready`, `task assign --none`, `task drop` (Cancel), `merge_to_green_s`.
 - Agent page (`--agent NAME`): all the old agent screen had, plus Compact (`swarm compact`) and its locks.
 - Activity (`--view activity`): the old screen, plus a search field.
 - Landing: open PRs (`gh pr list`, with agent, checks, review); main's CI runs with re-run; landed today with
@@ -577,22 +589,22 @@ The user, after using the build: "there's no way to pull up a side view of my sw
   longer the Overview cards in one column (round 5, design B, `BSide` on the canvas "Swarm layout options", page "B · full
   design"). Top to bottom: the head (swarm name, Away, Expand, Close; the section menu is gone); the staffing bar, on
   every tab ("N working · M idle", Auto-spawn and Max with − / +; the number changes at once, in the accent colour until
-  `swarm limits` answers, a refusal puts it back and the CLI's text shows in the flash line); the tabs Now, Queue,
-  Agents, More (Now's red count is what needs you, Queue's the tasks left, Agents' the live agents; under 380 px only
+  `swarm limits` answers, a refusal puts it back and the CLI's text shows in the flash line); the tabs Now, Board,
+  Agents, More (Now's red count is what needs you, Board's the tasks left, Agents' the live agents; under 380 px only
   Now's count stays); the tab; the "Message <communicator>" line at the foot.
   - Now: Needs you (answered in place), Working (a row per live agent: mark, name, task or why idle, its task's model,
     context), Next up (the tasks auto-spawn starts, in its order, up to 7, with a cut line after auto-spawn's number
-    less the live agents; each has #id, title, P0, model, two labels and a dim Spawn now; open tasks per label below,
-    a click filters the Queue).
-  - Queue: model and label chips with counts, several at once (AND), "Showing x of y · Clear"; Being worked on, Next
-    (numbered, the cut line), Waiting (held, behind a dep, or unqueued under queue-only). Done and Dropped open History
-    (the full view lists them in its Queue; see II.3 round 3). Queue only sits on Next up's head; Away is one control in the head.
+    less the live agents; each has #id, title, priority chip, model, two labels and a dim Spawn now; open tasks per label below,
+    a click filters the Board).
+  - Board: model and label chips with counts, several at once (AND), "Showing x of y · Clear"; Being worked on, Next
+    (numbered, the cut line), Waiting (Ready past the cut, behind a dep or reserved), Backlog. Completed and Cancelled open History
+    (the full view lists them in its Board; see II.3 round 3). Away is one control in the head.
   - Agents: the agents list with a model chip and context bar, Spawn… (the spawn form) and the ended link.
   - More: Activity, Landing, System, History, each a row with a line of what it holds; a click opens today's section as
     a page with a "‹ More" back row. Expand maps More to Overview.
-  - The order and cut are `staffOf` and `nextUp` in rw-rail/tree.js: Watchd.autoSpawn's `Queue.staffing` (a `main red:`
-    task, the queue by position, then, unless queue-only, the rest by priority with none first, then id; never a held
-    task or one behind an open dep); the live count leaves out the communicator.
+  - The order and cut are `staffOf` and `nextUp` in rw-rail/tree.js: `Queue.staffing` (a `main red:`
+    task, then Ready by place; never a Backlog task, one with an assignee, or one behind a dep that is not Completed; priority
+    orders nothing); the live count leaves out the communicator.
 - Open and close: Side and Full in rw-bar whenever the shown space has a swarm (each a toggle; never both open; both
   keep `shared("rw-swarm.view")`'s section and page). The rail's swarm heading: click is full width as today, a Side
   button on hover. Expand: panel to full width. Side while full width shows: back to the tab with the panel open.

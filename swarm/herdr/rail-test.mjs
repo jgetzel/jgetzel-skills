@@ -122,7 +122,7 @@ const swBy = new Map(swT.map((t) => [t.address, t]));
 const swSp = { tabs: swT.filter((t) => !t.parent).map((t, i) => ({ id: t.address, index: i + 1 })) };
 const swPs = swT.filter((t) => !t.parent).map((t) => ({ pane: `p${t.address}`, tab: t.address, terminal: t.address }));
 const A = (name, hc, o) => ({ name, hc, status: "idle", task: null, idle_s: 0, hung: false, ...o });
-const sum = { comms: "ll-comms", counts: { open: 4, claimed: 2 }, agents: [A("ll-107", "w107", { task: { id: 142 } }),
+const sum = { comms: "ll-comms", counts: { ready: 4, in_progress: 2 }, agents: [A("ll-107", "w107", { task: { id: 142 } }),
   A("ll-110", "w110", { status: "working", task: { id: 146 } }), A("ll-97", "w97", { status: "blocked", task: { id: 133 } }),
   A("ll-comms", "c"), A("ll-99", "gone", { hung: true, idle_s: 3480 })] };
 const sw = swarmOf(rowsOf(swSp, swPs, swBy), sum, swBy, null);
@@ -204,18 +204,18 @@ assert.deepEqual(hungOf([{ swarm: "ll", folder: "/w", on: "vps", agents: [A("h",
   [{ address: "vps/t5", name: "h", what: "hung · holds #4", hung: true, swarm: "ll", folder: "/w", on: "vps" }]);
 
 // The swarm tab (slice 7): who asks first and the communicator last, each with its task's title; the board's undone
-// tasks, blocked, claimed, ready, then waiting.
+// tasks, Needs Input, started, Ready in order, then waiting and Backlog.
 const ov = { comms: "c", agents: [A("c", "c", { stay: "the user's channel" }), A("w2", "w2", { status: "working", task: { id: 2, title: "Two" } }),
   A("q", "q", { status: "idle", task: { id: 3, title: "Three" }, idle_s: 60 }), A("i", "i", { idle_s: 3660, task: { id: 4, title: "Four" } }),
   A("h", "h", { stay_sign: "hung", idle_s: 3480 }), A("e", "e", { status: "ended" })],
-  tasks: [{ id: 2, state: "claimed", owner: "w2", title: "Two" }, { id: 3, state: "blocked", owner: "q", title: "Three", question: "which?", blocked_s: 360 },
-    { id: 4, state: "claimed", owner: "i", title: "Four" }, { id: 5, state: "open", title: "Five", deps: [3] }, { id: 6, state: "open", title: "Six" },
-    { id: 7, state: "open", title: "Seven", hold: "later" }, { id: 1, state: "done", title: "One" }] };
+  tasks: [{ id: 2, state: "in_progress", owner: "w2", assignee: "w2", title: "Two" }, { id: 3, state: "needs_input", owner: "q", assignee: "q", title: "Three", question: "which?", blocked_s: 360 },
+    { id: 4, state: "in_progress", owner: "i", assignee: "i", title: "Four" }, { id: 5, state: "ready", place: 2, title: "Five", deps: [3] }, { id: 6, state: "ready", place: 1, title: "Six" },
+    { id: 7, state: "backlog", place: 1, title: "Seven", note: "later" }, { id: 1, state: "completed", title: "One" }, { id: 8, state: "ready", place: 3, assignee: "w2", title: "Eight" }] };
 assert.deepEqual(agentRows(ov).map((r) => [r.a.name, r.mark, r.task, r.state]), [["q", "asks", "#3 Three", "asks you · 6m"],
   ["h", "hung", "no task", "hung 58m"], ["w2", "working", "#2 Two", "working"], ["i", "idle", "#4 Four", "idle 1h · holds #4"],
   ["c", "idle", "The communicator", "stays: the user's channel"]]);
 assert.deepEqual(asksOf(ov).map((n) => [n.kind, n.agent]), [["question", "q"], ["hung", "h"]]);
-assert.deepEqual(boardRows(ov).map((r) => [r.k.id, r.state]), [[3, "waiting on you"], [2, "w2"], [4, "i"], [6, "ready"], [5, "after #3"], [7, "held"]]);
+assert.deepEqual(boardRows(ov).map((r) => [r.k.id, r.state]), [[3, "Needs Input"], [2, "w2"], [4, "i"], [6, "Ready"], [8, "Assigned · w2"], [5, "after #3"], [7, "Backlog"]]);
 
 // An agent needs you (slice 8): the question splits above the agent's pane once per tab, and the agent's pane is focused.
 const calls = [], later = [], log = (c, a) => calls.push([c, a.pane ?? a.direction]);
@@ -288,23 +288,44 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual([ob.repos, ob.folder, ob.repoInfo[0].base, ob.repoInfo[0].locks, ob.repoInfo[0].swarms, ob.repoInfo[0].ci.url, ob.agents[0].repos],
     [["/w/nix"], "/w/nix", "main", 2, ["gl"], null, ["/w/nix", "/w/jgs"]]);
   const sh = shapeOf(ws[0]);
-  assert.deepEqual([sh.agents[0].stay_sign, sh.tasks[0].state, sh.tasks[0].owner, sh.ci.red_streak], ["hung", "blocked", "a", 1]);
+  assert.deepEqual([sh.agents[0].stay_sign, sh.tasks[0].state, sh.tasks[0].owner, sh.ci.red_streak], ["hung", "needs_input", "a", 1]);
+  // a Ready task waiting on a Cancelled one comes through the summary's needs, with the deps to remove, and the actions' commands
+  const [dz] = swarmsOf({ tasks: [{ id: 10, after: [3, 8, 9] }], swarms: [{ name: "z", needs: [{ kind: "dep-cancelled", task: 10, title: "W", deps: [8, 9] }, { kind: "ask", task: 2 }] }] });
+  const dc = shapeOf(dz); // the whole dep list comes from the machine's tasks
+  assert.deepEqual(dc.tasks.map((k) => [k.id, k.state, k.deps, k.cancelled_deps]), [[10, "ready", [3, 8, 9], [8, 9]]]);
+  const { dropDepArgs, cancelArgs } = await import("./mods/rw-rail/tree.js");
+  assert.deepEqual(dropDepArgs(dc.tasks[0], dc.tasks[0].cancelled_deps), ["task", "after", "10", "3"]);
+  assert.deepEqual(dropDepArgs({ id: 10, after: [8] }, [8]), ["task", "after", "10"]); // an empty list clears them
+  assert.deepEqual(cancelArgs(10), ["task", "drop", "10"]);
+}
+// A task of the new CLI keeps its state, category, place, priority name, note, assignee, waiting and dep lists through overOf and sumOf.
+{
+  const o = overOf({ counts: { ready: 4, in_progress: 1, duplicate: 1, ended: 0 }, categories: { unstarted: 4, started: 1, cancelled: 1 },
+    tasks: [{ id: 10, state: "ready", category: "unstarted", place: 4, priority: "urgent", assignee: "ox-1", note: "n", deps: [8], waiting: true, undone: [8], cancelled_deps: [8], dup_of: null },
+      { id: 9, state: "duplicate", category: "cancelled", dup_of: 4 }] });
+  assert.deepEqual([o.counts.ready, o.counts.duplicate, o.categories.unstarted, o.categories.cancelled], [4, 1, 4, 1]);
+  assert.deepEqual(o.tasks.map((k) => [k.state, k.category, k.place, k.priority, k.assignee, k.note, k.waiting, k.undone, k.cancelled_deps, k.dup_of]),
+    [["ready", "unstarted", 4, "urgent", "ox-1", "n", true, [8], [8], null], ["duplicate", "cancelled", null, null, null, null, false, [], [], 4]]);
+  const s = sumOf({ name: "ox", counts: { ready: 2 }, categories: { unstarted: 2 }, staffing: { live: 1, held: "auto-spawn holding: x" },
+    needs: [{ kind: "dep-cancelled", task: 10, title: "W", deps: [8] }], next: [{ id: 4, place: 1, priority: "urgent", title: "H" }] });
+  assert.deepEqual([s.counts.ready, s.categories.unstarted, s.needs[0].deps, s.next[0].place, s.next[0].priority, s.staffing.held], [2, 2, [8], 1, "urgent", "auto-spawn holding: x"]);
 }
 // The swarm view's Needs you (Part II.3): watchd down, red main with its fixer, the asks, low memory; in that order.
 {
   const { needsOf } = await import("./mods/rw-rail/tree.js");
   const o = overOf({ active: true, watchd: { alive: false }, machine: { high: true, line: "machine: 2/94G" },
     ci: { red_streak: 2, runs: [{ id: 9, status: "in_progress" }, { id: 8, status: "completed", conclusion: "failure", url: "javascript:x" }] },
-    tasks: [{ id: 1, state: "claimed", title: "main red: fix it", owner: "ll-2" }, { id: 2, state: "blocked", owner: "ll-3", title: "q", question: "?" }],
-    agents: [{ name: "ll-3", status: "idle" }, { name: "ll-4", status: "idle", stay_sign: "hung" }], limits: { queue_only: true } });
+    tasks: [{ id: 1, state: "in_progress", title: "main red: fix it", owner: "ll-2" }, { id: 2, state: "needs_input", owner: "ll-3", title: "q", question: "?" },
+      { id: 5, state: "ready", title: "w", deps: [6], undone: [6], cancelled_deps: [6] }, { id: 6, state: "cancelled" }, { id: 7, state: "backlog", note: "later", deps: [6], cancelled_deps: [6] }, { id: 8, state: "backlog" }],
+    agents: [{ name: "ll-3", status: "idle" }, { name: "ll-4", status: "idle", stay_sign: "hung" }] });
   const n = needsOf(o);
-  assert.deepEqual(n.map((x) => x.kind), ["watchd", "ci", "question", "hung", "memory"]);
+  assert.deepEqual(n.map((x) => x.kind), ["watchd", "ci", "question", "hung", "dep-cancelled", "dep-cancelled", "memory"]); // a Backlog task alone is no need
+  assert.deepEqual(n[4].deps, [6]); assert.equal(n[4].task.id, 5);
   assert.equal(n[1].run.id, 8); assert.equal(n[1].run.url, null); assert.equal(n[1].reds, 2); assert.equal(n[1].fixer.id, 1);
-  assert.equal(n[4].line, "2/94G");
-  assert.equal(o.limits.queue_only, true);
+  assert.equal(n[6].line, "2/94G");
   assert.deepEqual(needsOf(overOf({ active: true, watchd: { alive: true }, ci: { red_streak: 0 } })), []);
   // another swarm's question on the shared board is not this swarm's (sw-global: membership is agent.swarm)
-  const other = needsOf(overOf({ active: true, tasks: [{ id: 3, state: "blocked", owner: "hpl-4", question: "?" }, { id: 4, state: "blocked", owner: "ll-3", question: "?" }],
+  const other = needsOf(overOf({ active: true, tasks: [{ id: 3, state: "needs_input", owner: "hpl-4", question: "?" }, { id: 4, state: "needs_input", owner: "ll-3", question: "?" }],
     agents: [{ name: "ll-3", status: "idle" }] }));
   assert.deepEqual(other.map((x) => x.task?.id), [4]);
 }
@@ -341,7 +362,7 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 }
 // The task page (II.3c): `--task`'s detail and the fields its facts read.
 {
-  const o = overOf({ active: true, tasks: [{ id: 9, state: "done", holders: ["a", 3, null], blocks: [10, "x"], claims: 2, releases: 1,
+  const o = overOf({ active: true, tasks: [{ id: 9, state: "completed", holders: ["a", 3, null], blocks: [10, "x"], claims: 2, releases: 1,
     created_by: "human", merge_to_green_s: 360, answer: "yes\nno", ci_conclusion: "success" }],
     task: { id: 9, body: "# T\nbody", events: [{ ts: 1, agent: "a", kind: "claim" }, 5], messages: [{ ts: 2, frm: "a", dest: "all", body: "hi" }] } });
   const k = o.tasks[0];
@@ -352,13 +373,15 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 // The Board's queue (II.3e): in order, why each isn't next, and the moves.
 {
   const { queueRows, moveArgs } = await import("./mods/rw-rail/tree.js");
-  const o = overOf({ tasks: [{ id: 1, state: "done" }, { id: 2, qpos: 3, state: "open" }, { id: 3, qpos: 1, state: "open", deps: [1, 4] },
-    { id: 4, qpos: 2, state: "claimed", owner: "a" }, { id: 5, qpos: 4, state: "open", hold: "go" }, { id: 6, qpos: 5, state: "open" }, { id: 7, qpos: 6, state: "done" }] });
+  const o = overOf({ tasks: [{ id: 1, state: "completed" }, { id: 2, place: 2, state: "ready" }, { id: 3, place: 1, state: "ready", deps: [1, 4], undone: [4] },
+    { id: 4, state: "in_progress", owner: "a" }, { id: 5, place: 1, state: "backlog", note: "go" }, { id: 6, place: 3, state: "ready" }, { id: 7, state: "completed" },
+    { id: 8, place: 4, state: "ready", assignee: "b" }] });
   const q = queueRows(o);
-  assert.deepEqual(q.map((r) => [r.k.id, r.why]), [[3, "waits on #4"], [4, "a has it"], [2, "next"], [5, "held: go"], [6, "ready"]]);
-  assert.deepEqual(moveArgs(q, 2, "front"), ["queue", "add", "2", "--front"]);
-  assert.deepEqual(moveArgs(q, 2, "up"), ["queue", "add", "2", "--before", "4"]);
-  assert.deepEqual(moveArgs(q, 2, "down"), ["queue", "add", "2", "--after", "5"]);
+  assert.deepEqual(q.map((r) => [r.k.id, r.why, r.after, r.who, r.note]), [[3, "Waiting", [4], null, null], [2, "Next", [], null, null], [6, "Ready", [], null, null],
+    [8, "Reserved", [], "b", null], [5, "Backlog", [], null, "go"]]);
+  assert.deepEqual(moveArgs(q, 1, "front"), ["queue", "add", "2", "--front"]);
+  assert.deepEqual(moveArgs(q, 1, "up"), ["queue", "add", "2", "--before", "3"]);
+  assert.deepEqual(moveArgs(q, 1, "down"), ["queue", "add", "2", "--after", "6"]);
   assert.equal(moveArgs(q, 0, "up"), null); assert.equal(moveArgs(q, 4, "down"), null); assert.equal(moveArgs(q, 9, "up"), null);
 }
 // Spawn (II.3j): the next name as watchd picks it, and the form's command.
@@ -371,40 +394,37 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   for (const bad of ["", "-x", "a b", "a/b", "x".repeat(41)]) assert.equal(spawnArgs(bad, {}), null);
   assert.equal(spawnArgs("a", { task: "1,2" }), null);
 }
-// The side view (B): model words, the order and cut auto-spawn staffs by (Watchd.autoSpawn over Queue.staffing), counts.
+// The side view (B): model words, the order and cut auto-spawn staffs by (Queue.staffing), counts.
 {
   const { modelWord, staffOf, nextUp, labelCounts, modelCounts, queueSplit } = await import("./mods/rw-rail/tree.js");
   assert.deepEqual(["claude-opus-5-5", "opus", "claude-fable-5-2", "Sonnet", "gpt-9", "", null].map(modelWord), ["opus", "opus", "fable", "sonnet", "gpt-9", null, null]);
   const o = overOf({ comms: "x-comms", limits: { min: 3, max: 9 },
     agents: [{ name: "x-comms", status: "working" }, { name: "x-1", status: "working" }, { name: "x-2", status: "idle" }, { name: "x-3", status: "ended" }],
-    tasks: [{ id: 1, state: "done" }, { id: 2, state: "open", priority: 2, model: "claude-opus-5-5", labels: ["bug", "real2"] },
-      { id: 3, state: "open", qpos: 2 }, { id: 4, state: "open", qpos: 1, model: "sonnet", labels: ["bug"] }, { id: 5, state: "open", priority: 0 },
-      { id: 6, state: "open" }, { id: 7, state: "open", qpos: 3, hold: "wait" }, { id: 8, state: "open", deps: [9] }, { id: 9, state: "claimed", owner: "x-1", model: "opus" },
-      { id: 10, state: "open", deps: [1] }, { id: 11, state: "open", priority: 1, title: "main red: ci" }, { id: 12, state: "blocked", owner: "x-2" }] });
-  // red first, then the queue by position, then the rest: no priority (6, 10), then P0, P2; held, dep-waiting and claimed are out
+    tasks: [{ id: 1, state: "completed" }, { id: 2, state: "ready", place: 7, priority: "high", model: "claude-opus-5-5", labels: ["bug", "real2"] },
+      { id: 3, state: "ready", place: 2 }, { id: 4, state: "ready", place: 1, model: "sonnet", labels: ["bug"] }, { id: 5, state: "ready", place: 6, priority: "urgent" },
+      { id: 6, state: "ready", place: 4 }, { id: 7, state: "backlog", place: 1, note: "wait" }, { id: 8, state: "ready", place: 8, deps: [9], undone: [9] },
+      { id: 9, state: "in_progress", owner: "x-1", model: "opus" }, { id: 10, state: "ready", place: 5, deps: [1], undone: [] },
+      { id: 11, state: "ready", place: 9, priority: "low", title: "main red: ci" }, { id: 12, state: "needs_input", owner: "x-2" }, { id: 13, state: "ready", place: 3, assignee: "x-1" }] });
+  // red first, then by place (priority orders nothing); Backlog, a task on a dep, a reserved one and started ones are out
   assert.deepEqual(staffOf(o).map((k) => k.id), [11, 4, 3, 6, 10, 5, 2]);
-  assert.deepEqual(staffOf({ ...o, limits: { ...o.limits, queue_only: true } }).map((k) => k.id), [11, 4, 3]);
   // min 3, two live (the communicator and the ended one do not count): the first row starts
   let u = nextUp(o);
   assert.equal(u.cut, 1); assert.deepEqual(u.rows.map((r) => r.starts), [true, false, false, false, false, false, false]);
-  assert.equal(u.text, "auto-spawn 3, 2 live: the 1 above starts next");
-  u = nextUp({ ...o, limits: { min: 6 } }); assert.equal(u.cut, 4); assert.equal(u.text, "auto-spawn 6, 2 live: the 4 above start next");
-  assert.equal(nextUp({ ...o, limits: { min: 6 } }, true).text, "auto-spawn 6: 4 start");
-  assert.equal(nextUp({ ...o, limits: { min: 2 } }, true).text, "auto-spawn 2, 2 live: none start");
-  u = nextUp({ ...o, limits: { min: 2 } }); assert.equal(u.cut, 0); assert.equal(u.text, "auto-spawn 2, 2 live: none start · + starts #11");
-  assert.equal(nextUp({ ...o, limits: {} }).text, "auto-spawn off, 2 live: none start · raise it to 3 to start #11");
-  assert.equal(nextUp({ tasks: [], limits: { min: 1 } }).text, "auto-spawn 1, 0 live: none start");
+  assert.deepEqual(u.chips, [["Auto-spawn", "3"], ["Live", "2"], ["Start", "1"]]);
+  u = nextUp({ ...o, limits: { min: 6 } }); assert.equal(u.cut, 4); assert.deepEqual(u.chips, [["Auto-spawn", "6"], ["Live", "2"], ["Start", "4"]]);
+  u = nextUp({ ...o, limits: { min: 2 } }); assert.equal(u.cut, 0); assert.deepEqual(u.chips, [["Auto-spawn", "2"], ["Live", "2"], ["Start", "0"], ["Next", "#11"]]);
+  assert.deepEqual(nextUp({ ...o, limits: {} }).chips.slice(0, 1), [["Auto-spawn", "Off"]]);
+  assert.deepEqual(nextUp({ tasks: [], limits: { min: 1 } }).chips, [["Auto-spawn", "1"], ["Live", "0"], ["Start", "0"]]);
   // label and model counts are of the open tasks only; most first, ties by name
   assert.deepEqual(labelCounts(o.tasks), [["bug", 2], ["real2", 1]]);
   assert.deepEqual(modelCounts(o.tasks), [["opus", 2], ["sonnet", 1]]);
-  // the Queue: sections, and a filter that is all of its chips
+  // the Board: sections, and a filter that is all of its chips
   let q = queueSplit(o);
-  assert.deepEqual([q.doing.map((k) => k.id), q.next.map((r) => r.k.id), q.waiting.map((r) => [r.k.id, r.why])],
-    [[12, 9], [11, 4, 3, 6, 10, 5, 2], [[7, "held: wait"], [8, "waits on #9"]]]);
-  assert.equal(q.of, 11);
+  assert.deepEqual([q.doing.map((k) => k.id), q.next.map((r) => r.k.id), q.waiting.map((r) => [r.k.id, r.why, r.after, r.who]), q.backlog.map((r) => [r.k.id, r.note])],
+    [[12, 9], [11, 4, 3, 6, 10, 5, 2], [[13, "Reserved", [], "x-1"], [8, "Waiting", [9], null]], [[7, "wait"]]]);
+  assert.equal(q.of, 12);
   q = queueSplit(o, { models: ["opus"], labels: ["bug"] }); assert.deepEqual([q.next.map((r) => r.k.id), q.shown], [[2], 1]);
   q = queueSplit(o, { labels: ["bug"] }); assert.deepEqual(q.next.map((r) => [r.k.id, r.starts]), [[4, false], [2, false]]);
-  assert.deepEqual(queueSplit({ ...o, limits: { queue_only: true } }).waiting.map((r) => [r.k.id, r.why]).slice(-1), [[10, "not queued"]]);
 }
 // Motion (II.4a): nothing enters on the first render; a key enters the first frame it is drawn after, then not; one
 // not drawn for a frame enters again.
@@ -440,10 +460,10 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   const { historyOf, spentOf } = await import("./mods/rw-rail/tree.js");
   const now = new Date(2026, 10, 14, 12).getTime(), at = (dd, h) => new Date(2026, 10, dd, h).getTime() / 1000;
   const o = overOf({ tasks: [
-    { id: 1, state: "done", owner: "a", done_at: at(14, 9), work_s: 600, claim_ctx: 100000, done_ctx: 150000, claims: 1 },
-    { id: 2, state: "done", owner: "a", done_at: at(14, 11), work_s: 3600, claim_ctx: 300000, done_ctx: 40000 }, // compacted meanwhile
-    { id: 3, state: "done", owner: "b", done_at: at(13, 22), work_s: 60 },
-    { id: 4, state: "dropped", done_at: at(14, 10) }, { id: 5, state: "open" }],
+    { id: 1, state: "completed", owner: "a", done_at: at(14, 9), work_s: 600, claim_ctx: 100000, done_ctx: 150000, claims: 1 },
+    { id: 2, state: "completed", owner: "a", done_at: at(14, 11), work_s: 3600, claim_ctx: 300000, done_ctx: 40000 }, // compacted meanwhile
+    { id: 3, state: "completed", owner: "b", done_at: at(13, 22), work_s: 60 },
+    { id: 4, state: "cancelled", done_at: at(14, 10) }, { id: 5, state: "ready" }],
     agents: [{ name: "a", ended: at(14, 11) }, { name: "b", ended: at(13, 23), branch: "b/3", model: "opus" }, { name: "c" }] });
   assert.equal(spentOf(o.tasks[0]), 50000); assert.equal(spentOf(o.tasks[1]), 40000); assert.equal(spentOf(o.tasks[2]), null);
   const d = historyOf(o.tasks, o.agents, { now });
@@ -458,7 +478,7 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 // Activity (II.3g): the old panel's summary (fan-out, folds, episodes, asks) and log, the filters and the search.
 {
   const { actItems, actShown, tailOf } = await import("./mods/rw-rail/activity.js");
-  const o = overOf({ tasks: [{ id: 7, state: "blocked", title: "T7" }], agents: [{ name: "a", status: "working" }], comms: "c",
+  const o = overOf({ tasks: [{ id: 7, state: "needs_input", title: "T7" }], agents: [{ name: "a", status: "working" }], comms: "c",
     messages: [{ id: 1, ts: 100, frm: "c", dest: "a", body: "hi https://github.com/o/r/pull/12", kind: "dm" }, { id: 2, ts: 100, frm: "c", dest: "b", body: "hi https://github.com/o/r/pull/12", kind: "dm" },
       { id: 3, ts: 500, frm: "a", dest: "c", body: "urgent!", kind: "dm", urgent: 1 }],
     events: [{ id: 9, ts: 600, agent: "a", kind: "block", data: "#7 keep it?" }, { id: 8, ts: 590, agent: "swarm", kind: "task-blocked", path: "7", data: "keep it?" },
@@ -649,43 +669,48 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 { // the Board's graph (research/sw-graph-view.md): a chain, a diamond, loose tasks, a done task with no edge
   const { graphOf } = await import("./mods/rw-rail/tree.js");
   const K = (id, state, o = {}) => ({ id, state, title: `t${id}`, deps: [], ...o });
-  const ks = [K(1, "done"), K(2, "claimed", { deps: [1], owner: "a" }), K(3, "open", { deps: [2] }), K(4, "open", { deps: [3], qpos: 3 }),
-    K(12, "done"), K(10, "open", { deps: [12] }), K(11, "blocked", { deps: [12], owner: "b" }), K(13, "open", { deps: [11, 10], qpos: 1 }),
-    K(20, "open", { qpos: 2 }), K(21, "claimed", { owner: "c" }), K(22, "open", { hold: "go" }), K(30, "done"), K(31, "done", { deps: [30] }), K(40, "dropped"), K(41, "open", { deps: [40] })];
+  const ks = [K(1, "completed"), K(2, "in_progress", { deps: [1], owner: "a" }), K(3, "ready", { deps: [2], place: 4 }), K(4, "ready", { deps: [3], place: 3 }),
+    K(12, "completed"), K(10, "ready", { deps: [12], place: 5 }), K(11, "needs_input", { deps: [12], owner: "b" }), K(13, "ready", { deps: [11, 10], place: 1 }),
+    K(20, "ready", { place: 2 }), K(21, "in_progress", { owner: "c" }), K(22, "backlog", { note: "go", place: 1 }), K(30, "completed"), K(31, "completed", { deps: [30] }),
+    K(40, "cancelled"), K(41, "ready", { deps: [40], place: 6 })];
   const g = graphOf(ks, "all", false), at = (g2) => Object.fromEntries(g2.nodes.map((n) => [n.k.id, [n.layer, n.slot]]));
   assert.deepEqual(at(g), { 1: [0, 0], 12: [0, 1], 40: [0, 2], 2: [1, 0], 10: [1, 1], 11: [1, 2], 41: [1, 3], 3: [2, 0], 13: [2, 1], 4: [3, 0] });
-  assert.deepEqual(g.loose.map((n) => n.k.id), [21, 20, 22]); // claimed, ready, held; 30 and 31 are done
+  assert.deepEqual(g.loose.map((n) => n.k.id), [21, 20, 22]); // started, Ready, Backlog; 30 and 31 are Completed
   assert.deepEqual(g.edges.filter((e) => e.to === 13).map((e) => [e.from, e.met]), [[11, false], [10, false]]);
-  assert.deepEqual(g.edges.find((e) => e.to === 41).met, false); // a dropped dep holds it back
+  assert.deepEqual(g.edges.find((e) => e.to === 41).met, false); // a Cancelled dep holds it back
   const n = (id) => g.nodes.find((x) => x.k.id === id) ?? g.loose.find((x) => x.k.id === id);
   assert.deepEqual([10, 3, 41, 22, 20].map((id) => n(id).ready), [true, false, false, false, true]);
   assert.deepEqual([13, 20, 4].map((id) => [n(id).q, n(id).next]), [[1, false], [2, true], [3, false]]); // 13 waits: 20 is next
   const qg = graphOf(ks, "queue", false);
-  assert.deepEqual(qg.nodes.map((x) => x.k.id).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13]);
+  assert.deepEqual(qg.nodes.map((x) => x.k.id).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13, 40, 41]); // Ready, and what they wait on
   assert.deepEqual(qg.loose.map((x) => x.k.id), [20]);
   assert.deepEqual(Object.keys(at(graphOf(ks, "all", true))).map(Number).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13, 30, 31, 40, 41]);
-  assert.deepEqual(graphOf(ks, "queue", true).nodes.length, 8); // Done too is All's
-  assert.deepEqual(graphOf([K(5, "open", { deps: [6] }), K(6, "open", { deps: [5] })], "all", false).layers > 0, true); // a cycle ends
+  assert.deepEqual(graphOf(ks, "queue", true).nodes.length, 10); // Completed too is All's
+  assert.deepEqual(graphOf([K(5, "ready", { deps: [6] }), K(6, "ready", { deps: [5] })], "all", false).layers > 0, true); // a cycle ends
   assert.deepEqual(graphOf(null, "all", false), { nodes: [], edges: [], loose: [], layers: 0 });
 }
 
 { // round 3: the shared parts' pure logic
-  const { plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips } = await import("./mods/rw-rail/tree.js");
+  const { plain, tabOf, prioWord, staffWords, heldWhy, pastOf, fitChips, leftOf, stateWord, catOf, isClosed } = await import("./mods/rw-rail/tree.js");
   const K = (id, state, o = {}) => ({ id, state, title: `t${id}`, ...o });
   assert.equal(plain("## **Fix** the _slow_ `lake build`: see [#12](http://x/12) and snake_case_name, 2*3*4"), "Fix the slow lake build: see #12 and snake_case_name, 2*3*4");
   assert.equal(plain("> quoted\n# Head"), "quoted\nHead"); assert.equal(plain(null), "");
   assert.deepEqual(["overview", "board", "agents", "more", "history", "activity"].map(tabOf), ["overview", "board", "agents", "more", "more", "more"]);
-  assert.deepEqual([0, 1, 2, null].map((priority) => prioWord({ priority })), ["P0", "P1", null, null]);
+  assert.deepEqual(["none", "urgent", "high", "medium", "low", null].map((priority) => prioWord({ priority })), ["None", "Urgent", "High", null, "Low", null]);
   assert.equal(staffWords({ comms: "c", agents: [{ name: "c", status: "working" }, { name: "a", status: "working" }, { name: "b", status: "idle" }, { name: "e", status: "ended" }] }), "1 working, 1 idle");
-  assert.equal(heldWhy({ tasks: [K(1, "done")] }).action, "new"); // nothing left: add one
-  assert.equal(heldWhy({ tasks: [K(1, "open")] }), null); // one can start
-  let h = heldWhy({ tasks: [K(179, "claimed", { owner: "ll-124" }), K(1, "open", { deps: [179] }), K(2, "open", { deps: [179] })] });
-  assert.deepEqual([h.text, h.action, h.id], ["Nothing can start: 2 wait on #179, which ll-124 holds.", "task", 179]);
-  h = heldWhy({ tasks: [K(1, "open", { hold: "x" }), K(2, "open")], limits: { queue_only: true } });
-  assert.equal(h.text, "Nothing can start: 1 held, 1 not queued (queue only is on)."); assert.equal(h.action, null);
-  assert.equal(heldWhy({ tasks: [K(1, "claimed")] }).text, "Everything left is being worked on.");
-  const ps = [K(1, "done"), K(3, "done", { owner: "bo" }), K(2, "dropped"), K(4, "open")];
-  assert.deepEqual(pastOf(ps, "done").map((k) => k.id), [3, 1]); assert.deepEqual(pastOf(ps, "done", "BO").map((k) => k.id), [3]); assert.deepEqual(pastOf(ps, "dropped").map((k) => k.id), [2]);
+  assert.equal(heldWhy({ tasks: [K(1, "completed")] }).action, "new"); // nothing left: add one
+  assert.equal(heldWhy({ tasks: [K(1, "ready")] }), null); // one can start
+  let h = heldWhy({ tasks: [K(179, "in_progress", { owner: "ll-124" }), K(1, "ready", { deps: [179] }), K(2, "ready", { deps: [179] })] });
+  assert.deepEqual([h.text, h.chips, h.action, h.id], ["Nothing can start", [["Waiting", 2]], "task", 179]);
+  h = heldWhy({ tasks: [K(1, "backlog", { note: "x" }), K(2, "ready", { assignee: "a" })] });
+  assert.deepEqual([h.text, h.chips, h.action], ["Nothing can start", [["Reserved", 1], ["Backlog", 1]], null]);
+  assert.equal(heldWhy({ tasks: [K(1, "in_progress")] }).text, "Everything left is being worked on.");
+  const ps = [K(1, "completed"), K(3, "completed", { owner: "bo" }), K(2, "cancelled"), K(5, "duplicate", { dup_of: 3 }), K(4, "ready")];
+  assert.deepEqual(pastOf(ps, "completed").map((k) => k.id), [3, 1]); assert.deepEqual(pastOf(ps, "completed", "BO").map((k) => k.id), [3]);
+  assert.deepEqual(pastOf(ps, "cancelled").map((k) => k.id), [5, 2]); // Duplicate is a Cancelled state
+  assert.deepEqual([leftOf({ ready: 4, in_progress: 2, needs_input: 1, in_review: 1, backlog: 9, completed: 5 }), leftOf(null)], [8, 0]);
+  assert.deepEqual([stateWord("needs_input"), stateWord("duplicate"), catOf({ state: "in_review" }), catOf({ state: "duplicate" }), isClosed({ state: "cancelled" }), isClosed({ state: "backlog" })],
+    ["Needs Input", "Duplicate", "started", "cancelled", true, false]);
   const ls = [["a", 5], ["b", 4], ["c", 3], ["d", 2]];
   assert.deepEqual(fitChips(ls, ["d"], 2), { top: [["a", 5], ["b", 4], ["d", 2]], more: 1 });
 }

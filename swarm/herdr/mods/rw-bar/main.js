@@ -13,7 +13,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, hc, run, openOverlay, closeOverlay, theme, window, layout, props, home, shared, setShared, exec, appHome, nextCommand } from "herdr";
-import { SECTIONS, TABS, tabOf, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
+import { SECTIONS, TABS, leftOf, tabOf, animOn, allShown, answerArgs, answerBox, hungOf, boxFor, promptButtons, ciWord, line, looked, needsYou, nudgeArgs, peekWindow, questionsOf, rowText, showAll, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, toggleFull, toggleSide, viewShown } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? find(c, id), null));
@@ -109,9 +109,9 @@ export default class Bar extends View {
         .child(item("a-end", "End agent…", (cx) => { this.step = "end"; cx.notify(); }, true)));
   }
 
-  // The swarm view's four tabs, as the side view's: Now (red count of what needs you), Queue (tasks left), Agents (live), More.
+  // The swarm view's four tabs, as the side view's: Now (red count of what needs you), Board (tasks left), Agents (live), More.
   sections(t, v, sum) {
-    const c = sum?.counts ?? {}, left = (c.open ?? 0) + (c.claimed ?? 0) + (c.blocked ?? 0) + (c.landing ?? 0);
+    const left = leftOf(sum?.counts);
     const agents = (sum?.agents ?? []).filter((a) => a.name !== sum.comms).length, needs = (sum?.needs ?? []).length;
     const at = tabOf(v.section ?? "overview"), anim = animOn(shared("rw.animations")), n = { overview: [needs, t.blocked], board: [left, t.dim], agents: [agents, t.dim], more: [0, t.dim] };
     return h_flex().id("sections").flex_none().min_w(0).p(4).gap(4).items_center().rounded(12).bg(t.surface).border(1).border_color(t.border)

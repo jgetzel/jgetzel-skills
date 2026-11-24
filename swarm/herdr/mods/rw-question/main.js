@@ -59,10 +59,10 @@ export default class Question extends View {
       catch { if (this.watching === dir) this.watching = null; }
     })();
   }
-  // { a: the agent, k: its task blocked on you }, or null once answered (or the agent is gone).
+  // { a: the agent, k: its Needs Input task }, or null once answered (or the agent is gone).
   ask() {
     const { name } = this.where(), a = this.s?.agents?.find((x) => x.name === name && x.status !== "ended");
-    const k = a && this.s.tasks?.find((x) => x.state === "blocked" && x.owner === name);
+    const k = a && this.s.tasks?.find((x) => x.state === "needs_input" && x.owner === name);
     return k ? { a, k } : null;
   }
   // Answered: every question pane in the agent's tab closes (a mod pane is not told its own pane id).

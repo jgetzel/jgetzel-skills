@@ -51,17 +51,19 @@ const uniq = (xs, ...keys) => {
     return true;
   });
 };
-const COUNTS = Ox({ open: Nx, claimed: Nx, blocked: Nx, done: Nx, dropped: Nx, landing: Nx, ended: Nx });
+// A task's state is one of STATES (below); counts are keyed by them, categories by CATS.
+const COUNTS = Ox({ backlog: Nx, ready: Nx, in_progress: Nx, needs_input: Nx, in_review: Nx, completed: Nx, cancelled: Nx, duplicate: Nx, ended: Nx });
+const CATCOUNTS = Ox({ backlog: Nx, unstarted: Nx, started: Nx, completed: Nx, cancelled: Nx });
 const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, repos: Lx(Tx, 50), status: Tx, role: Tx, model: Tx, stay: Tx,
   task: Ox({ id: Nx, title: Tx, state: Tx }), idle_s: Nx, hung: Bx });
-const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx });
+const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx, deps: Lx(Nx, 200) });
 const CI = Ox({ id: Nx, repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx });
 // A swarm's repo: {path, base, ci, locks, swarms} (the other live swarms on it), or a bare path from an older CLI.
 const repoOf = (x) => (typeof x === "string" ? { path: Tx(x), base: null, ci: null, locks: null, swarms: [] }
   : Ox({ path: Tx, base: Tx, ci: CI, locks: Nx, swarms: Lx(Tx, 50) })(x));
 const summary = Ox({ name: Tx, active: Bx, comms: Tx, comms_hc: Tx, repos: Lx(repoOf, 200), folder: Tx, created: Nx, ended: Nx,
-  staffing: Ox({ live: Nx, min: Nx, max: Nx, held: Tx, queue_only: Bx }), rss_kb: Nx, counts: COUNTS, agents: Lx(sumAgent, 5000),
-  needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, qpos: Nx, priority: Nx }), 50), ready: Nx, ci: CI, away: Ax });
+  staffing: Ox({ live: Nx, min: Nx, max: Nx, held: Tx }), rss_kb: Nx, counts: COUNTS, categories: CATCOUNTS, agents: Lx(sumAgent, 5000),
+  needs: Lx(need, 5000), next: Lx(Ox({ id: Nx, title: Tx, place: Nx, priority: Tx }), 50), ready: Nx, ci: CI, away: Ax });
 // One swarm of `swarm state --json --view swarms` (sw-global §5): null unless an object with a name. `swarm` is its name,
 // what the views and the CLI's --swarm go by; `folder` an absolute repo of it (the cwd its commands run in), else null.
 // `repos` its absolute repos' paths, `repoInfo` the same repos as objects; an agent's `repos` every repo it works in.
@@ -83,12 +85,13 @@ const agent = Ox({ name: Tx, hc: Tx, status: Tx, task: Ox({ id: Nx, title: Tx })
   events: Lx(Ox({ kind: Tx, ts: Nx, data: Px, branch: Tx, subject: Tx, path: Tx }), 500), files: Lx(Tx, 500), cache: Tx, branch: Tx,
   worktree: Tx, ended: Nx, role: Tx, started: Nx, cold_at: Nx, cold_guarded: Bx,
   messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, urgent: Bx }), 200) }); // --agent: its own messages
-const task = Ox({ id: Nx, state: Tx, owner: Tx, lander: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), hold: Tx, qpos: Nx, priority: Nx,
+const task = Ox({ id: Nx, state: Tx, category: Tx, owner: Tx, assignee: Tx, lander: Tx, title: Tx, question: Px, blocked_s: Nx, deps: Lx(Nx, 200), note: Tx, place: Nx, priority: Tx,
+  dup_of: Nx, waiting: Bx, undone: Lx(Nx, 200), cancelled_deps: Lx(Nx, 200),
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
   claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20) });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
-const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, queue_only: Bx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
+const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, categories: CATCOUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
   rules: Px, // II.3k
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, kind: Tx, urgent: (x) => x === true || x === 1 }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
@@ -117,7 +120,11 @@ export function overOf(j) {
 // A state's tasks that are its swarm's own (`mine`, sw-global §5): the store's are every swarm's. Unmarked: all.
 export const ownTasks = (ks) => (ks ?? []).filter((k) => k.mine !== false);
 // `swarm state --json --view swarms`: the machine's swarms (sumOf each), unique by name; `db` the machine's db.
-export const swarmsOf = (j) => uniq(Lx(sumOf, 500)(j?.swarms), "name").map((s) => ({ ...s, db: Tx(j?.db) }));
+// A dep-cancelled need carries `after`: the task's whole dep list (the swarm's summary has only the Cancelled ones), from the machine's tasks.
+export const swarmsOf = (j) => {
+  const after = new Map((Array.isArray(j?.tasks) ? j.tasks : []).filter((k) => Number.isInteger(k?.id)).map((k) => [k.id, Lx(Nx, 200)(k.after)]));
+  return uniq(Lx(sumOf, 500)(j?.swarms), "name").map((s) => ({ ...s, db: Tx(j?.db), needs: s.needs.map((n) => (n.kind === "dep-cancelled" ? { ...n, after: after.get(n.task) ?? [] } : n)) }));
+};
 // The swarm CLI's arguments for swarm `name` (sw-global §2: a command names its swarm, never its folder).
 export const swarmArgs = (name, args) => (name ? ["--swarm", name, ...args] : args);
 // `gh pr list --json number,title,headRefName,state,isDraft,reviewDecision,mergedAt,statusCheckRollup,url`; a url only if https.
@@ -352,9 +359,9 @@ export function promptCard(box, rec, msg, blockedAt) {
 }
 export const median = (xs) => { const v = xs.filter(Number.isFinite).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
 
-// The context a done task spent: done_ctx past claim_ctx (an agent compacted meanwhile: its done_ctx), or null.
+// The context a completed task spent: done_ctx past claim_ctx (an agent compacted meanwhile: its done_ctx), or null.
 export const spentOf = (k) => (Number.isFinite(k?.done_ctx) ? Math.max(0, k.done_ctx - (Number.isFinite(k.claim_ctx) && k.claim_ctx <= k.done_ctx ? k.claim_ctx : 0)) : null);
-// History (II.3l): the done tasks and ended agents of `day` ("today", "yesterday" or "all", local days) out of the pages
+// History (II.3l): the Completed tasks and ended agents of `day` ("today", "yesterday" or "all", local days) out of the pages
 // read, tasks by `sort` ("finished", "longest" or "context"), agents newest first with how many tasks each finished,
 // and the medians History's first card shows.
 export function historyOf(tasks, agents, { day = "today", sort = "finished", now = Date.now() } = {}) {
@@ -362,7 +369,7 @@ export function historyOf(tasks, agents, { day = "today", sort = "finished", now
   const y = new Date(d); y.setDate(y.getDate() - 1);
   const [from, to] = day === "today" ? [d / 1000, Infinity] : day === "yesterday" ? [y / 1000, d / 1000] : [-Infinity, Infinity];
   const inDay = (ts) => day === "all" || (Number.isFinite(ts) && ts >= from && ts < to);
-  const done = (Array.isArray(tasks) ? tasks : []).filter((k) => k?.state === "done");
+  const done = (Array.isArray(tasks) ? tasks : []).filter((k) => k?.state === "completed");
   const by = { finished: (k) => k.done_at ?? 0, longest: (k) => k.work_s ?? -1, context: (k) => spentOf(k) ?? -1 }[sort] ?? ((k) => k.done_at ?? 0);
   const ts = done.filter((k) => inDay(k.done_at)).sort((a, b) => by(b) - by(a) || b.id - a.id);
   const n = new Map(); for (const k of done) if (k.owner) n.set(k.owner, (n.get(k.owner) ?? 0) + 1);
@@ -706,11 +713,11 @@ export function swarmText(it, at, now, opened) {
 }
 
 // The swarm tab (rw-swarm, slice 7), from `swarm state --json --view overview` (`s`).
-// What waits on you: questions (tasks blocked on you), agents stopped at a prompt, hung agents.
+// What waits on you: questions (Needs Input tasks), agents stopped at a prompt, hung agents.
 // A question is the swarm's when its agent is (sw-global §2: membership is agent.swarm; the board may hold other swarms').
 export function asksOf(s) {
   const all = s.agents ?? [], live = all.filter((a) => a.status !== "ended"), ours = new Set(all.map((a) => a.name));
-  const tasks = (s.tasks ?? []).filter((k) => k.state === "blocked" && (k.owner == null || !all.length || ours.has(k.owner)));
+  const tasks = (s.tasks ?? []).filter((k) => k.state === "needs_input" && (k.owner == null || !all.length || ours.has(k.owner)));
   const asked = new Set(tasks.map((k) => k.owner));
   return [
     ...tasks.map((k) => ({ kind: "question", agent: k.owner, task: k, ago: k.blocked_s })),
@@ -719,28 +726,31 @@ export function asksOf(s) {
   ];
 }
 // A swarm of `--view swarms` (sumOf) in the shape agentRows, asksOf and needsOf read: its agents (hung as watchd's sign),
-// its questions as blocked tasks (blocked as long as their agent has been idle) and its agents' tasks, its staffing as limits and its base's
+// its questions as Needs Input tasks (as long as their agent has been idle), its agents' tasks and the Ready tasks waiting on a Cancelled one, its staffing as limits and its base's
 // last run as `ci` (red once: the view sends one run per swarm).
 export function shapeOf(sum) {
   const agents = (sum.agents ?? []).map((a) => ({ ...a, stay_sign: a.hung ? "hung" : null }));
   const idle = new Map(agents.map((a) => [a.name, a.idle_s]));
   const tasks = (sum.needs ?? []).filter((n) => n.kind === "question" && n.task != null)
-    .map((n) => ({ id: n.task, state: "blocked", owner: n.agent, title: n.title, question: n.question, blocked_s: idle.get(n.agent) ?? null }))
-    .concat(agents.filter((a) => a.task?.id != null && a.task.state !== "blocked").map((a) => ({ id: a.task.id, state: a.task.state ?? "claimed", owner: a.name, title: a.task.title })));
+    .map((n) => ({ id: n.task, state: "needs_input", owner: n.agent, title: n.title, question: n.question, blocked_s: idle.get(n.agent) ?? null }))
+    .concat(agents.filter((a) => a.task?.id != null && a.task.state !== "needs_input").map((a) => ({ id: a.task.id, state: a.task.state ?? "in_progress", owner: a.name, title: a.task.title })))
+    .concat((sum.needs ?? []).filter((n) => n.kind === "dep-cancelled" && n.task != null).map((n) => ({ id: n.task, state: "ready", title: n.title, deps: n.after ?? n.deps ?? [], cancelled_deps: n.deps ?? [] })));
   const run = sum.ci?.status ? sum.ci : null, red = run?.status === "completed" && run.conclusion !== "success" && run.conclusion !== "cancelled";
   return { active: Boolean(sum.active), db: sum.db ?? null, comms: sum.comms, agents, tasks, counts: sum.counts ?? {},
     limits: sum.staffing ?? {}, ci: { runs: run ? [run] : [], red_streak: red ? 1 : 0 } };
 }
 // Everything that waits on the user in one swarm (Part II.3, Overview's Needs you), most urgent first: watchd not
 // running, main's CI red (the last finished run, how many in a row, the task fixing it if one is claimed), then the
-// questions, prompts and hung agents (asksOf), then a machine short on memory.
+// questions, prompts and hung agents (asksOf), the Ready or Backlog tasks waiting on a Cancelled one, then a machine short on memory.
 export function needsOf(s) {
   const out = [];
   if (s.active && s.watchd && s.watchd.alive === false) out.push({ kind: "watchd" });
   const reds = s.ci?.red_streak ?? 0, run = (s.ci?.runs ?? []).find((r) => r.status === "completed" && r.conclusion !== "cancelled");
   if (reds > 0 && run) out.push({ kind: "ci", run, reds,
-    fixer: (s.tasks ?? []).find((k) => (k.state === "claimed" || k.state === "blocked") && /\b(red|ci)\b/i.test(k.title ?? "")) ?? null });
+    fixer: (s.tasks ?? []).find((k) => (k.state === "in_progress" || k.state === "needs_input") && /\b(red|ci)\b/i.test(k.title ?? "")) ?? null });
   out.push(...asksOf(s));
+  out.push(...(s.tasks ?? []).filter((k) => (k.state === "ready" || k.state === "backlog") && (k.cancelled_deps ?? []).length)
+    .map((k) => ({ kind: "dep-cancelled", task: k, deps: k.cancelled_deps })));
   if (s.machine?.high) out.push({ kind: "memory", line: (s.machine.line ?? "").replace(/^machine: /, "") });
   return out;
 }
@@ -749,7 +759,7 @@ export function needsOf(s) {
 // communicator last.
 export function agentRows(s) {
   const asks = new Map();
-  for (const k of s.tasks ?? []) if (k.state === "blocked" && !asks.has(k.owner)) asks.set(k.owner, k);
+  for (const k of s.tasks ?? []) if (k.state === "needs_input" && !asks.has(k.owner)) asks.set(k.owner, k);
   const rows = (s.agents ?? []).filter((a) => a.status !== "ended").map((a) => {
     const comms = a.name === s.comms, q = asks.get(a.name);
     const idle = `idle ${dur((a.idle_s ?? 0) * 1000)}`;
@@ -763,135 +773,155 @@ export function agentRows(s) {
   const rank = (r) => r.comms ? 4 : { asks: 0, hung: 1, working: 2, idle: 3 }[r.mark];
   return rows.sort((x, y) => rank(x) - rank(y) || (nat(x.a.name) < nat(y.a.name) ? -1 : 1));
 }
-// The board's tasks still to do, with what each waits on: blocked, claimed, ready, then waiting or held.
+// Task states (Linear's): each with its display name, and the five categories the board groups and counts by.
+export const STATES = [["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In Progress"], ["needs_input", "Needs Input"], ["in_review", "In Review"],
+  ["completed", "Completed"], ["cancelled", "Cancelled"], ["duplicate", "Duplicate"]];
+export const CATS = [["backlog", "Backlog"], ["unstarted", "Ready"], ["started", "Started"], ["completed", "Completed"], ["cancelled", "Cancelled"]];
+const CAT = { backlog: "backlog", ready: "unstarted", in_progress: "started", needs_input: "started", in_review: "started", completed: "completed", cancelled: "cancelled", duplicate: "cancelled" };
+export const stateWord = (s) => STATES.find(([id]) => id === s)?.[1] ?? "";
+export const catOf = (k) => CAT[k?.state] ?? null;
+export const isClosed = (k) => catOf(k) === "completed" || catOf(k) === "cancelled";
+export const isStarted = (k) => catOf(k) === "started";
+// Priorities, as the CLI names them (`task priority <id> none|urgent|high|medium|low`); medium is the default and says nothing.
+export const PRIOS = [["none", "None"], ["urgent", "Urgent"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]];
+export const prioName = (p) => PRIOS.find(([id]) => id === p)?.[1] ?? null;
+const byId = (tasks) => new Map((tasks ?? []).map((k) => [k.id, k]));
+// The deps of `k` not Completed (a Cancelled one still holds it back): the CLI's `undone` when sent, else read off the tasks listed.
+const undoneOf = (k, by) => (Array.isArray(k.undone) ? k.undone : (k.deps ?? k.after ?? []).filter((d) => by.has(d) && by.get(d).state !== "completed"));
+// `task after` for `k` without the deps `gone` (the whole remaining list: it replaces the deps, an empty one clears them), and `task drop`.
+export const dropDepArgs = (k, gone) => ["task", "after", String(k.id), ...(k.deps ?? k.after ?? []).filter((d) => !gone.includes(d)).map(String)];
+export const cancelArgs = (id) => ["task", "drop", String(id)];
+// The board's tasks still to do, with what each waits on: Needs Input, started, Ready in order (waiting ones after the
+// startable), then Backlog.
 export function boardRows(s) {
-  const tasks = s.tasks ?? [], undone = new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
-  const rows = tasks.filter((k) => undone.has(k.id)).map((k) => {
-    const after = (k.deps ?? []).filter((d) => undone.has(d));
-    const [state, tone] = k.state === "blocked" ? ["waiting on you", "blocked"] : k.state === "claimed" ? [k.owner ?? "claimed", "muted"]
-      : k.state === "landing" ? [`landing · ${k.lander ?? "a lander"}`, "muted"]
-      : k.hold ? ["held", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"] : ["ready", "foreground"];
+  const tasks = s.tasks ?? [], by = byId(tasks);
+  const rows = tasks.filter((k) => !isClosed(k)).map((k) => {
+    const after = undoneOf(k, by);
+    const [state, tone] = k.state === "needs_input" ? ["Needs Input", "blocked"] : k.state === "in_progress" ? [k.assignee ?? k.owner ?? "In Progress", "muted"]
+      : k.state === "in_review" ? [k.lander ? `In Review · ${k.lander}` : "In Review", "muted"]
+      : k.state === "backlog" ? ["Backlog", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"]
+      : k.assignee ? [`Assigned · ${k.assignee}`, "foreground"] : ["Ready", "foreground"];
     return { k, state, tone, rank: { blocked: 0, muted: 1, foreground: 2, dim: 3 }[tone] };
   });
-  return rows.sort((x, y) => x.rank - y.rank || x.k.id - y.k.id);
+  const list = (k) => (k.state === "backlog" ? 1 : 0); // places count within Ready and within Backlog
+  return rows.sort((x, y) => x.rank - y.rank || list(x.k) - list(y.k) || (x.k.place ?? 1e9) - (y.k.place ?? 1e9) || x.k.id - y.k.id);
 }
 
-// The queue (II.3e), in order: each task with why it isn't staffed next ("next" for the first that can start).
+// The queue (II.3e), in order: Ready by place, then Backlog by place; each task with its label (Next for the first that
+// can start, Ready, Waiting on `after`, Reserved for `who`, Backlog with its `note`).
 export function queueRows(s) {
-  const tasks = s.tasks ?? [], undone = new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
+  const tasks = s.tasks ?? [], by = byId(tasks), list = (st) => tasks.filter((k) => k.state === st && k.place != null).sort((x, y) => x.place - y.place || x.id - y.id);
   let first = true;
-  return tasks.filter((k) => k.qpos != null && undone.has(k.id)).sort((x, y) => x.qpos - y.qpos).map((k) => {
-    const after = (k.deps ?? []).filter((d) => undone.has(d));
-    const why = k.state === "blocked" ? "waits on you" : k.state === "claimed" ? `${k.owner ?? "someone"} has it`
-      : k.state === "landing" ? `landing by ${k.lander ?? "a lander"}` : k.hold ? `held: ${k.hold}`
-      : after.length ? `waits on ${after.map((d) => `#${d}`).join(", ")}` : first ? "next" : "ready";
-    if (why === "next") first = false;
-    return { k, why };
+  return [...list("ready"), ...list("backlog")].map((k) => {
+    const after = undoneOf(k, by);
+    const why = k.state === "backlog" ? "Backlog" : k.assignee ? "Reserved" : after.length ? "Waiting" : first ? "Next" : "Ready";
+    if (why === "Next") first = false;
+    return { k, why, after, who: k.assignee ?? null, note: k.note ?? null };
   });
 }
 // A model as the side view's chip reads it: opus, sonnet, fable or haiku for any id naming one, anything else as written.
 export const modelWord = (m) => (typeof m === "string" && m ? (m.toLowerCase().match(/opus|sonnet|fable|haiku/)?.[0] ?? m) : null);
-const undoneIds = (tasks) => new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
-// The tasks auto-spawn would start, in its order (Watchd.autoSpawn over Queue.staffing): open, no undone dep, not held;
-// a `main red:` task first, then the queue by position, then (queue-only off) the rest by priority (none first) and id.
+// The ids of the tasks still to do (not Completed or Cancelled).
+const undoneIds = (tasks) => new Set(tasks.filter((k) => !isClosed(k)).map((k) => k.id));
+// The tasks auto-spawn would start, in its order (Queue.staffing): Ready, no assignee, every dep Completed; a `main red:`
+// task first, then by place. Priority orders nothing.
 // shortcut: no "stop pending" test (the CLI does not send it), so a task waiting to read a stop may show as startable.
 export function staffOf(s) {
-  const tasks = s.tasks ?? [], undone = undoneIds(tasks), red = (k) => (k.title ?? "").startsWith("main red: ");
-  const pool = tasks.filter((k) => k.state === "open" && !k.hold && !(k.deps ?? []).some((d) => undone.has(d)))
-    .sort((x, y) => (red(y) - red(x)) || ((x.priority ?? -1) - (y.priority ?? -1)) || x.id - y.id);
-  return [...pool.filter((k) => red(k)), ...pool.filter((k) => !red(k) && k.qpos != null).sort((x, y) => x.qpos - y.qpos),
-    ...(s.limits?.queue_only ? [] : pool.filter((k) => !red(k) && k.qpos == null))];
+  const tasks = s.tasks ?? [], by = byId(tasks), red = (k) => ((k.title ?? "").startsWith("main red: ") ? 1 : 0);
+  return tasks.filter((k) => k.state === "ready" && !k.assignee && !undoneOf(k, by).length)
+    .sort((x, y) => (red(y) - red(x)) || ((x.place ?? 1e9) - (y.place ?? 1e9)) || x.id - y.id);
 }
 // The live agents auto-spawn counts: everyone but the communicator.
 export const liveOf = (s) => (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms);
 // Next up: `rows` is staffOf with `starts` true for the first `cut` (auto-spawn's number less the live agents, at
-// least 0); `text` is the cut line, saying what + would start when none do.
-export function nextUp(s, narrow = false) {
+// least 0); `chips` are its labelled numbers [label, value]: Auto-spawn (the number or Off), Live, Start, and the Next task's id when none start.
+export function nextUp(s) {
   const rows = staffOf(s).map((k, i) => ({ k, n: i + 1 })), min = s.limits?.min ?? 0, live = liveOf(s).length, cut = Math.max(0, min - live);
   for (const r of rows) r.starts = r.n <= cut;
-  const to = min > 0 ? `auto-spawn ${min}` : "auto-spawn off", first = rows[cut]?.k;
-  const c = Math.min(cut, rows.length);
-  const text = c > 0 ? (narrow ? `${to}: ${c} start` : `${to}, ${live} live: the ${c} above start${c === 1 ? "s" : ""} next`)
-    : `${to}, ${live} live: none start${first && !narrow ? (min >= live ? ` · + starts #${first.id}` : ` · raise it to ${live + 1} to start #${first.id}`) : ""}`;
-  return { rows, cut, text };
+  const c = Math.min(cut, rows.length), first = rows[cut]?.k ?? null;
+  const chips = [["Auto-spawn", min > 0 ? String(min) : "Off"], ["Live", String(live)], ["Start", String(c)], ...(c === 0 && first ? [["Next", `#${first.id}`]] : [])];
+  return { rows, cut, chips };
 }
 // Open tasks per label, most first: [[label, n]].
 export function labelCounts(tasks) {
-  const undone = undoneIds(tasks ?? []), n = new Map();
-  for (const k of tasks ?? []) if (undone.has(k.id)) for (const l of k.labels ?? []) n.set(l, (n.get(l) ?? 0) + 1);
+  const n = new Map();
+  for (const k of tasks ?? []) if (!isClosed(k)) for (const l of k.labels ?? []) n.set(l, (n.get(l) ?? 0) + 1);
   return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
 }
 // Open tasks per model word, most first: [[word, n]] (a task with no model is not counted).
 export function modelCounts(tasks) {
-  const undone = undoneIds(tasks ?? []), n = new Map();
-  for (const k of tasks ?? []) { const w = undone.has(k.id) && modelWord(k.model); if (w) n.set(w, (n.get(w) ?? 0) + 1); }
+  const n = new Map();
+  for (const k of tasks ?? []) { const w = !isClosed(k) && modelWord(k.model); if (w) n.set(w, (n.get(w) ?? 0) + 1); }
   return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
 }
+// Tasks left to do: Ready and the started ones (Backlog is not planned work); from `counts`, keyed by state.
+export const leftOf = (c) => (c?.ready ?? 0) + (c?.in_progress ?? 0) + (c?.needs_input ?? 0) + (c?.in_review ?? 0);
 // Markdown as a one-line preview reads it: links keep their text, and heading, quote, bold, italic and code markers go.
 export const plain = (x) => String(x ?? "").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/^[ \t]{0,3}(#{1,6}[ \t]+|>[ \t]?)/gm, "")
   .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2").replace(/(^|[^\w*])([*_])(?=\S)([^*_\n]+?)(?<=\S)\2(?![\w*])/g, "$1$3").replace(/`+([^`\n]*)`+/g, "$1");
 // The view's four tabs (both views), and the four More holds; More's sections count under the More tab.
-export const TABS = [["overview", "Now"], ["board", "Queue"], ["agents", "Agents"], ["more", "More"]];
+export const TABS = [["overview", "Now"], ["board", "Board"], ["agents", "Agents"], ["more", "More"]];
 export const MORE = [["activity", "Activity"], ["landing", "Landing"], ["system", "System"], ["history", "History"]];
 export const tabOf = (section) => (TABS.some(([id]) => id === section) ? section : "more");
-// P0 and P1 are drawn; P2 is the default and says nothing.
-export const prioWord = (k) => (k?.priority === 0 || k?.priority === 1 ? `P${k.priority}` : null);
+// Every priority but the default (Medium) is drawn: None, Urgent, High, Low.
+export const prioWord = (k) => (k?.priority && k.priority !== "medium" ? prioName(k.priority) : null);
 // "2 working, 2 idle": the live agents other than the communicator.
 export function staffWords(s) {
   const live = liveOf(s), w = live.filter((a) => a.status === "working").length;
   return `${w} working, ${live.length - w} idle`;
 }
-// Why Next up has nothing to start, in words, with the one thing that changes it: {text, action: "new" | "task", id}.
-// null while something can start.
+// Why Next up has nothing to start: {text (a fixed label), chips [[label, n]], action: "new" | "task", id}. null while something can start.
+// Chips: Ready tasks Waiting on a task, Reserved for an assignee, and Backlog. `task` names the dep most of them wait on.
 export function heldWhy(s) {
-  const tasks = s.tasks ?? [], undone = undoneIds(tasks), open = tasks.filter((k) => k.state === "open");
-  if (!undone.size) return { text: "The board has no open tasks. Add one here, or ask the communicator to plan the next batch.", action: "new" };
+  const tasks = s.tasks ?? [], by = byId(tasks), left = tasks.filter((k) => !isClosed(k));
+  if (!left.length) return { text: "The board has no tasks. Add one here, or ask the communicator to plan the next batch.", chips: [], action: "new" };
   if (staffOf(s).length) return null;
-  const held = open.filter((k) => k.hold).length, dep = new Map();
-  for (const k of open) if (!k.hold) for (const d of k.deps ?? []) if (undone.has(d)) dep.set(d, (dep.get(d) ?? 0) + 1);
-  const waits = open.filter((k) => !k.hold && (k.deps ?? []).some((d) => undone.has(d))).length;
-  const top = [...dep].sort((x, y) => y[1] - x[1] || x[0] - y[0])[0], by = top && tasks.find((k) => k.id === top[0]);
-  const unq = s.limits?.queue_only ? open.filter((k) => !k.hold && k.qpos == null && !(k.deps ?? []).some((d) => undone.has(d))).length : 0;
-  const parts = [waits && `${waits} wait on ${top ? `#${top[0]}${by?.owner ? `, which ${by.owner} holds` : ""}` : "other tasks"}`, held && `${held} held`, unq && `${unq} not queued (queue only is on)`].filter(Boolean);
-  return { text: parts.length ? `Nothing can start: ${parts.join(", ")}.` : "Everything left is being worked on.", action: top ? "task" : null, id: top?.[0] };
+  const ready = tasks.filter((k) => k.state === "ready"), dep = new Map();
+  const waits = ready.filter((k) => !k.assignee && undoneOf(k, by).length);
+  for (const k of waits) for (const d of undoneOf(k, by)) dep.set(d, (dep.get(d) ?? 0) + 1);
+  const top = [...dep].sort((x, y) => y[1] - x[1] || x[0] - y[0])[0];
+  const chips = [["Waiting", waits.length], ["Reserved", ready.filter((k) => k.assignee).length], ["Backlog", tasks.filter((k) => k.state === "backlog").length]].filter(([, n]) => n);
+  return { text: chips.length ? "Nothing can start" : "Everything left is being worked on.", chips, action: top ? "task" : null, id: top?.[0] };
 }
-// The Done or Dropped tasks the Queue lists, newest first, under the filter text.
+// The Completed or Cancelled (with Duplicate) tasks the Board lists, newest first, under the filter text.
 export function pastOf(tasks, which, q = "") {
-  const w = q.trim().toLowerCase();
-  return (tasks ?? []).filter((k) => k.state === which && (!w || `#${k.id} ${k.title} ${k.owner ?? ""}`.toLowerCase().includes(w))).sort((x, y) => y.id - x.id);
+  const w = q.trim().toLowerCase(), inc = (k) => (which === "cancelled" ? k.state === "cancelled" || k.state === "duplicate" : k.state === which);
+  return (tasks ?? []).filter((k) => inc(k) && (!w || `#${k.id} ${k.title} ${k.assignee ?? k.owner ?? ""}`.toLowerCase().includes(w))).sort((x, y) => y.id - x.id);
 }
 // Chips that fit on one line: the first `max` plus any picked; `more` is what is left out.
 export function fitChips(items, picked, max) {
   const top = items.filter(([l], i) => i < max || picked.includes(l));
   return { top, more: items.length - top.length };
 }
-// The side Queue under a filter ({models, labels}, several of each at once: AND): being worked on (claimed or blocked,
-// blocked first), Next (nextUp's rows, `starts` kept), Waiting (the rest: held, behind a dep, or unqueued under
-// queue-only). `of`: the open tasks, `shown`: the rows under the filter.
+// The side Board under a filter ({models, labels}, several of each at once: AND): being worked on (started, Needs Input
+// first), Next (nextUp's rows, `starts` kept), Waiting (Ready tasks past the cut: Waiting on `after`, Reserved for `who`,
+// or just Ready), Backlog. `of`: the tasks to do, `shown`: the rows under the filter.
 export function queueSplit(s, f = {}) {
-  const tasks = s.tasks ?? [], undone = undoneIds(tasks), models = f.models ?? [], labels = f.labels ?? [];
+  const tasks = s.tasks ?? [], by = byId(tasks), models = f.models ?? [], labels = f.labels ?? [];
   const pass = (k) => (!models.length || models.every((m) => modelWord(k.model) === m)) && labels.every((l) => (k.labels ?? []).includes(l));
   const up = nextUp(s), next = up.rows.filter((r) => pass(r.k)), inNext = new Set(up.rows.map((r) => r.k.id));
-  const doing = tasks.filter((k) => (k.state === "claimed" || k.state === "blocked") && pass(k)).sort((x, y) => (x.state === "blocked" ? 0 : 1) - (y.state === "blocked" ? 0 : 1) || x.id - y.id);
-  const waiting = tasks.filter((k) => k.state === "open" && !inNext.has(k.id) && pass(k)).map((k) => {
-    const after = (k.deps ?? []).filter((d) => undone.has(d));
-    return { k, why: k.hold ? `held: ${k.hold}` : after.length ? `waits on ${after.map((d) => `#${d}`).join(", ")}` : "not queued" };
-  }).sort((x, y) => x.k.id - y.k.id);
-  return { doing, next, waiting, cut: up.cut, text: up.text, of: undone.size, shown: doing.length + next.length + waiting.length };
+  const place = (x, y) => (x.k.place ?? 1e9) - (y.k.place ?? 1e9) || x.k.id - y.k.id;
+  const doing = tasks.filter((k) => isStarted(k) && pass(k)).sort((x, y) => (x.state === "needs_input" ? 0 : 1) - (y.state === "needs_input" ? 0 : 1) || x.id - y.id);
+  const waiting = tasks.filter((k) => k.state === "ready" && !inNext.has(k.id) && pass(k)).map((k) => {
+    const after = undoneOf(k, by);
+    return { k, why: k.assignee ? "Reserved" : after.length ? "Waiting" : "Ready", after, who: k.assignee ?? null };
+  }).sort(place);
+  const backlog = tasks.filter((k) => k.state === "backlog" && pass(k)).map((k) => ({ k, why: "Backlog", after: undoneOf(k, by), who: k.assignee ?? null, note: k.note ?? null })).sort(place);
+  return { doing, next, waiting, backlog, cut: up.cut, chips: up.chips, of: undoneIds(tasks).size, shown: doing.length + next.length + waiting.length + backlog.length };
 }
-// The Board's graph (research/sw-graph-view.md) from `--view graph`'s tasks. scope "queue": the queued tasks and every
-// not-done task they wait on, transitively; "all": every not-done task; either with the done or dropped tasks those
+// The Board's graph (research/sw-graph-view.md) from `--view graph`'s tasks. scope "queue": the Ready tasks and every
+// task still to do they wait on, transitively; "all": every task still to do; either with the Completed or Cancelled tasks those
 // wait on (one hop), and with `done` (all only) every finished task that has an edge. Nodes {k, layer, slot, fin,
 // ready, q}: layer is the longest path from a root, slot the place in its layer after two barycentre sweeps; ready is
-// startable now (open, not held, every dep done); q the queue position (1-based), with next on the first that can
-// start. Edges {from, to, met} run prerequisite to dependant, met when the prerequisite is done. loose: the tasks in
+// startable now (Ready, every dep Completed); q the place in Ready (1-based), with next on the first that can
+// start. Edges {from, to, met} run prerequisite to dependant, met when the prerequisite is Completed. loose: the tasks in
 // scope with no edge, in the Board's order (queue order in "queue"); layers: the count.
 export function graphOf(tasks, scope, done) {
   const by = new Map((tasks ?? []).filter((k) => Number.isInteger(k?.id)).map((k) => [k.id, k]));
-  const fin = (k) => k.state === "done" || k.state === "dropped";
+  const fin = isClosed;
   const deps = (k) => [...new Set((k.deps ?? []).filter((d) => d !== k.id && by.has(d)))];
-  const ready = (k) => k.state === "open" && !k.hold && deps(k).every((d) => by.get(d).state === "done");
-  const queued = [...by.values()].filter((k) => k.qpos != null && !fin(k)).sort((x, y) => x.qpos - y.qpos);
+  const ready = (k) => k.state === "ready" && deps(k).every((d) => by.get(d).state === "completed");
+  const queued = [...by.values()].filter((k) => k.state === "ready").sort((x, y) => (x.place ?? 1e9) - (y.place ?? 1e9) || x.id - y.id);
   const q = new Map(queued.map((k, i) => [k.id, i + 1]));
   const next = queued.find(ready)?.id ?? null;
   const ids = new Set();
@@ -905,9 +935,9 @@ export function graphOf(tasks, scope, done) {
     for (const k of by.values()) if (fin(k) && (deps(k).length || named.has(k.id))) ids.add(k.id);
   }
   const edges = [];
-  for (const id of ids) for (const d of deps(by.get(id))) if (ids.has(d) && (!fin(by.get(id)) || done)) edges.push({ from: d, to: id, met: by.get(d).state === "done" });
+  for (const id of ids) for (const d of deps(by.get(id))) if (ids.has(d) && (!fin(by.get(id)) || done)) edges.push({ from: d, to: id, met: by.get(d).state === "completed" });
   const touched = new Set(edges.flatMap((e) => [e.from, e.to]));
-  const rank = (k) => (k.state === "blocked" ? 0 : k.state === "claimed" ? 1 : k.hold ? 3 : 2);
+  const rank = (k) => (k.state === "needs_input" ? 0 : isStarted(k) ? 1 : k.state === "backlog" ? 3 : 2);
   const loose = [...ids].filter((id) => !touched.has(id)).map((id) => by.get(id))
     .sort((x, y) => scope === "queue" ? (q.get(x.id) ?? 1e9) - (q.get(y.id) ?? 1e9) || x.id - y.id : rank(x) - rank(y) || x.id - y.id);
   const preds = new Map(), succs = new Map();
@@ -1145,6 +1175,8 @@ function evWords(e) {
     case "push": return `pushed ${e.branch ?? ""}${e.subject ? ` · ${e.subject}` : ""}`.trim();
     case "claim": return `claimed ${d}`.trim();
     case "done": return `finished ${d}`.trim();
+    case "task-backlog": case "hold": return `moved ${d.split(" ")[0]} to Backlog`.trim();
+    case "task-ready": case "unhold": return `moved ${d.split(" ")[0]} to Ready`.trim();
     case "end": return d ? `ended · ${d}` : "ended";
     case "compact": return "compacted its context";
     case "ci-red": return `main CI went red${d ? ` · run ${d}` : ""}`;

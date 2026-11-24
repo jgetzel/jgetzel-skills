@@ -11,11 +11,11 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import { panes, run, shared, setShared, settings, window as win, exec } from "herdr";
 import * as kit from "./kit.js";
-import { SELECT, addrOf, answerArgs, nudgeArgs, dur, line, repoName, showAll } from "./tree.js";
+import { SELECT, addrOf, answerArgs, cancelArgs, dropDepArgs, nudgeArgs, dur, line, prioName, repoName, showAll, stateWord } from "./tree.js";
 
-const STATES = [["block", "Blocked"], ["prog", "In progress"], ["land", "Landing"], ["ready", "Ready"], ["wait", "Waiting"], ["done", "Done today"]];
-const WORD = { block: "Blocked", prog: "In progress", land: "Landing", ready: "Ready", wait: "Waiting", done: "Done", dropped: "Dropped" };
-const PRIO = ["Urgent", "High", "Medium", "Low"];
+// The Board's groups, by state: the key is the glyph's word (kit.taskGlyph); a Ready task waiting on a dep keeps its place in Ready.
+const STATES = [["block", "Needs Input"], ["prog", "In Progress"], ["land", "In Review"], ["ready", "Ready"], ["back", "Backlog"], ["done", "Completed today"]];
+const WORD = { block: "Needs Input", prog: "In Progress", land: "In Review", ready: "Ready", back: "Backlog", done: "Completed" };
 const QUIET_READ = 30000; // the board is read again this often without events: its ages and leases move
 const LEASE = 7200; // a claim's default lease (2h): the lease bar's full width
 const PEEK = 420, IB = 68, NARROW = 760;
@@ -25,19 +25,20 @@ const hash = (x) => { let h = 0; for (const c of String(x)) h = (h * 31 + c.char
 const who = (a) => (a === "human" ? "you" : a ?? "someone");
 const openUrl = (url) => url && /^https:\/\//.test(url) && exec(win()?.platform === "macos" ? "open" : "xdg-open", [url]);
 
-// A task's board state: blocked, in progress, landing, ready, waiting (held, or after an open task), done; dropped: none.
-export function stateOf(k, open) {
+// A task's board state: Needs Input, In Progress, In Review, Ready, Backlog, Completed; Cancelled and Duplicate: none.
+export function stateOf(k) {
   switch (k.state) {
-    case "blocked": return "block";
-    case "claimed": return "prog";
-    case "landing": return "land";
-    case "done": return "done";
-    case "dropped": return null;
-    default: return k.held || (k.after ?? []).some((a) => open.has(a)) ? "wait" : "ready";
+    case "needs_input": return "block";
+    case "in_progress": return "prog";
+    case "in_review": return "land";
+    case "completed": return "done";
+    case "backlog": return "back";
+    case "ready": return "ready";
+    default: return null;
   }
 }
 // An agent's kit status from its swarms[] row.
-const statusOf = (a) => (!a ? "idle" : a.status === "blocked" ? "asks" : a.hung ? "hung" : a.task?.state === "landing" ? "landing"
+const statusOf = (a) => (!a ? "idle" : a.status === "blocked" ? "asks" : a.hung ? "hung" : a.task?.state === "in_review" ? "landing"
   : a.status === "working" ? "working" : "idle");
 // The choices a question offers, from its last sentence's "or": "A, or B?" gives A and B; none past four or 80 chars.
 export function choicesOf(q) {
@@ -66,15 +67,18 @@ function evWords(e) {
     case "ci": return [`CI ${x}`.trim(), null];
     case "pr": return [`PR ${x}`.trim(), null];
     case "done": return ["finished it", x || null];
-    case "drop": return ["dropped it", x || null];
-    case "held": return ["held it", x || null];
-    case "unheld": return ["unheld it", null];
+    case "drop": return ["cancelled it", x || null];
+    case "held": case "backlog": return ["moved it to Backlog", x || null];
+    case "unheld": case "ready": return ["moved it to Ready", null];
+    case "assign": return ["assigned it", x || null];
+    case "place": return ["moved it in the queue", null];
+    case "duplicate": return ["marked it a duplicate", x || null];
     default: return [`${e.kind}${x ? ` ${x}` : ""}`, null];
   }
 }
 // The state a task is in after event `e` (the history's spine takes its colour); null: unchanged.
-const afterEv = (e) => ({ add: "ready", release: "ready", unheld: "ready", claim: "prog", spawn: "prog", unblock: "prog", answer: "prog",
-  unland: "prog", block: "block", land: "land", done: "done", drop: "dropped", held: "wait" })[e.kind] ?? null;
+const afterEv = (e) => ({ add: "ready", release: "ready", unheld: "ready", ready: "ready", claim: "prog", spawn: "prog", unblock: "prog", answer: "prog",
+  unland: "prog", block: "block", land: "land", done: "done", drop: "dropped", held: "back", backlog: "back" })[e.kind] ?? null;
 
 export class SwarmBoard {
   // `swarm(args)`: the swarm CLI for the shown swarm, as rw-swarm's main.js runs it.
@@ -184,8 +188,7 @@ export class SwarmBoard {
     this.members = new Set((sw.agents ?? []).map((a) => a.name).concat(sw.comms ? [sw.comms] : []));
     this.repoBy = new Map((d.repos ?? []).map((r) => [r.path, r]));
     const tasks = (d.tasks ?? []);
-    const open = new Set(tasks.filter((k) => k.state !== "done" && k.state !== "dropped").map((k) => k.id));
-    this.taskBy = new Map(tasks.map((k) => [k.id, { ...k, st: stateOf(k, open) }]));
+    this.taskBy = new Map(tasks.map((k) => [k.id, { ...k, st: stateOf(k), wait: k.state === "ready" && (k.waiting ?? []).length > 0 }]));
     const day = new Date(); day.setHours(0, 0, 0, 0);
     this.midnight = day.getTime() / 1000;
   }
@@ -280,7 +283,6 @@ export class SwarmBoard {
       .when(wide, (el) => el
         .child(knob("min", "Auto-spawn", st.min, (cx, v) => this.act(cx, ["limits", "--min", String(v)])))
         .child(knob("max", "Max", st.max, (cx, v) => this.act(cx, ["limits", "--max", String(v)])))
-        .child(flag("queue", "Queue only", Boolean(st.queue_only), (cx) => this.act(cx, ["limits", "--queue-only", st.queue_only ? "off" : "on"])))
         .child(flag("away", "Away", Boolean(sw.away), (cx) => this.act(cx, sw.away ? ["away", "--back"] : ["away"]))))
       .when(Boolean(sw.comms && this.agentsBy.get(sw.comms)?.hc), (el) => el.child(kit.button(t, "sb-talk", `Talk to ${sw.comms}`, () => this.focus(sw.comms))));
   }
@@ -317,13 +319,13 @@ export class SwarmBoard {
       .child(chip("swarm", "Swarm", kit.swarmTag(t, this.sw.name)))
       .child(chip("others", "Other swarms", this.others === "quiet" ? "quieter" : "hidden", () => { this.others = this.others === "quiet" ? "hidden" : "quiet"; }))
       .child(chip("group", "Group", "repo, then state"))
-      .child(chip("done", "Done today", this.doneShown ? "shown" : "hidden", () => { this.doneShown = !this.doneShown; }))
+      .child(chip("done", "Completed today", this.doneShown ? "shown" : "hidden", () => { this.doneShown = !this.doneShown; }))
       .when(Boolean(sel), (el) => el.child(chip("sel", sel.from === "task" ? `#${sel.task}` : sel.agent, "clear", () => this.unselect())))
       .child(div().flex_1())
       .child(chip("list", "Also as", "a list, new task", () => this.view({ section: "board", board: "list" })))
       .child(chip("graph", "Also as", "a graph", () => this.view({ section: "board", board: "graph" })));
   }
-  // The older Board screens (List with New task, Done and Dropped; Graph) stay in main.js.
+  // The older Board screens (List with New task, Completed and Cancelled; Graph) stay in main.js.
   view(o) {
     setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o, page: null });
   }
@@ -350,7 +352,7 @@ export class SwarmBoard {
       const gk = g.path ? hash(g.path) : "none";
       items.push({ key: `g:${gk}`, top: y, h: kit.HEAD, el: () => this.repoHead(t, g) }); y += kit.HEAD;
       for (const [st, label] of STATES) {
-        const ks = g.ks.filter((k) => k.st === st).sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2) || a.id - b.id);
+        const ks = g.ks.filter((k) => k.st === st).sort((a, b) => (a.place ?? 1e9) - (b.place ?? 1e9) || a.id - b.id); // Ready and Backlog by place
         if (!ks.length) continue;
         items.push({ key: `s:${gk}:${st}`, top: y, h: kit.ROW_C, el: () => kit.stateHeader(t, `sb-st-${gk}-${st}`, st, label, ks.length) }); y += kit.ROW_C;
         for (const k of ks) { items.push({ key: `r:${gk}:${k.id}`, top: y, h: kit.ROW, el: () => this.row(t, k, g.path, gk) }); y += kit.ROW; }
@@ -383,16 +385,18 @@ export class SwarmBoard {
   }
   row(t, k, path, gk) {
     const c = kit.colors(t), sel = this.selOf(k), quiet = this.quiet(k);
-    const a = k.holder?.agent ? this.agentsBy.get(k.holder.agent) : null;
+    const who0 = k.holder?.agent ?? k.assignee ?? null, a = who0 ? this.agentsBy.get(who0) : null;
+    const queue = k.place != null ? `Queue ${k.place}` : null;
     const note = k.st === "block" ? div().text_color(c.asks).child("asks you")
-      : k.st === "wait" ? (k.held ? `held: ${line(k.held, 60)}` : `after ${(k.after ?? []).map((x) => `#${x}`).join(", ")}`)
+      : k.st === "ready" ? [queue, k.wait ? `after ${(k.after ?? []).map((x) => `#${x}`).join(", ")}` : null].filter(Boolean).join(" · ")
+      : k.st === "back" ? [queue, k.note ? line(k.note, 60) : null].filter(Boolean).join(" · ")
       : k.st === "land" ? "with the lander" : null;
     const tags = (k.repos ?? []).filter((r) => r.repo !== path).map((r) => kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6)));
     if (k.st === "block") tags.push(kit.button(t, `sb-ans-${gk}-${k.id}`, "Answer", (cx) => { cx.stop_propagation(); this.pickTask(cx, k); }, { kind: "danger", small: true }));
     const age = (k.updated ?? 0) >= this.midnight ? hhmm(k.updated) : k.updated ? new Date(k.updated * 1000).toDateString().slice(4, 10) : "";
-    const el = kit.issueRow(t, this.m, { id: k.id, key: `${gk}:${k.id}`, title: k.title, priority: k.priority, state: k.st }, {
+    const el = kit.issueRow(t, this.m, { id: k.id, key: `${gk}:${k.id}`, title: k.title, priority: k.priority, state: k.wait ? "wait" : k.st }, {
       onClick: (cx) => this.pickTask(cx, k), sel, note, age, tags: [h_flex().flex_none().gap(4).items_center().children(tags)],
-      assignees: k.holder?.agent ? [{ name: k.holder.agent, swarm: k.holder.swarm, status: statusOf(a) }] : [] });
+      assignees: who0 ? [{ name: who0, swarm: k.holder?.swarm ?? a?.swarm, status: statusOf(a) }] : [] });
     return quiet && sel !== true ? el.opacity(sel === false ? 0.4 : 0.42) : el;
   }
 
@@ -400,11 +404,11 @@ export class SwarmBoard {
   // A task's properties, its history oldest first (its question, when it waits on you, where new entries arrive), and a
   // note to its holder.
   peekPane(t, k) {
-    const c = kit.colors(t), m = this.m, id = k.id, st = k.st ?? stateOf(k, new Set()), h = k.holder?.agent ?? k.owner ?? null;
+    const c = kit.colors(t), m = this.m, id = k.id, st = k.st ?? stateOf(k), h = k.holder?.agent ?? k.assignee ?? k.owner ?? null;
     const a = h ? this.agentsBy.get(h) : null, show = this.showFor === id ? this.show : null;
     const repos = (k.repos ?? []).map((r) => (typeof r === "string" ? { repo: r } : r));
-    const stateLine = st === "block" ? `Blocked, ${h} asks you` : st === "prog" ? `In progress, ${h}` : st === "land" ? `Landing, ${h}`
-      : st === "wait" ? (k.held ? `Held: ${line(k.held, 80)}` : `Waiting on ${(k.after ?? []).map((x) => `#${x}`).join(", ")}`) : WORD[st] ?? st;
+    const stateLine = [stateWord(k.state), ["block", "prog", "land"].includes(st) ? h : null, st === "ready" && (k.after ?? []).length ? `after ${k.after.map((x) => `#${x}`).join(", ")}` : null,
+      st === "back" && k.note ? line(k.note, 80) : null, k.state === "duplicate" && k.dup_of != null ? `of #${k.dup_of}` : null].filter(Boolean).join(" · ");
     const fresh = m.isNew(`peek:${id}`);
     const head = v_flex().id("sb-pk-head").flex_none().px(16).py(14).gap(8).border_b(1).border_color(t.border)
       .child(h_flex().gap(6).items_center()
@@ -414,15 +418,16 @@ export class SwarmBoard {
         .child(kit.button(t, "sb-pk-copy", "Copy id", (cx) => cx.write_to_clipboard?.(`#${id}`), { small: true }))
         .child(kit.button(t, "sb-pk-close", "Close", (cx) => { this.unselect(); cx.notify(); }, { kind: "ghost", small: true })))
       .child(div().text_size(kit.TYPE.head).font_medium().whitespace_normal().child(k.title ?? ""))
-      .child(h_flex().gap(6).items_center().text_color(st === "block" ? c.asks : t.dim).child(kit.taskGlyph(t, st, 12, m, `pk:${id}:${st}`)).child(stateLine));
+      .child(h_flex().gap(6).items_center().text_color(st === "block" ? c.asks : t.dim).child(kit.taskGlyph(t, k.wait && st === "ready" ? "wait" : st, 12, m, `pk:${id}:${st}`)).child(stateLine));
     const prop = (label, v) => h_flex().gap(12).items_start().min_w(0)
       .child(div().w(86).flex_none().text_color(t.dim).child(label)).child(h_flex().flex_1().min_w(0).gap(6).items_center().flex_wrap().children([v].flat()));
-    const blocks = [...this.taskBy.values()].filter((x) => (x.after ?? []).includes(id) && x.st !== "done").map((x) => `#${x.id}`);
+    const blocks = [...this.taskBy.values()].filter((x) => (x.after ?? []).includes(id) && x.st && x.st !== "done").map((x) => `#${x.id}`);
     const deps = [(k.after ?? []).length ? `after ${k.after.map((x) => `#${x}`).join(", ")}` : null, blocks.length ? `holds back ${blocks.join(", ")}` : null].filter(Boolean);
     const lease = k.lease_left_s;
     const props = v_flex().id("sb-pk-props").flex_none().px(16).py(12).gap(8)
-      .child(prop("State", [kit.taskGlyph(t, st), div().child(WORD[st] ?? st)]))
-      .child(prop("Priority", div().child(`P${k.priority ?? 2} ${PRIO[k.priority ?? 2] ?? ""}`)))
+      .child(prop("State", [kit.taskGlyph(t, st), div().child(stateWord(k.state))]))
+      .child(prop("Priority", div().child(prioName(k.priority) ?? "Medium")))
+      .when(k.place != null, (el) => el.child(prop("Queue", div().child(`Queue ${k.place}`))))
       .when(repos.length > 0, (el) => el.child(prop("Repos", v_flex().gap(4).children(repos.map((r) => h_flex().gap(6).items_center().flex_wrap()
         .child(kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6))).child(div().child(repoName(r.repo)))
         .when(Boolean(r.base), (e) => e.child(div().text_size(kit.TYPE.meta).text_color(t.dim).child(`base ${r.base}`)))
@@ -470,7 +475,7 @@ export class SwarmBoard {
     const now = h_flex().id("sb-ev-now").flex_none().gap(8).items_center().py(6)
       .child(div().w(12).flex_none().flex().justify_center().child(div().size(8).rounded(4).bg(col(st))))
       .child(div().flex_1().text_color(st === "block" ? c.asks : t.dim)
-        .child(`Now: ${st === "block" ? "waiting on you" : (WORD[st] ?? st).toLowerCase()}${since ? `, ${since}` : ""}`));
+        .child(`Now: ${WORD[st] ?? stateWord(k.state)}${since ? `, ${since}` : ""}`));
     return v_flex().id("sb-history").flex_none().px(16).py(12).gap(0).border_t(1).border_color(t.border)
       .when(!show, (el) => el.child(div().py(6).text_size(kit.TYPE.meta).text_color(t.dim).child("Reading its history…")))
       .children(rows).when(Boolean(ask), (el) => el.child(div().py(6).child(ask))).child(now);
@@ -536,7 +541,7 @@ export class SwarmBoard {
       case "ask": return [`${n.agent ?? "An agent"} asks about ${task}`, "asks"];
       case "hung": return [`${n.agent} is hung${n.stay ? `: ${line(n.stay, 60)}` : ""}`, "hung"];
       case "lander": return [`${task} waits on the lander${n.lander ? `, ${n.lander}` : ""}`, "land"];
-      case "held": return [`${task} is held${n.why ? `: ${line(n.why, 60)}` : ""}`, "wait"];
+      case "dep-cancelled": return [`${task} waits on a Cancelled task`, "wait"];
       case "lock": return [`${n.path} is locked by ${n.agent ?? "nobody"}${n.agent && !this.agentsBy.has(n.agent) ? ", who is gone" : ", past its lease"}`, "idle"];
       case "ctx": return [`${n.agent} is at ${kilo(n.ctx)} context`, "working"];
       case "ci-red": return [`CI is red on ${repoName(n.repo)}`, "block"];
@@ -572,7 +577,8 @@ export class SwarmBoard {
       case "hung": case "ctx":
         acts.push(kit.button(t, `sb-d-nudge`, "Nudge", (cx) => this.act(cx, nudgeArgs(n.agent)), { kind: "primary" }), term(n.agent, "Open its terminal")); break;
       case "lander": acts.push(openTask(n.task), term(n.lander, "Open the lander's terminal")); break;
-      case "held": acts.push(kit.button(t, "sb-d-unhold", "Unhold", (cx) => this.act(cx, ["task", "unhold", String(n.task)]), { kind: "primary" }), openTask(n.task)); break;
+      case "dep-cancelled": if (k) acts.push(kit.button(t, "sb-d-rmdep", "Remove dependency", (cx) => this.act(cx, dropDepArgs(k, n.deps ?? [])), { kind: "primary" }),
+        kit.button(t, "sb-d-cancel", "Cancel task", (cx) => this.act(cx, cancelArgs(n.task))), openTask(n.task)); break;
       case "lock": acts.push(term(n.agent, "Open the holder's terminal")); break;
       case "ci-red": if (n.url) acts.push(kit.button(t, "sb-d-run", "Open the run", () => openUrl(n.url), { kind: "primary" })); break;
       case "ask": if (n.task != null) acts.push(openTask(n.task)); break;

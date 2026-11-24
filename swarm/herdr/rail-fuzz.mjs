@@ -111,9 +111,9 @@ for (let i = 0; i < 2000; i++) {
   const sa = T.spawnArgs(pick(HOSTILE), { task: pick(HOSTILE) });
   assert.ok(sa === null || (sa.at(-2) === "--" && /^[A-Za-z0-9][\w.-]*$/.test(sa.at(-1))), JSON.stringify(sa));
   // History (II.3l): never throws on junk pages; only done tasks and agents with an end
-  const ho = T.overOf({ tasks: [junk(), { id: 1, state: "done", done_at: junk(), work_s: junk(), claim_ctx: junk(), done_ctx: junk() }, junk()], agents: [junk(), { name: pick(HOSTILE), ended: junk() }] });
+  const ho = T.overOf({ tasks: [junk(), { id: 1, state: "completed", done_at: junk(), work_s: junk(), claim_ctx: junk(), done_ctx: junk() }, junk()], agents: [junk(), { name: pick(HOSTILE), ended: junk() }] });
   const hv = T.historyOf(rnd() < 0.2 ? junk() : ho?.tasks, rnd() < 0.2 ? junk() : ho?.agents, { day: pick(["today", "yesterday", "all", pick(HOSTILE)]), sort: pick(["finished", "longest", "context", pick(HOSTILE)]) });
-  assert.ok(hv.tasks.every((k) => k.state === "done") && hv.agents.every((a) => Number.isFinite(a.ended)) && [hv.work, hv.ctx].every((x) => x === null || Number.isFinite(x)), JSON.stringify(hv).slice(0, 200));
+  assert.ok(hv.tasks.every((k) => k.state === "completed") && hv.agents.every((a) => Number.isFinite(a.ended)) && [hv.work, hv.ctx].every((x) => x === null || Number.isFinite(x)), JSON.stringify(hv).slice(0, 200));
   // Rules and limits (II.3k): one bounded line; the command only whole numbers and on/off
   const lo = T.overOf({ limits: { ctx_nudge: junk(), ctx_compact: junk(), compact_stayers: junk() }, rules: junk() })?.limits;
   assert.ok(ok1(T.limitsLine(lo), 120), T.limitsLine(lo));
@@ -124,10 +124,10 @@ for (let i = 0; i < 2000; i++) {
 // 2. The swarm CLI's JSON, malformed or hostile: the mods' readers never throw; types are as they expect.
 const sw = { name: "ll", comms: "c", agents: [{ name: "c", hc: "t1" }, { name: 5, hc: 7 }, null, { name: "w", hc: "t2", status: { x: 1 } }, { name: "w", hc: "t3" },
   { name: "v", hc: "t2" }, { name: "\u202eq\nx", hc: ["t9"], task: "nope" }], needs: [null, { kind: "question", agent: "w", question: "a\nb" }, "x"],
-  counts: { open: "3" }, ci: [], space: 9, repos: "no", comms_hc: ["t1"] };
+  counts: { ready: "3" }, ci: [], space: 9, repos: "no", comms_hc: ["t1"] };
 const s0 = T.sumOf(sw);
 assert.deepEqual(s0.agents.map((a) => [a.name, a.hc]), [["c", "t1"], ["5", "7"], ["w", "t2"], ["q x", null]]); // unique by name, then by terminal
-assert.equal(s0.counts.open, null);
+assert.equal(s0.counts.ready, null);
 assert.equal(s0.space, 9); // a field the view does not list stays a scalar
 assert.deepEqual([s0.swarm, s0.repos, s0.folder, s0.comms_hc], ["ll", [], null, null]);
 assert.deepEqual(T.questionsOf([s0], new Set()), [{ address: "t2", name: "w", what: "a b", task: null, swarm: "ll", folder: null, on: null }]);
@@ -138,7 +138,7 @@ assert.deepEqual(T.swarmsOf({ db: 3, swarms: [null, { name: "a", folder: "rel" }
 assert.deepEqual(T.swarmsOf(null), []);
 assert.deepEqual(T.prsOf([{ number: 1, url: "javascript:alert(1)" }, { number: 2, url: "https://github.com/x/y/pull/2" }, { url: "https://x" }]).map((p) => p.url),
   [null, "https://github.com/x/y/pull/2"]);
-const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }], tasks: [{ id: 1, state: "blocked", owner: "a", title: { x: 1 } }, { id: 1 }, { id: "2" }],
+const ov = T.overOf({ agents: [{ name: "a", status: "blocked" }, { name: "a" }], tasks: [{ id: 1, state: "needs_input", owner: "a", title: { x: 1 } }, { id: 1 }, { id: "2" }],
   messages: "no", limits: [] });
 assert.deepEqual([ov.agents.length, ov.tasks.length, ov.messages, ov.limits, ov.tasks[0].title], [1, 1, [], null, null]);
 for (let i = 0; i < 3000; i++) {
@@ -222,7 +222,7 @@ for (let i = 0; i < 3000; i++) {
   const sw = time("swarmOf: 500 agents", 50, () => T.swarmOf(T.rowsOf(spaces[0], ps, by, T.swarmAddrs(sum, null)), sum, by, null));
   time("settleOf: 300 tabs, 500 put", 20, () => T.settleOf(new Set(sw.put), new Set(sw.hot), ps, spaces[0].tabs));
   const big = { comms: "ll-0", agents: [...agents, ...Array.from({ length: 10000 }, (_, i) => ({ name: `e${i}`, status: "ended" }))],
-    tasks: Array.from({ length: 10000 }, (_, i) => ({ id: i, state: pick(["open", "claimed", "blocked", "done"]), owner: `ll-${i % 500}`, deps: [i - 1] })) };
+    tasks: Array.from({ length: 10000 }, (_, i) => ({ id: i, state: pick(["backlog", "ready", "in_progress", "needs_input", "in_review", "completed", "cancelled", "duplicate"]), place: i, owner: `ll-${i % 500}`, deps: [i - 1] })) };
   const o = time("overOf: 10500 agents, 10000 tasks", 300, () => T.overOf(big));
   time("asksOf + agentRows + boardRows + needsOf of it", 150, () => { T.asksOf(o); T.agentRows(o); T.boardRows(o); T.needsOf(o); });
   const sums = Array.from({ length: 50 }, (_, i) => ({ ...sum, swarm: `w${i}`, comms_hc: `t${i * 10}`, repos: [`/w/${i}`], space: `s${i}` }));
@@ -230,12 +230,13 @@ for (let i = 0; i < 3000; i++) {
   time("homesOf: 50 swarms of 500 agents, 500 spaces", 150, () => T.homesOf(sums, spaces, ps));
 }
 
-// 6. The swarm CLI takes an answer or a name that starts with a dash as a value (needs `swarm` on PATH and git).
+// 6. The swarm CLI takes an answer or a name that starts with a dash as a value (needs `swarm` on PATH and git; SWARM_BIN names one off it).
 {
   const { spawnSync } = await import("node:child_process"), { mkdtempSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os");
   const dir = mkdtempSync(`${tmpdir()}/rail-fuzz-`), env = { ...process.env, SWARM_DB: `${dir}/s.db`, SWARM_NAME: "human" };
-  const sh = (cmd, ...args) => spawnSync(cmd, args, { cwd: dir, env, encoding: "utf8" });
+  const sh = (cmd, ...args) => spawnSync(cmd === "swarm" && process.env.SWARM_BIN ? process.env.SWARM_BIN : cmd, args, { cwd: dir, env, encoding: "utf8" });
   if (sh("swarm", "-h").status === 0 && sh("git", "init", "-q").status === 0) {
+    spawnSync(process.env.SWARM_BIN || "swarm", ["new", "fz", "--repo", dir], { cwd: dir, env: { ...env, SWARM_NAME: "" }, encoding: "utf8" }); // a swarm to act on (a new task is Ready, so #1 is never Needs Input)
     sh("swarm", "task", "add", "q");
     for (const text of ["-1", "--help", "-", "a=b --x"]) {
       const r = sh("swarm", ...T.answerArgs(1, text));

@@ -14,7 +14,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
-import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, homesOf,
+import { AGENT, leftOf, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, since, stamp, sumFor, homesOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering, addrOf, ciWord, repoName, SELECT, selectedAgent } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
@@ -36,7 +36,7 @@ const CHANGED = 5000; // agents' since-when times kept (the live ones always): t
 const QUIET = 30000; // a watched swarm db that hasn't changed is read again this often (its times and watchd still move), as rw-swarm
 const SHOWN = 4; // a swarm's agent rows drawn before "N more, M working" (those that ask you or hang always show)
 // A swarm row's kit status: asks, hung, working and gone from its mark, landing from its task, else idle.
-const statusOf = (it) => (["asks", "hung", "working", "gone"].includes(it.r.mark) ? it.r.mark : it.a.task?.state === "landing" ? "landing" : "idle");
+const statusOf = (it) => (["asks", "hung", "working", "gone"].includes(it.r.mark) ? it.r.mark : it.a.task?.state === "in_review" ? "landing" : "idle");
 
 export default class Rail extends View {
   init(_props, cx) {
@@ -500,7 +500,7 @@ export default class Rail extends View {
   block(t, s, sw, tabNames, shownTerm, now, fly = false) {
     const sum = sw.sum;
     const tag = sum.swarm ?? "";
-    const left = ["open", "claimed", "blocked"].reduce((n, k) => n + (sum.counts?.[k] ?? 0), 0);
+    const left = leftOf(sum.counts);
     const n = sum.agents.length;
     const rows = this.capped(t, `b:${s.id}`, sw.block.flatMap((it) => {
       if (it.fold) return [Object.assign(() => h_flex().id(`fold-${s.id}-${it.fold}`).h(ROW).flex_none().mx(4).px(6).gap(8).items_center().rounded(7)
