@@ -8,8 +8,14 @@ the one assumption. -/
 namespace SwarmLean.Board
 open Tasks
 
+/-- `v` is `u` with its id, state, owner and evidence as they were. -/
+def Keeps (u v : Task) : Prop := v.id = u.id ∧ v.state = u.state ∧ v.owner = u.owner ∧ v.evidence = u.evidence
+
 /-- `v` is `u` with its id, status, owner and evidence as they were. -/
-def Keeps (u v : Task) : Prop := v.id = u.id ∧ v.status = u.status ∧ v.owner = u.owner ∧ v.evidence = u.evidence
+def KeepsSo (u v : Task) : Prop := v.id = u.id ∧ v.status = u.status ∧ v.owner = u.owner ∧ v.evidence = u.evidence
+
+theorem Keeps.so {u v : Task} (h : Keeps u v) : KeepsSo u v := by
+  obtain ⟨h1, h2, h3, h4⟩ := h; exact ⟨h1, by unfold Task.status; rw [h2], h3, h4⟩
 
 /-- A lease moved keeps the status and the owner. -/
 theorem renew_so (l : Int) (s : TaskState) : (s.renew l).status = s.status ∧ (s.renew l).owner = s.owner := by
@@ -52,10 +58,13 @@ theorem priority_spec (c : Ctx) (i : Int) (p : Priority) (db : Db) :
     · exact .inl ⟨rfl, rfl⟩
     · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl, rfl⟩
 
+/-- `task renew` moves only the lease: the state is `u.state.renew` at the new end, the rest as it was. -/
 theorem renew_spec (c : Ctx) (i : Int) (l : String) (db : Db) :
     ((Tasks.renew c i l db).1.tasks = db.tasks ∧ (Tasks.renew c i l db).1.taskNext = db.taskNext) ∨
-    ∃ f : Task → Task, (∀ u, Keeps u (f u)) ∧ (Tasks.renew c i l db).1.tasks = (db.set i f).tasks ∧
-      (Tasks.renew c i l db).1.taskNext = db.taskNext := by
+    ∃ (r : Task) (u0 : Int) (f : Task → Task), db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
+      dur l = some u0 ∧
+      (∀ u, (f u).id = u.id ∧ (f u).state = u.state.renew (c.now + u0) ∧ (f u).evidence = u.evidence) ∧
+      (Tasks.renew c i l db).1.tasks = (db.set i f).tasks ∧ (Tasks.renew c i l db).1.taskNext = db.taskNext := by
   unfold Tasks.renew
   split
   · exact .inl ⟨rfl, rfl⟩
@@ -63,7 +72,22 @@ theorem renew_spec (c : Ctx) (i : Int) (l : String) (db : Db) :
     · exact .inl ⟨rfl, rfl⟩
     · split
       · exact .inl ⟨rfl, rfl⟩
-      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro u; exact ⟨rfl, (renew_so _ u.state).1, (renew_so _ u.state).2, rfl⟩
+      · rename_i _ r hr _ u0 hu hm
+        have hm' : mine r c.me = true := by simpa using hm
+        simp only [mine, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hm'
+        refine .inr ⟨r, u0, _, hr, hm'.2, hm'.1, hu, ?_, rfl, rfl⟩
+        intro _; exact ⟨rfl, rfl, rfl⟩
+
+/-- `renew_spec` read as status, owner and evidence kept. -/
+theorem renew_spec_so (c : Ctx) (i : Int) (l : String) (db : Db) :
+    ((Tasks.renew c i l db).1.tasks = db.tasks ∧ (Tasks.renew c i l db).1.taskNext = db.taskNext) ∨
+    ∃ f : Task → Task, (∀ u, KeepsSo u (f u)) ∧ (Tasks.renew c i l db).1.tasks = (db.set i f).tasks ∧
+      (Tasks.renew c i l db).1.taskNext = db.taskNext := by
+  rcases renew_spec c i l db with h | ⟨-, u0, f, -, -, -, -, hf, ht, hn⟩
+  · exact .inl h
+  · refine .inr ⟨f, fun u => ⟨(hf u).1, ?_, ?_, (hf u).2.2⟩, ht, hn⟩
+    · unfold Task.status; rw [(hf u).2.1]; exact (renew_so _ u.state).1
+    · unfold Task.owner; rw [(hf u).2.1]; exact (renew_so _ u.state).2
 
 theorem edit_spec (c : Ctx) (i : Int) (a : EditArgs) (db : Db) :
     ((Tasks.edit c i a db).1.tasks = db.tasks ∧ (Tasks.edit c i a db).1.taskNext = db.taskNext) ∨
@@ -76,14 +100,16 @@ theorem edit_spec (c : Ctx) (i : Int) (a : EditArgs) (db : Db) :
     | exact .inl ⟨rfl, rfl⟩
     | (refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl, rfl⟩)
 
+theorem toCompleted_owner (s : TaskState) : s.toCompleted.owner = s.owner := by cases s <;> rfl
+
 theorem done_spec (c : Ctx) (i : Int) (e : String) (db : Db) :
     ((Tasks.done c i e db).1.tasks = db.tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext) ∨
     (∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ EvOk (f u).evidence ∧
-        ((f u).state = u.state ∨ (f u).status = .completed)) ∧
+        (f u).state = u.state.toCompleted) ∧
       (Tasks.done c i e db).1.tasks = (db.set i f).tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext) ∨
-    -- a red task: released to Backlog
+    -- a red task: released to Backlog, reserved for no one
     ∃ (f : Task → Task) (x : Tasks.DoneOut) (r : Task), db.find i = some r ∧ r.status = .inProgress ∧
-      (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ (f u).status = .backlog) ∧
+      (∀ u, (f u).id = u.id ∧ (f u).state = .backlog none) ∧
       (Tasks.done c i e db).1.tasks = (db.set i f).tasks ∧ (Tasks.done c i e db).1.taskNext = db.taskNext ∧
       (Tasks.done c i e db).2 = .ok x := by
   unfold Tasks.done
@@ -100,15 +126,15 @@ theorem done_spec (c : Ctx) (i : Int) (e : String) (db : Db) :
         · exact .inl ⟨rfl, rfl⟩
         · split
           · exact .inl ⟨rfl, rfl⟩
-          · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro; exact ⟨rfl, rfl, ev, .inr rfl⟩
+          · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro u; exact ⟨rfl, toCompleted_owner u.state, ev, rfl⟩
       split
       · exact .inl ⟨rfl, rfl⟩
       · rename_i hm
         split
         · let f : Task → Task := fun t => { t with state := .backlog none, evidence := some e, note := some (strip e ++ " awaiting a green run") }
-          refine .inr (.inr ⟨f, .red, r, hr, ?_, fun _ => ⟨rfl, rfl, rfl⟩, rfl, rfl, rfl⟩)
+          refine .inr (.inr ⟨f, .red, r, hr, ?_, fun _ => ⟨rfl, rfl⟩, rfl, rfl, rfl⟩)
           simp [mine] at hm; exact hm.2
-        · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro; exact ⟨rfl, rfl, ev, .inr rfl⟩
+        · refine .inr (.inl ⟨_, ?_, rfl, rfl⟩); intro u; exact ⟨rfl, toCompleted_owner u.state, ev, rfl⟩
 
 /-- Blocking keeps the owner and moves only In Progress, to Needs Input. -/
 theorem block_so (q : String) (s : TaskState) :
@@ -120,23 +146,52 @@ theorem unblock_so (l : Int) (s : TaskState) :
     (s.unblock l).owner = s.owner ∧ ((s.unblock l).status = s.status ∨ (s.unblock l).status = .inProgress) := by
   cases s <;> simp [TaskState.unblock, TaskState.status, TaskState.owner]
 
+theorem block_in (q : String) {s : TaskState} (h : s.status = .inProgress) : (s.block q).status = .needsInput := by
+  cases s <;> simp_all [TaskState.block, TaskState.status]
+
+theorem unblock_in (l : Int) {s : TaskState} (h : s.status = .needsInput) : (s.unblock l).status = .inProgress := by
+  cases s <;> simp_all [TaskState.unblock, TaskState.status]
+
+/-- `task block` by the owner of an In Progress task: its state is `u.state.block q` (Needs Input, owner and lease
+kept), the rest as it was. -/
 theorem block_spec (c : Ctx) (i : Int) (q : String) (db : Db) :
     ((Tasks.block c i q db).1.tasks = db.tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext) ∨
-    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
-        ((f u).status = u.status ∨ (f u).status = .needsInput)) ∧
+    ∃ (r : Task) (f : Task → Task), db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
+      (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧ (f u).state = u.state.block q) ∧
+      (f r).status = .needsInput ∧
       (Tasks.block c i q db).1.tasks = (db.set i f).tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext := by
   unfold Tasks.block
   split
   · exact .inl ⟨rfl, rfl⟩
-  · split
+  · rename_i r hr
+    split
     · exact .inl ⟨rfl, rfl⟩
-    · refine .inr ⟨_, ?_, rfl, rfl⟩; intro u; exact ⟨rfl, (block_so q u.state).1, rfl, (block_so q u.state).2⟩
+    · rename_i hm
+      have hm' : mine r c.me = true := by simpa using hm
+      simp only [mine, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hm'
+      refine .inr ⟨r, _, hr, hm'.2, hm'.1, ?_, ?_, rfl, rfl⟩
+      · intro u; exact ⟨rfl, (block_so q u.state).1, rfl, rfl⟩
+      · exact block_in q hm'.2
 
+/-- `block_spec` read as owner and evidence kept, and the status kept or Needs Input. -/
+theorem block_spec_so (c : Ctx) (i : Int) (q : String) (db : Db) :
+    ((Tasks.block c i q db).1.tasks = db.tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext) ∨
+    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
+        ((f u).status = u.status ∨ (f u).status = .needsInput)) ∧
+      (Tasks.block c i q db).1.tasks = (db.set i f).tasks ∧ (Tasks.block c i q db).1.taskNext = db.taskNext := by
+  rcases block_spec c i q db with h | ⟨-, f, -, -, -, hf, -, ht, hn⟩
+  · exact .inl h
+  · refine .inr ⟨f, fun u => ⟨(hf u).1, (hf u).2.1, (hf u).2.2.1, ?_⟩, ht, hn⟩
+    unfold Task.status; rw [(hf u).2.2.2]; exact (block_so q u.state).2
+
+/-- `task unblock` of a Needs Input task by its owner or someone in charge: its state is `u.state.unblock` at a
+fresh lease (In Progress, owner kept), the rest but the answer as it was. -/
 theorem unblock_spec (c : Ctx) (i : Int) (ans : String) (db : Db) :
     ((Tasks.unblock c i ans db).1.tasks = db.tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext) ∨
-    ∃ r f, db.find i = some r ∧ r.owner.isSome ∧
+    ∃ r f, db.find i = some r ∧ r.status = .needsInput ∧ r.owner.isSome ∧
       (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
-        ((f u).status = u.status ∨ (f u).status = .inProgress)) ∧
+        (f u).state = u.state.unblock (c.now + LEASE)) ∧
+      (f r).status = .inProgress ∧
       (Tasks.unblock c i ans db).1.tasks = (db.set i f).tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext := by
   unfold Tasks.unblock
   split
@@ -144,7 +199,9 @@ theorem unblock_spec (c : Ctx) (i : Int) (ans : String) (db : Db) :
   · rename_i r hr
     split
     · exact .inl ⟨rfl, rfl⟩
-    · split
+    · rename_i hn0
+      have hb : r.status = .needsInput := by simpa using hn0
+      split
       · exact .inl ⟨rfl, rfl⟩
       · split
         · exact .inl ⟨rfl, rfl⟩
@@ -153,13 +210,27 @@ theorem unblock_spec (c : Ctx) (i : Int) (ans : String) (db : Db) :
           dsimp only
           repeat' split
           all_goals
-            refine .inr ⟨r, _, hr, hs, ?_, rfl, rfl⟩
-            intro u
-            exact ⟨rfl, (unblock_so _ u.state).1, rfl, (unblock_so _ u.state).2⟩
+            refine .inr ⟨r, _, hr, hb, hs, ?_, ?_, rfl, rfl⟩
+            · intro u; exact ⟨rfl, (unblock_so _ u.state).1, rfl, rfl⟩
+            · exact unblock_in _ hb
 
+/-- `unblock_spec` read as owner and evidence kept, and the status kept or In Progress. -/
+theorem unblock_spec_so (c : Ctx) (i : Int) (ans : String) (db : Db) :
+    ((Tasks.unblock c i ans db).1.tasks = db.tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext) ∨
+    ∃ r f, db.find i = some r ∧ r.owner.isSome ∧
+      (∀ u, (f u).id = u.id ∧ (f u).owner = u.owner ∧ (f u).evidence = u.evidence ∧
+        ((f u).status = u.status ∨ (f u).status = .inProgress)) ∧
+      (Tasks.unblock c i ans db).1.tasks = (db.set i f).tasks ∧ (Tasks.unblock c i ans db).1.taskNext = db.taskNext := by
+  rcases unblock_spec c i ans db with h | ⟨r, f, hr, -, hs, hf, -, ht, hn⟩
+  · exact .inl h
+  · refine .inr ⟨r, f, hr, hs, fun u => ⟨(hf u).1, (hf u).2.1, (hf u).2.2.1, ?_⟩, ht, hn⟩
+    unfold Task.status; rw [(hf u).2.2.2]; exact (unblock_so _ u.state).2
+
+/-- `task drop`: Duplicate with `dup`, Cancelled without, no owner. -/
 theorem drop_spec (c : Ctx) (i : Int) (dup : Option Int) (note : Option String) (db : Db) :
     ((Tasks.drop c i dup note db).1.tasks = db.tasks ∧ (Tasks.drop c i dup note db).1.taskNext = db.taskNext) ∨
-    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧ ((f u).status = .cancelled ∨ (f u).status = .duplicate)) ∧
+    ∃ f : Task → Task, (∀ u, (f u).id = u.id ∧ (f u).owner = none ∧
+        (f u).status = (match dup with | some _ => .duplicate | none => .cancelled)) ∧
       (Tasks.drop c i dup note db).1.tasks = (db.set i f).tasks ∧
       (Tasks.drop c i dup note db).1.taskNext = db.taskNext := by
   unfold Tasks.drop
@@ -176,8 +247,13 @@ theorem drop_spec (c : Ctx) (i : Int) (dup : Option Int) (note : Option String) 
     split
     · exact .inl ⟨rfl, rfl⟩
     · cases dup
-      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, .inl rfl⟩
-      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, .inr rfl⟩
+      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
+      · refine .inr ⟨_, ?_, rfl, rfl⟩; intro; exact ⟨rfl, rfl, rfl⟩
+
+theorem drop_closed (dup : Option Int) :
+    (match dup with | some _ => Status.duplicate | none => Status.cancelled) = .cancelled ∨
+      (match dup with | some _ => Status.duplicate | none => Status.cancelled) = .duplicate := by
+  cases dup <;> simp
 
 /-! The invariant, over every command. -/
 
@@ -225,7 +301,7 @@ theorem ok_of_ev {u v : Task} (hu : TaskOk u) (he : v.evidence = u.evidence)
 /-- A task not Completed fits the invariant. -/
 theorem ok_of_ne {v : Task} (h : v.status ≠ .completed) : TaskOk v := ⟨owned_all v, fun e => absurd e h⟩
 
-theorem keeps_ok {u v : Task} (h : Keeps u v) (hu : TaskOk u) : TaskOk v := by
+theorem keeps_ok {u v : Task} (h : KeepsSo u v) (hu : TaskOk u) : TaskOk v := by
   obtain ⟨-, hs, ho, he⟩ := h
   obtain ⟨⟨h1, h2⟩, h3⟩ := hu
   exact ⟨⟨fun e => by rw [ho]; exact h1 (hs.symm.trans e), fun e => by rw [ho]; exact h2 (hs.symm.trans e)⟩,
@@ -240,8 +316,12 @@ theorem ok_of_state {v : Task} (h : v.status = .needsInput ∨ v.status = .cance
   rcases h with h | h | h <;> exact ⟨⟨fun e => (by rw [h] at e; cases e), fun e => (by rw [h] at e; cases e)⟩,
     fun e => (by rw [h] at e; cases e)⟩
 
+theorem keeps_so {A : Prop} {B : (Task → Task) → Prop} (h : A ∨ ∃ f : Task → Task, (∀ u, Keeps u (f u)) ∧ B f) :
+    A ∨ ∃ f : Task → Task, (∀ u, KeepsSo u (f u)) ∧ B f :=
+  h.imp_right fun ⟨f, hf, hb⟩ => ⟨f, fun u => (hf u).so, hb⟩
+
 theorem keeps_step {db db' : Db} {i : Int}
-    (h : (db'.tasks = db.tasks ∧ db'.taskNext = db.taskNext) ∨ ∃ f : Task → Task, (∀ u, Keeps u (f u)) ∧
+    (h : (db'.tasks = db.tasks ∧ db'.taskNext = db.taskNext) ∨ ∃ f : Task → Task, (∀ u, KeepsSo u (f u)) ∧
       db'.tasks = (db.set i f).tasks ∧ db'.taskNext = db.taskNext) (hi : BInv db) : BInv db' := by
   rcases h with ⟨ht, hn⟩ | ⟨f, hk, ht, hn⟩
   · exact binv_same ht hn hi
@@ -252,12 +332,12 @@ theorem step_binv (c : TCmd) (db : Db) (h : BInv db) : BInv (c.step db).1 := by
   | add c a =>
     refine ⟨step_inv (.add c a) db h.1, ?_⟩
     show ∀ t ∈ (Tasks.add c a db).1.tasks, DoneEv t
-    rcases add_spec c a db with ⟨ht, -, -⟩ | ⟨t, ht, -, hs, -, -⟩
+    rcases add_spec c a db with ⟨ht, -, -⟩ | ⟨t, ht, -, hs, -⟩
     · rw [ht]; exact h.2
     · rw [ht]; intro u hu; simp only [List.mem_append, List.mem_singleton] at hu
       rcases hu with hu | rfl
       · exact h.2 u hu
-      · intro e; rw [hs] at e; cases e
+      · intro e; rw [(ready_none hs).1] at e; cases e
   | claim c i l =>
     obtain ⟨hn, hs⟩ := claim_spec c i l db
     rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, -⟩
@@ -270,24 +350,24 @@ theorem step_binv (c : TCmd) (db : Db) (h : BInv db) : BInv (c.step db).1 := by
     rcases hs with ⟨ht, -⟩ | ⟨g, hg, ht, -⟩
     · exact binv_same ht hn h
     · refine binv_set (fun u => (hg u).1) (fun u _ _ _ => ?_) ht hn h
-      obtain ⟨-, hs, ho⟩ := hg u
+      obtain ⟨hs, ho, -⟩ := ready_none (hg u).2
       exact ⟨⟨fun e => (by rw [hs] at e; cases e), fun _ => ho⟩, fun e => (by rw [hs] at e; cases e)⟩
-  | after c i l => exact keeps_step (after_spec c i l db) h
-  | priority c i p => exact keeps_step (priority_spec c i p db) h
-  | renew c i l => exact keeps_step (renew_spec c i l db) h
-  | edit c i a => exact keeps_step (edit_spec c i a db) h
+  | after c i l => exact keeps_step (keeps_so (after_spec c i l db)) h
+  | priority c i p => exact keeps_step (keeps_so (priority_spec c i p db)) h
+  | renew c i l => exact keeps_step (renew_spec_so c i l db) h
+  | edit c i a => exact keeps_step (keeps_so (edit_spec c i a db)) h
   | done c i e =>
     rcases done_spec c i e db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩ | ⟨f, -, -, -, -, hf, ht, hn, -⟩
     · exact binv_same ht hn h
     · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ⟨owned_all _, fun _ => (hf u).2.2.1⟩) ht hn h
-    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_ne (by rw [(hf u).2.2]; nofun)) ht hn h
+    · exact binv_set (fun u => (hf u).1) (fun u _ _ _ => ok_of_ne (by unfold Task.status; rw [(hf u).2]; nofun)) ht hn h
   | block c i q =>
-    rcases block_spec c i q db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
+    rcases block_spec_so c i q db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
     · exact binv_same ht hn h
     · exact binv_set (fun u => (hf u).1) (fun u _ _ hu => ok_of_ev hu (hf u).2.2.1
         ((hf u).2.2.2.imp_right fun e => by rw [e]; nofun)) ht hn h
   | unblock c i a =>
-    rcases unblock_spec c i a db with ⟨ht, hn⟩ | ⟨r, f, hr, hs, hf, ht, hn⟩
+    rcases unblock_spec_so c i a db with ⟨ht, hn⟩ | ⟨r, f, hr, hs, hf, ht, hn⟩
     · exact binv_same ht hn h
     · exact binv_set (fun u => (hf u).1) (fun u _ _ hu => ok_of_ev hu (hf u).2.2.1
         ((hf u).2.2.2.imp_right fun e => by rw [e]; nofun)) ht hn h
@@ -295,19 +375,19 @@ theorem step_binv (c : TCmd) (db : Db) (h : BInv db) : BInv (c.step db).1 := by
     rcases drop_spec c i d n db with ⟨ht, hn⟩ | ⟨f, hf, ht, hn⟩
     · exact binv_same ht hn h
     · exact binv_set (fun u => (hf u).1)
-        (fun u _ _ _ => ok_of_ne (by rcases (hf u).2.2 with e | e <;> rw [e] <;> nofun)) ht hn h
+        (fun u _ _ _ => ok_of_ne (by rcases drop_closed d with e | e <;> rw [(hf u).2.2, e] <;> nofun)) ht hn h
   | land c i s l =>
     obtain ⟨hn, hs⟩ := land_spec c i s l db
     rcases hs with ⟨ht, -⟩ | ⟨r, g, hr, hrs, -, hg, ht, -⟩
     · exact binv_same ht hn h
     · refine binv_set (fun u => (hg u).1) (fun u hu e _ => ?_) ht hn h
       obtain rfl := find_unique h.1.1 hr hu e
-      exact ok_of_ne (by rw [((hg u).2.2 hrs).1]; nofun)
+      exact ok_of_ne (by rw [((hg u).2.2.1 hrs).1]; nofun)
   | unland c i w =>
     obtain ⟨hn, hs⟩ := unland_spec c i w db
     rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, hg, ht, -⟩
     · exact binv_same ht hn h
-    · exact binv_set (fun u => (hg u).1) (fun u _ _ _ => ok_of_open (hg u).2.1 (hg u).2.2) ht hn h
+    · exact binv_set (fun u => (hg u).1) (fun u _ _ _ => ok_of_open (ready_none (hg u).2).1 (ready_none (hg u).2).2.1) ht hn h
   | board => exact h
 
 theorem binv_empty : BInv {} := ⟨inv_empty, by simp⟩
@@ -427,30 +507,28 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     refine ⟨?_, rfl⟩
     rcases after_spec cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).2.1 ▸ hu) ht h
+    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).so.2.1 ▸ hu) ht h
   | priority cc j p =>
     refine ⟨?_, rfl⟩
     rcases priority_spec cc j p db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).2.1 ▸ hu) ht h
+    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).so.2.1 ▸ hu) ht h
   | renew cc j l =>
     refine ⟨?_, rfl⟩
-    rcases renew_spec cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+    rcases renew_spec_so cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).2.1 ▸ hu) ht h
   | edit cc j a =>
     refine ⟨?_, rfl⟩
     rcases edit_spec cc j a db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
-    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).2.1 ▸ hu) ht h
+    · exact taken_set (fun u => (hf u).1) (fun _ u hu => (hf u).so.2.1 ▸ hu) ht h
   | done cc j e =>
     refine ⟨?_, rfl⟩
     rcases done_spec cc j e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩ | ⟨f, x, -, -, -, hf, ht, -, hx⟩
     · exact taken_same ht h
     · refine taken_set (fun u => (hf u).1) (fun _ u hu => ?_) ht h
-      rcases (hf u).2.2.2 with e | e
-      · unfold Task.status at hu ⊢; rw [e]; exact hu
-      · rw [e]; exact ⟨nofun, nofun⟩
+      unfold Task.status; rw [(hf u).2.2.2]; exact ⟨nofun, nofun⟩
     · have hij : j ≠ i := fun e' => by
         subst e'
         have : ReleasedOf j (.done cc j e, (Tasks.done cc j e db).2.toBool) = true := by
@@ -459,13 +537,13 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
       exact taken_set (fun u => (hf u).1) (fun e' => absurd e' hij) ht h
   | block cc j q =>
     refine ⟨?_, rfl⟩
-    rcases block_spec cc j q db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+    rcases block_spec_so cc j q db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hf u).1)
         (fun _ u hu => by rcases (hf u).2.2.2 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
   | unblock cc j a =>
     refine ⟨?_, rfl⟩
-    rcases unblock_spec cc j a db with ⟨ht, -⟩ | ⟨-, f, -, -, hf, ht, -⟩
+    rcases unblock_spec_so cc j a db with ⟨ht, -⟩ | ⟨-, f, -, -, hf, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hf u).1)
         (fun _ u hu => by rcases (hf u).2.2.2 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
@@ -474,14 +552,17 @@ theorem taken_step (db : Db) (i : Int) (c : TCmd) (h : Taken db i) (hr : Release
     rcases drop_spec cc j d n db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hf u).1)
-        (fun _ u _ => by rcases (hf u).2.2 with e | e <;> rw [e] <;> exact ⟨nofun, nofun⟩) ht h
+        (fun _ u _ => by rcases drop_closed d with e | e <;> rw [(hf u).2.2, e] <;> exact ⟨nofun, nofun⟩) ht h
   | land cc j s l =>
     refine ⟨?_, rfl⟩
     obtain ⟨-, hs⟩ := land_spec cc j s l db
     rcases hs with ⟨ht, -⟩ | ⟨-, g, -, -, -, hg, ht, -⟩
     · exact taken_same ht h
     · exact taken_set (fun u => (hg u).1)
-        (fun _ u hu => by rcases (hg u).2.1 with e | e <;> rw [e] <;> first | exact hu | exact ⟨nofun, nofun⟩) ht h
+        (fun _ u hu => by
+          by_cases e : u.status = .inProgress
+          · rw [((hg u).2.2.1 e).1]; exact ⟨nofun, nofun⟩
+          · rw [(hg u).2.1 e]; exact hu) ht h
   | unland cc j w =>
     show Taken (Tasks.unland cc j w db).1 i ∧ false = false
     refine ⟨?_, rfl⟩
@@ -760,7 +841,7 @@ theorem release_waits {c : Ctx} {x : Int} {af : Option (List Int)} {db : Db} {o 
   intro hp
   have hb := ((mem_pool _ _).1 hp).2.2.1
   have : blockedByDeps (Tasks.release c x af db).1 h = true := by
-    refine (blockedByDeps_iff _ _).2 ⟨g y, ?_, by rw [(hg y).2.1]; exact nofun, ?_⟩
+    refine (blockedByDeps_iff _ _).2 ⟨g y, ?_, by rw [(ready_none (hg y).2).1]; exact nofun, ?_⟩
     · rw [ht]; simp only [Db.set, List.mem_map]
       exact ⟨y, find_mem hy, by simp [find_id hy]⟩
     · obtain ⟨ds, hds, hs⟩ := hw
@@ -831,7 +912,7 @@ theorem release_other_spec {c : Ctx} {i : Int} {db : Db} {f : String}
     (h : (Tasks.release c i none db).2 = .ok (some f)) :
     ∃ r, db.find i = some r ∧ r.owner = some f ∧ (r.status = .inProgress ∨ r.status = .needsInput) ∧ f ≠ c.me ∧
       Agents.inCharge db c.comms c.me = true ∧
-      ∃ r' m, (Tasks.release c i none db).1.find i = some r' ∧ r'.status = .ready ∧ r'.owner = none ∧
+      ∃ r' m, (Tasks.release c i none db).1.find i = some r' ∧ r'.state = .ready none ∧
         r'.lease_until = none ∧ r'.question = none ∧ r'.stop_to = some f ∧
         (Tasks.release c i none db).1.msgs = db.msgs ++ [m] ∧ m.dest = some f ∧ m.urgent = some 1 ∧
         r'.stop_msg = some (m.id : Int) ∧
@@ -846,7 +927,7 @@ theorem release_other_spec {c : Ctx} {i : Int} {db : Db} {f : String}
     rw [← hP, find_congr (post_tasks ..), find_congr (log_tasks ..)]; exact find_set_self (fun _ => rfl) hr
   let g := fun x : Task => { x with stop_to := some f, stop_msg := some (P.2 : Int) }
   rw [find_set_self (f := g) (fun _ => rfl) hX]
-  refine ⟨_, _, rfl, rfl, rfl, rfl, rfl, rfl, by subst hP; rfl, rfl, rfl, by subst hP; rfl, fun j hj => ?_, by subst hP; rfl, by subst hP; rfl⟩
+  refine ⟨_, _, rfl, rfl, rfl, rfl, rfl, by subst hP; rfl, rfl, rfl, by subst hP; rfl, fun j hj => ?_, by subst hP; rfl, by subst hP; rfl⟩
   rw [find_set_ne (f := g) (fun _ => rfl) hj, ← hP, find_congr (post_tasks ..), find_congr (log_tasks ..),
     find_set_ne (f := reopenFromF) (fun _ => rfl) hj]
 
@@ -945,11 +1026,13 @@ theorem reapedFrom_events {db db' : Db} (h : db'.events = db.events) (n : String
     reapedFrom db' n i = reapedFrom db n i := by
   simp only [reapedFrom, taskEvents, h]
 
-/-- `task claim` is enabled for a Ready task reserved for no one else (or claimed with the communicator's --force,
-board #128), that waits on no task not Completed, has no stop pending, and is not behind the context fence (model: `claim_enabled`,
+/-- `task claim` is enabled for a Ready task reserved for no one else, or a Backlog one (or either claimed with the
+communicator's --force, board #128; a Backlog task only so), that waits on no task not Completed, has no stop pending, and is not behind the context fence (model: `claim_enabled`,
 `claimable`, `fenced`; N1's retake: an agent reap took the task from may claim it back), with a lease text it reads. -/
 theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u : Int} (hr : db.find i = some r)
-    (hh : ((py r.assignee).any (· != c.me) && !(c.force && Agents.inCharge db c.comms c.me)) = false) (ho : r.status = .ready) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
+    (hbk : (decide (r.status = .backlog) && !(c.force && Agents.inCharge db c.comms c.me)) = false)
+    (hh : ((py r.assignee).any (· != c.me) && !(c.force && Agents.inCharge db c.comms c.me)) = false)
+    (ho : r.status = .ready ∨ r.status = .backlog) (hu : undone db r = []) (hb : blockedByDeps db r = false) (hs : stopPending db r = false)
     (hk : Compact.over (ctxOf db c.me) (Compact.nudgeAt db) = false ∨ reapedFrom db c.me i = true) (hl : dur l = some u) :
     ∃ x, (Tasks.claim c i l db).2 = .ok x := by
   obtain ⟨tt, -⟩ := touch_frame db c.me none c.here c.now
@@ -961,10 +1044,16 @@ theorem claim_enabled {c : Ctx} {i : Int} {l : String} {db : Db} {r : Task} {u :
     rw [ctxOf_touch, nudgeAt_touch, reapedFrom_events (touch_events ..)]
     rcases hk with hk | hk <;> simp [hk]
   unfold Tasks.claim
-  simp only [hr, ho, reduceCtorEq, decide_false, decide_true, Bool.false_and, Bool.true_or, Bool.true_and, Bool.or_false,
-    hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, hb',
-    Bool.not_false, Bool.and_true]
-  exact ⟨_, rfl⟩
+  rcases ho with ho | ho
+  · simp only [hr, ho, reduceCtorEq, decide_false, decide_true, Bool.false_and, Bool.true_or, Bool.true_and, Bool.or_false,
+      hh, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs, hb',
+      Bool.not_false, Bool.and_true]
+    exact ⟨_, rfl⟩
+  · have hf : (c.force && Agents.inCharge db c.comms c.me) = true := by simpa [ho] using hbk
+    simp only [hr, ho, reduceCtorEq, decide_false, decide_true, Bool.false_and, Bool.or_true, Bool.true_and, Bool.or_false,
+      hf, Bool.not_true, Bool.and_false, hu, hk', Bool.false_eq_true, ↓reduceIte, hl, find_congr tt, stopPending_touch, hs,
+      hb', Bool.not_false, Bool.and_true]
+    exact ⟨_, rfl⟩
 
 /-! A done task stays done. -/
 
@@ -1011,7 +1100,7 @@ theorem block_done (c : Ctx) (i : Int) (q : String) (db : Db) (j : Int) (h : (db
       · exact .inl (by simp [hm])
   rcases hg with ht | ⟨r, hr, hb⟩
   · exact done_same ht h
-  · rcases block_spec c i q db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+  · rcases block_spec_so c i q db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
     · refine done_set (i := j) (fun u => (hf u).1) (fun r' hr' => ?_) ht h
       rw [hr] at hr'; cases hr'; rw [hb]; nofun
@@ -1029,7 +1118,7 @@ theorem unblock_done (c : Ctx) (i : Int) (a : String) (db : Db) (j : Int) (h : (
       · exact .inl (by simp [hb])
   rcases hg with ht | ⟨r, hr, hb⟩
   · exact done_same ht h
-  · rcases unblock_spec c i a db with ⟨ht, -⟩ | ⟨-, f, -, -, hf, ht, -⟩
+  · rcases unblock_spec_so c i a db with ⟨ht, -⟩ | ⟨-, f, -, -, hf, ht, -⟩
     · exact done_same ht h
     · refine done_set (i := j) (fun u => (hf u).1) (fun r' hr' => ?_) ht h
       rw [hr] at hr'; cases hr'; rw [hb]; nofun
@@ -1102,26 +1191,24 @@ theorem done_final (c : TCmd) (db : Db) (i : Int) (h : (db.find i).map (·.statu
   | after cc j l =>
     rcases after_spec cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
-    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).2.1]; exact hu) ht h
+    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).so.2.1]; exact hu) ht h
   | priority cc j p =>
     rcases priority_spec cc j p db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
-    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).2.1]; exact hu) ht h
+    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).so.2.1]; exact hu) ht h
   | renew cc j l =>
-    rcases renew_spec cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
+    rcases renew_spec_so cc j l db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
     · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).2.1]; exact hu) ht h
   | edit cc j a =>
     rcases edit_spec cc j a db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩
     · exact done_same ht h
-    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).2.1]; exact hu) ht h
+    · exact done_keeps (fun u => (hf u).1) (fun u hu => by rw [(hf u).so.2.1]; exact hu) ht h
   | done cc j e =>
     rcases done_spec cc j e db with ⟨ht, -⟩ | ⟨f, hf, ht, -⟩ | ⟨f, -, r, hr, hrs, hf, ht, -, -⟩
     · exact done_same ht h
     · refine done_keeps (fun u => (hf u).1) (fun u hu => ?_) ht h
-      rcases (hf u).2.2.2 with e | e
-      · unfold Task.status at hu ⊢; rw [e]; exact hu
-      · exact e
+      unfold Task.status; rw [(hf u).2.2.2]; rfl
     · exact done_set (i := i) (fun u => (hf u).1) (fun r' hr' => by rw [hr] at hr'; cases hr'; rw [hrs]; nofun) ht h
   | block cc j q => exact block_done cc j q db i h
   | unblock cc j a => exact unblock_done cc j a db i h
@@ -1180,7 +1267,7 @@ theorem land_ok {c : Ctx} {i : Int} {s : String} {l : Option String} {db : Db} (
       ∃ r', (Tasks.land c i s l db).1.find i = some r' ∧ r'.status = .inReview ∧ r'.owner = some c.me := by
   obtain ⟨-, ⟨-, hne⟩ | ⟨r, g, hr, hs, ho, hg, ht, -⟩⟩ := land_spec c i s l db
   · exact absurd h (hne ())
-  · refine ⟨r, hr, hs, ho, g r, ?_, ((hg r).2.2 hs).1, ((hg r).2.2 hs).2.trans ho⟩
+  · refine ⟨r, hr, hs, ho, g r, ?_, ((hg r).2.2.1 hs).1, ((hg r).2.2.1 hs).2.trans ho⟩
     rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hr]
     simp [find_id hr]
 

@@ -58,12 +58,18 @@ theorem owned_all (t : Task) : t.Owned := by
   unfold Task.Owned Task.status Task.owner
   cases t.state <;> simp [TaskState.status, TaskState.owner]
 
-/-- `landF` keeps the id and moves an In Progress task to In Review with its owner. -/
+/-- `landF` keeps the id, moves an In Progress task to In Review with its owner and the commit, lander and time, and
+leaves any other task as it is. -/
 theorem landF_spec (s : String) (l : Option String) (now : Int) (u : Task) :
-    (landF s l now u).id = u.id ∧ ((landF s l now u).status = u.status ∨ (landF s l now u).status = .inReview) ∧
-      (u.status = .inProgress → (landF s l now u).status = .inReview ∧ (landF s l now u).owner = u.owner) := by
+    (landF s l now u).id = u.id ∧ (u.status ≠ .inProgress → landF s l now u = u) ∧
+      (u.status = .inProgress → (landF s l now u).status = .inReview ∧ (landF s l now u).owner = u.owner) ∧
+      (∀ o e, u.state = .inProgress o e → (landF s l now u).state = .inReview o ⟨s, l, now⟩) := by
   unfold landF Task.status Task.owner
   cases h : u.state <;> simp [h, TaskState.status, TaskState.owner]
+
+/-- A task Ready with no assignee: Ready, no owner, no assignee. -/
+theorem ready_none {t : Task} (h : t.state = .ready none) : t.status = .ready ∧ t.owner = none ∧ t.assignee = none := by
+  unfold Task.status Task.owner Task.assignee; rw [h]; exact ⟨rfl, rfl, rfl⟩
 
 theorem setDeps_ok {db db' : Db} {i : Int} {l : List Int} {ds : List String} (h : setDeps db i l = .ok (db', ds)) :
     ∃ f : Task → Task, (∀ t, (f t).id = t.id ∧ (f t).state = t.state ∧ (f t).owner = t.owner) ∧
@@ -78,8 +84,8 @@ theorem setDeps_ok {db db' : Db} {i : Int} {l : List Int} {ds : List String} (h 
 theorem add_spec (c : Tasks.Ctx) (a : AddArgs) (db : Db) :
     ((Tasks.add c a db).1.tasks = db.tasks ∧ (Tasks.add c a db).1.taskNext = db.taskNext ∧
       ∀ x, (Tasks.add c a db).2 ≠ .ok x) ∨
-    (∃ t : Task, (Tasks.add c a db).1.tasks = db.tasks ++ [t] ∧ t.id = db.taskNext ∧ t.status = .ready ∧
-      t.owner = none ∧ (Tasks.add c a db).1.taskNext = db.taskNext + 1) := by
+    (∃ t : Task, (Tasks.add c a db).1.tasks = db.tasks ++ [t] ∧ t.id = db.taskNext ∧ t.state = .ready none ∧
+      (Tasks.add c a db).1.taskNext = db.taskNext + 1) := by
   unfold Tasks.add
   split
   · exact .inl ⟨rfl, rfl, fun _ => nofun⟩
@@ -89,7 +95,7 @@ theorem add_spec (c : Tasks.Ctx) (a : AddArgs) (db : Db) :
       · exact .inl ⟨rfl, rfl, fun _ => nofun⟩
       · split
         · exact .inl ⟨rfl, rfl, fun _ => nofun⟩
-        · exact .inr ⟨_, rfl, rfl, rfl, rfl, rfl⟩
+        · exact .inr ⟨_, rfl, rfl, rfl, rfl⟩
 
 theorem claim_spec (c : Tasks.Ctx) (i : Int) (l : String) (db : Db) :
     (Tasks.claim c i l db).1.taskNext = db.taskNext ∧
@@ -128,7 +134,7 @@ theorem claim_spec (c : Tasks.Ctx) (i : Int) (l : String) (db : Db) :
 theorem release_spec (c : Tasks.Ctx) (i : Int) (af : Option (List Int)) (db : Db) :
     (Tasks.release c i af db).1.taskNext = db.taskNext ∧
     (((Tasks.release c i af db).1.tasks = db.tasks ∧ ∀ x, (Tasks.release c i af db).2 ≠ .ok x) ∨
-     (∃ g, (∀ u, (g u).id = u.id ∧ (g u).status = .ready ∧ (g u).owner = none) ∧
+     (∃ g, (∀ u, (g u).id = u.id ∧ (g u).state = .ready none) ∧
         (Tasks.release c i af db).1.tasks = (db.set i g).tasks ∧ ∃ x, (Tasks.release c i af db).2 = .ok x)) := by
   unfold Tasks.release
   split
@@ -138,14 +144,14 @@ theorem release_spec (c : Tasks.Ctx) (i : Int) (af : Option (List Int)) (db : Db
     · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
     · rename_i db1 h1
       -- db1 is db with task i reopened by some g1
-      have ⟨g1, hg1, e1⟩ : ∃ g1 : Task → Task, (∀ u, (g1 u).id = u.id ∧ (g1 u).status = .ready ∧ (g1 u).owner = none) ∧
+      have ⟨g1, hg1, e1⟩ : ∃ g1 : Task → Task, (∀ u, (g1 u).id = u.id ∧ (g1 u).state = .ready none) ∧
           db1 = db.set i g1 := by
         split at h1
         · split at h1
-          · cases h1; exact ⟨reopenFromF, fun _ => ⟨rfl, rfl, rfl⟩, rfl⟩
+          · cases h1; exact ⟨reopenFromF, fun _ => ⟨rfl, rfl⟩, rfl⟩
           · cases h1
         · split at h1
-          · cases h1; exact ⟨reopenF, fun _ => ⟨rfl, rfl, rfl⟩, rfl⟩
+          · cases h1; exact ⟨reopenF, fun _ => ⟨rfl, rfl⟩, rfl⟩
           · cases h1
       subst e1
       split
@@ -163,22 +169,21 @@ theorem release_spec (c : Tasks.Ctx) (i : Int) (af : Option (List Int)) (db : Db
               exact ⟨f, hf, e, n⟩
           · cases h2; exact ⟨id, fun _ => ⟨rfl, rfl, rfl⟩, by simp [Db.set], rfl⟩
         have e12 : db2.tasks = (db.set i (g2 ∘ g1)).tasks := by rw [e2, set_set _ _ _ _ fun u => (hg1 u).1]
-        have hs1 : ∀ x, (g1 x).state.status = .ready := fun x => (hg1 x).2.1
-        have ho1 : ∀ x, (g1 x).state.owner = none := fun x => (hg1 x).2.2
         split
         · refine ⟨by simp [n2], .inr ⟨_ ∘ (g2 ∘ g1), fun u => ?_,
             (set_congr (db := db.set i (g2 ∘ g1)) (by simp [e12]) i _).trans
               (set_set db i (g2 ∘ g1) _ fun u => by simp [Function.comp, (hg2 _).1, (hg1 u).1]), _, rfl⟩⟩
-          simp [Task.status, Task.owner, hs1, ho1, (hg2 _).1, (hg2 _).2.1, (hg1 u).1]
+          simp [(hg2 _).1, (hg2 _).2.1, (hg1 u).1, (hg1 u).2]
         · refine ⟨by simp [n2], .inr ⟨g2 ∘ g1, fun u => ?_, by simp [e12], _, rfl⟩⟩
-          simp [Task.status, Task.owner, hs1, ho1, (hg2 _).1, (hg2 _).2.1, (hg1 u).1]
+          simp [(hg2 _).1, (hg2 _).2.1, (hg1 u).1, (hg1 u).2]
 
 theorem land_spec (c : Tasks.Ctx) (i : Int) (s : String) (l : Option String) (db : Db) :
     (Tasks.land c i s l db).1.taskNext = db.taskNext ∧
     (((Tasks.land c i s l db).1.tasks = db.tasks ∧ ∀ x, (Tasks.land c i s l db).2 ≠ .ok x) ∨
      (∃ r g, db.find i = some r ∧ r.status = .inProgress ∧ r.owner = some c.me ∧
-        (∀ u, (g u).id = u.id ∧ ((g u).status = u.status ∨ (g u).status = .inReview) ∧
-          (u.status = .inProgress → (g u).status = .inReview ∧ (g u).owner = u.owner)) ∧
+        (∀ u, (g u).id = u.id ∧ (u.status ≠ .inProgress → g u = u) ∧
+          (u.status = .inProgress → (g u).status = .inReview ∧ (g u).owner = u.owner) ∧
+          (∀ o e, u.state = .inProgress o e → (g u).state = .inReview o ⟨strip s, l.bind fun x => py (some (strip x)), c.now⟩)) ∧
         (Tasks.land c i s l db).1.tasks = (db.set i g).tasks ∧ ∃ x, (Tasks.land c i s l db).2 = .ok x)) := by
   unfold Tasks.land
   split
@@ -199,7 +204,7 @@ theorem unland_spec (c : Tasks.Ctx) (i : Int) (w : String) (db : Db) :
     (Tasks.unland c i w db).1.taskNext = db.taskNext ∧
     (((Tasks.unland c i w db).1.tasks = db.tasks ∧ ∀ x, (Tasks.unland c i w db).2 ≠ .ok x) ∨
      (∃ r g, db.find i = some r ∧ r.status = .inReview ∧
-        (∀ u, (g u).id = u.id ∧ (g u).status = .ready ∧ (g u).owner = none) ∧
+        (∀ u, (g u).id = u.id ∧ (g u).state = .ready none) ∧
         (Tasks.unland c i w db).1.tasks = (db.set i g).tasks ∧ ∃ x, (Tasks.unland c i w db).2 = .ok x)) := by
   unfold Tasks.unland
   split
@@ -214,7 +219,7 @@ theorem unland_spec (c : Tasks.Ctx) (i : Int) (w : String) (db : Db) :
         · exact ⟨rfl, .inl ⟨rfl, fun _ => nofun⟩⟩
         · dsimp only
           repeat' split
-          all_goals exact ⟨rfl, .inr ⟨r, unlandF c.me _, hr, by simpa using hs, fun _ => ⟨rfl, rfl, rfl⟩, rfl, _, rfl⟩⟩
+          all_goals exact ⟨rfl, .inr ⟨r, unlandF c.me _, hr, by simpa using hs, fun _ => ⟨rfl, rfl⟩, rfl, _, rfl⟩⟩
 
 /-! The invariant. -/
 
@@ -244,7 +249,7 @@ theorem set_spec_inv {db db' : Db} {i : Int} {g : Task → Task} (hg : ∀ u, (g
 theorem step_inv (c : Cmd) (db : Db) (h : Inv db) : Inv (c.step db).1 := by
   cases c with
   | add c a =>
-    rcases add_spec c a db with ⟨ht, hn, -⟩ | ⟨t, ht, hid, hs, ho, hn⟩
+    rcases add_spec c a db with ⟨ht, hn, -⟩ | ⟨t, ht, hid, -, hn⟩
     · exact inv_congr ht hn h
     · obtain ⟨hnd, hb, hw⟩ := h
       show Inv (Tasks.add c a db).1
@@ -386,7 +391,7 @@ theorem held_step (db : Db) (i : Int) (c : Cmd) (h : Held db i) (hr : ReleasedOf
     · obtain ⟨u, hu, hs⟩ := h; exact ⟨u, by rw [find_congr ht]; exact hu, hs⟩
     · by_cases hij : j = i
       · subst hij
-        refine ⟨g r, ?_, .inr ((hg r).2.2 hrs).1⟩
+        refine ⟨g r, ?_, .inr ((hg r).2.2.1 hrs).1⟩
         rw [find_congr ht, find_set _ _ _ _ fun u => (hg u).1, hfr]
         simp [find_id hfr]
       · exact held_set (fun u => (hg u).1) hij ht h
