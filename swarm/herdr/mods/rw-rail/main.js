@@ -13,7 +13,7 @@
 // (slice 13); it shows rw-swarms in place of the tabs.
 // A hung swarm agent is a row in the bar's Needs you (round 4, proposal 1), not a card here.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, stamp, sumFor, homesOf,
@@ -74,15 +74,29 @@ export default class Rail extends View {
     this.renaming = null; // the machine whose heading is a field
     this.name = InputState.new({});
     this.name.on("submit", (_e, cx) => this.rename(cx));
+    this.name.on("blur", (_e, cx) => { this.renaming = null; cx.notify(); }); // a rename leaves its field unsaved when it loses focus
     this.drag = null; // { space, tab, y, live, pane }: a row pressed, dragged once it moves 4 px (Part II.2)
     this.overTab = null; // { space, tab }: the tab under the pointer
     this.keys = cx.focus_handle(); // holds the keyboard while a drag is live, for Escape
-    this.retitle = null; // { tab, address }: the row whose tab is renamed in place (Part II.2)
+    this.retitle = null; // { tab }: the split tab renamed in place (Part II.2)
     this.tabInput = InputState.new({});
     this.tabInput.on("submit", (_e, cx) => {
       if (this.retitle) run("tab.rename", { id: this.retitle.tab, name: this.tabInput.value().trim() }); // empty: its number again
       this.retitle = null; cx.notify();
     });
+    this.tabInput.on("blur", (_e, cx) => { this.retitle = null; cx.notify(); });
+    this.spaceMenu = null; // the space whose menu is open
+    this.ctx = null; // { key, x, y, step }: the right-click menu open, where the click was in its element
+    this.spawnName = InputState.new({ placeholder: "name" });
+    this.spawnText = InputState.new({ placeholder: "what to work on (optional)" });
+    for (const i of [this.spawnName, this.spawnText]) i.on("submit", (_e, cx) => this.spawn(cx));
+    this.respace = null; // the space whose name is a field
+    this.spaceInput = InputState.new({});
+    this.spaceInput.on("submit", (_e, cx) => {
+      if (this.respace) run("space.rename", { id: this.respace, name: this.spaceInput.value().trim() }); // empty: its folder's name again
+      this.respace = null; cx.notify();
+    });
+    this.spaceInput.on("blur", (_e, cx) => { this.respace = null; cx.notify(); });
     this.refreshMachines(cx);
     cx.timer.every(15000, (cx) => this.refreshMachines(cx));
   }
@@ -356,7 +370,8 @@ export default class Rail extends View {
     const name = div().id(`machine-name-${m ? n : "local"}`).max_w(170).truncate()
       .when(count > 0, (el) => el.tooltip(`${count} ${count === 1 ? "terminal" : "terminals"}`)).child(m ? line(m, 60) : "This computer");
     return [
-      head.child(m ? this.menuOf(t, mc, name) : this.capsule(t, h_flex()).child(name))
+      head.when(Boolean(m), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menu = m; this.removing = null; cx.notify(); }))
+        .child(m ? this.menuOf(t, mc, name) : this.capsule(t, h_flex()).child(name))
         .when(off, (el) => el.child(mark(t, "hung")).child(this.act(t, `retry-${n}`, "Retry", (_e, cx) => this.refreshMachines(cx))))
         .when(Boolean(state), (el) => el.child(div().flex_none().text_size(11.5).font_normal().text_color(t.dim).child(state)))
         .when(mc.state === "needs_login", (el) => el.child(this.act(t, `login-${n}`, "Log in", (_e, cx) => this.login(m, cx))))
@@ -428,21 +443,16 @@ export default class Rail extends View {
   // swarm row has no x and no rename (`plain` false); the collapsed rail's card draws rows without a card of their own
   // (`card` false); `onClick` in place of showing its terminal. A question's row says the question, and resting on it
   // opens its options (askCard).
-  row(t, r, tabName, on, now, { text = null, plain = true, card = true, menu = null, kind = kindOf(r), onClick = null } = {}) {
+  row(t, r, tabName, on, now, { text = null, plain = true, card = true, menu = null, kind = kindOf(r), onClick = null, task = null } = {}) {
     const shell = kind === "shell", a = r.t.address, c = kit.colors(t), at = this.changed[a]?.at;
     let { name, what } = rowText(r.t, r.mark, tabName, this.home);
     let who = r.t.name && !shell ? name : null, title = shell ? (r.mark === "run" ? what : name) : what || name;
     let sideText = shell ? (r.mark === "run" ? name : "") : ageOf(r.mark, at, now);
     if (text) ({ name: who, what: title, side: sideText } = text);
     const q = r.mark === "asks" ? line(r.need?.question ?? r.t.report?.msg, 300) : "";
-    if (q) title = q;
+    if (q) { title = q; task = null; }
     if (who === title) who = null;
     const stale = r.mark === "idle" && Boolean(at) && now - at >= DAY;
-    if (plain && r.tab && this.retitle?.address === a) return h_flex().id(`retitle-${a}`).h(ROW).flex_none().px(2)
-      .items_center().rounded(9).bg(t.raised)
-      .on_key_down((e, cx) => { if (e.key === "escape") { this.retitle = null; cx.stop_propagation(); cx.notify(); } })
-      .child(div().flex_1().min_w(0).h(22).px(6).flex().items_center().rounded(6).border(1).border_color(t.ring ?? t.accent).bg(t.background)
-        .cursor_text().child(Input.new(this.tabInput).h_full().text_size(12.5).text_color(t.foreground)));
     const closes = plain && Boolean(r.pane), x = closes && this.hotRow === a, pop = Boolean(q) && this.hotAsk === a;
     const e = this.anim && this.ent.enter(`row:${a}`); // a new row grows in (II.4a)
     // Highlights are the row's own background, hover native: a fading layer per row cost two elements a row and a
@@ -455,14 +465,11 @@ export default class Rail extends View {
       .when(!on && r.mark === "asks", (el) => el.bg(alpha(c.asks, 0.14)))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       // A double click's second focuses the field; a drop isn't a click.
-      .on_click((e, cx) => { if (!(plain && r.tab && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) onClick ? onClick(cx) : this.open(r, cx); })
-      // Press: a drag of its tab may start (not a sub-terminal's). Double click: rename its tab in place.
+      .on_click((e, cx) => { if (!(r.split && plain && e?.click_count >= 2) && Date.now() - (this.droppedAt ?? 0) > 300) onClick ? onClick(cx) : this.open(r, cx); })
+      // Press: a drag of its tab may start (not a sub-terminal's, nor a pinned row's). Double click in a split tab: rename it.
       .when(plain && Boolean(r.tab), (el) => el.on_mouse_down("left", (e, cx) => {
-        if (e.click_count === 1 && r.pane && !r.lines.length) this.drag = { space: this.spaceOfTab.get(r.tab), tab: r.tab, y: e.position.y, live: false };
-        if (e.click_count !== 2) return;
-        this.retitle = { tab: r.tab, address: a };
-        this.tabInput.set_value(this.tabName.get(r.tab) ?? name); cx.notify();
-        cx.timer.after(50, () => this.tabInput.focus()); // once the field is drawn
+        if (e.click_count === 1 && r.pane && !r.lines.length && !r.pin) this.drag = { space: this.spaceOfTab.get(r.tab), tab: r.tab, y: e.position.y, live: false };
+        if (e.click_count === 2 && r.split) this.startRetitle(r.tab, name, cx);
       }))
       // Hover: the x in place of the mark (closes), a question's options, and a menu's card making way until it leaves.
       .when(closes || Boolean(menu) || Boolean(q), (el) => el.on_hover((h, cx) => {
@@ -474,10 +481,11 @@ export default class Rail extends View {
       // Right click: its menu; the row's hover card makes way until the pointer leaves the row.
       .when(Boolean(menu), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuFor = a; cx.notify(); menu(); }))
       .children(this.tree(t, r.lines))
-      .child(h_flex().w(14).flex_none().justify_center().child(svg(ICON[kind]).size(13).text_color(alpha(t.foreground, 0.74))))
+      .child(h_flex().w(14).flex_none().justify_center().child(this.icon(t, kind, r.t.program)))
       .when(Boolean(who), (el) => el.child(div().flex_none().max_w(90).truncate().text_size(11.5).font_semibold()
         .text_color(alpha(t.foreground, 0.78)).child(who)))
-      .child(div().flex_1().min_w(0).truncate().text_color(stale ? alpha(t.foreground, 0.8) : t.foreground).child(title))
+      .child(task ? h_flex().flex_1().min_w(0).child(this.taskChip(t, a, task))
+        : div().flex_1().min_w(0).truncate().text_color(stale ? alpha(t.foreground, 0.8) : t.foreground).child(title))
       .when(Boolean(sideText), (el) => el.child(div().flex_none().text_size(11.5).text_color(r.mark === "asks" || r.mark === "hung" ? c.asks
         : r.mark === "landing" ? c.landing : alpha(t.foreground, stale ? 0.68 : 0.74)).child(sideText)))
       // On hover the x takes the mark's place, so the row keeps its width.
@@ -490,7 +498,19 @@ export default class Rail extends View {
         .on_open_change((open, cx) => { if (!open) { this.askRow = this.askPop = this.replying = null; cx.notify(); } })
         .trigger(div().size(0)).content(this.askCard(t, r, who ?? name, q, now)))));
     if (x && this.anim) this.ent.enter(`mk:${a}:${r.mark}`); // the x stands in for the mark: it stays seen
-    return card && !pop && this.menuFor !== a && !this.drag?.live ? el.tooltip(this.card(r, name, sideText)) : el;
+    const tip = () => (task ? `#${task.id} ${line(task.title, 200)}\n` : "") + this.card(r, name, sideText) + (r.pin ? `\nin ${r.pin}` : "");
+    // Right click: its menu, a swarm agent's (rw-bar's popup) or the rail's own.
+    const k = `row:${a}`, own = card && !menu ? this.ctxMenu(el, t, k, () => this.rowItems(r, name, what, plain)) : el;
+    return card && !pop && this.menuFor !== a && this.ctx?.key !== k && !this.drag?.live ? own.tooltip(tip()) : own;
+  }
+
+  // A swarm agent's task as a chip (#12): a click opens its page in the swarm view.
+  taskChip(t, a, task) {
+    return h_flex().id(`task-${a}`).h(18).px(6).flex_none().items_center().rounded(9).bg(alpha(t.foreground, 0.1))
+      .text_size(11.5).font_medium().text_color(alpha(t.foreground, 0.85)).cursor_pointer()
+      .hover((s) => s.bg(alpha(t.foreground, 0.2)).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); task.open(); }).child(`#${task.id}`);
   }
 
   // A question's options (design H), solid over the rows below: the question in full, the agent's own options where
@@ -543,13 +563,19 @@ export default class Rail extends View {
     });
   }
 
-  // A row's mark (design E), 9 px: working a dot, asks a dot and hung a square in a halo, landing a thick ring, done a
+  // A row's icon: an agent's own from the app's program table (Claude Code, pi, Codex...), else its kind's.
+  icon(t, kind, p) {
+    if (kind !== "agent" || !p?.icon) return svg(ICON[kind]).size(13).text_color(alpha(t.foreground, 0.74));
+    return p.tint ? svg(p.icon).size(13).flex_none().text_color(alpha(t.foreground, 0.84)) : image(p.icon).w(13).h(13).flex_none();
+  }
+
+  // A row's mark (design E), 9 px: working a turning ring, asks a dot and hung a square in a halo, landing a thick ring, done a
   // light dot, idle a ring (fainter when `stale`), gone a dash; a shell none.
   dot(t, kind, stale = false) {
     const c = kit.colors(t), box = h_flex().size(9).flex_none();
     const halo = (el) => h_flex().size(15).mx(-3).my(-3).flex_none().items_center().justify_center().rounded(8).bg(alpha(c.asks, 0.28)).child(el);
     switch (kind) {
-      case "working": return box.rounded(5).bg(c.working);
+      case "working": return kit.agentGlyph(t, "working", 9);
       case "asks": return halo(box.rounded(5).bg(c.asks));
       case "hung": return halo(box.rounded(2).bg(c.asks));
       case "landing": return box.rounded(5).border(3).border_color(c.landing);
@@ -657,6 +683,8 @@ export default class Rail extends View {
       const picked = viewOn && selectedAgent(sel, j.swarm, it.a.name);
       return this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm || picked, now, { plain: false,
         text: { name: it.a.name, what: it.a.task?.title ?? (it.a.task ? `#${it.a.task.id}` : it.a.stay ? line(it.a.stay, 80) : ""), side },
+        task: it.a.task?.id != null ? { id: it.a.task.id, title: it.a.task.title ?? "",
+          open: () => showSwarm(run, setShared, { swarm: j.swarm, folder: j.folder, machine: j.on ?? null, section: "overview", page: { task: it.a.task.id } }) } : null,
         menu: () => openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
           props: { agentMenu: { name: it.a.name, swarm: j.swarm, folder: j.folder, machine: j.on ?? null, comms: false, task: it.a.task?.id ?? null } } }),
         onClick: (cx) => {
@@ -698,8 +726,154 @@ export default class Rail extends View {
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "rw-bar", kind: "popup", width: 240,
           props: { agentMenu: { name: comms.a.name, swarm: j.swarm, folder: j.folder, machine: j.on ?? null, comms: true, task: null } } }); })
         .child(svg(ICON.comms).size(11)).child("Talk"))));
-    return v_flex().id(`sw-${id}`).flex_none().mt(9).child(head)
+    return v_flex().id(`sw-${id}`).flex_none().mt(9).child(this.ctxMenu(head.relative(), t, `sw:${k}`, () => this.swarmItems(j, k)))
       .child(v_flex().flex_none().pl(6).children(this.capped(t, `sw:${k}`, all, drawRow, (r) => r.t.address)));
+  }
+
+  // A space's menu, on its ... button and on a right click of its heading: rename, new tab, close (Herdr asks first).
+  spaceMenuOf(t, s) {
+    const button = h_flex().id(`more-${s.id}`).size(18).flex_none().items_center().justify_center().rounded(6).text_color(t.dim)
+      .when(this.spaceMenu === s.id, (el) => el.bg(alpha(t.foreground, 0.13)).text_color(t.foreground))
+      .hover((st) => st.bg(alpha(t.foreground, 0.13)).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.spaceMenu = s.id; cx.notify(); })
+      .child(svg("mods/rw-rail/more.svg").size(12));
+    // A Popover only while open: one in the view keeps every spinner in the rail rebuilding the whole rail as it turns.
+    if (this.spaceMenu !== s.id) return button;
+    return Popover.new(`space-menu-${s.id}`).anchor("top_right").open(true)
+      .on_open_change((open, cx) => { this.spaceMenu = open ? s.id : null; cx.notify(); })
+      .trigger(button).content(this.menuCard(t, `space:${s.id}`, this.spaceItems(s), () => { this.spaceMenu = null; }));
+  }
+
+  // A space's menu items; `named`: with Rename (a tile has no field for it).
+  spaceItems(s, named = true) {
+    const same = this.sp.filter((x) => (x.machine ?? null) === (s.machine ?? null)), i = same.findIndex((x) => x.id === s.id);
+    const to = (x) => () => run("space.move", { id: s.id, index: this.sp.findIndex((y) => y.id === x.id) + 1 });
+    return [
+      named && { id: "rename", text: "Rename", act: (cx) => {
+        this.respace = s.id; this.spaceInput.set_value(s.name ?? "");
+        cx.timer.after(50, () => this.spaceInput.focus()); // once the field is drawn
+      } },
+      { id: "new", text: "New tab", act: () => this.newTab(s) },
+      i > 0 && { id: "up", text: "Move up", act: to(same[i - 1]) },
+      i >= 0 && i < same.length - 1 && { id: "down", text: "Move down", act: to(same[i + 1]) },
+      "-",
+      { id: "close", text: "Close space…", act: () => run("space.close", { id: s.id }), red: true }];
+  }
+
+  // The rail's menus: `items` { id, text, act(cx), red } (false: left out) or "-" for a line between groups; a click
+  // runs one and closes the menu (`close`).
+  menuCard(t, key, items, close) {
+    const n = this.mid(key), xs = items.filter(Boolean).filter((it, i, a) => it !== "-" || (i > 0 && i < a.length - 1 && a[i - 1] !== "-"));
+    return v_flex().w(200).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .children(xs.map((it) => it === "-" ? div().h(1).mx(4).my(3).bg(t.border)
+        : div().id(`mi-${n}-${it.id}`).px(10).py(6).rounded(6).text_size(12.5).font_normal().text_color(it.red ? t.blocked : t.foreground)
+          .cursor_pointer().hover((st) => st.bg(t.hover)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { cx.stop_propagation(); close(); it.act(cx); cx.notify(); }).child(it.text)));
+  }
+
+  // A right click on `el` (relative) opens menu `key` where it was. A Popover only while open, as above.
+  ctxMenu(el, t, key, items) {
+    el = el.on_mouse_down("right", (e, cx) => {
+      cx.stop_propagation(); this.ctx = { key, x: e.local_position?.x ?? 8, y: e.local_position?.y ?? 0 }; cx.notify();
+    });
+    const c = this.ctx;
+    if (c?.key !== key) return el;
+    const close = () => { if (this.ctx === c) this.ctx = null; };
+    return el.child(div().absolute().left(c.x).top(c.y).child(Popover.new(`ctx-${this.mid(key)}`).anchor("top_left").open(true)
+      .on_open_change((open, cx) => { if (!open && this.ctx === c) { this.ctx = null; cx.notify(); } })
+      .trigger(div().size(0)).content(c.step === "spawn" ? this.spawnCard(t, c) : this.menuCard(t, key, items(), close))));
+  }
+
+  // A row's menu (agents, shells, sub-terminals). `plain`: a row of a space's (it closes, and renames a split tab).
+  rowItems(r, name, what, plain) {
+    const a = r.t.address, cwd = (r.pane && this.paneBy.get(r.pane)?.cwd) || r.t.cwd, pinned = this.pinned.has(a);
+    const tab = r.split && plain && this.tabsOf.get(r.tab)?.find((x) => x.id === r.tab);
+    const ask = (title, detail, name, args) => openOverlay({ mod: "confirm", kind: "dialog", width: 440, height: 200, props: { title, detail, command: { name, args } } });
+    return [
+      { id: "show", text: r.pane ? "Show" : "Peek", act: (cx) => this.open(r, cx) },
+      tab && { id: "rename", text: "Rename tab", act: (cx) => this.startRetitle(r.tab, name, cx) },
+      r.mark === "run" && { id: "int", text: "Interrupt (Ctrl-C)", act: () => hc(["interrupt", a]).catch(() => {}) },
+      this.agentAddrs.has(a) && { id: "pin", text: pinned ? "Unpin" : "Pin to top", act: () => run("terminal.pin", { terminal: a, pinned: !pinned }) },
+      !r.pane && { id: "keep", text: "Give it a tab", act: () => run("terminal.keep", { terminal: a, place: "tab" }) },
+      r.pane && r.t.parent && { id: "park", text: "Back under its parent", act: () => run("terminal.park", { terminal: a }) },
+      "-",
+      cwd && { id: "copy", text: "Copy folder path", act: (cx) => cx.write_to_clipboard(cwd) },
+      cwd && !a.includes("/") && { id: "reveal", text: "Reveal in Finder", act: () => exec("open", ["-R", cwd]).catch(() => {}) },
+      "-",
+      plain && r.pane && { id: "close", text: "Close", act: () => this.close(r, name, what), red: true },
+      tab && (tab.panes ?? 1) > 1 && this.closeTabItem({ tab: r.tab, rows: [] }, tab),
+      !r.pane && { id: "end", text: "End…", red: true,
+        act: () => ask(`End ${line(name, 60)}?`, "Ends its terminal and any sub-agents under it.", "terminal.kill", { terminal: a }) }];
+  }
+
+  // Close a split tab, every pane in it, after asking.
+  closeTabItem(g, tab = this.tabsOf.get(g.tab)?.find((x) => x.id === g.tab)) {
+    const n = tab?.panes ?? g.rows.length;
+    return { id: "close-tab", text: "Close tab…", red: true, act: () => openOverlay({ mod: "confirm", kind: "dialog", width: 440, height: 200,
+      props: { title: "Close this tab?", detail: `Closes its ${n} panes and ends their terminals.`, command: { name: "tab.close", args: { id: g.tab, confirmed: true } } } }) };
+  }
+
+  // A swarm heading's menu.
+  swarmItems(j, k) {
+    const c = this.ctx;
+    return [
+      { id: "view", text: "Open swarm view", act: () => showSwarm(run, setShared, { swarm: j.swarm, folder: j.folder, machine: j.on ?? null, section: "overview" }) },
+      this.homes?.get(k) && { id: "side", text: "Open side panel", act: () => this.openSide(this.homes.get(k)) },
+      j.comms_hc && { id: "talk", text: "Talk to the communicator", act: () => this.talk(j) },
+      "-",
+      { id: "spawn", text: "New agent…", act: (cx) => {
+        this.ctx = { ...c, step: "spawn", j, said: null }; this.spawnName.set_value(""); this.spawnText.set_value("");
+        cx.timer.after(50, () => this.spawnName.focus());
+      } },
+      { id: "copy", text: "Copy swarm name", act: (cx) => cx.write_to_clipboard(j.swarm) }];
+  }
+
+  // New agent in a swarm (`swarm spawn <name> -- <text>`): its own worktree, no task claimed.
+  spawnCard(t, c) {
+    const box = (input) => div().h(28).px(8).flex().items_center().rounded(7).border(1).border_color(t.border).bg(t.background)
+      .child(Input.new(input).h_full().text_size(12.5).text_color(t.foreground));
+    return v_flex().w(280).p(12).gap(8).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg().text_size(12.5).text_color(t.foreground)
+      .child(div().text_size(13.5).font_semibold().child(`New agent in ${line(c.j.swarm, 40)}`))
+      .child(div().line_height(1.4).whitespace_normal().text_color(t.muted).child("Its own worktree, no task claimed. What you write is its first message."))
+      .child(box(this.spawnName)).child(box(this.spawnText))
+      .when(Boolean(c.said), (el) => el.child(div().line_height(1.4).whitespace_normal().text_color(c.busy ? t.muted : t.blocked).child(c.said)))
+      .child(h_flex().gap(8).justify_end()
+        .child(look(div().id("spawn-no").px(12).py(5).rounded(8).cursor_pointer(), t).on_click((_e, cx) => { this.ctx = null; cx.notify(); }).child("Cancel"))
+        .child(look(div().id("spawn-yes").px(12).py(5).rounded(8).cursor_pointer(), t, "solid").on_click((_e, cx) => this.spawn(cx)).child(c.busy ? "Starting…" : "Start")));
+  }
+
+  spawn(cx) {
+    const c = this.ctx, name = this.spawnName.value().trim(), text = this.spawnText.value().trim();
+    if (c?.step !== "spawn" || c.busy) return;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { c.said = "A name of letters, digits, dots, dashes."; cx.notify(); return; }
+    c.busy = true; c.said = "Starting…"; cx.notify();
+    swarm(c.j.folder, c.j.on ?? null, ["spawn", name, ...(text ? ["--", text] : [])], c.j.swarm)
+      .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }))
+      .then((r) => {
+        if (this.ctx !== c) return;
+        if (r.code === 0) this.ctx = null; else { c.busy = false; c.said = line(r.stderr || r.stdout || "swarm spawn failed", 300); }
+        cx.notify();
+      });
+  }
+
+  // A name as a field while it is renamed: Enter renames, Escape or a click elsewhere leaves it.
+  field(t, id, input, leave) {
+    return div().id(id).flex_1().min_w(0).h(22).px(6).flex().items_center().rounded(6).border(1)
+      .border_color(t.ring ?? t.accent).bg(t.background).cursor_text()
+      .on_click((_e, cx) => cx.stop_propagation())
+      .on_key_down((e, cx) => { if (e.key === "escape") { leave(); cx.stop_propagation(); cx.notify(); } })
+      .child(Input.new(input).h_full().text_size(12.5).text_color(t.foreground));
+  }
+  spaceField(t, s) { return this.field(t, `respace-${s.id}`, this.spaceInput, () => { this.respace = null; }); }
+  tabField(t, tab) { return this.field(t, `retitle-${tab}`, this.tabInput, () => { this.retitle = null; }); }
+
+  // Rename split tab `tab` in place, in its outline's head.
+  startRetitle(tab, name, cx) {
+    const own = this.tabName.get(tab);
+    this.retitle = { tab };
+    this.tabInput.set_value(own ?? name ?? ""); cx.notify();
+    cx.timer.after(50, () => this.tabInput.focus()); // once the field is drawn
   }
 
   // The shipped new-menu (a terminal or an agent) in space `s`: it opens its tab in the shown space.
@@ -735,7 +909,11 @@ export default class Rail extends View {
   // own rows (not a swarm's) is a drag target: the line shows before or after it, never inside an outline.
   tabOf(t, s, g, draw) {
     if (!g.tab) return g.rows.map(draw);
-    const d = this.drag?.live && this.drag.space === s.id ? this.target() : null, name = g.split && this.tabName.get(g.tab);
+    const d = this.drag?.live && this.drag.space === s.id ? this.target() : null;
+    // Herdr names a tab after its program ("Claude Code"): only a name someone gave heads the outline.
+    let name = g.split && this.tabName.get(g.tab);
+    if (g.rows.some((r) => r.t.program?.name === name)) name = null;
+    const retitling = g.split && this.retitle?.tab === g.tab;
     const part = Boolean(d) && this.anim && d.tab !== g.tab;
     return [v_flex().id(`tab-${g.tab}`).relative().flex_none()
       .when(g.split, (el) => el.rounded(9).border(1).border_color(alpha(t.foreground, 0.16)))
@@ -749,19 +927,24 @@ export default class Rail extends View {
       .when(d?.over === g.tab, (el) => el.child(div().absolute().left(4).right(4).h(2).rounded(1).bg(t.working)
         .when(d.after, (l) => l.bottom(part ? 4 : -1)).when(!d.after, (l) => l.top(part ? 4 : -1))))
       .when(part, (el) => el.child(div().id(`gap-a-${g.tab}`).flex_none().h(d.over === g.tab && !d.after ? 10 : 0).transition("height", 120)))
-      .when(Boolean(name), (el) => el.child(div().h(18).flex_none().px(8).truncate().text_size(11.5).text_color(t.dim).child(line(name, 80))))
+      .when(retitling, (el) => el.child(h_flex().h(26).flex_none().px(3).pt(3).items_center().child(this.tabField(t, g.tab))))
+      // Double click: rename the tab, as on any of its rows.
+      .when(!retitling && Boolean(name), (el) => el.child(this.ctxMenu(div().id(`tab-name-${g.tab}`).relative().h(18).flex_none().px(8).text_size(11.5).text_color(t.dim)
+        .on_mouse_down("left", (e, cx) => { if (e.click_count === 2) this.startRetitle(g.tab, name, cx); })
+        .child(div().truncate().child(line(name, 80))), t, `tab:${g.tab}`, () => [
+          { id: "rename", text: "Rename tab", act: (cx) => this.startRetitle(g.tab, name, cx) }, "-", this.closeTabItem(g)])))
       .children(g.rows.map(draw))
       .when(part, (el) => el.child(div().id(`gap-b-${g.tab}`).flex_none().h(d.over === g.tab && d.after ? 10 : 0).transition("height", 120)))];
   }
 
   // A space's lane (design E): its name, how many terminals (resting on it: its tabs, and `hid`, rail B's word for
-  // those a swarm above holds, "2 in nx"; nothing when it has none) and whether it has a split tab, + New tab on hover
+  // those a swarm above holds, "2 in nx"; nothing when it has none), + New tab on hover
   // (Part II.2); then its rows by tab. The shown space's name is bright; a click on another's shows it. `fly`: the
   // collapsed rail's hover card, always open and not marked as shown. `sw`: the card's swarm (swarmOf).
   space(t, s, rows, tabNames, shownTerm, now, fly = false, sw = null, hid = null) {
     const own = sw ? sw.rest : rows, on = s.active && !fly && !this.swarmTerm; // a swarm terminal shown lights its lane instead
     const tabs = hid ? tabGroups(rows).filter((g) => g.tab).length : s.tabs.length;
-    const groups = tabGroups(own), meta = [own.length || "", groups.some((g) => g.split) ? "split tab" : ""].filter(Boolean).join(" · ");
+    const groups = tabGroups(own), meta = own.length || "";
     const stop = (_e, cx) => cx.stop_propagation();
     const draw = (r) => this.row(t, r, tabNames.get(r.t.address), !fly && r.t.address === shownTerm, now, { card: !fly });
     const away = this.drag?.live && this.drag.space !== s.id; // no command moves a tab to another space
@@ -769,10 +952,13 @@ export default class Rail extends View {
       .child(h_flex().id(`head-${s.id}`).h(24).mb(3).flex_none().pl(8).pr(2).gap(6).items_center().rounded(9).cursor_pointer()
         .hover((st) => st.bg(t.hover))
         .when(!fly, (el) => el.on_hover((h, cx) => this.settle("hot", h, s.id, cx)))
-        .on_click(() => { if (viewShown(layout())) showAll(run, false); else if (!on) run("space.select", { id: s.id }); })
-        .child(div().flex_shrink_1().min_w(0).max_w(150).truncate().font_semibold().text_color(on || fly ? t.foreground : alpha(t.foreground, 0.7)).child(line(s.name, 80)))
+        .on_click(() => { if (this.respace === s.id) return; if (viewShown(layout())) showAll(run, false); else if (!on) run("space.select", { id: s.id }); })
+        .when(!fly, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.spaceMenu = s.id; cx.notify(); }))
+        .child(!fly && this.respace === s.id ? this.spaceField(t, s)
+          : div().flex_shrink_1().min_w(0).max_w(150).truncate().font_semibold().text_color(on || fly ? t.foreground : alpha(t.foreground, 0.7)).child(line(s.name, 80)))
         .child(div().id(`space-n-${s.id}`).flex_1().min_w(0).truncate().text_size(11.5).text_color(alpha(t.foreground, 0.74))
           .when(Boolean(meta), (el) => el.tooltip(`${tabs} ${tabs === 1 ? "tab" : "tabs"}${hid ? `, ${hid}` : ""}`)).child(meta))
+        .when(!fly && (this.hot === s.id || this.spaceMenu === s.id), (el) => el.child(this.spaceMenuOf(t, s)))
         .when(!fly && this.hot === s.id, (el) => el.child(h_flex().id(`add-${s.id}`).size(18).flex_none().items_center().justify_center()
           .rounded(6).text_color(t.dim).hover((st) => st.bg(alpha(t.foreground, 0.13)).text_color(t.foreground))
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.newTab(s); })
@@ -820,13 +1006,13 @@ export default class Rail extends View {
   // One tile per space with its agents' marks; hovering it opens the space's rows beside it.
   tile(t, s, rows, tabNames, shownTerm, now, sw) {
     const roll = rollOf(rows);
-    const trigger = v_flex().id(`tile-${s.id}`).flex_none().items_center().gap(6).cursor_pointer()
+    const trigger = v_flex().id(`tile-${s.id}`).relative().flex_none().items_center().gap(6).cursor_pointer()
       .on_click(() => run("space.select", { id: s.id }))
       .child(h_flex().size(40).items_center().justify_center().rounded(10).border(1)
         .bg(s.active ? t.selected : t.raised).border_color(s.active ? t.accent : t.border)
         .text_size(12).font_semibold().text_color(roll.length ? t.foreground : t.muted).child(abbrev(line(s.name, 80))))
       .child(h_flex().h(7).gap(3).items_center().children(roll.map((k) => mark(t, k, 7))));
-    return HoverCard.new(`hover-${s.id}`).anchor("top_left").open_delay(150).trigger(trigger)
+    return HoverCard.new(`hover-${s.id}`).anchor("top_left").open_delay(150).trigger(this.ctxMenu(trigger, t, `tile:${s.id}`, () => this.spaceItems(s, false)))
       // The card hangs from the tile's bottom left; the margins move it beside the tile, level with its top.
       .content(v_flex().ml(52).mt(-54).w(290).py(4).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .child(this.space(t, s, rows, tabNames, shownTerm, now, true, sw)));
@@ -863,10 +1049,12 @@ export default class Rail extends View {
     const now = Date.now();
     this.home = home();
     this.mono = settings().font_family ?? "JetBrains Mono"; // once a render: a host call per row adds up
-    const all = looked(terminals(), agents());
+    const ags = agents(), all = looked(terminals(), ags);
+    this.agentAddrs = new Set(ags.map((x) => x.address));
+    this.pinned = new Set(ags.filter((x) => x.pinned).map((x) => x.address));
     const byAddr = new Map(all.filter((x) => x.state === "live").map((x) => [x.address, x]));
     const ps = panes();
-    const sp = spaces();
+    const sp = this.sp = spaces();
     if (!((sp.find((s) => s.active)?.machine ?? "") in this.load)) this.poll(cx); // a machine not read yet
     const shownTerm = focused()?.terminal ?? null;
     // The question whose options are open; its prompt box is read once per hc msg (boxFor).
@@ -966,6 +1154,20 @@ export default class Rail extends View {
     this.swarmTerm = !narrow && swRows.some((r) => r.t.address === shownTerm);
     this.track([...swRows, ...[...rowsBy.values()].flat()], now, (a) => changedAt.get(a) ?? null, cx);
     setAgentOrder([...swRows, ...[...rowsBy.values()].flat()].filter((r) => AGENT.has(r.mark) && r.pane).map((r) => r.t.address));
+    // Pinned (terminal.pin): each pinned row, with what hangs under it, leaves its space for the Pinned lane at the top.
+    const pinnedRows = [];
+    if (!narrow && this.pinned.size) for (const [id, rows] of rowsBy) {
+      const keep = [], where = line(sp.find((s) => s.id === id)?.name, 60);
+      for (let i = 0; i < rows.length; i++) {
+        if (!this.pinned.has(rows[i].t.address)) { keep.push(rows[i]); continue; }
+        const d = rows[i].lines.length;
+        let j = i + 1;
+        while (j < rows.length && rows[j].lines.length > d) j++;
+        pinnedRows.push(...rows.slice(i, j).map((r) => ({ ...r, lines: r.lines.slice(d), split: false, pin: where })));
+        i = j - 1;
+      }
+      rowsBy.set(id, keep);
+    }
 
     // A heading per machine (rail B: always); spaces() lists this computer's first. Under each, its swarms' lanes, then its
     // spaces'.
@@ -1000,7 +1202,11 @@ export default class Rail extends View {
     if (narrow) return v_flex().size_full().min_h(0).pt(10).gap(14).items_center().bg(t.chrome).text_size(13)
       .child(this.button(t, "rail-expand", "chevron-right", () => this.toggle(true)))
       .child(v_flex().id("rail-tiles").flex_1().min_h(0).w_full().pb(12).gap(14).items_center().overflow_y_scrollbar().children(items));
-    return v_flex().id("rail").size_full().min_h(0).bg(t.chrome).text_size(13).track_focus(this.keys)
+    const pinLane = pinnedRows.length ? [v_flex().id("pinned").flex_none()
+      .child(h_flex().h(24).mb(3).flex_none().pl(8).items_center().font_semibold().text_color(t.foreground).child("Pinned"))
+      .child(v_flex().flex_none().pl(6).children(pinnedRows.map((r) => this.row(t, r, tabNames.get(r.t.address), r.t.address === shownTerm, now))))] : [];
+    const shownSpace = sp.find((s) => s.active);
+    const rail = v_flex().id("rail").relative().size_full().min_h(0).bg(t.chrome).text_size(13).track_focus(this.keys)
       // A release drops where the line shows; one outside the rail is seen at the next press, which cancels.
       .on_mouse_up("left", (_e, cx) => { if (this.drag) this.endDrag(cx, true); })
       .on_mouse_down_out((_e, cx) => { if (this.drag) this.endDrag(cx, false); })
@@ -1010,7 +1216,14 @@ export default class Rail extends View {
         if (dr && !dr.live && Math.abs(e.position.y - dr.y) >= 4) { dr.live = true; dr.pane = focused()?.pane ?? null; this.keys.focus(); cx.notify(); }
       })
       .when(sums.length > 1 || shownAll, (el) => el.child(this.allRow(t, sums, shownAll)))
-      .child(v_flex().id("rail-list").flex_1().min_h(0).px(8).pt(8).pb(12).gap(2).overflow_y_scrollbar().children(items))
+      .child(v_flex().id("rail-list").flex_1().min_h(0).px(8).pt(8).pb(12).gap(2).overflow_y_scrollbar().children([...pinLane, ...items]))
       .children([this.trouble(t, [...broken, ...this.failed.values()])].filter(Boolean));
+    // Right click on the rail's own ground.
+    return this.ctxMenu(rail, t, "rail", () => [
+      { id: "space", text: "New space", act: () => run("space.new") },
+      shownSpace && { id: "tab", text: "New tab", act: () => this.newTab(shownSpace) },
+      "-",
+      { id: "collapse", text: "Collapse rail", act: () => this.toggle(false) },
+      { id: "settings", text: "Settings", act: () => openOverlay({ mod: "rw-settings", kind: "dialog", width: 860, height: 620 }) }]);
   }
 }

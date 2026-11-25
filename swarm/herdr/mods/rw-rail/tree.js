@@ -557,7 +557,7 @@ export function tabGroups(rows) {
     const g = out.at(-1);
     if (g && r.tab != null && g.tab === r.tab) g.rows.push(r); else out.push({ tab: r.tab ?? null, rows: [r], split: false });
   }
-  for (const g of out) g.split = g.rows.filter((r) => r.pane).length > 1;
+  for (const g of out) { g.split = g.rows.filter((r) => r.pane).length > 1; for (const r of g.rows) r.split = g.split; }
   return out;
 }
 
