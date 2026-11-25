@@ -86,10 +86,7 @@ export default class Rail extends View {
     });
     this.tabInput.on("blur", (_e, cx) => { this.retitle = null; cx.notify(); });
     this.spaceMenu = null; // the space whose menu is open
-    this.ctx = null; // { key, x, y, step }: the right-click menu open, where the click was in its element
-    this.spawnName = InputState.new({ placeholder: "name" });
-    this.spawnText = InputState.new({ placeholder: "what to work on (optional)" });
-    for (const i of [this.spawnName, this.spawnText]) i.on("submit", (_e, cx) => this.spawn(cx));
+    this.ctx = null; // { key, x, y }: the right-click menu open, where the click was in its element
     this.respace = null; // the space whose name is a field
     this.spaceInput = InputState.new({});
     this.spaceInput.on("submit", (_e, cx) => {
@@ -782,7 +779,7 @@ export default class Rail extends View {
     const close = () => { if (this.ctx === c) this.ctx = null; };
     return el.child(div().absolute().left(c.x).top(c.y).child(Popover.new(`ctx-${this.mid(key)}`).anchor("top_left").open(true)
       .on_open_change((open, cx) => { if (!open && this.ctx === c) { this.ctx = null; cx.notify(); } })
-      .trigger(div().size(0)).content(c.step === "spawn" ? this.spawnCard(t, c) : this.menuCard(t, key, items(), close))));
+      .trigger(div().size(0)).content(this.menuCard(t, key, items(), close))));
   }
 
   // A row's menu (agents, shells, sub-terminals). `plain`: a row of a space's (it closes, and renames a split tab).
@@ -816,45 +813,15 @@ export default class Rail extends View {
 
   // A swarm heading's menu.
   swarmItems(j, k) {
-    const c = this.ctx;
     return [
       { id: "view", text: "Open swarm view", act: () => showSwarm(run, setShared, { swarm: j.swarm, folder: j.folder, machine: j.on ?? null, section: "overview" }) },
       this.homes?.get(k) && { id: "side", text: "Open side panel", act: () => this.openSide(this.homes.get(k)) },
       j.comms_hc && { id: "talk", text: "Talk to the communicator", act: () => this.talk(j) },
       "-",
-      { id: "spawn", text: "New agent…", act: (cx) => {
-        this.ctx = { ...c, step: "spawn", j, said: null }; this.spawnName.set_value(""); this.spawnText.set_value("");
-        cx.timer.after(50, () => this.spawnName.focus());
-      } },
+      // rw-bar's popup: a text field in a rail popover lost Enter and Space to the rail
+      j.comms_hc && { id: "spawn", text: "New agent…", act: () => openOverlay({ mod: "rw-bar", kind: "popup", width: 300, height: 260,
+        props: { spawnForm: { swarm: j.swarm, folder: j.folder, machine: j.on ?? null, comms: j.comms_hc } } }) },
       { id: "copy", text: "Copy swarm name", act: (cx) => cx.write_to_clipboard(j.swarm) }];
-  }
-
-  // New agent in a swarm (`swarm spawn <name> -- <text>`): its own worktree, no task claimed.
-  spawnCard(t, c) {
-    const box = (input) => div().h(28).px(8).flex().items_center().rounded(7).border(1).border_color(t.border).bg(t.background)
-      .child(Input.new(input).h_full().text_size(12.5).text_color(t.foreground));
-    return v_flex().w(280).p(12).gap(8).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg().text_size(12.5).text_color(t.foreground)
-      .child(div().text_size(13.5).font_semibold().child(`New agent in ${line(c.j.swarm, 40)}`))
-      .child(div().line_height(1.4).whitespace_normal().text_color(t.muted).child("Its own worktree, no task claimed. What you write is its first message."))
-      .child(box(this.spawnName)).child(box(this.spawnText))
-      .when(Boolean(c.said), (el) => el.child(div().line_height(1.4).whitespace_normal().text_color(c.busy ? t.muted : t.blocked).child(c.said)))
-      .child(h_flex().gap(8).justify_end()
-        .child(look(div().id("spawn-no").px(12).py(5).rounded(8).cursor_pointer(), t).on_click((_e, cx) => { this.ctx = null; cx.notify(); }).child("Cancel"))
-        .child(look(div().id("spawn-yes").px(12).py(5).rounded(8).cursor_pointer(), t, "solid").on_click((_e, cx) => this.spawn(cx)).child(c.busy ? "Starting…" : "Start")));
-  }
-
-  spawn(cx) {
-    const c = this.ctx, name = this.spawnName.value().trim(), text = this.spawnText.value().trim();
-    if (c?.step !== "spawn" || c.busy) return;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { c.said = "A name of letters, digits, dots, dashes."; cx.notify(); return; }
-    c.busy = true; c.said = "Starting…"; cx.notify();
-    swarm(c.j.folder, c.j.on ?? null, ["spawn", name, ...(text ? ["--", text] : [])], c.j.swarm)
-      .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }))
-      .then((r) => {
-        if (this.ctx !== c) return;
-        if (r.code === 0) this.ctx = null; else { c.busy = false; c.said = line(r.stderr || r.stdout || "swarm spawn failed", 300); }
-        cx.notify();
-      });
   }
 
   // A name as a field while it is renamed: Enter renames, Escape or a click elsewhere leaves it.

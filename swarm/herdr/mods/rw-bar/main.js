@@ -8,7 +8,8 @@
 // questions swarm agents wait on (slice 6), each with an answer field, and hung agents with Nudge (round 4), from the
 // rail's summaries. Opened as a popup with props {agentMenu: {name, swarm, folder, machine, comms}} it is a swarm agent's menu
 // from the rail (II.1b): Message, Open its page, Nudge, End agent (End anyway on a refusal). Keys: rw-bar.side,
-// rw-bar.full, rw-bar.needs (opens the list), rw-bar.<section> (rw-bar.board: that section).
+// rw-bar.full, rw-bar.needs (opens the list), rw-bar.<section> (rw-bar.board: that section). Opened as a popup with props
+// {spawnForm: {swarm, folder, machine, comms}} it is the rail's New agent form for that swarm.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -20,15 +21,16 @@ const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).redu
 const stop = (_e, cx) => cx.stop_propagation();
 const NEEDS = 60; // Needs you rows drawn
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
-// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
-const swarm = (cwd, on, args, name = null) => { const a = name ? ["--swarm", name, ...args] : args; return on
-  ? exec("sh", ["-c", 'exec env -u SWARM_DB SWARM_NAME=human "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on })
-  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined }); };
+// `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in;
+// `vars` more VAR=value for it; `timeout` in ms (exec's default 30 s).
+const swarm = (cwd, on, args, name = null, vars = [], timeout = undefined) => { const a = name ? ["--swarm", name, ...args] : args; return on
+  ? exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", ...vars, "sh", "-c", 'exec "$HOME/.claude/skills/swarm/swarm" "$@"', "sh", ...a], { cwd: cwd ?? undefined, on, timeout })
+  : exec("env", ["-u", "SWARM_DB", "SWARM_NAME=human", ...vars, `${appHome()}/mods/swarm/../../../swarm`, ...a], { cwd: cwd ?? undefined, timeout }); };
 const sumsOf = () => { const x = shared("rw-rail.swarms"); return Array.isArray(x) ? x : []; };
 
 export default class Bar extends View {
   init(_props, cx) {
-    if (!props()?.needs && !props()?.agentMenu) cx.spawn(async (cx) => { // keys and the palette: rw-bar.side, rw-bar.full (II.7)
+    if (!props()?.needs && !props()?.agentMenu && !props()?.spawnForm) cx.spawn(async (cx) => { // keys and the palette: rw-bar.side, rw-bar.full (II.7)
       for (;;) {
         const c = await nextCommand();
         if (c === "side") toggleSide(run, layout()); else if (c === "full") toggleFull(run, setShared, shared, layout(), this.spaceSum());
@@ -53,10 +55,52 @@ export default class Bar extends View {
         this.answers.set(`${q.on ?? ""}:${q.swarm}:${q.task}`, st);
       }
     }
+    if (props()?.spawnForm) {
+      this.spawnName = InputState.new({ placeholder: "Name" });
+      this.spawnText = InputState.new({ placeholder: "What to work on" });
+      for (const i of [this.spawnName, this.spawnText]) i.on("submit", (_e, cx) => this.spawn(cx));
+      cx.timer.after(50, () => this.spawnName.focus());
+    }
     if (!props()?.agentMenu) return;
     this.step = null; // null: the items; "message"; "end"; "refused" (this.why); "force"
     this.msg = InputState.new({ placeholder: "Message…" });
     this.msg.on("submit", (_e, cx) => this.send(cx));
+  }
+
+  // ---- New agent (`swarm spawn <name> -- <text>`; the text is required): its own worktree, no task claimed ----
+  // launch.sh needs a Herdr terminal to start from: the communicator's (HC_TERMINAL_ID), whose space the agent's tab
+  // opens in.
+  spawn(cx) {
+    const f = props().spawnForm, name = this.spawnName.value().trim(), text = this.spawnText.value().trim();
+    if (this.busy) return;
+    this.said = !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? "A name of letters, digits, dots and dashes." : !text ? "Say what it should work on." : null;
+    if (this.said) { (name ? this.spawnText : this.spawnName).focus(); cx.notify(); return; }
+    this.busy = true; cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try { r = await swarm(f.folder, f.machine, ["spawn", name, "--", text], f.swarm, [`HC_TERMINAL_ID=${f.comms}`], 180000); }
+      catch (e) { r = { code: 1, stderr: String(e?.message ?? e) }; }
+      this.busy = false;
+      if (r.code === 0) { closeOverlay(props().overlay); return; }
+      this.said = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
+      cx.notify();
+    });
+  }
+  spawnCard(t, f) {
+    const close = () => closeOverlay(props().overlay);
+    const box = (input) => div().h(30).px(10).flex().items_center().rounded(8).border(1).border_color(t.border).bg(t.background)
+      .child(Input.new(input).h_full().text_size(12.5).text_color(t.foreground));
+    const btn = (id, text, act, solid) => look(div().id(id).flex_none().px(12).py(5).rounded(8).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
+      .on_click((_e, cx) => { if (!this.busy) act(cx); }).child(text);
+    return v_flex().size_full().p(12).gap(8).bg(t.popover).text_size(12.5).text_color(t.foreground)
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); close(); } })
+      .child(div().text_size(13.5).font_semibold().child(`New agent in ${line(f.swarm, 40)}`))
+      .child(div().line_height(1.45).whitespace_normal().text_color(t.muted).child("Its own worktree, no task claimed. What you write is its first message."))
+      .child(box(this.spawnName)).child(box(this.spawnText))
+      .when(Boolean(this.said) || this.busy, (el) => el.child(div().line_height(1.45).whitespace_normal()
+        .text_color(this.busy ? t.muted : t.blocked).child(this.busy ? "Starting… (making its worktree)" : this.said)))
+      .child(h_flex().gap(8).justify_end().child(btn("s-no", "Cancel", close))
+        .child(btn("s-yes", this.busy ? "Starting…" : "Start", (cx) => this.spawn(cx), true)));
   }
 
   // ---- a swarm agent's menu (II.1b) ----
@@ -265,6 +309,7 @@ export default class Bar extends View {
     const t = theme();
     if (props()?.needs) return this.rise(this.list(t, cx), cx);
     if (props()?.agentMenu) return this.rise(this.menu(t, props().agentMenu), cx);
+    if (props()?.spawnForm) return this.rise(this.spawnCard(t, props().spawnForm), cx);
     const sp = spaces();
     const space = sp.find((s) => s.active);
     const byAddr = new Map(looked(terminals(), agents()).filter((x) => x.state === "live").map((x) => [x.address, x]));
