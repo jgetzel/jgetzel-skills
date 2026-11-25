@@ -796,7 +796,14 @@ export const isStarted = (k) => catOf(k) === "started";
 // Priorities, as the CLI names them (`task priority <id> none|urgent|high|medium|low`); medium is the default and says nothing.
 export const PRIOS = [["none", "None"], ["urgent", "Urgent"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]];
 export const prioName = (p) => PRIOS.find(([id]) => id === p)?.[1] ?? null;
-const byId = (tasks) => new Map((tasks ?? []).map((k) => [k.id, k]));
+// Each task by id, built once per tasks list (a snapshot's): a render reads it per row.
+const BY_ID = new WeakMap();
+export const byId = (tasks) => {
+  if (!tasks) return new Map();
+  let m = BY_ID.get(tasks);
+  if (!m) BY_ID.set(tasks, (m = new Map(tasks.map((k) => [k.id, k]))));
+  return m;
+};
 // The deps of `k` not Completed (a Cancelled one still holds it back): the CLI's `undone` when sent, else read off the tasks listed.
 const undoneOf = (k, by) => (Array.isArray(k.undone) ? k.undone : (k.deps ?? k.after ?? []).filter((d) => by.has(d) && by.get(d).state !== "completed"));
 // `task after` for `k` without the deps `gone` (the whole remaining list: it replaces the deps, an empty one clears them), and `task drop`.

@@ -4,7 +4,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Popover } from "gpui-base";
 import * as kit from "./kit.js";
-import { CATEGORIES, CAT_ICON, PRIO_ORDER, STATES, toggleCategory, toggleState, catTick, statusParts, passFilter, groupBy, placeWord, ageWord, staffOf, nextUp,
+import { CATEGORIES, CAT_ICON, PRIO_ORDER, STATES, toggleCategory, toggleState, catTick, statusParts, passFilter, groupBy, placeWord, ageWord, staffOf, nextUp, byId,
   leftOf, isClosed, modelWord, moveArgs, plain, line, dur, spawnArgs, nextName, stateWord } from "./tree.js";
 
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
@@ -15,7 +15,7 @@ const STAT = (c) => ({ backlog: c.backlog ?? 0, ready: c.ready ?? 0, in_progress
 
 // The Board's own state, kept on the view.
 export const bt = (v) => (v.bt ??= { tab: "active", status: new Set(), prio: new Set(), group: "state", empty: "hide", menu: null, sub: null, hover: null,
-  open: new Set(), before: false, hist: { completed: true, cancelled: true }, newState: "ready" });
+  open: new Set(), more: null, before: false, hist: { completed: true, cancelled: true }, newState: "ready" });
 
 // A menu only while open: a Popover in the view keeps every spinner rebuilding it. The trigger opens it; a press outside closes it.
 export function pop(v, id, trigger, content, anchor = "top_left") {
@@ -109,7 +109,7 @@ const person = (t, name, status) => name === "human" || name === "you" ? h_flex(
 const mark = (t, kids, red) => h_flex().h(20).px(6).gap(5).flex_none().items_center().rounded(kit.R.tag).border(1).border_color(red ? t.blocked + "88" : t.border)
   .text_size(kit.TYPE.meta).text_color(red ? t.blocked : t.muted).children(kids);
 function depMark(v, t, s, k, wide) {
-  const by = new Map((s.tasks ?? []).map((x) => [x.id, x])), cancelled = new Set(k.cancelled_deps ?? []);
+  const by = byId(s.tasks), cancelled = new Set(k.cancelled_deps ?? []);
   return (k.undone ?? []).slice(0, 2).map((id) => {
     const d = by.get(id), dead = cancelled.has(id) || d?.state === "cancelled" || d?.state === "duplicate", gl = kit.taskGlyph(t, kit.glyphOf(d?.state ?? "ready"), 11);
     return mark(t, [gl, ...(wide ? [div().child("waiting on")] : []), div().font_family(kit.mono()).text_color(dead ? t.blocked : t.foreground).when(dead, (e) => e.line_through()).child(`#${id}`)], dead);
@@ -119,7 +119,7 @@ function iconBtn(t, id, ch, args, v) {
   return div().id(id).w(22).h(22).flex_none().flex().items_center().justify_center().rounded(5).text_size(12).text_color(t.dim).cursor_pointer()
     .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); v.act(cx, args); }).child(ch);
 }
-// One task as a row. o: {gk (the group's key), n (its place, when it has one), wide, lst (its list as moveArgs reads it), startable, next, i}
+// One task as a row. o: {gk (the group's key), n (its place, when it has one), wide, lst (its list as moveArgs reads it), i (its index in lst), startable, next}
 export function taskRow(v, t, s, k, o) {
   const b = bt(v), wide = o.wide, c = kit.colors(t), hov = b.hover === k.id, now = s.now ?? Date.now() / 1000;
   const ready = k.state === "ready", back = k.state === "backlog", started = ["in_progress", "needs_input", "in_review"].includes(k.state);
@@ -130,7 +130,7 @@ export function taskRow(v, t, s, k, o) {
   const title = div().min_w(0).truncate().text_color(dim ? t.muted : t.foreground).child(plain(k.title ?? ""));
   const mid = back && k.note ? v_flex().flex_1().min_w(0).gap(3).child(title)
       .child(h_flex().gap(5).items_center().pl(0).min_w(0).child(kit.noteChip(t, k.note).max_w("100%"))) : h_flex().flex_1().min_w(0).child(title);
-  const lst = o.lst, i = lst ? lst.findIndex((x) => x.k.id === k.id) : -1, mv = (how) => (i >= 0 && lst.length > 1 ? moveArgs(lst, i, how) : null);
+  const lst = o.lst, i = o.i ?? (lst ? lst.findIndex((x) => x.k.id === k.id) : -1), mv = (how) => (i >= 0 && lst.length > 1 ? moveArgs(lst, i, how) : null);
   const acts = wide && hov && (ready || back) ? h_flex().gap(2).items_center()
     .children([["front", "⤒"], ["up", "↑"], ["down", "↓"]].map(([how, ch]) => ({ how, ch, a: mv(how) })).filter((x) => x.a).map((x) => iconBtn(t, `tr-${k.id}-${x.how}`, x.ch, x.a, v)))
     .children(ready && o.startable ? [kit.button(t, `tr-${k.id}-spawn`, "Spawn now", (cx) => v.spawnTask(cx, s, k), { kind: "ghost", small: true })] : [])
@@ -191,27 +191,47 @@ export const freeSlots = (t, n) => h_flex().id("bt-cut").h(26).px(12).gap(8).ite
   .child(h_flex().h(18).px(5).items_center().rounded(kit.R.tag).border(1).border_color(t.working + "88").font_family(kit.mono()).text_color(t.working).child(String(n)))
   .child(div().flex_1().h(1).border_t(1).border_dashed().border_color(t.border));
 
+// Rows a card draws: SHUT, or OPEN for the one card opened with Show more; BUDGET for the whole tab. Herdr's engine
+// interrupts a render that builds about 200 rows.
+const SHUT = 25, OPEN = 100, BUDGET = 140;
+// The last row of a card that hides some: Show more (or Show fewer) and how many are hidden.
+function moreRow(v, t, key, hidden) {
+  const b = bt(v), open = b.more === key;
+  return h_flex().h(30).px(12).gap(8).items_center()
+    .child(div().id(`bt-more-${key}`).text_color(t.ansi4).cursor_pointer().hover((x) => x.underline())
+      .on_click((_e, cx) => { b.more = open ? null : key; cx.notify(); }).child(open ? "Show fewer" : "Show more"))
+    .when(hidden > 0, (e) => e.child(div().font_family(kit.mono()).text_size(kit.TYPE.meta).text_color(t.dim).child(String(hidden))));
+}
+
 // The Active tab: started tasks above unstarted ones, grouped as the Display menu says.
 function activeTab(v, t, s, wide, cx) {
   const b = bt(v), all = s.tasks ?? [];
   const closedWanted = ["completed", "cancelled", "duplicate"].some((x) => b.status.has(x));
   if (closedWanted && cx) v.loadPast(cx);
-  const pool = b.status.size ? [...all, ...(closedWanted ? (v.pastTasks ?? []).filter((k) => !all.some((x) => x.id === k.id)) : [])] : all.filter((k) => ["ready", "in_progress", "needs_input", "in_review"].includes(k.state));
-  const tasks = pool.filter((k) => passFilter(k, b)), startIds = new Set(nextUp(s).rows.filter((r) => r.starts).map((r) => r.k.id)), cut = nextUp(s).cut, nextId = staffOf(s)[0]?.id ?? null;
+  const live = new Set(all.map((x) => x.id));
+  const pool = b.status.size ? [...all, ...(closedWanted ? (v.pastTasks ?? []).filter((k) => !live.has(k.id)) : [])] : all.filter((k) => ["ready", "in_progress", "needs_input", "in_review"].includes(k.state));
+  const tasks = pool.filter((k) => passFilter(k, b)), up = nextUp(s), startIds = new Set(up.rows.filter((r) => r.starts).map((r) => r.k.id)), cut = up.cut, nextId = up.rows[0]?.k.id ?? null;
   const order = (a, c2) => (a.place ?? 1e9) - (c2.place ?? 1e9) || a.id - c2.id;
   const readyLst = all.filter((k) => k.state === "ready").sort(order).map((k) => ({ k })), backLst = all.filter((k) => k.state === "backlog").sort(order).map((k) => ({ k }));
+  const at = new Map(); // each task's index in its own list
+  for (const l of [readyLst, backLst]) l.forEach((x, i) => at.set(x.k.id, i));
   const groups = groupBy(tasks, b.group, b.empty === "show");
-  const out = []; let lastCat = null;
+  const opened = groups.find((g) => g.key === b.more), openN = opened ? Math.min(opened.tasks.length, OPEN) : 0;
+  const out = []; let lastCat = null, budget = BUDGET - openN; // the opened card first: its Show more always shows more
   for (const g of groups) {
     if (b.group === "state" && g.cat !== lastCat) { lastCat = g.cat; out.push(caption(t, CAPTION[g.cat], groups.filter((x) => x.cat === g.cat).reduce((a, x) => a + x.tasks.length, 0))); }
     const sorted = [...g.tasks].sort((x, y) => (x.state === "ready" || x.state === "backlog") && x.state === y.state ? order(x, y) : x.id - y.id);
     const rows = []; let lastStart = -1;
     if (g.state === "ready" && cut > 0) sorted.forEach((k, i) => { if (startIds.has(k.id)) lastStart = i; });
-    sorted.forEach((k, i) => {
-      const lst = k.state === "ready" ? readyLst : k.state === "backlog" ? backLst : null, place = lst ? lst.findIndex((x) => x.k.id === k.id) + 1 : null;
-      rows.push(taskRow(v, t, s, k, { gk: g.key, n: place || null, wide, lst, startable: k.state === "ready" && !k.assignee && !(k.undone ?? []).length, next: k.id === nextId && k.state === "ready" }));
+    const n = g === opened ? openN : Math.min(sorted.length, SHUT, budget), shown = sorted.slice(0, n);
+    if (g !== opened) budget -= n;
+    shown.forEach((k, i) => {
+      const lst = k.state === "ready" ? readyLst : k.state === "backlog" ? backLst : null, j = lst ? at.get(k.id) ?? -1 : -1;
+      rows.push(taskRow(v, t, s, k, { gk: g.key, n: j >= 0 ? j + 1 : null, wide, lst, i: j, startable: k.state === "ready" && !k.assignee && !(k.undone ?? []).length, next: k.id === nextId && k.state === "ready" }));
       if (i === lastStart && cut > 0) rows.push(freeSlots(t, cut));
     });
+    if (lastStart >= n && cut > 0) rows.push(freeSlots(t, cut));
+    if (n < sorted.length || b.more === g.key) rows.push(moreRow(v, t, g.key, sorted.length - n));
     const right = g.state === "ready" ? "Staffed top down" : g.state === "backlog" ? "Ordered · auto-spawn skips" : null;
     out.push(card(t, `bt-g-${g.key}`, cardHead(t, g.state ?? CAT_ICON[g.cat], g.label, g.tasks.length, right), rows.length ? rows : [empty(t, "Nothing here")]));
   }
@@ -225,7 +245,10 @@ function activeTab(v, t, s, wide, cx) {
 function backlogTab(v, t, s, wide, cx) {
   const b = bt(v), all = s.tasks ?? [], order = (a, c2) => (a.place ?? 1e9) - (c2.place ?? 1e9) || a.id - c2.id;
   const lst = all.filter((k) => k.state === "backlog").sort(order).map((k) => ({ k })), tasks = lst.map((x) => x.k).filter((k) => passFilter(k, { prio: b.prio }));
-  const rows = tasks.map((k) => taskRow(v, t, s, k, { gk: "back", n: lst.findIndex((x) => x.k.id === k.id) + 1, wide, lst }));
+  const at = new Map(lst.map((x, i) => [x.k.id, i]));
+  const n = Math.min(tasks.length, b.more === "back" ? OPEN : SHUT * 2);
+  const rows = tasks.slice(0, n).map((k) => taskRow(v, t, s, k, { gk: "back", n: at.get(k.id) + 1, wide, lst, i: at.get(k.id) }));
+  if (n < tasks.length || b.more === "back") rows.push(moreRow(v, t, "back", tasks.length - n));
   return [caption(t, "Backlog", tasks.length), card(t, "bt-g-backlog", cardHead(t, "backlog", "Backlog", tasks.length, "Ordered · auto-spawn skips"), rows.length ? rows : [empty(t, "Nothing is in Backlog")])];
 }
 function histRow(v, t, s, k, wide) {

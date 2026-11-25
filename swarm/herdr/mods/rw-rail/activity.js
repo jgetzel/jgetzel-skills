@@ -2,7 +2,7 @@
 // closed, routine noise left to the log; a post fanned out to N agents is one row, a memory-pressure episode is one
 // row, and runs of spawns, ends, adds and drops fold into one. Log: every event and message, its raw kind, nothing
 // folded. Input is `state --json --view activity` through overOf.
-import { line, plain, evCells } from "./tree.js";
+import { line, plain, evCells, byId } from "./tree.js";
 
 const one = (x) => String(x ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -64,7 +64,7 @@ function logText(e) {
 // What one event says in the summary: { text, sub, part (its piece of a folded row), open, chip, meta, task }.
 function say0(s, e, kind, told) {
   const data = one(e.data), m = /^#(\d+)\s*(.*)$/.exec(data);
-  const task = (id) => s.tasks.find((k) => k.id === Number(id)), agent = s.agents.find((a) => a.name === e.agent);
+  const task = (id) => byId(s.tasks).get(Number(id)), agent = s.agents.find((a) => a.name === e.agent);
   const ref = m ? `#${m[1]} ${task(m[1])?.title ?? m[2]}`.trim() : data, id = m ? Number(m[1]) : null;
   const title = (m) => (m ? `#${m[1]} ${task(m[1])?.title ?? ""}`.trim() : data); // the id and title only: what follows it is the event's own data
   switch (kind) {
@@ -115,15 +115,22 @@ function say(s, e, kind, told, ctx) {
 // One block is up to four events within a minute: the agent's "asked you", the task's "waiting on you", the swarm's
 // notice to the comms and the agent's own message about the task; the ask row keeps them in `full`.
 function foldAsks(items) {
+  const gone = new Set();
+  // items are newest first: the first index at or below a time
+  const from = (ts) => { let lo = 0, hi = items.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (items[mid].ts > ts) lo = mid + 1; else hi = mid; } return lo; };
   for (const b of items.filter((i) => i.kind === "block" && i.task != null)) {
     const near = (i) => i !== b && Math.abs(i.ts - b.ts) <= 60 && ((i.kind === "task-blocked" && i.task === b.task)
       || (i.who === "swarm" && i.text.includes(`${b.who} is blocked on #${b.task}`))
       || (i.who === b.who && KIND[i.kind].group === "messages" && i.text.includes(`#${b.task}`)));
-    const folded = items.filter(near);
+    const folded = [];
+    for (let j = from(b.ts + 60); j < items.length && items[j].ts >= b.ts - 60; j++) if (!gone.has(items[j]) && near(items[j])) folded.push(items[j]);
     if (!folded.length) continue;
     b.full = [b, ...folded].map((i) => `${i.who} ${i.text}${i.meta ? ` (${i.meta})` : ""}`);
-    for (const i of folded) items.splice(items.indexOf(i), 1);
+    for (const i of folded) gone.add(i);
   }
+  let w = 0;
+  for (const i of items) if (!gone.has(i)) items[w++] = i;
+  items.length = w;
 }
 
 // The rows, newest first: { key, ts, who, kind, raw, text, sub, chip, meta, open, task, full }, every string one line.
@@ -139,7 +146,8 @@ export function actItems(s, log) {
     groups.set(g, it); items.push(it);
   }
   for (const m of items) { const n = m.dests.length; m.meta = `to ${n > 1 ? `${n} agents` : m.dests[0] === "all" ? "everyone" : m.dests[0] ?? "?"}`; delete m.dests; }
-  const told = (id) => msgs.filter((m) => m.kind === "system" && (m.body ?? "").startsWith(`main CI is red (run ${id}`)).length;
+  const red = msgs.filter((m) => m.kind === "system" && (m.body ?? "").startsWith("main CI is red (run "));
+  const told = (id) => red.filter((m) => m.body.startsWith(`main CI is red (run ${id}`)).length;
   let episode = null, prev = null;
   const ctx = { prio: new Map(), list: new Map() }; // a priority event's old value and a place event's list, read oldest first
   for (const e of [...evs].reverse()) { // oldest first: an episode opens before it closes, and runs fold forward

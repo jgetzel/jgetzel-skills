@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, PRIOS, cancelArgs, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
+import { FOLD, SECTIONS, PRIOS, cancelArgs, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -361,7 +361,7 @@ export default class SwarmTab extends View {
     const q = big ? this.filter.value().trim().toLowerCase() : "";
     const rows = q ? all.filter((r) => `${r.a.name} ${r.task}`.toLowerCase().includes(q)) : all;
     const color = (r) => (r.hot === "blocked" ? t.blocked : t.dim); // amber is only working (proposal 2)
-    const pr = (r) => s.tasks?.find((k) => k.id === r.a.task?.id)?.pr;
+    const pr = (r) => byId(s.tasks).get(r.a.task?.id)?.pr;
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000; // the context bar's full mark: watchd's compaction
     const side = Boolean(props()?.view), shown = side ? this.shownAgent(s) : null;
     const row = (r, i) => h_flex().id(`agent-${r.mark}-${i}`).h(38).mx(6).px(10).gap(12).items_center().min_w(0).border_t(1).border_color(t.border)
@@ -761,7 +761,7 @@ export default class SwarmTab extends View {
   agentRow(t, r, s, wide, shown) {
     const c = ctxOf(s.limits), full = c.compact || c.nudge || 400000, n = r.a.ctx_tokens, hot = n >= full;
     const tone = r.hot === "blocked" ? t.blocked : r.mark === "working" ? t.working : t.dim;
-    const model = this.modelChip(t, modelWord(s.tasks?.find((k) => k.id === r.a.task?.id)?.model ?? r.a.model));
+    const model = this.modelChip(t, modelWord(byId(s.tasks).get(r.a.task?.id)?.model ?? r.a.model));
     const ctx = wide ? v_flex().id(`ctx-${r.a.name}`).w(64).flex_none().items_end().gap(3).text_size(11.5).text_color(hot ? t.blocked : t.dim).child(n ? kilo(n) : "")
         .tooltip(n ? `${kilo(n)} of ${kilo(full)} context: watchd compacts it there` : "no context reading")
         .child(div().w(64).h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).bg(hot ? t.blocked : t.muted).w(`${Math.min(100, Math.round((100 * (n ?? 0)) / full))}%`)))
@@ -840,7 +840,8 @@ export default class SwarmTab extends View {
   }
   // The open queue as groups of rows: being worked on, next with the cut line, waiting. `wide` adds who or why and the actions.
   queueList(t, s, wide, cx) {
-    const q = queueSplit(s, this.qf), CAP = 30, ql = queueRows(s), listOf = (k) => ql.filter((x) => x.k.state === k.state); // a move stays in its own list (Ready, Backlog)
+    const q = queueSplit(s, this.qf), CAP = 30, lists = new Map(), at = new Map(); // a move stays in its own list (Ready, Backlog)
+    for (const x of queueRows(s)) { const l = lists.get(x.k.state) ?? lists.set(x.k.state, []).get(x.k.state); at.set(x.k.id, l.length); l.push(x); }
     const whyText = (r) => [r.why, ...(r.after?.length ? [r.after.map((d) => `#${d}`).join(" ")] : []), ...(r.who ? [r.who] : []), ...(r.note ? [r.note] : [])].join(" · ");
     const head = (text, n) => h_flex().px(wide ? 14 : 8).pt(10).pb(4).gap(8).text_size(11.5).text_color(t.dim).child(text).child(String(n));
     const more = (n, id) => n > 0 ? [div().id(id).px(8).py(4).text_size(12).text_color(t.dim).child(`${n} more`)] : [];
@@ -851,7 +852,7 @@ export default class SwarmTab extends View {
       right: div().min_w(0).truncate().text_size(11.5).text_color(k.state === "needs_input" ? t.blocked : t.muted).child([stateWord(k.state), k.assignee ?? k.owner].filter(Boolean).join(" · ")),
       spawn: wide && k.owner ? this.quiet(t, `open-${k.id}`, "Open terminal", (cx) => this.focus(k.owner, cx)) : null }));
     const next = this.withCut(t, q.next.slice(0, CAP), q.chips, (r) => {
-      const lst = listOf(r.k), i = lst.findIndex((x) => x.k.id === r.k.id), mv = (d) => moveArgs(lst, i, d);
+      const lst = lists.get(r.k.state) ?? [], i = at.get(r.k.id) ?? -1, mv = (d) => moveArgs(lst, i, d);
       return this.taskRow(t, r.k, { n: r.n, wide, who: wide, starts: r.starts,
         right: wide ? h_flex().min_w(0).gap(4).items_center().child(div().w(62).flex_none().text_size(11.5).text_color(t.dim).child(`Queue ${r.k.place}`))
           .children(i >= 0 && lst.length > 1 ? [icon(`qm-f-${r.k.id}`, "⤒", mv("front")), icon(`qm-u-${r.k.id}`, "↑", mv("up")), icon(`qm-d-${r.k.id}`, "↓", mv("down"))].filter((_, j) => mv(["front", "up", "down"][j])) : [])

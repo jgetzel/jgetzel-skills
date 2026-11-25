@@ -186,9 +186,11 @@ export class SwarmBoard {
   groups() {
     const ks = [...this.taskBy.values()].filter((k) => k.st && this.mine(k) && (this.others !== "hidden" || !this.quiet(k))
       && (k.st !== "done" || (this.doneShown && (k.updated ?? 0) >= this.midnight)));
-    const paths = [...this.scope];
-    for (const k of ks) for (const r of k.repos ?? []) if (!paths.includes(r.repo) && !this.quiet(k)) paths.push(r.repo);
-    const gs = paths.map((p) => ({ path: p, ks: ks.filter((k) => (k.repos ?? []).some((r) => r.repo === p)) }));
+    const paths = [...this.scope], has = new Set(paths);
+    for (const k of ks) for (const r of k.repos ?? []) if (!has.has(r.repo) && !this.quiet(k)) { paths.push(r.repo); has.add(r.repo); }
+    const of = new Map(paths.map((p) => [p, []]));
+    for (const k of ks) for (const p of new Set((k.repos ?? []).map((r) => r.repo))) of.get(p)?.push(k);
+    const gs = paths.map((p) => ({ path: p, ks: of.get(p) }));
     const none = ks.filter((k) => !(k.repos ?? []).length);
     if (none.length) gs.push({ path: null, ks: none });
     return gs;
