@@ -11,7 +11,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import { panes, run, shared, setShared, settings, window as win, exec } from "herdr";
 import * as kit from "./kit.js";
-import { SELECT, addrOf, answerArgs, cancelArgs, childrenArgs, childrenRefused, completeArgs, runAll, dropDepArgs, nudgeArgs, parentArgs, dur, line, prioName, repoName, showAll, stateWord, placeWord, evCells,
+import { SELECT, addrOf, answerArgs, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, nudgeArgs, parentArgs, dur, line, prioName, repoName, showAll, stateWord, placeWord, evCells,
   barOf, isClosed, labelCounts, stateCounts, labelGroups, parentTree } from "./tree.js";
 
 // The Board's groups, by state: the key is the glyph's word (kit.taskGlyph); a Ready task waiting on a dep keeps its place in Ready.
@@ -146,12 +146,12 @@ export class SwarmBoard {
     this.flash = null; this.kidsAsk = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await runAll(this.swarm, args);
+        const r = await this.swarm(args);
         if (r.code === 0) ok?.(); else {
           const text = r.stderr || r.stdout;
           this.flash = line(text, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`;
           // done or drop of a task with open sub-issues is refused without --children: offer the two answers
-          if (r.single && ["done", "drop"].includes(args[1]) && !args.includes("--children") && childrenRefused(text)) this.kidsAsk = { args, id: args[2] };
+          this.kidsAsk = kidsAskOf(r, args);
         }
       } catch (e) { this.flash = line(e?.message ?? e, 300); }
       this.showFor = null; cx.notify();

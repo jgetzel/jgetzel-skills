@@ -142,7 +142,7 @@ def machine (t : Int) (tree : Tasks.Tree) (st : Std.HashMap Int Status) (pl : St
       ("category", .str state.category.text), ("place", Json.oint ((pl.get? id).map (·))),
       ("priority", .str ((Priority.ofNum (int r[3]?)).toOption.getD .medium).text),
       ("assignee", Json.ostr owner), ("dup_of", Json.oint (int r[19]?)),
-      ("parent", Json.oint (int r[20]?)), ("progress", SwarmLean.Json.progress (tree.progress id)),
+      ("parent", Json.oint (int r[20]?)), ("parents", .arr ((commaPieces ((txt r[21]?).getD "")).filterMap parseInt |>.map Json.int).toArray), ("progress", SwarmLean.Json.progress (tree.progress id)),
       ("waiting", .arr ((waiting r).map fun (x, s) => Json.mkObj [("id", Json.int x), ("state", .str s.text)]).toArray),
       ("labels", .arr ((commaPieces ((txt r[4]?).getD "")).map Json.str).toArray),
       ("repos", .arr ((repos.getD id []).map fun (rp, b) =>
@@ -237,7 +237,7 @@ def view (t : Int) : m Json := do
     ("select repo, count(*) from lock group by repo", []),
     -- the machine-wide board (board #120): the tasks listed, their repos with bases, worktrees, repos, locks, last events
     (s!"select t.id, t.title, t.state, t.priority, t.labels, t.deps, t.hold, t.lease_until, t.created_by, t.owner, " ++
-      s!"t.created_at, t.question, t.land_sha, t.lander, t.landing_at, t.first_claimed_at, t.done_at, t.dropped_at, t.qpos, t.dup_of, t.parent from task t where {listed} order by t.id", []),
+      s!"t.created_at, t.question, t.land_sha, t.lander, t.landing_at, t.first_claimed_at, t.done_at, t.dropped_at, t.qpos, t.dup_of, t.parent, t.parents from task t where {listed} order by t.id", []),
     (s!"select tr.task, tr.repo, coalesce(nullif(tr.base, ''), nullif(t.base, ''), r.base) from task_repo tr " ++
       s!"join task t on t.id = tr.task left join repo r on r.path = tr.repo where {listed} order by tr.task, tr.rowid", []),
     ("select agent, repo, path from workspace where repo <> '' and agent is not null order by path", []),

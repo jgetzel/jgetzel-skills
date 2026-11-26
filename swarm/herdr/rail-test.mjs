@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf, needsOf, labelGroups, parentTree, barOf, parentArgs, doneArgs, childrenArgs, childrenRefused, cancelArgs, completeArgs, runAll } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf, needsOf, labelGroups, parentTree, barOf, parentArgs, doneArgs, childrenArgs, childrenRefused, cancelArgs, completeArgs, kidsAskOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -791,13 +791,14 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(parentArgs(7, null), ["task", "parent", "7", "--none"]);
   assert.deepEqual(childrenArgs(cancelArgs(4), "keep"), ["task", "drop", "4", "--children", "keep"]);
   assert.deepEqual(doneArgs(3, "all sub-issues done"), ["task", "done", "3", "--evidence", "all sub-issues done"]);
-  assert.deepEqual(completeArgs(3), [["task", "claim", "3"], ["task", "done", "3", "--evidence", "all sub-issues done"]]);
-  const seen = [], fake = (fail) => async (a) => { seen.push(a.join(" ")); return { code: a[1] === fail ? 1 : 0, stdout: "", stderr: "no" }; };
-  assert.equal((await runAll(fake(null), completeArgs(3))).code, 0);
-  assert.deepEqual(seen.splice(0), ["task claim 3", "task done 3 --evidence all sub-issues done"]);
-  const bad = await runAll(fake("done"), completeArgs(3)); // done refused: the claim is let go
-  assert.deepEqual([bad.code, bad.failed[1], bad.single, seen.splice(0)], [1, "done", false, ["task claim 3", "task done 3 --evidence all sub-issues done", "task release 3"]]);
-  assert.deepEqual([(await runAll(fake("drop"), ["task", "drop", "4"])).single, seen.splice(0)], [true, ["task drop 4"]]);
+  assert.deepEqual(completeArgs(3), ["task", "done", "3", "--evidence", "all sub-issues done"]); // plain: the user closes it with no claim
+  const refused = { code: 1, stdout: "", stderr: "swarm: #4 has 2 open sub-issues: --children cancel cancels them too" };
+  assert.deepEqual(kidsAskOf(refused, cancelArgs(4)), { args: ["task", "drop", "4"], id: "4" });
+  assert.deepEqual(kidsAskOf(refused, completeArgs(3)), { args: completeArgs(3), id: "3" });
+  assert.equal(kidsAskOf(refused, childrenArgs(cancelArgs(4), "keep")), null); // already answered
+  assert.equal(kidsAskOf({ ...refused, stderr: "no such task" }, cancelArgs(4)), null);
+  assert.equal(kidsAskOf({ ...refused, code: 0 }, cancelArgs(4)), null);
+  assert.equal(kidsAskOf(refused, ["task", "claim", "4"]), null);
   assert.ok(childrenRefused("swarm: #4 has 2 open sub-issues: --children cancel cancels them too") && !childrenRefused("no such task"));
   const s = sumOf({ name: "w", needs: [{ kind: "sub-issues-done", task: 3, title: "Goal", progress: { done: 2, total: 2 } }, { kind: "sub-issues-done" }] });
   assert.deepEqual(s.needs.filter((n) => n.kind === "sub-issues-done").map((n) => [n.task, n.progress]), [[3, { done: 2, total: 2 }], [null, null]]);

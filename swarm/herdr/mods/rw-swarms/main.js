@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window, home } from "herdr";
-import { SECTIONS, addrOf, cancelArgs, completeArgs, runAll, dropDepArgs, leftOf, prioName, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
+import { SECTIONS, addrOf, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, leftOf, prioName, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -91,9 +91,9 @@ export default class AllSwarms extends View {
   openSection(w, section, page) { showSwarm(run, setShared, { swarm: w.swarm, folder: w.folder, machine: w.on ?? null, section, page: page ?? null }); }
   // A swarm command for a Needs you button (Nudge): its error shows over the view until the next one.
   act(w, args, cx) {
-    this.flash = null;
+    this.flash = null; this.kidsAsk = null;
     cx.spawn(async (cx) => {
-      try { const r = await runAll((a) => swarm(w.folder, w.on, a, w.swarm), args); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+      try { const r = await swarm(w.folder, w.on, args, w.swarm); if (r.code !== 0) { this.kidsAsk = kidsAskOf(r, args) && { ...kidsAskOf(r, args), w }; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; } }
       catch (e) { this.flash = line(e?.message ?? e, 300); }
       this.next = 0; cx.notify();
     });
@@ -117,6 +117,16 @@ export default class AllSwarms extends View {
   btn(t, id, label, onClick, solid) {
     return look(div().id(id).flex_none().h(28).px(10).flex().items_center().rounded(8).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+  }
+
+  // A done or cancel the CLI refused for open sub-issues: the two answers, run again with --children.
+  kidsRow(t, cx) {
+    const k = this.kidsAsk;
+    return h_flex().id("kids").px(4).gap(8).items_center().flex_wrap()
+      .child(div().text_size(12).text_color(t.dim).child(`#${k.id} sub-issues`))
+      .child(this.btn(t, "kids-cancel", "Cancel them", (cx) => this.act(k.w, childrenArgs(k.args, "cancel"), cx)))
+      .child(this.btn(t, "kids-keep", "Keep them open", (cx) => this.act(k.w, childrenArgs(k.args, "keep"), cx)))
+      .child(this.btn(t, "kids-no", "Leave it", (cx) => { this.kidsAsk = null; this.flash = null; cx.notify(); }));
   }
 
   needs(t, ws, cx) {
@@ -240,6 +250,7 @@ export default class AllSwarms extends View {
         .child(div().text_size(12).text_color(t.dim).child(`${sums.length} ${sums.length === 1 ? "swarm" : "swarms"} · ${n} ${n === 1 ? "agent" : "agents"}`)))
       .when(!ws.length, (el) => el.child(div().px(4).text_color(t.dim).child("No swarm runs")))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.kidsAsk), (el) => el.child(this.kidsRow(t, cx)))
       .children([this.needs(t, ws, cx)].filter(Boolean))
       .child(h_flex().flex_none().gap(10).items_start().flex_wrap().children(ws.map(({ w, s }, i) => this.column(t, w, s, i))))
       .children([this.memory(t, sums)].filter(Boolean)));

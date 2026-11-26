@@ -182,8 +182,26 @@ def closeKids (c : Ctx) (db0 db : Db) (id : Int) : Db × Except String Unit :=
         (db, .ok ())
     | _ => (db, .error s!"#{d id} has {ids.length} open sub-issues: --children cancel cancels them too, --children keep leaves them open (they stay its sub-issues)")
 
+/-- Task `id`, when `c.me` (the user or the communicator) may close it without a claim: Ready or Backlog with no owner, and at
+least one sub-issue. -/
+def closableUnclaimed (c : Ctx) (db : Db) (id : Int) (evidence : String) : Option Task :=
+  match db.find id with
+  | some r =>
+    if strip evidence != "" && (r.status = .ready || r.status = .backlog) && r.owner.isNone && Agents.inCharge db c.comms c.me
+        && !((Tree.ofDb db).childrenOf id).isEmpty then some r else none
+  | none => none
+
 /-- `task done`, and a completed task's place goes; the count is of the tasks to staff after it. -/
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
+  match closableUnclaimed c db id evidence with
+  | some r =>
+    -- the user or communicator closes an unclaimed container: no claim, the same close as a claimant's
+    let db' := db.set id fun t => { t with state := t.state.toCompleted, evidence := some evidence, done_at := some c.now }
+    let db' := db'.log c.now (some c.me) "done" none (some s!"#{d id} {evidence}")
+    match closeKids c db db' id with
+    | (_, .error e) => (db, .error e)
+    | (db', _) => let db' := tidy db'; (db', .ok (.done 0 none (staffing db').length))
+  | none =>
   match Tasks.done c id evidence db with
   | (db', .ok (.done k st _)) =>
     match closeKids c db db' id with

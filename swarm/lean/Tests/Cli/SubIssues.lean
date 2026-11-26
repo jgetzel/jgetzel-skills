@@ -309,6 +309,43 @@ def test_sub_drop_with_open_sub_issues (t : T) : IO Unit := do
   for n in [1, 3, 4, 5] do eq (← stateOf t n) (json% "cancelled")
   eq ((← t.q "select id from task where state='ready'")).size 0
 
+def test_sub_user_closes_unclaimed_container (t : T) : IO Unit := do
+  setup t 0
+  for (title, p) in [("parent", none), ("kid", some 1), ("other", none)] do
+    t.sw_ "comms" (["task", "add", title] ++ match p with | some n => ["--parent", toString n] | none => [])
+  finish t 2
+  -- an agent still needs the claim; so does a task with no sub-issues, for the user too
+  has (← t.sw "a" ["task", "done", "1", "--evidence", "x"] { ok := false }).stderr "is not claimed by you"
+  has (← t.sw "human" ["task", "done", "3", "--evidence", "x"] { ok := false }).stderr "is not claimed by you"
+  eq (← stateOf t 1) (json% "ready")
+  has (← t.sw "human" ["task", "done", "1", "--evidence", ""] { ok := false }).stderr "--evidence is empty"
+  -- the user closes the parent whose sub-issues are done, with no claim
+  t.sw_ "human" ["task", "done", "1", "--evidence", "all sub-issues done"]
+  eq (← stateOf t 1) (json% "completed")
+  eq ((← t.q1 "select evidence from task where id=1").f "evidence") (json% "all sub-issues done")
+  eq (← summaryNeeds t) (json% [])
+  eq (← stateOf t 3) (json% "ready")
+
+def test_sub_comms_closes_backlog_container_with_open_kids (t : T) : IO Unit := do
+  seed t
+  t.sw_ "comms" ["task", "backlog", "1", "--note", "later"]
+  -- the open sub-issues still need --children; the communicator then closes with no claim
+  has (← t.sw "comms" ["task", "done", "1", "--evidence", "x"] { ok := false }).stderr "#1 has 4 open sub-issues"
+  eq (← stateOf t 1) (json% "backlog")
+  has (← t.sw "a" ["task", "done", "1", "--evidence", "x", "--children", "cancel"] { ok := false }).stderr "is not claimed by you"
+  t.sw_ "comms" ["task", "done", "1", "--evidence", "x", "--children", "cancel"]
+  eq (← stateOf t 1) (json% "completed")
+  for n in [2, 3, 4, 5] do eq (← stateOf t n) (json% "cancelled")
+
+def test_sub_swarms_view_tasks_carry_provenance_parents (t : T) : IO Unit := do
+  setup t 1
+  t.sw_ "a" ["task", "claim", "1"]
+  t.sw_ "a" ["task", "add", "filed"]
+  let s ← parse (← t.sw "a" ["state", "--json", "--view", "swarms"]).stdout
+  let task (n : Nat) := (arr (s.f "tasks")).find? (·.f "id" == toJson n) |>.getD .null
+  eq ((task 2).f "parents") (json% [1])
+  eq ((task 1).f "parents") (json% [])
+
 def tests : List Case := [
   ("test_sub_parent_set_clear_and_show", test_sub_parent_set_clear_and_show),
   ("test_sub_parent_refusals", test_sub_parent_refusals),
@@ -324,6 +361,9 @@ def tests : List Case := [
   ("test_sub_done_refuses_with_open_sub_issues", test_sub_done_refuses_with_open_sub_issues),
   ("test_sub_done_children_cancel", test_sub_done_children_cancel),
   ("test_sub_done_children_keep", test_sub_done_children_keep),
-  ("test_sub_drop_with_open_sub_issues", test_sub_drop_with_open_sub_issues)]
+  ("test_sub_drop_with_open_sub_issues", test_sub_drop_with_open_sub_issues),
+  ("test_sub_user_closes_unclaimed_container", test_sub_user_closes_unclaimed_container),
+  ("test_sub_comms_closes_backlog_container_with_open_kids", test_sub_comms_closes_backlog_container_with_open_kids),
+  ("test_sub_swarms_view_tasks_carry_provenance_parents", test_sub_swarms_view_tasks_carry_provenance_parents)]
 
 end SwarmLean.Tests.Cli.SubIssues

@@ -13,6 +13,9 @@ Rules the UI may rely on
 - progress = over ALL descendant leaves at any depth (leaf = task with no children); total excludes cancelled and
   duplicate leaves; done = completed leaves. A task with no children has progress null.
 - Completing or cancelling a task with open sub-issues is refused unless `--children cancel|keep`.
+- The user (`human`) or the communicator completes an UNCLAIMED task (Ready or Backlog, no owner) that has at least one
+  sub-issue with `task done <id> --evidence E`, no claim. Agents still need the claim, and a task without sub-issues
+  still needs it, for the user too (`task <id> is not claimed by you`). The `--children` refusal still applies.
 
 ## CLI
 
@@ -53,7 +56,7 @@ Full/board/agent views (Cmd/State.lean taskJson) and the machine-wide `tasks` of
 ```
 `parent`: int|null. `progress`: {done,total}|null (null for a task with no children), computed from the WHOLE db,
 so it is right for a parent whose completed children are paged out. The existing `parents` key (provenance) is
-unchanged. In the swarms view tasks have no `parents` key, as before.
+unchanged. The swarms view tasks carry `parents` too (provenance ints, [] when none).
 
 ## Needs-you item: kind "sub-issues-done"
 

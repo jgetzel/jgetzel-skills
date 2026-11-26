@@ -817,22 +817,11 @@ export const cancelArgs = (id) => ["task", "drop", String(id)];
 export const parentArgs = (id, parent) => ["task", "parent", String(id), parent == null ? "--none" : String(parent)];
 export const doneArgs = (id, evidence, children = null) => ["task", "done", String(id), "--evidence", evidence, ...(children ? ["--children", children] : [])];
 export const childrenArgs = (args, how) => [...args, "--children", how];
-// Completing a task the user doesn't hold (a parent whose sub-issues are done): `task done` is the claimant's, so the user claims it
-// first; `runAll` runs such a list through `run(args)` and stops at the first refusal, releasing the claim it took.
-export const completeArgs = (id, evidence = "all sub-issues done") => [["task", "claim", String(id)], doneArgs(id, evidence)];
-export async function runAll(run, seq) {
-  const list = Array.isArray(seq[0]) ? seq : [seq];
-  let r = { code: 0, stdout: "", stderr: "" };
-  for (let i = 0; i < list.length; i++) {
-    r = await run(list[i]);
-    if (r.code !== 0) {
-      if (i > 0 && list[0][1] === "claim") await run(["task", "release", list[0][2]]).catch(() => null);
-      return { ...r, failed: list[i], single: list.length === 1 };
-    }
-  }
-  return r;
-}
+// Completing a parent whose sub-issues are done: the user closes an unclaimed task that has sub-issues with no claim.
+export const completeArgs = (id, evidence = "all sub-issues done") => doneArgs(id, evidence);
 export const childrenRefused = (text) => /open sub-issues/.test(String(text ?? ""));
+// The refused done or drop `args` (result `r`) to offer --children for, else null.
+export const kidsAskOf = (r, args) => r.code !== 0 && ["done", "drop"].includes(args[1]) && !args.includes("--children") && childrenRefused(r.stderr || r.stdout) ? { args, id: args[2] } : null;
 // The board's tasks still to do, with what each waits on: Needs Input, started, Ready in order (waiting ones after the
 // startable), then Backlog.
 export function boardRows(s) {

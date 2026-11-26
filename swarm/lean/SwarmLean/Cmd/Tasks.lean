@@ -243,13 +243,14 @@ def task (a : Parsed) : m UInt32 := do
     | .red => out s!"#{d id} released: your fix is recorded, the task is in Backlog until a green run closes it (a newer red run moves it back to Ready). Go idle."
     | .done k stay n =>
       out s!"done #{d id}"
-      match stay with
-      | some s => out s!"context ~{k}k: you stay for '{s}'. `swarm stay --end` when that is over."
-      | none =>
-        let below ← Store.view [Sels.metas ["reuse_below"]] Reuse.reuseBelow
-        if k * 1000 < below && n > 0 then
-          out s!"context ~{k}k: go idle. Once your work lands watchd offers you related startable tasks, if any; else it ends you."
-        else out s!"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work."
+      unless r0.any (·.owner.isNone) do
+        match stay with
+        | some s => out s!"context ~{k}k: you stay for '{s}'. `swarm stay --end` when that is over."
+        | none =>
+          let below ← Store.view [Sels.metas ["reuse_below"]] Reuse.reuseBelow
+          if k * 1000 < below && n > 0 then
+            out s!"context ~{k}k: go idle. Once your work lands watchd offers you related startable tasks, if any; else it ends you."
+          else out s!"context ~{k}k: go idle. watchd ends you once your work lands; a fresh agent takes new work."
   | "land" =>
     let given := (a.str "sha").getD ""
     let sha ← match (words given).head? with

@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, PRIOS, cancelArgs, completeArgs, runAll, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
+import { FOLD, SECTIONS, PRIOS, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -191,11 +191,11 @@ export default class SwarmTab extends View {
   // One swarm command for the user; why it refused shows above the sections.
   act(cx, args, ok) {
     const { cwd, on, swarm: sw } = this.where();
-    this.busy = true; this.flash = null; cx.notify();
+    this.busy = true; this.flash = null; this.kidsAsk = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await runAll((a) => swarm(cwd, on, a, sw), args);
-        if (r.code === 0) ok?.(); else { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+        const r = await swarm(cwd, on, args, sw);
+        if (r.code === 0) ok?.(); else { this.pend = null; this.kidsAsk = kidsAskOf(r, args); this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
       } catch (e) { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(e?.message ?? e, 300); }
       this.actDone = Date.now(); this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
     });
@@ -300,6 +300,15 @@ export default class SwarmTab extends View {
   btn(t, id, label, onClick, solid) {
     return look(div().id(id).flex_none().h(30).px(14).flex().items_center().rounded(9).text_size(12.5).cursor_pointer(), t, solid ? "solid" : "outline")
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+  }
+// A done or cancel the CLI refused for open sub-issues: the two answers, run again with --children.
+  kidsRow(t) {
+    const k = this.kidsAsk;
+    return h_flex().id("kids").px(4).gap(8).items_center().flex_wrap()
+      .child(div().text_size(12).text_color(t.dim).child(`#${k.id} sub-issues`))
+      .child(this.small(t, "kids-cancel", "Cancel them", (cx) => this.act(cx, childrenArgs(k.args, "cancel"))))
+      .child(this.small(t, "kids-keep", "Keep them open", (cx) => this.act(cx, childrenArgs(k.args, "keep"))))
+      .child(this.small(t, "kids-no", "Leave it", (cx) => { this.kidsAsk = null; this.flash = null; cx.notify(); }));
   }
   small(t, id, label, onClick) { // a 24 px outlined button, in a row
     return look(div().id(id).flex_none().h(24).px(9).flex().items_center().rounded(7).text_size(12).cursor_pointer(), t)
@@ -1747,6 +1756,7 @@ export default class SwarmTab extends View {
     this.keyWas = key;
     return v_flex().id("rw-swarm-view").flex_1().min_h(0).p(12).gap(10).overflow_y_scrollbar()
       .when(Boolean(this.flash) && this.flashIn !== "bar", (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.kidsAsk), (el) => el.child(this.kidsRow(t)))
       .when(Boolean(this.error) && (section !== "overview" || Boolean(v.page)), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
       .child(v_flex().id(`body-${key}`).w_full().flex_none().gap(10).child(body)
         .when(this.anim, (el) => el.relative().left(e ? from : 0).opacity(e ? 0 : 1)
@@ -1823,6 +1833,7 @@ export default class SwarmTab extends View {
           .child(div().size(14).rounded(4).border(1).border_color(away ? t.working : t.border).bg(away ? t.working : t.background)
             .flex().items_center().justify_center().text_size(10).text_color(t.background).child(away ? "✓" : "")).child("Away"))))
       .when(Boolean(this.flash), (el) => el.child(div().px(4).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.kidsAsk), (el) => el.child(this.kidsRow(t)))
       .when(Boolean(this.error), (el) => el.child(div().px(4).truncate().text_size(12).text_color(t.blocked).child(`Couldn't read it again: ${this.error}`)))
       .children([this.needs(t, s)].filter(Boolean))
       .child(this.agents(t, s))
