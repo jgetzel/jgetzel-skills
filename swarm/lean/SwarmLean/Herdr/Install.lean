@@ -130,8 +130,13 @@ def agentsPatch : List (String × String) := [
   (r##"openOverlay({ mod: "agents","##,
    r##"openOverlay({ mod: "jgetzel-agents","##)]
 
-/-- The newer Herdr's one differing anchor, put back to the older form agentsPatch expects (an unknown form still dies in patch). -/
+/-- The newer Herdr's differing anchors, put back to the older forms agentsPatch expects (an unknown form still dies in patch). -/
 def agentsNormalize : List (String × String) := [
+  (r##"  if (listed.has(k.address)) return listed.get(k.address);
+  const s = k.status;
+"##,
+   r##"  const s = listed.get(k.address) ?? k.status;
+"##),
   (r##"      .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
 "##,
    r##"      .on_click(() => this.peek(k.address))
