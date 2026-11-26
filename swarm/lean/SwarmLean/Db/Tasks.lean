@@ -207,8 +207,25 @@ def reopenFromF (t : Task) : Task := { t with state := .ready none }
 /-- The place after every other: one more than the last. -/
 def endPos (db : Db) : Int := ((db.tasks.filterMap (·.pos)).foldl max 0) + 1
 
-/-- Fails on a missing dep or one that would close a cycle through `id`. -/
+/-- Task `id`'s goal ancestors, nearest first (a cycle, which the commands refuse, cannot loop). -/
+def goalAncestors (db : Db) (id : Int) : List Int :=
+  let rec go : Nat → Int → List Int
+    | 0, _ => []
+    | n + 1, i => match (db.find i).bind (·.parent) with
+      | some p => p :: go n p
+      | none => []
+  go 64 id
+
+/-- The refusal of a sub-issue `id` waiting on `x`, its parent or an ancestor of it: the parent is not staffed while
+the sub-issue is open, so they would wait on each other. -/
+def checkAncestorDep (anc : List Int) (id : Int) (deps : List Int) : Except String Unit :=
+  match anc.find? deps.contains with
+  | some a => .error s!"#{d id} is a sub-issue of #{d a}: it can't wait on it"
+  | none => .ok ()
+
+/-- Fails on a missing dep, one that would close a cycle through `id`, or an ancestor of `id`. -/
 def checkCycles (db : Db) (id : Int) (deps : List Int) : Except String Unit := do
+  checkAncestorDep (goalAncestors db id) id deps
   for x in deps do
     checkDeps db [x]
     if let some cyc := depPath db x id then
@@ -297,12 +314,12 @@ def Tree.allDone (tr : Tree) : List Int :=
   (tr.kids.toList.filterMap fun (p, ks) =>
     if !ks.isEmpty && tr.isOpen p && (tr.openBelow p).isEmpty then some p else none).mergeSort fun a b => decide (a ≤ b)
 
-/-- The ids with an open child. -/
+/-- The ids with an open descendant at any depth: the ancestors of every open task. -/
 def Tree.openParents (tr : Tree) : Std.HashSet Int :=
-  tr.kids.fold (fun h p ks => if ks.any tr.isOpen then h.insert p else h) {}
+  tr.st.fold (fun h i s => if s.closed then h else (tr.ancestors i).foldl (fun h a => h.insert a) h) {}
 
-/-- Task `t` is a container: an open child keeps it from staffing. -/
-def isContainer (db : Db) (t : Task) : Bool := db.tasks.any fun c => c.parent == some (t.id : Int) && !c.status.closed
+/-- Task `t` is a container: an open descendant, at any depth, keeps it from staffing. -/
+def isContainer (db : Db) (t : Task) : Bool := !((Tree.ofDb db).openBelow t.id).isEmpty
 
 /-- The refusal of a parent `n` for a task: it is a task, and open (a closed task takes no new sub-issue). -/
 def checkParent (db : Db) (n : Int) : Except String Unit :=
@@ -328,7 +345,9 @@ def setParent (c : Ctx) (id : Int) (p : Option Int) (db : Db) : Db × Except Str
         | .ok () =>
           if ((Tree.ofDb db).ancestors n).contains id then
             (db, .error s!"that would be a cycle: #{d n} is below #{d id}")
-          else go db
+          else match checkAncestorDep (n :: goalAncestors db n) id (((db.find id).map depsOf).getD []) with
+            | .error e => (db, .error e)
+            | .ok () => go db
 
 /-- `task add`: the new task's id. -/
 def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
@@ -339,7 +358,7 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
   else match checkDeps db a.deps with
     | .error e => (db, .error e)
     | .ok () =>
-    match (match a.parent with | some n => checkParent db n | none => .ok ()) with
+    match (match a.parent with | some n => checkParent db n *> checkAncestorDep (n :: goalAncestors db n) db.taskNext a.deps | none => .ok ()) with
     | .error e => (db, .error e)
     | .ok () =>
       let id := db.taskNext

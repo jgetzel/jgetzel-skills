@@ -6,8 +6,12 @@ Open = state category not completed/cancelled (backlog, ready, in_progress, need
 cancelled, duplicate. DB_VERSION is 3 (an older binary refuses to write a v3 db).
 
 Rules the UI may rely on
-- A task with any open sub-issue is a container: auto-spawn and offered work never staff it. The swarms view's `next`
+- A task with any open sub-issue, at any depth (a closed child with an open grandchild counts), is a container:
+  auto-spawn and offered work never staff it. The swarms view's `next`
   and `ready` leave it out. `swarm queue` shows why: "has open sub-issues".
+- A sub-issue never waits on its parent or any ancestor (they would wait on each other): `task parent <id> <N>`, `task add
+  --parent N --after ...`, `task after` and `task release --after` refuse it, naming both ids ("#3 is a sub-issue of #2: it
+  can't wait on it"). A parent may wait on its own sub-issue.
 - A parent is never completed automatically. When its last open descendant closes, a Needs-you item
   "sub-issues-done" appears for it; it goes once the parent is closed.
 - progress = over ALL descendant leaves at any depth (leaf = task with no children); total excludes cancelled and
@@ -21,7 +25,7 @@ Rules the UI may rely on
 
 ```
 swarm task add <title> ... --parent N        file as a sub-issue of open task N (refused: missing, closed)
-swarm task parent <id> <N>                   set (refused: missing task, self, cycle, N missing or closed)
+swarm task parent <id> <N>                   set (refused: missing task, self, cycle, N missing or closed, id waits on N or an ancestor)
 swarm task parent <id> --none                clear
 swarm task done <id> --evidence E [--children cancel|keep]
 swarm task drop <id> [--children cancel|keep] [--duplicate-of M] [--note T]

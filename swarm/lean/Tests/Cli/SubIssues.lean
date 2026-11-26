@@ -346,6 +346,38 @@ def test_sub_swarms_view_tasks_carry_provenance_parents (t : T) : IO Unit := do
   eq ((task 2).f "parents") (json% [1])
   eq ((task 1).f "parents") (json% [])
 
+def test_sub_grandparent_not_staffed_over_kept_grandchild (t : T) : IO Unit := do
+  t.fakes; twoHaiku t
+  t.sw_ "t-comms" ["task", "add", "grand"]
+  t.sw_ "t-comms" ["task", "add", "mid", "--parent", "1"]
+  t.sw_ "t-comms" ["task", "add", "leaf", "--parent", "2"]
+  t.sw_ "t-comms" ["task", "drop", "2", "--children", "keep"]
+  let q := (← t.sw "t-comms" ["queue"]).stdout
+  has q "#1 has open sub-issues  grand"
+  has q "#3 startable  leaf"
+  eq (← staffed t) (toJson 3)
+
+def test_sub_refuses_waiting_on_an_ancestor (t : T) : IO Unit := do
+  setup t 4
+  t.sw_ "comms" ["task", "parent", "3", "2"]
+  t.sw_ "comms" ["task", "parent", "2", "1"]
+  -- adding a dep from a sub-issue on its parent or a higher ancestor
+  refuse t ["task", "after", "3", "2"] "#3 is a sub-issue of #2"
+  refuse t ["task", "after", "3", "1"] "#3 is a sub-issue of #1"
+  refuse t ["task", "after", "2", "4,1"] "#2 is a sub-issue of #1"
+  t.sw_ "comms" ["task", "after", "1", "2"]
+  t.sw_ "comms" ["task", "after", "3", "4"]
+  -- a task that waits on N or an ancestor of N can't become N's sub-issue
+  t.sw_ "comms" ["task", "after", "4", "1"]
+  refuse t ["task", "parent", "4", "3"] "#4 is a sub-issue of #1"
+  refuse t ["task", "parent", "4", "2"] "#4 is a sub-issue of #1"
+  eq (← parentOf t 4) Json.null
+  -- task add --parent with --after on the parent or an ancestor
+  refuse t ["task", "add", "k", "--parent", "3", "--after", "2"] "is a sub-issue of #2"
+  refuse t ["task", "add", "k", "--parent", "3", "--after", "3"] "is a sub-issue of #3"
+  t.sw_ "comms" ["task", "add", "k", "--parent", "3", "--after", "4"]
+  eq (← parentOf t 5) (toJson 3)
+
 def tests : List Case := [
   ("test_sub_parent_set_clear_and_show", test_sub_parent_set_clear_and_show),
   ("test_sub_parent_refusals", test_sub_parent_refusals),
@@ -355,6 +387,8 @@ def tests : List Case := [
   ("test_sub_backlog_child_still_blocks_parent", test_sub_backlog_child_still_blocks_parent),
   ("test_sub_parent_startable_when_children_closed", test_sub_parent_startable_when_children_closed),
   ("test_sub_swarms_view_next_skips_container", test_sub_swarms_view_next_skips_container),
+  ("test_sub_grandparent_not_staffed_over_kept_grandchild", test_sub_grandparent_not_staffed_over_kept_grandchild),
+  ("test_sub_refuses_waiting_on_an_ancestor", test_sub_refuses_waiting_on_an_ancestor),
   ("test_sub_progress_nested", test_sub_progress_nested),
   ("test_sub_needs_when_last_descendant_closes", test_sub_needs_when_last_descendant_closes),
   ("test_sub_needs_gone_when_parent_cancelled", test_sub_needs_gone_when_parent_cancelled),

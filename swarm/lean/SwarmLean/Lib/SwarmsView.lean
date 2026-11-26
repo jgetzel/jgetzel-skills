@@ -83,9 +83,8 @@ assignee, no dep not Completed; a `main red:` task first, then Ready by place. -
 def startable (all ks : List T) : List T :=
   let undone : Std.HashSet Int := all.foldl (fun h k => if k.state == .completed then h else h.insert k.id) {}
   -- a task with an open sub-issue is a container: never staffed
-  let busy : Std.HashSet Int := all.foldl (fun h k => match k.parent with
-    | some p => if k.state.closed then h else h.insert p
-    | none => h) {}
+  let tr := Tasks.Tree.ofNodes (all.map fun k => (k.id, k.state, k.parent))
+  let busy := tr.openParents
   let ok := ks.filter fun k => k.state == .ready && (py k.owner).isNone && !k.deps.any undone.contains && !busy.contains k.id
   let rank (k : T) : List Int :=
     [if (k.title.getD "").startsWith "main red: " then 0 else 1, k.pos.getD (1 <<< 40), k.id]

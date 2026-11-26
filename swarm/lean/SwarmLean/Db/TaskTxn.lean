@@ -77,7 +77,7 @@ def agents (ns : List (Option String)) : List Sel :=
 /-- `task add`: its deps, the creator's held tasks, the places (a new task goes to the end of Ready) and the next
 task id. -/
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
-  Txn.update [tasks a.deps, tasks a.parent.toList, Sels.owned c.me, queuedSel] [.task] (Tasks.add c a)
+  Txn.update ([tasks a.deps, Sels.owned c.me, queuedSel] ++ (if a.parent.isSome then [allTasks] else [])) [.task] (Tasks.add c a)
 
 /-- The claim of task `id` on its slice: the task's row by a guarded update, then the rest with the
 held notes taken (`Notes.takeHeld`). -/
@@ -106,8 +106,7 @@ def claimTxn (c : Ctx) (id : Int) (lease : String) : Txn (Except String (Claimed
 
 /-- `task after`: the task and every task its new deps reach. -/
 def after (c : Ctx) (id : Int) (deps : List Int) : Txn (Except String Unit) := do
-  let ids ← closure deps
-  Txn.update [task id, tasks ids] [] (Tasks.after c id deps)
+  Txn.update [allTasks] [] (Tasks.after c id deps)
 
 /-- A step that reads task `id` alone (`priority`, `renew`). -/
 def one (id : Int) (f : Db → Db × α) : Txn α := Txn.update [task id] [] f
@@ -138,7 +137,7 @@ def release (c : Ctx) (id : Int) (af : Option (List Int)) : Txn (Except String (
   let ids ← match af with
     | some l => closure l
     | none => pure []
-  Txn.update [task id, Sels.metas ["comms"], tasks ids] [.msg] (Tasks.release c id af)
+  Txn.update [task id, Sels.metas ["comms"], tasks ids, allTasks] [.msg] (Tasks.release c id af)
 
 /-- `task edit` (and `label`): the task and its owner's row. -/
 def edit (c : Ctx) (id : Int) (a : EditArgs) : Txn (Except String (List String × Status)) :=
