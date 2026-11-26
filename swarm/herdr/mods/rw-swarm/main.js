@@ -14,7 +14,7 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, PRIOS, cancelArgs, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
+import { FOLD, SECTIONS, PRIOS, cancelArgs, completeArgs, runAll, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
@@ -194,7 +194,7 @@ export default class SwarmTab extends View {
     this.busy = true; this.flash = null; cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await swarm(cwd, on, args, sw);
+        const r = await runAll((a) => swarm(cwd, on, a, sw), args);
         if (r.code === 0) ok?.(); else { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
       } catch (e) { this.pend = null; this.flashIn = args[0] === "limits" ? "bar" : "view"; this.flash = line(e?.message ?? e, 300); }
       this.actDone = Date.now(); this.busy = false; this.dirty = true; this.refresh(cx); cx.notify();
@@ -539,6 +539,9 @@ export default class SwarmTab extends View {
         : n.kind === "ci" ? [kit.agentGlyph(t, "asks", 10), [div().flex_none().font_medium().text_color(t.foreground).child("main CI"), kit.chipText(t, "red").text_color(t.blocked), kit.chipText(t, `run ${n.run.id ?? "?"}`),
             ...(n.reds > 1 ? [kit.chipText(t, `${n.reds} in a row`)] : []), n.fixer ? kit.chipText(t, `${n.fixer.owner} · #${n.fixer.id}`) : kit.chipText(t, "nobody on it"), div().flex_1(), div().flex_none().font_family(mono).text_size(11.5).text_color(t.dim).child(hhmm(n.run.created))],
           [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []), this.twice(t, `rerun-${n.run.id}`, "Re-run failed", "Re-run: it spends CI minutes", (cx) => this.run(cx, "gh", ["run", "rerun", String(n.run.id), "--failed"]))], null]
+        : n.kind === "sub-issues-done" ? [kit.taskGlyph(t, kit.glyphOf(n.task.state), 14), [tid(n.task.id), title(n.task.title), kit.chipText(t, "sub-issues done"),
+            ...(n.progress ? [kit.chipText(t, `${n.progress.done}/${n.progress.total}`)] : [])],
+          [this.btn(t, `complete-${i}`, "Complete", (cx) => this.act(cx, completeArgs(n.task.id)), true), this.btn(t, `open-${i}`, "Open", () => this.openTask(n.task.id))], null]
         : n.kind === "watchd" ? [kit.agentGlyph(t, "asks", 10), [div().flex_none().font_medium().text_color(t.foreground).child("watchd"), kit.chipText(t, "stopped").text_color(t.blocked), div().flex_1()],
           [this.twice(t, "watchd", "Restart watchd", "Restart it", (cx) => this.act(cx, ["watchd", "--restart"]))], null]
         : n.kind === "dep-cancelled" ? [kit.taskGlyph(t, kit.glyphOf(n.task.state), 14), [tid(n.task.id), title(n.task.title), ...n.deps.map((d) => h_flex().h(20).px(6).gap(5).flex_none().items_center().rounded(kit.R.tag).border(1).border_color(t.blocked + "88")

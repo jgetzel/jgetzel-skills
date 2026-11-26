@@ -21,7 +21,7 @@ rm -f "$db" "$dir/state/cmd-cost/history.db"
 SWARM_DB=$db "$here/../swarm" swarms >/dev/null
 # swarm-lean stamps a new db at its first write, and that write would migrate the rows below (priorities move up one):
 # stamp it now at DB_VERSION (swarm/lean/SwarmLean/Db/Schema.lean)
-sqlite3 "$db" "pragma user_version=2"
+sqlite3 "$db" "pragma user_version=3"
 
 # watchd's record: pid 1 stands for a live one (shot.sh makes it its own pid), 2147483646 for a dead one;
 # "stale": started before the swarm code last changed. Times below are minutes before @now.
@@ -62,6 +62,28 @@ insert into task(title,state,owner,created_by,evidence,deps,question,lease_until
   ('Planner: statistics for partial indexes','ready','ox-2','ox-comms',null,null,null,null,'sonnet'),
   ('Planner: reuse the old cost model','ready',null,'ox-comms',null,'10',null,null,'sonnet'),
   ('Tenants: audit log table','duplicate',null,'ox-comms',null,null,null,null,'sonnet');
+-- sub-issues (ids 14-26): a goal 3 deep (14 > 15 > 16, 17), a Completed parent with an open child (19), a Cancelled one with an open
+-- child (25), a parent whose children are all done (22: its Needs-you item); the parents are set at the end of this block
+insert into task(title,state,owner,created_by,evidence,deps,question,lease_until,model) values
+  ('Planner: cost model v2 (all join and scan costs)','ready',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: join costs','ready',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: nested-loop join cost','ready',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: merge join cost','backlog',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Planner: scan costs (seq, index, bitmap)','completed','ox-7','ox-comms','PR #38 merged 77aa10c2',null,null,null,'sonnet'),
+  ('Tenants: rollout','completed','ox-3','ox-comms','PR #39 merged 12ef90ab',null,null,null,'sonnet'),
+  ('Tenants: cut over the read path','ready',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Tenants: write path','completed','ox-3','ox-comms','PR #40 merged 5c4d3b2a',null,null,null,'sonnet'),
+  ('Docs: plan cache guide','ready',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Docs: keying rules page','completed','ox-5','ox-comms','PR #41 merged 0d1e2f3a',null,null,null,'sonnet'),
+  ('Docs: eviction page','completed','ox-5','ox-comms','PR #42 merged 9a8b7c6d',null,null,null,'sonnet'),
+  ('Old plan: statistics v1','cancelled',null,'ox-comms',null,null,null,null,'sonnet'),
+  ('Statistics: histogram merge','ready',null,'ox-comms',null,null,null,null,'sonnet');
+update task set done_at=@now-40*60 where state='completed' and id>=18;
+update task set parent=case id when 4 then 14 when 15 then 14 when 18 then 14 when 16 then 15 when 17 then 15 when 20 then 19 when 21 then 19
+  when 23 then 22 when 24 then 22 when 26 then 25 end where id in (4,15,16,17,18,20,21,23,24,26);
+update task set labels=case id when 4 then 'planner,perf' when 14 then 'planner' when 15 then 'planner,perf' when 16 then 'planner,perf' when 17 then 'planner'
+  when 18 then 'planner' when 19 then 'tenants' when 20 then 'tenants' when 21 then 'tenants,proof' when 22 then 'docs' when 23 then 'docs' when 24 then 'docs'
+  when 7 then 'planner' when 9 then 'tenants' when 8 then 'bench,perf' end where id in (4,7,8,9,14,15,16,17,18,19,20,21,22,23,24);
 update task set priority=1 where title like 'Planner: cost model for hash%';
 update task set priority=4 where title like 'Bench:%';
 update task set priority=2 where title like 'Docs:%';

@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, shared, setShared, settings, layout, openOverlay, window, home } from "herdr";
-import { SECTIONS, addrOf, cancelArgs, dropDepArgs, leftOf, prioName, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
+import { SECTIONS, addrOf, cancelArgs, completeArgs, runAll, dropDepArgs, leftOf, prioName, agentRows, answerBox, boxFor, blockedAt, hookFor, promptButtons, promptCard, allShown, dur, line, memoryOf, needsOf, nudgeArgs, openAsk, peekWindow, repoName, shapeOf, showAll, showSwarm, swarmsOf, sumFor } from "./tree.js";
 import { mark, look } from "./marks.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
@@ -93,7 +93,7 @@ export default class AllSwarms extends View {
   act(w, args, cx) {
     this.flash = null;
     cx.spawn(async (cx) => {
-      try { const r = await swarm(w.folder, w.on, args, w.swarm); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
+      try { const r = await runAll((a) => swarm(w.folder, w.on, a, w.swarm), args); if (r.code !== 0) this.flash = line(r.stderr || r.stdout, 300).replace(/^swarm: /, "") || `swarm exited ${r.code}`; }
       catch (e) { this.flash = line(e?.message ?? e, 300); }
       this.next = 0; cx.notify();
     });
@@ -135,6 +135,7 @@ export default class AllSwarms extends View {
           : n.kind === "hung" ? [n.agent, "", [cc("hung", true)]]
           : n.kind === "ci" ? ["main CI", "", [cc("red", true), cc(`run ${n.run.id ?? "?"}`), ...(n.reds > 1 ? [cc(`${n.reds} in a row`)] : []), cc(n.fixer ? `${n.fixer.owner} · #${n.fixer.id}` : "nobody on it")]]
           : n.kind === "dep-cancelled" ? [`#${n.task.id}`, n.task.title ?? "", [cc("waiting on a cancelled task", true), ...n.deps.map((d) => cc(`#${d}`, true))]]
+          : n.kind === "sub-issues-done" ? [`#${n.task.id}`, n.task.title ?? "", [cc("sub-issues done"), ...(n.progress ? [cc(`${n.progress.done}/${n.progress.total}`)] : [])]]
           : n.kind === "watchd" ? ["watchd", "", [cc("stopped", true)]]
           : [n.w.on ?? "This computer", n.line || "", [cc("short on memory", true)]];
         const acts = n.kind === "question" ? [this.btn(t, `answer-${i}`, "Answer", (cx) => this.focus(n.w, n.s, n.agent, true, cx), true)]
@@ -143,6 +144,7 @@ export default class AllSwarms extends View {
           : n.kind === "ci" ? [...(n.run.url ? [this.btn(t, `run-${i}`, "Open run", () => openUrl(n.run.url))] : []), this.btn(t, `land-${i}`, "Landing", () => this.openSection(n.w, "landing"))]
           : n.kind === "dep-cancelled" ? [this.btn(t, `dep-${i}`, "Remove dependency", (cx) => this.act(n.w, dropDepArgs(n.task, n.deps), cx), true),
             this.btn(t, `cancel-${i}`, "Cancel task", (cx) => this.act(n.w, cancelArgs(n.task.id), cx))]
+          : n.kind === "sub-issues-done" ? [this.btn(t, `complete-${i}`, "Complete", (cx) => this.act(n.w, completeArgs(n.task.id), cx), true), this.btn(t, `open-${i}`, "Open", () => this.openSection(n.w, "board"))]
           : [this.btn(t, `sys-${i}`, n.kind === "watchd" ? "Restart in System" : "System", () => this.openSection(n.w, "system"))];
         return v_flex().id(`need-${i}`).flex_1().min_w(280).gap(6).p(12).rounded(10).bg(t.surface).border(1).border_color(t.blocked + "44")
           .child(h_flex().gap(8).items_center().min_w(0).text_size(12.5).child(this.chip(t, n.w.swarm))

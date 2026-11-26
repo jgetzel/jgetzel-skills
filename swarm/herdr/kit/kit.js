@@ -131,6 +131,21 @@ export function taskGlyph(t, state, size = 12, m = null, key = null) {
     : ring;
   return stamped(g, m, key ?? `task:${state}`, size);
 }
+// ---- glass, state bars ---------------------------------------------------------------------------------------------
+// Glass (the rail's design E), on the opaque ground: a theme colour at alpha `x`; a box takes the colour at `x` and its 1 px top edge
+// of light (a top border, so it follows the corners). No blur.
+export const alpha = (c, x) => `${String(c).slice(0, 7)}${Math.round(x * 255).toString(16).padStart(2, "0")}`;
+export const glass = (el, t, x = 0.14) => el.bg(alpha(t.foreground, x)).border_t(1).border_color(alpha(t.foreground, 0.26));
+// A count in a pill (a group's, a parent's).
+export const countBadge = (t, n) => h_flex().h(18).min_w(18).px(6).flex_none().items_center().justify_center().rounded(9).bg(alpha(t.foreground, 0.1))
+  .font_family(MONO).text_size(TYPE.meta).text_color(t.foreground).child(String(n));
+// A state bar: `segs` [[state, n]] (a task state word) as segments sharing `w` px, Completed first; an empty bar is its track.
+export function stateBar(t, segs, w = 96) {
+  const c = colors(t), col = { completed: t.ansi4, in_review: c.done, in_progress: c.working, needs_input: c.asks, ready: alpha(t.foreground, 0.5), backlog: alpha(t.foreground, 0.2) };
+  const bar = h_flex().w(w).h(4).flex_none().gap(1).rounded(2).overflow_hidden().bg(alpha(t.foreground, 0.08));
+  const live = segs.filter(([, n]) => n > 0), total = live.reduce((a, [, n]) => a + n, 0), room = w - Math.max(0, live.length - 1);
+  return bar.children(live.map(([s, n]) => div().h_full().flex_none().w(Math.max(2, Math.round((n / total) * room))).bg(col[s] ?? t.dim)));
+}
 // Priority as an icon (Linear's): Urgent a filled square with "!", High, Medium and Low three bars with three, two and one
 // lit, None three dots. `p` is the CLI's name.
 const PRIO = { none: "No priority", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };

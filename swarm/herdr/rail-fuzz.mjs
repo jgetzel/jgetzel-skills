@@ -246,4 +246,19 @@ for (let i = 0; i < 3000; i++) {
   } else console.log("rail-fuzz: no swarm CLI here, its argument check skipped");
   rmSync(dir, { recursive: true, force: true });
 }
+// Sub-issues at scale (1200 tasks, random parents among them: cycles, self-parents, orphans, hostile ids and labels): the
+// label groups and the parent tree finish, lose no open task, and loop on nothing.
+{
+  const ks = Array.from({ length: 1200 }, (_, i) => ({ id: i + 1, state: pick(["ready", "in_progress", "completed", "cancelled", "backlog"]), title: pick(HOSTILE),
+    parent: rnd() < 0.7 ? Math.floor(rnd() * 1300) : pick([null, undefined, "x", NaN]), labels: Array.from({ length: Math.floor(rnd() * 4) }, () => pick(["a", "b", "c", pick(HOSTILE)])) }));
+  const open = ks.filter((k) => !["completed", "cancelled"].includes(k.state));
+  const gs = time("labelGroups: 1200 tasks", 100, () => T.labelGroups(ks));
+  for (const k of open) assert.ok(gs.some((g) => g.ks.includes(k)), "an open task is in some group");
+  const tr = time("parentTree: 1200 tasks, cycles and orphans", 150, () => T.parentTree(ks, { keep: (k) => k.id % 7 === 0 }));
+  const seen = new Set();
+  const walk = (k, d) => { assert.ok(d < 1300, "no loop"); seen.add(k.id); for (const c of tr.kids.get(k.id) ?? []) if (!seen.has(c.id)) walk(c, d + 1); };
+  for (const r of tr.roots) walk(r, 0);
+  for (const r of tr.roots) T.barOf(r.progress ?? null, tr.info(r).leaves);
+  time("parentTree under a label filter", 150, () => T.parentTree(ks, { match: (k) => (k.labels ?? []).includes("a") }));
+}
 console.log("rail-fuzz: ok");

@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf, needsOf, labelGroups, parentTree, barOf, parentArgs, doneArgs, childrenArgs, childrenRefused, cancelArgs, completeArgs, runAll } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -761,5 +761,48 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   const rows = actItems(o, false);
   assert.deepEqual(rows.map((i) => [i.who, i.task, i.cells.map((c) => c.t)]), [["c", 9, ["dup"]], ["you", 4, ["prio"]], ["you", 4, ["prio"]]]);
   assert.deepEqual(rows[1].cells[0], { t: "prio", from: "low", to: "medium" });
+}
+// Sub-issues: label groups, the parent tree, state bars, the new need.
+{
+  const k = (id, state, o = {}) => ({ id, state, title: "t" + id, labels: [], parent: null, ...o });
+  const ks = [k(1, "ready", { labels: ["a", "b"] }), k(2, "in_progress", { labels: ["a"] }), k(3, "completed", { labels: ["a"] }), k(4, "backlog"), k(5, "ready", { labels: ["b", "b"] })];
+  const lg = labelGroups(ks);
+  assert.deepEqual(lg.map((g) => [g.label, g.ks.map((x) => x.id)]), [["a", [1, 2]], ["b", [1, 5]], [null, [4]]]); // open only, a task under each of its labels, Unlabelled last
+  assert.deepEqual(lg[0].counts, { ready: 1, in_progress: 1 });
+  assert.deepEqual(labelGroups([]), []);
+  // 10 > 11 > 12 (leaf, ready), 13 (leaf, completed); 20 completed with open child 21; 30 alone; 40 done parent, all children done; 50 orphan of a paged-out parent
+  const ts = [k(10, "ready"), k(11, "ready", { parent: 10 }), k(12, "ready", { parent: 11, labels: ["x"] }), k(13, "completed", { parent: 11, labels: ["x", "y"] }),
+    k(20, "completed"), k(21, "ready", { parent: 20 }), k(30, "ready"), k(40, "ready"), k(41, "completed", { parent: 40 }), k(50, "ready", { parent: 999 }), k(14, "cancelled", { parent: 10 }), k(60, "completed")];
+  const tr = parentTree(ts, { keep: (x) => x.id === 60 });
+  assert.deepEqual(tr.roots.map((x) => x.id), [10, 20, 40]);
+  assert.deepEqual(tr.none.map((x) => x.id), [30, 50, 60]);
+  assert.deepEqual(tr.kids.get(10).map((x) => x.id), [11]); // the Cancelled child is not listed
+  assert.deepEqual(tr.kids.get(11).map((x) => x.id), [12, 13]); // open first, Completed after
+  assert.deepEqual([...tr.info(10).labels], [["x", 2], ["y", 1]]);
+  assert.deepEqual(tr.info(10).leaves.map((x) => x.id).sort(), [12, 13, 14]);
+  assert.equal(tr.info(10).n, 4);
+  const hit = parentTree(ts, { match: (x) => (x.labels ?? []).includes("y") });
+  assert.deepEqual(hit.roots.map((x) => x.id), [10]);
+  assert.deepEqual(hit.kids.get(11).map((x) => x.id), [13]);
+  assert.deepEqual(parentTree([k(1, "ready", { parent: 1 }), k(2, "ready", { parent: 3 }), k(3, "ready", { parent: 2 })]).none.map((x) => x.id), [1]); // a self-parent is top level; a cycle does not loop
+  assert.deepEqual(barOf({ done: 3, total: 6 }, [k(1, "ready"), k(2, "in_progress")]), [["completed", 3], ["in_progress", 1], ["ready", 1], ["backlog", 1]]);
+  assert.deepEqual(barOf(null, [k(1, "completed"), k(2, "ready")]), [["completed", 1], ["ready", 1]]);
+  assert.deepEqual(parentArgs(7, 3), ["task", "parent", "7", "3"]);
+  assert.deepEqual(parentArgs(7, null), ["task", "parent", "7", "--none"]);
+  assert.deepEqual(childrenArgs(cancelArgs(4), "keep"), ["task", "drop", "4", "--children", "keep"]);
+  assert.deepEqual(doneArgs(3, "all sub-issues done"), ["task", "done", "3", "--evidence", "all sub-issues done"]);
+  assert.deepEqual(completeArgs(3), [["task", "claim", "3"], ["task", "done", "3", "--evidence", "all sub-issues done"]]);
+  const seen = [], fake = (fail) => async (a) => { seen.push(a.join(" ")); return { code: a[1] === fail ? 1 : 0, stdout: "", stderr: "no" }; };
+  assert.equal((await runAll(fake(null), completeArgs(3))).code, 0);
+  assert.deepEqual(seen.splice(0), ["task claim 3", "task done 3 --evidence all sub-issues done"]);
+  const bad = await runAll(fake("done"), completeArgs(3)); // done refused: the claim is let go
+  assert.deepEqual([bad.code, bad.failed[1], bad.single, seen.splice(0)], [1, "done", false, ["task claim 3", "task done 3 --evidence all sub-issues done", "task release 3"]]);
+  assert.deepEqual([(await runAll(fake("drop"), ["task", "drop", "4"])).single, seen.splice(0)], [true, ["task drop 4"]]);
+  assert.ok(childrenRefused("swarm: #4 has 2 open sub-issues: --children cancel cancels them too") && !childrenRefused("no such task"));
+  const s = sumOf({ name: "w", needs: [{ kind: "sub-issues-done", task: 3, title: "Goal", progress: { done: 2, total: 2 } }, { kind: "sub-issues-done" }] });
+  assert.deepEqual(s.needs.filter((n) => n.kind === "sub-issues-done").map((n) => [n.task, n.progress]), [[3, { done: 2, total: 2 }], [null, null]]);
+  const ns = needsOf({ ...s, tasks: [{ id: 3, state: "ready", title: "Goal" }] }).filter((n) => n.kind === "sub-issues-done");
+  assert.deepEqual(ns.map((n) => [n.task.id, n.task.title, n.progress]), [[3, "Goal", { done: 2, total: 2 }]]);
+  assert.deepEqual(needsOf(s).map((n) => [n.kind, n.task.id, n.task.title]), [["sub-issues-done", 3, "Goal"]]); // no tasks read: the need carries its title
 }
 console.log("rail-test: ok");

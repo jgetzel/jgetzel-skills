@@ -56,7 +56,8 @@ const COUNTS = Ox({ backlog: Nx, ready: Nx, in_progress: Nx, needs_input: Nx, in
 const CATCOUNTS = Ox({ backlog: Nx, unstarted: Nx, started: Nx, completed: Nx, cancelled: Nx });
 const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, repos: Lx(Tx, 50), status: Tx, role: Tx, model: Tx, stay: Tx,
   task: Ox({ id: Nx, title: Tx, state: Tx }), idle_s: Nx, hung: Bx });
-const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx, deps: Lx(Nx, 200) });
+const PROG = Ox({ done: Nx, total: Nx }); // a parent's sub-issue progress: done of total leaves, any depth
+const need = Ox({ kind: Tx, task: Nx, agent: Tx, question: Px, title: Tx, run: Nx, url: Tx, created: Tx, line: Tx, deps: Lx(Nx, 200), progress: PROG });
 const CI = Ox({ id: Nx, repo: Tx, status: Tx, conclusion: Tx, url: Tx, created: Tx });
 // A swarm's repo: {path, base, ci, locks, swarms} (the other live swarms on it), or a bare path from an older CLI.
 const repoOf = (x) => (typeof x === "string" ? { path: Tx(x), base: null, ci: null, locks: null, swarms: [] }
@@ -89,7 +90,7 @@ const task = Ox({ id: Nx, state: Tx, category: Tx, owner: Tx, assignee: Tx, land
   dup_of: Nx, dropped_at: Nx, waiting: Bx, undone: Lx(Nx, 200), cancelled_deps: Lx(Nx, 200),
   pr: Nx, lease_left: Nx, base: Tx, work_s: Nx, first_claimed_at: Nx, answer: Px, evidence: Px, blocks: Lx(Nx, 200), holders: Lx(Tx, 50),
   claims: Nx, releases: Nx, created_at: Nx, created_by: Tx, model: Tx, effort: Tx, ci_conclusion: Tx, merge_to_green_s: Nx, queue_wait_s: Nx,
-  claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20) });
+  claim_ctx: Nx, done_ctx: Nx, done_at: Nx, labels: Lx(Tx, 20), parent: Nx, progress: PROG });
 const AWAY = (x) => (x === true ? { since: null, note: null } : Ox({ since: Nx, note: Tx })(x)); // the banner's since and note
 const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts: COUNTS, categories: CATCOUNTS, limits: Ox({ min: Nx, max: Nx, held: Tx, ctx_nudge: Nx, ctx_compact: Nx, compact_stayers: Bx }),
   rules: Px, // II.3k
@@ -761,6 +762,8 @@ export function needsOf(s) {
   out.push(...asksOf(s));
   out.push(...(s.tasks ?? []).filter((k) => (k.state === "ready" || k.state === "backlog") && (k.cancelled_deps ?? []).length)
     .map((k) => ({ kind: "dep-cancelled", task: k, deps: k.cancelled_deps })));
+  out.push(...(Array.isArray(s.needs) ? s.needs : []).filter((n) => n?.kind === "sub-issues-done" && n.task != null)
+    .map((n) => ({ kind: "sub-issues-done", task: (s.tasks ?? []).find((k) => k.id === n.task) ?? { id: n.task, title: n.title, state: "in_progress" }, progress: n.progress ?? null })));
   if (s.machine?.high) out.push({ kind: "memory", line: (s.machine.line ?? "").replace(/^machine: /, "") });
   return out;
 }
@@ -809,6 +812,27 @@ const undoneOf = (k, by) => (Array.isArray(k.undone) ? k.undone : (k.deps ?? k.a
 // `task after` for `k` without the deps `gone` (the whole remaining list: it replaces the deps, an empty one clears them), and `task drop`.
 export const dropDepArgs = (k, gone) => ["task", "after", String(k.id), ...(k.deps ?? k.after ?? []).filter((d) => !gone.includes(d)).map(String)];
 export const cancelArgs = (id) => ["task", "drop", String(id)];
+// `task parent` (parent null: `--none`), `task done` with its evidence (and what becomes of open sub-issues), and a refused
+// done or drop run again with `--children cancel|keep`; the CLI's refusal names "open sub-issues".
+export const parentArgs = (id, parent) => ["task", "parent", String(id), parent == null ? "--none" : String(parent)];
+export const doneArgs = (id, evidence, children = null) => ["task", "done", String(id), "--evidence", evidence, ...(children ? ["--children", children] : [])];
+export const childrenArgs = (args, how) => [...args, "--children", how];
+// Completing a task the user doesn't hold (a parent whose sub-issues are done): `task done` is the claimant's, so the user claims it
+// first; `runAll` runs such a list through `run(args)` and stops at the first refusal, releasing the claim it took.
+export const completeArgs = (id, evidence = "all sub-issues done") => [["task", "claim", String(id)], doneArgs(id, evidence)];
+export async function runAll(run, seq) {
+  const list = Array.isArray(seq[0]) ? seq : [seq];
+  let r = { code: 0, stdout: "", stderr: "" };
+  for (let i = 0; i < list.length; i++) {
+    r = await run(list[i]);
+    if (r.code !== 0) {
+      if (i > 0 && list[0][1] === "claim") await run(["task", "release", list[0][2]]).catch(() => null);
+      return { ...r, failed: list[i], single: list.length === 1 };
+    }
+  }
+  return r;
+}
+export const childrenRefused = (text) => /open sub-issues/.test(String(text ?? ""));
 // The board's tasks still to do, with what each waits on: Needs Input, started, Ready in order (waiting ones after the
 // startable), then Backlog.
 export function boardRows(s) {
@@ -865,6 +889,80 @@ export function labelCounts(tasks) {
   const n = new Map();
   for (const k of tasks ?? []) if (!isClosed(k)) for (const l of k.labels ?? []) n.set(l, (n.get(l) ?? 0) + 1);
   return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+}
+// ---- Sub-issues and labels: how the Board groups by label and by parent ----------------------------------------------
+// Tasks per state word: {state: n}.
+export const stateCounts = (ks) => { const c = {}; for (const k of ks) c[k.state] = (c[k.state] ?? 0) + 1; return c; };
+// The segments of a state bar, in order: [[state, n]], Completed first. `done` of `total` leaves are Completed (a parent's
+// progress, right where its Completed children are paged out); `leaves` the open leaves read, which fill the rest.
+export function barOf(progress, leaves) {
+  const open = stateCounts((leaves ?? []).filter((k) => !isClosed(k))), n = Object.values(open).reduce((a, b) => a + b, 0);
+  const done = progress ? progress.done : (leaves ?? []).filter((k) => k.state === "completed").length;
+  const total = progress ? progress.total : done + n;
+  if (total - done > n) open.backlog = (open.backlog ?? 0) + (total - done - n);
+  return [["completed", done], ...["in_review", "in_progress", "needs_input", "ready", "backlog"].map((s) => [s, open[s] ?? 0])].filter(([, c]) => c > 0);
+}
+// The label groups of the open tasks, the most open first, then by name; a task with several labels is in each (its
+// `labels` length tells); Unlabelled last. [{label, ks, counts}], label null for Unlabelled.
+export function labelGroups(tasks) {
+  const by = new Map(), none = [];
+  for (const k of tasks ?? []) {
+    if (isClosed(k)) continue;
+    const ls = [...new Set(k.labels ?? [])];
+    if (!ls.length) none.push(k);
+    for (const l of ls) (by.get(l) ?? by.set(l, []).get(l)).push(k);
+  }
+  const gs = [...by].map(([label, ks]) => ({ label, ks, counts: stateCounts(ks) }))
+    .sort((x, y) => y.ks.length - x.ks.length || (x.label < y.label ? -1 : x.label > y.label ? 1 : 0));
+  if (none.length) gs.push({ label: null, ks: none, counts: stateCounts(none) });
+  return gs;
+}
+// The parent tree of `tasks`: a parent with no parent among them is a root; `kids` maps a task id to its children (open ones
+// first, Completed after, a Cancelled one never); `info` a parent's leaves and its descendants' labels; `none` the tasks with
+// neither a parent nor children. A root shows when it is open, has an open descendant (a Completed or Cancelled parent with open
+// children is shown, `closed`), or `keep` says so (done today); `match` (a label filter) keeps the tasks that match and
+// the parents of one. Roots: the most descendants first.
+export function parentTree(tasks, { keep = () => false, match = null } = {}) {
+  const by = byId(tasks), has = (k) => k.parent != null && k.parent !== k.id && by.has(k.parent);
+  const all = new Map();
+  for (const k of tasks ?? []) if (has(k)) (all.get(k.parent) ?? all.set(k.parent, []).get(k.parent)).push(k);
+  const memo = new Map(), seen = new Set();
+  const info = (k) => { // leaves under k, the labels under it, whether an open or matching task is under it
+    let r = memo.get(k.id);
+    if (r) return r;
+    r = { leaves: [], labels: new Map(), open: false, hit: false, n: 0 };
+    memo.set(k.id, r);
+    if (seen.has(k.id)) return r;
+    seen.add(k.id);
+    for (const c of all.get(k.id) ?? []) {
+      const ci = info(c), leaf = !all.has(c.id);
+      r.n += 1 + ci.n; r.open ||= !isClosed(c) || ci.open; r.hit ||= !match || match(c) || ci.hit;
+      if (leaf) r.leaves.push(c); else r.leaves.push(...ci.leaves);
+      for (const l of c.labels ?? []) r.labels.set(l, (r.labels.get(l) ?? 0) + 1);
+      for (const [l, n] of ci.labels) r.labels.set(l, (r.labels.get(l) ?? 0) + n);
+    }
+    seen.delete(k.id);
+    return r;
+  };
+  const kids = new Map();
+  for (const [p, cs] of all) {
+    const out = cs.filter((c) => c.state !== "cancelled" && c.state !== "duplicate" || info(c).open)
+      .filter((c) => !match || match(c) || info(c).hit)
+      .filter((c) => !isClosed(c) || c.state === "completed" || info(c).open);
+    out.sort((a, b) => Number(isClosed(a)) - Number(isClosed(b)) || (a.place ?? 1e9) - (b.place ?? 1e9) || a.id - b.id);
+    kids.set(p, out);
+  }
+  const roots = [], none = [];
+  for (const k of tasks ?? []) {
+    if (has(k)) continue;
+    if (all.has(k.id)) {
+      const i = info(k);
+      if ((!isClosed(k) || i.open || keep(k)) && (!match || match(k) || i.hit)) roots.push(k);
+    } else if (!isClosed(k) || keep(k)) if (!match || match(k)) none.push(k);
+  }
+  roots.sort((a, b) => info(b).n - info(a).n || a.id - b.id);
+  const EMPTY = { leaves: [], labels: new Map(), open: false, hit: false, n: 0 };
+  return { roots, kids, none, info: (x) => { const k = typeof x === "object" ? x : by.get(x); return k ? info(k) : EMPTY; } };
 }
 // Open tasks per model word, most first: [[word, n]] (a task with no model is not counted).
 export function modelCounts(tasks) {
