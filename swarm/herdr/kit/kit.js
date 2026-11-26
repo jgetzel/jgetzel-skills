@@ -249,7 +249,7 @@ export function issueRow(t, m, k, { onClick, sel = null, tags = [], assignees = 
       .child(div().min_w(0).truncate().text_color(k.state === "done" ? t.dim : t.foreground).child(k.title ?? ""))
       .when(Boolean(note), (el) => el.child(meta(t, note))))
     .children(tags).children(assignees.map((a) => assignee(t, a)))
-    .child(div().w(34).flex_none().text_right().font_family(MONO).text_size(10).text_color(t.dim).child(age));
+    .child(div().w(44).flex_none().text_right().font_family(MONO).text_size(10).text_color(t.dim).child(age));
   return synced(row, t, m, sel, swarmColor(t, assignees[0]?.swarm ?? ""), ROW);
 }
 // An agent: status glyph first, name, what it does, then the caller's right side (ctx, idle, repo tags). Compact in the rail.

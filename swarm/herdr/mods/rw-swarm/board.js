@@ -26,7 +26,7 @@ const ROWP = kit.ROW - 4; // a parent row's glass capsule
 const segsOf = (counts) => BAR.map((s) => [s, counts[s] ?? 0]);
 const QUIET_READ = 30000; // the board is read again this often without events: its ages and leases move
 const LEASE = 7200; // a claim's default lease (2h): the lease bar's full width
-const PEEK = 420, IB = 68, NARROW = 760;
+const PEEK = 420, IB = 76, NARROW = 760;
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const hhmm = (sec) => (sec ? new Date(sec * 1000).toTimeString().slice(0, 5) : "");
 const hash = (x) => { let h = 0; for (const c of String(x)) h = (h * 31 + c.charCodeAt(0)) | 0; return (h >>> 0).toString(36); };
@@ -419,7 +419,9 @@ export class SwarmBoard {
         const ks = g.ks.filter((k) => k.st === st).sort((a, b) => (a.place ?? 1e9) - (b.place ?? 1e9) || a.id - b.id); // Ready and Backlog by place
         if (!ks.length) continue;
         push(`s:${gk}:${st}`, kit.ROW_C, () => kit.stateHeader(t, `sb-st-${gk}-${st}`, st, label, ks.length));
-        for (const k of ks) push(`r:${gk}:${k.id}`, kit.ROW, () => this.row(t, k, g.path, gk));
+        const [rows, rest, n] = this.capped(`s:${gk}:${st}`, ks); // a card draws 25 rows: 400 overran the render deadline
+        for (const k of rows) push(`r:${gk}:${k.id}`, kit.ROW, () => this.row(t, k, g.path, gk));
+        if (rest > 0) push(`mr:${gk}:${st}`, kit.ROW_C, () => this.moreRow(t, `s:${gk}:${st}`, rest, n));
       }
     }
   }
@@ -742,7 +744,7 @@ export class SwarmBoard {
       .child(div().pt(3).flex_none().child(this.glyph(t, n, kind)))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(kind === "asks" || n.kind === "ci-red" ? kit.colors(t).asks : t.foreground).child(words))
-        .child(div().truncate().text_size(kit.TYPE.meta).text_color(t.dim).child(sub))
+        .when(sub !== "", (el) => el.child(div().truncate().text_size(kit.TYPE.meta).text_color(t.dim).child(sub)))
         .child(h_flex().gap(6).items_center().children(chips).children(n.repos.slice(0, 3).map((r) => kit.repoTag(t, r, repoName(r).slice(0, 6))))
           .when(Boolean(n.agent), (el) => el.child(kit.assignee(t, { name: n.agent, swarm: n.swarm, status: statusOf(n.a) })))))
       .child(div().flex_none().font_family(this.mono()).text_size(10).text_color(t.dim).child(age));
