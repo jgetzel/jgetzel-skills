@@ -216,7 +216,7 @@ def groupBy [BEq κ] [Hashable κ] (xs : List α) (key : α → List κ) : Std.H
 the deps not Completed (`undone`) and the Cancelled or Duplicate ones among them, waiting and blocks. `evs`: its events;
 `st`: each task's state; `pl`: each Ready and Backlog task's place; `waitersOf`: the Ready and Backlog tasks naming it a
 dep. -/
-def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat)
+def taskJson (r : Task) (tree : Tasks.Tree) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat)
     (waitersOf : Array Task) : Json :=
   let tm := Tasks.timing r evs t
   let deps := Tasks.depsOf r
@@ -236,6 +236,7 @@ def taskJson (r : Task) (evs : List Event) (t : Int) (st : Std.HashMap Int Statu
     ("base", N r.base), ("stop_to", N r.stop_to), ("stop_msg", NI r.stop_msg), ("priority", .str r.priority.text),
     ("land_sha", N r.land_sha), ("lander", N r.lander), ("landing_at", NI r.landing_at),
     ("labels", .arr ((Tasks.labelsOf r).map .str).toArray), ("parents", .arr ((Tasks.parentsOf r).map Json.int).toArray),
+    ("parent", NI r.parent), ("progress", SwarmLean.Json.progress (tree.progress r.id)),
     ("lease_left", NI lease), ("waiting", .bool !undone.isEmpty), ("undone", .arr (undone.map Json.int).toArray),
     ("cancelled_deps", .arr (cancelled.map Json.int).toArray), ("blocks", .arr (blocks.map fun b => Json.int b).toArray),
     ("queue_wait_s", NI tm.queue_wait_s), ("work_s", NI tm.work_s), ("total_s", NI tm.total_s),
@@ -378,6 +379,9 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
     | l => some (r, l)
   let needs := asks.map (fun r => need "question" [("task", some (Json.int r.id)), ("agent", r.owner.map .str),
       ("question", r.question.map .str), ("title", r.title.map .str)]) ++
+    (let tree := Tasks.Tree.ofDb db
+     tree.allDone.filterMap db.find).map (fun r => need "sub-issues-done" [("task", some (Json.int r.id)), ("title", r.title.map .str),
+      ("progress", some (SwarmLean.Json.progress ((Tasks.Tree.ofDb db).progress r.id)))]) ++
     depCancelled.map (fun (r, l) => need "dep-cancelled" [("task", some (Json.int r.id)), ("title", r.title.map .str),
       ("deps", some (.arr (l.map Json.int).toArray))]) ++
     (live.filter fun x => x.status == some .blocked && !asks.any (·.owner == some x.name)).map
@@ -418,7 +422,7 @@ def state (a : Parsed) : m UInt32 := do
   if view == some "summary" then  -- the agents, the tasks not done, the CI runs, two knobs and the live stayers' signs
     let db ← Store.run do
       let d0 ← Txn.slice [Sels.all .agent]
-      Txn.slice ([Sels.all .agent, Sels.metas ["comms", "away"], Sels.undone, Sels.all .ci] ++
+      Txn.slice ([Sels.all .agent, Sels.metas ["comms", "away"], Sels.undone, Sels.parented, Sels.all .ci] ++
         (d0.agents.filter fun x => x.ended.isNone && (py x.stay).isSome).map Sels.staySigns)
     Env.out (Json.encode (← summary db (← taskStates) p t))
     return 0
@@ -460,7 +464,7 @@ def state (a : Parsed) : m UInt32 := do
     let evNs := (d0.agents.filter fun x => full || (lanes && x.ended.isNone) || me == some x.name).map (·.name)
     let msgNs := (d0.agents.filter fun x => full || me == some x.name).map (·.name)
     let taskSels : List Sel := if full || view == some "graph" then [Sels.all .task] else
-      [Sels.undone, Sels.tasks page] ++ me.toList.map Sels.owned ++ (if fateNs.isEmpty then [] else [Sels.ownedBy fateNs])
+      [Sels.undone, Sels.parented, Sels.tasks page] ++ me.toList.map Sels.owned ++ (if fateNs.isEmpty then [] else [Sels.ownedBy fateNs])
     let evSels : List Sel := (if wants view "events" then [Sels.feed feedN] else []) ++ [Sels.kinds Tasks.TASK_KINDS] ++
       evNs.map (fun n => Sels.feed 5 (some n)) ++ stayers.map Sels.staySigns ++
       fateNs.flatMap (fun n => [Sels.lastEv n "stay", ({ table := .event, cond := Sels.evOf n "digest" } : Sel)]) ++
@@ -493,8 +497,9 @@ def state (a : Parsed) : m UInt32 := do
     evShown.filterMap fun e => (Tasks.eventTask e).map fun i => (i : Int)
   let sent (r : Task) : Bool := full || !(r.status = .completed || r.category = .cancelled) || page.contains r.id ||
     (r.status = .completed && me.isSome && r.owner == me)
+  let tree := Tasks.Tree.ofDb db
   let tasksJ := (db.tasks.filter sent).map fun r =>
-    (taskJson r (tevBy.getD r.id #[]).toList t stOf pl (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
+    (taskJson r tree (tevBy.getD r.id #[]).toList t stOf pl (waitersBy.getD r.id #[])).setObjVal! "mine" (.bool (isOurs r.id))
   let endedPage := if view == some "agents" then
       (((db.agents.filter fun x => x.ended.isSome && below (x.ended.getD 0)).mergeSort fun x y => x.ended.getD 0 ≥ y.ended.getD 0).take 60).map (·.name)
     else []

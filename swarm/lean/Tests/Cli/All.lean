@@ -14,6 +14,7 @@ import Tests.Cli.Scale
 import Tests.Cli.Spawn
 import Tests.Cli.Stay
 import Tests.Cli.Stop
+import Tests.Cli.SubIssues
 import Tests.Cli.WatchdRun
 import Tests.Spec.Cost
 import Tests.Spec.Db
@@ -45,6 +46,7 @@ def specs : List (String × List Case) := [
   ("cli_spawn_spec", Spawn.tests),
   ("cli_stay_spec", Stay.tests),
   ("cli_stop_spec", Stop.tests),
+  ("cli_subissues_spec", SubIssues.tests),
   ("cli_watchd_run_spec", WatchdRun.tests),
   ("cost_spec", Spec.Cost.tests),
   ("db_spec", Spec.Db.tests),

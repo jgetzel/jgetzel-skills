@@ -1,6 +1,7 @@
 import SwarmLean.Lib.Swarms
 import SwarmLean.Lib.Machine
 import SwarmLean.Lib.Run
+import SwarmLean.Lib.Json
 import SwarmLean.Db.Plan
 import SwarmLean.Db.Tasks
 import SwarmLean.Lib.Watchd
@@ -67,6 +68,8 @@ structure T where
   note : Option String
   pos : Option Int
   priority : Priority
+  /-- its goal parent -/
+  parent : Option Int := none
 
 /-- Each Ready and Backlog task's place in its list, 1..n (`Queue.place`): by position, then id, machine-wide. -/
 def places (all : List T) : Std.HashMap Int Nat :=
@@ -79,7 +82,11 @@ def places (all : List T) : Std.HashMap Int Nat :=
 assignee, no dep not Completed; a `main red:` task first, then Ready by place. -/
 def startable (all ks : List T) : List T :=
   let undone : Std.HashSet Int := all.foldl (fun h k => if k.state == .completed then h else h.insert k.id) {}
-  let ok := ks.filter fun k => k.state == .ready && (py k.owner).isNone && !k.deps.any undone.contains
+  -- a task with an open sub-issue is a container: never staffed
+  let busy : Std.HashSet Int := all.foldl (fun h k => match k.parent with
+    | some p => if k.state.closed then h else h.insert p
+    | none => h) {}
+  let ok := ks.filter fun k => k.state == .ready && (py k.owner).isNone && !k.deps.any undone.contains && !busy.contains k.id
   let rank (k : T) : List Int :=
     [if (k.title.getD "").startsWith "main red: " then 0 else 1, k.pos.getD (1 <<< 40), k.id]
   let rec lex : List Int → List Int → Bool
@@ -101,7 +108,7 @@ or Duplicate dependency; a Backlog task alone is no need), lock (a lock of an ag
 agent at its swarm's ctx_nudge), ci-red (a repo's newest finished run on its base). `st`: every task's state; `pl`:
 the places; `ts`: the tasks; `trs`: their repos; `ws`: worktrees (agent, repo, path); `rps`: repos; `lks`: locks;
 `upd`: each task's last event; `cis`: CI runs, newest first; `agents`: (swarm, row); `evs`: stay-hung events. -/
-def machine (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat) (ts trs : List (Array Val)) (ws : List (String × String × String)) (rps lks upd cis : List (Array Val))
+def machine (t : Int) (tree : Tasks.Tree) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat) (ts trs : List (Array Val)) (ws : List (String × String × String)) (rps lks upd cis : List (Array Val))
     (agents : List (String × Agent)) (sws : List Swarms.Row) (knob : String → String → Option String)
     (evs : List (String × String × Int)) : Array Json × Array Json × Array Json :=
   let txt (v : Option Val) : Option String := Swarms.txt v
@@ -135,6 +142,7 @@ def machine (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat) (
       ("category", .str state.category.text), ("place", Json.oint ((pl.get? id).map (·))),
       ("priority", .str ((Priority.ofNum (int r[3]?)).toOption.getD .medium).text),
       ("assignee", Json.ostr owner), ("dup_of", Json.oint (int r[19]?)),
+      ("parent", Json.oint (int r[20]?)), ("progress", SwarmLean.Json.progress (tree.progress id)),
       ("waiting", .arr ((waiting r).map fun (x, s) => Json.mkObj [("id", Json.int x), ("state", .str s.text)]).toArray),
       ("labels", .arr ((commaPieces ((txt r[4]?).getD "")).map Json.str).toArray),
       ("repos", .arr ((repos.getD id []).map fun (rp, b) =>
@@ -176,6 +184,10 @@ def machine (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat) (
   let depNeeds := (ts.filter fun r => (stateOf (txt r[2]?)).any (·.category == .unstarted) &&
       (waiting r).any (·.2.category == .cancelled)).map fun r =>
     ofTask "dep-cancelled" r [("deps", .arr (((waiting r).filter (·.2.category == .cancelled)).map (Json.int ·.1)).toArray)]
+  let allDone := tree.allDone
+  let subDone := (ts.filter fun r => (int r[0]?).any allDone.contains).map fun r =>
+    let i := (int r[0]?).getD 0
+    ofTask "sub-issues-done" r [("progress", SwarmLean.Json.progress (tree.progress i))]
   let lockNeeds := (locks.filter fun (_, _, a, lu, _) => !(a.any isLive) || lu.any (· < t)).map fun (rp, lp, a, _, since) =>
     need "lock" [("repo", .str rp), ("path", .str lp), ("agent", Json.ostr a), ("since", Json.oint since)]
   let ctxs := live.filterMap fun (sw, x) =>
@@ -190,7 +202,7 @@ def machine (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat) (
         some (need "ci-red" [("repo", .str rp), ("run", Json.oint (int c[5]?)), ("sha", Json.ostr (txt c[6]?)), ("url", Json.ostr (txt c[3]?))])
       else none
     | none => none
-  (tasksJ.toArray, reposJ.toArray, (asks ++ hungs ++ landers ++ depNeeds ++ lockNeeds ++ ctxs ++ reds).toArray)
+  (tasksJ.toArray, reposJ.toArray, (asks ++ hungs ++ landers ++ depNeeds ++ subDone ++ lockNeeds ++ ctxs ++ reds).toArray)
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Env m] [Sys m] [Proc m] [Git m]
 
@@ -214,7 +226,7 @@ def view (t : Int) : m Json := do
   let acols := ", ".intercalate (Row.cols Agent)
   let rs ← Sys.sqlAt p schema [
     (s!"select swarm, {acols} from agent where swarm is not null", []),
-    ("select id, state, owner, created_by, title, question, deps, hold, qpos, priority from task", []),
+    ("select id, state, owner, created_by, title, question, deps, hold, qpos, priority, parent from task", []),
     ("select task, repo from task_repo", []),
     ("select agent, repo from workspace where repo <> '' order by path", []),
     (s!"select scope, k, v from meta where k in ({", ".intercalate (KNOBS.map fun k => s!"'{k}'")})", []),
@@ -225,7 +237,7 @@ def view (t : Int) : m Json := do
     ("select repo, count(*) from lock group by repo", []),
     -- the machine-wide board (board #120): the tasks listed, their repos with bases, worktrees, repos, locks, last events
     (s!"select t.id, t.title, t.state, t.priority, t.labels, t.deps, t.hold, t.lease_until, t.created_by, t.owner, " ++
-      s!"t.created_at, t.question, t.land_sha, t.lander, t.landing_at, t.first_claimed_at, t.done_at, t.dropped_at, t.qpos, t.dup_of from task t where {listed} order by t.id", []),
+      s!"t.created_at, t.question, t.land_sha, t.lander, t.landing_at, t.first_claimed_at, t.done_at, t.dropped_at, t.qpos, t.dup_of, t.parent from task t where {listed} order by t.id", []),
     (s!"select tr.task, tr.repo, coalesce(nullif(tr.base, ''), nullif(t.base, ''), r.base) from task_repo tr " ++
       s!"join task t on t.id = tr.task left join repo r on r.path = tr.repo where {listed} order by tr.task, tr.rowid", []),
     ("select agent, repo, path from workspace where repo <> '' and agent is not null order by path", []),
@@ -245,8 +257,10 @@ def view (t : Int) : m Json := do
   let tasks : List T := (rows 1).filterMap fun r => (int r[0]?).map fun id =>
     { id, state := (stateOf (txt r[1]?)).getD .ready, owner := py (txt r[2]?), by_ := py (txt r[3]?), title := txt r[4]?,
       question := txt r[5]?, deps := ((txt r[6]?).map fun d => (commaPieces d).filterMap parseInt).getD [],
-      note := py (txt r[7]?), pos := int r[8]?, priority := (Priority.ofNum (int r[9]?)).toOption.getD .medium }
+      note := py (txt r[7]?), pos := int r[8]?, priority := (Priority.ofNum (int r[9]?)).toOption.getD .medium, parent := int r[10]? }
   let stOf : Std.HashMap Int Status := tasks.foldl (fun h k => h.insert k.id k.state) {}
+  let tree := Tasks.Tree.ofNodes (tasks.map fun k => (k.id, k.state, k.parent))
+  let allDone := tree.allDone
   let pl := places tasks
   let taskRepos : Std.HashMap Int (List String) := (rows 2).foldl (init := {}) fun h r =>
     match int r[0]?, txt r[1]? with
@@ -335,6 +349,9 @@ def view (t : Int) : m Json := do
     let deps := (ks.filter fun k => k.state.category == .unstarted && !(cancelledDeps k).isEmpty).map fun k =>
       obj [("kind", some (.str "dep-cancelled")), ("task", some (Json.int k.id)), ("title", k.title.map .str),
         ("deps", some (.arr ((cancelledDeps k).map Json.int).toArray))]
+    let subs := (ks.filter fun k => allDone.contains k.id).map fun k =>
+      obj [("kind", some (.str "sub-issues-done")), ("task", some (Json.int k.id)), ("title", k.title.map .str),
+        ("progress", some (SwarmLean.Json.progress (tree.progress k.id)))]
     let names := alive.map (·.name)
     let rss := (held.filter fun h => names.contains h.agent).foldl (· + ·.kb) 0
     let commsHc := (alive.find? fun x => some x.name == cv && !gone x).bind (py ·.hc)
@@ -360,9 +377,9 @@ def view (t : Int) : m Json := do
         ("place", (pl.get? k.id).map (Json.int ·)), ("priority", some (.str k.priority.text))]).toArray),
       ("ready", Json.int next.length),
       ("ci", (ci.map ciJson).getD .null),
-      ("agents", .arr ags), ("needs", .arr (qs.toArray ++ deps.toArray ++ needs)), ("rss_kb", Json.int rss),
+      ("agents", .arr ags), ("needs", .arr (qs.toArray ++ deps.toArray ++ subs.toArray ++ needs)), ("rss_kb", Json.int rss),
       ("away", .bool (knob sw.name "away").isSome)])
-  let (tasksJ, reposJ, needsJ) := machine t stOf pl (rows 10) (rows 11) wsRows (rows 13) (rows 14) (rows 15) (rows 7) agents sws knob evs
+  let (tasksJ, reposJ, needsJ) := machine t tree stOf pl (rows 10) (rows 11) wsRows (rows 13) (rows 14) (rows 15) (rows 7) agents sws knob evs
   return Json.mkObj [("now", Json.int t), ("view", .str "swarms"), ("db", .str p),
     ("counts", Json.mkObj (STATES.map fun s => (s.text, Json.int (tasks.filter (·.state == s)).length))),
     ("categories", Json.mkObj (CATEGORIES.map fun c => (c.text, Json.int (tasks.filter (·.state.category == c)).length))),

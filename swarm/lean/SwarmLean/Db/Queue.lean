@@ -135,11 +135,15 @@ def assign (c : Ctx) (id : Int) (who : Option String) (db : Db) : Db × Except S
 /-- Staffed by auto-spawn and offered to an agent asking for work: no assignee reserves it. -/
 def free (t : Task) : Bool := t.assignee.isNone
 
-/-- Startable `main red:` tasks no one is assigned, in pool order. -/
-def staffRed (db : Db) : List Task := (pool db).filter fun t => free t && redKey t == 1
+/-- Startable `main red:` tasks no one is assigned, in pool order. A task with an open sub-issue is a container: never staffed. -/
+def staffRed (db : Db) : List Task :=
+  let busy := (Tree.ofDb db).openParents
+  (pool db).filter fun t => free t && redKey t == 1 && !busy.contains (t.id : Int)
 
 /-- Startable Ready tasks no one is assigned (no red one), in place order. -/
-def staffReady (db : Db) : List Task := (pool db).filter fun t => free t && redKey t == 0
+def staffReady (db : Db) : List Task :=
+  let busy := (Tree.ofDb db).openParents
+  (pool db).filter fun t => free t && redKey t == 0 && !busy.contains (t.id : Int)
 
 /-- The tasks to staff, in order: a red main's task, then Ready by place; never a Backlog task, one waiting on a
 dependency or one reserved for an assignee. Auto-spawn staffs from it and an idle agent is told of it. -/
@@ -153,23 +157,51 @@ def whyNot (db : Db) (t : Task) : Option String :=
   if t.status = .backlog then some s!"backlog{match t.note with | some n => ": " ++ n | none => ""}"
   else if t.status ≠ .ready then some s!"{t.status.name}{match py t.assignee with | some a => " by " ++ a | none => ""}"
   else if let some a := py t.assignee then some s!"assigned to {a}"
+  else if isContainer db t then some "has open sub-issues"
   else if (pool db).any (·.id == t.id) then none
   else match undone db t with
     | [] => if stopPending db t then some s!"waits for {t.stop_to.getD "nil"} to read its stop" else some t.status.name
     | u => some ("waiting on " ++ idsText (u.map fun x => (x.id : Int)) ++
         if u.any (·.status.category = .cancelled) then " (cancelled)" else "")
 
+/-- The open sub-issues of task `id` when it closes, per `--children`: refused with their number without it, left as
+they are with `keep`, cancelled with `cancel` (each as `task drop` would, by whoever may drop it). -/
+def closeKids (c : Ctx) (db0 db : Db) (id : Int) : Db × Except String Unit :=
+  let ids := (Tree.ofDb db0).openBelow id
+  if ids.isEmpty then (db, .ok ())
+  else match c.children with
+    | some "keep" => (db, .ok ())
+    | some "cancel" =>
+      let rs := ids.filterMap db.find
+      match rs.findSome? (notMineToClose c db) with
+      | some e => (db, .error e)
+      | none =>
+        let db := rs.foldl (fun db r =>
+          (db.set r.id fun t => { t with state := t.state.toCancelled, dropped_at := some c.now }).log c.now (some c.me) "drop" none
+            (some s!"#{d r.id} sub-issue of #{d id}")) db
+        (db, .ok ())
+    | _ => (db, .error s!"#{d id} has {ids.length} open sub-issues: --children cancel cancels them too, --children keep leaves them open (they stay its sub-issues)")
+
 /-- `task done`, and a completed task's place goes; the count is of the tasks to staff after it. -/
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=
   match Tasks.done c id evidence db with
-  | (db', .ok (.done k st _)) => let db' := tidy db'; (db', .ok (.done k st (staffing db').length))
-  | (db', .ok (.landed o)) => (tidy db', .ok (.landed o))
+  | (db', .ok (.done k st _)) =>
+    match closeKids c db db' id with
+    | (_, .error e) => (db, .error e)
+    | (db', _) => let db' := tidy db'; (db', .ok (.done k st (staffing db').length))
+  | (db', .ok (.landed o)) =>
+    match closeKids c db db' id with
+    | (_, .error e) => (db, .error e)
+    | (db', _) => (tidy db', .ok (.landed o))
   | r => r
 
 /-- `task drop`, and its place goes. -/
 def drop (c : Ctx) (id : Int) (dup : Option Int) (note : Option String) (db : Db) : Db × Except String (List Task) :=
   match Tasks.drop c id dup note db with
-  | (db', .ok ws) => (tidy db', .ok ws)
+  | (db', .ok ws) =>
+    match closeKids c db db' id with
+    | (_, .error e) => (db, .error e)
+    | (db', _) => (tidy db', .ok ws)
   | r => r
 
 end SwarmLean.Queue

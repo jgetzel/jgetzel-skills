@@ -13,6 +13,11 @@ def decode (s : String) : Option Json := (Json.parse s).toOption
 /-- Compact JSON text (json.encode). -/
 def encode (j : Json) : String := j.compress
 
+/-- A sub-issue progress as `{"done": d, "total": t}`; null for a task with no sub-issues. -/
+def progress : Option (Nat × Nat) → Json
+  | some (d, t) => Json.mkObj [("done", Json.num d), ("total", Json.num t)]
+  | none => .null
+
 /-- Field `k` of an object, none when absent, null, or `j` is not an object. -/
 def field (j : Json) (k : String) : Option Json :=
   match j.getObjVal? k with

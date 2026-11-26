@@ -77,6 +77,8 @@ structure Ctx where
   force : Bool := false
   /-- `task done` of a landing task: its evidence names a commit on the task's base (checked with git first) -/
   onBase : Bool := false
+  /-- `task done` / `task drop --children`: what to do with the open sub-issues, `cancel` or `keep`; none: refuse them -/
+  children : Option String := none
 
 /-- What `task add` was given. -/
 structure AddArgs where
@@ -89,6 +91,8 @@ structure AddArgs where
   priority : Option Priority := none
   /-- `--label`: its labels, comma-separated as given -/
   labels : Option String := none
+  /-- `--parent`: the task it is a sub-issue of -/
+  parent : Option Int := none
 
 /-- What a successful claim prints: the lease's end and the body. -/
 structure Claimed where

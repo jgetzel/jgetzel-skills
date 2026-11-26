@@ -77,7 +77,7 @@ def agents (ns : List (Option String)) : List Sel :=
 /-- `task add`: its deps, the creator's held tasks, the places (a new task goes to the end of Ready) and the next
 task id. -/
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
-  Txn.update [tasks a.deps, Sels.owned c.me, queuedSel] [.task] (Tasks.add c a)
+  Txn.update [tasks a.deps, tasks a.parent.toList, Sels.owned c.me, queuedSel] [.task] (Tasks.add c a)
 
 /-- The claim of task `id` on its slice: the task's row by a guarded update, then the rest with the
 held notes taken (`Notes.takeHeld`). -/
@@ -115,7 +115,7 @@ def one (id : Int) (f : Db → Db × α) : Txn α := Txn.update [task id] [] f
 /-- `task done`, the task out of the queue: the task, the communicator, the agent and what `staffing` reads. -/
 def done (c : Ctx) (id : Int) (evidence : String) : Txn (Except String DoneOut) := do
   let ps ← poolSels
-  Txn.update ([task id, Sels.metas ["comms"], Sels.agent c.me] ++ ps) [] (Queue.done c id evidence)
+  Txn.update ([task id, Sels.metas ["comms"], Sels.agent c.me, Sels.parented] ++ ps) [] (Queue.done c id evidence)
 
 /-- `task land`: the task and the lander's row, for its message. -/
 def land (c : Ctx) (id : Int) (sha : String) (lander : Option String) : Txn (Except String Unit) :=
@@ -147,14 +147,19 @@ def edit (c : Ctx) (id : Int) (a : EditArgs) : Txn (Except String (List String �
 /-- `task drop`, its place gone: the task, the original it duplicates, the communicator, the agent's role, the waiters
 and the places. -/
 def drop (c : Ctx) (id : Int) (dup : Option Int) (note : Option String) : Txn (Except String (List Task)) :=
-  Txn.update [task id, tasks dup.toList, Sels.metas ["comms"], Sels.agent c.me, waitingSel, queuedSel] []
+  Txn.update [task id, tasks dup.toList, Sels.metas ["comms"], Sels.agent c.me, waitingSel, queuedSel, undoneSel, Sels.parented] []
     (Queue.drop c id dup note)
 
-/-- What `task show` reads: the task, its events, its deps and its waiters. -/
+/-- What `task show` reads: the task, its events, its deps and its waiters, and every task (its sub-issue tree, its
+ancestors and their progress). -/
 def showTxn (id : Int) : Txn Db := do
   let s ← Txn.slice [task id]
   let deps := ((s.find id).map depsOf).getD []
-  Txn.slice [task id, evs id, tasks deps, waitingSel, queuedSel]
+  Txn.slice [task id, evs id, tasks deps, waitingSel, queuedSel, allTasks]
+
+/-- `task parent`: every task (the cycle check walks the tree). -/
+def parent (c : Ctx) (id : Int) (p : Option Int) : Txn (Except String Unit) :=
+  Txn.update [allTasks] [] (Tasks.setParent c id p)
 
 /-- What `queue add` and `queue rm` read: the tasks named, the places and the communicator. -/
 def queueSels (ids : List Int) : List Sel := [tasks ids, queuedSel, Sels.metas ["comms"]]

@@ -4,11 +4,11 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add                   add a task (`task add -h`: how to write its body)\n   priority              set its priority: urgent, high, medium, low or none\n   after                 set the ids it waits on\n   claim                 claim a task before you work on it; prints its body and notes\n   renew                 extend your claim on long work\n   show                  the task, its edits and its notes\n   done                  finish a task whose work is on its base\n   land                  hand work that passed its checks to a lander\n   unland                a lander gives an In Review task back\n   block                 ask the human a question; the claim stays yours\n   unblock               answer a blocked task\n   release               give up your claim: back to Ready (not drop)\n   edit                  change the title or body, or --append a note\n   label                 set its labels\n   drop                  cancel the task\n   backlog               move a Ready task to Backlog\n   ready                 move a Backlog task to Ready\n   assign                reserve a task for an agent or a person"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add                   add a task (`task add -h`: how to write its body)\n   priority              set its priority: urgent, high, medium, low or none\n   after                 set the ids it waits on\n   claim                 claim a task before you work on it; prints its body and notes\n   renew                 extend your claim on long work\n   show                  the task, its edits and its notes\n   done                  finish a task whose work is on its base\n   land                  hand work that passed its checks to a lander\n   unland                a lander gives an In Review task back\n   block                 ask the human a question; the claim stays yours\n   unblock               answer a blocked task\n   release               give up your claim: back to Ready (not drop)\n   edit                  change the title or body, or --append a note\n   label                 set its labels\n   parent                set its goal parent (sub-issues), or --none\n   drop                  cancel the task\n   backlog               move a Ready task to Backlog\n   ready                 move a Backlog task to Ready\n   assign                reserve a task for an agent or a person"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
-  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nThe body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list,\n`- ` items for steps and files, backticks for paths, commands and identifiers. Pass it with `--body-file -` and a\nheredoc, never as one `--body \"...\"` paragraph.\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         urgent, high, medium, low or none (default medium)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
+  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>] [--parent <parent>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nThe body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list,\n`- ` items for steps and files, backticks for paths, commands and identifiers. Pass it with `--body-file -` and a\nheredoc, never as one `--body \"...\"` paragraph.\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         urgent, high, medium, low or none (default medium)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --parent <parent>     file it as a sub-issue of this open task (its goal parent; not the tasks you held when filing)\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
 
 /-- `swarm task priority -h`. -/
 def helpTaskPriority : String :=
@@ -52,11 +52,11 @@ def helpTaskRenew : String :=
 
 /-- `swarm task show -h`. -/
 def helpTaskShow : String :=
-  "Usage: swarm task show [-h] [--json] <id>\n\nthe task, its edits and its notes (`swarm post '#<id>'`)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json                the row and its notes as JSON"
+  "Usage: swarm task show [-h] [--json] <id>\n\nthe task, its edits and its notes (`swarm post '#<id>'`); Parent, Sub-issues (done/total over all leaves below it)\nand Filed from (the tasks its filer held; not a parent)\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --json                the row and its notes as JSON, with parent, parent_title, ancestors, sub_issues and progress"
 
 /-- `swarm task done -h`. -/
 def helpTaskDone : String :=
-  "Usage: swarm task done [-h] --evidence <evidence> <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --evidence <evidence>\n                         a landing task's: a commit on the task's base (its lander closes it)"
+  "Usage: swarm task done [-h] --evidence <evidence> [--children {cancel,keep}] <id>\n\nA task with open sub-issues is refused unless --children says what becomes of them. A parent is never completed by its\nlast sub-issue: the human is told all of them are done, and it is closed with this.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --evidence <evidence>\n                         a landing task's: a commit on the task's base (its lander closes it)\n   --children {cancel,keep}\n                         open sub-issues: cancel them too, or keep them open (they stay its sub-issues)"
 
 /-- `swarm task land -h`. -/
 def helpTaskLand : String :=
@@ -86,9 +86,13 @@ def helpTaskEdit : String :=
 def helpTaskLabel : String :=
   "Usage: swarm task label [-h] <id> [<labels>] ...\n\nArguments:\n   id\n   labels                its labels from now on: ui herdr or ui,herdr; none clears them\n\nOptions:\n   -h, --help            Show this help message and exit."
 
+/-- `swarm task parent -h`. -/
+def helpTaskParent : String :=
+  "Usage: swarm task parent [-h] [--none] <id> [<parent>]\n\nMakes <id> a sub-issue of <parent> (its goal parent; one parent per task), or with --none top level again. A parent with an\nopen sub-issue is a container: auto-spawn and offered work skip it. Refused: a task that is its own parent or below itself\n(a cycle), a parent that is closed.\n\nArguments:\n   id\n   parent\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --none                make it top level"
+
 /-- `swarm task drop -h`. -/
 def helpTaskDrop : String :=
-  "Usage: swarm task drop [-h] [--duplicate-of <duplicate_of>] [--note <note>] <id>\n\nCancels the task; with --duplicate-of it is a Duplicate of that task.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --duplicate-of <duplicate_of>\n                         the original task\n   --note <note>         why"
+  "Usage: swarm task drop [-h] [--duplicate-of <duplicate_of>] [--note <note>]\n       [--children {cancel,keep}] <id>\n\nCancels the task; with --duplicate-of it is a Duplicate of that task. A task with open sub-issues is refused unless\n--children says what becomes of them.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --duplicate-of <duplicate_of>\n                         the original task\n   --note <note>         why\n   --children {cancel,keep}\n                         open sub-issues: cancel them too, or keep them open (they stay its sub-issues)"
 
 /-- `swarm rules -h`. -/
 def helpRules : String :=
@@ -104,7 +108,7 @@ def helpRulesSet : String :=
 
 /-- `swarm board -h`. -/
 def helpBoard : String :=
-  "Usage: swarm board [-h] [--all] [--json]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --all\n   --json                the Board's snapshot, as `swarm state --json --view board` prints it"
+  "Usage: swarm board [-h] [--all] [--json] [--by {parent}]\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --all\n   --by {parent}        group as a tree: each parent's open sub-issues under it, a parent line with done/total\n   --json                the Board's snapshot, as `swarm state --json --view board` prints it"
 
 /-- `swarm  -h`. -/
 def helpRoot : String :=

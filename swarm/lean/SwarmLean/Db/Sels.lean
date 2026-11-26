@@ -28,6 +28,9 @@ def inbox (n : String) (dests : List String) (c : Int) : Sel :=
 /-- Task `id`. -/
 def task (id : Int) : Sel := { table := .task, cond := .eq "id" (.int id) }
 
+/-- The tasks that are sub-issues of another: with the tasks not done, every task a sub-issue tree's progress reads. -/
+def parented : Sel := { table := .task, cond := .notNull "parent" }
+
 /-- The tasks `n` owns. -/
 def owned (n : String) : Sel := { table := .task, cond := .eq "owner" (.text n) }
 

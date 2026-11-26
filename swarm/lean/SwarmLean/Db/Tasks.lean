@@ -1,6 +1,7 @@
 import SwarmLean.Db.Agents
 import SwarmLean.Db.Compact
 import SwarmLean.Db.Msgs
+import Std.Data.HashMap
 
 /-! tasks.lua's board logic as pure functions of the db: deps, the pool, timing, and each `task` action's effect.
 An action is `… → Db → Db × Except String α`: the db it leaves and its answer or the text it dies with. A die inside
@@ -20,7 +21,7 @@ def TITLE_MAX : Nat := 100
 /-- The event kinds about a task (tasks.TASK_KINDS). -/
 def TASK_KINDS : List String := ["task-add", "claim", "spawn", "done", "block", "unblock", "release", "drop", "task-edit",
   "queue", "unqueue", "hold", "unhold", "task-land", "task-unland", "task-note", "task-notes-given", "task-backlog",
-  "task-ready", "task-assign", "task-place", "task-duplicate"]
+  "task-ready", "task-assign", "task-place", "task-duplicate", "task-parent"]
 /-- The task id an event is about: data `#<id>` or `auto #<id>`, then the end or a space (tasks.event_task). -/
 def eventTask (e : Event) : Option Nat :=
   let s := e.data.getD ""
@@ -240,6 +241,95 @@ def labelsOf (t : Task) : List String := ((t.labels.getD "").splitOn ",").filter
 /-- The tasks a task's creator held when it was added (board #186). -/
 def parentsOf (t : Task) : List Int := ((t.parents.getD "").splitOn ",").filterMap parseInt
 
+/-- The goal hierarchy (sub-issues) as a forest over (id, state, parent): each task's children and states. A task is
+open while its state's category is not completed or cancelled. -/
+structure Tree where
+  kids : Std.HashMap Int (List Int) := {}
+  st : Std.HashMap Int Status := {}
+  par : Std.HashMap Int Int := {}
+
+/-- The forest of tasks given as (id, state, parent), in id order of the list. -/
+def Tree.ofNodes (ns : List (Int × Status × Option Int)) : Tree :=
+  ns.foldl (fun tr (i, s, p) =>
+    { tr with st := tr.st.insert i s,
+              kids := match p with | some q => tr.kids.insert q (tr.kids.getD q [] ++ [i]) | none => tr.kids,
+              par := match p with | some q => tr.par.insert i q | none => tr.par }) {}
+
+/-- The forest of the db's tasks. -/
+def Tree.ofDb (db : Db) : Tree := Tree.ofNodes (db.tasks.map fun t => ((t.id : Int), t.status, t.parent))
+
+/-- How deep the hierarchy is followed (a cycle, which the commands refuse, cannot loop). -/
+def Tree.DEPTH : Nat := 64
+
+/-- `id`'s direct children. -/
+def Tree.childrenOf (tr : Tree) (id : Int) : List Int := tr.kids.getD id []
+
+/-- Whether task `i` is open (a task not loaded is not). -/
+def Tree.isOpen (tr : Tree) (i : Int) : Bool := (tr.st.get? i).any (!·.closed)
+
+/-- `id`'s descendants at any depth, parents before their children. -/
+def Tree.descendants (tr : Tree) : Nat → Int → List Int
+  | 0, _ => []
+  | n + 1, id => (tr.childrenOf id).flatMap fun k => k :: tr.descendants n k
+
+/-- The open descendants of `id`. -/
+def Tree.openBelow (tr : Tree) (id : Int) : List Int := (tr.descendants Tree.DEPTH id).filter tr.isOpen
+
+/-- `id`'s ancestors, root first (the nearest last). -/
+def Tree.ancestors (tr : Tree) (id : Int) : List Int :=
+  let rec go : Nat → Int → List Int → List Int
+    | 0, _, acc => acc
+    | n + 1, i, acc => match tr.par.get? i with
+      | some p => go n p (p :: acc)
+      | none => acc
+  go Tree.DEPTH id []
+
+/-- (done, total) over the leaves below `id` at any depth: a leaf is a task with no children; total leaves exclude the
+Cancelled and Duplicate ones, done are the Completed. None for a task with no children. -/
+def Tree.progress (tr : Tree) (id : Int) : Option (Nat × Nat) :=
+  if (tr.childrenOf id).isEmpty then none else
+  let leaves := (tr.descendants Tree.DEPTH id).filter fun k => (tr.childrenOf k).isEmpty
+  let live := leaves.filter fun k => (tr.st.get? k).any (·.category != .cancelled)
+  some ((live.filter fun k => (tr.st.get? k).any (· == Status.completed)).length, live.length)
+
+/-- The ids of the open tasks that have a child or more, and no open descendant: all their sub-issues are done. -/
+def Tree.allDone (tr : Tree) : List Int :=
+  (tr.kids.toList.filterMap fun (p, ks) =>
+    if !ks.isEmpty && tr.isOpen p && (tr.openBelow p).isEmpty then some p else none).mergeSort fun a b => decide (a ≤ b)
+
+/-- The ids with an open child. -/
+def Tree.openParents (tr : Tree) : Std.HashSet Int :=
+  tr.kids.fold (fun h p ks => if ks.any tr.isOpen then h.insert p else h) {}
+
+/-- Task `t` is a container: an open child keeps it from staffing. -/
+def isContainer (db : Db) (t : Task) : Bool := db.tasks.any fun c => c.parent == some (t.id : Int) && !c.status.closed
+
+/-- The refusal of a parent `n` for a task: it is a task, and open (a closed task takes no new sub-issue). -/
+def checkParent (db : Db) (n : Int) : Except String Unit :=
+  match db.find n with
+  | none => .error s!"no task #{d n}"
+  | some p => if p.status.closed then .error s!"task #{d n} is {p.status.name}; a closed task can't take a new sub-issue" else .ok ()
+
+/-- `task parent`: task `id` becomes a sub-issue of `p`, or top level with none; the same refusals as `task add
+--parent`, and a task can't be its own parent or below itself. -/
+def setParent (c : Ctx) (id : Int) (p : Option Int) (db : Db) : Db × Except String Unit :=
+  match db.find id with
+  | none => (db, .error s!"no task #{d id}")
+  | some _ =>
+    let go (db : Db) : Db × Except String Unit :=
+      (( db.set id ({ · with parent := p })).log c.now (some c.me) "task-parent" none
+        (some s!"#{d id} parent {match p with | some n => "#" ++ d n | none => "none"}"), .ok ())
+    match p with
+    | none => go db
+    | some n =>
+      if n == id then (db, .error s!"task #{d id} can't be its own parent")
+      else match checkParent db n with
+        | .error e => (db, .error e)
+        | .ok () =>
+          if ((Tree.ofDb db).ancestors n).contains id then
+            (db, .error s!"that would be a cycle: #{d n} is below #{d id}")
+          else go db
+
 /-- `task add`: the new task's id. -/
 def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
   if !a.title.any (!isSpace ·) then (db, .error "the title can't be empty")
@@ -249,12 +339,15 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
   else match checkDeps db a.deps with
     | .error e => (db, .error e)
     | .ok () =>
+    match (match a.parent with | some n => checkParent db n | none => .ok ()) with
+    | .error e => (db, .error e)
+    | .ok () =>
       let id := db.taskNext
       let t : Task := { id, title := some a.title, body := some a.body, created_by := some c.me,
                         deps := py (some (",".intercalate (a.deps.map d))), model := a.model, effort := a.effort,
                         base := a.base, created_at := some c.now, priority := a.priority.getD DEFAULT_PRIORITY,
                         pos := some (endPos db),
-                        labels := a.labels.bind labelsText,
+                        labels := a.labels.bind labelsText, parent := a.parent,
                         parents := py (some (",".intercalate ((db.tasks.filter fun t => t.owner == some c.me &&
                           (t.status = .inProgress || t.status = .needsInput)).map (d ·.id)))) }
       let db := { db with tasks := db.tasks ++ [t], taskNext := db.taskNext + 1 }
@@ -412,6 +505,13 @@ def unland (c : Ctx) (id : Int) (why : String) (db : Db) : Db × Except String U
           else db
         | none => db
       (db, .ok ⟨r.owner, p⟩)
+
+/-- Why `r`, a task another's or in review, is not `c.me`'s to close (the checks of `task drop`). -/
+def notMineToClose (c : Ctx) (db : Db) (r : Task) : Option String :=
+  if (r.status = .inProgress || r.status = .needsInput) && r.owner != some c.me && !inCharge db c.comms c.me then
+    some s!"#{d r.id} is {r.status.name} by {r.owner.getD "nil"}; only it or the communicator can drop it"
+  else if r.status = .inReview && !isLander db c.comms c.me r then some (notLander r.id r)
+  else none
 
 /-- `task done`. -/
 def done (c : Ctx) (id : Int) (evidence : String) (db : Db) : Db × Except String DoneOut :=

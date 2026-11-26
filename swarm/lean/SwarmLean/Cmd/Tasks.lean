@@ -9,6 +9,7 @@ import SwarmLean.Db.Notes
 import SwarmLean.Lib.Workspaces
 import SwarmLean.Db.TaskTxn
 import SwarmLean.Lib.Events
+import SwarmLean.Lib.Json
 
 /-! `swarm task …`, `swarm board` and `swarm rules` (tasks.lua's cmd_task, cmd_board, cmd_rules). -/
 
@@ -21,6 +22,9 @@ def EFFORTS : List String := ["low", "medium", "high", "xhigh", "max"]
 /-- An `<id>` argument. -/
 def idArg : Pos := { name := "id", conv := some int }
 
+/-- What `task done` and `task drop` do with open sub-issues. -/
+def CHILDREN : List String := ["cancel", "keep"]
+
 /-- `--lease` with its default. -/
 def leaseOpt : Opt := opt "--lease" (some "2h")
 
@@ -30,14 +34,14 @@ def taskSpec : Spec :=
     .mk "add" helpTaskAdd [{ name := "title" }]
       [opt "--body" (some ""), opt "--body-file", opt "--after" none (some idList), opt "--model",
        { opt "--effort" with choices := EFFORTS }, { aliases := ["-p", "--priority"], target := "priority", conv := some prio },
-       opt "--base", opt "--label", { opt "--repo" with maxCount := 1000000 }, flag "--no-repo"]
+       opt "--base", opt "--label", opt "--parent" none (some int), { opt "--repo" with maxCount := 1000000 }, flag "--no-repo"]
       [["body", "body_file"], ["repo", "no_repo"]] [] none,
     .mk "priority" helpTaskPriority [idArg, { name := "priority", conv := some prio }] [] [] [] none,
     .mk "after" helpTaskAfter [idArg, { name := "deps", minArgs := 0, conv := some idList }] [] [] [] none,
     .mk "claim" helpTaskClaim [idArg] [leaseOpt, flag "--force"] [] [] none,
     .mk "renew" helpTaskRenew [idArg] [leaseOpt] [] [] none,
     .mk "show" helpTaskShow [idArg] [flag "--json"] [] [] none,
-    .mk "done" helpTaskDone [idArg] [{ opt "--evidence" with minCount := 1 }] [] [] none,
+    .mk "done" helpTaskDone [idArg] [{ opt "--evidence" with minCount := 1 }, { opt "--children" with choices := CHILDREN }] [] [] none,
     .mk "land" helpTaskLand [idArg] [{ opt "--sha" with minCount := 1 }, opt "--lander"] [] [] none,
     .mk "unland" helpTaskUnland [idArg] [{ opt "--why" with minCount := 1 }] [] [] none,
     .mk "block" helpTaskBlock [idArg, { name := "question" }] [] [] [] none,
@@ -47,7 +51,8 @@ def taskSpec : Spec :=
       [opt "--title", opt "--body", opt "--body-file", opt "--append", opt "--model",
        { opt "--effort" with choices := EFFORTS }, flag "--urgent"] [["body", "body_file", "append"]] [] none,
     .mk "label" helpTaskLabel [idArg, { name := "labels", minArgs := 0, maxArgs := 1000000 }] [] [] [] none,
-    .mk "drop" helpTaskDrop [idArg] [opt "--duplicate-of" none (some int), opt "--note"] [] [] none,
+    .mk "parent" helpTaskParent [idArg, { name := "parent", minArgs := 0, conv := some int }] [flag "--none"] [] [] none,
+    .mk "drop" helpTaskDrop [idArg] [opt "--duplicate-of" none (some int), opt "--note", { opt "--children" with choices := CHILDREN }] [] [] none,
     .mk "backlog" helpTaskBacklog [idArg] [{ opt "--note" with minCount := 1 }] [] [] none,
     .mk "ready" helpTaskReady [idArg] [] [] [] none,
     .mk "assign" helpTaskAssign [idArg, { name := "who", minArgs := 0 }] [flag "--none"] [] [] none,
@@ -65,7 +70,7 @@ def rulesSpec : Spec :=
     [.mk "show" helpRulesShow [] [] [] [] none, .mk "set" helpRulesSet [{ name := "text", maxArgs := 1000000 }] [] [] [] none])
 
 /-- The `board` parser. -/
-def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all", flag "--json"] [] [] none
+def boardSpec : Spec := .mk "board" helpBoard [] [flag "--all", flag "--json", { opt "--by" with choices := ["parent"] }] [] [] none
 
 variable {m : Type → Type} [Monad m] [MonadExceptOf Exit m] [Store m] [Clock m] [Env m] [Fs m] [Proc m] [Git m] [Sys m]
 
@@ -133,7 +138,14 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
   if let some q := Queue.place db r then s := s ++ s!"\n{if r.status = .backlog then "backlog" else "queue"}: {q}"
   if let some h := r.note then s := s ++ "\nnote: " ++ cont h
   if !(labelsOf r).isEmpty then s := s ++ "\nlabels: " ++ ", ".intercalate (labelsOf r)
-  if !(parentsOf r).isEmpty then s := s ++ s!"\nfiled by {r.created_by.getD "-"} while holding {idsText (parentsOf r)}"
+  if !(parentsOf r).isEmpty then s := s ++ s!"\nFiled from {idsText (parentsOf r)} by {r.created_by.getD "-"}"
+  let tr := Tree.ofDb db
+  if let some p := r.parent then
+    s := s ++ s!"\nParent: #{d p} {match db.find p with | some x => cont (x.title.getD "") ++ " (" ++ x.status.name ++ ")" | none => "(missing)"}"
+  if let some (dn, tot) := tr.progress r.id then
+    s := s ++ s!"\nSub-issues: {dn}/{tot} done"
+    for k in tr.childrenOf r.id do
+      if let some x := db.find k then s := s ++ s!"\n  #{d x.id} {x.status.name} {cont (x.title.getD "")}"
   if let some k := pyI tm.claim_ctx then s := s ++ s!", ctx {fdiv k 1000}k at claim"
   if let some k := pyI tm.done_ctx then s := s ++ s!" -> {fdiv k 1000}k at done"
   if let some ma := pyI tm.merged_at then
@@ -145,13 +157,20 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
 /-- `task show --json`: the row's fields and its notes, oldest first (board #202). -/
 def showJson (db : Db) (r : Task) : Lean.Json :=
   let j {α} [Lean.ToJson α] (x : α) : Lean.Json := Lean.toJson x
+  let tr := Tree.ofDb db
+  let brief (x : Task) : Lean.Json := Lean.Json.mkObj [("id", j x.id), ("title", j x.title), ("state", j x.status.text)]
   let note (n : Notes.Note) : Lean.Json := Lean.Json.mkObj [("ts", j n.ts), ("from", j n.frm), ("text", j n.text),
     ("to", j n.to), ("held", j n.held)]
   Lean.Json.mkObj [("id", j r.id), ("title", j r.title), ("state", j r.status.text), ("category", j r.category.text),
     ("assignee", j r.assignee), ("owner", j r.owner), ("priority", j r.priority.text), ("base", j r.base),
     ("labels", j (labelsOf r)), ("deps", j (depsOf r)), ("note", j r.note), ("dup_of", j r.dupOf),
     ("place", j (Queue.place db r)), ("evidence", j r.evidence), ("body", j (py r.body)),
-    ("notes", Lean.Json.arr ((Notes.notes db r.id).map note).toArray)]
+    ("notes", Lean.Json.arr ((Notes.notes db r.id).map note).toArray),
+    ("parent", j r.parent), ("parent_title", j ((r.parent.bind db.find).bind (·.title))),
+    ("ancestors", Lean.Json.arr ((tr.ancestors r.id).filterMap fun i => (db.find i).map fun x => brief x).toArray),
+    ("sub_issues", Lean.Json.arr ((tr.childrenOf r.id).filterMap fun i => (db.find i).map fun x =>
+      Lean.Json.mkObj [("id", j x.id), ("title", j x.title), ("state", j x.status.text), ("owner", j x.assignee)]).toArray),
+    ("progress", SwarmLean.Json.progress (tr.progress r.id))]
 
 /-- `swarm task …`. -/
 def task (a : Parsed) : m UInt32 := do
@@ -178,7 +197,7 @@ def task (a : Parsed) : m UInt32 := do
     let n ← step (TaskTxn.add c { title := clean ((a.str "title").getD ""), body, deps := (a.ids "after").getD [],
                                     model := a.str "model", effort := a.str "effort", base := a.str "base",
                                     priority := (a.str "priority").bind Priority.ofText,
-                                    labels := a.str "label" })
+                                    labels := a.str "label", parent := a.int "parent" })
     let rows ← repos.mapM fun r => do return (r, (a.str "base").filter (· ≠ ""), some (← Bases.default (some r)))
     Swarms.addTaskRepos n rows
     out s!"task #{d n}"
@@ -219,7 +238,7 @@ def task (a : Parsed) : m UInt32 := do
     let onBase ← match r0 with
       | some r => if r.status = .inReview then evidenceOnBase ev r else pure false
       | none => pure false
-    match ← step (TaskTxn.done { c with onBase } id ev) with
+    match ← step (TaskTxn.done { c with onBase, children := a.str "children" } id ev) with
     | .landed o => out s!"done #{d id}: landed{match py o with | some o => ", handed over by " ++ o | none => ""}"
     | .red => out s!"#{d id} released: your fix is recorded, the task is in Backlog until a green run closes it (a newer red run moves it back to Ready). Go idle."
     | .done k stay n =>
@@ -268,9 +287,14 @@ def task (a : Parsed) : m UInt32 := do
     discard <| step (TaskTxn.edit c id { labels := some (",".intercalate (a.strs "labels")) })
     let r ← Store.view [TaskTxn.task id] (·.find id)
     out s!"#{d id} labels: {match r.map labelsOf with | some l@(_ :: _) => ", ".intercalate l | _ => "none"}"
+  | "parent" =>
+    let p := a.int "parent"
+    if a.flag "none" == p.isSome then die "usage: swarm task parent <id> <parent>, or swarm task parent <id> --none"
+    step (TaskTxn.parent c id p)
+    out s!"#{d id} parent: {match p with | some n => "#" ++ d n | none => "none"}"
   | "drop" =>
     let dup := a.int "duplicate_of"
-    let ws ← step (TaskTxn.drop c id dup (a.str "note"))
+    let ws ← step (TaskTxn.drop { c with children := a.str "children" } id dup (a.str "note"))
     out s!"#{d id} {match dup with | some o => s!"Duplicate of #{d o}" | none => "Cancelled"}"
     for w in ws do
       out s!"#{d w.id} waits on #{d id}: `swarm task drop {d w.id}` too, or remove the dependency: `swarm task after {d w.id} …`"
@@ -297,7 +321,8 @@ def board (a : Parsed) : m UInt32 := do
   if let some (avail, total, psi) ← Machine.mem then out (Machine.line avail total psi)
   let all := a.flag "all"
   -- the tasks not done (`--all`: every task); the done ones only counted
-  let db ← Store.view (if all then TaskTxn.boardSels else TaskTxn.undoneSel :: TaskTxn.boardSels.filter (·.table != .task)) id
+  let db ← Store.view ((if all then TaskTxn.boardSels else TaskTxn.undoneSel :: TaskTxn.boardSels.filter (·.table != .task)) ++
+    (if a.str "by" == some "parent" then [Sels.parented] else [])) id
   let now ← Clock.now
   let role (o : Option String) : Option String :=
     o.bind fun n => (db.agents.find? fun x => x.name == n && x.ended.isNone).bind (·.role)
@@ -306,13 +331,16 @@ def board (a : Parsed) : m UInt32 := do
     (boardLe red)
   out (limitsLine db (← env "SWARM_COMMS"))
   if let some h := db.getMeta "spawn_held" then out (h.v.getD "nil")
-  for r in rows do
+  let tr := Tree.ofDb db
+  let render (r : Task) : m String := do
     let who := (py r.assignee).getD "-" ++ (match role r.assignee with | some x => s!" ({x})" | none => "")
     let pr := s!"  [{r.priority.name}]"
+    let prog := match (if a.str "by" == some "parent" then tr.progress r.id else none) with
+      | some (dn, tot) => s!"  [{dn}/{tot} done]" | none => ""
     if r.status = .needsInput then
-      out s!"#{d r.id} needs input from {who}: {cont (r.question.getD "None")}  {cont (r.title.getD "")}{pr}"
+      pure s!"#{d r.id} needs input from {who}: {cont (r.question.getD "None")}  {cont (r.title.getD "")}{pr}{prog}"
     else if r.status = .inReview then
-      out s!"{← landingLine r}  {cont (r.title.getD "")}{pr}"
+      pure s!"{← landingLine r}  {cont (r.title.getD "")}{pr}{prog}"
     else
       let lease := if r.status = .inProgress && r.owner != some Agents.HUMAN then
         let left := r.lease_until.getD 0 - now
@@ -321,11 +349,24 @@ def board (a : Parsed) : m UInt32 := do
       let u := undone db r
       let wait := if u.isEmpty then "" else
         " waiting on " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.category = .cancelled then " (cancelled)" else ""))
-      out (s!"#{d r.id} {padRight r.status.name 11} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++
+      pure (s!"#{d r.id} {padRight r.status.name 11} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++ prog ++
         (match Queue.place db r with | some q => s!"  [{if r.status = .backlog then "backlog" else "queue"} {q}]" | none => "") ++
         (if (py r.body).isSome then "  [body: task show]" else "") ++
         (match r.note with | some h => s!"  note: {cont h}" | none => "") ++
         (match py r.evidence with | some e => s!"  [evidence: {e}]" | none => ""))
+  if a.str "by" == some "parent" then
+    -- the tree: a task on the board whose parent is not (top level, or its parent closed) is a root, its children under it
+    let onB (i : Int) : Bool := rows.any fun k => (k.id : Int) == i
+    let kidsOf (r : Task) : List Task := rows.filter fun k => k.parent == some (r.id : Int)
+    let roots := rows.filter fun r => !(r.parent.any onB)
+    let rec walk : Nat → Nat → Task → m Unit
+      | 0, _, _ => pure ()
+      | n + 1, depth, r => do
+        out (String.ofList (List.replicate (2 * depth) ' ') ++ (← render r))
+        for k in kidsOf r do walk n (depth + 1) k
+    for r in roots do walk Tree.DEPTH 0 r
+  else
+    for r in rows do out (← render r)
   if all then out s!"({rows.length} tasks)"
   else out s!"({rows.length} shown, {((← Swarms.taskStates).filter (·.2 == Status.completed.text)).length} completed)"
   for x in (live db).filter (·.stay.isSome) do

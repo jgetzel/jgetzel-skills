@@ -19,7 +19,7 @@ create table if not exists task(id integer primary key autoincrement, title text
   effort text, created_at int, first_claimed_at int, done_at int, dropped_at int, pr int, merged_at int,
   ci_conclusion text, ci_green_at int, claim_ctx int, done_ctx int, answer text, base text, stop_to text, stop_msg int,
   priority int default 3, qpos int, hold text, labels text, parents text, land_sha text, lander text, landing_at int,
-  dup_of int);
+  dup_of int, parent int);
 create table if not exists lock(repo text not null default '', path text not null, agent text, reason text, since int,
   lease_until int, seen int default 0, primary key(repo, path));
 create table if not exists conflict(a text, b text, path text, since int, primary key(a,b,path));
@@ -47,11 +47,11 @@ create index if not exists msg_frm on msg(frm, id);
 
 /-- The invariant version of the db, stored in `pragma user_version` (a db header field: it is read and set in the same
 transaction as the migration, needs no table, and a binary can read it before it knows the schema). A fresh or current
-db is at 1; a db made before the version existed reads 0 and is raised to 1 at connect.
+db is at the current version; a db made before the version existed reads 0 and is raised at connect.
 Bump it, with an entry in `dbMigrations`, whenever `WF` or the schema changes: an older binary then refuses to write
 (`Real.checkWritable`), so the "only our code writes" assumption under `wf_reach` (sw-global-proofs.md §3.7) holds across
 binaries built at different commits. -/
-def DB_VERSION : Nat := 2
+def DB_VERSION : Nat := 3
 
 /-- Version 2 (Linear's states): the task states renamed (open → ready, claimed → in_progress, blocked → needs_input,
 landing → in_review, done → completed, dropped → cancelled); a held open task, and with a swarm's queue-only on an
@@ -90,10 +90,17 @@ def migrateV2 : List String := [
   "create index if not exists task_state on task(state)",
   "create index if not exists task_owner on task(owner)"]
 
+/-- Version 3 (sub-issues): the task's goal parent (column parent, NULL: top level) and an index on it. The column is
+not in `columns`: version 2's rebuild of the task table leaves it out, so only this migration may add it. A db made at
+version 2 has no such column until it runs. -/
+def migrateV3 : List String := [
+  "alter table task add column parent int",
+  "create index if not exists task_parent on task(parent)"]
+
 /-- The migrations: `(v, sqls)` takes a db at version `v - 1` to `v`, run in order by `connect` in one BEGIN IMMEDIATE.
 Obligation (for the proofs phase): if `WF_{v-1} db` then `WF_v` holds of the db after `sqls`, where `WF_v` is `WF` at
 the commit that bumped `DB_VERSION` to `v`. -/
-def dbMigrations : List (Nat × List String) := [(2, migrateV2)]
+def dbMigrations : List (Nat × List String) := [(2, migrateV2), (3, migrateV3)]
 
 /-- The meta keys of the machine (scope `''`); every other key is a swarm's (scope: its name). -/
 def machineKeys : List String := ["watchd", "watchd_tick", "watchd_up", "watchd_run", "machines", "jobs"]
