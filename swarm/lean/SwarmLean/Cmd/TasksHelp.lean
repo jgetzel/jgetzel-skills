@@ -4,11 +4,11 @@ namespace SwarmLean.Cmd.Tasks
 
 /-- `swarm task -h`. -/
 def helpTask : String :=
-  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add\n   priority\n   after\n   claim\n   renew\n   show\n   done\n   land\n   unland\n   block\n   unblock\n   release\n   edit\n   label\n   drop\n   backlog\n   ready\n   assign"
+  "Usage: swarm task [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   add                   add a task (`task add -h`: how to write its body)\n   priority              set its priority: urgent, high, medium, low or none\n   after                 set the ids it waits on\n   claim                 claim a task before you work on it; prints its body and notes\n   renew                 extend your claim on long work\n   show                  the task, its edits and its notes\n   done                  finish a task whose work is on its base\n   land                  hand work that passed its checks to a lander\n   unland                a lander gives an In Review task back\n   block                 ask the human a question; the claim stays yours\n   unblock               answer a blocked task\n   release               give up your claim: back to Ready (not drop)\n   edit                  change the title or body, or --append a note\n   label                 set its labels\n   drop                  cancel the task\n   backlog               move a Ready task to Backlog\n   ready                 move a Backlog task to Ready\n   assign                reserve a task for an agent or a person"
 
 /-- `swarm task add -h`. -/
 def helpTaskAdd : String :=
-  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         urgent, high, medium, low or none (default medium)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
+  "Usage: swarm task add ([--body <body>] | [--body-file <body_file>])\n       [-h] [--after <after>] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [-p <priority>]\n       [--base <base>] [--label <label>]\n       ([--repo <repo>] | [--no-repo]) <title>\n\nThe body is markdown, rendered on Herdr's task page: the goal in a line, then `Done when:` and a `- ` list,\n`- ` items for steps and files, backticks for paths, commands and identifiers. Pass it with `--body-file -` and a\nheredoc, never as one `--body \"...\"` paragraph.\n\nArguments:\n   title\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --body <body>         default: \n   --body-file <body_file>\n                         the body is this file's text; - reads stdin\n   --after <after>       ids it waits on: 3 or 3,5\n   --model <model>\n   --effort {low,medium,high,xhigh,max}\n           -p <priority>,\n   --priority <priority>\n                         urgent, high, medium, low or none (default medium)\n   --base <base>         branch its work lands on (default: .claude/swarm.json base, else main)\n   --label <label>       labels: ui or ui,herdr; an agent done with a task is offered startable ones sharing one\n   --repo <repo>         a repo it touches (repeatable; default: the folder's): a worktree in each when spawned\n   --no-repo             it touches no repo: no worktree, and only a claim or `spawn --task` staffs it"
 
 /-- `swarm task priority -h`. -/
 def helpTaskPriority : String :=
@@ -48,7 +48,7 @@ def helpQueue : String :=
 
 /-- `swarm task renew -h`. -/
 def helpTaskRenew : String :=
-  "Usage: swarm task renew [-h] [--lease <lease>] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h"
+  "Usage: swarm task renew [-h] [--lease <lease>] <id>\n\nExtends your claim on long work. watchd keeps a live holder's lapsed claim, and tells you when it lapses.\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --lease <lease>       default: 2h"
 
 /-- `swarm task show -h`. -/
 def helpTaskShow : String :=
@@ -68,7 +68,7 @@ def helpTaskUnland : String :=
 
 /-- `swarm task block -h`. -/
 def helpTaskBlock : String :=
-  "Usage: swarm task block [-h] <id> <question>\n\nArguments:\n   id\n   question\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm task block [-h] <id> <question>\n\nBlocked on the human: asks them <question>. The claim stays yours, and the answer may come back on the task.\n\nArguments:\n   id\n   question\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm task unblock -h`. -/
 def helpTaskUnblock : String :=
@@ -76,7 +76,7 @@ def helpTaskUnblock : String :=
 
 /-- `swarm task release -h`. -/
 def helpTaskRelease : String :=
-  "Usage: swarm task release [-h] [--after <after>] <id>\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --after <after>       ids it now waits on: 3 or 3,5"
+  "Usage: swarm task release [-h] [--after <after>] <id>\n\nGives up your claim: the task goes back to Ready for its next owner (`task drop` cancels it instead).\nFirst note on it what is done, what is next and the branch (`task edit <id> --append`).\n\nArguments:\n   id\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --after <after>       ids it now waits on: 3 or 3,5"
 
 /-- `swarm task edit -h`. -/
 def helpTaskEdit : String :=
@@ -92,7 +92,7 @@ def helpTaskDrop : String :=
 
 /-- `swarm rules -h`. -/
 def helpRules : String :=
-  "Usage: swarm rules [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   show\n   set"
+  "Usage: swarm rules [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   show                  print the rules\n   set                   set the rules every spawn's first message carries"
 
 /-- `swarm rules show -h`. -/
 def helpRulesShow : String :=

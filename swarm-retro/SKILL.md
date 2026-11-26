@@ -23,7 +23,7 @@ session n = 1 and every finding is one trial.
 - **User-level**: `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, skills in
   `~/.claude/skills` (incl. swarm tooling). Reaches all repos.
 - **Project-level**: the repo's CLAUDE.md / AGENTS.md, `.claude/` (rules,
-  skills, hooks, `orchestration.md`), auto-memory, swarm and lane briefs.
+  skills, hooks), auto-memory, swarm and lane briefs.
   Reaches that repo only.
 - Put a change at the narrowest scope its evidence supports. Evidence from one
   repo justifies a user-level change only when the defect is in that user

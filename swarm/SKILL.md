@@ -16,8 +16,7 @@ with subagents.
 ## 0. Setup
 
 1. Load the `hc` and `herdr-app` skills; check `HC_TERMINAL_ID`.
-2. Read CLAUDE.md and `.claude/orchestration.md`. Agents land work by those
-   rules; nothing here overrides them.
+2. Read CLAUDE.md. Agents land work by its rules; nothing here overrides them.
 3. `export SWARM_NAME=<prefix>-comms`, run `swarm join`, then load
    `SendMessage` (ToolSearch `select:SendMessage`) and `ListAgents`.
    The communicator is not a `SendMessage` address: agents' blocked notices and posts wait in your inbox until your next `swarm wait` delivers them.
@@ -66,7 +65,8 @@ with subagents.
 
 0. Set the rules every spawn's first message carries, auto-spawns included (rules, limits and the other knobs are
    your swarm's):
-   `swarm rules set "<what CLAUDE.md and orchestration.md ask of agents, e.g. never edit the main checkout>"`.
+   `swarm rules set "<what this swarm asks beyond CLAUDE.md>"`. Agents load CLAUDE.md themselves: rules are only for what
+   it doesn't say (this swarm's scope, a file to leave alone); none is fine.
    Ask the user for the two staffing numbers and set them before the first
    spawn: `swarm limits --min N --max M`. `--min` is the auto-spawn number
    (watchd staffs startable tasks until N agents are live; 0: it staffs

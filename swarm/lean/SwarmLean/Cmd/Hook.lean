@@ -201,7 +201,12 @@ def stopBlock (name : String) (p : Json) : m (Option String) := do
   let capped ← Store.run (capTxn name key active envComms t)
   if capped then return none
   let head := "You are not endable: " ++ "\n".intercalate (rs.map (·.text))
-  return some (head ++ "\n\nEnd this by changing state, not by arguing: (a) finish and land (`swarm task done`); (b) drop: `swarm task release <id>` and commit, ignore or delete what is listed (pushing the branch counts as handing off commits); (c) declare the wait: `swarm task block <id> \"<question>\"` or `swarm stay \"<what>\"`.")
+  return some (head ++ "\n\nEnd this by changing state, not by arguing: (a) finish and land (`swarm task done`); (b) drop: `swarm task release <id>` and commit, ignore or delete what is listed (pushing the branch counts as handing off commits); (c) declare the wait: `swarm task block <id> \"<question>\"` or `swarm stay \"<what>\" --until <cond>`.")
+
+/-- What a compacted agent other than the communicator is told as its compaction ends (SessionStart, source compact). -/
+def POST_COMPACT : String :=
+  "If after this compaction you no longer understand your task, note on it what is done, what is next and the branch " ++
+  "(`swarm task edit <id> --append \"…\"`), `swarm task release <id>` and stop: watchd staffs a fresh agent."
 
 /-- `swarm hook <event>` (hook.hook). -/
 def hook (ev : String) : m UInt32 := do
@@ -264,6 +269,9 @@ def hook (ev : String) : m UInt32 := do
           { a with compacted_at := some now, ctx_tokens := k.orElse fun _ => a.ctx_tokens }).1
         (if k.isNone then db.setAgent name ({ · with ctx_tokens := none }) else db, ()))
       Store.run (Txn.exec [logStmt now (some name) "compact" none none])
+      let envComms ← env "SWARM_COMMS"
+      let isC ← Store.view [Sels.metas ["comms"], Sels.agent name] fun db => Agents.isComms db envComms (some name)
+      if !isC then emit "SessionStart" (some POST_COMPACT) none
     else Store.run (Sels.onAgent name fun db => (setStatus db name here now .idle, ()))
   | _ => die s!"unknown hook event {ev}"
   return 0

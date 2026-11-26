@@ -4,7 +4,7 @@ namespace SwarmLean.Cmd.Agents
 
 /-- `swarm spawn -h`. -/
 def helpSpawn : String :=
-  "Usage: swarm spawn [-h] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [--stay <stay>]\n       [--task <task>] [--role <role>] [--attach <attach>] [--base <base>] [--full]\n       <name>\n       [<task>] ...\n\nArguments:\n   name\n   task\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --model <model>       default: sonnet\n   --effort {low,medium,high,xhigh,max}\n                         claude --effort for the new agent (default: its settings)\n   --stay <stay>         what the new agent waits for: watchd won't end it while it stays\n   --task <task>         claim this board task for the new agent before launching\n   --role <role>         the new agent's role label (`swarm role`)\n   --attach <attach>     start it read-only in this swarm workspace instead of making it a worktree\n   --base <base>         ref its worktree starts from (default: .claude/swarm.json spawn.base, else the task base); fetched, missing falls back\n   --full                every skill, plugin and MCP connector (default: the lean profile, SKILL.md)"
+  "Usage: swarm spawn [-h] [--model <model>]\n       [--effort {low,medium,high,xhigh,max}] [--stay <stay>]\n       [--task <task>] [--role <role>] [--attach <attach>] [--base <base>] [--full]\n       <name>\n       [<task>] ...\n\nStarts a peer agent in a new tab of the swarm's space, in its own worktree when --task names a task with a\nrepo. Refused at the swarm's agent max (`swarm board` shows it).\n\nArguments:\n   name\n   task\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --model <model>       default: sonnet\n   --effort {low,medium,high,xhigh,max}\n                         claude --effort for the new agent (default: its settings)\n   --stay <stay>         what the new agent waits for: watchd won't end it while it stays\n   --task <task>         claim this board task for the new agent before launching\n   --role <role>         the new agent's role label (`swarm role`)\n   --attach <attach>     start it read-only in this swarm workspace instead of making it a worktree\n   --base <base>         ref its worktree starts from (default: .claude/swarm.json spawn.base, else the task base); fetched, missing falls back\n   --full                every skill, plugin and MCP connector (default: the lean profile, SKILL.md)"
 
 /-- `swarm join -h`. -/
 def helpJoin : String :=
@@ -20,7 +20,7 @@ def helpEnd : String :=
 
 /-- `swarm endable -h`. -/
 def helpEndable : String :=
-  "Usage: swarm endable [-h] [--why] [<agent>]\n\nexit 0 if nothing keeps the agent from being ended by watchd, else 1\n\nArguments:\n   agent\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why                 print every reason"
+  "Usage: swarm endable [-h] [--why] [<agent>]\n\nexit 0 if nothing keeps the agent from being ended by watchd, else 1\n\nWhat keeps an agent: a claim, a lock, a dirty worktree, commits not on its base. Your Stop hook blocks a stop for\nthe same reasons. Change state, don't argue: finish and land (`task done`); or drop (`task release`, then commit,\nignore or delete what is listed; a pushed branch hands off commits); or declare the wait (`task block <id> \"<q>\"`,\n`stay \"<what>\" --until <cond>`). A background job of your own lets the stop through: wait on it by its completion\nnotification or PID, never `pgrep -f <script>` (peers run the same scripts) or a sleep loop.\n\nArguments:\n   agent\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --why                 print every reason"
 
 /-- `swarm who -h`. -/
 def helpWho : String :=
@@ -28,11 +28,11 @@ def helpWho : String :=
 
 /-- `swarm role -h`. -/
 def helpRole : String :=
-  "Usage: swarm role [-h] [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm role [-h] [<text>] ...\n\nSays what you do, in a few words (implementer, reviewer, lander, planner, …), when it changes.\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm stay -h`. -/
 def helpStay : String :=
-  "Usage: swarm stay [-h] [--end] [--until <until>] [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --until <until>       what ends the wait, and wakes you: job:<id> (a swarm run job ends), task:<id> (done or released), msg:<agent>, ci (the next CI result on the base), time:<HH:MM> (UTC). A stay names the wait, not the plan; without --until it is a free-text stay and gets a liveness check after 15 min\n   --end                 clear it: judged as any agent again; `--end NAME` clears NAME's (human or the communicator)"
+  "Usage: swarm stay [-h] [--end] [--until <until>] [<text>] ...\n\nArguments:\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --until <until>       what ends the wait, and wakes you: job:<id> (a swarm run job ends), task:<id> (done or released), msg:<agent>, ci (the next CI result on the base), time:<HH:MM> (UTC). A stay names the wait, not the plan; without --until it is a free-text stay and gets a liveness check after 15 min\n   --end                 clear it: judged as any agent again; `--end NAME` clears NAME's (human or the communicator)\n\nA compaction ends your stay (watchd says so); set it again if it still holds."
 
 /-- `swarm limits -h`. -/
 def helpLimits : String :=
@@ -44,7 +44,7 @@ def helpAway : String :=
 
 /-- `swarm machine -h`. -/
 def helpMachine : String :=
-  "Usage: swarm machine [-h]\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm machine [-h]\n\nThis machine's memory and load, memory per owner, then the other machines: the note the hooks show. Read it\nbefore a build or test.\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm new -h`. -/
 def helpNew : String :=

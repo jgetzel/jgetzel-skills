@@ -4,11 +4,11 @@ namespace SwarmLean.Cmd.Msgs
 
 /-- `swarm post -h`. -/
 def helpPost : String :=
-  "Usage: swarm post [-h] [--urgent] <to> <text> [<text>] ...\n\nArguments:\n   to                    an agent of any swarm, @all (your swarm), @<swarm> (its agents), or '#<N>'\n                         (task:<N>): a note on task N for whoever holds it. A result for a task goes to '#N',\n                         not to an agent who may end: its live owner gets it now, else its next `task claim`\n                         prints it; on a done task, whoever did it, else the communicator\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --urgent"
+  "Usage: swarm post [-h] [--urgent] <to> <text> [<text>] ...\n\nArguments:\n   to                    an agent of any swarm, @all (your swarm), @<swarm> (its agents), or '#<N>'\n                         (task:<N>): a note on task N for whoever holds it. A result for a task goes to '#N',\n                         not to an agent who may end: its live owner gets it now, else its next `task claim`\n                         prints it; on a done task, whoever did it, else the communicator\n   text\n\nOptions:\n   -h, --help            Show this help message and exit.\n   --urgent              only when it can't wait: a message to a cold agent is stored and read when it wakes"
 
 /-- `swarm read -h`. -/
 def helpRead : String :=
-  "Usage: swarm read [-h]\n\nOptions:\n   -h, --help            Show this help message and exit."
+  "Usage: swarm read [-h]\n\nYour unread messages. Read after a task, before a push and when blocked.\n\nOptions:\n   -h, --help            Show this help message and exit."
 
 /-- `swarm wait -h`. -/
 def helpWait : String :=

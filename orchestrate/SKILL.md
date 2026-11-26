@@ -16,8 +16,7 @@ subagents are fine for quick read-only lookups (docs questions, searches).
 
 1. Load the `hc` and `herdr-app` skills (CLI references). Check that
    `HC_TERMINAL_ID` is set: you run in a Herdr desktop app terminal.
-2. Read `CLAUDE.md` and the project's `.claude/orchestration.md` (repo-specific
-   agent rules, test command, CI facts). Paste the latter into agent prompts.
+2. Read `CLAUDE.md`.
 3. Register as orchestrator so the Stop hook guards you:
    `mkdir -p .claude/orchestrator && echo "$HC_TERMINAL_ID" > .claude/orchestrator/pane`.
    The hook then blocks ending a turn while no watcher runs. `rm` the file when
@@ -71,7 +70,7 @@ model.
 Parse hc/gh JSON with `jq` or `--jq`. Write
 prompts as files in your scratchpad; they get reused for follow-ups.
 
-Agent rules to include (plus `.claude/orchestration.md`):
+Agent rules to include:
 
 - Read CLAUDE.md and follow it. One PR per node, each from a fresh worktree off
   origin/main. Spec in docs as the first commit when there's a real design

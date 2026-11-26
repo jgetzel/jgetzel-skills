@@ -190,7 +190,7 @@ Changed:
 
 1. **Pure flat.** No roles in the skill.
 2. **How work lands is per repo, not in the skill.** The skill says "land
-   work the way the repo's CLAUDE.md and `.claude/orchestration.md` say".
+   work the way the repo's CLAUDE.md says".
    jk_ledger and linn-studio already push to main after a rebase, with CI on
    main and the agent that broke it fixing forward, so agents land their own
    work there. A repo that needs human review keeps its PR flow.

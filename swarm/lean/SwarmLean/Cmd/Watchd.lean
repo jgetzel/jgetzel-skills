@@ -25,7 +25,7 @@ def watchdSpec : Spec :=
 
 /-- `swarm worktrees -h`. -/
 def helpWorktrees : String :=
-  "Usage: swarm worktrees [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   prune"
+  "Usage: swarm worktrees [-h] <command> ...\n\nOptions:\n   -h, --help            Show this help message and exit.\n\nCommands:\n   prune                 remove the worktrees whose work is in a base"
 
 /-- `swarm worktrees prune -h`. -/
 def helpWorktreesPrune : String :=
