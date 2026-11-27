@@ -619,16 +619,17 @@ end Cursor
 loop over a cursor. -/
 def entryBound (p : Pager) : Nat := p.totalPages * (p.geo.usable / 4 + 1) + 1
 
-/-- Folds `f` over the rows of a table tree in rowid order. -/
-def foldTable (p : Pager) (root : Pgno) (init : β) (f : β → Int64 → ByteArray → β) : β :=
-  go (Cursor.first p root) init (entryBound p)
+/-- Folds `f` over the rows of a table tree in rowid order: each leaf's keys and cells in turn. -/
+@[specialize] def foldTable (p : Pager) (root : Pgno) (init : β) (f : β → Int64 → ByteArray → β) : β :=
+  go root init maxDepth
 where
-  go (c : Cursor) (acc : β) : Nat → β
+  go (pg : Pgno) (acc : β) : Nat → β
     | 0 => acc
     | fuel+1 =>
-      match c.row p with
-      | none => acc
-      | some (k, r) => go (c.next p) (f acc k r) fuel
+      match p.get pg with
+      | .table (.tleaf keys cells) => keys.size.fold (fun i h acc => f acc keys[i] (cells.getD i default).payload) acc
+      | .table (.tinner _ kids) => kids.foldl (fun acc k => go k acc fuel) acc
+      | _ => acc
 
 /-- Folds `f` over the entries of an index tree in order. -/
 def foldIndex (p : Pager) (root : Pgno) (init : β) (f : β → ByteArray → β) : β :=

@@ -394,21 +394,28 @@ def decodeRow (n : Nat) (ipk : Option Nat) (realCols : Array Bool) (defaults : A
   row.push (.int rowid)
 
 /-- Writes a table row into a frame from slot `base`: the columns `need` marks (an INTEGER PRIMARY KEY is the rowid, a REAL
-column's integers are reals, a column the record lacks has its default), then the rowid. -/
+column's integers are reals, a column the record lacks has its default), then the rowid (when `need` marks its slot). -/
 def fillRow (frame : Row) (base n : Nat) (ipk : Option Nat) (realCols : Array Bool) (defaults : Array Value)
     (need : Array Bool) (rowid : Int64) (rec_ : ByteArray) : Row :=
+  let upto := lastNeeded n
   let (hs, k) := getVarint rec_ 0
-  let frame := go frame hs.toNat k hs.toNat 0 (n + 1)
-  let frame := match ipk with | some i => frame.setIfInBounds (base + i) (.int rowid) | none => frame
-  frame.setIfInBounds (base + n) (.int rowid)
+  let frame := go frame upto hs.toNat k hs.toNat 0 (n + 1)
+  let frame := match ipk with
+    | some i => if need.getD (base + i) true then frame.setIfInBounds (base + i) (.int rowid) else frame
+    | none => frame
+  if need.getD (base + n) true then frame.setIfInBounds (base + n) (.int rowid) else frame
 where
-  go (fr : Row) (hs pos body i : Nat) : Nat → Row
+  /-- one past the last column `need` marks -/
+  lastNeeded : Nat → Nat
+    | 0 => 0
+    | i+1 => if need.getD (base + i) true then i + 1 else lastNeeded i
+  go (fr : Row) (upto hs pos body i : Nat) : Nat → Row
     | 0 => fr
     | f+1 =>
-      if i ≥ n then fr else
+      if i ≥ upto then fr else
       if pos ≥ hs then
         -- columns past the record's end (added by ALTER TABLE): their defaults
-        go (if need.getD (base + i) true then fr.setIfInBounds (base + i) (defaults.getD i .null) else fr) hs pos body (i+1) f
+        go (if need.getD (base + i) true then fr.setIfInBounds (base + i) (defaults.getD i .null) else fr) upto hs pos body (i+1) f
       else
       let (t, l) := getVarint rec_ pos
       let fr := if need.getD (base + i) true then
@@ -416,7 +423,7 @@ where
           let v := match v with | .int x => if realCols.getD i false then .real x.toFloat else v | v => v
           fr.setIfInBounds (base + i) v
         else fr
-      go fr hs (pos + l) (body + serialLen t) (i+1) f
+      go fr upto hs (pos + l) (body + serialLen t) (i+1) f
 
 /-- A WITHOUT ROWID table's record as a row of slots: each field in its column (`layout`), the rowid slot NULL. -/
 def worRow (n : Nat) (layout : Array Nat) (realCols : Array Bool) (rec_ : ByteArray) : Row :=
@@ -440,6 +447,15 @@ def bindCand (src : CSource) (need : Array Bool) (frame : Row) (raw : Array (Int
   | _, _ =>
     let c := cands.getD j #[]
     c.size.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) (c.getD k .null)) frame
+
+/-- A table candidate's columns `rest` marks (none, when empty), once the row passed the conditions read from
+`bindCand`'s columns. -/
+def bindRest (src : CSource) (rest : Array Bool) (frame : Row) (raw : Array (Int64 × ByteArray)) (j : Nat) : Row :=
+  match src, raw.isEmpty || rest.isEmpty with
+  | .table _ tn ipk rc dv base _ _ _ _ _, false =>
+    let (k, r) := raw.getD j (0, ByteArray.empty)
+    fillRow frame base tn ipk rc dv rest k r
+  | _, _ => frame
 
 /-- json_each / json_tree rows (the JSON module's). -/
 def tvfRows (tree : Bool) (json : Value) (root : Option Value) : EM (Array Row) :=
@@ -765,13 +781,17 @@ def caseLoop (env : Env) (base : Option Value) (whens : Array (CExpr × CExpr)) 
       if hit then do let r ← eval env t fuel; return some r
       else caseLoop env base whens (i+1) aff coll fuel
 
+/-- Whether a condition is true: an AND is true when both sides are. -/
+def condTrue (env : Env) : CExpr → Nat → EM Bool
+  | _, 0 => .error "expression nested too deeply"
+  | e, fuel+1 => match e with
+  | .and a b => do if !(← condTrue env a fuel) then return false else condTrue env b fuel
+  | e => do return isTrueV (← eval env e fuel)
+
 /-- Whether every condition is true. -/
 def allTrue (env : Env) (conds : Array CExpr) : Nat → EM Bool
   | 0 => .error "expression nested too deeply"
-  | fuel+1 => do
-    for c in conds do
-      if (← eval env c fuel).truth? != some true then return false
-    return true
+  | fuel+1 => conds.allM fun c => condTrue env c fuel
 
 /-- Uncorrelated subqueries run once: replaced by their result. -/
 def hoist (env : Env) : CExpr → Nat → EM CExpr
@@ -927,6 +947,19 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
       acc ++ args ++ f.toArray ++ part ++ ord ++ boundExprs s ++ boundExprs fi) #[]
     let need := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ filters.foldl (· ++ ·) #[] ++ srcExprs
       ++ aggArgs ++ winExprs)
+    -- each FROM item's columns in two stages: those its ON and WHERE conditions read, then the rest of `need`
+    let needs := srcs.mapIdx fun i s =>
+      let on := match s with
+        | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on | .cte _ _ _ _ _ on | .tvf _ _ _ _ _ _ on => on
+      let conds := on ++ filters.getD i #[]
+      -- (only for a scan: a lookup's few rows are not worth it)
+      match s with
+      | .table _ _ _ _ _ _ access _ _ layout _ =>
+        let scan := match access with | .full | .rowidRange _ _ => true | _ => false
+        if conds.isEmpty || !layout.isEmpty || !scan then (need, #[]) else
+        let first := neededSlots width conds
+        (first, need.mapIdx fun k b => b && !first.getD k false)
+      | _ => (need, #[])
     -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
     let rightCount ← match rightIdx with
       | some r => do
@@ -934,7 +967,7 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
         pure (if raw.isEmpty then cs.size else raw.size)
       | none => pure 0
     let (frames, matched) ← if !preOk then pure (#[], #[]) else if srcs.isEmpty then pure (#[frame0], #[])
-      else joinFrom env srcs subs filters need 0 frame0 (#[], Array.replicate rightCount false) hint fuel
+      else joinFrom env srcs subs filters needs 0 frame0 (#[], Array.replicate rightCount false) hint fuel
     -- then its rows nothing matched, with NULLs for the items before it
     let frames ← match rightIdx with
       | none => pure frames
@@ -948,7 +981,7 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
           let mut ok := true
           for k in [0:r+1] do
             unless ← allTrue (env.push fr) (filters.getD k #[]) fuel do ok := false; break
-          if ok then acc ← joinFrom env srcs subs filters need (r+1) fr acc none fuel
+          if ok then acc ← joinFrom env srcs subs filters needs (r+1) fr acc none fuel
         pure acc.1
     -- each result row's environment: its frame, or (aggregates) its group's
     let envs : Array Env ← if !isAgg then pure (frames.map env.push) else do
@@ -1194,9 +1227,10 @@ def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
     return res
 
 /-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
-checked, then the later items; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked. -/
+checked, then the later items; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked.
+`needs`: each item's slots its conditions read, and the rest it binds once they pass. -/
 def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row))) (filters : Array (Array CExpr))
-    (need : Array Bool) (i : Nat) (frame : Row) (acc : Array Row × Array Bool) (hint : Option Nat) :
+    (needs : Array (Array Bool × Array Bool)) (i : Nat) (frame : Row) (acc : Array Row × Array Bool) (hint : Option Nat) :
     Nat → EM (Array Row × Array Bool)
   | 0 => .error "query nested too deeply"
   | fuel+1 => do
@@ -1208,23 +1242,27 @@ def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row
       | .tvf _ _ n base left right on => (base, n, left, right, on)
     let (raw, cands) ← candidates env src (subs.getD i none) frame fuel
     let conds := filters.getD i #[]
+    let (first, rest) := needs.getD i (#[], #[])
     let mut acc := acc
     let mut matched := false
+    -- one frame written in place, row after row (copied only when a row is kept)
+    let mut fr := frame
     let count := if raw.isEmpty then cands.size else raw.size
     for j in [0:count] do
       if let some h := hint then if acc.1.size ≥ h then break
-      let fr := bindCand src need frame raw cands j
+      fr := bindCand src first fr raw cands j
       let e := env.push fr
       if left || right then
         unless ← allTrue e on fuel do continue
       matched := true
       if right then acc := (acc.1, acc.2.setIfInBounds j true)
       if ← allTrue e conds fuel then
-        acc ← joinFrom env srcs subs filters need (i+1) fr acc hint fuel
+        fr := bindRest src rest fr raw j
+        acc ← joinFrom env srcs subs filters needs (i+1) fr acc hint fuel
     if left && !matched then
-      let fr := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
-      if ← allTrue (env.push fr) conds fuel then
-        acc ← joinFrom env srcs subs filters need (i+1) fr acc hint fuel
+      let nulls := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
+      if ← allTrue (env.push nulls) conds fuel then
+        acc ← joinFrom env srcs subs filters needs (i+1) nulls acc hint fuel
     return acc
 
 /-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
