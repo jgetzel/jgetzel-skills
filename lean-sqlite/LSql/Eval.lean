@@ -918,6 +918,15 @@ def «match» (op : MatchOp) (fx fp : CFn) (fe : Option CFn) (neg : Bool) : CFn 
     | _ => likeMatch pv.toBytes v.toBytes escB
   return boolV (m != neg)⟩
 
+/-- LIKE or GLOB against a constant pattern (and escape): their bytes are taken once, not per row. -/
+def matchLit (op : MatchOp) (fx : CFn) (pat : ByteArray) (esc : Option UInt8) (neg : Bool) : CFn := ⟨fun env => do
+  let v ← fx.run env
+  if v.isNull then return .null
+  let m := match op with
+    | .glob => globMatch pat v.toBytes
+    | _ => likeMatch pat v.toBytes esc
+  return boolV (m != neg)⟩
+
 def inSelRow (sub : SubRun) (q : CSel) (fs : Array CFn) (neg : Bool) (affs : Array Aff) (colls : Array Collation) : CFn :=
   ⟨fun env => do
     let vs ← fs.mapM (·.run env)
@@ -1024,7 +1033,14 @@ def compileE (sub : SubRun) : CExpr → Nat → CFn
   | .exists q neg _ => Compiled.exists sub q neg
   | .scalar q _ => Compiled.scalar sub q
   | .matchE op x pat esc neg =>
-    Compiled.match op (compileE sub x fuel) (compileE sub pat fuel) (esc.map (compileE sub · fuel)) neg
+    let generic := Compiled.match op (compileE sub x fuel) (compileE sub pat fuel) (esc.map (compileE sub · fuel)) neg
+    match pat, esc with
+    | .lit pv, none => if pv.isNull then generic else Compiled.matchLit op (compileE sub x fuel) pv.toBytes none neg
+    | .lit pv, some (.lit ev) =>
+      let b := ev.toBytes
+      if pv.isNull || ev.isNull || b.size == 0 || charLen b 0 != b.size then generic
+      else Compiled.matchLit op (compileE sub x fuel) pv.toBytes (some (rd b 0)) neg
+    | _, _ => generic
   | .isNull x neg => Compiled.isNull neg (compileE sub x fuel)
   | .inSelRow es q neg affs colls => Compiled.inSelRow sub q (es.map (compileE sub · fuel)) neg affs colls
   | .win i => Compiled.win i
