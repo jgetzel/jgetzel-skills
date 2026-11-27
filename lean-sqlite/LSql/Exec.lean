@@ -471,7 +471,7 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   let ix0 : Index := { name, table := t.name, root := 0, cols := ns, colls := cs, desc := ds, unique, sql, pred, tail, exprs }
   -- the columns a plain index reads; a partial or expression index reads them all
   let need := Array.replicate (t.cols.size + 1) (pred.isSome || ix0.hasExprs)
-  let need := ns.foldl (fun m c => m.setIfInBounds c true) need
+  let need := ns.foldl (fun m c => m.setIfInBounds c true) (need.setIfInBounds t.cols.size true)
   let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) r)
     else
       let rc := t.cols.map (·.aff == .real)
