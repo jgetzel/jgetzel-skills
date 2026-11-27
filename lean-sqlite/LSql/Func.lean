@@ -167,36 +167,60 @@ def bytesEq (a : ByteArray) (i : Nat) (b : ByteArray) (j : Nat) (fold : Bool) : 
     let y := rd b j
     (if fold then foldCase x == foldCase y else x == y) && bytesEq a (i+1) b (j+1) fold n
 
+/-- How a LIKE match ended: `abort` when the string ran out while the pattern still needed characters, so no later
+start of an enclosing `%` can match either (sqlite's NOWILDCARDMATCH). -/
+inductive Like where
+  | yes | no | abort
+  deriving BEq
+
 /-- LIKE: `%` any run, `_` one character, `esc` makes the next character literal. -/
 def likeMatch (pat str : ByteArray) (esc : Option UInt8) : Bool :=
-  go 0 0 (pat.size * (str.size + 1) + pat.size + str.size + 2)
+  go 0 0 (2 * pat.size + 2) == .yes
 where
-  go (p s : Nat) : Nat → Bool
-    | 0 => false
+  go (p s : Nat) : Nat → Like
+    | 0 => .no
     | fuel+1 =>
-      if p ≥ pat.size then s ≥ str.size else
+      if p ≥ pat.size then (if s ≥ str.size then .yes else .no) else
       let c := rd pat p
-      if esc == some c then
-        -- escaped literal
-        let p' := p + 1
-        if p' ≥ pat.size then false else
-        let n := charLen pat p'
-        if s + n ≤ str.size && bytesEq pat p' str s true n then go (p' + n) (s + n) fuel else false
-      else if c == 37 then -- %
+      let escaped := esc == some c
+      if !escaped && c == 37 then -- %
         let p1 := p + 1
-        if p1 ≥ pat.size then true else
-        anyFrom p1 s (str.size - s + 1) fuel
-      else if c == 95 then -- _
-        if s ≥ str.size then false else go (p + 1) (s + charLen str s) fuel
+        if p1 ≥ pat.size then .yes else anyFrom p1 (firstLit p1) s (str.size - s + 1) fuel
+      else if !escaped && c == 95 then -- _
+        if s ≥ str.size then .abort else go (p + 1) (s + charLen str s) fuel
       else
-        let n := charLen pat p
-        if s + n ≤ str.size && bytesEq pat p str s true n then go (p + n) (s + n) fuel else false
+        -- a literal character, after the escape if there is one
+        let lp := if escaped then p + 1 else p
+        if lp ≥ pat.size then .no else
+        let n := charLen pat lp
+        if s ≥ str.size then .abort
+        else if s + n ≤ str.size && bytesEq pat lp str s true n then go (lp + n) (s + n) fuel else .no
   termination_by fuel => (fuel, 0)
-  /-- whether the pattern from `p` matches the string from some position in `[s, s + k)` -/
-  anyFrom (p s : Nat) : Nat → Nat → Bool
-    | 0, _ => false
-    | _, 0 => false
-    | k+1, fuel+1 => go p s fuel || anyFrom p (s + 1) k (fuel + 1)
+  /-- the first character start at or after `s` whose first byte (ASCII-folded) is `b`, or the string's end -/
+  seek (b : UInt8) (s : Nat) : Nat → Nat
+    | 0 => s
+    | k+1 => if s ≥ str.size || foldCase (rd str s) == b then s else seek b (s + charLen str s) k
+  /-- the first byte (ASCII-folded) of the literal the pattern at `p` starts with, if it starts with one -/
+  firstLit (p : Nat) : Option UInt8 :=
+    let c := rd pat p
+    if esc == some c then (if p + 1 < pat.size then some (foldCase (rd pat (p + 1))) else none)
+    else if c == 37 || c == 95 then none else some (foldCase c)
+  /-- whether the pattern from `p` matches the string from some character start in `[s, s + k)` -/
+  anyFrom (p : Nat) (lit : Option UInt8) (s : Nat) : Nat → Nat → Like
+    | 0, _ => .no
+    | _, 0 => .no
+    | k+1, fuel+1 =>
+      match lit with
+      | some b =>
+        let s' := seek b s (str.size - s)
+        if s' ≥ str.size then .abort else
+        match go p s' fuel with
+        | .no => anyFrom p lit (s' + charLen str s') k (fuel + 1)
+        | r => r
+      | none =>
+        match go p s fuel with
+        | .no => if s ≥ str.size then .abort else anyFrom p lit (s + charLen str s) k (fuel + 1)
+        | r => r
   termination_by k fuel => (fuel, k)
 
 /-- The code point of the UTF-8 character at `i`. -/
