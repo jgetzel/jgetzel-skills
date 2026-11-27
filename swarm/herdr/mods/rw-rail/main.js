@@ -18,10 +18,15 @@ import { v_flex, h_flex, HoverCard, Popover, InputState, Input } from "gpui-base
 import { spaces, panes, terminals, agents, focused, machines, run, theme, settings, setAgentOrder, shared, setShared, home, exec, hc, layout, appHome, openOverlay, watchFolder } from "herdr";
 import { AGENT, abbrev, allShown, viewShown, swarmShown, showSwarm, showSide, leaving, asksIn, dur, line, looked, machinesOf, openAsk, pollNext, due, prune, rollOf, rowText, rowsOf, settleOf, showAll, stamp, sumFor, homesOf,
   swarmAddrs, swarmOf, swarmsOf, swarmText, tabGroups, closeOf, dropAt, animOn, Entering, addrOf, ciWord, repoName, SELECT, selectedAgent,
-  kindOf, ageOf, boxFor, promptButtons, answerBox, answerArgs } from "./tree.js";
+  kindOf, ageOf, boxFor, promptButtons, answerBox, answerArgs, probeOf, LOW_BATTERY } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 
+// What the rail reads on each machine: memory (Linux), then after `@bat` its battery (Linux's sysfs, macOS's pmset); the
+// swarm CLI's probe (SwarmLean/Lib/Run.lean) reads the same.
+const PROBE = 'cat /proc/meminfo 2>/dev/null; echo @bat; if [ "$(uname)" = Darwin ]; then pmset -g batt 2>/dev/null; ' +
+  'else for d in /sys/class/power_supply/BAT*; do [ -r "$d/capacity" ] && echo "$(cat "$d/capacity") $(cat "$d/status")"; done; fi; true';
+const batteryText = (b) => (b ? `${b.percent}${b.discharging ? "-" : "+"}` : "");
 const ROW = 25; // fixed, so the tree lines of stacked rows meet
 const DAY = 86400000; // an agent idle this long is stale: it dims
 const ICON = { agent: "mods/rw-rail/agent.svg", shell: "mods/workspace-chrome/terminal.svg", comms: "mods/rw-rail/comms.svg" };
@@ -51,7 +56,7 @@ export default class Rail extends View {
     // Each agent's mark, turn and since when (ms), kept across restarts: terminals() leaves status_ms null.
     try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
     cx.timer.every(30000, (cx) => { this.save(); cx.notify(); }); // the rows' times
-    this.load = {}; // machine ("" here) -> { used, total } in kB, or null where /proc/meminfo can't be read
+    this.load = {}; // machine ("" here) -> { used, total, battery } (kB; battery {percent, discharging} or null), or null where neither can be read
     cx.timer.every(10000, (cx) => this.poll(cx));
     try { this.opened = new Set(JSON.parse(localStorage.getItem("opened") ?? "[]")); } catch { this.opened = new Set(); }
     this.all = new Set(); // spaces whose big swarm shows every worker
@@ -186,15 +191,16 @@ export default class Rail extends View {
     const hidden = shared(HIDDEN) ?? [], off = new Set((this.listed ?? []).filter((m) => m.state === "unreachable").map((m) => m.name));
     const ons = [null, ...new Set(spaces().map((s) => s.machine).filter((m) => m && !hidden.includes(m) && !off.has(m)))];
     cx.spawn(async (cx) => {
-      const drawn = (l) => l ? `${Math.round(l.used / 1048576)} ${Math.round(l.total / 1048576)} ${Math.round((100 * l.used) / l.total)}` : "";
+      const drawn = (l) => l ? `${Math.round(l.used / 1048576)} ${Math.round(l.total / 1048576)} ${Math.round((100 * l.used) / l.total)} ${batteryText(l.battery)}` : "";
       let changed = false;
       for (const on of ons) {
         let v = null;
         try {
-          const r = await exec("cat", ["/proc/meminfo"], { on });
-          const kb = (k) => Number(r.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
+          const r = await exec("sh", ["-c", PROBE], { on });
+          const { meminfo, battery } = probeOf(r.stdout);
+          const kb = (k) => Number(meminfo.match(new RegExp(`^${k}:\\s+(\\d+)`, "m"))?.[1]);
           const total = kb("MemTotal"), avail = kb("MemAvailable");
-          if (r.code === 0 && total > 0 && avail >= 0) v = { used: total - avail, total };
+          if (r.code === 0 && ((total > 0 && avail >= 0) || battery)) v = { used: total > 0 ? total - avail : 0, total: total > 0 ? total : 0, battery };
         } catch {}
         const was = this.load[on ?? ""];
         this.load[on ?? ""] = v;
@@ -218,10 +224,24 @@ export default class Rail extends View {
       .cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => { this.more.add(key); cx.notify(); }).child(text);
   }
 
+  // A machine's battery while it runs on it, on its heading: a battery drawn full to its charge and "68%", the warning
+  // color at LOW_BATTERY or less; a machine on mains or with none shows nothing.
+  batteryOf(t, m) {
+    const b = this.load[m ?? ""]?.battery;
+    if (!b?.discharging) return null;
+    const c = b.percent <= LOW_BATTERY ? t.blocked : t.dim, w = Math.round((b.percent / 100) * 10);
+    return h_flex().id(`battery-${m ? this.mid(m) : "local"}`).flex_none().items_center().gap(4).font_family(this.mono).text_size(kit.TYPE.meta)
+      .font_normal().text_color(c).tooltip(`On battery, ${b.percent}%`)
+      .child(h_flex().flex_none().items_center().gap(1)
+        .child(h_flex().w(14).h(8).flex_none().items_center().px(1).rounded(2).border(1).border_color(c).child(div().w(w).h(4).rounded(1).bg(c)))
+        .child(div().w(2).h(4).flex_none().rounded(1).bg(c)))
+      .child(`${b.percent}%`);
+  }
+
   // A machine's memory in use, on its heading: "12 of 94 G".
   loadOf(t, m) {
     const l = this.load[m ?? ""];
-    if (!l) return null;
+    if (!l?.total) return null;
     const g = (kb) => Math.round(kb / 1048576);
     return div().flex_none().font_family(this.mono).text_size(kit.TYPE.meta).font_normal().text_color(t.dim)
       .child(`${g(l.used)} of ${g(l.total)} G`);
@@ -349,7 +369,7 @@ export default class Rail extends View {
   }
 
   // A machine's heading: its name in a capsule (its menu, past this computer), its state or what its last action said,
-  // its memory in use, resting on its name how many terminals it has (`count`), this computer's the collapse chevron;
+  // its battery while it runs on it, its memory in use, resting on its name how many terminals it has (`count`), this computer's the collapse chevron;
   // as a field while it is renamed.
   heading(t, mc, now, count) {
     const m = mc.name, n = this.mid(m), off = mc.state === "unreachable";
@@ -373,7 +393,7 @@ export default class Rail extends View {
         .when(Boolean(state), (el) => el.child(div().flex_none().text_size(11.5).font_normal().text_color(t.dim).child(state)))
         .when(mc.state === "needs_login", (el) => el.child(this.act(t, `login-${n}`, "Log in", (_e, cx) => this.login(m, cx))))
         .child(div().flex_1())
-        .children([off ? null : this.loadOf(t, m)].filter(Boolean))
+        .children(off ? [] : [this.batteryOf(t, m), this.loadOf(t, m)].filter(Boolean))
         .when(!m, (el) => el.child(this.button(t, "rail-collapse", "chevron-left", () => this.toggle(false)))),
       ...(off ? [this.note(t, `off-${n}`, `Can't reach it${at}. Its terminals keep running there.`)] : []),
       ...(m && this.said[m] ? [this.note(t, `said-${n}`, this.said[m])] : [])];

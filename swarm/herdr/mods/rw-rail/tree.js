@@ -97,7 +97,7 @@ const overview = Ox({ active: Bx, db: Tx, now: Nx, comms: Tx, away: AWAY, counts
   agents: Lx(agent), tasks: Lx(task), messages: Lx(Ox({ id: Nx, ts: Nx, frm: Tx, dest: Tx, body: Px, kind: Tx, urgent: (x) => x === true || x === 1 }), 500),
   ci: Ox({ red_streak: Nx, runs: Lx(Ox({ id: Nx, status: Tx, conclusion: Tx, created: Tx, url: Tx }), 20) }),
   watchd: Ox({ alive: Bx, stale: Bx, pid: Nx, started: Nx, terminal: Tx, flags: Lx(Tx, 50) }),
-  machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx, psi: Ox({ memory: Nx, cpu: Nx }) }),
+  machine: Ox({ line: Tx, high: Bx, avail_kb: Nx, total_kb: Nx, psi: Ox({ memory: Nx, cpu: Nx }), battery: Ox({ percent: Nx, discharging: Bx }) }),
   // --view system (II.3i): memory holders and other machines' jobs, the cmd-cost history, memory episodes
   running: Lx(Ox({ agent: Tx, command: Tx, elapsed_s: Nx, rss_kb: Nx, top_kb: Nx, machine: Tx, lost: Bx, unreachable: Bx }), 500),
   cost_top: Lx(Ox({ key: Tx, n: Nx, peak_kb: Nx, wall_s: Nx }), 50), costly: Lx(Ox({ ts: Nx, agent: Tx, cmd: Tx, wall_s: Nx, peak_kb: Nx }), 50),
@@ -1314,6 +1314,24 @@ export function machinesOf(sp, known, listed, hidden) {
       spaces: sp.filter((s) => (s.machine ?? null) === name) };
   }); // a connected machine with no space open here stays: its heading is how to open one
 }
+
+// A machine's battery from its probe text: the first of Linux's `<capacity> <status>` lines (/sys/class/power_supply/BAT*) or
+// macOS's `pmset -g batt` lines, as {percent 0-100, discharging}; null for a machine with none.
+export function batteryOf(text) {
+  for (const l of String(text ?? "").split("\n")) {
+    const mac = /InternalBattery.*?(\d{1,3})%/.exec(l), lin = mac ? null : /^\s*(\d{1,3})\s+(\S+)/.exec(l);
+    if (mac) return { percent: Math.min(100, Number(mac[1])), discharging: l.includes("; discharging") };
+    if (lin) return { percent: Math.min(100, Number(lin[1])), discharging: lin[2] === "Discharging" };
+  }
+  return null;
+}
+// The rail's probe output (memory text, then "@bat" and the battery's text) as { meminfo, battery }; the memory text is empty
+// where there is none (macOS), so "@bat" may be the first line.
+export function probeOf(stdout) {
+  const [meminfo, ...rest] = String(stdout ?? "").split(/^@bat$/m);
+  return { meminfo, battery: batteryOf(rest.join("\n")) };
+}
+export const LOW_BATTERY = 20; // at or below it the rail's battery takes the warning color
 
 // rw-settings' colors as typed: a JSON object of theme color names to #rrggbb, or empty for none. {value} or {wrong}.
 export function colorsOf(text, names) {

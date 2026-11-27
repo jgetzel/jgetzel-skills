@@ -52,6 +52,22 @@ def mac : Option (Int × Int × Psi) := darwinMem "34359738368" (some vm) "2" "{
 #guard (darwinMem "" (some vm) "1" "" "").isNone
 #guard lineOf mac == "machine: 1.8/32.0G mem available, pressure warn, load 3.21 on 10 cores"
 #guard lineOf none == "machine: unknown (memory unreadable)"
+-- batteries: Linux's capacity and status, macOS's pmset; a machine with none
+#guard parseBattery "68 Discharging\n" == some { percent := 68, discharging := true }
+#guard parseBattery "100 Full" == some { percent := 100, discharging := false }
+#guard parseBattery "55 Charging" == some { percent := 55, discharging := false }
+#guard parseBattery "\n12 Not charging\n90 Discharging" == some { percent := 12, discharging := false }
+#guard parseBattery "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=4653155)\t85%; discharging; 4:12 remaining present: true\n" ==
+  some { percent := 85, discharging := true }
+#guard parseBattery "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4653155)\t100%; charged; 0:00 remaining present: true\n" ==
+  some { percent := 100, discharging := false }
+#guard parseBattery "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t40%; AC attached; not charging present: true\n" ==
+  some { percent := 40, discharging := false }
+#guard parseBattery "Now drawing from 'AC Power'\n" == none
+#guard parseBattery "" == none
+#guard parseBattery "\n" == none
+#guard parseBattery "xx Discharging" == none
+#guard (parseBattery "68 Discharging").map Battery.json == some (Lean.Json.mkObj [("percent", 68), ("discharging", true)])
 #guard parseLsof "p10\nfcwd\nn/Users/j/wt\np11\nfcwd\nn/\n" == [(10, "/Users/j/wt"), (11, "/")]
 
 -- beyond the spec: the cgroup scope, a job's command, an owner's command

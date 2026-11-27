@@ -490,6 +490,19 @@ def test_run_note_state_and_cleanup (t : T) : IO Unit := do
   for j in arr ((← parse (← t.sw "a" ["state", "--json"]).stdout).f "running") do
     if j.f "machine" != Json.null then lost := lost.push (toJson [j.f "machine", j.f "job", j.f "lost"])
   eq lost (json% [["laptop", "1", true]])  -- swarm run gone, terminal gone
+  -- the view's machine battery (SWARM_SYS's class/power_supply/BAT*): on battery, plugged in, and a machine with none
+  let battery (sys : String) : IO Json := do
+    let o ← swp t "a" pr ["state", "--json"] { env := [("SWARM_SYS", some sys)] }
+    pure (((← parse o.stdout).f "machine").f "battery")
+  let ps := t.d ++ "/sys/class/power_supply"
+  mkdir (ps ++ "/BAT0"); mkdir (ps ++ "/ACAD")
+  put (ps ++ "/BAT0/capacity") "68\n"; put (ps ++ "/BAT0/status") "Discharging\n"
+  eq (← battery (t.d ++ "/sys")) (json% {"percent": 68, "discharging": true})
+  put (ps ++ "/BAT0/status") "Charging\n"
+  eq (← battery (t.d ++ "/sys")) (json% {"percent": 68, "discharging": false})
+  mkdir (t.d ++ "/desk/class/power_supply/ACAD")
+  eq (← battery (t.d ++ "/desk")) Json.null
+  eq (← battery (t.d ++ "/nosys")) Json.null
   -- watchd's probe of each machine, only from a Herdr terminal
   t.sw_ "a" ["watchd", "--once"] { hc := some "t1", cwd := some t.repo }
   let lap := (← parse (((← t.q1 "select v from meta where k='machines'").f "v").s?.getD "")).f "laptop"
