@@ -824,6 +824,15 @@ def fire (tm : TriggerTiming) (ev : TriggerEvent) (t : Table) (newRow oldRow : O
         modify fun db => { db with trig := sTrig, firing := sFiring, returned := sRet }
         throw e
 
+/-- The rows of a VALUES list whose terms are all literals and whose rows are as wide as the first: what running it gives. -/
+def literalRows (vs : List (List Expr)) : Option (Array (Array Value)) :=
+  match vs with
+  | [] => none
+  | r0 :: _ =>
+    vs.toArray.mapM fun r => do
+      let row ← r.toArray.mapM fun | .lit v => some v | _ => none
+      if row.size == r0.length then some row else none
+
 def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : InsertSource) (upserts : List Upsert) :
     Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
@@ -850,8 +859,11 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
   let rows ← match src with
     | .defaults => pure #[#[]]
     | .values vs => do
-      let (cq, _, _) ← compileQ (.mk false [] (.values vs) [] [] none none)
-      liftR (runSel (← envX) cq fuel0)
+      match literalRows vs with
+      | some rs => pure rs
+      | none =>
+        let (cq, _, _) ← compileQ (.mk false [] (.values vs) [] [] none none)
+        liftR (runSel (← envX) cq fuel0)
     | .select q => do
       let (cq, _, _) ← compileQ q
       liftR (runSel (← envX) cq fuel0)
