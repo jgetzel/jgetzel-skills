@@ -1,3 +1,4 @@
+import LSql.Text
 import LSql.Value
 
 /-! sqlite's number and text conversions (util.c, vdbemem.c, vdbe.c, printf.c, func.c), following
@@ -40,10 +41,8 @@ where
     | 0 => r
     | fuel + 1 => if r.size >= n then r.extract 0 n else go (r ++ r.extract 0 (min r.size (n - r.size))) fuel
 
-/-- Bytes to a String. Invalid UTF-8 (possible only after a byte-precision cut in printf) is read as Latin-1. -/
-def bytesToString (b : ByteArray) : String :=
-  if h : b.validateUTF8 = true then String.fromUTF8 b (ByteArray.validateUTF8_eq_true_iff.mp h) else
-  b.foldl (fun s c => s.push (Char.ofNat c.toNat)) ""
+/-- Bytes to a String; bytes that are not valid UTF-8 (after a byte-precision cut in printf) are escaped bytes (see `textOfBytes`). -/
+def bytesToString (b : ByteArray) : String := textOfBytes b
 
 /-! ### 64-bit multiply and powers of ten (util.c) -/
 
@@ -612,7 +611,7 @@ def valueBytes : Value → Option ByteArray
   | .null => none
   | .int i => some (int64ToBytes i)
   | .real f => some (fmtRealBytes f)
-  | .text s => some s.toUTF8
+  | .text s => some (textBytes s)
   | .blob b => some b
 
 /-- CAST(v AS INTEGER) / sqlite3VdbeIntValue: reals saturate and truncate, text and blobs use the
@@ -1065,7 +1064,7 @@ def printfBytes? (fmt : ByteArray) (args : Array Value) : Option ByteArray :=
 
 /-- sqlite's printf()/format() SQL function. The result is empty when sqlite would raise "string or blob too
 big". A byte-precision cut of a multi-byte character (%.1s without the ! flag) gives bytes that are not
-UTF-8; they are read as Latin-1 here (use printfBytes? to see the exact bytes). -/
+UTF-8; they are escaped bytes here. -/
 def printf (fmt : String) (args : List Value) : String :=
   match printfBytes? fmt.toUTF8 args.toArray with
   | some b => bytesToString b

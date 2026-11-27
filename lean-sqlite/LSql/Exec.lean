@@ -174,10 +174,10 @@ def recordOver (t : Table) (row : Row) (o : OldRow) : ByteArray :=
   spliceRecord o.record o.fields t.cols.size (fun i => !o.changed.getD i true && t.ipk != some i) fun i =>
     if t.ipk == some i then .null
     else if o.changed.getD i true || i < o.fields.size then row.getD i .null
-    else constDefault (t.cols.getD i default).default
+    else columnDefault (t.cols.getD i default)
 
 def tableRow (t : Table) (rowid : Int64) (rec_ : ByteArray) : Row :=
-  decodeRow t.cols.size t.ipk (t.cols.map (·.aff == .real)) (t.cols.map (constDefault ·.default)) rowid rec_
+  decodeRow t.cols.size t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) rowid rec_
 
 /-- The rowid of another row with the same key in a UNIQUE index (NULLs never conflict). -/
 def uniqueConflict (p : Pager) (t : Table) (ix : Index) (row : Row) (rowid : Int64) : Option Int64 :=
@@ -199,7 +199,7 @@ def indexNeed (t : Table) (idxs : Array Index) : Array Bool :=
 /-- A table row's slots that `need` marks, decoded from its record (the others NULL). -/
 def tableRowNeed (t : Table) (need : Array Bool) (rowid : Int64) (rec_ : ByteArray) : Row :=
   fillRow (Array.replicate (t.cols.size + 1) .null) 0 t.cols.size t.ipk (t.cols.map (·.aff == .real))
-    (t.cols.map (constDefault ·.default)) need rowid rec_
+    (t.cols.map columnDefault) need rowid rec_
 
 /-- Removes a row (`row`: as stored, at least the slots `indexNeed` marks) and its index entries. -/
 def deleteRowOf (idxs : Array Index) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
@@ -369,7 +369,7 @@ def matchingRowids (t : Table) (w : Option Expr) : XS (Array Int64) := do
 
 def worRecord (t : Table) (row : Row) : ByteArray := encodeRecord (t.layout.map (row.getD · .null))
 def worKey (t : Table) (row : Row) : ByteArray := encodeRecord (t.pkCols.map (row.getD · .null))
-def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) r
+def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r
 
 /-- An index's entry for a row: its columns, then the rowid (or, on a WITHOUT ROWID table, the key columns it lacks). -/
 def entryVals (t : Table) (ix : Index) (row : Row) (rowid : Int64) : Array Value :=
@@ -517,10 +517,10 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   -- the columns a plain index reads; a partial or expression index reads them all
   let need := Array.replicate (t.cols.size + 1) (pred.isSome || ix0.hasExprs)
   let need := ns.foldl (fun m c => m.setIfInBounds c true) (need.setIfInBounds t.cols.size true)
-  let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) r)
+  let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r)
     else
       let rc := t.cols.map (·.aff == .real)
-      let dv := t.cols.map (constDefault ·.default)
+      let dv := t.cols.map columnDefault
       let blank : Row := Array.replicate (t.cols.size + 1) .null
       BTree.foldTable p0 t.root #[] fun acc k r => acc.push (fillRow blank 0 t.cols.size t.ipk rc dv need k r)
   -- a partial index holds the rows its WHERE accepts

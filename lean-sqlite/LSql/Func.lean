@@ -37,7 +37,7 @@ def toText : Value → String
 /-- A value as bytes (sqlite3_value_blob). -/
 def toBytes : Value → ByteArray
   | blob b => b
-  | text s => s.toUTF8
+  | text s => textBytes s
   | null => ByteArray.empty
   | v => v.toText.toUTF8
 
@@ -141,7 +141,7 @@ where
 def concatV (a b : Value) : Value :=
   match a, b with
   | .null, _ | _, .null => .null
-  | _, _ => .text (a.toText ++ b.toText)
+  | _, _ => .text (canonText (a.toText ++ b.toText))
 
 def negV : Value → Value
   | .null => .null
@@ -154,10 +154,13 @@ def negV : Value → Value
 
 /-! ## LIKE and GLOB (func.c patternCompare), on bytes; LIKE folds ASCII case only, as sqlite's default. -/
 
-/-- Bytes of the UTF-8 character starting at `i`. -/
+/-- Bytes of the character starting at `i` (sqlite's READ_UTF8): a lead byte (>= 0xC0) and the continuation bytes after it; any other byte alone. -/
 @[inline] def charLen (b : ByteArray) (i : Nat) : Nat :=
-  let c := rd b i
-  if c < 0x80 then 1 else if c < 0xE0 then 2 else if c < 0xF0 then 3 else 4
+  if rd b i < 0xC0 then 1 else 1 + charConts b (i + 1) (b.size + 1)
+where
+  charConts (b : ByteArray) (j : Nat) : Nat → Nat
+    | 0 => 0
+    | f+1 => if j < b.size && rd b j &&& 0xC0 == 0x80 then 1 + charConts b (j + 1) f else 0
 
 /-- Whether `n` bytes of `a` at `i` equal those of `b` at `j` (ASCII case folded when `fold`). -/
 def bytesEq (a : ByteArray) (i : Nat) (b : ByteArray) (j : Nat) (fold : Bool) : Nat → Bool
@@ -297,8 +300,16 @@ def quoteV : Value → String
   | .text s => "'" ++ s.replace "'" "''" ++ "'"
   | .blob b => "X'" ++ hexOf b ++ "'"
 
-/-- Characters of a string (code points), for length/substr/instr on text. -/
-def charCount (s : String) : Nat := s.length
+/-- The characters of a string as sqlite counts them (SQLITE_SKIP_UTF8): a byte >= 0x80 (a valid non-ASCII char, or an escaped
+byte) takes the escaped continuation bytes (0x80..0xBF) that follow it. -/
+def charGroups (s : String) : Array String :=
+  s.foldl (fun acc c =>
+    match acc.back? with
+    | some g => if isEscChar c && escByte c < 0xC0 && 0x80 ≤ g.front.val then acc.pop.push (g.push c) else acc.push (String.singleton c)
+    | none => #[String.singleton c]) #[]
+
+/-- length() of text. -/
+def charCount (s : String) : Nat := if hasEsc s then (charGroups s).size else s.length
 
 /-- substr(X, Y [, Z]) on characters (text) or bytes (blobs), sqlite's 1-based and negative positions. -/
 def substrV (x : Value) (y : Int64) (z : Option Int64) : Value :=
@@ -307,6 +318,11 @@ def substrV (x : Value) (y : Int64) (z : Option Int64) : Value :=
   | .blob b => .blob (cut b.size y z |> fun (a, n) => b.extract a (a + n))
   | v =>
     let s := v.toText
+    if hasEsc s then
+      let g := charGroups s
+      let (a, n) := cut g.size y z
+      .text (canonText (String.join (g.extract a (a + n)).toList))
+    else
     let (a, n) := cut s.length y z
     .text (String.ofList ((s.toList.drop a).take n))
 where
@@ -348,6 +364,13 @@ def instrV (x y : Value) : Value :=
   | _, _ =>
     let a := x.toText
     let b := y.toText
+    if hasEsc a || hasEsc b then
+      let ag := charGroups a
+      let nb := textBytes b
+      match (List.range ag.size).find? (fun i => (textBytes (String.join (ag.toList.drop i))).extract 0 nb.size == nb) with
+      | some i => .int (i + 1).toInt64
+      | none => .int (if nb.isEmpty then 1 else 0)
+    else
     let bs := b.toList
     let rec go (cs : List Char) (i : Nat) : Nat :=
       match cs with
@@ -369,7 +392,7 @@ def unicodeV (v : Value) : Value :=
     | none => .null
 
 def charV (args : Array Value) : Value :=
-  .text (String.ofList (args.toList.map fun v => Char.ofNat (Num.castToInt v).toNatClampNeg))
+  .text (textOfBytes (String.ofList (args.toList.map fun v => Char.ofNat (Num.castToInt v).toNatClampNeg)).toUTF8)
 
 /-- round(X [, N]). -/
 def roundV (x : Value) (n : Option Value) : Value :=

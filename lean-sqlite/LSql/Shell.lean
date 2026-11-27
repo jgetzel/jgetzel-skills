@@ -26,7 +26,7 @@ def render (nullValue : String) : Value → ByteArray
   | .int i => (Num.int64ToText i).toUTF8
   | .real f => (Num.fmtReal f).toUTF8
   | .text s =>
-    let b := s.toUTF8
+    let b := textBytes s
     -- text is printed as a C string: it ends at a NUL
     let b := match b.findIdx? (· == 0) with | some k => b.extract 0 k | none => b
     escapeCtrl b
