@@ -116,12 +116,11 @@ def cmpField (coll : Collation) (a : ByteArray) (ta : UInt64) (oa : Nat) (b : By
   else match ca with
   | 0 => .eq
   | 1 =>
-    match decodeField a oa ta, decodeField b ob tb with
-    | .int x, .int y => compare x y
-    | .int x, .real y => cmpIntReal x y
-    | .real x, .int y => (cmpIntReal y x).swap
-    | .real x, .real y => cmpFloat x y
-    | _, _ => .eq
+    if ta == 7 then
+      if tb == 7 then cmpFloat (realField a oa) (realField b ob)
+      else (cmpIntReal (intField b ob tb) (realField a oa)).swap
+    else if tb == 7 then cmpIntReal (intField a oa ta) (realField b ob)
+    else compare (intField a oa ta) (intField b ob tb)
   | 2 => cmpBytes coll a oa (serialLen ta) b ob (serialLen tb)
   | _ => cmpBytes .binary a oa (serialLen ta) b ob (serialLen tb)
 
@@ -141,6 +140,60 @@ where
       let coll := ki.colls.getD i .binary
       match cmpField coll a ta oa b tb ob with
       | .eq => go ha hb (pa + la) (pb + lb) (oa + serialLen ta) (ob + serialLen tb) (i+1) fuel
+      | o => if ki.desc.getD i false then o.swap else o
+
+/-- Compares `a`'s bytes `[ai, ai+an)` with a string's UTF-8 bytes in place under a collation. -/
+def cmpBytesString (coll : Collation) (a : ByteArray) (ai an : Nat) (s : String) : Ordering :=
+  let bn := s.utf8ByteSize
+  match go 0 (min an bn) with
+  | .eq =>
+    if an == bn then .eq
+    else if coll == .rtrim then
+      if an < bn then (if spaces s an (bn - an) then .eq else .lt)
+      else (if allSpaces a (ai + bn) (an - bn) then .eq else .gt)
+    else compare an bn
+  | o => o
+where
+  go (k : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 =>
+      let x := rd a (ai + k)
+      let y := strByte s k
+      let (x, y) := if coll == .nocase then (foldCase x, foldCase y) else (x, y)
+      if x < y then .lt else if x > y then .gt else go (k+1) f
+  spaces (s : String) (i : Nat) : Nat → Bool
+    | 0 => true
+    | f+1 => strByte s i == 32 && spaces s (i+1) f
+  allSpaces (c : ByteArray) (i : Nat) : Nat → Bool
+    | 0 => true
+    | f+1 => rd c i == 32 && allSpaces c (i+1) f
+
+/-- Compares one field of a record, from its serial type and body offset, with a value. -/
+def cmpFieldValue (coll : Collation) (a : ByteArray) (ta : UInt64) (oa : Nat) : Value → Ordering
+  | .null => compare (serialClass ta) 0
+  | .int y =>
+    if serialClass ta != 1 then compare (serialClass ta) 1
+    else if ta == 7 then (cmpIntReal y (realField a oa)).swap
+    else compare (intField a oa ta) y
+  | .real y =>
+    if serialClass ta != 1 then compare (serialClass ta) 1
+    else if ta == 7 then cmpFloat (realField a oa) y
+    else cmpIntReal (intField a oa ta) y
+  | .text s => if serialClass ta != 2 then compare (serialClass ta) 2 else cmpBytesString coll a oa (serialLen ta) s
+  | .blob y => if serialClass ta != 3 then compare (serialClass ta) 3 else cmpBytes .binary a oa (serialLen ta) y 0 y.size
+
+/-- `cmpRecords ki a b` where `b` is already decoded to `probe` (a search decodes its key once, not once a compare). -/
+def cmpRecordProbe (ki : KeyInfo) (a : ByteArray) (probe : Array Value) : Ordering :=
+  let (ha, ka) := getVarint a 0
+  go ha.toNat ka ha.toNat 0 (a.size + 1)
+where
+  go (ha pa oa i : Nat) : Nat → Ordering
+    | 0 => .eq
+    | fuel+1 =>
+      if pa ≥ ha || i ≥ probe.size || i ≥ ki.limit then .eq else
+      let (ta, la) := getVarint a pa
+      match cmpFieldValue (ki.colls.getD i .binary) a ta oa (probe.getD i .null) with
+      | .eq => go ha (pa + la) (oa + serialLen ta) (i+1) fuel
       | o => if ki.desc.getD i false then o.swap else o
 
 /-- `cmpRecords` on the fields' values, for entries not yet encoded: the same order, without decoding. -/
