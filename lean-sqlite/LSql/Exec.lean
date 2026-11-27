@@ -140,21 +140,42 @@ def tableScope (t : Table) : Scope :=
   { srcs := #[{ name := t.name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
                 base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false }] }
 
-/-- An index's key values for a row: its columns, or its expressions evaluated on the row (`t`: the table). -/
-def keyVals (t : Table) (ix : Index) (row : Row) : Array Value :=
+/-- An expression compiled once, to run on many rows. -/
+def cfn (e : CExpr) : CFn := e.compile (fun env q => runSel env q (fuel0 - 1)) (fuel0 - 1)
+
+/-- An index with its expressions compiled once per statement: `terms` are the key terms of an expression index
+(none: the column itself; an expression that does not compile is NULL), `holds` is a partial index's WHERE (an
+expression that does not compile never holds). -/
+structure PIdx extends Index where
+  terms : Array (Option CFn)
+  holds : Option CFn
+
+/-- An index of table `t` prepared (`s`: the schema its WHERE is compiled in). -/
+def PIdx.of (s : Schema) (t : Table) (ix : Index) : PIdx :=
+  let compiled (s : Schema) (e : Expr) : Option CFn :=
+    match (compileExpr { schema := s, scopes := [tableScope t] } e fuel0).run {} with
+    | .ok ((ce, _, _), _) => some (cfn ce)
+    | .error _ => none
+  { toIndex := ix
+    terms := if !ix.hasExprs then #[] else ix.cols.mapIdx fun i _ => (ix.exprs.getD i none).map fun e =>
+      (compiled {} e).getD ⟨fun _ => .ok .null⟩
+    holds := ix.pred.map fun w => (compiled s w).getD ⟨fun _ => .ok (.int 0)⟩ }
+
+/-- The indexes of table `t`, prepared. -/
+def prepIdxs (s : Schema) (t : Table) : Array PIdx := (s.indexesOfTable t).map (PIdx.of s t)
+
+/-- An index's key values for a row: its columns, or its expressions evaluated on the row. -/
+def keyVals (ix : PIdx) (row : Row) : Array Value :=
   if !ix.hasExprs then ix.cols.map (row.getD · .null) else
-  ix.cols.mapIdx fun i c => match ix.exprs.getD i none with
+  ix.cols.mapIdx fun i c => match ix.terms.getD i none with
     | none => row.getD c .null
-    | some e =>
-      match (compileExpr { schema := {}, scopes := [tableScope t] } e fuel0).run {} with
-      | .ok ((ce, _, _), _) => match eval (({ pager := Pager.placeholder } : Env).push row) ce fuel0 with
-        | .ok v => v
-        | .error _ => .null
+    | some f => match f.run (({ pager := Pager.placeholder } : Env).push row) with
+      | .ok v => v
       | .error _ => .null
 
 /-- The entry of index `ix` for a row (its key values, then the rowid). -/
-def indexKey (t : Table) (ix : Index) (row : Row) (rowid : Int64) : ByteArray :=
-  encodeRecord ((keyVals t ix row).push (.int rowid))
+def indexKey (ix : PIdx) (row : Row) (rowid : Int64) : ByteArray :=
+  encodeRecord ((keyVals ix row).push (.int rowid))
 
 /-- The record stored for a table row (the INTEGER PRIMARY KEY's column is NULL: it is the rowid). -/
 def recordOf (t : Table) (row : Row) : ByteArray :=
@@ -180,8 +201,8 @@ def tableRow (t : Table) (rowid : Int64) (rec_ : ByteArray) : Row :=
   decodeRow t.cols.size t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) rowid rec_
 
 /-- The rowid of another row with the same key in a UNIQUE index (NULLs never conflict). -/
-def uniqueConflict (p : Pager) (t : Table) (ix : Index) (row : Row) (rowid : Int64) : Option Int64 :=
-  let vals := keyVals t ix row
+def uniqueConflict (p : Pager) (ix : PIdx) (row : Row) (rowid : Int64) : Option Int64 :=
+  let vals := keyVals ix row
   if !ix.unique || vals.any (·.isNull) then none else
   let probe := encodeRecord vals
   let rids := scanIndex p ix.root ix.keyInfo probe probe vals.size none
@@ -192,7 +213,7 @@ def uniqueMsg (t : Table) (ix : Index) : String :=
 
 /-- The slots of a row (its columns, then its rowid) that its index entries read: an index's columns, or all of them for
 an index on expressions or a partial one. -/
-def indexNeed (t : Table) (idxs : Array Index) : Array Bool :=
+def indexNeed (t : Table) (idxs : Array PIdx) : Array Bool :=
   if idxs.any fun ix => ix.hasExprs || ix.pred.isSome then Array.replicate (t.cols.size + 1) true else
   idxs.foldl (fun m ix => ix.cols.foldl (fun m c => m.setIfInBounds c true) m) (Array.replicate (t.cols.size + 1) false)
 
@@ -202,29 +223,27 @@ def tableRowNeed (t : Table) (need : Array Bool) (rowid : Int64) (rec_ : ByteArr
     (t.cols.map columnDefault) need rowid rec_
 
 /-- Removes a row (`row`: as stored, at least the slots `indexNeed` marks) and its index entries. -/
-def deleteRowOf (idxs : Array Index) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
-  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexKey t ix row rowid)) p
+def deleteRowOf (idxs : Array PIdx) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
+  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexKey ix row rowid)) p
   BTree.tableDelete p t.root rowid
 
 /-- Removes a row and its index entries (`need`: `indexNeed`). -/
-def deleteRowN (need : Array Bool) (idxs : Array Index) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
+def deleteRowN (need : Array Bool) (idxs : Array PIdx) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
   match BTree.tableFind p t.root rowid with
   | none => p
   | some c => deleteRowOf idxs t (tableRowNeed t need rowid c.payload) rowid p
 
 /-- Removes a row and its index entries. -/
-def deleteRowP (idxs : Array Index) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
+def deleteRowP (idxs : Array PIdx) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
   deleteRowN (indexNeed t idxs) idxs t rowid p
 
 /-- Whether a row (its slots, then its rowid) belongs in an index: always, unless a partial index's WHERE is not true. -/
-def inIndex (s : Schema) (env : Env) (t : Table) (ix : Index) (frame : Row) : Bool :=
-  match ix.pred with
+def inIndex (ix : PIdx) (env : Env) (frame : Row) : Bool :=
+  match ix.holds with
   | none => true
-  | some w =>
-    match (compileExpr { schema := s, scopes := [tableScope t] } w fuel0).run {} with
-    | .ok ((ce, _, _), _) => match eval (env.push frame) ce fuel0 with
-      | .ok v => v.truth? == some true
-      | .error _ => false
+  | some f =>
+    match f.run (env.push frame) with
+    | .ok v => v.truth? == some true
     | .error _ => false
 
 /-- Each CHECK's name (CONSTRAINT name) or expression text, in source order, from the CREATE TABLE text. -/
@@ -251,21 +270,23 @@ where
       else if t.kind == .rp then (if depth == 1 then t.e else matchParen t.e (depth - 1) f)
       else matchParen t.e depth f
 
+/-- A table's CHECK constraints compiled once per statement (one that does not compile fails when a row reaches it). -/
+def prepChecks (s : Schema) (t : Table) : Array (Except String CFn) :=
+  t.checks.toArray.map fun c =>
+    (compileExpr { schema := s, scopes := [tableScope t] } c fuel0).run {} |>.map fun ((ce, _, _), _) => cfn ce
+
 /-- The first failing CHECK constraint's message for a row (with its rowid in the last slot). -/
-def checkRow (t : Table) (frame : Row) : XS (Option String) := do
-  if t.checks.isEmpty then return none
-  let s ← schemaX
-  let texts := checkTexts t.sql
+def checkRow (t : Table) (cks : Array (Except String CFn)) (frame : Row) : XS (Option String) := do
   let mut i := 0
-  for c in t.checks do
-    let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := [tableScope t] } c fuel0).run {})
-    let v ← liftR (eval ((← envX).push frame) ce fuel0)
-    if v.truth? == some false then return some s!"CHECK constraint failed: {texts.getD i t.name}"
+  for ck in cks do
+    let f ← liftP ck
+    let v ← liftR (f.run ((← envX).push frame))
+    if v.truth? == some false then return some s!"CHECK constraint failed: {(checkTexts t.sql).getD i t.name}"
     i := i + 1
   return none
 
 /-- Writes one row (constraints checked, conflicts resolved); false when OR IGNORE skipped it. -/
-def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (conflict : Conflict)
+def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (row : Row) (rowid : Int64) (conflict : Conflict)
     (oldRowid : Option Int64) (old : Option OldRow := none) : XS Bool := do
   -- NOT NULL
   let mut row := row
@@ -280,7 +301,7 @@ def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (confl
         | none => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
       | _ => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
   if let some msg := t.strictError row then runErr msg
-  if let some msg ← checkRow t (row.push (.int rowid)) then
+  if let some msg ← checkRow t cks (row.push (.int rowid)) then
     if conflict == .ignore then return false else runErr msg
   -- the rowid
   if oldRowid != some rowid then
@@ -290,18 +311,17 @@ def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (confl
       | .replace => modPager (deleteRowP idxs t rowid)
       | _ => runErr s!"UNIQUE constraint failed: {t.name}.{match t.ipk with | some i => (t.cols.getD i default).name | none => "rowid"}"
   -- UNIQUE indexes (a partial one only among the rows it holds)
-  let s ← schemaX
   let frame := row.push (.int rowid)
-  let holds := idxs.map fun ix => inIndex s ({ pager := Pager.placeholder } : Env) t ix frame
+  let holds := idxs.map fun ix => inIndex ix ({ pager := Pager.placeholder } : Env) frame
   for ix in idxs, h in holds do
     if !ix.unique || !h then continue
-    match uniqueConflict (← get).pager t ix row (oldRowid.getD rowid) with
+    match uniqueConflict (← get).pager ix row (oldRowid.getD rowid) with
     | some other =>
       if other == rowid && oldRowid.isNone then continue
       match conflict with
       | .ignore => return false
       | .replace => modPager (deleteRowP idxs t other)
-      | _ => runErr (uniqueMsg t ix)
+      | _ => runErr (uniqueMsg t ix.toIndex)
     | none => pure ()
   -- the old row goes, then the new one and its index entries
   if let some o := oldRowid then
@@ -311,7 +331,7 @@ def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (confl
     | none => recordOf t row
   modPager fun p =>
     let p := BTree.tableInsert p t.root rowid rec_
-    (idxs.zip holds).foldl (fun p (ix, h) => if h then BTree.indexInsert p ix.keyInfo ix.root (indexKey t ix row rowid) else p) p
+    (idxs.zip holds).foldl (fun p (ix, h) => if h then BTree.indexInsert p ix.keyInfo ix.root (indexKey ix row rowid) else p) p
   return true
 
 /-- sqlite_sequence's value for an AUTOINCREMENT table. -/
@@ -372,12 +392,12 @@ def worKey (t : Table) (row : Row) : ByteArray := encodeRecord (t.pkCols.map (ro
 def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r
 
 /-- An index's entry for a row: its columns, then the rowid (or, on a WITHOUT ROWID table, the key columns it lacks). -/
-def entryVals (t : Table) (ix : Index) (row : Row) (rowid : Int64) : Array Value :=
-  if ix.tail.isEmpty then (keyVals t ix row).push (.int rowid)
-  else keyVals t ix row ++ ix.tail.map (row.getD · .null)
+def entryVals (ix : PIdx) (row : Row) (rowid : Int64) : Array Value :=
+  if ix.tail.isEmpty then (keyVals ix row).push (.int rowid)
+  else keyVals ix row ++ ix.tail.map (row.getD · .null)
 
-def idxEntry (t : Table) (ix : Index) (row : Row) (rowid : Int64) : ByteArray :=
-  encodeRecord (entryVals t ix row rowid)
+def idxEntry (ix : PIdx) (row : Row) (rowid : Int64) : ByteArray :=
+  encodeRecord (entryVals ix row rowid)
 
 /-- The row of a WITHOUT ROWID table with the key of `row`. -/
 def worFind (p : Pager) (t : Table) (row : Row) : Option Row :=
@@ -386,15 +406,15 @@ def worFind (p : Pager) (t : Table) (row : Row) : Option Row :=
   | some r => if cmpRecords t.pkKeyInfo r key == .eq then some (worRowOf t r) else none
   | none => none
 
-def worDeleteP (idxs : Array Index) (t : Table) (row : Row) (p : Pager) : Pager :=
-  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (idxEntry t ix row 0)) p
+def worDeleteP (idxs : Array PIdx) (t : Table) (row : Row) (p : Pager) : Pager :=
+  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (idxEntry ix row 0)) p
   BTree.indexDelete p t.pkKeyInfo t.root (worRecord t row)
 
 def pkMsg (t : Table) : String :=
   "UNIQUE constraint failed: " ++ ", ".intercalate (t.pkCols.toList.map fun c => s!"{t.name}.{(t.cols.getD c default).name}")
 
 /-- Writes a row of a WITHOUT ROWID table, as writeRow does a rowid table's; `old`: the row it replaces. -/
-def writeRowWor (t : Table) (idxs : Array Index) (row : Row) (conflict : Conflict) (old : Option Row) : XS Bool := do
+def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (row : Row) (conflict : Conflict) (old : Option Row) : XS Bool := do
   let mut row := row
   for i in [0:t.cols.size] do
     let c := t.cols.getD i default
@@ -407,9 +427,8 @@ def writeRowWor (t : Table) (idxs : Array Index) (row : Row) (conflict : Conflic
         | none => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
       | _ => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
   if let some msg := t.strictError row then runErr msg
-  if let some msg ← checkRow t row then
+  if let some msg ← checkRow t cks row then
     if conflict == .ignore then return false else runErr msg
-  let s ← schemaX
   let isOld (r : Row) : Bool := match old with
     | some o => cmpRecords t.pkKeyInfo (worKey t o) (worKey t r) == .eq
     | none => false
@@ -422,8 +441,8 @@ def writeRowWor (t : Table) (idxs : Array Index) (row : Row) (conflict : Conflic
       | _ => runErr (pkMsg t)
   -- UNIQUE indexes: an entry with the same values names its row by the key columns
   for ix in idxs do
-    if !ix.unique || !inIndex s ({ pager := Pager.placeholder } : Env) t ix row then continue
-    let vals := keyVals t ix row
+    if !ix.unique || !inIndex ix ({ pager := Pager.placeholder } : Env) row then continue
+    let vals := keyVals ix row
     if vals.any (·.isNull) then continue
     let probe := encodeRecord vals
     let p := (← get).pager
@@ -440,14 +459,14 @@ def writeRowWor (t : Table) (idxs : Array Index) (row : Row) (conflict : Conflic
           | .replace => match worFind (← get).pager t orow with
             | some full => modPager (worDeleteP idxs t full)
             | none => pure ()
-          | _ => runErr (uniqueMsg t ix)
+          | _ => runErr (uniqueMsg t ix.toIndex)
     | none => pure ()
   if let some o := old then modPager (worDeleteP idxs t o)
   let rec_ := worRecord t row
-  let ins := idxs.filter fun ix => inIndex s ({ pager := Pager.placeholder } : Env) t ix row
+  let ins := idxs.filter fun ix => inIndex ix ({ pager := Pager.placeholder } : Env) row
   modPager fun p =>
     let p := BTree.indexInsert p t.pkKeyInfo t.root rec_
-    ins.foldl (fun p ix => BTree.indexInsert p ix.keyInfo ix.root (idxEntry t ix row 0)) p
+    ins.foldl (fun p ix => BTree.indexInsert p ix.keyInfo ix.root (idxEntry ix row 0)) p
   return true
 
 /-! ### Triggers -/
@@ -476,27 +495,28 @@ def viewTable (v : View) : XS Table := do
            cols := names.mapIdx fun i n => { name := n, aff := (affs.getD i .none) : Column } }
 
 /-- The UPSERT clause a row conflicts under, and the existing row it conflicts with (rowid tables). -/
-def upsertConflict (t : Table) (idxs : Array Index) (us : List Upsert) (row : Row) (rowid : Int64) (hasRowid : Bool) :
-    XS (Option (Upsert × Row)) := do
+def upsertConflict {α : Type} (t : Table) (idxs : Array PIdx) (us : List (Upsert × α)) (row : Row) (rowid : Int64)
+    (hasRowid : Bool) : XS (Option ((Upsert × α) × Row)) := do
   let p := (← get).pager
   let byRowid : Option Row := if !hasRowid then none else
     (BTree.tableFind p t.root rowid).map fun c => tableRow t rowid c.payload
-  let byIndex (ix : Index) : Option Row := (uniqueConflict p t ix row rowid).bind fun o =>
+  let byIndex (ix : PIdx) : Option Row := (uniqueConflict p ix row rowid).bind fun o =>
     (BTree.tableFind p t.root o).map fun c => tableRow t o c.payload
-  for u in us do
+  for ua in us do
+    let u := ua.1
     if u.target.isEmpty then
-      if let some r := byRowid then return some (u, r)
+      if let some r := byRowid then return some (ua, r)
       for ix in idxs do
-        if let some r := byIndex ix then return some (u, r)
+        if let some r := byIndex ix then return some (ua, r)
     else
       let tcols ← u.target.toArray.mapM fun ic => match t.colIndex? ic.name with
         | some i => pure i
         | none => parseErr s!"no such column: {ic.name}"
       if tcols.size == 1 && t.ipk == tcols[0]? then
-        if let some r := byRowid then return some (u, r)
+        if let some r := byRowid then return some (ua, r)
       else
         match idxs.find? (fun ix => ix.unique && ix.cols.size == tcols.size && tcols.all ix.cols.contains) with
-        | some ix => if let some r := byIndex ix then return some (u, r)
+        | some ix => if let some r := byIndex ix then return some (ua, r)
         | none => parseErr "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint"
   return none
 
@@ -524,11 +544,12 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
       let blank : Row := Array.replicate (t.cols.size + 1) .null
       BTree.foldTable p0 t.root #[] fun acc k r => acc.push (fillRow blank 0 t.cols.size t.ipk rc dv need k r)
   -- a partial index holds the rows its WHERE accepts
-  let rows := if pred.isNone then rows else rows.filter fun r => inIndex s0 ({ pager := Pager.placeholder } : Env) t ix0 r
+  let px0 := PIdx.of s0 t ix0
+  let rows := if pred.isNone then rows else rows.filter fun r => inIndex px0 ({ pager := Pager.placeholder } : Env) r
   -- a UNIQUE index on rows that repeat a key fails before anything is written
   if unique then
     let keys := rows.filterMap fun r =>
-      let vs := keyVals t ix0 r
+      let vs := keyVals px0 r
       if vs.any (·.isNull) then none else some vs
     let sorted := sortBy keys (cmpRowsColl cs)
     let dup := (List.range (sorted.size - 1)).any fun i =>
@@ -538,7 +559,7 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   let ix : Index := { name, table := t.name, root, cols := ns, colls := cs, desc := ds, unique, sql, pred, tail, exprs, temp := t.temp }
   let ki := ix.keyInfo
   -- entries in key order, so each lands at the end of the last leaf
-  let vals := sortBy (rows.map fun r => entryVals t ix r (match r.getD t.cols.size .null with | .int k => k | _ => 0)) (cmpEntries ki)
+  let vals := sortBy (rows.map fun r => entryVals { px0 with toIndex := ix } r (match r.getD t.cols.size .null with | .int k => k | _ => 0)) (cmpEntries ki)
   let vals := vals.foldl (fun acc v => match acc.back? with
     | some prev => if cmpEntries ki prev v == .eq then acc else acc.push v
     | none => acc.push v) #[]
@@ -898,7 +919,8 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOfTable t
+  let idxs := prepIdxs s t
+  let cks := prepChecks s t
   if !upserts.isEmpty && t.withoutRowid then parseErr "lean-sqlite: upsert on a WITHOUT ROWID table is not supported"
   -- target columns (a "rowid" column names the rowid itself)
   -- (none given: the values are in column order, and the targets are not built)
@@ -922,6 +944,18 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
   let targets := if src matches .defaults then #[] else targets
   let width := if direct then t.cols.size else targets.size
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
+  -- each DO UPDATE's WHERE and SET expressions, compiled once (a compile error surfaces at its first use)
+  let upsP : List (Upsert × Option (Option (Except String CFn) × List (String × Except String CFn))) ← do
+    let sc ← scopesX
+    let upScope : Scope := { srcs := #[
+      { name := t.name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
+        base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false },
+      -- excluded.* only by its name: an unqualified column is the table's
+      { name := "excluded", cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
+        base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
+    let comp (e : Expr) : Except String CFn :=
+      (compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {} |>.map fun ((ce, _, _), _) => cfn ce
+    pure (upserts.map fun u => (u, u.update.map fun (sets, w) => (w.map comp, sets.map fun (c, e) => (c, comp e))))
   -- one row can only fail before it writes: the statement journal is not needed
   if rows.size ≤ 1 && !hasTriggers && upserts.isEmpty then modPager Pager.noStmtJournal
   let defaults ← if direct then pure #[] else t.cols.mapM fun c => match c.default with
@@ -947,7 +981,7 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     if t.withoutRowid then
       try
         fire .before .insert t (some (row.push .null)) none [] fuel
-        if ← writeRowWor t idxs (row.push .null) conflict none then
+        if ← writeRowWor t idxs cks (row.push .null) conflict none then
           n := n + 1
           noteRow (row.push .null)
           fire .after .insert t (some (row.push .null)) none [] fuel
@@ -967,33 +1001,25 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     try
       fire .before .insert t (some row2) none [] fuel
       -- UPSERT: a conflict a clause names turns the insert into nothing, or into an update of the row it meets
-      let up ← if upserts.isEmpty then pure none else upsertConflict t idxs upserts (row2.extract 0 t.cols.size) rowid hasRowid
+      let up ← if upserts.isEmpty then pure none else upsertConflict t idxs upsP (row2.extract 0 t.cols.size) rowid hasRowid
       match up with
-      | some (u, old) =>
-        match u.update with
+      | some ((_, pu), old) =>
+        match pu with
         | none => pure ()
-        | some (sets, w) =>
-          let sc ← scopesX
-          let upScope : Scope := { srcs := #[
-            { name := t.name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
-              base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false },
-            -- excluded.* only by its name: an unqualified column is the table's
-            { name := "excluded", cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
-              base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
+        | some (w, sets) =>
           let frame := old ++ row2
           let env := (← envX).push frame
           let ok ← match w with
             | none => pure true
             | some w => do
-              let ((cw, _, _), _) ← liftP ((compileExpr { schema := s, scopes := upScope :: sc } w fuel0).run {})
-              pure ((← liftR (eval env cw fuel0)).truth? == some true)
+              let cw ← liftP w
+              pure ((← liftR (cw.run env)).truth? == some true)
           if ok then
             let oldRowid := match old.getD t.cols.size .null with | .int k => k | _ => 0
             let mut nrow := old.extract 0 t.cols.size
             let mut nr := oldRowid
             for (c, e) in sets do
-              let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {})
-              let v ← liftR (eval env ce fuel0)
+              let v ← liftR ((← liftP e).run env)
               match t.colIndex? c with
               | some i =>
                 let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1006,12 +1032,12 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
             let full := (match t.ipk with | some i => nrow.setIfInBounds i (.int nr) | none => nrow).push (.int nr)
             let setCols := sets.map (·.1)
             fire .before (.update setCols) t (some full) (some old) setCols fuel
-            if ← writeRow t idxs (full.extract 0 t.cols.size) nr .abort (some oldRowid) then
+            if ← writeRow t idxs cks (full.extract 0 t.cols.size) nr .abort (some oldRowid) then
               n := n + 1
               noteRow full
               fire .after (.update setCols) t (some full) (some old) setCols fuel
       | none =>
-        if ← writeRow t idxs (row2.extract 0 t.cols.size) rowid conflict none then
+        if ← writeRow t idxs cks (row2.extract 0 t.cols.size) rowid conflict none then
           modify fun db => { db with lastRowid := rowid }
           if t.autoinc then
             let db ← get
@@ -1036,7 +1062,8 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOfTable t
+  let idxs := prepIdxs s t
+  let cks := prepChecks s t
   let sc ← scopesX
   let targets ← sets.toArray.mapM fun (c, e) => do
     let tgt ← match t.colIndex? c with
@@ -1044,6 +1071,7 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
       | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
     let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t :: sc } e fuel0).run {})
     pure (tgt, ce)
+  let cfs := targets.map (cfn ·.2)
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   if !isView && !t.withoutRowid && !hasTriggers && conflict != .replace then
     -- each row decodes the columns the statement reads; its new record copies the others
@@ -1064,8 +1092,8 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
       let old := tableRowNeed t need oldRowid c.payload
       let mut row := old.extract 0 n
       let mut nr := oldRowid
-      for (tgt, ce) in targets do
-        let v ← liftR (eval ((← envX).push old) ce fuel0)
+      for ((tgt, _), cf) in targets.zip cfs do
+        let v ← liftR (cf.run ((← envX).push old))
         match tgt with
         | some i =>
           let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1081,7 +1109,7 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
       let row2 := match t.ipk with | some i => row.setIfInBounds i (.int nr) | none => row
       try
         let o : OldRow := { row := old, record := c.payload, fields := recordFields c.payload, changed }
-        if ← writeRow t idxs row2 nr conflict (some oldRowid) (some o) then
+        if ← writeRow t idxs cks row2 nr conflict (some oldRowid) (some o) then
           cnt := cnt + 1
           if all then noteRow (row2.push (.int nr))
       catch e => if isIgnore e then pure () else throw e
@@ -1100,8 +1128,8 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
     let oldRowid := match old.getD t.cols.size .null with | .int k => k | _ => 0
     let mut row := old.extract 0 t.cols.size
     let mut nr := oldRowid
-    for (tgt, ce) in targets do
-      let v ← liftR (eval ((← envX).push old) ce fuel0)
+    for ((tgt, _), cf) in targets.zip cfs do
+      let v ← liftR (cf.run ((← envX).push old))
       match tgt with
       | some i =>
         let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1122,8 +1150,8 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
         n := n + 1
       else
         fire .before (.update setCols) t (some newFull) (some old) setCols fuel
-        let wrote ← if t.withoutRowid then writeRowWor t idxs newFull conflict (some old)
-          else writeRow t idxs row2 nr conflict (some oldRowid)
+        let wrote ← if t.withoutRowid then writeRowWor t idxs cks newFull conflict (some old)
+          else writeRow t idxs cks row2 nr conflict (some oldRowid)
         if wrote then
           n := n + 1
           noteRow newFull
@@ -1144,7 +1172,7 @@ def delete (qtn : String) (w : Option Expr) : Nat → XS Unit
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOfTable t
+  let idxs := prepIdxs s t
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   if w.isNone && !hasTriggers && !isView then
     -- the whole table: clear its trees
@@ -1313,7 +1341,8 @@ def exec1 (st : Stmt) : Nat → XS Result
     let _ ← exec1 st fuel
     let rows ← modifyGet fun db => (db.returned.getD #[], { db with returned := none })
     let env ← envX
-    let out ← rows.mapM fun r => liftR (ces.mapM fun ce => eval (env.push r) ce fuel0)
+    let cfs := ces.map cfn
+    let out ← rows.mapM fun r => liftR (cfs.mapM fun cf => cf.run (env.push r))
     return { names, rows := out }
   | .pragma n v => pragma n v
   | .vacuum | .reindex | .begin | .commit | .rollback | .savepoint _ | .release _ | .rollbackTo _ => return {}
