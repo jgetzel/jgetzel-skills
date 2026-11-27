@@ -463,21 +463,47 @@ def kwList : List (String × TK) := [
   ("WITH", .kWITH),
   ("WITHOUT", .kWITHOUT)]
 
-def kwBuckets : Array (Array (String × TK)) :=
-  kwList.foldl (fun acc (w, t) =>
-    let b := (byteAt w 0 - 65).toNat
-    acc.modify b (·.push (w, t))) (Array.replicate 26 #[])
+/-- The keywords and their kinds, as parallel arrays indexed by an entry number. -/
+def kwWords : Array String := kwList.toArray.map (·.1)
+def kwToks : Array TK := kwList.toArray.map (·.2)
 
-/-- The keyword spelled by bytes [i, j) of s, in any case. -/
-def kwLookup (s : String) (i j : Nat) : Option TK :=
+/-- The hash of a keyword (upper-cased first and last byte, and the length): the slot its chain starts in. -/
+@[inline] def kwHash (c0 cn : UInt8) (n : Nat) : Nat := ((c0.toNat * 4) ^^^ (cn.toNat * 7) ^^^ n) % 256
+
+/-- Hash chains: slot h holds 1 + the first entry of its chain (0: empty); `next` links an entry to 1 + the following one. -/
+def kwChains : Array Nat × Array Nat :=
+  (List.range kwWords.size).foldl (fun (slots, next) e =>
+    let w := kwWords.getD e ""
+    let h := kwHash (byteAt w 0) (byteAt w (w.utf8ByteSize - 1)) w.utf8ByteSize
+    (slots.setIfInBounds h (e + 1), next.push (slots.getD h 0))) (Array.replicate 256 0, #[])
+
+/-- The keyword spelled by bytes [i, j) of s, in any case; `.id` when it is none. -/
+def kwLookup (s : String) (i j : Nat) : TK :=
   let n := j - i
-  if n < 2 || n > 17 then none
+  if n < 2 || n > 17 then .id
   else
     let c := byteAt s i
-    if !isAlpha c then none
-    else
-      ((kwBuckets[(up c - 65).toNat]?).getD #[]).findSome? fun (w, t) =>
-        if w.utf8ByteSize == n && eqFold w s i n then some t else none
+    if !isAlpha c then .id
+    else go n (kwChains.1.getD (kwHash (up c) (up (byteAt s (j - 1))) n) 0) kwWords.size
+where
+  go (n : Nat) : Nat → Nat → TK
+    | _, 0 => .id
+    | 0, _ => .id
+    | e + 1, f + 1 =>
+      let w := kwWords.getD e ""
+      if w.utf8ByteSize == n && eqFold w s i n then kwToks.getD e .id else go n (kwChains.2.getD e 0) f
+
+/-- The keywords sqlite3_complete tells apart (EXPLAIN, CREATE, TEMP, TRIGGER, END); `.id` for any other word. -/
+def kwClass (s : String) (i j : Nat) : TK :=
+  let n := j - i
+  let c := up (byteAt s i)
+  if n == 3 then (if c == 69 && eqFold "END" s i 3 then .kEND else .id)
+  else if n == 4 then (if c == 84 && eqFold "TEMP" s i 4 then .kTEMP else .id)
+  else if n == 6 then (if c == 67 && eqFold "CREATE" s i 6 then .kCREATE else .id)
+  else if n == 7 then
+    (if c == 69 && eqFold "EXPLAIN" s i 7 then .kEXPLAIN else if c == 84 && eqFold "TRIGGER" s i 7 then .kTRIGGER else .id)
+  else if n == 9 then (if c == 84 && eqFold "TEMPORARY" s i 9 then .kTEMP else .id)
+  else .id
 
 /-- Index after the quoted run starting at i (byte q at i): handles the doubled-quote escape; none when unterminated. -/
 def quotedEnd (s : String) (q : UInt8) (i : Nat) : Option Nat :=
@@ -505,6 +531,10 @@ where
 
 /-- Lexes the number starting at i (a digit, or a '.' followed by a digit). -/
 def lexNumber (s : String) (i : Nat) : Token :=
+  let j0 := scanWhile isDigit s i
+  let c := byteAt s j0
+  -- a plain integer: nothing that continues a number or a word follows the digits
+  if j0 > i && !isIdChar c && c != 46 then ⟨.int, i, j0⟩ else
   let c1 := byteAt s (i + 1)
   let (kind, j) : TK × Nat :=
     if byteAt s i == 48 && (c1 ||| 32) == 120 && isXDigit (byteAt s (i + 2)) then
@@ -523,8 +553,8 @@ def lexNumber (s : String) (i : Nat) : Token :=
   else if !(sepsOk (kind == .hex) s i j) then ⟨.illegal, i, j⟩
   else ⟨kind, i, j⟩
 
-/-- Lexes the token that starts at i (no whitespace skipping). -/
-def lexAt (s : String) (i : Nat) : Token :=
+/-- Lexes the token that starts at i (no whitespace skipping); `kw` classifies the word at [i, j). -/
+@[specialize] def lexAtG (kw : String → Nat → Nat → TK) (s : String) (i : Nat) : Token :=
   let n := s.utf8ByteSize
   if i >= n then ⟨.eof, n, n⟩ else
   let c := byteAt s i
@@ -574,14 +604,18 @@ def lexAt (s : String) (i : Nat) : Token :=
         ⟨.illegal, i, if j2 < n then j2 + 1 else n⟩
     else if isIdStart c then
       let j := scanWhile isIdChar s (i + 1)
-      match kwLookup s i j with
-      | some k => ⟨k, i, j⟩
-      | none => ⟨.id, i, j⟩
+      ⟨kw s i j, i, j⟩
     else t .illegal 1
+
+def lexAt (s : String) (i : Nat) : Token := lexAtG kwLookup s i
 
 /-- The next token at or after i, skipping whitespace and comments. -/
 def lexTok (s : String) (i : Nat) : Token :=
   lexAt s (skipTrivia s i (s.utf8ByteSize + 1))
+
+/-- As lexTok, but only the keywords sqlite3_complete cares about are told from plain words. -/
+def lexTokC (s : String) (i : Nat) : Token :=
+  lexAtG kwClass s (skipTrivia s i (s.utf8ByteSize + 1))
 
 /-- sqlite3_complete's state machine (complete.c): the shell's line_is_complete. States: 0 nothing seen, 1 start of a statement
 (the only complete one), 2 normal, 3 EXPLAIN, 4 CREATE [TEMP], 5 inside a CREATE TRIGGER, 6 saw `;` in a trigger, 7 saw `; END`. -/
@@ -612,9 +646,20 @@ where
   go (i : Nat) (state : Nat) : Nat → Bool
     | 0 => state == 1
     | f + 1 =>
-      let t := lexTok src i
+      let t := lexTokC src i
       match t.kind with
       | .eof => state == 1 && !openComment src i (src.utf8ByteSize + 1)
       | k => go t.e (completeStep state k) f
+
+
+/-! Every keyword is read back from its text, in either case; the shell's complete-statement scan sees the same five. -/
+#guard kwList.all fun (w, k) => kwLookup w 0 w.utf8ByteSize == k && kwLookup w.toLower 0 w.utf8ByteSize == k
+#guard kwList.all fun (w, k) =>
+  completeStep 3 (kwClass w 0 w.utf8ByteSize) == completeStep 3 k && completeStep 4 (kwClass w.toLower 0 w.utf8ByteSize) == completeStep 4 k
+    && completeStep 5 (kwClass w 0 w.utf8ByteSize) == completeStep 5 k && completeStep 6 (kwClass w 0 w.utf8ByteSize) == completeStep 6 k
+    && completeStep 7 (kwClass w 0 w.utf8ByteSize) == completeStep 7 k && completeStep 2 (kwClass w 0 w.utf8ByteSize) == completeStep 2 k
+#guard kwLookup "selects" 0 7 == .id && kwLookup "x" 0 1 == .id && kwLookup "SELEC" 0 5 == .id && kwLookup "Current_Timestamp" 0 17 == .kCURRENT_TIMESTAMP
+#guard isComplete "create trigger t after insert on a begin select 1; end;" && !isComplete "create trigger t after insert on a begin select 1; end"
+#guard isComplete "select 1; -- x\n" && !isComplete "select 'a;" && isComplete "explain select 1;" && !isComplete "select 1"
 
 end LSql.Lex
