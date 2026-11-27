@@ -327,9 +327,12 @@ def worKey (t : Table) (row : Row) : ByteArray := encodeRecord (t.pkCols.map (ro
 def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) r
 
 /-- An index's entry for a row: its columns, then the rowid (or, on a WITHOUT ROWID table, the key columns it lacks). -/
+def entryVals (t : Table) (ix : Index) (row : Row) (rowid : Int64) : Array Value :=
+  if ix.tail.isEmpty then (keyVals t ix row).push (.int rowid)
+  else keyVals t ix row ++ ix.tail.map (row.getD · .null)
+
 def idxEntry (t : Table) (ix : Index) (row : Row) (rowid : Int64) : ByteArray :=
-  if ix.tail.isEmpty then indexKey t ix row rowid
-  else encodeRecord (keyVals t ix row ++ ix.tail.map (row.getD · .null))
+  encodeRecord (entryVals t ix row rowid)
 
 /-- The row of a WITHOUT ROWID table with the key of `row`. -/
 def worFind (p : Pager) (t : Table) (row : Row) : Option Row :=
@@ -466,8 +469,15 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   let tail := if t.withoutRowid then t.pkCols.filter (!ns.contains ·) else #[]
   let exprs := cols.toArray.map (·.expr)
   let ix0 : Index := { name, table := t.name, root := 0, cols := ns, colls := cs, desc := ds, unique, sql, pred, tail, exprs }
+  -- the columns a plain index reads; a partial or expression index reads them all
+  let need := Array.replicate (t.cols.size + 1) (pred.isSome || ix0.hasExprs)
+  let need := ns.foldl (fun m c => m.setIfInBounds c true) need
   let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) r)
-    else BTree.foldTable p0 t.root #[] fun acc k r => acc.push (tableRow t k r)
+    else
+      let rc := t.cols.map (·.aff == .real)
+      let dv := t.cols.map (constDefault ·.default)
+      let blank : Row := Array.replicate (t.cols.size + 1) .null
+      BTree.foldTable p0 t.root #[] fun acc k r => acc.push (fillRow blank 0 t.cols.size t.ipk rc dv need k r)
   -- a partial index holds the rows its WHERE accepts
   let rows := if pred.isNone then rows else rows.filter fun r => inIndex s0 ({ pager := Pager.placeholder } : Env) t ix0 r
   -- a UNIQUE index on rows that repeat a key fails before anything is written
@@ -483,8 +493,11 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   let ix : Index := { name, table := t.name, root, cols := ns, colls := cs, desc := ds, unique, sql, pred, tail, exprs, temp := t.temp }
   let ki := ix.keyInfo
   -- entries in key order, so each lands at the end of the last leaf
-  let keys := sortBy (rows.map fun r => idxEntry t ix r (match r.getD t.cols.size .null with | .int k => k | _ => 0)) (cmpRecords ki)
-  modPager fun p => keys.foldl (fun p k => BTree.indexInsert p ki root k) p
+  let vals := sortBy (rows.map fun r => entryVals t ix r (match r.getD t.cols.size .null with | .int k => k | _ => 0)) (cmpEntries ki)
+  let vals := vals.foldl (fun acc v => match acc.back? with
+    | some prev => if cmpEntries ki prev v == .eq then acc else acc.push v
+    | none => acc.push v) #[]
+  modPager fun p => BTree.indexBuild p root (vals.map encodeRecord)
   addSchemaRow "index" name t.name root sql t.temp
   modSchema fun s => { s with indexes := s.indexes.push ix }
 

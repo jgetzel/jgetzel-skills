@@ -350,6 +350,53 @@ def indexInsert (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pag
   let (p, sp) := iInsert ki root key maxDepth p
   growIndexRoot p root sp
 
+/-! ## Building an index tree from sorted entries -/
+
+/-- The positions of the cells that move up to the parent when `sizes` (on-page cell sizes, in order) are packed greedily
+into pages of room `cap`: the groups between them each fit a page, and none is empty (when the last cell would be left
+alone as a separator, the one before it moves up instead). -/
+def packSeps (sizes : Array Nat) (cap : Nat) : Array Nat :=
+  let n := sizes.size
+  let (seps, _) := n.fold (fun i _ (st : Array Nat × Nat) =>
+    let s := sizes.getD i 0
+    if st.2 + s > cap && st.2 > 0 then (st.1.push i, 0) else (st.1, st.2 + s)) (#[], 0)
+  match seps.back? with
+  | some l =>
+    let start := if seps.size ≥ 2 then seps.getD (seps.size - 2) 0 + 1 else 0
+    if l + 1 == n && l ≥ start + 2 then seps.pop.push (n - 2) else seps
+  | none => seps
+
+/-- One level of a bottom-up build: `cells` are the level's cells in order (the entries, for the leaves; the promoted
+separators of the level below, otherwise) and `kids` the level below's pages, one more than the cells. The pages of the
+level are filled and the separators between them go up a level; a level that fits one page is the root's. -/
+def buildLevel (root : Pgno) (cells : Array Cell) (kids : Option (Array Pgno)) : Nat → Pager → Pager
+  | 0, p => p
+  | fuel+1, p =>
+    let g := p.geo
+    let seps := packSeps (cells.map (if kids.isNone then ileafCellSize g else iinnerCellSize g)) (g.room 0 kids.isNone)
+    let node (a b : Nat) : Node .index := match kids with
+      | none => .ileaf (cells.extract a b)
+      | some ks => .iinner (cells.extract a b) (ks.extract a (b + 1))
+    if seps.isEmpty then
+      let (_, p) := p.take root
+      p.put root (.index (node 0 cells.size))
+    else
+      let starts := #[0] ++ seps.map (· + 1)
+      let ends := seps.push cells.size
+      let (pgs, p) := (List.range starts.size).foldl (fun (acc : Array Pgno × Pager) j =>
+        let (np, p) := acc.2.alloc root
+        (acc.1.push np, p.put np (.index (node (starts.getD j 0) (ends.getD j 0))))) (#[], p)
+      buildLevel root (seps.map (cells.getD · default)) (some pgs) fuel p
+
+/-- Fills the empty index tree at `root` with `keys`, which are in order and distinct under the index's order: the leaves
+are packed in order and the interior levels built over them (sqlite's CREATE INDEX appends in order; this writes each
+page once). -/
+def indexBuild (p : Pager) (root : Pgno) (keys : Array ByteArray) : Pager :=
+  let (cells, p) := keys.foldl (fun (acc : Array Cell × Pager) k =>
+    let (c, p) := acc.2.allocOvfl .index k 0 root
+    (acc.1.push c, p)) (#[], p)
+  if cells.isEmpty then p else buildLevel root cells none maxDepth p
+
 /-- Puts every page of the subtree at `pg` on the freelist (overflow pages too). -/
 def freeTree (pg : Pgno) : Nat → Pager → Pager
   | 0, p => p
