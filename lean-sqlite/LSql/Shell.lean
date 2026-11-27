@@ -77,7 +77,7 @@ def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO S
       -- the database moves out of the shell's state, so the statement holds the only reference to its pages
       -- 'now' is read once per statement
       let now ← Std.Time.Timestamp.now
-      let db0 := { st.db with nowMs := some (now.val.second.val.toInt64 * 1000 + now.val.nano.val.toInt64 / 1000000) }
+      let db0 := { st.db with nowMs := some (now.toMillisecondsSinceUnixEpoch.val.toInt64) }
       st := { st with db := DB.placeholder }
       let (db, r, writes) := match stmt with
         | .pragma n _ =>
@@ -317,27 +317,16 @@ runs a file's lines in its place (`fuel`: how deep .read may nest). -/
 def runInput (out err : IO.FS.Stream) (st : St) (input : String) : Nat → IO St
   | 0 => do errLine out err "Error: .read nested too deeply"; return { st with failed := true }
   | fuel+1 => do
-  let total := input.utf8ByteSize
+  let lines := input.splitOn "\n"
   let mut st := st
   let mut buf := ""
   let mut bufLine := 0
   let mut n := 0
-  let mut pos := 0
-  let mut more := true
-  -- the lines of the input, as splitOn "\n" gives them (one more than there are newlines)
-  for _ in [0:total + 2] do
-    if !more then break
-    let start := pos
-    let e := Lex.lineEnd input pos
-    more := e < total
-    -- the line with its newline, which a last line lacks
-    let nl := if more then Lex.sub input start (e + 1) else Lex.sub input start e ++ "\n"
-    pos := e + 1
+  for l in lines do
     n := n + 1
     if st.quit then break
     if st.bail && st.failed then break
-    if buf.isEmpty && Lex.byteAt input (Lex.scanWhile (fun c => c == 32 || c == 9 || c == 13) input start) == 46 then
-      let l := Lex.sub input start e
+    if buf.isEmpty && l.trimAscii.toString.startsWith "." then
       if st.echo then out.putStrLn l
       let w := dotArgs l
       if w.headD "" == ".read" then
@@ -351,9 +340,9 @@ def runInput (out err : IO.FS.Stream) (st : St) (input : String) : Nat → IO St
       continue
     if buf.isEmpty then
       -- a line of only whitespace and comments starts no statement
-      if Lex.onlyTrivia nl then continue
+      if (Lex.lexTok l 0).kind == .eof && !(Lex.openComment l 0 (l.utf8ByteSize + 1)) then continue
       bufLine := n
-    buf := if buf.isEmpty then nl else buf ++ nl
+    buf := buf ++ l ++ "\n"
     if Parse.isComplete buf then
       if st.echo then out.putStr buf
       st ← runSql out err st buf bufLine

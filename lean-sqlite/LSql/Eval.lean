@@ -124,16 +124,6 @@ def seedOf (env : Env) (site : Int64) : UInt64 :=
   let h := row.foldl (fun (h : UInt64) v => splitmix (h ^^^ hash v.toText ^^^ (v.typeName.length.toUInt64 <<< (56 : UInt64)))) 0
   splitmix ((env.nowMs.getD 0).toUInt64 ^^^ splitmix site.toUInt64 ^^^ h)
 
-/-- The number of characters before the first NUL: what length() counts of a text. -/
-def charsToNul (s : String) : Nat :=
-  go 0 0 (s.utf8ByteSize + 1)
-where
-  go (i n : Nat) : Nat → Nat
-    | 0 => n
-    | f + 1 =>
-      let b := Lex.byteAt s i
-      if b == 0 then n else if i < s.utf8ByteSize then go (i + 1) (if b &&& 0xC0 == 0x80 then n else n + 1) f else n
-
 /-- The scalar functions (func.c). -/
 def evalFn (env : Env) (name : String) (a : Array Value) : EM Value :=
   if name == jsonValueTag then .ok (a.getD 0 .null) else
@@ -147,7 +137,7 @@ def evalFn (env : Env) (name : String) (a : Array Value) : EM Value :=
   | "LENGTH" => .ok (match x with
     | .null => .null
     | .blob b => .int b.size.toInt64
-    | v => .int (charsToNul v.toText).toInt64)
+    | v => .int (v.toText.takeWhile (· != '\x00')).positions.length.toInt64)
   | "OCTET_LENGTH" => .ok (match x with | .null => .null | v => .int v.toBytes.size.toInt64)
   | "LOWER" => .ok (match x with | .null => .null | v => .text (lowerAscii v.toText))
   | "UPPER" => .ok (match x with | .null => .null | v => .text (upperAscii v.toText))
