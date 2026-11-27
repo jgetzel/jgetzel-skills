@@ -69,6 +69,44 @@ def mem [Monad m] [Env m] [Fs m] [Proc m] : m (Option (Int × Int × Psi)) := do
   | some a, some t => return some (a, t, { memory := some (← psi "memory"), cpu := some (← psi "cpu") })
   | _, _ => return none
 
+/-- A battery: its charge in percent, and whether the machine runs on it (discharging). -/
+structure Battery where
+  percent : Int
+  discharging : Bool
+  deriving BEq, Repr
+
+/-- A battery as JSON: `percent` and `discharging`. -/
+def Battery.json (b : Battery) : Lean.Json :=
+  Lean.Json.mkObj [("percent", Lean.Json.num (Lean.JsonNumber.fromInt b.percent)), ("discharging", Lean.Json.bool b.discharging)]
+
+/-- The first battery in a reading, none for a machine with none: Linux's lines `<capacity> <status>` (one per
+`BAT*` in /sys/class/power_supply), or macOS's `pmset -g batt`, whose line for the internal battery reads
+`-InternalBattery-0 (id=1)\t85%; discharging; 4:12 remaining present: true`. -/
+def parseBattery (txt : String) : Option Battery :=
+  (splitlines txt).findSome? fun l =>
+    if hasSub l "InternalBattery" then
+      match l.splitOn "%" with
+      | pre :: _ :: _ =>
+        (parseInt (String.ofList ((pre.toList.reverse.takeWhile Char.isDigit).reverse))).map fun p =>
+          { percent := p, discharging := hasSub l "; discharging" }
+      | _ => none
+    else match words l with
+      | c :: s :: _ => (parseInt c).map fun p => { percent := p, discharging := s == "Discharging" }
+      | _ => none
+
+/-- This machine's battery, none when it has none (the first `BAT*` under $SWARM_SYS or /sys, or macOS's `pmset`). -/
+def battery [Monad m] [Env m] [Fs m] [Proc m] : m (Option Battery) := do
+  if (← osName) == "Darwin" then
+    return (← Proc.output ["pmset", "-g", "batt"] none []).bind fun o => parseBattery o.stdout
+  let dir := s!"{(← Env.var "SWARM_SYS").getD "/sys"}/class/power_supply"
+  let some es ← Fs.list dir | return none
+  let mut lines : List String := []
+  for e in es.mergeSort (· ≤ ·) do
+    if e.startsWith "BAT" then
+      if let some c ← Fs.read s!"{dir}/{e}/capacity" then
+        lines := lines ++ [s!"{strip c} {strip ((← Fs.read s!"{dir}/{e}/status").getD "")}"]
+  return parseBattery ("\n".intercalate lines)
+
 /-- Memory or CPU pressure is high (machine.pressure_high). -/
 def pressureHigh (avail total : Int) (psi : Psi) : Bool :=
   match psi.level with

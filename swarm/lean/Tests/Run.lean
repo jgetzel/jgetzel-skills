@@ -21,5 +21,16 @@ Pages purgeable:                           2655.
 #guard parseProbe "24\n3.50 2.0 1.0 1/900 77\nMemTotal: 1000 kB\nMemAvailable: 400 kB\nsome avg10=2.50 avg60=0\n" ==
   some { cores := 24, load := 3.5, avail_kb := 400, total_kb := 1000, psi := some 2.5 }
 #guard parseProbe "@darwin\n\n\n\n\n" == none
+-- the battery after the memory: Linux's lines, macOS's pmset, and none
+#guard parseProbe "24\n3.50 2.0 1.0 1/900 77\nMemTotal: 1000 kB\nMemAvailable: 400 kB\nsome avg10=2.50 avg60=0\n@bat\n68 Discharging\n" ==
+  some { cores := 24, load := 3.5, avail_kb := 400, total_kb := 1000, psi := some 2.5, battery := some { percent := 68, discharging := true } }
+#guard parseProbe "24\n3.50 2.0 1.0 1/900 77\nMemTotal: 1000 kB\nMemAvailable: 400 kB\nsome avg10=2.50 avg60=0\n@bat" ==
+  some { cores := 24, load := 3.5, avail_kb := 400, total_kb := 1000, psi := some 2.5 }
+#guard parseProbe ("@darwin\n10\n34359738368\n1\n{ 3.21 2.00 1.00 }\n" ++ vmRun ++
+    "@bat\nNow drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t85%; discharging; 4:12 remaining present: true\n") ==
+  some { cores := 10, load := 3.21, avail_kb := 120000 * 16, total_kb := 32 * 2 ^ 20, level := some "normal",
+         battery := some { percent := 85, discharging := true } }
+#guard parseProbe ("@darwin\n10\n34359738368\n1\n{ 3.21 2.00 1.00 }\n" ++ vmRun ++ "@bat\nNow drawing from 'AC Power'\n") ==
+  some { cores := 10, load := 3.21, avail_kb := 120000 * 16, total_kb := 32 * 2 ^ 20, level := some "normal" }
 #guard Cmd.Run.split ["--on", "laptop", "--env", "K=1", "--", "make", "--on"] == (["--on", "laptop", "--env", "K=1"], ["make", "--on"])
 #guard Cmd.Run.split ["echo hi; exit 2"] == ([], ["echo hi; exit 2"])

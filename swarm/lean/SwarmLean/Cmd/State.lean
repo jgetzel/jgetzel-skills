@@ -575,7 +575,8 @@ def state (a : Parsed) : m UInt32 := do
     | some (av, tot, psi) => pure (Json.mkObj [("line", .str (Machine.line av tot psi)), ("avail_kb", Json.int av),
         ("total_kb", Json.int tot), ("psi", obj [("memory", psi.memory.map Json.float), ("cpu", psi.cpu.map Json.float),
           ("level", psi.level.map .str), ("load", psi.load.map Json.float), ("cores", psi.cores.map Json.int)]),
-        ("high", .bool (Machine.pressureHigh av tot psi))])
+        ("high", .bool (Machine.pressureHigh av tot psi)),
+        ("battery", (← Machine.battery).map Machine.Battery.json |>.getD .null)])
     | none => pure .null
   let metaV (k : String) : Option String := (db.getMeta k).bind (·.v)
   let cv ← match py (metaV "comms") with | some c => pure (some c) | none => env "SWARM_COMMS"

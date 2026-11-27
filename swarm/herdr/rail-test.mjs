@@ -1,7 +1,7 @@
 // node swarm/herdr/rail-test.mjs: rw-rail's rows (order, tree lines, marks, the swarm block) and rw-bar's pills and
 // Needs you list from made-up Herdr data.
 import assert from "node:assert/strict";
-import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, colorsOf, looked, overOf, sumOf, needsOf, labelGroups, parentTree, barOf, parentArgs, doneArgs, childrenArgs, childrenRefused, cancelArgs, completeArgs, kidsAskOf } from "./mods/rw-rail/tree.js";
+import { rowsOf, markOf, dur, agentWhat, stamp, needsYou, tabGroups, closeOf, dropAt, rowText, abbrev, rollOf, swarmOf, swarmText, swarmAddrs, sumFor, sumNamed, homesOf, agentAt, ciWord, questionsOf, hungOf, asksOf, agentRows, boardRows, openAsk, settleOf, machinesOf, batteryOf, probeOf, colorsOf, looked, overOf, sumOf, needsOf, labelGroups, parentTree, barOf, parentArgs, doneArgs, childrenArgs, childrenRefused, cancelArgs, completeArgs, kidsAskOf } from "./mods/rw-rail/tree.js";
 
 const sh = { shell: true }, app = { shell: false };
 const T = (address, o) => ({ address, state: "live", status: null, parent: null, program: app, ...o });
@@ -857,4 +857,18 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   assert.deepEqual(o.tasks.filter((k) => T.inPool(k, { tab: "proposed", status: new Set(), prio: new Set(), labels: new Set() })).map((k) => k.id), [2, 3]);
   assert.deepEqual(T.barOf(null, o.tasks).map(([st]) => st), ["ready", "proposed", "backlog"]);
 }
+// a machine's battery: Linux's lines, macOS's pmset, none
+assert.deepEqual(batteryOf("68 Discharging\n"), { percent: 68, discharging: true });
+assert.deepEqual(batteryOf("100 Full"), { percent: 100, discharging: false });
+assert.deepEqual(batteryOf("\n20 Charging\n90 Discharging"), { percent: 20, discharging: false }); // the first
+assert.deepEqual(batteryOf("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t85%; discharging; 4:12 remaining present: true\n"), { percent: 85, discharging: true });
+assert.deepEqual(batteryOf("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true"), { percent: 100, discharging: false });
+assert.deepEqual(batteryOf("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t40%; AC attached; not charging present: true"), { percent: 40, discharging: false });
+for (const none of ["", "\n", "Now drawing from 'AC Power'\n", "xx Discharging", null, undefined]) assert.equal(batteryOf(none), null);
+// the probe's whole output: memory then the battery; on macOS the memory is empty and "@bat" comes first
+assert.deepEqual(probeOf("MemTotal: 100 kB\nMemAvailable: 40 kB\n@bat\n68 Discharging\n"), { meminfo: "MemTotal: 100 kB\nMemAvailable: 40 kB\n", battery: { percent: 68, discharging: true } });
+assert.deepEqual(probeOf("@bat\nNow drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t85%; discharging; 4:12 remaining present: true\n").battery, { percent: 85, discharging: true });
+assert.equal(probeOf("MemTotal: 100 kB\nMemAvailable: 40 kB\n@bat\n").battery, null);
+assert.equal(probeOf("MemTotal: 100 kB\n").battery, null);
+assert.equal(probeOf("").battery, null);
 console.log("rail-test: ok");

@@ -47,7 +47,10 @@ def liveJobs (db : Db) (t : Int) : List Job :=
 /-- The probe: load and memory, then with job terminals as args every process and each terminal's `hc get`. -/
 def PROBE : String := "if [ \"$(uname)\" = Darwin ]; then echo @darwin; for k in hw.ncpu hw.memsize kern.memorystatus_vm_pressure_level " ++
   "vm.loadavg; do sysctl -n $k 2>/dev/null || echo; done; vm_stat; " ++
-  "else nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null; fi; [ $# -gt 0 ] || exit 0; " ++
+  "else nproc; cat /proc/loadavg /proc/meminfo; cat /proc/pressure/memory 2>/dev/null; fi; " ++
+  "echo @bat; if [ \"$(uname)\" = Darwin ]; then pmset -g batt 2>/dev/null; " ++
+  "else for d in /sys/class/power_supply/BAT*; do [ -r \"$d/capacity\" ] && echo \"$(cat \"$d/capacity\") $(cat \"$d/status\")\"; done; fi; " ++
+  "[ $# -gt 0 ] || exit 0; " ++
   "echo @ps; LC_ALL=C ps -Ao pid=,ppid=,rss=,pcpu=; " ++
   "for t; do echo \"@hc $t\"; hc get \"$t\" --json 2>&1 | tr -d '\\n'; echo; done"
 
@@ -66,28 +69,31 @@ structure Probe where
   total_kb : Int
   psi : Option Float := none
   level : Option String := none
+  battery : Option Machine.Battery := none
   deriving BEq, Repr
 
 /-- The probe's head (before `@ps`) as a reading, none when unreadable (run.parse_probe). -/
-def parseProbe (head : String) : Option Probe :=
+def parseProbe (all : String) : Option Probe :=
+  let (head, bat) := match all.splitOn "\n@bat" with | h :: b :: _ => (h, Machine.parseBattery b) | _ => (all, none)
   let l := splitlines head
   if l.head? == some "@darwin" then do
     let (avail, total, p) ← Machine.darwinMem (l.getD 2 "") (some ("\n".intercalate (l.drop 5))) (l.getD 3 "") (l.getD 4 "") (l.getD 1 "")
     let cores ← p.cores
     let load ← p.load
-    pure { cores, load, avail_kb := avail, total_kb := total, level := some (p.level.getD "unknown") }
+    pure { cores, load, avail_kb := avail, total_kb := total, level := some (p.level.getD "unknown"), battery := bat }
   else do
     let cores ← parseInt (l.getD 0 "")
     let load ← parseFloat ((words (l.getD 1 "")).headD "")
     let avail ← numAfterSp head "MemAvailable:"
     let total ← numAfterSp head "MemTotal:"
-    pure { cores, load, avail_kb := avail, total_kb := total,
+    pure { cores, load, avail_kb := avail, total_kb := total, battery := bat,
            psi := some (((Machine.numAfter head "some avg10=" true).bind parseFloat).getD 0) }
 
 /-- A reading as JSON (meta 'machines'), with what watchd adds. -/
 def Probe.json (p : Probe) (extra : List (String × Option Json)) : Json :=
   obj ([("cores", some (Json.int p.cores)), ("load", some (Json.float p.load)), ("avail_kb", some (Json.int p.avail_kb)),
-    ("total_kb", some (Json.int p.total_kb)), ("psi", p.psi.map Json.float), ("level", p.level.map .str)] ++ extra)
+    ("total_kb", some (Json.int p.total_kb)), ("psi", p.psi.map Json.float), ("level", p.level.map .str),
+    ("battery", p.battery.map Machine.Battery.json)] ++ extra)
 
 /-- `ps -Ao pid=,ppid=,rss=,pcpu=` lines: (pid, ppid, rss KiB, %cpu). -/
 def psLine (l : String) : Option (Nat × Nat × Int × Float) :=
