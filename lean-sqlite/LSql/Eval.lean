@@ -123,7 +123,10 @@ A core's expressions are compiled once per run into closures (the role of sqlite
 collations and functions are decided once, literals converted once, and each row runs the closures. -/
 
 /-- A compiled computation over an environment: a value (`CFn`), a truth value (`CTruth`, NULL as none), whether a
-condition holds (`CPred`), or a value with whether it carries sqlite's JSON subtype (`CFnJ`). -/
+condition holds (`CPred`), or a value with whether it carries sqlite's JSON subtype (`CFnJ`). It is a one-field
+structure, and each node's closure is built by a combinator over its compiled children: a bare function of the
+environment would be eta-expanded to full arity by the compiler, and a let-bound child floated into the closure, so
+each row would compile its children again. -/
 structure Compiled (α : Type) where
   run : Env → EM α
 

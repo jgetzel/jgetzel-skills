@@ -91,11 +91,12 @@ def run (db : DB) : Array String :=
     | some t =>
       let rows := if t.withoutRowid then BTree.foldIndex p t.root #[] fun acc r => acc.push (worRowOf t r, (0 : Int64))
         else BTree.foldTable p t.root #[] fun acc k r => acc.push (tableRow t k r, k)
-      let rows := rows.filter fun (r, _) => inIndex db.schema db.env t ix r
+      let px := PIdx.of db.schema t ix
+      let rows := rows.filter fun (r, _) => inIndex px db.env r
       let n := BTree.foldIndex p ix.root 0 fun n _ => n + 1
       let errs := if n != rows.size then errs.push s!"wrong # of entries in index {ix.name}" else errs
       rows.foldl (fun errs (r, k) =>
-        let key := idxEntry t ix r k
+        let key := idxEntry px r k
         let c := BTree.Cursor.seekKey p ix.keyInfo ix.root key
         if (c.key p).any (cmpRecords ix.keyInfo · key == .eq) then errs else errs.push s!"row {k} missing from index {ix.name}") errs) st.errs
   errs
