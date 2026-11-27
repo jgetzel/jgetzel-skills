@@ -193,10 +193,10 @@ def fnOf (name : String) : ScalarFn :=
     if x.isNull || y.isNull || (a.size > 2 && z.isNull) then .ok .null else
     if a.size > 2 then
       match likeEscape z.toBytes with
-      | some esc => .ok (boolV (likeMatch x.toBytes y.toBytes (some esc)))
+      | some esc => .ok (boolV (likeValue x.toBytes y (some esc)))
       | none => .error "ESCAPE expression must be a single character"
-    else .ok (boolV (likeMatch x.toBytes y.toBytes none))
-  | "GLOB" => .of fun env a x y z anyNull => .ok (if anyNull then .null else boolV (globMatch x.toBytes y.toBytes))
+    else .ok (boolV (likeValue x.toBytes y none))
+  | "GLOB" => .of fun env a x y z anyNull => .ok (if anyNull then .null else boolV (globValue x.toBytes y))
   | "PRINTF" | "FORMAT" => .of fun env a x y z anyNull => .ok (if x.isNull then .null else .text (Num.printf x.toText (a.toList.drop 1)))
   | "CONCAT" => .of fun env a x y z anyNull => .ok (.text (canonText (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) "")))
   | "CONCAT_WS" => .of fun env a x y z anyNull =>
@@ -961,8 +961,8 @@ def «match» (op : MatchOp) (fx fp : CFn) (fe : Option CFn) (neg : Bool) : CFn 
       | none => throw "ESCAPE expression must be a single character"
     | none => pure none
   let m := match op with
-    | .glob => globMatch pv.toBytes v.toBytes
-    | _ => likeMatch pv.toBytes v.toBytes escB
+    | .glob => globValue pv.toBytes v
+    | _ => likeValue pv.toBytes v escB
   return boolV (m != neg)⟩
 
 /-- LIKE or GLOB against a constant pattern (and escape): their bytes are taken once, not per row. -/
@@ -970,8 +970,8 @@ def matchLit (op : MatchOp) (fx : CFn) (pat : ByteArray) (esc : Option ByteArray
   let v ← fx.run env
   if v.isNull then return .null
   let m := match op with
-    | .glob => globMatch pat v.toBytes
-    | _ => likeMatch pat v.toBytes esc
+    | .glob => globValue pat v
+    | _ => likeValue pat v esc
   return boolV (m != neg)⟩
 
 def inSelRow (sub : SubRun) (q : CSel) (fs : Array CFn) (neg : Bool) (affs : Array Aff) (colls : Array Collation) : CFn :=
