@@ -622,8 +622,9 @@ where
 
 /-! ## Table and index scans -/
 
-/-- Rows of a rowid range `[lo, hi]`. -/
-def scanRange (p : Pager) (root : Pgno) (lo : Option Int64) (hi : Option Int64) : Array (Int64 × ByteArray) :=
+/-- The rows of a rowid range `[lo, hi]` whose records `keep` accepts. -/
+def scanRange (p : Pager) (root : Pgno) (lo : Option Int64) (hi : Option Int64) (keep : ByteArray → Bool) :
+    Array (Int64 × ByteArray) :=
   let c := match lo with
     | some l => BTree.Cursor.seekRowid p root l
     | none => BTree.Cursor.first p root
@@ -637,7 +638,7 @@ where
       | some (k, r) =>
         let stop : Bool := match hi with | some h => decide (k > h) | none => false
         if stop then acc
-        else go (c.next p) (acc.push (k, r)) f
+        else go (c.next p) (if keep r then acc.push (k, r) else acc) f
 
 /-- The rowids of index entries from `probe` on, while their first `neq` fields equal the probe's and (when given) field
 `neq` stays within `hi`. -/
@@ -761,6 +762,57 @@ def OrdSet.of : BinOp → OrdSet
 /-- Whether a comparison holds on operands the comparison affinity was applied to (not when either is NULL). -/
 @[inline] def cmpHolds (s : OrdSet) (coll : Collation) (x y : Value) : Bool :=
   !x.isNull && !y.isNull && s.has (cmpValues coll x y)
+
+/-- The orderings the operator accepts with its operands swapped. -/
+def OrdSet.swap (s : OrdSet) : OrdSet := ⟨s.gt, s.eq, s.lt⟩
+
+/-- A condition on a table's column against a literal, decided on the record's bytes: the column's index, the orderings
+the operator accepts (for the column against the literal), the collation, the comparison affinity, the literal with it
+applied, whether the column's integers are reals, and the column's value in a record too short to have it. -/
+structure LitCond where
+  col : Nat
+  ords : OrdSet
+  coll : Collation
+  aff : Aff
+  lit : Value
+  real : Bool
+  dflt : Value
+
+/-- Whether the condition holds for the field of serial type `t` whose body starts at `o`: decided on the bytes when
+the affinity leaves the field's value as it is, else on the decoded field. -/
+def LitCond.holds (c : LitCond) (rec_ : ByteArray) (t : UInt64) (o : Nat) : Bool :=
+  let cls := serialClass t
+  if cls == 0 || c.lit.isNull then false else
+  let plain := !(c.real && cls == 1 && t != 7) && match c.aff with
+    | .none | .blob => true
+    | .numeric | .integer => cls != 2
+    | .real => cls == 3 || t == 7
+    | .text => cls != 1
+  if plain then c.ords.has (cmpFieldValue c.coll rec_ t o c.lit)
+  else
+    let v := match decodeField rec_ o t with
+      | .int x => if c.real then .real x.toFloat else .int x
+      | v => v
+    cmpHolds c.ords c.coll (Value.applyAff c.aff v) c.lit
+
+/-- Whether a record passes every condition (`lits` in column order): its header read once, the fields compared in place. -/
+def litsPass (lits : Array LitCond) (rec_ : ByteArray) : Bool :=
+  if lits.isEmpty then true else
+  let (hs, p0) := getVarint rec_ 0
+  go hs.toNat p0 hs.toNat 0 0 (lits.size + (lits.back?.map (·.col)).getD 0 + 1)
+where
+  go (hs pos body i j : Nat) : Nat → Bool
+    | 0 => true
+    | f+1 =>
+      match lits[j]? with
+      | none => true
+      | some c =>
+        if pos ≥ hs then
+          cmpHolds c.ords c.coll (Value.applyAff c.aff c.dflt) c.lit && go hs pos body i (j+1) f
+        else
+        let (t, l) := getVarint rec_ pos
+        if i < c.col then go hs (pos + l) (body + serialLen t) (i+1) j f
+        else c.holds rec_ t body && go hs pos body i (j+1) f
 
 /-- AND and OR of truth values. -/
 def andTruth : Option Bool → Option Bool → Option Bool
@@ -1101,16 +1153,53 @@ def compileConds (sub : SubRun) (conds : Array CExpr) (fuel : Nat) : CPred :=
   | #[c] => c.compileCond sub fuel
   | _ => Compiled.all (conds.map (·.compileCond sub fuel))
 
-/-- A FROM item's compiled closures: its ON conditions, the conditions checked once it is bound, its access path's
-probes, its transient index's probes (with their affinities), and a table-valued function's arguments. -/
+/-- A condition's conjuncts, in order. -/
+def CExpr.conjuncts : CExpr → Nat → Array CExpr
+  | .and a b, f+1 => a.conjuncts f ++ b.conjuncts f
+  | e, _ => #[e]
+
+/-- `column op literal` (either way round) on a table's columns (not its rowid), as a `LitCond`. -/
+def litCondOf (base n : Nat) (ipk : Option Nat) (rc : Array Bool) (dv : Array Value) : CExpr → Option LitCond
+  | .cmp op (.col 0 s) (.lit w) aff coll => mk op s w aff coll false
+  | .cmp op (.lit w) (.col 0 s) aff coll => mk op s w aff coll true
+  | _ => none
+where
+  mk (op : BinOp) (s : Nat) (w : Value) (aff : Aff) (coll : Collation) (flip : Bool) : Option LitCond :=
+    let ord := op == .eq || op == .ne || op == .lt || op == .le || op == .gt || op == .ge
+    if ord && base ≤ s && s < base + n && ipk != some (s - base) then
+      let k := s - base
+      let ords := OrdSet.of op
+      some { col := k, ords := if flip then ords.swap else ords, coll, aff, lit := Value.applyAff aff w,
+             real := rc.getD k false, dflt := dv.getD k .null }
+    else none
+
+/-- A table scan's conditions split: the leading conjuncts that compare a column to a literal (in column order), and the
+conditions after them (a later condition may fail on a row an earlier one rejects, so only a prefix moves ahead). -/
+def litSplit (fuel : Nat) (s : CSource) (conds : Array CExpr) : Array LitCond × Array CExpr :=
+  match s with
+  | .table _ n ipk rc dv base access false false layout _ =>
+    let scan := match access with | .full | .rowidRange _ _ => true | _ => false
+    if !scan || !layout.isEmpty then (#[], conds) else
+    let cs := conds.foldl (fun acc c => acc ++ (foldConst c fuel).conjuncts 64) #[]
+    let k := (cs.findIdx? fun c => (litCondOf base n ipk rc dv c).isNone).getD cs.size
+    let lits := (cs.extract 0 k).filterMap (litCondOf base n ipk rc dv)
+    if lits.isEmpty then (#[], conds) else (sortBy lits fun a b => compare a.col b.col, cs.extract k cs.size)
+  | _ => (#[], conds)
+
+/-- A FROM item's compiled closures: its ON conditions, its WHERE conditions, its access path's probes, its transient
+index's probes (with their affinities), and a table-valued function's arguments. A table scan's leading conditions on a
+column against a literal (`lits`) are decided on its records as the scan reads them; `resid` is the conditions that
+remain to check once a row is bound. -/
 structure SrcRun where
   on : CPred
   conds : CPred
+  lits : Array LitCond
+  resid : CPred
   access : Access CFn
   auto : Array (CFn × Aff)
   args : Array CFn
 
-instance : Inhabited SrcRun := ⟨⟨default, default, .full, #[], #[]⟩⟩
+instance : Inhabited SrcRun := ⟨⟨default, default, #[], default, .full, #[], #[]⟩⟩
 
 /-- An aggregate's compiled closures: its arguments (with their JSON subtypes for a JSON aggregate), FILTER, and step. -/
 structure AggRun where
@@ -1154,12 +1243,18 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
     let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
     let winExprs := wins.foldl (fun acc (.mk _ _ _ args f part _ ord _ _ s fi _) =>
       acc ++ args ++ f.toArray ++ part ++ ord ++ boundExprs s ++ boundExprs fi) #[]
-    let need := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ filters.foldl (· ++ ·) #[] ++ srcExprs
-      ++ aggArgs ++ winExprs)
+    let needOf (fs : Array (Array CExpr)) := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ fs.foldl (· ++ ·) #[]
+      ++ srcExprs ++ aggArgs ++ winExprs)
+    let need := needOf filters
+    -- each scan's conditions on a column against a literal, decided as its records are read
+    let splits := srcs.mapIdx fun i s => litSplit fuel s (filters.getD i #[])
     let needs := srcs.mapIdx fun i s =>
       let on := match s with
         | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on _ | .cte _ _ _ _ _ on _ | .tvf _ _ _ _ _ _ on => on
-      let conds := on ++ filters.getD i #[]
+      let (lits, others) := splits.getD i (#[], #[])
+      let conds := on ++ others
+      -- (the columns only those conditions read are not bound at all)
+      let need := if lits.isEmpty then need else needOf (filters.setIfInBounds i others)
       -- (only for a scan: a lookup's few rows are not worth it)
       match s with
       | .table _ _ _ _ _ _ access _ _ layout _ =>
@@ -1173,7 +1268,9 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
         | .table _ _ _ _ _ _ access _ _ _ on => (on, access, s.autoKeys, #[])
         | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => (on, .full, keys, #[])
         | .tvf _ args _ _ _ _ on => (on, .full, #[], args)
-      ({ on := compileConds sub on fuel, conds := compileConds sub (filters.getD i #[]) fuel,
+      let conds := compileConds sub (filters.getD i #[]) fuel
+      let (lits, others) := splits.getD i (#[], #[])
+      ({ on := compileConds sub on fuel, conds, lits, resid := if lits.isEmpty then conds else compileConds sub others fuel,
          access := access.map (·.compile sub fuel), auto := auto.map fun (_, x, aff, _) => (x.compile sub fuel, aff),
          args := args.map (·.compile sub fuel) } : SrcRun)
     let aggs := aggs.map fun (a : CAgg) => match a with
@@ -1653,7 +1750,7 @@ def joinFrom (e : Env) (srcs : Array CSource) (runs : Array SrcRun) (subs : Arra
         unless ← run.on.run e do continue
       matched := true
       if right then acc := (acc.1, acc.2.setIfInBounds j true)
-      if ← run.conds.run e then
+      if ← run.resid.run e then
         e := e.modifyTop (bindRest src rest · raw j)
         acc ← joinFrom e srcs runs subs autos needs (i+1) acc hint fuel
     if left && !matched then
@@ -1695,7 +1792,7 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
       let find (k : Int64) : Array (Int64 × ByteArray) :=
         match BTree.tableFind p root k with | some c => #[(k, c.payload)] | none => #[]
       match run.access with
-      | .full => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
+      | .full => return dec (BTree.foldTable p root #[] fun acc k r => if litsPass run.lits r then acc.push (k, r) else acc)
       | .rowidEq x => do
         let v ← x.run e
         return match toRowid? v with | some k => dec (find k) | none => (#[], #[])
@@ -1711,7 +1808,7 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
         let hi' ← match hi with
           | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl false)
           | none => pure none
-        return dec (scanRange p root lo' hi')
+        return dec (scanRange p root lo' hi' (litsPass run.lits))
       | .index iroot ki eqs lo hi => do
         let mut eqv : Array Value := #[]
         for (x, aff) in eqs do
