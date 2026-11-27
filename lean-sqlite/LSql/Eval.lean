@@ -439,7 +439,7 @@ def bindCand (src : CSource) (need : Array Bool) (frame : Row) (raw : Array (Int
     (j : Nat) : Row :=
   let (base, tbl) := match src with
     | .table _ tn ipk rc dv base _ _ _ _ _ => (base, some (tn, ipk, rc, dv))
-    | .sub _ _ base _ _ _ | .cte _ _ base _ _ _ | .tvf _ _ _ base _ _ _ => (base, none)
+    | .sub _ _ base _ _ _ _ | .cte _ _ base _ _ _ _ | .tvf _ _ _ base _ _ _ => (base, none)
   match tbl, raw.isEmpty with
   | some (tn, ipk, rc, dv), false =>
     let (k, r) := raw.getD j (0, ByteArray.empty)
@@ -613,6 +613,65 @@ where
         if past then acc else
         let rid := match recordColumn k (recordArity k - 1) with | .int r => r | _ => 0
         go (c.next p) (acc.push rid) f
+
+/-- A transient index on a FROM item: its rows as read whole (a table's (rowid, record) pairs, or a subquery's or WITH
+table's rows), and the positions of those whose key values are all non-NULL, sorted by key (equal keys in read order). -/
+structure AutoIdx where
+  raw : Array (Int64 × ByteArray)
+  rows : Array Row
+  keys : Array (Array Value × Nat)
+  deriving Inhabited
+
+/-- Key values in order, each under its collation. -/
+def cmpAutoKey (colls : Array Collation) (a b : Array Value) : Ordering :=
+  go 0 a.size
+where
+  go (k : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 => match cmpValues (colls.getD k .binary) (a.getD k .null) (b.getD k .null) with
+      | .eq => go (k+1) f
+      | o => o
+
+/-- The keys of a FROM item's transient index (empty: it has none). -/
+def CSource.autoKeys : CSource → Array (Nat × CExpr × Aff × Collation)
+  | .table _ _ _ _ _ _ (.auto keys) _ _ _ _ | .sub _ _ _ _ _ _ keys | .cte _ _ _ _ _ _ keys => keys
+  | _ => #[]
+
+/-- The transient index on the columns at slots `keys` of a FROM item's rows (sqlite's automatic index): each key
+value after the comparison's affinity, as the item's rows bound into a frame of `width` slots give it. -/
+def buildAuto (src : CSource) (width : Nat) (keys : Array (Nat × CExpr × Aff × Collation)) (raw : Array (Int64 × ByteArray))
+    (rows : Array Row) : AutoIdx :=
+  let need := keys.foldl (fun m (s, _) => m.setIfInBounds s true) (Array.replicate width false)
+  let frame : Row := Array.replicate width .null
+  let count := if raw.isEmpty then rows.size else raw.size
+  let entries := count.fold (fun j _ (acc : Array (Array Value × Nat)) =>
+    let fr := bindCand src need frame raw rows j
+    let key := keys.map fun (s, _, aff, _) => Value.applyAff aff (fr.getD s .null)
+    if key.any (·.isNull) then acc else acc.push (key, j)) #[]
+  let colls := keys.map (·.2.2.2)
+  { raw, rows, keys := sortBy entries fun a b => cmpAutoKey colls a.1 b.1 }
+
+/-- The rows of a transient index whose key equals `probe`, in index order. -/
+def autoSeek (ai : AutoIdx) (colls : Array Collation) (probe : Array Value) : Array (Int64 × ByteArray) × Array Row :=
+  let idx := ai.keys
+  let start := lower idx 0 idx.size (idx.size + 1)
+  let js := collect idx start #[] (idx.size - start)
+  if ai.raw.isEmpty then (#[], js.map (ai.rows.getD · #[])) else (js.map (ai.raw.getD · (0, ByteArray.empty)), #[])
+where
+  /-- the first entry in `[lo, hi)` not below the probe -/
+  lower (idx : Array (Array Value × Nat)) (lo hi : Nat) : Nat → Nat
+    | 0 => lo
+    | f+1 =>
+      if lo < hi then
+        let mid := (lo + hi) / 2
+        if cmpAutoKey colls ((idx.getD mid default).1) probe == .lt then lower idx (mid + 1) hi f else lower idx lo mid f
+      else lo
+  collect (idx : Array (Array Value × Nat)) (i : Nat) (acc : Array Nat) : Nat → Array Nat
+    | 0 => acc
+    | f+1 =>
+      match idx[i]? with
+      | some (key, j) => if cmpAutoKey colls key probe == .eq then collect idx (i + 1) (acc.push j) f else acc
+      | none => acc
 
 /-- The rowid a range bound starts or ends at: none when the bound is not a number (the scan is then unbounded on that
 side, and the WHERE clause decides). -/
@@ -930,8 +989,16 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
     let preOk ← allTrue (env.push frame0) pre fuel
     -- FROM subqueries run once
     let subs ← srcs.mapM fun s => match s with
-      | .sub q _ _ _ _ _ => do let r ← runSel env q fuel; pure (some r)
+      | .sub q _ _ _ _ _ _ => do let r ← runSel env q fuel; pure (some r)
       | _ => pure none
+    -- transient indexes, built once (and only once some row reaches their item)
+    let autos := if srcs.all (·.autoKeys.isEmpty) then #[] else srcs.mapIdx fun i s =>
+      let keys := s.autoKeys
+      if keys.isEmpty then none else some <| Thunk.mk fun _ => match s with
+        | .table root _ _ _ _ _ _ _ _ _ _ => buildAuto s width keys (BTree.foldTable env.pager root #[] fun acc k r => acc.push (k, r)) #[]
+        | .sub .. => buildAuto s width keys #[] ((subs.getD i none).getD #[])
+        | .cte id .. => buildAuto s width keys #[] (env.ctes.getD id #[])
+        | _ => default
     let rightIdx := srcs.findIdx? isRightOuter
     let hint := if isAgg || distinct || !order.isEmpty || !wins.isEmpty || rightIdx.isSome then none else hint
     let srcExprs := srcs.foldl (fun acc s => match s with
@@ -939,8 +1006,9 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
         | .rowidEq e => #[e] | .rowidIn es => es
         | .rowidRange lo hi => (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
         | .index _ _ eqs lo hi => eqs.map (·.1) ++ (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
+        | .auto keys => keys.map (·.2.1)
         | .full => #[])
-      | .sub _ _ _ _ _ on | .cte _ _ _ _ _ on => acc ++ on
+      | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => acc ++ on ++ keys.map (·.2.1)
       | .tvf _ args _ _ _ _ on => acc ++ args ++ on) #[]
     let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
     let winExprs := wins.foldl (fun acc (.mk _ _ _ args f part _ ord _ _ s fi _) =>
@@ -950,7 +1018,7 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
     -- each FROM item's columns in two stages: those its ON and WHERE conditions read, then the rest of `need`
     let needs := srcs.mapIdx fun i s =>
       let on := match s with
-        | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on | .cte _ _ _ _ _ on | .tvf _ _ _ _ _ _ on => on
+        | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on _ | .cte _ _ _ _ _ on _ | .tvf _ _ _ _ _ _ on => on
       let conds := on ++ filters.getD i #[]
       -- (only for a scan: a lookup's few rows are not worth it)
       match s with
@@ -963,17 +1031,17 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
     -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
     let rightCount ← match rightIdx with
       | some r => do
-        let (raw, cs) ← candidates env (srcs.getD r default) (subs.getD r none) frame0 fuel
+        let (raw, cs) ← candidates env (srcs.getD r default) (subs.getD r none) none frame0 fuel
         pure (if raw.isEmpty then cs.size else raw.size)
       | none => pure 0
     let (frames, matched) ← if !preOk then pure (#[], #[]) else if srcs.isEmpty then pure (#[frame0], #[])
-      else joinFrom env srcs subs filters needs 0 frame0 (#[], Array.replicate rightCount false) hint fuel
+      else joinFrom env srcs subs autos filters needs 0 frame0 (#[], Array.replicate rightCount false) hint fuel
     -- then its rows nothing matched, with NULLs for the items before it
     let frames ← match rightIdx with
       | none => pure frames
       | some r => do
         let src := srcs.getD r default
-        let (raw, cs) ← candidates env src (subs.getD r none) frame0 fuel
+        let (raw, cs) ← candidates env src (subs.getD r none) none frame0 fuel
         let mut acc : Array Row × Array Bool := (frames, #[])
         for j in [0:rightCount] do
           if matched.getD j true then continue
@@ -981,7 +1049,7 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
           let mut ok := true
           for k in [0:r+1] do
             unless ← allTrue (env.push fr) (filters.getD k #[]) fuel do ok := false; break
-          if ok then acc ← joinFrom env srcs subs filters needs (r+1) fr acc none fuel
+          if ok then acc ← joinFrom env srcs subs autos filters needs (r+1) fr acc none fuel
         pure acc.1
     -- each result row's environment: its frame, or (aggregates) its group's
     let envs : Array Env ← if !isAgg then pure (frames.map env.push) else do
@@ -1229,7 +1297,8 @@ def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
 /-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
 checked, then the later items; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked.
 `needs`: each item's slots its conditions read, and the rest it binds once they pass. -/
-def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row))) (filters : Array (Array CExpr))
+def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row))) (autos : Array (Option (Thunk AutoIdx)))
+    (filters : Array (Array CExpr))
     (needs : Array (Array Bool × Array Bool)) (i : Nat) (frame : Row) (acc : Array Row × Array Bool) (hint : Option Nat) :
     Nat → EM (Array Row × Array Bool)
   | 0 => .error "query nested too deeply"
@@ -1237,10 +1306,10 @@ def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row
     let some src := srcs[i]? | return (acc.1.push frame, acc.2)
     let (base, n, left, right, on) := match src with
       | .table _ n _ _ _ base _ left right _ on => (base, n + 1, left, right, on)
-      | .sub _ n base left right on => (base, n, left, right, on)
-      | .cte _ n base left right on => (base, n, left, right, on)
+      | .sub _ n base left right on _ => (base, n, left, right, on)
+      | .cte _ n base left right on _ => (base, n, left, right, on)
       | .tvf _ _ n base left right on => (base, n, left, right, on)
-    let (raw, cands) ← candidates env src (subs.getD i none) frame fuel
+    let (raw, cands) ← candidates env src (subs.getD i none) (autos.getD i none) frame fuel
     let conds := filters.getD i #[]
     let (first, rest) := needs.getD i (#[], #[])
     let mut acc := acc
@@ -1258,22 +1327,30 @@ def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row
       if right then acc := (acc.1, acc.2.setIfInBounds j true)
       if ← allTrue e conds fuel then
         fr := bindRest src rest fr raw j
-        acc ← joinFrom env srcs subs filters needs (i+1) fr acc hint fuel
+        acc ← joinFrom env srcs subs autos filters needs (i+1) fr acc hint fuel
     if left && !matched then
       let nulls := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
       if ← allTrue (env.push nulls) conds fuel then
-        acc ← joinFrom env srcs subs filters needs (i+1) nulls acc hint fuel
+        acc ← joinFrom env srcs subs autos filters needs (i+1) nulls acc hint fuel
     return acc
 
 /-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
-subquery's or WITH table's rows. -/
-def candidates (env : Env) (src : CSource) (sub : Option (Array Row)) (frame : Row) :
+subquery's or WITH table's rows. `auto`: the item's transient index. -/
+def candidates (env : Env) (src : CSource) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) (frame : Row) :
     Nat → EM (Array (Int64 × ByteArray) × Array Row)
   | 0 => .error "query nested too deeply"
-  | fuel+1 =>
+  | fuel+1 => do
+    if let some ai := auto then
+      let keys := src.autoKeys
+      let mut probe : Array Value := #[]
+      for (_, x, aff, _) in keys do
+        let v := Value.applyAff aff (← eval (env.push frame) x fuel)
+        if v.isNull then return (#[], #[])
+        probe := probe.push v
+      return autoSeek ai.get (keys.map (·.2.2.2)) probe
     match src with
-    | .sub _ _ _ _ _ _ => .ok (#[], sub.getD #[])
-    | .cte id _ _ _ _ _ => .ok (#[], env.ctes.getD id #[])
+    | .sub .. => .ok (#[], sub.getD #[])
+    | .cte id .. => .ok (#[], env.ctes.getD id #[])
     | .tvf fn args _ _ _ _ _ => do
       let vs ← args.mapM fun x => eval (env.push frame) x fuel
       if fn.startsWith "pragma_" then
@@ -1329,6 +1406,8 @@ def candidates (env : Env) (src : CSource) (sub : Option (Array Row)) (frame : R
         let probe := if lov.isNone && hiv.isSome then encodeRecord (eqv.push (.int (-9223372036854775808)) |>.pop |>.push (Value.real (-1.0/0.0))) else probe
         let rids := scanIndex p iroot ki probe eqProbe eqv.size hiv
         return dec (rids.foldl (fun acc k => acc ++ find k) #[])
+      -- with no transient index passed in (a RIGHT JOIN's own pass), the whole table
+      | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
 end
 
 end LSql

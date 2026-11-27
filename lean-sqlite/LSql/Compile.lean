@@ -32,6 +32,8 @@ structure CteInfo where
   id : Nat
   cols : Array String
   affs : Array Aff
+  /-- a recursive WITH table inside its own recursive SELECT: the queue's current row -/
+  queue : Bool := false
 
 structure CEnv where
   schema : Schema
@@ -199,6 +201,10 @@ def chooseAccess (t : Table) (idxs : Array Index) (base : Nat) (conds : Array CE
   let cons := conds.filterMap fun c => match asConstraint c with
     | some (s, op, e, aff, coll) => if s ≥ base && s ≤ rowidSlot && usable e then some (s, op, e, aff, coll) else none
     | none => none
+  -- an equality between two columns, this table's on the right
+  let cons := cons ++ conds.filterMap fun c => match c with
+    | .cmp .eq e (.col 0 s) aff coll => if s ≥ base && s ≤ rowidSlot && usable e then some (s, .eq, e, aff, coll) else none
+    | _ => none
   -- rowid = e
   match cons.find? (fun (s, op, _, _, _) => isRowid s && op == .eq) with
   | some (_, _, e, _, _) => .rowidEq e
@@ -246,6 +252,25 @@ where
     let lo := cons.findSome? fun (s, op, e, _, _) => if isRowid s && (op == .gt || op == .ge) then some (e, op == .ge) else none
     let hi := cons.findSome? fun (s, op, e, _, _) => if isRowid s && (op == .lt || op == .le) then some (e, op == .le) else none
     if lo.isNone && hi.isNone then none else some (.rowidRange lo hi)
+
+/-- The keys of a transient index for an inner FROM item read whole (sqlite's automatic index): the equalities between
+one of its `ncols` columns from slot `base` (not `rowid`, a rowid alias) and an expression over the earlier items,
+one per column. -/
+def autoKeys (base ncols : Nat) (rowid : Option Nat) (conds : Array CExpr) : Array (Nat × CExpr × Aff × Collation) :=
+  let usable (e : CExpr) : Bool := let (ss, corr) := slotsOf e 64; !corr && ss.all (· < base)
+  let key (s : Nat) (e : CExpr) (aff : Aff) (coll : Collation) : Option (Nat × CExpr × Aff × Collation) :=
+    if s ≥ base && s < base + ncols && rowid != some s && usable e then some (s, e, aff, coll) else none
+  conds.foldl (fun ks c =>
+    -- the column on either side
+    let k := match c with
+      | .cmp .eq (.col 0 s) e aff coll => key s e aff coll
+      | _ => none
+    let k := k <|> match c with
+      | .cmp .eq e (.col 0 s) aff coll => key s e aff coll
+      | _ => none
+    match k with
+    | some k => if ks.any (·.1 == k.1) then ks else ks.push k
+    | none => ks) #[]
 
 /-- The value of a DEFAULT expression that is a constant (a literal, a signed number). -/
 def constDefault : Option Expr → Value
@@ -295,9 +320,9 @@ def colName (infos : Array SrcInfo) (tbl : Option String) (n : String) : String 
       (s.cols.find? (nameEq · n)) else none
   hit.getD n
 def isOuter : CSource → Bool
-  | .table _ _ _ _ _ _ _ l r _ _ | .sub _ _ _ l r _ | .cte _ _ _ l r _ | .tvf _ _ _ _ l r _ => l || r
+  | .table _ _ _ _ _ _ _ l r _ _ | .sub _ _ _ l r _ _ | .cte _ _ _ l r _ _ | .tvf _ _ _ _ l r _ => l || r
 def isRightOuter : CSource → Bool
-  | .table _ _ _ _ _ _ _ _ r _ _ | .sub _ _ _ _ r _ | .cte _ _ _ _ r _ | .tvf _ _ _ _ _ r _ => r
+  | .table _ _ _ _ _ _ _ _ r _ _ | .sub _ _ _ _ r _ _ | .cte _ _ _ _ r _ _ | .tvf _ _ _ _ _ r _ => r
 
 /-- An ORDER BY term's direction, NULLs placement and collation, in a window. -/
 def winDir (o : OrderTerm) (t : Typed) : Bool × Bool × Collation :=
@@ -611,7 +636,7 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
         let (_, ns, affs, _) ← compileSelect env (.mk r c first [] [] none none) fuel
         let ns := if cols.isEmpty then ns else cols.toArray
         let info : CteInfo := { name, id, cols := ns, affs := affs.map fun _ => .none }
-        let env2 := { env with ctes := info :: env.ctes }
+        let env2 := { env with ctes := { info with queue := true } :: env.ctes }
         if rest2.length != 1 then throw s!"lean-sqlite: recursive table {name} must be one SELECT UNION [ALL] one SELECT"
         let (cq, _, _, _) ← compileSelect env2 q fuel
         pure (cq, info)
@@ -749,7 +774,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     let pre := allConds.filter fun c => (level c).isNone || srcs.isEmpty
     let filters := (List.range srcs.size).toArray.map fun j =>
       allConds.filter fun c => !srcs.isEmpty && level c == some j
-    let srcs := srcs.mapIdx fun j s => match s with
+    let srcs : Array CSource := srcs.mapIdx fun j s => match s with
       | .table root n ipk rc dv base _ left right layout _ =>
         let conds := if left || right then leftOn.getD j #[] else allConds
         let tbl := tableOfRoot env.schema root
@@ -758,9 +783,26 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
           | some t => if right || t.withoutRowid then .full else chooseAccess t (env.schema.indexesOfTable t) base conds
           | none => .full
         .table root n ipk rc dv base acc left right layout (leftOn.getD j #[])
-      | .sub q n base left right _ => .sub q n base left right (leftOn.getD j #[])
-      | .cte id n base left right _ => .cte id n base left right (leftOn.getD j #[])
+      | .sub q n base left right _ _ => .sub q n base left right (leftOn.getD j #[]) #[]
+      | .cte id n base left right _ _ => .cte id n base left right (leftOn.getD j #[]) #[]
       | .tvf tr args n base left right _ => .tvf tr args n base left right (leftOn.getD j #[])
+    -- an inner item read whole gets a transient index, unless each earlier item gives one row (a rowid lookup, a
+    -- recursive WITH table's queue row)
+    let oneRow (s : CSource) : Bool := match s with
+      | .table _ _ _ _ _ _ (.rowidEq _) _ _ _ _ => true
+      | .cte id .. => env.ctes.any fun c => c.id == id && c.queue
+      | _ => false
+    let srcs : Array CSource := if srcs.size < 2 then srcs else srcs.mapIdx fun j s =>
+      if j == 0 || (srcs.extract 0 j).all oneRow then s else
+      let keys (base n : Nat) (rowid : Option Nat) (left : Bool) (on : Array CExpr) :=
+        autoKeys base n rowid (if left then on else allConds)
+      match s with
+      | .table root n ipk rc dv base .full left false layout on =>
+        let ks := if layout.isEmpty then keys base n (ipk.map (base + ·)) left on else #[]
+        .table root n ipk rc dv base (if ks.isEmpty then .full else .auto ks) left false layout on
+      | .sub q n base left false on _ => .sub q n base left false on (keys base n none left on)
+      | .cte id n base left false on _ => .cte id n base left false on (keys base n none left on)
+      | s => s
     let minmax := if aggs.size == 1 then match aggs[0]? with
         | some (.mk "MIN" _ _ _ _ _) => some (0, false)
         | some (.mk "MAX" _ _ _ _ _) => some (0, true)
@@ -789,7 +831,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           let an := alias.getD name
           match env.ctes.find? (nameEq ·.name name) with
           | some c =>
-            pure (CSource.cte c.id c.cols.size slot left right #[],
+            pure (CSource.cte c.id c.cols.size slot left right #[] #[],
               { name := an, cols := c.cols, affs := c.affs, colls := c.cols.map fun _ => .binary, base := slot,
                 rowid := none, hidden := c.cols.map fun _ => false : SrcInfo })
           | none =>
@@ -797,7 +839,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           | some v =>
             let (cq, ns, affs, colls, _) ← compileSub { env with scopes := [] } v.q fuel
             let ns := if v.cols.isEmpty then ns else v.cols.toArray
-            pure (CSource.sub cq ns.size slot left right #[],
+            pure (CSource.sub cq ns.size slot left right #[] #[],
               { name := an, cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
                 rowid := none, hidden := ns.map fun _ => false : SrcInfo })
           | none =>
@@ -838,7 +880,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           else throw s!"no such table-valued function: {fname}"
         | .subquery q alias =>
           let (cq, ns, affs, colls, _) ← compileSub { env with scopes := env.scopes } q fuel
-          pure (CSource.sub cq ns.size slot left right #[],
+          pure (CSource.sub cq ns.size slot left right #[] #[],
             { name := alias.getD "", cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
               rowid := none, hidden := ns.map fun _ => false : SrcInfo })
       let info := info
