@@ -68,6 +68,7 @@ def varintLen (v : UInt64) : Nat :=
 
 /-- Appends the varint of `v`. -/
 def putVarint (b : ByteArray) (v : UInt64) : ByteArray :=
+  if v < 0x80 then b.push v.toUInt8 else
   if v >>> 56 != 0 then
     -- 9 bytes: 8 bytes of 7 bits (the high 56 bits of v), then the low 8 bits whole
     let hi := v >>> 8
@@ -79,7 +80,7 @@ def putVarint (b : ByteArray) (v : UInt64) : ByteArray :=
 where
   /-- the `n` 7-bit groups of `v`, the high bit set on all but the last (on all when `more`) -/
   groups (b : ByteArray) (v : UInt64) (n : Nat) (more : Bool) : ByteArray :=
-    (List.range n).foldl (fun b k =>
+    n.fold (fun k _ b =>
       let shift := (7 * (n - 1 - k)).toUInt64
       let c := ((v >>> shift) &&& 0x7f).toUInt8
       b.push (if more || k + 1 < n then c ||| 0x80 else c)) b

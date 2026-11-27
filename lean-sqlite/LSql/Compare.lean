@@ -143,4 +143,16 @@ where
       | .eq => go ha hb (pa + la) (pb + lb) (oa + serialLen ta) (ob + serialLen tb) (i+1) fuel
       | o => if ki.desc.getD i false then o.swap else o
 
+/-- `cmpRecords` on the fields' values, for entries not yet encoded: the same order, without decoding. -/
+def cmpEntries (ki : KeyInfo) (a b : Array Value) : Ordering :=
+  go 0 (min a.size b.size)
+where
+  go (i : Nat) : Nat → Ordering
+    | 0 => .eq
+    | fuel+1 =>
+      if i ≥ ki.limit then .eq else
+      match cmpValues (ki.colls.getD i .binary) (a.getD i .null) (b.getD i .null) with
+      | .eq => go (i+1) fuel
+      | o => if ki.desc.getD i false then o.swap else o
+
 end LSql

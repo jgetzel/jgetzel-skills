@@ -483,9 +483,31 @@ where
 
 def cmpRows (a b : Row) : Ordering := cmpRowsColl #[] a b
 
-/-- Stable sort. -/
-def sortBy (xs : Array α) (cmp : α → α → Ordering) : Array α :=
-  (xs.toList.mergeSort fun a b => cmp a b != .gt).toArray
+/-- Appends the merge of `src[i, mid)` and `src[j, hi)` to `dst`; on a tie the left element goes first. -/
+@[specialize] def mergeRuns (cmp : α → α → Ordering) (src : Array α) (mid hi : Nat) (i j : Nat) (dst : Array α) : Nat → Array α
+  | 0 => dst
+  | f+1 =>
+    if h : i < mid ∧ j < hi ∧ i < src.size ∧ j < src.size then
+      let x := src[i]'h.2.2.1
+      let y := src[j]'h.2.2.2
+      if cmp y x == .lt then mergeRuns cmp src mid hi i (j+1) (dst.push y) f else mergeRuns cmp src mid hi (i+1) j (dst.push x) f
+    else dst ++ src.extract i mid ++ src.extract j hi
+
+/-- Merges neighbouring runs of `w` elements (the last may be shorter), then runs of `2w`, until one run is left. -/
+@[specialize] def mergePasses (cmp : α → α → Ordering) (src : Array α) (w : Nat) : Nat → Array α
+  | 0 => src
+  | f+1 =>
+    let n := src.size
+    if w ≥ n then src else
+    let dst := ((n + 2 * w - 1) / (2 * w)).fold (fun k _ dst =>
+      let lo := k * 2 * w
+      let mid := min (lo + w) n
+      let hi := min (lo + 2 * w) n
+      mergeRuns cmp src mid hi lo mid dst (hi - lo)) (Array.emptyWithCapacity n)
+    mergePasses cmp dst (2 * w) f
+
+/-- Stable sort (bottom-up merge sort). -/
+@[specialize] def sortBy (xs : Array α) (cmp : α → α → Ordering) : Array α := mergePasses cmp xs 1 64
 
 /-- The indexes of each row's first occurrence, in order (DISTINCT, UNION). -/
 def firstOccurrences (rows : Array Row) (colls : Array Collation := #[]) : Array Nat :=
