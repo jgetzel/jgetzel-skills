@@ -229,15 +229,16 @@ export function button(t, id, label, onClick, { kind = "default", small = false 
 
 // ---- rows and headers ---------------------------------------------------------------------------------------------
 const meta = (t, text) => div().flex_none().text_size(TYPE.meta).text_color(t.dim).child(text);
-// A repo's group header: tag, name, meta (base, locks, CI), then on the right whatever the caller passes.
+// A repo's group header: tag, name, meta (text, or elements: the base, locks, open), then on the right whatever the caller passes.
 export const repoHeader = (t, id, { repo, name, meta: m, right = [] }) => h_flex().id(id).h(HEAD).px(14).gap(8).flex_none()
   .items_center().bg(t.chrome ?? t.surface).border_b(1).border_color(t.border).font_medium()
   .child(repoTag(t, repo)).child(div().text_color(t.foreground).child(name ?? repo ?? "No repo"))
-  .when(Boolean(m), (el) => el.child(meta(t, m))).child(div().flex_1()).children(right);
-// A state's sub-header inside a group: glyph, label, count.
-export const stateHeader = (t, id, state, label, n) => h_flex().id(id).h(ROW_C).pl(22).pr(14).gap(8).flex_none().items_center()
+  .when(Boolean(m), (el) => el.child(typeof m === "string" ? meta(t, m) : h_flex().flex_none().gap(8).items_center().text_size(TYPE.meta).text_color(t.dim).font_normal().children([m].flat())))
+  .child(div().flex_1()).children(right);
+// A group's sub-header inside a repo: its icon (a task glyph, a priority icon, or none), label, count.
+export const stateHeader = (t, id, icon, label, n) => h_flex().id(id).h(ROW_C).pl(22).pr(14).gap(8).flex_none().items_center()
   .border_b(1).border_color(t.border).text_size(TYPE.meta).text_color(t.dim)
-  .child(taskGlyph(t, state)).child(label).child(String(n));
+  .children(icon ? [icon] : []).child(label).child(String(n));
 // An issue: priority, state glyph, id, title (and a dim note), tags, assignees, age. `sel` as for synced().
 export function issueRow(t, m, k, { onClick, sel = null, tags = [], assignees = [], note = null, age = "" } = {}) {
   const row = h_flex().id(`is-${k.key ?? k.id}`).h(ROW).pl(22).pr(14).gap(8).flex_none().items_center().min_w(0)

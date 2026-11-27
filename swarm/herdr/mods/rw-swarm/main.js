@@ -14,12 +14,12 @@
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, theme, run, appHome, props, settings, watchFolder, window, shared, setShared, layout, openOverlay, focused } from "herdr";
-import { FOLD, SECTIONS, PRIOS, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
+import { FOLD, SECTIONS, PRIOS, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, isClosed, isStarted, leftOf, stateWord, graphOf, addrOf, moveArgs, nextName, queueRows, spawnArgs, answerArgs, asksOf, agentRows, boardRows, dur, evText, line, needsOf, nudgeArgs, openAsk, overOf, computeOf, capFields, capArgs, peekWindow, prsOf, checksOf, branchesOf, landedToday, median, memOf, boxFor, answerBox, promptButtons, promptCard, blockedAt, hookFor, ctxOf, limitsLine, limitArgs, historyOf, spentOf, modelWord, liveOf, nextUp, inPool, byId, labelCounts, modelCounts, queueSplit, TABS, MORE, plain, tabOf, prioWord, ageWord, placeWord, evCells, staffWords, heldWhy, pastOf, fitChips, animOn, Entering, showAll, showSide, showSwarm, sideShown, sumFor, sumNamed, swarmShown, tagOf, repoName, ownTasks } from "./tree.js";
 import { mark, look } from "./marks.js";
 import * as kit from "./kit.js";
 import { FILTERS, actItems, actShown, tailOf } from "./activity.js";
 import { SwarmBoard } from "./board.js";
-import { boardTab, bt, pop, panel, item as menuItem, taskRow, freeSlots } from "./queue.js";
+import { boardHead, boardTab, bt, pop, panel, item as menuItem, taskRow, freeSlots, parentProp, parentPicker, subIssues, moreRow } from "./queue.js";
 
 // The swarm CLI as the swarm mod runs it: this checkout's (mods/swarm links into it), or the skill's on another machine.
 // `name`: the swarm it acts on (its --swarm; sw-global §2: never the folder's); `cwd` the repo a repo's command runs in.
@@ -60,10 +60,12 @@ export default class SwarmTab extends View {
     this.newBody = TextareaState.new({ placeholder: "Description (markdown)", rows: 3 });
     this.newAfter = InputState.new({ placeholder: "Task numbers, e.g. 3, 5" }); this.newNote = InputState.new({ placeholder: "What it waits for" }); this.afterOpen = false;
     this.pastFilter = InputState.new({ placeholder: "Filter" });
+    this.parentIn = InputState.new({ placeholder: "Find a task" }); this.setP = null; // the task page's Parent picker (the task whose parent is being picked)
+    this.parentIn.on("change", (_e, cx) => cx.notify());
     this.pastFilter.on("change", (_e, cx) => cx.notify());
     this.form = { p: "medium", model: null, effort: null, backlog: false };
     // the message line's recipient ("comms" or "all"), urgent flag and Spawn (II.3j)
-    this.to = "comms"; this.urgent = false; this.qwhich = "open";
+    this.to = "comms"; this.urgent = false;
     this.spawnName = InputState.new({ placeholder: "Name" });
     this.spawnName.on("submit", (_e, cx) => this.spawnAgent(cx));
     this.spawnTask = InputState.new({ placeholder: "Task #" });
@@ -92,17 +94,16 @@ export default class SwarmTab extends View {
     this.sb = new SwarmBoard((args) => { const w = this.where(); return swarm(w.cwd, w.on, args, w.swarm); });
     this.refresh(cx); this.refreshPrs(cx);
     cx.timer.every(POLL, (cx) => {
-      if (this.boardView()) { if (this.hidden()) this.sb.gone = true; else this.sb.tick(cx, this.where()); return; }
+      if (this.boardView()) { if (!this.hidden()) { this.sb.tick(cx, this.where()); if (this.due()) this.refresh(cx); } return; } // the staffing bar and the counts stay current
       if (this.due()) this.refresh(cx);
       if (!this.hidden() && Date.now() - (this.prsAt ?? 0) > PR_POLL) this.refreshPrs(cx); // gh only while it shows
     });
   }
   hidden() { return props()?.view && !(props().side ? sideShown(layout()) : swarmShown(layout())); }
-  // The full view shows board.js: its Overview, or its Board but for the older List and Graph, no page open.
+  // The Board shows board.js's By repo body (II.9): Board, Shown as By repo, no page, not History; full width and in the side.
   boardView() {
-    const p = props() ?? {}, v = p.view && !p.side ? shared("rw-swarm.view") ?? {} : null;
-    const sec = v?.section ?? "overview";
-    return Boolean(v && !v.page && (sec === "board" && v.board === "repo"));
+    const v = props()?.view ? shared("rw-swarm.view") ?? {} : null;
+    return Boolean(v && !v.page && (v.section ?? "overview") === "board" && v.board === "repo" && bt(this).tab !== "history");
   }
 
   // The swarm shown: { cwd: a repo of it (where its commands and gh run), on: its machine, swarm: its name }.
@@ -132,13 +133,13 @@ export default class SwarmTab extends View {
   // system` adds memory holders, command cost, locks and memory episodes (II.3i). "graph" while the Board's graph shows:
   // `--view graph` is the tasks, with every task that has an edge (research/sw-graph-view.md).
   pageKey() {
-    const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page, side = Boolean(props()?.side);
+    const v = props()?.view ? shared("rw-swarm.view") : null, p = v?.page;
     return p?.agent ? `agent:${p.agent}` : Number.isInteger(p?.task) ? `task:${p.task}` : v?.section === "activity" || v?.section === "system" ? v.section
-      : v?.section === "board" && v.board === "graph" && !side ? "graph" : null;
+      : v?.section === "board" && v.board === "graph" ? "graph" : null;
   }
   refresh(cx) {
     const { cwd, on, swarm: sw } = this.where(), who = this.pageKey();
-    if (this.loading || this.busy || !sw || this.boardView()) return;
+    if (this.loading || this.busy || !sw) return;
     this.loading = true; this.at = Date.now(); this.dirty = false;
     cx.spawn(async (cx) => {
       try {
@@ -881,15 +882,24 @@ export default class SwarmTab extends View {
       ...(back.length ? [head("Backlog", q.backlog.length), ...back, ...more(q.backlog.length - 15, "sq-more-b")] : []),
       ...(!q.shown ? [this.emptyLine(t, this.qf.models.length + this.qf.labels.length ? "Nothing matches" : "Nothing left on the board")] : [])];
   }
-  sideQueue(t, s, cx) { return boardTab(this, t, s, false, cx); }
+  sideQueue(t, s, cx) { return this.boardMode() === "graph" && bt(this).tab !== "history" ? this.graphView(t, s, cx) : boardTab(this, t, s, false, cx); }
   toggleNew(cx) { this.newOpen = !this.newOpen; cx.notify(); if (this.newOpen) cx.timer.after(50, () => this.title.focus()); }
   spawnTask(cx, s, k) {
     const args = spawnArgs(nextName(s.comms, [...(s.agents ?? []), ...(this.ended ?? [])].map((a) => a.name)), { model: k.model, task: k.id });
     if (args) this.act(cx, args);
   }
+  // By repo under the header: the flash and kids rows, then board.js's body, which has its own scroller and peek.
+  repoView(t, cx) {
+    return v_flex().id("rw-swarm-repo").flex_1().min_h(0).gap(6).pt(10)
+      .when(Boolean(this.flash) && this.flashIn !== "bar", (el) => el.child(div().px(16).text_size(12).text_color(t.blocked).whitespace_normal().child(this.flash)))
+      .when(Boolean(this.kidsAsk), (el) => el.child(div().px(12).child(this.kidsRow(t))))
+      .child(this.sb.body(t, cx, this.motion, { w: this.where(), width: this.width, b: bt(this) }));
+  }
+  // The Board's header (II.9) shows on the Board section with no page open, in every view.
+  boardHeadShown() { const v = shared("rw-swarm.view") ?? {}; return (v.section ?? "overview") === "board" && !v.page; }
   boardMode() { const b = (shared("rw-swarm.view") ?? {}).board; return b === "graph" ? "graph" : b === "repo" ? "repo" : "list"; }
   setBoardView(x) { setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), board: x }); }
-  canShowAs() { return !props()?.side; }
+  canShowAs() { return true; }
   // More: Activity, Landing, System and History, each with a line of what is in it.
   sideMore(t, s) {
     const m = [...(s.messages ?? [])].sort((a, b) => b.ts - a.ts)[0], c = s.counts ?? {}, mm = s.machine, g = (kb) => Math.round(kb / 1048576);
@@ -1427,22 +1437,6 @@ export default class SwarmTab extends View {
       this.pastLoading = false; cx.notify();
     });
   }
-  // The Board's head: Open, Completed or Cancelled; List or Graph (with the graph's scope); New task.
-  queueHead(t, s, v, g) {
-    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o }), graph = v.board === "graph", all = v.graph === "all", c = s.counts ?? {};
-    const left = leftOf(c) + (c.backlog ?? 0), past = this.qwhich !== "open";
-    return h_flex().id("b-head").flex_none().px(4).gap(10).items_center().flex_wrap()
-      .when(!graph, (el) => el.child(this.seg(t, "q-which", [["open", `Open ${left}`], ["completed", `Completed ${c.completed ?? 0}`], ["cancelled", `Cancelled ${(c.cancelled ?? 0) + (c.duplicate ?? 0)}`]], this.qwhich, (x) => { this.qwhich = x; })))
-      .child(this.seg(t, "b-as", [["repo", "By repo"], ["list", "List"], ["graph", "Graph"]], graph ? "graph" : "list", (x) => set({ board: x })))
-      .when(graph, (el) => el.child(this.seg(t, "b-scope", [["queue", "Ready"], ["all", "All tasks"]], all ? "all" : "queue", (x) => set({ graph: x })))
-        .when(all, (el) => el.child(h_flex().id("b-donetoo").gap(6).items_center().text_size(12).text_color(t.muted).cursor_pointer()
-          .on_click((_e, cx) => { set({ done: !v.done }); cx.notify(); })
-          .child(div().size(13).rounded(3).border(1).border_color(v.done ? t.working : t.border).bg(v.done ? t.working : t.background)).child("Completed too"))))
-      .child(div().flex_1())
-      .when(Boolean(g), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(`${g.nodes.length + g.loose.length} tasks, ${g.edges.length} ${g.edges.length === 1 ? "edge" : "edges"}`)))
-      .when(!graph && past, (el) => el.child(div().w(160).flex_none().child(this.field(t, "b-pf", this.pastFilter))))
-      .when(!graph, (el) => el.child(this.btn(t, "b-new-open", "New task", (cx) => { this.newOpen = !this.newOpen; cx.notify(); if (this.newOpen) cx.timer.after(50, () => this.title.focus()); })));
-  }
   // New task (the canvas's "New task fields"): a title, a description, then Ready or Backlog, Priority, Waiting on and Model as chips, the place it
   // will take, and Add task. Enter in the title adds it.
   newForm(t) {
@@ -1484,20 +1478,27 @@ export default class SwarmTab extends View {
   }
   // The Board (full view): Open, Completed or Cancelled as one switch; filters; one table.
   fullQueue(t, s, cx) {
-    const v = shared("rw-swarm.view") ?? {};
-    if (v.board === "graph") return v_flex().w_full().max_w(1500).gap(10).child(this.queueHead(t, s, v, this.graphOf(s, v))).child(this.graphView(t, s, v));
+    if (this.boardMode() === "graph" && bt(this).tab !== "history") return v_flex().w_full().max_w(1500).gap(10).child(this.graphView(t, s, cx));
     return v_flex().w_full().max_w(1180).gap(10).child(boardTab(this, t, s, true, cx));
   }
 
   // ---- the Board's graph (#190, research/sw-graph-view.md) ---------------------------------------------------------
-  // graphOf for the shown read and scope, laid out once per read: nodes placed left to right by layer (top to bottom
-  // under 700 px of width), each with its box {x, y, w, h}; the canvas's size.
-  graphOf(s, v) {
-    const scope = v.graph === "all" ? "all" : "queue", done = scope === "all" && Boolean(v.done), side = (this.width ?? 0) > 0 && this.width < 700;
-    const g0 = this.gFor === s && this.gScope === `${scope}:${done}` ? this.g : graphOf(s.tasks, scope, done);
+  // graphOf for the Board's pool (inPool: the tab, Status, Priority and Label), laid out once per read and filter: nodes placed left to right
+  // by layer (top to bottom under 700 px of width), each with its box {x, y, w, h}; the canvas's size. The tasks are the read's and, with a
+  // closed Status ticked, `--view board`'s closed ones.
+  graphTasks(s, cx) {
+    const b = bt(this), closed = ["completed", "cancelled", "duplicate"].some((x) => b.status.has(x));
+    if (closed && cx) this.loadPast(cx);
+    const live = new Set((s.tasks ?? []).map((k) => k.id));
+    return [...(s.tasks ?? []), ...(closed ? (this.pastTasks ?? []).filter((k) => !live.has(k.id)) : [])];
+  }
+  graphOf(s, cx) {
+    const b = bt(this), side = (this.width ?? 0) > 0 && this.width < 700, tasks = this.graphTasks(s, cx);
+    const sig = [b.tab, [...b.status].sort(), [...b.prio].sort(), [...(b.labels ?? [])].sort(), tasks.length].join("|");
+    const g0 = this.gFor === s && this.gSig === sig ? this.g : graphOf(tasks, tasks.filter((k) => inPool(k, b)).map((k) => k.id));
     // full width: nodes share the view's width between the layers, 232 to 340 px each
     const W = side ? 176 : Math.max(232, Math.min(340, Math.floor(((this.width ?? 0) - 58 - 56 * (g0.layers - 1)) / Math.max(1, g0.layers)))), H = 50, h = 28, P = 16;
-    const key = `${scope}:${done}:${side}:${W}`;
+    const key = `${sig}:${side}:${W}`;
     if (this.gFor === s && this.gKey === key) return this.g;
     const g = g0;
     for (const n of g.nodes) {
@@ -1505,7 +1506,7 @@ export default class SwarmTab extends View {
       n.box = n.fin ? { x, y: y + (H - h) / 2, w: W, h } : { x, y, w: W, h: H };
     }
     g.side = side; g.nodeW = W; g.w = Math.max(0, ...g.nodes.map((n) => n.box.x + n.box.w)) + P; g.h = Math.max(0, ...g.nodes.map((n) => n.box.y + n.box.h)) + P;
-    this.g = g; this.gFor = s; this.gKey = key; this.gScope = `${scope}:${done}`;
+    this.g = g; this.gFor = s; this.gKey = key; this.gSig = sig;
     return g;
   }
   // A node's second line: what it is doing or waits on, in the Board's colours, and its place in the queue.
@@ -1560,25 +1561,19 @@ export default class SwarmTab extends View {
     }
     return out;
   }
-  graphView(t, s, v) {
-    const g = this.graphOf(s, v), by = new Map((s.tasks ?? []).map((k) => [k.id, k])), all = v.graph === "all";
-    const set = (o) => setShared("rw-swarm.view", { ...(shared("rw-swarm.view") ?? {}), ...o });
+  graphView(t, s, cx) {
+    const b = bt(this), g = this.graphOf(s, cx), by = new Map(this.graphTasks(s).map((k) => [k.id, k])), filtered = b.status.size + b.prio.size + (b.labels?.size ?? 0) > 0;
+    const field = (label, n) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim).child(div().child(label)).child(div().font_family(kit.mono()).text_color(t.muted).child(String(n)));
     const note = (text) => div().px(16).pb(12).text_size(12.5).text_color(t.dim).whitespace_normal().child(text);
     const card = this.card(t, "g-card").pb(4);
-    if (!g.nodes.length && !g.loose.length) {
-      card.child(this.head(t, "Graph", all ? "every task still to do, and what it waits on" : "Ready, and what it waits on"));
-      return all ? card.child(note("Nothing left to do on this board")) : card.child(note("Nothing Ready"))
-        .child(div().px(16).pb(12).child(this.small(t, "g-to-all", "Show all tasks", () => set({ graph: "all" }))));
-    }
-    card.child(this.head(t, all ? "All tasks" : "Ready", all ? "every task still to do, and the tasks they wait on" : "the Ready tasks and what they wait on"));
+    if (!g.nodes.length && !g.loose.length) return card.child(this.head(t, "Graph")).child(note(filtered ? "No task matches" : "Nothing is left to do"));
+    card.child(this.head(t, "Graph", null, h_flex().gap(14).items_center().child(field("Tasks", g.nodes.length + g.loose.length)).child(field("Edges", g.edges.length))));
     if (g.nodes.length) {
       const canvas = div().id("g-canvas").relative().flex_none().w(g.w).h(g.h).children(this.graphEdges(t, g))
         .children(g.nodes.map((n) => this.graphNode(t, n, by).absolute().left(n.box.x).top(n.box.y).w(n.box.w)));
       card.child(div().id("g-scroll").w_full().overflow_x_scrollbar().child(canvas));
     } else card.child(note("No task here waits on another"));
-    const fin = g.nodes.filter((n) => n.fin && n.k.state === "completed").length, left = Math.max(0, (s.counts?.completed ?? 0) - fin);
-    if (all && left) card.child(note(`Completed ${left}, not drawn${v.done ? "" : ": Completed too adds those with an edge"}; List › Completed lists them all`));
-    const loose = g.loose.length ? this.card(t, "g-loose").pb(12).child(this.head(t, `No dependencies · ${g.loose.length}`, all ? "nothing they wait on, nothing waits on them" : "Ready, waiting on nothing"))
+    const loose = g.loose.length ? this.card(t, "g-loose").pb(12).child(this.head(t, "No dependencies", null, field("Tasks", g.loose.length)))
       .child(h_flex().px(16).gap(8).flex_wrap().children(g.loose.map((n) => this.graphNode(t, n, by, true).w(g.side ? 176 : 232)))) : null;
     return v_flex().w_full().gap(10).child(card).children(loose ? [loose] : []);
   }
@@ -1647,6 +1642,14 @@ export default class SwarmTab extends View {
       this.tsBusy = false; cx.notify();
     });
   }
+  // What the Parent property, its picker and Sub-issues (queue.js) need of the task page.
+  taskHost(s) {
+    const tasks = () => [...(s.tasks ?? []), ...(this.pastTasks ?? [])], b = bt(this);
+    return { act: (cx, args, ok) => { this.tsAt = 0; this.act(cx, args, ok); }, task: (id) => tasks().find((x) => x.id === id), tasks, parentIds: () => new Set(tasks().map((k) => k.parent).filter((p) => p != null)),
+      open: (_cx, k) => this.openTask(k.id), input: this.parentIn, picking: () => this.setP, openPicker: (id) => { this.setP = this.setP === id ? null : id; this.parentIn.set_value(""); },
+      closePicker: () => { this.setP = null; }, capped: (key, ks) => { const n = b.more === key ? 100 : 25; return [ks.slice(0, n), ks.length - n, n]; },
+      moreRow: (t, key, rest) => moreRow(this, t, key, rest) };
+  }
   taskPage(t, s, pg, cx) {
     const id = pg.task, k = s.tasks?.find((x) => x.id === id) ?? this.pastTasks?.find((x) => x.id === id), x = s.task?.id === id ? s.task : null, b = bt(this);
     const label = pg.back === "tab" && !props()?.side ? "Back to the tab" : this.secLabel(), mono = settings().font_family, wide = (this.width ?? 0) >= 820;
@@ -1655,6 +1658,7 @@ export default class SwarmTab extends View {
     if (!k) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading || !x ? "Reading…" : "No such task on this board"));
     const live = k.state === "in_progress" || k.state === "needs_input", open = !isClosed(k), unstarted = k.state === "ready" || k.state === "backlog", sid = String(k.id);
     const owner = k.owner && s.agents?.find((a) => a.name === k.owner), by = new Map([...(s.tasks ?? []), ...(this.pastTasks ?? [])].map((y) => [y.id, y]));
+    const show = this.tsFor === id ? this.ts : null, host = this.taskHost(s); // `task show --json`: the parent, its sub-issues and history
     const cat = { backlog: "Backlog", ready: "Unstarted", in_progress: "Started", needs_input: "Started", in_review: "Started", completed: "Completed", cancelled: "Cancelled", duplicate: "Cancelled" }[k.state];
     const chipB = (cid, kids) => h_flex().id(cid).h(30).px(10).gap(7).flex_none().items_center().rounded(kit.R.ctl).border(1).border_color(t.border).text_size(kit.TYPE.body)
       .text_color(t.foreground).cursor_pointer().hover((st) => st.bg(t.hover)).children(kids);
@@ -1680,6 +1684,8 @@ export default class SwarmTab extends View {
     const props = v_flex().id("t-facts").flex_none().p(14).gap(0).rounded(10).border(1).border_color(t.border).bg(t.surface)
       .child(prop("State", [kit.taskGlyph(t, kit.glyphOf(k.state), 12), div().child(stateWord(k.state)), div().text_color(t.dim).child(cat)]))
       .child(prop("Priority", [kit.priority(t, k.priority ?? "medium", 13), div().child({ none: "No priority", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" }[k.priority ?? "medium"])]))
+      .child(prop("Parent", parentProp(host, t, k, show)))
+      .when(this.setP === id, (e) => e.child(h_flex().pl(112).pb(6).child(parentPicker(host, t, k, show).flex_1())))
       .child(prop("Assignee", k.assignee || k.owner ? [k.assignee === "human" || k.owner === "human" ? h_flex().gap(5).items_center().child(kit.personGlyph(t, 9)).child(div().child("human")) : kit.assignee(t, { name: k.assignee ?? k.owner, swarm: null, status: k.state === "needs_input" ? "asks" : owner?.status === "working" ? "working" : "idle" }),
         ...(unstarted && k.assignee ? [this.quiet(t, "unassign", "Unassign", (cx) => this.act(cx, ["task", "assign", sid, "--none"]))] : [])] : div().text_color(t.dim).child("None")))
       .when(Boolean(placeWord(k) && unstarted), (e) => e.child(prop(k.state === "backlog" ? "Backlog" : "Queue", [div().font_family(mono).child(String(k.place)),
@@ -1721,7 +1727,8 @@ export default class SwarmTab extends View {
             const title = this.editTitle.value().trim(), text = this.editBody.value();
             if (title) this.act(cx, ["task", "edit", `--title=${title}`, `--body=${text}`, sid], () => { this.editing = null; });
           }, true))) : null;
-    const left = v_flex().flex_1().min_w(0).gap(14).children([editor ?? body].filter(Boolean))
+    const subs = (show?.sub_issues ?? []).length > 0 ? this.card(t, "t-subs").child(subIssues(host, t, k, show)) : null;
+    const left = v_flex().flex_1().min_w(0).gap(14).children([editor ?? body, subs].filter(Boolean))
       .child(v_flex().id("t-hist").gap(0).child(h_flex().pb(8).gap(14).items_center().text_size(12).child(tabBtn("history", "History")).child(tabBtn("messages", `Messages ${msgs.length}`)))
         .children(list.length ? list : [div().py(6).text_size(12.5).text_color(t.dim).child(x ? "Nothing yet" : "…")]));
     return v_flex().gap(14).min_w(0)
@@ -1809,17 +1816,15 @@ export default class SwarmTab extends View {
       if (k !== this.shownKey) { this.shownKey = k; this.s = null; this.error = null; this.loading = false; this.answers.clear(); this.pastTasks = null; this.land = null; this.sys = null; this.hist = null; this.refresh(cx); this.refreshPrs(cx); }
       else if (this.pageKey() !== this.pageWas) { this.loading = false; this.dirty = true; this.editing = null; this.refresh(cx); } // read the page's at once
       this.pageWas = this.pageKey();
-      const bv = this.boardView();
-      if (bv !== this.bvWas) { this.bvWas = bv; if (!bv) { this.loading = false; this.dirty = true; this.refresh(cx); } }
       const root = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
         .on_size_change((sz, cx) => { if (sz.width !== this.width) { this.width = sz.width; cx.notify(); } })
         .when(Boolean(props().side), (el) => el.child(this.sideHead(t)));
       if (props().side && !this.where().swarm) return root.child(div().p(16).text_size(12.5).text_color(t.dim).child("No swarm runs in this space"));
-      if (bv) return root.child(this.sb.draw(t, cx, this.motion, { w: this.where(), width: this.width, board: (shared("rw-swarm.view") ?? {}).section === "board" }));
       if (!this.s) return root.child(v_flex().flex_1().items_center().justify_center().child(this.reading(t)));
       const side = Boolean(props().side);
       return root.child(this.staffBar(t, this.s, !side).mt(side ? 0 : 4)).when(side, (el) => el.child(this.sideTabs(t, this.s)))
-        .child(this.view(t, this.s, cx)).children([this.messageLine(t, this.s, !side)].filter(Boolean));
+        .when(this.boardHeadShown(), (el) => el.child(div().id("board-head").w_full().flex_none().px(12).pt(side ? 10 : 8).child(boardHead(this, t, this.s, !side, cx))))
+        .child(this.boardView() ? this.repoView(t, cx) : this.view(t, this.s, cx)).children([this.messageLine(t, this.s, !side)].filter(Boolean));
     }
     const page = v_flex().id("rw-swarm").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13);
     if (!s) return page.items_center().justify_center().child(div().text_color(this.error ? t.blocked : t.dim).child(this.error ?? "Reading the swarm…"));

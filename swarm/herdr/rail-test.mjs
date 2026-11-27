@@ -690,21 +690,53 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
     K(12, "completed"), K(10, "ready", { deps: [12], place: 5 }), K(11, "needs_input", { deps: [12], owner: "b" }), K(13, "ready", { deps: [11, 10], place: 1 }),
     K(20, "ready", { place: 2 }), K(21, "in_progress", { owner: "c" }), K(22, "backlog", { note: "go", place: 1 }), K(30, "completed"), K(31, "completed", { deps: [30] }),
     K(40, "cancelled"), K(41, "ready", { deps: [40], place: 6 })];
-  const g = graphOf(ks, "all", false), at = (g2) => Object.fromEntries(g2.nodes.map((n) => [n.k.id, [n.layer, n.slot]]));
+  const { inPool, POOL } = await import("./mods/rw-rail/tree.js");
+  const open = new Set(ks.filter((k) => POOL.includes(k.state) || k.state === "backlog").map((k) => k.id));
+  const g = graphOf(ks, open), at = (g2) => Object.fromEntries(g2.nodes.map((n) => [n.k.id, [n.layer, n.slot]]));
   assert.deepEqual(at(g), { 1: [0, 0], 12: [0, 1], 40: [0, 2], 2: [1, 0], 10: [1, 1], 11: [1, 2], 41: [1, 3], 3: [2, 0], 13: [2, 1], 4: [3, 0] });
-  assert.deepEqual(g.loose.map((n) => n.k.id), [21, 20, 22]); // started, Ready, Backlog; 30 and 31 are Completed
+  assert.deepEqual(g.loose.map((n) => n.k.id), [21, 20, 22]); // started, Ready, Backlog; 30 and 31 are Completed and not in the seed
   assert.deepEqual(g.edges.filter((e) => e.to === 13).map((e) => [e.from, e.met]), [[11, false], [10, false]]);
   assert.deepEqual(g.edges.find((e) => e.to === 41).met, false); // a Cancelled dep holds it back
   const n = (id) => g.nodes.find((x) => x.k.id === id) ?? g.loose.find((x) => x.k.id === id);
   assert.deepEqual([10, 3, 41, 22, 20].map((id) => n(id).ready), [true, false, false, false, true]);
   assert.deepEqual([13, 20, 4].map((id) => [n(id).q, n(id).next]), [[1, false], [2, true], [3, false]]); // 13 waits: 20 is next
-  const qg = graphOf(ks, "queue", false);
-  assert.deepEqual(qg.nodes.map((x) => x.k.id).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13, 40, 41]); // Ready, and what they wait on
-  assert.deepEqual(qg.loose.map((x) => x.k.id), [20]);
-  assert.deepEqual(Object.keys(at(graphOf(ks, "all", true))).map(Number).sort((a, b) => a - b), [1, 2, 3, 4, 10, 11, 12, 13, 30, 31, 40, 41]);
-  assert.deepEqual(graphOf(ks, "queue", true).nodes.length, 10); // Completed too is All's
-  assert.deepEqual(graphOf([K(5, "ready", { deps: [6] }), K(6, "ready", { deps: [5] })], "all", false).layers > 0, true); // a cycle ends
-  assert.deepEqual(graphOf(null, "all", false), { nodes: [], edges: [], loose: [], layers: 0 });
+  const rs = graphOf(ks, ks.filter((k) => k.state === "ready").map((k) => k.id)); // a seed of the Ready tasks: what they wait on, one hop
+  assert.deepEqual(rs.nodes.map((x) => x.k.id).sort((a, b) => a - b), [2, 3, 4, 10, 11, 12, 13, 40, 41]); // 11 is 13's, 12 is 10's; 1 is two hops from 3
+  assert.deepEqual(rs.loose.map((x) => x.k.id), [20]);
+  assert.deepEqual(rs.nodes.filter((x) => x.fin).map((x) => x.k.id).sort((a, b) => a - b), [12, 40]);
+  assert.deepEqual(graphOf(ks, [31]).nodes.map((x) => [x.k.id, x.fin]), [[30, true], [31, true]]); // a Completed task with an edge, with its dep
+  assert.deepEqual(graphOf(ks, [30]).nodes.length + graphOf(ks, [30]).loose.length, 0); // and without one: not drawn
+  assert.deepEqual(graphOf(ks, [999, 20]).loose.map((x) => x.k.id), [20]); // an id the read lacks is no node
+  assert.deepEqual(graphOf([K(5, "ready", { deps: [6] }), K(6, "ready", { deps: [5] })], [5, 6]).layers > 0, true); // a cycle ends
+  assert.deepEqual(graphOf(null, null), { nodes: [], edges: [], loose: [], layers: 0 });
+  // inPool: the one pool of every Board view
+  const B = (o = {}) => ({ tab: "active", status: new Set(), prio: new Set(), ...o });
+  const ids = (b) => ks.filter((k) => inPool(k, b)).map((k) => k.id);
+  assert.deepEqual(ids(B()), [2, 3, 4, 10, 11, 13, 20, 21, 41]); // Ready and started; Backlog and the closed are not
+  assert.deepEqual(ids(B({ tab: "backlog" })), [22]);
+  assert.deepEqual(ids(B({ status: new Set(["completed", "cancelled"]) })), [1, 12, 30, 31, 40]); // a Status filter: the ticked states, closed too
+  assert.deepEqual(ids(B({ status: new Set(["ready"]), prio: new Set(["high"]) })), []); // then priority too
+  assert.deepEqual(ids(B({ tab: "backlog", status: new Set(["ready"]) })), [22]); // Backlog ignores Status
+  assert.deepEqual(inPool(K(7, "backlog", { priority: "low" }), B({ tab: "backlog", prio: new Set(["high"]) })), false);
+}
+
+{ // II.9c: the Label filter and Group by Label
+  const { inPool, passFilter, groupBy } = await import("./mods/rw-rail/tree.js");
+  const K = (id, state, o = {}) => ({ id, state, title: `t${id}`, ...o });
+  const ks = [K(1, "ready", { labels: ["cli", "lean"] }), K(2, "in_progress", { labels: ["cli"] }), K(3, "ready", { labels: ["rw-rail"] }), K(4, "ready"), K(5, "backlog", { labels: ["lean"] }),
+    K(6, "completed", { labels: ["cli"] }), K(7, "ready", { labels: ["rw-rail", "rw-rail"] })];
+  const L = (...ls) => ({ status: new Set(), prio: new Set(), labels: new Set(ls) });
+  assert.deepEqual(ks.filter((k) => passFilter(k, L("cli"))).map((k) => k.id), [1, 2, 6]);
+  assert.deepEqual(ks.filter((k) => passFilter(k, L("lean", "rw-rail"))).map((k) => k.id), [1, 3, 5, 7]); // several ticks: any of them
+  assert.deepEqual(ks.filter((k) => passFilter(k, { labels: new Set() })).length, 7); // none ticked passes all
+  assert.deepEqual(ks.filter((k) => passFilter(k, { status: new Set(["ready"]), labels: new Set(["cli"]) })).map((k) => k.id), [1]); // with Status
+  assert.deepEqual(ks.filter((k) => inPool(k, { tab: "active", ...L("cli") })).map((k) => k.id), [1, 2]); // the pool: Active, not Completed
+  assert.deepEqual(ks.filter((k) => inPool(k, { tab: "backlog", ...L("lean") })).map((k) => k.id), [5]);
+  const open = ks.filter((k) => inPool(k, { tab: "active", status: new Set(), prio: new Set() }));
+  const g = groupBy(open, "label");
+  assert.deepEqual(g.map((x) => [x.label, x.tasks.map((k) => k.id)]), [["cli", [1, 2]], ["rw-rail", [3, 7]], ["lean", [1]], ["Unlabelled", [4]]]); // most tasks first, then name; a task with two labels in both; Unlabelled last
+  assert.deepEqual(g.map((x) => x.dot), ["cli", "rw-rail", "lean", null]);
+  assert.deepEqual(groupBy([], "label", true), []); // no empty cards
 }
 
 { // round 3: the shared parts' pure logic

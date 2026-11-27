@@ -696,6 +696,97 @@ fact is a label, a field, a chip or a table cell.
   Cancelled with notes, Duplicates, and the events the CLI itself writes for backlog, ready, assign, queue add, priority, drop, duplicate and
   limits (`swarm task ...` run against the sandbox's db; their times are then spread).
 
+## II.9 One Board header (board-header)
+
+The user: one header, the newer one (List's, II.8), on every Board view: List, By repo and Graph, full width and in the side panel. This
+supersedes II.8's Board tab, Filter and Display bullets where they differ, its "Not built: Label filter", and its stale "Full-width Now is still
+the By repo inbox" (`view()` draws `fullNow`; the inbox below goes). No UI sentence carries a variable value.
+
+- Shape, top to bottom on the Board section with no page open: the staffing bar (`staffBar`, main.js; side: under the side head and over the side
+  tabs, as today); the toolbar row; the chip row; the New task form when open; then the view's body. The toolbar, chips and form sit outside the
+  scroller and do not move between views. Full width keeps rw-bar on top (swarm, sections, Away). A page (task, agent) replaces all of it.
+- One function: `boardHead(v, t, s, wide, cx)` in rw-swarm/queue.js, made from today's `toolbar`, `chips` and the New task form. main.js `draw()`
+  calls it once for every Board view, full and side. `boardTab` loses its toolbar and chip rows; main.js `queueHead` and `qwhich` go; board.js
+  `head()` and `filters()` go. The early `if (bv) return root.child(this.sb.draw(...))` in `draw()` goes: By repo is drawn under the staffing bar
+  and header like the others, and under it `flash`, `kidsRow` and `messageLine` now show too. Header and toolbar are `w_full` in every view; the
+  bodies keep their widths (List max 1180, Graph max 1500, By repo full).
+- Toolbar, the same in every view: the switch Active n, Backlog n, History; Filter; Display ("Group: State ⌄"; in Graph "Display ⌄", which has no
+  Group by); New task (`v.toggleNew`, "+" in the side). On History: the search and the Completed and Cancelled toggles in place of Display and New
+  task. Chip row: one chip per filter ("Status is …", "Priority is …", "Label is …", each with ×), and in By repo the selection chip below.
+- Header state lives in one place: `bt(v)` on the main.js view (side and full are separate copies, as List is today). Shown as stays
+  `shared("rw-swarm.view").board` (`list`, `repo`, `graph`), shared by side and full. Group by is per view: `b.group` for List (default `state`),
+  `b.repoGroup` for By repo (default `state`); Other swarms is `b.others` (`quiet`, `hidden`). The `shared("rw-swarm.group")` key and board.js
+  `GROUPS` go. The pure logic named here is in rw-rail/tree.js (rw-swarm's is a link to it).
+- Filter: Status, Priority and Label (new). Label lists the open tasks' labels with counts (`labelCounts`), 16 then "More labels"; several ticks
+  mean any of them (as Status). `b.labels` is a Set; `passFilter` in tree.js also checks it. All three views and History apply it.
+- One pool for every view: `inPool(k, b)` in tree.js. Active: Ready, In Progress, Needs Input, In Review; with a Status filter, the ticked states
+  instead (closed ones too). Then `passFilter` (status, priority, labels). Backlog: Backlog, then priority and labels only (as `backlogTab`
+  today). queue.js `activeTab` and `backlogTab`, board.js `shown()` and Graph's seed all call it. The reads differ, the predicate does not: List
+  and Graph read the overview (`--view graph` while Graph shows) and `pastTasks` (`--view board`) for closed states; By repo reads `--view swarms`
+  (it alone carries `repos` and `holder`). The switch's counts come from the overview in every view, so By repo's rows can differ from them by the
+  other swarms' tasks in its repos. With a closed Status, By repo shows the Completed tasks its read carries, Graph the closed tasks that have an
+  edge.
+
+| | List | By repo | Graph |
+| --- | --- | --- | --- |
+| Group by | Category, State, Priority, Label, Parent, None | under each repo: Category, State, Priority, None | not shown |
+| Empty groups, Order | shown | shown (inside a repo) | not shown |
+| Other swarms | not shown | Quieter, Hidden | not shown |
+| Shown as | List, By repo, Graph | same | same |
+| Active, Backlog | cards of the pool | repo sections of the pool | the pool and what it waits on |
+| History | `historyTab` | `historyTab` | `historyTab` |
+| A row's click | task page | peek, sets `SELECT` | task page |
+
+- Group by Label (List): `groupBy(tasks, "label")` in tree.js, in `labelGroups`' order (most tasks first, Unlabelled last); a task with two labels
+  is in both cards. The card head is the label's dot, name and count; a row drops that label and shows a "×n" chip when it has more. 12 label
+  cards, then a "More labels" row.
+- Group by Parent (List): not a flat group. `parentCards(v, t, s, wide)` in queue.js draws `parentTree(all, {match: (k) => inPool(k, b)})` over
+  all the read's tasks, so a task in the pool keeps its ancestors (as board.js passed its label filter), in two cards. "Parents" n: a row per root
+  parent with a chevron, state icon, #id, title, a state chip when closed, its sub-issues' top 3 labels with counts (wide only), done and total as
+  two numbers, and `kit.stateBar(t, barOf(k.progress, info.leaves), 56)`. The chevron opens it in place: children 16 px deeper per level, a
+  sub-parent as a parent row, a leaf as `taskRow` with `o.indent`. Parents start closed (`b.tree`, a Set); the card head has "Collapse all" while
+  one is open. "No parent" n: the rest as flat rows. Caps as II.8's cards: an opened parent shows 25 children, then Show more (100); every row of
+  the tab counts toward `BUDGET` (140). A row's click opens its task page, which gains the peek's Parent property (Set parent, Change, Remove
+  parent) and its Sub-issues list from `task show --json`: move board.js `parentProp`, `openPicker`, `parentChoices`, `parentPicker` and
+  `subIssues` into queue.js as functions of a host (`act`, a task by id, open a task, the picker's `InputState`), used by the peek and the task
+  page alike.
+- Why Label and Parent are not in By repo: the repo is its grouping. Goal parents carry no repo while their sub-issues do (462 of hpl's 492 parent
+  and child pairs), so a tree inside a repo has no roots. Label cards would repeat in each repo. Graph lays out by dependency and has no groups.
+- By repo body: `SwarmBoard.body(t, cx, m, {w, width, b})` replaces `draw()`. It draws the flash and kids rows, then the list and peek as today.
+  `repoRows`: inside each repo the headers are `groupBy(g.ks, b.repoGroup, b.empty === "show")` (`kit.stateHeader(t, id, kit.glyphOf(g.state),
+  g.label, n)`; a priority group passes `kit.priority(t, g.prio, 12)`, so `stateHeader` takes an icon), not `STATES`. Ready and Backlog stay in
+  place order, and a Ready task waiting on another stays in Ready. `shown()` is `k.st && scoped(k) && inPool(k, b)`: By repo draws no Cancelled or
+  Duplicate row (History lists them). Delete from board.js: `head`, `filters`, `labelChip`, `labelRows`, `parentRows`, `parentRow`, `groupHead`,
+  `section`, `view`, the Inbox (`inbox`, `items`, `item`, `itemWords`, `glyph`, `detail`, `inboxAll`, `tab`), `today`, `doneShown`, `labelFilter`,
+  `labelPick`, `allLabels`, `openBy`, `dfltOff`, `isOpen` and `toggle`. Keep the peek, `askCard` (the peek's history uses it), the composer, the
+  parent picker, `settle`, `capped` and `moreRow`. The repo header's meta becomes fields: the base as a chip, Locks n with the holder's glyph,
+  Open n. "3 locks held by ll-124" and "12 open" go.
+- Graph: `graphOf(tasks, seed)`, where seed is the ids `inPool` passes. It adds the tasks they wait on, one hop (closed ones drawn as today's
+  `fin`), and the edges among them. The `scope`/`done` arguments go, and with them the Ready / All tasks switch, "Completed too", and the `graph`
+  and `done` keys of `rw-swarm.view`. A Status filter now does each of those: Unstarted, or tick Completed. The graph card's head is "Graph" with
+  Tasks n and Edges n as fields; the sentence "N tasks, M edges" goes. When nothing is in it: "No task matches" while a filter is set, else
+  "Nothing is left to do".
+- Where each old control goes. Dropped: "Swarm hpl" and its repos (rw-bar and the side head name the swarm); the Board tab (the section is the
+  Board); Talk to hpl-comms (the message line at the foot); Completed today (History, or Status with Completed). The Inbox tab is dropped too:
+  Needs you is the Now section, with its red count in rw-bar and the side tabs. Now's `needsOf` lacks the Inbox's lander, lock and ctx items and
+  its whole-machine scope, a follow-up for Now, not this change. Moved: Auto-spawn and Max to the staffing bar; Away off the Board (rw-bar's Away
+  full width, `awayControl` in the side head, the communicator's pane header); Other swarms to a Display row, By repo only (List and Graph read
+  only this swarm's tasks); Group to Display's Group by; Label to Filter; Collapse all to List's Parents card head; Also as a list / a graph to
+  Shown as. The selection chip goes to By repo's chip row as "Selected", the agent's glyph and name, ×. It shows only when the rail picked an
+  agent (`SELECT.from === "agent"`), and × calls `sb.unselect()`. A picked task is the open peek, which has Close.
+- Side panel: `canShowAs()` is true and `sideQueue` follows `boardMode()`. Below 760 px By repo is board.js's narrow mode (the peek replaces the
+  list). Below 700 px Graph uses `graphOf`'s top-to-bottom layout. `pageKey()` reads `--view graph` in the side too (drop its `!side`).
+- Reads and polls: `boardView()` is Board, Shown as By repo, no page, not History, full or side. While it holds, the timer runs `sb.tick` (its
+  events-gated swarms read) and also `if (this.due()) this.refresh(cx)`, so the staffing bar and the counts stay current. Neither read polls
+  faster than today.
+- Wording: History's "Show all 14" becomes Show all with the count as its own field.
+- Slices: II.9a `boardHead` pinned in List and Graph; `graphOf(tasks, seed)`; `queueHead` gone. II.9b By repo under the header (`body`, the reads,
+  `inPool`, repo groups, Other swarms, the selection chip, the deletions). II.9c the Label filter, Group by Label and Parent in List, Parent and
+  Sub-issues on the task page. II.9d Shown as in the side. Test the pure parts in rail-test.mjs: `inPool`, `passFilter` with labels, `groupBy(…,
+  "label")`, `graphOf` with a seed. Shoot each view with `shot.sh --rework real`. At f1a39cd5 the sandbox showed no swarm (the side said "No swarm
+  runs in this space"), so this design was checked against the user's two screenshots and the code, not against Graph or the side Board as they
+  render.
+
 ## Part II build order (one builder, in sequence)
 
 II.2a, II.1a, II.2b, II.2c, II.3a, II.3b, II.6a, II.6b, II.3d, II.1b, II.3c, II.3e, II.3f, II.3j, II.3g, II.3h,

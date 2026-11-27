@@ -999,11 +999,31 @@ export function statusParts(set) {
 }
 // The priorities a Priority filter or the menu lists, as the CLI names them.
 export const PRIO_ORDER = ["urgent", "high", "medium", "low", "none"];
-// Tasks passing a filter ({status: Set of states, prio: Set of priorities}); an empty set passes all.
-export const passFilter = (k, f) => (!f?.status?.size || f.status.has(k.state)) && (!f?.prio?.size || f.prio.has(k.priority ?? "medium"));
-// The groups of a list of tasks: by "state" (Started's states, then Ready, Backlog and the closed ones, as the canvas orders them), "category",
+// Tasks passing a filter ({status: Set of states, prio: Set of priorities, labels: Set of labels (any of them)}); an empty set passes all.
+export const passFilter = (k, f) => (!f?.status?.size || f.status.has(k.state)) && (!f?.prio?.size || f.prio.has(k.priority ?? "medium"))
+  && (!f?.labels?.size || (k.labels ?? []).some((l) => f.labels.has(l)));
+// The one pool every Board view draws (II.9): on Backlog the Backlog tasks, then priority and labels only; on Active Ready, In Progress, Needs
+// Input and In Review (with a Status filter the ticked states instead, closed ones too), then the whole filter. `b` is the Board's state
+// ({tab, status, prio, labels}).
+export const POOL = ["ready", "in_progress", "needs_input", "in_review"];
+export function inPool(k, b) {
+  if (b?.tab === "backlog") return k.state === "backlog" && passFilter(k, { prio: b.prio, labels: b.labels });
+  return (b?.status?.size ? b.status.has(k.state) : POOL.includes(k.state)) && passFilter(k, b);
+}
+// The groups of a list of tasks: by "label" (cards of a label, `dot` its name, not a state), or "state" (Started's states, then Ready, Backlog and the closed ones, as the canvas orders them), "category",
 // "priority" or "none"; each {key, label, state (its icon, a task state), cat, tasks}. Empty groups are left out unless `empty`.
 export function groupBy(tasks, how, empty = false) {
+  if (how === "label") { // a card per label, the most tasks first, then by name, Unlabelled last; a task with two labels is in both; no empty cards
+    const by = new Map(), none = [];
+    for (const k of tasks) {
+      const ls = [...new Set(k.labels ?? [])];
+      if (!ls.length) none.push(k);
+      for (const l of ls) (by.get(l) ?? by.set(l, []).get(l)).push(k);
+    }
+    const gs = [...by].sort((x, y) => y[1].length - x[1].length || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)).map(([label, ks]) => ({ key: `l:${label}`, label, dot: label, tasks: ks }));
+    if (none.length) gs.push({ key: "l:", label: "Unlabelled", dot: null, tasks: none });
+    return gs;
+  }
   const lead = (xs, of) => of.map((id) => xs.find((x) => (x[0] ?? x) === id)).filter(Boolean);
   const defs = how === "category" ? lead(CATEGORIES, ["started", "unstarted", "backlog", "completed", "cancelled"]).map(([id, label, sts]) => ({ key: id, label, state: CAT_ICON[id], cat: id, has: (k) => sts.includes(k.state) }))
     : how === "priority" ? PRIO_ORDER.map((p) => ({ key: p, label: prioName(p) ?? p, prio: p, has: (k) => (k.priority ?? "medium") === p }))
@@ -1093,14 +1113,13 @@ export function queueSplit(s, f = {}) {
   const backlog = tasks.filter((k) => k.state === "backlog" && pass(k)).map((k) => ({ k, why: "Backlog", after: undoneOf(k, by), who: k.assignee ?? null, note: k.note ?? null })).sort(place);
   return { doing, next, waiting, backlog, cut: up.cut, chips: up.chips, of: undoneIds(tasks).size, shown: doing.length + next.length + waiting.length + backlog.length };
 }
-// The Board's graph (research/sw-graph-view.md) from `--view graph`'s tasks. scope "queue": the Ready tasks and every
-// task still to do they wait on, transitively; "all": every task still to do; either with the Completed or Cancelled tasks those
-// wait on (one hop), and with `done` (all only) every finished task that has an edge. Nodes {k, layer, slot, fin,
+// The Board's graph (research/sw-graph-view.md, II.9): `seed` is the ids the Board's pool holds (`inPool`); the graph adds the tasks
+// they wait on, one hop (a Completed or Cancelled one drawn as `fin`), and the edges among them. Nodes {k, layer, slot, fin,
 // ready, q}: layer is the longest path from a root, slot the place in its layer after two barycentre sweeps; ready is
 // startable now (Ready, every dep Completed); q the place in Ready (1-based), with next on the first that can
 // start. Edges {from, to, met} run prerequisite to dependant, met when the prerequisite is Completed. loose: the tasks in
-// scope with no edge, in the Board's order (queue order in "queue"); layers: the count.
-export function graphOf(tasks, scope, done) {
+// scope with no edge (an open task: a closed one is drawn only with an edge), started first, then Ready (queue order), then Backlog; layers: the count.
+export function graphOf(tasks, seed) {
   const by = new Map((tasks ?? []).filter((k) => Number.isInteger(k?.id)).map((k) => [k.id, k]));
   const fin = isClosed;
   const deps = (k) => [...new Set((k.deps ?? []).filter((d) => d !== k.id && by.has(d)))];
@@ -1108,22 +1127,14 @@ export function graphOf(tasks, scope, done) {
   const queued = [...by.values()].filter((k) => k.state === "ready").sort((x, y) => (x.place ?? 1e9) - (y.place ?? 1e9) || x.id - y.id);
   const q = new Map(queued.map((k, i) => [k.id, i + 1]));
   const next = queued.find(ready)?.id ?? null;
-  const ids = new Set();
-  if (scope === "queue") {
-    const walk = (k) => { if (ids.has(k.id)) return; ids.add(k.id); for (const d of deps(k)) if (!fin(by.get(d))) walk(by.get(d)); };
-    queued.forEach(walk);
-  } else for (const k of by.values()) if (!fin(k)) ids.add(k.id);
+  const ids = new Set([...(seed ?? [])].filter((id) => by.has(id)));
   for (const id of [...ids]) for (const d of deps(by.get(id))) ids.add(d);
-  if (done && scope !== "queue") {
-    const named = new Set([...by.values()].flatMap(deps));
-    for (const k of by.values()) if (fin(k) && (deps(k).length || named.has(k.id))) ids.add(k.id);
-  }
   const edges = [];
-  for (const id of ids) for (const d of deps(by.get(id))) if (ids.has(d) && (!fin(by.get(id)) || done)) edges.push({ from: d, to: id, met: by.get(d).state === "completed" });
+  for (const id of ids) for (const d of deps(by.get(id))) if (ids.has(d)) edges.push({ from: d, to: id, met: by.get(d).state === "completed" });
   const touched = new Set(edges.flatMap((e) => [e.from, e.to]));
-  const rank = (k) => (k.state === "needs_input" ? 0 : isStarted(k) ? 1 : k.state === "backlog" ? 3 : 2);
-  const loose = [...ids].filter((id) => !touched.has(id)).map((id) => by.get(id))
-    .sort((x, y) => scope === "queue" ? (q.get(x.id) ?? 1e9) - (q.get(y.id) ?? 1e9) || x.id - y.id : rank(x) - rank(y) || x.id - y.id);
+  const rank = (k) => (k.state === "needs_input" ? 0 : isStarted(k) ? 1 : k.state === "backlog" ? 3 : fin(k) ? 4 : 2);
+  const loose = [...ids].filter((id) => !touched.has(id) && !fin(by.get(id))).map((id) => by.get(id))
+    .sort((x, y) => rank(x) - rank(y) || (q.get(x.id) ?? 1e9) - (q.get(y.id) ?? 1e9) || x.id - y.id);
   const preds = new Map(), succs = new Map();
   for (const e of edges) { (preds.get(e.to) ?? preds.set(e.to, []).get(e.to)).push(e.from); (succs.get(e.from) ?? succs.set(e.from, []).get(e.from)).push(e.to); }
   const layer = new Map(), seen = new Set();
