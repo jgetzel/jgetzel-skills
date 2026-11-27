@@ -1,0 +1,28 @@
+-- LIKE and GLOB read C strings (end at the first NUL); ESCAPE is a whole UTF-8 character
+create table lk(s text);
+insert into lk values('ab'||char(0)||'cd'),(char(0)),('ab'),(''),('a'),('é'),('%'),('_'),('é%'),('é_'),('%x'),('_x');
+select hex(s), s like '_', s like '__', s like '%_', s like 'ab', s like 'ab%', s like '%b', s like '', s like '%' from lk order by rowid;
+select hex(s), s glob '?', s glob '??', s glob '*?', s glob 'ab', s glob 'ab*', s glob '*b', s glob '', s glob '*' from lk order by rowid;
+select 'ab'||char(0)||'cd' like 'ab', 'ab' like 'ab'||char(0)||'cd', 'ab' like 'ab'||char(0)||'%', char(0) like '', '' like char(0), char(0) like char(0);
+select 'ab'||char(0)||'cd' glob 'ab', 'ab' glob 'ab'||char(0)||'cd', 'ab' glob 'ab'||char(0)||'*', char(0) glob '', '' glob char(0), char(0) glob char(0);
+select 'a'||char(0) like 'a', 'a'||char(0)||'b' like 'a%b', 'a'||char(0)||'b' like '%b', 'xa'||char(0)||'b' like '%a', 'a'||char(0)||'b' glob '*b', 'xa'||char(0)||'b' glob '*a';
+select s from lk where s like '%é%' escape 'é' order by rowid;
+select s from lk where s like 'é_' escape 'é' order by rowid;
+select s from lk where s like 'éé%' escape 'é' order by rowid;
+select s from lk where s like 'é%' escape 'é' order by rowid;
+select s from lk where s like 'é' escape 'é' order by rowid;
+select s from lk where s like '%é%x' escape 'é' order by rowid;
+select s from lk where s like 'é_x' escape 'é' order by rowid;
+select s from lk where s like '_x' escape 'é' order by rowid;
+select s from lk where s like '%' escape 'é' order by rowid;
+select 'a%' like 'a%' escape '%', 'a%' like 'a%%' escape '%', 'ab' like 'a%%' escape '%', 'a_' like 'a__' escape '_', 'ab' like 'a__' escape '_', 'a' like 'a_' escape '_';
+select 'ab' like 'ab' escape 'a'||char(0)||'b', 'a' like 'a' escape 'a'||char(0)||'b';
+select 'a' like 'a' escape char(0);
+select 'a' like 'a' escape '';
+select 'a' like 'a' escape 'ab';
+select 'é' like 'é' escape 'éé';
+select like('_', 'é'), like('é%', 'éx', 'é'), like('éé', 'é', 'é'), like('a', 'a', 'a'||char(0)||'b');
+select like('a', 'a', '');
+select 'é' glob '*[^é]', 'éa' glob '*[^é]', 'éa' glob '*[^é]*', 'aé' glob '*?', 'é' glob '*?*?', 'é' glob '?*', 'éé' glob '*é', 'xé' glob '*[é]', 'é' glob '[é', 'é' glob '[é-é]', 'a'||char(0)||'b' glob '[a'||char(0)||']*';
+select 'abc' glob 'a[b'||char(0)||'c]c', 'abc' glob 'a[b-'||char(0)||'c]c', 'a' glob '[a-'||char(0)||']';
+select 'x'||char(0)||'a' like '%a', 'xa' like '%a'||char(0)||'b', 'é'||char(0) like '_', 'é'||char(0) like '__', 'a'||char(0)||'b' like '%'||char(0)||'%';

@@ -211,7 +211,7 @@ def dump (st : St) (pats : List String) (dataOnly : Bool) : IO ByteArray := do
   let mut b := if dataOnly then ByteArray.empty else "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n".toUTF8
   let mut writable := false
   -- an object is dumped when its name matches one of the LIKE patterns (ESCAPE '\')
-  let wanted (name : String) : Bool := pats.isEmpty || pats.any fun p => likeMatch p.toUTF8 name.toUTF8 (some 92)
+  let wanted (name : String) : Bool := pats.isEmpty || pats.any fun p => likeMatch p.toUTF8 name.toUTF8 (some (ByteArray.mk #[92]))
   -- tables, sqlite_sequence last
   let tables := rows.filter fun (_, vs) => (vs.getD 0 .null).toText == "table" && !(vs.getD 4 .null).isNull
   let tables := tables.filter (fun (_, vs) => (vs.getD 1 .null).toText != "sqlite_sequence")

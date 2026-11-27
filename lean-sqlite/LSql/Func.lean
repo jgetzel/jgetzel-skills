@@ -176,37 +176,49 @@ inductive Like where
   | yes | no | abort
   deriving BEq
 
-/-- LIKE: `%` any run, `_` one character, `esc` makes the next character literal. -/
-def likeMatch (pat str : ByteArray) (esc : Option UInt8) : Bool :=
+/-- The escape character of a LIKE ... ESCAPE (or a three-argument like()): the single character of the text, which ends
+at its first NUL; none when that is empty or longer than one character. -/
+def likeEscape (b : ByteArray) : Option ByteArray :=
+  let n := (b.findIdx? (· == 0)).getD b.size
+  if n == 0 || charLen b 0 < n then none else some (b.extract 0 n)
+
+/-- LIKE: `%` any run, `_` one character, `esc` makes the next character literal. Both texts end at their first NUL, as
+the C strings sqlite3 matches; reading past an array's end gives the NUL too. -/
+def likeMatch (pat str : ByteArray) (esc : Option ByteArray) : Bool :=
   go 0 0 (2 * pat.size + 2) == .yes
 where
+  isEsc (p : Nat) : Bool :=
+    match esc with
+    | some e => bytesEq pat p e 0 false e.size
+    | none => false
+  escLen : Nat := (esc.map (·.size)).getD 0
   go (p s : Nat) : Nat → Like
     | 0 => .no
     | fuel+1 =>
-      if p ≥ pat.size then (if s ≥ str.size then .yes else .no) else
+      if rd pat p == 0 then (if rd str s == 0 then .yes else .no) else
       let c := rd pat p
-      let escaped := esc == some c
+      let escaped := isEsc p
       if !escaped && c == 37 then -- %
         let p1 := p + 1
-        if p1 ≥ pat.size then .yes else anyFrom p1 (firstLit p1) s (str.size - s + 1) fuel
+        if rd pat p1 == 0 then .yes else anyFrom p1 (firstLit p1) s (str.size - s + 1) fuel
       else if !escaped && c == 95 then -- _
-        if s ≥ str.size then .abort else go (p + 1) (s + charLen str s) fuel
+        if rd str s == 0 then .abort else go (p + 1) (s + charLen str s) fuel
       else
         -- a literal character, after the escape if there is one
-        let lp := if escaped then p + 1 else p
-        if lp ≥ pat.size then .no else
+        let lp := if escaped then p + escLen else p
+        if rd pat lp == 0 then .no else
         let n := charLen pat lp
-        if s ≥ str.size then .abort
+        if rd str s == 0 then .abort
         else if s + n ≤ str.size && bytesEq pat lp str s true n then go (lp + n) (s + n) fuel else .no
   termination_by fuel => (fuel, 0)
   /-- the first character start at or after `s` whose first byte (ASCII-folded) is `b`, or the string's end -/
   seek (b : UInt8) (s : Nat) : Nat → Nat
     | 0 => s
-    | k+1 => if s ≥ str.size || foldCase (rd str s) == b then s else seek b (s + charLen str s) k
+    | k+1 => if rd str s == 0 || foldCase (rd str s) == b then s else seek b (s + charLen str s) k
   /-- the first byte (ASCII-folded) of the literal the pattern at `p` starts with, if it starts with one -/
   firstLit (p : Nat) : Option UInt8 :=
     let c := rd pat p
-    if esc == some c then (if p + 1 < pat.size then some (foldCase (rd pat (p + 1))) else none)
+    if isEsc p then (if rd pat (p + escLen) != 0 then some (foldCase (rd pat (p + escLen))) else none)
     else if c == 37 || c == 95 then none else some (foldCase c)
   /-- whether the pattern from `p` matches the string from some character start in `[s, s + k)` -/
   anyFrom (p : Nat) (lit : Option UInt8) (s : Nat) : Nat → Nat → Like
@@ -216,13 +228,13 @@ where
       match lit with
       | some b =>
         let s' := seek b s (str.size - s)
-        if s' ≥ str.size then .abort else
+        if rd str s' == 0 then .abort else
         match go p s' fuel with
         | .no => anyFrom p lit (s' + charLen str s') k (fuel + 1)
         | r => r
       | none =>
         match go p s fuel with
-        | .no => if s ≥ str.size then .abort else anyFrom p lit (s + charLen str s) k (fuel + 1)
+        | .no => if rd str s == 0 then .abort else anyFrom p lit (s + charLen str s) k (fuel + 1)
         | r => r
   termination_by k fuel => (fuel, k)
 
@@ -249,12 +261,12 @@ where
   clsLoop (neg hit : Bool) (p : Nat) (first : Bool) (c : Nat) : Nat → Option (Bool × Nat)
     | 0 => none
     | fuel+1 =>
-      if p ≥ pat.size then none else
+      if rd pat p == 0 then none else
       let x := rd pat p
       if x == 93 && !first then some (hit != neg, p + 1) else
       let lo := codeAt pat p
       let p1 := p + charLen pat p
-      if rd pat p1 == 45 && p1 + 1 < pat.size && rd pat (p1 + 1) != 93 then
+      if rd pat p1 == 45 && rd pat (p1 + 1) != 0 && rd pat (p1 + 1) != 93 then
         let hi := codeAt pat (p1 + 1)
         let p2 := p1 + 1 + charLen pat (p1 + 1)
         clsLoop neg (hit || (lo ≤ c && c ≤ hi)) p2 false c fuel
@@ -262,16 +274,16 @@ where
   go (p s : Nat) : Nat → Bool
     | 0 => false
     | fuel+1 =>
-      if p ≥ pat.size then s ≥ str.size else
+      if rd pat p == 0 then rd str s == 0 else
       let c := rd pat p
       if c == 42 then -- *
         let p1 := p + 1
-        if p1 ≥ pat.size then true else
+        if rd pat p1 == 0 then true else
         anyFrom p1 s (str.size - s + 1) fuel
       else if c == 63 then -- ?
-        if s ≥ str.size then false else go (p + 1) (s + charLen str s) fuel
+        if rd str s == 0 then false else go (p + 1) (s + charLen str s) fuel
       else if c == 91 then -- [
-        if s ≥ str.size then false else
+        if rd str s == 0 then false else
         match cls (p + 1) (codeAt str s) with
         | some (true, p') => go p' (s + charLen str s) fuel
         | _ => false
@@ -282,7 +294,7 @@ where
   anyFrom (p s : Nat) : Nat → Nat → Bool
     | 0, _ => false
     | _, 0 => false
-    | k+1, fuel+1 => go p s fuel || anyFrom p (s + 1) k (fuel + 1)
+    | k+1, fuel+1 => go p s fuel || (rd str s != 0 && anyFrom p (s + charLen str s) k (fuel + 1))
   termination_by k fuel => (fuel, k)
 
 /-! ## Scalar functions -/
