@@ -309,7 +309,7 @@ def test_state_sends_what_the_view_lists (t : T) : IO Unit := do
     | _ => []
   let o ← st t ["--view", "overview"]  -- its event feed names #2
   eq (ids o) [2, 4]
-  eq (o.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 0, "needs_input": 0, "in_review": 0, "completed": 2, "cancelled": 1, "duplicate": 0, "ended": 1})
+  eq (o.f "counts") (json% {"backlog": 0, "proposed": 0, "ready": 1, "in_progress": 0, "needs_input": 0, "in_review": 0, "completed": 2, "cancelled": 1, "duplicate": 0, "ended": 1})
   eq ((nth (o.f "tasks") 1).f "undone") (json% [])
   if (names o).contains "e" then fail "overview sent an ended agent"
   eq (ids (← st t ["--view", "board"])) [1, 2, 3, 4]
@@ -337,7 +337,7 @@ def test_state_summary (t : T) : IO Unit := do
   t.q_ "insert into event(ts, agent, kind, data) values (?, 's', 'stay-hung', ''), (?, 'w', 'claim', '#1')" [.int (n - 10), .int (n - 10)]
   t.q_ "insert into ci(id,sha,status,conclusion,url,created) values(7,'x','completed','failure','u','2026-11-08T10:00:00Z')"
   let s ← st t ["--view", "summary"]
-  eq (s.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 1, "cancelled": 0, "duplicate": 0})
+  eq (s.f "counts") (json% {"backlog": 0, "proposed": 0, "ready": 1, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 1, "cancelled": 0, "duplicate": 0})
   let ags := match s.f "agents" with | .arr a => a.toList | _ => []
   eq (ags.map (·.f "name")) [json% "comms", json% "p", json% "q", json% "s", json% "w"]
   eq (byName s "q") (json% {"name": "q", "hc": null, "status": "blocked", "task": {"id": 2, "title": "two"}, "idle_s": 0, "hung": false})
@@ -373,14 +373,14 @@ def test_state_swarms (t : T) : IO Unit := do
   t.q_ "insert into task_repo(task, repo) values(4, '/r2')"
   let s ← st t ["--view", "swarms"]
   eq (s.f "db") (Json.str t.db)
-  eq (s.f "counts") (json% {"backlog": 0, "ready": 2, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
+  eq (s.f "counts") (json% {"backlog": 0, "proposed": 0, "ready": 2, "in_progress": 1, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
   let sws := match s.f "swarms" with | .arr a => a.toList | _ => []
   eq (sws.map (·.f "name")) [json% "t", json% "u"]
   let st0 := sws.headD .null
   let su := sws.getD 1 .null
   eq ((st0.f "comms"), (st0.f "comms_hc"), (st0.f "active"), (su.f "comms")) (json% "c", json% "t1", json% true, Json.null)
-  eq (st0.f "counts") (json% {"backlog": 0, "ready": 1, "in_progress": 1, "needs_input": 0, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
-  eq (su.f "counts") (json% {"backlog": 0, "ready": 2, "in_progress": 0, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
+  eq (st0.f "counts") (json% {"backlog": 0, "proposed": 0, "ready": 1, "in_progress": 1, "needs_input": 0, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
+  eq (su.f "counts") (json% {"backlog": 0, "proposed": 0, "ready": 2, "in_progress": 0, "needs_input": 1, "in_review": 0, "completed": 0, "cancelled": 0, "duplicate": 0})
   eq ((st0.f "staffing").f "live") (json% 1)
   let names (j : Json) : List Json := match j.f "agents" with | .arr a => a.toList.map fun (x : Json) => x.f "name" | _ => []
   eq (names st0) [json% "c", json% "w"]

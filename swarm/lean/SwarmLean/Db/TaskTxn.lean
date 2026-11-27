@@ -22,9 +22,9 @@ def undoneSel : Sel := { table := .task, cond := .ne "state" (.text Status.compl
 /-- The tasks with a place: every task not closed. -/
 def queuedSel : Sel := { table := .task, cond := .notNull "qpos" }
 
-/-- The Ready and Backlog tasks with deps: every task `waiters` can name. -/
+/-- The Ready, Proposed and Backlog tasks with deps: every task `waiters` can name. -/
 def waitingSel : Sel :=
-  { table := .task, cond := .and (.oneOf "state" [.text Status.ready.text, .text Status.backlog.text]) (.notNull "deps") }
+  { table := .task, cond := .and (.oneOf "state" [.text Status.ready.text, .text Status.proposed.text, .text Status.backlog.text]) (.notNull "deps") }
 
 /-- Every task. -/
 def allTasks : Sel := { table := .task }
@@ -74,10 +74,10 @@ def agents (ns : List (Option String)) : List Sel :=
   | [] => []
   | l => [{ table := .agent, cond := .oneOf "name" (l.map .text), inScope := false }]
 
-/-- `task add`: its deps, the creator's held tasks, the places (a new task goes to the end of Ready) and the next
-task id. -/
+/-- `task add`: its deps, the creator's held tasks, the places (a new task goes to the end of Ready, or of Proposed for
+an agent: the communicator knob says who is in charge) and the next task id. -/
 def add (c : Ctx) (a : AddArgs) : Txn (Except String Nat) :=
-  Txn.update ([tasks a.deps, Sels.owned c.me, queuedSel] ++ (if a.parent.isSome then [allTasks] else [])) [.task] (Tasks.add c a)
+  Txn.update ([tasks a.deps, Sels.owned c.me, queuedSel, Sels.metas ["comms"]] ++ (if a.parent.isSome then [allTasks] else [])) [.task] (Tasks.add c a)
 
 /-- The claim of task `id` on its slice: the task's row by a guarded update, then the rest with the
 held notes taken (`Notes.takeHeld`). -/

@@ -67,7 +67,7 @@ def test_queue_left_on_done_and_drop (t : T) : IO Unit := do
   eq (← order t) (ids [3])
   has (← t.sw "comms" ["queue"]).stdout "1. #3 startable"
   has (← t.sw "comms" ["queue", "add", "1"] { ok := false }).stderr
-    "task #1 is Completed; only a Ready or Backlog task has a place"
+    "task #1 is Completed; only a Ready, Proposed or Backlog task has a place"
 
 def test_queue_says_why_not_startable (t : T) : IO Unit := do
   t.q_ "update swarm set comms='comms' where name='t'"
@@ -95,7 +95,7 @@ def test_backlog_and_claim (t : T) : IO Unit := do
   has (← t.sw "a" ["task", "claim", "1", "--force"] { ok := false }).stderr "only the communicator or the user can --force it"
   t.sw_ "comms" ["task", "claim", "1", "--force"]
   eq ((← t.q1 "select owner, state from task where id=1")) (json% {"owner": "comms", "state": "in_progress"})
-  has (← t.sw "comms" ["task", "ready", "1"] { ok := false }).stderr "task #1 is In Progress; only a Backlog task moves to Ready"
+  has (← t.sw "comms" ["task", "ready", "1"] { ok := false }).stderr "task #1 is In Progress; only a Backlog or Proposed task moves to Ready"
   has (← t.sw "comms" ["task", "backlog", "1", "--note", "x"] { ok := false }).stderr "(release it first)"
 
 /-- Security review H1: only the communicator or the user moves a task from Backlog to Ready; each call, refused or
@@ -114,7 +114,7 @@ def test_ready_rights (t : T) : IO Unit := do
   t.sw_ "a" ["task", "backlog", "2", "--note", "again"]
   t.sw_ "human" ["task", "ready", "2"]
   eq (← order t) (ids [3, 1, 2])
-  has (← t.sw "comms" ["task", "ready", "2"] { ok := false }).stderr "task #2 is Ready; only a Backlog task moves to Ready"
+  has (← t.sw "comms" ["task", "ready", "2"] { ok := false }).stderr "task #2 is Ready; only a Backlog or Proposed task moves to Ready"
 
 /-- A Ready task can have an assignee before it starts: auto-spawn skips it and only its assignee claims it. -/
 def test_assign (t : T) : IO Unit := do
@@ -134,7 +134,7 @@ def test_assign (t : T) : IO Unit := do
   t.sw_ "comms" ["task", "assign", "2", "--none"]
   eq ((← t.q1 "select owner from task where id=2").f "owner") Json.null
   has (← t.sw "comms" ["task", "assign", "2"] { ok := false }).stderr "usage: swarm task assign"
-  has (← t.sw "comms" ["task", "assign", "1", "a"] { ok := false }).stderr "task #1 is In Progress; only a Ready or Backlog task is assigned"
+  has (← t.sw "comms" ["task", "assign", "1", "a"] { ok := false }).stderr "task #1 is In Progress; only a Ready, Proposed or Backlog task is assigned"
 
 /-- The old verbs and flags fail naming their replacement. -/
 def test_old_verbs_name_their_replacement (t : T) : IO Unit := do

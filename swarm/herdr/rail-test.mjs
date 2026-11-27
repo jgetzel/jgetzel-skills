@@ -766,11 +766,13 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
 { // Linear states: places, the Status filter, grouping, and a task event as table cells
   const T = await import("./mods/rw-rail/tree.js"), { actItems } = await import("./mods/rw-rail/activity.js");
   assert.deepEqual([T.placeWord({ state: "ready", place: 4 }), T.placeWord({ state: "backlog", place: 2 }), T.placeWord({ state: "in_progress" })], ["Queue 4", "Backlog 2", null]);
+  assert.equal(T.placeWord({ state: "proposed", place: 3 }), "Proposed 3");
   let set = T.toggleCategory(new Set(), "started"); assert.deepEqual([...set], ["in_progress", "needs_input", "in_review"]);
   assert.deepEqual(T.statusParts(set).map((p) => [p.kind, p.label]), [["category", "Started"]]);
   assert.deepEqual([T.catTick(set, "started"), T.catTick(set, "backlog"), T.catTick(T.toggleState(set, "in_review"), "started")], ["all", "none", "some"]);
   assert.deepEqual(T.statusParts(new Set(["in_progress", "needs_input"])).map((p) => [p.kind, p.label]), [["state", "In Progress"], ["state", "Needs Input"]]);
-  assert.deepEqual(T.statusParts(new Set(["ready", "in_progress"])).map((p) => [p.kind, p.label]), [["category", "Unstarted"], ["state", "In Progress"]]);
+  assert.deepEqual(T.statusParts(new Set(["ready", "in_progress"])).map((p) => [p.kind, p.label]), [["state", "Ready"], ["state", "In Progress"]]);
+  assert.deepEqual(T.statusParts(new Set(["proposed", "ready", "in_progress"])).map((p) => [p.kind, p.label]), [["category", "Unstarted"], ["state", "In Progress"]]);
   assert.deepEqual(T.statusParts(new Set(["backlog", "cancelled", "duplicate"])).map((p) => p.label), ["Backlog", "Cancelled"]);
   assert.deepEqual([...T.toggleCategory(set, "started")], []);
   const ks = [{ id: 1, state: "ready", priority: "high" }, { id: 2, state: "needs_input" }, { id: 3, state: "in_progress", priority: "low" }];
@@ -837,5 +839,22 @@ assert.deepEqual(lk.map((t) => t.status), ["idle", "done", "done", "working"]);
   const ns = needsOf({ ...s, tasks: [{ id: 3, state: "ready", title: "Goal" }] }).filter((n) => n.kind === "sub-issues-done");
   assert.deepEqual(ns.map((n) => [n.task.id, n.task.title, n.progress]), [[3, "Goal", { done: 2, total: 2 }]]);
   assert.deepEqual(needsOf(s).map((n) => [n.kind, n.task.id, n.task.title]), [["sub-issues-done", 3, "Goal"]]); // no tasks read: the need carries its title
+}
+{ // Proposed: an agent's task waits for triage, apart from Ready and Backlog; no one staffs it
+  const T = await import("./mods/rw-rail/tree.js");
+  const o = T.overOf({ counts: { proposed: 2, ready: 1, backlog: 1 }, categories: { unstarted: 3, backlog: 1 },
+    tasks: [{ id: 1, state: "ready", category: "unstarted", place: 1 }, { id: 2, state: "proposed", category: "unstarted", place: 1 }, { id: 3, state: "proposed", category: "unstarted", place: 2 },
+      { id: 4, state: "backlog", category: "backlog", place: 1, note: "later" }] });
+  assert.equal(o.counts.proposed, 2);
+  const s = { tasks: o.tasks, agents: [], limits: { min: 2 } };
+  assert.deepEqual(T.boardRows(s).map((r) => [r.k.id, r.state]), [[1, "Ready"], [2, "Proposed"], [3, "Proposed"], [4, "Backlog"]]);
+  assert.deepEqual(T.queueRows(s).map((r) => [r.k.id, r.why]), [[1, "Next"], [2, "Proposed"], [3, "Proposed"], [4, "Backlog"]]);
+  assert.deepEqual(T.staffOf(s).map((k) => k.id), [1]); // Proposed is never in the pool
+  const q = T.queueSplit(s);
+  assert.deepEqual([q.proposed.map((r) => r.k.id), q.backlog.map((r) => r.k.id), q.shown], [[2, 3], [4], 4]);
+  assert.deepEqual([T.stateWord("proposed"), T.catOf({ state: "proposed" }), T.isClosed({ state: "proposed" })], ["Proposed", "unstarted", false]);
+  assert.deepEqual(T.groupBy(o.tasks, "state").map((g) => [g.label, g.tasks.length]), [["Ready", 1], ["Proposed", 2], ["Backlog", 1]]);
+  assert.deepEqual(o.tasks.filter((k) => T.inPool(k, { tab: "proposed", status: new Set(), prio: new Set(), labels: new Set() })).map((k) => k.id), [2, 3]);
+  assert.deepEqual(T.barOf(null, o.tasks).map(([st]) => st), ["ready", "proposed", "backlog"]);
 }
 console.log("rail-test: ok");

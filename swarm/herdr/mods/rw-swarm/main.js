@@ -422,7 +422,7 @@ export default class SwarmTab extends View {
   board(t, s) {
     const big = (s.agents ?? []).filter((a) => a.status !== "ended" && a.name !== s.comms).length > FOLD;
     const q = big ? this.filter.value().trim().toLowerCase() : "";
-    const rows = boardRows(s), c = s.counts ?? {}, done = c.completed ?? 0, total = done + leftOf(c) + (c.backlog ?? 0), cancelled = (c.cancelled ?? 0) + (c.duplicate ?? 0);
+    const rows = boardRows(s), c = s.counts ?? {}, done = c.completed ?? 0, total = done + leftOf(c) + (c.backlog ?? 0) + (c.proposed ?? 0), cancelled = (c.cancelled ?? 0) + (c.duplicate ?? 0);
     const l = s.limits ?? {}, tone = { blocked: t.blocked, muted: t.muted, foreground: t.foreground, dim: t.dim };
     const shown = !big ? rows.slice(0, SHOWN) : q ? rows.filter((r) => `#${r.k.id} ${r.k.title}`.toLowerCase().includes(q)).slice(0, SHOWN)
       : rows.filter((r) => r.tone === "foreground").slice(0, NEXT); // as auto-spawn staffs: Ready by place (boardRows' order)
@@ -443,8 +443,8 @@ export default class SwarmTab extends View {
           .child(div().flex_none().max_w(160).truncate().text_color(t.dim).child(k.state === "duplicate" ? "Duplicate" : k.assignee ?? k.owner ?? "")))
         : [div().px(16).py(6).text_size(12.5).text_color(t.dim).child(`Nothing ${this.past === "completed" ? "Completed" : "Cancelled"}`)]))
       .when(!past && big, (el) => el.child(h_flex().mx(16).mt(4).mb(8).gap(18).flex_wrap()
-        .children([["muted", "Started"], ["blocked", "Needs Input"], ["foreground", "Ready"], ["dim", "Waiting or Backlog"]].map(([tn, label]) =>
-          h_flex().gap(6).items_baseline().child(div().text_size(18).font_semibold().text_color(tone[tn]).child(String(rows.filter((r) => r.tone === tn).length)))
+        .children([["muted", "Started"], ["blocked", "Needs Input"], ["foreground", "Ready"], ["prop", "Proposed"], ["dim", "Waiting or Backlog"]].map(([tn, label]) =>
+          h_flex().gap(6).items_baseline().child(div().text_size(18).font_semibold().text_color(tone[tn] ?? t.dim).child(String(rows.filter((r) => tn === "prop" ? r.k.state === "proposed" : tn === "dim" ? r.tone === "dim" && r.k.state !== "proposed" : r.tone === tn).length)))
             .child(div().text_size(12).text_color(t.dim).child(label))))))
       .when(!past && big, (el) => el.child(div().px(16).pt(4).pb(2).text_size(11.5).font_semibold().text_color(t.muted)
         .child(q ? "Tasks that match" : "Next to be staffed")))
@@ -803,13 +803,14 @@ export default class SwarmTab extends View {
   nextCard(t, s, wide) {
     const narrow = (this.width ?? 0) < 380, up = nextUp(s), tasks = s.tasks ?? [], N = wide ? 10 : 7;
     const ready = tasks.filter((k) => k.state === "ready"), waiting = ready.filter((k) => !k.assignee && (k.undone ?? []).length), reserved = ready.filter((k) => k.assignee);
-    const back = tasks.filter((k) => k.state === "backlog").length, why = heldWhy(s), dep = why?.id != null ? tasks.find((k) => k.id === why.id) : null;
+    const back = tasks.filter((k) => k.state === "backlog").length, prop = tasks.filter((k) => k.state === "proposed").length, why = heldWhy(s), dep = why?.id != null ? tasks.find((k) => k.id === why.id) : null;
     const chip = (kids, id) => h_flex().id(id).h(24).px(8).gap(6).flex_none().items_center().rounded(kit.R.ctl).border(1).border_color(t.border).text_size(kit.TYPE.meta).text_color(t.muted).children(kids);
     const count = (n) => div().font_family(settings().font_family).text_color(t.dim).child(String(n));
     const chips = [...(!ready.length ? [chip([kit.taskGlyph(t, "ready", 11), div().child("Ready"), count(0)], "nx-ready")] : []),
       ...(waiting.length ? [chip([div().child("Waiting"), count(waiting.length)], "nx-wait")] : []),
       ...(dep ? [chip([kit.taskGlyph(t, kit.glyphOf(dep.state), 11), div().font_family(settings().font_family).text_color(t.foreground).child(`#${dep.id}`)], "nx-dep")] : []),
       ...(reserved.length ? [chip([div().child("Reserved"), count(reserved.length)], "nx-res")] : []),
+      ...(prop ? [chip([kit.taskGlyph(t, "prop", 11), div().child("Proposed"), count(prop)], "nx-prop")] : []),
       chip([kit.taskGlyph(t, "back", 11), div().child("Backlog"), count(back)], "nx-back")];
     const open = div().id("nx-open").flex_none().text_size(kit.TYPE.meta).text_color(t.ansi4).cursor_pointer().hover((x) => x.underline())
       .on_click((_e, cx) => { bt(this).tab = "backlog"; this.go("board"); cx.notify(); }).child("Open Backlog");
@@ -874,11 +875,14 @@ export default class SwarmTab extends View {
     });
     const wait = q.waiting.slice(0, 15).map((r) => this.taskRow(t, r.k, { wide, who: wide, starts: false, right: dim(`Queue ${r.k.place} · ${whyText(r)}`),
       spawn: wide ? this.quiet(t, `unq-${r.k.id}`, "To the end", (cx) => this.act(cx, ["queue", "rm", String(r.k.id)])) : null }));
+    const prop = q.proposed.slice(0, 15).map((r) => this.taskRow(t, r.k, { wide, who: wide, starts: false, right: dim(`Proposed ${r.k.place}`),
+      spawn: wide ? this.quiet(t, `rdy-${r.k.id}`, "To Ready", (cx) => this.act(cx, ["task", "ready", String(r.k.id)])) : null }));
     const back = q.backlog.slice(0, 15).map((r) => this.taskRow(t, r.k, { wide, who: wide, starts: false, right: dim(`Queue ${r.k.place}${r.note ? ` · ${r.note}` : ""}`),
       spawn: wide ? this.quiet(t, `rdy-${r.k.id}`, "To Ready", (cx) => this.act(cx, ["task", "ready", String(r.k.id)])) : null }));
     return [...(doing.length ? [head("Being worked on", q.doing.length), ...doing, ...more(q.doing.length - CAP, "sq-more-d")] : []),
       ...(next.length ? [head("Next, in the order auto-spawn starts them", q.next.length), ...next, ...more(q.next.length - CAP, "sq-more-n")] : []),
       ...(wait.length ? [head("Waiting", q.waiting.length), ...wait, ...more(q.waiting.length - 15, "sq-more-w")] : []),
+      ...(prop.length ? [head("Proposed, waiting for triage", q.proposed.length), ...prop, ...more(q.proposed.length - 15, "sq-more-p")] : []),
       ...(back.length ? [head("Backlog", q.backlog.length), ...back, ...more(q.backlog.length - 15, "sq-more-b")] : []),
       ...(!q.shown ? [this.emptyLine(t, this.qf.models.length + this.qf.labels.length ? "Nothing matches" : "Nothing left on the board")] : [])];
   }
@@ -1514,7 +1518,7 @@ export default class SwarmTab extends View {
     const k = n.k, undone = (k.deps ?? []).filter((d) => by.get(d)?.state !== "completed"), who = k.assignee ?? k.owner;
     return k.state === "needs_input" ? [`Needs Input${who ? ` · ${who}` : ""}`, t.blocked]
       : isStarted(k) ? [`${stateWord(k.state)}${who ? ` · ${who}` : ""}`, t.muted]
-      : k.state === "backlog" ? [`Backlog${k.note ? ` · ${k.note}` : ""}`, t.dim] : undone.length ? [`after ${undone.map((d) => `#${d}`).join(", ")}`, t.dim]
+      : k.state === "proposed" ? ["Proposed", t.dim] : k.state === "backlog" ? [`Backlog${k.note ? ` · ${k.note}` : ""}`, t.dim] : undone.length ? [`after ${undone.map((d) => `#${d}`).join(", ")}`, t.dim]
       : ["Ready", t.ansi2 ?? t.working];
   }
   graphNode(t, n, by, small) {
@@ -1618,7 +1622,8 @@ export default class SwarmTab extends View {
     return panel(t).w(240).gap(0)
       .child(div().px(8).py(6).text_color(t.dim).border_b(1).border_color(t.border).child("Move to…"))
       .child(cap("Backlog")).child(row("back", "backlog", "Backlog", (cx) => { this.stAsk = "note"; this.backlogNote.set_value(k.note ?? ""); cx.notify(); }, k.state === "ready" || k.state === "backlog" ? "note" : null))
-      .child(cap("Unstarted")).child(row("ready", "ready", "Ready", (cx) => { if (k.state === "backlog") close(cx, ["task", "ready", sid]); else b.menu = null; }))
+      .child(cap("Unstarted")).child(row("ready", "ready", "Ready", (cx) => { if (k.state === "backlog" || k.state === "proposed") close(cx, ["task", "ready", sid]); else b.menu = null; }))
+      .when(k.state === "proposed", (e) => e.child(row("prop", "proposed", "Proposed", () => { b.menu = null; })))
       .when(canUn, (e) => e.child(cap("Started")).child(row("prog", "in_progress", "In Progress", (cx) => close(cx, ["task", "claim", sid]))))
       .when(!isClosed(k), (e) => e.child(cap("Completed")).child(row("done", "completed", "Completed", (cx) => close(cx, ["task", "done", sid, "--evidence", "Marked Completed from the task page"])))
         .child(cap("Cancelled")).child(row("cancel", "cancelled", "Cancelled", (cx) => close(cx, cancelArgs(k.id))))
@@ -1656,10 +1661,10 @@ export default class SwarmTab extends View {
     const crumb = h_flex().gap(8).items_center().text_size(13).text_color(t.dim)
       .child(this.btn(t, "page-back", `‹ ${label}`, () => this.back(pg))).child("/").child(div().font_family(mono).text_color(t.foreground).child(`#${id}`));
     if (!k) return v_flex().gap(12).child(crumb).child(div().text_size(12.5).text_color(t.dim).child(this.loading || !x ? "Reading…" : "No such task on this board"));
-    const live = k.state === "in_progress" || k.state === "needs_input", open = !isClosed(k), unstarted = k.state === "ready" || k.state === "backlog", sid = String(k.id);
+    const live = k.state === "in_progress" || k.state === "needs_input", open = !isClosed(k), unstarted = k.state === "ready" || k.state === "proposed" || k.state === "backlog", sid = String(k.id);
     const owner = k.owner && s.agents?.find((a) => a.name === k.owner), by = new Map([...(s.tasks ?? []), ...(this.pastTasks ?? [])].map((y) => [y.id, y]));
     const show = this.tsFor === id ? this.ts : null, host = this.taskHost(s); // `task show --json`: the parent, its sub-issues and history
-    const cat = { backlog: "Backlog", ready: "Unstarted", in_progress: "Started", needs_input: "Started", in_review: "Started", completed: "Completed", cancelled: "Cancelled", duplicate: "Cancelled" }[k.state];
+    const cat = { backlog: "Backlog", proposed: "Unstarted", ready: "Unstarted", in_progress: "Started", needs_input: "Started", in_review: "Started", completed: "Completed", cancelled: "Cancelled", duplicate: "Cancelled" }[k.state];
     const chipB = (cid, kids) => h_flex().id(cid).h(30).px(10).gap(7).flex_none().items_center().rounded(kit.R.ctl).border(1).border_color(t.border).text_size(kit.TYPE.body)
       .text_color(t.foreground).cursor_pointer().hover((st) => st.bg(t.hover)).children(kids);
     const chev = () => div().text_color(t.dim).child("⌄");
@@ -1688,7 +1693,7 @@ export default class SwarmTab extends View {
       .when(this.setP === id, (e) => e.child(h_flex().pl(112).pb(6).child(parentPicker(host, t, k, show).flex_1())))
       .child(prop("Assignee", k.assignee || k.owner ? [k.assignee === "human" || k.owner === "human" ? h_flex().gap(5).items_center().child(kit.personGlyph(t, 9)).child(div().child("human")) : kit.assignee(t, { name: k.assignee ?? k.owner, swarm: null, status: k.state === "needs_input" ? "asks" : owner?.status === "working" ? "working" : "idle" }),
         ...(unstarted && k.assignee ? [this.quiet(t, "unassign", "Unassign", (cx) => this.act(cx, ["task", "assign", sid, "--none"]))] : [])] : div().text_color(t.dim).child("None")))
-      .when(Boolean(placeWord(k) && unstarted), (e) => e.child(prop(k.state === "backlog" ? "Backlog" : "Queue", [div().font_family(mono).child(String(k.place)),
+      .when(Boolean(placeWord(k) && unstarted), (e) => e.child(prop(k.state === "backlog" ? "Backlog" : k.state === "proposed" ? "Proposed" : "Queue", [div().font_family(mono).child(String(k.place)),
         ...(k.state === "ready" && (k.undone ?? []).length ? [div().text_color(t.dim).child("skipped")] : [])])))
       .when(k.state === "backlog" && Boolean(k.note), (e) => e.child(prop("Note", kit.noteChip(t, k.note).max_w("100%"))))
       .child(prop("Waiting on", (k.deps ?? []).length ? (k.deps).map(dep) : div().text_color(t.dim).child("Nothing")))

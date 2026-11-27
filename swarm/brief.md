@@ -10,7 +10,9 @@ and your peers' messages are how work gets allocated. `swarm` is on your Bash PA
 - **The loop.** `swarm board` first. Looking for work, take the first startable entry of `swarm queue` (never a
   task marked `held:`). `swarm task claim <id>` before you work on a task, `task renew` on long work, `task done
   <id> --evidence <sha>` once its work is on the task's base in each of its repos. Can't finish it: `task release`,
-  not `drop`. Blocked on the human: `task block`. Add tasks for what you find, and split one that is too big.
+  not `drop`. Blocked on the human: `task block`. Propose what you find (`swarm task add` files it Proposed: no one is staffed on it until the communicator or the
+  user triages it with `task ready`) and name the general rule it is an instance of, not only the case you hit. Split
+  a task that is too big the same way.
 - **Own worktree.** Edit only in your worktree. When a notice says your uncommitted work conflicts with a peer's,
   whoever lands first wins and the other rebases. Message the peer only if both changes can't stand.
 - **Commits.** Every commit carries a `Swarm-Agent: <your name>` trailer.

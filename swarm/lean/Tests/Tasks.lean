@@ -1,4 +1,5 @@
 import SwarmLean.Db.Spawn
+import SwarmLean.Db.Reuse
 
 /-! tasks_spec.lua's asserts: reserve claims for a new agent, a lost race is `lost`, unreserve reopens; event_task parses
 ids; claim's dependency check holds in its write. -/
@@ -66,12 +67,26 @@ def misfitOf (r : Except String TaskState) : Option String := match r with | .er
   some (.needsInput "a" 5 "q?")
 #guard (TaskState.ofCols .cancelled none none (some "q?") (some "abc") none (some 7) none).toOption ==
   some (.cancelled (some "q?") (some ⟨"abc", none, 7⟩))
--- a Ready or Backlog task may have an assignee (reserved), a Duplicate names its original
+-- a Ready, Proposed or Backlog task may have an assignee (reserved), a Duplicate names its original
+#guard (TaskState.ofCols .proposed (some "human") none none none none none none).toOption == some (.proposed (some "human"))
+#guard (TaskState.ofCols .proposed none (some 1) none none none none none).toOption.isNone
+#guard (Status.ofText "proposed").toOption == some .proposed && Status.proposed.category == .unstarted && !Status.proposed.closed
 #guard (TaskState.ofCols .ready (some "human") none none none none none none).toOption == some (.ready (some "human"))
 #guard (TaskState.ofCols .backlog (some "a1") none none none none none none).toOption == some (.backlog (some "a1"))
 #guard (TaskState.ofCols .duplicate none none none none none none (some 4)).toOption == some (.duplicate 4 none none)
 -- priorities are names; numbers are refused with the mapping
 #guard (Priority.ofText "urgent", Priority.ofText "none", Priority.ofText "2") == (some .urgent, some .none, none)
 #guard (Priority.ofNum (some 1), Priority.ofNum none).1.toOption == some .urgent
+
+-- a Proposed task is in no pool: not staffed (auto-spawn, an agent asking for work), not offered by --reuse-below
+def dbP : Db := { tasks := [
+  { id := 1, title := some "done", state := .completed (some "n1") none none, done_at := some 10, labels := some "ui" },
+  { id := 2, title := some "proposed", state := .proposed none, labels := some "ui", pos := some 1 },
+  { id := 3, title := some "ready", state := .ready none, labels := some "ui", pos := some 2 }], taskNext := 4 }
+#guard (pool dbP).map (·.id) == [3]
+#guard (Queue.staffing dbP).map (·.id) == [3]
+#guard (Reuse.candidates dbP "n1" (some "sonnet") "sonnet" (Queue.staffing dbP)).map (·.id) == [3]
+#guard (dbP.find 2).bind (Queue.whyNot dbP) == some "proposed: waits for triage (`task ready`)"
+#guard (dbP.find 2).bind (Queue.place dbP) == some 1 && (dbP.find 3).bind (Queue.place dbP) == some 1  -- each list has its own places
 
 end SwarmLean.Tests.Tasks

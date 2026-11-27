@@ -46,7 +46,7 @@ def dest (here : String → Bool) (comms : Option String) (me : String) (t : Tas
   | .inProgress | .needsInput | .inReview => match t.owner with
     | some o => if o == me then .self else if here o then .owner o else .held
     | Option.none => .held
-  | .backlog | .ready => .held
+  | .backlog | .proposed | .ready => .held
   | .completed => ended .completed
   | .cancelled => ended .cancelled
   | .duplicate => ended .duplicate

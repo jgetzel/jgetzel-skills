@@ -174,9 +174,9 @@ export default class AllSwarms extends View {
   column(t, w, s, i) {
     const run0 = s.ci?.runs?.[0];
     const ci = !run0 ? null : run0.status !== "completed" ? ["main: checks run", t.working] : run0.conclusion === "success" ? ["main green", t.ansi2] : [`main ${run0.conclusion === "failure" ? "red" : run0.conclusion ?? "?"}`, t.blocked];
-    const c = s.counts ?? {}, done = c.completed ?? 0, total = done + leftOf(c) + (c.backlog ?? 0), l = s.limits ?? {};
+    const c = s.counts ?? {}, done = c.completed ?? 0, total = done + leftOf(c) + (c.backlog ?? 0) + (c.proposed ?? 0), l = s.limits ?? {};
     const started = (c.in_progress ?? 0) + (c.needs_input ?? 0) + (c.in_review ?? 0), ready = w.ready ?? 0, waits = Math.max(0, (c.ready ?? 0) - ready);
-    const counts = [[started, "Started"], [ready, "Ready"], [waits, "Waiting"], [c.backlog ?? 0, "Backlog"]].filter(([k]) => k).map(([k, x]) => `${k} ${x}`).join(" · ");
+    const counts = [[started, "Started"], [ready, "Ready"], [waits, "Waiting"], [c.proposed ?? 0, "Proposed"], [c.backlog ?? 0, "Backlog"]].filter(([k]) => k).map(([k, x]) => `${k} ${x}`).join(" · ");
     const next = (w.next ?? []).slice(0, TASKS), ags = agentRows(s);
     const repos = (w.repos ?? []).map(repoName).filter(Boolean), many = new Set(ags.map((r) => r.a.repo).filter(Boolean)).size > 1;
     const staff = [`Auto-spawn ${l.min ?? 0}`, l.max != null ? `Max ${l.max}` : null, l.held ? "Paused" : null].filter(Boolean).join(" · ");

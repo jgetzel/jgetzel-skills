@@ -8,7 +8,8 @@ export SWARM_DB=$T/swarm.db
 # the scratch db's one swarm, of this repo (sw-global §2); every command after acts on it
 env -u SWARM -u SWARM_NAME "$B" new t --repo . >/dev/null || exit 1
 export SWARM=t
-SWARM_NAME=setup "$B" task add contested >/dev/null || exit 1
+# the user files it: an agent's task would be Proposed, which a claim refuses
+SWARM_NAME=human "$B" task add contested >/dev/null || exit 1
 # each process spins until go exists, so all 50 start their transactions together
 for k in $(seq 50); do
   (while [ ! -e "$T/go" ]; do :; done; SWARM_NAME=a$k exec "$B" task claim 1) >"$T/out$k" 2>&1 &

@@ -71,12 +71,12 @@ structure T where
   /-- its goal parent -/
   parent : Option Int := none
 
-/-- Each Ready and Backlog task's place in its list, 1..n (`Queue.place`): by position, then id, machine-wide. -/
+/-- Each Ready, Proposed and Backlog task's place in its list, 1..n (`Queue.place`): by position, then id, machine-wide. -/
 def places (all : List T) : Std.HashMap Int Nat :=
   let le (a b : T) : Bool := a.pos.getD 0 < b.pos.getD 0 || (a.pos.getD 0 == b.pos.getD 0 && a.id ≤ b.id)
   let one (s : Status) (h : Std.HashMap Int Nat) : Std.HashMap Int Nat :=
     ((all.filter fun k => k.state == s && k.pos.isSome).mergeSort le).zipIdx.foldl (fun h (k, i) => h.insert k.id (i + 1)) h
-  one .backlog (one .ready {})
+  one .proposed (one .backlog (one .ready {}))
 
 /-- The Ready tasks auto-spawn could start (as `Queue.staffing` orders them, its stop-pending test left out): no
 assignee, no dep not Completed; a `main red:` task first, then Ready by place. -/
@@ -180,7 +180,7 @@ def machine (t : Int) (tree : Tasks.Tree) (st : Std.HashMap Int Status) (pl : St
     let o := py (txt r[9]?)
     ofTask "lander" r [("agent", Json.ostr o), ("lander", Json.ostr (py (txt r[13]?))), ("sha", Json.ostr (txt r[12]?)),
       ("since", Json.oint (int r[14]?)), ("swarm", Json.ostr (o.bind swarmOf))]
-  let depNeeds := (ts.filter fun r => (stateOf (txt r[2]?)).any (·.category == .unstarted) &&
+  let depNeeds := (ts.filter fun r => (stateOf (txt r[2]?)).any (fun s => s.category == .unstarted && s != .proposed) &&
       (waiting r).any (·.2.category == .cancelled)).map fun r =>
     ofTask "dep-cancelled" r [("deps", .arr (((waiting r).filter (·.2.category == .cancelled)).map (Json.int ·.1)).toArray)]
   let allDone := tree.allDone
@@ -345,7 +345,7 @@ def view (t : Int) : m Json := do
       ("task", some (Json.int k.id)), ("agent", k.owner.map .str), ("question", k.question.map .str), ("title", k.title.map .str)]
     -- a Ready or Backlog task waiting on a Cancelled dependency: remove the dependency or cancel it too
     let cancelledDeps (k : T) : List Int := k.deps.filter fun x => (stOf.get? x).any (·.category == .cancelled)
-    let deps := (ks.filter fun k => k.state.category == .unstarted && !(cancelledDeps k).isEmpty).map fun k =>
+    let deps := (ks.filter fun k => k.state.category == .unstarted && k.state != .proposed && !(cancelledDeps k).isEmpty).map fun k =>
       obj [("kind", some (.str "dep-cancelled")), ("task", some (Json.int k.id)), ("title", k.title.map .str),
         ("deps", some (.arr ((cancelledDeps k).map Json.int).toArray))]
     let subs := (ks.filter fun k => allDone.contains k.id).map fun k =>

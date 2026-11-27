@@ -1,7 +1,7 @@
 import SwarmLean.Db.Tasks
 
-/-! Places, Ready and Backlog (board #128, Linear's states): every task not closed has a place (`Task.pos`); Ready's
-tasks in place order are the staffing order, Backlog's are its order. `queue add`/`queue rm` move a task's place and
+/-! Places, Ready, Proposed and Backlog (board #128, Linear's states): every task not closed has a place (`Task.pos`); Ready's
+tasks in place order are the staffing order, Backlog's and Proposed's are their own orders. An agent's `task add` is Proposed until `task ready` (triage). `queue add`/`queue rm` move a task's place and
 change nothing else; `task backlog` and `task ready` move it between the two, to the end. `staffing` is the order in
 which auto-spawn and an agent asking for work take tasks: the red main's tasks first, then Ready by place, never a task
 reserved for an assignee. -/
@@ -35,16 +35,20 @@ def readyList (db : Db) : List Task := (queued db).filter (·.status = .ready)
 /-- Backlog's tasks, in place order. -/
 def backlogList (db : Db) : List Task := (queued db).filter (·.status = .backlog)
 
-/-- A Ready or Backlog task's place in its list, 1..n ("Queue N" on the board). -/
+/-- Proposed's tasks, in place order. -/
+def proposedList (db : Db) : List Task := (queued db).filter (·.status = .proposed)
+
+/-- A Ready, Proposed or Backlog task's place in its list, 1..n ("Queue N" on the board). -/
 def place (db : Db) (t : Task) : Option Nat :=
-  let l := if t.status = .ready then readyList db else if t.status = .backlog then backlogList db else []
+  let l := if t.status = .ready then readyList db else if t.status = .backlog then backlogList db
+    else if t.status = .proposed then proposedList db else []
   (l.findIdx? (·.id == t.id)).map (· + 1)
 
 /-- On the board: not closed. -/
 def onBoard (t : Task) : Bool := !t.status.closed
 
-/-- Not started yet: Backlog or Ready, the tasks a place move, `task assign` and `task after` act on. -/
-def unstarted (t : Task) : Bool := t.status = .ready || t.status = .backlog
+/-- Not started yet: Backlog, Proposed or Ready, the tasks a place move, `task assign` and `task after` act on. -/
+def unstarted (t : Task) : Bool := t.status.preStart
 
 /-- Takes the places of the tasks that closed (completed, cancelled). -/
 def tidy (db : Db) : Db :=
@@ -59,14 +63,14 @@ def addCheck (c : Ctx) (ids : List Int) (w : Place) (db : Db) : Except String Un
   for i in ids do
     match db.find i with
     | none => throw s!"no task #{d i}"
-    | some r => if !unstarted r then throw s!"task #{d i} is {r.status.name}; only a Ready or Backlog task has a place"
+    | some r => if !unstarted r then throw s!"task #{d i} is {r.status.name}; only a Ready, Proposed or Backlog task has a place"
   if !inCharge db c.comms c.me then
     if let .back := w then pure () else throw "only the communicator or the user can move a task other than to the end"
   match w with
   | .before x | .after x =>
     if ids.contains x then throw s!"#{d x} can't be placed next to itself"
     match db.find x with
-    | some r => if !unstarted r then throw s!"#{d x} is {r.status.name}; it has no place in Ready or Backlog"
+    | some r => if !unstarted r then throw s!"#{d x} is {r.status.name}; it has no place in Ready, Proposed or Backlog"
     | none => throw s!"no task #{d x}"
   | _ => pure ()
 
@@ -96,31 +100,31 @@ def add (c : Ctx) (ids : List Int) (w : Place) (db : Db) : Db × Except String U
 /-- `queue rm`: moves `ids` to the end of the places; nothing else on the task changes. -/
 def rm (c : Ctx) (ids : List Int) (db : Db) : Db × Except String Unit := add c ids .back db
 
-/-- `task backlog`: Ready task `id` moves to the end of Backlog with note `note` (a Backlog task's note is
+/-- `task backlog`: Ready or Proposed task `id` moves to the end of Backlog with note `note` (a Backlog task's note is
 replaced); its assignee kept. Auto-spawn and an agent asking for work skip it until `task ready`. -/
 def backlog (c : Ctx) (id : Int) (note : String) (db : Db) : Db × Except String Unit :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
     if !unstarted r then
-      (db, .error s!"task #{d id} is {r.status.name}; only a Ready task moves to Backlog{if r.status.category = .started then " (release it first)" else ""}")
+      (db, .error s!"task #{d id} is {r.status.name}; only a Ready or Proposed task moves to Backlog{if r.status.category = .started then " (release it first)" else ""}")
     else if strip note == "" then (db, .error "--note is empty: say what the task waits for")
     else
       let db1 := db.set id ({ · with state := .backlog r.assignee, note := some (oneLine note) })
-      let db1 := if r.status = .ready then toEnd id db1 else db1
+      let db1 := if r.status = .backlog then db1 else toEnd id db1
       (db1.log c.now (some c.me) "task-backlog" none (some s!"#{d id} {oneLine note}"), .ok ())
 
-/-- `task ready`: Backlog task `id` moves to the end of Ready, its note and assignee kept; by the communicator or the
+/-- `task ready`: Backlog or Proposed task `id` moves to the end of Ready (triage), its note and assignee kept; by the communicator or the
 user only. -/
 def ready (c : Ctx) (id : Int) (db : Db) : Db × Except String Unit :=
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.status ≠ .backlog then (db, .error s!"task #{d id} is {r.status.name}; only a Backlog task moves to Ready")
+    if r.status ≠ .backlog && r.status ≠ .proposed then (db, .error s!"task #{d id} is {r.status.name}; only a Backlog or Proposed task moves to Ready")
     else inChargeStep c s!"move #{d id} to Ready" "task-ready" s!"#{d id}"
       (fun db => toEnd id (db.set id ({ · with state := .ready r.assignee }))) db
 
-/-- `task assign`: Ready or Backlog task `id` reserved for `who` (none: no assignee); by the communicator or the user
+/-- `task assign`: Ready, Proposed or Backlog task `id` reserved for `who` (none: no assignee); by the communicator or the user
 only. Auto-spawn skips a reserved task, and only its assignee claims it (or the communicator's --force). -/
 def assign (c : Ctx) (id : Int) (who : Option String) (db : Db) : Db × Except String Unit :=
   match db.find id with
@@ -128,9 +132,9 @@ def assign (c : Ctx) (id : Int) (who : Option String) (db : Db) : Db × Except S
   | some r =>
     let who := who.bind fun w => py (some (strip w))
     if !unstarted r then
-      (db, .error s!"task #{d id} is {r.status.name}; only a Ready or Backlog task is assigned (a claim assigns a started one)")
+      (db, .error s!"task #{d id} is {r.status.name}; only a Ready, Proposed or Backlog task is assigned (a claim assigns a started one)")
     else inChargeStep c s!"assign #{d id}" "task-assign" s!"#{d id} {who.getD "-"}"
-      (·.set id ({ · with state := if r.status = .backlog then .backlog who else .ready who })) db
+      (·.set id ({ · with state := match r.status with | .backlog => .backlog who | .proposed => .proposed who | _ => .ready who })) db
 
 /-- Staffed by auto-spawn and offered to an agent asking for work: no assignee reserves it. -/
 def free (t : Task) : Bool := t.assignee.isNone
@@ -145,7 +149,7 @@ def staffReady (db : Db) : List Task :=
   let busy := (Tree.ofDb db).openParents
   (pool db).filter fun t => free t && redKey t == 0 && !busy.contains (t.id : Int)
 
-/-- The tasks to staff, in order: a red main's task, then Ready by place; never a Backlog task, one waiting on a
+/-- The tasks to staff, in order: a red main's task, then Ready by place; never a Backlog or Proposed task, one waiting on a
 dependency or one reserved for an assignee. Auto-spawn staffs from it and an idle agent is told of it. -/
 def staffing (db : Db) : List Task := staffRed db ++ staffReady db
 
@@ -155,6 +159,7 @@ def staffHead (skip : Task → Bool) (db : Db) : Option Int := ((staffing db).fi
 /-- Why a task with a place is not staffed now; none when it would be. -/
 def whyNot (db : Db) (t : Task) : Option String :=
   if t.status = .backlog then some s!"backlog{match t.note with | some n => ": " ++ n | none => ""}"
+  else if t.status = .proposed then some "proposed: waits for triage (`task ready`)"
   else if t.status ≠ .ready then some s!"{t.status.name}{match py t.assignee with | some a => " by " ++ a | none => ""}"
   else if let some a := py t.assignee then some s!"assigned to {a}"
   else if isContainer db t then some "has open sub-issues"
@@ -182,12 +187,12 @@ def closeKids (c : Ctx) (db0 db : Db) (id : Int) : Db × Except String Unit :=
         (db, .ok ())
     | _ => (db, .error s!"#{d id} has {ids.length} open sub-issues: --children cancel cancels them too, --children keep leaves them open (they stay its sub-issues)")
 
-/-- Task `id`, when `c.me` (the user or the communicator) may close it without a claim: Ready or Backlog with no owner, and at
+/-- Task `id`, when `c.me` (the user or the communicator) may close it without a claim: Ready, Proposed or Backlog with no owner, and at
 least one sub-issue. -/
 def closableUnclaimed (c : Ctx) (db : Db) (id : Int) (evidence : String) : Option Task :=
   match db.find id with
   | some r =>
-    if strip evidence != "" && (r.status = .ready || r.status = .backlog) && r.owner.isNone && Agents.inCharge db c.comms c.me
+    if strip evidence != "" && r.status.preStart && r.owner.isNone && Agents.inCharge db c.comms c.me
         && !((Tree.ofDb db).childrenOf id).isEmpty then some r else none
   | none => none
 
